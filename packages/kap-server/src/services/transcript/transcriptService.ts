@@ -72,6 +72,7 @@ import {
 
 import type { HistoryLocatorStore } from '../history/historyLocatorStore';
 import { openLogicalWire, streamLogicalWireRecords, type LogicalWire } from '../history/logicalWireRead';
+import { historyNavigationProof, matchesNavigationProof } from '../history/historyNavigationProof';
 import { CanonicalEntityPreparingError, type CanonicalToolLookup, type ResidentTurnProofResult } from '../history/historyCanonicalReader';
 
 import {
@@ -173,6 +174,8 @@ interface LiveEntry {
   ready: Promise<void>;
   readonly agentBackfills: Map<string, Promise<void>>;
   readonly agentHistory: Map<string, AgentHistoryState>;
+  readonly tailFirstAgents: Set<string>;
+  readonly tailBackfills: Map<string, Promise<void>>;
   readonly agentWires: Map<string, IWireService>;
   readonly pendingDisposals: Map<string, Promise<void>>;
   readonly unavailableAgents: Set<string>;
@@ -516,7 +519,7 @@ export class TranscriptService {
    * Get (or create + bind) the transcript store for a session that is live in
    * this process. Returns `undefined` when the session is not in memory.
    */
-  forSessionLive(sessionId: string): TranscriptStore | undefined {
+  forSessionLive(sessionId: string, options: { readonly tailFirst?: boolean } = {}): TranscriptStore | undefined {
     const existing = this.live.get(sessionId);
     if (existing !== undefined) {
       if (getLiveSessionById(this.deps.core.accessor, sessionId) !== undefined) {
@@ -559,6 +562,8 @@ export class TranscriptService {
       ready: Promise.resolve(),
       agentBackfills: new Map(),
       agentHistory: new Map(),
+      tailFirstAgents: new Set(options.tailFirst === true ? [MAIN_AGENT_ID] : []),
+      tailBackfills: new Map(),
       agentWires,
       pendingDisposals: new Map(),
       unavailableAgents: new Set(),
@@ -570,7 +575,7 @@ export class TranscriptService {
     };
     this.live.set(sessionId, entry);
     entry.ready = (async () => {
-      await this.backfillMain(sessionId, store);
+      await this.backfillMain(sessionId, store, options.tailFirst);
       if (this.live.get(sessionId)?.store === store) {
         binding.seedRunningTasks(MAIN_AGENT_ID);
         binding.seedPendingInteractions(MAIN_AGENT_ID);
@@ -594,6 +599,8 @@ export class TranscriptService {
     entry.agentWires.delete(agentId);
     entry.agentBackfills.delete(agentId);
     entry.agentHistory.delete(agentId);
+    entry.tailFirstAgents.delete(agentId);
+    entry.tailBackfills.delete(agentId);
     const journal = entry.opsJournals.get(agentId);
     if (journal !== undefined) {
       this.disposeOpsJournal(entry, journal);
@@ -688,22 +695,26 @@ export class TranscriptService {
 
   /**
    * Resolves when the session's initial history backfill has landed (or
-   * immediately when the session has no live store). Full-read consumers
-   * (REST route, WS subscribe) await this so the first answer carries the
-   * established main-agent transcript.
+   * immediately when the session has no live store). A tail-first store
+   * establishes its visible window before releasing buffered live events;
+   * explicit full-history reads recover the remaining canonical history.
    */
   async whenReady(sessionId: string): Promise<void> {
     await this.live.get(sessionId)?.ready;
   }
 
   /** Return an established projection; dormant agents use the bounded cold cache, not the live store. */
-  async ensureAgentHistory(sessionId: string, agentId: string, options: { readonly fullHistory?: boolean } = {}): Promise<AgentTranscript | undefined> {
+  async ensureAgentHistory(sessionId: string, agentId: string, options: { readonly fullHistory?: boolean; readonly tailFirst?: boolean; readonly signal?: AbortSignal } = {}): Promise<AgentTranscript | undefined> {
+    const signal = options.signal;
+    signal?.throwIfAborted();
+    const tailFirst = options.tailFirst === true && options.fullHistory !== true;
+    const wait = <T>(promise: Promise<T>): Promise<T> => signal === undefined ? promise : abortable(promise, signal);
     const establish = async (transcript: AgentTranscript | undefined): Promise<AgentTranscript | undefined> => {
       if (transcript === undefined || !transcript.hasMoreOlder) return transcript;
       if (!options.fullHistory && transcript.getItems().some(item => item.kind === 'turn')) return transcript;
       const snapshot = options.fullHistory
-        ? await this.readFullAgentSnapshot(sessionId, agentId, transcript)
-        : await this.readScreenSnapshot(sessionId, agentId);
+        ? await this.readFullAgentSnapshot(sessionId, agentId, transcript, signal)
+        : await this.readScreenSnapshot(sessionId, agentId, undefined, signal, undefined, tailFirst);
       if (snapshot === undefined) return undefined;
       const full = new AgentTranscript(agentId);
       full.apply([{ op: 'reset', agentId, snapshot }]);
@@ -712,12 +723,30 @@ export class TranscriptService {
     };
     const entry = this.live.get(sessionId);
     if (entry === undefined) return;
-    if (agentId === MAIN_AGENT_ID) await entry.ready;
-    await entry.pendingDisposals.get(agentId);
+    const disposal = entry.pendingDisposals.get(agentId);
+    if (disposal !== undefined) await wait(disposal);
     this.assertReadableAgent(sessionId, agentId);
+    if (tailFirst && entry.agentHistory.get(agentId)?.status === 'pending' && !entry.tailFirstAgents.has(agentId)) {
+      let tail = entry.tailBackfills.get(agentId);
+      if (tail === undefined) {
+        tail = this.establishPendingReplayTail(sessionId, agentId, entry);
+        entry.tailBackfills.set(agentId, tail);
+      }
+      await wait(tail);
+      signal?.throwIfAborted();
+      if (this.live.get(sessionId) === entry) return entry.store.getAgent(agentId);
+      return;
+    }
+    if (tailFirst && entry.tailBackfills.has(agentId)) {
+      await wait(entry.tailBackfills.get(agentId)!);
+      if (this.live.get(sessionId) === entry) return entry.store.getAgent(agentId);
+      return;
+    }
+    if (agentId === MAIN_AGENT_ID) await wait(entry.ready);
+    signal?.throwIfAborted();
     const session = getLiveSessionById(this.deps.core.accessor, sessionId);
     if (agentId !== MAIN_AGENT_ID && session?.accessor.get(IAgentLifecycleService).get(agentId) === undefined) {
-      const snapshot = await this.readScreenSnapshot(sessionId, agentId);
+      const snapshot = await this.readScreenSnapshot(sessionId, agentId, undefined, signal, undefined, tailFirst);
       if (snapshot === undefined) return;
       const transcript = new AgentTranscript(agentId);
       transcript.apply([{ op: 'reset', agentId, snapshot: this.reconcileQuestionSnapshot(sessionId, snapshot) }]);
@@ -739,10 +768,12 @@ export class TranscriptService {
     if (backfill === undefined) {
       if (agentId === MAIN_AGENT_ID && history?.status !== 'failed') return establish(entry.store.getAgent(agentId));
       entry.agentHistory.set(agentId, { status: 'pending' });
-      backfill = this.backfillAgent(sessionId, entry.store, agentId);
+      if (tailFirst) entry.tailFirstAgents.add(agentId);
+      backfill = this.backfillAgent(sessionId, entry.store, agentId, tailFirst);
       entry.agentBackfills.set(agentId, backfill);
     }
-    await backfill;
+    await wait(backfill);
+    signal?.throwIfAborted();
     this.assertReadableAgent(sessionId, agentId);
     if (this.live.get(sessionId)?.store === entry.store) {
       entry.binding.seedRunningTasks(agentId);
@@ -751,6 +782,25 @@ export class TranscriptService {
       this.reconcileQueuedPrompts(sessionId, entry.store, agentId);
       return establish(entry.store.getAgent(agentId));
     }
+  }
+
+  private async establishPendingReplayTail(sessionId: string, agentId: string, entry: LiveEntry): Promise<void> {
+    let replayState: TranscriptReplayState | undefined;
+    const snapshot = await this.readScreenSnapshot(sessionId, agentId,
+      () => this.liveActiveTurnIds(sessionId, agentId, undefined), undefined,
+      (state) => { replayState = state; }, true);
+    if (snapshot === undefined || replayState === undefined || this.live.get(sessionId) !== entry) return;
+    const transcript = entry.store.ensureAgent(agentId);
+    const result = transcript.apply(snapshotToOps(this.reconcileLiveInteractionSnapshot(sessionId, transcript, snapshot)));
+    transcript.noteOlderHistory();
+    if (result.accepted.length > 0) this.dispatchOps(sessionId, { agentId, ops: result.accepted });
+    entry.tailFirstAgents.add(agentId);
+    entry.agentHistory.set(agentId, { status: 'unverified' });
+    entry.binding.finishReplay(agentId, replayState);
+    entry.binding.seedRunningTasks(agentId);
+    entry.binding.seedPendingInteractions(agentId);
+    entry.binding.seedPrompts(agentId);
+    this.reconcileQueuedPrompts(sessionId, entry.store, agentId);
   }
 
   private reconcileQueuedPrompts(sessionId: string, store: TranscriptStore, agentId: string): void {
@@ -819,12 +869,14 @@ export class TranscriptService {
   }
 
   /** Initial backfill: main-agent history + the full roster from session metadata. */
-  private async backfillMain(sessionId: string, store: TranscriptStore): Promise<void> {
-    await this.backfillAgent(sessionId, store, MAIN_AGENT_ID);
+  private async backfillMain(sessionId: string, store: TranscriptStore, tailFirst = false): Promise<void> {
+    await this.backfillAgent(sessionId, store, MAIN_AGENT_ID, tailFirst);
     if (this.live.get(sessionId)?.store !== store) return;
     try {
       const session = getLiveSessionById(this.deps.core.accessor, sessionId);
-      const meta = await session?.accessor.get(ISessionMetadata).read();
+      const metadata = session?.accessor.get(ISessionMetadata);
+      if (tailFirst) await metadata?.ready;
+      const meta = tailFirst ? metadata?.snapshot() : await metadata?.read();
       for (const [agentId, agentMeta] of Object.entries(meta?.agents ?? {})) {
         store.describeAgent(descriptorFromMeta(agentId, agentMeta));
       }
@@ -858,7 +910,7 @@ export class TranscriptService {
    * the rebuild are 0-based like the engine's, so future live turns continue
    * without colliding.
    */
-  private async backfillAgent(sessionId: string, store: TranscriptStore, agentId: string): Promise<void> {
+  private async backfillAgent(sessionId: string, store: TranscriptStore, agentId: string, tailFirst = false): Promise<void> {
     const entryAtStart = this.live.get(sessionId);
     if (entryAtStart?.store !== store) return;
     entryAtStart.agentHistory.set(agentId, { status: 'pending' });
@@ -876,7 +928,9 @@ export class TranscriptService {
         () => this.liveActiveTurnIds(sessionId, agentId, initialActiveTurnId),
         undefined,
         (state) => { replayState = state; },
+        tailFirst,
       );
+      if (!tailFirst && entryAtStart.tailFirstAgents.has(agentId)) return;
       if (snapshot === undefined || replayState === undefined) failed = true;
       if (snapshot !== undefined) {
         const liveMeta = transcript.snapshot().meta;
@@ -921,6 +975,7 @@ export class TranscriptService {
     }
     const entry = this.live.get(sessionId);
     if (entry?.store !== store) return;
+    if (!tailFirst && entry.tailFirstAgents.has(agentId)) return;
     if (entry.unavailableAgents.has(agentId)) return;
     const existing = store.agents().find((d) => d.agentId === agentId);
     const hasContent =
@@ -1754,7 +1809,7 @@ export class TranscriptService {
   /** Cache a fingerprint-bound page projection and bounded tail turns for immediate continuations. */
   async readColdPageSnapshot(sessionId: string, agentId: string,
     project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot,
-    signal?: AbortSignal, extendOlder = false, spanBytes = FIRST_SCREEN_WINDOW_BYTES, preserveWindow = false): Promise<AgentTranscriptSnapshot | undefined> {
+    signal?: AbortSignal, extendOlder = false, spanBytes = FIRST_SCREEN_WINDOW_BYTES, preserveWindow = false, tailFirst = false): Promise<AgentTranscriptSnapshot | undefined> {
     signal?.throwIfAborted();
     const location = await this.historyWireLocation(sessionId, agentId);
     if (location === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
@@ -1766,7 +1821,7 @@ export class TranscriptService {
     signal?.throwIfAborted();
     if (info === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
-    if (info.size <= FIRST_SCREEN_WINDOW_MAX_BYTES) {
+    if (!tailFirst && info.size <= FIRST_SCREEN_WINDOW_MAX_BYTES && !this.coldWireWindows.has(wirePath)) {
       return this.readLegacyColdPageSnapshot(sessionId, agentId, project, signal);
     }
     const retained = this.retainedColdTurns.get(wirePath);
@@ -1794,7 +1849,7 @@ export class TranscriptService {
       return cached.snapshot;
     }
     if (cached !== undefined) this.deleteColdSnapshotCache(wirePath);
-    const window = await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, opened);
+    const window = await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, opened, undefined, undefined, !tailFirst);
     if (window === undefined) return undefined;
     const after = await stat(wirePath);
     signal?.throwIfAborted();
@@ -1820,7 +1875,7 @@ export class TranscriptService {
 
   private async readScreenSnapshot(sessionId: string, agentId: string,
     preserveOpenTurnIds?: () => readonly string[], signal?: AbortSignal,
-    captureReplayState?: (state: TranscriptReplayState) => void,
+    captureReplayState?: (state: TranscriptReplayState) => void, tailFirst = false,
   ): Promise<AgentTranscriptSnapshot | undefined> {
     signal?.throwIfAborted();
     const location = await this.historyWireLocation(sessionId, agentId);
@@ -1832,11 +1887,17 @@ export class TranscriptService {
     signal?.throwIfAborted();
     if (info === undefined) return this.readColdSnapshot(sessionId, agentId, preserveOpenTurnIds, signal, captureReplayState);
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
-    if (info.size <= FIRST_SCREEN_WINDOW_MAX_BYTES) {
+    if (!tailFirst && info.size <= FIRST_SCREEN_WINDOW_MAX_BYTES) {
       return this.readColdSnapshot(sessionId, agentId, preserveOpenTurnIds, signal, captureReplayState);
     }
     const opened = signal ?? new AbortController().signal;
-    const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, preserveOpenTurnIds, captureReplayState);
+    const proof = tailFirst ? await historyNavigationProof(location.wirePath, info.size, opened) : undefined;
+    const window = await this.ensureColdWireWindow(sessionId, agentId, location.wirePath, info, fingerprint, opened, preserveOpenTurnIds, captureReplayState, !tailFirst);
+    if (proof !== undefined && !matchesNavigationProof(proof, await historyNavigationProof(location.wirePath, info.size, opened))) {
+      this.forgetColdWindow(location.wirePath);
+      throw new Error('history_source_changed');
+    }
+    opened.throwIfAborted();
     return window?.snapshot;
   }
 
@@ -1908,7 +1969,7 @@ export class TranscriptService {
   private async ensureColdWireWindow(sessionId: string, agentId: string, wirePath: string,
     info: { size: number; mtimeMs: number; ctimeMs: number; dev: number | bigint; ino: number | bigint; birthtimeMs: number },
     fingerprint: string, signal: AbortSignal, preserveOpenTurnIds?: () => readonly string[],
-    captureReplayState?: (state: TranscriptReplayState) => void,
+    captureReplayState?: (state: TranscriptReplayState) => void, resolveHeaders = true,
   ): Promise<ColdWireWindow | undefined> {
     const existing = this.coldWireWindows.get(wirePath);
     if (existing !== undefined && existing.fingerprint === fingerprint && existing.payloadEvicted !== true) {
@@ -1923,7 +1984,7 @@ export class TranscriptService {
     const entire = start === 0 && read.complete;
     const snapshot = this.projectColdRecords(agentId, read.records, entire, preserveOpenTurnIds, captureReplayState);
     const window: ColdWireWindow = { fingerprint, start, end: info.size, entire, records: read.records, snapshot, bytes: 0 };
-    if (!entire) {
+    if (!entire && resolveHeaders) {
       const orphans = snapshot.items.filter((item): item is TranscriptTurn => item.kind === 'turn' &&
         item.origin.kind === 'other' && item.message === undefined && item.promptId === undefined && item.startedAt === undefined);
       const headers: TranscriptTurn[] = [];
@@ -1951,7 +2012,7 @@ export class TranscriptService {
     let guard = 0;
     while (visible.snapshot.items.length === 0 && visible.start > 0 && guard < 8) {
       const before = visible.start;
-      const extended = await this.extendColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState);
+      const extended = await this.extendColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState, undefined, resolveHeaders);
       if (extended === undefined || extended.start === before) break;
       visible = extended;
       guard += 1;
@@ -1962,11 +2023,11 @@ export class TranscriptService {
   private async extendColdWireWindow(sessionId: string, agentId: string, wirePath: string,
     info: { size: number; mtimeMs: number; ctimeMs: number; dev: number | bigint; ino: number | bigint; birthtimeMs: number },
     fingerprint: string, signal: AbortSignal, preserveOpenTurnIds?: () => readonly string[],
-    captureReplayState?: (state: TranscriptReplayState) => void, spanBytes = FIRST_SCREEN_WINDOW_BYTES,
+    captureReplayState?: (state: TranscriptReplayState) => void, spanBytes = FIRST_SCREEN_WINDOW_BYTES, resolveHeaders = true,
   ): Promise<ColdWireWindow | undefined> {
     const retained = this.coldWireWindows.get(wirePath);
     const window = retained?.fingerprint === fingerprint && retained.payloadEvicted === true ? retained :
-      await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState);
+      await this.ensureColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, signal, preserveOpenTurnIds, captureReplayState, resolveHeaders);
     if (window === undefined || window.start === 0) return window;
     const next = await this.tailRecordStart(wirePath, window.start, signal, spanBytes);
     if (next >= window.start) return window;

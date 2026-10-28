@@ -397,7 +397,11 @@ function makeCore(
           if (t === ISessionInteractionService) return lifecycle.interactions;
           if (t === ISessionActivityView) return lifecycle.workView;
           if (t === ISessionDispatchService) return lifecycle.dispatch;
-          if (t === ISessionMetadata) return { read: async () => ({ agents: metaAgents }) };
+          if (t === ISessionMetadata) return {
+            ready: Promise.resolve(),
+            snapshot: () => ({ agents: metaAgents }),
+            read: async () => ({ agents: metaAgents }),
+          };
           return undefined;
         },
       };
@@ -3151,8 +3155,7 @@ describe('SessionEventBroadcaster', () => {
   });
 
   describe('transcript streaming', () => {
-    it.each((['main_ready', 'agent_backfill', 'agent_verify'] as const).flatMap((stage) =>
-      (['succeeded', 'failed', 'cancelled'] as const).map((outcome) => ({ stage, outcome }))))(
+    it.each((['succeeded', 'failed', 'cancelled'] as const).map((outcome) => ({ stage: 'agent_backfill' as const, outcome })))(
       'session loading timing retains $stage / $outcome through the production seed path', async ({ stage, outcome }) => {
         const lifecycle = new FakeLifecycle();
         lifecycle.addAgent('main');
@@ -3171,19 +3174,10 @@ describe('SessionEventBroadcaster', () => {
         const gate = async (): Promise<void> => {
           enter();
           await blocked;
-          if (outcome === 'failed' || (outcome === 'cancelled' && stage === 'agent_backfill')) throw new Error('private-source-content');
-          if (outcome === 'cancelled' && stage === 'agent_verify') throw new DOMException('private-abort-content', 'AbortError');
+          if (outcome === 'failed' || outcome === 'cancelled') throw new Error('private-source-content');
         };
-        if (stage === 'main_ready') {
-          const original = service.whenReady.bind(service);
-          vi.spyOn(service, 'whenReady').mockImplementation(async (...args) => { await gate(); return original(...args); });
-        } else if (stage === 'agent_backfill') {
-          const original = service.ensureAgentHistory.bind(service);
-          vi.spyOn(service, 'ensureAgentHistory').mockImplementation(async (...args) => { await gate(); return original(...args); });
-        } else {
-          const original = service.verifyTranscriptLiveCoverage.bind(service);
-          vi.spyOn(service, 'verifyTranscriptLiveCoverage').mockImplementation(async (...args) => { await gate(); return original(...args); });
-        }
+        const original = service.ensureAgentHistory.bind(service);
+        vi.spyOn(service, 'ensureAgentHistory').mockImplementation(async (...args) => { await gate(); return original(...args); });
         const diagnostics = channel('kiki.session-view.timing');
         const records: Array<Record<string, unknown>> = [];
         const collect = (record: unknown): void => { records.push(record as Record<string, unknown>); };
@@ -3219,8 +3213,7 @@ describe('SessionEventBroadcaster', () => {
           release();
           if (outcome !== 'cancelled') await finished;
           else await vi.advanceTimersByTimeAsync(0);
-          const actualOutcome = outcome !== 'cancelled' ? outcome :
-            stage === 'main_ready' ? 'succeeded' : stage === 'agent_backfill' ? 'failed' : 'cancelled';
+          const actualOutcome = outcome === 'cancelled' ? 'failed' : outcome;
           expect(records).toContainEqual(expect.objectContaining({ ...identity, outcome: actualOutcome,
             signalAborted: outcome === 'cancelled', durationMs: 1_000 }));
           expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ ...identity, outcome: actualOutcome }), 'session view phase');
@@ -3256,6 +3249,47 @@ describe('SessionEventBroadcaster', () => {
           diagnostics.unsubscribe(collect);
         }
       });
+
+    it('seeds a resident transcript without waiting for full-session readiness or live coverage', async () => {
+      const lifecycle = new FakeLifecycle();
+      lifecycle.addAgent('main');
+      sessions.set('s1', lifecycle);
+      const core = makeCore(sessions, eventBus);
+      const service = new TranscriptService({ homeDir: dir, core });
+      service.forSessionLive('s1');
+      await service.whenReady('s1');
+      const resident = service.forSessionLive('s1')!.getAgent('main')!;
+      const whenReady = vi.spyOn(service, 'whenReady').mockImplementation(() => new Promise<void>(() => {}));
+      const verify = vi.spyOn(service, 'verifyTranscriptLiveCoverage').mockImplementation(() => new Promise<boolean>(() => {}));
+      const ensure = vi.spyOn(service, 'ensureAgentHistory').mockResolvedValue(resident);
+      bc = new SessionEventBroadcaster({ eventsDir: dir, core, transcriptService: service });
+      await bc.getCursor('s1');
+      const frames: Array<Record<string, unknown>> = [];
+      const errors = vi.fn();
+      const connection = new SessionViewHttpConnection(bc, (frame) => {
+        frames.push(frame.data as Record<string, unknown>);
+      }, errors, { core, service });
+      try {
+        connection.receive({ type: 'view_attach', id: 'resident-view', sessionId: 's1', data: { generation: 31,
+          transcript_coverage_version: 2,
+          input: { sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } } } });
+        await vi.waitFor(() => expect(frames.some((frame) => frame['type'] === 'ready')).toBe(true));
+        expect(frames).toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: 'transcript', event: expect.objectContaining({ type: 'transcript.reset' }) }),
+          expect.objectContaining({ type: 'ready' }),
+        ]));
+        expect(errors).not.toHaveBeenCalled();
+        expect(whenReady).not.toHaveBeenCalled();
+        expect(verify).not.toHaveBeenCalled();
+        expect(ensure).toHaveBeenCalledWith('s1', 'main', {
+          tailFirst: true,
+          signal: expect.any(AbortSignal),
+        });
+      } finally {
+        connection.dispose();
+        service.dispose();
+      }
+    });
 
     function makeBroadcasterWithTranscript(
       metaAgents?: Record<string, { type?: string; parentAgentId?: string }>,
@@ -3666,25 +3700,31 @@ describe('SessionEventBroadcaster', () => {
         drain: async () => { envelopes.push(...buffered.splice(0)); streaming = true; },
       };
       let finished = false;
+      let verification: Promise<boolean> | undefined;
       const pending = bc.subscribe('s1', target, undefined, { '*': 'off', main: 'delta', 'visible-child': 'delta' })
         .then((result) => { finished = true; return result; });
       try {
-        await vi.waitFor(() => expect(proofRequested).toBe(true));
-        expect(transcriptEnvelopes(envelopes)).toEqual([]);
-        expect(blockedFinished).toBe(false);
-        releaseProof();
         await vi.waitFor(() => expect(transcriptEnvelopes(envelopes).some((frame) =>
           frame.type === 'transcript.reset' && (frame.payload as { agent_id: string }).agent_id === fast.id)).toBe(true));
+        expect(proofRequested).toBe(false);
+        expect(proofVerified).toBe(false);
         expect(blockedFinished).toBe(false);
         expect(finished).toBe(false);
+        expect(transcriptEnvelopes(envelopes)).toHaveLength(1);
         const first = transcriptEnvelopes(envelopes)[0]!;
         expect(first).toMatchObject({ type: 'transcript.reset', payload: { agent_id: fast.id, grade: 'delta',
-          coverage: { kind: 'full', hasMoreOlder: false } } });
+          coverage: { kind: 'unknown', hasMoreOlder: true } } });
+        verification = service.verifyTranscriptLiveCoverage('s1', fast.id);
+        await vi.waitFor(() => expect(proofRequested).toBe(true));
+        expect(proofVerified).toBe(false);
         fast.bus.emit(agentEvent('turn.started', { turnId: 7, origin: { kind: 'user' } }));
         await vi.waitFor(() => expect(transcriptEnvelopes(envelopes).some((frame) =>
           frame.type === 'transcript.ops' && (frame.payload as OpsPayload).agent_id === fast.id)).toBe(true));
         expect(blockedFinished).toBe(false);
         expect(finished).toBe(false);
+        releaseProof();
+        await expect(verification).resolves.toBe(true);
+        expect(proofVerified).toBe(true);
         if (supersede) await bc.subscribe('s1', target, undefined, { '*': 'off', [blockedAgent]: 'off', [fast.id]: 'delta' });
         const beforeRelease = transcriptEnvelopes(envelopes).length;
         const liveBeforeRelease = transcriptEnvelopes(envelopes).filter((frame) =>
@@ -3706,13 +3746,14 @@ describe('SessionEventBroadcaster', () => {
             (frame.payload as { agent_id: string }).agent_id).sort()).toEqual(['main', 'visible-child']);
           expect(frames.some((frame) => frame.type === 'transcript.ops' && (frame.payload as OpsPayload).agent_id === fast.id)).toBe(true);
           const mainReset = frames.find((frame) => frame.type === 'transcript.reset' && (frame.payload as { agent_id: string }).agent_id === 'main')!;
-          expect(mainReset).toMatchObject({ payload: { coverage: { kind: 'full', hasMoreOlder: false }, snapshot: {
+          expect(mainReset).toMatchObject({ payload: { coverage: { kind: 'unknown', hasMoreOlder: true }, snapshot: {
             items: expect.arrayContaining([expect.objectContaining({ prompt: 'persisted main first' }), expect.objectContaining({ prompt: 'persisted main second' })]),
           } } });
         }
         expect(buffered).toEqual([]);
       } finally {
         releaseProof();
+        if (verification !== undefined) await verification.catch(() => {});
         releaseHistory();
         await pending;
         await service.whenReady('s1');
@@ -3809,9 +3850,9 @@ describe('SessionEventBroadcaster', () => {
       const original = service.ensureAgentHistory.bind(service);
       const backfillSpy = vi
         .spyOn(service, 'ensureAgentHistory')
-        .mockImplementation(async (sessionId, agentId) => {
+        .mockImplementation(async (sessionId, agentId, options) => {
           if (agentId === 'sub-1') await gate;
-          return original(sessionId, agentId);
+          return original(sessionId, agentId, options);
         });
       bc = new SessionEventBroadcaster({
         eventsDir: dir,
@@ -3823,7 +3864,10 @@ describe('SessionEventBroadcaster', () => {
       const view = collectingTarget();
       const pending = bc.subscribe('s1', view.target, undefined, { 'sub-1': 'delta' });
       await vi.waitFor(() => {
-        expect(backfillSpy).toHaveBeenCalledWith('s1', 'sub-1');
+        expect(backfillSpy).toHaveBeenCalledWith('s1', 'sub-1', expect.objectContaining({
+          tailFirst: true,
+          signal: expect.any(AbortSignal),
+        }));
       });
       sub.bus.emit(agentEvent('turn.started', { turnId: 1, origin: { kind: 'user' } }));
       bc.unsubscribe('s1', view.target);

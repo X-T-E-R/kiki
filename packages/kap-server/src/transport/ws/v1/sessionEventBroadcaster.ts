@@ -64,6 +64,7 @@ import { readLegacyStatus, toLegacyPhase } from '../../../services/legacyStatus/
 import type { TranscriptService } from '../../../services/transcript/transcriptService';
 import { recordSessionViewTiming, timeSessionViewPhase, type SessionViewTimingContext } from '../../klient/sessionViewTiming';
 import { boundedTranscriptOps, boundedTranscriptSnapshot, TRANSCRIPT_WINDOW_BYTES } from '../../klient/boundedTranscript';
+import { sessionViewSnapshotHistoryCursor } from '../../klient/sessionViewReads';
 import { InFlightTurnTracker } from './inFlightTurnTracker';
 import { SubagentRosterTracker } from './subagentRosterTracker';
 import { TurnUsageTracker } from './turnUsageTracker';
@@ -373,7 +374,7 @@ export class SessionEventBroadcaster {
         return true;
       }
       const deferred = opts?.deferTranscriptReset === true;
-      const liveStore = this.opts.transcriptService?.forSessionLive(sessionId);
+      const liveStore = this.opts.transcriptService?.forSessionLive(sessionId, { tailFirst: true });
       const streamChanged = liveStore !== undefined && state.transcriptStream?.store !== liveStore;
       const needsSeed =
         deferred ||
@@ -557,16 +558,10 @@ export class SessionEventBroadcaster {
       const current = () => !stopped && this.isTranscriptGeneration(state, target, seed.generation) &&
         service.forSessionLive(state.sessionId) === seed.store;
       if (!current()) return;
-      let mainReady = false;
       const ensureHistory = async (agentId: string): Promise<AgentTranscript | undefined> => {
-        if (agentId === MAIN_AGENT_ID && !mainReady) {
-          await timeSessionViewPhase('main_ready', { ...fields, agentId }, () => service.whenReady(state.sessionId), timing);
-          mainReady = true;
-          if (!current()) return;
-        }
         if (!admitted.has(agentId)) return seed.store.getAgent(agentId);
         const transcript = await timeSessionViewPhase('agent_backfill', { ...fields, agentId },
-          () => service.ensureAgentHistory(state.sessionId, agentId), timing);
+          () => service.ensureAgentHistory(state.sessionId, agentId, { tailFirst: true, signal: timing.signal }), timing);
         admitted.delete(agentId);
         return transcript;
       };
@@ -616,9 +611,6 @@ export class SessionEventBroadcaster {
             sent = { seq: catchup.throughSeq, epoch: catchup.epoch };
           } else {
             if (since !== undefined || needsReset) {
-              await timeSessionViewPhase('agent_verify', { ...fields, agentId },
-                () => service.verifyTranscriptLiveCoverage(state.sessionId, agentId), timing);
-              if (!current()) return false;
               if (!this.sendTranscriptReset(state, target, transcript, grade, cursor, seed.generation)) return false;
               await timeSessionViewPhase('agent_drain', { ...fields, agentId }, async () => target.drain?.(), timing);
               if (!firstDetail && priority.has(agentId)) {
@@ -819,8 +811,7 @@ export class SessionEventBroadcaster {
         else seed.delivered.delete(transcript.agentId);
       }
     };
-    if (service.isTranscriptLiveCoverageVerified(state.sessionId, transcript.agentId)) deliver();
-    else void service.verifyTranscriptLiveCoverage(state.sessionId, transcript.agentId).then(deliver, deliver);
+    deliver();
   }
 
   /**
@@ -858,7 +849,7 @@ export class SessionEventBroadcaster {
       this.buildTranscriptEnvelope(state, 'transcript.reset', {
         session_id: state.sessionId,
         agent_id: transcript.agentId,
-        snapshot,
+        snapshot: { ...snapshot, olderCursor: sessionViewSnapshotHistoryCursor(snapshot, transcript.agentId, 'derived', cursor.epoch) },
         grade,
         coverage,
         cursor,

@@ -170,7 +170,7 @@ describe('SessionViewTarget', () => {
       else expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ type: 'ready' }) }));
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(service.readColdPageSnapshot).toHaveBeenCalledExactlyOnceWith('s1', 'agent-27', expect.any(Function), expect.any(AbortSignal));
+    expect(service.readColdPageSnapshot).toHaveBeenCalledExactlyOnceWith('s1', 'agent-27', expect.any(Function), expect.any(AbortSignal), false, undefined, false, true);
     const result = service.readColdPageSnapshot.mock.results[0];
     if (result?.type !== 'return') throw new Error('Cold page reader must complete the projection');
     const projected = (await result.value).items[0]!;
