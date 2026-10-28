@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 import { MemoryWorker } from '#/persistence/backends/sqliteMemory/host';
 import { configureMemoryWorkerRuntime } from '#/persistence/backends/sqliteMemory/protocol';
 import { join } from 'node:path';
@@ -136,6 +137,24 @@ describe('canonical Memory transactions', () => {
     await expect(store.query([workspace], { cursor: first.next_cursor! })).rejects.toThrow('visible scopes changed');
   });
 
+  it('serves initial queries through concurrent writes and refreshes from a separate Store worker', async () => {
+    const saved = await save('Cross-store refresh');
+    const other = new TestInstantiationService();
+    other.stub(IBootstrapService, { storeDir: join(home, 'store') });
+    other.stub(IMemoryScopes, { resolve: async (scope) => pathFor(scope) });
+    other.set(IMemoryPersistence, new SyncDescriptor(SqliteMemoryPersistence));
+    other.set(ISqliteMemoryStore, new SyncDescriptor(SqliteMemoryStore));
+    const peer = other.get(ISqliteMemoryStore);
+    try {
+      const [page, changed] = await Promise.all([store.query([global], { mode: 'list' }), peer.put({ action: 'update', scope: global, id: saved.entry.id, expectedRevision: saved.entry.revision, type: 'feedback', title: saved.entry.title, body: 'Peer correction; preserve exception 17.', source, reason: 'Peer correction' })]);
+      expect(page.coverage.complete).toBe(true);
+      expect(page.items).toHaveLength(1);
+      expect([saved.entry.body, changed.entry.body]).toContain(page.items[0]?.body);
+      expect((await store.get(global, saved.entry.id))?.revision).toBe(changed.entry.revision);
+      expect((await store.query([global], { mode: 'list' })).items[0]?.body).toBe(changed.entry.body);
+    } finally { await other.get(IMemoryPersistence).close(); await other.dispose(); }
+  });
+
   it('does not skip surviving results when earlier pages or later candidates are forgotten', async () => {
     const a = await save('A');
     const b = await save('B');
@@ -226,6 +245,117 @@ describe('Memory shadow import and replay barriers', () => {
     await close(); bind();
     await store.forget(global, [{ id: saved.entry.id, expectedRevision: saved.entry.revision }], 'forget-once');
     expect(await store.get(global, saved.entry.id)).toBeUndefined();
+  });
+
+  it('filters untrusted and background ingestion before registering a stable source', async () => {
+    const mutation = { scope: global, type: 'feedback' as const, title: 'Trusted source', body: 'Keep the complete condition and exception 17.', reason: 'Trusted source candidate', source: { writer: 'agent' as const } };
+    for (const origin of ['untrusted', 'system'] as const) await expect(store.ingest({ mutation, unit: { id: origin, payload: mutation.body, origin } })).rejects.toThrow('trusted interactive');
+    await expect(store.ingest({ mutation, unit: { id: 'background', payload: mutation.body, origin: 'agent', sessionKind: 'background' } })).rejects.toThrow('trusted interactive');
+    for (const locator of ['sessions/example/turn.jsonl', 'memory\\.dreams\\session-corpus\\example.txt']) await expect(store.ingest({ mutation, unit: { id: locator, payload: mutation.body, origin: 'owner', locator } })).rejects.toThrow('trusted interactive');
+    expect((await persistence.read(['memory/global'])).generation).toBe(0);
+    const saved = await store.ingest({ mutation, unit: { id: 'interactive', payload: mutation.body, origin: 'agent', sessionKind: 'interactive' } });
+    expect(saved.entry.body).toBe(mutation.body);
+    expect((await store.provenance(global, saved.entry.id)).sources[0]?.payload).toBe(mutation.body);
+  });
+
+  it('replays stable-source extraction through correction, replacement, deletion and precise forget', async () => {
+    const mutation = { scope: global, type: 'feedback' as const, title: 'Source A', body: 'Address A.', reason: 'Observed source', source: { writer: 'agent' as const } };
+    const unit = { id: 'session-example:turn-1:fact-1', payload: 'Original human utterance: address A.', origin: 'owner' as const };
+    const first = await store.ingest({ mutation, unit });
+    const corrected = await update(first.entry, 'A was mistaken; always Address B.');
+    expect((await store.ingest({ mutation: { ...mutation, title: 'Re-extracted A' }, unit })).entry.body).toBe(corrected.entry.body);
+    const replacement = await store.put({ ...mutation, action: 'supersede', id: first.entry.id, expectedRevision: corrected.entry.revision, title: 'Replacement B', body: 'Address B, exception 17.', source });
+    expect((await store.ingest({ mutation, unit })).entry.id).toBe(replacement.entry.id);
+    const deletion = await store.delete(global, replacement.entry.id, replacement.entry.revision);
+    await expect(store.ingest({ mutation, unit })).rejects.toThrow('deleted Memory');
+    const restored = await store.undo(global, deletion);
+    expect((await store.ingest({ mutation, unit })).entry.revision).toBe(restored?.revision);
+    const preview = await store.previewForget(global, [replacement.entry.id]);
+    expect(preview.targets.map((target) => target.id).toSorted()).toEqual([first.entry.id, replacement.entry.id].toSorted());
+    await expect(store.forget(global, [{ id: replacement.entry.id, expectedRevision: restored!.revision }], 'incomplete-forget')).rejects.toThrow('complete source lineage');
+    await store.forget(global, preview.targets, 'forget-source-lineage');
+    await close(); bind();
+    await expect(store.ingest({ mutation, unit })).rejects.toThrow('source unit has been forgotten');
+    expect((await store.provenance(global, first.entry.id)).sources).toEqual([]);
+    expect(await store.getRevision(global, first.entry.id, corrected.entry.revision)).toBeUndefined();
+    const independent = await store.ingest({ mutation: { ...mutation, title: 'Separate fact' }, unit: { ...unit, id: 'session-example:turn-1:fact-2' } });
+    expect(independent.entry.status).toBe('active');
+  });
+
+  it('forgets recoverably deleted preimages and rejects an obsolete preview after a new successor', async () => {
+    const saved = await save('Deleted private preimage');
+    await store.delete(global, saved.entry.id, saved.entry.revision);
+    const deleted = await store.previewForget(global, [saved.entry.id]);
+    expect(deleted.targets[0]?.entry).toBeNull();
+    await store.forget(global, deleted.targets, 'forget-deleted');
+    expect(await store.getRevision(global, saved.entry.id, saved.entry.revision)).toBeUndefined();
+    const original = await save('Obsolete preview');
+    const preview = await store.previewForget(global, [original.entry.id]);
+    await store.put({ action: 'supersede', scope: global, id: original.entry.id, expectedRevision: original.entry.revision, type: original.entry.type, title: 'New successor', body: original.entry.body, reason: 'Replace', source });
+    await expect(store.forget(global, preview.targets, 'obsolete-forget')).rejects.toThrow('preview changed');
+    expect((await store.list(global)).filter((entry) => entry.status === 'active')).toHaveLength(1);
+  });
+
+  it('includes pending derivatives in forget preview and permits clean archive approval', async () => {
+    const saved = await save('Pending lineage');
+    const proposal = await store.put({ action: 'update', scope: global, id: saved.entry.id, expectedRevision: saved.entry.revision, type: saved.entry.type, title: saved.entry.title, body: 'Derived private correction.', pending: true, reason: 'Review', source: { writer: 'agent' } });
+    const preview = await store.previewForget(global, [saved.entry.id]);
+    expect(preview.targets.map((target) => target.id).toSorted()).toEqual([saved.entry.id, proposal.entry.id].toSorted());
+    await store.forget(global, preview.targets, 'forget-pending-derivative');
+    expect(await store.get(global, proposal.entry.id)).toBeUndefined();
+    const archived = await save('Archive approval');
+    const archive = await store.put({ action: 'archive', scope: global, id: archived.entry.id, expectedRevision: archived.entry.revision, pending: true, source: { writer: 'agent' }, reason: 'Review retirement' });
+    const approved = await store.put({ action: 'update', scope: global, id: archive.entry.id, expectedRevision: archive.entry.revision, reason: 'Accept retirement', source });
+    expect(approved.entry.status).toBe('archived');
+    expect(await store.get(global, archive.entry.id)).toBeUndefined();
+  });
+
+  it('rolls back supersede and its source reservation together when lineage persistence fails', async () => {
+    const saved = await save('Atomic origin');
+    const db = new DatabaseSync(join(home, 'store', 'memory-sqlite-v1', 'memory.sqlite'));
+    try {
+      db.exec("CREATE TRIGGER fail_lineage BEFORE INSERT ON source_links BEGIN SELECT RAISE(ABORT, 'injected lineage failure'); END;");
+      await expect(store.put({ action: 'supersede', scope: global, id: saved.entry.id, expectedRevision: saved.entry.revision, type: 'feedback', title: 'Failed successor', body: 'Must never become active.', reason: 'Replace', source })).rejects.toThrow('injected lineage failure');
+    } finally { db.exec('DROP TRIGGER fail_lineage'); db.close(); }
+    await close(); bind();
+    expect(await store.get(global, saved.entry.id)).toEqual(saved.entry);
+    expect((await store.list(global)).filter((entry) => entry.status === 'active')).toHaveLength(1);
+    expect((await persistence.read(['memory/global'])).generation).toBe(1);
+  });
+
+  it('backfills stable imported identities on schema-1 upgrade before re-extraction', async () => {
+    const seed = await save('Schema seed');
+    const entry: MemoryEntry = { ...seed.entry, id: 'm_schema_import', title: 'Schema source', source: { writer: 'import', session: 'example-schema', turn: 1 } };
+    await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }]);
+    await close();
+    const db = new DatabaseSync(join(home, 'store', 'memory-sqlite-v1', 'memory.sqlite'));
+    try { db.exec("DROP TABLE source_links; DROP TABLE source_barriers; DELETE FROM sources WHERE id LIKE 'source-unit:%'; PRAGMA user_version=1;"); }
+    finally { db.close(); }
+    bind();
+    const corrected = await update(entry, 'Current corrected schema source.');
+    const duplicate = { ...entry, id: 'm_schema_reextracted' };
+    const replay = await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${duplicate.id}.md`, payload: JSON.stringify(duplicate), entry: duplicate }]);
+    expect(replay.issues[0]?.issue).toBe('source_lineage_preserved');
+    expect(await store.get(global, duplicate.id)).toBeUndefined();
+    expect((await store.get(global, entry.id))?.body).toBe(corrected.entry.body);
+  });
+
+  it('applies imported-source correction and forget to a changed legacy ID and real lorebook reimport', async () => {
+    const original: MemoryEntry = { ...((await save('Seed')).entry), id: 'm_source_original', title: 'Address source', body: 'Address A', source: { writer: 'import', session: 'example-source', turn: 2 }, basis: { kind: 'observed', note: 'Exact source fact', refs: ['fixture://source/original'] } };
+    const importEntry = (entry: MemoryEntry) => persistence.importLegacy([{ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }]);
+    await importEntry(original);
+    const corrected = await update(original, 'A was mistaken; always Address B.');
+    expect((await importEntry({ ...original, id: 'm_source_reextracted', title: 'Stale extraction' })).issues[0]?.issue).toBe('source_lineage_preserved');
+    expect(await store.get(global, 'm_source_reextracted')).toBeUndefined();
+    expect((await store.get(global, original.id))?.body).toBe(corrected.entry.body);
+    await store.forget(global, (await store.previewForget(global, [original.id])).targets, 'forget-imported-source');
+    await close(); bind();
+    expect((await importEntry({ ...original, id: 'm_source_returned' })).issues[0]?.issue).toBe('forgotten_source_rejected');
+    const lorebook = [{ title: 'Lorebook source', content: 'Private lorebook fact.' }];
+    const first = await store.importLorebook(global, lorebook, { session: 'example-lorebook', turn: 4 });
+    await store.forget(global, (await store.previewForget(global, [first[0]!.entry.id])).targets, 'forget-lorebook');
+    expect(await store.importLorebook(global, lorebook, { session: 'example-lorebook', turn: 4 })).toEqual([]);
+    expect((await store.query([global], { query: 'Private lorebook' })).items.map((entry) => entry.body)).not.toContain(lorebook[0]!.content);
   });
 
   it('rolls back an uncommitted write when its worker exits and reopens the last committed view', async () => {

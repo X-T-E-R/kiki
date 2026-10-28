@@ -26,6 +26,15 @@ export interface MemoryEvidenceSource {
   readonly locator?: string;
   readonly learnedAt: string;
 }
+export type MemorySourceState =
+  | { readonly state: 'missing' }
+  | { readonly state: 'forgotten'; readonly id: string; readonly scope: string }
+  | { readonly state: 'registered'; readonly source: MemoryEvidenceSource; readonly objectIds: readonly string[] };
+export interface MemoryProvenance {
+  readonly sources: readonly MemoryEvidenceSource[];
+  readonly adjudications: readonly MemoryAdjudication[];
+  readonly relatedObjectIds: readonly string[];
+}
 export interface MemoryAdjudication {
   readonly id: string;
   readonly scope: string;
@@ -46,6 +55,7 @@ export interface MemoryCommit {
   readonly expectedGeneration: number;
   readonly edits: readonly MemoryObjectEdit[];
   readonly sources?: readonly MemoryEvidenceSource[];
+  readonly sourceTransfers?: readonly { readonly scope: string; readonly from: string; readonly to: string }[];
   readonly adjudications?: readonly MemoryAdjudication[];
   readonly barriers?: readonly MemoryForgetBarrier[];
   readonly journal?: readonly (MemoryJournalRecord & { readonly scope: string })[];
@@ -79,6 +89,8 @@ export interface IMemoryPersistence {
   commit(input: MemoryCommit): Promise<MemoryCommitReceipt>;
   receipt(operationId: string, request?: string): Promise<MemoryCommitReceipt | undefined>;
   journal(scope: string, id?: string): Promise<readonly MemoryJournalRecord[]>;
+  source(scope: string, id: string): Promise<MemorySourceState>;
+  provenance(scope: string, id: string): Promise<MemoryProvenance>;
   importLegacy(batch: readonly MemoryLegacyPayload[]): Promise<MemoryImportResult>;
   legacy(scope: string): Promise<readonly MemoryLegacyPayload[]>;
   close(): Promise<void>;

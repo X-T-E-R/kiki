@@ -6,6 +6,8 @@ export type MemoryOperation =
   | { readonly type: 'commit'; readonly input: MemoryCommit }
   | { readonly type: 'receipt'; readonly operationId: string; readonly request?: string }
   | { readonly type: 'journal'; readonly scope: string; readonly id?: string }
+  | { readonly type: 'source'; readonly scope: string; readonly id: string }
+  | { readonly type: 'provenance'; readonly scope: string; readonly id: string }
   | { readonly type: 'importLegacy'; readonly batch: readonly MemoryLegacyPayload[] }
   | { readonly type: 'legacy'; readonly scope: string }
   | { readonly type: 'close' };

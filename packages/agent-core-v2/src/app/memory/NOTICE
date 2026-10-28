@@ -1,0 +1,27 @@
+OpenClaw Memory source lifecycle adaptation
+
+Upstream: https://github.com/openclaw/openclaw
+Revision: 3c9b8602b79b2ae2f3c9a76ac7dfb9579ea8eefc
+License: MIT, copyright (c) 2026 OpenClaw Foundation.
+Full license: OPENCLAW-LICENSE in this directory.
+
+Adapted units:
+- extensions/memory-core/src/dreaming-consolidation-candidates.ts:
+  trusted-origin and interactive-session candidate admission.
+- extensions/memory-core/src/memory-entry-origins.ts:
+  source registration, union of predecessor lineage and forget tombstones.
+- src/agents/memory-write-provenance.ts:
+  reserve provenance before content commit and roll both back on failure.
+- extensions/memory-core/src/memory-forget.ts:
+  preview exact affected lineage, fence reads/reprocessing, remove derived content.
+
+Changes: Kiki uses per-fact source units and scoped IDs rather than whole-session
+blacklists. Sources, immutable revisions, independent human adjudications,
+lineage, barriers and content cleanup share one SQLite transaction. It preserves
+CAS, review/off policy and recoverable delete/undo. It does not run dreaming.
+
+Adapted behavioral tests in test/app/memory/sqliteMemory.test.ts retain upstream
+cases from dreaming-consolidation.test.ts, memory-entry-origins.test.ts,
+memory-forget-consolidation.test.ts and memory-forget.test.ts: blocked origins,
+interactive session admission, failed lineage reservation, predecessor-source
+inheritance, mixed-lineage preview and persistent replay prevention.

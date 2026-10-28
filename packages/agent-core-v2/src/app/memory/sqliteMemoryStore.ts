@@ -4,15 +4,39 @@ import { Disposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
-import { IMemoryPersistence, type MemoryCommit, type MemoryObjectEdit, type MemoryReadView } from '#/persistence/interface/memoryPersistence';
+import { IMemoryPersistence, type MemoryCommit, type MemoryObjectEdit, type MemoryReadView, type MemoryProvenance } from '#/persistence/interface/memoryPersistence';
 import { IMemoryScopes, type MemoryScope } from './memoryScopes';
 import { decodeMemoryEntry, type IMemoryStore, type MemoryEntry, type MemoryMutation, type MemoryPutResult, type MemoryStoreChange, type MemoryWriter, type MemoryQuery, type MemoryQueryPage, type MemoryLorebookEntry, type MemorySource } from './memoryStore';
 import { MemoryDomainError, memoryApplicability, normalizeMemoryBasis, normalizeMemoryValidity } from './memoryMetadata';
 import { memoryQueryCursor, memoryQueryRequest, rankMemoryEntries } from './memoryQuery';
 import { redactMemorySecrets } from './memorySafety';
+import { memorySourceUnitId } from './memorySourceIdentity';
 
+export interface MemorySourceUnit {
+  readonly id: string;
+  readonly payload: string;
+  readonly locator?: string;
+  readonly origin: 'owner' | 'agent' | 'untrusted' | 'system';
+  readonly sessionKind?: 'interactive' | 'background';
+}
+export interface MemoryIngestCandidate {
+  readonly mutation: Omit<MemoryMutation, 'action' | 'id' | 'expectedRevision'>;
+  readonly unit: MemorySourceUnit;
+}
+export interface MemoryForgetTarget {
+  readonly id: string;
+  readonly expectedRevision: string;
+  readonly entry: MemoryEntry | null;
+}
+export interface MemoryForgetPreview {
+  readonly generation: number;
+  readonly targets: readonly MemoryForgetTarget[];
+}
 export interface ISqliteMemoryStore extends IMemoryStore {
   getRevision(scope: MemoryScope, id: string, revision: string): Promise<MemoryEntry | undefined>;
+  provenance(scope: MemoryScope, id: string): Promise<MemoryProvenance>;
+  ingest(candidate: MemoryIngestCandidate): Promise<MemoryPutResult>;
+  previewForget(scope: MemoryScope, ids: readonly string[]): Promise<MemoryForgetPreview>;
   forget(scope: MemoryScope, targets: readonly { readonly id: string; readonly expectedRevision: string }[], operationId: string): Promise<void>;
 }
 export const ISqliteMemoryStore = createDecorator<ISqliteMemoryStore>('sqliteMemoryStore');
@@ -43,19 +67,42 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
   }
   async get(scope: MemoryScope, id: string): Promise<MemoryEntry | undefined> { return (await this.inventory(scope)).entries.find((entry) => entry.id === id); }
   async getRevision(scope: MemoryScope, id: string, revision: string): Promise<MemoryEntry | undefined> { return this.persistence.revision(await this.scopes.resolve(scope), id, revision); }
-  async put(original: MemoryMutation): Promise<MemoryPutResult> {
+  async provenance(scope: MemoryScope, id: string): Promise<MemoryProvenance> { return this.persistence.provenance(await this.scopes.resolve(scope), id); }
+  async ingest({ mutation, unit }: MemoryIngestCandidate): Promise<MemoryPutResult> {
+    const locator = unit.locator?.replaceAll('\\', '/');
+    const sessionDerived = locator?.startsWith('sessions/') || locator?.startsWith('memory/.dreams/session-corpus/');
+    if (unit.origin !== 'owner' && unit.origin !== 'agent' || (sessionDerived || unit.sessionKind !== undefined) && unit.sessionKind !== 'interactive') fail('invalid_input', 'Only trusted interactive sources can enter durable Memory');
+    return this.mutate({ ...mutation, action: 'create' }, unit);
+  }
+  async put(original: MemoryMutation): Promise<MemoryPutResult> { return this.mutate(original); }
+  private async mutate(original: MemoryMutation, unit?: MemorySourceUnit): Promise<MemoryPutResult> {
     original.signal?.throwIfAborted();
-    await this.scopes.resolve(original.scope);
+    const base = await this.scopes.resolve(original.scope);
     const operationId = original.operationId ?? randomUUID();
-    const request = JSON.stringify({ ...original, signal: undefined, operationId: undefined }, (_key, value: unknown) => value !== null && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).toSorted(([a], [b]) => a.localeCompare(b))) : value);
+    const request = JSON.stringify({ ...original, unit, signal: undefined, operationId: undefined }, (_key, value: unknown) => value !== null && typeof value === 'object' && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).toSorted(([a], [b]) => a.localeCompare(b))) : value);
     const replay = await this.persistence.receipt(operationId, request);
     if (replay !== undefined) {
       if ((replay.result as { forgotten?: boolean }).forgotten) fail('inactive_target', 'This operation refers to forgotten Memory content');
-      return replay.result as MemoryPutResult;
+      if (unit === undefined) return replay.result as MemoryPutResult;
     }
-    const { base, view } = await this.view(original.scope);
+    const sourceId = unit === undefined ? `source:${operationId}` : JSON.stringify([base, unit.id]);
+    if (unit !== undefined && (!unit.id.trim() || unit.id.length > 1000 || !unit.payload || unit.payload.length > 64 * 1024)) fail('invalid_input', 'Source ingestion requires one stable source unit and a create candidate');
+    const admitted = unit === undefined ? undefined : await this.persistence.source(base, sourceId);
+    if (admitted?.state === 'forgotten') fail('inactive_target', 'This exact source unit has been forgotten');
+    const view = await this.persistence.read([base]);
     const objects = new Map(view.objects.map((object) => [object.id, object]));
     const entries = view.objects.flatMap((object) => object.entry === null ? [] : [object.entry]);
+    if (unit !== undefined) {
+      if (admitted?.state === 'registered') {
+        if (admitted.source.payload !== unit.payload) fail('invalid_input', 'A changed source requires a new source revision identity');
+        const linked = admitted.objectIds.flatMap((id) => objects.get(id)?.entry ? [objects.get(id)!.entry!] : []);
+        const applicable = linked.filter((entry) => entry.status === 'active');
+        if (applicable.length > 1) fail('invalid_input', 'This source unit has conflicting active successors; review its lineage');
+        const retained = applicable[0] ?? linked.find((entry) => entry.status === 'pending') ?? linked.find((entry) => entry.status === 'archived');
+        if (retained === undefined) fail('inactive_target', 'This source unit belongs to a deleted Memory object');
+        return { entry: retained, operationId: null, outcome: retained.status === 'pending' ? 'pending' : 'unchanged' };
+      }
+    }
     let input = original;
     const candidate = input.id === undefined ? undefined : objects.get(input.id)?.entry ?? undefined;
     if (input.action === 'create' ? input.id !== undefined || input.expectedRevision !== undefined : input.id === undefined || !input.expectedRevision) fail('invalid_input', 'Existing targets require ID and revision; create accepts neither');
@@ -116,8 +163,9 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     const result: MemoryPutResult = { entry, operationId, outcome: entry.status === 'pending' ? 'pending' : 'applied', warnings: changed && basis?.kind === 'unknown' ? ['content changed without refreshed attribution'] : undefined };
     original.signal?.throwIfAborted();
     await this.save(original.scope, view, { operationId, request, expectedGeneration: view.generation, edits,
-      sources: [{ id: `source:${operationId}`, scope: base, objectId: id, payload: JSON.stringify({ writer: input.source, basis }), locator: basis?.refs?.[0], learnedAt: now }],
-      adjudications: input.source.writer === 'user' && !input.pending ? edits.filter((edit) => edit.entry !== null).map((edit) => ({ id: `decision:${operationId}:${edit.id}`, scope: base, objectId: edit.id, kind: archive ? 'retirement' as const : 'correction' as const, revision: edit.revision, reason: entry.reason, sourceIds: [`source:${operationId}`] })) : undefined,
+      sources: [{ id: sourceId, scope: base, objectId: id, payload: unit?.payload ?? JSON.stringify({ writer: input.source, basis }), locator: unit?.locator ?? basis?.refs?.[0], learnedAt: now }],
+      sourceTransfers: [predecessor, accepted, input.pending && (proposal || input.action === 'supersede') ? old : undefined].flatMap((prior) => prior === undefined ? [] : [{ scope: base, from: prior.id, to: id }]),
+      adjudications: input.source.writer === 'user' && !input.pending ? edits.filter((edit) => edit.entry !== null).map((edit) => ({ id: `decision:${operationId}:${edit.id}`, scope: base, objectId: edit.id, kind: archive ? 'retirement' as const : 'correction' as const, revision: edit.revision, reason: entry.reason, sourceIds: [sourceId] })) : undefined,
       journal: edits.map((edit) => ({ scope: base, operationId, action: edit.id === predecessor?.id ? 'supersede_previous' : edit.id === accepted?.id ? 'accept_proposal' : input.action, id: edit.id, at: now, writer: input.source.writer, before: objects.get(edit.id)?.entry ? JSON.stringify(objects.get(edit.id)!.entry) : null, beforeRevision: objects.get(edit.id)?.revision ?? null, afterRevision: edit.entry === null ? null : edit.revision })), result });
     return result;
   }
@@ -158,11 +206,26 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     const primary = records.find((record) => record.action !== 'supersede_previous') ?? records[0]!;
     return edits.find((edit) => edit.id === primary.id)?.entry ?? undefined;
   }
+  async previewForget(scope: MemoryScope, ids: readonly string[]): Promise<MemoryForgetPreview> {
+    if (ids.length === 0 || ids.length > 1000) fail('invalid_input', 'Select between one and 1000 Memory objects');
+    const base = await this.scopes.resolve(scope);
+    const related = new Set<string>();
+    for (const id of ids) for (const relatedId of (await this.persistence.provenance(base, id)).relatedObjectIds) related.add(relatedId);
+    if (related.size > 1000) fail('invalid_input', 'Memory source lineage exceeds the forget batch limit');
+    const view = await this.persistence.read([base]);
+    const targets = [...related].toSorted().map((id): MemoryForgetTarget => {
+      const object = view.objects.find((item) => item.id === id);
+      if (object === undefined) fail('not_found', 'Memory forget target is missing or already forgotten');
+      return { id, expectedRevision: object.revision, entry: object.entry };
+    });
+    return { generation: view.generation, targets };
+  }
   async forget(scope: MemoryScope, targets: readonly { readonly id: string; readonly expectedRevision: string }[], operationId: string): Promise<void> {
+    if (!operationId || targets.length === 0 || targets.length > 1000 || new Set(targets.map((target) => target.id)).size !== targets.length) fail('invalid_input', 'Forget requires an operation ID and a nonempty exact target set');
     const request = JSON.stringify({ action: 'forget', scope, targets });
     if (await this.persistence.receipt(operationId, request) !== undefined) return;
     const { base, view } = await this.view(scope);
-    for (const target of targets) if (view.objects.find((object) => object.id === target.id)?.entry?.revision !== target.expectedRevision) fail('revision_conflict', 'Forget preview changed');
+    for (const target of targets) if (view.objects.find((object) => object.id === target.id)?.revision !== target.expectedRevision) fail('revision_conflict', 'Forget preview changed');
     await this.save(scope, view, { operationId, request, expectedGeneration: view.generation, edits: [], barriers: targets.map((target) => ({ scope: base, objectId: target.id, at: new Date().toISOString() })), result: { forgotten: targets.map((target) => target.id) } });
     for (const target of targets) this.emitter.fire({ scope, id: target.id, operationId });
   }
@@ -204,9 +267,14 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
   }
   async importLorebook(scope: MemoryScope, entries: readonly MemoryLorebookEntry[], source: Partial<MemorySource> = {}): ReturnType<IMemoryStore['importLorebook']> {
     const result: { entry: MemoryEntry; operationId: string }[] = [];
+    const base = await this.scopes.resolve(scope);
+    const writer: MemorySource = { ...source, writer: 'import' };
     for (const [index, item] of entries.entries()) {
-      const saved = await this.put({ action: 'create', scope, type: 'reference', title: (item.title ?? item.name ?? `Lorebook entry ${index + 1}`).trim(), body: item.content, pinned: item.constant, reason: 'Imported from Character Card lorebook', source: { ...source, writer: 'import' } });
-      result.push({ entry: saved.entry, operationId: saved.operationId! });
+      const title = (item.title ?? item.name ?? `Lorebook entry ${index + 1}`).trim();
+      const unitId = memorySourceUnitId(base, writer, item.content, [], `lorebook:${title}`)!;
+      if ((await this.persistence.source(base, JSON.stringify([base, unitId]))).state === 'forgotten') continue;
+      const saved = await this.ingest({ mutation: { scope, type: 'reference', title, body: item.content, pinned: item.constant, reason: 'Imported from Character Card lorebook', source: writer }, unit: { id: unitId, payload: item.content, origin: 'owner' } });
+      if (saved.operationId !== null) result.push({ entry: saved.entry, operationId: saved.operationId });
     }
     return result;
   }

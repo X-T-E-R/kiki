@@ -20,7 +20,19 @@ Legacy revisions remain exact lookup tokens; new revisions start with `mem2:`. `
 
 The importer preserves raw payloads, legacy IDs, revisions, operation IDs, proposal targets and deleted preimages. Repeating it retains unchanged payloads. Native corrections are not overwritten by a later legacy payload. An absent source file is not yet a deletion instruction: inventory reconciliation and the authority switch belong to the migration transaction.
 
-`forget(scope, targets, operationId)` compares the exact previewed IDs and revisions, publishes durable barriers and removes content from Memory reads, historical views and replay receipts. It rejects subsequent imports for those objects. The barriers do not remove History, external files or independently held backups; their owners must perform those operations. A backup-restore entry point must install current barriers before exposing restored content.
+## Source ingestion and irreversible forget
+
+`ingest({ mutation, unit })` is the host ingestion boundary. The host supplies the stable source-unit ID, original payload, locator and provenance classification; model-generated text must not assign its own trust. Only owner/agent sources are eligible. Session-derived sources require `sessionKind: 'interactive'`; untrusted, system and background sources are rejected before storage. A unit identifies one independently correctable fact, not an entire session. A changed original payload requires a new source revision identity.
+
+Re-extracting an admitted unit resolves its current corrected, pending or archived object rather than creating another object. Supersede transfers predecessor source lineage atomically; delete blocks re-extraction until undo restores the object. `provenance(scope, id)` returns the original sources, independent adjudications and related object IDs.
+
+Shadow imports register a stable fact identity from scope, writer/session/turn, sorted basis references and exact body, excluding the memory ID and title. Re-importing that fact under another ID reports `source_lineage_preserved` instead of restoring its old claim. Missing source coordinates leave an explicit source identity unavailable; the importer still enforces object-ID barriers. Lorebook imports use their writer coordinates, title and complete content as the source unit; a repeated admitted item does not create a new object, and a forgotten item is skipped.
+
+Call `previewForget(scope, ids)` before confirmation. It expands the complete source lineage and returns exact IDs, revisions and current entries, including recoverably deleted tombstones (`entry: null`). Show the complete set to the user. `forget(scope, targets, operationId)` rejects changed revisions or an incomplete lineage, then atomically publishes persistent object/source barriers and removes Memory content, historical views and replay receipt bodies. The same exact source cannot return under a new memory ID, while a distinct fact from the same session remains eligible. This action cannot be undone.
+
+The barriers do not remove History, external files or independently held backups; their owners must perform those operations. A backup-restore entry point must install current barriers before exposing restored content. SQLite schema 2 adds source links and barriers and backfills stable identities for schema-1 imported objects whose original revisions remain available.
+
+The source lifecycle adapts OpenClaw's trusted-candidate, provenance reservation, predecessor-lineage and forget units. Source revision, modifications and the MIT license are recorded in `src/app/memory/NOTICE` and `OPENCLAW-LICENSE`.
 
 ## Integration boundary
 

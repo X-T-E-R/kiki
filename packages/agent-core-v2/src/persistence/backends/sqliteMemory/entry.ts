@@ -11,6 +11,8 @@ function execute(operation: MemoryOperation): unknown {
     case 'commit': return database.commit(operation.input);
     case 'receipt': return database.receipt(operation.operationId, operation.request);
     case 'journal': return database.journal(operation.scope, operation.id);
+    case 'source': return database.source(operation.scope, operation.id);
+    case 'provenance': return database.provenance(operation.scope, operation.id);
     case 'importLegacy': return database.importLegacy(operation.batch);
     case 'legacy': return database.legacy(operation.scope);
     case 'close': database.close(); return undefined;
