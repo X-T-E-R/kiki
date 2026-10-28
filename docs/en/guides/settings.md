@@ -122,6 +122,10 @@ The **Identity** tab is the central page for request identity: the global defaul
 
 The dialog's three choices are saved rather than repeated each time: **Remind me tomorrow** comes back 24 hours later, **Skip this version** silences that version on that channel only, and a newer version still comes either way. Before installing, Kiki re-checks the channel and the version and refuses an offer that has changed underneath you. If a choice cannot be saved, the dialog stays open and asks you to try again. See [Kiki desktop](../getting-started/desktop-app.md#update).
 
+## Memory
+
+**Settings → Memory** (`/settings/memory`) separates the overall **Allow memory** switch from **Memory Advisor**. The advisor card lets you choose a configured model and protocol, confirm a destination for each workspace, and test the connection with sample data. Its **Advanced** fold contains selection and request budgets. The memory-page header and `Ctrl-K` provide the same global advisor switch; turning it off retains the model and restores the previous memory selection. See [Memory Advisor](./memory.md#memory-advisor) for setup and what is sent.
+
 ## Agents
 
 **Settings → Models & agents → Agents** has two tabs. **Agent profiles** (`/settings/agents?tab=profiles`), the default, lists the selected workspace's main and subagent profiles in one table — role, engine, model, effort, and who may dispatch whom — and marks the file each profile comes from. Open a row to edit its instructions and settings; a file-backed profile can also be edited at the source shown. The same tab holds **Identity and agent loading** and **Prompt fields**, which edits the `[prompt]` prompt-field overrides section in `config.toml`; expand the card first. **Subagents & dispatch** (`/settings/agents?tab=dispatch`) holds the defaults that apply across profiles — see [Dispatch capabilities](#dispatch-capabilities). See [Agents and subagents](../customization/agents-and-subagents.md#capability-visibility) and [Prompt field overrides](../customization/prompt-fields.md).

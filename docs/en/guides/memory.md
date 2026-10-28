@@ -1,8 +1,8 @@
 # Memory
 
-Kiki remembers the things you would otherwise re-explain every session: how you like your code reviewed, which project fact you confirmed last week, where a reference lives. It is on by default, everything stays on the machine running Kiki, and every write shows up as one line in the conversation.
+Kiki remembers the things you would otherwise re-explain every session: how you like your code reviewed, which project fact you confirmed last week, where a reference lives. Memory is on by default, entries are stored on the machine running Kiki, and every write shows up as one line in the conversation. The optional [Memory Advisor](#memory-advisor) sends context to a model you choose after you confirm its destination.
 
-This page covers the scope choices on the **/memory** page, the review inbox that can sit between an agent and a write, and how to turn memory off. For what the agent does inside one session — compression, the message queue, the task board — see [Work that runs long](/en/features/long-work).
+This page covers the scope choices on the **/memory** page, the review inbox, model-assisted recommendations, and how to turn memory off. For what the agent does inside one session — compression, the message queue, the task board — see [Work that runs long](/en/features/long-work).
 
 ::: warning Shared memory homes
 A Kiki older than 0.3.2 does not know the **Basis** and **Validity** fields below, and a write from that version can drop them from an entry. If two Kiki installations share one memory home — a desktop app and a CLI on the same `KIKI_HOME`, or a rollback to an earlier build — upgrade each of them to 0.3.2 or later. A field that has already been dropped is not restored for you: an entry that has lost one reads **Not recorded**, and putting it back means recording the basis or the check again from the original instruction or source material.
@@ -84,9 +84,25 @@ Memory approval has three settings. The default, **auto**, applies a write the a
 
 While a proposal waits, the original entry keeps its current content and stays in effect. **Keep** applies the proposal — an update replaces the text of the entry it supersedes, an archive archives that entry. **Discard** drops only the proposal and leaves the original untouched. A proposal is not active guidance: it is not used as a premise, and an agent's own write cannot approve it, only you can.
 
+## Memory Advisor
+
+Memory Advisor uses a model you choose to recommend saved entries for the current request. Open **Settings → Memory** (`/settings/memory#st-card-memory-advisor`) to configure it. The feature is available by default; it starts making recommendations after you save a model and allow its destination for the workspace. Until then, memory keeps its existing selection behavior.
+
+1. Choose an existing model alias and a protocol, then select **Save model**. **Chat** asks a chat model for structured answers; **System One** uses a compatible decision service; **Pair score** uses a reranking service. The service must support the selected protocol. Non-chat endpoints must use the origin (scheme, host and port) of the selected model's effective address, shown below the endpoint field.
+2. Under **Sending memory out**, choose the workspace and inspect the destination. **Allow sending** permits the current request, task notes, relevant tool-error context, memory titles, short excerpts and selected complete entries to be sent there. Confirmation is specific to that workspace, provider and origin. Changing the provider or origin requires confirmation again; **Revoke** withdraws it. Common secret patterns are masked before sending, while ordinary sensitive facts can remain.
+3. Optionally choose **Test with sample data**. It tests the saved connection with made-up content, including while the advisor is off. Your saved entries are not read for this test. A failure names the issue so you can correct the model, protocol, endpoint or credentials and try again.
+
+The **Advisor** switch in the memory-page header and the command in `Ctrl-K` change the same global setting. Turning it off preserves the model and destination confirmations, cancels unfinished recommendations, and restores the previous memory selection and text. Turning it back on uses **Rank**. The separate **Allow memory** switch controls all memory access.
+
+In **Advanced**, **Rank** places recommendations before keyword matches within the existing complete-entry budget. **Select** also leaves out entries explicitly judged unsuitable; exact ID references, pinned entries and entries not yet judged remain eligible. **Pair score** supports **Rank** only. A recommendation does not replace an entry's evidence or required validity check. Children use the advisor only within their effective memory and model permissions, and can be excluded with **Advise subagents**.
+
+In the same fold, **In a running session** lets you choose an existing session and agent, then **Read status** for the latest runtime outcome, calls and recommendations. Reads happen only when requested. A cold or absent agent reports **No running status yet** and stays unloaded.
+
+The wait, request deadline, calls per turn, directory pages, full-entry count and input budget are adjustable in the same fold. Only the first step waits, up to the configured limit; later results join at a subsequent step. On a timeout or invalid answer, Kiki uses the existing selection path. If the current storage backend lacks committed snapshots, the advisor reports that it is unsupported and memory continues as before.
+
 ## Turning memory off
 
-The **/memory** page has a single **Use memory** switch, and the same setting lives in the desktop app's settings. Turning it off stops agents from reading or writing memory.
+**Allow memory** on the **/memory** page and in Settings stops agents from reading or writing memory. To keep memory available and stop only model-assisted recommendations, turn off **Advisor** instead.
 
 The periodic long-term-memory reminders are separate. To stop just those while keeping the new-instruction and pre-compaction checks, set `memory_maintenance = false` in `config.toml` — the memory tools, approval and task notes stay available. See [Continuity reminder settings](/en/configuration/config-files#continuity-reminder-settings).
 

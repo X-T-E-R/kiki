@@ -198,6 +198,8 @@ home 中存在旧格式消息邮箱，或升级尚未完成时，服务会先进
 
 模型读取分别返回已保存的 `protocol` 和求解后的 `effective_protocol`。已存值缺省表示继承供应商默认格式；列表中生效值缺省表示未能构建可用 requester。修改模型协议不会写供应商连接、凭据、请求身份或默认指针。配置示例和端点兼容要求见[模型请求格式覆盖](../configuration/providers.md#模型请求格式覆盖)。
 
+单个模型的响应还将已存的 `base_url` 覆盖值与只读的 `effective_base_url` 分开。后者依次取模型覆盖、供应商 URL、供应商环境配置和厂商默认地址；全部未解析到时省略。创建与 PATCH 只接受存储字段，提交时应排除 `effective_base_url`。
+
 ### 执行器目录与检查
 
 执行器目录列出已注册的引擎，不等待可执行程序发现或认证检查。读取目录不会启动引擎，也不会执行登录。
@@ -568,8 +570,10 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 
 | 方法与路径 | 说明 |
 | --- | --- |
-| `GET /api/memory/settings` | 读取记忆配置，含 `effective_enabled` |
-| `PATCH /api/memory/settings` | 修改 `enabled`、`approval` 或 `budget` |
+| `GET /api/memory/settings` | 读取记忆配置，含 `effective_enabled`、可选 `advisor` 及 `advisor_status`；可选 `workspace_id` 用于判断工作区外发确认 |
+| `PATCH /api/memory/settings` | 修改 `enabled`、`approval`、`budget` 或稀疏 `advisor` 字段；接受同一可选 `workspace_id` |
+| `POST /api/memory/advisor/probe` | 用虚构内容测试已保存的选择器；请求体为 `{ confirm_destination }` |
+| `GET /api/memory/advisor/status` | 用 `session_id` 和可选 `agent_id`（默认 `main`）读取 live Agent 状态；冷会话或不存在的 Agent 返回 `null` |
 | `GET /api/memory/workspaces/{workspace_id}/settings` | 读取某个工作区的开关 |
 | `PATCH /api/memory/workspaces/{workspace_id}/settings` | 设为 `true` / `false`，或 `null` 表示跟随全局 |
 | `GET /api/memory/{scope}` | 搜索或列出条目，过滤与分页见下文 |
@@ -588,6 +592,12 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 | `POST /api/memory/{scope}/forget` | 不可逆地忘记已确认的目标集合 |
 | `GET /api/memory/{scope}/{id}/provenance` | 读取原始来源、人工裁决与关联 ID |
 | `GET /api/memory/{scope}/{id}/revisions/{revision}` | 读取精确历史版本；revision 需 URL 编码 |
+
+顾问选择器为 `{ protocol: "chat_json" | "system_one" | "pair_score", model, endpoint? }`，`model` 是已配置 alias，非对话协议的 `endpoint` 须与该模型的 `effective_base_url` 同源。`mode` 取 `off`、`rank` 或 `select`；`pair_score` 只支持 `rank`。`{ "advisor": { "mode": "off" } }` 保留选择器和其他设置。`advisor: null` 删除整个配置块，`selector: null` 只清除选择器。修改无需重启即可生效。
+
+自动推荐前，带 `workspace_id` 读取设置，核对 `advisor_status.destination`，再以 `{ workspace_id, destination }` 将这个精确值保存到 `advisor.egress_ack`，并保留其他工作区的确认。确认允许将上下文发给该供应商和 origin；发送内容见[记忆顾问](../guides/memory.md#记忆顾问)。探针要求显式传入匹配的 `confirm_destination`，不读取已存条目，自动推荐关闭时也可测试。返回 `{ ok, status, duration_ms, input_tokens?, output_tokens?, usage_known }`。
+
+状态包含 `state`、可选 `reason`、目的地及模型，以及逻辑轮数 `logical_calls`、实际请求 `requests`、重试 `retries`、推荐数 `recommended_count`、目录覆盖 `enumeration`、未判断数 `unjudged_count` 和挤出条目 `displaced_ids`。设置状态说明配置是否就绪；`/advisor/status` 读取实际运行结果，不会启动或恢复 Agent。
 
 `GET /api/memory/{scope}` 返回有界分页的 `{ items, mode, next_cursor, coverage }`，不带分页参数时也一样。没有 `query` 时 `mode` 默认 `list`，有 `query` 时默认 `search`；`page_size` 取 1–20。没有显式 `statuses` 时，list 查 `active` 和 `pending`，search 查 `active`，`include_inactive=true` 把两者都放宽到四种。`statuses` 是 `active`、`pending`、`superseded`、`archived` 的逗号串。既有客户端必须消费 `next_cursor`，不能把第一页当成整个命名空间。
 

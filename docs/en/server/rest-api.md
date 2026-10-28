@@ -198,6 +198,8 @@ Model creation accepts an optional `protocol`: `openai`, `openai_responses`, `an
 
 Model reads expose the saved `protocol` and resolved `effective_protocol` separately. An absent saved value inherits the provider's default format; an absent effective value in the list means no usable requester was materialized. Changing a model's protocol does not write the provider connection, credentials, request identity, or default pointers. See [model request format overrides](../configuration/providers.md#model-request-format-overrides) for configuration examples and endpoint compatibility.
 
+The single-model response also separates the stored `base_url` override from read-only `effective_base_url`. The latter resolves the model override, provider URL, provider environment and vendor default in that order, and is omitted if none resolves. Create and PATCH accept only stored fields; do not copy `effective_base_url` into a write.
+
 ### Executor catalog and checks
 
 The executor catalog lists registered engines without waiting for executable discovery or authentication checks. Reading it does not launch an engine or sign in.
@@ -568,8 +570,10 @@ Both `PATCH` variants accept `{ name?, pinned? }`, with at least one field requi
 
 | Method and path | Description |
 | --- | --- |
-| `GET /api/memory/settings` | Read the memory section, with `effective_enabled` |
-| `PATCH /api/memory/settings` | Change `enabled`, `approval` or `budget` |
+| `GET /api/memory/settings` | Read the memory section, with `effective_enabled`, optional `advisor` and `advisor_status`; optional `workspace_id` resolves workspace consent |
+| `PATCH /api/memory/settings` | Change `enabled`, `approval`, `budget` or sparse `advisor` fields; accepts the same optional `workspace_id` |
+| `POST /api/memory/advisor/probe` | Test the saved selector using synthetic content; body: `{ confirm_destination }` |
+| `GET /api/memory/advisor/status` | Read a live agent's status with `session_id` and optional `agent_id` (default `main`); returns `null` for a cold or absent agent |
 | `GET /api/memory/workspaces/{workspace_id}/settings` | Read one workspace's switch |
 | `PATCH /api/memory/workspaces/{workspace_id}/settings` | Set it to `true` / `false`, or `null` to follow the global setting |
 | `GET /api/memory/{scope}` | Search or list entries; see below for filters and pagination |
@@ -588,6 +592,12 @@ Both `PATCH` variants accept `{ name?, pinned? }`, with at least one field requi
 | `POST /api/memory/{scope}/forget` | Irreversibly forget the confirmed target set |
 | `GET /api/memory/{scope}/{id}/provenance` | Read original sources, human adjudications and related IDs |
 | `GET /api/memory/{scope}/{id}/revisions/{revision}` | Read an exact historical revision; URL-encode the revision |
+
+An advisor selector is `{ protocol: "chat_json" | "system_one" | "pair_score", model, endpoint? }`, where `model` is a configured alias and a non-chat `endpoint` must share the origin of that model's `effective_base_url`. `mode` is `off`, `rank` or `select`; `pair_score` supports `rank` only. `{ "advisor": { "mode": "off" } }` preserves the selector and other preferences. `advisor: null` removes the block; `selector: null` clears only the selector. Updates apply without restarting.
+
+For automatic recommendations, read the settings with `workspace_id`, inspect `advisor_status.destination`, then save that exact value in `advisor.egress_ack` as `{ workspace_id, destination }`, preserving any confirmations for other workspaces. The confirmation covers context sent to that provider and origin; see [Memory Advisor](../guides/memory.md#memory-advisor) for the content sent. The probe requires an explicit matching `confirm_destination`, reads no saved entries, and works while automatic advice is off. It returns `{ ok, status, duration_ms, input_tokens?, output_tokens?, usage_known }`.
+
+Status carries `state`, optional `reason`, destination and model, plus `logical_calls`, real `requests`, `retries`, `recommended_count`, directory `enumeration`, `unjudged_count` and `displaced_ids`. Settings status describes configuration readiness; `/advisor/status` reads runtime outcomes without starting or resuming an agent.
 
 `GET /api/memory/{scope}` returns bounded pages as `{ items, mode, next_cursor, coverage }`, including when no pagination parameters are supplied. `mode` defaults to `list` with no `query` and to `search` with one; `page_size` is 1–20. Without explicit `statuses`, list reads `active` and `pending`, search reads `active`, and `include_inactive=true` widens either to all four. `statuses` is a comma-separated list of `active`, `pending`, `superseded` and `archived`. Existing clients must consume `next_cursor` rather than treating the first page as the whole namespace.
 
