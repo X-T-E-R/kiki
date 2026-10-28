@@ -78,16 +78,22 @@ export type ComputerControlVerdictKind =
   | 'connection_not_ready'
   | 'ready';
 
+export type ComputerControlVerdictExecutor =
+  | 'checking'
+  | 'unknown'
+  | 'external'
+  | { readonly state: 'not_installed' | 'partial' | 'ready' | 'unsupported'; readonly installing: boolean };
+
 export interface ComputerControlVerdictInput {
   readonly enabled: boolean;
   readonly hostLocked?: boolean;
   readonly unresolved?: boolean;
   readonly toolPolicyDenied: boolean;
-  /** The executor capability as last read; `checking` before the first answer, `unknown` when the read failed. */
-  readonly executor: 'checking' | 'unknown' | { readonly state: 'not_installed' | 'partial' | 'ready' | 'unsupported'; readonly installing: boolean };
+  /** The executor capability as last read; `checking` before the first answer, `unknown` when the read failed, `external` when the active connection uses an external executor (such as Windows-MCP) rather than the bundled CUA capability. */
+  readonly executor: ComputerControlVerdictExecutor;
   /** Whether a computer connection would be used: an explicit choice, or a configured default CUA entry. */
   readonly hasConnection: boolean;
-  /** False when the active connection is known not to be startable (e.g. Windows-MCP not serve-ready). */
+  /** False when the active connection is missing, disabled, not a computer MCP config, or not startable (e.g. Windows-MCP not serve-ready). */
   readonly activeConnectionReady: boolean;
 }
 
@@ -114,8 +120,8 @@ const COMPUTER_VERDICT_TONE: Readonly<Record<ComputerControlVerdictKind, Compute
 
 /**
  * The lead sentence of the computer settings page. "Ready" means the switch is
- * on, the pinned executor verified and a connection is chosen — it is not a
- * claim that the desktop is reachable or being controlled.
+ * on, a startable connection is selected, and its required executor is ready —
+ * it is not a claim that the desktop is reachable or being controlled.
  */
 export function computerControlVerdict(input: ComputerControlVerdictInput): ComputerControlVerdict {
   const kind = ((): ComputerControlVerdictKind => {
@@ -123,10 +129,12 @@ export function computerControlVerdict(input: ComputerControlVerdictInput): Comp
     if (!input.enabled) return input.hostLocked === true ? 'host_locked' : 'off';
     if (input.toolPolicyDenied) return 'tool_denied';
     if (input.executor === 'checking' || input.executor === 'unknown') return input.executor;
-    if (input.executor.installing) return 'installing';
-    if (input.executor.state === 'unsupported') return 'unsupported';
-    if (input.executor.state === 'not_installed') return 'not_installed';
-    if (input.executor.state === 'partial') return 'partial';
+    if (input.executor !== 'external') {
+      if (input.executor.installing) return 'installing';
+      if (input.executor.state === 'unsupported') return 'unsupported';
+      if (input.executor.state === 'not_installed') return 'not_installed';
+      if (input.executor.state === 'partial') return 'partial';
+    }
     if (!input.hasConnection) return 'no_connection';
     if (!input.activeConnectionReady) return 'connection_not_ready';
     return 'ready';

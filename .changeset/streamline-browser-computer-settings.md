@@ -2,4 +2,4 @@
 "@kiki/cli": patch
 ---
 
-Streamline browser and computer control settings.
+Simplify browser connections with one default selector and in-place connection details.

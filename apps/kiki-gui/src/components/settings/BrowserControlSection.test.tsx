@@ -562,18 +562,18 @@ describe('BrowserControlSection', () => {
 
       const row = query('[data-browser-route="independent-browser"]');
       const button = row?.querySelector('[data-browser-route-prepare]');
-      expect(button?.textContent).toBe('Allow browser launch');
+      expect(button?.textContent).toBe('Allow browser control');
       // No trip to the Developer page while Set up already covers the flag.
       expect(row?.querySelector('[data-browser-route-enable-feature]')).toBeNull();
       // And it does not claim the components were just installed.
       expect(row?.querySelector('[data-browser-route-settled]')).toBeNull();
-      expect(row?.querySelector('[data-browser-route-blocker="feature"]')?.textContent).toContain('letting Kiki start a browser');
+      expect(row?.querySelector('[data-browser-route-blocker="feature"]')?.textContent).toContain('browser control');
 
       await click('[data-browser-route-prepare]');
       expect(query('[data-confirm-action="confirm"]')).not.toBeNull();
       // The consent says what it will switch on, not only what it installs.
       expect(document.body.textContent).toContain('switches browser control on for this server');
-      expect(document.body.textContent).toContain('Lets Kiki start a browser on this server');
+      expect(document.body.textContent).toContain('Allows browser control on this server (launching or attaching)');
     });
 
     it('offers primary open action and advanced update and shortcut actions for independent browser', async () => {
@@ -738,7 +738,7 @@ describe('BrowserControlSection', () => {
       // is closed, so the claim under test is that it is not in the headline.
       const headline = row?.querySelector('[data-browser-route-forced-off]');
       expect(headline?.textContent).toContain('no action here can change it');
-      expect(headline?.textContent).toContain('keeps letting Kiki start a browser off');
+      expect(headline?.textContent).toContain('keeps browser control off');
       expect(headline?.textContent).not.toContain('KIKI_EXPERIMENTAL_NATIVE_BROWSER');
       // The override that holds it off is the only way back, so it is one
       // click away rather than hidden — and that click opens the existing fold.
@@ -1355,7 +1355,7 @@ describe('BrowserControlSection', () => {
 
     // The page says it in the reader's language without forcing the internal flag name into the main prose.
     const line = query('[data-feedback-tone="error"]')?.textContent ?? '';
-    expect(line).toContain('does not let Kiki start a browser yet');
+    expect(line).toContain('Browser control is not allowed on this server yet, so this connection cannot start or attach.');
     expect(line).not.toContain('native_browser');
     // The refusal is real, so nothing about the connection turns green.
     expect(connect).toHaveBeenCalledWith('research');
@@ -2422,6 +2422,8 @@ describe('BrowserControlSection', () => {
       });
 
       await render();
+      expect(query('[data-browser-sources] summary')?.textContent).toBe('Browser sources');
+      expect(query('[data-browser-sources-attention]')).toBeNull();
       await toggleDetails('[data-browser-sources]');
       await settleUntil('[data-browser-source-items="codex-browser"]');
 

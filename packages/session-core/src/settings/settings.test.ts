@@ -2252,6 +2252,11 @@ describe('computer-use preference settings', () => {
     expect(computerControlVerdict({ ...base, executor: { state: 'unsupported', installing: false } }).kind).toBe('unsupported');
     expect(computerControlVerdict({ ...base, hasConnection: false }).kind).toBe('no_connection');
     expect(computerControlVerdict({ ...base, activeConnectionReady: false }).kind).toBe('connection_not_ready');
+    // External executors (such as Windows-MCP) do not require the bundled CUA capability to be installed,
+    // and missing or non-ready connections never report ready.
+    expect(computerControlVerdict({ ...base, executor: 'external' })).toEqual({ kind: 'ready', tone: 'ok' });
+    expect(computerControlVerdict({ ...base, executor: 'external', hasConnection: false })).toEqual({ kind: 'no_connection', tone: 'attention' });
+    expect(computerControlVerdict({ ...base, executor: 'external', activeConnectionReady: false })).toEqual({ kind: 'connection_not_ready', tone: 'attention' });
   });
 });
 

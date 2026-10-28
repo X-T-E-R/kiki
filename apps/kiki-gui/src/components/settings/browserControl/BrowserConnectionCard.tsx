@@ -43,7 +43,7 @@ import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
 import {
   AGENT_BROWSER_MARKERS, AGENT_BROWSER_VERSION, LIVE_BLOCKING_CONNECT, LIVE_STATES, browserApi, browserFailureOf, browserKeys, endpointHost,
-  isFlagDisabled, presetReadiness, whenText,
+  isFlagDisabled, whenText,
 } from '../../../lib/browserRest';
 import type { BrowserConnection, BrowserConnectionRow, BrowserConnectionType, BrowserOwnership } from '../../../lib/browserRest';
 import { ConfirmDialog } from '../../ConfirmDialog';
@@ -210,8 +210,8 @@ export function BrowserConnectionCard() {
   const rows = allowance.connections;
   const defaultBrowser = allowance.defaultBrowser;
 
-  // The routes name the Codex pipe whose approval is still unproven, and which
-  // sources still need a person; both are read from the same cached setup read.
+  // The routes name the Codex pipe whose approval is still unproven, read from
+  // the cached setup read.
   const presetsQuery = useQuery({
     queryKey: browserKeys.presets(scopeId),
     queryFn: () => browserApi(client).setupPresets(),
@@ -222,9 +222,6 @@ export function BrowserConnectionCard() {
     .filter((item) => item.preset === 'codex-browser' && item.reason === 'approval_unproven' && item.browserId !== undefined)
     .map((item) => item.browserId!));
   const sourceName = (source: BrowserSourceId): string => t(SOURCE_NAME_KEYS[source]);
-  const sourcesNeedingAction = presets.filter((item) => item.controlSurface !== 'external-app'
-    && allowance.sourceEnabled(item.preset)
-    && ['needs-action', 'failed', 'blocked'].includes(presetReadiness(item))).length;
 
   const [rowBusy, setRowBusy] = useState(false);
   const [rowFeedback, setRowFeedback] = useState<Feedback>(null);
@@ -776,7 +773,7 @@ export function BrowserConnectionCard() {
       </div>
       {list}
       <FeedbackLine feedback={feedback} />
-      <SourcesFold attention={sourcesNeedingAction} defaultOpen={empty} />
+      <SourcesFold defaultOpen={empty} />
     </div>
   );
 
@@ -851,7 +848,7 @@ function DefaultSelect({ allowance, save }: {
  * The sources, folded under the list for management: each one's switch, the
  * preparation and the checks. A search hit on the old setup card opens it.
  */
-function SourcesFold({ attention, defaultOpen }: { readonly attention: number; readonly defaultOpen: boolean }) {
+function SourcesFold({ defaultOpen }: { readonly defaultOpen: boolean }) {
   const { t } = useI18n();
   const flashId = useContext(SettingsFlashContext);
   const onCardMount = useContext(SettingsCardMountContext);
@@ -875,7 +872,6 @@ function SourcesFold({ attention, defaultOpen }: { readonly attention: number; r
     >
       <summary className="cursor-pointer select-none text-[13px] text-ink-soft hover:text-ink">
         {t('st.browser.setup.title')}
-        {attention === 0 ? null : <span className="text-amber-ink" data-browser-sources-attention={attention}>{` · ${t('st.browser.sourcesAttention', { count: attention })}`}</span>}
       </summary>
       <div className="pt-3">
         {open ? <BrowserSetupWizard /> : null}

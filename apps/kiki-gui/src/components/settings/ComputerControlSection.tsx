@@ -219,11 +219,19 @@ export function ComputerControlSection() {
     return base;
   }, [mcpEntries, selectedConnection, t]);
 
-  const activeEntry = mcpEntries.find((entry) =>
-    selectedConnection !== undefined ? entry.name === selectedConnection : computerExecutorKind(entry.config) === 'cua',
-  );
+  const activeEntry = useMemo(() => {
+    if (selectedConnection !== undefined) {
+      return mcpEntries.find((entry) => entry.name === selectedConnection);
+    }
+    const cuaEntries = mcpEntries.filter((entry) => computerExecutorKind(entry.config) === 'cua');
+    return cuaEntries.find((entry) => entry.config.enabled !== false) ?? cuaEntries[0];
+  }, [mcpEntries, selectedConnection]);
   const activeKind = activeEntry !== undefined ? computerExecutorKind(activeEntry.config) : undefined;
   const activeWindowsNotReady = activeKind === 'windows-mcp' && activeEntry !== undefined && !isWindowsMcpServeReady(activeEntry.config);
+  const activeEntryEnabled = activeEntry !== undefined && activeEntry.config.enabled !== false;
+  const activeConnectionReady = activeEntry !== undefined
+    && activeEntryEnabled
+    && (activeKind === 'cua' || (activeKind === 'windows-mcp' && !activeWindowsNotReady));
 
   const [draftPreference, setDraftPreference] = useState<ComputerUsagePreference | null>(null);
   const [preferenceSaving, setPreferenceSaving] = useState(false);
@@ -351,18 +359,25 @@ export function ComputerControlSection() {
   const optionalUnchecked = capability?.steps.some((step) => step.optional === true && step.state !== 'ok') === true;
   const canInstall = capability !== undefined && capability.state !== 'ready' && !capability.install.running && capability.plan !== undefined;
 
+  const verdictExecutor = ((): Parameters<typeof computerControlVerdict>[0]['executor'] => {
+    if (configQuery.isPending || mcpQuery.isPending) return 'checking';
+    if (mcpQuery.isError) return 'unknown';
+    if (activeKind === 'windows-mcp' || (selectedConnection !== undefined && activeKind !== 'cua')) {
+      return 'external';
+    }
+    if (capabilityQuery.isPending) return 'checking';
+    if (capabilityQuery.isError || capability === undefined) return 'unknown';
+    return { state: capability.state, installing: capability.install.running || installing };
+  })();
+
   const verdict = computerControlVerdict({
     enabled: isComputerEnabled,
     hostLocked: computerHostLocked,
     unresolved: computerCapability?.unresolved,
     toolPolicyDenied: isToolPolicyDenied,
-    executor: capabilityQuery.isPending || configQuery.isPending
-      ? 'checking'
-      : capabilityQuery.isError || capability === undefined
-        ? 'unknown'
-        : { state: capability.state, installing: capability.install.running || installing },
-    hasConnection: selectedConnection !== undefined || activeEntry !== undefined,
-    activeConnectionReady: !activeWindowsNotReady,
+    executor: verdictExecutor,
+    hasConnection: activeEntry !== undefined,
+    activeConnectionReady,
   });
   const verdictText = verdict.kind === 'ready'
     ? t('st.computer.verdict.ready', { name: selectedConnection ?? activeEntry?.name ?? t('st.computer.activeConnectionDefault') })

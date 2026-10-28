@@ -17,7 +17,7 @@ You can connect the kind of browser that fits the job:
 - **Your everyday signed-in browser (Kimi / Codex browser extensions)**: use the **Kimi Browser Extension** or **Codex / ChatGPT browser extension** to drive the browser you already use, keeping your existing sign-ins and cookies for internal dashboards, social research, form filling, and cross-site collection. Kiki prepares the local bridge components, and you add and approve the extension from your browser's store.
 - **Kiki-managed independent browser**: Kiki starts and manages a separate browser and sign-in profile on the server without copying your everyday cookies. It is suited for automated verification, stateless browsing, or tasks that need an isolated account. It runs headless by default, with an option to show the browser window.
 - **Ego Lite**: if you install Ego Lite yourself and finish its setup window, Kiki can check its readiness and connect it so agents can run page automation scripts with screenshots attached directly to the timeline.
-- **Existing or remote browsers (CDP)**: under **+ Add browser → Add manual connection**, attach directly to any local or remote browser that already exposes a CDP address without launching a new browser instance.
+- **Existing or remote browsers (CDP)**: under **+ Add browser → Configure manually**, attach directly to any local or remote browser that already exposes a CDP address without launching a new browser instance.
 
 ### Browser permissions
 
