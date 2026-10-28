@@ -19,9 +19,13 @@ export interface MemorySourceUnit {
   readonly locator?: string;
   readonly origin: 'owner' | 'agent' | 'untrusted' | 'system';
   readonly sessionKind?: 'interactive' | 'background';
+  readonly aliases?: readonly string[];
+}
+export function memoryIngestSourceIds(base: string, unit: MemorySourceUnit): readonly string[] {
+  return [...new Set([JSON.stringify([base, unit.id]), ...(unit.aliases ?? []), ...(unit.id.startsWith('source-unit:') ? [unit.id] : [])])];
 }
 export interface MemoryIngestCandidate {
-  readonly mutation: Omit<MemoryMutation, 'action' | 'id' | 'expectedRevision'>;
+  readonly mutation: Omit<MemoryMutation, 'action' | 'id' | 'expectedRevision'> | (MemoryMutation & { readonly action: 'update' });
   readonly unit: MemorySourceUnit;
 }
 export interface MemoryForgetTarget {
@@ -84,7 +88,7 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     const locator = unit.locator?.replaceAll('\\', '/');
     const sessionDerived = locator?.startsWith('sessions/') || locator?.startsWith('memory/.dreams/session-corpus/');
     if (unit.origin !== 'owner' && unit.origin !== 'agent' || (sessionDerived || unit.sessionKind !== undefined) && unit.sessionKind !== 'interactive') fail('invalid_input', 'Only trusted interactive sources can enter durable Memory');
-    return this.mutate({ ...mutation, action: 'create' }, unit);
+    return this.mutate({ ...mutation, action: 'action' in mutation ? mutation.action : 'create' }, unit);
   }
   async put(original: MemoryMutation): Promise<MemoryPutResult> { return this.mutate(original); }
   private async mutate(original: MemoryMutation, unit?: MemorySourceUnit): Promise<MemoryPutResult> {
@@ -98,7 +102,7 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
       if (unit === undefined) return replay.result as MemoryPutResult;
     }
     const sourceId = unit === undefined ? `source:${operationId}` : JSON.stringify([base, unit.id]);
-    if (unit !== undefined && (!unit.id.trim() || unit.id.length > 1000 || !unit.payload || unit.payload.length > 64 * 1024)) fail('invalid_input', 'Source ingestion requires one stable source unit and a create candidate');
+    if (unit !== undefined && (!unit.id.trim() || unit.id.length > 1000 || !unit.payload || unit.payload.length > 64 * 1024)) fail('invalid_input', 'Source ingestion requires one stable source unit and a complete source payload');
     const admitted = unit === undefined ? undefined : await this.persistence.source(base, sourceId);
     if (admitted?.state === 'forgotten') fail('inactive_target', 'This exact source unit has been forgotten');
     const view = await this.persistence.read([base]);
@@ -107,12 +111,7 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     if (unit !== undefined) {
       if (admitted?.state === 'registered') {
         if (admitted.source.payload !== unit.payload) fail('invalid_input', 'A changed source requires a new source revision identity');
-        const linked = admitted.objectIds.flatMap((id) => objects.get(id)?.entry ? [objects.get(id)!.entry!] : []);
-        const applicable = linked.filter((entry) => entry.status === 'active');
-        if (applicable.length > 1) fail('invalid_input', 'This source unit has conflicting active successors; review its lineage');
-        const retained = applicable[0] ?? linked.find((entry) => entry.status === 'pending') ?? linked.find((entry) => entry.status === 'archived');
-        if (retained === undefined) fail('inactive_target', 'This source unit belongs to a deleted Memory object');
-        return { entry: retained, operationId: null, outcome: retained.status === 'pending' ? 'pending' : 'unchanged' };
+        return this.retainSource(admitted.objectIds, view);
       }
     }
     let input = original;
@@ -155,6 +154,14 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
       supersedes_revision: input.pending ? input.action === 'supersede' || proposal ? input.expectedRevision : old?.supersedes_revision : undefined,
       superseded_by: archive ? old?.superseded_by : undefined, pending_action: proposal ? input.action as 'update' | 'archive' : input.pending ? old?.pending_action : undefined,
       covered_by: dependency === undefined ? archive ? old?.covered_by : undefined : { id: dependency.id, revision: dependency.expected_revision } };
+    const canonicalSource = memorySourceUnitId(base, entry.source, entry.body, entry.basis?.refs);
+    const aliases = [...new Set([...(unit === undefined ? [] : memoryIngestSourceIds(base, unit).filter((value) => value !== sourceId)), ...(canonicalSource === undefined ? [] : [canonicalSource])])];
+    for (const alias of aliases) {
+      const known = await this.persistence.source(base, alias);
+      if (known.state === 'forgotten') fail('inactive_target', 'This exact source unit has been forgotten');
+      if (known.state === 'registered' && input.action === 'create') return this.retainSource(known.objectIds, view);
+      if (known.state === 'registered' && unit !== undefined && !known.objectIds.includes(input.id!)) fail('invalid_input', 'This source unit belongs to another Memory lineage');
+    }
     if (!create && !proposal && accepted === undefined && old !== undefined && same(old, entry)) return { entry: old, operationId: null, outcome: 'unchanged' };
     const duplicate = input.pending ? entries.find((item) => item.status === 'pending' && item.supersedes === entry.supersedes && item.supersedes_revision === entry.supersedes_revision && item.pending_action === entry.pending_action && same(item, entry)) : undefined;
     if (duplicate !== undefined) return { entry: duplicate, operationId: null, outcome: 'pending' };
@@ -175,11 +182,19 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     const result: MemoryPutResult = { entry, operationId, outcome: entry.status === 'pending' ? 'pending' : 'applied', warnings: changed && basis?.kind === 'unknown' ? ['content changed without refreshed attribution'] : undefined };
     original.signal?.throwIfAborted();
     await this.save(original.scope, view, { operationId, request, expectedGeneration: view.generation, edits,
-      sources: [{ id: sourceId, scope: base, objectId: id, payload: unit?.payload ?? JSON.stringify({ writer: input.source, basis }), locator: unit?.locator ?? basis?.refs?.[0], learnedAt: now }],
+      sources: [{ id: sourceId, scope: base, objectId: id, payload: unit?.payload ?? JSON.stringify({ writer: input.source, basis }), locator: unit?.locator ?? basis?.refs?.[0], learnedAt: now, aliases }],
       sourceTransfers: [predecessor, accepted, input.pending && (proposal || input.action === 'supersede') ? old : undefined].flatMap((prior) => prior === undefined ? [] : [{ scope: base, from: prior.id, to: id }]),
       adjudications: input.source.writer === 'user' && !input.pending ? edits.filter((edit) => edit.entry !== null).map((edit) => ({ id: `decision:${operationId}:${edit.id}`, scope: base, objectId: edit.id, kind: archive ? 'retirement' as const : 'correction' as const, revision: edit.revision, reason: entry.reason, sourceIds: [sourceId] })) : undefined,
       journal: edits.map((edit) => ({ scope: base, operationId, action: edit.id === predecessor?.id ? 'supersede_previous' : edit.id === accepted?.id ? 'accept_proposal' : input.action, id: edit.id, at: now, writer: input.source.writer, before: objects.get(edit.id)?.entry ? JSON.stringify(objects.get(edit.id)!.entry) : null, beforeRevision: objects.get(edit.id)?.revision ?? null, afterRevision: edit.entry === null ? null : edit.revision })), result });
     return result;
+  }
+  private retainSource(ids: readonly string[], view: MemoryReadView): MemoryPutResult {
+    const linked = view.objects.flatMap((object) => ids.includes(object.id) && object.entry !== null ? [object.entry] : []);
+    const active = linked.filter((entry) => entry.status === 'active');
+    if (active.length > 1) fail('invalid_input', 'This source unit has conflicting active successors; review its lineage');
+    const retained = active[0] ?? linked.find((entry) => entry.status === 'pending') ?? linked.find((entry) => entry.status === 'archived');
+    if (retained === undefined) fail('inactive_target', 'This source unit belongs to a deleted Memory object');
+    return { entry: retained, operationId: null, outcome: retained.status === 'pending' ? 'pending' : 'unchanged' };
   }
   private async save(scope: MemoryScope, view: MemoryReadView, commit: MemoryCommit): Promise<void> {
     try { await this.persistence.commit(commit); }

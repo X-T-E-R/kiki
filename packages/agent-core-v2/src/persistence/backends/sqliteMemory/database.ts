@@ -88,6 +88,21 @@ export class MemoryDatabase {
       if (replay !== undefined) return replay;
       if (this.generation() !== input.expectedGeneration) conflict('Memory commit generation changed; reread and reconcile');
       const generation = input.expectedGeneration + 1;
+      const aliases = input.edits.flatMap((edit) => {
+        this.linkHistoricalSources(edit.scope, edit.id);
+        if (edit.entry === null) return [];
+        const id = memorySourceUnitId(edit.scope, edit.entry.source, edit.entry.body, edit.entry.basis?.refs);
+        return id === undefined ? [] : [{ scope: edit.scope, id, objectId: edit.id }];
+      });
+      for (const source of input.sources ?? []) for (const id of source.aliases ?? []) {
+        if (!/^source-unit:[a-f0-9]{64}$/.test(id)) throw new Error('Invalid Memory source alias');
+        aliases.push({ scope: source.scope, id, objectId: source.objectId });
+      }
+      for (const alias of aliases) {
+        if (this.db.prepare('SELECT 1 FROM source_barriers WHERE scope=? AND id=?').get(alias.scope, alias.id) !== undefined) conflict('Memory source has a forget barrier');
+        const linked = this.db.prepare('SELECT object_id FROM source_links WHERE scope=? AND source_id=?').all(alias.scope, alias.id).map((row) => String(row['object_id']));
+        if (linked.length > 0 && !linked.includes(alias.objectId) && !input.sourceTransfers?.some((transfer) => transfer.scope === alias.scope && transfer.to === alias.objectId && linked.includes(transfer.from))) conflict('Memory source was concurrently registered; reread its current lineage');
+      }
       const touched = new Set<string>();
       for (const edit of input.edits) {
         const key = JSON.stringify([edit.scope, edit.id]);
@@ -108,6 +123,7 @@ export class MemoryDatabase {
         this.db.prepare('INSERT INTO sources VALUES(?,?,?,?,?,?)').run(source.id, source.scope, source.objectId, source.payload, source.locator ?? null, source.learnedAt);
         this.db.prepare('INSERT INTO source_links VALUES(?,?,?)').run(source.scope, source.id, source.objectId);
       }
+      for (const alias of aliases) this.db.prepare('INSERT OR IGNORE INTO source_links VALUES(?,?,?)').run(alias.scope, alias.id, alias.objectId);
       for (const transfer of input.sourceTransfers ?? []) {
         const from = input.edits.find((edit) => edit.scope === transfer.scope && edit.id === transfer.from);
         const to = input.edits.find((edit) => edit.scope === transfer.scope && edit.id === transfer.to);
@@ -130,6 +146,7 @@ export class MemoryDatabase {
       }
       this.db.prepare('INSERT INTO operations VALUES(?,?,?,?)').run(input.operationId, fingerprint(input.request), generation, JSON.stringify(input.result));
       const barriers = input.barriers ?? [];
+      for (const barrier of barriers) this.linkHistoricalSources(barrier.scope, barrier.objectId);
       for (const barrier of barriers) for (const related of this.relatedObjects(barrier.scope, barrier.objectId)) {
         const row = this.db.prepare('SELECT r.entry FROM heads h JOIN revisions r ON r.scope=h.scope AND r.id=h.id AND r.revision=h.revision WHERE h.scope=? AND h.id=?').get(barrier.scope, related);
         if (row !== undefined && !barriers.some((target) => target.scope === barrier.scope && target.objectId === related)) conflict('Memory forget preview must include the complete source lineage');
@@ -154,10 +171,18 @@ export class MemoryDatabase {
   }
   source(scope: string, id: string): MemorySourceState {
     if (this.db.prepare('SELECT 1 FROM source_barriers WHERE scope=? AND id=?').get(scope, id) !== undefined) return { state: 'forgotten', id, scope };
-    const row = this.db.prepare('SELECT * FROM sources WHERE scope=? AND id=?').get(scope, id);
-    return row === undefined ? { state: 'missing' } : { state: 'registered', source: { id, scope, objectId: String(row['object_id']), payload: String(row['payload']), locator: row['locator'] === null ? undefined : String(row['locator']), learnedAt: String(row['learned_at']) }, objectIds: this.relatedObjects(scope, String(row['object_id'])) };
+    const row = this.db.prepare('SELECT * FROM sources WHERE scope=? AND id=?').get(scope, id) ?? this.db.prepare('SELECT s.* FROM source_links a JOIN source_links l ON l.scope=a.scope AND l.object_id=a.object_id JOIN sources s ON s.scope=l.scope AND s.id=l.source_id WHERE a.scope=? AND a.source_id=? ORDER BY s.learned_at,s.id LIMIT 1').get(scope, id);
+    return row === undefined ? { state: 'missing' } : { state: 'registered', source: { id: String(row['id']), scope, objectId: String(row['object_id']), payload: String(row['payload']), locator: row['locator'] === null ? undefined : String(row['locator']), learnedAt: String(row['learned_at']) }, objectIds: this.relatedObjects(scope, String(row['object_id'])) };
+  }
+  private linkHistoricalSources(scope: string, id: string): void {
+    for (const row of this.db.prepare('SELECT entry FROM revisions WHERE scope=? AND id=? AND entry IS NOT NULL').all(scope, id)) {
+      const entry = JSON.parse(String(row['entry'])) as MemoryEntry;
+      const alias = memorySourceUnitId(scope, entry.source, entry.body, entry.basis?.refs);
+      if (alias !== undefined) this.db.prepare('INSERT OR IGNORE INTO source_links VALUES(?,?,?)').run(scope, alias, id);
+    }
   }
   provenance(scope: string, id: string): MemoryProvenance {
+    this.linkHistoricalSources(scope, id);
     const sources = this.db.prepare('SELECT s.id FROM sources s JOIN source_links l ON l.scope=s.scope AND l.source_id=s.id WHERE l.scope=? AND l.object_id=? ORDER BY s.learned_at,s.id').all(scope, id).flatMap((row) => {
       const source = this.source(scope, String(row['id']));
       return source.state === 'registered' ? [source.source] : [];

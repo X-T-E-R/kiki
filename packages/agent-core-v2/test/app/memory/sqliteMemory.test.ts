@@ -825,6 +825,62 @@ describe('single Memory authority and isolated recovery', () => {
     expect((await managed.memory.get(global, proposal.entry.id))?.status).toBe('pending');
   });
 
+  it('preserves canonical native-source barriers across correction, forget and a complete database restore', async () => {
+    const { memory, authority } = managedMemory();
+    await authority.migrate(migration());
+    const origin = { writer: 'user' as const, session: 'source-proof-fixture', turn: 17 };
+    const input = { action: 'create' as const, scope: global, type: 'feedback' as const, title: 'Traceable post-cutover source', body: 'TRACEABLE_FORGOTTEN_BODY_8237', reason: 'Traceable owner instruction', source: origin };
+    const saved = await memory.put(input);
+    const provenance = await authority.provenance(global, saved.entry.id);
+    expect(provenance.sources[0]?.id).toBe(`source:${saved.operationId}`);
+    const correction = { mutation: { ...input, action: 'update' as const, id: saved.entry.id, expectedRevision: saved.entry.revision, body: 'Only the corrected choice applies.', source }, unit: { id: 'owner-correction-source', payload: 'Only the corrected choice applies.', origin: 'owner' as const } };
+    await expect(store.ingest({ ...correction, mutation: { ...correction.mutation, expectedRevision: 'stale' } })).rejects.toThrow('revision conflict');
+    const changed = await store.ingest(correction);
+    const renamed = { ...saved.entry, id: 'm_renamed_source_replay' };
+    const payload = [{ scope: 'memory/global', key: `entries/${renamed.id}.md`, payload: JSON.stringify(renamed), entry: renamed }];
+    expect((await persistence.importLegacy(payload)).issues).toContainEqual(expect.objectContaining({ issue: 'source_lineage_preserved' }));
+    const candidate = { mutation: { ...input, title: 'Changed extraction ID' }, unit: { id: 'different-extraction-id', payload: input.body, origin: 'owner' as const } };
+    expect((await store.ingest(candidate)).entry).toEqual(changed.entry);
+    await authority.forget(global, (await authority.previewForget(global, [saved.entry.id])).targets, randomUUID());
+    await expect(store.ingest(candidate)).rejects.toThrow('source unit has been forgotten');
+    const recovery = await authority.recoverReadOnly();
+    const restoredPath = join(home, 'restored-source.sqlite');
+    await copyFile(storage.pathFor(recovery.scope, recovery.database), restoredPath);
+    const restored = new MemoryDatabase(restoredPath);
+    try {
+      expect(restored.source('memory/global', provenance.sources[0]!.id).state).toBe('forgotten');
+      expect(() => restored.commit({ operationId: randomUUID(), request: 'changed-audit-id-replay', expectedGeneration: restored.read(['memory/global']).generation, edits: [{ scope: 'memory/global', id: renamed.id, expectedRevision: null, revision: renamed.revision, entry: renamed }], sources: [{ ...provenance.sources[0]!, id: 'source:new-audit-id', objectId: renamed.id }], result: {} })).toThrow('source has a forget barrier');
+      expect(restored.importLegacy(payload)).toMatchObject({ imported: 0, issues: [expect.objectContaining({ issue: 'forgotten_source_rejected' })] });
+      expect(restored.read(['memory/global']).objects).toEqual([]);
+    } finally { restored.close(); }
+    const state = await authority.status();
+    await authority.resumeEditing(recovery.recoveryId, state.epoch);
+    expect((await memory.put({ ...input, title: 'A distinct new owner instruction', source: { ...origin, turn: 18 } })).outcome).toBe('applied');
+    expect((await memory.put({ ...input, scope: workspace })).outcome).toBe('applied');
+  });
+
+  it('backfills canonical aliases for existing readable SQLite revision history before its first forget', async () => {
+    let managed = managedMemory();
+    await managed.authority.migrate(migration());
+    const saved = await managed.memory.put({ action: 'create', scope: global, type: 'feedback', title: 'Existing native entry', body: 'Existing original source A.', reason: 'Original owner instruction', source: { writer: 'user', session: 'existing-sqlite-source', turn: 17 } });
+    const changed = await managed.memory.put({ action: 'update', scope: global, id: saved.entry.id, expectedRevision: saved.entry.revision, type: saved.entry.type, title: saved.entry.title, body: 'Existing corrected source B.', reason: 'New owner instruction', source: { writer: 'user', session: 'existing-sqlite-source', turn: 18 } });
+    await close();
+    const database = new DatabaseSync(join(home, 'store', 'memory-sqlite-v1', 'memory.sqlite'));
+    try {
+      database.exec("DELETE FROM source_links WHERE source_id LIKE 'source-unit:%'");
+      expect(database.prepare("SELECT COUNT(*) AS n FROM source_links WHERE source_id LIKE 'source-unit:%'").get()?.['n']).toBe(0);
+    } finally { database.close(); }
+    bind();
+    managed = managedMemory();
+    expect(await managed.memory.get(global, changed.entry.id)).toEqual(changed.entry);
+    await managed.authority.forget(global, [{ id: changed.entry.id, expectedRevision: changed.entry.revision }], randomUUID());
+    for (const original of [saved.entry, changed.entry]) {
+      const renamed = { ...original, id: `m_renamed_${original.source.turn}` };
+      expect((await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${renamed.id}.md`, payload: JSON.stringify(renamed), entry: renamed }])).issues).toContainEqual(expect.objectContaining({ issue: 'forgotten_source_rejected' }));
+    }
+    expect(await managed.memory.list(global, true)).toEqual([]);
+  });
+
   it('keeps the live SQLite authority editable if recovery-package publication fails', async () => {
     const { memory, authority } = managedMemory();
     await authority.migrate(migration());
