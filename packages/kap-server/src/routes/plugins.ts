@@ -38,6 +38,7 @@ import {
 } from '@kiki/protocol';
 
 import { errEnvelope, okEnvelope } from '../envelope';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { defineRoute } from '../middleware/defineRoute';
 import { authenticatedForwardHeaders } from '../middleware/auth';
 import { ErrorCode } from '../protocol/error-codes';
@@ -529,11 +530,12 @@ export function registerPluginsRoutes(
       operationId: 'previewPlugin',
     },
     async (req, reply) => {
+      const connection = reply as unknown as Parameters<typeof withReplyCloseSignal>[0];
       try {
-        const plan = await core.accessor.get(IPluginService).previewPlugin(req.body);
-        reply.send(okEnvelope(plan, req.id));
+        const plan = await withReplyCloseSignal(connection, (signal) => core.accessor.get(IPluginService).previewPlugin(req.body, signal), req);
+        if (!connection.raw.destroyed) reply.send(okEnvelope(plan, req.id));
       } catch (error) {
-        reply.send(mapPluginError(error, req.id));
+        if (!connection.raw.destroyed) reply.send(mapPluginError(error, req.id));
       }
     },
   );

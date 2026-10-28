@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
-import { readFile, readdir } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { readdir } from 'node:fs/promises';
 import path from 'node:path';
+import { finished } from 'node:stream/promises';
 
 import type { PluginPermissions } from './contributions';
 import type { PluginManifest } from './types';
@@ -18,21 +20,55 @@ export interface PluginInstallPlan {
   readonly unsupported: readonly string[];
 }
 
-export async function fingerprintDirectory(root: string): Promise<string> {
+export async function fingerprintDirectory(root: string, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   const digest = createHash('sha256');
-  async function walk(directory: string): Promise<void> {
-    for (const entry of (await readdir(directory, { withFileTypes: true })).toSorted((a, b) => a.name.localeCompare(b.name))) {
+  async function* walk(directory: string): AsyncGenerator<string> {
+    signal?.throwIfAborted();
+    const entries = await readdir(directory, { withFileTypes: true });
+    signal?.throwIfAborted();
+    for (const entry of entries.toSorted((a, b) => a.name.localeCompare(b.name))) {
+      signal?.throwIfAborted();
       if (entry.isSymbolicLink()) throw new Error(`Plugin file is a symbolic link: ${entry.name}`);
       const file = path.join(directory, entry.name);
-      if (entry.isDirectory()) await walk(file);
-      else if (entry.isFile()) {
-        digest.update(path.relative(root, file).replaceAll('\\', '/'));
-        digest.update('\0');
-        digest.update(await readFile(file));
-      } else throw new Error(`Unsupported plugin file: ${entry.name}`);
+      if (entry.isDirectory()) yield* walk(file);
+      else if (entry.isFile()) yield file;
+      else throw new Error(`Unsupported plugin file: ${entry.name}`);
     }
   }
-  await walk(root);
+  async function hashBatch(files: readonly string[]): Promise<void> {
+    signal?.throwIfAborted();
+    const readers = files.map((file) => {
+      const stream = createReadStream(file, { signal, highWaterMark: 64 * 1024 });
+      const closed = finished(stream, { cleanup: true }).catch((error: unknown) => error);
+      stream.read(0);
+      return { file, stream, closed };
+    });
+    try {
+      for (const { file, stream } of readers) {
+        signal?.throwIfAborted();
+        digest.update(path.relative(root, file).replaceAll('\\', '/'));
+        digest.update('\0');
+        for await (const chunk of stream) {
+          signal?.throwIfAborted();
+          digest.update(chunk);
+        }
+      }
+    } finally {
+      for (const { stream } of readers) stream.destroy();
+      await Promise.all(readers.map(({ closed }) => closed));
+    }
+  }
+  let batch: string[] = [];
+  for await (const file of walk(root)) {
+    batch.push(file);
+    if (batch.length === 8) {
+      await hashBatch(batch);
+      batch = [];
+    }
+  }
+  if (batch.length > 0) await hashBatch(batch);
+  signal?.throwIfAborted();
   return digest.digest('hex');
 }
 

@@ -433,6 +433,9 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
       if (service === 'agentPanelService' && method === 'read') {
         clonedArgs[1] = options?.signal;
       }
+      if (service === 'pluginService' && method === 'previewPlugin') {
+        clonedArgs[1] = options?.signal;
+      }
       try {
         const result = await (member as (...a: unknown[]) => unknown).apply(instance, clonedArgs);
         return wireClone(result);

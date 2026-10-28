@@ -25,7 +25,7 @@ import { IAgentPromptService, reservePrompt } from '@kiki/agent-core-v2/agent/pr
 import { IModelService } from '@kiki/agent-core-v2/kosong/model/model';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { ISessionActivityView } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
-import { ConfigTarget, IConfigService, IEventService, PluginChanged } from '@kiki/agent-core-v2';
+import { ConfigTarget, IConfigService, IEventService, IPluginService, PluginChanged } from '@kiki/agent-core-v2';
 import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import { IAgentPermissionModeService } from '@kiki/agent-core-v2/agent/permissionMode/permissionMode';
 import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/mainAgent';
@@ -765,6 +765,41 @@ export function defineKlientConformance(
       expect(Array.isArray(await target.klient.global.plugins.list())).toBe(true);
       const status = await target.klient.global.auth.status();
       expect(typeof status.loggedIn).toBe('boolean');
+    });
+
+    it('cancels plugin preview through transport metadata without invoking installation', async () => {
+      const plugins = target.app.accessor.get(IPluginService);
+      const controller = new AbortController();
+      let entered!: () => void;
+      let release!: () => void;
+      let observed: AbortSignal | undefined;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      const waiting = new Promise<void>((resolve) => { release = resolve; });
+      const preview = vi.spyOn(plugins, 'previewPlugin').mockImplementation(async (_input, signal) => {
+        observed = signal;
+        signal?.addEventListener('abort', release, { once: true });
+        entered();
+        await waiting;
+        signal?.removeEventListener('abort', release);
+        signal?.throwIfAborted();
+        throw new Error('Preview must be cancelled');
+      });
+      const install = vi.spyOn(plugins, 'installPlugin');
+      const result = target.klient.global.plugins.preview({ source: '/neutral-plugin' }, { signal: controller.signal }).catch((error: unknown) => error);
+      try {
+        await started;
+        expect(observed).toBeInstanceOf(AbortSignal);
+        controller.abort();
+        expect(await result).toBeInstanceOf(Error);
+        await waitFor(() => observed?.aborted === true, 2_000);
+        expect(install).not.toHaveBeenCalled();
+      } finally {
+        controller.abort();
+        release();
+        await result;
+        preview.mockRestore();
+        install.mockRestore();
+      }
     });
 
     it('global import read models share the session-independent facade across transports', async () => {

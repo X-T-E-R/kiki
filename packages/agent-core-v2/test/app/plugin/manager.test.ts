@@ -8,6 +8,8 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PluginManager } from '#/app/plugin/manager';
+import * as archive from '#/app/plugin/archive';
+import * as installPlan from '#/app/plugin/installPlan';
 import { PluginHost } from '#/app/plugin/host';
 import { readInstalled, writeInstalled, type InstalledRecord } from '#/app/plugin/store';
 import { SyncDescriptor } from '#/_base/di/descriptors';
@@ -60,6 +62,52 @@ describe('PluginManager', () => {
     vi.unstubAllGlobals();
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it('keeps concurrent ZIP preparation scratch isolated and removes only the cancelled preview copy', async () => {
+    const bytes = Buffer.from('neutral archive fixture');
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array(bytes))));
+    const scratch: string[] = [];
+    const release: (() => void)[] = [];
+    const originalFingerprint = installPlan.fingerprintDirectory;
+    const extraction = vi.spyOn(archive, 'extractZip').mockImplementation(async (_buffer, dest) => {
+      scratch.push(dest);
+      await writeFile(join(dest, 'kimi.plugin.json'), JSON.stringify({ name: 'isolated-preview' }));
+      return dest;
+    });
+    const hashing = vi.spyOn(installPlan, 'fingerprintDirectory').mockImplementation(async (directory, signal) => {
+      await new Promise<void>((resolve) => {
+        release.push(resolve);
+        signal?.addEventListener('abort', () => { resolve(); }, { once: true });
+      });
+      signal?.throwIfAborted();
+      return originalFingerprint(directory, signal);
+    });
+    const manager = new PluginManager({ kimiHomeDir: home });
+    const controller = new AbortController();
+    const cancelled = manager.preview('https://example.test/plugin.zip', sha256, controller.signal).catch((error: unknown) => error);
+    const remaining = manager.preview('https://example.test/plugin.zip', sha256);
+    try {
+      await vi.waitFor(() => { expect(release).toHaveLength(2); });
+      expect(scratch[0]).not.toBe(scratch[1]);
+      controller.abort();
+      expect(await cancelled).toMatchObject({ name: 'AbortError' });
+      const first = scratch[0]!;
+      const second = scratch[1]!;
+      const exists = await Promise.all([stat(first).then(() => true, () => false), stat(second).then(() => true, () => false)]);
+      expect(exists.filter(Boolean)).toHaveLength(1);
+      for (const resolve of release) resolve();
+      expect(await remaining).toMatchObject({ id: 'isolated-preview' });
+      for (const dir of scratch) await expect(stat(dir)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      controller.abort();
+      for (const resolve of release) resolve();
+      await Promise.allSettled([cancelled, remaining]);
+      extraction.mockRestore();
+      hashing.mockRestore();
+      for (const dir of scratch) await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('previews App service activation from the manifest without treating ordinary plugins as resident', async () => {

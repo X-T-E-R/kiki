@@ -37,6 +37,10 @@ const UNSUPPORTED_RUNTIME_FIELDS = [
   'bootstrap',
 ] as const;
 
+function checkAborted(signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+}
+
 export interface ParsedManifestResult {
   readonly manifest?: PluginManifest;
   readonly manifestKind?: PluginManifestKind;
@@ -45,18 +49,24 @@ export interface ParsedManifestResult {
   readonly diagnostics: readonly PluginDiagnostic[];
 }
 
-export async function parseManifest(pluginRoot: string): Promise<ParsedManifestResult> {
+export async function parseManifest(pluginRoot: string, signal?: AbortSignal): Promise<ParsedManifestResult> {
+  checkAborted(signal);
   const rootJsonPath = path.join(pluginRoot, KIMI_PLUGIN_ROOT_PATH);
   const dirJsonPath = path.join(pluginRoot, KIMI_PLUGIN_DIR_PATH);
-  const rootJsonExists = await isFile(rootJsonPath);
-  const dirJsonExists = await isFile(dirJsonPath);
+  const rootJsonExists = await isFile(rootJsonPath, signal);
+  checkAborted(signal);
+  const dirJsonExists = await isFile(dirJsonPath, signal);
+  checkAborted(signal);
 
   if (!rootJsonExists && !dirJsonExists) {
     const claudePath = path.join(pluginRoot, '.claude-plugin', 'plugin.json');
-    if (await isFile(claudePath)) {
-      const imported = await importClaudePlugin(pluginRoot, claudePath);
+    if (await isFile(claudePath, signal)) {
+      checkAborted(signal);
+      const imported = await importClaudePlugin(pluginRoot, claudePath, signal);
+      checkAborted(signal);
       return { ...imported, manifestKind: 'claude-code', manifestPath: claudePath };
     }
+    checkAborted(signal);
     return {
       diagnostics: [
         {
@@ -73,8 +83,12 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
 
   let raw: unknown;
   try {
-    raw = JSON.parse(await readFile(manifestPath, 'utf8'));
+    checkAborted(signal);
+    const content = await readFile(manifestPath, { encoding: 'utf8', signal });
+    checkAborted(signal);
+    raw = JSON.parse(content);
   } catch (error) {
+    checkAborted(signal);
     return {
       manifestKind,
       manifestPath,
@@ -112,20 +126,24 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
     return { manifestKind, manifestPath, shadowedManifestPath, diagnostics };
   }
 
-  let skills = await resolveDirListField(pluginRoot, 'skills', raw['skills'], diagnostics);
+  let skills = await resolveDirListField(pluginRoot, 'skills', raw['skills'], diagnostics, signal);
+  checkAborted(signal);
   let rootSkillFallback: boolean | undefined;
   if (raw['skills'] === undefined) {
     const rootSkillMd = path.join(pluginRoot, 'SKILL.md');
-    if (await isFile(rootSkillMd)) {
+    if (await isFile(rootSkillMd, signal)) {
+      checkAborted(signal);
       skills = [pluginRoot];
       rootSkillFallback = true;
     }
   }
 
-  let agents = await resolveDirListField(pluginRoot, 'agents', raw['agents'], diagnostics);
+  let agents = await resolveDirListField(pluginRoot, 'agents', raw['agents'], diagnostics, signal);
+  checkAborted(signal);
   if (raw['agents'] === undefined) {
     const agentsDir = path.join(pluginRoot, 'agents');
-    if (await isDir(agentsDir)) {
+    if (await isDir(agentsDir, signal)) {
+      checkAborted(signal);
       agents = [agentsDir];
     }
   }
@@ -133,7 +151,8 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
   const skillInstructions =
     typeof raw['skillInstructions'] === 'string' ? raw['skillInstructions'] : undefined;
 
-  const systemPrompt = await readSystemPrompt(pluginRoot, raw, diagnostics);
+  const systemPrompt = await readSystemPrompt(pluginRoot, raw, diagnostics, signal);
+  checkAborted(signal);
   let prerequisites: PluginManifest['prerequisites'];
   if (raw['x-kiki'] !== undefined) {
     const extension = isObject(raw['x-kiki']) ? raw['x-kiki'] : undefined;
@@ -147,7 +166,8 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
     }
   }
 
-  const kiki = await parsePluginExtension(pluginRoot, raw['x-kiki'], diagnostics);
+  const kiki = await parsePluginExtension(pluginRoot, raw['x-kiki'], diagnostics, signal);
+  checkAborted(signal);
   recordUnsupportedRuntimeFields(raw, diagnostics);
 
   const manifest: PluginManifest = {
@@ -162,17 +182,18 @@ export async function parseManifest(pluginRoot: string): Promise<ParsedManifestR
     rootSkillFallback,
     agents,
     sessionStart: readSessionStart(raw['sessionStart'], diagnostics),
-    mcpServers: await readMcpServers(pluginRoot, raw['mcpServers'], diagnostics),
+    mcpServers: await readMcpServers(pluginRoot, raw['mcpServers'], diagnostics, signal),
     hooks: readHooks(raw['hooks'], diagnostics),
     hookRules: readHookRules(raw['hooks'], diagnostics),
-    commands: await readCommands(pluginRoot, raw['commands'], diagnostics),
+    commands: await readCommands(pluginRoot, raw['commands'], diagnostics, signal),
     interface: readInterface(raw['interface']),
-    icon: await readIcon(pluginRoot, raw['icon'], diagnostics),
+    icon: await readIcon(pluginRoot, raw['icon'], diagnostics, signal),
     skillInstructions,
     systemPrompt,
     prerequisites,
     kiki,
   };
+  checkAborted(signal);
 
   return { manifest, manifestKind, manifestPath, shadowedManifestPath, diagnostics };
 }
@@ -195,7 +216,9 @@ async function resolveDirListField(
   field: string,
   raw: unknown,
   diagnostics: PluginDiagnostic[],
+  signal?: AbortSignal,
 ): Promise<readonly string[]> {
+  checkAborted(signal);
   if (raw === undefined) return [];
   const entries: string[] = [];
   if (typeof raw === 'string') {
@@ -209,6 +232,7 @@ async function resolveDirListField(
 
   const resolved: string[] = [];
   for (const entry of entries) {
+    checkAborted(signal);
     if (!entry.startsWith('./')) {
       diagnostics.push({
         severity: 'error',
@@ -219,11 +243,22 @@ async function resolveDirListField(
     const absolute = path.resolve(pluginRoot, entry);
     let real: string;
     try {
+      checkAborted(signal);
       real = await realpath(absolute);
+      checkAborted(signal);
     } catch {
+      checkAborted(signal);
       real = absolute;
     }
-    const rootReal = await realpath(pluginRoot).catch(() => pluginRoot);
+    let rootReal: string;
+    try {
+      checkAborted(signal);
+      rootReal = await realpath(pluginRoot);
+      checkAborted(signal);
+    } catch {
+      checkAborted(signal);
+      rootReal = pluginRoot;
+    }
     if (!isWithin(real, rootReal)) {
       diagnostics.push({
         severity: 'error',
@@ -231,15 +266,18 @@ async function resolveDirListField(
       });
       continue;
     }
-    if (!(await isDir(real))) {
+    if (!(await isDir(real, signal))) {
+      checkAborted(signal);
       diagnostics.push({
         severity: 'warn',
         message: `"${field}" path is not a directory (${entry})`,
       });
       continue;
     }
+    checkAborted(signal);
     resolved.push(real);
   }
+  checkAborted(signal);
   return resolved;
 }
 
@@ -248,7 +286,8 @@ async function resolvePluginPathField(input: {
   readonly field: string;
   readonly value: string;
   readonly diagnostics: PluginDiagnostic[];
-}): Promise<string | undefined> {
+}, signal?: AbortSignal): Promise<string | undefined> {
+  checkAborted(signal);
   if (!input.value.startsWith('./')) {
     input.diagnostics.push({
       severity: 'warn',
@@ -259,11 +298,22 @@ async function resolvePluginPathField(input: {
   const absolute = path.resolve(input.pluginRoot, input.value);
   let real: string;
   try {
+    checkAborted(signal);
     real = await realpath(absolute);
+    checkAborted(signal);
   } catch {
+    checkAborted(signal);
     real = absolute;
   }
-  const rootReal = await realpath(input.pluginRoot).catch(() => input.pluginRoot);
+  let rootReal: string;
+  try {
+    checkAborted(signal);
+    rootReal = await realpath(input.pluginRoot);
+    checkAborted(signal);
+  } catch {
+    checkAborted(signal);
+    rootReal = input.pluginRoot;
+  }
   if (!isWithin(real, rootReal)) {
     input.diagnostics.push({
       severity: 'warn',
@@ -271,6 +321,7 @@ async function resolvePluginPathField(input: {
     });
     return undefined;
   }
+  checkAborted(signal);
   return real;
 }
 
@@ -298,7 +349,9 @@ async function readSystemPrompt(
   pluginRoot: string,
   raw: Record<string, unknown>,
   diagnostics: PluginDiagnostic[],
+  signal?: AbortSignal,
 ): Promise<string | undefined> {
+  checkAborted(signal);
   const parts: string[] = [];
   if (raw['systemPrompt'] !== undefined && typeof raw['systemPrompt'] !== 'string') {
     diagnostics.push({ severity: 'warn', message: '"systemPrompt" must be a string' });
@@ -330,9 +383,18 @@ async function readSystemPrompt(
         field: 'systemPromptPath',
         value: pathValue.trim(),
         diagnostics,
-      });
+      }, signal);
+      checkAborted(signal);
       if (resolved !== undefined) {
-        const fileStat = await stat(resolved).catch(() => undefined);
+        let fileStat: Awaited<ReturnType<typeof stat>> | undefined;
+        try {
+          checkAborted(signal);
+          fileStat = await stat(resolved);
+          checkAborted(signal);
+        } catch {
+          checkAborted(signal);
+          fileStat = undefined;
+        }
         if (fileStat === undefined || !fileStat.isFile()) {
           diagnostics.push({
             severity: 'warn',
@@ -347,9 +409,13 @@ async function readSystemPrompt(
           });
         } else {
           try {
-            const content = (await readFile(resolved, 'utf8')).replace(/^\uFEFF/, '').trim();
+            checkAborted(signal);
+            const content = (await readFile(resolved, { encoding: 'utf8', signal }))
+              .replace(/^\uFEFF/, '').trim();
+            checkAborted(signal);
             if (content.length > 0) parts.push(content);
           } catch (error) {
+            checkAborted(signal);
             diagnostics.push({
               severity: 'warn',
               message: `Failed to read "systemPromptPath" (${pathValue}): ${(error as Error).message}`,
@@ -360,6 +426,7 @@ async function readSystemPrompt(
     }
   }
 
+  checkAborted(signal);
   return parts.length === 0 ? undefined : parts.join('\n\n');
 }
 
@@ -367,7 +434,9 @@ async function readIcon(
   pluginRoot: string,
   raw: unknown,
   diagnostics: PluginDiagnostic[],
+  signal?: AbortSignal,
 ): Promise<string | undefined> {
+  checkAborted(signal);
   if (raw === undefined) return undefined;
   if (typeof raw !== 'string') {
     diagnostics.push({ severity: 'warn', message: '"icon" must be a string' });
@@ -383,7 +452,8 @@ async function readIcon(
     field: 'icon',
     value,
     diagnostics,
-  });
+  }, signal);
+  checkAborted(signal);
   if (resolved === undefined) return undefined;
   const mimeType = PLUGIN_ICON_MIME_TYPES[path.extname(resolved).toLowerCase()];
   if (mimeType === undefined) {
@@ -393,7 +463,15 @@ async function readIcon(
     });
     return undefined;
   }
-  const fileStat = await stat(resolved).catch(() => undefined);
+  let fileStat: Awaited<ReturnType<typeof stat>> | undefined;
+  try {
+    checkAborted(signal);
+    fileStat = await stat(resolved);
+    checkAborted(signal);
+  } catch {
+    checkAborted(signal);
+    fileStat = undefined;
+  }
   if (fileStat === undefined || !fileStat.isFile()) {
     diagnostics.push({ severity: 'warn', message: `"icon" is not a file (${value})` });
     return undefined;
@@ -408,9 +486,12 @@ async function readIcon(
     return undefined;
   }
   try {
-    const bytes = await readFile(resolved);
+    checkAborted(signal);
+    const bytes = await readFile(resolved, { signal });
+    checkAborted(signal);
     return `data:${mimeType};base64,${bytes.toString('base64')}`;
   } catch (error) {
+    checkAborted(signal);
     diagnostics.push({
       severity: 'warn',
       message: `Failed to read "icon" (${value}): ${(error as Error).message}`,
@@ -423,7 +504,9 @@ async function readMcpServers(
   pluginRoot: string,
   raw: unknown,
   diagnostics: PluginDiagnostic[],
+  signal?: AbortSignal,
 ): Promise<PluginManifest['mcpServers']> {
+  checkAborted(signal);
   if (raw === undefined) return undefined;
   if (!isObject(raw)) {
     diagnostics.push({ severity: 'warn', message: '"mcpServers" must be an object' });
@@ -432,6 +515,7 @@ async function readMcpServers(
 
   const out: Record<string, McpServerConfig> = {};
   for (const [name, value] of Object.entries(raw)) {
+    checkAborted(signal);
     const trimmedName = name.trim();
     if (trimmedName.length === 0) {
       diagnostics.push({
@@ -453,9 +537,11 @@ async function readMcpServers(
       name: trimmedName,
       config: parsed.data,
       diagnostics,
-    });
+    }, signal);
+    checkAborted(signal);
     if (normalized !== undefined) out[trimmedName] = normalized;
   }
+  checkAborted(signal);
   return Object.keys(out).length === 0 ? undefined : out;
 }
 
@@ -495,7 +581,9 @@ async function readCommands(
   pluginRoot: string,
   raw: unknown,
   diagnostics: PluginDiagnostic[],
+  signal?: AbortSignal,
 ): Promise<readonly PluginCommandEntry[] | undefined> {
+  checkAborted(signal);
   if (raw === undefined) return undefined;
   const entries: string[] = [];
   if (typeof raw === 'string') {
@@ -509,30 +597,43 @@ async function readCommands(
 
   const files: PluginCommandEntry[] = [];
   for (const entry of entries) {
+    checkAborted(signal);
     const resolved = await resolvePluginPathField({
       pluginRoot,
       field: 'commands',
       value: entry,
       diagnostics,
-    });
+    }, signal);
+    checkAborted(signal);
     if (resolved === undefined) continue;
-    if (await isDir(resolved)) {
-      files.push(...(await listMarkdownFilesRecursive(resolved)));
-    } else if ((await isFile(resolved)) && resolved.endsWith('.md')) {
-      files.push({ path: resolved, name: commandNameFromFile(resolved, path.dirname(resolved)) });
+    const directory = await isDir(resolved, signal);
+    checkAborted(signal);
+    if (directory) {
+      const nested = await listMarkdownFilesRecursive(resolved, signal);
+      checkAborted(signal);
+      files.push(...nested);
     } else {
-      diagnostics.push({
-        severity: 'warn',
-        message: `"commands" entry must be a directory or .md file (${entry})`,
-      });
+      const file = await isFile(resolved, signal);
+      checkAborted(signal);
+      if (file && resolved.endsWith('.md')) {
+        files.push({ path: resolved, name: commandNameFromFile(resolved, path.dirname(resolved)) });
+      } else {
+        diagnostics.push({
+          severity: 'warn',
+          message: `"commands" entry must be a directory or .md file (${entry})`,
+        });
+      }
     }
   }
+  checkAborted(signal);
   return files.length === 0 ? undefined : files.toSorted((a, b) => a.name.localeCompare(b.name));
 }
 
-async function listMarkdownFilesRecursive(root: string): Promise<readonly PluginCommandEntry[]> {
+async function listMarkdownFilesRecursive(root: string, signal?: AbortSignal): Promise<readonly PluginCommandEntry[]> {
+  checkAborted(signal);
   const out: PluginCommandEntry[] = [];
-  await walkMarkdown(root, root, out);
+  await walkMarkdown(root, root, out, signal);
+  checkAborted(signal);
   return out;
 }
 
@@ -540,21 +641,29 @@ async function walkMarkdown(
   root: string,
   dir: string,
   out: PluginCommandEntry[],
+  signal?: AbortSignal,
 ): Promise<void> {
+  checkAborted(signal);
   let entries;
   try {
+    checkAborted(signal);
     entries = await readdir(dir, { withFileTypes: true });
+    checkAborted(signal);
   } catch {
+    checkAborted(signal);
     return;
   }
   for (const entry of entries) {
+    checkAborted(signal);
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      await walkMarkdown(root, full, out);
+      await walkMarkdown(root, full, out, signal);
+      checkAborted(signal);
     } else if (entry.isFile() && entry.name.endsWith('.md')) {
       out.push({ path: full, name: commandNameFromFile(full, root) });
     }
   }
+  checkAborted(signal);
 }
 
 function commandNameFromFile(file: string, root: string): string {
@@ -567,7 +676,8 @@ async function normalizePluginMcpServer(input: {
   readonly name: string;
   readonly config: McpServerConfig;
   readonly diagnostics: PluginDiagnostic[];
-}): Promise<McpServerConfig | undefined> {
+}, signal?: AbortSignal): Promise<McpServerConfig | undefined> {
+  checkAborted(signal);
   const { config } = input;
   if (config.transport === 'http' || config.transport === 'sse') return config;
 
@@ -578,7 +688,8 @@ async function normalizePluginMcpServer(input: {
       field: `mcpServers.${input.name}.command`,
       value: command,
       diagnostics: input.diagnostics,
-    });
+    }, signal);
+    checkAborted(signal);
     if (resolvedCommand === undefined) return undefined;
     command = resolvedCommand;
   } else if (command.includes('/') || path.isAbsolute(command)) {
@@ -596,11 +707,13 @@ async function normalizePluginMcpServer(input: {
       field: `mcpServers.${input.name}.cwd`,
       value: cwd,
       diagnostics: input.diagnostics,
-    });
+    }, signal);
+    checkAborted(signal);
     if (resolvedCwd === undefined) return undefined;
     cwd = resolvedCwd;
   }
 
+  checkAborted(signal);
   return { ...config, command, cwd };
 }
 
@@ -650,18 +763,28 @@ function isWithin(child: string, parent: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-async function isFile(p: string): Promise<boolean> {
+async function isFile(p: string, signal?: AbortSignal): Promise<boolean> {
+  checkAborted(signal);
   try {
-    return (await stat(p)).isFile();
+    checkAborted(signal);
+    const value = await stat(p);
+    checkAborted(signal);
+    return value.isFile();
   } catch {
+    checkAborted(signal);
     return false;
   }
 }
 
-async function isDir(p: string): Promise<boolean> {
+async function isDir(p: string, signal?: AbortSignal): Promise<boolean> {
+  checkAborted(signal);
   try {
-    return (await stat(p)).isDirectory();
+    checkAborted(signal);
+    const value = await stat(p);
+    checkAborted(signal);
+    return value.isDirectory();
   } catch {
+    checkAborted(signal);
     return false;
   }
 }

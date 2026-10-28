@@ -56,7 +56,8 @@ export interface IPluginService {
   readonly _serviceBrand: undefined;
 
   listPlugins(): Promise<readonly PluginSummary[]>;
-  previewPlugin(input: Pick<InstallPluginInput, 'source' | 'sha256'>): Promise<PluginInstallPlan>;
+  /** Reads a committed snapshot before preparing independently; cancellation waits for owned IO and scratch cleanup. */
+  previewPlugin(input: Pick<InstallPluginInput, 'source' | 'sha256'>, signal?: AbortSignal): Promise<PluginInstallPlan>;
   installPlugin(input: InstallPluginInput): Promise<PluginSummary>;
   rollbackPlugin(input: { readonly id: string }): Promise<PluginSummary>;
   setPluginEnabled(input: SetPluginEnabledInput): Promise<void>;

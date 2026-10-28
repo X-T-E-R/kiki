@@ -12,6 +12,10 @@ import type { PluginDiagnostic } from './types';
 export const KIKI_PLUGIN_ENGINE_VERSION = '0.4.1';
 export const PLUGIN_EXTENSION_VERSION = 1;
 
+function checkAborted(signal?: AbortSignal): void {
+  signal?.throwIfAborted();
+}
+
 const schemaVersion = z.literal(PLUGIN_EXTENSION_VERSION);
 const slug = z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/);
 const permissionSchema = z.object({
@@ -144,7 +148,9 @@ export async function parsePluginExtension(
   root: string,
   raw: unknown,
   diagnostics: PluginDiagnostic[],
+  signal?: AbortSignal,
 ): Promise<PluginExtension | undefined> {
+  checkAborted(signal);
   if (raw === undefined) return undefined;
   const envelope = z.object({
     engines: z.object({ kiki: z.string().min(1) }).strict().optional(),
@@ -201,25 +207,31 @@ export async function parsePluginExtension(
     if (group.required.some((key) => value.settings?.schema.properties[group.settingsPrefix + key] === undefined)) diagnostics.push({ severity: 'error', message: `Media source ${group.id} required settings must be declared` });
   }
   if (value.mediaScriptProvider !== undefined && (!value.mediaProviders?.some((provider) => provider.id === value.mediaScriptProvider) || value.settings?.schema.properties['scriptSources']?.type !== 'string')) diagnostics.push({ severity: 'error', message: 'Media scripts require a declared provider and scriptSources string setting' });
-  const resolvedEntry = value.entry === undefined ? undefined : await safePluginFile(root, value.entry);
+  const resolvedEntry = value.entry === undefined ? undefined : await safePluginFile(root, value.entry, signal);
+  checkAborted(signal);
   if (value.entry !== undefined && resolvedEntry === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.entry must be an existing file inside the plugin' });
   }
   const themes: PluginTheme[] = [];
   for (const theme of value.themes ?? []) {
-    const file = await safePluginFile(root, theme.path);
+    checkAborted(signal);
+    const file = await safePluginFile(root, theme.path, signal);
+    checkAborted(signal);
     if (file === undefined) {
       diagnostics.push({ severity: 'error', message: `Theme ${theme.id} must reference a file inside the plugin` });
       continue;
     }
     try {
-      const bytes = await readFile(file);
+      checkAborted(signal);
+      const bytes = await readFile(file, { signal });
+      checkAborted(signal);
       if (bytes.byteLength > 64 * 1024) throw new Error('theme file exceeds 64 KiB');
       const skin = skinFileSchema.parse(JSON.parse(bytes.toString('utf8')));
       if (skin.id !== undefined && skin.id !== theme.id) throw new Error('theme id mismatch');
       if (skin.variants[theme.base] === undefined) throw new Error(`missing ${theme.base} variant`);
       themes.push({ ...theme, file: { ...skin, id: theme.id } });
     } catch (error) {
+      checkAborted(signal);
       diagnostics.push({ severity: 'error', message: `Invalid theme ${theme.id}: ${(error as Error).message}` });
     }
   }
@@ -228,21 +240,39 @@ export async function parsePluginExtension(
     diagnostics.push({ severity: 'error', message: 'x-kiki.permissions.uiPanel is required for panel contributions' });
   }
   for (const panel of value.panels ?? []) {
-    const file = await safePluginFile(root, panel.path);
-    if (file === undefined || (await stat(file)).size > 256 * 1024) {
+    checkAborted(signal);
+    const file = await safePluginFile(root, panel.path, signal);
+    checkAborted(signal);
+    let panelStat: Awaited<ReturnType<typeof stat>> | undefined;
+    if (file !== undefined) {
+      checkAborted(signal);
+      panelStat = await stat(file);
+      checkAborted(signal);
+    }
+    if (file === undefined || panelStat === undefined || panelStat.size > 256 * 1024) {
       diagnostics.push({ severity: 'error', message: `Panel ${panel.id} must reference an HTML file under 256 KiB inside the plugin` });
       continue;
     }
     const assetFiles: Record<string, string> = {};
     for (const asset of panel.assets ?? []) {
-      const resolved = await safePluginFile(root, asset);
-      if (resolved === undefined || (await stat(resolved)).size > 512 * 1024 ||
+      checkAborted(signal);
+      const resolved = await safePluginFile(root, asset, signal);
+      checkAborted(signal);
+      let assetStat: Awaited<ReturnType<typeof stat>> | undefined;
+      if (resolved !== undefined) {
+        checkAborted(signal);
+        assetStat = await stat(resolved);
+        checkAborted(signal);
+      }
+      if (resolved === undefined || assetStat === undefined || assetStat.size > 512 * 1024 ||
         !/\.(?:js|css|svg|png|webp)$/i.test(resolved)) {
         diagnostics.push({ severity: 'error', message: `Panel ${panel.id} asset ${asset} is invalid or exceeds 512 KiB` });
       } else assetFiles[asset.slice(2)] = resolved;
     }
+    checkAborted(signal);
     panels.push({ ...panel, file, assetFiles });
   }
+  checkAborted(signal);
   return {
     engines: value.engines,
     permissions: value.permissions,
@@ -264,12 +294,25 @@ export async function parsePluginExtension(
   };
 }
 
-async function safePluginFile(root: string, relative: string): Promise<string | undefined> {
+async function safePluginFile(root: string, relative: string, signal?: AbortSignal): Promise<string | undefined> {
+  checkAborted(signal);
   const base = await realpath(root);
+  checkAborted(signal);
   const candidate = path.resolve(base, relative);
-  const file = await realpath(candidate).catch(() => undefined);
+  let file: string | undefined;
+  try {
+    checkAborted(signal);
+    file = await realpath(candidate);
+    checkAborted(signal);
+  } catch {
+    checkAborted(signal);
+    file = undefined;
+  }
   if (file === undefined) return undefined;
   const within = path.relative(base, file);
-  if (within.startsWith('..') || path.isAbsolute(within) || !(await stat(file)).isFile()) return undefined;
-  return file;
+  if (within.startsWith('..') || path.isAbsolute(within)) return undefined;
+  checkAborted(signal);
+  const fileStat = await stat(file);
+  checkAborted(signal);
+  return fileStat.isFile() ? file : undefined;
 }

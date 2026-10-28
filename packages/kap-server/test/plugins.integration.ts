@@ -1,5 +1,5 @@
 import { cp, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
-import { IPluginHostService } from '@kiki/agent-core-v2';
+import { IPluginHostService, IPluginService } from '@kiki/agent-core-v2';
 import { readDefaultPluginCatalog, OFFICIAL_PLUGIN_CATALOG_SOURCE } from '@kiki/agent-core-v2/app/plugin/defaultCatalog';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -188,6 +188,53 @@ describe('server-v2 /api plugins', () => {
     );
     return dir;
   }
+
+  it('aborts preview IO when its HTTP client disconnects while committed plugin reads remain responsive', async () => {
+    const source = await makePluginDir('preview-stable', '1.0.0');
+    expect((await install(source)).body.code).toBe(0);
+    let entered!: () => void;
+    let aborted!: () => void;
+    let observed: AbortSignal | undefined;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const stopped = new Promise<void>((resolve) => { aborted = resolve; });
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      if ((url instanceof Request ? url.url : url.toString()) !== 'https://downloads.example.test/blocked.zip') return originalFetch(url, init);
+      observed = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        observed?.addEventListener('abort', () => { aborted(); reject(observed?.reason); }, { once: true });
+        entered();
+      });
+    }));
+    const controller = new AbortController();
+    const plugins = server!.core.accessor.get(IPluginService);
+    const installation = vi.spyOn(plugins, 'installPlugin');
+    const request = fetch(`${base}/api/plugins:preview`, {
+      method: 'POST',
+      headers: authHeaders(server!, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ source: 'https://downloads.example.test/blocked.zip', sha256: '0'.repeat(64) }),
+      signal: controller.signal,
+    }).catch((error: unknown) => error);
+    try {
+      await started;
+      const result = await Promise.race([
+        Promise.all([call<{ plugins: { id: string }[] }>('GET', '/api/plugins'), call<{ id: string }>('GET', '/api/plugins/preview-stable')]),
+        new Promise<undefined>((resolve) => { setTimeout(() => { resolve(undefined); }, 500); }),
+      ]);
+      expect(result?.[0].body.code).toBe(0);
+      expect(result?.[1].body.data.id).toBe('preview-stable');
+      controller.abort();
+      expect(await request).toMatchObject({ name: 'AbortError' });
+      await Promise.race([stopped, new Promise<never>((_resolve, reject) => { setTimeout(() => { reject(new Error('Preview IO did not stop')); }, 500); })]);
+      expect(observed?.aborted).toBe(true);
+      expect(installation).not.toHaveBeenCalled();
+      expect((await call('GET', '/api/plugins/preview-stable')).body.code).toBe(0);
+    } finally {
+      controller.abort();
+      await request;
+      installation.mockRestore();
+    }
+  });
 
   it('supports sessionless settings panels with own settings, credential-free model choices and no conversation actions', async () => {
     const source = await makePluginDir('display-settings', '0.1.0');

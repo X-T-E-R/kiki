@@ -276,6 +276,38 @@ describe('plugin changes in an existing live agent', () => {
     await expect(host.app.accessor.get(IPluginHostService).execute('live-tool', 'echo', {}, new AbortController().signal)).rejects.toMatchObject({ code: 'plugin.not_found' });
   });
 
+  it('discovers tools and executes an existing live plugin while an unrelated preview waits on IO', async () => {
+    const plugins = host.app.accessor.get(IPluginService);
+    const hosts = host.app.accessor.get(IPluginHostService);
+    const { registry, pluginTools } = liveAgent();
+    await pluginTools.ready();
+    const source = path.join(root, 'source');
+    await writePlugin(source, 'live-tool', 1);
+    await install(plugins, source, true);
+    await plugins.setPluginEnabled({ id: 'live-tool', enabled: true });
+    const started = deferred();
+    const controller = new AbortController();
+    vi.stubGlobal('fetch', vi.fn((_url, options: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      options.signal?.addEventListener('abort', () => { reject(options.signal?.reason); }, { once: true });
+      started.resolve();
+    })));
+    const preview = plugins.previewPlugin({ source: 'https://example.test/preview.zip', sha256: '0'.repeat(64) }, controller.signal).catch((error: unknown) => error);
+    try {
+      await started.promise;
+      const result = await Promise.race([
+        Promise.all([hosts.list(), invoke(registry, 'live-tool', { value: 'during preview' })]),
+        new Promise<undefined>((resolve) => { setTimeout(() => { resolve(undefined); }, 500); }),
+      ]);
+      expect(result?.[0]).toMatchObject([{ pluginId: 'live-tool', definition: { name: 'echo' } }]);
+      expect(JSON.parse(textOutput(result![1].output))).toMatchObject({ version: 1, value: 'during preview', asset: 'asset-v1' });
+    } finally {
+      controller.abort();
+      await preview;
+      vi.unstubAllGlobals();
+    }
+    expect(await preview).toMatchObject({ name: 'AbortError' });
+  });
+
   it('finishes a started v1 call before replacing its files while another plugin keeps the same host', async () => {
     const plugins = host.app.accessor.get(IPluginService);
     const { registry, pluginTools } = liveAgent();

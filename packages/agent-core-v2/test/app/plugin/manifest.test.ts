@@ -1,13 +1,25 @@
+import * as fsPromises from 'node:fs/promises';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { parseManifest, PLUGIN_ICON_MAX_BYTES, PLUGIN_SYSTEM_PROMPT_MAX_BYTES } from '#/app/plugin/manifest';
 import { resolvePluginPrerequisites } from '#/app/plugin/prerequisites';
 
 import { symlinkDir } from '../../_base/utils/symlink';
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    stat: vi.fn(actual.stat),
+    readFile: vi.fn(actual.readFile),
+    readdir: vi.fn(actual.readdir),
+    realpath: vi.fn(actual.realpath),
+  };
+});
 
 describe('plugin manifest parser', () => {
   let dir: string;
@@ -469,5 +481,47 @@ describe('plugin manifest parser', () => {
       .toBe('plugin-declared');
     expect(resolvePluginPrerequisites({ id: 'kimi-webbridge', version: '1.11.3',
       source: '/bundled/official/kimi-webbridge' })).toBeUndefined();
+  });
+
+  it('checks an already aborted signal before manifest IO', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const stat = vi.mocked(fsPromises.stat).mockClear();
+    const readFile = vi.mocked(fsPromises.readFile).mockClear();
+    const readdir = vi.mocked(fsPromises.readdir).mockClear();
+    const realpath = vi.mocked(fsPromises.realpath).mockClear();
+    await expect(parseManifest(dir, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(stat).not.toHaveBeenCalled();
+    expect(readFile).not.toHaveBeenCalled();
+    expect(readdir).not.toHaveBeenCalled();
+    expect(realpath).not.toHaveBeenCalled();
+  });
+
+  it('stops recursive command IO after cancellation during directory traversal', async () => {
+    const commands = join(dir, 'commands');
+    await mkdir(join(commands, 'nested'), { recursive: true });
+    await mkdir(join(commands, 'later'), { recursive: true });
+    await writeFile(join(commands, 'nested', 'first.md'), '# First', 'utf8');
+    await writeFile(join(commands, 'later', 'later.md'), '# Later', 'utf8');
+    await writeFile(join(dir, 'kimi.plugin.json'), JSON.stringify({ name: 'demo', commands: ['./commands'] }), 'utf8');
+    const controller = new AbortController();
+    let readdirCalls = 0;
+    const readdir = vi.mocked(fsPromises.readdir).mockImplementation(async () => {
+      readdirCalls += 1;
+      if (readdirCalls === 1) {
+        return [
+          { name: 'nested', isDirectory: () => true, isFile: () => false },
+          { name: 'later', isDirectory: () => true, isFile: () => false },
+        ] as never;
+      }
+      controller.abort();
+      return [{ name: 'first.md', isDirectory: () => false, isFile: () => true }] as never;
+    });
+    try {
+      await expect(parseManifest(dir, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+      expect(readdir).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });

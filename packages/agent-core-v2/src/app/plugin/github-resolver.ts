@@ -16,16 +16,23 @@ export interface GithubSourceResolution {
   readonly ref: PluginGithubRef;
 }
 
+function lookupSignal(signal?: AbortSignal): AbortSignal {
+  signal?.throwIfAborted();
+  const timeout = AbortSignal.timeout(10_000);
+  return signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
+}
+
 export async function resolveGithubCommitSha(
   owner: string,
   repo: string,
   ref: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   const encodedRef = encodeCodeloadRefPath(ref);
   const url = `https://github.com/${owner}/${repo}/commits/${encodedRef}.atom`;
   const resp = await fetch(url, {
     headers: { accept: 'application/atom+xml', range: 'bytes=0-4095' },
-    signal: AbortSignal.timeout(10_000),
+    signal: lookupSignal(signal),
   });
   if (!resp.ok) {
     throw new Error2(
@@ -35,6 +42,7 @@ export async function resolveGithubCommitSha(
     );
   }
   const feed = await resp.text();
+  signal?.throwIfAborted();
   const sha = /Grit::Commit\/([0-9a-f]{40})/i.exec(feed)?.[1];
   if (sha === undefined) {
     throw new Error2(
@@ -48,7 +56,9 @@ export async function resolveGithubCommitSha(
 
 export async function resolveGithubSource(
   input: GithubSourceInput,
+  signal?: AbortSignal,
 ): Promise<GithubSourceResolution> {
+  signal?.throwIfAborted();
   const { owner, repo } = input;
 
   if (input.ref !== undefined) {
@@ -59,7 +69,8 @@ export async function resolveGithubSource(
     };
   }
 
-  const latestTag = await tryResolveLatestReleaseTag(owner, repo);
+  const latestTag = await tryResolveLatestReleaseTag(owner, repo, signal);
+  signal?.throwIfAborted();
   if (latestTag !== undefined) {
     return {
       tarballUrl: codeloadUrl(owner, repo, { kind: 'tag', value: latestTag }),
@@ -70,8 +81,9 @@ export async function resolveGithubSource(
 
   const headProbe = await fetch(`https://codeload.github.com/${owner}/${repo}/zip/HEAD`, {
     method: 'HEAD',
-    signal: AbortSignal.timeout(10_000),
+    signal: lookupSignal(signal),
   });
+  signal?.throwIfAborted();
   if (headProbe.status === 404) {
     throw new Error2(
       ErrorCodes.PLUGIN_LOAD_FAILED,
@@ -93,12 +105,13 @@ export async function resolveGithubSource(
   };
 }
 
-async function tryResolveLatestReleaseTag(owner: string, repo: string): Promise<string | undefined> {
+async function tryResolveLatestReleaseTag(owner: string, repo: string, signal?: AbortSignal): Promise<string | undefined> {
   const url = `https://github.com/${owner}/${repo}/releases/latest`;
   const resp = await fetch(url, {
     redirect: 'manual',
-    signal: AbortSignal.timeout(10_000),
+    signal: lookupSignal(signal),
   });
+  signal?.throwIfAborted();
 
   if (resp.status === 404) return undefined;
 

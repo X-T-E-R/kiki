@@ -377,7 +377,7 @@ export interface GlobalCapabilitiesFacade {
 export interface GlobalPluginsFacade {
   list(): Promise<readonly PluginSummary[]>;
   info(id: string): Promise<PluginInfo>;
-  preview(input: import('@kiki/protocol').PluginPreviewRequest): Promise<import('@kiki/protocol').PluginInstallPlan>;
+  preview(input: import('@kiki/protocol').PluginPreviewRequest, options?: Pick<CallOptions, 'signal'>): Promise<import('@kiki/protocol').PluginInstallPlan>;
   install(input: string | import('@kiki/protocol').PluginInstallRequest): Promise<PluginSummary>;
   setEnabled(input: { id: string; enabled: boolean }): Promise<void>;
   setMcpServerEnabled(input: { id: string; server: string; enabled: boolean }): Promise<void>;
@@ -793,7 +793,7 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
     plugins: {
       list: () => call('pluginService', 'listPlugins', []) as Promise<readonly PluginSummary[]>,
       info: (id) => call('pluginService', 'getPluginInfo', [{ id }]) as Promise<PluginInfo>,
-      preview: (input) => call('pluginService', 'previewPlugin', [input]) as Promise<import('@kiki/protocol').PluginInstallPlan>,
+      preview: (input, options) => call('pluginService', 'previewPlugin', [input], options) as Promise<import('@kiki/protocol').PluginInstallPlan>,
       install: async (input) => {
         if (typeof input !== 'string') return call('pluginService', 'installPlugin', [input]) as Promise<PluginSummary>;
         const plan = await call('pluginService', 'previewPlugin', [{ source: input }]) as import('@kiki/protocol').PluginInstallPlan;

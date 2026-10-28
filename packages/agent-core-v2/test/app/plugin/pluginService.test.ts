@@ -733,37 +733,137 @@ describe('PluginService (plugin boundary)', () => {
     }
   });
 
-  it('waits for a pending install before reading managed plugin files', async () => {
+  it('serves committed management and consumption reads while a preview is blocked', async () => {
     const home = await makeHome();
-    await writeValidInstalledFile(home);
+    const root = await makePluginDir('stable-preview', { systemPrompt: 'Committed prompt', skills: './skills/' });
+    createdDirs.push(root);
+    const pluginSkill = path.join(root, 'skills', 'example', 'SKILL.md');
+    const ordinarySkill = path.join(home, 'ordinary-skill', 'SKILL.md');
+    await mkdir(path.dirname(pluginSkill), { recursive: true });
+    await mkdir(path.dirname(ordinarySkill), { recursive: true });
+    await writeFile(pluginSkill, 'Plugin skill body');
+    await writeFile(ordinarySkill, 'Ordinary skill body');
+    await writeInstalledFile(home, JSON.stringify(installedFile('stable-preview', root)));
     const downloadStarted = deferred<void>();
     const downloadResponse = deferred<Response>();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(() => {
-        downloadStarted.resolve(undefined);
-        return downloadResponse.promise;
-      }) as typeof fetch,
-    );
+    vi.stubGlobal('fetch', vi.fn(() => {
+      downloadStarted.resolve(undefined);
+      return downloadResponse.promise;
+    }) as typeof fetch);
+    const host = makeHost(home);
+    let preview: Promise<unknown> | undefined;
+    try {
+      const svc = host.app.accessor.get(IPluginService);
+      await svc.listPlugins();
+      preview = svc.previewPlugin({ source: 'https://downloads.example.test/plugin.zip', sha256: '0'.repeat(64) }).catch((error: unknown) => error);
+      await downloadStarted.promise;
+      const reads = Promise.all([
+        svc.listPlugins(), svc.getPluginInfo({ id: 'stable-preview' }),
+        svc.enabledSystemPrompts(), svc.listPluginCommands(), svc.enabledHooks(),
+        svc.pluginSkillOwner(ordinarySkill), svc.pluginSkillOwner(pluginSkill), svc.pluginSkillRoots(),
+      ]);
+      const result = await Promise.race([reads, new Promise<undefined>((resolve) => { setTimeout(() => { resolve(undefined); }, 150); })]);
+      expect(result).toEqual([
+        [expect.objectContaining({ id: 'stable-preview', enabled: true })],
+        expect.objectContaining({ id: 'stable-preview', enabled: true }),
+        [{ pluginId: 'stable-preview', content: 'Committed prompt' }], [], [],
+        undefined, 'stable-preview', [expect.objectContaining({ plugin: { id: 'stable-preview', instructions: undefined } })],
+      ]);
+    } finally {
+      downloadResponse.resolve(new Response('not a zip archive', { status: 200 }));
+      await preview;
+      await host.dispose();
+    }
+  });
+
+  it('cancels one preview waiting for a mutation without cancelling other waiters or replaying IO', async () => {
+    const home = await makeHome();
+    const root = await makePluginDir('queued-preview', { systemPrompt: 'Committed' });
+    createdDirs.push(root);
+    await writeInstalledFile(home, JSON.stringify(installedFile('queued-preview', root)));
+    const host = makeHost(home);
+    const persisted = deferred<void>();
+    const writing = deferred<void>();
+    try {
+      const svc = host.app.accessor.get(IPluginService);
+      await svc.listPlugins();
+      const originalWrite = writeInstalled.getMockImplementation()!;
+      writeInstalled.mockImplementationOnce(async (...args) => {
+        writing.resolve(undefined);
+        await persisted.promise;
+        return originalWrite(...args);
+      });
+      const mutation = svc.setPluginEnabled({ id: 'queued-preview', enabled: false });
+      await writing.promise;
+      const cancelled = new AbortController();
+      const first = svc.previewPlugin({ source: 'https://example.test/cancelled.zip', sha256: '0'.repeat(64) }, cancelled.signal).catch((error: unknown) => error);
+      const second = svc.previewPlugin({ source: root });
+      const reads = svc.listPlugins();
+      let readsSettled = false;
+      void reads.then(() => { readsSettled = true; });
+      const network = vi.fn(() => { throw new Error('Cancelled preview started IO'); });
+      vi.stubGlobal('fetch', network);
+      cancelled.abort();
+      expect(await first).toMatchObject({ name: 'AbortError' });
+      expect(network).not.toHaveBeenCalled();
+      expect(readsSettled).toBe(false);
+      persisted.resolve(undefined);
+      await mutation;
+      expect((await reads)[0]).toMatchObject({ id: 'queued-preview', enabled: false });
+      expect(await second).toMatchObject({ id: 'queued-preview' });
+      expect(network).not.toHaveBeenCalled();
+      expect(await svc.enabledSystemPrompts()).toEqual([]);
+    } finally {
+      persisted.resolve(undefined);
+      await host.dispose();
+    }
+  });
+
+  it('aborts active preview download on service disposal and leaves later reads usable after caller cancellation', async () => {
+    const home = await makeHome();
+    const host = makeHost(home);
+    const started = deferred<void>();
+    let activeSignal: AbortSignal | undefined;
+    vi.stubGlobal('fetch', vi.fn((_url, options: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      activeSignal = options.signal ?? undefined;
+      activeSignal?.addEventListener('abort', () => { reject(activeSignal?.reason); }, { once: true });
+      started.resolve(undefined);
+    })));
+    const svc = host.app.accessor.get(IPluginService);
+    const controller = new AbortController();
+    const preview = svc.previewPlugin({ source: 'https://example.test/cancel.zip', sha256: '0'.repeat(64) }, controller.signal).catch((error: unknown) => error);
+    await started.promise;
+    controller.abort();
+    expect(await preview).toMatchObject({ name: 'AbortError' });
+    expect(activeSignal?.aborted).toBe(true);
+    expect(await svc.listPlugins()).toEqual([]);
+    const another = svc.previewPlugin({ source: 'https://example.test/dispose.zip', sha256: '0'.repeat(64) }).catch((error: unknown) => error);
+    await vi.waitFor(() => { expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2); });
+    await host.dispose();
+    expect(await another).toMatchObject({ name: 'AbortError' });
+  });
+
+  it('requires an unchanged complete fingerprint and consent before the normal preview-install chain', async () => {
+    const home = await makeHome();
+    const root = await makePluginDir('integrity-preview', { systemPrompt: 'Trusted contribution', hooks: [{ event: 'Stop', command: 'echo done' }] });
+    createdDirs.push(root);
+    await mkdir(path.join(root, 'node_modules', 'example'), { recursive: true });
+    const dependency = path.join(root, 'node_modules', 'example', 'index.js');
+    await writeFile(dependency, 'export const value = 1;');
     const host = makeHost(home);
     try {
       const svc = host.app.accessor.get(IPluginService);
-      await expect(svc.listPlugins()).resolves.toEqual([]);
-
-      const install = svc.previewPlugin({ source: 'https://downloads.example.test/plugin.zip', sha256: '0'.repeat(64) });
-      await downloadStarted.promise;
-
-      const roots = svc.pluginSkillRoots();
-      let rootsSettled = false;
-      void roots.then(() => {
-        rootsSettled = true;
-      });
-      await Promise.resolve();
-      expect(rootsSettled).toBe(false);
-
-      downloadResponse.resolve(new Response('not a zip archive', { status: 200 }));
-      await expect(install).rejects.toThrow();
-      await expect(roots).resolves.toEqual([]);
+      const plan = await svc.previewPlugin({ source: root });
+      await expect(svc.installPlugin({ source: root, fingerprint: plan.fingerprint })).rejects.toThrow('consent');
+      await writeFile(dependency, 'export const value = 2;');
+      await expect(svc.installPlugin({ source: root, fingerprint: plan.fingerprint, consent: true })).rejects.toThrow('changed');
+      expect(await svc.listPlugins()).toEqual([]);
+      const current = await svc.previewPlugin({ source: root });
+      await svc.installPlugin({ source: root, fingerprint: current.fingerprint, consent: true });
+      expect(await svc.getPluginInfo({ id: 'integrity-preview' })).toMatchObject({ state: 'ok', enabled: true, globalEnabled: false });
+      expect(await svc.enabledSystemPrompts()).toEqual([]);
+      await svc.setPluginEnabled({ id: 'integrity-preview', enabled: true });
+      expect(await svc.enabledSystemPrompts()).toEqual([{ pluginId: 'integrity-preview', content: 'Trusted contribution' }]);
     } finally {
       await host.dispose();
     }

@@ -125,13 +125,17 @@ export class PluginManager {
     return this.records.get(normalizePluginId(id));
   }
 
-  async preview(source: string, sha256?: string): Promise<PluginInstallPlan> {
-    const candidate = await preparePluginSource(source, sha256);
+  async preview(source: string, sha256?: string, signal?: AbortSignal): Promise<PluginInstallPlan> {
+    signal?.throwIfAborted();
+    const records = this.records;
+    const candidate = await preparePluginSource(source, sha256, signal);
     try {
-      const parsed = await parseManifest(candidate.root);
+      signal?.throwIfAborted();
+      const parsed = await parseManifest(candidate.root, signal);
+      signal?.throwIfAborted();
       assertInstallable(parsed);
-      const fingerprint = await fingerprintDirectory(candidate.root);
-      return buildInstallPlan(parsed.manifest!, fingerprint, previousSourceManifest(this.records.get(resolveInstalledPluginId(parsed.manifest!.name)), candidate));
+      const fingerprint = await fingerprintDirectory(candidate.root, signal);
+      return buildInstallPlan(parsed.manifest!, fingerprint, previousSourceManifest(records.get(resolveInstalledPluginId(parsed.manifest!.name)), candidate));
     } finally {
       if (candidate.tempDir !== undefined) await rm(candidate.tempDir, { recursive: true, force: true });
     }
@@ -624,17 +628,18 @@ function assertInstallable(parsed: ParsedManifestResult): void {
   }
 }
 
-async function preparePluginSource(source: string, sha256?: string): Promise<PreparedPluginSource> {
+async function preparePluginSource(source: string, sha256?: string, signal?: AbortSignal): Promise<PreparedPluginSource> {
+  signal?.throwIfAborted();
   const resolved = resolveInstallSource(source);
   if (resolved.kind === 'local-path') {
-    return { root: await normalizeInstallRoot(resolved.path), originalSource: resolved.path, source: 'local-path' };
+    return { root: await normalizeInstallRoot(resolved.path, signal), originalSource: resolved.path, source: 'local-path' };
   }
   const originalSource = source.trim();
   let github: PluginGithubMetadata | undefined;
   let zipUrl = resolved.kind === 'zip-url' ? resolved.path : '';
   if (resolved.kind === 'github') {
-    const resolution = await resolveGithubSource(resolved);
-    const installedSha = await installedGithubSha(resolved.owner, resolved.repo, resolution.ref);
+    const resolution = await resolveGithubSource(resolved, signal);
+    const installedSha = await installedGithubSha(resolved.owner, resolved.repo, resolution.ref, signal);
     if (installedSha === undefined || installedSha.length !== 40) {
       throw new Error2(ErrorCodes.VALIDATION_FAILED, 'GitHub plugin requires a pinned 40-character commit SHA');
     }
@@ -643,13 +648,16 @@ async function preparePluginSource(source: string, sha256?: string): Promise<Pre
   } else if (sha256 === undefined || !/^[0-9a-fA-F]{64}$/.test(sha256)) {
     throw new Error2(ErrorCodes.VALIDATION_FAILED, 'ZIP plugins require a sha256 checksum. Install it from the plugin market, which publishes the checksum, or pass the publisher checksum for a ZIP you chose yourself.');
   }
-  const buffer = await downloadZip(zipUrl);
+  const buffer = await downloadZip(zipUrl, signal);
+  signal?.throwIfAborted();
   if (resolved.kind === 'zip-url' && createHash('sha256').update(buffer).digest('hex') !== sha256!.toLowerCase()) {
     throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Plugin ZIP sha256 mismatch');
   }
+  signal?.throwIfAborted();
   const tempDir = await mkdtemp(path.join(tmpdir(), 'kimi-plugin-zip-'));
   try {
-    const root = await extractZip(buffer, tempDir);
+    const root = await extractZip(buffer, tempDir, signal);
+    signal?.throwIfAborted();
     return { root, tempDir, originalSource, source: resolved.kind, github, zipSha256: resolved.kind === 'zip-url' ? sha256?.toLowerCase() : undefined };
   } catch (error) {
     await rm(tempDir, { recursive: true, force: true });
@@ -661,9 +669,11 @@ async function installedGithubSha(
   owner: string,
   repo: string,
   ref: PluginGithubMetadata['ref'],
+  signal?: AbortSignal,
 ): Promise<string | undefined> {
+  signal?.throwIfAborted();
   if (ref.kind === 'sha' && ref.value.length === 40) return ref.value.toLowerCase();
-  return resolveGithubCommitSha(owner, repo, ref.value);
+  return resolveGithubCommitSha(owner, repo, ref.value, signal);
 }
 
 async function checkGithubUpdate(record: PluginRecord): Promise<PluginUpdateStatus> {
@@ -746,7 +756,8 @@ function assertMutable(record: PluginRecord): void {
   );
 }
 
-async function normalizeInstallRoot(rootPath: string): Promise<string> {
+async function normalizeInstallRoot(rootPath: string, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   const trimmed = rootPath.trim();
   if (!path.isAbsolute(trimmed)) {
     throw new Error2(
@@ -759,12 +770,16 @@ async function normalizeInstallRoot(rootPath: string): Promise<string> {
   try {
     resolved = await realpath(trimmed);
   } catch (error) {
+    signal?.throwIfAborted();
     throw new Error2(ErrorCodes.FS_PATH_NOT_FOUND, `Plugin root does not exist: ${trimmed}`, {
       cause: error,
       details: { path: trimmed },
     });
   }
-  if (!(await stat(resolved)).isDirectory()) {
+  signal?.throwIfAborted();
+  const result = await stat(resolved);
+  signal?.throwIfAborted();
+  if (!result.isDirectory()) {
     throw new Error2(ErrorCodes.VALIDATION_FAILED, `Plugin root is not a directory: ${trimmed}`, {
       details: { path: trimmed },
     });

@@ -6,6 +6,7 @@ import { KIMI_CODE_PROVIDER_NAME } from '@kiki/oauth';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Service } from '#/_base/di/service';
 import { AsyncEmitter, Emitter, type Event } from '#/_base/event';
+import { abortable } from '#/_base/utils/abort';
 import type { HookDef } from '#/features/externalHooks/internal/types';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
@@ -73,6 +74,8 @@ export class PluginService extends Service implements IPluginService {
   private snapshotLoaded = false;
   private loadError: Error | undefined;
   private mutationQueue: Promise<void> = Promise.resolve();
+  private readonly previewController = new AbortController();
+  private readonly previews = new Set<Promise<unknown>>();
   private changing: { readonly affected?: readonly string[]; draining: boolean } | undefined;
   private readonly onWillChangeEmitter = this._register(new AsyncEmitter<PluginChangeEvent>());
   readonly onWillChange: Event<PluginChangeEvent> = this.onWillChangeEmitter.event;
@@ -104,14 +107,31 @@ export class PluginService extends Service implements IPluginService {
       const plugin = this.manager.info(id);
       return plugin === undefined ? { allowed: false, globalEnabled: false } : { allowed: plugin.enabled && plugin.state === 'ok', globalEnabled: plugin.globalEnabled };
     }));
+    this._register({ dispose: async () => {
+      this.previewController.abort();
+      await Promise.allSettled(this.previews);
+    } });
   }
 
   listPlugins(): Promise<readonly PluginSummary[]> {
     return this.runManagementRead(async () => this.manager.summaries());
   }
 
-  previewPlugin(input: Pick<InstallPluginInput, 'source' | 'sha256'>) {
-    return this.runSerializedOperation(() => this.manager.preview(input.source, this.installSha256(input.source, input.sha256)));
+  async previewPlugin(input: Pick<InstallPluginInput, 'source' | 'sha256'>, signal?: AbortSignal) {
+    const previewSignal = signal === undefined ? this.previewController.signal : AbortSignal.any([signal, this.previewController.signal]);
+    previewSignal.throwIfAborted();
+    const preview = (async () => {
+      await abortable(this.waitForPendingMutations(), previewSignal);
+      previewSignal.throwIfAborted();
+      this.assertLoaded();
+      return this.manager.preview(input.source, this.installSha256(input.source, input.sha256), previewSignal);
+    })();
+    this.previews.add(preview);
+    try {
+      return await preview;
+    } finally {
+      this.previews.delete(preview);
+    }
   }
 
   private installSha256(source: string, sha256: string | undefined): string | undefined {
