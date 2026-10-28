@@ -238,10 +238,17 @@ export class UsageRangeFold {
     signal?.throwIfAborted();
     const selected = records.filter((record) => !record.invalid && matches(record));
     const keyLimit = this.query.batchIf === undefined ? Math.min(90, 127 - this.collection.length) : 90;
+    let previous: { record: UsageFact; bucketKey: string; group: string } | undefined;
     const grouped = selected.map((record) => {
       const bucket = bucketOf(record);
-      const group = foldKey(`group:${JSON.stringify([summary.id, bucket, record.model, record.agentId, record.parentAgentId, record.provider, record.modelAlias, record.profileName])}`, keyLimit);
-      return { record, bucket: foldKey(`bucket:${bucket}`, keyLimit), bucketKey: bucket, group };
+      const group = previous !== undefined && previous.bucketKey === bucket && previous.record.model === record.model &&
+        previous.record.agentId === record.agentId && previous.record.parentAgentId === record.parentAgentId &&
+        previous.record.provider === record.provider && previous.record.modelAlias === record.modelAlias && previous.record.profileName === record.profileName
+        ? previous.group
+        : foldKey(`group:${JSON.stringify([summary.id, bucket, record.model, record.agentId, record.parentAgentId, record.provider, record.modelAlias, record.profileName])}`, keyLimit);
+      const row = { record, bucket: foldKey(`bucket:${bucket}`, keyLimit), bucketKey: bucket, group };
+      previous = row;
+      return row;
     });
     if (this.query.batchIf !== undefined) await this.initialize();
     const revision = this.revision;

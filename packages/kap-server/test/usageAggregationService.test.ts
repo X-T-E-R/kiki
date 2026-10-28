@@ -2754,6 +2754,23 @@ describe('shared agent and history usage projection', () => {
 
 
 describe('SQLite UsageRangeFold publication', () => {
+  it('reuses consecutive attribution keys without merging changed fields, buckets or later pages', async () => {
+    const saved = await openRange([summary('session', 'workspace')], {}, true);
+    const fold = new UsageRangeFold(saved.store, 'attribution-keys', 100, 100);
+    const base: UsageFactSnapshot['records'][number] = { time: 1, model: 'example'.repeat(30), usageKnown: true, usage: { inputOther: 0, output: 1, inputCacheRead: 0, inputCacheCreation: 0 } };
+    const variants = [{ ...base, model: 'other' }, { ...base, agentId: 'child' }, { ...base, parentAgentId: 'parent' }, { ...base, provider: 'provider' }, { ...base, modelAlias: 'alias' }, { ...base, profileName: 'profile' }, { ...base, time: 2 }];
+    const stringify = vi.spyOn(JSON, 'stringify');
+    try {
+      await fold.addPage(summary('session', 'workspace'), [base, base, ...variants, base, base], (record) => String(record.time), () => true, { version: 1 });
+      expect(stringify.mock.calls.filter(([value]) => Array.isArray(value) && value.length === 8 && value[0] === 'session')).toHaveLength(9);
+    } finally { stringify.mockRestore(); }
+    await fold.addPage(summary('session', 'workspace'), [base], (record) => String(record.time), () => true, { version: 1 });
+    const actual = (await fold.recordPage()).items.map(({ record }) => [record.time, record.model, record.agentId, record.parentAgentId, record.provider, record.modelAlias, record.profileName, record.folded.records, record.usage.output]);
+    const expected = [base, ...variants].map((record, index) => [record.time, record.model, record.agentId, record.parentAgentId, record.provider, record.modelAlias, record.profileName, index === 0 ? 5 : 1, index === 0 ? 5 : 1]);
+    expect(actual).toHaveLength(8);
+    expect(actual).toEqual(expect.arrayContaining(expected));
+  });
+
   it('packs small source journals into shared 256-fact pages with atomic continuations', async () => {
     const sources = Array.from({ length: 15 }, (_, index) => `sessions/workspace/session/agents/agent-${index}`);
     const saved = await openRange([summary('session', 'workspace')], Object.fromEntries(sources.map((source) => [source, []])), true);
