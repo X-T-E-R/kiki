@@ -895,16 +895,18 @@ describe('single Memory authority and isolated recovery', () => {
     const { legacy, authority } = managedMemory();
     await persistence.read([]);
     const access = new MemoryAuthorityAccess(storage);
-    const leaseAcquired = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
+    let onLeaseAcquired!: () => void;
+    let releaseLease!: () => void;
+    const leaseAcquired = new Promise<void>((resolve) => { onLeaseAcquired = resolve; });
+    const released = new Promise<void>((resolve) => { releaseLease = resolve; });
     const exclusive = access.exclusive(async (lease) => {
-      leaseAcquired.resolve();
-      await release.promise;
+      onLeaseAcquired();
+      await released;
       await lease.publish({ version: 1, epoch: 1, backend: 'sqlite', mode: 'active', migrationId: randomUUID() });
     });
-    await leaseAcquired.promise;
+    await leaseAcquired;
     const waiting = createManaged(legacy, 'Queued legacy write');
-    release.resolve();
+    releaseLease();
     await exclusive;
     await expect(waiting).rejects.toThrow('authority changed');
     expect((await authority.status()).backend).toBe('sqlite');
