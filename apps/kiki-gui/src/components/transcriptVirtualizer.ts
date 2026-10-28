@@ -179,7 +179,21 @@ export function installTranscriptAnchoring(instance: TranscriptVirtualizer): () 
       break;
     }
   };
+  // A shrinking viewport (soft keyboard, collapsing toolbars) keeps scrollTop,
+  // which silently moves a reader who was following the end off it.
+  const distanceFromEnd = (element: HTMLElement) => element.scrollHeight - element.clientHeight - element.scrollTop;
+  let viewportHeight = scroll?.clientHeight ?? 0;
+  let pinnedToEnd = scroll !== null && distanceFromEnd(scroll) <= TRANSCRIPT_END_THRESHOLD;
+  const viewportObserver = scroll === null || typeof ResizeObserver === 'undefined'
+    ? undefined
+    : new ResizeObserver(() => {
+      if (!scroll.isConnected || scroll.clientHeight === 0 || scroll.clientHeight === viewportHeight) return;
+      viewportHeight = scroll.clientHeight;
+      if (pinnedToEnd && distanceFromEnd(scroll) > TRANSCRIPT_END_THRESHOLD) landAtEnd(instance);
+    });
+  if (scroll !== null) viewportObserver?.observe(scroll);
   const onScroll = () => {
+    if (scroll !== null && scroll.clientHeight === viewportHeight) pinnedToEnd = distanceFromEnd(scroll) <= TRANSCRIPT_END_THRESHOLD;
     capture();
     // Newly mounted rows settle after the scroll delivery.
     if (frame !== undefined) cancelAnimationFrame(frame);
@@ -273,6 +287,7 @@ export function installTranscriptAnchoring(instance: TranscriptVirtualizer): () 
     scroll?.removeEventListener('wheel', onReaderInput);
     scroll?.removeEventListener('touchmove', onReaderInput);
     scroll?.removeEventListener('keydown', onReaderKey);
+    viewportObserver?.disconnect();
     if (frame !== undefined) cancelAnimationFrame(frame);
     readerDisclosures.delete(instance);
     if (instance.resizeItem !== resizeItem) instance.resizeItem = resizeItem;

@@ -289,6 +289,51 @@ describe('in-row prose anchoring', () => {
   });
 });
 
+describe('a shrinking viewport', () => {
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  function setup(scrollTop: number) {
+    const observers: (() => void)[] = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: () => void) { observers.push(callback); }
+      observe() {}
+      disconnect() {}
+    });
+    const scroll = document.createElement('div');
+    document.body.append(scroll);
+    let height = 800;
+    scroll.scrollTop = scrollTop;
+    Object.defineProperties(scroll, {
+      clientHeight: { get: () => height, configurable: true },
+      scrollHeight: { value: 4000, configurable: true },
+    });
+    const instance = new Virtualizer<HTMLDivElement, HTMLDivElement>({
+      count: 0, getScrollElement: () => scroll, estimateSize: () => 100,
+      scrollToFn: () => {}, observeElementRect: () => {}, observeElementOffset: () => {},
+    });
+    instance.scrollElement = scroll;
+    const toEnd = vi.spyOn(instance, 'scrollToEnd').mockImplementation(() => { scroll.scrollTop = 4000 - height; });
+    const cleanup = installTranscriptAnchoring(instance);
+    const shrink = (next: number) => { height = next; for (const observer of observers) observer(); };
+    return { scroll, toEnd, shrink, cleanup };
+  }
+
+  it('keeps a reader following the end at the end when the keyboard opens', () => {
+    const test = setup(3200);
+    test.shrink(450);
+    expect(test.toEnd).toHaveBeenCalledOnce();
+    expect(test.scroll.scrollTop).toBe(3550);
+    test.cleanup();
+  });
+
+  it('leaves a reader scrolled into history where they were', () => {
+    const test = setup(1200);
+    test.shrink(450);
+    expect(test.toEnd).not.toHaveBeenCalled();
+    expect(test.scroll.scrollTop).toBe(1200);
+    test.cleanup();
+  });
+});
 
 describe('hydrated row measurement', () => {
   it('reconciles text/disclosure mutations before the next paint and ignores disposed work', async () => {

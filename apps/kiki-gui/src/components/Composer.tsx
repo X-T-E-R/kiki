@@ -3551,7 +3551,10 @@ export function Composer({
                 </button>
               ) : null}
             </>
-          ) : text.trim() === '' && !busy ? (
+          ) : text.trim() === '' && !busy && !coarsePointer ? (
+            // Keyboard chords only: a software keyboard's Enter is a newline
+            // (see onKeyDown), so on touch this line would describe the wrong
+            // keys and spend a row above the open keyboard.
             <p
               data-composer-hints
               className="min-w-0 flex-1 truncate text-center text-[12px] text-ink-faint opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-focus-within/composer:opacity-100 motion-reduce:transition-none"

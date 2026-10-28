@@ -19,6 +19,7 @@ describe('web asset cache policy', () => {
       writeFile(join(assetsDir, 'assets', 'index-Dy7xs5tu.js'), 'export {};'),
       writeFile(join(assetsDir, 'assets', 'application-configuration.json'), '{}'),
       writeFile(join(assetsDir, 'favicon.svg'), '<svg></svg>'),
+      writeFile(join(assetsDir, 'manifest.webmanifest'), '{}'),
     ]);
     app = Fastify();
     await registerWebAssetRoutes(app, assetsDir);
@@ -42,6 +43,14 @@ describe('web asset cache policy', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+  });
+
+  it('serves the install manifest with its manifest media type', async () => {
+    const response = await app.inject({ method: 'GET', url: '/manifest.webmanifest' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['content-type']).toContain('application/manifest+json');
+    expect(response.headers['cache-control']).toBe('no-cache');
   });
 
   it('rejects a missing GUI build with the asset path in the diagnostic', async () => {

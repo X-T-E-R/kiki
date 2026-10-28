@@ -120,7 +120,7 @@ export const WORKSPACE_GROUP_PREVIEW = 8;
 const ICON = 'h-4 w-4 shrink-0';
 /** Quiet square control for the wordmark row (search, activity). */
 const HEADER_ICON =
-  'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink aria-[current=page]:bg-ink/[0.06] aria-[current=page]:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
+  'flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors pointer-coarse:h-10 pointer-coarse:w-10 hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink aria-[current=page]:bg-ink/[0.06] aria-[current=page]:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink';
 /** The collapsed rail's one button: the header's quiet square a step larger,
  * so the 56px column stays a comfortable target. Flat — never a pill. */
 const RAIL_ICON =
@@ -335,7 +335,7 @@ function PrimaryNav({
           {...item.hook}
           aria-current={current ? 'page' : undefined}
           onClick={() => { void navigate(scopedRoute(item.route, activeWorkspaceId)); }}
-          className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[13px] ${
+          className={`row-interactive flex h-8 w-full items-center gap-2 px-2 text-left text-[13px] pointer-coarse:h-10 ${
             current ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
           }`}
         >
@@ -1278,7 +1278,7 @@ export function Sidebar({
             type="button"
             aria-label={t('app.closeSidebar')}
             onClick={onClose}
-            className={`${HEADER_ICON} pointer-coarse:h-9 pointer-coarse:w-9 md:hidden`}
+            className={`${HEADER_ICON} md:hidden`}
           >
             <Icon name="close" size={16} />
           </button>
@@ -1293,7 +1293,7 @@ export function Sidebar({
           type="button"
           data-new-session
           onClick={onNewSession}
-          className="flex h-8 w-full items-center gap-2 rounded-lg bg-paper px-2 text-left text-[13px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)] transition-colors duration-[var(--kiki-motion-quick)] hover:bg-panel"
+          className="flex h-8 w-full items-center gap-2 rounded-lg bg-paper px-2 pointer-coarse:h-10 text-left text-[13px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)] transition-colors duration-[var(--kiki-motion-quick)] hover:bg-panel"
         >
           <span className="text-accent"><Icon name="plus" size={14} /></span>
           <span className="min-w-0 flex-1 truncate">{t('sidebar.newSession')}</span>
@@ -1377,7 +1377,7 @@ export function Sidebar({
             aria-label={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
             title={allFolded ? t('sidebar.expandAllGroups') : t('sidebar.collapseAllGroups')}
             onClick={() => { setAllGroupsCollapsed(workspaceGroupKeys, !allFolded); }}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
           >
             <Icon name={allFolded ? 'expand' : 'collapse'} size={14} />
           </button>
@@ -1391,7 +1391,7 @@ export function Sidebar({
           aria-label={t('sidebar.filterMenu')}
           title={t('sidebar.filterMenu')}
           onClick={() => { setOpenMenu((open) => (open === 'filter' ? null : 'filter')); }}
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink ${filtersActive ? 'text-accent-ink' : 'text-ink-faint'}`}
+          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink ${filtersActive ? 'text-accent-ink' : 'text-ink-faint'}`}
         >
           <Icon name="filter" size={14} />
         </button>
@@ -1404,7 +1404,7 @@ export function Sidebar({
           aria-label={t('sidebar.viewMenu')}
           title={t('sidebar.viewMenu')}
           onClick={() => { setOpenMenu((open) => (open === 'view' ? null : 'view')); }}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink"
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink aria-expanded:bg-ink/[0.06] aria-expanded:text-ink"
         >
           <Icon name="sliders" size={14} />
         </button>
@@ -1530,7 +1530,7 @@ export function Sidebar({
             </button>
             <button type="button" data-session-selection-clear aria-label={t('room.clearSelection')} title={t('room.clearSelection')}
               onClick={() => { setSelected(new Set()); }}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
               <Icon name="close" size={12} />
             </button>
           </div>
@@ -2252,7 +2252,7 @@ function SessionRow({
               event.stopPropagation();
               onTogglePin();
             }}
-            className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.06] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
+            className={`flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 transition-colors hover:bg-ink/[0.06] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
               pinned ? 'text-ink-soft' : 'text-ink-faint hover:text-ink'
             }`}
           >
@@ -2267,7 +2267,7 @@ function SessionRow({
             const rect = event.currentTarget.getBoundingClientRect();
             onMenu(rect.right + 4, rect.top, true);
           }}
-          className="flex h-7 w-7 items-center justify-center rounded-md text-[13px] leading-none text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink"
+          className="flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-[13px] leading-none text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink"
         >
           <Icon name="more" size={14} />
         </button>
@@ -2446,7 +2446,7 @@ function RoomConversationRow({
               event.stopPropagation();
               onTogglePin();
             }}
-            className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.06] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
+            className={`flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 transition-colors hover:bg-ink/[0.06] disabled:cursor-default disabled:opacity-50 disabled:hover:bg-transparent ${
               item.pinned ? 'text-ink-soft' : 'text-ink-faint hover:text-ink'
             }`}
           >
@@ -2462,7 +2462,7 @@ function RoomConversationRow({
             const rect = event.currentTarget.getBoundingClientRect();
             onMenu(rect.right + 4, rect.top, true);
           }}
-          className="flex h-7 w-7 items-center justify-center rounded-md text-[13px] leading-none text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink"
+          className="flex h-7 w-7 items-center justify-center rounded-md pointer-coarse:h-10 pointer-coarse:w-10 text-[13px] leading-none text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink"
         >
           <Icon name="more" size={14} />
         </button>
