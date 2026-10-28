@@ -24,6 +24,10 @@ if (args[0] === 'models') {
   process.exit(0);
 }
 const model = args[args.indexOf('--model') + 1];
+if (model === 'claude-opus-5-5-high' && args.includes('--effort')) {
+  process.stderr.write('invalid model selection: --effort is not supported for model "claude-opus-5-5-high"\n');
+  process.exit(1);
+}
 const agent = args.includes('--agent') ? args[args.indexOf('--agent') + 1] : undefined;
 const { requestHookPermission } = await import('./agy-permission-hook.mjs');
 for (const key of Object.keys(process.env).filter(key => key.startsWith('KIKI_AGY_MCP_') && process.env.AGY_FIXTURE_MCP_OFF !== '1')) {

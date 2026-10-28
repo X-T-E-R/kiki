@@ -24,7 +24,7 @@ export function launchArgs(session) {
   const args = ['--input-format', 'stream-json', '--output-format', 'stream-json'];
   if (session.conversationId) args.push('--conversation', session.conversationId);
   if (session.model !== DEFAULT) args.push('--model', session.model);
-  if (session.effort !== DEFAULT) args.push('--effort', session.effort);
+  if (session.effort !== DEFAULT && !session.model.startsWith('claude-')) args.push('--effort', session.effort);
   if (session.hostGate && session.permission?.override?.mode === 'yolo') args.push('--dangerously-skip-permissions');
   for (const dir of session.additionalDirectories) args.push('--add-dir', dir);
   return args;
@@ -325,7 +325,7 @@ export class AgyBridge {
     const argValue = name => { const index = launch.args.lastIndexOf(name); return index < 0 ? DEFAULT : launch.args[index + 1]; };
     const model = argValue('--model') === DEFAULT ? init.model : argValue('--model');
     if (typeof model !== 'string' || !model || this.model !== DEFAULT && model !== this.model) throw new Error('AGY native load model differs from its original binding or was not confirmed');
-    const effort = argValue('--effort');
+    const effort = launch.effort ?? argValue('--effort');
     validateEffort(model, effort);
     if (processAlive(launch.pid)) throw new Error('AGY native conversation still has an owned process; close it before loading');
     const path = resolve(this.auditDir, `${params.sessionId}.resume-lock`);
@@ -544,7 +544,7 @@ export class AgyBridge {
     });
     try { await session.mcpPlugin?.launched(child.pid); }
     catch (error) { await this.stopProcess(child); await session.cleanup; throw error; }
-    return this.audit(session, 'launch', { cliPath: this.cliPath, args, pid: child.pid, cwd: session.cwd });
+    return this.audit(session, 'launch', { cliPath: this.cliPath, args, effort: session.effort, pid: child.pid, cwd: session.cwd });
   }
 
   async settleTool(session, active, toolCallId, status, message) {

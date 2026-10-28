@@ -87,7 +87,7 @@ void test('frozen writer roots reach the real fixture process without changing t
     assert.equal(resolve(b.session(id).init.init.cwd), resolve(writer));
     assert.equal(launch.cwd, writer);
     assert.deepEqual(launch.args.slice(1), ['--input-format', 'stream-json', '--output-format', 'stream-json',
-      '--model', 'claude-opus-5-5-high', '--effort', 'high', '--add-dir', materials]);
+      '--model', 'claude-opus-5-5-high', '--add-dir', materials]);
     assert.equal(process.cwd(), parentCwd);
     assert.equal(b.session(id).permissionRegistration, undefined);
   } finally { await b.close(); await rm(root, { recursive: true, force: true }); }
@@ -1028,7 +1028,7 @@ void test('agy 1.3.4 catalog ids embed effort; a bare provider id does not inher
   opus.setConfig({ sessionId: opusId, configId: 'effort', value: 'high' });
   assert.deepEqual(configOptions(opus.session(opusId))[0].options.map(option => option.value), ['engine-default', 'high']);
   assert.deepEqual(launchArgs(opus.session(opusId)), ['--input-format', 'stream-json', '--output-format', 'stream-json',
-    '--model', 'claude-opus-5-5-high', '--effort', 'high']);
+    '--model', 'claude-opus-5-5-high']);
   const gemini = bridge('gemini-3.8-flash-high');
   const geminiId = await session(gemini);
   gemini.setConfig({ sessionId: geminiId, configId: 'effort', value: 'high' });
@@ -1058,11 +1058,46 @@ void test('raw model effort suffix is authoritative, not the generic CLI effort 
     assert.equal(b.session(id).effort, before);
     assert.equal(b.session(id).child, undefined);
     b.setConfig({ sessionId: id, configId: 'effort', value: effort });
-    assert.ok(launchArgs(b.session(id)).includes(effort));
+    const args = launchArgs(b.session(id));
+    assert.equal(args[args.indexOf('--model') + 1], model);
+    assert.equal(args.includes('--effort'), !model.startsWith('claude-'));
+    if (!model.startsWith('claude-')) assert.equal(args[args.indexOf('--effort') + 1], effort);
     await b.close();
   }
   assert.deepEqual(configOptions({ model: 'engine-default', effort: 'engine-default' })[0].options.map(option => option.value), ['engine-default']);
   assert.throws(() => launchArgs({ model: 'claude-opus-5-5-high', effort: 'max', additionalDirectories: [] }), /conflicts with effort/);
+});
+
+void test('Claude encoded effort survives exact native load with new and legacy launch audits', async () => {
+  const { mkdtemp, readFile, writeFile, rm } = await import('node:fs/promises');
+  for (const legacy of [false, true]) {
+    const root = await mkdtemp(join(process.env.AGY_TEST_WORKSPACE ?? tmpdir(), 'agy-claude-effort-'));
+    const first = bridge('claude-opus-5-5-high'); first.auditDir = root;
+    const loaded = bridge('claude-opus-5-5-high'); loaded.auditDir = root;
+    try {
+      const id = (await first.newSession({ cwd: root, mcpServers: [] })).sessionId;
+      first.setConfig({ sessionId: id, configId: 'effort', value: 'high' });
+      assert.equal((await turn(first, id, 'first fixture turn', [])).stopReason, 'end_turn');
+      await first.close();
+      const auditPath = join(root, `${id}.ndjson`);
+      const records = (await readFile(auditPath, 'utf8')).trim().split('\n').map(JSON.parse);
+      const launch = records.find(record => record.type === 'launch');
+      assert.equal(launch.effort, 'high');
+      assert.equal(launch.args.includes('--effort'), false);
+      if (legacy) {
+        delete launch.effort;
+        launch.args.push('--effort', 'high');
+        await writeFile(auditPath, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+      }
+      const opened = await loaded.loadSession({ sessionId: id, cwd: root, mcpServers: [] });
+      assert.equal(opened.configOptions[0].currentValue, 'high');
+      assert.equal(loaded.session(id).model, 'claude-opus-5-5-high');
+      const args = launchArgs(loaded.session(id));
+      assert.equal(args.includes('--effort'), false);
+      assert.equal(args[args.indexOf('--conversation') + 1], 'fixture-conversation');
+      assert.equal((await turn(loaded, id, 'next fixture turn', [])).stopReason, 'end_turn');
+    } finally { await first.close(); await loaded.close(); await rm(root, { recursive: true, force: true }); }
+  }
 });
 
 void test('native load uses only exact audited conversation and binding, owns a lease, and never copies history', async () => {
