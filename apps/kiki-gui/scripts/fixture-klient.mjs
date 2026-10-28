@@ -56,6 +56,17 @@ const { modelCatalogItemSchema } = await tsImport('../../../packages/protocol/sr
 // The production bounded-content functions: a fixture that cuts a body must cut
 // it exactly the way kap-server does, and read segments back the same way.
 const bounded = await tsImport('../../../packages/kap-server/src/transport/klient/boundedContent.ts', import.meta.url);
+// The production page and reset windows: a page is cut to the same byte window
+// kap-server answers with, so a long history opens in bounded pages and its
+// older items arrive through `next_cursor`, never as one oversized body.
+const boundedTranscript = await tsImport('../../../packages/kap-server/src/transport/klient/boundedTranscript.ts', import.meta.url);
+/** kap-server `readSessionViewTranscriptPage` window (sessionViewReads.ts). */
+const TRANSCRIPT_PAGE_WINDOW_BYTES = 64 * 1024;
+const transcriptModel = await tsImport('../../../packages/transcript/src/index.ts', import.meta.url);
+const inlineMedia = await tsImport('../../../packages/kap-server/src/services/inlineMedia.ts', import.meta.url);
+/** Whether a page's `next_cursor` (an item key or its digest anchor) names this item key. */
+export const historyAnchorMatches = boundedTranscript.historyAnchorMatches;
+export const transcriptItemId = transcriptModel.itemId;
 const terminalControls = {
   terminal_attach: terminalWire.terminalAttachMessageSchema,
   terminal_detach: terminalWire.terminalDetachMessageSchema,
@@ -575,13 +586,51 @@ export class FixtureKlient {
   constructor(server) { this.server = server; this.connections = new Map(); }
 
   /** The canonical entity a ref addresses, by the same source the ref names. */
-  canonicalFor(session, ref) {
+  canonicalFor(session, ref, agentId = 'main') {
     const source = ref.source;
     if (source.kind === 'snapshot') return session.boundedCanonical.get('snapshot:root');
     if (source.kind === 'frame' || source.kind === 'turn' || source.kind === 'task') {
-      return session.boundedCanonical.get(`${source.kind}:${source.id}`);
+      const seeded = session.boundedCanonical.get(`${source.kind}:${source.id}`);
+      if (seeded !== undefined) return seeded;
     }
-    return undefined;
+    return this.entityFor(session, agentId, source);
+  }
+
+  /**
+   * The bytes behind an `inline:` / `inline-content:` media id a bounded page
+   * substituted for a data URL, resolved through the production reader against
+   * the same unbounded entity — undefined when the id names no current media.
+   */
+  async inlineMediaBytes(session, fileId) {
+    if (inlineMedia.parseInlineMediaIdentity(fileId) === undefined) return undefined;
+    const file = await inlineMedia.openPublishedInlineMedia(fileId, async (agentId, source) => this.entityFor(session, agentId, source));
+    if (file === undefined) return undefined;
+    const parts = [];
+    for await (const chunk of file.stream()) parts.push(chunk);
+    return { bytes: Buffer.concat(parts), mime: file.mediaType, name: file.name };
+  }
+
+  /**
+   * An unbounded entity from the transcript the page is served from — what
+   * kap-server's canonical read returns for a ref or inline media id the page
+   * window cut.
+   */
+  entityFor(session, agentId, source) {
+    const snapshot = this.server.transcriptSource(session, agentId);
+    if (snapshot === undefined) return undefined;
+    const turnOf = (turnId) => snapshot.items.find((item) => item.kind === 'turn' && item.turnId === turnId);
+    switch (source.kind) {
+      case 'turn': return turnOf(source.id);
+      case 'marker': return snapshot.items.find((item) => item.kind === 'marker' && item.markerId === source.id);
+      case 'frame': return turnOf(source.turnId)?.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
+      case 'task': return snapshot.tasks.find((task) => task.taskId === source.id);
+      case 'attachment': return snapshot.attachments.find((attachment) => attachment.attachmentId === source.id);
+      case 'prompt': return snapshot.prompts.find((prompt) => prompt.promptId === source.id);
+      case 'interaction': return snapshot.interactions.find((interaction) => interaction.interactionId === source.id);
+      case 'todo': return snapshot.todos.find((todo) => todo.todoId === source.id);
+      case 'meta': return snapshot.meta;
+      default: return undefined;
+    }
   }
 
   route(res, url, body, method) {
@@ -656,7 +705,7 @@ export class FixtureKlient {
         const contentSession = server.sessions.get(decodeURIComponent(contentMatch[1]));
         if (contentSession === undefined) throw invalid('session not found', 40401);
         const input = parse(view.sessionViewTranscriptContentInputSchema, body);
-        const canonical = this.canonicalFor(contentSession, input.ref);
+        const canonical = this.canonicalFor(contentSession, input.ref, input.agentId);
         if (canonical === undefined) return server.envelope(res, null, 40401, 'content unavailable');
         return server.envelope(res, parse(view.sessionViewTranscriptContentOutputSchema, bounded.readContentSegment(canonical, input.ref)));
       }
@@ -670,7 +719,8 @@ export class FixtureKlient {
       let schema = view.sessionViewSnapshotOutputSchema;
       if (suffix === 'transcript') {
         parse(view.sessionViewTranscriptPageInputSchema, { agentId: query.get('agent_id'), beforeTurn: query.get('before_turn') ?? undefined,
-          afterTurn: query.get('after_turn') ?? undefined, pageSize: query.has('page_size') ? Number(query.get('page_size')) : undefined });
+          beforeItem: query.get('before_item') ?? undefined, afterTurn: query.get('after_turn') ?? undefined, afterItem: query.get('after_item') ?? undefined,
+          pageSize: query.has('page_size') ? Number(query.get('page_size')) : undefined });
         schema = view.sessionViewTranscriptPageOutputSchema;
       } else if (suffix === 'transcript/catch-up') {
         parse(view.sessionViewTranscriptCatchUpInputSchema, { agentId: query.get('agent_id'), since: { epoch: query.get('epoch'), seq: Number(query.get('since_seq')) }, grade: query.get('grade') ?? undefined });
@@ -690,6 +740,8 @@ export class FixtureKlient {
           const turns = data.items.filter((item) => item.kind === 'turn');
           data = boundScenarioEntities(session, { ...data, session_id: sessionId, cursor: { seq: data.seq, epoch: session.transcript.epoch },
             coverage: data.has_more ? { kind: 'tail', hasMoreOlder: true, fromTurnId: turns[0]?.turnId, throughTurnId: turns.at(-1)?.turnId } : { kind: 'full', hasMoreOlder: false } });
+          const forward = query.has('after_turn') || query.has('after_item');
+          data = boundedTranscript.boundedTranscriptResponse(data, forward ? 'head' : 'tail', TRANSCRIPT_PAGE_WINDOW_BYTES);
         }
         if (suffix === 'transcript/ops') {
           data = catchUp(session, query.get('agent_id'), { epoch: query.get('epoch') ?? undefined, seq: Number(query.get('since_seq')) });

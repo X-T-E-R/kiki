@@ -173,7 +173,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { WebSocketServer } from 'ws';
-import { boundScenarioEntities, FixtureKlient } from './fixture-klient.mjs';
+import { boundScenarioEntities, FixtureKlient, historyAnchorMatches, transcriptItemId } from './fixture-klient.mjs';
 import { mintSessionPlayback, releaseSessionPlayback, serveSessionPlayback, sessionMediaBytes } from './fixture-media.mjs';
 import { handleAppearance } from './fixture-appearance.mjs';
 import { handlePersonas, resetPersonas } from './fixture-personas.mjs';
@@ -1743,6 +1743,29 @@ class FixtureServer {
    * scenario's bounded entities — the same two steps the server applies before
    * answering, so the store and the REST page agree on refs and revisions.
    */
+  /** The full transcript an agent's pages are cut from: the live projector, or the scenario's seeded one. */
+  transcriptSource(session, agentId) {
+    const live = session.transcript.snapshot(agentId);
+    const seeded = session.agentTranscripts[agentId];
+    const snapshot = live.items.length > 0 || seeded === undefined ? live : {
+      items: [...(seeded.items ?? [])],
+      tasks: [...(seeded.tasks ?? live.tasks)],
+      interactions: [...(seeded.interactions ?? live.interactions)],
+      attachments: [...(seeded.attachments ?? live.attachments)],
+      todos: [...(seeded.todos ?? live.todos)],
+      prompts: [...(seeded.prompts ?? live.prompts)],
+      meta: { ...(seeded.meta ?? live.meta) },
+      hasMoreOlder: seeded.has_more === true || live.hasMoreOlder,
+    };
+    if (Array.isArray(snapshot.interactions) && session.resolvedInteractions.size > 0) {
+      snapshot.interactions = snapshot.interactions.map((interaction) => {
+        const outcome = session.resolvedInteractions.get(interaction.interactionId);
+        return outcome === undefined ? interaction : { ...interaction, state: outcome };
+      });
+    }
+    return snapshot;
+  }
+
   boundedResetSnapshot(session, grade, payload) {
     return { ...payload, snapshot: boundScenarioEntities(session, redactSnapshotForGrade(grade, payload.snapshot)) };
   }
@@ -3768,6 +3791,15 @@ class FixtureServer {
     const sessionMedia = /^\/sessions\/([^/]+)\/media\/([^/]+)(\/preview)?$/.exec(path);
     if (sessionMedia !== null && method === 'GET') {
       const [, sessionId, fileId, preview] = sessionMedia;
+      const mediaSession = this.sessions.get(decodeURIComponent(sessionId));
+      if (mediaSession !== undefined && /^inline(?:-content)?:/u.test(decodeURIComponent(fileId))) {
+        return this.klient.inlineMediaBytes(mediaSession, decodeURIComponent(fileId)).then((file) => {
+          if (file === undefined) return this.envelope(res, null, 40409, 'media.not_found');
+          res.writeHead(200, { 'content-type': file.mime, 'content-length': file.bytes.length });
+          res.end(file.bytes);
+          return undefined;
+        }, (failure) => this.envelope(res, null, 50001, failure instanceof Error ? failure.message : 'media.unavailable'));
+      }
       try {
         const file = sessionMediaBytes(this, decodeURIComponent(sessionId), decodeURIComponent(fileId), preview === undefined ? 'original' : 'preview');
         res.writeHead(200, {
@@ -4310,34 +4342,24 @@ class FixtureServer {
     if (tail === '/transcript') {
       const agentId = query.get('agent_id');
       if (agentId === null) return this.envelope(res, null, 40402, 'agent.not_found');
-      const live = session.transcript.snapshot(agentId);
-      const seeded = session.agentTranscripts[agentId];
-      const snapshot = live.items.length > 0 || seeded === undefined ? live : {
-        items: [...(seeded.items ?? [])],
-        tasks: [...(seeded.tasks ?? live.tasks)],
-        interactions: [...(seeded.interactions ?? live.interactions)],
-        attachments: [...(seeded.attachments ?? live.attachments)],
-        todos: [...(seeded.todos ?? live.todos)],
-        prompts: [...(seeded.prompts ?? live.prompts)],
-        meta: { ...(seeded.meta ?? live.meta) },
-        hasMoreOlder: seeded.has_more === true || live.hasMoreOlder,
-      };
-      if (Array.isArray(snapshot.interactions) && session.resolvedInteractions.size > 0) {
-        snapshot.interactions = snapshot.interactions.map((interaction) => {
-          const outcome = session.resolvedInteractions.get(interaction.interactionId);
-          return outcome === undefined ? interaction : { ...interaction, state: outcome };
-        });
-      }
+      const snapshot = this.transcriptSource(session, agentId);
       const beforeTurn = query.get('before_turn');
       const afterTurn = query.get('after_turn');
+      const beforeItem = query.get('before_item');
+      const afterItem = query.get('after_item');
       const pageSize = Math.min(Number(query.get('page_size') ?? 20), 100);
       let items = snapshot.items;
+      const anchored = (anchor) => items.findIndex((item) => historyAnchorMatches(`${item.kind}:${transcriptItemId(item)}`, anchor));
       if (beforeTurn !== null) {
         const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === beforeTurn);
         items = index >= 0 ? items.slice(0, index) : items;
       } else if (afterTurn !== null) {
         const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === afterTurn);
         items = index >= 0 ? items.slice(index + 1) : items;
+      } else if (beforeItem !== null || afterItem !== null) {
+        const index = anchored(beforeItem ?? afterItem);
+        if (index < 0) return this.envelope(res, null, 40922, 'transcript cursor no longer matches this history');
+        items = beforeItem !== null ? items.slice(0, index) : items.slice(index + 1);
       }
       const turns = items.filter((item) => item.kind === 'turn');
       const windowTurns = turns.slice(-pageSize);

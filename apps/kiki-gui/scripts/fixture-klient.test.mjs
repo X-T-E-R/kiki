@@ -68,6 +68,51 @@ test('fixture serves the real Klient ordered view and preserves checkpoints thro
   } finally { await client.close(); await fixture.stop(); }
 });
 
+test('fixture pages a heavy history within the client read budget and serves the media a page replaced', async () => {
+  const fixture = await startFixtureServer({ port: 0, scenario: 'first-open' });
+  const endpoint = `http://127.0.0.1:${fixture.http.address().port}`;
+  const client = createKlient({ endpoint, token: FIXTURE_TOKEN, WebSocket });
+  try {
+    const raw = await fetch(`${endpoint}/api/klient/session-view/${SID}/transcript?agent_id=main&transcript_coverage_version=2`, { headers }).then((response) => response.text());
+    assert.ok(Buffer.byteLength(raw) <= 96 * 1024, `first page carried ${Buffer.byteLength(raw)} bytes`);
+    const page = JSON.parse(raw).data;
+    const mediaIds = [...raw.matchAll(/"file_?[iI]d":"(inline[^"]+)"/g)].map((match) => match[1]);
+    assert.equal(new Set(mediaIds).size, 3, 'each inline screenshot is replaced by one session media id');
+    assert.ok(!raw.includes('data:image/'), 'no data URL survives into the page');
+    for (const id of new Set(mediaIds)) {
+      const media = await fetch(`${endpoint}/api/sessions/${SID}/media/${encodeURIComponent(id)}`, { headers });
+      assert.equal(media.status, 200);
+      assert.equal(media.headers.get('content-type'), 'image/png');
+      const bytes = Buffer.from(await media.arrayBuffer());
+      assert.equal(bytes.subarray(1, 4).toString(), 'PNG');
+    }
+    const stale = await fetch(`${endpoint}/api/sessions/${SID}/media/${encodeURIComponent(mediaIds[0].replace(/:[0-9a-f]{64}$/u, `:${'0'.repeat(64)}`))}`, { headers }).then((response) => response.json());
+    assert.equal(stale.code, 40409);
+    assert.equal(page.coverage.kind, 'full');
+
+    const session = fixture.sessions.get(SID);
+    const body = 'x'.repeat(40 * 1024);
+    const at = '2026-01-01T11:19:00.000Z';
+    const items = Array.from({ length: 12 }, (_, index) => ({
+      kind: 'turn', turnId: `t${index}`, ordinal: index, state: 'completed', origin: { kind: 'user' }, prompt: `${index}:${body}`, startedAt: at, endedAt: at,
+      steps: [{ kind: 'step', stepId: `t${index}.1`, turnId: `t${index}`, ordinal: 1, state: 'completed', startedAt: at, endedAt: at,
+        frames: [{ kind: 'text', frameId: `heavy-${index}`, role: 'assistant', text: body }] }],
+    }));
+    session.agentTranscripts.heavy = { items };
+    const seen = [];
+    let cursor;
+    for (let index = 0; index < 20; index += 1) {
+      const next = await client.session(SID).view.transcript.page({ agentId: 'heavy', beforeItem: cursor });
+      seen.unshift(...next.items.map((item) => item.turnId));
+      if (!next.has_more) break;
+      assert.ok(next.next_cursor, 'an incomplete page must name where older history continues');
+      cursor = next.next_cursor;
+    }
+    assert.deepEqual(seen, items.map((item) => item.turnId));
+    assert.ok(cursor !== undefined, 'a ~500 KiB history must arrive over more than one page');
+  } finally { await client.close(); await fixture.stop(); }
+});
+
 test('fixture serves the GUI global facades through typed contracts and shared fixture state', async () => {
   const fixture = await startFixtureServer({ port: 0, scenario: 'settings' });
   const endpoint = `http://127.0.0.1:${fixture.http.address().port}`;
