@@ -4,6 +4,7 @@ import { Disposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
 
 import type { Workspace } from './workspace';
 import {
@@ -23,16 +24,57 @@ export class FileWorkspacePersistence extends Disposable implements IWorkspacePe
   private readonly changeEmitter = this._register(new Emitter<void>());
   readonly onDidChange: Event<void> = this.changeEmitter.event;
 
-  constructor(@IAtomicDocumentStore private readonly docs: IAtomicDocumentStore) {
+  private generation = 0;
+  private cached: { readonly fingerprint: string; readonly catalog: WorkspaceCatalog | undefined } | undefined;
+  private loading: Promise<WorkspaceCatalog | undefined> | undefined;
+
+  constructor(
+    @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
+    @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
+  ) {
     super();
     this._register(
-      this.docs.watch(WORKSPACE_CATALOG_SCOPE, WORKSPACE_CATALOG_KEY)(() => {
-        this.changeEmitter.fire();
-      }),
+      this.docs.watch(WORKSPACE_CATALOG_SCOPE, WORKSPACE_CATALOG_KEY)(() => this.invalidate()),
     );
   }
 
-  async load(): Promise<WorkspaceCatalog | undefined> {
+  load(): Promise<WorkspaceCatalog | undefined> {
+    if (this.loading !== undefined) return this.loading;
+    const loading = this.loadCurrent();
+    this.loading = loading;
+    void loading.finally(() => { if (this.loading === loading) this.loading = undefined; }).catch(() => {});
+    return loading;
+  }
+
+  private invalidate(notify = true): void {
+    this.generation++;
+    this.cached = undefined;
+    if (notify) this.changeEmitter.fire();
+  }
+
+  private async fingerprint(): Promise<string> {
+    const [size, mtime] = await Promise.all([
+      this.storage.size(WORKSPACE_CATALOG_SCOPE, WORKSPACE_CATALOG_KEY),
+      this.storage.mtime(WORKSPACE_CATALOG_SCOPE, WORKSPACE_CATALOG_KEY),
+    ]);
+    return `${size}:${mtime}`;
+  }
+
+  private async loadCurrent(): Promise<WorkspaceCatalog | undefined> {
+    for (;;) {
+      const generation = this.generation;
+      const before = await this.fingerprint();
+      if (generation !== this.generation) continue;
+      if (this.cached?.fingerprint === before) return this.cached.catalog;
+      const catalog = await this.readCatalog();
+      const after = await this.fingerprint();
+      if (generation !== this.generation || before !== after) continue;
+      this.cached = { fingerprint: after, catalog };
+      return catalog;
+    }
+  }
+
+  private async readCatalog(): Promise<WorkspaceCatalog | undefined> {
     const file = await this.docs.get<PersistedWorkspaceFile>(
       WORKSPACE_CATALOG_SCOPE,
       WORKSPACE_CATALOG_KEY,
@@ -64,7 +106,7 @@ export class FileWorkspacePersistence extends Disposable implements IWorkspacePe
     const deletedIds = Array.isArray(rawDeleted)
       ? rawDeleted.filter((id): id is string => typeof id === 'string')
       : [];
-    return { workspaces, deletedIds };
+    return Object.freeze({ workspaces: Object.freeze(workspaces.map((workspace) => Object.freeze(workspace))), deletedIds: Object.freeze(deletedIds) });
   }
 
   async save(catalog: WorkspaceCatalog): Promise<void> {
@@ -83,8 +125,14 @@ export class FileWorkspacePersistence extends Disposable implements IWorkspacePe
       workspaces: record,
       deleted_workspace_ids: [...catalog.deletedIds],
     };
-    await this.docs.set(WORKSPACE_CATALOG_SCOPE, WORKSPACE_CATALOG_KEY, file);
-    this.changeEmitter.fire();
+    this.invalidate(false);
+    let committed = false;
+    try {
+      await this.docs.set(WORKSPACE_CATALOG_SCOPE, WORKSPACE_CATALOG_KEY, file);
+      committed = true;
+    } finally {
+      this.invalidate(committed);
+    }
   }
 }
 

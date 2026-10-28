@@ -148,6 +148,23 @@ describe('WorkspaceService (file-backed)', () => {
     };
   }
 
+  it('shares unchanged catalog reads without repeating document IO', async () => {
+    const root = join(homeDir, 'catalog-root');
+    const id = encodeWorkDirKey(root);
+    await writeWorkspacesJson({ [id]: { root, name: 'catalog', created_at: '2026-01-01T00:00:00.000Z', last_opened_at: '2026-01-01T00:00:00.000Z' } });
+    const registry = build();
+    const documents = currentHost!.app.accessor.get(IAtomicDocumentStore);
+    const reads = vi.spyOn(documents, 'get');
+    await Promise.all(Array.from({ length: 8 }, () => registry.get(id)));
+    expect(reads.mock.calls.filter(([scope, key]) => scope === '' && key === 'workspaces.json')).toHaveLength(1);
+    reads.mockClear();
+    await Promise.all(Array.from({ length: 8 }, () => registry.get(id)));
+    expect(reads.mock.calls.filter(([scope, key]) => scope === '' && key === 'workspaces.json')).toHaveLength(0);
+    await writeWorkspacesJson({ [id]: { root, name: 'external replacement', created_at: '2026-01-01T00:00:00.000Z', last_opened_at: '2026-01-01T00:00:00.000Z' } });
+    expect((await registry.get(id))?.name).toBe('external replacement');
+    expect(reads.mock.calls.filter(([scope, key]) => scope === '' && key === 'workspaces.json')).toHaveLength(1);
+  });
+
   it('creates and opens a registered workspace while legacy inventory discovery is stalled', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });

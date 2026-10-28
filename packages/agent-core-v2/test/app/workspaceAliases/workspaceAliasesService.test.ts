@@ -334,7 +334,7 @@ describe('WorkspaceAliasesService (file-backed)', () => {
     await writeWorkspacesJson({ [typedId]: entry(typedRoot) });
     const storage = new FileStorageService(homeDir);
     const persistence = new GatedPersistence(
-      new FileWorkspacePersistence(new JsonAtomicDocumentStore(storage)),
+      new FileWorkspacePersistence(new JsonAtomicDocumentStore(storage), storage),
     );
     const aliases = build(undefined, storage, persistence);
     const ws = (id: string, root: string): Workspace => ({
