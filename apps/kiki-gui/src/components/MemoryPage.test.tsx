@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import type { PersonaSnapshot, Session, Workspace, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
-import { KikiClient, MEMORY_TYPES, type MemoryEntry, type MemoryJournalRecord, type MemorySettings } from '../lib/client';
+import { ApiError, KikiClient, MEMORY_REVISION_CONFLICT, MEMORY_TYPES, type MemoryEntry, type MemoryJournalRecord, type MemorySettings } from '../lib/client';
 import { MemoryPage, MEMORY_SETTINGS_QUERY_KEY } from './MemoryPage';
 import { getToasts } from '../lib/toasts';
 import { memorySourceTargets } from './useMemorySources';
@@ -1957,4 +1957,222 @@ it('MemoryPage discovery anchor exposes the scope group as the memory-scope tour
   expect(scope).not.toBeNull();
   expect(resolveAnchorElement('memory-scope')).toBe(scope);
   expect(detectActiveAnchors()).toContain('memory-scope');
+});
+
+describe('MemoryPage governed store', () => {
+  const sqlite = { version: 1, epoch: 3, backend: 'sqlite', mode: 'active', migrationId: '00000000-0000-4000-8000-000000000001' } as const;
+  const legacy = { version: 1, epoch: 0, backend: 'legacy', mode: 'active' } as const;
+  const current = () => fixtureEntry({ id: 'm_deploy', title: 'Deployment procedure', body: 'Use 5 workers.', revision: 'mem2:rev-current' });
+
+  it('keeps every ordinary edit on the file store and offers no governed action', async () => {
+    seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue(legacy);
+    const provenance = vi.spyOn(client, 'memoryProvenance');
+    const container = await renderPage();
+    expect(container.querySelector('[data-memory-store="legacy"]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-recover]')).toBeNull();
+    await click(container, '[data-memory-row="m_deploy"]');
+    for (const selector of ['[data-memory-edit]', '[data-memory-pin]', '[data-memory-delete]']) expect(container.querySelector(selector)).not.toBeNull();
+    expect(container.querySelector('[data-memory-forget-open]')).toBeNull();
+    expect(container.querySelector('[data-memory-governance="legacy"]')).not.toBeNull();
+    expect(provenance).not.toHaveBeenCalled();
+  });
+
+  it('keeps the page editable when the server cannot report its store', async () => {
+    seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryAuthority').mockRejectedValue(new Error('no route'));
+    const container = await renderPage();
+    expect(container.querySelector('[data-memory-store="unknown"]')).not.toBeNull();
+    await click(container, '[data-memory-row="m_deploy"]');
+    expect(container.querySelector('[data-memory-edit]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-forget-open]')).toBeNull();
+    expect(container.querySelector('[data-memory-governance]')).toBeNull();
+  });
+
+  it('lists decisions and sources, marks the ruling in force, and opens an earlier revision', async () => {
+    seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue(sqlite);
+    vi.spyOn(client, 'memoryProvenance').mockResolvedValue({
+      sources: [{ id: 's1', scope: 'memory/global', objectId: 'm_deploy', payload: '{}', locator: 'session_example#turn-2', learnedAt: '2026-01-01T12:00:00Z' }],
+      adjudications: [
+        { id: 'd1', scope: 'memory/global', objectId: 'm_deploy', kind: 'correction', revision: 'mem2:rev-old', reason: 'Owner instruction', sourceIds: ['s1'] },
+        { id: 'd2', scope: 'memory/global', objectId: 'm_deploy', kind: 'correction', revision: 'mem2:rev-current', reason: 'Lowered after the incident', sourceIds: ['s1'] },
+      ],
+      relatedObjectIds: ['m_deploy', 'm_other'],
+    });
+    const revision = vi.spyOn(client, 'memoryRevision').mockResolvedValue({ ...current(), body: 'Use 9 workers.', revision: 'mem2:rev-old', historical: true });
+    const container = await renderPage();
+    await click(container, '[data-memory-row="m_deploy"]');
+    expect(container.querySelector('[data-memory-current-revision="mem2:rev-current"]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-decision-current="true"]')?.textContent).toContain('Lowered after the incident');
+    expect(container.querySelector('[data-memory-source-record="s1"]')?.textContent).toContain('session_example#turn-2');
+    expect(container.querySelector('[data-memory-shared-source="1"]')).not.toBeNull();
+    await click(container, '[data-memory-open-revision="mem2:rev-old"]');
+    expect(revision).toHaveBeenCalledWith({ scope: 'global' }, 'm_deploy', 'mem2:rev-old', expect.anything());
+    expect(document.querySelector('[data-memory-revision-detail="mem2:rev-old"]')?.textContent).toContain('Use 9 workers.');
+  });
+
+  it('forgets exactly the previewed set with the previewed revisions, and never offers Undo', async () => {
+    const other = fixtureEntry({ id: 'm_other', title: 'Shares the source', revision: 'mem2:rev-other' });
+    seedMemories({ 'global::': [current(), other] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue(sqlite);
+    vi.spyOn(client, 'memoryProvenance').mockResolvedValue({ sources: [], adjudications: [], relatedObjectIds: ['m_deploy', 'm_other'] });
+    vi.spyOn(client, 'previewMemoryForget').mockResolvedValue({ generation: 7, targets: [
+      { id: 'm_deploy', expectedRevision: 'mem2:rev-current', entry: current() },
+      { id: 'm_other', expectedRevision: 'mem2:rev-other', entry: other },
+    ] });
+    const forget = vi.spyOn(client, 'forgetMemory')
+      .mockRejectedValueOnce(new ApiError({ code: MEMORY_REVISION_CONFLICT, msg: 'Forget preview changed', data: null }))
+      .mockResolvedValue({ operation_id: 'op', forgotten: ['m_deploy', 'm_other'] });
+    const container = await renderPage();
+    await click(container, '[data-memory-row="m_deploy"]');
+    await click(container, '[data-memory-forget-open]');
+    const dialog = () => document.querySelector<HTMLElement>('[data-memory-forget="m_deploy"]')!;
+    expect(dialog().querySelector('[data-memory-forget-scope="2"]')).not.toBeNull();
+    expect([...dialog().querySelectorAll('[data-memory-forget-target]')].map((row) => row.getAttribute('data-memory-forget-revision'))).toEqual(['mem2:rev-current', 'mem2:rev-other']);
+    expect(document.querySelector<HTMLButtonElement>('[data-memory-forget-confirm]')!.disabled).toBe(true);
+    await act(async () => { document.querySelector<HTMLInputElement>('[data-memory-forget-ack]')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-memory-forget-confirm]')!.click(); });
+    await flush();
+    expect(document.querySelector('[data-memory-forget-stale]')).not.toBeNull();
+    expect(document.querySelector('[data-memory-forget-confirm]')).toBeNull();
+    const firstOperation = forget.mock.calls[0]![1];
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-memory-forget-repreview]')!.click(); });
+    await flush();
+    await act(async () => { document.querySelector<HTMLInputElement>('[data-memory-forget-ack]')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-memory-forget-confirm]')!.click(); });
+    await flush();
+    expect(forget).toHaveBeenLastCalledWith({ scope: 'global' }, expect.stringMatching(/^[0-9a-f-]{36}$/), [
+      { id: 'm_deploy', expectedRevision: 'mem2:rev-current' }, { id: 'm_other', expectedRevision: 'mem2:rev-other' },
+    ]);
+    expect(forget.mock.calls[1]![1]).not.toBe(firstOperation);
+    expect(document.querySelector('[data-memory-forget]')).toBeNull();
+    expect(container.querySelector('[data-memory-detail="m_deploy"]')).toBeNull();
+    const toast = getToasts().at(-1)!;
+    expect(toast.text).toBe('Forgot 2 entries.');
+    expect(toast.retry).toBeUndefined();
+  });
+
+  it('keeps ordinary Delete undoable and worded apart from Forget', async () => {
+    seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue(sqlite);
+    vi.spyOn(client, 'memoryProvenance').mockResolvedValue({ sources: [], adjudications: [], relatedObjectIds: ['m_deploy'] });
+    const container = await renderPage();
+    await click(container, '[data-memory-row="m_deploy"]');
+    expect(container.querySelector('[data-memory-delete]')?.textContent).toBe('Delete');
+    expect(container.querySelector('[data-memory-forget-open]')?.textContent).toBe('Forget permanently');
+    await click(container, '[data-memory-delete]');
+    expect(document.body.textContent).toContain('You can undo this from the entry history.');
+  });
+
+  it('reads everything but withholds every edit in read-only recovery, and resumes with the exact recovery id and epoch', async () => {
+    seedMemories({ 'global::': [current()] }, { ...enabledSettings, approval: 'review' });
+    vi.spyOn(client, 'memoryInbox').mockResolvedValue({ items: [fixtureEntry({ id: 'm_pending', status: 'pending', title: 'Proposal', revision: 'mem2:p' })] });
+    const readonly = { ...sqlite, epoch: 4, mode: 'readonly', recoveryId: '2b9a3c3e-0b7c-4d1e-9a51-7f0c1d2e3f40' } as const;
+    const authority = vi.spyOn(client, 'memoryAuthority').mockResolvedValue(readonly);
+    vi.spyOn(client, 'memoryProvenance').mockResolvedValue({ sources: [], adjudications: [], relatedObjectIds: ['m_deploy'] });
+    const resume = vi.spyOn(client, 'resumeMemoryEditing').mockResolvedValue({ ...sqlite, epoch: 5 });
+    const container = await renderPage();
+    expect(container.querySelector('[data-memory-store="readonly"]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-write-hold="readonly"]')).not.toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('[data-memory-new]')!.disabled).toBe(true);
+    await click(container, '[data-memory-row="m_deploy"]');
+    expect(container.querySelector('[data-memory-read-body]')?.textContent).toBe('Use 5 workers.');
+    expect(container.querySelector('[data-memory-governance="governed"]')).not.toBeNull();
+    for (const selector of ['[data-memory-edit]', '[data-memory-pin]', '[data-memory-delete]', '[data-memory-forget-open]', '[data-memory-detail] [data-memory-undo]']) expect(container.querySelector(selector)).toBeNull();
+    await click(container, '[data-memory-tab="inbox"]');
+    expect(container.querySelector<HTMLButtonElement>('[data-memory-inbox-keep]')!.disabled).toBe(true);
+    authority.mockResolvedValue({ ...sqlite, epoch: 5 });
+    await click(container, '[data-memory-resume]');
+    expect(resume).toHaveBeenCalledWith(readonly.recoveryId, 4);
+    expect(container.querySelector('[data-memory-write-hold]')).toBeNull();
+  });
+
+  it('holds edits behind a paused migration and offers no migration control', async () => {
+    seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue({ ...legacy, mode: 'migrating', migration: { id: '00000000-0000-4000-8000-000000000002', namespaces: ['memory/global'], index: 0, issues: [] } });
+    const container = await renderPage();
+    expect(container.querySelector('[data-memory-write-hold="migrating"]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-resume]')).toBeNull();
+    expect(container.querySelector('[data-memory-recover]')).toBeNull();
+    await click(container, '[data-memory-row="m_deploy"]');
+    expect(container.querySelector('[data-memory-edit]')).toBeNull();
+  });
+
+  it('keeps an open draft when the store turns read-only, sends no save, and saves the same draft after editing resumes', async () => {
+    seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue(sqlite);
+    vi.spyOn(client, 'memoryProvenance').mockResolvedValue({ sources: [], adjudications: [], relatedObjectIds: ['m_deploy'] });
+    const put = vi.spyOn(client, 'putMemory').mockResolvedValue({ entry: current(), operationId: 'op_saved', outcome: 'applied' });
+    const { container, queryClient } = await mountPage();
+    await click(container, '[data-memory-row="m_deploy"]');
+    await click(container, '[data-memory-edit]');
+    await fillDraft(container, 'Draft written before recovery');
+    await flush();
+    const readonly = { ...sqlite, epoch: 4, mode: 'readonly' as const, recoveryId: '2b9a3c3e-0b7c-4d1e-9a51-7f0c1d2e3f40' };
+    await act(async () => { queryClient.setQueryData(['memory-authority'], readonly); });
+    await flush();
+    const save = container.querySelector<HTMLButtonElement>('[data-memory-save]')!;
+    expect(container.querySelector<HTMLInputElement>('[data-memory-title]')?.value).toBe('Draft written before recovery');
+    expect(save.disabled).toBe(true);
+    await act(async () => { save.click(); });
+    await flush();
+    expect(put).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-memory-write-hold="readonly"]')).not.toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('[data-memory-edit]')?.textContent).toBe('Close');
+    await act(async () => { queryClient.setQueryData(['memory-authority'], { ...sqlite, epoch: 5 }); });
+    await flush();
+    await click(container, '[data-memory-save]');
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(put.mock.calls[0]![2]).toMatchObject({ title: 'Draft written before recovery', expected_revision: 'mem2:rev-current' });
+  });
+
+  it('holds an open forget confirmation when the store stops accepting writes', async () => {
+    seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue(sqlite);
+    vi.spyOn(client, 'memoryProvenance').mockResolvedValue({ sources: [], adjudications: [], relatedObjectIds: ['m_deploy'] });
+    vi.spyOn(client, 'previewMemoryForget').mockResolvedValue({ generation: 1, targets: [{ id: 'm_deploy', expectedRevision: 'mem2:rev-current', entry: current() }] });
+    const forget = vi.spyOn(client, 'forgetMemory').mockResolvedValue({ operation_id: 'op', forgotten: ['m_deploy'] });
+    const { container, queryClient } = await mountPage();
+    await click(container, '[data-memory-row="m_deploy"]');
+    await click(container, '[data-memory-forget-open]');
+    await act(async () => { document.querySelector<HTMLInputElement>('[data-memory-forget-ack]')!.click(); });
+    await act(async () => { queryClient.setQueryData(['memory-authority'], { ...sqlite, mode: 'migrating', backend: 'legacy' }); });
+    await flush();
+    const confirm = document.querySelector<HTMLButtonElement>('[data-memory-forget-confirm]')!;
+    expect(confirm.disabled).toBe(true);
+    expect(document.querySelector('[data-memory-forget-held="migrating"]')).not.toBeNull();
+    expect(document.querySelector('[data-memory-forget-target="m_deploy"]')).not.toBeNull();
+    await act(async () => { confirm.click(); });
+    await flush();
+    expect(forget).not.toHaveBeenCalled();
+    await act(async () => { queryClient.setQueryData(['memory-authority'], sqlite); });
+    await flush();
+    expect(document.querySelector('[data-memory-forget-held]')).toBeNull();
+    expect(document.querySelector<HTMLButtonElement>('[data-memory-forget-confirm]')!.disabled).toBe(false);
+  });
+
+  it('does not paint a late provenance answer for one workspace onto the same id in the next', async () => {
+    const beta = { ...workspace, id: 'wd_beta', name: 'Beta', root: '/fixture/beta' };
+    const shared = fixtureEntry({ id: 'm_same', title: 'Same id in both', revision: 'mem2:same' });
+    seedMemories({ 'workspace:wd_current:': [shared], 'workspace:wd_beta:': [shared] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue(sqlite);
+    const late = deferred<Awaited<ReturnType<typeof client.memoryProvenance>>>();
+    const provenance = vi.spyOn(client, 'memoryProvenance').mockImplementation(async (target) => target.workspaceId === 'wd_current'
+      ? late.promise
+      : { sources: [], adjudications: [], relatedObjectIds: ['m_same'] });
+    const container = await renderPage('/memory?workspace=wd_current&entry=m_same', [workspace, beta]);
+    expect(provenance).toHaveBeenCalledWith({ scope: 'workspace', workspaceId: 'wd_current' }, 'm_same', expect.anything());
+    await click(container, '#memory-workspace-picker');
+    await click(container, '[data-option-value="wd_beta"]');
+    expect(routeParams(container).get('workspace')).toBe('wd_beta');
+    await click(container, '[data-memory-row="m_same"]');
+    await act(async () => {
+      late.resolve({ sources: [], adjudications: [{ id: 'd', scope: 'memory/workspaces/wd_current', objectId: 'm_same', kind: 'correction', revision: 'mem2:same', reason: 'Only true in the first workspace', sourceIds: [] }], relatedObjectIds: ['m_same'] });
+    });
+    await flush();
+    const panel = container.querySelector('[data-memory-governance="governed"]')!.textContent!;
+    expect(panel).not.toContain('Only true in the first workspace');
+    expect(panel).toContain('No decisions recorded yet.');
+  });
 });

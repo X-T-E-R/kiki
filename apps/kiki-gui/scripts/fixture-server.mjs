@@ -177,6 +177,7 @@ import { boundScenarioEntities, FixtureKlient, historyAnchorMatches, transcriptI
 import { mintSessionPlayback, releaseSessionPlayback, serveSessionPlayback, sessionMediaBytes } from './fixture-media.mjs';
 import { handleAppearance } from './fixture-appearance.mjs';
 import { handlePersonas, resetPersonas } from './fixture-personas.mjs';
+import { handleMemoryGovernance, resetMemoryGovernance } from './fixture-memory-governance.mjs';
 import { handleRequestIdentity, resetRequestIdentity } from './fixture-request-identity.mjs';
 import { handleUsageExport, resetUsageExport } from './fixture-usage-export.mjs';
 import { resetImportHistory, importedSessionMessages } from './fixture-plugin-import.mjs';
@@ -950,6 +951,7 @@ class FixtureServer {
       Object.entries(structuredClone(data.memoryJournal ?? {})).map(([scope, records]) => [scope, records]),
     );
     this.memoryOpCounter = 0;
+    resetMemoryGovernance(this, data);
     resetPersonas(this, data);
     resetRequestIdentity(this, data);
     resetBotRooms(this, data);
@@ -2168,6 +2170,8 @@ class FixtureServer {
       // The unified path keeps the former advanced-session, usage, and MCP
       // management domains distinct from the flat session/runtime routes.
       if (handleUsageExport(this, res, path, req.method, body)) return;
+      // Governed-store memory routes and write gating (fixture-memory-governance.mjs).
+      if (await handleMemoryGovernance(this, res, path, url.searchParams, body, req.method)) return;
       const advanced = path === '/usage'
         || path === '/usage/pricing'
         || path === '/usage/realtime'

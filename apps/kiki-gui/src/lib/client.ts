@@ -681,6 +681,74 @@ export interface MemoryListPage {
 export const MEMORY_NOT_FOUND = 40423;
 export const MEMORY_REVISION_CONFLICT = 40944;
 
+/**
+ * Which store currently owns memory (`GET /memory/authority`). `legacy` is the
+ * file store every older install runs; `sqlite` adds source, decision and
+ * revision records plus permanent forget. `migrating` holds a write barrier
+ * and `readonly` is a recovery copy; neither accepts edits.
+ */
+export interface MemoryAuthorityState {
+  readonly version: 1;
+  readonly epoch: number;
+  readonly backend: 'legacy' | 'sqlite';
+  readonly mode: 'active' | 'migrating' | 'readonly';
+  readonly migration?: {
+    readonly id: string;
+    readonly namespaces: readonly string[];
+    readonly index: number;
+    readonly after?: string;
+    readonly issues: readonly { readonly scope: string; readonly key: string; readonly issue: string }[];
+  };
+  readonly migrationId?: string;
+  readonly recoveryId?: string;
+}
+
+/** `POST /memory/authority/recover-readonly`: the recovery copy the store switched to. */
+export interface MemoryRecoveryPackage {
+  readonly recoveryId: string;
+  readonly scope: string;
+  readonly generation: number;
+  readonly namespaces: readonly string[];
+  readonly mode: 'readonly';
+}
+
+export interface MemoryEvidenceSource {
+  readonly id: string;
+  readonly scope: string;
+  readonly objectId: string;
+  readonly payload: string;
+  readonly locator?: string;
+  readonly learnedAt: string;
+}
+
+/** A human decision recorded against one revision of an entry. */
+export interface MemoryAdjudication {
+  readonly id: string;
+  readonly scope: string;
+  readonly objectId: string;
+  readonly kind: 'correction' | 'retirement' | 'restoration';
+  readonly revision: string;
+  readonly reason: string;
+  readonly sourceIds: readonly string[];
+}
+
+export interface MemoryProvenance {
+  readonly sources: readonly MemoryEvidenceSource[];
+  readonly adjudications: readonly MemoryAdjudication[];
+  /** Entries that share a source with this one, this entry included. */
+  readonly relatedObjectIds: readonly string[];
+}
+
+/**
+ * `POST /memory/{scope}/forget-preview`: every object a forget would remove,
+ * each with the exact revision the confirmation must send back. `entry` is
+ * null for an object that is already deleted but still holds the source.
+ */
+export interface MemoryForgetPreview {
+  readonly generation: number;
+  readonly targets: readonly { readonly id: string; readonly expectedRevision: string; readonly entry: MemoryEntry | null }[];
+}
+
 export interface CapabilityStatus {
   readonly id: 'kimi-cu' | 'kimi-webbridge' | 'kiki-computer' | 'kiki-browser';
   readonly pluginId?: string;
@@ -2944,6 +3012,42 @@ export class KikiClient {
 
   undoMemory(target: MemoryTarget, operationId: string): Promise<{ readonly entry: MemoryEntry | null }> {
     return this.memoryRequest('POST', `/memory/${target.scope}/undo`, { target, body: { operation_id: operationId } });
+  }
+
+  /**
+   * Governed-store calls. Migration start/cancel is deliberately absent: it
+   * needs every older writer stopped first, which this page cannot confirm.
+   */
+  memoryAuthority(signal?: AbortSignal): Promise<MemoryAuthorityState> {
+    return this.memoryRequest('GET', '/memory/authority', { signal });
+  }
+
+  memoryProvenance(target: MemoryTarget, id: string, signal?: AbortSignal): Promise<MemoryProvenance> {
+    return this.memoryRequest('GET', `/memory/${target.scope}/${encodeURIComponent(id)}/provenance`, { target, signal });
+  }
+
+  memoryRevision(target: MemoryTarget, id: string, revision: string, signal?: AbortSignal): Promise<MemoryEntry & { readonly historical: true }> {
+    return this.memoryRequest('GET', `/memory/${target.scope}/${encodeURIComponent(id)}/revisions/${encodeURIComponent(revision)}`, { target, signal });
+  }
+
+  previewMemoryForget(target: MemoryTarget, ids: readonly string[], signal?: AbortSignal): Promise<MemoryForgetPreview> {
+    return this.memoryRequest('POST', `/memory/${target.scope}/forget-preview`, { target, signal, body: { ids } });
+  }
+
+  /** Permanent. `operationId` makes a retried confirmation idempotent. */
+  forgetMemory(target: MemoryTarget, operationId: string, targets: readonly { readonly id: string; readonly expectedRevision: string }[]): Promise<{ readonly operation_id: string; readonly forgotten: readonly string[] }> {
+    return this.memoryRequest('POST', `/memory/${target.scope}/forget`, {
+      target,
+      body: { operation_id: operationId, confirm_irreversible: true, targets: targets.map((item) => ({ id: item.id, expected_revision: item.expectedRevision })) },
+    });
+  }
+
+  recoverMemoryReadOnly(): Promise<MemoryRecoveryPackage> {
+    return this.memoryRequest('POST', '/memory/authority/recover-readonly', { body: { confirm_readonly: true }, timeoutMs: 120_000 });
+  }
+
+  resumeMemoryEditing(recoveryId: string, expectedEpoch: number): Promise<MemoryAuthorityState> {
+    return this.memoryRequest('POST', '/memory/authority/resume-editing', { body: { recovery_id: recoveryId, expected_epoch: expectedEpoch } });
   }
 
   private async memoryRequest<T>(

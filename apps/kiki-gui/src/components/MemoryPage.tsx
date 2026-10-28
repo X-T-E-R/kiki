@@ -21,6 +21,13 @@
  * anything is permanent. Every write carries `expected_revision`; 40944
  * surfaces as "reload before saving" and never silently overwrites.
  *
+ * The store in charge (`/memory/authority`) decides the rest. The governed
+ * store adds sources, decisions and historical revisions to the detail, and a
+ * separate permanent Forget behind an exact preview (memory/MemoryGovernance).
+ * While the store is migrating or a read-only recovery copy, everything stays
+ * readable and every edit control is withheld; the file store keeps the page
+ * exactly as it was. Migration itself is not started from here.
+ *
  * The Inbox tab exists only while `approval` is `review` — with the default
  * `auto` there is nothing pending, so there is no tab.
  */
@@ -65,6 +72,8 @@ import { SearchableSelect } from './SearchableSelect';
 import { segmentClass } from './WorkspaceScopeControl';
 import { memoryTargetKey, personaMemoryTarget } from './persona/PersonaMemoryScope';
 import { usePersonaList } from './persona/usePersonas';
+import { MemoryAuthorityContext, useMemoryAuthority, useMemoryAuthorityQuery } from './memory/memoryAuthority';
+import { MemoryForgetDialog, MemoryGovernancePanel, MemoryStoreStatus, MemoryWriteHold } from './memory/MemoryGovernance';
 
 export const MEMORY_SETTINGS_QUERY_KEY = ['memory-settings'] as const;
 /** One dirty seat for the memory editor; the guard keys everything by it. */
@@ -162,6 +171,7 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
     staleTime: 15_000,
   });
   const settings = settingsQuery.data;
+  const authority = useMemoryAuthorityQuery();
   const memorySources = useMemorySources({
     workspaceId: effectiveScope,
     workspaces: workspaceOptions,
@@ -229,6 +239,7 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
   });
 
   return (
+    <MemoryAuthorityContext.Provider value={authority}>
     <div data-memory-page className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
       <PageHeader title={t('memory.title')} onToggleSidebar={onToggleSidebar} width="split">
         <div data-memory-status className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] text-ink-soft" role="status">
@@ -242,6 +253,7 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
           {globalEnabled && scope !== undefined && workspaceOverride === false ? (
             <span data-memory-workspace-disabled className="font-medium text-amber-ink">{t('st.memory.workspaceDisabled')}</span>
           ) : null}
+          {settings !== undefined ? <MemoryStoreStatus /> : null}
           {globalEnabled ? (
             <span className="inline-flex min-w-0 items-center gap-2 border-l border-hairline pl-3" data-memory-advisor-header>
               <span className="shrink-0 text-ink-faint" aria-hidden>{t('memory.advisor.headerLabel')}</span>
@@ -421,6 +433,7 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
         </>
       )}
     </div>
+    </MemoryAuthorityContext.Provider>
   );
 }
 
@@ -482,6 +495,7 @@ function MemoryScopeView({
   const { t, tp, locale } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
+  const { writable } = useMemoryAuthority();
   const [params] = useSearchParams();
   const linkedEntry = params.get('entry');
   const linkedTab = params.get('tab');
@@ -690,6 +704,7 @@ function MemoryScopeView({
             {t('memory.ws.offNotice')}
           </p>
         ) : null}
+        <MemoryWriteHold />
 
         {readError !== null && readError !== undefined || coverageIncomplete ? (
           <div
@@ -737,6 +752,7 @@ function MemoryScopeView({
                     <button
                       type="button"
                       data-memory-new
+                      disabled={!writable}
                       onClick={() => { leaveEditor(() => { setSelectedId(null); setCreating(true); }); }}
                       className={SECONDARY_BUTTON}
                     >
@@ -943,7 +959,9 @@ function MemoryDetail({
   const { t, locale } = useI18n();
   const { client } = useConnection();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmForget, setConfirmForget] = useState(false);
   const [openHistory, setOpenHistory] = useState<string | null>(null);
+  const { writable, governed } = useMemoryAuthority();
 
   const journalQuery = useQuery({
     queryKey: ['memory-journal', targetKey(target), entry.id],
@@ -1032,7 +1050,7 @@ function MemoryDetail({
           open only Close stays: a pin would move the revision under the draft
           and turn its own save into a conflict. */}
       <div data-memory-actions className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        {!inactive ? (
+        {!inactive && (writable || editing) ? (
           <button type="button" data-memory-edit onClick={() => {
             if (!editing) { setEditing(true); return; }
             const close = () => { setEditing(false); };
@@ -1042,7 +1060,7 @@ function MemoryDetail({
             {t(editing ? 'common.close' : 'memory.edit')}
           </button>
         ) : null}
-        {!inactive && !editing ? (
+        {!inactive && !editing && writable ? (
           <button type="button" data-memory-pin disabled={pinMutation.isPending} onClick={() => { pinMutation.mutate(); }} className={QUIET_ACTION}>
             {t(entry.pinned ? 'memory.unpin' : 'memory.pin')}
           </button>
@@ -1053,13 +1071,25 @@ function MemoryDetail({
             {t('memory.openSource')}
           </button>
         ) : null}
-        {!editing ? (
-          <button type="button" data-memory-delete disabled={deleteMutation.isPending} onClick={() => { setConfirmDelete(true); }}
-            className="ml-auto rounded-sm text-[12px] text-danger/80 transition-colors hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-60">
-            {t('memory.delete')}
-          </button>
+        {/* Delete is undoable and Forget is not, so they sit apart: Forget is
+            only offered by the governed store, and only behind its own preview. */}
+        {!editing && writable ? (
+          <span className="ml-auto flex items-center gap-4">
+            <button type="button" data-memory-delete disabled={deleteMutation.isPending} onClick={() => { setConfirmDelete(true); }}
+              className="rounded-sm text-[12px] text-danger/80 transition-colors hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-60">
+              {t('memory.delete')}
+            </button>
+            {governed ? (
+              <button type="button" data-memory-forget-open onClick={() => { setConfirmForget(true); }}
+                className="rounded-sm text-[12px] font-medium text-danger transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
+                {t('memory.forget')}
+              </button>
+            ) : null}
+          </span>
         ) : null}
       </div>
+
+      <MemoryGovernancePanel target={target} entry={entry} />
 
       <section data-memory-history aria-labelledby={`memory-history-${entry.id}`}>
         <h3 id={`memory-history-${entry.id}`} className={FIELD_LABEL}>{t('memory.history')}</h3>
@@ -1090,11 +1120,13 @@ function MemoryDetail({
                   {' · '}
                   <RelativeTime at={record.at} />
                 </button>
-                <UndoButton
-                  record={record}
-                  busy={undoMutation.isPending}
-                  onUndo={() => { undoMutation.mutate(record.operationId); }}
-                />
+                {writable ? (
+                  <UndoButton
+                    record={record}
+                    busy={undoMutation.isPending}
+                    onUndo={() => { undoMutation.mutate(record.operationId); }}
+                  />
+                ) : null}
               </li>
             ))}
           </ul>}
@@ -1108,7 +1140,7 @@ function MemoryDetail({
             target={target}
             sourceLabel={sourceLabel}
             onUndo={(record) => { undoMutation.mutate(record.operationId); }}
-            undoBusy={undoMutation.isPending}
+            undoBusy={undoMutation.isPending || !writable}
           />
         ) : null}
       </section>
@@ -1125,6 +1157,14 @@ function MemoryDetail({
         onCancel={() => { setConfirmDelete(false); }}
         onConfirm={() => { deleteMutation.mutate(); }}
       />
+      {confirmForget ? (
+        <MemoryForgetDialog
+          target={target}
+          entry={entry}
+          onClose={() => { setConfirmForget(false); }}
+          onForgotten={() => { setConfirmForget(false); onClosed(); }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1194,6 +1234,10 @@ function MemoryEditor({
   const [type, setType] = useState<MemoryType>(seed.type);
   const [reason, setReason] = useState('');
   const [conflict, setConflict] = useState(false);
+  // A store that stops accepting writes while a draft is open keeps the draft
+  // readable and closable; only the save waits, and it resumes on the same
+  // draft and seed revision once editing is back.
+  const { writable } = useMemoryAuthority();
 
   // `reason` rides the same save, so it is part of the same draft: a reader who
   // typed only a reason has an unsaved change worth keeping.
@@ -1306,8 +1350,8 @@ function MemoryEditor({
         <button
           type="button"
           data-memory-save
-          disabled={!dirty || !valid || save.isPending}
-          onClick={() => { save.mutate(); }}
+          disabled={!dirty || !valid || save.isPending || !writable}
+          onClick={() => { if (writable) save.mutate(); }}
           className={PRIMARY_BUTTON}
         >
           {t(seed.id === undefined ? 'memory.create' : 'memory.save')}
@@ -1364,6 +1408,7 @@ function MemoryInbox({
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
+  const { writable } = useMemoryAuthority();
   const locatedRef = useRef<HTMLLIElement>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const expanded = useQuery({
@@ -1418,7 +1463,7 @@ function MemoryInbox({
   if (entries.length === 0) {
     return incomplete ? null : <p data-memory-inbox-empty className="py-8 text-[13px] text-ink-soft">{t('memory.inbox.empty')}</p>;
   }
-  const busy = keep.isPending || discard.isPending;
+  const busy = keep.isPending || discard.isPending || !writable;
   return (
     <ul data-memory-inbox className="divide-y divide-hairline overflow-hidden rounded-xl border border-hairline bg-panel">
       {entries.map((entry) => (

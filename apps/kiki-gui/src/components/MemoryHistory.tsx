@@ -280,7 +280,7 @@ export function MemoryReadView({ entry, target, sourceLabel, onOpenReplacement, 
   );
 }
 
-function VersionBlock({ label, entry, raw, revision }: {
+export function VersionBlock({ label, entry, raw, revision }: {
   readonly label: string;
   readonly entry: MemoryEntryView | undefined;
   readonly raw: string | null | undefined;
