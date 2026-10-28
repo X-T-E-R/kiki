@@ -60,6 +60,7 @@ export interface MemoryMutation {
   readonly source: MemorySource;
   readonly id?: string;
   readonly expectedRevision?: string;
+  readonly operationId?: string;
   readonly pinned?: boolean;
   readonly pending?: boolean;
   readonly basis?: MemoryBasis;
@@ -163,7 +164,7 @@ function metadataText(value: unknown): string {
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value instanceof Date) return String(value);
   throw new Error('Invalid memory metadata');
 }
-function decode(raw: string): MemoryEntry {
+export function decodeMemoryEntry(raw: string): MemoryEntry {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/.exec(raw);
   if (match === null) throw new Error('Invalid memory frontmatter');
   const meta = load(match[1]!) as Record<string, unknown>;
@@ -187,6 +188,7 @@ function decode(raw: string): MemoryEntry {
     revision: revision(raw),
   };
 }
+const decode = decodeMemoryEntry;
 
 function decodeCoveredBy(value: unknown): { id: string; revision: string } {
   const covered = value as Record<string, unknown>;

@@ -146,7 +146,7 @@ Archive is a state change: provide the target and reason, not a replacement body
     if (input.action === 'create' ? input.id !== undefined || input.expected_revision !== undefined : input.id === undefined) return failure(new MemoryDomainError('invalid_input', 'Invalid action target', 'Omit id and expected_revision for create; provide id for existing targets.'));
     if (input.action !== 'create' && !input.expected_revision) return failure(new MemoryDomainError('missing_revision', 'Memory revision is required', 'Read the complete target and copy its latest revision.'));
     if (input.action !== 'archive' && input.covered_by !== undefined) return failure(new MemoryDomainError('invalid_input', 'covered_by is only accepted for archive', 'Remove covered_by from this action.'));
-    return { approvalRule: this.name, accesses: ToolAccesses.none(), description: `Remember: ${(input.title ?? input.id ?? '').slice(0, 70)}`, execute: async ({ turnId, signal }) => {
+    return { approvalRule: this.name, accesses: ToolAccesses.none(), description: `Remember: ${(input.title ?? input.id ?? '').slice(0, 70)}`, execute: async ({ turnId, toolCallId, signal }) => {
       if (this.session.ephemeral === true || !available(this.capabilities, this.session, this.instantiation)) return failure(new MemoryDomainError('inactive_target', 'Memory is disabled.', 'Preserve an unsaved change in existing task records instead of bypassing this restriction.'));
       try {
         const persona = this.memorySnapshot.getPersona();
@@ -161,7 +161,7 @@ Archive is a state change: provide the target and reason, not a replacement body
           scope = selected[0]!.scope;
         }
         const result = await this.store.put({ action: input.action, scope, type: input.type, title: input.title, body: input.body, reason: input.reason,
-          id: input.id, expectedRevision: input.expected_revision, basis: input.basis, validity: input.validity, covered_by: input.covered_by, signal,
+          id: input.id, expectedRevision: input.expected_revision, operationId: toolCallId === undefined ? undefined : JSON.stringify([this.session.sessionId, turnId, toolCallId]), basis: input.basis, validity: input.validity, covered_by: input.covered_by, signal,
           source: { writer: 'agent', session: this.session.sessionId, turn: turnId }, pending: this.config.get<MemoryConfig>(MEMORY_SECTION).approval === 'review' });
         const outcome = result.outcome;
         const entry = result.entry;
