@@ -244,15 +244,21 @@ export class UsageDatabase {
     const nativeBucket = query.granularity === 'five_hour' ? 18_000_000 : query.granularity === 'day' ? 86_400_000 : undefined;
     const bucketKey = query.granularity === 'session' ? 's.session_id' : nativeBucket === undefined ? 'CAST(CAST(usage_bucket(f.time,?,?) AS INTEGER) AS TEXT)' : `CAST(CAST(floor((f.time+?)/${nativeBucket})*${nativeBucket}-? AS INTEGER) AS TEXT)`;
     const bucketParams: SQLInputValue[] = query.granularity === 'session' ? [] : nativeBucket === undefined ? [query.granularity, query.timezoneOffsetMinutes] : [query.timezoneOffsetMinutes * 60_000, query.timezoneOffsetMinutes * 60_000];
-    this.db.exec('DROP TABLE IF EXISTS temp.usage_selected');
-    const sourceNumbers = 'source_numbered AS MATERIALIZED (SELECT row_number() OVER(ORDER BY id) AS source_number,* FROM source)';
-    const selected = `SELECT s.source_number,f.time,f.model,f.source_agent,f.agent,f.parent_agent,f.provider,f.model_alias,f.profile,f.turn,f.input_other,f.output,f.cache_read,f.cache_creation,f.state,f.mask,s.workspace,s.session_id,u.ephemeral,${cost} AS raw_cost,${dimension} AS group_key,${bucketKey} AS bucket FROM source_numbered s JOIN session u ON s.workspace=u.workspace AND s.session_id=u.id CROSS JOIN fact f NOT INDEXED ON f.source=s.id AND f.generation=s.generation LEFT JOIN quote q ON q.model=f.model WHERE ${clauses.join(' AND ')}`;
-    const identities = 'source_number,bucket,turn,model,source_agent,agent,parent_agent,provider,model_alias,profile,state,mask';
-    const compact = `WITH ${sourceNumbers},selected AS (${selected}) SELECT min(time) AS time,max(time) AS latest_time,${identities},min(workspace) AS workspace,min(session_id) AS session_id,min(ephemeral) AS ephemeral,min(group_key) AS group_key,sum(input_other) AS input_other,sum(output) AS output,sum(cache_read) AS cache_read,sum(cache_creation) AS cache_creation,sum(CASE WHEN raw_cost<=1.7976931348623157e308 THEN raw_cost END) AS raw_cost,max(raw_cost IS NULL OR raw_cost>1.7976931348623157e308) AS price_unknown,count(*) AS record_count FROM selected GROUP BY ${identities}`;
-    const individual = `WITH ${sourceNumbers} SELECT *,time AS latest_time,raw_cost IS NULL OR raw_cost>1.7976931348623157e308 AS price_unknown,1 AS record_count FROM (${selected})`;
-    this.db.prepare(`CREATE TEMP TABLE usage_selected AS ${finiteCosts ? individual : compact}`).run(...bucketParams, ...parameters);
-    this.db.exec('CREATE INDEX usage_selected_session ON usage_selected(workspace,session_id)');
+    this.db.exec('DROP TABLE IF EXISTS temp.usage_selected; DROP TABLE IF EXISTS temp.usage_sources');
     try {
+    this.db.exec('CREATE TEMP TABLE usage_sources AS SELECT row_number() OVER(ORDER BY id) AS source_number,* FROM source; CREATE UNIQUE INDEX usage_source_number ON usage_sources(source_number)');
+    const selected = `SELECT s.source_number,f.time,f.model,f.source_agent,f.agent,f.parent_agent,f.provider,f.model_alias,f.profile,f.turn,f.input_other,f.output,f.cache_read,f.cache_creation,f.state,f.mask,s.workspace,s.session_id,u.ephemeral,${cost} AS raw_cost,${dimension} AS group_key,${bucketKey} AS bucket FROM usage_sources s JOIN session u ON s.workspace=u.workspace AND s.session_id=u.id CROSS JOIN fact f NOT INDEXED ON f.source=s.id AND f.generation=s.generation LEFT JOIN quote q ON q.model=f.model WHERE s.source_number=? AND ${clauses.join(' AND ')}`;
+    const identities = 'source_number,bucket,turn,model,source_agent,agent,parent_agent,provider,model_alias,profile,state,mask';
+    const compact = `WITH selected AS (${selected}) SELECT min(time) AS time,max(time) AS latest_time,${identities},min(workspace) AS workspace,min(session_id) AS session_id,min(ephemeral) AS ephemeral,min(group_key) AS group_key,sum(input_other) AS input_other,sum(output) AS output,sum(cache_read) AS cache_read,sum(cache_creation) AS cache_creation,sum(CASE WHEN raw_cost<=1.7976931348623157e308 THEN raw_cost END) AS raw_cost,max(raw_cost IS NULL OR raw_cost>1.7976931348623157e308) AS price_unknown,count(*) AS record_count FROM selected GROUP BY ${identities}`;
+    const individual = `SELECT *,time AS latest_time,raw_cost IS NULL OR raw_cost>1.7976931348623157e308 AS price_unknown,1 AS record_count FROM (${selected})`;
+    const projection = finiteCosts ? individual : compact;
+    this.db.prepare(`CREATE TEMP TABLE usage_selected AS ${projection} LIMIT 0`).run(...bucketParams, 0, ...parameters);
+    const append = this.db.prepare(`INSERT INTO usage_selected ${projection}`);
+    for (const source of this.db.prepare('SELECT source_number FROM usage_sources WHERE present=1').iterate()) {
+      this.check();
+      append.run(...bucketParams, Number(source['source_number']), ...parameters);
+    }
+    this.db.exec('CREATE INDEX usage_selected_session ON usage_selected(workspace,session_id)');
     if (!finiteCosts && this.db.prepare('SELECT 1 FROM usage_selected WHERE raw_cost>1.7976931348623157e308 LIMIT 1').get() !== undefined) throw COST_OVERFLOW;
     const cte = 'WITH priced AS (SELECT *,CASE WHEN state=0 AND raw_cost<=1.7976931348623157e308 THEN raw_cost END AS cost FROM usage_selected)';
     const all = (sql: string, extra: SQLInputValue[] = []): Row[] => {
@@ -308,7 +314,7 @@ export class UsageDatabase {
       return { key, startAt, endAt: query.granularity === 'session' ? Number(row['latest']) + 1 : bucketEnd(startAt, query.granularity, query.timezoneOffsetMinutes), requests: Number(row['requests']), turns: turnsByBucket.get(key) ?? 0, groups: (groupsByBucket.get(key) ?? []).map((item) => ({ ...aggregateOf(item), key: String(item['group_key']), provider: nullable(item['provider']), modelAlias: nullable(item['model_alias']), agentId: nullable(item['agent']), parentAgentId: nullable(item['parent_agent']), profileName: nullable(item['profile']) })), sessions: members.slice(0, query.drilldownSessionLimit).map((item) => ({ id: String(item['session_id']), turns: Number(item['turns']), unknownTurnRecords: Number(item['unknown']), turnIds: (turnsBySession.get(String(item['session_id'])) ?? []).map((turn) => Number(turn['turn'])) })), sessionsTruncated: members.length > query.drilldownSessionLimit };
     }).sort((left, right) => left.startAt -right.startAt || left.key.localeCompare(right.key));
     return { revision, total: aggregateOf(totals), earliestAt: totals['earliest'] === null ? undefined : Number(totals['earliest']), latestAt: totals['latest'] === null ? undefined : Number(totals['latest']), sessionCount: Number(totals['sessions']), incompleteSessions: Number(status['incomplete']), scannedSessions: Number(status['scanned']), includesDeletedSessions: Boolean(status['deleted']), unknownPriceModels: unknown, trend, sessions, hasMore };
-    } finally { this.db.exec('DROP TABLE temp.usage_selected'); }
+    } finally { this.db.exec('DROP TABLE IF EXISTS temp.usage_selected; DROP TABLE IF EXISTS temp.usage_sources'); }
   }
 }
 
