@@ -8413,6 +8413,7 @@ export const zh = {
   'st.im.provider.slack': 'Slack',
   'st.im.provider.matrix': 'Matrix',
   'st.im.accountsTitle': '已连接账号',
+  'st.im.configureAccount': '配置账号',
   'st.im.stateListening': '监听中',
   'st.im.stateStarting': '正在连接',
   'st.im.stateReconnecting': '重新连接中',

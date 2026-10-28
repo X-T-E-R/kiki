@@ -2,6 +2,7 @@
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ImProviderKind, ImSessionSnapshot } from '@kiki/protocol';
@@ -44,7 +45,17 @@ async function render(width = '1100px') {
   roots.push(root);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   clients.push(client);
-  await act(async () => { root.render(<QueryClientProvider client={client}><I18nProvider><ImSessionCard /></I18nProvider></QueryClientProvider>); });
+  await act(async () => {
+    root.render(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <I18nProvider>
+            <ImSessionCard />
+          </I18nProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+  });
   await act(settle);
   await act(settle);
   return document.body as HTMLDivElement;
@@ -80,6 +91,33 @@ describe('ImSessionCard channel management', () => {
     expect(container.querySelector('[data-im-account="account-a"] h3')?.textContent).toBe('Study QQ');
     expect(container.querySelector('[data-im-account="unnamed-account"] h3')?.textContent).toBe('plugin:fixture-qq/other');
     expect(container.textContent).not.toContain('st.im.provider.plugin:');
+  });
+
+  it('renders a configure account link to kiki-qq plugin settings for QQ plugin instances only', async () => {
+    const state = imChannelSnapshot('plugin:kiki-qq/qq-official');
+    state.instances[0] = { ...state.instances[0]!, label: 'Official QQ', account_id: '12345678' };
+    state.instances.push({
+      id: 'other-im',
+      provider_kind: 'telegram',
+      label: 'TG Bot',
+      account_id: 'tg_bot',
+      listening: false,
+      configured: true,
+      adapter: 'running',
+    });
+    fixture = createImSettingsFixture(state);
+    const container = await render();
+
+    const qqAccount = container.querySelector('[data-im-account="account-a"]')!;
+    expect(qqAccount).not.toBeNull();
+    const qqLink = qqAccount.querySelector<HTMLAnchorElement>('[data-im-plugin-settings="kiki-qq"]');
+    expect(qqLink).not.toBeNull();
+    expect(qqLink?.textContent).toBe('Configure account');
+    expect(qqLink?.getAttribute('href')).toBe('/settings/plugins?plugin=kiki-qq');
+
+    const tgAccount = container.querySelector('[data-im-account="other-im"]')!;
+    expect(tgAccount).not.toBeNull();
+    expect(tgAccount.querySelector('[data-im-plugin-settings="kiki-qq"]')).toBeNull();
   });
 
   it.each(platforms)('groups two %s channels under one account and edits only the chosen target, options and off override', async (kind) => {

@@ -21,6 +21,8 @@ import {
   type ImSetupProvider,
   type ImSetupRequest,
 } from '@kiki/protocol';
+import { Link } from 'react-router-dom';
+import { pluginSettingsPath } from '@kiki/session-core/settings';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../../i18n';
@@ -1261,6 +1263,18 @@ function AccountChannels({ account, data, catalog, setupPlatform, initialTarget,
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[12px] text-ink-soft">
           <span className="break-all font-mono" data-im-adapter={account.adapter}>{account.account_id ?? account.id}</span>
+          {(account.provider_kind.startsWith('plugin:kiki-qq/') || account.id.startsWith('plugin:kiki-qq/')) ? (
+            <>
+              <span aria-hidden>·</span>
+              <Link
+                to={pluginSettingsPath('kiki-qq')}
+                className="text-selected-ink hover:underline"
+                data-im-plugin-settings="kiki-qq"
+              >
+                {t('st.im.configureAccount')}
+              </Link>
+            </>
+          ) : null}
           {account.provider_kind === 'matrix' && setupPlatform?.capabilities.encrypted_rooms === false ? (
             <>
               <span aria-hidden>·</span>

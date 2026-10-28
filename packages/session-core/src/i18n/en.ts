@@ -8497,6 +8497,7 @@ export const en = {
   'st.im.provider.slack': 'Slack',
   'st.im.provider.matrix': 'Matrix',
   'st.im.accountsTitle': 'Connected accounts',
+  'st.im.configureAccount': 'Configure account',
   'st.im.stateListening': 'Listening',
   'st.im.stateStarting': 'Connecting',
   'st.im.stateReconnecting': 'Reconnecting',
