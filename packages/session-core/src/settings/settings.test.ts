@@ -1523,7 +1523,7 @@ describe('settings search breadcrumbs and synonyms', () => {
 
   it('carries the visual group into grouped hits for the group › leaf › card breadcrumb', () => {
     const index = buildSettingsSearchIndex({ general: 'General' }, t);
-    const models = index.find((entry) => entry.cardId === 'st-card-models');
+    const models = index.find((entry) => entry.cardId === 'st-card-providers');
     expect(models?.groupLabel).toBe('Models & agents');
     const about = index.find((entry) => entry.cardId === 'st-card-about');
     expect(about?.groupLabel).toBe('Advanced');
@@ -1535,7 +1535,7 @@ describe('settings search breadcrumbs and synonyms', () => {
     ['能力', 'st-card-caps'],
     ['供应商', 'st-card-providers'],
     ['提供商', 'st-card-auth'],
-    ['模型目录', 'st-card-models'],
+    ['模型目录', 'st-card-providers'],
     ['模型目录刷新', 'st-card-catalog-refresh'],
     // The fold-steps switch moved from its own timeline card into the
     // composer card; the legacy terms keep finding it.
@@ -1551,7 +1551,7 @@ describe('settings search breadcrumbs and synonyms', () => {
   it.each([
     ['能力', 'st-card-caps'],
     ['供应商', 'st-card-providers'],
-    ['model catalog', 'st-card-models'],
+    ['model catalog', 'st-card-providers'],
     ['catalog refresh', 'st-card-catalog-refresh'],
     ['会话记录', 'st-card-composer'],
   ])('matches the legacy/synonym term %s in Chinese', (term, cardId) => {
@@ -1571,11 +1571,18 @@ describe('settings search breadcrumbs and synonyms', () => {
     }
   });
 
-  it('points the catalog-refresh hit at the models tab so the card is mounted on arrival', () => {
+  it('points the catalog-refresh hit at the providers tab so the card is mounted on arrival', () => {
     const index = buildSettingsSearchIndex({}, t);
     const hit = searchSettings(index, 'Get models')
       .find((entry) => entry.cardId === 'st-card-catalog-refresh');
-    expect(hit).toMatchObject({ section: 'ai', tab: 'models' });
+    expect(hit).toMatchObject({ section: 'ai', tab: 'providers' });
+  });
+
+  it('finds model editing on the providers tab, where every model is edited', () => {
+    const index = buildSettingsSearchIndex({}, t);
+    const hit = searchSettings(index, '模型编辑').find((entry) => entry.cardId === 'st-card-providers');
+    expect(hit).toMatchObject({ section: 'ai', tab: 'providers' });
+    expect(index.some((entry) => entry.tab === ('models' as never))).toBe(false);
   });
 });
 
@@ -1587,7 +1594,7 @@ describe('settings route resolver', () => {
 
   it('passes known sections through and keeps a local card hash', () => {
     expect(resolveSettingsRoute('ai', '#st-card-models'))
-      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-models', tab: 'models' });
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-providers', tab: 'providers' });
     expect(resolveSettingsRoute('ai', ''))
       .toEqual({ status: 'ok', section: 'ai', cardId: undefined, tab: undefined });
     expect(resolveSettingsRoute('about', ''))
@@ -1596,7 +1603,7 @@ describe('settings route resolver', () => {
 
   it('redirects the legacy models/providers sections to the merged ai entry with their tab', () => {
     expect(resolveSettingsRoute('models', ''))
-      .toEqual({ status: 'ok', section: 'ai', cardId: undefined, tab: 'models' });
+      .toEqual({ status: 'ok', section: 'ai', cardId: undefined, tab: 'providers' });
     expect(resolveSettingsRoute('providers', ''))
       .toEqual({ status: 'ok', section: 'ai', cardId: undefined, tab: 'providers' });
     expect(resolveSettingsRoute('models', '#st-card-request-identity'))
@@ -1665,11 +1672,11 @@ describe('settings route resolver', () => {
     expect(resolveSettingsRoute('retired-section', '#st-card-workspaces'))
       .toEqual({ status: 'ok', section: 'workspaces', cardId: 'st-card-workspaces', tab: undefined });
     expect(resolveSettingsRoute('retired-section', '#st-card-models'))
-      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-models', tab: 'models' });
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-providers', tab: 'providers' });
     // The catalog-refresh controls moved out of the agents sidecar onto the
     // models tab of the merged ai entry; old sidecar deep links follow them.
     expect(resolveSettingsRoute('agents', '#st-card-catalog-refresh'))
-      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-catalog-refresh', tab: 'models' });
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-catalog-refresh', tab: 'providers' });
   });
 
   it('redirects the retired capabilities section and its card deep links (redesign §10.3)', () => {

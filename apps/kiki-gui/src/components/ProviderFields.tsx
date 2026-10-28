@@ -854,6 +854,7 @@ export function ProviderFields({
   fieldIssue = null,
   advancedExtra,
   revealKey,
+  storedModels,
 }: {
   draft: ProviderDraft;
   onChange: (draft: ProviderDraft) => void;
@@ -898,6 +899,12 @@ export function ProviderFields({
   advancedExtra?: React.ReactNode;
   /** Fetches the effective key (saved or environment) on explicit request. */
   revealKey?: () => Promise<string | undefined>;
+  /**
+   * A saved connection's stored models, each opening the complete model
+   * editor. When set, the rows below are only the models this form will
+   * create on Save; a stored model is never edited from here.
+   */
+  storedModels?: React.ReactNode;
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
@@ -1089,7 +1096,11 @@ export function ProviderFields({
             />
           </div>
         ) : null}
-        {draft.models.map((model, index) => (
+        {storedModels}
+        {storedModels !== undefined && draft.models.some((model) => model.id === '') ? (
+          <p className={`${FORM_LABEL} pt-2`} data-provider-new-models>{t('st.providerModels.newRows')}</p>
+        ) : null}
+        {draft.models.map((model, index) => storedModels !== undefined && model.id !== '' ? null : (
           <ModelDraftRow
             key={model.id || `new-${index}`}
             model={model}
@@ -1201,6 +1212,8 @@ export function ProviderEditor({
   accountLabel,
   accountMethod,
   density = 'comfortable',
+  modelList,
+  defaultOpen = false,
 }: {
   provider: ProviderCatalogItem;
   models: readonly ModelCatalogItem[];
@@ -1215,6 +1228,10 @@ export function ProviderEditor({
   accountLabel?: string;
   /** Row density from the surrounding settings list; compact drops the second line. */
   density?: ListDensity;
+  /** This connection's stored models, each opening the full model editor. */
+  modelList?: React.ReactNode;
+  /** Open on arrival, for a link that names one of its models. */
+  defaultOpen?: boolean;
 }) {
   const { t, locale, time } = useI18n();
   const { client } = useConnection();
@@ -1499,6 +1516,7 @@ export function ProviderEditor({
       data-connection-kind={kind}
       data-connection-health={healthTone}
       className="group/provider [&[open]]:bg-paper"
+      open={defaultOpen || undefined}
     >
       <summary style={{ minHeight: LIST_ROW_HEIGHT[density] }}
         className={`flex cursor-pointer list-none items-center gap-3 px-3 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden ${density === 'compact' ? 'py-1' : 'py-2'}`}>
@@ -1596,6 +1614,7 @@ export function ProviderEditor({
             modelProtocols={modelProtocols}
             onModelProtocolsChange={setModelProtocols}
             onRefreshed={onSaved}
+            storedModels={modelList ?? null}
             advancedExtra={<>
               <SavedGenerationParametersEditor scope="provider" id={provider.id} onSaved={onSaved} />
               <ProviderConnectionExtras providerId={provider.id} onSaved={onSaved} />

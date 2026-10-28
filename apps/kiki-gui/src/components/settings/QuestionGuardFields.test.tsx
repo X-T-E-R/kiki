@@ -20,7 +20,7 @@ import { I18nProvider } from '../../i18n';
 import { optionLabels, pickValue } from './testControls';
 import { QuestionGuardFields } from './QuestionGuardFields';
 import { SessionsSection } from './SessionsSection';
-import { ModelCatalogCard } from './ModelsSection';
+import { ProviderModelsHarness } from './testProviderModels';
 import {
   EMPTY_GUARD_DRAFT,
   clearGuardNumber,
@@ -349,7 +349,7 @@ describe('the model row editor', () => {
       }
       return entity(Object.keys(nextGuard).length === 0 ? undefined : { ask_user_question_guard: nextGuard });
     });
-    const container = await render(<ModelCatalogCard />);
+    const container = await render(<ProviderModelsHarness />);
     const row = container.querySelector<HTMLElement>('[data-model-row="demo/model"]')!;
     // The row's first button is the default-model star; the second opens the
     // detail panel the editor lives in.

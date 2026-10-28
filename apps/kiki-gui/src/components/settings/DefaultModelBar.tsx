@@ -71,7 +71,7 @@ export function DefaultModelBar({ tab: _tab }: { tab?: AiSettingsTab } = {}) {
 
   return (
     <div data-default-model-bar data-default-model-line
-      className="sticky top-0 z-10 -mt-2 bg-paper/95 pb-3 pt-2 backdrop-blur-[2px] supports-[backdrop-filter]:bg-paper/85">
+      className="-mt-2 pb-3 pt-2">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
         <label htmlFor="st-default-model" className="shrink-0 text-[13px] text-ink-soft">{t('st.models.newSessionsUse')}</label>
         <div className="flex min-w-0 items-center gap-3">

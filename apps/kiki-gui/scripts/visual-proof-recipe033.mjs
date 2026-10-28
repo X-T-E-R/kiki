@@ -36,9 +36,7 @@ async function openModelEditor(page) {
   await page.evaluate(() => {
     try { localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: new Date().toISOString() })); } catch { /* ignore */ }
   });
-  await page.goto(page.url().replace(/\/new.*$/, '/settings/ai?tab=models'), { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector(`[data-model-row="${MODEL}"]`, { timeout: 20_000 });
-  await page.locator(`[data-model-row="${MODEL}"] button[aria-expanded]`).first().click();
+  await page.goto(page.url().replace(/\/new.*$/, `/settings/ai?tab=providers&model=${encodeURIComponent(MODEL)}`), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector(`[data-model-row-editor="${MODEL}"]`, { timeout: 15_000 });
   await page.locator(`[data-model-recipe="${MODEL}"]`).first().scrollIntoViewIfNeeded();
   await page.waitForTimeout(400);

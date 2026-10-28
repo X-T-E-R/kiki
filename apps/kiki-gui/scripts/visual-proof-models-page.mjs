@@ -29,20 +29,20 @@ export function createModelsPageWalker({ page, shot, resizeViewport, setProofThe
     const { theme, width } = view;
     await open('/settings/ai?tab=providers', '[data-connections-empty]');
     await shot(name('empty-connections', theme, width));
-    await open('/settings/ai?tab=models', '#st-card-models [data-list-empty="none"]');
-    await shot(name('empty-models', theme, width));
   }
 
   async function populated() {
     const { theme, width } = view;
     // Theme and width come from the job (registry `matrix`): one pass per context.
-    // Model list — one default line, grouped by connection.
-    await open('/settings/ai?tab=models', '[data-model-row]');
-    const defaults = await page.locator('[data-model-row][data-default="true"]').count();
-    if (defaults !== 1) throw new Error(`expected one default row, saw ${defaults}`);
+    // Models live inside their connection; the retired Models tab lands here.
+    await open('/settings/ai?tab=models', '[data-connection-row]');
+    if (!page.url().includes('tab=providers')) throw new Error(`tab=models must land on providers, saw ${page.url()}`);
+    await page.click('[data-connection-row="managed:github-copilot"] > summary');
+    await page.waitForSelector('[data-connection-row="managed:github-copilot"] [data-provider-models] [data-model-row]', { timeout: 10_000 });
+    await scrollTo('[data-connection-row="managed:github-copilot"] [data-provider-models]');
     await shot(name('list', theme, width));
-    // Search narrows across connections.
-    const search = '#st-card-models input[type="search"]';
+    // Search finds a connection by the models it carries.
+    const search = '[data-list-search]';
     await page.fill(search, 'gpt');
     await page.waitForTimeout(200);
     await shot(name('search', theme, width));

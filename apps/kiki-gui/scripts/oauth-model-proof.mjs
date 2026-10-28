@@ -58,13 +58,13 @@ try {
   for (const theme of ['light', 'dark']) {
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 900 });
-      await page.goto(deepLink('/settings/ai?tab=models'), { waitUntil: 'domcontentloaded' });
+      await page.goto(deepLink('/settings/ai?tab=defaults'), { waitUntil: 'domcontentloaded' });
       await page.evaluate((value) => {
         const settings = JSON.parse(localStorage.getItem('kiki.settings') ?? '{}');
         localStorage.setItem('kiki.settings', JSON.stringify({ ...settings, theme: value }));
       }, theme);
       await page.reload({ waitUntil: 'domcontentloaded' });
-      await page.locator('#st-card-models').waitFor();
+      await page.locator('[data-default-row]').first().waitFor();
       await page.waitForFunction((value) => document.documentElement.dataset.theme === value, theme);
       await page.screenshot({ path: join(shots, `models-${theme}-${width}.png`), fullPage: true });
       await page.locator('[data-ai-tab="providers"]').click();

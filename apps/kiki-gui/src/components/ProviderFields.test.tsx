@@ -516,22 +516,15 @@ describe('ProviderEditor save channel', () => {
   });
 
   it('keeps provider A draft and baseline through provider B save and real query invalidation', async () => {
-    updateModel.mockImplementation(async (id: string, patch: Record<string, unknown>) => {
-      const renamed = { ...MANAGED_MODELS[0]!, display_name: String(patch['display_name']) };
-      listModels.mockResolvedValue({ items: [...FAST_MODELS, renamed] });
-      return { ...renamed, revision: `${id}-rev-2`, issues: [] };
-    });
     const { container } = await renderSurface(<ConnectionsTab />);
-    const editors = [...container.querySelectorAll<HTMLDetailsElement>('#st-card-providers details')];
-    const first = editors[0]!;
-    const second = editors[1]!;
+    const editors = [...container.querySelectorAll<HTMLDetailsElement>('#st-card-providers details, #st-card-auth details')];
+    const first = editors.find((editor) => editor.getAttribute('data-connection-row') === 'edge:gateway')!;
+    const second = editors.find((editor) => editor.getAttribute('data-connection-row') === 'managed:kimi-code')!;
     await act(async () => { for (const editor of editors) editor.open = true; });
     const baseUrl = [...first.querySelectorAll('input')].find((input) => input.value === COLON_PROVIDER.base_url)!;
     await act(async () => { setInputValue(baseUrl, 'https://draft.example.test/v1'); });
     await typeKey(first, 'YOUR_API_KEY');
-    await act(async () => { second.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click(); });
-    const name = second.querySelector<HTMLInputElement>('input[aria-label="Model 1 display name"]')!;
-    await act(async () => { setInputValue(name, 'Changed elsewhere'); });
+    await pickValue(second.querySelector('[data-provider-default-model]')!, 'data-provider-default-model', '');
     await act(async () => { buttonByText(second, 'Save provider').click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
@@ -540,13 +533,11 @@ describe('ProviderEditor save channel', () => {
     expect(keyInput(first).value).toBe('YOUR_API_KEY');
     expect(buttonByText(first, 'Save provider').disabled).toBe(false);
     expect(reportDirty.mock.calls.findLast(([id]) => id === 'provider:edge:gateway')).toEqual(['provider:edge:gateway', true]);
-    // Revision reads plus the generation defaults and connection extras editors' own entity reads.
-    expect(getProviderEntity.mock.calls.filter(([id]) => id === 'edge:gateway')).toHaveLength(4);
     await act(async () => { buttonByText(first, 'Save provider').click(); });
     expect(updateProvider).toHaveBeenCalledWith('edge:gateway', {
       base_url: 'https://draft.example.test/v1', api_key: 'YOUR_API_KEY', base_revision: 'provider-rev-1',
     });
-    expect(updateModel).toHaveBeenCalledTimes(1);
+    expect(updateModel).not.toHaveBeenCalled();
   });
 
   it('preserves a dirty draft and its original revision through refresh and background catalog updates', async () => {
@@ -673,130 +664,64 @@ describe('ProviderEditor save channel', () => {
     expect(container.textContent).toContain('Server saved provider managed:kimi-code.');
   });
 
-  it('keeps a local alias and its remote target when only the display name changes', async () => {
-    const onSaved = vi.fn(async () => {});
-    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, onSaved);
-
-    const editToggle = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Edit model 1 details"]',
-    );
-    expect(editToggle, 'model row toggle').not.toBeNull();
-    await act(async () => {
-      editToggle!.click();
-    });
-
-    const displayNameInput = [...container.querySelectorAll('input')].find(
-      (input) => input.value === 'Fast',
-    );
-    expect(displayNameInput, 'display name input').toBeDefined();
-    await act(async () => {
-      setInputValue(displayNameInput!, 'Fast (renamed)');
-    });
-
-    await act(async () => {
-      buttonByText(container, 'Save provider').click();
-    });
-
-    expect(updateModel).toHaveBeenCalledTimes(1);
-    const [modelId, patch] = updateModel.mock.calls[0] as [string, Record<string, unknown>];
-    expect(modelId).toBe('fast');
-    expect(patch).toEqual({ display_name: 'Fast (renamed)', base_revision: 'fast-rev-1' });
-    expect(patch).not.toHaveProperty('remote_id');
-    expect(updateProvider).not.toHaveBeenCalled();
-    expect(onSaved).toHaveBeenCalledTimes(1);
-  });
-
-  it('shows the stored local alias and remote id separately', async () => {
+  it('lists stored models as rows that open their editor, never as fields of the provider form', async () => {
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
-    expect(container.textContent).toContain('vendor/model:v1');
-    expect(container.textContent).toContain('fast');
+    // Without a model list the form still holds no stored row: one draft per model.
+    expect(container.querySelector('button[aria-label="Edit model 1 details"]')).toBeNull();
+    expect(container.querySelector('[data-model-protocol-field]')).toBeNull();
+    expect(container.querySelector('input[aria-label="Model 1 display name"]')).toBeNull();
+    expect(buttonByText(container, 'Save provider').disabled).toBe(true);
   });
 
-  it('round-trips the real managed:kimi-code / kimi-code/... alias shape', async () => {
-    const onSaved = vi.fn(async () => {});
-    const container = await renderEditor(MANAGED_PROVIDER, MANAGED_MODELS, true, onSaved);
-
-    const editToggle = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Edit model 1 details"]',
-    );
-    expect(editToggle, 'managed model row toggle').not.toBeNull();
-    await act(async () => {
-      editToggle!.click();
-    });
-
-    const displayNameInput = [...container.querySelectorAll('input')].find(
-      (input) => input.value === 'Kimi K2',
-    );
-    expect(displayNameInput, 'managed display name input').toBeDefined();
-    await act(async () => {
-      setInputValue(displayNameInput!, 'K2 (mine)');
-    });
-
-    await act(async () => {
-      buttonByText(container, 'Save provider').click();
-    });
-
+  it('opens a stored model of a connection in its full editor and saves the alias untouched', async () => {
+    const { container } = await renderSurface(<ConnectionsTab />);
+    const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="managed:kimi-code"]')!;
+    await act(async () => { row.open = true; });
+    // The alias and the upstream id are both on the row.
+    const modelRow = row.querySelector<HTMLElement>('[data-provider-models] [data-model-row="kimi-code/kimi-k2"]')!;
+    expect(modelRow.textContent).toContain('kimi-k2');
+    await act(async () => { modelRow.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const editor = document.body.querySelector<HTMLElement>('[data-model-row-editor="kimi-code/kimi-k2"]')!;
+    expect(editor).not.toBeNull();
+    // Recipe and the per-identity scope are on the same editor.
+    expect(editor.querySelector('[data-model-editor-tab="advanced"]')).not.toBeNull();
+    expect(editor.querySelector('[data-model-scope-choice]')).not.toBeNull();
+    const name = editor.querySelector<HTMLInputElement>('input[aria-label="Display name for kimi-code/kimi-k2"]')!;
+    await act(async () => { setInputValue(name, 'K2 (mine)'); });
+    // The provider form is not dirtied by a model draft.
+    expect(buttonByText(row, 'Save provider').disabled).toBe(true);
+    await act(async () => { buttonByText(editor, 'Save').click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(updateModel).toHaveBeenCalledTimes(1);
     const [modelId, patch] = updateModel.mock.calls[0] as [string, Record<string, unknown>];
-    // The alias never loses its generated prefix, and the patch touches only
-    // the display name: the alias, the remote id, the capabilities and the
-    // stored protocol fields stay exactly as they were.
     expect(modelId).toBe('kimi-code/kimi-k2');
-    expect(patch).toEqual({
-      display_name: 'K2 (mine)',
-      base_revision: 'kimi-code/kimi-k2-rev-1',
-    });
-    expect(deleteModel).not.toHaveBeenCalled();
-    expect(createModel).not.toHaveBeenCalled();
-    expect(onSaved).toHaveBeenCalledTimes(1);
+    expect(patch).toEqual({ display_name: 'K2 (mine)', base_revision: 'kimi-code/kimi-k2-rev-1' });
+    expect(updateProvider).not.toHaveBeenCalled();
   });
 
-  it('keeps the first writer when two editors save the same model field', async () => {
-    let storedName = 'Fast';
-    let revision = 'fast-rev-1';
-    let conflictCode: number | undefined;
-    getModel.mockImplementation(async () => ({
-      ...FAST_MODELS[0],
-      display_name: storedName,
-      provider_source: 'provider',
-      revision,
-      issues: [],
-    }));
-    updateModel.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
-      if (patch['base_revision'] !== revision) {
-        conflictCode = 40941;
-        throw Object.assign(new Error('Model changed since it was read.'), { code: conflictCode });
-      }
-      storedName = String(patch['display_name']);
-      revision = 'fast-rev-2';
-      return { ...(await getModel('fast')), revision };
-    });
-
-    const first = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
-    const second = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
-    for (const [container, name] of [[first, 'First writer'], [second, 'Second writer']] as const) {
-      await act(async () => {
-        container.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click();
-      });
-      const input = [...container.querySelectorAll('input')].find((candidate) => candidate.value === 'Fast')!;
-      await act(async () => { setInputValue(input, name); });
-    }
-
-    await act(async () => { buttonByText(first, 'Save provider').click(); });
-    await act(async () => { buttonByText(second, 'Save provider').click(); });
-
-    expect(updateModel).toHaveBeenCalledTimes(2);
-    expect(updateModel.mock.calls[0]?.[1]).toMatchObject({
-      display_name: 'First writer',
-      base_revision: 'fast-rev-1',
-    });
-    expect(updateModel.mock.calls[1]?.[1]).toMatchObject({
-      display_name: 'Second writer',
-      base_revision: 'fast-rev-1',
-    });
-    expect(conflictCode).toBe(40941);
-    expect(storedName).toBe('First writer');
-    expect(second.textContent).toContain('Model changed since it was read.');
+  it('removes a stored model from its editor under the revision it read, and keeps the panel on a refusal', async () => {
+    deleteModel.mockRejectedValueOnce(new Error('Model changed since it was read.'));
+    const { container } = await renderSurface(<ConnectionsTab />);
+    const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="edge:gateway"]')!;
+    await act(async () => { row.open = true; });
+    await act(async () => { row.querySelector<HTMLButtonElement>('[data-model-row="fast"] button[aria-haspopup="dialog"]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const remove = () => document.body.querySelector<HTMLButtonElement>('[data-model-remove="fast"]')!;
+    await act(async () => { remove().click(); });
+    const confirm = () => [...document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')]
+      .findLast((button) => button.textContent === 'Remove model')!;
+    expect(document.body.textContent).toContain('Remove Fast?');
+    await act(async () => { confirm().click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(deleteModel).toHaveBeenCalledWith('fast', { baseRevision: 'fast-rev-1' });
+    expect(document.body.querySelector('[data-model-row-editor="fast"]')).not.toBeNull();
+    expect(document.body.textContent).toContain('Model changed since it was read.');
+    await act(async () => { remove().click(); });
+    await act(async () => { confirm().click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(deleteModel).toHaveBeenCalledTimes(2);
+    expect(document.body.querySelector('[data-model-row-editor="fast"]')).toBeNull();
   });
 
   it('records a created model before a later provider failure so retry can continue', async () => {
@@ -837,7 +762,8 @@ describe('ProviderEditor save channel', () => {
       capabilities: ['thinking', 'tool_use'],
     }));
     expect(onSaved).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain('edge:gateway/new-model');
+    // The created row is stored now: it leaves the form for the connection's model list.
+    expect(container.querySelector('[data-provider-new-models]')).toBeNull();
     expect(container.textContent).toContain('Provider changed since it was read.');
 
     await act(async () => { buttonByText(container, 'Save provider').click(); });
@@ -845,27 +771,6 @@ describe('ProviderEditor save channel', () => {
     expect(updateProvider).toHaveBeenCalledTimes(2);
     expect(onSaved).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain('Server saved provider edge:gateway.');
-  });
-
-  it('does not replay successful model edits or deletions after a partial provider save failure', async () => {
-    updateProvider.mockRejectedValueOnce(new Error('Provider changed since it was read.'));
-    const obsolete = { ...FAST_MODELS[0]!, id: 'obsolete', remote_id: 'obsolete' };
-    const container = await renderEditor(COLON_PROVIDER, [...FAST_MODELS, obsolete], false, async () => {});
-    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click(); });
-    await act(async () => { setInputValue(container.querySelector<HTMLInputElement>('input[aria-label="Model 1 display name"]')!, 'Renamed'); });
-    await act(async () => { container.querySelectorAll<HTMLButtonElement>('button[aria-label="Remove model"]')[1]!.click(); });
-    const baseUrl = [...container.querySelectorAll('input')].find((input) => input.value === COLON_PROVIDER.base_url)!;
-    await act(async () => { setInputValue(baseUrl, 'https://changed.example.test/v1'); });
-    await act(async () => { buttonByText(container, 'Save provider').click(); });
-    expect(updateModel).toHaveBeenCalledTimes(1);
-    expect(deleteModel).toHaveBeenCalledWith('obsolete', { baseRevision: 'obsolete-rev-1' });
-    expect(container.textContent).toContain('Provider changed since it was read.');
-    expect(baseUrl.value).toBe('https://changed.example.test/v1');
-    await act(async () => { buttonByText(container, 'Save provider').click(); });
-    expect(updateModel).toHaveBeenCalledTimes(1);
-    expect(deleteModel).toHaveBeenCalledTimes(1);
-    expect(updateProvider).toHaveBeenCalledTimes(2);
-    expect(buttonByText(container, 'Save provider').disabled).toBe(true);
   });
 
   it('fills known parameters when a directory model is selected', async () => {
@@ -979,89 +884,6 @@ describe('ProviderEditor model protocols', () => {
       .find((option) => option.getAttribute('title') === remoteId)!;
     await act(async () => { custom.click(); });
   };
-
-  it('saves a per-model request format as its own sparse model patch', async () => {
-    const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
-    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click(); });
-    const field = container.querySelector<HTMLElement>('[data-model-protocol-field]')!;
-    expect(field.dataset['modelProtocolField']).toBe('inherit');
-    expect(buttonByText(container, 'Save provider').disabled).toBe(true);
-
-    await pickValue(field, 'data-model-protocol', 'openai_responses');
-    expect(buttonByText(container, 'Save provider').disabled).toBe(false);
-    await act(async () => { buttonByText(container, 'Save provider').click(); });
-
-    expect(updateModel).toHaveBeenCalledTimes(1);
-    expect(updateModel).toHaveBeenCalledWith('fast', { protocol: 'openai_responses', base_revision: 'fast-rev-1' });
-    expect(updateProvider).not.toHaveBeenCalled();
-  });
-
-  it('names the resolved provider format on the inherit option without becoming a stored choice', async () => {
-    const models: ModelCatalogItem[] = [{ ...FAST_MODELS[0]!, effective_protocol: 'openai' }];
-    const container = await renderEditor(COLON_PROVIDER, models, false, async () => {});
-    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click(); });
-    const field = container.querySelector<HTMLElement>('[data-model-protocol-field]')!;
-    expect(field.dataset['modelProtocolField']).toBe('inherit');
-    const labels = await optionLabels(field);
-    expect(labels[0]).toBe('Provider default · Chat Completions');
-    // A resolved format is display only: nothing is dirty, nothing saves.
-    expect(buttonByText(container, 'Save provider').disabled).toBe(true);
-  });
-
-  it('clears a stored format override back to the provider default', async () => {
-    const models: ModelCatalogItem[] = [{ ...FAST_MODELS[0]!, protocol: 'anthropic', effective_protocol: 'anthropic' }];
-    const container = await renderEditor(COLON_PROVIDER, models, false, async () => {});
-    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click(); });
-    const field = container.querySelector<HTMLElement>('[data-model-protocol-field]')!;
-    expect(field.dataset['modelProtocolField']).toBe('anthropic');
-    // The stored override's resolved format IS that override: the inherit
-    // option must not rename it as the provider default — neither before nor
-    // after the unsaved choice moves to inherit.
-    expect((await optionLabels(field))[0]).toBe('Provider default');
-    await pickValue(field, 'data-model-protocol', 'inherit');
-    expect((await optionLabels(field))[0]).toBe('Provider default');
-    await act(async () => { buttonByText(container, 'Save provider').click(); });
-
-    expect(updateModel).toHaveBeenCalledTimes(1);
-    expect(updateModel).toHaveBeenCalledWith('fast', { protocol: null, base_revision: 'fast-rev-1' });
-    expect(updateProvider).not.toHaveBeenCalled();
-  });
-
-  it('retries a partially saved protocol change without resending the row that landed', async () => {
-    const twoModels: ModelCatalogItem[] = [
-      FAST_MODELS[0]!,
-      { id: 'slow', provider_id: 'edge:gateway', remote_id: 'vendor/slow:v1', display_name: 'Slow', max_context_size: 128000 },
-    ];
-    const twoProvider: ProviderCatalogItem = { ...COLON_PROVIDER, models: ['fast', 'slow'] };
-    getModel.mockImplementation(async (id: string) => {
-      const model = twoModels.find((candidate) => candidate.id === id)!;
-      return { ...model, provider_source: 'provider', revision: `${id}-rev-1`, issues: [] };
-    });
-    updateModel.mockImplementation(async (id: string) => {
-      if (id === 'slow') throw new Error('Provider changed since it was read.');
-      return { ...(await getModel(id)), revision: `${id}-rev-2` };
-    });
-    const container = await renderEditor(twoProvider, twoModels, false, async () => {});
-    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit model 1 details"]')!.click(); });
-    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit model 2 details"]')!.click(); });
-    const fields = container.querySelectorAll<HTMLElement>('[data-model-protocol-field]');
-    expect(fields.length).toBe(2);
-    await pickValue(fields[0]!, 'data-model-protocol', 'openai_responses');
-    await pickValue(fields[1]!, 'data-model-protocol', 'google-genai');
-
-    await act(async () => { buttonByText(container, 'Save provider').click(); });
-    expect(container.textContent).toContain('Provider changed since it was read.');
-    expect(updateModel).toHaveBeenCalledTimes(2);
-    expect(updateModel).toHaveBeenNthCalledWith(1, 'fast', { protocol: 'openai_responses', base_revision: 'fast-rev-1' });
-
-    // The retry keys on what actually landed: fast is already saved, so only
-    // slow goes back on the wire, still against its original revision.
-    updateModel.mockImplementation(async (id: string) => ({ ...(await getModel(id)), revision: `${id}-rev-2` }));
-    await act(async () => { buttonByText(container, 'Save provider').click(); });
-    expect(updateModel).toHaveBeenCalledTimes(3);
-    expect(updateModel).toHaveBeenNthCalledWith(3, 'slow', { protocol: 'google-genai', base_revision: 'slow-rev-1' });
-    expect(updateProvider).not.toHaveBeenCalled();
-  });
 
   it('creates a new model row with its chosen request format', async () => {
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});

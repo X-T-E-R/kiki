@@ -142,9 +142,7 @@ export function createContextCompactWalker({ page, shot, selectSession, resizeVi
   }
 
   async function settings(theme) {
-    await page.goto(settingsUrl('/settings/ai?tab=models'), { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('#st-card-models', { timeout: 15_000 });
-    await page.locator('[data-model-row="fixture/opus-5-5"] button[aria-expanded]').click();
+    await page.goto(settingsUrl('/settings/ai?tab=providers&model=fixture%2Fopus-5-5'), { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('[data-model-context-fields]', { timeout: 10_000 });
     await page.locator('[data-model-context-fields]').scrollIntoViewIfNeeded();
     await shot(`context-compact-model-editor-${theme}`);

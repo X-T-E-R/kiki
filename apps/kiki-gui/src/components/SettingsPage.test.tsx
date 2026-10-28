@@ -312,9 +312,9 @@ describe('SettingsPage panel scopes', () => {
     expect(container.querySelector('#workspace-mcp-select')).toBeNull();
   });
 
-  it('shows the connected server on a model panel', async () => {
-    const container = await renderSettings('/settings/ai?tab=models');
-    expect(container.querySelector('#st-card-models [data-settings-panel-scope]')?.textContent).toContain('connected server');
+  it('shows the connected server on the connections panel that edits models', async () => {
+    const container = await renderSettings('/settings/ai?tab=providers');
+    expect(container.querySelector('#st-card-providers [data-settings-panel-scope]')?.textContent).toContain('connected server');
   });
 
   it('says nothing about where changes go while connected to the local server', async () => {
@@ -369,13 +369,16 @@ describe('SettingsPage panel scopes', () => {
     expect(mcp.querySelector('#st-card-mcp-timeouts')).not.toBeNull();
   });
 
-  it('mounts the catalog-refresh card on the models tab of the merged ai entry', async () => {
+  it('opens the catalog-refresh card under maintenance on the providers tab, also from a retired models link', async () => {
     client.refreshAllProviders.mockClear();
     client.createModel.mockClear();
-    const container = await renderSettings('/settings/ai?tab=models');
+    const container = await renderSettings('/settings/ai?tab=models#st-card-catalog-refresh');
+    await flush();
     const card = container.querySelector('#st-card-catalog-refresh');
     expect(card).not.toBeNull();
-    expect(container.querySelector('[data-ai-tab="models"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('[data-ai-tab="models"]')).toBeNull();
+    expect(container.querySelector('[data-ai-tab="providers"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('[data-models-maintenance]')?.hasAttribute('open')).toBe(true);
     expect(card!.textContent).toContain('Add models from your connections');
     expect(card!.textContent).toContain('Click Get models to query supported models from your providers.');
     expect(client.refreshAllProviders).not.toHaveBeenCalled();
@@ -1186,8 +1189,8 @@ describe('SettingsPage search locating', () => {
         await setInput(search, 'catalog refresh');
         await click(search.parentElement!.querySelector('[role="option"]')!);
         await flush();
-        expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/ai?tab=models#st-card-catalog-refresh');
-        expect(container.querySelector('[data-ai-tab="models"]')?.getAttribute('aria-selected')).toBe('true');
+        expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/ai?tab=providers#st-card-catalog-refresh');
+        expect(container.querySelector('[data-ai-tab="providers"]')?.getAttribute('aria-selected')).toBe('true');
         const card = container.querySelector('#st-card-catalog-refresh');
         expect(card?.className).toContain('settings-card-flash');
         expect(scrollIntoView).toHaveBeenCalledTimes(hit);
@@ -1237,13 +1240,13 @@ describe('SettingsPage search locating', () => {
       await click(container.querySelector('[data-test-cancel]')!);
 
       // This is a new, ordinary navigation, not confirmation of the search hit.
-      await click(container.querySelector('[data-ai-tab="models"]')!);
+      await click(container.querySelector('[data-ai-tab="providers"]')!);
       await click(container.querySelector('[data-test-confirm]')!);
       await flush();
-      expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/ai?tab=models');
-      const card = container.querySelector('#st-card-catalog-refresh');
-      expect(card).not.toBeNull();
-      expect(card?.className).not.toContain('settings-card-flash');
+      expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/ai?tab=providers');
+      // An ordinary visit leaves maintenance folded and flashes nothing.
+      expect(container.querySelector('[data-models-maintenance]')?.hasAttribute('open')).toBe(false);
+      expect(container.querySelector('.settings-card-flash')).toBeNull();
       expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       scrollIntoView.mockRestore();

@@ -93,8 +93,8 @@ export const OBJECTS_SECTION_REDIRECTS: Readonly<Record<string, string>> = {
   identity: 'ai?tab=identity',
 };
 
-/** The AI page's tabs in `objects` mode: the shipped three plus identity. */
-export const OBJECTS_AI_TABS = ['providers', 'models', 'defaults', 'identity'] as const;
+/** The AI page's tabs in `objects` mode: the shipped tabs, identity included. */
+export const OBJECTS_AI_TABS = ['providers', 'defaults', 'identity'] as const;
 
 /** The nav tree a mode renders; null and unknown modes mean the shipped tree. */
 export function navTreeForMode(mode: SettingsIaMode | null): readonly SettingsNavNode[] {

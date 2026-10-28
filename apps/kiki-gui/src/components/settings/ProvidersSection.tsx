@@ -15,6 +15,7 @@ import { SidePanel } from '../SidePanel';
 import { SECONDARY_BUTTON } from '../ui';
 import { ExternalEnginesList, ExternalEnginesVisibilitySwitch } from './ExternalEnginesSection';
 import { ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec, type ListSortSpec } from './list';
+import { MODEL_QUERY_PARAM, ModelMaintenance, ProviderModelList } from './ModelsSection';
 import { SectionCard, SettingsCardMountContext } from './SectionCard';
 
 const KIND_ORDER: readonly ConnectionKind[] = ['api', 'account', 'local'];
@@ -75,7 +76,8 @@ export function OAuthAccountCard({
 export function ProvidersSection() {
   const { client } = useConnection();
   const { t } = useI18n();
-  const { hash } = useLocation();
+  const { hash, search } = useLocation();
+  const requestedModel = new URLSearchParams(search).get(MODEL_QUERY_PARAM);
   const queryClient = useQueryClient();
   const [feedback, setFeedback] = useState<Feedback>(null);
 
@@ -105,9 +107,15 @@ export function ProvidersSection() {
   const empty = providersQuery.isSuccess && providerItems.length === 0;
 
   const keyOf = useCallback((provider: ProviderCatalogItem) => provider.id, []);
+  // A connection is also found by the models it carries, since that is where
+  // every model is edited now.
   const textOf = useCallback(
-    (provider: ProviderCatalogItem) => [provider.id, methodFor(provider.id)?.label, provider.base_url],
-    [methods],
+    (provider: ProviderCatalogItem) => [
+      provider.id, methodFor(provider.id)?.label, provider.base_url,
+      ...(modelsQuery.data?.items ?? []).filter((model) => model.provider_id === provider.id)
+        .flatMap((model) => [model.id, model.remote_id, model.display_name]),
+    ],
+    [methods, modelsQuery.data],
   );
   const filters = useMemo<readonly ListFilterSpec<ProviderCatalogItem>[]>(() => [
     ...KIND_ORDER.map((kind) => ({
@@ -136,10 +144,16 @@ export function ProvidersSection() {
     view.visible.filter((provider) => connectionKind(provider, accountProviders) === kind);
   const renderProvider = (provider: ProviderCatalogItem) => {
     const method = methodFor(provider.id);
+    const models = modelsQuery.data?.items ?? [];
     return (
       <ProviderEditor
         provider={provider}
-        models={modelsQuery.data?.items ?? []}
+        models={models}
+        defaultOpen={requestedModel !== null && models.some((model) => model.id === requestedModel && model.provider_id === provider.id)}
+        modelList={(
+          <ProviderModelList providerId={provider.id} models={models}
+            inheritedImageTypes={provider.images?.accepted_types} onChanged={refreshProviderData} />
+        )}
         managed={accountProviders.has(provider.id)}
         modelCount={modelCount(provider.id)}
         onSaved={refreshProviderData}
@@ -204,7 +218,13 @@ export function ProvidersSection() {
               </div>
             ) : null}
             {providersQuery.isLoading ? <Hint>{t('st.providers.loading')}</Hint> : null}
-            {providersQuery.isError ? <InlineError error={providersQuery.error} /> : null}
+            {[providersQuery, modelsQuery].filter((query) => query.isError).map((query, index) => (
+              <div key={index} className="flex flex-wrap items-center gap-3" data-providers-read-error>
+                <InlineError error={query.error} />
+                <button type="button" className={SECONDARY_BUTTON} disabled={query.isFetching}
+                  onClick={() => void query.refetch()}>{t('common.retry')}</button>
+              </div>
+            ))}
             <FeedbackLine feedback={feedback} />
           </div>
         </SectionCard>
@@ -253,6 +273,8 @@ export function ProvidersSection() {
           </div>
         </SectionCard>
       </div>
+
+      <ModelMaintenance />
 
       {addOpen && !empty ? (
         <SidePanel

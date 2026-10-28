@@ -1,4 +1,5 @@
-import { useLocation } from 'react-router-dom';
+import { useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import {
   AI_SETTINGS_DEFAULT_TAB,
@@ -11,22 +12,23 @@ import { useI18n } from '../../i18n';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { DefaultModelBar } from './DefaultModelBar';
 import { IdentitySection } from './IdentitySection';
-import { DefaultsTab, ModelsTab } from './ModelsSection';
+import { DefaultsTab } from './ModelsSection';
 import { ConnectionsTab } from './ProvidersSection';
 
 /**
- * Visual tab order follows the path a person takes: connect something, see
- * the models it brings, decide which model each job uses, and configure how
- * outbound requests identify themselves. Tab ids and deep links are unchanged.
+ * Visual tab order follows the path a person takes: connect something and
+ * edit the models it brings, decide which model each job uses, and configure
+ * how outbound requests identify themselves.
  */
-const AI_TAB_ORDER: readonly AiSettingsTab[] = (['providers', 'models', 'defaults', 'identity'] as const)
+const AI_TAB_ORDER: readonly AiSettingsTab[] = (['providers', 'defaults', 'identity'] as const)
   .filter((candidate) => (AI_SETTINGS_TABS as readonly string[]).includes(candidate));
 
 /**
- * The merged "Models & providers" entry: one navigation leaf, four stable
- * tabs — Providers & accounts (OAuth, API keys, provider lifecycle), Models
- * (cross-provider catalog), Defaults (per-job models, thinking, compaction),
- * and Identity (request identity profiles, version tracks, usage, observations).
+ * The merged "Models & providers" entry: one navigation leaf, three stable
+ * tabs — Providers & accounts (OAuth, API keys, provider lifecycle, and each
+ * connection's models with their one complete editor), Defaults (per-job
+ * models, thinking, compaction), and Identity (request identity profiles,
+ * version tracks, usage, observations).
  * The new-session default model is a bar above the tabs, so it is stated once
  * and reachable from wherever the reader lands. The active tab is the `?tab=`
  * query so deep links, search hits, and legacy `/settings/models`,
@@ -36,9 +38,20 @@ const AI_TAB_ORDER: readonly AiSettingsTab[] = (['providers', 'models', 'default
 export function AiSection() {
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
-  const { search } = useLocation();
+  const rawNavigate = useNavigate();
+  const { search, hash } = useLocation();
   const rawTab = new URLSearchParams(search).get('tab');
   const tab: AiSettingsTab = normalizeAiTab(rawTab) ?? AI_SETTINGS_DEFAULT_TAB;
+
+  // The retired Models tab: its models are edited inside their connection
+  // now, so an old `?tab=models` link is rewritten in place (with `?model=`
+  // and any card hash kept) rather than left naming a tab that is not there.
+  useEffect(() => {
+    if (rawTab !== 'models') return;
+    const params = new URLSearchParams(search);
+    params.set('tab', AI_SETTINGS_DEFAULT_TAB);
+    void rawNavigate(`/settings/ai?${params.toString()}${hash}`, { replace: true });
+  }, [rawTab, search, hash, rawNavigate]);
 
   // Tab switches go through the guarded navigator: an unsaved provider or
   // identity draft arms the same leave-guard as a section switch.
@@ -74,10 +87,9 @@ export function AiSection() {
           );
         })}
       </div>
-      {tab === 'providers' ? <ConnectionsTab />
-        : tab === 'defaults' ? <DefaultsTab />
+      {tab === 'defaults' ? <DefaultsTab />
         : tab === 'identity' ? <IdentitySection />
-        : <ModelsTab />}
+        : <ConnectionsTab />}
     </div>
   );
 }

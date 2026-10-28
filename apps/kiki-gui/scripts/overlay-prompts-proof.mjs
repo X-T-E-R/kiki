@@ -84,8 +84,8 @@ const result = await runProof({
     assert.deepEqual(writes.at(-1)?.prompt_overrides, { independent: 'off' });
     assert.equal(writes.at(-1)?.description, 'Updated shared instructions.');
 
-    await page.goto(link('/settings/ai?tab=models'));
-    await page.locator(`[data-model-row="${MODEL}"] button[aria-expanded]`).first().click();
+    await page.goto(link(`/settings/ai?tab=providers&model=${encodeURIComponent(MODEL)}`));
+    await page.locator(`[data-model-row-editor="${MODEL}"]`).waitFor();
     await page.locator(`[data-advanced="model-${MODEL}"] > button`).click();
     const modelEditor = page.locator('[data-model-cognition-editor]');
     await open(modelEditor);

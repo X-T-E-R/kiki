@@ -143,6 +143,20 @@ describe('ProvidersSection zone order and status', () => {
     expect(enginesCard?.textContent).not.toContain('Local CLI harnesses');
     expect(enginesCard?.textContent).not.toMatch(/[①②③]/);
   });
+
+  it('shows a failed model read on the providers card and retries it in place', async () => {
+    listModels.mockRejectedValueOnce(new Error('fixture local read failed'));
+    const container = await render();
+    const card = container.querySelector('#st-card-providers')!;
+    expect(card.textContent).toContain('fixture local read failed');
+    const retry = [...card.querySelectorAll<HTMLButtonElement>('[data-providers-read-error] button')]
+      .find((button) => button.textContent === 'Retry');
+    expect(retry).toBeDefined();
+    await act(async () => { retry!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(card.textContent).not.toContain('fixture local read failed');
+    expect(listModels).toHaveBeenCalledTimes(2);
+  });
 });
 
 const API_PROVIDER = {

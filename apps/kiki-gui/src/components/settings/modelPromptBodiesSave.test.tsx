@@ -157,7 +157,7 @@ const PACKAGE = {
   editable: false, used_by: [], history: [],
 };
 
-const { ModelCatalogCard } = await import('./ModelsSection');
+const { ProviderModelsHarness } = await import('./testProviderModels');
 
 let container: HTMLElement;
 let root: Root;
@@ -210,7 +210,7 @@ async function renderCard(): Promise<HTMLElement> {
         <QueryClientProvider client={client}>
           <I18nProvider>
             <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
-              <ModelCatalogCard />
+              <ProviderModelsHarness />
             </DirtyGuardContext.Provider>
           </I18nProvider>
         </QueryClientProvider>

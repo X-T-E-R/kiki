@@ -29,7 +29,7 @@ import { Icon } from './icons';
 import { AgentsSection } from './settings/AgentsSection';
 import { AiSection } from './settings/AiSection';
 import { ProvidersSection } from './settings/ProvidersSection';
-import { DefaultsTab, ModelsTab } from './settings/ModelsSection';
+import { DefaultsTab } from './settings/ModelsSection';
 import { HooksSection } from './settings/hooks/HooksSection';
 import { ConnectionSection } from './settings/ConnectionSection';
 import { DeveloperSection } from './settings/DeveloperSection';
@@ -307,7 +307,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
 
   // Canonicalize legacy / card-moved targets in place: replace, never push,
   // and bypass the dirty guard — this is a redirect, not a user navigation.
-  // A resolved tab (legacy `/settings/models` → `ai?tab=models`) is merged
+  // A resolved tab (legacy `/settings/models` → `ai?tab=providers`) is merged
   // into the existing query so server/token deep-link params survive. A
   // legacy card hash (`#st-card-sidecar`) is rewritten to its canonical card
   // so the scroll + flash lands on the renamed target.
@@ -463,7 +463,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'connection' ? <ConnectionSection />
     : active === 'ai' ? <AiSection />
     : active === 'providers' ? <ProvidersSection />
-    : active === 'models' ? <div className="space-y-6"><DefaultsTab /><ModelsTab /></div>
+    : active === 'models' ? <DefaultsTab />
     : active === 'connection-services' ? <ExternalClientsSection />
     : active === 'identity' ? <IdentitySection />
     : active === 'agents' ? <AgentsSection />

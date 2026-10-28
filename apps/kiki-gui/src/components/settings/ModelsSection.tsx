@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useLocation, useSearchParams } from 'react-router-dom';
 
 import type {
   GenerationParametersPatch,
@@ -36,7 +37,7 @@ import { useConnection } from '../../state/connection';
 import { ChipSelect } from '../ChipSelect';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SaveStatus, SavedTick, Toggle, type Feedback } from '../controls';
-import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
+import { useDirtyReporter } from '../dirtyGuard';
 import {
   AdvancedDisclosure,
   CapabilityMarks,
@@ -44,15 +45,13 @@ import {
   ImagePolicyEditor,
   SavedGenerationParametersEditor,
 } from '../ProviderFields';
-import { OAUTH_METHODS_QUERY_KEY } from '../AccountSignIn';
 import { GlobalCompactionCard, ModelContextFields, CompactPointTrack, useModelCompactionTrack } from './ContextWindowSettings';
 import { CompactPointField } from './CompactPointField';
-import { vendorLabelFor } from '../providerPresets';
 import { RequestIdentityLayerEditor } from '../RequestIdentityLayerEditor';
 import { REQUEST_IDENTITY_QUERY_KEY, useCustomIdentityChoices } from './identityCatalog';
 import { SearchableSelect } from '../SearchableSelect';
 import { buildCatalogModelOptions } from '../modelSelectOptions';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
+import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
 import { FORM_LABEL, SettingsDraftFooter, SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
 import { effortLabel } from './profileEditor/profileDraft';
@@ -120,18 +119,7 @@ import { DisclosureChevron, Icon } from '../icons';
 import { selectGlobalDefaultModel } from './defaultModelSelection';
 import { OriginBadge } from './spaces/OriginBadge';
 import { SidePanel } from '../SidePanel';
-import {
-  LIST_ROW_HEIGHT,
-  ListBody,
-  ListEmpty,
-  ListGroup,
-  ListToolbar,
-  groupItems,
-  useListView,
-  type ListDensity,
-  type ListFilterSpec,
-  type ListSortSpec,
-} from './list';
+import { LIST_ROW_HEIGHT, ListBody, type ListDensity } from './list';
 
 function requestIdentityDraftsEqual(
   a: RequestIdentityLayerDraft,
@@ -212,110 +200,86 @@ export function GlobalRequestIdentityCard() {
 }
 
 /**
- * Tab 2 of the merged entry (redesign §3.3): the cross-provider model
- * catalog — search everything, grouped by provider, metadata per row. The
- * star picks the GLOBAL default model (and carries its provider along); the
- * per-provider default is a separate concept, shown as a group-header chip
- * and edited inside the provider editor on the Connections tab. A row also
- * expands into an in-place parameter editor: model parameters are editable
- * from BOTH this detail surface and the provider editor, through the same
- * validation and save channel.
+ * Which per-job defaults point at each model. Marks a row in place; it is not
+ * a group or a filter, so a model in use is found where it already lives.
  */
-export function ModelCatalogCard() {
+function useModelRoles(): ReadonlyMap<string, readonly string[]> {
   const { client } = useConnection();
-  const { t, locale } = useI18n();
-  const navigate = useGuardedNavigate();
-  const queryClient = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
-  const [tick, ping] = useSavedTick();
-  const [editing, setEditing] = useState<string | null>(null);
-  const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
+  const { t } = useI18n();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
-  const methodsQuery = useQuery({
-    queryKey: OAUTH_METHODS_QUERY_KEY,
-    queryFn: () => client.listOAuthMethods(),
-    staleTime: 10_000,
-    enabled: typeof client.listOAuthMethods === 'function',
-  });
-  const items = modelsQuery.data?.items ?? [];
-  const providers = useMemo(
-    () => new Map((providersQuery.data?.items ?? []).map((provider) => [provider.id, provider])),
-    [providersQuery.data],
-  );
-  const defaultModel = configQuery.data?.default_model;
-  const defaultProvider = configQuery.data?.default_provider ?? '';
-
-  // Row edits write one model entity each; every dependent read refreshes.
-  const refreshCatalog = useCallback(async () => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['models'] }),
-      queryClient.invalidateQueries({ queryKey: ['providers'] }),
-      queryClient.invalidateQueries({ queryKey: ['generation-entity'] }),
-      queryClient.invalidateQueries({ queryKey: ['config'] }),
-    ]);
-  }, [queryClient]);
-
-  // Which defaults point at each model, and what they serve it. This marks a
-  // row in place; it is not a group or a filter, so a model in use is found
-  // where it already lives rather than in a second list of the same rows.
   const config = configQuery.data;
-  const roles = useMemo(() => {
+  return useMemo(() => {
     const out = new Map<string, string[]>();
     const add = (id: string | undefined, label: string) => {
       if (id === undefined || id === '') return;
       out.set(id, [...(out.get(id) ?? []), label]);
     };
-    add(defaultModel, t('st.defaults.row.newSession'));
+    add(config?.default_model, t('st.defaults.row.newSession'));
     add(config?.session_title?.model, t('st.defaults.row.title'));
     add(config?.fast_model, t('st.defaults.row.fast'));
     add(config?.subagent?.defaultModel, t('st.defaults.row.subagent'));
     return out;
-  }, [defaultModel, config, t]);
-  const attention = useCallback((item: ModelCatalogItem) => {
-    // No connection, or one that is not working: either way the model cannot run.
-    const status = providers.get(item.provider_id)?.status;
-    return providersQuery.data !== undefined && status !== 'connected';
-  }, [providers, providersQuery.data]);
-  const accountLabels = useMemo(
-    () => new Map((methodsQuery.data ?? []).map((method) => [method.provider, method.label])),
-    [methodsQuery.data],
+  }, [config, t]);
+}
+
+/** The `?model=` query: the one model whose editor a link asks to open. */
+export const MODEL_QUERY_PARAM = 'model';
+
+/**
+ * The stored models of one connection, inside its provider editor.
+ *
+ * This is the only place a stored model is edited: a row opens the complete
+ * model editor (`ModelDetailPanel`) beside the list, which reads the model
+ * entity and saves one sparse patch under its revision. The provider form
+ * around it owns the connection and the rows that do not exist yet; it never
+ * writes a stored model's fields itself, so there is one draft per model.
+ *
+ * The star sets the global new-session default; `?model=<id>` opens that
+ * model's editor, which is how search hits and older links to the retired
+ * Models tab arrive.
+ */
+export function ProviderModelList({ providerId, models, inheritedImageTypes, onChanged }: {
+  providerId: string;
+  /** Every configured model; the list keeps this connection's own. */
+  models: readonly ModelCatalogItem[];
+  inheritedImageTypes: readonly string[] | undefined;
+  onChanged: () => Promise<void>;
+}) {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [tick, ping] = useSavedTick();
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const defaultModel = configQuery.data?.default_model;
+  const roles = useModelRoles();
+  const own = useMemo(
+    () => models.filter((item) => item.provider_id === providerId)
+      .toSorted((a, b) => Number(b.id === defaultModel) - Number(a.id === defaultModel)
+        || (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id)),
+    [models, providerId, defaultModel],
   );
-  const groupLabel = useCallback((providerId: string) => providerId === '' ? t('st.models.group.noProvider') :
-    accountLabels.get(providerId) ?? vendorLabelFor(providers.get(providerId)?.base_url) ?? providerId,
-  [accountLabels, providers, t]);
+  const requested = searchParams.get(MODEL_QUERY_PARAM);
+  const [editing, setEditing] = useState<string | null>(() =>
+    requested !== null && own.some((item) => item.id === requested) ? requested : null);
+  // A link that arrives while this page is already open (a search hit) asks
+  // for its model through the same query.
+  useEffect(() => {
+    if (requested !== null && own.some((item) => item.id === requested)) setEditing(requested);
+  }, [requested, own]);
+  const editingItem = own.find((item) => item.id === editing);
 
-  // No "In use" filter: a model that some role points at is already marked on
-  // its own row, and a category of them repeated the list under a second name.
-  const filters = useMemo<ListFilterSpec<ModelCatalogItem>[]>(() => [
-    { id: 'attention', label: t('st.models.filter.attention'), test: attention, tone: 'attention' },
-    { id: 'reasoning', label: t('st.models.filter.reasoning'), test: (item) => hasCapability(item, 'thinking') },
-    { id: 'vision', label: t('st.models.filter.vision'), test: (item) => hasCapability(item, 'image_in') },
-  ], [t, attention]);
-  const sorts = useMemo<ListSortSpec<ModelCatalogItem>[]>(() => [
-    { id: 'name', label: t('st.list.sort.name'), compare: (a, b) => (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id) },
-  ], [t]);
-  const keyOf = useCallback((item: ModelCatalogItem) => item.id, []);
-  const textOf = useCallback((item: ModelCatalogItem) => [
-    item.id, item.remote_id, item.display_name, item.provider_id, groupLabel(item.provider_id), ...(item.capabilities ?? []),
-  ], [groupLabel]);
-  const view = useListView({ listId: 'models', items, keyOf, textOf, filters, sorts });
+  const close = () => {
+    setEditing(null);
+    if (searchParams.has(MODEL_QUERY_PARAM)) {
+      const next = new URLSearchParams(searchParams);
+      next.delete(MODEL_QUERY_PARAM);
+      setSearchParams(next, { replace: true });
+    }
+  };
 
-  // Group order: the default provider, then providers by name. The list is
-  // already one flat set of rows, so it is grouped by provider only.
-  const groups = useMemo(() => {
-    const providerIds = [...new Set(items.map((item) => item.provider_id))]
-      .toSorted((a, b) => Number(b === defaultProvider) - Number(a === defaultProvider) || groupLabel(a).localeCompare(groupLabel(b)));
-    return groupItems(
-      items,
-      view.visible,
-      (item) => [{ key: `provider:${item.provider_id}`, label: groupLabel(item.provider_id) }],
-      providerIds.map((id) => `provider:${id}`),
-    ).filter((group) => group.items.length > 0);
-  }, [items, view.visible, defaultProvider, groupLabel]);
-
-  // Starring a model carries its provider along as the global default provider.
   const selectDefaultModel = async (item: ModelCatalogItem) => {
     setBusy(true);
     setFeedback(null);
@@ -329,91 +293,48 @@ export function ModelCatalogCard() {
     }
   };
 
-  const catalogEmpty = !modelsQuery.isLoading && !modelsQuery.isError && items.length === 0;
-  const editingItem = items.find((item) => item.id === editing);
-
-  const renderRow = (item: ModelCatalogItem) => (
-    <ModelRow
-      item={item}
-      density={view.density}
-      isDefault={item.id === defaultModel}
-      roles={roles.get(item.id)}
-      attention={attention(item)}
-      busy={busy}
-      open={item.id === editing}
-      onSetDefault={() => void selectDefaultModel(item)}
-      onOpen={() => { setEditing(item.id); }}
-    />
-  );
-
   return (
-    <SectionCard id="st-card-models" title={t('st.models.defaultTitle')}>
-      <div className="space-y-3">
-        {/* The new-session default is stated once, in the bar above the tabs;
-            here it is the starred row with its Default badge. */}
-        {items.length > 0 ? (
-          <ListToolbar view={view} total={items.length} filters={filters}
-            actions={tick ? <SavedTick show /> : undefined}
-            searchLabel={t('st.models.searchAria')} searchPlaceholder={t('st.models.searchWide')} />
-        ) : null}
-        {items.length > 0 && view.visible.length === 0 ? (
-          <ListEmpty kind="no-match" title={t('st.models.noMatchTitle')}
-            body={view.query.trim() === '' ? undefined : t('st.models.searchEmpty', { query: view.query.trim() })}
-            onClear={view.clear} />
-        ) : null}
-        <div>
-          {groups.map((group) => {
-            const isProvider = group.key.startsWith('provider:');
-            const provider = isProvider ? providers.get(group.key.slice('provider:'.length)) : undefined;
-            // A provider id no connection answers to is as broken as a failing one.
-            // The no-connection group already says so in its label.
-            const broken = !isProvider || group.key === 'provider:' || providersQuery.data === undefined ? undefined
-              : provider === undefined ? 'missing' : provider.status !== 'connected' ? provider.status : undefined;
-            return (
-              <ListGroup key={group.key} groupKey={group.key} label={group.label} count={group.items.length} total={group.total}
-                folded={view.isFolded(group.key)} onToggle={() => { view.toggleFold(group.key); }}
-                trailing={broken !== undefined ? (
-                  <span data-group-attention className="inline-flex shrink-0 items-center gap-1 text-[12px] text-attention">
-                    <Icon name="warning" size={12} />{t(broken === 'unconfigured' ? 'st.models.providerUnconfigured' : broken === 'missing' ? 'st.models.group.noProvider' : 'st.models.providerAttention')}
-                  </span>
-                ) : undefined}>
-                <ListBody items={group.items} keyOf={keyOf} density={view.density} renderRow={renderRow} label={group.label} />
-              </ListGroup>
-            );
-          })}
-        </div>
-        {catalogEmpty ? (
-          <ListEmpty kind="none" title={t('st.models.emptyCatalog')}
-            action={(
-              <button type="button" className={SECONDARY_BUTTON}
-                onClick={() => { void navigate('/settings/ai?tab=providers#st-card-providers-add'); }}>
-                {t('st.models.goProviders')}
-              </button>
-            )} />
-        ) : null}
-        {modelsQuery.isLoading ? <div role="status"><Hint>{t('st.models.loading')}</Hint></div> : null}
-        {[modelsQuery, providersQuery].filter((query) => query.isError).map((query, index) => (
-          <div key={index} className="flex flex-wrap items-center gap-3">
-            <InlineError error={query.error} />
-            <button type="button" className={SECONDARY_BUTTON} disabled={query.isFetching}
-              onClick={() => void query.refetch()}>{t('common.retry')}</button>
-          </div>
-        ))}
-        <FeedbackLine feedback={feedback} />
-      </div>
+    <div className="space-y-2" data-provider-models={providerId}>
+      {own.length > 0 ? (
+        <ListBody items={own} keyOf={(item) => item.id} density="comfortable" label={t('st.providerModels.title')}
+          virtualizeAfter={Number.POSITIVE_INFINITY}
+          renderRow={(item) => (
+            <ModelRow
+              item={item}
+              density="comfortable"
+              isDefault={item.id === defaultModel}
+              roles={roles.get(item.id)}
+              attention={false}
+              busy={busy}
+              open={item.id === editing}
+              onSetDefault={() => void selectDefaultModel(item)}
+              onOpen={() => { setEditing(item.id); }}
+            />
+          )} />
+      ) : (
+        <p className="text-[12px] leading-4 text-ink-faint" data-provider-models-empty>{t('st.providerModels.empty')}</p>
+      )}
+      {own.length > 0 ? (
+        <p className="flex items-center gap-2 text-[11.5px] leading-4 text-ink-faint">
+          <span className="min-w-0">{t('st.providerModels.openHint')}</span>
+          <SavedTick show={tick} />
+        </p>
+      ) : null}
+      <FeedbackLine feedback={feedback} />
       {editingItem !== undefined ? (
         <ModelDetailPanel
           key={editingItem.id}
           item={editingItem}
-          inheritedImageTypes={providers.get(editingItem.provider_id)?.images?.accepted_types}
+          inheritedImageTypes={inheritedImageTypes}
           isDefault={editingItem.id === defaultModel}
           defaultBusy={busy}
+          roles={roles.get(editingItem.id)}
           onSetDefault={() => void selectDefaultModel(editingItem)}
-          onSaved={refreshCatalog}
-          onClose={() => { setEditing(null); }}
+          onSaved={onChanged}
+          onClose={close}
         />
       ) : null}
-    </SectionCard>
+    </div>
   );
 }
 
@@ -1019,21 +940,35 @@ export function ModelGenerationMigrationCard() {
   );
 }
 
-/** Models tab: the cross-connection list first, then adding models, then one-off maintenance. */
-export function ModelsTab() {
+const MAINTENANCE_CARDS = new Set(['#st-card-catalog-refresh', '#st-card-model-migration']);
+
+/**
+ * One-off model chores at the end of Providers & accounts: fetch models from
+ * every connection at once, and the legacy parameter migration. Each
+ * connection already fetches and adds its own models, so these stay folded
+ * until a link points at one of them.
+ */
+export function ModelMaintenance() {
   const { t } = useI18n();
+  const { hash } = useLocation();
+  const linked = MAINTENANCE_CARDS.has(hash);
+  const [open, setOpen] = useState(linked);
+  useEffect(() => { if (linked) setOpen(true); }, [linked, hash]);
   return (
-    <div className="space-y-6">
-      <ModelCatalogCard />
-      <CatalogRefreshCard />
-      <details className="group border-t border-hairline pt-4" data-models-maintenance>
-        <summary className="flex h-7 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-1 text-[12px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink [&::-webkit-details-marker]:hidden">
-          <DisclosureChevron open={false} className="text-ink-soft transition-transform group-open:rotate-90" />
-          {t('st.models.maintenance')}
-        </summary>
-        <div className="pt-4"><ModelGenerationMigrationCard /></div>
-      </details>
-    </div>
+    <details className="group border-t border-hairline pt-4" data-models-maintenance open={open}
+      onToggle={(event) => { setOpen(event.currentTarget.open); }}>
+      <summary className="flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-1 text-[12px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink [&::-webkit-details-marker]:hidden">
+        <DisclosureChevron open={false} className="text-ink-soft transition-transform group-open:rotate-90" />
+        {t('st.models.maintenance')}
+        <span className="font-normal text-ink-faint">{t('st.providerModels.maintenanceHint')}</span>
+      </summary>
+      {open ? (
+        <div className="space-y-6 pt-4">
+          <CatalogRefreshCard />
+          <ModelGenerationMigrationCard />
+        </div>
+      ) : null}
+    </details>
   );
 }
 
@@ -1063,11 +998,6 @@ const MODEL_ISSUE_KEYS: Readonly<Record<string, I18nKey>> = {
   'model.request_identity_invalid': 'st.models.issue.requestIdentityInvalid',
   'model.override_routing_rejected': 'st.models.issue.overrideRouting',
 };
-
-function hasCapability(item: ModelCatalogItem, capability: string): boolean {
-  const caps = item.effective_capabilities ?? item.capabilities ?? [];
-  return caps.includes(capability) || (capability === 'thinking' && caps.includes('always_thinking'));
-}
 
 /**
  * One catalog row: star (global default), name + remote id, context, the
@@ -1169,6 +1099,7 @@ function ModelDetailPanel({
   inheritedImageTypes,
   isDefault = false,
   defaultBusy = false,
+  roles,
   onSetDefault,
   onSaved,
   onClose,
@@ -1177,6 +1108,8 @@ function ModelDetailPanel({
   inheritedImageTypes: readonly string[] | undefined;
   isDefault?: boolean;
   defaultBusy?: boolean;
+  /** The jobs this model is the default for; named before it is removed. */
+  roles?: readonly string[];
   onSetDefault?: () => void;
   onSaved: () => Promise<void>;
   onClose: () => void;
@@ -1201,9 +1134,11 @@ function ModelDetailPanel({
           isDefault={isDefault}
           defaultBusy={defaultBusy}
           onSetDefault={onSetDefault}
+          roles={roles}
           onSaved={onSaved}
           onDirtyChange={setDirty}
           onClose={requestClose}
+          onRemoved={onClose}
         />
       </div>
       <ConfirmDialog
@@ -1235,19 +1170,24 @@ function ModelCatalogRowEditor({
   inheritedImageTypes,
   isDefault = false,
   defaultBusy = false,
+  roles,
   onSetDefault,
   onSaved,
   onDirtyChange,
   onClose,
+  onRemoved,
 }: {
   item: ModelCatalogItem;
   inheritedImageTypes: readonly string[] | undefined;
   isDefault?: boolean;
   defaultBusy?: boolean;
+  roles?: readonly string[];
   onSetDefault?: () => void;
   onSaved: () => Promise<void>;
   onDirtyChange: (dirty: boolean) => void;
   onClose: () => void;
+  /** The model is gone; close without asking about drafts it no longer has. */
+  onRemoved?: () => void;
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
@@ -1262,6 +1202,8 @@ function ModelCatalogRowEditor({
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [detailSaved, pingDetailSaved] = useSavedTick();
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
   // The compaction point rides beside the shared model draft: it is a token
   // count on the model entity, edited here and nowhere in the provider form.
   const [autoCompact, setAutoCompact] = useState<number | undefined>(undefined);
@@ -1748,6 +1690,28 @@ function ModelCatalogRowEditor({
   };
 
   /**
+   * Removing deletes the stored model under the revision this editor read, so
+   * a concurrent edit is refused instead of silently discarded. A failure
+   * keeps the panel open with every draft and the server's reason.
+   */
+  const remove = async () => {
+    setRemoving(true);
+    setFeedback(null);
+    try {
+      await client.deleteModel(entity.id, { baseRevision: entity.revision });
+      setConfirmRemove(false);
+      queryClient.removeQueries({ queryKey: ['model-entity', item.id] });
+      await onSaved();
+      onRemoved?.();
+    } catch (error) {
+      setConfirmRemove(false);
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  /**
    * Discard puts every draft back on its baseline at once. It is the same
    * "nothing pending" state a fresh open would show, so nothing half-reset can
    * ride along with the next save. A package being authored in the Recipe
@@ -2158,8 +2122,31 @@ function ModelCatalogRowEditor({
         {dirty ? (
           <span role="status" className="text-[12px] text-ink-faint">{t('st.draft.unsaved')}</span>
         ) : <SavedTick show={detailSaved} />}
+        {onRemoved !== undefined ? (
+          <button type="button" className={`${DANGER_GHOST_BUTTON} ml-auto`} data-model-remove={entity.id}
+            disabled={saving || removing} onClick={() => { setConfirmRemove(true); }}>
+            {t('st.providerModels.remove')}
+          </button>
+        ) : null}
         <div className="basis-full empty:hidden"><FeedbackLine feedback={feedback} /></div>
       </div>
+      <ConfirmDialog
+        open={confirmRemove}
+        stacked
+        overlayId={`catalog-model-remove:${entity.id}`}
+        title={t('st.providerModels.removeTitle', { model: entity.display_name ?? entity.id })}
+        body={t('st.providerModels.removeBody')}
+        consequences={[
+          ...(roles !== undefined && roles.length > 0
+            ? [t('st.providerModels.removeDefault', { model: entity.id, roles: roles.join(locale === 'zh' ? '、' : ', ') })]
+            : []),
+          t('st.providerModels.removeSessions'),
+        ]}
+        confirmLabel={t('st.providerModels.remove')}
+        busy={removing}
+        onConfirm={() => void remove()}
+        onCancel={() => { setConfirmRemove(false); }}
+      />
     </div>
   );
 }

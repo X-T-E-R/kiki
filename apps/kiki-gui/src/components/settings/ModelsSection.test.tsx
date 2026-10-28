@@ -22,7 +22,8 @@ import { translate } from '@kiki/session-core/i18n';
 import { I18nProvider } from '../../i18n';
 import { DirtyGuardContext } from '../dirtyGuard';
 import { DefaultModelBar } from './DefaultModelBar';
-import { CatalogRefreshCard, GlobalDefaultsCard, ModelCatalogCard, ThinkingCard } from './ModelsSection';
+import { CatalogRefreshCard, GlobalDefaultsCard, ThinkingCard } from './ModelsSection';
+import { ProviderModelsHarness } from './testProviderModels';
 import { ModelSwitchCard } from './ModelSwitchCard';
 import { optionLabels, pickValue } from './testControls';
 
@@ -148,8 +149,8 @@ async function renderCard(
         <QueryClientProvider client={client}>
           <I18nProvider>
             <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
-              <DefaultModelBar tab="models" />
-              <ModelCatalogCard />
+              <DefaultModelBar tab="providers" />
+              <ProviderModelsHarness />
               <CatalogRefreshCard />
             </DirtyGuardContext.Provider>
           </I18nProvider>
@@ -183,7 +184,7 @@ function setTextareaValue(textarea: HTMLTextAreaElement, value: string): void {
   textarea.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-describe('ModelCatalogCard row editor', () => {
+describe('ProviderModelList row editor', () => {
   it('makes configured models selectable while the connection status read is still pending', async () => {
     listProviders.mockReturnValue(new Promise(() => {}));
     const started = performance.now();
@@ -194,21 +195,6 @@ describe('ModelCatalogCard row editor', () => {
     expect(container.querySelector('[data-group-attention]')).toBeNull();
     expect(performance.now() - started).toBeLessThan(1000);
     expect(refreshAllProviders).not.toHaveBeenCalled();
-  });
-
-  it('retries a failed local catalog read without fetching remote suggestions or losing the saved default', async () => {
-    listModels.mockRejectedValueOnce(new Error('fixture local read failed'));
-    const container = await renderCard();
-    expect(container.textContent).toContain('fixture local read failed');
-    const retry = [...container.querySelectorAll<HTMLButtonElement>('#st-card-models button')].find((button) => button.textContent === 'Retry')!;
-    expect(retry).toBeDefined();
-    await act(async () => { retry.click(); });
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    expect(container.textContent).not.toContain('fixture local read failed');
-    expect(container.querySelector('#st-default-model')?.textContent).toContain('Kimi K2');
-    expect(refreshAllProviders).not.toHaveBeenCalled();
-    expect(setDefaultModel).not.toHaveBeenCalled();
-    expect(patchConfig).not.toHaveBeenCalled();
   });
 
   it('keeps cached models and the selected default readable when revalidation fails', async () => {
@@ -242,7 +228,6 @@ describe('ModelCatalogCard row editor', () => {
     listModels.mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve; }));
     const oldQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const old = await renderCard(undefined, oldQueryClient);
-    expect(old.textContent).toContain('Loading model catalog');
     await act(async () => { roots.shift()!.unmount(); });
     const nextQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const current = await renderCard(undefined, nextQueryClient);
@@ -622,7 +607,7 @@ describe('ModelCatalogCard row editor', () => {
  * and inert) with its draft, baseline and dirty flag intact, and only an
  * explicit Close — confirmed while dirty — drops the draft.
  */
-describe('ModelCatalogCard context window and compaction point', () => {
+describe('ProviderModelList context window and compaction point', () => {
   const openEditor = async (container: HTMLElement) => {
     await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click(); });
     // The parameter group hangs off the entity read, so it lands a tick after
@@ -685,7 +670,7 @@ describe('ModelCatalogCard context window and compaction point', () => {
   });
 });
 
-describe('ModelCatalogCard row editor draft retention', () => {
+describe('ProviderModelList row editor draft retention', () => {
   const editToggle = (container: HTMLElement) => container.querySelector<HTMLButtonElement>(
     'button[aria-label="Edit parameters for kimi-code/kimi-k2"]',
   )!;
@@ -759,30 +744,6 @@ describe('ModelCatalogCard row editor draft retention', () => {
     await act(async () => { buttonByText(container, 'Close').click(); });
     expect(container.querySelector('[role="alertdialog"]')).toBeNull();
     expect(editorWrapper(container)).toBeNull();
-  });
-
-  it('keeps an open draft while the list is searched, filtered empty and cleared', async () => {
-    listModels.mockResolvedValue({ items: [...MODELS, { ...MODELS[0], id: 'other', remote_id: 'other-model', display_name: 'Other model' }] });
-    const reportDirty = vi.fn();
-    const container = await renderCard(reportDirty);
-    await openEditor(container);
-    const input = nameInput(container);
-    await act(async () => { setInputValue(input, 'K2 Thinking'); });
-    expect(reportDirty).toHaveBeenCalledWith('catalog-model:kimi-code/kimi-k2', true);
-    reportDirty.mockClear();
-    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!;
-    await act(async () => { setInputValue(search, 'other-model'); });
-    expect(container.querySelector('[data-model-row="kimi-code/kimi-k2"]')).toBeNull();
-    expect(container.querySelector('[data-model-row="other"]')).not.toBeNull();
-    await act(async () => { setInputValue(search, 'zzz-no-match'); });
-    expect(container.querySelector('[data-list-empty="no-match"]')).not.toBeNull();
-    await act(async () => { setInputValue(search, ''); });
-    // The panel never unmounted: same input, same draft, still dirty.
-    expect(nameInput(container)).toBe(input);
-    expect(input.value).toBe('K2 Thinking');
-    expect(buttonByText(container, 'Save').disabled).toBe(false);
-    expect(reportDirty).not.toHaveBeenCalledWith('catalog-model:kimi-code/kimi-k2', false);
-    expect(updateModel).not.toHaveBeenCalled();
   });
 });
 
@@ -993,7 +954,7 @@ describe('default model cross-tab selection ownership', () => {
               <I18nProvider>
                 <DirtyGuardContext.Provider value={{ dirty: false, reportDirty: () => {}, navigate: () => {} }}>
                   {tab === 'models' ? (
-                    <ModelCatalogCard />
+                    <ProviderModelsHarness />
                   ) : (
                     <>
                       <DefaultModelBar />
@@ -1083,14 +1044,14 @@ describe('default model cross-tab selection ownership', () => {
   });
 });
 
-describe('ModelCatalogCard list and detail hierarchy', () => {
+describe('ProviderModelList list and detail hierarchy', () => {
   it('states the default once and marks capabilities with at most three words', async () => {
     listModels.mockResolvedValue({ items: [{ ...MODELS[0], capabilities: ['thinking', 'image_in', 'tool_use', 'video_in', 'audio_in'] }] });
     const container = await renderCard();
     expect(container.querySelector('[data-default-model-line]')!.textContent).toContain('Kimi K2');
     // One default statement above the list; the model appears once, under its
     // own connection and starred there. There is no separate "In use" group.
-    expect(container.querySelectorAll('[data-list-group^="provider:"] [data-model-row][data-default="true"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-provider-models] [data-model-row][data-default="true"]')).toHaveLength(1);
     expect(container.querySelector('[data-list-group="in-use"]')).toBeNull();
     expect(container.textContent).not.toContain('In use\n');
     const marks = container.querySelector('[data-capability-marks]')!;
