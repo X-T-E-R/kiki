@@ -1395,8 +1395,8 @@ export class KikiClient {
     return this.run(() => this.rest.usagePricing.set(update));
   }
 
-  getSession(sessionId: string): Promise<Session> {
-    return this.sessions.getSession(sessionId);
+  getSession(sessionId: string, options?: { readonly signal?: AbortSignal }): Promise<Session> {
+    return this.run(() => this.klient.session(sessionId).commands.read(options));
   }
 
   /** Rename etc. — `POST /api/sessions/{id}/profile`. */

@@ -24,7 +24,7 @@ import {
 
 import type { DiscoveryState } from '../discovery/state';
 import { LocalizedError, type I18nKey, type ValidationIssue } from '../i18n/locale';
-import { spaceStorage } from '../storage/spaceStorage';
+import { spaceStorage, spaceStorageKey } from '../storage/spaceStorage';
 import type { KikiConfigPatch, KikiConfigResponse } from '../transport';
 import { questionGuardDraftFromBehavior, questionGuardModelPatch } from './questionGuardSettings';
 
@@ -673,6 +673,15 @@ export function writeLastSessionId(sessionId: string | undefined): void {
   try {
     if (sessionId === undefined) spaceStorage.removeItem(LAST_SESSION_KEY);
     else spaceStorage.setItem(LAST_SESSION_KEY, sessionId);
+  } catch {
+    // ignore
+  }
+  if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+  try {
+    const event = typeof StorageEvent === 'function'
+      ? new StorageEvent('storage', { key: spaceStorageKey(LAST_SESSION_KEY), newValue: sessionId ?? null })
+      : new Event('storage');
+    window.dispatchEvent(event);
   } catch {
     // ignore
   }
@@ -1967,13 +1976,13 @@ export async function fetchRemoteModels(probe: RemoteModelsProbe): Promise<Provi
 
 /**
  * The "Models & providers" entry is one navigation leaf with three stable
- * tabs (redesign §3.3 / §7.1): the domain objects stay distinct — Provider
- * owns credentials and lifecycle, Model owns catalog and metadata, Defaults
- * owns new-session choices — but first-run and daily model switching are one
- * continuous path, so they share an entry instead of two parallel pages.
- * Tab ids double as the `?tab=` deep-link parameter.
+ * tabs: Provider owns credentials, lifecycle and the models it carries (each
+ * model has one complete editor, opened from its connection), Defaults owns
+ * per-job choices, Identity owns request identity. Tab ids double as the
+ * `?tab=` deep-link parameter; the retired `models` tab resolves to
+ * `providers`, and `?model=<id>` opens one model's editor there.
  */
-export const AI_SETTINGS_TABS = ['providers', 'models', 'defaults', 'identity'] as const;
+export const AI_SETTINGS_TABS = ['providers', 'defaults', 'identity'] as const;
 export type AiSettingsTab = (typeof AI_SETTINGS_TABS)[number];
 
 /**
@@ -1989,9 +1998,8 @@ const AI_TAB_BY_CARD: Readonly<Record<string, AiSettingsTab>> = {
   'st-card-providers-add': 'providers',
   'st-card-engines': 'providers',
   'st-card-catalog-import': 'providers',
-  'st-card-models': 'models',
-  'st-card-catalog-refresh': 'models',
-  'st-card-model-migration': 'models',
+  'st-card-catalog-refresh': 'providers',
+  'st-card-model-migration': 'providers',
   'st-card-global-defaults': 'defaults',
   'st-card-model-switch': 'defaults',
   'st-card-thinking': 'defaults',
@@ -2475,9 +2483,8 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.tray', 'st.desktop.quit'] },
   { section: 'notifications', cardId: 'st-card-notify-away', titleKey: 'st.away.title', keywordKeys: ['st.away.enabled', 'st.away.completed', 'st.away.failed', 'st.away.question', 'st.away.approval'], synonyms: ['system notification', '系统通知', 'desktop notification', '桌面通知', 'unread', '未读', 'badge', '角标', 'activity', '活动'] },
   { section: 'sessions', cardId: 'st-card-session-title', titleKey: 'st.sessions.titlesTitle', keywordKeys: ['st.sessions.titlesToggle', 'st.sessions.titleMoments', 'st.sessionTitleModel.model'], synonyms: ['session title', '会话标题', 'title model', '标题模型', 'title moment', '标题时机', 'automatic title', '自动标题', 'generate when', '生成时机'] },
-  { section: 'ai', tab: 'models', cardId: 'st-card-models', titleKey: 'st.models.defaultTitle', keywordKeys: ['st.models.providerLabel', 'st.models.searchPlaceholder', 'st.models.remoteIdAria', 'st.images.acceptedTypes', 'st.images.convertUnsupported'], synonyms: ['模型目录', 'model catalog', '模型列表', 'model editing', '模型编辑', 'remote id', '远端模型 ID', 'image policy', '图片策略', '图片类型', '图片转换'] },
-  { section: 'ai', tab: 'models', cardId: 'st-card-catalog-refresh', titleKey: 'st.catalogRefresh.title', keywordKeys: ['st.catalogRefresh.hint', 'st.catalogRefresh.getModels'], synonyms: ['模型目录刷新', 'catalog refresh', '获取模型', 'get models'] },
-  { section: 'ai', tab: 'models', cardId: 'st-card-model-migration', titleKey: 'st.modelMigration.title', keywordKeys: ['st.modelMigration.hint', 'st.modelMigration.preview', 'st.modelMigration.restore'], synonyms: ['model migration', '模型迁移', '旧版模型参数', 'model parameters backup'] },
+  { section: 'ai', tab: 'providers', cardId: 'st-card-catalog-refresh', titleKey: 'st.catalogRefresh.title', keywordKeys: ['st.catalogRefresh.hint', 'st.catalogRefresh.getModels'], synonyms: ['模型目录刷新', 'catalog refresh', '获取模型', 'get models'] },
+  { section: 'ai', tab: 'providers', cardId: 'st-card-model-migration', titleKey: 'st.modelMigration.title', keywordKeys: ['st.modelMigration.hint', 'st.modelMigration.preview', 'st.modelMigration.restore'], synonyms: ['model migration', '模型迁移', '旧版模型参数', 'model parameters backup'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-global-defaults', titleKey: 'st.defaults.globalTitle', keywordKeys: ['st.models.providerLabel', 'st.defaults.globalHint'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-model-switch', titleKey: 'st.modelSwitch.title', keywordKeys: ['st.modelSwitch.defaultMode', 'st.modelSwitch.confirm', 'st.modelSwitch.rulesTitle', 'st.modelSwitch.ruleFrom'], synonyms: ['模型切换', 'model switch', 'switch model', '换模型', '切换方式', '全新上下文', 'fresh context', '压缩后切换', 'exception rule', '例外规则'] },
   { section: 'ai', tab: 'identity', cardId: 'st-card-request-identity', titleKey: 'st.requestIdentity.defaultTitle', keywordKeys: ['st.requestIdentity.defaultLabel', 'st.requestIdentity.defaultHint'], synonyms: ['请求身份', 'request identity', 'User-Agent', 'UA', 'header', '请求头', 'fingerprint', '指纹'] },
@@ -2496,7 +2503,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'connection-services', cardId: 'st-card-conn-external', titleKey: 'st.conn.ext.title', keywordKeys: ['st.conn.ext.intro', 'st.conn.ext.notInstalled'], synonyms: ['cloudflare', 'tunnel', '隧道', 'external connection', '外部连接'] },
   { section: 'connection-services', cardId: 'st-card-external-clients', titleKey: 'st.section.externalClients', keywordKeys: ['st.xc.localTitle', 'st.xc.remoteTitle', 'st.xc.listenerTitle', 'st.xc.authTitle', 'st.xc.intro', 'st.xc.workspace', 'st.xc.tools'], synonyms: ['external client', '外部客户端', 'mcp client', 'stdio client', 'connection services', '连接服务', 'remote access', '远程接入', 'ChatGPT', 'chatgpt', '客户端', 'client', '连接客户端', 'stdio', '反向', 'reverse mcp', '外部调用'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-auth', titleKey: 'st.connections.addTitle', keywordKeys: ['st.auth.signIn', 'st.account.signIn', 'st.connect.accountTitle'], synonyms: ['提供商', '供应商', 'provider', '认证', '登录', 'sign in', '账号', 'account', '订阅', 'subscription'] },
-  { section: 'ai', tab: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty', 'st.images.acceptedTypes', 'st.images.convertUnsupported', 'st.quota.intro', 'st.quota.refresh'], synonyms: ['提供商', '供应商', 'provider', 'image policy', '图片策略', '图片类型', '图片转换', 'accepted image types', 'convert unsupported', '额度', '配额', 'quota', 'limit', '限额', 'Kimi Code', '订阅', 'subscription'] },
+  { section: 'ai', tab: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty', 'st.images.acceptedTypes', 'st.images.convertUnsupported', 'st.quota.intro', 'st.quota.refresh'], synonyms: ['提供商', '供应商', 'provider', 'image policy', '图片策略', '图片类型', '图片转换', 'accepted image types', 'convert unsupported', '额度', '配额', 'quota', 'limit', '限额', 'Kimi Code', '订阅', 'subscription', '模型目录', 'model catalog', '模型列表', 'model editing', '模型编辑', '模型参数', 'model parameters', 'remote id', '远端模型 ID', 'Recipe', '思考强度', 'thinking effort'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'], synonyms: ['提供商', '供应商', 'provider'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-catalog-import', titleKey: 'st.catalog.title', keywordKeys: ['st.catalog.intro', 'st.catalog.searchPlaceholder'], synonyms: ['models.dev', '目录', 'catalog', 'directory', '导入', 'import', '提供商', 'provider'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-engines', titleKey: 'st.engines.title', keywordKeys: ['st.engines.intro', 'st.engines.check'], synonyms: ['外部引擎', 'executor', 'harness', 'Codex', 'Claude Code', 'Grok Build', 'ACP'] },
@@ -2523,6 +2530,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'memory', cardId: 'st-card-memory', titleKey: 'st.memory.title', keywordKeys: ['st.memory.hint', 'memory.toggle', 'st.memory.approval', 'st.memory.budget', 'st.memory.open'], synonyms: ['memory', '记忆', 'remember', '长期记忆', 'memory approval', '记忆审批'] },
   { section: 'memory', cardId: 'st-card-memory-workspaces', titleKey: 'st.memory.workspaces', keywordKeys: ['memory.ws.label', 'memory.ws.follow', 'memory.ws.off'], synonyms: ['memory workspace', '工作区记忆', '记忆覆盖'] },
   { section: 'notifications', cardId: 'st-card-notify-rules', titleKey: 'st.notify.rulesTitle', keywordKeys: ['st.notify.enabled', 'st.notify.quiet', 'st.notify.viewing', 'st.notify.minWork'], synonyms: ['notification', '通知', 'do not disturb', '免打扰', 'quiet hours', 'nb-im', 'nb_im'] },
+  { section: 'notifications', cardId: 'st-card-notify-scenes', titleKey: 'st.notify.matrixTitle', keywordKeys: ['st.notify.scene.work_complete', 'st.notify.scene.question_pending', 'st.notify.scenes'], synonyms: ['scene', '场景', '何时提醒', 'when to notify', 'question pending', '等待回答', 'work complete', '工作完成'] },
   { section: 'notifications', cardId: 'st-card-im-session', titleKey: 'st.im.title', keywordKeys: ['st.im.hint', 'st.im.check', 'st.im.busy', 'st.im.actions'], synonyms: ['phone', 'pairing', 'telegram', '手机', '配对', '双向'] },
   { section: 'notifications', cardId: 'st-card-notify-channels', titleKey: 'st.notify.channelsTitle', keywordKeys: ['st.notify.add', 'st.notify.test', 'st.notify.check', 'st.notify.deliveries'], synonyms: ['telegram', 'wecom', '企业微信', '企微', 'dingtalk', '钉钉', 'feishu', '飞书', 'discord', 'slack', 'webhook', 'IM', '推送'] },
   { section: 'notifications', cardId: 'st-card-notify-add', titleKey: 'st.notify.addTitle', keywordKeys: ['st.notify.choose', 'st.notify.provider', 'st.notify.newConnection'], synonyms: ['add channel', '添加通道', 'new channel', '新建通道', 'bot', '机器人'] },
@@ -2674,6 +2682,9 @@ export const LEGACY_SETTINGS_SECTION_ALIASES: Readonly<Record<string, string>> =
 
 /** Dissolved cards keep a bookmark to their nearest active control. */
 export const LEGACY_CARD_ALIASES: Readonly<Record<string, { readonly section: string; readonly cardId: string }>> = {
+  // The cross-provider model list retired with the Models tab; each model is
+  // edited inside its connection now.
+  'st-card-models': { section: 'ai', cardId: 'st-card-providers' },
   'st-card-sidecar': { section: 'agents', cardId: 'st-card-subagent-limits' },
   'st-card-subagent-timeout': { section: 'agents', cardId: 'st-card-subagent-limits' },
   'st-card-subagent-profiles': { section: 'agents', cardId: 'st-card-main-agents' },
@@ -2703,7 +2714,7 @@ export const LEGACY_CARD_ALIASES: Readonly<Record<string, { readonly section: st
 
 /** Which tab a legacy section bookmark maps to. */
 const LEGACY_SECTION_TABS: Readonly<Record<string, SettingsTab>> = {
-  models: 'models',
+  models: 'providers',
   providers: 'providers',
   identity: 'identity',
   subagents: 'dispatch',
@@ -2742,7 +2753,7 @@ export function settingsTabForCard(cardId: string): SettingsTab | undefined {
  *   hash names a card that now lives elsewhere, the card wins, because the
  *   link predates a content move and the card is the precise half of it.
  * - Tabbed entries carry a tab: an explicit card hash picks its owning tab,
- *   otherwise the legacy section's own tab mapping applies (`models → tab=models`,
+ *   otherwise the legacy section's own tab mapping applies (`models → tab=providers`,
  *   `providers → tab=providers`, `identity → tab=identity`, `subagents → tab=dispatch`,
  *   `skills → tab=skills`, `mcp → tab=mcp`, `plugins → tab=plugins`,
  *   `computer-control → tab=computer`).

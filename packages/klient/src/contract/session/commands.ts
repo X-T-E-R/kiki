@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { CallOptions } from '../../core/channel.js';
 import {
   approvalResolveRequestSchema, approvalResolveResultSchema,
   cancelTaskQuerySchema, cancelTaskResultSchema, taskAlreadyFinishedDataSchema,
@@ -41,5 +42,5 @@ export const sessionCommandContract = {
 export type SessionCommandName = keyof typeof sessionCommandContract;
 
 export interface SessionCommandChannel {
-  execute(sessionId: string, command: SessionCommandName, input: unknown): Promise<unknown>;
+  execute(sessionId: string, command: SessionCommandName, input: unknown, options?: CallOptions): Promise<unknown>;
 }

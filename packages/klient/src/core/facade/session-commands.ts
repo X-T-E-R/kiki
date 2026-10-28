@@ -6,11 +6,12 @@ import type {
   QuestionResolveResult, RegenerateMessageRequest, Session,
 } from '@kiki/protocol';
 import type { z } from 'zod';
+import type { CallOptions } from '../channel.js';
 import { sessionCommandContract, type SessionCommandChannel, type SessionCommandName } from '../../contract/session/commands.js';
 import { KlientValidationError } from '../validation.js';
 
 export interface SessionCommandsFacade {
-  read(): Promise<Session>;
+  read(options?: CallOptions): Promise<Session>;
   submit(body: PromptSubmission): Promise<PromptSubmitResult>;
   edit(messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult>;
   regenerate(messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
@@ -39,16 +40,16 @@ export function createSessionCommandsFacade(channel: SessionCommandChannel | und
     if (!result.success) throw new KlientValidationError(phase, name, result.error.issues, value);
     return result.data;
   };
-  const invoke = async <T>(command: SessionCommandName, input: unknown): Promise<T> => {
+  const invoke = async <T>(command: SessionCommandName, input: unknown, options?: CallOptions): Promise<T> => {
     if (channel === undefined) throw new Error('session commands are unavailable on this transport');
     const contract = sessionCommandContract[command];
     const name = `session.commands.${command}`;
     const wireInput = validate ? parse('input', name, contract.input, input) : input;
-    const result = await channel.execute(sessionId, command, wireInput);
+    const result = await channel.execute(sessionId, command, wireInput, options);
     return (validate ? parse('output', name, contract.output, result) : result) as T;
   };
   return {
-    read: () => invoke('read', {}),
+    read: (options) => invoke('read', {}, options),
     submit: (body) => invoke('submit', { body }),
     edit: (target, body) => invoke('edit', { target, body }),
     regenerate: (target, body) => invoke('regenerate', { target, body }),

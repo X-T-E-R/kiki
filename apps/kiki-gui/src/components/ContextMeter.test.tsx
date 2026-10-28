@@ -184,6 +184,126 @@ describe('canonical current-agent cumulative usage', () => {
     await act(async () => { root.unmount(); });
   });
 
+  it('reads main-session accounting, aborts on session switch and close, and marks the known subtotal', async () => {
+    const first = deferred<Record<string, unknown>>();
+    const second = deferred<Record<string, unknown>>();
+    const signals: AbortSignal[] = [];
+    canonicalMocks.connection = {
+      spaceKey: 'main',
+      scopeId: 'local',
+      client: { getSession: canonicalMocks.read },
+    };
+    canonicalMocks.read.mockImplementation((id: string, options: { signal: AbortSignal }) => {
+      signals.push(options.signal);
+      return id === 'session_a' ? first.promise : second.promise;
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    const usage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      total_cost_usd: 0,
+    };
+    await act(async () => {
+      root.render(
+        <I18nProvider><MemoryRouter>
+          <ContextMeter used={40_000} limit={200_000} sessionId="session_a" usage={usage} />
+        </MemoryRouter></I18nProvider>,
+      );
+    });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+    expect(canonicalMocks.read).toHaveBeenCalledWith('session_a', { signal: expect.any(AbortSignal) });
+    first.resolve({
+      id: 'session_a',
+      usage: {
+        ...usage,
+        accounting: {
+          version: 2,
+          subject: { session_id: 'session_a', scope: 'session' },
+          covered_at: 1,
+          complete: true,
+          tokens: { input_other: 10, output: 0, input_cache_read: 0, input_cache_creation: 0 },
+          tokens_unknown: true,
+          cost_usd_estimated: 0.01,
+          cost_unknown: true,
+        },
+      },
+    });
+    await act(async () => { await first.promise; });
+    const detail = container.querySelector('[data-context-usage]');
+    expect(detail?.textContent).toContain('Input10');
+    expect(detail?.textContent).toContain('$0.010');
+    expect(detail?.querySelector('[data-usage-accounting-known-subtotal]')).not.toBeNull();
+
+    await act(async () => {
+      root.render(
+        <I18nProvider><MemoryRouter>
+          <ContextMeter used={40_000} limit={200_000} sessionId="session_b" usage={usage} />
+        </MemoryRouter></I18nProvider>,
+      );
+    });
+    expect(signals[0]?.aborted).toBe(true);
+    await act(async () => { await Promise.resolve(); });
+    expect(signals).toHaveLength(2);
+    expect(signals[1]?.aborted).toBe(false);
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+    expect(signals[1]?.aborted).toBe(true);
+    await act(async () => { root.unmount(); });
+  });
+
+  it('keeps child-agent usage self-scoped without reading the session record', async () => {
+    const agentRead = vi.fn().mockResolvedValue(canonicalResponse('child_7', {
+      inputTokens: 9,
+      outputTokens: 1,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      totalTokens: 10,
+      totalCostUsd: null,
+      contextTokens: null,
+      contextLimit: null,
+      compactionCount: null,
+    }));
+    canonicalMocks.connection = {
+      spaceKey: 'main',
+      scopeId: 'local',
+      client: { getSession: canonicalMocks.read },
+      klient: { global: { agentPanel: { read: agentRead } } },
+    };
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    const queryClient = new QueryClient();
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider><MemoryRouter>
+            <ContextMeter
+              used={40_000}
+              limit={200_000}
+              sessionId="session_a"
+              agentId="child_7"
+              usageScope="agent"
+              usage={{ input_tokens: 9, output_tokens: 1, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: null }}
+            />
+          </MemoryRouter></I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(canonicalMocks.read).not.toHaveBeenCalled();
+    expect(agentRead).toHaveBeenCalled();
+    expect(container.querySelector('[data-context-usage]')?.textContent).toContain('Agent cumulative');
+    expect(container.querySelector('[data-context-usage]')?.textContent).toContain('Input9');
+    await act(async () => { root.unmount(); });
+    queryClient.clear();
+  });
+
   it('keeps refreshing live numbers through the own header after settle coverage completes', async () => {
     vi.useFakeTimers();
     let root: Root | undefined;
@@ -662,7 +782,7 @@ describe('ContextMeter interaction', () => {
           <ContextMeter
             used={40_000}
             limit={200_000}
-            usage={{ input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: null }}
+            usage={{ input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: 0 }}
             usageError="read-failed"
           />
         </I18nProvider>,
@@ -678,6 +798,7 @@ describe('ContextMeter interaction', () => {
     // The zeros the server falls back to are placeholders, not a measurement.
     expect(usage?.textContent).not.toContain('Input');
     expect(usage?.textContent).not.toContain('Total tokens');
+    expect(usage?.textContent).not.toContain('$0.00');
     await act(async () => { root.unmount(); });
   });
 

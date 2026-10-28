@@ -6,13 +6,16 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ErrorCode } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
+import { ApiError } from '../lib/client';
 import { USAGE_FILTERS_STORAGE_KEY, type UsageResponseWire } from '../lib/usageV2';
 import { UsagePage } from './UsagePage';
 import { usagePanelFromSearch } from './UsageNavigation';
 import { detectActiveAnchors, resolveAnchorElement } from './discovery/DiscoveryContext';
 import { subscribeUsageFreshness } from '../lib/usageFreshness';
 import { writeLastSessionId } from '@kiki/session-core/settings';
+import { configureSpaceStorage } from '@kiki/session-core/storage';
 import type { Klient } from '@kiki/klient';
 
 const containers: HTMLDivElement[] = [];
@@ -192,6 +195,12 @@ function LocationProbe() {
   return <span data-location-probe>{`${location.pathname}${location.search}`}</span>;
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
 async function renderPage(entry = '/usage?panel=history', options: { flush?: boolean } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const container = document.createElement('div');
@@ -244,6 +253,7 @@ function mainCalls() {
 }
 
 beforeEach(() => {
+  configureSpaceStorage(null);
   localStorage.clear();
   getUsage.mockReset();
   getUsageRescan.mockReset();
@@ -395,6 +405,116 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
     queryClient.clear();
   });
+  it('keeps live session usage errors honest and follows last-session writes in the active space', async () => {
+    configureSpaceStorage({ homeId: 'space-a' });
+    writeLastSessionId('session-a');
+    getSession.mockImplementation(async (id: string) => id === 'session-a'
+      ? {
+          id,
+          title: 'Failed session',
+          usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: 0 },
+          usage_error: 'read-failed',
+        }
+      : {
+          id,
+          title: 'Partial session',
+          usage: { input_tokens: 200, output_tokens: 20, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: 1.25 },
+          usage_error: 'agent-read-failed',
+        });
+    const { container, root } = await renderPage('/usage?panel=history');
+    await openLiveStrip(container);
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-usage-strip-current-cost]')?.textContent).toContain('—');
+    expect(container.querySelector('[data-usage-strip-current-cost]')?.textContent).not.toContain('$0.00');
+
+    configureSpaceStorage({ homeId: 'space-b' });
+    writeLastSessionId('session-b');
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(getSession.mock.calls.at(-1)?.[0]).toBe('session-b');
+    expect(getSession.mock.calls.at(-1)?.[1]).toEqual({ signal: expect.any(AbortSignal) });
+    expect(container.querySelector('[data-usage-strip]')?.textContent).toContain('Partial session');
+    expect(container.querySelector('[data-usage-strip-current-cost]')?.textContent).toContain('$1.25');
+    expect(container.querySelector('[data-usage-strip-current-cost] [data-usage-accounting-known-subtotal]')).not.toBeNull();
+    await act(async () => { root.unmount(); });
+    configureSpaceStorage(null);
+  });
+
+  it('keeps live accounting subtotal and cost unknown independent', async () => {
+    writeLastSessionId('accounting-session');
+    getSession.mockResolvedValue({
+      id: 'accounting-session',
+      title: 'Accounting session',
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        total_cost_usd: 0,
+        accounting: {
+          version: 2,
+          subject: { session_id: 'accounting-session', scope: 'session' },
+          covered_at: 1,
+          complete: true,
+          tokens: { input_other: 10, output: 0, input_cache_read: 0, input_cache_creation: 0 },
+          tokens_unknown: true,
+          cost_usd_estimated: 1.25,
+          cost_unknown: true,
+        },
+      },
+    });
+    const { container, root } = await renderPage('/usage?panel=history');
+    await openLiveStrip(container);
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const currentCost = container.querySelector('[data-usage-strip-current-cost]');
+    expect(currentCost?.textContent).toContain('$1.25');
+    expect(currentCost?.querySelector('[data-usage-accounting-known-subtotal]')).not.toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('aborts a superseded live session read and ignores its late result', async () => {
+    writeLastSessionId('session-a');
+    const first = deferred<Record<string, unknown>>();
+    const second = deferred<Record<string, unknown>>();
+    const signals = new Map<string, AbortSignal>();
+    getSession.mockImplementation((id: string, options?: { signal?: AbortSignal }) => {
+      if (options?.signal !== undefined) signals.set(id, options.signal);
+      return id === 'session-a' ? first.promise : second.promise;
+    });
+    const { container, root } = await renderPage('/usage?panel=history');
+    await openLiveStrip(container);
+    expect(getSession).toHaveBeenCalledTimes(1);
+    writeLastSessionId('session-b');
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(signals.get('session-a')?.aborted).toBe(true);
+    expect(signals.get('session-b')?.aborted).toBe(false);
+    first.resolve({ id: 'session-a', title: 'Old session', usage: { total_cost_usd: 1 } });
+    second.resolve({ id: 'session-b', title: 'New session', usage: { total_cost_usd: 2 } });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-usage-strip]')?.textContent).toContain('New session');
+    expect(container.querySelector('[data-usage-strip]')?.textContent).not.toContain('Old session');
+    expect(container.querySelector('[data-usage-strip-current-cost]')?.textContent).toContain('$2.00');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('aborts the live session read when leaving the history panel', async () => {
+    writeLastSessionId('session-a');
+    let signal: AbortSignal | undefined;
+    getSession.mockImplementation((_id: string, options?: { signal?: AbortSignal }) => {
+      signal = options?.signal;
+      return new Promise<Record<string, unknown>>(() => {});
+    });
+    const { container, root } = await renderPage('/usage?panel=history');
+    await openLiveStrip(container);
+    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(signal?.aborted).toBe(false);
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-usage-panel="realtime"]')!.click();
+      await Promise.resolve();
+    });
+    expect(signal?.aborted).toBe(true);
+    await act(async () => { root.unmount(); });
+  });
+
   it('opens realtime by default and keeps historical reads out of the first screen', async () => {
     const { container, root } = await renderPage('/usage');
     expect([...container.querySelectorAll<HTMLElement>('[data-usage-panel]')].map((node) => node.dataset['usagePanel'])).toEqual(['realtime', 'history', 'quota', 'export']);
@@ -885,6 +1005,33 @@ describe('UsagePage (V2)', () => {
     expect(container.querySelector('[data-usage-session="s_2"]')).not.toBeNull();
   });
 
+  it('drops a stale page token and refetches only the first page on 40922', async () => {
+    let firstPage = true;
+    getUsage.mockImplementation(async (query: Record<string, unknown>) => {
+      if (query['page_size'] === 1) return usageResponse();
+      if (query['page_token'] === undefined) {
+        if (firstPage) {
+          firstPage = false;
+          return usageResponse({ hasMore: true, nextPageToken: 'stale-token', sessions: [{ id: 'stale-first' }] });
+        }
+        return usageResponse({ sessions: [{ id: 'fresh-first' }] });
+      }
+      throw new ApiError({ code: ErrorCode.PAGE_TOKEN_MISMATCH, msg: 'stale page token', data: null });
+    });
+    const { container, root } = await renderPage('/usage?range=this_week&view=sessions');
+    const more = container.querySelector<HTMLButtonElement>('[data-usage-load-more]');
+    expect(more).not.toBeNull();
+    await act(async () => { more!.click(); });
+    for (let i = 0; i < 10; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const pageCalls = getUsage.mock.calls
+      .filter(([query]) => (query as Record<string, unknown>)['page_size'] === 25)
+      .map(([query]) => (query as Record<string, unknown>)['page_token']);
+    expect(pageCalls).toEqual([undefined, 'stale-token', undefined]);
+    expect(container.querySelector('[data-usage-session="fresh-first"]')).not.toBeNull();
+    expect(container.querySelector('[data-usage-session="stale-first"]')).toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
   it('auto-pages until a deep-linked session on a later page is found', async () => {
     getUsage.mockImplementation(async (query: Record<string, unknown>) => {
       if (query['page_size'] === 1) return usageResponse();
@@ -1317,6 +1464,18 @@ describe('UsagePage (V2)', () => {
     expect(traceCall['range']).toBe('custom');
     expect(Number(traceCall['start_at'])).toBeGreaterThan(0);
     expect(Number(traceCall['end_at']) - Number(traceCall['start_at'])).toBe(7 * 86_400_000);
+    await act(async () => { root.unmount(); });
+  });
+
+  it('marks a trace summary cost subtotal when pricing is incomplete', async () => {
+    getUsage.mockImplementation(async () => usageResponse({ costUnknown: true, tokensUnknown: true, summaryCost: 2, unknownPriceModels: ['example-model'] }));
+    const { container, root } = await renderPage('/usage?range=last_7_days');
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-usage-open-sessions]')!.click(); });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const total = document.body.querySelector('[data-usage-trace-total]');
+    expect(total?.textContent).toContain('$2.00');
+    expect(total?.querySelector('[data-usage-accounting-known-subtotal]')).not.toBeNull();
     await act(async () => { root.unmount(); });
   });
 

@@ -24,7 +24,7 @@ import { createContext, useContext, useEffect, useId, useRef, useState, type Rea
 
 import { Link } from 'react-router-dom';
 
-import type { SessionUsageError } from '@kiki/protocol';
+import type { SessionUsageError, UsageAccountingSnapshot } from '@kiki/protocol';
 
 import { sessionActionErrorText } from '@kiki/session-core/commands';
 import { formatCostUsd } from '@kiki/session-core/util';
@@ -34,6 +34,8 @@ import { compactUsageLevel } from '../lib/autoCompact';
 import { pushToast } from '../lib/toasts';
 import { usageSessionDeepLink } from '../lib/usageV2';
 import { useCanonicalAgentUsage } from './agent-panel/useCanonicalAgentUsage';
+import { useCanonicalSessionUsage } from './agent-panel/useCanonicalSessionUsage';
+import { KnownSubtotalMarker } from './usage/usageShared';
 import { ContextCompactSection, type ContextCompactSectionProps } from './ContextCompactSection';
 import { COMPOSER_PANEL_END, useComposerPanelAnchor, usePopoverDismiss } from './ComposerControls';
 import { ContextStrategySection, STRATEGY_LABEL_KEY } from './ContextStrategySection';
@@ -83,6 +85,7 @@ export type ContextMeterUsage = {
   readonly cache_read_tokens: number | null;
   readonly cache_creation_tokens: number | null;
   readonly total_cost_usd: number | null;
+  readonly accounting?: UsageAccountingSnapshot;
 };
 
 /** Percentage (0-100, clamped) of the context window in use. */
@@ -197,16 +200,28 @@ export function ContextMeter({
   const detailsId = useId();
   const [open, setOpen] = useState(false);
   const canonicalUsage = useCanonicalAgentUsage({ open, sessionId, agentId });
+  const canonicalSession = useCanonicalSessionUsage(open, sessionId, agentId);
   const hasCanonicalIdentity = canonicalUsage.hasIdentity;
-  const detailUsage = hasCanonicalIdentity ? canonicalUsage.usage : usage;
+  const sessionUsage = canonicalSession.active ? canonicalSession.usage ?? usage : usage;
+  const sessionAccounting = sessionUsage?.accounting;
+  const detailUsage = hasCanonicalIdentity ? canonicalUsage.usage : sessionAccounting === undefined ? sessionUsage : {
+    input_tokens: sessionAccounting.tokens.input_other,
+    output_tokens: sessionAccounting.tokens.output,
+    cache_read_tokens: sessionAccounting.tokens.input_cache_read,
+    cache_creation_tokens: sessionAccounting.tokens.input_cache_creation,
+    total_cost_usd: sessionAccounting.cost_usd_estimated,
+  };
   const detailUsageError: SessionUsageError | undefined = hasCanonicalIdentity
     ? canonicalUsage.state === 'error'
       ? 'read-failed'
       : canonicalUsage.partial
         ? 'agent-read-failed'
         : undefined
-    : usageError;
-  const canonicalUsageLoading = hasCanonicalIdentity && canonicalUsage.state === 'loading' && detailUsage === undefined;
+    : canonicalSession.error ? 'read-failed' : sessionAccounting !== undefined
+      ? sessionAccounting.tokens_unknown || !sessionAccounting.complete ? 'agent-read-failed' : undefined
+      : usageError;
+  const costUnknown = hasCanonicalIdentity ? canonicalUsage.partial : sessionAccounting?.cost_unknown === true;
+  const canonicalUsageLoading = hasCanonicalIdentity && canonicalUsage.state === 'loading' && detailUsage === undefined || canonicalSession.loading && sessionAccounting === undefined;
   const canonicalUsageUnknown = hasCanonicalIdentity && canonicalUsage.state === 'unavailable';
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -430,6 +445,7 @@ export function ContextMeter({
                       <dt className="text-ink-faint">{t('usage.card.cost')}</dt>
                       <dd className="font-mono text-ink tabular-nums">
                         {detailUsage.total_cost_usd === null ? t('diagnostics.unknown') : formatCostUsd(detailUsage.total_cost_usd)}
+                        {costUnknown && detailUsage.total_cost_usd !== null ? <KnownSubtotalMarker /> : null}
                       </dd>
                     </div>
                   ) : null}

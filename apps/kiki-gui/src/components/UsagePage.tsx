@@ -27,11 +27,13 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
-import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
+import { ErrorCode, type Session, type WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { readLastSessionId } from '@kiki/session-core/settings';
+import { spaceStorageKey } from '@kiki/session-core/storage';
 import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
+import { ApiError } from '../lib/client';
 import { RequestGovernanceView } from './RequestGovernanceView';
 import { UsageNavigation, usagePanelFromSearch, type UsagePanel } from './UsageNavigation';
 import { UsageExportPanel } from './usage/export/UsageExportPanel';
@@ -143,14 +145,29 @@ function localDateKey(nowMs: number): string {
  */
 function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWire; enabled: boolean }) {
   const { client } = useConnection();
+  const queryClient = useQueryClient();
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [lastSessionId, setLastSessionId] = useState<string | undefined>(() => readLastSessionId());
   useEffect(() => {
     if (!open) return;
     const timer = window.setInterval(() => { setNowMs(Date.now()); }, 60_000);
     return () => { window.clearInterval(timer); };
   }, [open]);
+  useEffect(() => {
+    const syncLastSession = (event?: StorageEvent) => {
+      const key = event?.key;
+      const currentKey = spaceStorageKey('kiki.lastSessionId');
+      if (key !== undefined && key !== null && key !== 'kiki.lastSessionId' && key !== currentKey && !key.startsWith('kiki.space.')) return;
+      const next = readLastSessionId();
+      setLastSessionId((current) => current === next ? current : next);
+    };
+    const onStorage = (event: StorageEvent) => { syncLastSession(event); };
+    window.addEventListener('storage', onStorage);
+    syncLastSession();
+    return () => { window.removeEventListener('storage', onStorage); };
+  }, []);
 
   const todayQuery = useQuery({
     queryKey: ['usage-v2-strip', localDateKey(nowMs), browserTimezoneOffsetMinutes()],
@@ -166,21 +183,32 @@ function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWi
     refetchInterval: enabled && open ? 60_000 : false,
     staleTime: 30_000,
   });
-  const lastSessionId = useMemo(() => readLastSessionId(), []);
   const sessionQuery = useQuery({
     queryKey: ['usage-v2-strip-session', lastSessionId],
-    queryFn: () => client.getSession(lastSessionId!),
+    queryFn: ({ signal }) => client.getSession(lastSessionId!, { signal }),
     enabled: open && lastSessionId !== undefined,
     retry: false,
     staleTime: 30_000,
   });
+  useEffect(() => {
+    return () => { void queryClient.cancelQueries({ queryKey: ['usage-v2-strip-session', lastSessionId] }); };
+  }, [lastSessionId, queryClient]);
+  useEffect(() => {
+    if (open) return;
+    void queryClient.cancelQueries({ queryKey: ['usage-v2-strip-session', lastSessionId] });
+  }, [lastSessionId, open, queryClient]);
 
   const today = (todayResponse ?? todayQuery.data)?.summary;
   const todayTokenTotalUnknown = today !== undefined && usageTokenTotalIsUnknown(today);
   const todayHasUnknownSubtotal = today !== undefined && !todayTokenTotalUnknown && today.tokens_unknown === true;
+  const todayHasUnknownCost = today !== undefined && today.cost_unknown === true;
   const knownTodayTokens = today === undefined || todayTokenTotalUnknown ? undefined : totalTokensOf(today);
   const rate = knownTodayTokens !== undefined ? burnRatePerHour(knownTodayTokens, nowMs) : undefined;
-  const current: Session | undefined = open ? sessionQuery.data : undefined;
+  const current: Session | undefined = open && sessionQuery.data?.id === lastSessionId ? sessionQuery.data : undefined;
+  const currentAccounting = current?.usage?.accounting;
+  const currentCost = currentAccounting?.cost_usd_estimated ?? (typeof current?.usage?.total_cost_usd === 'number' ? current.usage.total_cost_usd : undefined);
+  const currentUsageError = currentAccounting === undefined ? current?.usage_error : undefined;
+  const currentCostUnknown = currentAccounting?.cost_unknown === true || currentAccounting?.complete === false || currentUsageError === 'agent-read-failed';
 
   const item = (label: string, value: ReactNode) => (
     <span className="flex min-w-0 items-baseline gap-1.5">
@@ -208,8 +236,9 @@ function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWi
               <span className="min-w-0 max-w-64 truncate text-ink">
                 <ThreadTitle text={current.title.trim() !== '' ? current.title : t('sidebar.untitled')} />
               </span>
-              <span className="shrink-0 font-mono text-ink-soft tabular-nums">
-                {formatCostUsd(current.usage.total_cost_usd)}
+              <span data-usage-strip-current-cost className="shrink-0 font-mono text-ink-soft tabular-nums">
+                {currentUsageError === 'read-failed' || currentCost === undefined ? '—' : formatCostUsd(currentCost)}
+                {currentCostUnknown && currentCost !== undefined ? <KnownSubtotalMarker /> : null}
               </span>
             </>
           ) : (
@@ -220,7 +249,7 @@ function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWi
               {todayTokenTotalUnknown ? '—' : time.formatTokens(totalTokensOf(today))}
               {' · '}
               {todayTokenTotalUnknown ? '—' : formatCostUsd(today.cost_usd_estimated)}
-              {todayHasUnknownSubtotal ? <KnownSubtotalMarker /> : null}
+              {todayHasUnknownSubtotal || todayHasUnknownCost ? <KnownSubtotalMarker /> : null}
             </span>
           ) : (
             <span className="text-ink-faint">…</span>
@@ -960,6 +989,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
         { signal },
       ),
     initialPageParam: undefined as string | undefined,
+    retry: false,
     getNextPageParam: (lastPage) =>
       lastPage.sessions.has_more ? (lastPage.sessions.next_page_token ?? undefined) : undefined,
     refetchInterval: (query) => {
@@ -969,6 +999,13 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       return unfinished ? 250 : reuseTodaySummary ? 60_000 : false;
     },
   });
+  const recoveredPageError = useRef<unknown>(undefined);
+  useEffect(() => {
+    const error = usageQuery.error;
+    if (!usageQuery.isFetchNextPageError || !(error instanceof ApiError) || error.code !== ErrorCode.PAGE_TOKEN_MISMATCH || recoveredPageError.current === error) return;
+    recoveredPageError.current = error;
+    void queryClient.resetQueries({ queryKey: ['usage-v2', filters, localUsageDate, timezoneOffsetMinutes], exact: true });
+  }, [usageQuery.error, usageQuery.isFetchNextPageError, queryClient, filters, localUsageDate, timezoneOffsetMinutes]);
   // A session locator must find its target beyond the first page: keep
   // pulling pages until it appears or the set is exhausted (a failed page
   // stops the walk).

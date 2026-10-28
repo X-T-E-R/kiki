@@ -151,7 +151,8 @@ export function UsageSessionPanel({
             <div>
               <dt className="text-[11.5px] text-ink-faint">{t('usage.sources.windowTotal')}</dt>
               <dd data-usage-trace-total className="font-mono text-[18px] text-ink tabular-nums">
-                {usageTokenTotalIsUnknown(summary) ? '—' : formatCostUsd(summary.cost_usd_estimated)}
+                {formatCostUsd(summary.cost_usd_estimated)}
+                {summary.cost_unknown ? <KnownSubtotalMarker /> : null}
               </dd>
             </div>
             <div>

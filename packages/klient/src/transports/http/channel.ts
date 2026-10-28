@@ -166,7 +166,7 @@ export class HttpChannel implements KlientChannel {
   };
 
   readonly sessionCommands: SessionCommandChannel = {
-    execute: async (sessionId, command, input) => {
+    execute: async (sessionId, command, input, options) => {
       const spec = sessionCommandContract[command];
       const value = input as {
         target?: string;
@@ -181,7 +181,8 @@ export class HttpChannel implements KlientChannel {
           method: spec.method,
           body: spec.method === 'GET' ? undefined : value.body ?? {},
           okCodes: spec.okCodes,
-          timeoutMs: 'timeoutMs' in spec ? spec.timeoutMs : undefined,
+          timeoutMs: options?.timeoutMs ?? ('timeoutMs' in spec ? spec.timeoutMs : undefined),
+          signal: options?.signal,
         },
       );
       if (command === 'submit' && result !== null && typeof result === 'object' && !('content' in result)) {

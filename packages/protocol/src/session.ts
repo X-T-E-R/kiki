@@ -9,6 +9,7 @@ import {
 import { personaAvatarDataSchema } from './rest/persona';
 import { isoDateTimeSchema } from './time';
 import { workspaceIdSchema } from './workspace';
+import { usageAccountingSnapshotSchema } from './rest/usage';
 
 export const sessionUsageSchema = z.object({
   input_tokens: z.number().int().nonnegative(),
@@ -19,6 +20,7 @@ export const sessionUsageSchema = z.object({
   tokens_by_model: z.record(z.string(), z.number().int().nonnegative()).optional(),
   by_model: z.record(z.string(), z.number().nonnegative()).optional(),
   cost_unknown_models: z.array(z.string()).optional(),
+  accounting: usageAccountingSnapshotSchema.optional(),
   context_tokens: z.number().int().nonnegative(),
   context_limit: z.number().int().nonnegative(),
   turn_count: z.number().int().nonnegative(),

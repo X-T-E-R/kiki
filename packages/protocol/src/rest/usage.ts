@@ -69,6 +69,16 @@ export const usageAggregateSchema = z.object({
   cost_unknown: z.boolean(),
 });
 
+export const usageAccountingSnapshotSchema = usageAggregateSchema.extend({
+  version: z.literal(2),
+  subject: z.object({ session_id: z.string(), agent_id: z.string().optional(), scope: z.enum(['self', 'descendants', 'session']) }),
+  source_revision: z.string().optional(),
+  covered_at: z.number().nonnegative(),
+  complete: z.boolean(),
+});
+
+export type UsageAccountingSnapshot = z.infer<typeof usageAccountingSnapshotSchema>;
+
 export const usageGroupSchema = usageAggregateSchema.extend({
   key: z.string(),
   provider: z.string().nullable(),
