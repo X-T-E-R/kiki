@@ -152,7 +152,7 @@ When a scan has not finished, the page says so and shows only the counted subtot
 
 Token usage and estimated cost each carry their own completeness marker. If a provider returned no usage, Kiki shows that as unknown rather than as a real zero, and mixed results show the recorded subtotal with an incomplete-accounting notice. A missing model price affects the cost estimate only, never the recorded token count. **Data reliability** tells these cases apart from an empty range or a failed request.
 
-The context card's cumulative tokens and cost refer to the current agent, including when that agent is the main agent. They use the same totals as **This agent** in the right panel; **Whole tree** includes its descendants. The context-window gauge is separate: it measures the current engine's occupied window, not cumulative billing tokens or a sum of agent windows.
+In the main conversation, the context card's cumulative tokens and cost cover the whole session. In a subagent conversation, they cover that subagent only. The right panel's **This agent** view covers the selected agent alone, while **Whole tree** also includes its descendants. The context-window gauge is separate: it measures the current engine's occupied window, not cumulative billing tokens or a sum of agent windows.
 
 ## Context compression
 

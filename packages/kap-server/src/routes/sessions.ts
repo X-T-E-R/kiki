@@ -61,6 +61,7 @@ import {
   type Scope,
   type SessionSummary,
   type SessionUsageSummary,
+  type UsageFactTotals,
   type Workspace,
 } from '@kiki/agent-core-v2';
 import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
@@ -110,6 +111,7 @@ import {
   type ModelTokenUsage,
 } from '../pricing/modelPricingService';
 import { readLegacyStatus } from '../services/legacyStatus/legacyStatus';
+import { usageRuntime } from '../usage/usageRuntime';
 import type { LeaseRegistry } from '../services/leaseRegistry';
 import { loadMessageHistoryEntries } from '../services/messages/messageHistory';
 import {
@@ -824,7 +826,7 @@ export function registerSessionsRoutes(
         );
         return;
       }
-      const facts = await resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage);
+      const facts = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage, undefined, signal));
       reply.send(
         okEnvelope(
           toWireSession(
@@ -1713,8 +1715,21 @@ export async function resolveSessionBindingFacts(
   workspaceId: string,
   persistedUsage?: SessionUsageSummary,
   metadata?: AgentMeta,
+  signal?: AbortSignal,
+  options: { readonly includeAccounting?: boolean } = {},
 ): Promise<SessionFacts> {
-  const facts = resolveSessionFacts(core, sessionId, persistedUsage);
+  let facts = resolveSessionFacts(core, sessionId, persistedUsage);
+  if (facts.live && facts.usage?.accounting?.complete) return facts;
+  if (options.includeAccounting !== false) {
+    try {
+      const accounting = await usageRuntime(core).service.readSessionAccounting(workspaceId, sessionId, signal);
+      facts = { ...facts, usage: { ...(facts.usage ?? emptySessionUsage()), accounting } };
+    } catch (error) {
+      signal?.throwIfAborted();
+      facts = { ...facts, usageError: 'read-failed' };
+      core.accessor.get(ILogService).warn('Session Usage accounting projection pending', { error: toErrorMessage(error) });
+    }
+  }
   if (facts.live) return facts;
   const mainMetadata = metadata ?? (await core.accessor.get(IAtomicDocumentStore).get<SessionMeta>(
     `sessions/${workspaceId}/${sessionId}`, 'state.json',
@@ -1756,6 +1771,7 @@ export function resolveSessionFacts(
           : readPersistedSessionUsage(
               persistedUsage,
               core.accessor.get(IModelPricingService),
+              sessionId,
             ),
       live: false,
     };
@@ -1789,7 +1805,10 @@ export function resolveSessionFacts(
             ? undefined
             : { id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar` },
         },
-    usage: usage.usage,
+    usage: usage.usage === undefined ? undefined : {
+      ...usage.usage,
+      accounting: sessionUsage?.accounting?.version === 2 ? sessionAccounting(sessionUsage.accounting, sessionId, core.accessor.get(IModelPricingService), sessionUsage.wireComplete === true && usage.error === undefined) : undefined,
+    },
     usageError: usage.error,
     live: true,
   };
@@ -1850,9 +1869,23 @@ function applyModelPricing(
     unknownModels.length === 0 ? undefined : unknownModels.toSorted();
 }
 
+function sessionAccounting(totals: UsageFactTotals, sessionId: string, pricing: IModelPricingService, complete: boolean): NonNullable<SessionUsage['accounting']> {
+  let cost = 0;
+  let unknown = totals.partial || !complete;
+  for (const [model, masks] of Object.entries(totals.byModelMask ?? {})) {
+    for (const value of Object.values(masks)) {
+      const quoted = pricing.calculate(model, value);
+      if (quoted === undefined || !Number.isFinite(cost + quoted)) unknown = true;
+      else cost += quoted;
+    }
+  }
+  return { version: 2, subject: { session_id: sessionId, scope: 'session' }, covered_at: Date.now(), complete, tokens: { input_other: totals.usage.inputOther, output: totals.usage.output, input_cache_read: totals.usage.inputCacheRead, input_cache_creation: totals.usage.inputCacheCreation }, tokens_unknown: totals.partial, cost_usd_estimated: cost, cost_unknown: unknown };
+}
+
 function readPersistedSessionUsage(
   persisted: SessionUsageSummary | undefined,
   pricing: IModelPricingService,
+  sessionId: string,
 ): SessionUsage | undefined {
   if (persisted === undefined) return undefined;
   const byModel = new Map<string, MutableModelTokenUsage>();
@@ -1868,6 +1901,7 @@ function readPersistedSessionUsage(
     turn_count: 0,
   };
   applyModelPricing(usage, byModel, pricing);
+  if (persisted.accounting?.version === 2) usage.accounting = sessionAccounting(persisted.accounting, sessionId, pricing, persisted.wireComplete === true);
   return usage;
 }
 

@@ -11,6 +11,8 @@ import {
   ISessionDeliveryService,
   ISessionManager,
   ISessionMetadata,
+  summarizeUsageFacts,
+  type SessionUsageSummary,
   type Scope,
 } from '@kiki/agent-core-v2';
 
@@ -134,7 +136,7 @@ const USAGE_STATUS = {
   byModel: {},
 };
 
-function liveSession(agents: readonly FakeAgent[]) {
+function liveSession(agents: readonly FakeAgent[], summary?: SessionUsageSummary) {
   const warns: { readonly message: string; readonly payload: unknown }[] = [];
   let usageThrows = false;
   const main = agentOf('main', new Map<unknown, unknown>([
@@ -153,7 +155,7 @@ function liveSession(agents: readonly FakeAgent[]) {
   const listed = [main, ...agents];
   const sessionAccessor = new Map<unknown, unknown>([
     [IAgentLifecycleService, { list: () => listed }],
-    [ISessionMetadata, { usage: () => undefined }],
+    [ISessionMetadata, { usage: () => summary }],
     [ISessionActivityView, { state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' }) }],
     [ISessionDeliveryService, { mode: () => 'reply' }],
   ]);
@@ -174,6 +176,18 @@ function liveSession(agents: readonly FakeAgent[]) {
 }
 
 describe('resolveSessionFacts usage failures', () => {
+  it.each([true, false])('preserves known subtotal and session subject for live=%s without changing legacy usage', (live) => {
+    const known = { inputOther: 10, output: 0, inputCacheRead: 0, inputCacheCreation: 0 };
+    const missing = { ...known, inputOther: 7 };
+    const summary: SessionUsageSummary = { total: { ...known, inputOther: 17 }, byModel: { model: { ...known, inputOther: 17 } }, wireComplete: true, accounting: summarizeUsageFacts([{ time: 1, model: 'model', usage: known, usageKnown: true }, { time: 2, model: 'model', usage: missing, usageKnown: false }]) };
+    const { core } = liveSession([], summary);
+    const selected = live ? core : { accessor: { get: (id: unknown) => id === ISessionManager ? { get: () => undefined } : core.accessor.get(id as typeof IModelPricingService) } } as unknown as Scope;
+    const wire = toWireSession(fields, '/example', resolveSessionFacts(selected, 's1', summary));
+    expect(wire.usage.input_tokens).toBe(17);
+    expect(wire.usage.accounting).toMatchObject({ version: 2, subject: { session_id: 's1', scope: 'session' }, complete: true, tokens: { input_other: 10 }, tokens_unknown: true, cost_unknown: true });
+    expect(wire.usage.context_tokens).toBe(live ? 42 : 0);
+  });
+
   it('projects live usage with no error marker when every read succeeds', () => {
     const { core, warns } = liveSession([]);
     const facts = resolveSessionFacts(core, 's1');

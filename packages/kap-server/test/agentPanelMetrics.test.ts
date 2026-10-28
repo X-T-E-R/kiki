@@ -1,3 +1,16 @@
+import { mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
+import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
+import { AppendLogStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/appendLogStore';
+import { InMemoryStorageService } from '@kiki/agent-core-v2/persistence/backends/memory/inMemoryStorageService';
+import { SqliteUsageReadModel } from '@kiki/agent-core-v2/persistence/backends/sqlite/sqliteUsageReadModel';
+import { drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/queryStoreDisposals';
+import { UsageFactStore } from '@kiki/agent-core-v2/app/usageFacts/usageFactStore';
+import { stubBootstrap } from '../../agent-core-v2/test/app/bootstrap/stubs';
+import { stubLog } from '../../agent-core-v2/test/_base/log/stubs';
 import {
   IAgentProfileService,
   IAgentStateService,
@@ -5,8 +18,8 @@ import {
   IAgentUsageService,
   IAppendLogStore,
   IUsageFactStore,
-  summarizeUsageFacts,
-  type UsageFactSnapshot,
+  IUsageReadModel,
+  IBootstrapService,
   IFileSystemStorageService,
   ILogService,
   IInstantiationService,
@@ -16,10 +29,11 @@ import {
   type WireRecord,
 } from '@kiki/agent-core-v2';
 import { panelAccountingKey } from '@kiki/agent-core-v2/agent/usage/panelAccounting';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { IModelPricingService } from '../src/pricing/modelPricingService';
+import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { readAgentPanelMetrics, readPersistedAgentPanelMetrics } from '../src/routes/agentPanelMetrics';
+import { UsageAggregationService } from '../src/usage/usageAggregationService';
 
 const ZERO_USAGE: TokenUsage = {
   inputOther: 0,
@@ -27,6 +41,16 @@ const ZERO_USAGE: TokenUsage = {
   inputCacheRead: 0,
   inputCacheCreation: 0,
 };
+
+const persistedFixtures: { readonly home: string; readonly ix: TestInstantiationService; readonly model: IUsageReadModel }[] = [];
+afterEach(async () => {
+  for (const { home, ix, model } of persistedFixtures.splice(0)) {
+    await model.close();
+    await ix.dispose();
+    await drainQueryStoreDisposals();
+    await rm(home, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
 
 function usage(inputOther: number, output: number): TokenUsage {
   return { inputOther, output, inputCacheRead: 0, inputCacheCreation: 0 };
@@ -45,12 +69,36 @@ function pricing(costs: Readonly<Record<string, number | undefined>>): IModelPri
   };
 }
 
+function tokenPricing(costs: Readonly<Record<string, Partial<Record<'inputOther' | 'output' | 'inputCacheRead' | 'inputCacheCreation', number>>>>): IModelPricingService {
+  return {
+    _serviceBrand: undefined,
+    ready: Promise.resolve(),
+    getPricing: async () => ({ items: [], overrides: {} }),
+    setPricing: async () => ({ items: [], overrides: {} }),
+    resolve: () => undefined,
+    calculate: (model, value) => {
+      const prices = costs[model];
+      if (prices === undefined) return undefined;
+      let total = 0;
+      for (const key of ['inputOther', 'output', 'inputCacheRead', 'inputCacheCreation'] as const) {
+        const amount = value[key] ?? 0;
+        if (amount !== 0 && prices[key] === undefined) return undefined;
+        total += amount * (prices[key] ?? 0);
+      }
+      return total;
+    },
+    refreshNow: async () => false,
+    status: () => ({ source: 'empty', keys: 0 }),
+  };
+}
+
 function liveAgent(
   byModel: Readonly<Record<string, TokenUsage>>,
   accounting?: {
     records: number;
     knownRecords?: number;
     knownByModel?: Readonly<Record<string, TokenUsage>>;
+    knownByModelMask?: Readonly<Record<string, Readonly<Record<string, TokenUsage>>>>;
     incomplete: boolean;
   },
 ): IAgentScopeHandle {
@@ -110,6 +158,16 @@ function persistedFixture(
     readonly recordBytes?: number;
   } = {},
 ) {
+  const home = mkdtempSync(join(tmpdir(), 'agent-panel-metrics-'));
+  const ix = new TestInstantiationService();
+  const log = {
+    _serviceBrand: undefined,
+    level: 'info' as const,
+    error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(),
+    child: vi.fn(), setLevel: vi.fn(), flush: vi.fn(),
+  };
+  ix.stub(IBootstrapService, stubBootstrap(home));
+  ix.stub(ILogService, log);
   let records = [...initial];
   let mtime = 1;
   let reads = 0;
@@ -119,66 +177,71 @@ function persistedFixture(
   const serialize = () => Buffer.from(records.map((item) => JSON.stringify({ time: 1, ...item })).join('\n') + (records.length > 0 ? '\n' : ''));
   let wire = serialize();
   const bytes = () => wire;
-  const storage = {
-    pathFor: () => undefined,
-    list: async () => {
-      lists += 1;
-      return config.agentIds ?? ['main'];
+  const memory = new InMemoryStorageService();
+  const storage = new Proxy(memory, {
+    get(target, property, receiver) {
+      if (property === 'list') return async (scope: string, prefix?: string) => {
+        if (!scope.endsWith('/agents')) return target.list(scope, prefix);
+        lists += 1;
+        const ids = config.agentIds ?? ['main'];
+        return prefix === undefined ? ids : ids.filter((id) => id.startsWith(prefix));
+      };
+      if (property === 'size') return async (scope: string, key: string) => key === 'wire.jsonl' ? bytes().length : target.size(scope, key);
+      if (property === 'mtime') return async (scope: string, key: string) => key === 'wire.jsonl' ? mtime : target.mtime(scope, key);
+      if (property === 'readStream') return (scope: string, key: string, range?: { readonly start: number; readonly end: number }, options?: { readonly signal?: AbortSignal; readonly chunkBytes?: number }) => {
+        if (key !== 'wire.jsonl') return target.readStream(scope, key, range);
+        const scanning = options?.chunkBytes !== undefined;
+        if (scanning) { reads += 1; scopes.push(scope); }
+        return (async function* () {
+          if (scanning) await config.beforeRead?.(scope, options?.signal);
+          options?.signal?.throwIfAborted();
+          const source = bytes().subarray(range?.start ?? 0, (range?.end ?? bytes().length - 1) + 1);
+          if (source.length > 0) yield source;
+          if (scanning && throwAfter !== undefined) throw new Error('fixture storage failure');
+        })();
+      };
+      if (property === 'write') return async (scope: string, key: string, value: Uint8Array, options?: { readonly atomic?: boolean; readonly signal?: AbortSignal }) => {
+        await target.write(scope, key, value, options);
+        documents.set(`${scope}/${key}`, Uint8Array.from(value));
+      };
+      if (property === 'append') return async (scope: string, key: string, value: Uint8Array, options?: { readonly durable?: boolean }) => {
+        await target.append(scope, key, value, options);
+        const stored = await target.read(scope, key);
+        if (stored !== undefined) documents.set(`${scope}/${key}`, Uint8Array.from(stored));
+      };
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
     },
-    size: async () => bytes().length,
-    mtime: async () => mtime,
-    read: async (scope: string, key: string) => documents.get(`${scope}/${key}`),
-    write: async (scope: string, key: string, value: Uint8Array) => { documents.set(`${scope}/${key}`, value); },
-    readStream: (scope: string, _key: string, range: { start: number; end: number }, options?: { signal?: AbortSignal }): AsyncIterable<Uint8Array> => {
-      const scanning = options !== undefined;
-      if (scanning) { reads += 1; scopes.push(scope); }
-      return (async function* () {
-        if (scanning) await config.beforeRead?.(scope, options?.signal);
-        options?.signal?.throwIfAborted();
-        const source = bytes().subarray(range.start, range.end + 1);
-        if (source.length > 0) yield source;
-        if (scanning && throwAfter !== undefined) throw new Error('fixture storage failure');
-      })();
-    },
-  } as unknown as IFileSystemStorageService;
+  }) as unknown as IFileSystemStorageService;
+  ix.stub(IFileSystemStorageService, storage);
+  ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel));
+  ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+  ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
+  const model = ix.get(IUsageReadModel);
+  const realAppendLog = ix.get(IAppendLogStore);
   const listeners = new Set<(event: { scope: string; key: string }) => void>();
-  const appendLog = {
-    generation: async () => 'legacy',
-    onDidWrite: (listener: (event: { scope: string; key: string }) => void) => {
-      listeners.add(listener);
-      return { dispose: () => { listeners.delete(listener); } };
+  const appendLog = new Proxy(realAppendLog, {
+    get(target, property, receiver) {
+      if (property === 'onDidWrite') return (listener: (event: { scope: string; key: string }) => void) => {
+        listeners.add(listener);
+        const subscription = target.onDidWrite(listener);
+        return { dispose: () => { listeners.delete(listener); subscription.dispose(); } };
+      };
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
     },
-  } as unknown as IAppendLogStore;
-  const log = {
-    _serviceBrand: undefined,
-    level: 'info',
-    error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn(),
-    child: vi.fn(), setLevel: vi.fn(), flush: vi.fn(),
-  };
-  const facts: IUsageFactStore = {
-    _serviceBrand: undefined,
-    async checkpoint(_scope, signal) { signal?.throwIfAborted(); return undefined; },
-    async read(scope) {
-      const bytes = documents.get(`facts/${scope}`);
-      return bytes === undefined ? { records: [] } : JSON.parse(Buffer.from(bytes).toString('utf8')) as UsageFactSnapshot;
-    },
-    async summary(scope, signal) {
-      const snapshot = await facts.read(scope, undefined, signal);
-      return { checkpoint: snapshot.checkpoint, totals: summarizeUsageFacts(snapshot.records) };
-    },
-    async commit(scope, start, checkpoint, records) {
-      const previous = await facts.read(scope);
-      documents.set(`facts/${scope}`, Buffer.from(JSON.stringify({ checkpoint, records: [...(start === 0 ? [] : previous.records), ...records] })));
-    },
-  };
+  }) as unknown as IAppendLogStore;
+  const facts = ix.get(IUsageFactStore);
+  persistedFixtures.push({ home, ix, model });
   const core = {
     accessor: {
       get: (identifier: unknown) => {
         if (identifier === IUsageFactStore) return facts;
+        if (identifier === IUsageReadModel) return model;
         if (identifier === IFileSystemStorageService) return storage;
         if (identifier === IAppendLogStore) return appendLog;
         if (identifier === ILogService) return log;
-        if (identifier === IInstantiationService) return { onWillDispose: () => ({ dispose() {} }) };
+        if (identifier === IInstantiationService) return ix;
         throw new Error(`unexpected service ${String(identifier)}`);
       },
     },
@@ -217,6 +280,51 @@ function deferred(): { readonly promise: Promise<void>; readonly resolve: () => 
   const promise = new Promise<void>((done) => { resolve = done; });
   return { promise, resolve };
 }
+
+describe('session accounting from typed source totals', () => {
+  function service(core: Scope, prices: IModelPricingService): UsageAggregationService {
+    const priced = { accessor: { get: (id: unknown) => id === IModelPricingService ? prices : core.accessor.get(id as typeof IUsageFactStore) } } as unknown as Scope;
+    return new UsageAggregationService(priced);
+  }
+
+  it('keeps each fully priced mask subtotal and reprices the same complete session without rereading wire', async () => {
+    const fixture = persistedFixture([record('model', usage(10, 0), true), record('model', usage(0, 1), true)]);
+    const prices = { model: { inputOther: 0.1, output: undefined as number | undefined } };
+    const reader = service(fixture.core, tokenPricing(prices));
+    try {
+      expect(await reader.readSessionAccounting('workspace', 'session')).toMatchObject({
+        version: 2, subject: { session_id: 'session', scope: 'session' }, complete: true,
+        tokens: { input_other: 10, output: 1 }, tokens_unknown: false, cost_usd_estimated: 1, cost_unknown: true,
+      });
+      const reads = fixture.reads();
+      expect(reads).toBe(1);
+      prices.model.output = 0.2;
+      expect(await reader.readSessionAccounting('workspace', 'session')).toMatchObject({ complete: true, cost_usd_estimated: 1.2, cost_unknown: false });
+      expect(fixture.reads()).toBe(reads);
+    } finally { reader.dispose(); }
+  });
+
+  it('counts all session agents while preserving explicitly unknown nonzero usage outside the known subtotal', async () => {
+    const fixture = persistedFixture([record('model', usage(10, 0), true), record('model', usage(7, 0), false)], undefined, { agentIds: ['main', 'child'] });
+    const reader = service(fixture.core, tokenPricing({ model: { inputOther: 0.1 } }));
+    try {
+      expect(await reader.readSessionAccounting('workspace', 'session')).toMatchObject({
+        subject: { session_id: 'session', scope: 'session' }, complete: true,
+        tokens: { input_other: 20, output: 0 }, tokens_unknown: true, cost_usd_estimated: 2, cost_unknown: true,
+      });
+      expect(fixture.reads()).toBe(2);
+    } finally { reader.dispose(); }
+  });
+
+  it('reports complete zero accounting for a session with an empty agent inventory', async () => {
+    const fixture = persistedFixture([], undefined, { agentIds: [] });
+    const reader = service(fixture.core, tokenPricing({}));
+    try {
+      expect(await reader.readSessionAccounting('workspace', 'session')).toMatchObject({ complete: true, tokens: { input_other: 0, output: 0 }, tokens_unknown: false, cost_usd_estimated: 0, cost_unknown: false });
+      expect(fixture.reads()).toBe(0);
+    } finally { reader.dispose(); }
+  });
+});
 
 describe('agent panel metrics cost provenance', () => {
   it('keeps the known live token and cost subtotals when another usage record is missing', () => {
@@ -323,6 +431,29 @@ describe('agent panel metrics cost provenance', () => {
     );
     expect(metrics).toMatchObject({ totalCostUsd: null, costPartial: true });
   });
+
+  it('keeps known live token cost when one token price is missing', () => {
+    const input = usage(10, 0);
+    const output = usage(0, 1);
+    const metrics = readAgentPanelMetrics(
+      liveAgent({ model: { inputOther: 10, output: 1, inputCacheRead: 0, inputCacheCreation: 0 } }, {
+        records: 2,
+        knownRecords: 2,
+        knownByModel: { model: { inputOther: 10, output: 1, inputCacheRead: 0, inputCacheCreation: 0 } },
+        knownByModelMask: { model: { '1': input, '2': output } },
+        incomplete: false,
+      }),
+      tokenPricing({ model: { inputOther: 0.1 } }),
+    );
+    expect(metrics).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 1,
+      totalTokens: 11,
+      totalCostUsd: 1,
+      costPartial: true,
+      usagePartial: false,
+    });
+  });
 });
 
 describe('persisted agent panel metrics provenance', () => {
@@ -399,18 +530,21 @@ describe('persisted agent panel metrics provenance', () => {
       limits: { maxRecords: 1 },
     });
     expect(capped['main']).toMatchObject({ totalTokens: 5, usagePartial: true, usageSource: 'persisted' });
-    expect(fixture.reads()).toBe(1);
+    const readsAfterCapped = fixture.reads();
+    expect(readsAfterCapped).toBe(1);
     const header = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', { settle: false });
     expect(header['main']).toMatchObject({ totalTokens: null, usagePartial: true, usageSource: 'persisted' });
-    expect(fixture.reads()).toBe(1);
+    expect(fixture.reads()).toBe(readsAfterCapped);
     const again = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', {
       settle: true,
       limits: { maxRecords: 1 },
     });
     expect(again['main']).toMatchObject({ totalTokens: 14, usagePartial: false });
-    expect(fixture.reads()).toBe(2);
+    const completedReads = fixture.reads();
+    expect(completedReads).toBe(2);
     const completeHeader = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', { settle: false });
     expect(completeHeader['main']).toMatchObject({ totalTokens: 14, usagePartial: false });
+    expect(fixture.reads()).toBe(completedReads);
   });
 
   it('projects explicitly known zero usage and zero cost as complete', async () => {
@@ -474,6 +608,26 @@ describe('persisted agent panel metrics provenance', () => {
       usagePartial: false,
       costPartial: true,
     });
+  });
+
+  it('reprices known persisted masks without rereading wire when a token price is added', async () => {
+    const fixture = persistedFixture([
+      record('model', usage(10, 0), true),
+      record('model', usage(0, 1), true),
+    ]);
+    const missingOutput = await persisted(fixture.core, tokenPricing({ model: { inputOther: 0.1 } }), 'token-prices');
+    expect(missingOutput['main']).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 1,
+      totalTokens: 11,
+      totalCostUsd: 1,
+      costPartial: true,
+      usagePartial: false,
+    });
+    expect(fixture.reads()).toBe(1);
+    const pricedOutput = await persisted(fixture.core, tokenPricing({ model: { inputOther: 0.1, output: 0.2 } }), 'token-prices');
+    expect(pricedOutput['main']).toMatchObject({ totalTokens: 11, totalCostUsd: 1.2, costPartial: false, usagePartial: false });
+    expect(fixture.reads()).toBe(1);
   });
 
   it('rejects bad records without dropping valid known usage', async () => {

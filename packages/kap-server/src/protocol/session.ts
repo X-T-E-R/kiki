@@ -8,7 +8,7 @@ import {
   sessionMetadataSchema,
 } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 
-import { personaAvatarDataSchema, executorCapabilitiesSchema } from '@kiki/protocol';
+import { personaAvatarDataSchema, executorCapabilitiesSchema, usageAccountingSnapshotSchema } from '@kiki/protocol';
 import { workspaceIdSchema } from './workspace';
 
 export const sessionUsageSchema = z.object({
@@ -20,6 +20,7 @@ export const sessionUsageSchema = z.object({
   tokens_by_model: z.record(z.string(), z.number().int().nonnegative()).optional(),
   by_model: z.record(z.string(), z.number().nonnegative()).optional(),
   cost_unknown_models: z.array(z.string()).optional(),
+  accounting: usageAccountingSnapshotSchema.optional(),
   context_tokens: z.number().int().nonnegative(),
   context_limit: z.number().int().nonnegative(),
   turn_count: z.number().int().nonnegative(),

@@ -5,10 +5,11 @@ import { createServer } from 'node:http';
 import { DatabaseSync, StatementSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 import { gzipSync, gunzipSync } from 'node:zlib';
-import { AGENT_WIRE_RECORD_KEY, IAppendLogStore, IBootstrapService, IEventService, IFileSystemStorageService, ILogService, IQueryStore, IRetainedUsageService, ISessionIndex, IUsageFactStore, type IBootstrapService as Bootstrap, type Scope, type SessionSummary, type WireRecord } from '@kiki/agent-core-v2';
+import { AGENT_WIRE_RECORD_KEY, IAppendLogStore, IBootstrapService, IEventService, IFileSystemStorageService, ILogService, IQueryStore, IRetainedUsageService, ISessionIndex, IUsageFactStore, IUsageReadModel, type IBootstrapService as Bootstrap, type Scope, type SessionSummary, type WireRecord } from '@kiki/agent-core-v2';
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
 import { AppendLogStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/appendLogStore';
 import { MiniDbQueryStore, drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/backends/minidb/miniDbQueryStore';
+import { SqliteUsageReadModel } from '@kiki/agent-core-v2/persistence/backends/sqlite/sqliteUsageReadModel';
 import { UsageFactStore } from '@kiki/agent-core-v2/app/usageFacts/usageFactStore';
 import { RetainedUsageService } from '@kiki/agent-core-v2/app/retainedUsage/retainedUsageService';
 import { stubLog } from '../../agent-core-v2/test/_base/log/stubs';
@@ -52,21 +53,22 @@ function record(time: number, inputOther: number, other = { output: 3, inputCach
 async function fixture(limits: ConstructorParameters<typeof UsageAggregationService>[2] = {}, now?: () => number, keyring?: ExportKeyring, vibeAuthRequest?: VibeAuthRequest) {
   const home = await mkdtemp(join(tmpdir(), 'kiki-usage-export-')); cleanup.push(() => rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
   const storage = new FileStorageService(home, 0o700, 0o600); const append = new AppendLogStore(storage); cleanup.push(async () => { await append.flush(); await append.dispose(); });
-  const bootstrap = { scope: (name: string) => name, credentialsHomeDir: home, cacheDir: join(home, 'cache') } as Bootstrap;
-  const ix = new TestInstantiationService(); cleanup.push(() => drainQueryStoreDisposals()); cleanup.push(async () => { await ix.dispose(); });
+  const bootstrap = { homeDir: home, scope: (name: string) => name, credentialsHomeDir: home, cacheDir: join(home, 'cache') } as Bootstrap;
+  const ix = new TestInstantiationService();
   const log = stubLog();
   ix.stub(IBootstrapService, bootstrap); ix.stub(IFileSystemStorageService, storage); ix.stub(IAppendLogStore, append); ix.stub(ILogService, log);
-  ix.set(IEventService, new SyncDescriptor(EventService)); ix.set(IRetainedUsageService, new SyncDescriptor(RetainedUsageService));
+  ix.set(IEventService, new SyncDescriptor(EventService)); ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel)); ix.set(IRetainedUsageService, new SyncDescriptor(RetainedUsageService));
   ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore)); ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
+  const model = ix.get(IUsageReadModel); cleanup.push(async () => { await model.close(); await ix.dispose(); await drainQueryStoreDisposals(); });
   const retained = ix.get(IRetainedUsageService); const facts = ix.get(IUsageFactStore); const query = ix.get(IQueryStore); const sessions: SessionSummary[] = [];
   const index = { listRecent: async (query: { before?: string; limit?: number }) => { const start = query.before === undefined ? 0 : sessions.findIndex((s) => s.id === query.before) + 1; const items = sessions.slice(start, start + (query.limit ?? 100)); return { items, nextCursor: start + items.length < sessions.length ? items.at(-1)?.id : undefined }; } };
-  const services = new Map<unknown, unknown>([[IFileSystemStorageService, storage], [IRetainedUsageService, retained], [ISessionIndex, index], [IModelPricingService, priced], [IBootstrapService, bootstrap], [IAppendLogStore, append], [IUsageFactStore, facts], [IQueryStore, query], [ILogService, log]]);
+  const services = new Map<unknown, unknown>([[IFileSystemStorageService, storage], [IRetainedUsageService, retained], [ISessionIndex, index], [IModelPricingService, priced], [IBootstrapService, bootstrap], [IAppendLogStore, append], [IUsageFactStore, facts], [IUsageReadModel, model], [IQueryStore, query], [ILogService, log]]);
   const core = { accessor: { get: (key: unknown) => services.get(key) } } as Scope;
   const reader = new UsageAggregationService(core, Date.now, limits); const path = join(home, 'export.sqlite'); let store = new UsageExportStore(path);
   const secretStore = () => new UsageExportSecretStore(home, store.installationKey(), keyring ?? (async () => { throw new Error('keyring-unavailable-fixture'); }));
   const secrets = secretStore();
   let service = new UsageExportService(store, reader, priced, secrets, [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); cleanup.push(() => service.close());
-  const write = async (session: string, agent: string, records: readonly WireRecord[]) => storage.write(`sessions/work/${session}/agents/${agent}`, AGENT_WIRE_RECORD_KEY, Buffer.from(records.map((v) => JSON.stringify(v)).join('\n') + '\n'));
+  const write = async (session: string, agent: string, records: readonly WireRecord[]) => append.rewrite(`sessions/work/${session}/agents/${agent}`, AGENT_WIRE_RECORD_KEY, records);
   const add = (id: string) => { const summary: SessionSummary = { id, workspaceId: 'work', createdAt: T, updatedAt: T, archived: false, title: SENTINEL, cwd: SENTINEL, lastPrompt: SENTINEL }; sessions.push(summary); return summary; };
   const restart = async (legacyDisabled?: boolean) => { await service.close(); store = new UsageExportStore(path, legacyDisabled); service = new UsageExportService(store, new UsageAggregationService(core, Date.now, limits), priced, secretStore(), [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); return service; };
   return { home, storage, retained, sessions, reader, core, write, add, get service() { return service; }, get store() { return store; }, restart };
@@ -218,7 +220,7 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
     } finally { clearImmediate(tick); spy.mockRestore(); }
   });
 
-  it('replays cold fact journals without materializing a query index, preserving duplicate ordinals, zero quality and rewrite resets', async () => {
+  it('replays cold fact journals through the typed read model without constructing a generic query index, preserving duplicate ordinals, zero quality and rewrite resets', async () => {
     const f = await fixture({ cacheMaxRecords: 0 }); const s = f.add('journal');
     const zero = { output: 0, inputCacheRead: 0, inputCacheCreation: 0 };
     const known = record(T + 1, 2, zero);
@@ -234,8 +236,9 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
         if (source.kind !== 'session') return;
         visits += source.records.length;
         expect(source.records).toHaveLength(5);
-        expect(source.records[0]).toBe(source.records[1]);
-        expect(new Set(source.records).size).toBe(4);
+        expect(source.records[0]).toEqual(source.records[1]);
+        expect(source.records[0]).not.toBe(source.records[1]);
+        expect(new Set(source.records).size).toBe(5);
         expect(source.records.map((value) => value.usageKnown)).toEqual([true, true, true, false, undefined]);
       });
       expect(visits).toBe(5);
@@ -248,7 +251,7 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
       await f.service.scan();
       expect(f.store.preview(d.id).items[0]!.bucket).toMatchObject({ tokens: { input_other: 7 }, quality: { known_records: 1, missing_records: 0, legacy_zero_records: 0 } });
       expect(f.service.status()).toMatchObject({ scan_complete: true, scan_error: null });
-      expect(read).not.toHaveBeenCalled(); expect(batch).not.toHaveBeenCalled();
+      expect(read).toHaveBeenCalled(); expect(batch).not.toHaveBeenCalled();
     } finally { read.mockRestore(); batch.mockRestore(); }
   });
 

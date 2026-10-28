@@ -13,6 +13,7 @@ import {
   type TokenUsage,
 } from '@kiki/agent-core-v2';
 import { panelAccountingKey } from '@kiki/agent-core-v2/agent/usage/panelAccounting';
+import { summarizeUsageFacts } from '@kiki/agent-core-v2/agent/usage/usageFact';
 import type { AgentPanelMetrics } from '@kiki/protocol';
 import type { IModelPricingService } from '../pricing/modelPricingService';
 import { usageRuntime } from '../usage/usageRuntime';
@@ -25,6 +26,7 @@ const EMPTY_USAGE: TokenUsage = {
 type PersistedUsage = {
   usage: TokenUsage;
   byModel: Record<string, TokenUsage>;
+  byModelMask?: Readonly<Record<string, Readonly<Record<string, TokenUsage>>>>;
   records: number;
   knownUsageRecords: number;
   partial: boolean;
@@ -97,7 +99,7 @@ export function readAgentPanelMetrics(agent: IAgentScopeHandle, pricing: IModelP
   const total = knownRecords > 0 ? sumUsage(Object.values(knownByModel)) : undefined;
   const hasKnownUsage = total !== undefined;
   const costSummary = summarizeCosts(
-    Object.entries(knownByModel).map(([model, value]) => pricing.calculate(model, value)),
+    Object.entries(accounting.knownByModelMask ?? Object.fromEntries(Object.entries(knownByModel).map(([model, value]) => [model, { legacy: value }]))).flatMap(([model, masks]) => Object.values(masks).map((value) => pricing.calculate(model, value))),
   );
   const cost = hasKnownUsage ? costSummary.total : null;
   const input = total === undefined ? null : total.inputOther + total.inputCacheRead + total.inputCacheCreation;
@@ -317,7 +319,7 @@ async function scanPersistedAgentPanelMetrics(
     const state: PersistedUsage = row?.totals === undefined
       ? emptyPersistedUsage(row?.complete !== true)
       : { ...row.totals, usage: { ...row.totals.usage }, byModel: { ...row.totals.byModel }, partial: row.totals.partial || !row.complete, complete: row.complete };
-    if (row?.totals === undefined) for (const record of row?.records ?? []) applyPersistedUsageRecord(state, record);
+    if (row?.totals === undefined) Object.assign(state, summarizeUsageFacts(row?.records ?? [], state));
     usages[id] = state;
     partial ||= row?.complete !== true;
   }
@@ -371,7 +373,7 @@ function toPersistedMetrics(state: PersistedUsage, pricing?: IModelPricingServic
     : null;
   const output = hasKnownUsage ? state.usage.output : null;
   const usagePartial = state.partial || !state.complete || !hasKnownUsage || state.knownUsageRecords < state.records;
-  const costs = summarizeCosts(Object.entries(state.byModel).map(([model, usage]) => pricing?.calculate(model, usage)));
+  const costs = summarizeCosts(Object.entries(state.byModelMask ?? Object.fromEntries(Object.entries(state.byModel).map(([model, usage]) => [model, { legacy: usage }]))).flatMap(([model, masks]) => Object.values(masks).map((usage) => pricing?.calculate(model, usage))));
   return {
     inputTokens: input, outputTokens: output,
     cacheReadTokens: hasKnownUsage ? state.usage.inputCacheRead : null,
@@ -398,7 +400,7 @@ function summarizeCosts(costs: Iterable<number | undefined>): { total: number | 
   let known = false;
   let unknown = false;
   for (const cost of costs) {
-    if (cost === undefined) {
+    if (cost === undefined || !Number.isFinite(total + cost)) {
       unknown = true;
       continue;
     }
