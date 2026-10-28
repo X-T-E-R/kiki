@@ -545,17 +545,19 @@ const cronStub = {
 } as unknown as ISessionCronService;
 
 function sessionMetadataStub(agents: Readonly<Record<string, AgentMeta>>): ISessionMetadata {
+  const readMetadata = () => ({
+    id: 'test-session',
+    createdAt: 0,
+    updatedAt: 0,
+    archived: false,
+    agents,
+  });
   return {
     _serviceBrand: undefined,
     ready: Promise.resolve(),
     onDidChangeMetadata: Event.None as ISessionMetadata['onDidChangeMetadata'],
-    read: async () => ({
-      id: 'test-session',
-      createdAt: 0,
-      updatedAt: 0,
-      archived: false,
-      agents,
-    }),
+    read: async () => readMetadata(),
+    snapshot: () => structuredClone(readMetadata()),
     getAgentExecutor: async (agentId: string) => agents[agentId]?.executor,
     usage: () => undefined,
     recordUsage: () => {},

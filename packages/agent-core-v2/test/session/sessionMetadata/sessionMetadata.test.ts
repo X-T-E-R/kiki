@@ -94,6 +94,28 @@ describe('SessionMetadata', () => {
     expect((await meta.read()).createdAt).toBeGreaterThan(0);
   });
 
+  it('requires readiness for synchronous snapshots and detaches nested metadata', async () => {
+    const documents = ix.get(IAtomicDocumentStore);
+    const original = documents.get.bind(documents);
+    const gate = deferred();
+    vi.spyOn(documents, 'get').mockImplementation(async (...args) => { await gate.promise; return original(...args); });
+    const meta = ix.get(ISessionMetadata);
+    expect(() => meta.snapshot()).toThrow('requires ready');
+    const oldRead = meta.read();
+    gate.resolve();
+    await meta.ready;
+    expect(await oldRead).toMatchObject({ id: 's1' });
+    await meta.registerAgent('child', { labels: { phase: 'before' }, status: 'completed' });
+    await meta.update({ custom: { nested: { value: 'before' } } });
+    const captured = meta.snapshot();
+    await meta.updateAgent('child', (agent) => ({ ...agent, labels: { phase: 'after' }, status: 'failed' }));
+    await meta.update({ custom: { nested: { value: 'after' } } });
+    expect(captured.agents?.['child']).toMatchObject({ labels: { phase: 'before' }, status: 'completed' });
+    expect(captured.custom).toEqual({ nested: { value: 'before' } });
+    captured.custom!['nested'] = 'caller edit';
+    expect((await meta.read()).custom).toEqual({ nested: { value: 'after' } });
+  });
+
   it('returns undefined for a missing executor without reading metadata', async () => {
     const meta = ix.get(ISessionMetadata);
     const readSpy = vi.spyOn(meta, 'read');

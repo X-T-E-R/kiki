@@ -3,6 +3,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
+import { BugIndicatingError } from '#/_base/errors/errors';
 import { defineState } from '#/state/state';
 import { ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
 import { buildSessionSummary } from '#/app/sessionIndex/sessionIndexSource';
@@ -59,6 +60,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
 
   private disposed = false;
   private disposing = false;
+  private initialized = false;
   readonly ready: Promise<void>;
   readonly onDidChangeMetadata: Event<SessionMetadataChangedEvent>;
 
@@ -137,7 +139,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     this.states.contributeState(sessionMetadataDataKey);
     this.scope = ctx.metaScope;
     this.onDidChangeMetadata = this._onDidChangeMetadata.event;
-    this.ready = this.load();
+    this.ready = this.load().then(() => { this.initialized = true; });
   }
 
   override async dispose(): Promise<void> {
@@ -181,6 +183,11 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   async read(): Promise<SessionMeta> {
     await this.ready;
     return this.data;
+  }
+
+  snapshot(): SessionMeta {
+    if (!this.initialized) throw new BugIndicatingError('Session metadata snapshot requires ready');
+    return structuredClone(this.data);
   }
 
   async getAgentExecutor(agentId: string): Promise<string | undefined> {

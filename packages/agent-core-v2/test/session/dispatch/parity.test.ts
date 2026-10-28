@@ -1002,17 +1002,19 @@ function createLane(
     reload: async () => {},
   } as unknown as ISessionAgentProfileCatalog;
 
+  const readMetadata = () => ({
+    id: 'session_test',
+    createdAt: 0,
+    updatedAt: 0,
+    archived: false,
+    agents: metadataAgents,
+  });
   const metadata = {
     _serviceBrand: undefined,
     ready: Promise.resolve(),
     onDidChangeMetadata: Event.None,
-    read: async () => ({
-      id: 'session_test',
-      createdAt: 0,
-      updatedAt: 0,
-      archived: false,
-      agents: metadataAgents,
-    }),
+    read: async () => readMetadata(),
+    snapshot: () => structuredClone(readMetadata()),
     getAgentExecutor: async (agentId: string) => metadataAgents[agentId]?.executor,
     usage: () => undefined,
     recordUsage: () => {},

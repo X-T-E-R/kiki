@@ -1005,6 +1005,7 @@ function stubSessionMetadata(meta: SessionMeta): ISessionMetadata {
     ready: Promise.resolve(),
     onDidChangeMetadata: noopEvent,
     read: async () => meta,
+    snapshot: () => structuredClone(meta),
     getAgentExecutor: async (agentId: string) => meta.agents?.[agentId]?.executor,
     usage: () => meta.usage,
     recordUsage: () => {},

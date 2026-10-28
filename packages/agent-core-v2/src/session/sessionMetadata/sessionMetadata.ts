@@ -107,6 +107,8 @@ export interface ISessionMetadata {
   readonly ready: Promise<void>;
   readonly onDidChangeMetadata: Event<SessionMetadataChangedEvent>;
   read(): Promise<SessionMeta>;
+  /** Returns a detached metadata value synchronously after `ready` resolves. */
+  snapshot(): SessionMeta;
   getAgentExecutor(agentId: string): Promise<string | undefined>;
   usage(): SessionUsageSummary | undefined;
   recordUsage(model: string, usage: TokenUsage, usageKnown?: boolean): void;
