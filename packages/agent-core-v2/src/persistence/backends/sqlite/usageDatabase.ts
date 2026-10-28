@@ -21,7 +21,7 @@ export class UsageDatabase {
     if (writable) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path, { readOnly: !writable });
     try {
-      this.db.exec('PRAGMA busy_timeout=50; PRAGMA foreign_keys=ON; PRAGMA cache_size=-16384; PRAGMA temp_store=FILE');
+      this.db.exec('PRAGMA busy_timeout=50; PRAGMA foreign_keys=ON; PRAGMA cache_size=-16384; PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-16384');
       const app = Number(this.db.prepare('PRAGMA application_id').get()!['application_id']);
       const version = Number(this.db.prepare('PRAGMA user_version').get()!['user_version']);
       if ((app !== 0 && app !== APPLICATION_ID) || version > 2) throw new Error('Unsupported Usage read-model schema; upgrade this writer');
@@ -247,7 +247,7 @@ export class UsageDatabase {
     this.db.exec('DROP TABLE IF EXISTS temp.usage_selected');
     const sourceNumbers = 'source_numbered AS MATERIALIZED (SELECT row_number() OVER(ORDER BY id) AS source_number,* FROM source)';
     const selected = `SELECT s.source_number,f.time,f.model,f.source_agent,f.agent,f.parent_agent,f.provider,f.model_alias,f.profile,f.turn,f.input_other,f.output,f.cache_read,f.cache_creation,f.state,f.mask,s.workspace,s.session_id,u.ephemeral,${cost} AS raw_cost,${dimension} AS group_key,${bucketKey} AS bucket FROM source_numbered s JOIN session u ON s.workspace=u.workspace AND s.session_id=u.id CROSS JOIN fact f NOT INDEXED ON f.source=s.id AND f.generation=s.generation LEFT JOIN quote q ON q.model=f.model WHERE ${clauses.join(' AND ')}`;
-    const identities = 'source_number,model,source_agent,agent,parent_agent,provider,model_alias,profile,turn,state,mask,bucket';
+    const identities = 'source_number,bucket,turn,model,source_agent,agent,parent_agent,provider,model_alias,profile,state,mask';
     const compact = `WITH ${sourceNumbers},selected AS (${selected}) SELECT min(time) AS time,max(time) AS latest_time,${identities},min(workspace) AS workspace,min(session_id) AS session_id,min(ephemeral) AS ephemeral,min(group_key) AS group_key,sum(input_other) AS input_other,sum(output) AS output,sum(cache_read) AS cache_read,sum(cache_creation) AS cache_creation,sum(CASE WHEN raw_cost<=1.7976931348623157e308 THEN raw_cost END) AS raw_cost,max(raw_cost IS NULL OR raw_cost>1.7976931348623157e308) AS price_unknown,count(*) AS record_count FROM selected GROUP BY ${identities}`;
     const individual = `WITH ${sourceNumbers} SELECT *,time AS latest_time,raw_cost IS NULL OR raw_cost>1.7976931348623157e308 AS price_unknown,1 AS record_count FROM (${selected})`;
     this.db.prepare(`CREATE TEMP TABLE usage_selected AS ${finiteCosts ? individual : compact}`).run(...bucketParams, ...parameters);
