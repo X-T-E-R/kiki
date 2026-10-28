@@ -13,13 +13,21 @@ const port = parentPort;
 if (port === null) throw new Error('Query store requires a worker');
 const database = (workerData as { database: string }).database;
 const APPLICATION_ID = 0x4b515331;
-let db: DatabaseSync | undefined;
+interface QueryConnection {
+  readonly connection: DatabaseSync;
+  readonly get: ReturnType<DatabaseSync['prepare']>;
+  readonly put: ReturnType<DatabaseSync['prepare']>;
+  readonly remove: ReturnType<DatabaseSync['prepare']>;
+  readonly clearColumns: ReturnType<DatabaseSync['prepare']>;
+  readonly column: ReturnType<DatabaseSync['prepare']>;
+}
+let db: QueryConnection | undefined;
 let cancellation: Int32Array | undefined;
 
 function check(): void { if (cancellation !== undefined && Atomics.load(cancellation, 0) !== 0) throw new DOMException('Query store read cancelled', 'AbortError'); }
 function quote(value: string): string { return `'${value.replaceAll("'", "''")}'`; }
 function open(): DatabaseSync {
-  if (db !== undefined) return db;
+  if (db !== undefined) return db.connection;
   mkdirSync(dirname(database), { recursive: true, mode: 0o700 });
   const connection = new DatabaseSync(database);
   try {
@@ -36,7 +44,14 @@ function open(): DatabaseSync {
       CREATE TABLE IF NOT EXISTS definitions(id INTEGER PRIMARY KEY, collection TEXT NOT NULL, name TEXT NOT NULL, json TEXT NOT NULL, UNIQUE(collection,name));
       PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=1; COMMIT;`);
     connection.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE');
-    db = connection;
+    db = {
+      connection,
+      get: connection.prepare('SELECT json FROM rows WHERE collection=? AND key=?'),
+      put: connection.prepare('INSERT INTO rows VALUES(?,?,?) ON CONFLICT(collection,key) DO UPDATE SET json=excluded.json'),
+      remove: connection.prepare('DELETE FROM rows WHERE collection=? AND key=?'),
+      clearColumns: connection.prepare('DELETE FROM columns WHERE collection=? AND key=?'),
+      column: connection.prepare('INSERT INTO columns VALUES(?,?,?,?)'),
+    };
     return connection;
   } catch (error) { connection.close(); throw error; }
 }
@@ -50,7 +65,7 @@ function transaction<T>(work: (connection: DatabaseSync) => T): T {
 
 function batch(ops: readonly WriteOp[], conditions?: readonly WriteCondition[], staged?: StagedWrite): boolean {
   return transaction((connection) => {
-    const get = connection.prepare('SELECT json FROM rows WHERE collection=? AND key=?');
+    const { get, put, remove, clearColumns, column } = db!;
     for (const condition of conditions ?? []) {
       const row = get.get(condition.collection, Buffer.from(condition.key));
       const current: unknown = row === undefined ? undefined : JSON.parse(String(row['json']));
@@ -65,10 +80,6 @@ function batch(ops: readonly WriteOp[], conditions?: readonly WriteCondition[], 
       connection.prepare('INSERT INTO columns SELECT ?,name,value,key FROM columns WHERE collection=?').run(staged.collection, staged.source);
       connection.prepare('DELETE FROM rows WHERE collection=?').run(staged.source);
     }
-    const put = connection.prepare('INSERT INTO rows VALUES(?,?,?) ON CONFLICT(collection,key) DO UPDATE SET json=excluded.json');
-    const remove = connection.prepare('DELETE FROM rows WHERE collection=? AND key=?');
-    const clearColumns = connection.prepare('DELETE FROM columns WHERE collection=? AND key=?');
-    const column = connection.prepare('INSERT INTO columns VALUES(?,?,?,?)');
     for (const op of ops) {
       const key = Buffer.from(op.key);
       if (op.kind === 'delete') { remove.run(op.collection, key); continue; }
@@ -186,7 +197,7 @@ async function query(input: ReadQuery): Promise<{ items: unknown[]; nextCursor?:
 
 async function execute(operation: StoreOperation): Promise<unknown> {
   check();
-  if (operation.type === 'close') { try { db?.exec('PRAGMA wal_checkpoint(PASSIVE)'); } finally { db?.close(); db = undefined; } return undefined; }
+  if (operation.type === 'close') { try { db?.connection.exec('PRAGMA wal_checkpoint(PASSIVE)'); } finally { try { db?.connection.close(); } finally { db = undefined; } } return undefined; }
   if (operation.type === 'batch') return batch(operation.ops, operation.conditions, operation.staged);
   if (operation.type === 'query') {
     const connection = open();
@@ -203,7 +214,7 @@ async function execute(operation: StoreOperation): Promise<unknown> {
   });
   const connection = open();
   if (operation.type === 'get') {
-    const get = connection.prepare('SELECT json FROM rows WHERE collection=? AND key=?');
+    const { get } = db!;
     const rows: Array<[string, unknown]> = [];
     connection.exec('BEGIN');
     try {

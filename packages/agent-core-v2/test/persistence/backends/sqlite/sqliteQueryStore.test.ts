@@ -114,6 +114,71 @@ describe('SqliteQueryStore', () => {
     } finally { database.close(); }
   }, 20_000);
 
+  it('reuses fixed statements through CAS, rollback, columns, staging and a new connection', async () => {
+    const entry = new URL('../../../../src/persistence/backends/sqlite/entry.ts', import.meta.url);
+    const wrapper = join(home, 'prepared-statements.mjs');
+    const fixed = [
+      'SELECT json FROM rows WHERE collection=? AND key=?',
+      'INSERT INTO rows VALUES(?,?,?) ON CONFLICT(collection,key) DO UPDATE SET json=excluded.json',
+      'DELETE FROM rows WHERE collection=? AND key=?',
+      'DELETE FROM columns WHERE collection=? AND key=?',
+      'INSERT INTO columns VALUES(?,?,?,?)',
+    ];
+    await writeFile(wrapper, `
+      import {DatabaseSync} from 'node:sqlite'; import {parentPort as port} from 'node:worker_threads';
+      const fixed=new Set(${JSON.stringify(fixed)}), counts={};
+      const prepare=DatabaseSync.prototype.prepare, post=port.postMessage.bind(port);
+      DatabaseSync.prototype.prepare=function(sql) { if(fixed.has(sql)) counts[sql]=(counts[sql]??0)+1; return prepare.call(this,sql); };
+      port.postMessage=response=>post({...response,prepared:counts});
+      await import(${JSON.stringify(entry.href)});
+    `);
+    configureQueryStoreWorkerRuntime(wrapper);
+    try {
+      const store = open();
+      await store.put('prepared', 'head', { revision: 0 });
+      const host = Reflect.get(store, 'worker') as object;
+      const thread = Reflect.get(host, 'worker') as Worker;
+      let prepared: Record<string, number> = {};
+      thread.on('message', (message: { prepared?: Record<string, number> }) => { if (message.prepared !== undefined) prepared = message.prepared; });
+      await store.ensureIndex('prepared', { kind: 'value', name: 'byId', field: 'id', unique: true });
+      for (let revision = 1; revision <= 3; revision++) {
+        const ops: WriteOp[] = [
+          { kind: 'put', collection: 'prepared', key: 'head', value: { revision } },
+          { kind: 'put', collection: 'prepared', key: 'row', value: { id: 'row', time: revision }, columns: { time: revision } },
+        ];
+        expect(await store.batchIf!([{ collection: 'prepared', key: 'head', value: { revision: revision - 1 } }], ops)).toBe(true);
+        expect(await store.batchIf!([{ collection: 'prepared', key: 'head', value: { revision: revision - 1 } }], ops)).toBe(false);
+        expect((await store.pageByColumn('prepared', { column: 'time', bounds: { gte: revision }, limit: 10 })).items).toEqual([{ id: 'row', time: revision }]);
+      }
+      await expect(store.batch([
+        { kind: 'delete', collection: 'prepared', key: 'row' },
+        { kind: 'put', collection: 'prepared', key: 'bad', value: { id: 'bad' }, columns: { time: Infinity } },
+      ])).rejects.toThrow('finite');
+      expect(await store.get('prepared', 'row')).toEqual({ id: 'row', time: 3 });
+      await store.put('prepared', 'row', { id: 'row', time: 4 });
+      expect((await store.pageByColumn('prepared', { column: 'time', limit: 10 })).items).toEqual([]);
+      await store.delete('prepared', 'row');
+      expect(await store.get('prepared', 'row')).toBeUndefined();
+      for (const replace of [false, true]) {
+        await store.put('stage:prepared', 'staged', { id: 'staged', time: 5 }, { columns: { time: 5 } });
+        expect(await store.batchIf!([{ collection: 'prepared', key: 'head', value: replace ? undefined : { revision: 3 } }], [], { source: 'stage:prepared', collection: 'prepared', replace })).toBe(!replace);
+        if (replace) expect(await store.batchIf!([{ collection: 'prepared', key: 'head', value: { revision: 3 } }], [], { source: 'stage:prepared', collection: 'prepared', replace })).toBe(true);
+        expect(await store.listKeys('stage:prepared')).toEqual([]);
+        expect((await store.pageByColumn('prepared', { column: 'time', limit: 10 })).items).toEqual([{ id: 'staged', time: 5 }]);
+      }
+      expect(fixed.map((sql) => prepared[sql])).toEqual([1, 1, 1, 1, 1]);
+      await store.close();
+      expect(thread.threadId).toBe(-1);
+      const reopened = open();
+      await reopened.put('prepared', 'head', { revision: 4 });
+      const reopenedThread = Reflect.get(Reflect.get(reopened, 'worker') as object, 'worker') as Worker;
+      expect(reopenedThread).not.toBe(thread);
+      reopenedThread.on('message', (message: { prepared?: Record<string, number> }) => { if (message.prepared !== undefined) prepared = message.prepared; });
+      expect(await reopened.get('prepared', 'head')).toEqual({ revision: 4 });
+      expect(fixed.map((sql) => prepared[sql])).toEqual([1, 1, 1, 1, 1]);
+    } finally { configureQueryStoreWorkerRuntime(fileURLToPath(entry)); }
+  });
+
   it('publishes stage and head atomically with two connections and rejects stale CAS', async () => {
     const first = open(), peer = open();
     await first.put('facts', 'head', { offset: 1 });
