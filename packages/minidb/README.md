@@ -178,6 +178,13 @@ db.query({
 });
 ```
 
+`sort` orders document fields. To order the independent datetime metadata instead,
+use `orderByColumn: { column: 'created', dir: 'desc' }` (`dir` defaults to `'asc'`).
+Rows without that column are excluded; ties use ascending UTF-8 key order in both
+directions. `orderByColumn` works with key ranges, filters, projections and
+pagination in `query`, `queryAsync` and cluster queries. Do not combine it with
+`sort`.
+
 Filter operators: `$eq $ne $gt $gte $lt $lte $in $nin $regex $exists $contains
 $type`, plus `$and $or $nor $not`. Paths use dot/bracket notation
 (`"address.city"`, `"tags[0]"`).
@@ -220,7 +227,7 @@ TF-IDF ranking.
 | `scan({ gte, gt, lte, lt, limit, reverse })` | Ordered key range scan |
 | `prefix(p, limit?)` | Key prefix scan |
 | `dtColumns()`, `dtRange(col, opts)` | Datetime column range query |
-| `query({ key, dt, text, filter, project, sort, skip, limit })` | Unified Mongo-like query |
+| `query({ key, dt, text, filter, project, sort, orderByColumn, skip, limit })` | Unified Mongo-like query |
 | `createTextIndex(name, { fields? })`, `dropTextIndex(name)` | Full-text index |
 | `search(name, q, { op?, limit? })` | Full-text search |
 | `compact()` | Force a snapshot + WAL rewrite now |

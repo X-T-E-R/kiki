@@ -112,6 +112,9 @@ export interface QueryOptions {
   filter?: Record<string, unknown>;
   project?: readonly string[];
   sort?: Record<string, 1 | -1>;
+  /** Order by numeric DT metadata, excluding rows without the column. Ties use
+   * ascending UTF-8 key order. Cannot be combined with document-field `sort`. */
+  orderByColumn?: { readonly column: string; readonly dir?: 'asc' | 'desc' };
   skip?: number;
   limit?: number;
 }

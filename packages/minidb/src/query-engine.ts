@@ -147,6 +147,34 @@ export class QueryEngine<V> {
     return out;
   }
 
+  private *orderedDtKeys(col: string, opts: RangeOptions<number>, key: QueryOptions['key'], stableTies: boolean): Generator<string> {
+    const exact = typeof key === 'string' ? toKStr(key) : undefined;
+    const prefix = typeof key === 'object' && key.prefix ? toKStr(key.prefix) : undefined;
+    const range = typeof key === 'object' && prefix === undefined ? canonRange(key) : undefined;
+    const accepts = (candidate: string): boolean => {
+      if (exact !== undefined) return candidate === exact;
+      if (prefix !== undefined) return candidate >= prefix && candidate < prefix + '￿';
+      if (range === undefined) return true;
+      const lower = range.gte ?? range.gt;
+      return (lower === undefined || (range.gt !== undefined ? candidate > lower : candidate >= lower)) &&
+        (range.lte === undefined || candidate <= range.lte) && (range.lt === undefined || candidate < range.lt);
+    };
+    if (stableTies && opts.reverse) {
+      let remaining = opts;
+      for (;;) {
+        const first = this.deps.dt.iterate(col, remaining).next().value;
+        if (first === undefined) return;
+        for (const entry of this.deps.dt.iterate(col, { gte: first.value, lte: first.value })) {
+          if (accepts(entry.key)) yield entry.key;
+        }
+        remaining = { ...remaining, lte: undefined, lt: first.value };
+      }
+    }
+    for (const entry of this.deps.dt.iterate(col, opts)) {
+      if (accepts(entry.key)) yield entry.key;
+    }
+  }
+
   // Fast path: a query bounded by a single dt column whose result order is that
   // dt column can walk the dt skiplist in order and stop as soon as `limit`
   // qualifying rows are found, instead of materializing + decoding + sorting the
@@ -154,20 +182,23 @@ export class QueryEngine<V> {
   // falls back to the general path). Kept conservative so results match exactly.
   private tryDtOrderedLimit(q: QueryOptions): ScanEntry<V>[] | null {
     if (q.text) return null; // text has its own ranking
-    if (q.key !== undefined) return null;
+    if (q.key !== undefined && q.orderByColumn === undefined) return null;
+    if (q.orderByColumn !== undefined && (!Number.isSafeInteger(q.limit) || q.limit! <= 0 ||
+      !Number.isSafeInteger(q.skip ?? 0) || (q.skip ?? 0) < 0)) return null;
     if (q.limit === undefined) return null; // unbounded -> full return, no win
-    if (!q.dt) return null;
-    const dtCols = Object.keys(q.dt);
-    if (dtCols.length !== 1) return null;
-    const col = dtCols[0]!;
-    const cond = q.dt[col]!;
+    const dtCols = Object.keys(q.dt ?? {});
+    const col = q.orderByColumn?.column ?? dtCols[0];
+    if (col === undefined || dtCols.length > 1 || (dtCols.length === 1 && dtCols[0] !== col)) return null;
+    const cond = q.dt?.[col] ?? {};
     // A dt condition carrying its own offset/count has slice semantics this
     // fast path cannot reproduce exactly (it honors range bounds only) — the
     // general path handles it.
     if (cond.offset !== undefined || cond.count !== undefined) return null;
+    if (q.key !== undefined && ((cond.gte !== undefined && cond.gt !== undefined) ||
+      (cond.lte !== undefined && cond.lt !== undefined))) return null;
 
     // Result order must be the dt column's order.
-    let reverse = false;
+    let reverse = q.orderByColumn?.dir === 'desc';
     if (q.sort) {
       const entries = Object.entries(q.sort);
       if (entries.length !== 1) return null;
@@ -191,7 +222,7 @@ export class QueryEngine<V> {
     const stats = this.deps.stats;
     const out: { key: string; value: V; dt: Record<string, number> | undefined }[] = [];
     let skipped = 0;
-    for (const { key: kstr } of this.deps.dt.iterate(col, iterOpts)) {
+    for (const kstr of this.orderedDtKeys(col, iterOpts, q.key, q.orderByColumn !== undefined)) {
       stats.queryCandidates++;
       let rejected = false;
       for (const c of eqChecks) {
@@ -224,6 +255,7 @@ export class QueryEngine<V> {
 
   query(q: QueryOptions = {}): ScanEntry<V>[] {
     this.deps.ensureOpen();
+    if (q.sort !== undefined && q.orderByColumn !== undefined) throw new TypeError('sort and orderByColumn cannot be combined');
     const fast = this.tryDtOrderedLimit(q);
     if (fast !== null) return fast;
 
@@ -280,10 +312,11 @@ export class QueryEngine<V> {
     // query decodes only the rows it returns instead of the whole candidate
     // set (an indexed equality query with limit previously decoded every
     // candidate and sliced at the end).
-    const early = !q.sort && !textOrder;
+    const early = !q.sort && !q.orderByColumn && !textOrder;
     const docs: ScanEntry<V>[] = [];
     let seen = 0;
     for (const k of keys) {
+      if (q.orderByColumn !== undefined && this.deps.store().map.get(k)?.dt?.[q.orderByColumn.column] === undefined) continue;
       stats.queryCandidates++;
       const buf = this.deps.store().get(k);
       if (buf === undefined) continue;
@@ -320,6 +353,14 @@ export class QueryEngine<V> {
       });
     }
 
+    if (q.orderByColumn !== undefined) {
+      stats.querySortedRows += docs.length;
+      const { column, dir } = q.orderByColumn;
+      docs.sort((a, b) => {
+        const delta = a.dt![column]! - b.dt![column]!;
+        return (dir === 'desc' ? -delta : delta) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+      });
+    }
     const sliced = early ? docs : skip || limit !== Infinity ? docs.slice(skip, skip + limit) : docs;
 
     if (q.project) {
@@ -336,8 +377,9 @@ export class QueryEngine<V> {
    *  sync when the query planner changes. */
   async queryAsync(q: QueryOptions = {}): Promise<ScanEntry<V>[]> {
     this.deps.ensureOpen();
+    if (q.sort !== undefined && q.orderByColumn !== undefined) throw new TypeError('sort and orderByColumn cannot be combined');
     const keysOnly = q.project?.length === 0 && q.filter === undefined && q.sort === undefined && q.text === undefined;
-    const fast = keysOnly ? null : await this.tryDtOrderedLimitAsync(q);
+    const fast = keysOnly && q.orderByColumn === undefined ? null : await this.tryDtOrderedLimitAsync(q);
     if (fast !== null) return fast;
 
     let keys: Iterable<string> | null = null;
@@ -392,7 +434,7 @@ export class QueryEngine<V> {
     const stats = this.deps.stats;
     const skip = q.skip ?? 0;
     const limit = q.limit === undefined ? Infinity : q.limit;
-    const early = !q.sort && !textOrder;
+    const early = !q.sort && !q.orderByColumn && !textOrder;
     const docs: ScanEntry<V>[] = [];
     let seen = 0;
     let visited = 0;
@@ -412,6 +454,7 @@ export class QueryEngine<V> {
             (cond.lte !== undefined && value > cond.lte) || (cond.lt !== undefined && value >= cond.lt)) continue candidates;
         }
       }
+      if (q.orderByColumn !== undefined && this.deps.store().map.get(k)?.dt?.[q.orderByColumn.column] === undefined) continue;
       stats.queryCandidates++;
       let value: V;
       if (keysOnly) {
@@ -454,6 +497,14 @@ export class QueryEngine<V> {
       });
     }
 
+    if (q.orderByColumn !== undefined) {
+      stats.querySortedRows += docs.length;
+      const { column, dir } = q.orderByColumn;
+      docs.sort((a, b) => {
+        const delta = a.dt![column]! - b.dt![column]!;
+        return (dir === 'desc' ? -delta : delta) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+      });
+    }
     const sliced = early ? docs : skip || limit !== Infinity ? docs.slice(skip, skip + limit) : docs;
 
     if (q.project) {
@@ -466,16 +517,19 @@ export class QueryEngine<V> {
    *  same eligibility rules and output, with async value reads. */
   private async tryDtOrderedLimitAsync(q: QueryOptions): Promise<ScanEntry<V>[] | null> {
     if (q.text) return null;
-    if (q.key !== undefined) return null;
+    if (q.key !== undefined && q.orderByColumn === undefined) return null;
+    if (q.orderByColumn !== undefined && (!Number.isSafeInteger(q.limit) || q.limit! <= 0 ||
+      !Number.isSafeInteger(q.skip ?? 0) || (q.skip ?? 0) < 0)) return null;
     if (q.limit === undefined) return null;
-    if (!q.dt) return null;
-    const dtCols = Object.keys(q.dt);
-    if (dtCols.length !== 1) return null;
-    const col = dtCols[0]!;
-    const cond = q.dt[col]!;
+    const dtCols = Object.keys(q.dt ?? {});
+    const col = q.orderByColumn?.column ?? dtCols[0];
+    if (col === undefined || dtCols.length > 1 || (dtCols.length === 1 && dtCols[0] !== col)) return null;
+    const cond = q.dt?.[col] ?? {};
     if (cond.offset !== undefined || cond.count !== undefined) return null;
+    if (q.key !== undefined && ((cond.gte !== undefined && cond.gt !== undefined) ||
+      (cond.lte !== undefined && cond.lt !== undefined))) return null;
 
-    let reverse = false;
+    let reverse = q.orderByColumn?.dir === 'desc';
     if (q.sort) {
       const entries = Object.entries(q.sort);
       if (entries.length !== 1) return null;
@@ -497,7 +551,7 @@ export class QueryEngine<V> {
     const stats = this.deps.stats;
     const out: { key: string; value: V; dt: Record<string, number> | undefined }[] = [];
     let skipped = 0;
-    for (const { key: kstr } of this.deps.dt.iterate(col, iterOpts)) {
+    for (const kstr of this.orderedDtKeys(col, iterOpts, q.key, q.orderByColumn !== undefined)) {
       stats.queryCandidates++;
       let rejected = false;
       for (const c of eqChecks) {
@@ -507,11 +561,17 @@ export class QueryEngine<V> {
         }
       }
       if (rejected) continue;
-      const buf = await this.deps.readValueAsync(kstr);
-      if (buf === undefined) continue;
+      let value: V;
+      if (q.orderByColumn !== undefined && q.project?.length === 0 && q.filter === undefined) {
+        if (!this.deps.store().has(kstr)) continue;
+        value = {} as V;
+      } else {
+        const buf = await this.deps.readValueAsync(kstr);
+        if (buf === undefined) continue;
+        stats.queryDecoded++;
+        value = this.deps.decode(buf)!;
+      }
       const r = this.deps.store().map.get(kstr);
-      stats.queryDecoded++;
-      const value = this.deps.decode(buf)!;
       if (q.filter && !match(value, q.filter)) continue;
       if (skipped < skip) {
         skipped++;

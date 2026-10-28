@@ -330,6 +330,7 @@ export class ClusterDb<V = unknown> {
    *  use search() when the score matters. */
   async query(q: QueryOptions = {}): Promise<ScanEntry<V>[]> {
     this.ensureOpen();
+    if (q.sort !== undefined && q.orderByColumn !== undefined) throw new TypeError('sort and orderByColumn cannot be combined');
     const skip = q.skip ?? 0;
     const limit = q.limit === undefined ? Infinity : q.limit;
     const needed = skip + limit;
@@ -339,7 +340,13 @@ export class ClusterDb<V = unknown> {
         const rows = await this.reader(id, (db) => db.queryAsync({ ...q, project: keysOnly ? [] : q.project, skip: 0, limit: needed }));
         for (const r of rows) all.push(r);
       }
-      if (q.sort) {
+      if (q.orderByColumn !== undefined) {
+        const { column, dir } = q.orderByColumn;
+        all.sort((a, b) => {
+          const delta = a.dt![column]! - b.dt![column]!;
+          return (dir === 'desc' ? -delta : delta) || compareEntries(a, b);
+        });
+      } else if (q.sort) {
         const entries = Object.entries(q.sort);
         all.sort((a, b) => {
           for (const [p, dir] of entries) {

@@ -383,6 +383,21 @@ describe('MiniDbQueryStore', () => {
     ]);
   });
 
+  it('pageByColumn orders independent column metadata when document fields disagree or are absent', async () => {
+    const store = build();
+    await store.batch([
+      { kind: 'put', collection: COLLECTION, key: 'a', value: { id: 'a', rank: 100 }, columns: { rank: 1 } },
+      { kind: 'put', collection: COLLECTION, key: 'b', value: { id: 'b', rank: 0 }, columns: { rank: 3 } },
+      { kind: 'put', collection: COLLECTION, key: 'c', value: { id: 'c' }, columns: { rank: 2 } },
+      { kind: 'put', collection: COLLECTION, key: 'missing', value: { id: 'missing', rank: 999 } },
+      { kind: 'put', collection: 'neighbor', key: 'foreign', value: { id: 'foreign' }, columns: { rank: 999 } },
+    ]);
+    const page = await store.pageByColumn<{ id: string }>(COLLECTION, { column: 'rank', dir: 'desc', limit: 2 });
+    expect(page.items.map((item) => item.id)).toEqual(['b', 'c']);
+    const older = await store.pageByColumn<{ id: string }>(COLLECTION, { column: 'rank', dir: 'desc', bounds: { lt: 2 }, limit: 2 });
+    expect(older.items.map((item) => item.id)).toEqual(['a']);
+  });
+
   it('pageByColumn stays cheap as the collection grows', async () => {
     const store = build();
     const seed = async (from: number, to: number): Promise<void> => {

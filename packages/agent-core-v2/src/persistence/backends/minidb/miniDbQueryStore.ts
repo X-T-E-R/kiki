@@ -215,7 +215,7 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
         key: { prefix: physicalKey(collection, '') },
         dt: { [query.column]: query.bounds ?? {} },
         filter: query.filter as Record<string, unknown> | undefined,
-        sort: { [query.column]: dir === 'desc' ? -1 : 1 },
+        orderByColumn: { column: query.column, dir },
         limit: query.limit,
       }),
     )) as ReadonlyArray<{ value: T }>;

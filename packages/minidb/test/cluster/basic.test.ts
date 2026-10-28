@@ -324,6 +324,30 @@ test('compound ranges merge shard pages in order with exclusive continuation and
 });
 
 
+test('column pages merge shard metadata independently of document sort with stable keys and collection isolation', async () => {
+  const dir = await tmpDir('minidb-cluster-column-');
+  const db = await ClusterDb.open({ dir, shardCount: 2, valueCodec: 'json', valueMode: 'disk' });
+  try {
+    const rows = Array.from({ length: 8 }, (_, index) => ({
+      key: keyOnShard(`row:${index}`, index % 2, 2), rank: Math.floor(index / 2), document: 10 - index,
+    }));
+    for (const row of rows) await db.set(row.key, { document: row.document }, { dt: { rank: row.rank, view: 1 } });
+    await db.set(keyOnShard('foreign:', 0, 2), { document: 99 }, { dt: { rank: 99, view: 1 } });
+    await db.set(keyOnShard('row:missing', 1, 2), { document: 0 });
+    for (const dir of ['asc', 'desc'] as const) {
+      const expected = rows.toSorted((a, b) => (dir === 'desc' ? b.rank - a.rank : a.rank - b.rank) || Buffer.compare(Buffer.from(a.key), Buffer.from(b.key)));
+      const query = { key: { prefix: 'row:' }, orderByColumn: { column: 'rank', dir } };
+      assert.deepEqual((await db.query(query)).map((row) => row.key), expected.map((row) => row.key));
+      for (const dt of [undefined, { rank: {}, view: { gte: 1 } }]) {
+        assert.deepEqual((await db.query({ ...query, dt, skip: 1, limit: 3 })).map((row) => row.key), expected.slice(1, 4).map((row) => row.key));
+      }
+    }
+    const documentSorted = await db.query({ key: { prefix: 'row:' }, dt: { rank: {} }, sort: { document: -1 }, limit: 3 });
+    assert.deepEqual(documentSorted.map((row) => row.key), rows.slice(0, 3).map((row) => row.key));
+    await assert.rejects(db.query({ sort: { document: 1 }, orderByColumn: { column: 'rank' } }), /cannot be combined/);
+  } finally { await db.close(); await rmrf(dir); }
+});
+
 test('disk-backed get, mget and query use async values without changing order, TTL or errors', async () => {
   const dir = await tmpDir('minidb-cluster-async-');
   const writer = await ClusterDb.open<QueryDoc>({ dir, shardCount: 2, valueCodec: 'json', valueMode: 'disk' });

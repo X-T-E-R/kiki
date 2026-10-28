@@ -238,6 +238,77 @@ test('keyed async DT filters preserve bounds, intersections, pages, missing colu
   }
 });
 
+test('keyed ordered DT pages preserve stable ties and read only the selected values', async () => {
+  const dir = await tmpDir();
+  const db = await MiniDb.open({ dir, valueCodec: 'json', valueMode: 'disk', activeExpireIntervalMs: 0 });
+  try {
+    await db.createIndex('bySelected', { field: 'selected' });
+    for (let index = 0; index < 100; index++) {
+      const ts = Math.floor(index / 4);
+      for (const prefix of ['记录:', 'other:']) {
+        await db.set(`${prefix}${String(index).padStart(3, '0')}`, { ts, selected: index % 2 === 0 }, { dt: { ts } });
+      }
+    }
+    await db.set('记录:expired', { ts: 24, selected: true }, { ttl: 1, dt: { ts: 24 } });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const keys: import('../src/types.js').QueryOptions['key'][] = [
+      { prefix: '记录:' }, { gte: '记录:020', lt: '记录:090' },
+      { gt: '记录:020', lte: '记录:090' }, '记录:024', { prefix: 'missing:' },
+    ];
+    for (const key of keys) {
+      for (const direction of ['asc', 'desc'] as const) {
+        const query = { key, dt: { ts: { gte: 5, lt: 24 } }, orderByColumn: { column: 'ts', dir: direction } };
+        const expected = db.query(query).slice(2, 6);
+        for (const async of [false, true]) {
+          const before = db.stats.queryDecoded;
+          const page = { ...query, skip: 2, limit: 4 };
+          assert.deepEqual(async ? await db.queryAsync(page) : db.query(page), expected);
+          assert.ok(db.stats.queryDecoded - before <= 6, 'bounded pages must not decode the full collection');
+        }
+        const filtered = { ...query, filter: { selected: true }, project: ['ts'] };
+        const expectedFiltered = db.query(filtered).slice(1, 4);
+        assert.deepEqual(db.query({ ...filtered, skip: 1, limit: 3 }), expectedFiltered);
+        assert.deepEqual(await db.queryAsync({ ...filtered, skip: 1, limit: 3 }), expectedFiltered);
+      }
+    }
+    const keyOrdered = { key: { prefix: '记录:' }, dt: { ts: { gte: 5 } }, limit: 3 };
+    assert.deepEqual(await db.queryAsync(keyOrdered), db.query(keyOrdered));
+  } finally {
+    await db.close();
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('column ordering is independent of document fields on fast and general queries', async () => {
+  const dir = await tmpDir();
+  const db = await MiniDb.open({ dir, valueCodec: 'json' });
+  try {
+    await db.set('row:a', { rank: 30 }, { dt: { rank: 1, view: 0 } });
+    await db.set('row:b', { rank: 10 }, { dt: { rank: 3, view: 0 } });
+    await db.set('row:c', {}, { dt: { rank: 2, view: 0 } });
+    await db.set('row:missing', { rank: 0 });
+    const key = { prefix: 'row:' };
+    const orderByColumn = { column: 'rank', dir: 'desc' as const };
+    for (const query of [
+      { key, orderByColumn, limit: 2 },
+      { key, orderByColumn },
+      { key, dt: { rank: {}, view: {} }, orderByColumn, limit: 2 },
+    ]) {
+      const expected = query.limit === undefined ? ['row:b', 'row:c', 'row:a'] : ['row:b', 'row:c'];
+      assert.deepEqual(db.query(query).map((row) => row.key), expected);
+      assert.deepEqual((await db.queryAsync(query)).map((row) => row.key), expected);
+    }
+    const ordinary = { key, dt: { rank: {} }, sort: { rank: 1 as const }, limit: 2 };
+    assert.deepEqual(db.query(ordinary).map((row) => row.key), ['row:b', 'row:a']);
+    assert.deepEqual(await db.queryAsync(ordinary), db.query(ordinary));
+    assert.throws(() => db.query({ key, orderByColumn, sort: { rank: 1 } }), /cannot be combined/);
+    await assert.rejects(db.queryAsync({ key, orderByColumn, sort: { rank: 1 } }), /cannot be combined/);
+  } finally {
+    await db.close();
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
 test('keyed async DT filtering yields on scanned candidates even when none match', async () => {
   const dir = await tmpDir();
   const db = await MiniDb.open({ dir, valueCodec: 'json' });
