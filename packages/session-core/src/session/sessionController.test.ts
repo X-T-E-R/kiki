@@ -2997,6 +2997,96 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
+  it.each(['baseline', 'meta-before-reset', 'resync', 'resync-pending'] as const)('keeps a cold child idle until its delayed live baseline and retains running metadata (%s)', async (order) => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    const childId = 'child-1';
+    const offChild = controller.subscribeAgent(childId, vi.fn());
+    const coldEpoch = 'cold:session_test:child-1';
+    const liveEpoch = 'live-child';
+    const cold = { ...resetEvent(childId, userTurnSnapshot({ streaming: true }), 0), cursor: { seq: 0, epoch: coldEpoch } };
+    const baseline = { ...resetEvent(childId, userTurnSnapshot(), 1), cursor: { seq: 1, epoch: liveEpoch } };
+    const running = { ...opsEvent(childId, [{ op: 'meta.merge', meta: {
+      activity: 'turn', agent: { phase: { kind: 'running', turnId: 2, step: 1, stepId: 't2.1', since: 0 } },
+    } }], 2), cursor: { seq: 2, epoch: liveEpoch } };
+    const shell = deferred<SessionSnapshotResponse>();
+    const liveBaseline = deferred<void>();
+    let resync: Promise<void> | undefined;
+    try {
+      controller.handleTranscript(cold);
+      flushAll();
+      expect(controller.getAgentState(childId).busy).toBe(false);
+      expect(controller.getAgentTranscriptCursor(childId)?.epoch).toBe(coldEpoch);
+      client.snapshot.mockImplementationOnce(() => shell.promise);
+      resync = controller.resync();
+      expect(controller.getState().resyncing).toBe(true);
+      const activation = liveBaseline.promise.then(() => controller.handleTranscript(baseline));
+      flushAll();
+      expect(controller.getAgentState(childId).busy).toBe(false);
+      if (!order.startsWith('resync')) {
+        shell.resolve(snapshot({ epoch: 'live-session' }));
+        await resync;
+      }
+      liveBaseline.resolve();
+      await activation;
+      controller.handleTranscript(running);
+      if (order === 'meta-before-reset') controller.handleTranscript(baseline);
+      if (order !== 'resync-pending') {
+        flushAll();
+        expect(controller.getAgentState(childId).busy).toBe(true);
+      }
+      if (order.startsWith('resync')) {
+        shell.resolve(snapshot({ epoch: 'live-session' }));
+        await resync;
+      }
+      flushAll();
+      expect(controller.getAgentState(childId).transcriptReady).toBe(true);
+      expect(controller.getAgentTranscriptCursor(childId)).toEqual({ seq: 2, epoch: liveEpoch });
+      controller.handleTranscript(baseline);
+      flushAll();
+      expect(controller.getAgentState(childId).busy).toBe(true);
+      controller.handleTranscript({ ...opsEvent(childId, [{ op: 'meta.merge', meta: {
+        activity: 'idle', agent: { phase: { kind: 'ended', turnId: 2, reason: 'completed', durationMs: 1, at: 1 } },
+      } }], 3), cursor: { seq: 3, epoch: liveEpoch } });
+      flushAll();
+      expect(controller.getAgentState(childId).busy).toBe(false);
+    } finally {
+      liveBaseline.resolve();
+      shell.resolve(snapshot({ epoch: 'live-session' }));
+      await resync;
+      offChild();
+      controller.close();
+    }
+  });
+
+  it.each([false, true])('clears child baseline readiness and resume cursors across an unrefreshed boundary (rewrite=%s)', async (rewrite) => {
+    const { controller, client, view, flushAll } = await openTranscriptController();
+    const childId = 'child-1';
+    const offChild = controller.subscribeAgent(childId, vi.fn());
+    const subscribe = vi.spyOn(view, 'subscribe');
+    const shell = deferred<SessionSnapshotResponse>();
+    let restoring: Promise<void> | undefined;
+    try {
+      controller.handleTranscript(resetEvent(childId, userTurnSnapshot(), 1));
+      client.snapshot.mockImplementationOnce(() => shell.promise);
+      restoring = controller.resync({ rewrite });
+      if (rewrite) controller.handleTranscript(resetEvent(childId, userTurnSnapshot({ streaming: true }), 2));
+      shell.resolve(snapshot({ epoch: 'new-session-epoch' }));
+      await restoring;
+      flushAll();
+      expect(controller.getAgentState(childId).transcriptReady).toBe(false);
+      expect(subscribe.mock.calls.at(-1)?.[0].transcriptSince?.[childId]).toBeUndefined();
+      controller.handleTranscript({ ...resetEvent(childId, userTurnSnapshot(), 0), cursor: { seq: 0, epoch: 'new-child-epoch' } });
+      flushAll();
+      expect(controller.getAgentState(childId)).toMatchObject({ busy: false, transcriptReady: true });
+      expect(controller.getAgentTranscriptCursor(childId)).toEqual({ seq: 0, epoch: 'new-child-epoch' });
+    } finally {
+      shell.resolve(snapshot());
+      await restoring;
+      offChild();
+      controller.close();
+    }
+  });
+
   it('converges reset then ops once and does not mix legacy timeline frames', async () => {
     const { controller, socket, flushAll } = await openTranscriptController();
     controller.handleTranscript(asTranscriptEvent({

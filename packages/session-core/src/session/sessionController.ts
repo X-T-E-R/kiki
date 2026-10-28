@@ -1145,6 +1145,9 @@ export class SessionController {
     });
   }
 
+  /** Refresh the session shell and subscription. Transcript baselines received
+   * during the read retain their readiness, grade and resume cursor together;
+   * a rewrite retains only baselines from a new transcript epoch. */
   async resync(options: { rewrite?: boolean } = {}): Promise<void> {
     if (this.closed || this.isSuspended) return;
     const rewrite = options.rewrite === true;
@@ -1162,24 +1165,28 @@ export class SessionController {
     this.setState(setResyncing(this.state, true));
     const attachment = this.viewAttachment;
     const baselineAtStart = new Map(this.transcriptBaselineSerial);
+    const cursorsAtStart = rewrite ? new Map(this.transcriptCursors) : undefined;
     try {
       const snapshot = await this.readSnapshot();
       if (this.closed || attachment !== this.viewAttachment) return;
       for (const agentId of this.agentTranscripts.keys()) this.bumpHistoryGeneration(agentId);
-      this.pendingTranscriptBatches.clear();
-      this.pendingTranscriptAgents.clear();
       this.catchupReplay.clear();
-      const retainedReady = (agentId: string): boolean => this.transcriptBaselineSerial.get(agentId) !== baselineAtStart.get(agentId)
-        && this.hasTranscriptBaseline(agentId);
+      const retainedReady = new Set([...this.agentTranscripts.keys()].filter((agentId) => {
+        const epoch = this.transcriptCursors.get(agentId)?.epoch;
+        return this.transcriptBaselineSerial.get(agentId) !== baselineAtStart.get(agentId) && this.hasTranscriptBaseline(agentId) &&
+          (!rewrite || epoch !== undefined && epoch !== cursorsAtStart?.get(agentId)?.epoch);
+      }));
+      for (const agentId of this.pendingTranscriptBatches.keys()) if (!retainedReady.has(agentId)) this.pendingTranscriptBatches.delete(agentId);
+      for (const agentId of this.pendingTranscriptAgents) if (!retainedReady.has(agentId)) this.pendingTranscriptAgents.delete(agentId);
       for (const [agentId, state] of this.agentStates) {
-        const transcriptReady = retainedReady(agentId);
+        const transcriptReady = retainedReady.has(agentId);
         if (state.transcriptReady === transcriptReady) continue;
         this.agentStates.set(agentId, { ...state, version: state.version + 1, transcriptReady });
         this.dirtyAgents.add(agentId);
       }
-      const transcriptReady = retainedReady(MAIN_AGENT_ID);
-      this.transcriptCursors.clear();
-      this.appliedTranscriptGrades.clear();
+      const transcriptReady = retainedReady.has(MAIN_AGENT_ID);
+      for (const agentId of this.transcriptCursors.keys()) if (!retainedReady.has(agentId)) this.transcriptCursors.delete(agentId);
+      for (const agentId of this.appliedTranscriptGrades.keys()) if (!retainedReady.has(agentId)) this.appliedTranscriptGrades.delete(agentId);
       this.setState(
         setResyncing(
           {

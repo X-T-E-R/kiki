@@ -616,10 +616,14 @@ describe('GUI shared client against an isolated KAP host', () => {
     }
     const view = client.sessionView(id);
     let ready = false;
+    let liveChildBaselineEpoch: string | undefined;
     const subscribe = view.subscribe.bind(view);
     const subscriptionSpy = vi.spyOn(view, 'subscribe').mockImplementation((options, callback) =>
       subscribe(options, (signal) => {
         if (signal.type === 'ready') ready = true;
+        if (signal.type === 'transcript' && signal.event.type === 'transcript.reset' &&
+          signal.event.agent_id === child.id && signal.event.cursor.epoch !== undefined &&
+          !signal.event.cursor.epoch.startsWith('cold:')) liveChildBaselineEpoch = signal.event.cursor.epoch;
         callback(signal);
       }),
     );
@@ -636,13 +640,26 @@ describe('GUI shared client against an isolated KAP host', () => {
         controller.flushFrames();
         expect(controller.getForest()?.byId[child.id]?.status).toBe('completed');
       });
+      if (mode === 'cold') {
+        expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
+        expect(controller.getAgentTranscriptCursor(child.id)?.epoch).toMatch(/^cold:/);
+        expect(controller.getAgentState(child.id).busy).toBe(false);
+      }
       for (const ending of ['completed', 'failed', 'cancelled'] as const) {
         hold = true;
         mainChanges.mockClear();
         childChanges.mockClear();
         const beforeRequests = requests.length;
+        const beforeEpoch = controller.getAgentTranscriptCursor(child.id)?.epoch;
         await client.sendAgentMessage(id, child.id, `follow-up ${ending}`, undefined, `follow-up-${ending}`);
         await vi.waitFor(() => expect(requests).toHaveLength(beforeRequests + 1), { timeout: 10000 });
+        await vi.waitFor(() => {
+          controller.flushFrames();
+          expect(liveChildBaselineEpoch).toBeDefined();
+          expect(controller.getAgentTranscriptCursor(child.id)?.epoch).toBe(liveChildBaselineEpoch);
+          expect(controller.getAgentState(child.id).transcriptReady).toBe(true);
+          if (beforeEpoch?.startsWith('cold:')) expect(liveChildBaselineEpoch).not.toBe(beforeEpoch);
+        }, { timeout: 10000 });
         await vi.waitFor(() => {
           controller.flushFrames();
           expect(controller.getForest()?.byId[child.id]?.status).toBe('background');
