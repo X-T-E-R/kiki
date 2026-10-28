@@ -228,31 +228,48 @@ export class UsageAggregationService {
   }
 
   async readSessionAccounting(workspaceId: string, sessionId: string, signal?: AbortSignal): Promise<UsageAccountingSnapshot> {
-    const scope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
-    const agents = await this.core.accessor.get(IFileSystemStorageService).list(`${scope}/agents`);
-    const rows = await this.readAgentUsage(workspaceId, sessionId, agents, { signal, summaryOnly: true, deadlineAt: this.now() + this.limits.deadlineMs });
+    signal?.throwIfAborted();
+    const deadlineAt = this.now() + this.limits.deadlineMs;
+    const deadline = new AbortController();
+    const timer = setTimeout(() => { deadline.abort(new DOMException('Session usage deadline', 'TimeoutError')); }, this.limits.deadlineMs);
+    timer.unref();
+    const readSignal = AbortSignal.any([this.modelController.signal, deadline.signal, ...(signal === undefined ? [] : [signal])]);
+    const rows: Record<string, AgentUsageProjection> = {};
+    const revisions = new Map<string, string>();
+    let agents: string[] = [];
+    let inventoryComplete = false;
+    let pricingReady = false;
     const pricing = this.core.accessor.get(IModelPricingService);
-    await waitForSource(pricing.ready, signal);
+    const preparation = pricing.ready.then(() => { pricingReady = true; });
+    void preparation.catch(() => undefined);
+    try {
+      const scope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
+      agents = await waitForSource(this.core.accessor.get(IFileSystemStorageService).list(`${scope}/agents`), readSignal);
+      inventoryComplete = true;
+      await waitForSource(this.readAgentUsageSources(workspaceId, sessionId, agents, { signal: readSignal, factSignal: readSignal, summaryOnly: true, deadlineAt, factBudget: { remainingRecords: this.limits.usageFactBudget }, recoveryBudget: { remainingRecords: Infinity, remainingBytes: Infinity } }, rows, revisions), readSignal);
+      await waitForSource(preparation, readSignal);
+    } catch (error) {
+      signal?.throwIfAborted();
+      this.modelController.signal.throwIfAborted();
+      if (!deadline.signal.aborted) throw error;
+    } finally { clearTimeout(timer); }
     let totals = summarizeUsageFacts([]);
-    let complete = true;
+    let complete = inventoryComplete;
     let cost = 0;
-    let costUnknown = false;
-    const revisions: string[] = [];
+    let costUnknown = !pricingReady;
     for (const agent of agents) {
       const row = rows[agent];
       complete &&= row?.complete === true;
       const summary = row?.totals ?? summarizeUsageFacts(row?.records ?? []);
-      const head = await this.core.accessor.get(IUsageReadModel).source(agentScopeOf(scope, agent), signal);
-      revisions.push(`${agent}:${head?.revision ?? 0}:${head?.checkpoint?.generation ?? ''}:${head?.checkpoint?.offset ?? 0}`);
       for (const key of ['inputOther', 'output', 'inputCacheRead', 'inputCacheCreation'] as const) totals.usage[key] += summary.usage[key];
       totals = { ...totals, records: totals.records + summary.records, knownUsageRecords: totals.knownUsageRecords + summary.knownUsageRecords, partial: totals.partial || summary.partial };
-      for (const [model, masks] of Object.entries(summary.byModelMask ?? {})) for (const value of Object.values(masks)) {
+      if (pricingReady) for (const [model, masks] of Object.entries(summary.byModelMask ?? {})) for (const value of Object.values(masks)) {
         const quoted = pricing.calculate(model, value);
         if (quoted === undefined || !Number.isFinite(cost + quoted)) costUnknown = true; else cost += quoted;
       }
       if (summary.byModelMask === undefined && summary.knownUsageRecords > 0) costUnknown = true;
     }
-    return { version: 2, subject: { session_id: sessionId, scope: 'session' }, source_revision: revisions.join('|'), covered_at: this.now(), complete, tokens: { input_other: totals.usage.inputOther, output: totals.usage.output, input_cache_read: totals.usage.inputCacheRead, input_cache_creation: totals.usage.inputCacheCreation }, tokens_unknown: totals.partial, cost_usd_estimated: cost, cost_unknown: costUnknown || totals.partial };
+    return { version: 2, subject: { session_id: sessionId, scope: 'session' }, source_revision: agents.map((agent) => revisions.get(agent) ?? `${agent}:unread`).join('|'), covered_at: this.now(), complete, tokens: { input_other: totals.usage.inputOther, output: totals.usage.output, input_cache_read: totals.usage.inputCacheRead, input_cache_creation: totals.usage.inputCacheCreation }, tokens_unknown: totals.partial, cost_usd_estimated: cost, cost_unknown: costUnknown || totals.partial };
   }
 
   async readAgentUsage(
@@ -287,6 +304,7 @@ export class UsageAggregationService {
     agentIds: readonly string[],
     options: SourceReadOptions & { factSignal?: AbortSignal },
     rows: Record<string, AgentUsageProjection>,
+    revisions?: Map<string, string>,
   ): Promise<Readonly<Record<string, AgentUsageProjection>>> {
     const facts = this.core.accessor.get(IUsageFactStore);
     const storage = this.core.accessor.get(IFileSystemStorageService);
@@ -302,7 +320,9 @@ export class UsageAggregationService {
       const covered = await this.synchronizeSource({ source, agentId: id, generation, size: size ?? 0, mtimeMs: mtimeMs ?? 0 }, signal, options);
       const snapshot = await model.summary(source, signal);
       const checkpoint = snapshot.head?.checkpoint;
-      const complete = covered && checkpoint?.valid === true && snapshot.head?.pendingCheckpoint === undefined && checkpoint.generation === generation && checkpoint.size === (size ?? 0) && checkpoint.offset === (size ?? 0) && checkpoint.mtimeMs === (mtimeMs ?? 0) && await logs.generation(source, AGENT_WIRE_RECORD_KEY) === generation;
+      revisions?.set(id, `${id}:${snapshot.head?.revision ?? 0}:${checkpoint?.generation ?? ''}:${checkpoint?.offset ?? 0}`);
+      if (options.summaryOnly) rows[id] = { records: [], totals: snapshot.totals, complete: false };
+      const complete = covered && checkpoint?.valid === true && snapshot.head?.pendingCheckpoint === undefined && checkpoint.generation === generation && checkpoint.size === (size ?? 0) && checkpoint.offset === (size ?? 0) && checkpoint.mtimeMs === (mtimeMs ?? 0) && await waitForSource(logs.generation(source, AGENT_WIRE_RECORD_KEY), signal) === generation;
       if (options.summaryOnly) rows[id] = { records: [], totals: snapshot.totals, complete };
       else { const read = await facts.read(source, undefined, signal); rows[id] = { records: read.records, complete: complete && read.readComplete !== false }; }
     }
@@ -667,7 +687,7 @@ export class UsageAggregationService {
 }
 
 async function waitForSource<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  signal?.throwIfAborted();
+  if (signal?.aborted) { void promise.catch(() => undefined); signal.throwIfAborted(); }
   if (signal === undefined) return promise;
   let abort!: () => void;
   const aborted = new Promise<never>((_resolve, reject) => {

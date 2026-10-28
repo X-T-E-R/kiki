@@ -282,9 +282,9 @@ function deferred(): { readonly promise: Promise<void>; readonly resolve: () => 
 }
 
 describe('session accounting from typed source totals', () => {
-  function service(core: Scope, prices: IModelPricingService): UsageAggregationService {
+  function service(core: Scope, prices: IModelPricingService, limits: ConstructorParameters<typeof UsageAggregationService>[2] = {}): UsageAggregationService {
     const priced = { accessor: { get: (id: unknown) => id === IModelPricingService ? prices : core.accessor.get(id as typeof IUsageFactStore) } } as unknown as Scope;
-    return new UsageAggregationService(priced);
+    return new UsageAggregationService(priced, Date.now, limits);
   }
 
   it('keeps each fully priced mask subtotal and reprices the same complete session without rereading wire', async () => {
@@ -323,6 +323,57 @@ describe('session accounting from typed source totals', () => {
       expect(await reader.readSessionAccounting('workspace', 'session')).toMatchObject({ complete: true, tokens: { input_other: 0, output: 0 }, tokens_unknown: false, cost_usd_estimated: 0, cost_unknown: false });
       expect(fixture.reads()).toBe(0);
     } finally { reader.dispose(); }
+  });
+  it('bounds a stalled inventory from entry and forwards request cancellation', async () => {
+    const fixture = persistedFixture([]);
+    const storage = fixture.core.accessor.get(IFileSystemStorageService);
+    const list = vi.fn<IFileSystemStorageService['list']>().mockReturnValue(new Promise(() => undefined));
+    const blocked = new Proxy(storage, { get: (target, key) => key === 'list' ? list : Reflect.get(target, key) });
+    const core = { accessor: { get: (id: unknown) => id === IFileSystemStorageService ? blocked : fixture.core.accessor.get(id as typeof IUsageFactStore) } } as unknown as Scope;
+    const reader = service(core, tokenPricing({}), { deadlineMs: 20 });
+    try {
+      expect(await reader.readSessionAccounting('workspace', 'session')).toMatchObject({ complete: false, tokens: { input_other: 0 }, tokens_unknown: false });
+      const controller = new AbortController();
+      const cancelled = reader.readSessionAccounting('workspace', 'session', controller.signal);
+      controller.abort(new Error('Leave session'));
+      await expect(cancelled).rejects.toThrow('Leave session');
+      expect(list).toHaveBeenCalledTimes(2);
+    } finally { list.mockRestore(); reader.dispose(); }
+  });
+
+  it('keeps complete known tokens when pricing preparation reaches the same absolute deadline', async () => {
+    const fixture = persistedFixture([record('model', usage(10, 0), true)]);
+    const warm = service(fixture.core, tokenPricing({ model: { inputOther: 0.1 } }));
+    await warm.readSessionAccounting('workspace', 'session'); warm.dispose();
+    const prices = tokenPricing({ model: { inputOther: 0.1 } });
+    const calculate = vi.spyOn(prices, 'calculate');
+    const reader = service(fixture.core, { ...prices, ready: new Promise(() => undefined) }, { deadlineMs: 100 });
+    try {
+      expect(await reader.readSessionAccounting('workspace', 'session')).toMatchObject({ complete: true, tokens: { input_other: 10 }, tokens_unknown: false, cost_usd_estimated: 0, cost_unknown: true });
+      expect(calculate).not.toHaveBeenCalled();
+    } finally { reader.dispose(); }
+  });
+
+  it('retains a priced committed agent subtotal when the next source stalls without conflating coverage and quality', async () => {
+    const fixture = persistedFixture([record('model', usage(10, 0), true)], undefined, { agentIds: ['main', 'child'] });
+    const prices = tokenPricing({ model: { inputOther: 0.1 } });
+    const warm = service(fixture.core, prices);
+    await warm.readSessionAccounting('workspace', 'session'); warm.dispose();
+    const model = fixture.core.accessor.get(IUsageReadModel);
+    const summary = model.summary.bind(model);
+    let aborted = false;
+    const stalled = vi.spyOn(model, 'summary').mockImplementation(async (scope, signal) => {
+      if (!scope.endsWith('/child')) return summary(scope, signal);
+      return new Promise((_resolve, reject) => signal!.addEventListener('abort', () => { aborted = true; reject(signal!.reason); }, { once: true }));
+    });
+    const reader = service(fixture.core, prices, { deadlineMs: 100 });
+    try {
+      const accounting = await reader.readSessionAccounting('workspace', 'session');
+      expect(accounting).toMatchObject({ complete: false, tokens: { input_other: 10 }, tokens_unknown: false, cost_usd_estimated: 1, cost_unknown: false });
+      expect(accounting.source_revision).toContain('main:');
+      expect(accounting.source_revision).toContain('child:unread');
+      expect(aborted).toBe(true);
+    } finally { stalled.mockRestore(); reader.dispose(); }
   });
 });
 
