@@ -9,8 +9,10 @@ import type { KikiConfigResponse, MemoryApproval, MemorySettings } from '../../l
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, SaveStatus, Toggle, type Feedback } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
+import { SECONDARY_BUTTON } from '../ui';
+import { Icon } from '../icons';
 import { SectionCard } from './SectionCard';
-import { SettingField } from './fields';
+import { AdvancedDetails, SettingField } from './fields';
 import { CommitInput, SettingsSelect } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
@@ -26,8 +28,6 @@ export function MemorySettingsCard() {
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
   const [saved, ping] = useSavedTick();
-  // The text budget keeps its system default; it surfaces only behind Advanced.
-  const [advanced, setAdvanced] = useState(false);
   const [defaultError, setDefaultError] = useState<unknown>();
   const settingsQuery = useQuery({
     queryKey: MEMORY_SETTINGS_KEY,
@@ -80,7 +80,12 @@ export function MemorySettingsCard() {
         : null;
 
   return (
-    <SectionCard id="st-card-memory" title={t('st.memory.title')}>
+    <SectionCard id="st-card-memory" title={t('st.memory.title')} actions={(
+      <button type="button" data-memory-settings-link className={SECONDARY_BUTTON}
+        onClick={() => { void navigate('/memory'); }}>
+        {t('st.memory.open')}
+      </button>
+    )}>
       <div className="min-w-0 space-y-2" data-memory-settings>
         <SettingField label={t('memory.toggle')} htmlFor="memory-enabled" help={t('st.memory.hint')}>
           {status('enabled')}
@@ -121,16 +126,8 @@ export function MemorySettingsCard() {
             ]}
           />
         </SettingField>
-        <button
-          type="button"
-          data-memory-advanced-toggle
-          aria-expanded={advanced}
-          onClick={() => { setAdvanced((value) => !value); }}
-          className="inline-flex min-h-7 items-center text-[12px] font-medium text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-        >
-          {t(advanced ? 'st.memory.advancedHide' : 'st.memory.advanced')}
-        </button>
-        {advanced ? (
+        {/* The text budget keeps its system default; it waits behind Advanced. */}
+        <AdvancedDetails summary={t('st.memory.advanced')} data-memory-advanced>
         <SettingField label={t('st.memory.budget')} htmlFor="memory-budget" help={t('st.memory.budgetHint')}>
           {status('budget')}
           <CommitInput
@@ -144,15 +141,7 @@ export function MemorySettingsCard() {
             onCommit={(text) => { update.mutate({ budget: Number(text) }); }}
           />
         </SettingField>
-        ) : null}
-        <button
-          type="button"
-          data-memory-settings-link
-          onClick={() => { void navigate('/memory'); }}
-          className="inline-flex min-h-7 items-center text-[12px] font-medium text-selected-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
-        >
-          {t('st.memory.open')}
-        </button>
+        </AdvancedDetails>
         <FeedbackLine feedback={feedback} />
       </div>
     </SectionCard>
@@ -177,20 +166,27 @@ export function MemoryWorkspaceSettingsCard() {
     queryFn: () => client.getWorkspaceMemorySettings(selectedId!),
     enabled: selectedId !== undefined,
   });
+  // A write carries its workspace with it: the selection can move while it is
+  // in flight, and the result, tick and error belong to the workspace written.
+  const [savedId, setSavedId] = useState<string | undefined>();
   const update = useMutation({
-    mutationFn: (enabled: boolean | null) => client.patchWorkspaceMemorySettings(selectedId!, enabled),
-    onSuccess: async () => {
+    mutationFn: ({ workspaceId, enabled }: { workspaceId: string; enabled: boolean | null }) =>
+      client.patchWorkspaceMemorySettings(workspaceId, enabled),
+    onSuccess: async (result, { workspaceId }) => {
+      const written = result.workspace_id || workspaceId;
+      setSavedId(written);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: MEMORY_SETTINGS_KEY }),
-        queryClient.invalidateQueries({ queryKey: [...MEMORY_WORKSPACE_SETTINGS_KEY, selectedId] }),
+        queryClient.invalidateQueries({ queryKey: [...MEMORY_WORKSPACE_SETTINGS_KEY, written] }),
       ]);
       ping();
     },
   });
+  const updateHere = update.variables?.workspaceId === selectedId;
   const overrides = workspaces.filter((workspace) => workspace.id !== selectedId && settingsQuery.data?.workspaces[workspace.id] !== undefined);
   const feedback: Feedback = workspacesQuery.isError || settingsQuery.isError || workspaceQuery.isError
     ? { tone: 'error', text: t('st.memory.loadFailed', { detail: errorText(locale, workspacesQuery.error ?? settingsQuery.error ?? workspaceQuery.error) }) }
-    : update.isError
+    : update.isError && updateHere
       ? { tone: 'error', text: t('st.memory.saveFailed', { detail: errorText(locale, update.error) }) }
       : null;
   const override: WorkspaceOverride = workspaceQuery.data?.enabled === null || workspaceQuery.data === undefined
@@ -199,11 +195,20 @@ export function MemoryWorkspaceSettingsCard() {
   const effective = workspaceQuery.data === undefined
     ? undefined
     : t(workspaceQuery.data.effective_enabled ? 'st.memory.enabled' : 'st.memory.disabled');
+  // A workspace uses memory only while the global switch is on and its own
+  // setting is not off. Global off is said once, here, and nothing is
+  // disabled: an override chosen now is saved as chosen and applies as soon
+  // as memory is allowed again.
+  const globalOff = settingsQuery.data?.enabled === false;
+  const select = (id: string) => { const next = new URLSearchParams(params); next.set('workspace', id); setParams(next, { replace: true }); };
 
   return (
     <SectionCard id="st-card-memory-workspaces" title={t('st.memory.workspaces')} scope="workspace">
       <div className="space-y-2" data-memory-workspace-settings>
         {workspaces.length === 0 && !workspacesQuery.isPending ? <Hint>{t('st.memory.workspaceNone')}</Hint> : null}
+        {globalOff && workspaces.length > 0 ? (
+          <p data-memory-global-off className="max-w-[62ch] text-[12px] leading-snug text-amber-ink">{t('st.memory.globalOffNotice')}</p>
+        ) : null}
         {selectedId !== undefined ? (
           <>
             <SettingField label={t('st.memory.workspaceSelect')}>
@@ -213,7 +218,7 @@ export function MemoryWorkspaceSettingsCard() {
                 ariaLabel={t('st.memory.workspaceSelect')}
                 className="max-w-64"
                 value={selectedId}
-                onChange={(id) => { const next = new URLSearchParams(params); next.set('workspace', id); setParams(next, { replace: true }); }}
+                onChange={select}
                 choices={workspaces.map((workspace) => ({ value: workspace.id, label: workspace.name, hint: workspace.root }))}
               />
             </SettingField>
@@ -228,13 +233,13 @@ export function MemoryWorkspaceSettingsCard() {
                 ) : null}
               </>}
             >
-              <SaveStatus saving={update.isPending} saved={saved && !update.isError} />
+              <SaveStatus saving={update.isPending && updateHere} saved={saved && !(update.isError && updateHere) && savedId === selectedId} />
               <SettingsSelect<WorkspaceOverride>
                 dataAttr="data-memory-workspace-override"
                 ariaLabel={t('memory.ws.label')}
                 value={override}
-                disabled={workspaceQuery.isPending || update.isPending}
-                onChange={(next) => { update.mutate(next === 'inherit' ? null : next === 'true'); }}
+                disabled={workspaceQuery.isPending || (update.isPending && updateHere)}
+                onChange={(next) => { update.mutate({ workspaceId: selectedId, enabled: next === 'inherit' ? null : next === 'true' }); }}
                 choices={[
                   { value: 'inherit', label: t('memory.ws.follow') },
                   { value: 'true', label: t('memory.ws.on') },
@@ -245,14 +250,23 @@ export function MemoryWorkspaceSettingsCard() {
           </>
         ) : null}
         {overrides.length > 0 ? (
-          <div data-memory-other-overrides className="space-y-0.5 pt-1 text-[12px] text-ink-soft">
-            <p className="font-medium">{t('st.memory.workspaceOverrides')}</p>
-            {overrides.map((workspace) => (
-              <p key={workspace.id}>{t('st.memory.workspaceOverride', {
-                name: workspace.name,
-                state: t(settingsQuery.data?.workspaces[workspace.id] === true ? 'memory.ws.on' : 'memory.ws.off'),
-              })}</p>
-            ))}
+          <div data-memory-other-overrides className="space-y-1 border-t border-hairline pt-3">
+            <p className="text-[13px] text-ink">{t('st.memory.workspaceOverrides')}</p>
+            <ul className="divide-y divide-hairline rounded-lg border border-hairline bg-paper">
+              {overrides.map((workspace) => (
+                <li key={workspace.id}>
+                  <button type="button" data-memory-override-open={workspace.id}
+                    onClick={() => { select(workspace.id); }}
+                    className="flex min-h-9 w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] text-ink transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11">
+                    <span className="min-w-0 flex-1 truncate">{t('st.memory.workspaceOverride', {
+                      name: workspace.name,
+                      state: t(settingsQuery.data?.workspaces[workspace.id] === true ? 'memory.ws.on' : 'memory.ws.off'),
+                    })}</span>
+                    <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
+                  </button>
+                </li>
+              ))}
+            </ul>
           </div>
         ) : null}
         <FeedbackLine feedback={feedback} />

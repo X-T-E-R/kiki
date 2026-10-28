@@ -114,7 +114,7 @@ const client = {
   listNamedAgentProfiles: vi.fn(async () => ({ items: [] })),
   getMemorySettings: vi.fn(async () => ({ enabled: true, approval: 'auto', budget: 2000, workspaces: {} as Record<string, boolean> })),
   patchMemorySettings: vi.fn(async (patch: { enabled?: boolean; approval?: string; budget?: number }) => ({ enabled: true, approval: 'auto', budget: 2000, workspaces: {}, ...patch })),
-  getWorkspaceMemorySettings: vi.fn(async (id: string) => ({ workspace_id: id, enabled: null, effective_enabled: true })),
+  getWorkspaceMemorySettings: vi.fn(async (id: string) => ({ workspace_id: id, enabled: null as boolean | null, effective_enabled: true })),
   patchWorkspaceMemorySettings: vi.fn(async (id: string, enabled: boolean | null) => ({ workspace_id: id, enabled, effective_enabled: enabled !== false })),
   patchConfig: vi.fn(async () => ({})),
   requestIdentity: {
@@ -406,11 +406,11 @@ describe('SettingsPage panel scopes', () => {
     expect(client.patchMemorySettings).toHaveBeenCalledWith({ approval: 'review' });
 
     // K04 keeps the text limit under Advanced; it still commits on Enter.
-    const advanced = container.querySelector('[data-memory-advanced-toggle]')!;
-    expect(advanced.getAttribute('aria-expanded')).toBe('false');
-    expect(container.querySelector('[data-memory-budget]')).toBeNull();
-    await click(advanced);
-    expect(advanced.getAttribute('aria-expanded')).toBe('true');
+    const advanced = container.querySelector<HTMLDetailsElement>('[data-memory-advanced]')!;
+    expect(advanced.open).toBe(false);
+    expect(advanced.contains(container.querySelector('[data-memory-budget]'))).toBe(true);
+    // The way into the memory page sits on the card heading, not in the rows.
+    expect(container.querySelector('#st-card-memory [data-settings-card-actions] [data-memory-settings-link]')).not.toBeNull();
     expect(container.querySelector('[data-memory-budget-save]')).toBeNull();
     const budget = container.querySelector<HTMLInputElement>('[data-memory-budget]')!;
     expect(budget.value).toBe('2000');
@@ -500,11 +500,99 @@ describe('SettingsPage panel scopes', () => {
     expect(fallback().disabled).toBe(false);
   });
 
+  it('keeps a workspace override as saved while global memory is off, and applies it when allowed again', async () => {
+    // Effective = global enabled && override !== false. The override is stored
+    // as chosen; global off only changes what is effective.
+    let global = false;
+    const saved: Record<string, boolean> = {};
+    // No capability block: the allow switch reads the memory settings alone.
+    client.getConfig.mockResolvedValue({});
+    client.getMemorySettings.mockImplementation(async () => ({ enabled: global, approval: 'auto' as const, budget: 2000, workspaces: { ...saved } }));
+    client.getWorkspaceMemorySettings.mockImplementation(async (id: string) => ({
+      workspace_id: id, enabled: saved[id] ?? null, effective_enabled: global && saved[id] !== false,
+    }));
+    client.patchWorkspaceMemorySettings.mockImplementation(async (id: string, enabled: boolean | null) => {
+      if (enabled === null) delete saved[id]; else saved[id] = enabled;
+      return { workspace_id: id, enabled, effective_enabled: global && enabled !== false };
+    });
+    client.patchMemorySettings.mockImplementation(async (patch: { enabled?: boolean }) => {
+      global = patch.enabled ?? global;
+      return { enabled: global, approval: 'auto' as const, budget: 2000, workspaces: { ...saved } };
+    });
+    const container = await renderSettings('/settings/memory?workspace=ws-beta');
+    await flush();
+    const override = () => container.querySelector<HTMLElement>('[data-memory-workspace-override]')!;
+    const effective = () => container.querySelector('[data-memory-workspace-effective]')?.textContent ?? '';
+    expect(container.querySelector('[data-memory-global-off]')).not.toBeNull();
+    // Nothing is disabled while global is off: the override can be staged.
+    expect(override().hasAttribute('disabled')).toBe(false);
+    await pickOption(override(), 'On');
+    await flush();
+    expect(client.patchWorkspaceMemorySettings).toHaveBeenLastCalledWith('ws-beta', true);
+    expect(effective()).toContain('Off');
+
+    await click(container.querySelector('#memory-enabled')!);
+    await flush();
+    await flush();
+    expect(container.querySelector('[data-memory-global-off]')).toBeNull();
+    expect(effective()).toContain('On');
+
+    await pickOption(override(), 'Follow global');
+    await flush();
+    expect(client.patchWorkspaceMemorySettings).toHaveBeenLastCalledWith('ws-beta', null);
+    expect(effective()).toContain('On');
+
+    await pickOption(override(), 'Off');
+    await flush();
+    expect(client.patchWorkspaceMemorySettings).toHaveBeenLastCalledWith('ws-beta', false);
+    expect(effective()).toContain('Off');
+  });
+
+  it('keeps an in-flight workspace write with the workspace it was made for', async () => {
+    const saved: Record<string, boolean> = {};
+    client.getMemorySettings.mockImplementation(async () => ({ enabled: true, approval: 'auto' as const, budget: 2000, workspaces: { ...saved } }));
+    client.getWorkspaceMemorySettings.mockImplementation(async (id: string) => ({
+      workspace_id: id, enabled: saved[id] ?? null, effective_enabled: saved[id] !== false,
+    }));
+    let release!: () => void;
+    client.patchWorkspaceMemorySettings.mockImplementation((id: string, enabled: boolean | null) => new Promise((resolve) => {
+      release = () => {
+        if (enabled === null) delete saved[id]; else saved[id] = enabled;
+        resolve({ workspace_id: id, enabled, effective_enabled: enabled !== false });
+      };
+    }));
+    const container = await renderSettings('/settings/memory?workspace=ws-alpha');
+    await flush();
+    const card = () => container.querySelector('[data-memory-workspace-settings]')!;
+    const override = () => container.querySelector<HTMLElement>('[data-memory-workspace-override]')!;
+    const effective = () => container.querySelector('[data-memory-workspace-effective]')?.textContent ?? '';
+    await pickOption(override(), 'Off');
+    expect(client.patchWorkspaceMemorySettings).toHaveBeenLastCalledWith('ws-alpha', false);
+    expect(card().querySelector('[data-save-status="saving"]')).not.toBeNull();
+
+    await pickOption(container.querySelector<HTMLElement>('[data-memory-workspace-select]')!, 'Beta');
+    await flush();
+    // Beta is not the workspace being written: not busy, nothing pending here.
+    expect(override().hasAttribute('disabled')).toBe(false);
+    expect(card().querySelector('[data-save-status="saving"]')).toBeNull();
+    await act(async () => { release(); });
+    await flush();
+    await flush();
+    expect(client.patchWorkspaceMemorySettings).toHaveBeenCalledTimes(1);
+    expect(saved).toEqual({ 'ws-alpha': false });
+    expect(card().querySelector('[data-saved-tick]')).toBeNull();
+    expect(effective()).toContain('On');
+
+    await click(container.querySelector('[data-memory-override-open="ws-alpha"]')!);
+    await flush();
+    await flush();
+    expect(effective()).toContain('Off');
+  });
+
   it('shows other workspace overrides and refuses an out-of-range budget', async () => {
     client.getMemorySettings.mockResolvedValueOnce({ enabled: true, approval: 'review', budget: 2000, workspaces: { 'ws-alpha': false } });
     const container = await renderSettings('/settings/memory?workspace=ws-beta');
     expect(container.querySelector('[data-memory-other-overrides]')?.textContent).toContain('Alpha: Off');
-    await click(container.querySelector('[data-memory-advanced-toggle]')!);
     const budget = container.querySelector<HTMLInputElement>('[data-memory-budget]')!;
     expect(budget.value).toBe('2000');
     const writes = client.patchMemorySettings.mock.calls.length;
