@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   HistoryReadTool,
+  HistoryReadInputSchema,
   HistorySearchTool,
   IHistoryArchive,
   IHistorySearchTool,
@@ -425,6 +426,52 @@ describe('history tools', () => {
     const restored = await run(reader, failed.data.error?.next_call?.arguments ?? {});
     expect(restored.result.isError).not.toBe(true);
     expect(source.readTurn).toHaveBeenCalledWith('older', 'main', 7, undefined);
+  });
+
+  it.each(['turn', 'frame'] as const)('binds ref preparation to its %s target and original read position', async (kind) => {
+    const ix = new TestInstantiationService();
+    const source = archive();
+    const preparation = { offset: 8000, incarnation: 'incarnation' };
+    const scanned = { bytes: 8000, records: 2 };
+    source.readDirectory = vi.fn(async () => ({ status: 'navigation_building' as const, preparation, scanned }));
+    source.readRef = vi.fn(async () => ({ status: 'navigation_building' as const, next: preparation, scanned }));
+    ix.set(IHistoryArchive, source);
+    ix.set(SessionContextToken, session);
+    ix.set(AgentScopeContextToken, caller);
+    ix.set(SessionIndexToken, sessions);
+    ix.set(WorkspaceToken, workspaces);
+    ix.set(IHistoryReadTool, new SyncDescriptor(HistoryReadTool));
+    const tool = ix.get(IHistoryReadTool);
+    const execute = async (input: Record<string, unknown>) => {
+      const execution = await tool.resolveExecution(input as never);
+      if (!('execute' in execution)) throw new Error('Expected execute');
+      const result = await execution.execute({ signal: new AbortController().signal, turnId: 1, toolCallId: 'read' });
+      expect(result.isError).not.toBe(true);
+      return JSON.parse(result.output as string);
+    };
+    try {
+      const ref = `h1_${Buffer.from(JSON.stringify({ workspace: 'ws-a', session: 'current', agent: 'main', kind, pad: 'p'.repeat(1100) })).toString('base64url')}`;
+      const resume = { v: 3, ref, maxChars: 1000, position: 11, offset: 17, watermark: 33, asOfBytes: 99 };
+      const first = await execute(kind === 'turn' ? { cursor: Buffer.from(JSON.stringify(resume)).toString('base64url') } :
+        { ref, start_char: 29, max_chars: 1000 });
+      expect(first).toMatchObject({ status: 'partial', ref, blocks: [], has_more: true, continuation: 'scan',
+        coverage: { complete: false, gaps: ['navigation_building'], scanned }, progress: { through_bytes: 8000 } });
+      expect(HistoryReadInputSchema.safeParse({ cursor: first.next_cursor }).success).toBe(true);
+      const wrapper = JSON.parse(Buffer.from(first.next_cursor, 'base64url').toString('utf8'));
+      expect(wrapper.resume).toEqual(kind === 'turn' ?
+        { v: 3, position: 11, offset: 17, watermark: 33, asOfBytes: 99 } : { v: 2, offset: 29 });
+      await execute({ cursor: first.next_cursor });
+      if (kind === 'turn') expect(source.readDirectory).toHaveBeenLastCalledWith(ref, 1000,
+        { position: 11, offset: 17, watermark: 33, asOfBytes: 99 }, expect.any(AbortSignal));
+      else expect(source.readRef).toHaveBeenLastCalledWith(ref, expect.any(AbortSignal));
+      const wrongAgent = await tool.resolveExecution({ cursor: first.next_cursor, agent_id: 'other' });
+      expect(wrongAgent).toMatchObject({ isError: true });
+      await expect(tool.resolveExecution({ cursor: first.next_cursor, max_chars: 2000 })).rejects.toThrow('conflicts');
+      await expect(tool.resolveExecution({ cursor: first.next_cursor, turn: 12 })).rejects.toThrow('conflicts');
+      const forged = Buffer.from(JSON.stringify({ ...wrapper, resume: { ...wrapper.resume, ref: `${ref}x` } })).toString('base64url');
+      await expect(tool.resolveExecution({ cursor: forged })).rejects.toThrow('Invalid HistoryRead ref preparation cursor');
+      expect(source.readTurn).not.toHaveBeenCalled();
+    } finally { await ix.dispose(); }
   });
 
   it('binds preparation cursors to their target and never advises replaying a stale directory ref', async () => {

@@ -176,6 +176,143 @@ describe('history navigation source rows', () => {
     } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
 
+  it.each([false, true])('rebuilds evicted prefix refs through bounded preparation after three watermarks, restart: %s', async (restart) => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-prefix-ref-eviction-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const path = join(dir, 'navigation.sqlite');
+    let db = HistoryNavigationDb.lazy(path);
+    const ix = new TestInstantiationService();
+    try {
+      const prompt = 'original prompt 400 '.repeat(70);
+      const answer = 'original answer 400 𠮷 '.repeat(70);
+      const prefix = line({ type: 'note', pad: 'x'.repeat((1 << 20) - 2048) }).repeat(9);
+      const turns = Array.from({ length: 6 }, (_, index) => {
+        const turnId = 400 + index;
+        return line({ type: 'turn.prompt', turnId, promptId: `p${turnId}`, origin: { kind: 'user' },
+          input: [{ type: 'text', text: turnId === 400 ? prompt : `prompt ${turnId}` }] }) +
+          line({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId, step: 1, uuid: `s${turnId}` } }) +
+          line({ type: 'context.append_loop_event', event: { type: 'content.part', turnId, stepUuid: `s${turnId}`,
+            uuid: `f${turnId}`, part: { type: 'text', text: turnId === 400 ? answer : `answer ${turnId}` } } }) +
+          line({ type: 'turn.ended', turnId, reason: 'completed' });
+      }).join('');
+      expect(Buffer.byteLength(prefix + turns)).toBeLessThan(9 << 20);
+      await writeFile(wirePath, prefix + turns);
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      let nav = new HistoryLocatorStore(db, transcript);
+      const request = { workspaceId: 'ws', sessionId: 's', agentId: 'main', kind: 'turns' as const,
+        order: 'newest' as const, limit: 5 };
+      const finish = async (cursor: string) => {
+        let page = await nav.list({ ...request, cursor });
+        let calls = 0;
+        while (!page.coverage.complete && page.nextCursor !== undefined) {
+          expect(++calls).toBeLessThan(3);
+          page = await nav.list({ ...request, cursor: page.nextCursor });
+        }
+        expect(page.coverage.complete).toBe(true);
+        return page;
+      };
+      const first = await nav.list(request);
+      const older = await finish(first.nextCursor!);
+      const ref = older.turns!.find((turn) => turn.turn === 400)!.ref!;
+      const frozen = JSON.parse(Buffer.from(ref.slice(3), 'base64url').toString('utf8')).window.end as number;
+      const original = await nav.readBlocks(ref, 1000);
+      expect(original).toMatchObject({ status: 'ok', blocks: [{ text: prompt.slice(0, 1000) }], next: expect.any(Object) });
+      const full = await nav.readBlocks(ref, 16000);
+      const frameRef = full.blocks!.find((block) => block.part === 'text')!.ref;
+      const laterCursors: string[] = [];
+      for (const turnId of [406, 407]) {
+        await appendFile(wirePath, line({ type: 'turn.prompt', turnId, input: [{ type: 'text', text: `later ${turnId}` }] }));
+        const latest = await nav.list(request);
+        laterCursors.push(latest.nextCursor!);
+        await finish(latest.nextCursor!);
+      }
+      const evicted = () => (db.ready()).then((disk) => {
+        expect(disk.db.prepare("SELECT count(*) AS n FROM rows WHERE json_extract(value,'$.anchor.window.end')=?").get(frozen)).toEqual({ n: 0 });
+        expect(disk.readManifest('ws\0s\0main')).toBeUndefined();
+      });
+      await evicted();
+      if (restart) {
+        await db.close();
+        db = HistoryNavigationDb.lazy(path);
+        nav = new HistoryLocatorStore(db, transcript);
+      }
+      const archive = historyArchiveSeed(() => ({ accessor: { get: () => ({ get: async () => undefined }) } }) as unknown as Scope,
+        () => transcript, () => nav)[0]![1] as IHistoryArchive;
+      ix.set(HistoryArchiveToken, archive);
+      ix.set(SessionContextToken, { sessionId: 's', workspaceId: 'ws' } as ISessionContext);
+      ix.set(AgentScopeContextToken, { agentId: 'main' } as IAgentScopeContext);
+      ix.set(SessionIndexToken, { get: async () => ({ workspaceId: 'ws' }) } as unknown as ISessionIndex);
+      ix.set(WorkspaceToken, { get: async () => undefined } as unknown as IWorkspaceService);
+      ix.set(IHistoryReadTool, new SyncDescriptor(HistoryReadTool));
+      const tool = ix.get(IHistoryReadTool);
+      const run = async (input: Record<string, unknown>) => {
+        const execution = await tool.resolveExecution(input as never);
+        if (!('execute' in execution)) throw new Error('not executable');
+        const result = await execution.execute({ signal: new AbortController().signal, turnId: 0, toolCallId: 'c' });
+        expect(result.isError).not.toBe(true);
+        return JSON.parse(result.output as string);
+      };
+      if (restart) {
+        const controller = new AbortController();
+        const actual = await vi.importActual<typeof logicalWire>('../src/services/history/logicalWireRead');
+        const entered = vi.spyOn(logicalWire, 'streamLogicalWireRecordsAwaited').mockImplementationOnce(async (...args) => {
+          const result = await actual.streamLogicalWireRecordsAwaited(...args);
+          controller.abort(new Error('cancel entered prefix ref recovery'));
+          return result;
+        });
+        entered.mockClear();
+        try {
+          await expect(nav.readBlocks(ref, 1000, undefined, controller.signal)).rejects.toThrow('cancel entered prefix ref recovery');
+          expect(entered).toHaveBeenCalledOnce();
+          await vi.waitFor(() => expect((nav as unknown as { scanQueue: { queued: number } }).scanQueue.queued).toBe(0));
+          await evicted();
+        } finally { entered.mockRestore(); }
+      }
+      const cursor = Buffer.from(JSON.stringify({ v: 3, ref, maxChars: 1000, ...original.next })).toString('base64url');
+      const preparing = await run(restart ? { cursor } : { ref, max_chars: 1000 });
+      expect(preparing).toMatchObject({ status: 'partial', blocks: [], continuation: 'scan', has_more: true,
+        ref, coverage: { complete: false, gaps: ['navigation_building'] } });
+      expect(preparing.coverage.scanned.bytes).toBeLessThanOrEqual(8 << 20);
+      expect(preparing.progress.through_bytes).toBeGreaterThan(0);
+      expect(preparing.progress.through_bytes).toBeLessThan(frozen);
+      if (restart) {
+        await db.close();
+        db = HistoryNavigationDb.lazy(path);
+        nav = new HistoryLocatorStore(db, transcript);
+      }
+      let page = await run({ cursor: preparing.next_cursor });
+      let text = '';
+      let calls = 0;
+      for (;;) {
+        expect(page.ref).toBe(ref);
+        text += page.blocks.map((block: { text: string }) => block.text).join('');
+        if (page.next_cursor === undefined) break;
+        expect(++calls).toBeLessThan(6);
+        page = await run({ cursor: page.next_cursor });
+      }
+      expect(text).toBe((restart ? prompt.slice(1000) : prompt) + answer);
+      for (const later of laterCursors) await finish(later);
+      await evicted();
+      const preparingFrame = await run({ ref: frameRef, start_char: 37, max_chars: 1000 });
+      expect(preparingFrame).toMatchObject({ status: 'partial', blocks: [], continuation: 'scan', has_more: true, ref: frameRef });
+      let framePage = await run({ cursor: preparingFrame.next_cursor });
+      let frameText = '';
+      calls = 0;
+      for (;;) {
+        frameText += framePage.blocks[0].text;
+        if (framePage.next_cursor === undefined) break;
+        expect(++calls).toBeLessThan(4);
+        framePage = await run({ cursor: framePage.next_cursor });
+      }
+      expect(frameText).toBe(answer.slice(37));
+      await appendFile(wirePath, line({ type: 'context.undo', count: 1 }));
+      expect(await nav.readBlocks(ref, 16000)).toEqual({ status: 'stale_ref' });
+      expect(await nav.read(frameRef)).toEqual({ status: 'stale_ref' });
+      await writeFile(wirePath, (prefix + turns).replace('original prompt 400', 'replaced prompt 400'));
+      expect(await nav.readBlocks(ref, 16000)).toEqual({ status: 'stale_ref' });
+    } finally { await ix.dispose(); await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
   it.each([
     { name: 'implicit string turn', suffix: line({ type: 'turn.prompt', turnId: '700', input: [{ type: 'text', text: 'implicit prompt' }] }), turns: [401, 400] },
     { name: 'undo', suffix: line({ type: 'context.undo', count: 1 }), turns: [] },

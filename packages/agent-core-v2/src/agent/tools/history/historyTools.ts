@@ -93,6 +93,8 @@ export interface HistoryReadBlock {
 
 export interface HistoryReadBlocksPage {
   readonly status: 'ok' | 'stale_ref' | 'source_missing' | 'navigation_building' | 'invalid_ref';
+  readonly preparation?: HistoryPreparation;
+  readonly scanned?: { readonly bytes: number; readonly records: number };
   readonly blocks?: readonly HistoryReadBlock[];
   readonly next?: { readonly position: number; readonly offset: number; readonly watermark: number;
     readonly asOfBytes: number };
@@ -134,7 +136,8 @@ export interface IHistoryArchive {
   readTurn(sessionId: string, agentId: string, turn: number, stepId?: string): Promise<string | undefined>;
   readRef?(ref: string, signal?: AbortSignal): Promise<{ status: 'ok'; text?: string; turn: number; stepId?: string;
     role?: 'user' | 'assistant' | 'tool' | 'record'; toolName?: string; part?: string; ref: string } |
-    { status: 'stale_ref' | 'source_missing' | 'invalid_ref' }>;
+    { status: 'stale_ref' | 'source_missing' | 'invalid_ref' } |
+    Extract<HistoryDirectoryLookup, { status: 'navigation_building' }>>;
   lookupDirectory?(workspace: string, session: string, agent: string, turn: number, step?: string,
     preparation?: HistoryPreparation, signal?: AbortSignal): Promise<HistoryDirectoryLookup>;
   directoryRef?(workspace: string, session: string, agent: string, turn: number, step?: string): Promise<string | undefined>;
@@ -199,8 +202,32 @@ type DirectoryCursor = { v: 3; ref: string; maxChars: number; position: number; 
   watermark: number; asOfBytes: number };
 type PreparingReadCursor = { v: 4; workspace: string; session: string; agent: string; turn: number;
   step?: string; maxChars: number; preparation: HistoryPreparation };
+type PreparingRefCursor = { v: 5; ref: string; maxChars: number;
+  resume?: Omit<DirectoryCursor, 'ref' | 'maxChars'> | Omit<BlockCursor, 'ref' | 'maxChars'> };
 type RefTarget = { workspace: string; session: string; agent: string;
   kind?: 'turn' | 'step' | 'frame'; focus?: number };
+
+function decodePreparingRefCursor(value: string | undefined): PreparingRefCursor | undefined {
+  if (value === undefined) return undefined;
+  let raw: Partial<PreparingRefCursor>;
+  try { raw = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Partial<PreparingRefCursor>; }
+  catch { return undefined; }
+  if (raw?.v !== 5) return undefined;
+  if (typeof raw.ref !== 'string' || !raw.ref.startsWith('h1_') || raw.ref.length > 2048 ||
+      !Number.isSafeInteger(raw.maxChars) || raw.maxChars! < 1000 || raw.maxChars! > 20_000) {
+    throw new Error('Invalid HistoryRead ref preparation cursor; reopen its ref.');
+  }
+  if (raw.resume !== undefined) {
+    if (raw.resume === null || typeof raw.resume !== 'object' || 'ref' in raw.resume || 'maxChars' in raw.resume) {
+      throw new Error('Invalid HistoryRead ref preparation cursor; reopen its ref.');
+    }
+    const encoded = Buffer.from(JSON.stringify({ ...raw.resume, ref: raw.ref, maxChars: raw.maxChars })).toString('base64url');
+    if ((decodeDirectoryCursor(encoded) ?? decodeBlockCursor(encoded)) === undefined) {
+      throw new Error('Invalid HistoryRead ref preparation cursor; reopen its ref.');
+    }
+  }
+  return raw as PreparingRefCursor;
+}
 
 function decodePreparingReadCursor(value: string | undefined): PreparingReadCursor | undefined {
   if (value === undefined) return undefined;
@@ -477,6 +504,20 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
     @IAgentScopeContext private readonly caller: IAgentScopeContext,
   ) { super(archive, session, workspaces); }
 
+  private renderRefPreparation(cursor: PreparingRefCursor,
+    progress: Extract<HistoryDirectoryLookup, { status: 'navigation_building' }>): ExecutableToolResult {
+    const next = Buffer.from(JSON.stringify(cursor)).toString('base64url');
+    const source = refTarget(cursor.ref);
+    return { output: JSON.stringify({ schema_version: 2, status: 'partial', ref: cursor.ref,
+      target: { workspace_id: source.workspace, session_id: source.session, agent_id: source.agent },
+      source: 'transcript', blocks: [], coverage: { complete: false, domain: 'full_text',
+        gaps: ['navigation_building'], scanned: progress.scanned },
+      progress: { through_bytes: progress.next.offset }, next_cursor: next, has_more: true,
+      continuation: 'scan', next_call: { tool: 'HistoryRead', arguments: { cursor: next } },
+      message: 'Navigation preparation advanced. Continue with the cursor to read the original source.',
+    }) };
+  }
+
   private async renderDirectory(ref: string, maxChars: number, signal: AbortSignal,
     cursor?: DirectoryCursor): Promise<ExecutableToolResult> {
     signal.throwIfAborted();
@@ -485,6 +526,11 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
       asOfBytes: cursor.asOfBytes,
     }, signal);
     signal.throwIfAborted();
+    if (page?.status === 'navigation_building' && page.preparation !== undefined && page.scanned !== undefined) {
+      return this.renderRefPreparation({ v: 5, ref, maxChars, resume: cursor === undefined ? undefined : {
+        v: 3, position: cursor.position, offset: cursor.offset, watermark: cursor.watermark, asOfBytes: cursor.asOfBytes,
+      } }, { status: 'navigation_building', next: page.preparation, scanned: page.scanned });
+    }
     if (page === undefined || page.status !== 'ok') {
       const target = refTarget(ref);
       return { isError: true, output: JSON.stringify({ error: {
@@ -583,6 +629,10 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
         context.signal.throwIfAborted();
         const read = await this.archive.readRef?.(ref, context.signal);
         context.signal.throwIfAborted();
+        if (read?.status === 'navigation_building') {
+          return this.renderRefPreparation({ v: 5, ref, maxChars: limit,
+            resume: { v: 2, offset: start } }, read);
+        }
         if (read === undefined || read.status !== 'ok') return { isError: true, output: JSON.stringify({ error: {
           code: read?.status ?? 'source_missing',
           message: read?.status === 'invalid_ref' ? 'Invalid historical source ref; search for a fresh hit.' :
@@ -619,6 +669,24 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
   }
 
   async resolveExecution(input: z.infer<typeof HistoryReadInputSchema>): Promise<ToolExecution> {
+    const preparingRef = decodePreparingRefCursor(input.cursor);
+    if (preparingRef !== undefined) {
+      if (input.ref !== undefined && input.ref !== preparingRef.ref ||
+          input.max_chars !== undefined && input.max_chars !== preparingRef.maxChars) {
+        throw new Error('HistoryRead ref preparation cursor conflicts with another selector.');
+      }
+      const resume = preparingRef.resume === undefined ? undefined :
+        { ...preparingRef.resume, ref: preparingRef.ref, maxChars: preparingRef.maxChars };
+      const resumed = { ...input, ref: preparingRef.ref, max_chars: preparingRef.maxChars,
+        cursor: resume === undefined ? undefined : Buffer.from(JSON.stringify(resume)).toString('base64url') };
+      const kind = refTarget(preparingRef.ref).kind;
+      if (kind === 'turn' || kind === 'step') {
+        if (resume?.v === 2) throw new Error('Directory preparation requires a directory cursor.');
+        return this.resolveDirectory(resumed, preparingRef.ref, resume);
+      }
+      if (resume?.v === 3) throw new Error('Text-block preparation requires a text-block cursor.');
+      return this.resolveRef(resumed, resume);
+    }
     const directoryCursor = decodeDirectoryCursor(input.cursor);
     if (directoryCursor !== undefined) return this.resolveDirectory(input, directoryCursor.ref, directoryCursor);
     const refKind = input.ref === undefined ? undefined : refTarget(input.ref).kind;

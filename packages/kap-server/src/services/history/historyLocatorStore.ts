@@ -101,6 +101,8 @@ export interface HistoryNavBlock {
 
 export interface HistoryNavBlocksPage {
   readonly status: 'ok' | 'stale_ref' | 'source_missing' | 'navigation_building';
+  readonly preparation?: HistoryPreparation;
+  readonly scanned?: { readonly bytes: number; readonly records: number };
   readonly blocks?: readonly HistoryNavBlock[];
   readonly next?: { readonly position: number; readonly offset: number; readonly watermark: number;
     readonly asOfBytes: number };
@@ -1064,7 +1066,9 @@ export class HistoryLocatorStore {
       return child === undefined ? { status: 'stale_ref' } : child.navigation.readBlocks(ref, maxChars, cursor, signal);
     }
     const source = await this.read(ref, signal);
-    if (source.status !== 'ok') return { status: source.status };
+    if (source.status === 'navigation_building') return { status: source.status,
+      preparation: source.next, scanned: source.scanned };
+    if (source.status !== 'ok') return source;
     const selected = source.row;
     if (selected.kind === 'frame' || selected.position === undefined) return { status: 'navigation_building' };
     const location = await this.transcript.historyWireLocation(selected.session, selected.agent);
@@ -1098,7 +1102,9 @@ export class HistoryLocatorStore {
       }
       signal?.throwIfAborted();
       const checked = await this.read(this.ref(row), signal);
-      if (checked.status !== 'ok') return { status: checked.status };
+      if (checked.status === 'navigation_building') return { status: checked.status,
+        preparation: checked.next, scanned: checked.scanned };
+      if (checked.status !== 'ok') return checked;
       const text = checked.text;
       if (text === undefined) return { status: 'stale_ref' };
       const start = row.position === position ? cursor?.offset ?? 0 : 0;
@@ -1131,7 +1137,7 @@ export class HistoryLocatorStore {
   }
 
   async read(ref: string, signal?: AbortSignal): Promise<{ status: 'ok'; row: HistoryNavRow; text?: string } |
-    { status: 'stale_ref' | 'source_missing' }> {
+    { status: 'stale_ref' | 'source_missing' } | Extract<HistoryDirectoryLookup, { status: 'navigation_building' }>> {
     signal?.throwIfAborted();
     const anchor = decodeHistoryRef(ref);
     if (anchor.window !== undefined && this.directoryWindow === undefined) {
@@ -1143,6 +1149,18 @@ export class HistoryLocatorStore {
     if (location.workspaceId !== anchor.workspace) return { status: 'stale_ref' };
     const result = await verifyHistorySource(location.wirePath, anchor, signal);
     if (result.status !== 'ok') return result;
+    if (this.directoryWindow?.mode === 'prefix') {
+      const db = await (this.store as LazyHistoryNavigationDb).ready();
+      const scope = `${this.projectionPrefix}${anchor.workspace}\0${anchor.session}\0${anchor.agent}`;
+      const manifest = db.readManifest(scope);
+      if (manifest?.complete !== true || manifest.offset !== this.directoryWindow.end) {
+        const scan = await this.scan(anchor.session, anchor.agent, signal, undefined, this.directoryWindow.end);
+        if (scan === undefined) return { status: 'source_missing' };
+        if (!scan.complete) return { status: 'navigation_building',
+          next: { offset: scan.nextByteOffset, incarnation: scan.incarnation },
+          scanned: { bytes: scan.bytesRead, records: scan.recordsRead } };
+      }
+    }
     const row = await this.row(anchor.workspace, anchor.session, anchor.agent,
       anchor.kind, anchor.turn, anchor.step, anchor.frame, anchor.frame?.split(':').at(-1) as HistoryNavRow['part']);
     const turn = await this.row(anchor.workspace, anchor.session, anchor.agent, 'turn', anchor.turn);
