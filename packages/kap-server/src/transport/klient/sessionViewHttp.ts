@@ -16,7 +16,7 @@ import {
 } from '@kiki/transcript';
 import { okEnvelope } from '../../protocol/envelope';
 import { withReplyCloseSignal } from '../../procedures/requestSignal';
-import { assembleBrowseSnapshot, assembleBrowseSnapshotSource, SnapshotNotFoundError } from '../../routes/snapshot';
+import { assembleBrowseSnapshot, readBrowseSnapshotContent, SnapshotNotFoundError } from '../../routes/snapshot';
 import type { TranscriptService } from '../../services/transcript/transcriptService';
 import type { SessionEventBroadcaster } from '../ws/v1/sessionEventBroadcaster';
 import {
@@ -26,7 +26,7 @@ import {
   readSessionViewTranscriptPage,
   TranscriptDetailCursorError,
 } from './sessionViewReads';
-import { ContentChangedError, readContentSegment } from './boundedContent';
+import { ContentChangedError } from './boundedContent';
 import { CanonicalEntityPreparingError } from '../../services/history/historyCanonicalReader';
 import { SessionViewTarget } from './sessionViewTarget';
 import { recordSessionViewTiming, timeSessionViewPhase, type SessionViewTimingContext } from './sessionViewTiming';
@@ -50,10 +50,9 @@ export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts
         if (parsed.data.ref.source.kind !== 'snapshot') return readSessionViewTranscriptContent(service, sessionId, { ...parsed.data, signal });
         const broadcaster = opts.sessionViewBroadcaster;
         if (broadcaster === undefined) throw new RPCError(50001, 'session view unavailable');
-        const snapshot = await assembleBrowseSnapshotSource(scope, broadcaster, sessionId, parsed.data.ref.source.id === 'legacy' ? 'legacy' : undefined);
-        signal.throwIfAborted();
-        return readContentSegment(snapshot, parsed.data.ref);
-      });
+        return readBrowseSnapshotContent(scope, broadcaster, sessionId, parsed.data.agentId, parsed.data.ref,
+          { logger: req.log, signal, requestId: req.id });
+      }, req);
       return await reply.send(data === undefined ? { code: 40401, msg: 'content unavailable', data: null, request_id: req.id } : okEnvelope(data, req.id));
     } catch (error) {
       if (error instanceof CanonicalEntityPreparingError) return reply.send({ code: 40923, msg: error.message, data: null, request_id: req.id });

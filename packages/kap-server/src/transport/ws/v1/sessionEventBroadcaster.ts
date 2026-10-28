@@ -1034,7 +1034,9 @@ export class SessionEventBroadcaster {
   ): Promise<SessionSnapshotState & { captured?: T }> {
     const timing = { ...options.timing, logger: options.timing?.logger ?? this.opts.logger };
     const fields = { sessionId, requestId: timing.requestId };
+    timing.signal?.throwIfAborted();
     const state = await timeSessionViewPhase('snapshot_state', fields, () => this.ensureState(sessionId), timing);
+    timing.signal?.throwIfAborted();
     if (state === undefined) {
       const cold = await this.readColdWatermark(sessionId);
       return {
@@ -1051,11 +1053,11 @@ export class SessionEventBroadcaster {
     }
     const captureMessages = options.captureMessages !== false;
     const queued = state.queue;
-    const barrier = timeSessionViewPhase('snapshot_queue', fields, () => queued, timing).then(async () => {
+    const barrier = timeSessionViewPhase('snapshot_queue', fields, () => queued, timing).then(() => {
+      timing.signal?.throwIfAborted();
       const contextMessages = captureMessages ? [...state.contextMessages] : [];
       const mainAgent = state.mainAgent;
-      const captured = await timeSessionViewPhase('snapshot_capture', fields, async () => options.capture?.(), timing);
-      return {
+      const frozen = {
         seq: state.journal.seq,
         epoch: state.journal.epoch,
         contextMessages,
@@ -1063,29 +1065,36 @@ export class SessionEventBroadcaster {
           ? state.contextMessages.length
           : cachedMessageCount(this.opts.core, sessionId, state.contextMessages) ?? state.contextMessages.length,
         mainAgent,
-        inFlightTurn: state.tracker.get(sessionId),
-        subagents: state.roster.get(sessionId),
-        pendingApprovals: state.interactionService?.listPending('approval').map((interaction) => toWireApproval(interaction, sessionId)) ?? [],
-        pendingQuestions: state.interactionService?.listPending('question').map((interaction) => toWireQuestion(interaction, sessionId)) ?? [],
-        captured,
+        inFlightTurn: structuredClone(state.tracker.get(sessionId)),
+        subagents: structuredClone(state.roster.get(sessionId)),
+        pendingApprovals: structuredClone(state.interactionService?.listPending('approval').map((interaction) => toWireApproval(interaction, sessionId)) ?? []),
+        pendingQuestions: structuredClone(state.interactionService?.listPending('question').map((interaction) => toWireQuestion(interaction, sessionId)) ?? []),
         currentPromptId: readCurrentPromptId(mainAgent),
-        status: readSnapshotStatus(mainAgent),
+        status: structuredClone(readSnapshotStatus(mainAgent)),
       };
+      const captured = timeSessionViewPhase('snapshot_capture', fields, async () => options.capture?.(), timing);
+      return { ...frozen, captured };
     });
     state.queue = barrier
       .then(() => undefined)
       .catch((error: unknown) => {
         this.logDispatchDropped(sessionId, 'snapshot.capture', error);
       });
-    const { mainAgent, contextMessages, ...base } = await barrier;
-    const history =
+    const { mainAgent, contextMessages, captured, ...base } = await barrier;
+    const [capture, history] = await Promise.allSettled([
+      captured,
       !captureMessages || mainAgent === undefined
         ? { messages: contextMessages, times: contextMessages.map(() => undefined) }
-        : await captureContextMessageHistory(this.opts.core, mainAgent, contextMessages);
+        : timeSessionViewPhase('snapshot_history', fields,
+          () => captureContextMessageHistory(this.opts.core, mainAgent, contextMessages, timing.signal), timing),
+    ]);
+    if (capture.status === 'rejected') throw capture.reason;
+    if (history.status === 'rejected') throw history.reason;
     return {
       ...base,
-      contextMessages: history.messages,
-      contextMessageTimes: history.times,
+      captured: capture.value,
+      contextMessages: history.value.messages,
+      contextMessageTimes: history.value.times,
     };
   }
 

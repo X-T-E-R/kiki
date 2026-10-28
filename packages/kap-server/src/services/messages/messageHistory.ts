@@ -1,3 +1,4 @@
+import { stat } from 'node:fs/promises';
 import {
   AGENT_WIRE_RECORD_KEY,
   IAgentBlobService,
@@ -64,15 +65,15 @@ interface MessageHistoryCacheState {
 
 const messageHistoryCacheStates = new WeakMap<Scope, MessageHistoryCacheState>();
 const messageHistoryLifecycleScopes = new WeakSet<Scope>();
-const messageHistoryRefreshes = new WeakMap<Scope, Map<string, Promise<MessageHistoryCacheEntry>>>();
-interface ColdHistoryFlight {
-  promise: Promise<MessageHistoryCacheEntry>;
+const messageHistoryRefreshes = new WeakMap<Scope, Map<string, MessageHistoryFlight>>();
+interface MessageHistoryFlight<T = MessageHistoryCacheEntry> {
+  promise: Promise<T>;
   readonly controller: AbortController;
   waiters: number;
   settled: boolean;
 }
 
-const coldMessageHistoryRefreshes = new WeakMap<Scope, Map<string, ColdHistoryFlight>>();
+const coldMessageHistoryRefreshes = new WeakMap<Scope, Map<string, MessageHistoryFlight>>();
 
 /** Count a compatible, already-materialized history plus its live tail without reading the wire. */
 export function cachedMessageCount(
@@ -268,7 +269,7 @@ async function openMessageHistory(
   if (lease !== undefined) {
     try {
       signal?.throwIfAborted();
-      const active = await loadActiveMessageHistory(core, lease.handle, sessionId, summary.createdAt);
+      const active = await loadActiveMessageHistory(core, lease.handle, sessionId, summary.createdAt, signal);
       return {
         ...active,
         hydrate: (messages) => rehydrate(active.agent, messages),
@@ -287,6 +288,7 @@ async function loadActiveMessageHistory(
   session: ISessionScopeHandle,
   sessionId: string,
   createdAt: number,
+  signal?: AbortSignal,
 ): Promise<{
   readonly agent: IAgentScopeHandle;
   readonly createdAt: number;
@@ -295,7 +297,7 @@ async function loadActiveMessageHistory(
   readonly explicitIndexes: ReadonlyMap<string, number>;
 }> {
   const agent = await ensureMainAgent(session);
-  const entry = await refreshMessageHistoryCache(core, agent, sessionId, createdAt);
+  const entry = await refreshMessageHistoryCache(core, agent, sessionId, createdAt, signal);
   return {
     agent,
     createdAt,
@@ -324,7 +326,7 @@ async function loadColdMessageHistory(
   let flight = refreshes.get(sessionId);
   if (flight === undefined) {
     const controller = new AbortController();
-    const created: ColdHistoryFlight = {
+    const created: MessageHistoryFlight = {
       controller,
       waiters: 0,
       settled: false,
@@ -428,24 +430,36 @@ async function refreshMessageHistoryCache(
   agent: IAgentScopeHandle,
   sessionId: string,
   sessionCreatedAtMs: number,
+  signal?: AbortSignal,
 ): Promise<MessageHistoryCacheEntry> {
+  signal?.throwIfAborted();
   let refreshes = messageHistoryRefreshes.get(core);
   if (refreshes === undefined) {
     refreshes = new Map();
     messageHistoryRefreshes.set(core, refreshes);
   }
-  const pending = refreshes.get(sessionId);
-  if (pending !== undefined) return pending;
-  const refresh = refreshMessageHistoryCacheNow(
-    core,
-    agent,
-    sessionId,
-    sessionCreatedAtMs,
-  ).finally(() => {
-    if (refreshes.get(sessionId) === refresh) refreshes.delete(sessionId);
-  });
-  refreshes.set(sessionId, refresh);
-  return refresh;
+  let flight = refreshes.get(sessionId);
+  if (flight === undefined) {
+    const controller = new AbortController();
+    const created: MessageHistoryFlight = { controller, waiters: 0, settled: false, promise: undefined as unknown as Promise<MessageHistoryCacheEntry> };
+    created.promise = refreshMessageHistoryCacheNow(core, agent, sessionId, sessionCreatedAtMs, controller.signal).finally(() => {
+      created.settled = true;
+      if (refreshes.get(sessionId) === created) refreshes.delete(sessionId);
+    });
+    void created.promise.catch(() => {});
+    flight = created;
+    refreshes.set(sessionId, created);
+  }
+  flight.waiters++;
+  try {
+    return await waitForColdHistory(flight.promise, signal);
+  } finally {
+    flight.waiters--;
+    if (!flight.settled && flight.waiters === 0) {
+      if (refreshes.get(sessionId) === flight) refreshes.delete(sessionId);
+      flight.controller.abort();
+    }
+  }
 }
 
 async function refreshMessageHistoryCacheNow(
@@ -453,7 +467,9 @@ async function refreshMessageHistoryCacheNow(
   agent: IAgentScopeHandle,
   sessionId: string,
   sessionCreatedAtMs: number,
+  signal?: AbortSignal,
 ): Promise<MessageHistoryCacheEntry> {
+  signal?.throwIfAborted();
   ensureMessageHistoryLifecycle(core);
   const state = messageHistoryCacheState(core);
   const generation = state.generation;
@@ -461,21 +477,23 @@ async function refreshMessageHistoryCacheNow(
   const existing = state.cache.get(sessionId) ?? await loadSpilledMessageHistory(core, sessionId);
   let entry: MessageHistoryCacheEntry;
   if (existing === undefined || existing.coldMtimeMs !== undefined) {
-    entry = await rebuildMessageHistoryCache(core, agent, contextMessages, sessionCreatedAtMs);
+    entry = await rebuildMessageHistoryCache(core, agent, contextMessages, sessionCreatedAtMs, signal);
   } else {
-    const tail = await readDurableWireTail(core, agent, existing);
+    const tail = await readDurableWireTail(core, agent, existing, signal);
+    signal?.throwIfAborted();
     const additions = Math.max(0, contextMessages.length - existing.observedContext.length);
     const compatible =
       contextTailCompatible(existing.observedContext, contextMessages) &&
       tail.creationTimes.length >= additions;
     if (tail.rewritten || !compatible) {
-      entry = await rebuildMessageHistoryCache(core, agent, contextMessages, sessionCreatedAtMs);
+      entry = await rebuildMessageHistoryCache(core, agent, contextMessages, sessionCreatedAtMs, signal);
     } else {
       applyContextTail(existing, contextMessages, tail.creationTimes, sessionCreatedAtMs);
       existing.offset = tail.offset;
       entry = existing;
     }
   }
+  signal?.throwIfAborted();
   const admission = admitMessageHistoryCacheEntry(state, sessionId, entry, generation);
   await persistSpilledMessageHistory(core, sessionId, entry, admission === 'spill');
   return entry;
@@ -667,13 +685,16 @@ async function rebuildMessageHistoryCache(
   agent: IAgentScopeHandle,
   contextMessages: readonly ContextMessage[],
   sessionCreatedAtMs: number,
+  signal?: AbortSignal,
 ): Promise<MessageHistoryCacheEntry> {
+  signal?.throwIfAborted();
   await agent.accessor.get(IWireService).flush();
+  signal?.throwIfAborted();
   const scope = agent.accessor.get(IAgentScopeContext).scope();
   const offset = await core.accessor
     .get(IFileSystemStorageService)
     .size(scope, AGENT_WIRE_RECORD_KEY) ?? 0;
-  const transcript = await readTranscript(core, agent);
+  const transcript = await readTranscript(core, agent, signal);
   const merged = mergeLiveTail(transcript, contextMessages);
   const messages = [...merged.messages];
   return {
@@ -691,10 +712,14 @@ async function readDurableWireTail(
   core: Scope,
   agent: IAgentScopeHandle,
   entry: MessageHistoryCacheEntry,
+  signal?: AbortSignal,
 ): Promise<{ readonly offset: number; readonly creationTimes: number[]; readonly rewritten: boolean }> {
+  signal?.throwIfAborted();
   await agent.accessor.get(IWireService).flush();
+  signal?.throwIfAborted();
   const storage = core.accessor.get(IFileSystemStorageService);
   const size = await storage.size(entry.scope, AGENT_WIRE_RECORD_KEY) ?? 0;
+  signal?.throwIfAborted();
   if (size < entry.offset) return { offset: size, creationTimes: [], rewritten: true };
   if (size === entry.offset) return { offset: size, creationTimes: [], rewritten: false };
   let pending = '';
@@ -704,7 +729,9 @@ async function readDurableWireTail(
     entry.scope,
     AGENT_WIRE_RECORD_KEY,
     { start: entry.offset, end: size - 1 },
+    { signal },
   )) {
+    signal?.throwIfAborted();
     pending += decoder.decode(chunk, { stream: true });
     let newline = pending.indexOf('\n');
     while (newline !== -1) {
@@ -848,13 +875,93 @@ export interface CapturedContextMessageHistory {
   readonly times: readonly (number | undefined)[];
 }
 
+interface SnapshotHistoryEntry {
+  readonly fingerprint: string;
+  readonly history: CapturedContextMessageHistory;
+  readonly bytes: number;
+}
+
+const SNAPSHOT_HISTORY_CACHE_BYTES = 4 << 20;
+const snapshotHistoryCaches = new WeakMap<Scope, { bytes: number; entries: Map<string, SnapshotHistoryEntry> }>();
+const snapshotHistoryFlights = new WeakMap<Scope, Map<string, MessageHistoryFlight<ContextTranscript> & { fingerprint: string }>>();
+
 export async function captureContextMessageHistory(
   core: Scope,
   agent: IAgentScopeHandle,
   contextMessages: readonly ContextMessage[],
+  signal?: AbortSignal,
 ): Promise<CapturedContextMessageHistory> {
-  const transcript = await readTranscript(core, agent);
-  return alignFrozenContextHistory(transcript, contextMessages);
+  signal?.throwIfAborted();
+  await agent.accessor.get(IWireService).flush();
+  signal?.throwIfAborted();
+  const scope = agent.accessor.get(IAgentScopeContext).scope();
+  const storage = core.accessor.get(IFileSystemStorageService);
+  const fingerprint = async (): Promise<string> => {
+    const path = storage.pathFor(scope, AGENT_WIRE_RECORD_KEY);
+    if (path !== undefined) {
+      try {
+        const info = await stat(path, { bigint: true });
+        signal?.throwIfAborted();
+        return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        signal?.throwIfAborted();
+        return 'missing';
+      }
+    }
+    const [size, mtime] = await Promise.all([storage.size(scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY)]);
+    signal?.throwIfAborted();
+    return `${size}:${mtime}`;
+  };
+  const before = await fingerprint();
+  const cache = snapshotHistoryCaches.get(core);
+  const cached = cache?.entries.get(scope);
+  if (cached?.fingerprint === before && cached.history.messages.length === contextMessages.length &&
+    contextMessages.every((message, index) => cached.history.messages[index] === message)) return cached.history;
+  let flights = snapshotHistoryFlights.get(core);
+  if (flights === undefined) { flights = new Map(); snapshotHistoryFlights.set(core, flights); }
+  let flight = flights.get(scope);
+  if (flight === undefined || flight.fingerprint !== before) {
+    const controller = new AbortController();
+    const created: MessageHistoryFlight<ContextTranscript> & { fingerprint: string } = {
+      controller, fingerprint: before, waiters: 0, settled: false, promise: undefined as unknown as Promise<ContextTranscript>,
+    };
+    created.promise = readTranscript(core, agent, controller.signal).finally(() => {
+      created.settled = true;
+      if (flights.get(scope) === created) flights.delete(scope);
+    });
+    void created.promise.catch(() => {});
+    flight = created;
+    flights.set(scope, created);
+  }
+  flight.waiters++;
+  let transcript: ContextTranscript;
+  try { transcript = await waitForColdHistory(flight.promise, signal); }
+  finally {
+    flight.waiters--;
+    if (!flight.settled && flight.waiters === 0) {
+      if (flights.get(scope) === flight) flights.delete(scope);
+      flight.controller.abort();
+    }
+  }
+  const history = alignFrozenContextHistory(transcript, contextMessages);
+  if (before === await fingerprint()) {
+    let retained = snapshotHistoryCaches.get(core);
+    if (retained === undefined) { retained = { bytes: 0, entries: new Map() }; snapshotHistoryCaches.set(core, retained); }
+    const previous = retained.entries.get(scope);
+    if (previous !== undefined) { retained.entries.delete(scope); retained.bytes -= previous.bytes; }
+    const bytes = estimateContextMessagesBytes(contextMessages) + history.times.length * 8;
+    if (bytes <= SNAPSHOT_HISTORY_CACHE_BYTES) {
+      while (retained.entries.size > 0 && (retained.bytes + bytes > SNAPSHOT_HISTORY_CACHE_BYTES || retained.entries.size >= 32)) {
+        const oldest = retained.entries.keys().next().value!;
+        retained.bytes -= retained.entries.get(oldest)!.bytes;
+        retained.entries.delete(oldest);
+      }
+      retained.entries.set(scope, { fingerprint: before, history, bytes });
+      retained.bytes += bytes;
+    }
+  }
+  return history;
 }
 
 export async function loadMessageHistory(
@@ -1007,13 +1114,16 @@ async function rehydrate(
   return changed ? out : messages;
 }
 
-async function readTranscript(core: Scope, agent: IAgentScopeHandle): Promise<ContextTranscript> {
+async function readTranscript(core: Scope, agent: IAgentScopeHandle, signal?: AbortSignal): Promise<ContextTranscript> {
+  signal?.throwIfAborted();
   await agent.accessor.get(IWireService).flush();
+  signal?.throwIfAborted();
   const scope = agent.accessor.get(IAgentScopeContext).scope();
   const reducer = createContextTranscriptReducer();
   for await (const record of core.accessor
     .get(IAppendLogStore)
-    .read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY)) {
+    .read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, { signal })) {
+    signal?.throwIfAborted();
     reducer.add(record);
   }
   return reducer.result();

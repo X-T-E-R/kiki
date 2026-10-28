@@ -33,6 +33,7 @@ import {
   IAgentToolRegistryService,
   IAgentUsageService,
   IAppendLogStore,
+  IFileSystemStorageService,
   IEventBus,
   IEventService,
   IModelCatalog,
@@ -423,6 +424,7 @@ function makeCore(
   const accessor = {
     get(token: unknown): unknown {
       if (token === IAppendLogStore) return { read: async function* () {} };
+      if (token === IFileSystemStorageService) return { size: async () => 0, mtime: async () => 0, pathFor: () => undefined };
       if (token === IEventService) return eventBus;
       if (token === ISessionIndex) return { get: async (sessionId: string) => sessions.has(sessionId) ? { id: sessionId, workspaceId: 'wd' } : undefined };
       if (token === ISessionManager) {
@@ -3067,6 +3069,36 @@ describe('SessionEventBroadcaster', () => {
     if (outcome !== 'failed') expect(dispose).toHaveBeenCalledOnce();
   });
 
+  it('dispatches live events and captures their state while another snapshot awaits catalogs', async () => {
+    const lifecycle = new FakeLifecycle();
+    const main = lifecycle.addAgent('main');
+    sessions.set('s1', lifecycle);
+    const { target, envelopes } = collectingTarget();
+    await bc.subscribe('s1', target);
+    const boundary = await bc.getCursor('s1');
+    let release!: () => void;
+    let enter!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const first = bc.getSnapshotState('s1', { captureMessages: false, capture: async () => { enter(); await blocked; return 'catalog'; } });
+    let current: Awaited<ReturnType<typeof bc.getSnapshotState>> | undefined;
+    try {
+      await entered;
+      main.bus.emit(agentEvent('turn.started', { turnId: 12 }));
+      main.bus.emit(agentEvent('assistant.delta', { turnId: 12, delta: 'live during capture' }));
+      void bc.getSnapshotState('s1', { captureMessages: false }).then((value) => { current = value; });
+      await vi.waitFor(() => {
+        expect(envelopes.some((envelope) => envelope.type === 'assistant.delta')).toBe(true);
+        expect(current?.inFlightTurn?.assistant_text).toBe('live during capture');
+      }, { timeout: 300 });
+    } finally { release(); }
+    const frozen = await first;
+    expect(frozen.seq).toBe(boundary.seq);
+    expect(frozen.inFlightTurn).toBeNull();
+    expect(frozen.captured).toBe('catalog');
+    expect(current!.seq).toBeGreaterThan(frozen.seq);
+  });
+
   it('session loading timing separates a snapshot capture from the next request queue', async () => {
     const lifecycle = new FakeLifecycle();
     lifecycle.addAgent('main');
@@ -3079,6 +3111,10 @@ describe('SessionEventBroadcaster', () => {
     const blocked = new Promise<void>((resolve) => { release = resolve; });
     const entered = new Promise<void>((resolve) => { enter = resolve; });
     const cancelled = new AbortController();
+    const diagnostics = channel('kiki.session-view.timing');
+    const records: Array<Record<string, unknown>> = [];
+    const collect = (record: unknown): void => { records.push(record as Record<string, unknown>); };
+    diagnostics.subscribe(collect);
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
     const first = bc.getSnapshotState('s1', { captureMessages: false,
       timing: { signal: cancelled.signal, requestId: 'first-snapshot' },
@@ -3089,8 +3125,8 @@ describe('SessionEventBroadcaster', () => {
       await vi.advanceTimersByTimeAsync(1_000);
       expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: 'snapshot_capture', outcome: 'pending',
         requestId: 'first-snapshot', durationMs: 1_000 }), 'session view phase');
-      expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: 'snapshot_queue', outcome: 'pending',
-        requestId: 'second-snapshot', durationMs: 1_000 }), 'session view phase');
+      expect(logger.warn.mock.calls.some(([record]) => record.stage === 'snapshot_queue' &&
+        record.requestId === 'second-snapshot' && record.outcome === 'pending')).toBe(false);
       cancelled.abort();
       expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: 'snapshot_capture', outcome: 'abort_requested',
         requestId: 'first-snapshot', durationMs: 1_000 }), 'session view phase');
@@ -3102,11 +3138,14 @@ describe('SessionEventBroadcaster', () => {
       expect(captured.captured).toBe('captured');
       expect(captured.seq).toBe(cursor.seq);
       expect(queued.seq).toBe(cursor.seq);
-      expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: 'snapshot_queue', outcome: 'succeeded',
-        requestId: 'second-snapshot', durationMs: 1_000 }), 'session view phase');
+      expect(records).toContainEqual(expect.objectContaining({ stage: 'snapshot_queue', outcome: 'succeeded',
+        requestId: 'second-snapshot', durationMs: 0 }));
+      expect(logger.warn.mock.calls.some(([record]) => record.stage === 'snapshot_queue' &&
+        record.requestId === 'second-snapshot' && record.durationMs >= 1_000)).toBe(false);
     } finally {
       release();
       await first;
+      diagnostics.unsubscribe(collect);
       vi.useRealTimers();
     }
   });
