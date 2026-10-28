@@ -38,14 +38,15 @@ export class MemoryAuthorityAccess {
   }
   async exclusive<T>(operation: (lease: MemoryAuthorityLease) => Promise<T>, signal?: AbortSignal): Promise<T> {
     const previous = queues.get(this.storage) ?? Promise.resolve();
-    const released = Promise.withResolvers<void>();
-    const current = previous.then(() => released.promise);
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const current = previous.then(() => released);
     queues.set(this.storage, current);
     try {
       await (signal === undefined ? previous : abortable(previous, signal));
       return await this.locked(operation, signal);
     } finally {
-      released.resolve();
+      release();
       void current.then(() => { if (queues.get(this.storage) === current) queues.delete(this.storage); });
     }
   }
