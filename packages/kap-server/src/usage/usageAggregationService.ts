@@ -658,40 +658,63 @@ export class UsageAggregationService {
       const foldHead = head;
       const pageOpened = async (): Promise<void> => {
         for (const session of foldHead.sessions) {
-          for (const source of session.sources ?? []) {
-            if (source.cursor === undefined) continue;
-            while (!source.done) {
-              if (this.now() >= budget.deadlineAt) { budget.incompleteReason = 'deadline'; return; }
-              if ((budget.remainingFacts ?? Infinity) <= 0) { budget.incompleteReason = 'record_budget'; return; }
-              if (source.cursor?.startsWith('journal:') === true) {
-                const hold = { cursor: source.cursor };
-                const replayed = await this.replayFactJournal(source.scope, source.cursor, query.range, budget, hold, async (records) => {
-                  const cursor = source.cursor, invalid = session.invalid;
-                  source.cursor = hold.cursor;
-                  session.invalid ||= records.some((record) => record.invalid);
-                  try { await fold.addPage(session.summary, records, (record) => resolveBucket(record.time, session.summary, query).key, (record) => inRange(record.time, query.range) && matchesFilters(record, query), foldHead, budget.factSignal, { session, source }); }
-                  catch (error) { source.cursor = cursor; session.invalid = invalid; throw error; }
-                }, source.checkpoint.generation ?? 'legacy', source.checkpoint.offset);
-                if (replayed === undefined) source.cursor = undefined;
-                else {
-                  source.done = replayed.done;
-                  source.cursor = replayed.done ? undefined : replayed.cursor;
-                  if (!replayed.done) return;
-                  continue;
+          const queued: UsageFact[] = [];
+          const originals = new Map<RangeFoldSource, { cursor?: string; done: boolean }>();
+          const before = { invalid: session.invalid };
+          const rollback = (): void => {
+            if (originals.size === 0) return;
+            for (const [source, original] of originals) { source.cursor = original.cursor; source.done = original.done; }
+            session.invalid = before.invalid;
+            queued.length = 0;
+            originals.clear();
+          };
+          const flush = async (): Promise<void> => {
+            if (queued.length === 0) return;
+            try { await fold.addPage(session.summary, queued.slice(), (record) => resolveBucket(record.time, session.summary, query).key, (record) => inRange(record.time, query.range) && matchesFilters(record, query), foldHead, budget.factSignal, { session, sources: [...originals.keys()] }); }
+            catch (error) { rollback(); throw error; }
+            queued.length = 0;
+            originals.clear();
+            before.invalid = session.invalid;
+          };
+          try {
+            for (const source of session.sources ?? []) {
+              if (source.cursor === undefined) continue;
+              while (!source.done) {
+                if (this.now() >= budget.deadlineAt) { await flush(); budget.incompleteReason = 'deadline'; return; }
+                if ((budget.remainingFacts ?? Infinity) <= 0) { await flush(); budget.incompleteReason = 'record_budget'; return; }
+                if (source.cursor?.startsWith('journal:') === true) {
+                  const hold = { cursor: source.cursor };
+                  const replayed = await this.replayFactJournal(source.scope, source.cursor, query.range, budget, hold, async (records) => {
+                    if (originals.size === 0) before.invalid = session.invalid;
+                    if (!originals.has(source)) originals.set(source, { cursor: source.cursor, done: source.done });
+                    source.cursor = hold.cursor;
+                    session.invalid ||= records.some((record) => record.invalid);
+                    queued.push(...records);
+                    if (queued.length === 256) await flush();
+                  }, source.checkpoint.generation ?? 'legacy', source.checkpoint.offset, () => 256 - queued.length);
+                  if (replayed === undefined) source.cursor = undefined;
+                  else {
+                    source.done = replayed.done;
+                    source.cursor = replayed.done ? undefined : replayed.cursor;
+                    if (!replayed.done) { await flush(); return; }
+                    continue;
+                  }
                 }
+                await flush();
+                const page = await facts.read(source.scope, query.range, budget.factSignal, { budget: budget.factBudget, cursor: source.cursor, pageSize: 256 });
+                if (page.readComplete === false && page.nextCursor === undefined) { budget.incompleteReason = 'record_budget'; return; }
+                if (page.checkpoint === undefined) { foldHead.invalidated = true; budget.sourcesComplete = false; return; }
+                const checkpoint = source.checkpoint, cursor = source.cursor, done = source.done, invalid = session.invalid;
+                source.checkpoint = page.checkpoint;
+                source.cursor = page.nextCursor;
+                source.done = page.readComplete !== false;
+                session.invalid ||= !page.checkpoint.valid || page.records.some((record) => record.invalid);
+                try { await fold.addPage(session.summary, page.records, (record) => resolveBucket(record.time, session.summary, query).key, (record) => inRange(record.time, query.range) && matchesFilters(record, query), foldHead, budget.factSignal, { session, source }); }
+                catch (error) { source.checkpoint = checkpoint; source.cursor = cursor; source.done = done; session.invalid = invalid; throw error; }
               }
-              const page = await facts.read(source.scope, query.range, budget.factSignal, { budget: budget.factBudget, cursor: source.cursor, pageSize: 256 });
-              if (page.readComplete === false && page.nextCursor === undefined) { budget.incompleteReason = 'record_budget'; return; }
-              if (page.checkpoint === undefined) { foldHead.invalidated = true; budget.sourcesComplete = false; return; }
-              const checkpoint = source.checkpoint, cursor = source.cursor, done = source.done, invalid = session.invalid;
-              source.checkpoint = page.checkpoint;
-              source.cursor = page.nextCursor;
-              source.done = page.readComplete !== false;
-              session.invalid ||= !page.checkpoint.valid || page.records.some((record) => record.invalid);
-              try { await fold.addPage(session.summary, page.records, (record) => resolveBucket(record.time, session.summary, query).key, (record) => inRange(record.time, query.range) && matchesFilters(record, query), foldHead, budget.factSignal, { session, source }); }
-              catch (error) { source.checkpoint = checkpoint; source.cursor = cursor; source.done = done; session.invalid = invalid; throw error; }
             }
-          }
+            await flush();
+          } catch (error) { rollback(); throw error; }
         }
       };
       await pageOpened();
@@ -1519,6 +1542,7 @@ export class UsageAggregationService {
     emit: (records: readonly UsageFact[]) => Promise<void>,
     generation?: string,
     endOffset?: number,
+    pageAllowance: () => number = () => 256,
   ): Promise<{ done: boolean; cursor: string } | undefined> {
     const changed = (): { done: boolean; cursor: string } | undefined => { if (endOffset !== undefined) throw new UsageFactCursorChangedError(); return undefined; };
     const parts = cursor.split(':');
@@ -1571,7 +1595,7 @@ export class UsageAggregationService {
         if (budget.remainingFacts !== undefined) budget.remainingFacts -= 1;
         const record = records[index]!;
         if (apply && index >= prefix && (record.invalid || inRange(record.time, range))) selected.push(record);
-        if (selected.length === 256) await publish(lineStart, index + 1);
+        if (selected.length === pageAllowance()) await publish(lineStart, index + 1);
       }
       if (apply) covered = { generation: checkpoint.generation, offset: checkpoint.offset, count: replacement ? records.length : (covered?.count ?? 0) + records.length };
       done = reached();

@@ -2754,6 +2754,106 @@ describe('shared agent and history usage projection', () => {
 
 
 describe('SQLite UsageRangeFold publication', () => {
+  it('packs small source journals into shared 256-fact pages with atomic continuations', async () => {
+    const sources = Array.from({ length: 15 }, (_, index) => `sessions/workspace/session/agents/agent-${index}`);
+    const saved = await openRange([summary('session', 'workspace')], Object.fromEntries(sources.map((source) => [source, []])), true);
+    saved.core.accessor.get(IUsageFactStore);
+    for (const source of sources) {
+      for (let turn = 0; turn < 40; turn++) saved.logs.append(source, 'wire.jsonl', usageRecord(turn + 1, turn));
+      await saved.logs.flush(source, 'wire.jsonl');
+    }
+    const service = new UsageAggregationService(saved.core, () => 1000);
+    const add = vi.spyOn(UsageRangeFold.prototype, 'addPage');
+    try {
+      const response = await service.query({ range: 'custom', start_at: 0, end_at: 1000 });
+      expect(response.reliability.complete).toBe(true);
+      expect(response.reliability.usage_coverage).toMatchObject({ known_records: 600, missing_records: 0 });
+      expect(response.summary.tokens.output).toBe(600);
+      expect(response.trend[0]?.turn_count).toBe(600);
+      expect(add.mock.calls.map(([, records]) => records.length)).toEqual([256, 256, 88]);
+      expect(add.mock.calls[0]?.[6]?.sources?.length).toBeGreaterThan(1);
+      const reopened = await new UsageAggregationService(saved.core, () => 1000).query({ range: 'custom', start_at: 0, end_at: 1000 });
+      expect(reopened.summary).toEqual(response.summary);
+      expect(reopened.trend).toEqual(response.trend);
+    } finally { add.mockRestore(); service.dispose(); }
+  });
+
+  it.each([false, true])('retains a cross-source committed prefix and freezes a backdated append after a page pause (reject: %s)', async (reject) => {
+    const sources = Array.from({ length: 15 }, (_, index) => `sessions/workspace/session/agents/agent-${String(index).padStart(2, '0')}`);
+    const saved = await openRange([summary('session', 'workspace')], Object.fromEntries(sources.map((source) => [source, []])), true);
+    saved.core.accessor.get(IUsageFactStore);
+    for (const source of sources) {
+      for (let turn = 0; turn < 40; turn++) saved.logs.append(source, 'wire.jsonl', usageRecord(turn + 1, turn));
+      await saved.logs.flush(source, 'wire.jsonl');
+    }
+    const service = new UsageAggregationService(saved.core, () => 1000);
+    const add = UsageRangeFold.prototype.addPage;
+    let pages = 0;
+    const gate = vi.spyOn(UsageRangeFold.prototype, 'addPage').mockImplementation(async function (this: UsageRangeFold, ...args) {
+      if (++pages === (reject ? 2 : 1)) {
+        if (!reject) await add.apply(this, args);
+        saved.logs.append(sources[0]!, 'wire.jsonl', usageRecord(1, 999));
+        await saved.logs.flush(sources[0]!, 'wire.jsonl');
+        vi.advanceTimersByTime(10_001);
+        if (reject) throw new DOMException('Pause shared journal page', 'TimeoutError');
+        return;
+      }
+      return add.apply(this, args);
+    });
+    const input = { range: 'custom', start_at: 0, end_at: 1000 } as const;
+    let partial: UsageResponse;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try { partial = await service.query(input); }
+    finally { vi.useRealTimers(); gate.mockRestore(); service.dispose(); }
+    expect(partial!.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline', usage_coverage: { known_records: 256 } });
+    expect(partial!.summary.tokens.output).toBe(256);
+    const resumed = new UsageAggregationService(saved.core, () => 1000);
+    const frozen = await resumed.query(input);
+    expect(frozen.reliability.complete).toBe(true);
+    expect(frozen.summary.tokens.output).toBe(600);
+    const refreshed = await resumed.query(input);
+    const reopened = await new UsageAggregationService(saved.core, () => 1000).query(input);
+    for (const response of [refreshed, reopened]) {
+      expect(response.reliability.complete).toBe(true);
+      expect(response.summary.tokens.output).toBe(601);
+      expect(response.reliability.usage_coverage?.known_records).toBe(601);
+      expect(response.trend[0]?.turn_count).toBe(601);
+    }
+    resumed.dispose();
+  });
+
+  it('discards uncommitted cross-source cursors on cancellation while retaining the acknowledged page', async () => {
+    const sources = Array.from({ length: 15 }, (_, index) => `sessions/workspace/session/agents/agent-${String(index).padStart(2, '0')}`);
+    const saved = await openRange([summary('session', 'workspace')], Object.fromEntries(sources.map((source) => [source, []])), true);
+    saved.core.accessor.get(IUsageFactStore);
+    for (const source of sources) {
+      for (let turn = 0; turn < 40; turn++) saved.logs.append(source, 'wire.jsonl', usageRecord(turn + 1, turn));
+      await saved.logs.flush(source, 'wire.jsonl');
+    }
+    const service = new UsageAggregationService(saved.core, () => 1000), controller = new AbortController();
+    const replay = Reflect.get(service, 'replayFactJournal') as (...args: unknown[]) => Promise<unknown>;
+    const pages = vi.spyOn(UsageRangeFold.prototype, 'addPage');
+    const gate = vi.spyOn(service as unknown as { replayFactJournal: (...args: unknown[]) => Promise<unknown> }, 'replayFactJournal').mockImplementation(async (...args) => {
+      if (args[0] === sources[8]) { expect(pages).toHaveBeenCalledOnce(); controller.abort(new Error('Cancel buffered journal sources')); }
+      return replay.apply(service, args);
+    });
+    const input = { range: 'custom', start_at: 0, end_at: 1000 } as const;
+    try { await expect(service.query(input, controller.signal)).rejects.toThrow('Cancel buffered journal sources'); }
+    finally { gate.mockRestore(); pages.mockRestore(); service.dispose(); }
+    const fingerprint = (await saved.store.listKeys('usage-range-routing-v1'))[0]!;
+    const head = (await new UsageRangeFold(saved.store, `usage-range-v1:${fingerprint}`, 100, 100).head<RangeFoldHead>())!;
+    expect(head.sessions[0]?.sources?.filter((source) => source.done)).toHaveLength(6);
+    expect(head.sessions[0]?.sources?.find((source) => source.scope === sources[6])?.cursor?.split(':')[2]).toBe('16');
+    expect(head.sessions[0]?.sources?.find((source) => source.scope === sources[7])).toMatchObject({ cursor: 'journal:0:0', done: false });
+    const resumed = new UsageAggregationService(saved.core, () => 1000);
+    const response = await resumed.query(input);
+    expect(response.reliability.complete).toBe(true);
+    expect(response.summary.tokens.output).toBe(600);
+    expect(response.reliability.usage_coverage?.known_records).toBe(600);
+    expect(response.trend[0]?.turn_count).toBe(600);
+    resumed.dispose();
+  });
+
   it.each([3, 40])('folds unchanged journals using the bounded tail before checkpoint metadata with missing fact rows (%s facts)', async (count) => {
     const wireScope = scope('workspace', 'session');
     const model = count === 3 ? 'example' : 'example'.repeat(5000);

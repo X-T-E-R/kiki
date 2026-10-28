@@ -78,7 +78,7 @@ export interface RangeFoldHead {
 interface FoldRevision { readonly epoch: string; readonly revision: number }
 interface StoredHead { readonly layout: 2; readonly value: unknown; readonly sessions?: readonly string[] }
 interface StoredSession { readonly value: Omit<RangeFoldSession, 'sources'>; readonly hasSources: boolean }
-interface FoldProgress { readonly session: RangeFoldSession; readonly source?: RangeFoldSource }
+interface FoldProgress { readonly session: RangeFoldSession; readonly source?: RangeFoldSource; readonly sources?: readonly RangeFoldSource[] }
 const REVISION = 'head:revision';
 
 export class UsageRangeFoldChangedError extends UsageFactCursorChangedError {}
@@ -194,10 +194,12 @@ export class UsageRangeFold {
       const key = sessionRowKey(session);
       const { sources, ...value } = session;
       rows.set(key, { value, hasSources: sources !== undefined });
-      if (progress?.source === undefined) {
+      if (progress?.source !== undefined) rows.set(sourceRowKey(progress.source), progress.source);
+      else if (progress?.sources !== undefined) for (const source of progress.sources) rows.set(sourceRowKey(source), source);
+      else {
         if (sources !== undefined) rows.set(`${key}:sources`, sources.map(sourceRowKey));
         for (const source of sources ?? []) rows.set(sourceRowKey(source), source);
-      } else rows.set(sourceRowKey(progress.source), progress.source);
+      }
     }
     return rows;
   }
