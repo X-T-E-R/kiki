@@ -59,6 +59,99 @@ describe('UsageFactStore', () => {
     await rm(home, { recursive: true, force: true, maxRetries: 5 });
   });
 
+  it.each(['read', 'summary'] as const)('reads only aligned checkpoint metadata and leaves missing fact rows for %s validation', async (method) => {
+    logs.append(SCOPE, KEY, fact());
+    await logs.flush(SCOPE, KEY);
+    const expected = await facts.read(SCOPE);
+    const key = (await query.listKeys(COLLECTION)).find((key) => key !== 'head')!;
+    await query.delete(COLLECTION, key);
+    await query.close();
+    await ix.dispose();
+    await drainQueryStoreDisposals();
+    open();
+    const rows = vi.spyOn(query, 'query'), streams = vi.spyOn(storage, 'readStream');
+    expect(await facts.checkpoint(SCOPE)).toEqual(expected.checkpoint);
+    expect(rows).not.toHaveBeenCalled();
+    expect(streams).not.toHaveBeenCalled();
+    const recovered = await facts[method](SCOPE);
+    if ('records' in recovered) expect(recovered).toEqual(expected);
+    else expect(recovered.totals?.usage.output).toBe(2);
+    expect(rows).toHaveBeenCalled();
+    expect(streams.mock.calls.some(([, key]) => key === 'facts.jsonl')).toBe(true);
+  });
+
+  it('rejects missing, unaligned and malformed checkpoint heads without preparing the fact index', async () => {
+    logs.append(SCOPE, KEY, fact());
+    await logs.flush(SCOPE, KEY);
+    const lock = vi.spyOn(query, 'withExclusive');
+    expect(await facts.checkpoint(SCOPE)).toBeUndefined();
+    expect(lock).not.toHaveBeenCalled();
+    await facts.read(SCOPE);
+    lock.mockClear();
+    const head = (await query.get<Record<string, unknown>>(COLLECTION, 'head'))!;
+    const checkpoint = head['checkpoint'] as Record<string, unknown>;
+    const rows = vi.spyOn(query, 'query');
+    for (const changed of [
+      { ...head, ledgerOffset: Number(head['ledgerOffset']) - 1 }, { ...head, ledgerOffset: Number(head['ledgerOffset']) + 1 },
+      { ...head, version: 1 }, { ...head, epoch: -1 }, { ...head, recordCount: -1 },
+      { ...head, checkpoint: undefined }, { ...head, checkpoint: { ...checkpoint, offset: -1 } },
+      { ...head, checkpoint: { ...checkpoint, size: -1 } }, { ...head, checkpoint: { ...checkpoint, mtimeMs: 'invalid' } },
+      { ...head, checkpoint: { ...checkpoint, boundaryHash: 1 } }, { ...head, checkpoint: { ...checkpoint, valid: 1 } },
+    ]) {
+      await query.put(COLLECTION, 'head', changed);
+      expect(await facts.checkpoint(SCOPE)).toBeUndefined();
+    }
+    await query.delete(COLLECTION, 'head');
+    expect(await facts.checkpoint(SCOPE)).toBeUndefined();
+    expect(rows).not.toHaveBeenCalled();
+    expect(lock).not.toHaveBeenCalled();
+    await query.put(COLLECTION, 'head', head);
+    const before = await facts.checkpoint(SCOPE);
+    expect(lock).toHaveBeenCalledOnce();
+    await logs.rewrite(SCOPE, KEY, [fact(2)]);
+    await query.put(COLLECTION, 'head', { ...head, ledgerOffset: await storage.size(`cache/usage-facts-v1/${ID}`, 'facts.jsonl') });
+    expect(await facts.checkpoint(SCOPE)).toBeUndefined();
+    expect(await logs.generation(SCOPE, KEY)).not.toBe(before?.generation);
+  });
+
+  it.each(['append', 'rewrite', 'cancel'] as const)('rechecks checkpoint coverage after the unlocked preflight (%s)', async (change) => {
+    logs.append(SCOPE, KEY, fact());
+    await logs.flush(SCOPE, KEY);
+    await facts.read(SCOPE);
+    const controller = new AbortController();
+    const get = query.get.bind(query);
+    vi.spyOn(query, 'get').mockImplementationOnce(async (...args) => {
+      const head = await get(...args);
+      if (change === 'cancel') controller.abort(new Error('preflight cancelled'));
+      else if (change === 'rewrite') await logs.rewrite(SCOPE, KEY, [fact(2)]);
+      else { logs.append(SCOPE, KEY, fact(2)); await logs.flush(SCOPE, KEY); }
+      return head;
+    });
+    if (change === 'cancel') await expect(facts.checkpoint(SCOPE, controller.signal)).rejects.toThrow('preflight cancelled');
+    else expect(await facts.checkpoint(SCOPE, controller.signal)).toBeUndefined();
+  });
+
+  it('propagates checkpoint flush and IO failures and cancels a stalled same-scope read', async () => {
+    logs.append(SCOPE, KEY, fact());
+    await logs.flush(SCOPE, KEY);
+    await facts.read(SCOPE);
+    vi.spyOn(logs, 'flush').mockRejectedValueOnce(new Error('checkpoint flush failed'));
+    await expect(facts.checkpoint(SCOPE)).rejects.toThrow('checkpoint flush failed');
+    vi.spyOn(storage, 'size').mockRejectedValueOnce(new Error('checkpoint stat failed'));
+    await expect(facts.checkpoint(SCOPE)).rejects.toThrow('checkpoint stat failed');
+    vi.spyOn(query, 'get').mockRejectedValueOnce(new Error('checkpoint head failed'));
+    await expect(facts.checkpoint(SCOPE)).rejects.toThrow('checkpoint head failed');
+    const controller = new AbortController();
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    vi.spyOn(logs, 'flush').mockImplementationOnce(async () => { enter(); await new Promise<void>((resolve) => { release = resolve; }); });
+    const rejected = expect(facts.checkpoint(SCOPE, controller.signal)).rejects.toThrow('checkpoint cancelled');
+    await entered;
+    controller.abort(new Error('checkpoint cancelled'));
+    await rejected;
+    release();
+  });
+
   it('writes known, missing and zero facts after canonical success; non-usage advances coverage without wire reads', async () => {
     const read = vi.spyOn(storage, 'readStream');
     const zero = { ...fact(3), usage: { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 } };

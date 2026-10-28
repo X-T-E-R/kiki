@@ -249,6 +249,7 @@ function fixture(
   };
   const facts: IUsageFactStore = {
     _serviceBrand: undefined,
+    async checkpoint(_scope, signal) { signal?.throwIfAborted(); return undefined; },
     async read(scope, range, signal, options) {
       signal?.throwIfAborted();
       const bytes = await storage.read('facts', scope);
@@ -2753,6 +2754,61 @@ describe('shared agent and history usage projection', () => {
 
 
 describe('SQLite UsageRangeFold publication', () => {
+  it.each([3, 40])('folds unchanged journals using the bounded tail before checkpoint metadata with missing fact rows (%s facts)', async (count) => {
+    const wireScope = scope('workspace', 'session');
+    const model = count === 3 ? 'example' : 'example'.repeat(5000);
+    const records = [...Array.from({ length: count - 1 }, () => ({ ...usageRecord(1, 7), model })), { ...usageRecord(2, 8), model, usageKnown: false }];
+    const saved = await openRange([summary('session', 'workspace')], { [wireScope]: records }, true);
+    const warm = new UsageAggregationService(saved.core, () => 1000);
+    await warm.readAgentUsage('workspace', 'session', ['main']);
+    warm.dispose();
+    const facts = saved.core.accessor.get(IUsageFactStore);
+    await facts.summary(wireScope);
+    expect(await facts.checkpoint(wireScope)).toBeDefined();
+    const collection = `usage-facts-v1:${createHash('sha256').update(wireScope).digest('hex')}`;
+    await saved.store.delete(collection, 'fact:1');
+    const checkpoint = vi.spyOn(facts, 'checkpoint'), read = vi.spyOn(facts, 'read'), summarize = vi.spyOn(facts, 'summary');
+    const service = new UsageAggregationService(saved.core, () => 1000);
+    const input = { range: 'custom', start_at: 0, end_at: 1000 } as const;
+    const response = await service.query(input);
+    expect(response.reliability.complete).toBe(true);
+    expect(response.reliability.usage_coverage).toMatchObject({ known_records: count - 1, missing_records: 1 });
+    expect(response.summary.tokens.output).toBe(count - 1);
+    expect(response.trend[0]?.turn_count).toBe(2);
+    expect(checkpoint).toHaveBeenCalledTimes(count === 3 ? 0 : 1);
+    expect(read).not.toHaveBeenCalled();
+    expect(summarize).not.toHaveBeenCalled();
+    const reopened = await new UsageAggregationService(saved.core, () => 1000).query(input);
+    expect(reopened.summary).toEqual(response.summary);
+    expect(reopened.trend).toEqual(response.trend);
+    service.dispose();
+  });
+
+  it.each([false, true])('keeps tail windows disjoint and attempts metadata only beyond the tail budget (oversize: %s)', async (oversize) => {
+    const wireScope = scope('workspace', 'session');
+    const model = oversize ? 'example'.repeat(1600) : 'example';
+    const saved = await openRange([summary('session', 'workspace')], { [wireScope]: Array.from({ length: 100 }, (_, turn) => ({ ...usageRecord(1, turn), model })) }, true);
+    const service = new UsageAggregationService(saved.core, () => 1000);
+    await service.readAgentUsage('workspace', 'session', ['main']);
+    const facts = saved.core.accessor.get(IUsageFactStore);
+    const expected = (await facts.summary(wireScope)).checkpoint;
+    expect(expected).toBeDefined();
+    const checkpoint = vi.spyOn(facts, 'checkpoint').mockResolvedValue(undefined);
+    const streams = vi.spyOn(saved.storage, 'readStream');
+    const read = () => Reflect.apply(Reflect.get(service, 'factJournalCheckpoint'), service, [wireScope]) as Promise<unknown>;
+    expect(await read()).toEqual(oversize ? undefined : expected);
+    expect(checkpoint).toHaveBeenCalledTimes(Number(oversize));
+    const ranges = streams.mock.calls.filter(([, key]) => key === 'facts.jsonl').map(([, , range]) => range!);
+    expect(ranges.length).toBeGreaterThan(1);
+    expect(ranges[0]!.end! - ranges[0]!.start! + 1).toBe(4096);
+    for (let index = 1; index < ranges.length; index++) expect(ranges[index]!.end! + 1).toBe(ranges[index - 1]!.start);
+    if (oversize) {
+      checkpoint.mockRejectedValueOnce(new Error('checkpoint unavailable'));
+      await expect(read()).rejects.toThrow('checkpoint unavailable');
+    }
+    service.dispose();
+  });
+
   it.each(['AbortError', 'TimeoutError'])('cancels stalled journal preparation without publishing unfinished metadata (%s)', async (reason) => {
     const saved = await openRange([], {}, true);
     const service = new UsageAggregationService(saved.core, () => 1000);
@@ -2846,6 +2902,36 @@ describe('SQLite UsageRangeFold publication', () => {
       const buckets = await fold.buckets(['bucket']);
       expect([...buckets.values()][0]?.turnCount).toBe(1);
     } finally { reads.mockRestore(); }
+  });
+
+  it('uses exact bucket agent turns without rereading turn ledgers and retains overflow deduplication after reopen', async () => {
+    const saved = await openRange([], {}, true);
+    let fold = new UsageRangeFold(saved.store, 'tracked-turns', 1, 2);
+    const session = summary('session', 'workspace'), overflow = summary('overflow', 'workspace');
+    const fact = (agentId: string, turnId?: number) => ({ time: 1, model: 'example', agentId, turnId, usageKnown: true, usage: { inputOther: 0, output: 1, inputCacheRead: 0, inputCacheCreation: 0 } });
+    await fold.reset();
+    await fold.addPage(session, [fact('a', 1), fact('a', 1), fact('a', 2), fact('a', 3), fact('a')], () => 'bucket', () => true, {});
+    await fold.addPage(session, [fact('b', 1), fact('a', 3), fact('a', 4)], () => 'bucket', () => true, {});
+    fold = new UsageRangeFold(saved.store, 'tracked-turns', 1, 2);
+    await fold.head();
+    const reads = vi.spyOn(saved.store, 'getMany');
+    await fold.addPage(session, [fact('a', 1), fact('b', 1), fact('a')], () => 'bucket', () => true, {});
+    expect(reads.mock.calls.flatMap(([, keys]) => keys).some((key) => key.startsWith('turn:') || key.startsWith('drilldown:'))).toBe(false);
+    let bucket = [...(await fold.buckets(['bucket'])).values()][0]!;
+    expect(bucket.turnCount).toBe(5);
+    expect(bucket.sessions[0]).toMatchObject({ turnCount: 4, turnIds: [1, 2], unknownTurnRecords: 2 });
+    expect(bucket.sessions[0]?.agents?.find((agent) => agent.agentId === 'a')?.turnIds).toEqual([1, 2, 3, 4]);
+    const keys = await saved.store.listKeys('tracked-turns');
+    expect(keys.filter((key) => key.startsWith('turn:'))).toHaveLength(5);
+    expect(keys.filter((key) => key.startsWith('drilldown:'))).toHaveLength(4);
+    await fold.addPage(overflow, [fact('a', 1), fact('a', 1), fact('a', 2)], () => 'bucket', () => true, {});
+    fold = new UsageRangeFold(saved.store, 'tracked-turns', 1, 2);
+    await fold.head();
+    await fold.addPage(overflow, [fact('a', 1)], () => 'bucket', () => true, {});
+    bucket = [...(await fold.buckets(['bucket'])).values()][0]!;
+    expect(bucket).toMatchObject({ turnCount: 7, sessionsTruncated: true });
+    expect(bucket.sessions).toHaveLength(1);
+    reads.mockRestore();
   });
 
   it('publishes one prepared session without encoding other sources and preserves the full-head cache', async () => {

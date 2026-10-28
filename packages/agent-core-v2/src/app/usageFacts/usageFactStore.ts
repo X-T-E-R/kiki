@@ -48,6 +48,8 @@ export interface UsageFactRange {
 
 export interface IUsageFactStore {
   readonly _serviceBrand: undefined;
+  /** Source coverage metadata for the successfully flushed journal, available only from a matching current-format head. Does not verify fact rows or totals; read and summary retain their full validation. */
+  checkpoint(scope: string, signal?: AbortSignal): Promise<UsageFactCheckpoint | undefined>;
   read(scope: string, range?: UsageFactRange, signal?: AbortSignal, options?: UsageFactReadOptions): Promise<UsageFactSnapshot>;
   summary(scope: string, signal?: AbortSignal, options?: UsageFactReadOptions): Promise<{ checkpoint?: UsageFactCheckpoint; totals?: UsageFactTotals; readComplete?: boolean }>;
   commit(scope: string, start: number, checkpoint: UsageFactCheckpoint, records: readonly UsageFact[]): Promise<void>;
@@ -181,6 +183,30 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
         await owner.dispose();
       }
     });
+  }
+
+  checkpoint(scope: string, signal?: AbortSignal): Promise<UsageFactCheckpoint | undefined> {
+    const read = async (): Promise<UsageFactCheckpoint | undefined> => {
+      signal?.throwIfAborted();
+      const directory = factDirectory(scope);
+      await abortable(this.logs.flush(directory, LOG), signal);
+      const size = await abortable(this.storage.size(directory, LOG), signal) ?? 0;
+      if (size === 0) return undefined;
+      const head = await this.query.get<IndexHead>(collectionOf(scope), HEAD, signal);
+      const checkpoint = head?.checkpoint;
+      if (head?.version !== 2 || head.ledgerOffset !== size || !Number.isSafeInteger(head.epoch) || head.epoch < 0 || !Number.isSafeInteger(head.recordCount) || head.recordCount < 0 || !validCheckpoint(checkpoint)) return undefined;
+      return checkpoint;
+    };
+    return abortable((async () => {
+      if (await read() === undefined) return undefined;
+      return this.exclusive(scope, async () => {
+        const checkpoint = await read();
+        if (checkpoint === undefined) return undefined;
+        const generation = await abortable(this.logs.generation(scope, AGENT_WIRE_RECORD_KEY), signal);
+        signal?.throwIfAborted();
+        return checkpoint.generation === generation ? checkpoint : undefined;
+      });
+    })(), signal);
   }
 
   read(scope: string, range?: UsageFactRange, signal?: AbortSignal, options: UsageFactReadOptions = {}): Promise<UsageFactSnapshot> {
@@ -456,6 +482,12 @@ function factDirectory(scope: string): string {
 
 function collectionOf(scope: string): string {
   return `usage-facts-v1:${sourceId(scope)}`;
+}
+
+function validCheckpoint(value: UsageFactCheckpoint | undefined): value is UsageFactCheckpoint {
+  return value !== undefined && value !== null && typeof value === 'object' && typeof value.generation === 'string' &&
+    Number.isSafeInteger(value.offset) && value.offset >= 0 && Number.isSafeInteger(value.size) && value.size >= value.offset &&
+    typeof value.mtimeMs === 'number' && Number.isFinite(value.mtimeMs) && typeof value.boundaryHash === 'string' && typeof value.valid === 'boolean';
 }
 
 function validBatch(value: FactBatch): boolean {

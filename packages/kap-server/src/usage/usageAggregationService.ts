@@ -864,7 +864,7 @@ export class UsageAggregationService {
       const excluded = mtimeExcludesRange(mtime ?? 0, range.startAt);
       const checkpoint = excluded || (size ?? 0) === 0
         ? { generation, offset: size ?? 0, size: size ?? 0, mtimeMs: mtime ?? 0, boundaryHash: '', valid: true }
-        : await this.factJournalCheckpoint(scope).catch(() => undefined);
+        : await this.factJournalCheckpoint(scope, signal);
       const current = checkpoint !== undefined && checkpoint.generation === generation && checkpoint.offset === (size ?? 0) && checkpoint.size === (size ?? 0) && checkpoint.mtimeMs === (mtime ?? 0) && (excluded || await logs.generation(scope, AGENT_WIRE_RECORD_KEY) === generation);
       if (current) prepared.get(session)!.checkpoints[agentId] = { ...checkpoint, generation };
     });
@@ -1372,7 +1372,7 @@ export class UsageAggregationService {
         }
         return { agentId, snapshot: projectionOnly
           ? this.factJournalReplayEnabled()
-            ? { checkpoint: await this.factJournalCheckpoint(wireScope), records: [] as readonly NormalizedUsageRecord[], readComplete: true }
+            ? { checkpoint: await this.factJournalCheckpoint(wireScope, signal), records: [] as readonly NormalizedUsageRecord[], readComplete: true }
             : { ...await facts.summary(wireScope, signal, { budget }), records: [] as readonly NormalizedUsageRecord[] }
           : await facts.read(wireScope, range, signal, { budget }) };
       })), signal);
@@ -1481,15 +1481,17 @@ export class UsageAggregationService {
     }
   }
 
-  private async factJournalCheckpoint(wireScope: string): Promise<WireCheckpoint | undefined> {
+  private async factJournalCheckpoint(wireScope: string, signal?: AbortSignal): Promise<WireCheckpoint | undefined> {
+    signal?.throwIfAborted();
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const directory = factJournalDirectory(wireScope);
-    const size = await storage.size(directory, FACT_JOURNAL_KEY) ?? 0;
+    const size = await waitForSource(storage.size(directory, FACT_JOURNAL_KEY), signal) ?? 0;
     if (size === 0) return undefined;
     let bytes = Buffer.alloc(0), length = Math.min(size, 4096);
     const limit = Math.min(size, 1024 * 1024);
     while (length <= limit) {
-      const prefix = await readKeyedRange(storage, directory, FACT_JOURNAL_KEY, size - length, size - bytes.byteLength - 1);
+      const prefix = await waitForSource(readKeyedRange(storage, directory, FACT_JOURNAL_KEY, size - length, size - bytes.byteLength - 1, signal), signal);
+      signal?.throwIfAborted();
       bytes = bytes.byteLength === 0 ? Buffer.from(prefix) : Buffer.concat([prefix, bytes]);
       const end = bytes.lastIndexOf(10);
       const start = bytes.lastIndexOf(10, Math.max(0, end - 1));
@@ -1501,7 +1503,8 @@ export class UsageAggregationService {
         } catch { return undefined; }
         return undefined;
       }
-      if (length === limit) return undefined;
+      if (length === limit) return this.core.accessor.get(IUsageFactStore).checkpoint(wireScope, signal);
+      signal?.throwIfAborted();
       length = Math.min(length * 2, limit);
     }
     return undefined;
@@ -2490,10 +2493,11 @@ async function readKeyedRange(
   key: string,
   start: number,
   end: number,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
   if (end < start) return Buffer.alloc(0);
   const chunks: Buffer[] = [];
-  for await (const chunk of storage.readStream(scope, key, { start, end })) chunks.push(Buffer.from(chunk));
+  for await (const chunk of storage.readStream(scope, key, { start, end }, { signal })) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks);
 }
 

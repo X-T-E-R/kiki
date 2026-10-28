@@ -157,6 +157,7 @@ function persistedFixture(
   };
   const facts: IUsageFactStore = {
     _serviceBrand: undefined,
+    async checkpoint(_scope, signal) { signal?.throwIfAborted(); return undefined; },
     async read(scope) {
       const bytes = documents.get(`facts/${scope}`);
       return bytes === undefined ? { records: [] } : JSON.parse(Buffer.from(bytes).toString('utf8')) as UsageFactSnapshot;

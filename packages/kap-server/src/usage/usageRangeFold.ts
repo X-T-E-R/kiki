@@ -105,7 +105,8 @@ export class UsageRangeFold {
       this.createdKeys.add(key);
       if (this.createdKeys.size > 32768) { this.emptyBase = false; this.createdKeys.clear(); }
     }
-    const bytes = key.length * 2 + (value === true ? 32 : value.kind === 'group'
+    if (value === true) return;
+    const bytes = key.length * 2 + (value.kind === 'group'
       ? 768 + [value.record.model, value.record.sourceAgentId, value.record.agentId, value.record.parentAgentId, value.record.provider, value.record.modelAlias, value.record.profileName].reduce((sum, field) => sum + (field?.length ?? 0) * 2, 0)
       : 128 + value.sessions.reduce((sum, session) => sum + 192 + session.sessionId.length * 2 + session.turnIds.length * 8 + (session.agents ?? []).reduce((total, agent) => total + 128 + agent.agentId.length * 2 + agent.turnIds.length * 8, 0), 0));
     const existing = this.cachedRows.get(key);
@@ -235,24 +236,34 @@ export class UsageRangeFold {
     signal?.throwIfAborted();
     const selected = records.filter((record) => !record.invalid && matches(record));
     const keyLimit = this.query.batchIf === undefined ? Math.min(90, 127 - this.collection.length) : 90;
-    const rows = selected.map((record) => {
+    const grouped = selected.map((record) => {
       const bucket = bucketOf(record);
       const group = foldKey(`group:${JSON.stringify([summary.id, bucket, record.model, record.agentId, record.parentAgentId, record.provider, record.modelAlias, record.profileName])}`, keyLimit);
-      const turn = record.turnId === undefined ? undefined : foldKey(`turn:${JSON.stringify([bucket, summary.id, record.agentId ?? record.sourceAgentId ?? '', record.turnId])}`, keyLimit);
-      const drilldown = record.turnId === undefined ? undefined : foldKey(`drilldown:${JSON.stringify([bucket, summary.id, record.turnId])}`, keyLimit);
-      return { record, bucket: foldKey(`bucket:${bucket}`, keyLimit), bucketKey: bucket, group, turn, drilldown };
+      return { record, bucket: foldKey(`bucket:${bucket}`, keyLimit), bucketKey: bucket, group };
     });
-    const keys = [...new Set(rows.flatMap((row) => [row.group, row.bucket, row.turn, row.drilldown].filter((key): key is string => key !== undefined)))];
     if (this.query.batchIf !== undefined) await this.initialize();
     const revision = this.revision;
     const existing = new Map<string, GroupRow | BucketRow | true>();
-    const missing = keys.filter((key) => {
-      const cached = this.query.batchIf === undefined ? undefined : this.cachedRows.get(key);
-      if (cached !== undefined) { existing.set(key, cached.value); return false; }
-      return !this.emptyBase || this.createdKeys.has(key);
+    const load = async (keys: readonly string[]): Promise<void> => {
+      const missing = keys.filter((key) => {
+        if (existing.has(key)) return false;
+        const cached = this.query.batchIf === undefined ? undefined : this.cachedRows.get(key);
+        if (cached !== undefined) { existing.set(key, cached.value); return false; }
+        return !this.emptyBase || this.createdKeys.has(key);
+      });
+      if (missing.length > 0) for (const [key, value] of await this.query.getMany<GroupRow | BucketRow | true>(this.collection, missing, signal)) existing.set(key, value);
+      signal?.throwIfAborted();
+    };
+    await load([...new Set(grouped.flatMap((row) => [row.group, row.bucket]))]);
+    const rows = grouped.map((row) => {
+      const bucket = existing.get(row.bucket) as BucketRow | undefined;
+      const session = bucket?.sessions.find((value) => value.sessionId === summary.id);
+      const tracked = this.query.batchIf !== undefined && (bucket === undefined || bucket.turnAgents === true && (session === undefined ? bucket.sessions.length < this.sessionLimit : Array.isArray(session.agents)));
+      const turn = tracked || row.record.turnId === undefined ? undefined : foldKey(`turn:${JSON.stringify([row.bucketKey, summary.id, row.record.agentId ?? row.record.sourceAgentId ?? '', row.record.turnId])}`, keyLimit);
+      const drilldown = tracked || row.record.turnId === undefined ? undefined : foldKey(`drilldown:${JSON.stringify([row.bucketKey, summary.id, row.record.turnId])}`, keyLimit);
+      return { ...row, tracked, turn, drilldown };
     });
-    if (missing.length > 0) for (const [key, value] of await this.query.getMany<GroupRow | BucketRow | true>(this.collection, missing, signal)) existing.set(key, value);
-    signal?.throwIfAborted();
+    await load([...new Set(rows.flatMap((row) => [row.turn, row.drilldown].filter((key): key is string => key !== undefined)))]);
     const changed = new Map<string, GroupRow | BucketRow | true>();
     const read = <T extends GroupRow | BucketRow | true>(key: string): T | undefined => (changed.get(key) ?? existing.get(key)) as T | undefined;
     for (const row of rows) {
@@ -282,8 +293,8 @@ export class UsageRangeFold {
         bucket = bucket === undefined ? { kind: 'bucket', key: row.bucketKey, turnCount: 0, sessions: [], sessionsTruncated: false, turnAgents: true } : structuredClone(bucket);
         changed.set(row.bucket, bucket);
       }
-      const turnIsNew = row.turn !== undefined && read(row.turn) === undefined;
-      if (turnIsNew) { changed.set(row.turn!, true); bucket!.turnCount++; }
+      const persistedTurnIsNew = row.turn !== undefined && read(row.turn) === undefined;
+      if (persistedTurnIsNew) { changed.set(row.turn!, true); bucket!.turnCount++; }
       let session = bucket!.sessions.find((value) => value.sessionId === summary.id);
       if (session === undefined && bucket!.sessions.length < this.sessionLimit) {
         session = { sessionId: summary.id, turnIds: [], turnCount: 0, unknownTurnRecords: 0, agents: [] };
@@ -299,9 +310,14 @@ export class UsageRangeFold {
           agent = { agentId, turnIds: [], unknownTurnRecords: 0 };
           listedAgents.push(agent);
         }
-        if (row.drilldown === undefined) { session.unknownTurnRecords++; agent.unknownTurnRecords++; }
-        else if (read(row.drilldown) === undefined) {
-          changed.set(row.drilldown, true);
+        const turnIsNew = row.tracked ? record.turnId !== undefined && !agent.turnIds.includes(record.turnId) : persistedTurnIsNew;
+        if (row.tracked && turnIsNew) {
+          bucket!.turnCount++;
+          changed.set(foldKey(`turn:${JSON.stringify([row.bucketKey, summary.id, agentId, record.turnId])}`, keyLimit), true);
+        }
+        if (record.turnId === undefined) { session.unknownTurnRecords++; agent.unknownTurnRecords++; }
+        else if (row.tracked ? !listedAgents.some((value) => value.turnIds.includes(record.turnId!)) : read(row.drilldown!) === undefined) {
+          changed.set(row.drilldown ?? foldKey(`drilldown:${JSON.stringify([row.bucketKey, summary.id, record.turnId])}`, keyLimit), true);
           session.turnCount++;
           const index = session.turnIds.findIndex((value) => value > record.turnId!);
           session.turnIds.splice(index < 0 ? session.turnIds.length : index, 0, record.turnId!);
