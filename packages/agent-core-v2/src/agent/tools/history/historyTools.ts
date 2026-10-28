@@ -132,14 +132,14 @@ export interface IHistoryArchive {
     signal?: AbortSignal;
   }): Promise<HistorySearchPage>;
   readTurn(sessionId: string, agentId: string, turn: number, stepId?: string): Promise<string | undefined>;
-  readRef?(ref: string): Promise<{ status: 'ok'; text?: string; turn: number; stepId?: string;
+  readRef?(ref: string, signal?: AbortSignal): Promise<{ status: 'ok'; text?: string; turn: number; stepId?: string;
     role?: 'user' | 'assistant' | 'tool' | 'record'; toolName?: string; part?: string; ref: string } |
     { status: 'stale_ref' | 'source_missing' | 'invalid_ref' }>;
   lookupDirectory?(workspace: string, session: string, agent: string, turn: number, step?: string,
     preparation?: HistoryPreparation, signal?: AbortSignal): Promise<HistoryDirectoryLookup>;
   directoryRef?(workspace: string, session: string, agent: string, turn: number, step?: string): Promise<string | undefined>;
   readDirectory?(ref: string, maxChars: number, cursor?: { readonly position: number;
-    readonly offset: number; readonly watermark: number; readonly asOfBytes: number }): Promise<HistoryReadBlocksPage>;
+    readonly offset: number; readonly watermark: number; readonly asOfBytes: number }, signal?: AbortSignal): Promise<HistoryReadBlocksPage>;
 }
 
 export const IHistoryArchive = createDecorator<IHistoryArchive>('historyArchive');
@@ -483,7 +483,7 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
     const page = await this.archive.readDirectory?.(ref, maxChars, cursor === undefined ? undefined : {
       position: cursor.position, offset: cursor.offset, watermark: cursor.watermark,
       asOfBytes: cursor.asOfBytes,
-    });
+    }, signal);
     signal.throwIfAborted();
     if (page === undefined || page.status !== 'ok') {
       const target = refTarget(ref);
@@ -579,8 +579,10 @@ export class HistoryReadTool extends HistoryToolBase implements AgentTool<z.infe
     return {
       approvalRule: this.name, description: 'Reading historical source block',
       accesses: target.externalRoot === undefined ? ToolAccesses.none() : ToolAccesses.readFile(target.externalRoot, true),
-      execute: async () => {
-        const read = await this.archive.readRef?.(ref);
+      execute: async (context) => {
+        context.signal.throwIfAborted();
+        const read = await this.archive.readRef?.(ref, context.signal);
+        context.signal.throwIfAborted();
         if (read === undefined || read.status !== 'ok') return { isError: true, output: JSON.stringify({ error: {
           code: read?.status ?? 'source_missing',
           message: read?.status === 'invalid_ref' ? 'Invalid historical source ref; search for a fresh hit.' :

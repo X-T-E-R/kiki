@@ -300,11 +300,11 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
   getNavigation?: () => HistoryLocatorStore): ScopeSeed {
   const archive: IHistoryArchive = {
     _serviceBrand: undefined,
-    async readRef(ref) {
+    async readRef(ref, signal) {
       const nav = getNavigation?.();
       if (nav === undefined) return { status: 'source_missing' };
       let result: Awaited<ReturnType<HistoryLocatorStore['read']>>;
-      try { result = await nav.read(ref); }
+      try { result = await nav.read(ref, signal); }
       catch (error) {
         if (error instanceof Error && error.message === 'invalid_ref') return { status: 'invalid_ref' };
         throw error;
@@ -322,10 +322,10 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
     async directoryRef(workspace, session, agent, turn, step) {
       return getNavigation?.().directoryRef(workspace, session, agent, turn, step);
     },
-    async readDirectory(ref, maxChars, cursor) {
+    async readDirectory(ref, maxChars, cursor, signal) {
       const nav = getNavigation?.();
       if (nav === undefined) return { status: 'source_missing' };
-      try { return await nav.readBlocks(ref, maxChars, cursor); }
+      try { return await nav.readBlocks(ref, maxChars, cursor, signal); }
       catch (error) {
         if (error instanceof Error && error.message === 'invalid_ref') return { status: 'invalid_ref' };
         throw error;

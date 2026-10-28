@@ -210,6 +210,66 @@ describe('FileStorageService — stale takeover scheduling', () => {
     schedule.beforeLink = undefined;
     expect(await cleanupExpiredSessionLocks(directory)).toBe(1);
   });
+
+  it('acquires an absent lock without scanning foreign watches', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'fss-uncontended-'));
+    schedule.afterReaddir = () => { throw new Error('uncontended acquisition scanned watches'); };
+    const holder = await new FileStorageService(directory).acquireLock('session-locks', 'session.lock');
+    await holder.release();
+    expect(await readFile(join(directory, 'session-locks', 'session.lock')).catch(() => undefined)).toBeUndefined();
+  });
+
+  it('cancels a contended acquisition without removing its holder or leaking a watch', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'fss-contended-cancel-'));
+    const storage = new FileStorageService(directory);
+    const holder = await storage.acquireLock('session-locks', 'session.lock');
+    const lockDir = join(directory, 'session-locks');
+    const original = await readFile(join(lockDir, 'session.lock'), 'utf8');
+    const controller = new AbortController();
+    schedule.afterReaddir = () => { controller.abort(new Error('cancel queued lock')); };
+    try {
+      await expect(storage.acquireLock('session-locks', 'session.lock', { waitForMs: 60_000, signal: controller.signal }))
+        .rejects.toThrow('cancel queued lock');
+      expect(await readFile(join(lockDir, 'session.lock'), 'utf8')).toBe(original);
+      expect((await readdir(lockDir)).filter((entry) => entry.includes('.watch-'))).toHaveLength(1);
+    } finally { await holder.release(); }
+  });
+
+  it.each(['rename', 'settle', 'replacement'] as const)('cleans only its own stale takeover after cancellation during %s', async (phase) => {
+    directory = await mkdtemp(join(tmpdir(), 'fss-takeover-cancel-'));
+    const lockDir = join(directory, 'session-locks');
+    const lockPath = join(lockDir, 'session.lock');
+    await mkdir(lockDir);
+    await writeFile(lockPath, JSON.stringify({ version: 1, pid: 2_147_483_647, processStartedAt: 0,
+      token: 'dead-owner', acquiredAt: Date.now(), leaseMs: 1000 }));
+    const controller = new AbortController();
+    let entered = false;
+    const replacement = JSON.stringify({ version: 1, pid: process.pid,
+      processStartedAt: Math.floor(Date.now() - process.uptime() * 1000),
+      token: 'replacement-owner', acquiredAt: Date.now(), leaseMs: 120_000 });
+    if (phase === 'rename') schedule.beforeRename = async (source, target) => {
+      if (!source.includes('.bid-') || target !== lockPath) return;
+      entered = true;
+      controller.abort(new Error('cancel takeover'));
+    };
+    else schedule.afterRename = (source, target) => {
+      if (!source.includes('.bid-') || target !== lockPath) return;
+      entered = true;
+      if (phase === 'replacement') writeFileSync(lockPath, replacement);
+      if (phase === 'settle') setTimeout(() => { controller.abort(new Error('cancel takeover')); }, 5);
+      else controller.abort(new Error('cancel takeover'));
+    };
+    await expect(new FileStorageService(directory).acquireLock('session-locks', 'session.lock', { signal: controller.signal }))
+      .rejects.toThrow('cancel takeover');
+    expect(entered).toBe(true);
+    expect((await readdir(lockDir)).filter((entry) => entry.includes('.watch-') || entry.includes('.bid-'))).toEqual([]);
+    if (phase === 'replacement') expect(await readFile(lockPath, 'utf8')).toBe(replacement);
+    else {
+      expect(await readdir(lockDir)).toEqual([]);
+      const next = await new FileStorageService(directory).acquireLock('session-locks', 'session.lock');
+      await next.release();
+    }
+  });
 });
 
 describe('FileStorageService — transient access denial during acquisition', () => {

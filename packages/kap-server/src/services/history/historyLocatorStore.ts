@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { stat } from 'node:fs/promises';
+import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 
 import { decodeHistoryDirectoryCursor, encodeHistoryDirectoryCursor,
   type HistoryDirectoryRequest, type HistoryDirectoryPage, type HistoryDirectoryTurn,
@@ -295,8 +296,10 @@ export class HistoryLocatorStore {
     let release!: () => void;
     this.scanTail = new Promise<void>((resolve) => { release = resolve; });
     const flight = (async (): Promise<HistoryNavScan> => {
+      let entered = false;
       try {
-        await previous;
+        await (scanSignal === undefined ? previous : abortable(previous, scanSignal));
+        entered = true;
         scanSignal?.throwIfAborted();
         const input = { workspace, session, agent, wirePath, incarnation, key, signal: scanSignal };
         if (search?.sort !== undefined && 'ready' in this.store) {
@@ -309,15 +312,18 @@ export class HistoryLocatorStore {
         return await (search !== undefined && 'ready' in this.store
           ? this.scanSearchSlice(input, search) : this.scanSlice({ ...input, search }));
       } catch (error) {
-        this.scanners.delete(key);
-        if ('ready' in this.store) {
-          const db = await (this.store as LazyHistoryNavigationDb).ready().catch(() => undefined);
-          db?.rollbackSlice();
+        if (entered) {
+          this.scanners.delete(key);
+          if ('ready' in this.store) {
+            const db = await (this.store as LazyHistoryNavigationDb).ready().catch(() => undefined);
+            db?.rollbackSlice();
+          }
         }
         throw error;
       } finally {
         this.queuedScans -= 1;
-        release();
+        if (entered) release();
+        else void previous.then(release);
       }
     })();
     if (controller === undefined) return flight;
@@ -363,7 +369,7 @@ export class HistoryLocatorStore {
     if (saved !== undefined) {
       const manifest = saved;
       if (manifest.incarnation !== input.incarnation ||
-          !await historyNavigationProof(input.wirePath, manifest.offset)
+          !await historyNavigationProof(input.wirePath, manifest.offset, input.signal)
             .then((proof) => matchesNavigationProof(manifest.source, proof), sourceMutationOrThrow)) {
         if (search.cursor !== undefined) throw new Error('stale_scan_cursor');
         saved = undefined;
@@ -460,10 +466,10 @@ export class HistoryLocatorStore {
     const saved = stateDb?.readManifest(input.key);
     const cursor = saved === undefined ? undefined : stateDb?.readAdapterCursor(input.key);
     const sourceMatches = saved !== undefined && stateDb?.hasCanonicalSources(input.key) === true && cursor?.ordinal === saved.ordinal &&
-      saved.incarnation === input.incarnation && await historyNavigationProof(input.wirePath, saved.offset)
+      saved.incarnation === input.incarnation && await historyNavigationProof(input.wirePath, saved.offset, input.signal)
         .then((proof) => matchesNavigationProof(saved.source, proof), sourceMutationOrThrow);
     const through = input.stopAt ?? input.search?.asOf ?? (await stat(input.wirePath)).size;
-    const source = await historyNavigationProof(input.wirePath, through);
+    const source = await historyNavigationProof(input.wirePath, through, input.signal);
     if (source.identity !== input.incarnation) throw new Error('history_source_changed');
     const freshSearch = input.search !== undefined && input.search.cursor === undefined;
     const rebuild = stateDb === undefined
@@ -760,10 +766,10 @@ export class HistoryLocatorStore {
     }
     await flushPending();
     const nextOrdinal = scanner.ordinal + read.recordCount;
-    const currentSource = await historyNavigationProof(input.wirePath, through);
+    const currentSource = await historyNavigationProof(input.wirePath, through, input.signal);
     if (!matchesNavigationProof(source, currentSource)) throw new Error('history_source_changed');
     if (stateDb !== undefined) {
-      const proof = read.nextByteOffset === through ? currentSource : await historyNavigationProof(input.wirePath, read.nextByteOffset);
+      const proof = read.nextByteOffset === through ? currentSource : await historyNavigationProof(input.wirePath, read.nextByteOffset, input.signal);
       input.signal?.throwIfAborted();
       if (proof.identity !== input.incarnation) throw new Error('history_source_changed');
       stateDb.commitSlice(input.key, { v: 2, generation: scanner.generation,
@@ -850,7 +856,7 @@ export class HistoryLocatorStore {
     const entries: HistoryDirectoryTurn[] = [];
     let stale = false;
     for (const row of rows.slice(0, request.limit)) {
-      const checked = await this.read(this.ref(row));
+      const checked = await this.read(this.ref(row), request.signal);
       if (checked.status !== 'ok') { stale = true; continue; }
       entries.push({ ref: this.ref(row), turn: row.turn,
         startedAt: row.time === undefined ? undefined : new Date(row.time).toISOString(),
@@ -890,7 +896,7 @@ export class HistoryLocatorStore {
     const row = await this.row(workspace, session, agent, step === undefined ? 'turn' : 'step', turn, step);
     if (row?.active !== true) return { status: 'not_found' };
     if (row.position === undefined) return { status: 'navigation_unavailable', reason: 'position_missing' };
-    const checked = await this.read(this.ref(row));
+    const checked = await this.read(this.ref(row), signal);
     return checked.status === 'ok' ? { status: 'ok', ref: this.ref(row) } : checked;
   }
 
@@ -902,8 +908,9 @@ export class HistoryLocatorStore {
 
   async readBlocks(ref: string, maxChars: number,
     cursor?: { readonly position: number; readonly offset: number; readonly watermark: number;
-      readonly asOfBytes: number }): Promise<HistoryNavBlocksPage> {
-    const source = await this.read(ref);
+      readonly asOfBytes: number }, signal?: AbortSignal): Promise<HistoryNavBlocksPage> {
+    signal?.throwIfAborted();
+    const source = await this.read(ref, signal);
     if (source.status !== 'ok') return { status: source.status };
     const selected = source.row;
     if (selected.kind === 'frame' || selected.position === undefined) return { status: 'navigation_building' };
@@ -935,7 +942,8 @@ export class HistoryLocatorStore {
         }
         continue;
       }
-      const checked = await this.read(this.ref(row));
+      signal?.throwIfAborted();
+      const checked = await this.read(this.ref(row), signal);
       if (checked.status !== 'ok') return { status: checked.status };
       const text = checked.text;
       if (text === undefined) return { status: 'stale_ref' };
@@ -968,13 +976,14 @@ export class HistoryLocatorStore {
       rowKey({ workspace, session, agent, kind, turn, step, frame, part }));
   }
 
-  async read(ref: string): Promise<{ status: 'ok'; row: HistoryNavRow; text?: string } |
+  async read(ref: string, signal?: AbortSignal): Promise<{ status: 'ok'; row: HistoryNavRow; text?: string } |
     { status: 'stale_ref' | 'source_missing' }> {
+    signal?.throwIfAborted();
     const anchor = decodeHistoryRef(ref);
     const location = await this.transcript.historyWireLocation(anchor.session, anchor.agent);
     if (location === undefined) return { status: 'source_missing' };
     if (location.workspaceId !== anchor.workspace) return { status: 'stale_ref' };
-    const result = await verifyHistorySource(location.wirePath, anchor);
+    const result = await verifyHistorySource(location.wirePath, anchor, signal);
     if (result.status !== 'ok') return result;
     const row = await this.row(anchor.workspace, anchor.session, anchor.agent,
       anchor.kind, anchor.turn, anchor.step, anchor.frame, anchor.frame?.split(':').at(-1) as HistoryNavRow['part']);
@@ -984,7 +993,8 @@ export class HistoryLocatorStore {
         row.selector !== anchor.selector) return { status: 'stale_ref' };
     if (row.part === undefined) return { status: 'ok', row };
     const length = anchor.end - anchor.start;
-    const bytes = await readLogicalWireRange(location.wirePath, anchor.start, length);
+    const bytes = await readLogicalWireRange(location.wirePath, anchor.start, length, signal);
+    signal?.throwIfAborted();
     if (bytes === undefined || bytes.byteLength !== length) return { status: 'stale_ref' };
     const record = JSON.parse(Buffer.from(bytes).toString('utf8')) as Record<string, unknown>;
     const text = originalText(record, row.part, row.selector);

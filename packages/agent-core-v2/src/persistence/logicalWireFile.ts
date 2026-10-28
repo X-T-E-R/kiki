@@ -50,7 +50,7 @@ export async function readLogicalRange(
   length: number,
   signal?: AbortSignal,
 ): Promise<Uint8Array | undefined> {
-  const pinned = await openPinnedLogicalRead(storage, scope, key);
+  const pinned = await openPinnedLogicalRead(storage, scope, key, signal);
   try {
     if (pinned.size === undefined) return undefined;
     return await readPinnedRange(pinned, position, length, signal);

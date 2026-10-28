@@ -75,12 +75,16 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
   if (cursor !== undefined && (asOf > Number(source.size) ||
       cursor.proof === undefined && cursor.fingerprint !== fingerprint ||
       cursor.incarnation !== input.incarnation || cursor.requestHash !== requestHash)) throw new Error('stale_scan_cursor');
-  const proof = await historyNavigationProof(input.wirePath, asOf);
+  const proof = await historyNavigationProof(input.wirePath, asOf, input.signal);
   if (cursor?.proof !== undefined && !matchesNavigationProof(cursor.proof, proof)) throw new Error('stale_scan_cursor');
   let saved = db.readManifest(input.key);
   if (saved !== undefined && (saved.incarnation !== input.incarnation ||
-      !await historyNavigationProof(input.wirePath, saved.offset)
-        .then((proof) => matchesNavigationProof(saved!.source, proof), () => false))) {
+      !await historyNavigationProof(input.wirePath, saved.offset, input.signal)
+        .then((proof) => matchesNavigationProof(saved!.source, proof), (error: unknown) => {
+          input.signal?.throwIfAborted();
+          if (error instanceof Error && error.message === 'history_source_changed') return false;
+          throw error;
+        }))) {
     if (cursor !== undefined) throw new Error('stale_scan_cursor');
     saved = undefined;
   }
@@ -99,7 +103,7 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
   const identity = { v: 2 as const, asOf, fingerprint, proof, incarnation: input.incarnation, requestHash,
     generation: saved?.generation ?? '', offset: saved?.offset ?? 0 };
   const unchanged = async () => {
-    const current = await historyNavigationProof(input.wirePath, asOf);
+    const current = await historyNavigationProof(input.wirePath, asOf, input.signal);
     if (!matchesNavigationProof(proof, current)) throw new Error('stale_scan_cursor');
   };
   if (saved === undefined || saved.offset < asOf) {
@@ -117,7 +121,7 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
   const gaps = new Set<string>(cursor?.skippedOversize ? ['record_exceeds_page_budget'] : []);
   let after = cursor?.after;
   let complete = false;
-  const logical = await openLogicalWire(input.wirePath);
+  const logical = await openLogicalWire(input.wirePath, input.signal);
   const file = logical === undefined ? await open(input.wirePath, 'r') : undefined;
   try {
     outer: while (bytesRead < input.maxBytes && recordsRead < input.maxRecords) {

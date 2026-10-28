@@ -129,6 +129,8 @@ export interface StorageLockOptions {
   readonly leaseMs?: number;
   readonly renewIntervalMs?: number;
   readonly waitForMs?: number;
+  /** Cancels acquisition; a granted lock must still be released. */
+  readonly signal?: AbortSignal;
   readonly owner?: Readonly<Record<string, unknown>>;
 }
 

@@ -16,7 +16,7 @@ import { type AppendLogStore, coldManifestKey } from '#/persistence/backends/nod
 import { createTestAppendLogStore } from '../../interface/stubs';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
-import { COLD_SEGMENT_BYTES, readLogicalBytes } from '#/persistence/coldSegmentLog';
+import { COLD_SEGMENT_BYTES, openPinnedLogicalRead, readLogicalBytes, withColdExclusive } from '#/persistence/coldSegmentLog';
 import { sealRetainedJournal } from '#/persistence/retainedJournal';
 import { StorageErrors, type StorageReadOptions, type StorageReadRange, type StorageWriteOptions } from '#/persistence/interface/storage';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
@@ -753,6 +753,31 @@ describe('cold segment journal', () => {
       await rm(root, { recursive: true, force: true });
     }
   }, 20_000);
+
+  it('cancels a queued pin without letting the next reader overtake an active seal', async () => {
+    const storage = new InMemoryStorageService();
+    const bytes = buildJournal().bytes;
+    await storage.write(SCOPE, KEY, bytes);
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const active = new Promise<void>((resolve) => { entered = resolve; });
+    const sealing = withColdExclusive(storage, SCOPE, KEY, async () => { entered(); await hold; });
+    await active;
+    const controller = new AbortController();
+    const cancelled = openPinnedLogicalRead(storage, SCOPE, KEY, controller.signal);
+    let nextEntered = false;
+    const next = openPinnedLogicalRead(storage, SCOPE, KEY).then((pin) => { nextEntered = true; return pin; });
+    controller.abort(new Error('cancel queued pin'));
+    try {
+      await expect(cancelled).rejects.toThrow('cancel queued pin');
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(nextEntered).toBe(false);
+    } finally { release(); await sealing; }
+    const pinned = await next;
+    try { expect(await concatBytes(pinned.read())).toEqual(bytes); }
+    finally { pinned.close(); }
+  });
 
   it('seals a retained journal only through the last complete record', async () => {
     const root = await mkdtemp(join(tmpdir(), 'cold-retained-'));

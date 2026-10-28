@@ -4,6 +4,21 @@ import { InMemoryStorageService } from '#/persistence/backends/memory/inMemorySt
 
 const encoder = new TextEncoder();
 
+describe('InMemoryStorageService — locks', () => {
+  it('rejects cancelled acquisition without reserving a lock and releases a granted lock after cancellation', async () => {
+    const svc = new InMemoryStorageService();
+    const controller = new AbortController();
+    controller.abort(new Error('cancel acquisition'));
+    await expect(svc.acquireLock('scope', 'example.lock', { signal: controller.signal })).rejects.toThrow('cancel acquisition');
+    const held = new AbortController();
+    const lock = await svc.acquireLock('scope', 'example.lock', { signal: held.signal });
+    held.abort();
+    await lock.release();
+    const next = await svc.acquireLock('scope', 'example.lock');
+    await next.release();
+  });
+});
+
 describe('InMemoryStorageService — mtime', () => {
   it('returns undefined for a missing key and the write time for an existing one', async () => {
     const svc = new InMemoryStorageService();

@@ -31,10 +31,10 @@ export async function readLogicalInto(
   return count;
 }
 
-export async function openLogicalWire(wirePath: string): Promise<LogicalWire | undefined> {
+export async function openLogicalWire(wirePath: string, signal?: AbortSignal): Promise<LogicalWire | undefined> {
   const address = wireFileAddress(wirePath);
   const storage = new FileStorageService(address.baseDir);
-  const pinned = await openPinnedLogicalRead(storage, address.scope, address.key);
+  const pinned = await openPinnedLogicalRead(storage, address.scope, address.key, signal);
   if (pinned.size === undefined) {
     pinned.close();
     return undefined;
@@ -43,7 +43,7 @@ export async function openLogicalWire(wirePath: string): Promise<LogicalWire | u
   let closed = false;
   return {
     size,
-    readAt: (position, length) => readPinnedRange(pinned, position, length),
+    readAt: (position, length) => readPinnedRange(pinned, position, length, signal),
     close() {
       if (closed) return;
       closed = true;
@@ -67,7 +67,7 @@ export async function streamLogicalWireRecords(
   wirePath: string,
   options: WireRecordsStreamOptions,
 ): Promise<WireRecordsStreamResult> {
-  const opened = await openLogicalWire(wirePath);
+  const opened = await openLogicalWire(wirePath, options.signal);
   if (opened === undefined) return streamWireRecords(wirePath, options);
   try {
     return await streamWireRecords(wirePath, { ...options, byteSource: opened });
@@ -80,7 +80,7 @@ export async function streamLogicalWireRecordsAwaited(
   wirePath: string,
   options: AwaitedWireRecordsStreamOptions,
 ): Promise<WireRecordsStreamResult> {
-  const opened = await openLogicalWire(wirePath);
+  const opened = await openLogicalWire(wirePath, options.signal);
   if (opened === undefined) return streamWireRecordsAwaited(wirePath, options);
   try {
     return await streamWireRecordsAwaited(wirePath, { ...options, byteSource: opened });

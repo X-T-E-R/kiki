@@ -94,6 +94,40 @@ describe('history navigation source rows', () => {
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 
+  it('cancels an active directory source read and leaves its complete body readable', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-read-cancel-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    let restoreRange = (): void => {};
+    try {
+      await writeFile(wirePath, lines.join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(memoryStore(), transcript);
+      await nav.scan('s', 'main');
+      const turn = await nav.row('ws', 's', 'main', 'turn', 4);
+      const controller = new AbortController();
+      let started!: () => void;
+      const active = new Promise<void>((resolve) => { started = resolve; });
+      const range = vi.spyOn(logicalWire, 'readLogicalWireRange').mockImplementationOnce(async (_path, _start, _length, signal) => {
+        expect(signal).toBe(controller.signal);
+        started();
+        return new Promise<never>((_resolve, reject) => {
+          signal!.addEventListener('abort', () => { reject(signal!.reason); }, { once: true });
+        });
+      });
+      restoreRange = () => { range.mockRestore(); };
+      const reading = nav.readBlocks(nav.ref(turn!), 16_000, undefined, controller.signal);
+      await active;
+      controller.abort(new Error('cancel active directory read'));
+      await expect(reading).rejects.toThrow('cancel active directory read');
+      const recovered = await nav.readBlocks(nav.ref(turn!), 16_000);
+      expect(recovered.status).toBe('ok');
+      if (recovered.status === 'ok') {
+        expect(recovered.complete).toBe(true);
+        expect(recovered.blocks?.map((block) => block.text)).toEqual(['原话 one', '{"file":"a.txt"}', 'needle 𠮷 suffix']);
+      }
+    } finally { restoreRange(); await rm(dir, { recursive: true, force: true }); }
+  });
+
   it('advances after append without rereading the old prefix', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'history-nav-'));
     const wirePath = join(dir, 'wire.jsonl');
@@ -225,6 +259,46 @@ describe('history navigation source rows', () => {
         expect(await second.read(second.ref(row!))).toMatchObject({ status: 'ok', text: 'tail-prompt-299' });
       } finally { await secondDb.close(); }
     } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('cancels a queued search without rolling back or overtaking the active projection', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-queued-cancel-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    const actual = await vi.importActual<typeof import('../src/services/history/logicalWireRead')>('../src/services/history/logicalWireRead');
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    let started!: () => void;
+    const active = new Promise<void>((resolve) => { started = resolve; });
+    const gate = vi.spyOn(logicalWire, 'streamLogicalWireRecordsAwaited').mockImplementationOnce(async (...args) => {
+      const result = await actual.streamLogicalWireRecordsAwaited(...args);
+      started();
+      await hold;
+      return result;
+    });
+    try {
+      await writeFile(wirePath, lines.join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      const disk = await db.ready();
+      const rollback = vi.spyOn(disk, 'rollbackSlice');
+      const first = nav.scan('s', 'main');
+      await active;
+      const controller = new AbortController();
+      const query = { query: '原话', mode: 'auto' as const, pageSize: 5 };
+      const queued = nav.scan('s', 'main', controller.signal, query);
+      await vi.waitFor(() => expect((nav as unknown as { queuedScans: number }).queuedScans).toBe(2));
+      controller.abort(new Error('cancel queued HistorySearch'));
+      await expect(queued).rejects.toThrow('cancel queued HistorySearch');
+      expect(rollback).not.toHaveBeenCalled();
+      let settled = false;
+      const next = nav.scan('s', 'main', undefined, query).then((scan) => { settled = true; return scan; });
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(settled).toBe(false);
+      release();
+      expect(await first).toMatchObject({ complete: true, recordsRead: 6 });
+      expect((await next)?.hits?.map((hit) => hit.turn)).toEqual([4]);
+    } finally { release(); gate.mockRestore(); await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
 
   it('serializes two concurrent SQLite query workspaces and keeps both source hits readable', async () => {

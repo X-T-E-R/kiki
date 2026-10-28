@@ -224,6 +224,32 @@ describe('history tools', () => {
       .resolveExecution({ turn: 7, step_id: 't8.2' })).rejects.toThrow('step_id');
   });
 
+  it('passes execution cancellation to archive block and directory reads', async () => {
+    const source = archive();
+    const ref = `h1_${Buffer.from(JSON.stringify({ workspace: 'ws-a', session: 'current', agent: 'main', kind: 'frame' })).toString('base64url')}`;
+    const directoryRef = `h1_${Buffer.from(JSON.stringify({ workspace: 'ws-a', session: 'current', agent: 'main', kind: 'turn' })).toString('base64url')}`;
+    const controller = new AbortController();
+    const context = { signal: controller.signal, turnId: 1, toolCallId: 'history-signal' };
+    const readRef = vi.fn(async (value: string, signal?: AbortSignal) => {
+      expect(signal).toBe(context.signal);
+      return { status: 'ok' as const, text: 'archive text', turn: 7, ref: value };
+    });
+    const readDirectory = vi.fn(async (_value: string, _maxChars: number, _cursor: unknown, signal?: AbortSignal) => {
+      expect(signal).toBe(context.signal);
+      return { status: 'ok' as const, blocks: [], complete: true };
+    });
+    source.readRef = readRef;
+    source.readDirectory = readDirectory;
+    const tool = new HistoryReadTool(source, session, workspaces, sessions, caller);
+    const block = await tool.resolveExecution({ ref });
+    const directory = await tool.resolveExecution({ ref: directoryRef });
+    if (!('execute' in block) || !('execute' in directory)) throw new Error('Expected executions');
+    await block.execute(context);
+    await directory.execute(context);
+    expect(readRef).toHaveBeenCalledWith(ref, controller.signal);
+    expect(readDirectory).toHaveBeenCalledWith(directoryRef, 6000, undefined, controller.signal);
+  });
+
   it('advertises and executes step-only and cursor-only reads', async () => {
     const source = archive('响'.repeat(6_101));
     const tool = new HistoryReadTool(source, session, workspaces, sessions, caller);

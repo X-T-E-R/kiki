@@ -122,7 +122,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
       await this.logs.flush(scope, AGENT_WIRE_RECORD_KEY);
       signal?.throwIfAborted();
       const generation = await this.logs.generation(scope, AGENT_WIRE_RECORD_KEY);
-      const pinned = await openPinnedLogicalRead(this.storage, scope, AGENT_WIRE_RECORD_KEY);
+      const pinned = await openPinnedLogicalRead(this.storage, scope, AGENT_WIRE_RECORD_KEY, signal);
       try {
         const size = pinned.size ?? 0;
         const mtime = await this.storage.mtime(scope, AGENT_WIRE_RECORD_KEY);
@@ -233,7 +233,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
         ref.total !== (field === 'input' ? row.inputUnits : row.outputUnits) ||
         !Number.isSafeInteger(ref.offset) || ref.offset < 0 || ref.offset >= ref.total) changed();
       if (await this.logs.generation(scope, AGENT_WIRE_RECORD_KEY) !== row.generation) changed();
-      const pinned = await openPinnedLogicalRead(this.storage, scope, AGENT_WIRE_RECORD_KEY);
+      const pinned = await openPinnedLogicalRead(this.storage, scope, AGENT_WIRE_RECORD_KEY, signal);
       try {
         if ((pinned.size ?? 0) < row.terminalEnd) changed();
         await this.record(pinned, scope, row.terminalStart, row.terminalEnd, row.terminalDigest, signal);

@@ -14,6 +14,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { posix } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import * as portablePath from 'pathe';
 
@@ -93,23 +94,33 @@ function pidAlive(pid: unknown): boolean {
   }
 }
 
-async function ownerProcessAlive(payload: FileLockPayload): Promise<boolean> {
+async function ownerProcessAlive(payload: FileLockPayload, signal?: AbortSignal, provedAt?: Map<string, number>): Promise<boolean> {
+  signal?.throwIfAborted();
   if (!pidAlive(payload.pid)) return false;
   if (payload.pid === process.pid) {
     return Math.abs(payload.processStartedAt - PROCESS_STARTED_AT) <= 2_000;
   }
   if (process.platform !== 'win32') return true;
+  const identity = `${payload.pid}:${payload.processStartedAt}`;
+  const proved = provedAt?.get(identity);
+  if (proved !== undefined && Date.now() - proved < 5_000) return true;
   try {
     const { stdout } = await execFileAsync('powershell.exe', [
       '-NoProfile',
       '-NonInteractive',
       '-Command',
       `(Get-Process -Id ${payload.pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc()`,
-    ], { timeout: 5_000, windowsHide: true, maxBuffer: 4_096 });
+    ], { timeout: 5_000, windowsHide: true, maxBuffer: 4_096, signal });
     const startedAt = Number(stdout.trim()) / 10_000 - WINDOWS_EPOCH_OFFSET_MS;
     if (!Number.isFinite(startedAt) || startedAt < 0 || startedAt > Date.now() + 60_000) return true;
-    return Math.abs(startedAt - payload.processStartedAt) <= 2_000;
+    const alive = Math.abs(startedAt - payload.processStartedAt) <= 2_000;
+    if (alive && provedAt !== undefined) {
+      if (provedAt.size >= 128) provedAt.delete(provedAt.keys().next().value!);
+      provedAt.set(identity, Date.now());
+    }
+    return alive;
   } catch {
+    signal?.throwIfAborted();
     return pidAlive(payload.pid);
   }
 }
@@ -284,7 +295,8 @@ async function sharedReaderAlive(leasePath: string, provedAt: Map<string, number
   return alive;
 }
 
-export async function withColdReaderGate<T>(journalPath: string, body: () => Promise<T>): Promise<T> {
+export async function withColdReaderGate<T>(journalPath: string, body: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
   const id = resolve(journalPath);
   const depth = readerGateDepth.get(id) ?? 0;
   if (depth > 0) {
@@ -297,9 +309,10 @@ export async function withColdReaderGate<T>(journalPath: string, body: () => Pro
       else readerGateDepth.set(id, next);
     }
   }
-  const lock = await acquireReaderGate(`${id}.cold.lock`);
+  const lock = await acquireReaderGate(`${id}.cold.lock`, signal);
   readerGateDepth.set(id, 1);
   try {
+    signal?.throwIfAborted();
     return await body();
   } finally {
     readerGateDepth.delete(id);
@@ -307,10 +320,11 @@ export async function withColdReaderGate<T>(journalPath: string, body: () => Pro
   }
 }
 
-async function acquireReaderGate(lockPath: string): Promise<IStorageLock> {
+async function acquireReaderGate(lockPath: string, signal?: AbortSignal): Promise<IStorageLock> {
   for (;;) {
+    signal?.throwIfAborted();
     try {
-      return await acquireFileLock(lockPath, { waitForMs: READER_GATE_WAIT_MS });
+      return await acquireFileLock(lockPath, { waitForMs: READER_GATE_WAIT_MS, signal });
     } catch (error) {
       if (!isStorageError(error, StorageErrors.codes.STORAGE_LOCKED)) throw error;
     }
@@ -346,7 +360,14 @@ export async function acquireFileLock(
   let delayMs = LOCK_WAIT_BASE_MS;
   try {
     for (;;) {
-      if (await lock.acquire()) return lock;
+      options.signal?.throwIfAborted();
+      if (await lock.acquire()) {
+        if (options.signal?.aborted) {
+          await lock.release();
+          options.signal.throwIfAborted();
+        }
+        return lock;
+      }
       if (Date.now() >= deadline) {
         const inspected = await lock.inspectOwner();
         const sessionId = inspected?.owner?.['sessionId'];
@@ -381,10 +402,11 @@ export async function acquireFileLock(
         );
       }
       const remainingMs = Math.max(1, deadline - Date.now());
-      await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, remainingMs)));
+      await delay(Math.min(delayMs, remainingMs), undefined, { signal: options.signal });
       delayMs = Math.min(LOCK_WAIT_MAX_MS, delayMs * 2);
     }
   } catch (error) {
+    options.signal?.throwIfAborted();
     if (error instanceof StorageError) throw error;
     throw toStorageIoError(error, { path: lockPath, op: 'lock' });
   }
@@ -402,6 +424,8 @@ class FileLock implements IStorageLock {
   private readonly owner?: Readonly<Record<string, unknown>>;
   private readonly dirMode?: number;
   private readonly fileMode?: number;
+  private readonly signal?: AbortSignal;
+  private readonly provedAt = new Map<string, number>();
   private token = '';
   private acquiredAt = 0;
   private held = false;
@@ -420,6 +444,7 @@ class FileLock implements IStorageLock {
       Math.min(options.renewIntervalMs ?? DEFAULT_RENEW_INTERVAL_MS, this.leaseMs / 2),
     );
     this.owner = options.owner;
+    this.signal = options.signal;
     this.dirMode = modes.dirMode;
     this.fileMode = modes.fileMode;
   }
@@ -499,22 +524,24 @@ class FileLock implements IStorageLock {
         return await this.acquireAttempt();
       } catch (error) {
         if (attempt >= TRANSIENT_DENIAL_RETRIES || !isTransientAccessDenial(error)) throw error;
-        await new Promise((resolve) => setTimeout(resolve, TRANSIENT_DENIAL_DELAY_MS * (attempt + 1)));
+        await delay(TRANSIENT_DENIAL_DELAY_MS * (attempt + 1), undefined, { signal: this.signal });
       }
     }
   }
 
   private async acquireAttempt(): Promise<boolean> {
+    this.signal?.throwIfAborted();
     if (this.held) return true;
     this.token = `${process.pid}:${randomUUID()}`;
     this.acquiredAt = Date.now();
     await mkdir(dirname(this.lockPath), { recursive: true, mode: this.dirMode });
     await this.publishWatch();
     try {
-      await this.reapDeadWatches();
       for (let attempt = 0; attempt < 3; attempt += 1) {
+        this.signal?.throwIfAborted();
         if (await this.tryCreate()) return true;
-        const seen = await this.inspect();
+        if (attempt === 0) await this.reapDeadWatches();
+        const seen = await this.inspect(this.signal);
         if (seen === null) continue;
         if (seen.active) return false;
         if (await this.takeOver()) return true;
@@ -561,19 +588,23 @@ class FileLock implements IStorageLock {
   private async takeOver(): Promise<boolean> {
     const bidPath = `${this.lockPath}.bid-${process.pid}-${nextSidecarSequence()}`;
     const startedAt = Date.now();
+    let renamed = false;
     try {
       await writeFile(bidPath, this.payloadText(), { mode: this.fileMode });
       for (let attempt = 0; ; attempt += 1) {
-        const gate = await this.inspect();
+        this.signal?.throwIfAborted();
+        const gate = await this.inspect(this.signal);
         if (gate === null || gate.active || gate.mine) return false;
         if (await this.hasLiveForeignWatch(gate.payload?.token)) return false;
+        this.signal?.throwIfAborted();
         try {
           await rename(bidPath, this.lockPath);
+          renamed = true;
           break;
         } catch (error) {
           const code = (error as NodeJS.ErrnoException).code;
           if (code === 'EPERM' && process.platform === 'win32' && attempt < 50) {
-            await new Promise((resolve) => setTimeout(resolve, 20 + Math.floor(Math.random() * 30)));
+            await delay(20 + Math.floor(Math.random() * 30), undefined, { signal: this.signal });
             continue;
           }
           if (code === 'EEXIST' || code === 'EPERM') return false;
@@ -585,20 +616,26 @@ class FileLock implements IStorageLock {
         Math.max(TAKEOVER_SETTLE_BASE_MS, (Date.now() - startedAt) * 4),
       );
       for (;;) {
-        await new Promise((resolve) => setTimeout(resolve, settleMs));
-        const current = await this.inspect();
+        await delay(settleMs, undefined, { signal: this.signal });
+        const current = await this.inspect(this.signal);
         if (current?.mine !== true) return false;
         if (!(await this.hasLiveForeignWatch())) break;
         settleMs = Math.min(TAKEOVER_SETTLE_MAX_MS, settleMs * 2);
       }
+      this.signal?.throwIfAborted();
       this.markHeld();
       return true;
     } finally {
+      if (renamed && !this.held && (await this.readPayload(this.lockPath))?.token === this.token) {
+        await unlink(this.lockPath).catch((error: unknown) => {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        });
+      }
       await unlink(bidPath).catch(() => undefined);
     }
   }
 
-  private async inspect(): Promise<InspectedLock | null> {
+  private async inspect(signal?: AbortSignal): Promise<InspectedLock | null> {
     let raw: string;
     try {
       const handle = await open(this.lockPath, 'r');
@@ -620,7 +657,7 @@ class FileLock implements IStorageLock {
     if (payload === undefined) return { malformedText: raw, active: false, mine: false };
     return {
       payload,
-      active: await ownerProcessAlive(payload),
+      active: await ownerProcessAlive(payload, signal, this.provedAt),
       mine: payload.token === this.token,
     };
   }
@@ -657,7 +694,7 @@ class FileLock implements IStorageLock {
     try {
       const payload = knownPayload ?? await this.readPayload(watchPath);
       await stat(watchPath);
-      if (payload !== undefined) return await ownerProcessAlive(payload);
+      if (payload !== undefined) return await ownerProcessAlive(payload, this.signal, this.provedAt);
       const entry = basename(watchPath);
       const prefix = `${basename(this.lockPath)}.watch-`;
       const namedPid = Number(entry.slice(prefix.length).split('-')[0]);

@@ -182,7 +182,7 @@ export class HistoryCanonicalReader {
     };
     let bytesRead = 0;
     try {
-      logical = await openLogicalWire(context.wirePath);
+      logical = await openLogicalWire(context.wirePath, signal);
       handle = logical === undefined ? await open(context.wirePath, 'r') : undefined;
       for (const span of spans) {
         signal?.throwIfAborted();
@@ -207,7 +207,7 @@ export class HistoryCanonicalReader {
         if (turn !== undefined && (turn.prompt !== undefined || (turn.attachmentIds?.length ?? 0) > 0)) {
           await releaseRead();
           signal?.throwIfAborted();
-          const proof = await historyNavigationProof(context.wirePath, manifest.offset);
+          const proof = await historyNavigationProof(context.wirePath, manifest.offset, signal);
           signal?.throwIfAborted();
           if (generation !== this.generation || !matchesNavigationProof(manifest.source, proof) ||
             db.readManifest(context.scope)?.generation !== manifest.generation || db.readManifest(context.scope)?.offset !== manifest.offset) throw new Error('history_source_changed');
@@ -269,7 +269,7 @@ export class HistoryCanonicalReader {
     const revision = `${generation}\0${manifest.generation}\0${manifest.incarnation}\0${turnRevision}`;
     const validate = async (): Promise<void> => {
       signal.throwIfAborted();
-      const proof = await historyNavigationProof(input.wirePath, manifest.offset);
+      const proof = await historyNavigationProof(input.wirePath, manifest.offset, signal);
       signal.throwIfAborted();
       const current = db.readManifest(scope);
       if (generation !== this.generation || !matchesNavigationProof(manifest.source, proof) ||
@@ -303,7 +303,7 @@ export class HistoryCanonicalReader {
       let logical: LogicalWire | undefined;
       let handle: FileHandle | undefined;
       try {
-        logical = await openLogicalWire(input.wirePath);
+        logical = await openLogicalWire(input.wirePath, signal);
         handle = logical === undefined ? await open(input.wirePath, 'r') : undefined;
         for (const span of spans) {
           signal.throwIfAborted();
@@ -366,7 +366,7 @@ export class HistoryCanonicalReader {
     const retained = db.readManifest(scope);
     if (retained?.complete && [...this.cache].some(([key, entry]) =>
       key.startsWith(`${scope}\0`) && entry.fingerprint === sourceFingerprint(retained))) {
-      const proof = await historyNavigationProof(location.wirePath, retained.offset).catch((error: unknown) => {
+      const proof = await historyNavigationProof(location.wirePath, retained.offset, signal).catch((error: unknown) => {
         if (error instanceof Error && error.message === 'history_source_changed') return undefined;
         throw error;
       });
@@ -392,7 +392,7 @@ export class HistoryCanonicalReader {
     }
     const manifest = db.readManifest(scope);
     if (manifest === undefined || !db.hasCanonicalSources(scope)) throw new Error('history_canonical_locator_incomplete');
-    const proof = await historyNavigationProof(location.wirePath, manifest.offset);
+    const proof = await historyNavigationProof(location.wirePath, manifest.offset, signal);
     signal?.throwIfAborted();
     if (!manifest.complete || !matchesNavigationProof(manifest.source, proof)) {
       throw new Error('history_source_changed');
@@ -421,7 +421,7 @@ export class HistoryCanonicalReader {
       throw error;
     });
     if (!Number.isSafeInteger(info.size) || info.size < 0) throw new Error('history_source_changed');
-    const proof = await historyNavigationProof(wirePath, info.size);
+    const proof = await historyNavigationProof(wirePath, info.size, signal);
     signal?.throwIfAborted();
     return proof;
   }
@@ -457,7 +457,7 @@ export class HistoryCanonicalReader {
     const before = await this.fullWireProof(context.wirePath, signal);
     const retained = await this.transcript.readRetainedColdTurn(session, agent, turnId, signal);
     if (retained !== undefined) {
-      const proof = await historyNavigationProof(context.wirePath, before.size);
+      const proof = await historyNavigationProof(context.wirePath, before.size, signal);
       signal.throwIfAborted();
       if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
       if (!matchesNavigationProof(before, proof)) throw new Error('history_source_changed');
@@ -470,7 +470,7 @@ export class HistoryCanonicalReader {
     }
     const snapshotTurn = await this.transcript.readProjectedColdTurn(session, agent, turnId, signal);
     if (snapshotTurn !== undefined) {
-      const proof = await historyNavigationProof(context.wirePath, before.size);
+      const proof = await historyNavigationProof(context.wirePath, before.size, signal);
       signal.throwIfAborted();
       if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
       if (!matchesNavigationProof(before, proof)) throw new Error('history_source_changed');
@@ -588,7 +588,7 @@ export class HistoryCanonicalReader {
     let expectedOrdinal = seed.ordinal;
     this.replays += 1;
     try {
-      logical = await openLogicalWire(input.wirePath);
+      logical = await openLogicalWire(input.wirePath, signal);
       handle = logical === undefined ? await open(input.wirePath, 'r') : undefined;
       for (;;) {
         signal.throwIfAborted();
@@ -630,7 +630,7 @@ export class HistoryCanonicalReader {
       }
       await releaseRead();
       signal.throwIfAborted();
-      const proof = await historyNavigationProof(input.wirePath, input.manifest.offset);
+      const proof = await historyNavigationProof(input.wirePath, input.manifest.offset, signal);
       signal.throwIfAborted();
       if (!matchesNavigationProof(input.manifest.source, proof) ||
           input.db.readManifest(input.scope)?.generation !== input.manifest.generation ||

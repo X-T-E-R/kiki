@@ -22,7 +22,7 @@ export interface HistoryNavigationProof {
  * the captured stat revision as latest. A same-size mtime or ctime change still fails.
  * Exact record digests are a separate check.
  */
-export async function historyNavigationProof(path: string, through: number): Promise<HistoryNavigationProof> {
+export async function historyNavigationProof(path: string, through: number, signal?: AbortSignal): Promise<HistoryNavigationProof> {
   const before = await stat(path, { bigint: true });
   const identity = `${before.dev}:${before.ino}:${before.birthtimeNs}`;
   let opened: LogicalWire | undefined;
@@ -38,7 +38,7 @@ export async function historyNavigationProof(path: string, through: number): Pro
     }
   };
   try {
-    opened = await openLogicalWire(path);
+    opened = await openLogicalWire(path, signal);
     if (!before.isFile() || opened === undefined || !Number.isSafeInteger(through) || through < 0 ||
         BigInt(through) > before.size || through > opened.size) {
       throw new Error('history_source_changed');

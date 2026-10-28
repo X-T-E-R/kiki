@@ -114,6 +114,7 @@ export class InMemoryStorageService implements IFileSystemStorageService {
     key: string,
     options: StorageLockOptions = {},
   ): Promise<IStorageLock> {
+    options.signal?.throwIfAborted();
     const id = this.watchKey(scope, key);
     if (this.locks.has(id)) {
       throw new StorageError(

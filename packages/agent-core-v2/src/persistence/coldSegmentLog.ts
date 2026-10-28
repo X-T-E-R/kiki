@@ -4,6 +4,7 @@ import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import { resolve } from 'pathe';
 
 import { BugIndicatingError } from '#/_base/errors/errors';
+import { abortable } from '#/_base/utils/abort';
 import { acquireSharedReadLease, waitSharedReadIdle, withColdReaderGate } from '#/persistence/backends/node-fs/fileLock';
 import type { ColdSealOptions, ColdSealResult } from '#/persistence/interface/appendLogStore';
 import {
@@ -132,18 +133,25 @@ function takeTurn(storage: IFileSystemStorageService, scope: string, key: string
   return { ready, finish };
 }
 
+/** Cancelling a waiter preserves the preceding operation's place before releasing its turn. */
 export async function withColdExclusive<T>(
   storage: IFileSystemStorageService,
   scope: string,
   key: string,
   body: () => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
+  signal?.throwIfAborted();
   const turn = takeTurn(storage, scope, key);
-  await turn.ready;
+  let entered = false;
   try {
+    await (signal === undefined ? turn.ready : abortable(turn.ready, signal));
+    entered = true;
+    signal?.throwIfAborted();
     return await body();
   } finally {
-    turn.finish();
+    if (entered) turn.finish();
+    else void turn.ready.then(turn.finish);
   }
 }
 
@@ -560,27 +568,37 @@ export interface PinnedLogicalRead {
   close(): void;
 }
 
+/** Pins the selected seal under the reader gate; cancellation releases an unpublished pin. */
 export async function openPinnedLogicalRead(
   storage: IFileSystemStorageService,
   scope: string,
   key: string,
+  signal?: AbortSignal,
 ): Promise<PinnedLogicalRead> {
   let manifest: ColdManifest | undefined;
   let size: number | undefined;
   let release = (): void => {};
-  await withColdExclusive(storage, scope, key, async () => {
-    const open = async (): Promise<void> => {
-      manifest = await loadMatchedManifest(storage, scope, key);
-      size = await storage.size(scope, key);
-      if (manifest !== undefined) {
-        if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
-        release = await pinSeal(storage, scope, key, manifest.sealId);
-      }
-    };
-    const located = locatedJournal(storage, scope, key);
-    if (located === undefined) await open();
-    else await withColdReaderGate(located, open);
-  });
+  try {
+    await withColdExclusive(storage, scope, key, async () => {
+      const open = async (): Promise<void> => {
+        signal?.throwIfAborted();
+        manifest = await loadMatchedManifest(storage, scope, key);
+        size = await storage.size(scope, key);
+        signal?.throwIfAborted();
+        if (manifest !== undefined) {
+          if (size === undefined || size < manifest.sealedCut) throw corrupted(scope, key, 'original-shrunk');
+          release = await pinSeal(storage, scope, key, manifest.sealId);
+        }
+        signal?.throwIfAborted();
+      };
+      const located = locatedJournal(storage, scope, key);
+      if (located === undefined) await open();
+      else await withColdReaderGate(located, open, signal);
+    }, signal);
+  } catch (error) {
+    release();
+    throw error;
+  }
   let closed = false;
   return {
     size,
@@ -604,7 +622,7 @@ export async function* readLogicalBytes(
   range?: StorageReadRange,
   options?: StorageReadOptions,
 ): AsyncIterable<Uint8Array> {
-  const pinned = await openPinnedLogicalRead(storage, scope, key);
+  const pinned = await openPinnedLogicalRead(storage, scope, key, options?.signal);
   try {
     yield* pinned.read(range, options);
   } finally {

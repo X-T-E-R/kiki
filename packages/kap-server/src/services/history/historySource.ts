@@ -68,13 +68,15 @@ export function decodeHistoryRef(value: string): HistorySourceAnchor {
   return a as HistorySourceAnchor;
 }
 
-export async function verifyHistorySource(wirePath: string, anchor: HistorySourceAnchor): Promise<HistorySourceResult> {
+export async function verifyHistorySource(wirePath: string, anchor: HistorySourceAnchor, signal?: AbortSignal): Promise<HistorySourceResult> {
+  signal?.throwIfAborted();
   const incarnation = await historySourceIncarnation(wirePath);
   if (incarnation === undefined) return { status: 'source_missing' };
   if (incarnation !== anchor.incarnation) return { status: 'stale_ref' };
   const size = anchor.end - anchor.start;
   if (size <= 0 || size > MAX_RECORD_BYTES) return { status: 'stale_ref' };
-  const bytes = await readLogicalWireRange(wirePath, anchor.start, size);
+  const bytes = await readLogicalWireRange(wirePath, anchor.start, size, signal);
+  signal?.throwIfAborted();
   if (bytes === undefined) return { status: 'source_missing' };
   if (bytes.byteLength !== size || hashHistoryRecord(bytes) !== anchor.digest) return { status: 'stale_ref' };
   return await historySourceIncarnation(wirePath) === anchor.incarnation
