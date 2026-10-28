@@ -649,10 +649,10 @@ describe('AgentProfileService.bind', () => {
       sessionService(ISessionAgentProfileCatalog, catalog),
       hostEnvironmentServices(homeDir, hostPathClass),
     );
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models,
+      'mock-pin': { provider: 'test-provider', model: 'mock-pin', maxContextSize: 1_000_000, defaultEffort: 'off' },
+    } };
     await ctx.ready;
-    await ctx.get(IModelService).set('mock-pin', {
-      provider: 'test-provider', model: 'mock-pin', maxContextSize: 1_000_000, defaultEffort: 'off',
-    });
     const service = ctx.get(IAgentProfileService);
     await service.bind({ profile: 'open', model: MOCK_MODEL });
     expect(service.data().execution).toBeUndefined();
@@ -1716,15 +1716,15 @@ describe('AgentProfileService.bind', () => {
       sessionService(ISessionAgentProfileCatalog, routedCatalog(MOCK_MODEL)),
       hostEnvironmentServices(homeDir, hostPathClass),
     );
-    await ctx.ready;
     const canonicalId = `test-provider/${MOCK_MODEL}`;
-    await ctx.get(IModelService).replaceAll({
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: {
       [canonicalId]: {
         provider: 'test-provider',
         model: MOCK_MODEL,
         maxContextSize: 1_000_000,
       },
-    });
+    } };
+    await ctx.ready;
     const svc = ctx.get(IAgentProfileService);
 
     await svc.bind({ route: 'reviewer.ui-k3' });
@@ -1884,15 +1884,17 @@ describe('AgentProfileService.bind', () => {
       hostEnvironmentServices(homeDir, hostPathClass),
       sessionService(ISessionAgentProfileCatalog, routedCatalog()),
     );
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models,
+      'other-model': {
+        provider: 'test-provider',
+        model: 'other-model',
+        maxContextSize: 1_000_000,
+        capabilities: ['thinking'],
+        supportEfforts: ['low', 'high'],
+        defaultEffort: 'high',
+      },
+    } };
     await ctx.ready;
-    await ctx.get(IModelService).set('other-model', {
-      provider: 'test-provider',
-      model: 'other-model',
-      maxContextSize: 1_000_000,
-      capabilities: ['thinking'],
-      supportEfforts: ['low', 'high'],
-      defaultEffort: 'high',
-    });
     const { profile, toolPolicy } = profileServices(ctx);
 
     await profile.bind({ route: 'reviewer.ui-k3' });
