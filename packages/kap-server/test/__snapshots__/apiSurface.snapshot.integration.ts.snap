@@ -1142,6 +1142,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/decision/move-reviewer-key",
+    ],
+    [
+      "POST",
+      "/api/decision/probe",
+    ],
+    [
+      "POST",
       "/api/desktop-lifecycle",
     ],
     [
