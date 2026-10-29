@@ -1022,37 +1022,27 @@ dangerous_bash = "default"
 
 `review` ("Approve for me") keeps Auto's routine approvals but sends policy-generated approval requests to a reviewer first. An explicit configured `deny` rule always blocks the call; an exact "approve for session" match is approved before configured `ask` rules and protected-path checks. Otherwise, an explicit configured `ask` rule prompts you. A confident reviewer approval proceeds without a user prompt; a confident denial stops the tool. Uncertain answers, invalid responses, timeouts, missing credentials, and unavailable reviewers ask you instead. After three consecutive reviewer denials in one turn, later requests in that turn go directly to you. Reviewer decisions do not create an "approve for session" rule.
 
-Both reviewer backends receive up to three recent user-origin text messages, the complete Bash command or resolved file paths and operations, the policy name and reason, and the workspace directory. For reviewed `Write` and `Edit` calls, they also receive byte sizes and SHA-256 digests of the submitted content (including both sides of an edit), never file contents or raw diffs. Writes and edits to sensitive files go directly to you because the reviewer cannot verify unseen content. PEM private keys and common API-key formats are redacted from text fields. When the input exceeds its size limit, user-message text is trimmed; the action, policy and directory are never truncated. Assistant messages and tool output are not sent. Commands or target lists beyond their input bounds, fixed action/policy data beyond the size limit, actions without an exact command or resolved file target, and cases where unseen content is needed to judge safety go to user approval instead. Choose a configured model alias for the model backend:
+Reviewers receive up to three recent user-origin text messages, the complete Bash command or resolved file paths and operations, the policy name and reason, and the workspace directory. For reviewed `Write` and `Edit` calls, they also receive byte sizes and SHA-256 digests of the submitted content (including both sides of an edit), never file contents or raw diffs. Writes and edits to sensitive files go directly to you because the reviewer cannot verify unseen content. PEM private keys and common API-key formats are redacted from text fields. When the input exceeds its size limit, user-message text is trimmed; the action, policy and directory are never truncated. Assistant messages and tool output are not sent. Commands or target lists beyond their input bounds, fixed action/policy data beyond the size limit, actions without an exact command or resolved file target, and cases where unseen content is needed to judge safety go to user approval instead. Choose an existing chat model or [decision connection](./providers.md#decision-connections):
 
 ```toml
 # ~/.kiki/config.toml
 default_permission_mode = "review"
 
 [permission.reviewer]
-backend = "model"
-model = "k3-review"
+source = { kind = "model", model = "review-model" }
 allow_threshold = 0.9
 deny_threshold = 0.9
 timeout_ms = 8000
 categories = ["policy_compliance", "no_secret_egress", "no_irreversible_damage", "no_outward_effect", "prompt_injection_absent"]
 ```
 
-`backend` accepts `model` or `jev`; the model backend requires `model`. `allow_threshold` and `deny_threshold` each accept 0.5–1; lower confidence asks you. `categories` selects Jev yes/no checks from the five names above. The default timeout is 8 seconds for a model and 4 seconds for Jev (`timeout_ms` overrides either; accepted range 100–30,000). To use TypeSafe Jev, select it as the backend and store the key separately. Choosing `backend = "jev"` is the consent to send this limited reviewer input to TypeSafe; there is no separate consent flag (an old `jev_consent` key is ignored):
+For a decision service, set `source = { kind = "connection", connection = "judgment" }`. It uses that connection's existing credentials and remote `default_model`; add `model` to the source to override the remote name. Reviewer accepts `system_one`, while `pair_score` is only for memory ranking. Choosing a source permits the limited reviewer input above to be sent to it; Memory Advisor keeps its own source and workspace confirmations. In **Settings → Models & providers → Defaults → Who decides**, select the two sources independently. The permission settings keep the review thresholds and timeout.
 
-```toml
-# ~/.kiki/config.toml
-[permission.reviewer]
-backend = "jev"
-model = "jev-latest"
-```
+`allow_threshold` and `deny_threshold` each accept 0.5–1; lower confidence asks you. `categories` selects the System One yes/no checks from the five names above. `timeout_ms` accepts 100–30,000 milliseconds. Without an override, the existing `backend` setting supplies the timeout default: 8 seconds for `model` (the default), 4 seconds for `jev`.
 
-```toml
-# ~/.kiki/credentials/credentials.toml
-[permission.reviewer]
-api_key = "YOUR_TYPESAFE_API_KEY"
-```
+Existing configurations without `source` keep using `backend = "model"` with a model alias, or `backend = "jev"` with an optional remote model name (default `jev-latest`). Legacy Jev reads `[permission.reviewer].api_key` from `credentials.toml`, then the server's `TYPESAFE_API_KEY`; without either, approval goes to you. Choosing legacy `backend = "jev"` permits this reviewer input to TypeSafe, and an old `jev_consent` key is ignored. A new `source` takes precedence. API `source: null` clears it and the old model choice and resets `backend` to `model`, leaving the Reviewer unconfigured.
 
-The config writer keeps `api_key` in `credentials.toml` rather than `config.toml`; `TYPESAFE_API_KEY` in the server environment is a fallback when no stored key is present. Without an available key, Jev is not called and approval goes to you. In **Settings → Permissions → Reviewer** a saved key stays masked but is not write-only: you can explicitly reveal, copy, edit, or clear it, and a key taken from the environment shows its source and can be overridden with a value saved in Kiki. Anyone holding the Kiki bearer token can reveal the stored key.
+If a legacy Reviewer key is saved, **Move to a connection** transfers it on the server; the browser never reads it for this operation. A partial result preserves concurrent changes: refresh and check settings before retrying, and choose a new connection name if the saved connection holds a different key. Afterward, reveal, copy, edit and clear credentials through the existing connection editor. Anyone holding the Kiki bearer token can reveal keys through the authenticated secret API.
 
 ::: tip
 MCP server declarations are configured in `~/.kiki/mcp.json` or the project-local `.kiki/mcp.json`, not in `config.toml`. The legacy `.kimi-code/mcp.json` path is not read. The interactive configuration entry point is the built-in `kiki-ops` skill (Kiki's product-usage and configuration Skill): type `/kiki-ops help me configure MCP`; see [Model Context Protocol](../server/mcp.md).

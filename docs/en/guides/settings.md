@@ -97,6 +97,8 @@ A reading timeout only bounds waiting; it never limits how much can be read. A c
 
 Above the tabs, the **New sessions use** bar and the star on a model row set the global model for new sessions. The titles, fast model, and subagents listed beside it open **Defaults**, where you change them.
 
+In **Providers & accounts → Decision services**, add Jev, a compatible System One service or a reranker using the existing connection credentials. These services need a remote model name, not a chat-model entry. In **Defaults → Who decides**, choose a decision connection or existing chat model independently for permission review and Memory Advisor. A connection keeps its protocol, endpoint and key; each job can override its remote model name. Pair-score services are offered only for memory ranking. See [decision connections](../configuration/providers.md#decision-connections).
+
 In the model editor, change request settings and prompt text, then **Save** once. The identity selector keeps **Shared**, **Main agent**, and **Delegated agent** drafts separate; saving includes edits made in all three. Advanced fields edit the same model rather than a second form. Editing text loaded from a file stores an inline copy on the model, leaving the source file unchanged. **Remove model** is at the bottom of the editor and asks for confirmation.
 
 Opening a prompt does not by itself leave the shared group. While **Main agent** or **Delegated agent** still follows that group, the first **Save** of a prompt copies the whole effective group onto that identity, including unchanged file references and timing. Later edits to the shared group no longer change it. A steering source set to **Follow the user-message setting** uses the steering text and timing already in effect for user messages on the selected identity. That is the saved steering, not the words of the user message. After the identity has its own prompt copy, this reads the steering on that copy. A source left unconfigured stays off.
@@ -124,7 +126,7 @@ The dialog's three choices are saved rather than repeated each time: **Remind me
 
 ## Memory
 
-**Settings → Memory** (`/settings/memory`) separates the overall **Allow memory** switch from **Memory Advisor**. The advisor card lets you choose a configured model and protocol, confirm a destination for each workspace, and test the connection with sample data. Its **Advanced** fold contains selection and request budgets. The memory-page header and `Ctrl-K` provide the same global advisor switch; turning it off retains the model and restores the previous memory selection. See [Memory Advisor](./memory.md#memory-advisor) for setup and what is sent.
+**Settings → Memory** (`/settings/memory`) separates the overall **Allow memory** switch from **Memory Advisor**. The advisor card shows its source and links to **Defaults → Who decides** to change it. Here you confirm a destination for each workspace and test the saved source with sample data; **Advanced** contains selection and request budgets. The memory-page header and `Ctrl-K` provide the same global advisor switch; turning it off retains the source and confirmations and restores the previous memory selection and text. See [Memory Advisor](./memory.md#memory-advisor) for setup and what is sent.
 
 ## Agents
 

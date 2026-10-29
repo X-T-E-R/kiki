@@ -4,7 +4,7 @@ Kiki can connect to multiple model providers at once. An API key is the most gen
 
 ## Supported provider types
 
-The `type` field in the `providers` table sets the default request format (the API payload and endpoint), which individual models can override with `protocol`:
+The `type` field in the `providers` table selects the connection's request format (the API payload and endpoint). Chat models can override their connection's format with `protocol`; decision connections use the format of the connection itself:
 
 | Type | Protocol | Typical use |
 | --- | --- | --- |
@@ -14,10 +14,40 @@ The `type` field in the `providers` table sets the default request format (the A
 | `openai_responses` | OpenAI Responses API | OpenAI's newer Responses interface |
 | `google-genai` | Google GenAI | Gemini API |
 | `vertexai` | Google GenAI on Vertex | Google Cloud Vertex AI |
+| `system_one` | System One | Decision services such as Jev; permission review and memory recommendations |
+| `pair_score` | Reranking scores | Memory ranking with compatible rerankers or classifiers |
 
-All providers communicate with models in streaming mode by default. Capabilities such as thinking, vision, and tool use are matched automatically by model name prefix — you typically do not need to declare them manually.
+Chat connections stream by default. Capabilities such as thinking, vision, and tool use are matched automatically by model name prefix — you typically do not need to declare them manually. Decision connections return judgments or scores and do not add entries to the chat model catalog.
 
-**Credential priority**: a model's own credential wins; otherwise Kiki uses the provider's `api_key`, then its explicitly configured `api_key_env` variable. Without `api_key_env`, the existing `[providers.<name>.env]` credential fallback remains unchanged. Shell variables are not read automatically. See [Config overrides: provider credentials](./overrides.md#provider-credentials) for the full priority and an environment-variable example.
+**Credential priority**: a model's own credential wins; otherwise Kiki uses the provider's `api_key`, then its explicitly configured `api_key_env` variable. Without `api_key_env`, the existing `[providers.<name>.env]` credential fallback remains unchanged. The `system_one` type also provides the TypeSafe default address and `TYPESAFE_API_KEY` fallback. See [Config overrides: provider credentials](./overrides.md#provider-credentials) for the full priority and an environment-variable example.
+
+### Decision connections
+
+A decision connection owns its address, protocol and credentials. Permission review and [Memory Advisor](../guides/memory.md#memory-advisor) can reference the same connection, while each keeps its own source choice and behavior settings. Use a compatible service's address and remote model name; no local chat model or context size is needed.
+
+This example shares one Jev connection, using the server's existing environment variable:
+
+```toml
+[providers.judgment]
+type = "system_one"
+base_url = "https://api.typesafe.ai/v1"
+api_key_env = "TYPESAFE_API_KEY"
+default_model = "jev-latest"
+
+[permission.reviewer]
+source = { kind = "connection", connection = "judgment" }
+
+[memory.advisor]
+source = { kind = "connection", connection = "judgment" }
+```
+
+`default_model` is the name sent to the remote decision service. A source can override it with `model`, or select an existing chat alias with `{ kind = "model", model = "review-model" }`. Changing one consumer's source does not change the other. Memory recommendations also require the workspace's [destination confirmation](../guides/memory.md#memory-advisor); saving a source preserves an existing off switch.
+
+For a reranker, use `type = "pair_score"`, its `base_url`, and its remote `default_model`. Pair scores support memory **Rank**, not **Select** or permission review. By default, requests append `/systemone` or `/rerank` to the base path. Set `decision_endpoint` to a path or complete URL when the service needs another route; it must share the base URL's scheme, host and port and contain no embedded credentials.
+
+Both types use the existing provider credential fields and custom headers. A service that accepts unauthenticated HTTP requests can leave credentials unset. An explicitly selected `api_key_env` that has no value and no alternative authentication reports an authentication issue; an upstream 401 or 403 does too. Store API keys through the existing connection credential field or `credentials.toml`, not a second consumer-specific key field. The [decision probe](../server/rest-api.md#decision-connections) sends only synthetic content after destination confirmation.
+
+Existing Reviewer `backend = "jev"` and advisor `selector` configurations continue working. The explicit [move Reviewer key](../server/rest-api.md#decision-connections) action transfers a saved legacy key on the server, switches the Reviewer source, then clears that old key. A partial result preserves newer settings: refresh and check the connection and Reviewer before retrying. If the Reviewer key has changed while the target connection still holds the old key, choose a new connection name; conflicting connections are never overwritten. Environment-variable connections require no key transfer.
 
 ### Model request format overrides
 

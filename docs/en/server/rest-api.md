@@ -182,15 +182,17 @@ The `hooks` value accepts a legacy command-rule array or a declarative object wi
 | `POST /api/models/{model_id}:set_default` | Set the global default model |
 | `GET /api/providers` | List providers |
 | `POST /api/providers` | Create a provider (201) |
-| `GET /api/providers/{provider_id}` | Read a provider (reveals the stored key) |
+| `GET /api/providers/{provider_id}` | Read a provider with credential-source metadata; values require `POST /api/secrets:reveal` |
 | `PATCH /api/providers/{provider_id}` | Change only the supplied provider fields |
-
-`GET /api/providers` and `GET /api/providers/{provider_id}` include `request_compression` and `responses_web_socket` when that provider saved them. A partial compression object, `encoding: "off"`, `off: true`, and the saved `targets` order come back as stored. The read does not fill those fields from the system section. `POST /api/providers` and `PATCH /api/providers/{provider_id}` accept the same objects. JSON `null` on PATCH clears that provider field. Omitted fields stay unchanged.
 | `DELETE /api/providers/{provider_id}` | Delete a provider (204) |
 | `POST /api/providers/{provider_id}:refresh` | Refresh one provider's model metadata |
 | `POST /api/providers:{action}` | Collection actions: `refresh` / `refresh_oauth` / `import_catalog` / `import_registry` |
 | `GET /api/catalog/providers` | Browse the models.dev directory (server-proxied) |
 | `GET /api/catalog/providers/{catalog_id}` | Read one directory entry |
+
+Provider listings distinguish `service: "chat" | "decision"`; decision rows report `decision_protocol`, optional `decision_endpoint`, `effective_base_url` and an empty `models` array. Create a decision provider with `type: "system_one" | "pair_score"`, its address and a remote `default_model`; `models: []` is accepted. Protocol and endpoint belong to the connection. An endpoint override may be a path or same-origin HTTP(S) URL without embedded credentials. These connections use existing provider credentials, environment variables and custom headers and stay out of chat discovery and model pickers. See [decision connections](../configuration/providers.md#decision-connections).
+
+`GET /api/providers` and `GET /api/providers/{provider_id}` include `request_compression` and `responses_web_socket` when that provider saved them. A partial compression object, `encoding: "off"`, `off: true`, and the saved `targets` order come back as stored. The read does not fill those fields from the system section. `POST /api/providers` and `PATCH /api/providers/{provider_id}` accept the same objects. JSON `null` on PATCH clears that provider field. Omitted fields stay unchanged.
 
 Directory reads return the last fetched catalog or bundled snapshot immediately while one background update runs. Successful fetches are fresh for ten minutes; a failed background update leaves the local directory readable and postpones another automatic attempt for ten minutes. Without a local catalog, the read waits for the upstream fetch and reports an error if it fails. Explicit `import_catalog` waits for any required catalog update before validating and saving the selected entry; if upstream is unavailable, it can use the same cached or bundled entry. Directory browsing never fetches model lists from your configured providers; those requests require an explicit `refresh` action.
 
@@ -199,6 +201,21 @@ Model creation accepts an optional `protocol`: `openai`, `openai_responses`, `an
 Model reads expose the saved `protocol` and resolved `effective_protocol` separately. An absent saved value inherits the provider's default format; an absent effective value in the list means no usable requester was materialized. Changing a model's protocol does not write the provider connection, credentials, request identity, or default pointers. See [model request format overrides](../configuration/providers.md#model-request-format-overrides) for configuration examples and endpoint compatibility.
 
 The single-model response also separates the stored `base_url` override from read-only `effective_base_url`. The latter resolves the model override, provider URL, provider environment and vendor default in that order, and is omitted if none resolves. Create and PATCH accept only stored fields; do not copy `effective_base_url` into a write.
+
+### Decision connections
+
+Permission review and Memory Advisor each store a `source`: `{ kind: "connection", connection, model? }` for a decision connection, or `{ kind: "model", model }` for a configured chat alias. Save it under `permission.reviewer` with `POST /api/config`, or under `advisor` with `PATCH /api/memory/settings`. An omitted source is preserved; an object replaces the whole source. `source: null` clears it and the advisor's legacy selector, or resets the Reviewer to an unconfigured model backend. Without a source, legacy configurations continue working. Permission review rejects `pair_score`; Memory Advisor uses those scores for `rank` only.
+
+Configuration reads expose `reviewer.source_status` and `advisor_status.source_status`. They report `state` (`ready`, `unconfigured`, `auth`, `protocol` or `capability_mismatch`) plus available connection, model, protocol, origin, destination and credential source metadata. No credential value is included. A ready configuration still needs a successful request to establish that the service answers the chosen protocol.
+
+| Method and path | Description |
+| --- | --- |
+| `POST /api/decision/probe` | Test `{ source, confirm_destination }` with synthetic content; returns `{ ok, status, duration_ms, reason? }` |
+| `POST /api/decision/move-reviewer-key` | Move a saved legacy Reviewer key on the server; body `{ connection }`, response `{ connection, state, retryable }` |
+
+Pass the exact destination reported for the source as `confirm_destination`. The decision probe reads no user memory and does not save a source or workspace consent. Its `status` uses the source-status shape above. The [saved-advisor probe](#memory) instead uses the saved advisor configuration and returns advisor status and optional token usage.
+
+Key movement creates a connection without exposing the key to the caller, switches the Reviewer source, then removes the old key. `complete` confirms all stages; `connection_saved` and `source_switched` identify the completed stage when a later write fails or concurrent settings change. Refresh the connection and Reviewer before retrying. Reuse the name only when it still represents the same key and settings; if the Reviewer key changed while the connection holds the old key, choose a new name. Conflicting connections and newer settings are preserved. Environment-variable Jev connections need no key movement.
 
 ### Executor catalog and checks
 
@@ -572,7 +589,7 @@ Both `PATCH` variants accept `{ name?, pinned? }`, with at least one field requi
 | --- | --- |
 | `GET /api/memory/settings` | Read the memory section, with `effective_enabled`, optional `advisor` and `advisor_status`; optional `workspace_id` resolves workspace consent |
 | `PATCH /api/memory/settings` | Change `enabled`, `approval`, `budget` or sparse `advisor` fields; accepts the same optional `workspace_id` |
-| `POST /api/memory/advisor/probe` | Test the saved selector using synthetic content; body: `{ confirm_destination }` |
+| `POST /api/memory/advisor/probe` | Test the saved advisor source using synthetic content; body: `{ confirm_destination }` |
 | `GET /api/memory/advisor/status` | Read a live agent's status with `session_id` and optional `agent_id` (default `main`); returns `null` for a cold or absent agent |
 | `GET /api/memory/workspaces/{workspace_id}/settings` | Read one workspace's switch |
 | `PATCH /api/memory/workspaces/{workspace_id}/settings` | Set it to `true` / `false`, or `null` to follow the global setting |
@@ -597,7 +614,9 @@ Both `PATCH` variants accept `{ name?, pinned? }`, with at least one field requi
 | `POST /api/memory/{scope}/import-preview` | Compare a Markdown document with the current governed entry |
 | `POST /api/memory/{scope}/import` | Apply an explicitly confirmed preview token |
 
-An advisor selector is `{ protocol: "chat_json" | "system_one" | "pair_score", model, endpoint? }`, where `model` is a configured alias and a non-chat `endpoint` must share the origin of that model's `effective_base_url`. `mode` is `off`, `rank` or `select`; `pair_score` supports `rank` only. `{ "advisor": { "mode": "off" } }` preserves the selector and other preferences. `advisor: null` removes the block; `selector: null` clears only the selector. Updates apply without restarting.
+Set `advisor.source` to a [decision source](#decision-connections). It takes precedence over an existing `selector`. Sparse `{ "advisor": { "mode": "off" } }` preserves the source, destination confirmations and other preferences. `mode` is `off`, `rank` or `select`; `pair_score` supports `rank` only. `advisor: null` removes the whole block; `source: null` clears both the source and legacy selector, while `selector: null` clears only the selector. Updates apply without restarting.
+
+The legacy selector remains `{ protocol: "chat_json" | "system_one" | "pair_score", model, endpoint? }`, where `model` is a configured alias and a non-chat `endpoint` must share the origin of that model's `effective_base_url`. New connection sources keep the protocol and endpoint on the connection instead.
 
 For automatic recommendations, read the settings with `workspace_id`, inspect `advisor_status.destination`, then save that exact value in `advisor.egress_ack` as `{ workspace_id, destination }`, preserving any confirmations for other workspaces. The confirmation covers context sent to that provider and origin; see [Memory Advisor](../guides/memory.md#memory-advisor) for the content sent. The probe requires an explicit matching `confirm_destination`, reads no saved entries, and works while automatic advice is off. It returns `{ ok, status, duration_ms, input_tokens?, output_tokens?, usage_known }`.
 

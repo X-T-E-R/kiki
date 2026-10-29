@@ -1008,37 +1008,27 @@ dangerous_bash = "default"
 
 `review`（「替我审批」）沿用 Auto 模式对普通操作的自动批准，但先把策略产生的审批请求交给审查者。显式配置的 `deny` 规则始终拦截；匹配「本会话允许」的调用先于显式 `ask` 规则和受保护路径检查而放行，其余命中显式 `ask` 的调用仍会询问你。审查者高置信批准会继续执行，高置信拒绝会阻止工具；结果不确定、格式错误、超时、凭证缺失或服务不可用时，改为询问你。同一轮连续三次被审查者拒绝后，这轮余下的请求直接询问你。审查者的批准不会写入「本会话始终批准」规则。
 
-两种审查后端都会收到最多三条最近的真实 User 文本消息、完整的 Bash 命令或解析后的文件路径及操作、策略名称和原因，以及工作目录。对于交由审查者的 `Write` 和 `Edit` 调用，还会收到提交内容的字节数及 SHA-256 摘要（编辑时包括修改前后两段），但不会收到文件正文或 Diff 原文。向敏感文件写入或编辑时，由于审查者无法核实未发送的内容，会直接询问你。文本字段中的 PEM 私钥及常见 API 密钥格式会先脱敏。输入过长时裁剪 User 消息文本，不截断操作、策略和工作目录；Assistant 消息与工具输出不会发送。命令或目标列表超过各自上限、固定的操作或策略内容超出总长度上限、操作没有明确命令或解析后目标，或必须看到隐去的内容才能判断安全性时，改为询问你。使用模型后端时，`model` 必须是已配置的模型别名：
+审查者会收到最多三条最近的真实 User 文本消息、完整的 Bash 命令或解析后的文件路径及操作、策略名称和原因，以及工作目录。对于交由审查者的 `Write` 和 `Edit` 调用，还会收到提交内容的字节数及 SHA-256 摘要（编辑时包括修改前后两段），但不会收到文件正文或 Diff 原文。向敏感文件写入或编辑时，由于审查者无法核实未发送的内容，会直接询问你。文本字段中的 PEM 私钥及常见 API 密钥格式会先脱敏。输入过长时裁剪 User 消息文本，不截断操作、策略和工作目录；Assistant 消息与工具输出不会发送。命令或目标列表超过各自上限、固定的操作或策略内容超出总长度上限、操作没有明确命令或解析后目标，或必须看到隐去的内容才能判断安全性时，改为询问你。可选择已有对话模型或[决策连接](./providers.md#决策连接)：
 
 ```toml
 # ~/.kiki/config.toml
 default_permission_mode = "review"
 
 [permission.reviewer]
-backend = "model"
-model = "k3-review"
+source = { kind = "model", model = "review-model" }
 allow_threshold = 0.9
 deny_threshold = 0.9
 timeout_ms = 8000
 categories = ["policy_compliance", "no_secret_egress", "no_irreversible_damage", "no_outward_effect", "prompt_injection_absent"]
 ```
 
-`backend` 可选 `model` 或 `jev`，模型后端必须配置 `model`。`allow_threshold` 和 `deny_threshold` 的范围都是 0.5–1；置信度低于对应阈值时会询问你。`categories` 从上面五个名称中选择 Jev 的是非检查项。默认超时：模型 8 秒、Jev 4 秒；`timeout_ms` 可覆盖为 100–30,000 毫秒。使用 TypeSafe Jev 时，把它选为审查后端，并单独保存密钥。选择 `backend = "jev"` 即表示同意把上述有限审查内容发送给 TypeSafe，不再有单独的同意开关（旧的 `jev_consent` 键会被忽略）：
+使用决策服务时，设置 `source = { kind = "connection", connection = "judgment" }`，复用该连接的现有凭证及远端 `default_model`；可在 source 中加 `model` 覆盖远端名称。权限审查接受 `system_one`，`pair_score` 只用于记忆排序。选择来源即允许将上述有限审查内容发送给它；记忆顾问保留自身的来源及工作区确认。在**设置 → 模型与提供商 → 默认值 → 谁来做判断**中分别选择两处来源；权限设置保留审查阈值和超时。
 
-```toml
-# ~/.kiki/config.toml
-[permission.reviewer]
-backend = "jev"
-model = "jev-latest"
-```
+`allow_threshold` 和 `deny_threshold` 的范围都是 0.5–1；置信度低于对应阈值时会询问你。`categories` 从上面五个名称中选择 System One 的是非检查项。`timeout_ms` 接受 100–30,000 毫秒；未覆盖时沿用 `backend` 的默认超时：`model`（默认）为 8 秒，`jev` 为 4 秒。
 
-```toml
-# ~/.kiki/credentials/credentials.toml
-[permission.reviewer]
-api_key = "YOUR_TYPESAFE_API_KEY"
-```
+未设置 `source` 的旧配置继续使用 `backend = "model"` 加模型别名，或 `backend = "jev"` 加可选远端模型名（默认 `jev-latest`）。旧 Jev 依次读取 `credentials.toml` 中的 `[permission.reviewer].api_key`、服务器的 `TYPESAFE_API_KEY`；两者都没有时，改为询问你。选择旧 `backend = "jev"` 即允许向 TypeSafe 发送上述审查内容，旧的 `jev_consent` 键会被忽略。新 `source` 优先；API 的 `source: null` 同时清除来源和旧模型选择，并将 `backend` 重置为 `model`，使 Reviewer 回到未配置状态。
 
-配置写入器把 `api_key` 保存在 `credentials.toml` 而不是 `config.toml`。未保存密钥时，可从服务器进程的 `TYPESAFE_API_KEY` 环境变量读取。没有可用密钥时不会调用 Jev，而是询问你。在「设置 → 权限 → 审查者」中，已保存的密钥默认遮盖，但不是只写：可以主动显示、复制、编辑或清除；来自环境变量的密钥会标明来源，也可以在 Kiki 中另存一个值覆盖它。持有 Kiki bearer 令牌的人都能显示已保存的密钥。
+保存过旧 Reviewer 密钥时，**移到连接**会在服务器端转存，浏览器不会为这项操作读取密钥。部分完成时保留并发修改：先刷新、核对设置再重试；连接持有不同密钥时，换一个新连接名。之后通过现有连接编辑器显示、复制、编辑或清除凭证。持有 Kiki bearer 令牌的人可通过已鉴权的密钥 API 显示密钥。
 
 ::: tip
 MCP server 的声明配置写在 `~/.kiki/mcp.json` 或项目内 `.kiki/mcp.json` 中，不在 `config.toml` 里。旧的 `.kimi-code/mcp.json` 路径不会读取。交互式配置入口是内置的 `kiki-ops` Skill（负责 Kiki 产品使用与配置的内置 Skill）：输入 `/kiki-ops 帮我配置 MCP`，详见 [Model Context Protocol](../server/mcp.md)。

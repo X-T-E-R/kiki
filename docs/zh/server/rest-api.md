@@ -182,15 +182,17 @@ home 中存在旧格式消息邮箱，或升级尚未完成时，服务会先进
 | `POST /api/models/{model_id}:set_default` | 设置全局默认模型 |
 | `GET /api/providers` | 列出供应商 |
 | `POST /api/providers` | 创建供应商（201） |
-| `GET /api/providers/{provider_id}` | 读取供应商（含已存密钥） |
+| `GET /api/providers/{provider_id}` | 读取供应商及凭证来源元数据；密钥值须通过 `POST /api/secrets:reveal` 读取 |
 | `PATCH /api/providers/{provider_id}` | 只修改提供的供应商字段 |
-
-`GET /api/providers` 和 `GET /api/providers/{provider_id}` 在供应商保存过 `request_compression` 或 `responses_web_socket` 时返回这两项。不完整的压缩对象、`encoding: "off"`、`off: true`，以及已保存的 `targets` 顺序都按原样返回，不会用系统节补齐。`POST /api/providers` 和 `PATCH /api/providers/{provider_id}` 接受同样的对象。PATCH 里的 JSON `null` 清除该供应商字段。省略的字段保持不变。
 | `DELETE /api/providers/{provider_id}` | 删除供应商（204） |
 | `POST /api/providers/{provider_id}:refresh` | 刷新该供应商的模型元数据 |
 | `POST /api/providers:{action}` | 集合级动作：`refresh` / `refresh_oauth` / `import_catalog` / `import_registry` |
 | `GET /api/catalog/providers` | 浏览 models.dev 目录（服务端代理） |
 | `GET /api/catalog/providers/{catalog_id}` | 读取目录中单个条目 |
+
+供应商列表以 `service: "chat" | "decision"` 区分类型；决策行返回 `decision_protocol`、可选 `decision_endpoint`、`effective_base_url` 及空的 `models` 数组。创建决策提供商时填 `type: "system_one" | "pair_score"`、地址和远端 `default_model`，接受 `models: []`。协议及端点归连接；端点覆盖可为路径或同源 HTTP(S) URL，且不含嵌入式凭据。这些连接复用现有提供商凭证、环境变量和自定义请求头，不进入对话模型发现或选择器。见[决策连接](../configuration/providers.md#决策连接)。
+
+`GET /api/providers` 和 `GET /api/providers/{provider_id}` 在供应商保存过 `request_compression` 或 `responses_web_socket` 时返回这两项。不完整的压缩对象、`encoding: "off"`、`off: true`，以及已保存的 `targets` 顺序都按原样返回，不会用系统节补齐。`POST /api/providers` 和 `PATCH /api/providers/{provider_id}` 接受同样的对象。PATCH 里的 JSON `null` 清除该供应商字段。省略的字段保持不变。
 
 目录读取会立即返回最近获取的目录或内置快照，同时合并为一次后台更新。成功获取的目录在十分钟内有效；后台更新失败时，本地目录仍可读取，下一次自动尝试至少间隔十分钟。没有本地目录时，读取等待上游获取，失败则返回错误。显式 `import_catalog` 会等待必要的目录更新，再校验并保存所选条目；上游不可用时，可使用同一份缓存或内置条目。浏览目录不会向你已配置的供应商获取模型列表；这类请求需要显式执行 `refresh`。
 
@@ -199,6 +201,21 @@ home 中存在旧格式消息邮箱，或升级尚未完成时，服务会先进
 模型读取分别返回已保存的 `protocol` 和求解后的 `effective_protocol`。已存值缺省表示继承供应商默认格式；列表中生效值缺省表示未能构建可用 requester。修改模型协议不会写供应商连接、凭据、请求身份或默认指针。配置示例和端点兼容要求见[模型请求格式覆盖](../configuration/providers.md#模型请求格式覆盖)。
 
 单个模型的响应还将已存的 `base_url` 覆盖值与只读的 `effective_base_url` 分开。后者依次取模型覆盖、供应商 URL、供应商环境配置和厂商默认地址；全部未解析到时省略。创建与 PATCH 只接受存储字段，提交时应排除 `effective_base_url`。
+
+### 决策连接
+
+权限审查与记忆顾问分别保存 `source`：`{ kind: "connection", connection, model? }` 引用决策连接，`{ kind: "model", model }` 引用已配置的对话模型别名。通过 `POST /api/config` 写 `permission.reviewer.source`，或通过 `PATCH /api/memory/settings` 写 `advisor.source`。省略则保留，对象整体替换来源。`source: null` 会清除来源及顾问的旧 selector，或将 Reviewer 重置为未配置的 model backend。未设 source 时，旧配置继续工作。权限审查拒绝 `pair_score`；记忆顾问只用这类分数做 `rank`。
+
+配置读取返回 `reviewer.source_status` 和 `advisor_status.source_status`，包含 `state`（`ready`、`unconfigured`、`auth`、`protocol` 或 `capability_mismatch`），以及可解析的连接、模型、协议、origin、目的地和凭证来源元数据，不含凭证值。配置就绪后，仍须一次成功请求确认服务能按所选协议回答。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `POST /api/decision/probe` | 用虚构内容测试 `{ source, confirm_destination }`，返回 `{ ok, status, duration_ms, reason? }` |
+| `POST /api/decision/move-reviewer-key` | 在服务器上转存已保存的旧 Reviewer 密钥；请求 `{ connection }`，返回 `{ connection, state, retryable }` |
+
+`confirm_destination` 须使用该来源报告的精确目的地。决策连接测试不读取用户记忆，不保存来源或工作区同意；`status` 使用上述来源状态结构。[已保存顾问的测试](#记忆)则读取顾问配置，返回顾问状态及可选 token 用量。
+
+密钥转存会先创建连接，切换 Reviewer 来源，再删除旧密钥；调用方不会收到密钥。`complete` 表示全部完成，`connection_saved` 和 `source_switched` 表示后续写入失败或遇到并发设置变化前完成的阶段。重试前先刷新连接和 Reviewer；只有名称仍对应同一密钥和设置时才沿用，Reviewer 密钥已换新而连接仍持旧密钥时应换新名称。冲突连接和较新设置会保留。通过环境变量使用 Jev 时无需转存。
 
 ### 执行器目录与检查
 
@@ -572,7 +589,7 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 | --- | --- |
 | `GET /api/memory/settings` | 读取记忆配置，含 `effective_enabled`、可选 `advisor` 及 `advisor_status`；可选 `workspace_id` 用于判断工作区外发确认 |
 | `PATCH /api/memory/settings` | 修改 `enabled`、`approval`、`budget` 或稀疏 `advisor` 字段；接受同一可选 `workspace_id` |
-| `POST /api/memory/advisor/probe` | 用虚构内容测试已保存的选择器；请求体为 `{ confirm_destination }` |
+| `POST /api/memory/advisor/probe` | 用虚构内容测试已保存的顾问来源；请求体为 `{ confirm_destination }` |
 | `GET /api/memory/advisor/status` | 用 `session_id` 和可选 `agent_id`（默认 `main`）读取 live Agent 状态；冷会话或不存在的 Agent 返回 `null` |
 | `GET /api/memory/workspaces/{workspace_id}/settings` | 读取某个工作区的开关 |
 | `PATCH /api/memory/workspaces/{workspace_id}/settings` | 设为 `true` / `false`，或 `null` 表示跟随全局 |
@@ -597,7 +614,9 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 | `POST /api/memory/{scope}/import-preview` | 比较 Markdown 文档与当前受治理条目 |
 | `POST /api/memory/{scope}/import` | 应用明确确认过的预览 token |
 
-顾问选择器为 `{ protocol: "chat_json" | "system_one" | "pair_score", model, endpoint? }`，`model` 是已配置 alias，非对话协议的 `endpoint` 须与该模型的 `effective_base_url` 同源。`mode` 取 `off`、`rank` 或 `select`；`pair_score` 只支持 `rank`。`{ "advisor": { "mode": "off" } }` 保留选择器和其他设置。`advisor: null` 删除整个配置块，`selector: null` 只清除选择器。修改无需重启即可生效。
+将 `advisor.source` 设为[决策来源](#决策连接)，优先于已有 `selector`。稀疏 `{ "advisor": { "mode": "off" } }` 保留来源、目的地确认及其他设置。`mode` 取 `off`、`rank` 或 `select`；`pair_score` 只支持 `rank`。`advisor: null` 删除整个配置块；`source: null` 同时清除来源和旧 selector，`selector: null` 则只清除 selector。修改无需重启即可生效。
+
+旧选择器仍为 `{ protocol: "chat_json" | "system_one" | "pair_score", model, endpoint? }`，`model` 是已配置 alias，非对话协议的 `endpoint` 须与该模型的 `effective_base_url` 同源。新的连接来源将协议及端点保存在连接上。
 
 自动推荐前，带 `workspace_id` 读取设置，核对 `advisor_status.destination`，再以 `{ workspace_id, destination }` 将这个精确值保存到 `advisor.egress_ack`，并保留其他工作区的确认。确认允许将上下文发给该供应商和 origin；发送内容见[记忆顾问](../guides/memory.md#记忆顾问)。探针要求显式传入匹配的 `confirm_destination`，不读取已存条目，自动推荐关闭时也可测试。返回 `{ ok, status, duration_ms, input_tokens?, output_tokens?, usage_known }`。
 
