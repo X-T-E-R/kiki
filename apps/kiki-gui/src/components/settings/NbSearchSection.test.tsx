@@ -126,6 +126,12 @@ const PROJECTED_CAPABILITIES: NbSearchCapabilities = {
   },
   fetch: {
     ...CAPABILITIES.fetch,
+    // The other-pairs editor offers every declared input; a saved file chain
+    // needs the file input declared the way a real server declares it.
+    inputs: [
+      ...CAPABILITIES.fetch.inputs,
+      { kind: 'file', enabled: false, max_bytes: 2_097_152, media_types: [] },
+    ],
     // A pipeline a saved file chain can legitimately name; the save checks that
     // every configured pipeline really exists.
     pipelines: [
@@ -257,6 +263,14 @@ async function flush(): Promise<void> {
   });
 }
 
+/** Pick an option from a `SettingsSelect` popover (rendered in the body portal). */
+async function choose(container: HTMLElement, dataAttr: string, value: string): Promise<void> {
+  await click(container.querySelector(`[${dataAttr}] button`)!);
+  const option = document.querySelector(`[data-option-value="${value}"]`);
+  expect(option, `option ${value} of ${dataAttr}`).not.toBeNull();
+  await click(option!);
+}
+
 /** The server already reporting a saved override for Exa: it appears in the list. */
 const CONFIGURED_EXA = {
   providers: {},
@@ -266,14 +280,34 @@ const CONFIGURED_EXA = {
 } as unknown as KikiConfigResponse;
 
 /** The providers tab lists configured services; a row opens the editor. */
+/** Opens a service body. The card id is the lane id when the method has one,
+ * and `instance:<id>` when the user configured the provider directly. */
+/** Resolves an instance to the card that edits it: its own instance card, or
+ * the lane card whose provider the instance serves (the lane card edits the
+ * provider's first instance). */
+function serviceCardIdFor(container: HTMLDivElement, instanceId: string): string | null {
+  const all = [...container.querySelectorAll('[data-nb-search-service-card]')];
+  const ids = all.map((node) => node.getAttribute('data-nb-search-service-card') ?? '');
+  if (ids.includes(`instance:${instanceId}`)) return `instance:${instanceId}`;
+  const provider = instanceId.split('.')[0]!;
+  return ids.find((id) => !id.startsWith('instance:') && id.startsWith(`${provider}.`)) ?? null;
+}
+
 async function openServiceDetail(container: HTMLDivElement, instanceId: string): Promise<HTMLDivElement> {
-  const tab = container.querySelector('#nb-search-tab-providers')!;
-  await click(tab);
-  const row = container.querySelector(`[data-nb-search-service-row="${instanceId}"]`);
-  expect(row, `${instanceId} is not in the configured service list`).not.toBeNull();
-  await click(row!);
-  const detail = container.querySelector<HTMLDivElement>(`[data-nb-search-service="${instanceId}"]`);
-  expect(detail, `${instanceId} editor did not open`).not.toBeNull();
+  const all = [...container.querySelectorAll('[data-nb-search-service-card]')];
+  const cardId = serviceCardIdFor(container, instanceId);
+  const card = cardId === null ? undefined : container.querySelector(`[data-nb-search-service-card="${cardId}"]`) ?? undefined;
+  expect(card, `${instanceId} is not in the service list (${all.map((n) => n.getAttribute('data-nb-search-service-card')).join(',')})`).not.toBeNull();
+  const openButton = card!.querySelector('[data-nb-search-service-open]');
+  expect(openButton, `${instanceId} has no open button`).not.toBeNull();
+  if (openButton!.getAttribute('aria-expanded') !== 'true') await click(openButton!);
+  const detail = card!.querySelector<HTMLDivElement>('[data-nb-search-service-body]');
+  expect(detail, `${instanceId} body did not open`).not.toBeNull();
+  // Every collapsed disclosure inside the body opens too, so tests reach the
+  // env field, Base URL and key-status panel the way a user would.
+  for (const summary of detail!.querySelectorAll('details:not([open]) > summary')) {
+    await click(summary);
+  }
   return detail!;
 }
 
@@ -315,35 +349,37 @@ describe('NbSearchSection status', () => {
     expect(testNbSearch).not.toHaveBeenCalled();
   });
 
-  it('lists lanes for the default-lane choice, and shows the real inherited default', async () => {
+  it('lists every search service by name, with no schema ids on the rows', async () => {
+    getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
     const container = await renderSection();
-    const defaults = container.querySelector('#st-card-search-defaults')!;
-    expect(defaults.textContent).toContain('exa.search');
-    expect(defaults.textContent).toContain('results · nb-search.results@1');
-    expect(defaults.textContent).toContain('github.repositories');
-    expect(defaults.textContent).toContain('example.documents');
-    expect(defaults.textContent).toContain('typed · example.documents@1');
-    // No Kiki override: the row says so, instead of claiming search is off
-    // while the engine may be serving an inherited default.
-    expect(defaults.textContent).toContain('Use the current default');
-    expect(defaults.textContent).toContain('No default search lane is set');
+    const services = container.querySelector('#st-card-search-providers')!;
+    // The row says the service, never the protocol: no lane ids, no schema ids.
+    expect(services.textContent).toContain('Exa');
+    expect(services.textContent).toContain('GitHub');
+    expect(services.textContent).not.toContain('exa.search');
+    expect(services.textContent).not.toContain('nb-search.results@1');
+    expect(services.textContent).not.toContain('exa.default');
+    expect(services.textContent).not.toContain('example.documents@1');
   });
 
   it('names the lane actually in use when the default is inherited', async () => {
     getNbSearchCapabilities.mockResolvedValue({
-      ...CAPABILITIES,
-      search: { ...CAPABILITIES.search, default_lane: 'github.repositories' },
+      ...PROJECTED_CAPABILITIES,
+      search: { ...PROJECTED_CAPABILITIES.search, default_lane: 'github.repositories' },
+      inherited_configuration: {
+        ...PROJECTED_CAPABILITIES.inherited_configuration!,
+        default_search_lane: 'github.repositories',
+      },
     });
     const container = await renderSection('/settings/search?tab=search');
     const panel = container.querySelector('#nb-search-panel-search')!;
-    // Nothing is overridden here, so the page has to report the engine's own lane.
-    expect(panel.textContent).toContain('Use the current default');
-    expect(panel.textContent).toContain('Using the default: github.repositories');
-    expect(panel.querySelector('[data-nb-search-lane-inherited-badge]')).not.toBeNull();
+    // Nothing is overridden here, so the card says the default comes from the source.
+    expect(panel.querySelector('[data-nb-search-service-inherit]')).not.toBeNull();
+    expect(panel.querySelector('[data-nb-search-service-make-default="github.repositories"]')).toBeNull();
   });
 
   it('shows an empty service list and the directory entry when nothing is configured', async () => {
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const providers = container.querySelector('#st-card-search-providers')!;
     // Nothing configured is a normal state, not a page of open forms.
     expect(providers.textContent).toContain('No service configured');
@@ -356,42 +392,43 @@ describe('NbSearchSection status', () => {
 
   it('lists a configured service as one compact row and opens its editor', async () => {
     getConfig.mockResolvedValue(CONFIGURED_EXA);
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const providers = container.querySelector('#st-card-search-providers')!;
-    const rows = providers.querySelectorAll('[data-nb-search-service-row]');
-    expect(rows).toHaveLength(1);
-    // A human name leads; the instance id stays secondary.
-    expect(rows[0]!.textContent).toContain('Exa');
-    expect(rows[0]!.textContent).toContain('exa.default');
-    expect(rows[0]!.querySelector('[data-nb-search-row-state]')!.getAttribute('data-nb-search-row-state')).toBe('needsKey');
-    // One editor pane, for the service the user has — not one per instance.
-    const editors = providers.querySelectorAll('[data-nb-search-service]');
-    expect(editors).toHaveLength(1);
-    expect(editors[0]!.getAttribute('data-nb-search-service')).toBe('exa.default');
+    const cards = providers.querySelectorAll('[data-nb-search-service-card]');
+    expect(cards).toHaveLength(1);
+    // A human name leads; the instance id never appears on the row.
+    expect(cards[0]!.textContent).toContain('Exa');
+    expect(cards[0]!.textContent).not.toContain('exa.default');
+    expect(cards[0]!.getAttribute('data-nb-search-service-card')).toBe('instance:exa.default');
+    expect(cards[0]!.querySelector('[data-nb-search-service-state]')!.getAttribute('data-nb-search-service-state')).toBe('needsKey');
 
     const detail = await openServiceDetail(container, 'exa.default');
-    expect(detail.textContent).toContain('exa.default');
+    expect(detail.querySelector('[data-nb-search-keys="exa.default"]')).not.toBeNull();
+    expect(detail.querySelector('[data-nb-search-credential-env-section]')).not.toBeNull();
+    // Address and key order live behind the card's own advanced disclosure.
+    await click(detail.querySelector('[data-nb-search-service-advanced] > summary')!);
     expect(detail.querySelector('[data-nb-search-base-url]')).not.toBeNull();
-    expect(detail.querySelector('[data-nb-search-credential-env]')).not.toBeNull();
   });
 
   it('adds a service from the searchable directory using its real instance id', async () => {
-    const container = await renderSection('/settings/search?tab=providers');
+    getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
+    const container = await renderSection('/settings/search?tab=search');
     const providers = container.querySelector('#st-card-search-providers')!;
     const directory = await openDirectory(container);
-    // Every instance the server reports is reachable by its own id — nothing is
-    // guessed from a provider name.
-    expect(directory.querySelector('[data-nb-search-directory-row="exa.default"]')).not.toBeNull();
-    expect(directory.querySelector('[data-nb-search-directory-row="direct-http.default"]')).not.toBeNull();
+    // Every lane the engine reports is reachable by name; nothing shows its id.
+    expect(directory.querySelector('[data-nb-search-directory-row="jina.reader"]')).not.toBeNull();
+    expect(directory.querySelector('[data-nb-search-directory-row="direct.fetch"]')).not.toBeNull();
 
     // Search narrows the directory.
-    await setInputValue(directory.querySelector<HTMLInputElement>('input[type="search"]')!, 'direct-http');
-    expect(directory.querySelector('[data-nb-search-directory-row="direct-http.default"]')).not.toBeNull();
-    expect(directory.querySelector('[data-nb-search-directory-row="exa.default"]')).toBeNull();
+    await setInputValue(directory.querySelector<HTMLInputElement>('input[type="search"]')!, 'jina');
+    expect(directory.querySelector('[data-nb-search-directory-row="jina.reader"]')).not.toBeNull();
+    expect(directory.querySelector('[data-nb-search-directory-row="direct.fetch"]')).toBeNull();
 
-    // Choosing it stages an override and opens the editor.
-    await click(directory.querySelector('[data-nb-search-directory-row="direct-http.default"]')!);
-    expect(providers.querySelector('[data-nb-search-service="direct-http.default"]')).not.toBeNull();
+    // Choosing it stages a fetch-chain declaration; the service joins the
+    // fetch tab's chain at once.
+    await click(directory.querySelector('[data-nb-search-directory-row="jina.reader"]')!);
+    await click(container.querySelector('#nb-search-tab-fetch')!);
+    expect(container.querySelector('[data-nb-search-service-card="jina.reader"]')).not.toBeNull();
     expect(saveButtonOf(container).disabled).toBe(false);
   });
 
@@ -402,7 +439,7 @@ describe('NbSearchSection status', () => {
       reveal ? { ...MANAGED_KEYS, value: 'key-one,key-two' } : MANAGED_KEYS
     ));
 
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     const keys = detail.querySelector('[data-nb-search-keys="exa.default"]')!;
 
@@ -451,7 +488,7 @@ describe('NbSearchSection status', () => {
       .mockResolvedValueOnce(envView);
     writeNbSearchCredential.mockResolvedValueOnce({ ...envView, stored: true, active: true, source: 'managed', version: 'fixture-new' });
 
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     const keys = detail.querySelector('[data-nb-search-keys="exa.default"]')!;
     expect(keys.textContent).toContain('From environment variable NB_SEARCH_EXA_API_KEY');
@@ -475,7 +512,7 @@ describe('NbSearchSection status', () => {
     readNbSearchCredential.mockResolvedValue(empty);
     writeNbSearchCredential.mockRejectedValueOnce(new Error('credential store unreachable'));
 
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     const keys = detail.querySelector('[data-nb-search-keys="exa.default"]')!;
     await setInputValue(keys.querySelector<HTMLInputElement>('[data-key-input]')!, 'fixture-typed-key');
@@ -495,7 +532,7 @@ describe('NbSearchSection status', () => {
     getConfig.mockResolvedValue(CONFIGURED_EXA);
     readNbSearchCredential.mockResolvedValue({ instance_id: 'exa.default', slot_id: 'exa.default', stored: false, active: false, source: 'none', version: 'none', binding_version: 'fixture-binding' });
 
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     const keys = detail.querySelector('[data-nb-search-keys="exa.default"]')!;
     const tooMany = Array.from({ length: 33 }, (_, index) => `key-${index}`).join(',');
@@ -525,7 +562,7 @@ describe('NbSearchSection status', () => {
   it('keeps key strategy and cache TTL through a save and read-back', async () => {
     getConfig.mockResolvedValue(CONFIGURED_EXA);
     patchConfig.mockImplementation(async (patch: Record<string, unknown>) => ({ ...patch }) as unknown as KikiConfigResponse);
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
 
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-nb-search-balance-ttl]')!, '600000');
@@ -562,7 +599,7 @@ describe('NbSearchSection status', () => {
         },
       },
     } as unknown as KikiConfigResponse);
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-nb-search-base-url]')!, '');
     await click(saveButtonOf(container));
@@ -578,25 +615,16 @@ describe('NbSearchSection status', () => {
   });
 
   it('removes a service explicitly and leaves the other instances alone', async () => {
-    getConfig.mockResolvedValueOnce({
-      providers: {},
-      nb_search: {
-        provider_instances: {
-          'exa.default': { provider_id: 'exa', enabled: true },
-          'tavily.default': { provider_id: 'tavily', enabled: true },
-        },
-      },
-    } as unknown as KikiConfigResponse);
     getNbSearchCapabilities.mockResolvedValue({
-      ...CAPABILITIES,
+      ...PROJECTED_CAPABILITIES,
       providers: {
-        ...CAPABILITIES.providers,
+        ...PROJECTED_CAPABILITIES.providers,
         descriptors: [
-          ...CAPABILITIES.providers.descriptors,
+          ...PROJECTED_CAPABILITIES.providers.descriptors,
           { provider_id: 'tavily', adapter_version: '1', query_operations: [], fetch_operations: [], activation: { credential: 'required', endpoint: 'none' }, option_keys: [] },
         ],
         instances: [
-          ...CAPABILITIES.providers.instances,
+          ...PROJECTED_CAPABILITIES.providers.instances,
           {
             id: 'tavily.default',
             provider_id: 'tavily',
@@ -609,11 +637,20 @@ describe('NbSearchSection status', () => {
         ],
       },
     });
-    const container = await renderSection('/settings/search?tab=providers');
+    getConfig.mockResolvedValueOnce({
+      providers: {},
+      nb_search: {
+        provider_instances: {
+          'exa.default': { provider_id: 'exa', enabled: true },
+          'tavily.default': { provider_id: 'tavily', enabled: true },
+        },
+      },
+    } as unknown as KikiConfigResponse);
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     await click(detail.querySelector('[data-nb-search-service-remove]')!);
     const confirm = document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!;
-    expect(confirm.textContent).toBe('Remove service');
+    expect(confirm.textContent).toBe('Remove this service');
     await click(confirm);
     await click(saveButtonOf(container));
     await flush();
@@ -628,20 +665,20 @@ describe('NbSearchSection status', () => {
 
 describe('NbSearchSection save', () => {
   it('patches only nb_search and refetches capabilities after a lane choice and credential env edit', async () => {
+    getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
     getConfig.mockResolvedValue(CONFIGURED_EXA);
     getNbSearchCapabilities.mockResolvedValue({
-      ...CAPABILITIES,
+      ...PROJECTED_CAPABILITIES,
       revision: 'config-after-save',
       search: { ...CAPABILITIES.search, default_lane: 'github.repositories' },
     });
     const container = await renderSection();
-    const defaults = container.querySelector('#st-card-search-defaults')!;
-    const laneRadio = defaults.querySelector<HTMLInputElement>(
-      '[data-nb-search-lane-row="github.repositories"] input[type="radio"]',
-    )!;
-    await click(laneRadio);
+    await click(container.querySelector('#nb-search-tab-search')!);
+    await click(container.querySelector('[data-nb-search-methods] > summary')!);
+    await click(container.querySelector('[data-nb-search-lane-make-default="github.repositories"]')!);
 
     const detail = await openServiceDetail(container, 'exa.default');
+    await click(detail.querySelector('[data-nb-search-credential-env-section] > summary')!);
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-nb-search-credential-env]')!, 'TEAM_EXA_API_KEY');
 
     const saveButton = saveButtonOf(container);
@@ -752,6 +789,7 @@ describe('NbSearchSection save', () => {
   });
 
   it('restores every fetch group to inheritance instead of a snapshot', async () => {
+    getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
     getNbSearchCapabilities.mockReset().mockResolvedValue(PROJECTED_CAPABILITIES);
     getConfig.mockResolvedValueOnce({
       providers: {},
@@ -766,7 +804,10 @@ describe('NbSearchSection save', () => {
     } as KikiConfigResponse);
     const container = await renderSection('/settings/search?tab=fetch');
     const fetchCard = container.querySelector('#st-card-search-fetch')!;
-    await click(fetchCard.querySelector('[data-nb-search-fetch-restore-all]')!);
+    await click(fetchCard.querySelector('[data-nb-search-fetch-restore]')!);
+    await click(fetchCard.querySelector('[data-nb-search-fetch-other-pairs] > summary')!);
+    await choose(container, 'data-nb-search-fetch-input', 'file');
+    await click(fetchCard.querySelector('[data-nb-search-fetch-restore-pair]')!);
     await click(saveButtonOf(container));
     await flush();
 
@@ -815,7 +856,9 @@ describe('NbSearchSection save', () => {
   });
 
   it('rejects a non-numeric execution field without patching', async () => {
+    getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
     const container = await renderSection();
+    await click(container.querySelector('#nb-search-tab-advanced')!);
     const execution = container.querySelector('#st-card-search-execution')!;
     const concurrencyInput = [...execution.querySelectorAll('label')]
       .find((label) => label.textContent!.includes('Max concurrent provider calls'))!
@@ -836,7 +879,7 @@ describe('NbSearchSection save', () => {
       .mockResolvedValueOnce(CAPABILITIES)
       .mockRejectedValueOnce(new Error('first refresh unavailable'));
     const reported = new Map<string, boolean>();
-    const container = await renderSection('/settings/search?tab=providers', {
+    const container = await renderSection('/settings/search?tab=search', {
       dirty: false,
       reportDirty: (id, dirty) => { reported.set(id, dirty); },
       navigate: vi.fn(),
@@ -872,7 +915,7 @@ describe('NbSearchSection save', () => {
       .mockResolvedValueOnce(CAPABILITIES)
       .mockResolvedValueOnce(CAPABILITIES)
       .mockRejectedValueOnce(new Error('post-key refresh unavailable'));
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-key-input]')!, 'example-saved-key');
     await click(detail.querySelector('[data-key-add]')!);
@@ -915,7 +958,7 @@ describe('NbSearchSection save', () => {
       stored = { value, version: 'd'.repeat(64) };
       return { ...MANAGED_KEYS, version: stored.version, binding_version: binding };
     });
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     await click(detail.querySelector('[data-key-show]')!);
     await click(detail.querySelector('[data-key-replace]')!);
@@ -964,7 +1007,7 @@ describe('NbSearchSection save', () => {
     });
     getNbSearchCapabilities.mockResolvedValueOnce(CAPABILITIES);
     if (refreshFails) getNbSearchCapabilities.mockRejectedValueOnce(new Error('migration refresh unavailable'));
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     await click(detail.querySelector('[data-key-show]')!);
     await click(detail.querySelector('[data-key-replace]')!);
@@ -999,7 +1042,7 @@ describe('NbSearchSection save', () => {
       stored = { value, version: 'd'.repeat(64) };
       return { ...MANAGED_KEYS, version: stored.version, binding_version: binding };
     });
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     await click(detail.querySelector('[data-key-show]')!);
     await click(detail.querySelector('[data-key-replace]')!);
@@ -1022,7 +1065,7 @@ describe('NbSearchSection save', () => {
       if (version !== expectedVersion) throw Object.assign(new Error('version conflict'), { code: 40941 });
       return { ...MANAGED_KEYS, version, binding_version: binding };
     });
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     await click(detail.querySelector('[data-key-replace]')!);
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-key-input]')!, 'example-first-key,example-second-key');
@@ -1036,6 +1079,7 @@ describe('NbSearchSection save', () => {
   });
 
   it('keeps successful keys committed while a sibling conflicts and retries only the unresolved key', async () => {
+    getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
     getConfig.mockResolvedValue({
       ...CONFIGURED_EXA,
       nb_search: { provider_instances: {
@@ -1044,9 +1088,9 @@ describe('NbSearchSection save', () => {
       } },
     });
     getNbSearchCapabilities.mockResolvedValue({
-      ...CAPABILITIES,
-      providers: { ...CAPABILITIES.providers, instances: [
-        ...CAPABILITIES.providers.instances, { ...CAPABILITIES.providers.instances[0]!, id: 'exa.backup' },
+      ...PROJECTED_CAPABILITIES,
+      providers: { ...PROJECTED_CAPABILITIES.providers, instances: [
+        ...PROJECTED_CAPABILITIES.providers.instances, { ...PROJECTED_CAPABILITIES.providers.instances[0]!, id: 'exa.backup' },
       ] },
     });
     const binding = 'a'.repeat(64);
@@ -1063,7 +1107,7 @@ describe('NbSearchSection save', () => {
       stored.set(id, { value, version: 'd'.repeat(64) });
       return { ...MANAGED_KEYS, instance_id: id, version: 'd'.repeat(64), binding_version: binding };
     });
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     for (const id of ['exa.default', 'exa.backup']) {
       const detail = await openServiceDetail(container, id);
       await click(detail.querySelector('[data-key-show]')!);
@@ -1077,8 +1121,7 @@ describe('NbSearchSection save', () => {
     expect(stored.get('exa.default')!.value).toBe('example-primary-key,example-input-exa.default');
     expect(stored.get('exa.backup')!.value).toBe('example-other-client-key');
     expect(container.textContent).toContain('This key changed on the server while you were editing');
-    await click(container.querySelector('[data-nb-search-service-row="exa.backup"]')!);
-    const unresolved = container.querySelector('[data-nb-search-service="exa.backup"]')!;
+    const unresolved = await openServiceDetail(container, 'exa.backup');
     expect(unresolved.querySelector('[data-keys-mode="set"]')).not.toBeNull();
     await click(unresolved.querySelector('[data-key-show]')!);
     await click(saveButtonOf(container));
@@ -1095,7 +1138,7 @@ describe('NbSearchSection save', () => {
       .mockResolvedValueOnce(CAPABILITIES)
       .mockResolvedValueOnce(CAPABILITIES)
       .mockRejectedValueOnce(new Error('post-key refresh unavailable'));
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-key-input]')!, 'example-saved-key');
     await click(detail.querySelector('[data-key-add]')!);
@@ -1130,7 +1173,7 @@ describe('NbSearchSection save', () => {
       if (expectedVersion !== version || expectedBinding !== binding) throw Object.assign(new Error('binding conflict'), { code: 40941 });
       return { ...MANAGED_KEYS, version, binding_version: binding };
     });
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     await click(detail.querySelector('[data-key-show]')!);
     await click(detail.querySelector('[data-key-replace]')!);
@@ -1163,7 +1206,7 @@ describe('NbSearchSection save', () => {
       serverValue = value;
       return view();
     });
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-key-input]')!, 'example-direct-paste');
     await click(detail.querySelector('[data-key-add]')!);
@@ -1185,7 +1228,7 @@ describe('NbSearchSection save', () => {
       .mockResolvedValueOnce(CAPABILITIES)
       .mockRejectedValueOnce(new Error('post-key refresh unavailable'))
       .mockRejectedValueOnce(new Error('retry still unavailable'));
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-key-input]')!, 'example-saved-key');
     await click(detail.querySelector('[data-key-add]')!);
@@ -1208,6 +1251,13 @@ describe('NbSearchSection save', () => {
   });
 });
 
+const openSourceCard = async (container: HTMLDivElement): Promise<HTMLElement> => {
+  await click(container.querySelector('#nb-search-tab-advanced')!);
+  const card = container.querySelector<HTMLElement>('#st-card-search-source')!;
+  expect(card, 'source card on the advanced tab').not.toBeNull();
+  return card;
+};
+
 describe('NbSearchSection configuration source', () => {
   it('renders unknowns instead of guessing when the server reports no config_source', async () => {
     getConfig.mockResolvedValueOnce({
@@ -1217,7 +1267,7 @@ describe('NbSearchSection configuration source', () => {
     } as KikiConfigResponse);
     const container = await renderSection();
 
-    const sourceCard = container.querySelector('#st-card-search-source')!;
+    const sourceCard = await openSourceCard(container);
     // CAPABILITIES carries no config_source: status reads unknown and the
     // effective-layers flow is not inferred from the draft toggle.
     expect(sourceCard.textContent).toContain('Status unavailable');
@@ -1251,7 +1301,7 @@ describe('NbSearchSection configuration source', () => {
     } as NbSearchCapabilities);
     const container = await renderSection();
 
-    const sourceCard = container.querySelector('#st-card-search-source')!;
+    const sourceCard = await openSourceCard(container);
     expect(sourceCard.textContent).toContain('Check the file and its access permissions');
     expect(sourceCard.textContent).not.toContain('LOCAL_CONFIG_UNREADABLE');
     expect(sourceCard.textContent).toContain('FUTURE_BACKEND_CODE');
@@ -1281,7 +1331,7 @@ describe('NbSearchSection configuration source', () => {
     } as NbSearchCapabilities);
     const container = await renderSection();
 
-    const sourceCard = container.querySelector('#st-card-search-source')!;
+    const sourceCard = await openSourceCard(container);
     expect(sourceCard.textContent).toContain('Local credential file');
     // Missing field means "not checked", never a guessed "missing".
     expect(sourceCard.textContent).toContain('Not checked');
@@ -1303,7 +1353,7 @@ describe('NbSearchSection configuration source', () => {
     } as NbSearchCapabilities);
     const container = await renderSection();
 
-    const sourceCard = container.querySelector('#st-card-search-source')!;
+    const sourceCard = await openSourceCard(container);
     expect(sourceCard.textContent).toContain('Local credential file');
     expect(sourceCard.textContent).toContain('Loaded');
     expect(sourceCard.textContent).toContain('Server environment and local nb-search credentials');
@@ -1329,7 +1379,7 @@ describe('NbSearchSection configuration source', () => {
     } as NbSearchCapabilities);
     const container = await renderSection();
 
-    const sourceCard = container.querySelector('#st-card-search-source')!;
+    const sourceCard = await openSourceCard(container);
     const credentialRow = [...sourceCard.querySelectorAll('div')]
       .find((div) => div.textContent?.startsWith('Local credential file'))!;
     expect(credentialRow.textContent).toContain('Skipped');
@@ -1358,7 +1408,7 @@ describe('NbSearchSection configuration source', () => {
     } as NbSearchCapabilities);
     const container = await renderSection();
 
-    const sourceCard = container.querySelector('#st-card-search-source')!;
+    const sourceCard = await openSourceCard(container);
     expect(sourceCard.textContent).toContain('Local credential permission checks timed out');
     expect(sourceCard.textContent).toContain('Retry or turn local reuse off');
     expect(sourceCard.textContent).not.toContain('LOCAL_CREDENTIALS_TIMEOUT');
@@ -1379,7 +1429,7 @@ describe('NbSearchSection configuration source', () => {
     } as NbSearchCapabilities);
     const container = await renderSection();
 
-    const sourceCard = container.querySelector('#st-card-search-source')!;
+    const sourceCard = await openSourceCard(container);
     expect(sourceCard.textContent).toContain('Binding or protection check failed');
     expect(sourceCard.textContent).toContain('no longer matches the saved credential binding');
     expect(sourceCard.textContent).not.toContain('LOCAL_CREDENTIAL_BINDING_MISMATCH');
@@ -1388,7 +1438,9 @@ describe('NbSearchSection configuration source', () => {
 
 describe('NbSearchSection diagnostics', () => {
   it('runs the readiness check on demand and renders the result', async () => {
+    getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
     const container = await renderSection();
+    await click(container.querySelector('#nb-search-tab-advanced')!);
     const diagnostics = container.querySelector('#st-card-search-diagnostics')!;
     const runButton = [...diagnostics.querySelectorAll('button')]
       .find((button) => button.textContent === 'Run readiness check')!;
@@ -1400,8 +1452,10 @@ describe('NbSearchSection diagnostics', () => {
   });
 
   it('shows the error when the check fails', async () => {
+    getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
     testNbSearch.mockRejectedValueOnce(new Error('kap-server unreachable'));
     const container = await renderSection();
+    await click(container.querySelector('#nb-search-tab-advanced')!);
     const diagnostics = container.querySelector('#st-card-search-diagnostics')!;
     const runButton = [...diagnostics.querySelectorAll('button')]
       .find((button) => button.textContent === 'Run readiness check')!;
@@ -1419,7 +1473,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     const overviewTab = container.querySelector('#nb-search-tab-overview')!;
     const searchTab = container.querySelector('#nb-search-tab-search')!;
     const fetchTab = container.querySelector('#nb-search-tab-fetch')!;
-    const providersTab = container.querySelector('#nb-search-tab-providers')!;
+    const providersTab = container.querySelector('#nb-search-tab-search')!;
     const advancedTab = container.querySelector('#nb-search-tab-advanced')!;
 
     expect(overviewTab.getAttribute('aria-selected')).toBe('true');
@@ -1457,7 +1511,8 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     expect(overviewTab.getAttribute('aria-selected')).toBe('true');
   });
 
-  it('prioritizes search lanes: default/pinned first, available sync second, others third, and supports pinning', async () => {
+  it('marks the explicit default on its card and never defaults on a row click', async () => {
+    getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
     getConfig.mockResolvedValueOnce({
       providers: {},
       nb_search: {
@@ -1469,22 +1524,27 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     await click(searchTab);
 
     const searchPanel = container.querySelector('#nb-search-panel-search')!;
-    // The chosen lane is marked, and it heads the list because it is in use.
-    expect(searchPanel.textContent).toContain('Current default');
-    expect(searchPanel.textContent).toContain('github.repositories');
+    // The default's card carries the tag.
+    expect(searchPanel.querySelector('[data-nb-search-service-default]')).not.toBeNull();
 
-    // Pinning a lane
-    const pinButtons = [...searchPanel.querySelectorAll('button')].filter((b) => b.getAttribute('aria-pressed') === 'false' && b.querySelector('[data-icon="pin"]') !== null);
-    expect(pinButtons.length).toBeGreaterThan(0);
-    await click(pinButtons[0]!);
-    expect(searchPanel.textContent).toContain('Pinned');
+    // Clicking a card's row opens it; the default never changes as a side effect.
+    const githubCard = searchPanel.querySelector('[data-nb-search-service-card="github.repositories"]')!;
+    expect(githubCard.querySelector('[data-nb-search-service-open]')!.getAttribute('aria-expanded')).toBe('true');
+    expect(searchPanel.querySelector('[data-nb-search-service-default]')).not.toBeNull();
+    expect(githubCard.querySelector('[data-nb-search-service-body]')).not.toBeNull();
+    // A card that already is the default offers no default action — 设为默认
+    // belongs to the other cards, and clicking this row changed nothing.
+    expect(githubCard.querySelector('[data-nb-search-service-make-default]')).toBeNull();
+    const exaCard = searchPanel.querySelector('[data-nb-search-service-card="exa.search"]')!;
+    if (exaCard.querySelector('[data-nb-search-service-open]')!.getAttribute('aria-expanded') !== 'true') {
+      await click(exaCard.querySelector('[data-nb-search-service-open]')!);
+    }
+    expect(exaCard.querySelector('[data-nb-search-service-make-default]')).not.toBeNull();
 
-    // Filter lanes: the row goes away, not merely the words. The inherit row
-    // still names the lane in use, which is the point of it.
-    const searchInput = searchPanel.querySelector<HTMLInputElement>('input[type="search"]')!;
-    await setInputValue(searchInput, 'example');
-    expect(searchPanel.textContent).toContain('example.documents');
-    expect(searchPanel.querySelector('[data-nb-search-lane-row="github.repositories"]')).toBeNull();
+    // The advanced methods list names the same default and offers 设为默认 per row.
+    await click(searchPanel.querySelector('[data-nb-search-methods] > summary')!);
+    expect(searchPanel.querySelector('[data-nb-search-lane-default]')).not.toBeNull();
+    expect(searchPanel.querySelector('[data-nb-search-lane-make-default="exa.search"]')).not.toBeNull();
   });
 
   it('toggles reuse local configuration and saves only nb_search_source', async () => {
@@ -1495,7 +1555,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     } as KikiConfigResponse);
     const container = await renderSection();
 
-    const sourceCard = container.querySelector('#st-card-search-source')!;
+    const sourceCard = await openSourceCard(container);
     expect(sourceCard.textContent).toContain('Reuse server nb-search configuration');
     expect(sourceCard.textContent).toContain('Configuration host');
     expect(sourceCard.textContent).toContain('Connected Kiki server');
@@ -1537,9 +1597,8 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     );
     const container = await renderSection();
 
-    const toggle = container.querySelector<HTMLInputElement>(
-      '#st-card-search-source input[type="checkbox"]',
-    )!;
+    const sourceCardForToggle = await openSourceCard(container);
+    const toggle = sourceCardForToggle.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     await click(toggle);
     const saveButton = [...container.querySelectorAll('button')]
       .find((button) => button.textContent === 'Save search & retrieval')!;
@@ -1551,10 +1610,8 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     // A follow-up nb_search edit must still start from the intact saved domain.
     const searchTab = container.querySelector('#nb-search-tab-search')!;
     await click(searchTab);
-    const laneRadio = container.querySelector<HTMLInputElement>(
-      '[data-nb-search-lane-row="example.documents"] input[type="radio"]',
-    )!;
-    await click(laneRadio);
+    await click(container.querySelector('[data-nb-search-methods] > summary')!);
+    await click(container.querySelector('[data-nb-search-lane-make-default="example.documents"]')!);
     await click(saveButton);
     await flush();
     const secondPatch = patchConfig.mock.calls[1]![0] as {
@@ -1575,16 +1632,13 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     } as KikiConfigResponse);
     const container = await renderSection();
 
-    const toggle = container.querySelector<HTMLInputElement>(
-      '#st-card-search-source input[type="checkbox"]',
-    )!;
+    const sourceCardForToggle = await openSourceCard(container);
+    const toggle = sourceCardForToggle.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     await click(toggle);
     const searchTab = container.querySelector('#nb-search-tab-search')!;
     await click(searchTab);
-    const laneRadio = container.querySelector<HTMLInputElement>(
-      '[data-nb-search-lane-row="github.repositories"] input[type="radio"]',
-    )!;
-    await click(laneRadio);
+    await click(container.querySelector('[data-nb-search-methods] > summary')!);
+    await click(container.querySelector('[data-nb-search-lane-make-default="github.repositories"]')!);
 
     const saveButton = saveButtonOf(container);
     await click(saveButton);
@@ -1606,9 +1660,8 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     patchConfig.mockRejectedValueOnce(new Error('config write rejected'));
     const container = await renderSection();
 
-    const toggle = container.querySelector<HTMLInputElement>(
-      '#st-card-search-source input[type="checkbox"]',
-    )!;
+    const sourceCardForToggle = await openSourceCard(container);
+    const toggle = sourceCardForToggle.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     await click(toggle);
     const saveButton = [...container.querySelectorAll('button')]
       .find((button) => button.textContent === 'Save search & retrieval')!;
@@ -1639,7 +1692,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     } as NbSearchCapabilities);
     const container = await renderSection();
 
-    const sourceCard = container.querySelector('#st-card-search-source')!;
+    const sourceCard = await openSourceCard(container);
     // Localized recovery hint instead of a bare code.
     expect(sourceCard.textContent).toContain('turn reuse off to isolate the local file');
     expect(sourceCard.textContent).not.toContain('EFFECTIVE_CONFIG_INVALID');
@@ -1673,11 +1726,10 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
         search: { ...CAPABILITIES.search, default_lane: 'github.repositories' },
       });
     const container = await renderSection();
-    expect(container.querySelector('#st-card-search-source')).not.toBeNull();
+    expect(container.querySelector('#st-card-search-status')).not.toBeNull();
 
-    const toggle = container.querySelector<HTMLInputElement>(
-      '#st-card-search-source input[type="checkbox"]',
-    )!;
+    const sourceCardForToggle = await openSourceCard(container);
+    const toggle = sourceCardForToggle.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     await click(toggle);
     const saveButton = [...container.querySelectorAll('button')]
       .find((button) => button.textContent === 'Save search & retrieval')!;
@@ -1692,6 +1744,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     // editor is gone, the error and a retry affordance are shown. The amber
     // note says the save itself landed and only the refresh failed.
     expect(container.querySelector('#st-card-search-source')).toBeNull();
+    expect(container.querySelector('#nb-search-tab-advanced')).toBeNull();
     expect(container.textContent).toContain('Configuration saved, but status could not be refreshed');
     expect(container.textContent).toContain('capabilities endpoint down');
     expect(container.querySelector('#st-card-search-status')!.textContent).not.toContain('Ready');
@@ -1702,8 +1755,10 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     await flush();
     await flush();
 
-    expect(container.querySelector('#st-card-search-source')).not.toBeNull();
+    // Back on the overview; the advanced tab owns the source card again.
     expect(container.querySelector('#st-card-search-status')!.textContent).toContain('Ready');
+    await click(container.querySelector('#nb-search-tab-advanced')!);
+    expect(container.querySelector('#st-card-search-source')).not.toBeNull();
   });
 
   it('does not show the saved-status note when the initial capabilities load fails', async () => {
@@ -1718,27 +1773,26 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
   });
 
   it('narrows the service directory instead of a whole-catalogue form list', async () => {
-    const container = await renderSection('/settings/search?tab=providers');
+    getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
+    const container = await renderSection('/settings/search?tab=search');
     const providers = container.querySelector('#st-card-search-providers')!;
     const directory = await openDirectory(container);
 
-    // Every service the server reports is listed, with its own state word.
+    // Services without a card yet are listed with one Add each.
     expect(directory.querySelectorAll('[data-nb-search-directory-row]')).toHaveLength(2);
-    expect(directory.textContent).toContain('Exa');
+    expect(directory.textContent).toContain('Jina Reader');
     expect(directory.textContent).toContain('Direct HTTP');
-    expect(directory.textContent).toContain('needs a key');
-    expect(directory.textContent).toContain('no key needed');
 
     const searchInput = directory.querySelector<HTMLInputElement>('input[type="search"]')!;
     await setInputValue(searchInput, 'direct');
-    expect(directory.querySelector('[data-nb-search-directory-row="direct-http.default"]')).not.toBeNull();
-    expect(directory.querySelector('[data-nb-search-directory-row="exa.default"]')).toBeNull();
+    expect(directory.querySelector('[data-nb-search-directory-row="direct.fetch"]')).not.toBeNull();
+    expect(directory.querySelector('[data-nb-search-directory-row="jina.reader"]')).toBeNull();
 
     // A query nothing matches says so, and clearing it brings the list back.
     await setInputValue(searchInput, 'nothing-matches-this');
     expect(directory.textContent).toContain('No service matches');
     await click([...directory.querySelectorAll('button')].find((b) => b.textContent === 'Clear search and filters')!);
-    expect(directory.querySelector('[data-nb-search-directory-row="exa.default"]')).not.toBeNull();
+    expect(directory.querySelector('[data-nb-search-directory-row="jina.reader"]')).not.toBeNull();
   });
 
   it('supports discard edits in the sticky action bar', async () => {
@@ -1746,44 +1800,36 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     const searchTab = container.querySelector('#nb-search-tab-search')!;
     await click(searchTab);
 
-    const laneRadio = container.querySelector<HTMLInputElement>(
-      '[data-nb-search-lane-row="github.repositories"] input[type="radio"]',
-    )!;
-    await click(laneRadio);
+    await click(container.querySelector('[data-nb-search-methods] > summary')!);
+    await click(container.querySelector('[data-nb-search-lane-make-default="github.repositories"]')!);
 
     const discardButton = [...container.querySelectorAll('button')]
       .find((button) => button.textContent === 'Discard edits')!;
     expect(discardButton).toBeDefined();
     await click(discardButton);
 
-    // After discard the draft is back to "no override", so the inherit row wins.
-    const inheritRadio = container.querySelector<HTMLInputElement>(
-      '[data-nb-search-lane-inherit] input[type="radio"]',
-    )!;
-    expect(inheritRadio.checked).toBe(true);
+    // After discard the draft is back to "no override", so nothing is dirty.
     expect(saveButtonOf(container).disabled).toBe(true);
   });
 
   it('resolves tab-hash conflict by prioritizing the specific card hash anchor', async () => {
     // When URL has tab=overview but hash points to st-card-search-providers, providers tab wins
     const container = await renderSection('/settings/search?tab=overview#st-card-search-providers');
-    const providersTab = container.querySelector('#nb-search-tab-providers')!;
+    const providersTab = container.querySelector('#nb-search-tab-search')!;
     const overviewTab = container.querySelector('#nb-search-tab-overview')!;
     expect(providersTab.getAttribute('aria-selected')).toBe('true');
     expect(overviewTab.getAttribute('aria-selected')).toBe('false');
 
-    const providersPanel = container.querySelector('#nb-search-panel-providers')!;
+    const providersPanel = container.querySelector('#nb-search-panel-search')!;
     expect(providersPanel.className).not.toContain('hidden');
   });
 
   it('retains dirty draft across sub-page tab switches without popping leave guard', async () => {
     const container = await renderSection('/settings/search?tab=search');
 
-    // Make an edit on search lanes tab
-    const laneRadio = container.querySelector<HTMLInputElement>(
-      '[data-nb-search-lane-row="github.repositories"] input[type="radio"]',
-    )!;
-    await click(laneRadio);
+    // Make an edit on the search tab
+    await click(container.querySelector('[data-nb-search-methods] > summary')!);
+    await click(container.querySelector('[data-nb-search-lane-make-default="github.repositories"]')!);
 
     // Switch to fetch tab
     const fetchTab = container.querySelector('#nb-search-tab-fetch')!;
@@ -1797,10 +1843,8 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     // Switch back to search tab: draft edit is still preserved
     const searchTab = container.querySelector('#nb-search-tab-search')!;
     await click(searchTab);
-    const radioNow = container.querySelector<HTMLInputElement>(
-      '[data-nb-search-lane-row="github.repositories"] input[type="radio"]',
-    )!;
-    expect(radioNow.checked).toBe(true);
+    await click(container.querySelector('[data-nb-search-methods] > summary')!);
+    expect(container.querySelector('[data-nb-search-lane-make-default="github.repositories"]')).toBeNull();
 
     // Save button remains enabled with unsaved indicator
     expect(saveButtonOf(container).disabled).toBe(false);
@@ -1808,7 +1852,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
 
   it('keeps a key draft across tab switches and registers it with the leave guard', async () => {
     getConfig.mockResolvedValue(CONFIGURED_EXA);
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     const keys = detail.querySelector('[data-nb-search-keys="exa.default"]')!;
     await setInputValue(keys.querySelector<HTMLInputElement>('[data-key-input]')!, 'fixture-unsaved-key');
@@ -1816,7 +1860,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
 
     // Leave the tab and come back: the key is still typed and still unsaved.
     await click(container.querySelector('#nb-search-tab-overview')!);
-    await click(container.querySelector('#nb-search-tab-providers')!);
+    await click(container.querySelector('#nb-search-tab-search')!);
     const after = container.querySelector('[data-nb-search-keys="exa.default"]')!;
     expect(after.textContent).toContain('fixture-unsaved-key');
     expect(saveButtonOf(container).disabled).toBe(false);
@@ -1844,7 +1888,8 @@ describe('search-leaf targets match the settings search index', () => {
       expect(entries.some((entry) => entry.tab === tab), tab).toBe(true);
     }
     // Rendering a hit's target must actually mount the card it flashes. The
-    // Experimental rows are mounted by SettingsPage after the leaf, not in a panel.
+    // Experimental rows are mounted by SettingsPage after the leaf, not in a
+    // panel; the services tab's other anchor is the same card's deep link.
     for (const entry of entries.filter((item) => item.cardId !== 'st-card-exp-search')) {
       const container = await renderSection(`/settings/search?tab=${entry.tab}`);
       const panel = container.querySelector(`#nb-search-panel-${entry.tab}`);
@@ -1857,19 +1902,23 @@ describe('search-leaf targets match the settings search index', () => {
 
 describe('NbSearchSection S2 mounted surfaces', () => {
   it('renders the S2 editing surfaces on the product route', async () => {
+    getNbSearchCapabilities.mockResolvedValue(PROJECTED_CAPABILITIES);
     const container = await renderSection('/settings/search?tab=search');
-    const lanes = container.querySelector('#st-card-search-defaults')!;
+    const methods = container.querySelector('[data-nb-search-methods]')!;
+    await click(methods.querySelector('summary')!);
     // The advanced binding is passed by the page itself, so these are the real
     // product surfaces, not a harness-only branch.
-    expect(lanes.querySelector('[data-nb-search-lane-edit]'), 'lane row editing').not.toBeNull();
-    expect(lanes.querySelector('[data-nb-search-lane-add]'), 'new search method').not.toBeNull();
+    expect(methods.querySelector('[data-nb-search-lane-edit]'), 'lane row editing').not.toBeNull();
+    expect(methods.querySelector('[data-nb-search-lane-add]'), 'new search method').not.toBeNull();
 
     const fetchCard = container.querySelector('#st-card-search-fetch')!;
+    await click(fetchCard.querySelector('[data-nb-search-fetch-other-pairs] > summary')!);
     expect(fetchCard.querySelector('[data-nb-search-fetch-combo]'), 'input/output pair picker').not.toBeNull();
     expect(fetchCard.querySelector('[data-nb-search-fetch-input]'), 'input kind').not.toBeNull();
     expect(fetchCard.querySelector('[data-nb-search-fetch-representation]'), 'representation').not.toBeNull();
     expect(fetchCard.querySelector('[data-nb-search-fetch-chain]'), 'ordered pipeline chain').not.toBeNull();
 
+    await click(container.querySelector('#nb-search-tab-advanced')!);
     expect(container.querySelector('[data-nb-search-filescope-state]'), 'file scopes').not.toBeNull();
     expect(container.querySelector('[data-nb-search-quality-mode]'), 'quality fallback').not.toBeNull();
   });
@@ -1877,8 +1926,9 @@ describe('NbSearchSection S2 mounted surfaces', () => {
   it('creates a second instance of one service with its own slot and variable, then saves both', async () => {
     getNbSearchCapabilities.mockReset().mockResolvedValue(PROJECTED_CAPABILITIES);
     getConfig.mockResolvedValueOnce(CONFIGURED_EXA);
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
 
+    await click(container.querySelector('[data-nb-search-methods] > summary')!);
     await click(container.querySelector('[data-nb-search-new-instance]')!);
     const editor = container.querySelector('[data-nb-search-instance-editor]')!;
     await click(editor.querySelector('[data-nb-search-provider-option="exa"]')!);
@@ -1887,16 +1937,13 @@ describe('NbSearchSection S2 mounted surfaces', () => {
       .toBe('NB_SEARCH_EXA_CUSTOM_API_KEY');
     await click(editor.querySelector('[data-nb-search-instance-create]')!);
 
-    // It is listed and editable before the server has ever seen it, and its
-    // state does not borrow a readiness or a credential state.
-    const row = container.querySelector('[data-nb-search-service-row="exa.custom"]')!;
-    expect(row.querySelector('[data-nb-search-row-state]')!.getAttribute('data-nb-search-row-state')).toBe('unsaved');
-    const detail = container.querySelector('[data-nb-search-service="exa.custom"]')!;
-    expect(detail.textContent).toContain('not saved yet');
-    expect(detail.querySelector('[data-nb-search-key-usage]'), 'nothing to read from a draft instance').toBeNull();
-    expect(detail.textContent).toContain('Key status can be checked once this service is saved.');
-    // The old instance is still there, with its own editor.
-    expect(container.querySelector('[data-nb-search-service-row="exa.default"]')).not.toBeNull();
+    // It is listed before the server has ever seen it, and its state does
+    // not borrow a readiness or a credential state.
+    const row = container.querySelector('[data-nb-search-service-card="instance:exa.custom"]')!;
+    expect(row, 'the new instance joins the list').not.toBeNull();
+    expect(row!.querySelector('[data-nb-search-service-state]')!.getAttribute('data-nb-search-service-state')).toBe('needsKey');
+    // The old instance is still there, edited through its search method's card.
+    expect(container.querySelector('[data-nb-search-service-card="exa.search"]')).not.toBeNull();
 
     await click(saveButtonOf(container));
     await flush();
@@ -1921,7 +1968,7 @@ describe('NbSearchSection S2 mounted surfaces', () => {
 
   it('reads key status only when asked, and shows the unknown state honestly', async () => {
     getConfig.mockResolvedValueOnce(CONFIGURED_EXA);
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     const panel = detail.querySelector('[data-nb-search-key-usage="exa.default"]')!;
     expect(readNbSearchKeyUsage).not.toHaveBeenCalled();
@@ -1942,7 +1989,7 @@ describe('NbSearchSection S2 mounted surfaces', () => {
 
   it('keeps the key-status read out of the save path', async () => {
     getConfig.mockResolvedValueOnce(CONFIGURED_EXA);
-    const container = await renderSection('/settings/search?tab=providers');
+    const container = await renderSection('/settings/search?tab=search');
     await openServiceDetail(container, 'exa.default');
     await flush();
     expect(readNbSearchKeyUsage).not.toHaveBeenCalled();
