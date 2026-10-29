@@ -310,10 +310,16 @@ export class ConfigService extends Disposable implements IConfigService {
   private freshCache:
     | {
         readonly envNames: readonly string[];
-        readonly fingerprint: string;
+        readonly envValues: readonly (string | undefined)[];
         readonly value: ResolvedConfig;
       }
     | undefined;
+  private readonly originsCache = new Map<string, {
+    readonly inputs: readonly unknown[];
+    readonly envNames: readonly string[];
+    readonly envValues: readonly (string | undefined)[];
+    readonly value: Record<string, ConfigOrigin>;
+  }>();
   private readonly diagnosticsList: ConfigDiagnostic[] = [];
   private lastDiagnosticsSnapshot = '[]';
   private readonly configKey: string;
@@ -469,24 +475,33 @@ export class ConfigService extends Disposable implements IConfigService {
   }
 
   origins(domain: string): Record<string, ConfigOrigin> {
+    const sectionEnv = this.registry.getSection(domain)?.env;
+    const inputs = [this.get(domain), this.baseRaw[domain], this.homeRaw[domain], this.validated[domain], this.memory[domain], this.presetRaw[domain], sectionEnv];
+    const cached = this.originsCache.get(domain);
+    if (cached !== undefined && cached.inputs.every((input, index) => input === inputs[index]) && this.envUnchanged(cached.envNames, cached.envValues)) {
+      return cached.value;
+    }
     const envFields = new Set<string>();
+    const envNames: string[] = [];
     const walk = (bindings: AnyEnvBindings, path: string[]): void => {
       if (isEnvBinding(bindings)) {
         const name = typeof bindings === 'string' ? bindings : bindings.env;
         const raw = this.bootstrap.getEnv(name);
+        envNames.push(name);
         if (raw !== undefined && (typeof bindings === 'string' || parseBoundRaw(bindings, raw) !== undefined)) envFields.add(path.join('.'));
         return;
       }
       for (const [key, entry] of Object.entries(bindings)) if (entry !== undefined) walk(entry, [...path, key]);
     };
-    const sectionEnv = this.registry.getSection(domain)?.env;
     if (sectionEnv !== undefined) walk(sectionEnv, []);
-    return leafOrigins(this.get(domain), this.baseRaw[domain], this.homeRaw[domain], this.validated[domain], this.memory[domain], envFields, this.presetRaw[domain]);
+    const value = leafOrigins(inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], envFields, inputs[5]);
+    this.originsCache.set(domain, { inputs, envNames, envValues: envNames.map((name) => this.bootstrap.getEnv(name)), value });
+    return value;
   }
 
   private freshEffective(): ResolvedConfig {
     const cached = this.freshCache;
-    if (cached !== undefined && this.envFingerprint(cached.envNames) === cached.fingerprint) {
+    if (cached !== undefined && this.envUnchanged(cached.envNames, cached.envValues)) {
       return cached.value;
     }
     const accessed = new Set<string>();
@@ -498,16 +513,15 @@ export class ConfigService extends Disposable implements IConfigService {
     this.applySectionEnvBindings(effective, false, getEnv);
     this.applyEnvOverlay(effective, false, getEnv);
     const envNames = [...accessed].sort();
-    this.freshCache = { envNames, fingerprint: this.envFingerprint(envNames), value: effective };
+    this.freshCache = { envNames, envValues: envNames.map((name) => this.bootstrap.getEnv(name)), value: effective };
     return effective;
   }
 
-  private envFingerprint(names: readonly string[]): string {
-    let fingerprint = '';
-    for (const name of names) {
-      fingerprint += `${name}\u0000${this.bootstrap.getEnv(name) ?? '\u0001'}\u0002`;
+  private envUnchanged(names: readonly string[], values: readonly (string | undefined)[]): boolean {
+    for (let index = 0; index < names.length; index += 1) {
+      if (this.bootstrap.getEnv(names[index]!) !== values[index]) return false;
     }
-    return fingerprint;
+    return true;
   }
 
   private invalidateFresh(): void {

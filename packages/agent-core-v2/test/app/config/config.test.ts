@@ -4208,6 +4208,23 @@ describe('space config layers', () => {
     } finally { await f.disposables.dispose(); }
   });
 
+  it('reuses unchanged origin maps and recomputes them after env or layer changes', async () => {
+    const env: Record<string, string> = {};
+    const f = await fixture('[raw.flags]\na = 1\nb = 2\n', 'builtin_product_skills = false\n[raw.flags]\nb = 3\n', env);
+    try {
+      const first = f.config.origins('raw');
+      expect(f.config.origins('raw')).toBe(first);
+      expect(f.config.origins(BUILTIN_PRODUCT_SKILLS_SECTION)).toEqual({ '': 'home' });
+      env['KIKI_BUILTIN_PRODUCT_SKILLS'] = 'on';
+      expect(f.config.origins(BUILTIN_PRODUCT_SKILLS_SECTION)).toEqual({ '': 'env' });
+      delete env['KIKI_BUILTIN_PRODUCT_SKILLS'];
+      expect(f.config.origins(BUILTIN_PRODUCT_SKILLS_SECTION)).toEqual({ '': 'home' });
+      await f.config.removeOverride('raw', ['flags', 'b']);
+      expect(f.config.origins('raw')).not.toBe(first);
+      expect(f.config.origins('raw')['flags.b']).toBe('base');
+    } finally { await f.disposables.dispose(); }
+  });
+
   it('gives environment precedence and tracks changing env origins', async () => {
     const env: Record<string, string> = {};
     const f = await fixture('builtin_product_skills = true\n', 'builtin_product_skills = false\n', env);

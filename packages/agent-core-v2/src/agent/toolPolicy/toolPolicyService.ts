@@ -2,7 +2,7 @@ import { Disposable } from '#/_base/di/lifecycle';
 import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { IAgentProfileService, ProfileError, ProfileErrors } from '#/agent/profile/profile';
+import { IAgentProfileService, ProfileError, ProfileErrors, type ProfileData } from '#/agent/profile/profile';
 import { TOOLS_SECTION, type ToolsConfig } from './configSection';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -70,6 +70,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       name,
       source,
       this.scope.parentAgentId === undefined ? undefined : this.subagentPolicy(profile.toolOverride?.tools ?? (profile.boundProfile === undefined ? profile.activeToolNames : profile.boundProfile.tools)),
+      profile,
     );
   }
 
@@ -85,6 +86,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       name,
       source,
       this.scope.parentAgentId === undefined ? undefined : this.subagentPolicy(profile.toolOverride?.tools ?? (profile.boundProfile === undefined ? profile.activeToolNames : profile.boundProfile.tools)),
+      profile,
     );
   }
 
@@ -93,14 +95,16 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     name: string,
     source: ToolSource = 'builtin',
   ): boolean {
+    const data = this.profile.data();
     return this.evaluate(
       {
         ...profile,
-        executionRestriction: this.profile.data().executionRestriction ?? profile.executionRestriction,
+        executionRestriction: data.executionRestriction ?? profile.executionRestriction,
       },
       name,
       source,
       this.subagentPolicy(profile.tools),
+      data,
     );
   }
 
@@ -116,29 +120,30 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     name: string,
     source: ToolSource,
     subagent: SubagentToolPolicy | undefined,
+    data: ProfileData,
   ): boolean {
     const capabilities = this.capabilities.current;
     const session = this.session.current;
     const optional = this.optionalPolicy();
     const computerServers = typeof optional?.computerServerNames === 'function' ? optional.computerServerNames() : [];
     const capability = optionalCapabilityForTool(name, computerServers);
-    const policy = session === undefined || capability === undefined ? undefined : this.optionalPolicy();
+    const policy = session === undefined || capability === undefined ? undefined : optional;
     let sendMessageAllowListOverride = false;
     if (policy !== undefined && session !== undefined && capability !== undefined) {
-      this.note(policy, session.sessionId, session.workspaceId);
+      this.note(policy, session.sessionId, session.workspaceId, data);
       const request = { sessionId: session.sessionId, workspaceId: session.workspaceId, agentId: this.scope.agentId };
       const admission = capability === 'send_message'
         ? admitSendMessageCapability(policy, request, this.delivery.current?.effectiveMode() ?? 'reply')
         : policy.admit(capability, request);
       if (!admission.admitted) {
-        if (name === 'SendMessage') this.note(policy, session.sessionId, session.workspaceId, false);
+        if (name === 'SendMessage') this.note(policy, session.sessionId, session.workspaceId, data, false);
         return false;
       }
       if (name === 'SendMessage') {
         const choice = policy.choice(session.sessionId, 'send_message');
         sendMessageAllowListOverride = choice === 'on' ||
           (choice === 'inherit' && (policy.globalState('send_message').defaultOn || isLegacyShippedMessageBinding(
-            this.profile.data(),
+            data,
             this.delivery.current?.effectiveMode() ?? 'reply',
             (path) => this.cleanDefaultPath(path),
           )));
@@ -147,7 +152,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     } else if (capabilities !== undefined && session !== undefined &&
       !capabilities.toolAvailable(name, session.workspaceId, session.sessionId)) return false;
     const effectiveProfile = name === 'SendMessage' && (sendMessageAllowListOverride || isLegacyShippedMessageBinding(
-      this.profile.data(),
+      data,
       this.delivery.current?.effectiveMode() ?? 'reply',
       (path) => this.cleanDefaultPath(path),
     )) ? { ...profile, tools: undefined, toolAllowPolicies: undefined } : profile;
@@ -164,7 +169,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       source,
     );
     if (policy !== undefined && session !== undefined && name === 'SendMessage') {
-      this.note(policy, session.sessionId, session.workspaceId, active);
+      this.note(policy, session.sessionId, session.workspaceId, data, active);
     }
     return active;
   }
@@ -185,8 +190,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     }
   }
 
-  private note(policy: IOptionalCapabilityPolicy, sessionId: string, workspaceId: string, sendMessageActive?: boolean): void {
-    const profile = this.profile.data();
+  private note(policy: IOptionalCapabilityPolicy, sessionId: string, workspaceId: string, profile: ProfileData, sendMessageActive?: boolean): void {
     const bound = profile.boundProfile;
     const source = capabilityToolsSource(bound?.toolsSource, bound, (path) => this.cleanDefaultPath(path));
     policy.retain(sessionId, this.scope.agentId, {
