@@ -228,7 +228,7 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
       this.currentStatus = advisorStatus('unsupported_store', { reason: 'unsupported_store' });
       return;
     }
-    await this.snapshot.refreshIfDirty();
+    await (this.snapshot.refreshView?.() ?? this.snapshot.refreshIfDirty());
     if (this.disposed || epoch !== this.epoch) return;
     const view = this.snapshot.projectionView;
     if (view === undefined) return;

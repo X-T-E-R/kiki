@@ -81,6 +81,7 @@ function fixture(
   options: {
     mode?: 'rank' | 'select' | 'off';
     advisorHook?: boolean;
+    publishRefreshOnly?: boolean;
     unconfigured?: boolean;
     child?: boolean;
     allowedModels?: string[];
@@ -232,8 +233,9 @@ function fixture(
   ix.set(IAgentMemorySnapshot, new SyncDescriptor(AgentMemorySnapshot));
   const snapshot = ix.get(IAgentMemorySnapshot);
   before.register('context-injector', async (_context, next) => {
-    await snapshot.refreshIfDirty();
-    published = await snapshot.get();
+    const refreshed = await snapshot.refreshIfDirty();
+    if (options.publishRefreshOnly) published = refreshed ?? published;
+    else published = await snapshot.get();
     await next();
   });
   ix.set(IAgentMemoryAdvisor, new SyncDescriptor(AgentMemoryAdvisor));
@@ -347,6 +349,28 @@ describe('Memory Advisor lifecycle and snapshot publication', () => {
     expect(f.calls).toHaveBeenCalledTimes(2);
     await f.step(1, false);
     expect(f.calls).toHaveBeenCalledTimes(2);
+  });
+  it('hands the refreshed projection to the prompt publisher after the Advisor reads the request', async () => {
+    const gate = deferred<Awaited<ReturnType<IMemorySelector['call']>>>();
+    const pending = fixture({ publishRefreshOnly: true, call: async () => gate.promise });
+    const baseline = fixture({ publishRefreshOnly: true, advisorHook: false });
+    await pending.step();
+    await baseline.step();
+    expect(pending.calls).toHaveBeenCalledOnce();
+    expect(pending.published()).toContain('[m_lexical]');
+    expect(pending.published()).toBe(baseline.published());
+    const f = fixture({ wait: 100, publishRefreshOnly: true });
+    await f.step();
+    expect(f.calls).toHaveBeenCalledTimes(2);
+    expect(f.published()).toContain('use=history');
+    expect(f.published()).toContain('Exception: this must only be used as history.');
+    const disabled = fixture({ mode: 'off', publishRefreshOnly: true });
+    const disabledBaseline = fixture({ mode: 'off', publishRefreshOnly: true, advisorHook: false });
+    await disabled.step();
+    await disabledBaseline.step();
+    expect(disabled.published()).toBe(disabledBaseline.published());
+    expect(disabled.published()).toContain('<memory-workset');
+    gate.resolve([]);
   });
   it('cancels in-flight work and clears advice on hot disable; a selector ignoring abort cannot publish late results', async () => {
     const gate = deferred<Awaited<ReturnType<IMemorySelector['call']>>>();
@@ -834,6 +858,19 @@ describe('Advisor governed protocols', () => {
     });
     expect(record.mock.calls.map((args) => args[2])).toEqual([false, true]);
     expect(f.request.mock.calls[0]![2].attribution).toBe(attribution);
+  });
+  it('asks chat discovery to list only full reads and leaves room for a whole catalog page', async () => {
+    const f = selector();
+    const call = { ...input('chat_json'), stage: 'discover' as const, units: Array.from({ length: 40 }, (_, index) => ({ handle: `c${index}`, text: `Entry ${index}` })) };
+    f.request.mockImplementationOnce(async function* () {
+      yield { type: 'finish' as const, message: { role: 'assistant' as const, content: [{ type: 'text' as const, text: '{"answers":[{"handle":"c7","use":"read"}]}' }], toolCalls: [] } };
+    });
+    expect(await f.service.call(call)).toEqual([{ handle: 'c7', use: 'read' }]);
+    const [request, , params] = f.request.mock.calls[0]!;
+    const payload = JSON.parse(request.messages[0]!.content[0]!.text);
+    expect(payload.contract).toContain('omitted entries are skipped');
+    expect(payload.contract).not.toContain('read|skip');
+    expect(params.maxCompletionTokens).toBe(5_696);
   });
   it('uses System One criteria and probability answers, admission, provider credentials and real usage fields', async () => {
     const f = selector();

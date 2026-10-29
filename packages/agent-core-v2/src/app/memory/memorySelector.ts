@@ -77,8 +77,8 @@ function chatPayload(
 ): string {
   const contract =
     stage === 'discover'
-      ? '{"answers":[{"handle":"c0","use":"read|skip"}]}'
-      : '{"answers":[{"handle":"c0","use":"apply|history|skip"}]}';
+      ? 'List only entries worth reading in full; omitted entries are skipped. {"answers":[{"handle":"c0","use":"read"}]}'
+      : 'Answer every handle. {"answers":[{"handle":"c0","use":"apply|history|skip"}]}';
   return JSON.stringify({ stage, query, units, contract });
 }
 function httpPayload(
@@ -248,7 +248,7 @@ export class MemorySelector extends Service implements IMemorySelector {
           signal,
           {
             attribution: input.attribution,
-            maxCompletionTokens: Math.min(4_096, Math.max(256, units.length * 60)),
+            maxCompletionTokens: Math.min(8_192, 4_096 + units.length * 40),
             thinkingEffort: selectorThinkingEffort(resolved.chatModel!),
             onRequestAttempt: () => {
               stats.requests++;
