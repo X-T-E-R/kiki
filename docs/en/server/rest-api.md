@@ -429,6 +429,8 @@ Sending now adds ordinary selected prompts to the active turn at a safe step bou
 
 Use `after_model_switch` only for a message intentionally dependent on an existing explicit switch operation. Do not combine it with a new model, effort, profile, execution or context choice: the server rejects mixed selections instead of silently replacing them with the old dependency's binding. Standalone manual compaction reports its own `compaction.started`, `compaction.completed` or `compaction.cancelled` progress; it neither accepts nor executes a pending message's model choice.
 
+Standalone native model switches apply before the next model request without submitting a prompt or interrupting the current request. Their `thinking` input accepts a string for an explicit effort, `null` to restore the persona, model-profile or model default, and omission to preserve the current effort.
+
 For an explicit switch operation, an accepted send is not a completed switch. If switching fails or its durable completion is uncertain, the original message remains queued and the switch exposes its recoverable state. Retry the same operation to finish the accepted delivery; a cancelled switch is not revived. Prompts with an unrelated execution selection still require their own turn. After a restart, sending now bypasses the recovery hold only for the selected prompts; other restored prompts still wait for confirmation. Aborting a steered prompt cancels the turn it joined, not a later turn. Ordinary `:abort` returns `40402` for an unknown or already settled prompt; use `?queued_only=true` when removing a queue row.
 
 ### Approvals and questions

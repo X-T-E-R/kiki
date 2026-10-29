@@ -9,7 +9,7 @@ export interface ModelSwitchInput {
   readonly operationId: string;
   readonly model: string;
   readonly mode: ModelSwitchMode;
-  readonly thinking?: string;
+  readonly thinking?: string | null;
   readonly selectedFromModel?: string;
 }
 

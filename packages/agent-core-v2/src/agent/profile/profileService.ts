@@ -1537,7 +1537,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     };
   }
 
-  async prepareModelSwitchBinding(alias: string, requestedThinking?: string): Promise<import('./profile').PreparedModelSwitchBinding> {
+  async prepareModelSwitchBinding(alias: string, requestedThinking?: string | null): Promise<import('./profile').PreparedModelSwitchBinding> {
     await this.ensureDelegationPosition();
     if (this.isExternalExecutor) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Model switching requires an executor-specific binding and context adapter.');
@@ -1547,13 +1547,30 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const recipe = await this.selectedRecipe(model);
     const record = this.resolveUsageModel(model, recipe ?? null);
     if (this.delegationPosition !== 'main') assertSubagentModelNotDenied(this.config, model, this.models);
-    const config = this.resolveConfigPayload({ modelAlias: model, thinkingLevel: requestedThinking,
+    const defaultThinking = requestedThinking === null ? resolveMainThinkingCandidate({
+      personaThinking: this.currentPersona?.definition.thinkingEffort,
+      routeLockedThinking: previous.lockedThinkingEffort,
+      profileThinking: resolveProfileThinkingDefault(previous.boundProfile ?? this.resolveActiveProfile(), model, (id) => this.models.resolveId(id)),
+    }) : undefined;
+    const thinkingLevel = requestedThinking === null
+      ? this.resolveThinkingEffort(defaultThinking, record, true)
+      : requestedThinking ?? this.getEffectiveThinkingLevel();
+    const config = this.resolveConfigPayload({ modelAlias: model, thinkingLevel,
+      thinkingEffortExplicit: requestedThinking === null ? defaultThinking !== undefined : undefined,
+      thinkingEffortAdjusted: requestedThinking === null ? false : undefined,
       personaOverrides: previous.personaId === undefined ? undefined : {
-        ...previous.personaOverrides, model: alias, thinking: requestedThinking ?? previous.personaOverrides?.thinking,
+        ...previous.personaOverrides, model: alias,
+        thinking: requestedThinking === null ? undefined : requestedThinking ?? previous.personaOverrides?.thinking,
       },
     }, record);
-    const thinking = config.thinkingEffort ?? this.getEffectiveThinkingLevel();
-    if (requestedThinking !== undefined) this.assertThinkingEffortSupported(requestedThinking, record, model);
+    if (requestedThinking === null && config.execution !== undefined) {
+      config.execution = { ...config.execution,
+        selection: { ...config.execution.selection, overrides: { ...config.execution.selection.overrides, thinking: null } },
+        sources: { ...config.execution.sources, thinking: defaultThinking === undefined ? 'harness-default' : 'profile' },
+      };
+    }
+    const thinking = config.thinkingEffort ?? thinkingLevel;
+    if (typeof requestedThinking === 'string') this.assertThinkingEffortSupported(requestedThinking, record, model);
     this.assertCurrentBindingConstraints(model, thinking);
     const base = previous.boundProfile?.promptBase;
     let nextFields: ResolvedPromptFieldOverrides | undefined;

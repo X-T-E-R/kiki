@@ -175,6 +175,10 @@ const timeoutCases = [
 ]);
 
 describe('session thinking selection contract', () => {
+  it.each(['high', null, undefined])('preserves standalone model-switch effort %s', thinking => {
+    const input = { operationId: 'effort-selection', model: 'example/model', mode: 'direct', thinking };
+    expect(agentPromptContract.switchModel.input.parse([input])).toEqual([input]);
+  });
   it.each([{ thinking: 'high' }, { thinking: null }, { thinking: undefined }])(
     'preserves thinking $thinking when creating a session',
     ({ thinking }) => {

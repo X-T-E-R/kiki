@@ -310,7 +310,7 @@ export interface IAgentProfileService {
   applyPersonaSettings(restoreDefaults?: boolean): Promise<void>;
   /** Runs the optional guard synchronously before committing a prepared model; throwing prevents the commit. */
   setModel(model: string, assertCurrent?: () => void): Promise<ProfileSetModelResult>;
-  prepareModelSwitchBinding(model: string, thinking?: string): Promise<PreparedModelSwitchBinding>;
+  prepareModelSwitchBinding(model: string, thinking?: string | null): Promise<PreparedModelSwitchBinding>;
   setEffort(level: string): ProfileSetEffortResult;
   setThinking(level: string): void;
   /** Drops a user effort pin and stores the profile or model default. An execution binding clears through that binding instead. */

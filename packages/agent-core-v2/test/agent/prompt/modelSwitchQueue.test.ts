@@ -1696,3 +1696,40 @@ describe('missing metadata ownership', () => {
     expect((await records(cold)).filter((record) => record.type === 'agent.model_switch')).toHaveLength(1);
   });
 });
+
+it.each([false, true])('applies a standalone live binding before the next request; effortOnly=%s', async effortOnly => {
+  const scripted = createScriptedGenerate();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let calls = 0;
+  const ctx = await host(async (...args) => {
+    if (++calls === 1) { entered.resolve(); await release.promise; }
+    return scripted.generate(...args);
+  });
+  ctx.kimiConfig = { ...ctx.kimiConfig, models: Object.fromEntries(Object.entries(ctx.kimiConfig.models!).map(([id, model]) => [id, {
+    ...model, capabilities: ['thinking'], supportEfforts: ['off', 'high'], defaultEffort: 'off',
+  }])) };
+  ctx.get(IAgentPermissionModeService).setMode('yolo');
+  ctx.get(IAgentProfileService).update({ activeToolNames: ['Lookup'] });
+  ctx.get(IAgentToolRegistryService).register({ name: 'Lookup', description: 'Read a value.', parameters: { type: 'object', properties: {} },
+    resolveExecution: () => ({ approvalRule: 'Lookup', execute: async () => ({ output: 'original-tool-result' }) }),
+  });
+  scripted.mockNextResponse({ type: 'function', id: 'live-lookup', name: 'Lookup', arguments: '{}' });
+  scripted.mockNextResponse({ type: 'text', text: 'Done.' });
+  const prompt = ctx.get(IAgentPromptService);
+  const active = await prompt.enqueue({ id: 'live-binding-turn', message: { role: 'user', content: [{ type: 'text', text: 'Look up the value.' }], toolCalls: [] } });
+  try {
+    await entered.promise;
+    const target = effortOnly ? OLD : NEW;
+    expect(await prompt.switchModel({ operationId: 'live-binding', model: target, thinking: 'high', mode: 'direct' })).toMatchObject({ state: 'pending' });
+    expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+    expect(calls).toBe(1);
+    release.resolve();
+    await active.completion;
+    const journal = await records(ctx);
+    expect(journal.filter(record => record.type === 'llm.request')).toMatchObject([
+      { modelAlias: OLD, thinkingEffort: 'off', turnStep: '0.1' }, { modelAlias: target, thinkingEffort: 'high', turnStep: '0.2' },
+    ]);
+    expect(JSON.stringify(scripted.calls[1])).toContain('original-tool-result');
+  } finally { release.resolve(); ctx.get(IAgentLoopService).cancel(); await ctx.get(IAgentLoopService).settled(); }
+});

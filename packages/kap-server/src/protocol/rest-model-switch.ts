@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const modelSwitchModeSchema = z.enum(['direct', 'compact', 'fresh']);
 export const modelSwitchInputSchema = z.object({
   operationId: z.string().min(1), model: z.string().min(1), mode: modelSwitchModeSchema,
-  thinking: z.string().optional(), selectedFromModel: z.string().optional(),
+  thinking: z.string().nullable().optional(), selectedFromModel: z.string().optional(),
 });
 export const modelSwitchReceiptSchema = z.object({
   operationId: z.string(), agentId: z.string(), state: z.enum(['pending', 'preparing', 'completed', 'failed', 'cancelled']),
