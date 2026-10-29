@@ -1376,6 +1376,53 @@ describe('NativeAgentExecutorSession', () => {
     await ix.dispose();
   });
 
+  it('rejects an undelivered native steer when finalization fails instead of leaving it held', async () => {
+    const ctx = createTestAgent();
+    const loop = ctx.get(IAgentLoopService);
+    const execution = ctx.get(IAgentExecutionService);
+    const endedStep = deferred<void>();
+    const release = deferred<void>();
+    const flush = ctx.wire.flush.bind(ctx.wire);
+    let failing = true;
+    ctx.wire.flush = async () => {
+      if (failing && loop.status().finalizing) throw new Error('storage unavailable');
+      await flush();
+    };
+    const hook = loop.hooks.onDidFinishStep.register('finalization-steer-race', async (context, next) => {
+      context.stopTurn = true;
+      endedStep.resolve();
+      await release.promise;
+      await next();
+    });
+    try {
+      ctx.get(ProfileServiceId).update({ activeToolNames: [] });
+      ctx.mockNextResponse({ type: 'text', text: 'Original result' });
+      const run = await execution.run({ kind: 'prompt', prompt: 'Original task' }, { signal: new AbortController().signal });
+      const completion = expect(run.turn.result).rejects.toMatchObject({ details: { persistenceOutcome: 'failed' } });
+      await endedStep.promise;
+      expect(execution.steer).toBeTypeOf('function');
+      if (execution.steer === undefined) throw new Error('Native execution does not expose steering');
+      const steered = expect(execution.steer({ role: 'user', content: [{ type: 'text', text: 'Queued steer' }], toolCalls: [] }))
+        .rejects.toMatchObject({ details: { persistenceOutcome: 'failed' } });
+      release.resolve();
+      await Promise.all([completion, steered]);
+      expect(loop.status()).toMatchObject({ state: 'running', finalizing: true, hasPendingRequests: false });
+      expect(ctx.llmCalls).toHaveLength(1);
+      failing = false;
+      expect(await loop.recoverPersistence()).toBe(true);
+      await execution.settled();
+      expect(execution.status().state).toBe('idle');
+      expect(ctx.llmCalls).toHaveLength(1);
+    } finally {
+      release.resolve();
+      failing = false;
+      await loop.recoverPersistence();
+      ctx.wire.flush = flush;
+      await hook.dispose();
+      await ctx.dispose();
+    }
+  });
+
   it('materializes a running native steer at the next loop step boundary and rejects idle steering', async () => {
     let state: 'idle' | 'running' = 'running';
     let request: Parameters<IAgentLoopService['enqueue']>[0] | undefined;
@@ -1386,6 +1433,7 @@ describe('NativeAgentExecutorSession', () => {
     const loop = {
       _serviceBrand: undefined,
       enqueue,
+      settled: () => new Promise<void>(() => {}),
       status: () => ({
         state,
         activeTurnId: state === 'running' ? 17 : undefined,

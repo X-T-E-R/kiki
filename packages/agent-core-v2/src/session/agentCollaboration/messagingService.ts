@@ -403,6 +403,11 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     let observedStart = false;
     let stall: string | undefined;
     for (;;) {
+      const loop = handle.accessor.get(IAgentLoopService);
+      if (!this.isExternalExecutor(handle) && loop.status().finalizing) {
+        await loop.recoverPersistence({ throwOnFailure: true });
+        if (loop.status().state === 'idle') await handle.accessor.get(IAgentExecutionService).settled();
+      }
       const steered = await this.serializeDelivery(handle.id, () => this.deliverRunning(handle));
       if (steered === 'unknown') return observedStart;
       if (this.messageLanded(handle, message.messageId) || idleWake === undefined) return observedStart;
@@ -417,14 +422,13 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         if (!followBusyCompletion) return observedStart;
         const execution = handle.accessor.get(IAgentExecutionService);
         const loop = handle.accessor.get(IAgentLoopService);
-        const executionSettled = execution.settled();
-        const loopSettled = loop.settled();
+        const settling = Promise.all([execution.settled(), loop.settled({ rejectOnPersistenceFailure: true })]);
         let finished = false;
-        void Promise.all([executionSettled, loopSettled]).then(() => { finished = true; }, () => { finished = true; });
+        void settling.then(() => { finished = true; }, () => { finished = true; });
         for (let attempt = 0; attempt < 4 && !finished; attempt += 1) await Promise.resolve();
-        if (finished && this.executionBusy(handle)) return observedStart;
-        await executionSettled;
-        await loopSettled;
+        const stillBusy = finished && this.executionBusy(handle);
+        await settling;
+        if (stillBusy) return observedStart;
         continue;
       }
       const outcome = await this.serializeWake(handle.id, async () => {
@@ -492,12 +496,12 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     if (executionState !== 'idle' && executionState !== 'running') return 'skipped';
     if (executionState === 'running') {
       if (!this.isExternalExecutor(handle) && loop.status().state !== 'running') return 'skipped';
-      await loop.settled();
+      await loop.settled({ rejectOnPersistenceFailure: true });
       await execution.settled();
       if (this.messageLanded(handle, message.messageId)) return 'skipped';
       executionState = execution.status().state;
     } else if (loop.status().state === 'running') {
-      await loop.settled();
+      await loop.settled({ rejectOnPersistenceFailure: true });
       if (this.messageLanded(handle, message.messageId)) return 'skipped';
       executionState = execution.status().state;
     }

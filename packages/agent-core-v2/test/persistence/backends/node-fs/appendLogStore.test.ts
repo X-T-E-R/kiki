@@ -252,65 +252,125 @@ describe('AppendLogStore', () => {
     expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }, { n: 2 }]);
   });
 
-  it('does not retry an uncommitted append failure that is not transient', async () => {
+  it('retries uncommitted ENOSPC only on an explicit flush after storage recovers', async () => {
     let attempts = 0;
     const failure = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'storage append failed: no space left on device', {
       details: { path: `${SCOPE}/${KEY}`, op: 'append', errno: 'ENOSPC', committed: false },
     });
     let reportFailure!: (error: unknown) => void;
-    const reportedFailure = new Promise<unknown>((resolve) => {
-      reportFailure = resolve;
-    });
-    storage.append = async () => {
-      attempts += 1;
-      throw failure;
-    };
+    const reportedFailure = new Promise<unknown>((resolve) => { reportFailure = resolve; });
+    const append = storage.append.bind(storage);
+    storage.append = async () => { attempts += 1; throw failure; };
     record.append(SCOPE, KEY, { n: 1 }, { onError: reportFailure });
     expect(await reportedFailure).toBe(failure);
-    await expect(record.flush(SCOPE, KEY)).rejects.toBe(failure);
     expect(attempts).toBe(1);
     expect(await storage.read(SCOPE, KEY)).toBeUndefined();
+    storage.append = async (...args) => { attempts += 1; await append(...args); };
+    await record.flush(SCOPE, KEY);
+    expect(attempts).toBe(2);
+    expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }]);
   });
 
-  it('does not retry an append that already wrote before it threw', async () => {
-    const failure = new Error('append failed after commit');
-    let markAppendStarted!: () => void;
-    const appendStarted = new Promise<void>((resolve) => {
-      markAppendStarted = resolve;
-    });
-    let releaseAppend!: () => void;
-    const appendGate = new Promise<void>((resolve) => {
-      releaseAppend = resolve;
-    });
-    let reportFailure!: (error: unknown) => void;
-    const reportedFailure = new Promise<unknown>((resolve) => {
-      reportFailure = resolve;
-    });
-    let appendAttempts = 0;
-    const originalAppend = storage.append.bind(storage);
-    const committedFailure = new StorageError(StorageErrors.codes.STORAGE_IO_FAILED, 'storage append failed: unrecognized I/O error', {
-      details: { path: `${SCOPE}/${KEY}`, op: 'append', errno: 'EIO', committed: true },
-      cause: failure,
-    });
-    storage.append = async (...args) => {
-      appendAttempts++;
-      markAppendStarted();
-      await appendGate;
-      await originalAppend(...args);
-      throw committedFailure;
+  it.each([0, 1, 11, 'full'] as const)('reconciles an ENOSPC append with %s bytes written and only appends the missing suffix', async (cut) => {
+    record.append(SCOPE, KEY, { n: 0 });
+    await record.flush(SCOPE, KEY);
+    const prefix = (await storage.read(SCOPE, KEY))!;
+    const value = { text: '示例🙂', n: 1 };
+    const encoded = enc.encode(JSON.stringify(value) + '\n');
+    const written = cut === 'full' ? encoded.byteLength : cut;
+    const append = storage.append.bind(storage);
+    const calls: Uint8Array[] = [];
+    let blocked = true;
+    const commits: unknown[] = [];
+    record.registerProjection({ key: KEY, prepare: (_scope, values) => values,
+      commit: async (_position, values) => { commits.push(values); }, onError: () => {} });
+    const failure = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'no space left on device', { details: { errno: 'ENOSPC', committed: true } });
+    storage.append = async (scope, key, data, options) => {
+      calls.push(data.slice());
+      if (blocked) {
+        await append(scope, key, data.slice(0, written), options);
+        throw failure;
+      }
+      await append(scope, key, data, options);
     };
-
-    record.append(SCOPE, KEY, { n: 1 }, { onError: reportFailure });
+    record.append(SCOPE, KEY, value);
+    await expect(record.flush(SCOPE, KEY)).rejects.toBe(failure);
+    expect(calls).toHaveLength(1);
+    expect(commits).toEqual([]);
+    blocked = false;
     record.append(SCOPE, KEY, { n: 2 });
-    await appendStarted;
-    releaseAppend();
-    expect(await reportedFailure).toBe(committedFailure);
+    await Promise.all([record.flush(SCOPE, KEY), record.flush(SCOPE, KEY)]);
+    expect(calls[1]).toEqual(encoded.subarray(written));
+    expect(new TextDecoder().decode(await storage.read(SCOPE, KEY))).toBe(new TextDecoder().decode(prefix) + JSON.stringify(value) + '\n{"n":2}\n');
+    expect(commits).toEqual([[value], [{ n: 2 }]]);
+    expect(await collect(SCOPE, KEY)).toEqual([{ n: 0 }, value, { n: 2 }]);
+  });
 
-    await expect(record.flush()).rejects.toBe(committedFailure);
-    expect(appendAttempts).toBe(1);
+  it('keeps a fully written batch failed until a new durable sync succeeds without reappending its bytes', async () => {
+    const append = storage.append.bind(storage);
+    const sizes: number[] = [];
+    let failing = true;
+    const failure = new StorageError(StorageErrors.codes.STORAGE_IO_FAILED, 'sync failed', { details: { committed: true } });
+    storage.append = async (scope, key, data, options) => {
+      sizes.push(data.byteLength);
+      await append(scope, key, data, options);
+      if (failing) throw failure;
+    };
+    record.append(SCOPE, KEY, { n: 1 });
+    record.append(SCOPE, KEY, { n: 2 });
+    await expect(record.flush()).rejects.toBe(failure);
+    await expect(record.flush()).rejects.toBe(failure);
+    expect(sizes).toEqual([16, 0]);
     expect(new TextDecoder().decode(await storage.read(SCOPE, KEY))).toBe('{"n":1}\n{"n":2}\n');
-    await expect(record.flush()).rejects.toBe(committedFailure);
-    expect(appendAttempts).toBe(1);
+    failing = false;
+    await record.flush();
+    expect(sizes).toEqual([16, 0, 0]);
+    expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }, { n: 2 }]);
+  });
+
+  it('retains the original byte fence when suffix recovery fails before writing', async () => {
+    const append = storage.append.bind(storage);
+    let attempts = 0;
+    const failure = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'no space left on device', { details: { committed: true } });
+    storage.append = async (scope, key, bytes, options) => {
+      attempts++;
+      if (attempts === 1) { await append(scope, key, bytes.subarray(0, 3), options); throw failure; }
+      if (attempts === 2) throw uncommittedBusy();
+      await append(scope, key, bytes, options);
+    };
+    record.append(SCOPE, KEY, { n: 1 });
+    await expect(record.flush()).rejects.toBe(failure);
+    await expect(record.flush()).rejects.toMatchObject({ details: { committed: false } });
+    record.append(SCOPE, KEY, { n: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(attempts).toBe(2);
+    expect(new TextDecoder().decode(await storage.read(SCOPE, KEY))).toBe('{"n');
+    await record.flush();
+    expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }, { n: 2 }]);
+    expect(attempts).toBe(4);
+  });
+
+  it.each(['generation', 'boundary', 'tail'] as const)('blocks reconciliation after the %s changes without appending', async (change) => {
+    record.append(SCOPE, KEY, { n: 0 });
+    await record.flush(SCOPE, KEY);
+    const append = storage.append.bind(storage);
+    let attempts = 0;
+    const failure = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'no space left on device', { details: { committed: true } });
+    storage.append = async (scope, key, bytes, options) => {
+      attempts++;
+      await append(scope, key, bytes.subarray(0, 3), options);
+      throw failure;
+    };
+    record.append(SCOPE, KEY, { n: 1 });
+    await expect(record.flush()).rejects.toBe(failure);
+    if (change === 'generation') await storage.write(SCOPE, `${KEY}.generation`, enc.encode('replacement'));
+    else {
+      const bytes = (await storage.read(SCOPE, KEY))!;
+      bytes[change === 'boundary' ? 0 : bytes.byteLength - 1] = 0;
+      await storage.write(SCOPE, KEY, bytes);
+    }
+    await expect(record.flush()).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_CORRUPTED, details: { recovery: 'journal_mismatch' } });
+    expect(attempts).toBe(1);
   });
 
   it('later flush reports an ambiguous auto-flush failure after one retried drain', async () => {

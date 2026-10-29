@@ -99,9 +99,10 @@ export type TurnResult = LoopRunResult;
 
 export class TurnPersistenceError extends Error2 {
   constructor(readonly turnId: number, readonly executionResult: TurnResult, cause: unknown) {
-    super('internal', 'Turn execution ended, but saving failed. Recover persistence before continuing.', {
-      cause, details: { turnId, executionOutcome: executionResult.type, persistenceOutcome: 'failed' },
-    });
+    const storageDetails = isError2(cause) ? cause.details : undefined;
+    super(isError2(cause) ? cause.code : 'internal',
+      `Turn execution ended, but saving failed. Restore writable storage; the pending save can recover without rerunning this work. Last failure: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause, details: { ...storageDetails, turnId, executionOutcome: executionResult.type, persistenceOutcome: 'failed' } });
   }
 }
 
@@ -127,6 +128,8 @@ export interface Turn {
   readonly signal: AbortSignal;
   readonly ready: Promise<void>;
   readonly result: Promise<LoopRunResult>;
+  /** The same native execution result after its final save succeeds, including recovery from a rejected result. */
+  readonly durableResult?: Promise<TurnResult>;
   cancel(reason?: unknown): boolean;
 }
 
@@ -170,8 +173,8 @@ export interface IAgentLoopService {
 
   status(): AgentLoopStatus;
 
-  /** Retries the original completion event, never the model turn. Failed finalization also retries with bounded delays and on the next enqueue, while keeping admission held until durable success. */
-  recoverPersistence(): Promise<boolean>;
+  /** Retries the original completion event, never the model turn. Explicit callers can request the original turn's save error instead of a false result. Admission stays held until durable success. */
+  recoverPersistence(options?: { readonly throwOnFailure?: boolean }): Promise<boolean>;
 
   cancel(turnId?: number, reason?: unknown): boolean;
 
@@ -186,7 +189,8 @@ export interface IAgentLoopService {
   /** Runs a control operation after the active request and its tool results, before another request. */
   atStepBoundary(run: (boundary: StepBoundary | undefined) => Promise<void>): Promise<void>;
 
-  settled(): Promise<void>;
+  /** Failure-sensitive waiters reject when finalization is blocked; ordinary waiters remain held until the loop is idle. */
+  settled(options?: { readonly rejectOnPersistenceFailure?: boolean }): Promise<void>;
 
   hasPendingRequests(): boolean;
 

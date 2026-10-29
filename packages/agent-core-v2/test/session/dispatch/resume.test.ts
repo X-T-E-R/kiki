@@ -12,6 +12,9 @@ import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 import { SubagentToolInputSchema } from '#/agent/tools/agent/agent';
 import { addSubagentBindingSchemaConstraints } from '#/session/subagent/configSection';
 import { toInputJsonSchema } from '#/tool/input-schema';
@@ -42,7 +45,8 @@ import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IWireService } from '#/wire/wire';
 import type { WireRecord } from '#/wire/record';
 import { Error2, ErrorCodes } from '#/errors';
-import { agentServices, testAgent, type TestAgentContext } from '../../harness';
+import { agentServices, appServices, testAgent, type TestAgentContext } from '../../harness';
+import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { Event } from '#/_base/event';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { MessageStepRequest } from '#/agent/loop/stepRequest';
@@ -62,7 +66,7 @@ const CHILD = 'saved-child';
 const hosts: TestAgentContext[] = [];
 const containers: TestInstantiationService[] = [];
 
-async function host() {
+async function host(realAppend = false) {
   const ctx = testAgent({ autoConfigure: false, initialConfig: {
     providers: { example: { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' } },
     models: {
@@ -72,7 +76,7 @@ async function host() {
   } }, agentServices((reg) => reg.defineInstance(IAgentScopeContext, {
     _serviceBrand: undefined, agentId: CHILD, parentAgentId: 'main',
     scope: (subKey) => `test-session/agents/${CHILD}${subKey ? `/${subKey}` : ''}`,
-  })));
+  })), appServices((reg) => { if (realAppend) reg.define(IAppendLogStore, AppendLogStore); }));
   hosts.push(ctx);
   await ctx.ready;
   await ctx.get(IAgentProfileService).bind({ model: OLD, thinking: 'off', delegationPosition: 'sub',
@@ -677,6 +681,201 @@ describe('dispatch resume after cancellation with deferred task notifications', 
     ix.set(IAgentCollaborationMessagingService, new SyncDescriptor(AgentCollaborationMessagingService));
     return { messaging: ix.get(IAgentCollaborationMessagingService), delivered: () => delivered };
   }
+
+  async function persistenceBlockedChild(realAppend = false, committed = true, exhaust = true) {
+    const ctx = await host(realAppend);
+    const parent = testAgent();
+    hosts.push(parent);
+    await parent.ready;
+    parent.mockNextResponse({ type: 'text', text: 'Original task notification received.' });
+    const notificationEnd = parent.untilTurnEnd();
+    const tasks = parent.get(IAgentTaskService);
+    const view = dispatchFor(ctx);
+    const loop = ctx.get(IAgentLoopService);
+    const wire = ctx.get(IWireService);
+    const storage = ctx.get(IFileSystemStorageService);
+    const append = storage.append.bind(storage);
+    const flush = wire.flush.bind(wire);
+    let blocked = true;
+    let failures = 0;
+    let partial = false;
+    const failure = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'storage append failed: no space left on device', {
+      details: { op: 'append', errno: 'ENOSPC', committed },
+    });
+    if (realAppend) {
+      vi.spyOn(storage, 'append').mockImplementation(async (scope, key, bytes, options) => {
+        if (blocked && key === 'wire.jsonl' && loop.status().finalizing) {
+          if (failures++ === 0) vi.useFakeTimers();
+          if (committed && !partial) { partial = true; await append(scope, key, bytes.slice(0, Math.max(1, bytes.length - 7)), options); }
+          throw failure;
+        }
+        await append(scope, key, bytes, options);
+      });
+    } else {
+      vi.spyOn(wire, 'flush').mockImplementation(async () => {
+        if (blocked && loop.status().finalizing) {
+          if (failures++ === 0) vi.useFakeTimers();
+          throw failure;
+        }
+        await flush();
+      });
+    }
+    const action = vi.fn(async () => ({ output: 'saved once' }));
+    ctx.get(IAgentPermissionModeService).setMode('yolo', 'ambient');
+    ctx.get(IAgentToolRegistryService).register({ name: 'SaveWork', description: 'Save fixture work.', parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'SaveWork', execute: action }) });
+    ctx.get(IAgentProfileService).update({ activeToolNames: ['SaveWork'] });
+    ctx.mockNextResponse({ type: 'function', id: 'save-work', name: 'SaveWork', arguments: '{}' });
+    ctx.mockNextResponse({ type: 'text', text: 'Original result.' });
+    const controller = new AbortController();
+    const run = await ctx.get(IAgentExecutionService).run({ kind: 'prompt', prompt: 'Save original work.' }, { signal: controller.signal });
+    const taskId = tasks.registerTask(new SubagentTask({ agentId: CHILD, profileName: 'example-worker',
+      completion: run.completion.then((result) => ({ result: result.summary })) }, 'Save original work', controller));
+    await expect(run.turn.result).rejects.toMatchObject({ details: { executionOutcome: 'completed', persistenceOutcome: 'failed' } });
+    if (exhaust) {
+      await vi.advanceTimersByTimeAsync(1_000_000);
+      const exhausted = failures;
+      await vi.advanceTimersByTimeAsync(1_000_000);
+      expect(failures).toBe(exhausted);
+    } else await vi.advanceTimersByTimeAsync(2_600);
+    expect(loop.status()).toMatchObject({ state: 'running', finalizing: true, persistenceFailure: { executionOutcome: 'completed' } });
+    expect(tasks.list(true)).toMatchObject([{ taskId, status: 'running' }]);
+    expect(ctx.get(IAgentExecutionService).status().state).toBe('running');
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(ctx.llmCalls).toHaveLength(2);
+    return { ctx, parent, notificationEnd, ...view, loop, action, run, tasks, taskId, controller, unblock: () => { blocked = false; }, cleanup: async () => {
+      blocked = false;
+      vi.useRealTimers();
+      expect(await loop.recoverPersistence()).toBe(true);
+      await run.completion.catch(() => {});
+      await tasks.wait(taskId);
+    } };
+  }
+
+  it.each([false, true])('automatically completes the original task after ENOSPC committed=%s recovers during extended backoff', async (committed) => {
+    const fixture = await persistenceBlockedChild(true, committed, false);
+    const { ctx, loop, run, tasks, taskId, action } = fixture;
+    try {
+      fixture.unblock();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await run.completion).toMatchObject({ summary: 'Original result.' });
+      await tasks.wait(taskId);
+      await fixture.notificationEnd;
+      const notifications = fixture.parent.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'task' && message.origin.taskId === taskId);
+      expect(notifications).toHaveLength(1);
+      expect(JSON.stringify(notifications)).toContain('Original result.');
+      expect(tasks.list(false).find((task) => task.taskId === taskId)?.status).toBe('completed');
+      expect(loop.status()).toMatchObject({ state: 'idle', finalizing: false });
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(ctx.llmCalls).toHaveLength(2);
+      expect((await journal(ctx)).filter((record) => record.type === 'turn.ended' && record['turnId'] === run.turn.id)).toHaveLength(1);
+    } finally { await fixture.cleanup(); }
+  });
+
+  it.each([false, true])('recovers on an actual successful journal write after timer exhaustion with prior cancellation=%s', async (cancelled) => {
+    const fixture = await persistenceBlockedChild(true);
+    const { ctx, loop, run, tasks, taskId, action } = fixture;
+    try {
+      if (cancelled) {
+        const completion = expect(run.completion).rejects.toBeDefined();
+        await tasks.stopByUser(taskId);
+        await completion;
+        await tasks.wait(taskId);
+      }
+      fixture.unblock();
+      const store = ctx.get(IAppendLogStore);
+      store.append('recovery-evidence', 'events.jsonl', { storage: 'writable' });
+      await store.flush('recovery-evidence', 'events.jsonl');
+      if (!cancelled) expect(await run.completion).toMatchObject({ summary: 'Original result.' });
+      await loop.settled();
+      await tasks.wait(taskId);
+      expect(tasks.list(false).find((task) => task.taskId === taskId)?.status).toBe(cancelled ? 'killed' : 'completed');
+      expect(loop.status()).toMatchObject({ state: 'idle', finalizing: false });
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(ctx.llmCalls).toHaveLength(2);
+    } finally { await fixture.cleanup(); }
+  });
+
+  it('recovers the original task on a journal read after storage returns and timers are exhausted', async () => {
+    const fixture = await persistenceBlockedChild(true);
+    const { ctx, loop, run, tasks, taskId, action } = fixture;
+    try {
+      fixture.unblock();
+      const records = await journal(ctx);
+      expect(await run.completion).toMatchObject({ summary: 'Original result.' });
+      await tasks.wait(taskId);
+      expect(tasks.list(false).find((task) => task.taskId === taskId)?.status).toBe('completed');
+      expect(loop.status()).toMatchObject({ state: 'idle', finalizing: false });
+      expect(records.filter((record) => record.type === 'turn.ended' && record['turnId'] === run.turn.id)).toHaveLength(1);
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(ctx.llmCalls).toHaveLength(2);
+    } finally { await fixture.cleanup(); }
+  });
+
+  it.each([false, true])('recovers the same child after exhausted final-save retries with real append=%s', async (realAppend) => {
+    const fixture = await persistenceBlockedChild(realAppend);
+    const { ctx, child, dispatch, loop, action } = fixture;
+    try {
+      fixture.unblock();
+      ctx.mockNextResponse({ type: 'text', text: 'Continued result.' });
+      const opts = options('after-persistence-outage');
+      const [first, second] = await Promise.all([
+        dispatch.runOnExisting(child, 'Continue saved work.', opts),
+        dispatch.runOnExisting(child, 'Continue saved work.', opts),
+      ]);
+      expect(second).toBe(first);
+      const handle = await first.started;
+      await handle.completion;
+      expect(handle.agentId).toBe(CHILD);
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(ctx.llmCalls).toHaveLength(3);
+      expect(loop.status()).toMatchObject({ state: 'idle', finalizing: false, persistenceFailure: undefined });
+      const records = await journal(ctx);
+      expect(records.filter((record) => record.type === 'turn.ended' && record['turnId'] === fixture.run.turn.id)).toHaveLength(1);
+      expect(records.filter((record) => record.type === 'turn.prompt' && record['turnId'] === fixture.run.turn.id)).toHaveLength(1);
+    } finally { await fixture.cleanup(); }
+  });
+
+  it('reports persistent save failure on resume and message delivery while preserving the queued message', async () => {
+    const fixture = await persistenceBlockedChild();
+    const { ctx, child, dispatch, loop, action } = fixture;
+    const mail = mailboxFor(ctx, child, dispatch);
+    const input = { sourceAgentId: CHILD, sourceTaskName: 'sender', targetAgentId: CHILD, targetTaskName: 'saved_child',
+      content: 'Retain this update.', idempotencyKey: 'save-blocked-message', waitForRunningDelivery: true, idleWake: 'owned-child' as const };
+    try {
+      await expect(dispatch.runOnExisting(child, 'Must remain blocked.', options('still-failing'))).rejects.toMatchObject({
+        details: { persistenceOutcome: 'failed', executionOutcome: 'completed' },
+      });
+      await expect(mail.messaging.send(input)).rejects.toMatchObject({ details: { persistenceOutcome: 'failed' } });
+      expect(mail.delivered()).toBe(false);
+      expect(loop.status().hasPendingRequests).toBe(false);
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(ctx.llmCalls).toHaveLength(2);
+      fixture.unblock();
+      ctx.mockNextResponse({ type: 'text', text: 'Mailbox recovered.' });
+      const run = await dispatch.runOnExisting(child, '', options('recover-queued-message'));
+      await (await run.started).completion;
+      expect(await mail.messaging.send(input)).toMatchObject({ delivery: 'delivered', deduplicated: true });
+      expect(ctx.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'agent_message' && message.origin.messageId === 'queued-mailbox')).toHaveLength(1);
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(ctx.llmCalls).toHaveLength(3);
+    } finally { await fixture.cleanup(); }
+  });
+
+  it('wakes a persistence-blocked child from AgentSend after storage recovers', async () => {
+    const fixture = await persistenceBlockedChild();
+    const { ctx, child, dispatch, action } = fixture;
+    const mail = mailboxFor(ctx, child, dispatch);
+    try {
+      fixture.unblock();
+      ctx.mockNextResponse({ type: 'text', text: 'Message continuation.' });
+      expect(await mail.messaging.send({ sourceAgentId: CHILD, sourceTaskName: 'sender', targetAgentId: CHILD, targetTaskName: 'saved_child',
+        content: 'Continue from saved mail.', idempotencyKey: 'wake-after-save-failure', waitForRunningDelivery: true, idleWake: 'owned-child' })).toMatchObject({ delivery: 'delivered', resumed: true });
+      await ctx.get(IAgentLoopService).settled();
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(ctx.llmCalls).toHaveLength(3);
+    } finally { await fixture.cleanup(); }
+  });
 
   it('retains queued mailbox and late timeout notifications until the resumed first step', async () => {
     const { ctx, dispatch, child, descendant, tool } = await cancelledChild();

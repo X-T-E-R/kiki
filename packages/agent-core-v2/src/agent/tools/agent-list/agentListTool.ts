@@ -9,6 +9,7 @@ import {
 } from '#/agent/task/task';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import {
@@ -53,7 +54,16 @@ export class AgentListTool implements IAgentListTool {
         const latestRuns = latestAgentRuns(this.tasks.list(false));
         const entries = directChildAgents(session.agents, this.scope.agentId)
           .map((child) => {
-            const execution = this.lifecycle.get(child.agentId)?.accessor.get(IAgentExecutionService).status();
+            const live = this.lifecycle.get(child.agentId);
+            const loop = live?.accessor.get(IAgentLoopService).status();
+            if (loop?.persistenceFailure !== undefined) {
+              return { ...toEntry(child, 'persistence_failed'), persistence_failure: {
+                turn_id: loop.activeTurnId,
+                execution_outcome: loop.persistenceFailure.executionOutcome,
+                message: loop.persistenceFailure.message,
+              } };
+            }
+            const execution = live?.accessor.get(IAgentExecutionService).status();
             const status = execution?.state === 'broken'
               ? 'errored'
               : execution?.state === 'closed'

@@ -416,6 +416,12 @@ export class SessionDispatchService implements ISessionDispatchService {
     options: DispatchRunOptions,
   ): Promise<DispatchRun> {
     options.signal.throwIfAborted();
+    const loop = child.agent.accessor.get(IAgentLoopService);
+    if ((child.agent.accessor.get(IAgentProfileService).data().executorId ?? 'native') === 'native' && loop.status().persistenceFailure !== undefined) {
+      await abortable(loop.recoverPersistence({ throwOnFailure: true }), options.signal);
+      if (loop.status().state === 'idle') await abortable(child.agent.accessor.get(IAgentExecutionService).settled(), options.signal);
+      options.signal.throwIfAborted();
+    }
     this.requireIdle(child.agent, options.idlePolicy ?? 'execution');
     const meta = child.meta ?? (await this.metadata.read()).agents?.[child.agentId];
     const delegator = meta === undefined ? undefined : delegatorRef(meta);

@@ -18,6 +18,7 @@ export const AgentListInputSchema = z.object({
 export type AgentListInput = z.infer<typeof AgentListInputSchema>;
 
 export type AgentListStatus =
+  | 'persistence_failed'
   | 'running'
   | 'completed'
   | 'interrupted'
@@ -30,6 +31,11 @@ export interface AgentListEntry {
   readonly name?: string;
   readonly profile?: string;
   readonly status: AgentListStatus;
+  readonly persistence_failure?: {
+    readonly turn_id?: number;
+    readonly execution_outcome: 'completed' | 'failed' | 'cancelled';
+    readonly message: string;
+  };
 }
 
 export interface AgentListOutput {

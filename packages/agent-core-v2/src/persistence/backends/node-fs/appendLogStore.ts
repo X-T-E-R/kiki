@@ -5,7 +5,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
 
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 import { discardColdSegments, discardColdUnlocked, readLogicalBytes, sealColdSegments, withColdExclusive } from '#/persistence/coldSegmentLog';
 import { withColdReaderGate } from '#/persistence/backends/node-fs/fileLock';
 import {
@@ -67,8 +67,20 @@ interface LogState {
   retired: boolean;
   ready: Promise<void>;
   retirement: Promise<void> | undefined;
-  position?: { generation: string; offset: number; boundary: Uint8Array };
+  position?: AppendPosition;
+  uncertainAppend?: {
+    readonly start: AppendPosition;
+    readonly encoded: Uint8Array;
+    readonly count: number;
+    readonly prepared: readonly ((position: AppendLogCommit) => Promise<void>)[];
+  };
   onError?: (error: unknown) => void;
+}
+
+interface AppendPosition {
+  readonly generation: string;
+  readonly offset: number;
+  readonly boundary: Uint8Array;
 }
 
 interface ProjectionObserver {
@@ -249,6 +261,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
         });
         if (committed === undefined) return false;
         state.position = committed;
+        state.uncertainAppend = undefined;
         state.storageFailure = undefined;
         for (const commit of prepared) {
           await commit({
@@ -300,12 +313,12 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       const [scope, key] = target;
       const state = this.logs.get(logId(scope, key));
       if (state === undefined) return;
-      await this.flushState(scope, key, state);
+      await this.flushState(scope, key, state, false, true);
       return;
     }
     const inFlight = [...this.logs.entries()].map(([id, state]) => {
       const { scope, key } = fromLogId(id);
-      return this.flushState(scope, key, state);
+      return this.flushState(scope, key, state, false, true);
     });
     const settled = await Promise.allSettled(inFlight);
     for (const result of settled) {
@@ -362,14 +375,19 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
 
   private flushLog(scope: string, key: string): Promise<void> {
     const state = this.state(scope, key);
-    return this.flushState(scope, key, state);
+    return this.flushState(scope, key, state, false, true);
   }
 
-  private flushState(scope: string, key: string, state: LogState, retryFailure = false): Promise<void> {
+  private flushState(scope: string, key: string, state: LogState, retryFailure = false, recoverFailure = false): Promise<void> {
     if (state.flushPromise !== undefined) return state.flushPromise;
+    if (state.uncertainAppend !== undefined) {
+      if (!recoverFailure) return Promise.reject(state.storageFailure?.error);
+      const wroteBox = { value: false };
+      return this.ownFlush(scope, key, state, this.recoverAppend(scope, key, state), wroteBox);
+    }
     if (!retryFailure && state.storageFailure !== undefined) {
       const failure = state.storageFailure.error;
-      if (!isUncommittedTransientAppend(failure) || state.pending.length === 0) {
+      if ((!isUncommittedTransientAppend(failure) && !(recoverFailure && appendCommitted(failure) === false)) || state.pending.length === 0) {
         return Promise.reject(failure);
       }
       state.storageFailure = undefined;
@@ -383,6 +401,51 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       this.drain(scope, key, state, wroteBox, retryFailure),
       wroteBox,
     );
+  }
+
+  private async recoverAppend(scope: string, key: string, state: LogState): Promise<boolean> {
+    const pending = state.uncertainAppend!;
+    const { start, encoded } = pending;
+    try {
+      const [generation, size] = await Promise.all([this.readGeneration(scope, key), this.storage.size(scope, key)]);
+      const end = size ?? 0;
+      const from = start.offset - start.boundary.byteLength;
+      const mismatch = (): StorageError => new StorageError(StorageErrors.codes.STORAGE_CORRUPTED,
+        'Append recovery found changed journal bytes. Preserve the journal and inspect it before continuing.',
+        { cause: state.storageFailure?.error, details: { scope, key, expectedOffset: start.offset, actualSize: end, recovery: 'journal_mismatch' } });
+      if (generation !== start.generation || end < start.offset || end > start.offset + encoded.byteLength) throw mismatch();
+      const chunks: Uint8Array[] = [];
+      if (end > from) {
+        for await (const chunk of readLogicalBytes(this.storage, scope, key, { start: from, end: end - 1 })) chunks.push(chunk);
+      }
+      const existing = Buffer.concat(chunks);
+      const written = end - start.offset;
+      if (existing.byteLength !== end - from ||
+        !existing.subarray(0, start.boundary.byteLength).equals(start.boundary) ||
+        !existing.subarray(start.boundary.byteLength).equals(encoded.subarray(0, written))) throw mismatch();
+      await this.storage.append(scope, key, encoded.subarray(written), { durable: true });
+      await this.publishAppend(scope, key, state, start, encoded, pending.prepared);
+      state.pending.splice(0, pending.count);
+      state.uncertainAppend = undefined;
+      state.storageFailure = undefined;
+      state.storageFailureRetriable = false;
+      return true;
+    } catch (error) {
+      state.storageFailure = { error };
+      state.storageFailureRetriable = false;
+      throw error;
+    }
+  }
+
+  private async publishAppend(scope: string, key: string, state: LogState, start: AppendPosition, encoded: Uint8Array,
+    prepared: readonly ((position: AppendLogCommit) => Promise<void>)[]): Promise<void> {
+    const boundary = encoded.byteLength >= 4096
+      ? encoded.slice(-4096)
+      : Buffer.concat([start.boundary.slice(Math.max(0, start.boundary.byteLength + encoded.byteLength - 4096)), encoded]);
+    state.position = { generation: start.generation, offset: start.offset + encoded.byteLength, boundary };
+    if (prepared.length === 0) return;
+    const boundaryHash = boundaryProof(boundary);
+    for (const commit of prepared) await commit({ scope, key, generation: start.generation, start: start.offset, end: state.position.offset, boundaryHash, rewrite: false });
   }
 
   private release(scope: string, key: string, state: LogState): void {
@@ -472,7 +535,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       const batch = state.pending.slice();
       const encoded = encodeBatch(batch);
       const prepared = this.prepareProjections(scope, key, batch);
-      if (prepared.length > 0 && state.position === undefined) {
+      if (state.position === undefined) {
         try {
           const [generation, size] = await Promise.all([this.readGeneration(scope, key), this.storage.size(scope, key)]);
           const offset = size ?? 0;
@@ -483,25 +546,21 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
           prepared.length = 0;
         }
       }
-      const start = state.position?.offset;
+      const start = state.position;
       try {
         await this.storage.append(scope, key, encoded, { durable: true });
         wrote = true;
         if (wroteBox !== undefined) wroteBox.value = true;
       } catch (error) {
         state.position = undefined;
+        if (appendCommitted(error) === true && start !== undefined) {
+          state.uncertainAppend = { start, encoded, count: batch.length, prepared };
+        }
         state.storageFailure ??= { error };
         state.storageFailureRetriable = mayRetryAppendFailure(state.storageFailure.error, isRetry);
         throw state.storageFailure.error;
       }
-      if (state.position !== undefined && start !== undefined) {
-        state.position.offset = start + encoded.byteLength;
-        state.position.boundary = encoded.byteLength >= 4096
-          ? encoded.slice(-4096)
-          : Buffer.concat([state.position.boundary.slice(Math.max(0, state.position.boundary.byteLength + encoded.byteLength - 4096)), encoded]);
-        const boundaryHash = boundaryProof(state.position.boundary);
-        for (const commit of prepared) await commit({ scope, key, generation: state.position.generation, start, end: state.position.offset, boundaryHash, rewrite: false });
-      }
+      if (start !== undefined) await this.publishAppend(scope, key, state, start, encoded, prepared);
       if (state.cutoverEpoch !== cutoverEpoch) return wrote;
       state.pending.splice(0, batch.length);
     }

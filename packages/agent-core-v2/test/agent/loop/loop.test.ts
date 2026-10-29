@@ -275,7 +275,16 @@ describe('Agent loop', () => {
     const subscription = ctx.get(IEventBus).subscribe(TurnEnded, (event) => events.push(event));
     const first = loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'compute' }], toolCalls: [] }, { admission: 'newTurn' }));
     const { turn } = await first.assigned;
+    let idle = false;
+    const idleWait = loop.settled().then(() => { idle = true; });
+    const failedWait = expect(loop.settled({ rejectOnPersistenceFailure: true })).rejects.toMatchObject({
+      details: { turnId: turn.id, executionOutcome: 'completed', persistenceOutcome: 'failed' },
+    });
     await expect(turn.result).rejects.toMatchObject({ details: { executionOutcome: 'completed', persistenceOutcome: 'failed' } });
+    await failedWait;
+    await expect(loop.settled({ rejectOnPersistenceFailure: true })).rejects.toMatchObject({ details: { persistenceOutcome: 'failed' } });
+    await expect(loop.recoverPersistence({ throwOnFailure: true })).rejects.toMatchObject({ details: { persistenceOutcome: 'failed' } });
+    expect(idle).toBe(false);
     expect(loop.status()).toMatchObject({ state: 'running', finalizing: true, persistenceFailure: { executionOutcome: 'completed' } });
     expect(loop.tryAcquireQuiescence()).toBeUndefined();
     expect(events).toEqual([]);
@@ -290,6 +299,8 @@ describe('Agent loop', () => {
     const next = (await notification.assigned).turn;
     expect(next.id).not.toBe(turn.id);
     expect((await next.result).type).toBe('completed');
+    await idleWait;
+    expect(idle).toBe(true);
     expect(events.map((event) => event.turnId)).toEqual([turn.id, next.id]);
     await subscription.dispose();
   });
@@ -555,10 +566,10 @@ describe('Agent loop', () => {
     const first = await prompts.enqueue({ id: 'long-outage', message: { role: 'user', content: [{ type: 'text', text: 'compute' }], toolCalls: [] } });
     await expect((await first.launched)!.result).rejects.toMatchObject({ details: { persistenceOutcome: 'failed' } });
     try {
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(1_000_000);
       const boundedFailures = failures;
-      expect(boundedFailures).toBe(8);
-      await vi.advanceTimersByTimeAsync(10_000);
+      expect(boundedFailures).toBe(16);
+      await vi.advanceTimersByTimeAsync(1_000_000);
       expect(failures).toBe(boundedFailures);
       expect(loop.status()).toMatchObject({ state: 'running', finalizing: true });
       failing = false;

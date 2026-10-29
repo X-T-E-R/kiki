@@ -52,6 +52,7 @@ import type {
 } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { LOOP_CONTROL_SECTION, type LoopControl } from './configSection';
 import {
   createMaxStepsExceededError,
@@ -109,7 +110,8 @@ export const loopLastRequestTraceIdKey = defineState<string | undefined>(
 export const loopDisposingKey = defineState<boolean>('loop.disposing', () => false);
 
 const MAX_STEP_SIGNAL_LISTENERS = 64;
-const PERSISTENCE_RECOVERY_DELAYS_MS = [100, 500, 2000] as const;
+const PERSISTENCE_RECOVERY_DELAYS_MS = [100, 500, 2000, 10_000, 30_000, 60_000, 300_000] as const;
+const PERSISTENCE_WRITE_WAKE_COOLDOWN_MS = 30_000;
 
 export class AgentLoopService extends Disposable implements IAgentLoopService {
   declare readonly _serviceBrand: undefined;
@@ -127,7 +129,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private readonly heldAdmissions: HeldAdmission[] = [];
   private activeTurnJob: TurnJob | undefined;
   private lastTurnResult: TurnResult['type'] | undefined;
-  private readonly settleWaiters: Array<() => void> = [];
+  private readonly settleWaiters: Array<{ resolve: () => void; reject?: (error: unknown) => void }> = [];
   private quiescenceDepth = 0;
   private activeBoundary?: import('./loop').StepBoundary;
   private boundaryWake?: ReturnType<typeof createControlledPromise<void>>;
@@ -139,6 +141,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private activeRequestTrace: LLMRequestTrace | undefined;
   private finalization: { readonly turn: Turn; readonly result: TurnResult; readonly event: TurnEnded; recoveryAttempts?: number; error?: unknown } | undefined;
   private persistenceRecoveryTimer?: ReturnType<typeof setTimeout>;
+  private persistenceWriteWakeAfter = 0;
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -152,8 +155,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     @IAgentScopeContext private readonly scope: IAgentScopeContext,
     @ISessionDispatchService private readonly dispatch: ISessionDispatchService,
     @IInstantiationService private readonly instantiation: IInstantiationService,
+    @IAppendLogStore appendLog: IAppendLogStore,
   ) {
     super();
+    this._register(appendLog.onDidWrite(() => {
+      if (this.disposing || this.finalization?.error === undefined || this.persistenceRecoveryTimer !== undefined || Date.now() < this.persistenceWriteWakeAfter) return;
+      this.persistenceWriteWakeAfter = Date.now() + PERSISTENCE_WRITE_WAKE_COOLDOWN_MS;
+      void this.recoverPersistence();
+    }));
     this.states.contributeState(turnKey);
     this.states.contributeState(loopNextReservedTurnIdKey);
     this.states.contributeState(loopLastRequestTraceIdKey);
@@ -397,6 +406,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     job.turn.state = 'cancelled';
     job.ready.reject(cancellation instanceof Error ? cancellation : abortError('Turn cancelled'));
     job.result.resolve({ type: 'cancelled', steps: 0, reason: cancellation });
+    job.durableResult.resolve({ type: 'cancelled', steps: 0, reason: cancellation });
     this.maybeSettle();
     return true;
   }
@@ -410,7 +420,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     );
   }
 
-  settled(): Promise<void> {
+  settled(options?: { readonly rejectOnPersistenceFailure?: boolean }): Promise<void> {
+    if (options?.rejectOnPersistenceFailure && this.finalization?.error !== undefined) {
+      return Promise.reject(new TurnPersistenceError(this.finalization.turn.id, this.finalization.result, this.finalization.error));
+    }
     if (
       this.quiescenceDepth === 0 &&
       this.activeTurnJob === undefined &&
@@ -419,8 +432,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     ) {
       return Promise.resolve();
     }
-    return new Promise<void>((resolve) => {
-      this.settleWaiters.push(resolve);
+    return new Promise<void>((resolve, reject) => {
+      this.settleWaiters.push({ resolve, reject: options?.rejectOnPersistenceFailure ? reject : undefined });
     });
   }
 
@@ -433,7 +446,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     ) return;
     if (this.settleWaiters.length === 0) return;
     const waiters = this.settleWaiters.splice(0);
-    for (const resolve of waiters) resolve();
+    for (const { resolve } of waiters) resolve();
   }
 
   private createPendingTurn(request: StepRequest, seed: TurnSeed): TurnJob {
@@ -441,19 +454,22 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     const controller = new AbortController();
     const ready = createControlledPromise<void>();
     const result = createControlledPromise<TurnResult>();
+    const durableResult = createControlledPromise<TurnResult>();
     const queue = new StepRequestQueue();
     const steps = new Map<string, MutableStep>();
     void ready.catch(() => undefined);
     void result.catch(() => undefined);
+    void durableResult.catch(() => undefined);
     const turn: MutableTurn = {
       id,
       state: 'queued',
       signal: controller.signal,
       ready,
       result,
+      durableResult,
       cancel: (reason) => this.cancel(id, reason),
     };
-    const job = { request, seed, controller, ready, result, queue, steps, turn, steerController: new AbortController() };
+    const job = { request, seed, controller, ready, result, durableResult, queue, steps, turn, steerController: new AbortController() };
     this.assignStep(job, request);
     this.moveStandaloneStepsTo(job);
     return job;
@@ -672,7 +688,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     }
   }
 
-  async recoverPersistence(): Promise<boolean> {
+  async recoverPersistence(options?: { readonly throwOnFailure?: boolean }): Promise<boolean> {
     const finalization = this.finalization;
     if (finalization === undefined) return true;
     try {
@@ -681,6 +697,15 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       finalization.error = error;
       onUnexpectedError(error);
       this.schedulePersistenceRecovery(finalization);
+      const failure = new TurnPersistenceError(finalization.turn.id, finalization.result, error);
+      for (let index = this.settleWaiters.length - 1; index >= 0; index--) {
+        const waiter = this.settleWaiters[index]!;
+        if (waiter.reject !== undefined) {
+          this.settleWaiters.splice(index, 1);
+          waiter.reject(failure);
+        }
+      }
+      if (options?.throwOnFailure) throw failure;
       return false;
     }
     if (this.finalization !== finalization) return true;
@@ -741,6 +766,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       if (this.boundaryRequests[index]!.turnId === turn.id) this.boundaryRequests.splice(index, 1)[0]!.result.reject(reason);
     }
     this.lastTurnResult = result?.type ?? 'failed';
+    job.durableResult.resolve(result ?? { type: 'failed', steps: 0, error: new Error2(ErrorCodes.INTERNAL, 'Turn ended without an execution result') });
     this.activeTurnJob = undefined;
     this.maybeSettle();
   }
@@ -1854,6 +1880,7 @@ interface TurnJob {
   readonly controller: AbortController;
   readonly ready: ReturnType<typeof createControlledPromise<void>>;
   readonly result: ReturnType<typeof createControlledPromise<TurnResult>>;
+  readonly durableResult: ReturnType<typeof createControlledPromise<TurnResult>>;
   readonly queue: StepRequestQueue;
   readonly steps: Map<string, MutableStep>;
   readonly turn: MutableTurn;

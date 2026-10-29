@@ -29,6 +29,7 @@ import type { IAgentCommandService } from '@kiki/agent-core-v2/agent/command/age
 import type { IAgentContextRebuildService } from '@kiki/agent-core-v2/agent/contextRebuild/contextRebuild';
 import type { IAgentGoalService } from '@kiki/agent-core-v2/agent/goal/goal';
 import type { IAgentRuntimeBindingService } from '@kiki/agent-core-v2/agent/runtimeBinding/runtimeBinding';
+import type { AgentLoopStatus } from '@kiki/agent-core-v2/agent/loop/loop';
 import type { TurnEndReason } from '@kiki/agent-core-v2/agent/loop/turnEvents';
 import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/types';
 import type { IAgentProfileService } from '@kiki/agent-core-v2/agent/profile/profile';
@@ -208,6 +209,7 @@ import {
 import {
   agentCommandInfoSchema,
   agentContextDataSchema,
+  agentLoopStatusSchema,
   agentTaskInfoSchema,
   activateSkillPayloadSchema,
   cancelPayloadSchema,
@@ -867,6 +869,7 @@ const _setPermissionPayload: AssertWire<typeof setPermissionPayloadSchema, SetPe
   true;
 const _tokenUsage: AssertWire<typeof tokenUsageSchema, TokenUsage> = true;
 const _usageStatus: AssertWire<typeof usageStatusSchema, UsageStatus> = true;
+const _agentLoopStatus: AssertWire<typeof agentLoopStatusSchema, AgentLoopStatus> = true;
 // One-directional: `history` entries are full `ContextMessage`s (deep
 // `Message`/`Tool`/`PromptOrigin` unions) mirrored as `unknown`.
 const _agentContextData: AssertEngineToWire<typeof agentContextDataSchema, AgentContextData> = true;

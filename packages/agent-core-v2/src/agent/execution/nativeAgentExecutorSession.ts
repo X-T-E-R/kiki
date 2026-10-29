@@ -59,16 +59,20 @@ export class NativeAgentExecutorSession implements AgentExecutorSession {
   }
 
   async steer(message: ContextMessage): Promise<boolean> {
+    if (this.loop.status().finalizing) await this.loop.recoverPersistence({ throwOnFailure: true });
     if (this.loop.status().state !== 'running') return false;
     const request = new AgentMessageStepRequest(message);
     try {
       this.loop.enqueue(request);
+      return await Promise.race([
+        request.delivered,
+        this.loop.settled({ rejectOnPersistenceFailure: true }).then(() => false),
+      ]);
     } catch (error) {
       request.abort();
       if (this.loop.status().state !== 'running') return false;
       throw error;
     }
-    return request.delivered;
   }
 
   cancel(reason?: unknown): boolean {

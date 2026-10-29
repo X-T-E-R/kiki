@@ -1,13 +1,13 @@
 import { APIProviderRateLimitError, isProviderRateLimitError } from '#/kosong/contract/errors';
 import { type TokenUsage } from '#/kosong/contract/usage';
 
-import { linkAbortSignal, userCancellationReason } from '#/_base/utils/abort';
+import { abortable, linkAbortSignal, userCancellationReason } from '#/_base/utils/abort';
 import type { AgentExecutorAgentContext } from '#/app/agentExecutor/agentExecutor';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { Error2, ErrorCodes, fromErrorPayload, toKimiErrorPayload, type KimiErrorPayload } from '#/errors';
 import { IAgentPromptService, type PromptInput } from '#/agent/prompt/prompt';
-import { IAgentLoopService, type Turn, type TurnResult } from '#/agent/loop/loop';
+import { IAgentLoopService, TurnPersistenceError, type Turn, type TurnResult } from '#/agent/loop/loop';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import type { AgentProfileSummaryPolicy } from '#/app/agentProfileCatalog/agentProfileCatalog';
 
@@ -142,7 +142,10 @@ async function awaitTurn(
     if (controller.signal.aborted) {
       cancelOnAbort();
     }
-    const result = await turn.result;
+    const result = await turn.result.catch((error: unknown) => {
+      if (!(error instanceof TurnPersistenceError) || turn.durableResult === undefined) throw error;
+      return abortable(turn.durableResult, controller.signal);
+    });
     controller.signal.throwIfAborted();
     return result;
   } finally {

@@ -16,7 +16,11 @@ import { pluginManifestSchema } from '../src/contract/global/plugins.js';
 import { oAuthFlowSnapshotSchema, oAuthMethodStatusSchema } from '../src/contract/global/auth.js';
 import { mcpServerAuthFlowHandleSchema } from '../src/contract/global/mcpManagement.js';
 import { createSessionOptionsSchema } from '../src/contract/session/lifecycle.js';
-import { activateSkillPayloadSchema, promptPayloadSchema } from '../src/contract/agent/schemas.js';
+import {
+  activateSkillPayloadSchema,
+  agentLoopStatusSchema,
+  promptPayloadSchema,
+} from '../src/contract/agent/schemas.js';
 import { agentEvents } from '../src/contract/agent/events.js';
 import { agentGoalContract, agentPromptContract, agentSkillContract } from '../src/contract/agent/services.js';
 import { sessionCommandContract } from '../src/contract/session/commands.js';
@@ -245,6 +249,28 @@ describe('prompt contract validation', () => {
     expect(recover.input.parse(['switch-1', 'retry'])).toEqual(['switch-1', 'retry']);
     expect(recover.input.parse(['switch-1', 'keep_original'])).toEqual(['switch-1', 'keep_original']);
     expect(recover.input.safeParse(['switch-1', 'keep_original', 'fresh']).success).toBe(false);
+  });
+});
+
+describe('agent loop status contract', () => {
+  it('preserves failure state, persistence details, and pending request kinds', () => {
+    const status = {
+      state: 'running' as const,
+      activeTurnId: 7,
+      lastTurnResult: 'failed' as const,
+      finalizing: true,
+      persistenceFailure: { executionOutcome: 'failed' as const, message: 'storage unavailable' },
+      pendingTurnIds: [8],
+      hasPendingRequests: true,
+      pendingRequestKinds: ['message'],
+      activeTraceId: 'trace-7',
+    };
+    expect(agentLoopStatusSchema.parse(status)).toEqual(status);
+  });
+
+  it('accepts legacy payloads without newer status fields', () => {
+    const legacy = { state: 'idle' as const, pendingTurnIds: [], hasPendingRequests: false };
+    expect(agentLoopStatusSchema.parse(legacy)).toEqual(legacy);
   });
 });
 

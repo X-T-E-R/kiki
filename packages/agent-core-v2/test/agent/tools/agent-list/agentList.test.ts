@@ -5,6 +5,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentLoopService, type AgentLoopStatus } from '#/agent/loop/loop';
 import type { AgentExecutionStatus } from '#/app/agentExecutor/agentExecutor';
 import { AgentListTool } from '#/agent/tools/agent-list/agentListTool';
 import { IAgentListTool, type AgentListOutput } from '#/agent/tools/agent-list/agent-list';
@@ -39,6 +40,7 @@ function makeTool(options: {
   readonly callerAgentId?: string;
   readonly agents?: Readonly<Record<string, AgentMeta>>;
   readonly execution?: Readonly<Record<string, AgentExecutionStatus['state']>>;
+  readonly loops?: Readonly<Record<string, AgentLoopStatus>>;
   readonly tasks?: readonly {
     readonly agentId: string;
     readonly status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';
@@ -68,6 +70,7 @@ function makeTool(options: {
       if (state === undefined) return undefined;
       const child = disposables.add(new TestInstantiationService());
       child.stub(IAgentExecutionService, { status: () => ({ state }) });
+      child.stub(IAgentLoopService, { status: () => options.loops?.[agentId] ?? { state: 'idle', pendingTurnIds: [], hasPendingRequests: false } });
       return {
         id: agentId,
         kind: 'agent',
@@ -97,6 +100,16 @@ async function listAgents(
 }
 
 describe('AgentListTool', () => {
+  it.each([undefined, 'failed', 'completed'] as const)('keeps a persistence-blocked child discoverable with task status %s', async (status) => {
+    const tool = makeTool({ agents: { worker: childMeta({ name: 'worker' }) }, execution: { worker: 'running' },
+      loops: { worker: { state: 'running', activeTurnId: 3, finalizing: true, pendingTurnIds: [], hasPendingRequests: false,
+        persistenceFailure: { executionOutcome: 'completed', message: 'storage append failed: no space left on device' } } },
+      tasks: status === undefined ? [] : [{ agentId: 'worker', status }],
+    });
+    expect((await listAgents(tool)).agents).toEqual([{ agent_id: 'worker', name: 'worker', status: 'persistence_failed',
+      persistence_failure: { turn_id: 3, execution_outcome: 'completed', message: 'storage append failed: no space left on device' } }]);
+  });
+
   it.each(['timed_out', 'completed', 'failed', 'killed', 'lost'] as const)(
     'keeps a live child visible after its background task is %s',
     async (status) => {

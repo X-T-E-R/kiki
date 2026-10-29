@@ -252,8 +252,15 @@ export const setPermissionPayloadSchema = z.object({
 export const agentLoopStatusSchema = z.object({
   state: z.enum(['idle', 'running']),
   activeTurnId: z.number().optional(),
+  lastTurnResult: z.enum(['completed', 'failed', 'cancelled']).optional(),
+  finalizing: z.boolean().optional(),
+  persistenceFailure: z.object({
+    executionOutcome: z.enum(['completed', 'failed', 'cancelled']),
+    message: z.string(),
+  }).optional(),
   pendingTurnIds: z.array(z.number()),
   hasPendingRequests: z.boolean(),
+  pendingRequestKinds: z.array(z.string()).optional(),
   activeTraceId: z.string().optional(),
 });
 
