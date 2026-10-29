@@ -105,10 +105,17 @@ const scenarios = [
         await page.locator('[data-memory-import] input[type="file"]').setInputFiles({ name, mimeType: 'text/markdown', buffer: Buffer.from(text) });
         await page.waitForFunction((file) => document.querySelector('[data-memory-import-file]')?.getAttribute('data-memory-import-file') === file, name, { timeout: 10_000 });
         await page.locator('[data-memory-import-reason]').fill(view.locale === 'zh' ? '复盘后改为 4 个' : 'Lowered after the review');
-        if (!phone) await shot(text === edited ? 'import-form' : 'import-conflict-form');
+        if (!phone && (text === edited || text === exported)) await shot(text === edited ? 'import-form' : 'import-conflict-form');
         await page.locator('[data-memory-import-preview]').click();
         await page.waitForSelector('[data-memory-import-preview-result]', { timeout: 15_000 });
       };
+      // A file that only pins the entry: the change must be visible before confirming.
+      await importFile(exported.replace('"pinned": false', '"pinned": true'));
+      await page.waitForSelector('[data-memory-import-incoming] [data-memory-import-meta-changed="pinned"]', { timeout: 15_000 });
+      await page.locator('[data-memory-import-incoming] [data-memory-import-meta]').scrollIntoViewIfNeeded();
+      await shot('import-pin-only');
+      await page.locator('[data-memory-import-cancel]').click();
+
       await importFile(edited);
       if (await page.locator('[data-memory-import-incoming]').innerText().then((text) => !text.includes('Use 4 workers'))) throw new Error('preview does not show the file');
       await shot('import-preview');

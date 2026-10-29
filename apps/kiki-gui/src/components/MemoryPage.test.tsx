@@ -2365,3 +2365,165 @@ describe('MemoryPage Markdown round trip', () => {
     expect(document.querySelector('[data-memory-import]')).toBeNull();
   });
 });
+
+describe('MemoryPage Markdown import recovery', () => {
+  const sqlite = { version: 1, epoch: 3, backend: 'sqlite', mode: 'active', migrationId: '00000000-0000-4000-8000-000000000001' } as const;
+  const current = () => fixtureEntry({ id: 'm_deploy', title: 'Deployment procedure', body: 'Use 5 workers.', revision: 'mem2:rev-current' });
+  const exported = '---\n{"format":"kiki-memory-v1"}\n---\nUse 4 workers.\n';
+  const incoming = { format: 'kiki-memory-v1', scope: { kind: 'global' }, id: 'm_deploy', revision: 'mem2:rev-current', origin: { id: 'm_deploy', revision: 'mem2:rev-current' }, source: { writer: 'user' }, type: 'feedback', title: 'Deployment procedure', body: 'Use 4 workers.', status: 'active', pinned: false, validity: null } as const;
+  const appliable = (token = 'token-1') => ({ incoming, current: current(), action: 'update', canApply: true, previewToken: token, expiresAt: new Date(Date.now() + 600_000).toISOString() } as const);
+  const dialog = () => document.querySelector<HTMLElement>('[data-memory-import]')!;
+  const button = (selector: string) => document.querySelector<HTMLButtonElement>(selector);
+
+  function governed() {
+    seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryProvenance').mockResolvedValue({ sources: [], adjudications: [], relatedObjectIds: ['m_deploy'] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue(sqlite);
+  }
+  async function press(selector: string) {
+    await act(async () => { button(selector)!.click(); });
+    await flush();
+  }
+  async function type(selector: string, value: string) {
+    const input = document.querySelector<HTMLInputElement>(selector)!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+  async function choose(...files: File[]) {
+    const input = dialog().querySelector<HTMLInputElement>('input[type="file"]')!;
+    for (const file of files) {
+      Object.defineProperty(input, 'files', { value: [file], configurable: true });
+      await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })); });
+    }
+    await flush();
+  }
+  const markdownFile = (name = 'deployment.md', text = exported) => new File([text], name, { type: 'text/markdown' });
+  async function openFilled(container: HTMLElement) {
+    await click(container, '[data-memory-import-open]');
+    await choose(markdownFile());
+    await type('[data-memory-import-reason]', 'Lowered after review');
+  }
+
+  it('keeps the import receipt when reading back fails, and retries only the read', async () => {
+    governed();
+    vi.spyOn(client, 'previewMemoryImport').mockResolvedValue(appliable());
+    const apply = vi.spyOn(client, 'applyMemoryImport').mockResolvedValue({ entry: { ...current(), body: 'Use 4 workers.', revision: 'mem2:rev-next' }, operationId: 'op-import-1' });
+    const read = vi.spyOn(client, 'getMemory')
+      .mockRejectedValueOnce(new ApiError({ code: 50000, msg: 'read failed', data: null }))
+      .mockResolvedValueOnce({ ...current(), body: 'Use 4 workers, then 3.', revision: 'mem2:rev-later' });
+    const container = await renderPage();
+    await openFilled(container);
+    await press('[data-memory-import-preview]');
+    await press('[data-memory-import-confirm="update"]');
+    const applied = document.querySelector('[data-memory-import-applied="m_deploy"]')!;
+    expect(applied.getAttribute('data-memory-import-operation')).toBe('op-import-1');
+    expect(applied.querySelector('[data-memory-import-readback-failed]')!.textContent).toContain('could not be read back');
+    expect(applied.querySelector('[data-memory-import-readback]')).toBeNull();
+    expect(applied.textContent).not.toContain('This is what memory holds now');
+    await press('[data-memory-import-reread]');
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(document.querySelector('[data-memory-import-readback="mem2:rev-later"]')).not.toBeNull();
+    expect(document.querySelector('[data-memory-import-applied]')!.textContent).toContain('Use 4 workers, then 3.');
+    expect(apply).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['success', 'failure'] as const)('drops a preview %s that arrives after the epoch moved, keeping the chosen file', async (outcome) => {
+    governed();
+    const late = deferred<Awaited<ReturnType<typeof client.previewMemoryImport>>>();
+    const preview = vi.spyOn(client, 'previewMemoryImport').mockReturnValueOnce(late.promise).mockResolvedValueOnce(appliable('token-new'));
+    const apply = vi.spyOn(client, 'applyMemoryImport').mockResolvedValue({ entry: current(), operationId: 'op' });
+    vi.spyOn(client, 'getMemory').mockResolvedValue(current());
+    const { container, queryClient } = await mountPage();
+    await openFilled(container);
+    await press('[data-memory-import-preview]');
+    await act(async () => { queryClient.setQueryData(['memory-authority'], { ...sqlite, epoch: 4 }); });
+    await flush();
+    await act(async () => {
+      if (outcome === 'success') late.resolve(appliable('token-old'));
+      else late.reject(new ApiError({ code: 40001, msg: 'Markdown scope does not match', data: null, details: { code: 'scope_mismatch', recovery: 'x' } }));
+    });
+    await flush();
+    expect(button('[data-memory-import-confirm]')).toBeNull();
+    expect(dialog().querySelector('[data-memory-import-preview-result]')).toBeNull();
+    expect(dialog().querySelector('[data-memory-import-refused]')).toBeNull();
+    expect(dialog().querySelector('[data-memory-import-file]')!.getAttribute('data-memory-import-file')).toBe('deployment.md');
+    expect(button('[data-memory-import-preview]')!.disabled).toBe(false);
+    await press('[data-memory-import-preview]');
+    await press('[data-memory-import-confirm="update"]');
+    expect(preview).toHaveBeenCalledTimes(2);
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(apply.mock.calls[0]![1]).toBe('token-new');
+  });
+
+  it('turns an unreadable file into a local error the reader can recover from', async () => {
+    governed();
+    const container = await renderPage();
+    await click(container, '[data-memory-import-open]');
+    const broken = markdownFile('broken.md');
+    const original = FileReader.prototype.readAsText;
+    vi.spyOn(FileReader.prototype, 'readAsText').mockImplementation(function (this: FileReader, blob: Blob) {
+      if (blob === broken) { queueMicrotask(() => { this.onerror?.(new ProgressEvent('error') as ProgressEvent<FileReader>); }); return; }
+      original.call(this, blob);
+    });
+    await choose(broken);
+    expect(dialog().querySelector('[role="alert"]')!.textContent).toContain('Could not read broken.md');
+    expect(dialog().querySelector('[data-memory-import-file]')!.getAttribute('data-memory-import-file')).toBe('');
+    expect(button('[data-memory-import-pick]')!.disabled).toBe(false);
+    await choose(markdownFile('fixed.md'));
+    expect(dialog().querySelector('[data-memory-import-file]')!.getAttribute('data-memory-import-file')).toBe('fixed.md');
+    expect(dialog().textContent).not.toContain('Could not read');
+  });
+
+  it('keeps the later file when an earlier read finishes last', async () => {
+    governed();
+    const container = await renderPage();
+    await click(container, '[data-memory-import-open]');
+    const slow = markdownFile('first.md', '---\n{}\n---\nfirst\n');
+    const fast = markdownFile('second.md', '---\n{}\n---\nsecond\n');
+    const pending: (() => void)[] = [];
+    const original = FileReader.prototype.readAsText;
+    vi.spyOn(FileReader.prototype, 'readAsText').mockImplementation(function (this: FileReader, blob: Blob) {
+      if (blob === slow) { pending.push(() => { original.call(this, blob); }); return; }
+      original.call(this, blob);
+    });
+    await choose(slow, fast);
+    expect(dialog().querySelector('[data-memory-import-file]')!.getAttribute('data-memory-import-file')).toBe('second.md');
+    await act(async () => { pending.forEach((run) => { run(); }); });
+    await flush();
+    expect(dialog().querySelector('[data-memory-import-file]')!.getAttribute('data-memory-import-file')).toBe('second.md');
+    const preview = vi.spyOn(client, 'previewMemoryImport').mockResolvedValue(appliable());
+    await type('[data-memory-import-reason]', 'Pick the second');
+    await press('[data-memory-import-preview]');
+    expect(preview.mock.calls[0]![1].markdown).toContain('second');
+  });
+
+  it('shows a pin-only change next to the stored entry, with the object and base revision', async () => {
+    governed();
+    vi.spyOn(client, 'previewMemoryImport').mockResolvedValue({ ...appliable(), incoming: { ...incoming, body: 'Use 5 workers.', pinned: true } });
+    const container = await renderPage();
+    await openFilled(container);
+    await press('[data-memory-import-preview]');
+    const stored = dialog().querySelector('[data-memory-import-current]')!;
+    const file = dialog().querySelector('[data-memory-import-incoming]')!;
+    expect(stored.querySelector('[data-memory-import-meta-pinned]')!.getAttribute('data-memory-import-meta-pinned')).toBe('false');
+    expect(file.querySelector('[data-memory-import-meta-pinned]')!.getAttribute('data-memory-import-meta-pinned')).toBe('true');
+    expect(file.querySelector('[data-memory-import-meta-changed="pinned"]')).not.toBeNull();
+    expect(stored.querySelector('[data-memory-import-meta-changed]')).toBeNull();
+    expect(file.querySelector('[data-memory-import-meta-id="m_deploy"]')).not.toBeNull();
+    expect(file.querySelector('[data-memory-import-meta-revision="mem2:rev-current"]')!.getAttribute('title')).toBe('mem2:rev-current');
+    expect(file.querySelector('[data-memory-import-meta-scope]')!.textContent).toBe('Global');
+    expect(file.textContent).not.toContain('kiki-memory-v1');
+  });
+
+  it('marks no pin change when only the content differs', async () => {
+    governed();
+    vi.spyOn(client, 'previewMemoryImport').mockResolvedValue(appliable());
+    const container = await renderPage();
+    await openFilled(container);
+    await press('[data-memory-import-preview]');
+    expect(dialog().querySelector('[data-memory-import-meta-changed]')).toBeNull();
+    expect([...dialog().querySelectorAll('[data-memory-import-meta-pinned]')].map((node) => node.getAttribute('data-memory-import-meta-pinned'))).toEqual(['false', 'false']);
+  });
+});

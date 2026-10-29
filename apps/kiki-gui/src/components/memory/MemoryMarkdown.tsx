@@ -33,7 +33,7 @@ import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { VersionBlock } from '../MemoryHistory';
 import { downloadBlob } from '../persona/usePersonas';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
-import { memoryOperationId } from './MemoryGovernance';
+import { memoryOperationId, shortRevision } from './MemoryGovernance';
 import { useMemoryAuthority } from './memoryAuthority';
 import { parseMemoryEntry, type MemoryEntryView } from './memoryReceipt';
 
@@ -116,12 +116,29 @@ function readText(file: Blob): Promise<string> {
   });
 }
 
-interface IssuedPreview {
-  readonly preview: MemoryImportPreview;
-  /** What the token was issued for; any difference drops it. */
+/**
+ * What one preview request was sent for, frozen when it was sent. Its answer
+ * is kept only while this is still the latest request, and its token stays
+ * usable only while every field still matches the dialog.
+ */
+interface PreviewRequest {
+  readonly generation: number;
   readonly inputs: string;
   readonly client: unknown;
   readonly epoch: number | undefined;
+  readonly markdown: string;
+  readonly sourceLocator: string;
+  readonly reason: string;
+}
+
+interface IssuedPreview extends Omit<PreviewRequest, 'markdown' | 'sourceLocator' | 'reason'> {
+  readonly preview: MemoryImportPreview;
+}
+
+/** A confirmed write: the receipt is kept apart from the read that checks it. */
+interface ImportReceipt {
+  readonly entry: MemoryEntry;
+  readonly operationId: string;
 }
 
 /**
@@ -152,19 +169,39 @@ export function MemoryImportDialog({ target, onClose, onOpenEntry }: {
   const [locator, setLocator] = useState('');
   const [reason, setReason] = useState('');
   const [issued, setIssued] = useState<IssuedPreview | null>(null);
+  const [previewError, setPreviewError] = useState<unknown>(null);
   const [failure, setFailure] = useState<ApplyFailure | null>(null);
   const [expired, setExpired] = useState(false);
-  const [applied, setApplied] = useState<MemoryEntry | null>(null);
+  const [receipt, setReceipt] = useState<ImportReceipt | null>(null);
+  const [reading, setReading] = useState(false);
   const targetKey = JSON.stringify([target.scope, target.workspaceId ?? null, target.personaId ?? null]);
   const inputs = JSON.stringify([targetKey, file?.text ?? null, locator.trim(), reason.trim()]);
 
-  /** Any edit to what a preview was issued for makes it history. */
-  const dropPreview = () => { setIssued(null); setFailure(null); setExpired(false); };
+  // Only the latest preview request may answer; an older one that lands late
+  // (after an edit, a reconnect or an epoch change) is dropped, success or not.
+  const generation = useRef(0);
+  const dropPreview = () => { generation.current += 1; setIssued(null); setPreviewError(null); setFailure(null); setExpired(false); };
+  useEffect(() => { generation.current += 1; }, [client, epoch]);
 
+  // Likewise only the latest file pick may fill the form.
+  const pickGeneration = useRef(0);
   const pick = async (picked: File | undefined) => {
     if (picked === undefined) return;
+    const mine = ++pickGeneration.current;
     dropPreview();
-    const text = await readText(picked);
+    setReading(true);
+    let text: string;
+    try {
+      text = await readText(picked);
+    } catch {
+      if (mine !== pickGeneration.current) return;
+      setReading(false);
+      setFile(null);
+      setFileError(t('memory.markdown.fileUnreadable', { file: picked.name }));
+      return;
+    }
+    if (mine !== pickGeneration.current) return;
+    setReading(false);
     if (text.length > MARKDOWN_LIMIT) { setFile(null); setFileError(t('memory.markdown.fileTooLarge')); return; }
     setFileError(null);
     setFile({ name: picked.name, text });
@@ -172,10 +209,24 @@ export function MemoryImportDialog({ target, onClose, onOpenEntry }: {
   };
 
   const preview = useMutation({
-    mutationFn: () => client.previewMemoryImport(target, { markdown: file!.text, sourceLocator: locator.trim(), reason: reason.trim() }),
-    onSuccess: (result) => { setFailure(null); setExpired(false); setIssued({ preview: result, inputs, client, epoch }); },
-    onError: () => { setIssued(null); },
+    mutationFn: (request: PreviewRequest) => client.previewMemoryImport(target, { markdown: request.markdown, sourceLocator: request.sourceLocator, reason: request.reason }),
+    onSuccess: (result, request) => {
+      if (request.generation !== generation.current) return;
+      setFailure(null); setExpired(false); setPreviewError(null);
+      setIssued({ preview: result, generation: request.generation, inputs: request.inputs, client: request.client, epoch: request.epoch });
+    },
+    onError: (error: unknown, request) => {
+      if (request.generation !== generation.current) return;
+      setIssued(null);
+      setPreviewError(error);
+    },
   });
+  const sendPreview = () => {
+    if (file === null) return;
+    generation.current += 1;
+    setPreviewError(null);
+    preview.mutate({ generation: generation.current, inputs, client, epoch, markdown: file.text, sourceLocator: locator.trim(), reason: reason.trim() });
+  };
   const current = issued !== null && issued.inputs === inputs && issued.client === client && issued.epoch === epoch ? issued.preview : undefined;
   const moved = issued !== null && current === undefined && (issued.client !== client || issued.epoch !== epoch);
   // One operation per preview: a retried click after a lost answer is the same import.
@@ -191,14 +242,10 @@ export function MemoryImportDialog({ target, onClose, onOpenEntry }: {
   // A second click lands before `isPending` renders; one confirmation sends once.
   const applying = useRef(false);
   const apply = useMutation({
-    mutationFn: async () => {
-      const result = await client.applyMemoryImport(target, current!.previewToken!, operationId);
-      // Read back what the store now holds rather than trusting the preview.
-      return client.getMemory(target, result.entry.id).catch(() => result.entry);
-    },
-    onSuccess: (entry) => {
-      setApplied(entry);
-      pushToast({ tone: 'success', text: t('memory.markdown.imported', { title: entry.title }) });
+    mutationFn: () => client.applyMemoryImport(target, current!.previewToken!, operationId),
+    onSuccess: (result) => {
+      setReceipt({ entry: result.entry, operationId: result.operationId ?? operationId });
+      pushToast({ tone: 'success', text: t('memory.markdown.imported', { title: result.entry.title }) });
       for (const key of ['memory', 'memory-journal', 'memory-related', 'memory-inbox', 'memory-provenance', 'memory-detail']) void queryClient.invalidateQueries({ queryKey: [key] });
     },
     onSettled: () => { applying.current = false; },
@@ -211,8 +258,19 @@ export function MemoryImportDialog({ target, onClose, onOpenEntry }: {
     },
   });
 
-  const refusal = preview.isError ? (REFUSAL_TEXT[detailCode(preview.error) as keyof typeof REFUSAL_TEXT] ?? null) : null;
-  const busy = preview.isPending || apply.isPending;
+  // The write is settled by its receipt; this read only checks what is stored
+  // now. Retrying it never sends the import again.
+  const readback = useQuery({
+    queryKey: ['memory-import-readback', targetKey, receipt?.entry.id, receipt?.operationId],
+    queryFn: () => client.getMemory(target, receipt!.entry.id),
+    enabled: receipt !== null,
+    retry: false, gcTime: 0, staleTime: Infinity,
+  });
+
+  const refusal = previewError === null ? null : (REFUSAL_TEXT[detailCode(previewError) as keyof typeof REFUSAL_TEXT] ?? null);
+  // A request sent for an earlier epoch, connection or input no longer holds the dialog.
+  const previewing = preview.isPending && preview.variables?.inputs === inputs && preview.variables.client === client && preview.variables.epoch === epoch;
+  const busy = previewing || apply.isPending || reading;
   const ready = file !== null && locator.trim() !== '' && reason.trim() !== '';
   const appliable = current?.canApply === true && current.previewToken !== undefined && !expired && (failure === null || failure.kind === 'failed');
   const needsRepreview = moved || expired || failure?.kind === 'stale';
@@ -220,12 +278,27 @@ export function MemoryImportDialog({ target, onClose, onOpenEntry }: {
   return (
     <Dialog onClose={() => { if (!busy) onClose(); }} dismissible={!busy && file === null} ariaLabel={t('memory.markdown.importTitle')} overlayId="memory-import"
       panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.lg} flex max-h-[88dvh] flex-col max-md:max-w-none`}>
-      <div data-memory-import={applied === null ? (current?.action ?? 'form') : 'applied'} className="min-h-0 flex-1 space-y-5 overflow-y-auto">
+      <div data-memory-import={receipt === null ? (current?.action ?? 'form') : 'applied'} className="min-h-0 flex-1 space-y-5 overflow-y-auto">
         <h3 className="font-display text-[18px] font-semibold text-ink">{t('memory.markdown.importTitle')}</h3>
-        {applied !== null ? (
-          <div data-memory-import-applied={applied.id} className="space-y-3">
-            <p role="status" className="text-[13px] text-ink-soft">{t('memory.markdown.appliedLead')}</p>
-            <VersionBlock label={t('memory.markdown.current')} entry={parseMemoryEntry(applied)} raw={undefined} revision={applied.revision} />
+        {receipt !== null ? (
+          <div data-memory-import-applied={receipt.entry.id} data-memory-import-operation={receipt.operationId} className="space-y-3">
+            {readback.data !== undefined ? (
+              <>
+                <p role="status" data-memory-import-readback={readback.data.revision} className="text-[13px] text-ink-soft">{t('memory.markdown.appliedLead')}</p>
+                <VersionBlock label={t('memory.markdown.current')} entry={parseMemoryEntry(readback.data)} raw={undefined} revision={readback.data.revision} />
+                <EntryMeta scope={target} id={readback.data.id} revision={readback.data.revision} pinned={readback.data.pinned} />
+              </>
+            ) : readback.isError ? (
+              <div role="alert" data-memory-import-readback-failed className="space-y-2">
+                <p className="text-[13px] text-ink">{t('memory.markdown.savedUnread', { revision: shortRevision(receipt.entry.revision) })}</p>
+                <p className="text-[12px] text-danger">{t('memory.markdown.readbackFailed', { detail: errorText(locale, readback.error) })}</p>
+                <button type="button" data-memory-import-reread disabled={readback.isFetching} onClick={() => { void readback.refetch(); }} className={`${SECONDARY_BUTTON} pointer-coarse:py-3`}>
+                  {t('memory.markdown.reread')}
+                </button>
+              </div>
+            ) : (
+              <p role="status" className="text-[13px] text-ink-faint">{t('memory.markdown.savedReading')}</p>
+            )}
           </div>
         ) : (
           <>
@@ -236,9 +309,9 @@ export function MemoryImportDialog({ target, onClose, onOpenEntry }: {
               onLocator={(value) => { dropPreview(); setLocator(value); }}
               onReason={(value) => { dropPreview(); setReason(value); }}
             />
-            {preview.isError ? (
-              <p role="alert" data-memory-import-refused={detailCode(preview.error) ?? 'error'} className="text-[12px] leading-relaxed text-danger">
-                {refusal === null ? t('memory.markdown.previewFailed', { detail: errorText(locale, preview.error) }) : t(refusal)}
+            {previewError !== null ? (
+              <p role="alert" data-memory-import-refused={detailCode(previewError) ?? 'error'} className="text-[12px] leading-relaxed text-danger">
+                {refusal === null ? t('memory.markdown.previewFailed', { detail: errorText(locale, previewError) }) : t(refusal)}
               </p>
             ) : null}
             {current !== undefined ? (
@@ -267,17 +340,17 @@ export function MemoryImportDialog({ target, onClose, onOpenEntry }: {
         )}
       </div>
       <div className="mt-6 flex shrink-0 flex-wrap justify-end gap-2">
-        {applied !== null ? (
+        {receipt !== null ? (
           <>
             <button type="button" data-memory-import-close onClick={onClose} className={`${SECONDARY_BUTTON} pointer-coarse:py-3`}>{t('common.close')}</button>
-            <button type="button" data-memory-import-open={applied.id} onClick={() => { onClose(); onOpenEntry(applied.id); }} className={`${PRIMARY_BUTTON} pointer-coarse:py-3`}>{t('memory.markdown.openEntry')}</button>
+            <button type="button" data-memory-import-open={receipt.entry.id} onClick={() => { onClose(); onOpenEntry(receipt.entry.id); }} className={`${PRIMARY_BUTTON} pointer-coarse:py-3`}>{t('memory.markdown.openEntry')}</button>
           </>
         ) : (
           <>
             <button type="button" data-memory-import-cancel disabled={busy} onClick={onClose} className={`${SECONDARY_BUTTON} pointer-coarse:py-3`}>{t('common.cancel')}</button>
             {failure?.kind === 'closed' ? null : current === undefined || needsRepreview ? (
-              <button type="button" data-memory-import-preview disabled={!ready || busy || !writable} onClick={() => { if (writable) { apply.reset(); preview.mutate(); } }} className={`${needsRepreview ? SECONDARY_BUTTON : PRIMARY_BUTTON} pointer-coarse:py-3`}>
-                {t(needsRepreview ? 'memory.markdown.repreview' : preview.isPending ? 'memory.markdown.previewing' : 'memory.markdown.preview')}
+              <button type="button" data-memory-import-preview disabled={!ready || busy || !writable} onClick={() => { if (writable) { apply.reset(); sendPreview(); } }} className={`${needsRepreview ? SECONDARY_BUTTON : PRIMARY_BUTTON} pointer-coarse:py-3`}>
+                {t(needsRepreview ? 'memory.markdown.repreview' : previewing ? 'memory.markdown.previewing' : 'memory.markdown.preview')}
               </button>
             ) : appliable ? (
               <button type="button" data-memory-import-confirm={current.action} disabled={busy || !writable} onClick={() => { if (!writable || applying.current) return; applying.current = true; apply.mutate(); }} className={`${PRIMARY_BUTTON} pointer-coarse:py-3`}>
@@ -383,13 +456,63 @@ function ImportPreview({ target, preview, reason, onOpenEntry }: {
               <h4 className="text-[12px] font-medium text-ink-soft">{t('memory.markdown.current')}</h4>
               <p className="text-[13px] text-ink-faint">{t('memory.markdown.noCurrent')}</p>
             </section>
-          ) : <VersionBlock label={t('memory.markdown.current')} entry={parseMemoryEntry(currentEntry)} raw={undefined} revision={currentEntry.revision} />}
+          ) : (
+            <>
+              <VersionBlock label={t('memory.markdown.current')} entry={parseMemoryEntry(currentEntry)} raw={undefined} revision={currentEntry.revision} />
+              <EntryMeta scope={target} id={currentEntry.id} revision={currentEntry.revision} pinned={currentEntry.pinned} />
+            </>
+          )}
         </div>
         <div data-memory-import-incoming className="min-w-0">
           <VersionBlock label={t('memory.markdown.incoming')} entry={documentView(preview.incoming, reason)} raw={undefined} revision={preview.incoming.revision ?? 'new'} />
+          <EntryMeta
+            scope={preview.incoming.scope} id={preview.incoming.id} revision={preview.incoming.revision} pinned={preview.incoming.pinned}
+            basedOn pinnedChanged={currentEntry !== null && currentEntry.pinned !== preview.incoming.pinned}
+          />
         </div>
       </div>
     </section>
+  );
+}
+
+type MetaScope = MemoryTarget | MemoryMarkdownDocument['scope'];
+
+function scopeText(scope: MetaScope, t: ReturnType<typeof useI18n>['t']): string {
+  const kind = 'kind' in scope ? scope.kind : scope.scope;
+  const parts = [t(kind === 'global' ? 'memory.scope.global' : kind === 'persona' ? 'memory.scope.persona' : 'memory.scope.workspace')];
+  if ('workspaceId' in scope && scope.workspaceId !== undefined) parts.push(scope.workspaceId);
+  if ('personaId' in scope && scope.personaId !== undefined) parts.push(scope.personaId);
+  return parts.join(' / ');
+}
+
+/**
+ * Which object and revision one side of the comparison is, and whether it is
+ * pinned: the parts of a file the content view does not show, so a change to
+ * them is visible before it is confirmed.
+ */
+function EntryMeta({ scope, id, revision, pinned, basedOn = false, pinnedChanged = false }: {
+  readonly scope: MetaScope;
+  readonly id: string;
+  readonly revision: string | null;
+  readonly pinned: boolean;
+  readonly basedOn?: boolean;
+  readonly pinnedChanged?: boolean;
+}) {
+  const { t } = useI18n();
+  return (
+    <dl data-memory-import-meta className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-t border-hairline pt-2 text-[12px]">
+      <dt className="text-ink-faint">{t('memory.markdown.meta.scope')}</dt>
+      <dd data-memory-import-meta-scope className="min-w-0 truncate text-ink-soft">{scopeText(scope, t)}</dd>
+      <dt className="text-ink-faint">{t('memory.markdown.meta.id')}</dt>
+      <dd data-memory-import-meta-id={id} className="min-w-0 truncate font-mono text-[11px] text-ink-soft">{id === 'new' ? t('memory.markdown.meta.newEntry') : id}</dd>
+      <dt className="text-ink-faint">{t(basedOn ? 'memory.markdown.meta.basedOn' : 'memory.markdown.meta.revision')}</dt>
+      <dd data-memory-import-meta-revision={revision ?? ''} className="min-w-0 truncate font-mono text-[11px] text-ink-soft" title={revision ?? undefined}>{revision === null ? '—' : shortRevision(revision)}</dd>
+      <dt className="text-ink-faint">{t('memory.markdown.meta.pinned')}</dt>
+      <dd data-memory-import-meta-pinned={pinned ? 'true' : 'false'} data-memory-import-meta-changed={pinnedChanged ? 'pinned' : undefined}
+        className={pinnedChanged ? 'font-medium text-accent-ink' : 'text-ink-soft'}>
+        {t(pinned ? 'memory.markdown.meta.pinnedYes' : 'memory.markdown.meta.pinnedNo')}{pinnedChanged ? ` · ${t('memory.markdown.meta.changed')}` : ''}
+      </dd>
+    </dl>
   );
 }
 
