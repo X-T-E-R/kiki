@@ -50,7 +50,7 @@ const peerProcedureMethods: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['agentProfileService', new Set(['getModel', 'setModel', 'setEffort', 'getEffectiveThinkingLevel', 'setThinking', 'getModelCapabilities', 'getAgentsMdWarning'])],
   ['agentPermissionModeService', new Set(['mode', 'setMode', 'setModeAndBroadcast'])],
   ['agentUsageService', new Set(['status'])],
-  ['agentPlanService', new Set(['status', 'enter', 'clear', 'cancel'])],
+  ['agentPlanService', new Set(['status', 'enter', 'exit', 'clear', 'cancel'])],
   ['agentTaskService', new Set(['list', 'readOutput', 'stop', 'stopByUser', 'detach'])],
   ['agentFullCompactionService', new Set(['begin', 'cancel', 'isCompacting', 'getAutoCompact', 'getDefaultAutoCompact', 'setAutoCompactOverride', 'getContextStrategy', 'setContextStrategyOverride'])],
   ['agentGoalService', new Set(['getGoal', 'createGoal', 'updateGoal', 'pauseGoal', 'resumeGoal', 'cancelGoal'])],

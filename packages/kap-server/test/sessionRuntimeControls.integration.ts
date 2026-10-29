@@ -138,6 +138,19 @@ describe('live session runtime controls', () => {
     expect(profile.getEffectiveThinkingLevel()).toBe('high');
   });
 
+  it.each(['free', 'gated'] as const)('applies the %s plan gate when creating a session', async (plan_gate) => {
+    const created = await fixture.call<{ id: string }>('POST', '/api/sessions', {
+      metadata: { cwd: fixture.home },
+      agent_config: { plan_gate },
+    });
+    expect(created.body.code, created.body.msg).toBe(0);
+    const id = created.body.data.id;
+    const main = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    expect(main.accessor.get(IAgentPlanService).planGate).toBe(plan_gate);
+    const snapshot = await fixture.call<{ session: { agent_config: { plan_gate: string } } }>('GET', `/api/sessions/${id}/snapshot`);
+    expect(snapshot.body.data.session.agent_config.plan_gate).toBe(plan_gate);
+  });
+
   it('updates the active plan gate without another prompt', async () => {
     const id = await fixture.createSession(fixture.home!);
     const session = getLiveSessionById(fixture.server!.core.accessor, id)!;

@@ -320,6 +320,8 @@ Agent 的持久元数据若未保存创建时间，就省略 `created_at`；客�
 
 Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的思考强度覆盖，更低优先级的强度因此重新生效：先是 profile，然后是 harness 设置；Kiki 没有钉住强度时，才回到引擎默认。不带 `model` 会保留已保存的模型。空的思考强度字符串会被拒绝；省略 `thinking` 则保持当前强度。Agent 仍在运行时，这次 profile 更新会被拒绝。提示词可以携带同样的 `thinking: null`，Kiki 在该提示词启动时应用它，省略的 `model` 仍保留。
 
+创建会话和更新 profile 均接受 `agent_config.plan_gate: "free" | "gated"`。profile 更新直接应用到 live main agent，无需发送提示词；live 快照返回生效的 `plan_gate`。该覆盖只持续到当前 Agent 实例关闭，恢复后重新使用配置中的 gate；冷快照省略此字段。要通过 klient 让指定 Agent 退出 Plan 模式，调用 `klient.session(sessionId).agent(agentId).exitPlan()`；它的父 Agent 和同级 Agent 保持各自的模式。
+
 #### `POST /api/sessions/{session_id}:archive`
 
 空请求体保留单会话归档行为。发送 `{ "include_attached": true, "exclude_session_ids": ["independent-thread-id"] }` 可归档仍附属的整组对话。服务器跨所有工作区读取持久元数据，不依赖客户端已加载的页面。`created_by_session_id` 表示创建的线程；`parent_session_id` 只有同时带 `child_session_kind: "child"` 才算附属，普通 fork 不包含在内。排除某个线程会排除其整棵子树；排除请求中的根线程 ID 不会排除根自身。

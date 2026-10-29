@@ -518,6 +518,7 @@ export function registerSessionsRoutes(
           if (
             body.agent_config?.permission_mode !== undefined
             || body.agent_config?.plan_mode !== undefined
+            || body.agent_config?.plan_gate !== undefined
           ) {
             await applyAgentRuntimeControls(await ensureMainAgent(handle), body.agent_config);
           }

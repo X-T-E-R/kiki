@@ -433,7 +433,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
   app.get(switchList.path, switchList.options, switchList.handler as Parameters<PromptRouteHost['get']>[2]);
   const switchSubmit = defineRoute({ method: 'POST', path: switchPath, params: switchParams, body: modelSwitchInputSchema,
     success: { data: modelSwitchReceiptSchema }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
-    description: 'Queue a model and context switch at the agent idle boundary', tags: ['prompts'], operationId: 'switchModel' }, async (req, reply) => {
+    description: 'Queue a native model and context switch before the next model request', tags: ['prompts'], operationId: 'switchModel' }, async (req, reply) => {
     try {
       await withSessionOperation(core, req.params.session_id, async (handle) => {
         const resolved = await resolvePromptFromSession(core, requireSession(handle, req.params.session_id), req.params.agent_id);

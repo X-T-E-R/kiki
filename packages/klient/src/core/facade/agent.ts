@@ -150,6 +150,7 @@ export interface AgentFacade {
   switchRuntime(runtimeId: string): Promise<RuntimeBinding>;
   getPlan(): Promise<PlanData>;
   enterPlan(): Promise<void>;
+  exitPlan(): Promise<void>;
   clearPlan(): Promise<void>;
   cancelPlan(input?: { id?: string }): Promise<void>;
   reconcileContextWhenIdle(
@@ -311,6 +312,7 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
       call(scope, 'agentRuntimeBindingService', 'switch', [runtimeId]) as Promise<RuntimeBinding>,
     getPlan: () => call(scope, 'agentPlanService', 'status', []) as Promise<PlanData>,
     enterPlan: () => call(scope, 'agentPlanService', 'enter', []) as Promise<void>,
+    exitPlan: () => call(scope, 'agentPlanService', 'exit', []) as Promise<void>,
     clearPlan: () => call(scope, 'agentPlanService', 'clear', []) as Promise<void>,
     cancelPlan: (input) =>
       call(scope, 'agentPlanService', 'cancel', [input?.id]) as Promise<void>,

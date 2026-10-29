@@ -40,6 +40,7 @@ export const sessionAgentConfigSchema = z.object({
   persona: personaAvatarDataSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
   plan_mode: z.boolean().optional(),
+  plan_gate: promptPlanGateSchema.optional(),
 });
 export type SessionAgentConfig = z.infer<typeof sessionAgentConfigSchema>;
 
@@ -51,6 +52,7 @@ export const sessionAgentConfigPartialSchema = z.strictObject({
   thinking: promptThinkingSchema.optional(),
   permission_mode: promptPermissionModeSchema.optional(),
   plan_mode: z.boolean().optional(),
+  plan_gate: promptPlanGateSchema.optional(),
   goal_objective: z.string().optional(),
   goal_control: z.enum(['pause', 'resume', 'cancel']).optional(),
 });

@@ -320,6 +320,8 @@ Session reads return the committed `agent_config.execution` binding as `{ versio
 
 On an idle agent, `thinking: null` in `agent_config` clears only the session thinking override, so the lower-priority effort applies again: the profile, then the harness setting, then the engine default when Kiki has not pinned an effort. Leaving `model` out keeps the saved model. An empty thinking string is rejected; omitting `thinking` keeps the current effort. While the agent is running, that profile update is refused. A prompt can carry the same `thinking: null`; Kiki applies it when that prompt launches, and an omitted model stays in place.
 
+Session creation and profile updates accept `agent_config.plan_gate: "free" | "gated"`. A profile update applies it to the live main agent without sending a prompt; live snapshots echo the effective `plan_gate`. This override lasts for the live agent's lifetime; after restoration it uses the configured gate again. Cold snapshots omit the gate. To leave Plan mode on a specific agent through klient, call `klient.session(sessionId).agent(agentId).exitPlan()`; its parent and siblings stay in their current modes.
+
 #### `POST /api/sessions/{session_id}:archive`
 
 An empty body keeps the single-session behavior. Send `{ "include_attached": true, "exclude_session_ids": ["independent-thread-id"] }` to archive the attached family. The server reads persisted metadata across all workspaces, not the client's loaded page. `created_by_session_id` records a created thread; `parent_session_id` counts only with `child_session_kind: "child"`, so ordinary forks are not included. Each excluded thread cuts its whole subtree; excluding the requested root does not exclude that root.

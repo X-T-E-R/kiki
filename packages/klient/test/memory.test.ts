@@ -160,6 +160,10 @@ describe('memory dispatcher specifics', () => {
       const created = await klient.global.sessions.create({ workDir: process.cwd() });
       const session = klient.session(created.id);
       await session.agent('main').enterPlan();
+      expect(await session.agent('main').getPlan()).not.toBeNull();
+      await session.agent('main').exitPlan();
+      expect(await session.agent('main').getPlan()).toBeNull();
+      await session.agent('main').enterPlan();
       const expected = await session.agent('main').getPlan();
       expect(expected).not.toBeNull();
       await session.close();
