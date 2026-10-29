@@ -1,5 +1,6 @@
 import { createDecorator } from '#/_base/di/instantiation';
 import type { IDisposable } from '#/_base/di/lifecycle';
+import type { Event } from '#/_base/event';
 import { Error2, isError2, type Error2Options } from '#/_base/errors/errors';
 import type { FinishReason } from '#/kosong/contract/provider';
 import type { TokenUsage } from '#/kosong/contract/usage';
@@ -172,6 +173,7 @@ export interface IAgentLoopService {
   run(options: LoopRunOptions): Promise<LoopRunResult>;
 
   status(): AgentLoopStatus;
+  readonly onDidChangePersistence?: Event<void>;
 
   /** Retries the original completion event, never the model turn. Explicit callers can request the original turn's save error instead of a false result. Admission stays held until durable success. */
   recoverPersistence(options?: { readonly throwOnFailure?: boolean }): Promise<boolean>;

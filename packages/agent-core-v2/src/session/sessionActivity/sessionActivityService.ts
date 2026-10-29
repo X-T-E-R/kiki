@@ -120,6 +120,10 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     if (execution?.onDidChangeStatus !== undefined) {
       subscriptions.add(execution.onDidChangeStatus(() => this.recompute('background')));
     }
+    const loop = handle.accessor.get(IAgentLoopService);
+    if (loop?.onDidChangePersistence !== undefined) {
+      subscriptions.add(loop.onDidChangePersistence(() => { this.recompute('background'); }));
+    }
     const bus = handle.accessor.get(IEventBus) as IEventBus | undefined;
     if (bus === undefined) return;
     subscriptions.add(
@@ -180,10 +184,11 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
       const state = handle.accessor.get(IAgentStateService);
       const goalActive = state?.has(goalKey) === true && state.get(goalKey)?.status === 'active';
       const executorActive = execution?.state === 'starting' || execution?.state === 'running' || execution?.state === 'cancelling';
-      const turnExecuting = execution === undefined ? fold?.turnActive === true : executorActive;
+      const turnExecuting = loop?.persistenceFailure === undefined && (execution === undefined ? fold?.turnActive === true : executorActive);
       const taskExecuting = tasks?.list(true).some((task) => task.status === 'running' &&
         task.lifetime !== 'service' && task.kind !== 'agent' && task.kind !== 'question') === true;
-      executing ||= turnExecuting || background || taskExecuting || loop?.state === 'running' || loop?.finalizing === true;
+      executing ||= turnExecuting || background || taskExecuting ||
+        (loop?.persistenceFailure === undefined && (loop?.state === 'running' || loop?.finalizing === true));
       if (fold?.turnActive || background || tasks?.hasUnfinishedWork() || goalActive ||
         loop?.state === 'running' || loop?.finalizing || loop?.persistenceFailure || loop?.hasPendingRequests ||
         (loop?.pendingTurnIds.length ?? 0) > 0 || prompt?.active !== undefined || prompt?.launching !== undefined ||

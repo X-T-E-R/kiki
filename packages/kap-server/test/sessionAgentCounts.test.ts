@@ -167,6 +167,18 @@ describe('lightweight metadata roster', () => {
     });
   });
 
+  it.each(['completed', 'cancelled'] as const)('exposes failed saving after execution %s ahead of a retained running overlay', (executionOutcome) => {
+    const meta = { id: 'fixture-session', createdAt: 1, updatedAt: 30, archived: false,
+      agents: { main: {}, child: { status: 'failed' as const, completedAt: 10, error: 'old outcome' } } };
+    const turn = { turnId: 2, origin: { kind: 'user' as const }, phase: 'running' as const, step: 1, ending: false,
+      pendingApprovals: [], activeToolCalls: [], since: 20 };
+    const roster = sessionAgentRoster(meta.id, meta, [{ ...row('child', 'running'), started_at: new Date(20).toISOString(), subagent_phase: 'working' }],
+      new Map([['child', { lifecycle: 'ready', background: [], turn, persistenceFailure: { executionOutcome, message: 'Turn execution ended, but saving failed.' } }]]));
+    expect(roster[0]).toMatchObject({ status: 'failed', activity_status: 'failed', status_source: 'runtime', live: true,
+      completed_at: undefined, stop_reason: 'Turn execution ended, but saving failed.' });
+    expect(sessionAgentCounts(meta.agents, roster)).toMatchObject({ active: 0, failed: 1 });
+  });
+
   it('does not label an agent idle while a finite background task is executing', () => {
     const meta = {
       id: 'fixture-session', createdAt: 1, updatedAt: 10, archived: false,

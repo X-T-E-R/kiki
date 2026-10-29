@@ -2248,6 +2248,8 @@ describe('running subagent status', () => {
         agentId: id, agentScope: `agents/${id}`, parentAgentId,
       }));
       accessor.stub(IAgentExecutionService, { status: () => ({ state }) });
+      accessor.stub(IAgentLoopService, { status: () => ({ state: 'running', pendingTurnIds: [], hasPendingRequests: false,
+        persistenceFailure: id === 'agent-saving' ? { executionOutcome: 'completed', message: 'saving failed' } : undefined }) });
       return { id, accessor } as unknown as IAgentScopeHandle;
     };
     const lifecycle = { list: () => [
@@ -2255,6 +2257,7 @@ describe('running subagent status', () => {
       child('agent-idle', 'main', 'idle'),
       child('agent-broken', 'main', 'broken'),
       child('agent-closed', 'main', 'closed'),
+      child('agent-saving', 'main', 'running'),
       child('agent-grandchild', 'agent-live', 'running'),
     ] };
     const tasks = { list: () => [

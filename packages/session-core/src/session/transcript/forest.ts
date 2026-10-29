@@ -90,11 +90,22 @@ export function rosterFromTranscriptResponse(
     maxContextTokens: meta.maxContextTokens,
     usage: meta.usage,
     status: response.agent_id === MAIN_AGENT_ID && projectedStatus === 'unknown' ? undefined : projectedStatus,
+    ...interruptedStatusFields(meta.phase, projectedStatus),
     busy: agentBusyFromMeta(response),
   };
   if (index >= 0) roster[index] = { ...roster[index]!, ...statusFields };
   else roster.push({ agentId: response.agent_id, name: response.agent_id, ...statusFields });
   return roster;
+}
+
+function interruptedStatusFields(
+  phase: { readonly kind: string; readonly message?: unknown; readonly at?: unknown } | undefined,
+  status: AgentRosterDescriptor['status'],
+): Partial<AgentRosterDescriptor> {
+  if (phase?.kind !== 'interrupted' || typeof phase.message !== 'string' || typeof phase.at !== 'number' || status !== 'failed') return {};
+  const at = new Date(phase.at);
+  if (Number.isNaN(at.getTime())) return {};
+  return { statusSource: 'runtime', error: phase.message, endedAt: at.toISOString() };
 }
 
 export function taskItemsFromTranscriptTasks(
@@ -486,6 +497,7 @@ export function sessionAgentForestFromAgentSnapshots(
     const meta = snapshot.meta.agent;
     const count = canonicalToolCallCountFields(snapshot);
     const source = liveById.get(agentId);
+    const status = agentStatusFromMeta({ agent_id: agentId, items: snapshot.items, has_more: false, meta: snapshot.meta });
     roster.push({
       agentId,
       parentAgentId: source?.parentAgentId,
@@ -499,12 +511,8 @@ export function sessionAgentForestFromAgentSnapshots(
       toolCallCount: count.toolCallCount,
       toolCallCountKnown: count.toolCallCountKnown,
       toolCallCountAuthoritative: true,
-      status: agentStatusFromMeta({
-        agent_id: agentId,
-        items: snapshot.items,
-        has_more: false,
-        meta: snapshot.meta,
-      }),
+      status,
+      ...interruptedStatusFields(meta?.phase, status),
       busy: agentBusyFromMeta({
         agent_id: agentId,
         items: snapshot.items,

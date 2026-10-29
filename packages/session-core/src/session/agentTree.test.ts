@@ -24,6 +24,7 @@ import {
 import {
   liveSourcesFromAgentSnapshots,
   rosterFromTranscriptAgents,
+  rosterFromTranscriptResponse,
   sessionAgentForestFromAgentSnapshots,
   taskItemsFromSessionTasks,
 } from './transcript/forest';
@@ -1834,6 +1835,29 @@ describe('historical metadata roster', () => {
     const forest = sessionAgentForestFromAgentSnapshots(new Map([['main', main()]]), [registered('child'), registered('unopened', 'failed')]);
     expect(forest.byId['child']).toMatchObject({ label: 'Protocol investigation', name: 'Protocol investigation', status: 'completed', busy: false, model: 'fixture/model' });
     expect(forest.byId['unopened']).toMatchObject({ label: 'Protocol investigation', status: 'failed', busy: false, startedAt: undefined });
+  });
+
+  it('projects a live final-save failure above its retained running task and accepts original recovery', () => {
+    const child: AgentTranscriptSnapshot = { items: [], tasks: [], interactions: [], attachments: [], todos: [], prompts: [],
+      meta: { agent: { phase: { kind: 'interrupted', turnId: 1, reason: 'error', message: 'Turn execution ended, but saving failed.', at: Date.parse(end) } } } };
+    const failed = sessionAgentForestFromAgentSnapshots(new Map([['main', main()], ['child', child]]));
+    expect(failed.byId['child']).toMatchObject({ status: 'failed', busy: false, error: 'Turn execution ended, but saving failed.' });
+    const recovered: AgentTranscriptSnapshot = { ...child, meta: { agent: { phase: { kind: 'ended', turnId: 1, reason: 'completed', at: Date.parse(end) } } } };
+    const complete = sessionAgentForestFromAgentSnapshots(new Map([['main', main('completed')], ['child', recovered]]));
+    expect(complete.byId['child']).toMatchObject({ status: 'completed', busy: false, error: undefined });
+  });
+
+  it('validates interrupted transport metadata before promoting it above a retained task', () => {
+    const phase = { kind: 'interrupted', reason: 'error', message: 'Saving failed.', at: Date.parse(end) };
+    const response = { agent_id: 'child', items: [], has_more: false, meta: { agent: { phase } } };
+    expect(rosterFromTranscriptResponse(response)[0]).toMatchObject({
+      status: 'failed', statusSource: 'runtime', error: 'Saving failed.', endedAt: end, busy: false,
+    });
+    for (const at of [undefined, 'unknown', NaN]) {
+      const row = rosterFromTranscriptResponse({ ...response, meta: { agent: { phase: { ...phase, at } } } })[0];
+      expect(row?.statusSource).toBeUndefined();
+      expect(row?.endedAt).toBeUndefined();
+    }
   });
 
   it('does not time a cold unfinished registration as running, and accepts a newer live generation', () => {

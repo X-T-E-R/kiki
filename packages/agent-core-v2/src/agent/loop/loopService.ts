@@ -8,6 +8,7 @@ import { createControlledPromise } from '@antfu/utils';
 
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Disposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { Emitter } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
@@ -124,6 +125,9 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     onDidAppendToolResult: new OrderedHookSlot(),
     onDidFinishStep: new OrderedHookSlot(),
   };
+
+  private readonly persistenceChanged = this._register(new Emitter<void>());
+  readonly onDidChangePersistence = this.persistenceChanged.event;
 
   private readonly standaloneStepQueue = new StepRequestQueue();
   private readonly pendingAssignments = new Map<StepRequest, ReturnType<typeof createControlledPromise<import('./loop').StepAssignment>>>();
@@ -284,7 +288,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       activeTurnId: this.activeTurnJob?.turn.id,
       finalizing: this.finalization !== undefined,
       persistenceFailure: this.finalization?.error === undefined ? undefined : {
-        executionOutcome: this.finalization.result.type, message: toErrorMessage(this.finalization.error),
+        executionOutcome: this.finalization.result.type,
+        message: new TurnPersistenceError(this.finalization.turn.id, this.finalization.result, this.finalization.error).message,
       },
       lastTurnResult: this.lastTurnResult,
       pendingTurnIds: this.pendingTurns.map((job) => job.turn.id),
@@ -703,6 +708,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       await this.dispatcher.dispatchDurably(finalization.event);
     } catch (error) {
       finalization.error = error;
+      this.persistenceChanged.fire();
       onUnexpectedError(error);
       this.schedulePersistenceRecovery(finalization);
       const failure = new TurnPersistenceError(finalization.turn.id, finalization.result, error);
@@ -726,6 +732,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     }
     this.quiescenceDepth += 1;
     this.releaseActiveTurn(finalization.turn, finalization.result);
+    this.persistenceChanged.fire();
     this.releaseQuiescence();
     return true;
   }

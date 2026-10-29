@@ -64,13 +64,18 @@ export class AgentListTool implements IAgentListTool {
               } };
             }
             const execution = live?.accessor.get(IAgentExecutionService).status();
-            const status = execution?.state === 'broken'
-              ? 'errored'
-              : execution?.state === 'closed'
-                ? 'interrupted'
-                : execution !== undefined && execution.state !== 'idle'
-                  ? 'running'
-                  : statusOf(latestRuns.get(child.agentId)?.status);
+            const task = latestRuns.get(child.agentId);
+            const outcome = task === undefined || task.status === 'running' && task.taskId === child.meta.taskId
+              ? child.meta.status
+              : undefined;
+            const active = execution?.state === 'starting' || execution?.state === 'running' || execution?.state === 'cancelling';
+            const status = active ? 'running'
+              : outcome === 'completed' ? 'completed'
+              : outcome === 'cancelled' ? 'interrupted'
+              : outcome === 'failed' ? 'errored'
+              : execution?.state === 'broken' ? 'errored'
+              : execution?.state === 'closed' ? 'interrupted'
+              : statusOf(task?.status);
             return toEntry(child, status);
           })
           .filter((entry) => includeFinished || !FINISHED_STATUSES.has(entry.status))

@@ -34,6 +34,7 @@ import { ISessionDispatchService, type DispatchChild, type DispatchRunOptions } 
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import { readResumeRecord, writeResumeRecord } from '#/session/dispatch/resume';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentExecutorRegistry, type ResolvedAgentExecutor } from '#/app/agentExecutor/agentExecutor';
 import { recordNegotiatedSnapshot } from '#/agent/execution/negotiatedSnapshot';
 import { mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
@@ -737,6 +738,8 @@ describe('dispatch resume after cancellation with deferred task notifications', 
     expect(loop.status()).toMatchObject({ state: 'running', finalizing: true, persistenceFailure: { executionOutcome: 'completed' } });
     expect(tasks.list(true)).toMatchObject([{ taskId, status: 'running' }]);
     expect(ctx.get(IAgentExecutionService).status().state).toBe('running');
+    expect(ctx.get(IAgentActivityView).state().persistenceFailure).toMatchObject({ executionOutcome: 'completed',
+      message: expect.stringContaining('Turn execution ended, but saving failed') });
     expect(action).toHaveBeenCalledTimes(1);
     expect(ctx.llmCalls).toHaveLength(2);
     return { ctx, parent, notificationEnd, ...view, loop, action, run, tasks, taskId, controller, failures: () => failures, unblock: () => { blocked = false; }, cleanup: async () => {

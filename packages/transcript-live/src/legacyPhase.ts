@@ -15,7 +15,12 @@ import type { AgentPhase } from '@kiki/protocol';
  * `endingReason`; `disposing`/`disposed` emit nothing.
  */
 export function toLegacyPhase(state: AgentActivityState): AgentPhase | undefined {
-  const { lifecycle, turn, lastTurn } = state;
+  const { lifecycle, turn, lastTurn, persistenceFailure } = state;
+
+  if (lifecycle === 'ready' && turn !== undefined && persistenceFailure !== undefined) {
+    return { kind: 'interrupted', turnId: turn.turnId, step: turn.step, reason: 'error',
+      message: persistenceFailure.message, at: Date.now() };
+  }
 
   if (turn === undefined && lifecycle === 'ready') {
     if (lastTurn !== undefined && lifecycle === 'ready') {

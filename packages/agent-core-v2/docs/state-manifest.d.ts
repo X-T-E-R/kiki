@@ -1299,6 +1299,10 @@ export interface AgentStateSnapshot {
       readonly durationMs?: number;
       readonly at: number;
     };
+    readonly persistenceFailure?: {
+      readonly executionOutcome: 'completed' | 'cancelled' | 'failed';
+      readonly message: string;
+    };
     readonly background: readonly /* BackgroundRef — packages/agent-core-v2/src/agent/activityView/activityView.ts */ {
       readonly kind: string;
       readonly id: string;
@@ -3336,6 +3340,7 @@ export interface AgentStateSnapshot {
     readonly providerConfig: /* ProviderConfig — packages/agent-core-v2/src/kosong/provider/provider.ts */ {
       modelSource?: 'static' | 'discover' | 'oauth-catalog';
       baseUrl?: string;
+      decisionEndpoint?: string;
       customHeaders?: Record<string, string>;
       defaultModel?: string;
       defaults?: /* GenerationParameters — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {

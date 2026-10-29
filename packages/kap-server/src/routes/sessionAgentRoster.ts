@@ -58,7 +58,9 @@ export function sessionAgentRoster(
     const trackedActive = row?.live === true && row?.refreshing !== true && terminalOutcome === undefined && (phaseOpen || taskOpen);
     const loopOpen = activity?.turn !== undefined || (activity?.background.length ?? 0) > 0;
     const status = terminalOutcome ?? row?.status ?? 'running';
-    const activityStatus: SnapshotSubagent['activity_status'] = current && activity?.turn !== undefined
+    const persistenceFailure = current ? activity.persistenceFailure : undefined;
+    const activityStatus: SnapshotSubagent['activity_status'] = persistenceFailure !== undefined ? 'failed'
+      : current && activity?.turn !== undefined
       ? activity.turn.pendingApprovals.length > 0 ? 'suspended' : 'running'
       : current && loopOpen ? 'running'
       : trackedActive ? row?.subagent_phase === 'suspended' ? 'suspended' : 'running'
@@ -70,14 +72,14 @@ export function sessionAgentRoster(
       id, agent_id: id, session_id: sessionId, kind: 'subagent',
       description: resolveSubagentDisplayName(label, profile, row?.description ?? id),
       label, profile, name_source: nameSource,
-      status: activityStatus === 'running' || activityStatus === 'suspended' ? 'running' : status,
+      status: persistenceFailure !== undefined ? 'failed' : activityStatus === 'running' || activityStatus === 'suspended' ? 'running' : status,
       activity_status: activityStatus,
       status_source: current && activity.turn !== undefined || outcome === undefined && (current || trackedActive) ? 'runtime' : 'metadata',
       live: current || trackedActive && outcome === undefined,
       created_at: registration?.createdAt === undefined ? undefined : new Date(registration.createdAt).toISOString(),
       started_at: current && activity.turn !== undefined && (row?.started_at === undefined || outcomeAt !== undefined && trackedStart <= outcomeAt)
         ? new Date(activity.turn.since).toISOString() : row?.started_at,
-      completed_at: activityStatus === 'running' || activityStatus === 'suspended' ? undefined
+      completed_at: persistenceFailure !== undefined || activityStatus === 'running' || activityStatus === 'suspended' ? undefined
         : terminal && (outcomeAt !== undefined || activityTerminalAt !== undefined)
           ? new Date(outcomeAt ?? activityTerminalAt!).toISOString()
           : row?.completed_at,
@@ -87,7 +89,7 @@ export function sessionAgentRoster(
       executor_id: registration?.executor ?? row?.executor_id,
       executor_protocol: registration?.executor !== undefined ? registration.executorProtocol : row?.executor_protocol,
       output_preview: row?.output_preview ?? registration?.resultSummary?.slice(0, 2048),
-      stop_reason: row?.stop_reason ?? registration?.error?.slice(0, 2048),
+      stop_reason: persistenceFailure?.message ?? row?.stop_reason ?? registration?.error?.slice(0, 2048),
       tool_call_count: row?.tool_call_count ?? registration?.toolCallCount,
     };
   });

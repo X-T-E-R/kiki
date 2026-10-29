@@ -5,7 +5,8 @@ import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IEventBus } from '#/app/event/eventBus';
 import type { Event2, Event2Class } from '#/app/event/event2';
-import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentLoopService, type AgentLoopStatus } from '#/agent/loop/loop';
+import { Emitter } from '#/_base/event';
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import { TurnEnded, turnKey, type TurnModelState } from '#/agent/loop/turnOps';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -76,9 +77,16 @@ function harness(
   lastEnded?: TurnModelState['lastEnded'],
 ) {
   const bus = new FakeBus();
+  let loopStatus: AgentLoopStatus = { state: 'idle', pendingTurnIds: [], hasPendingRequests: false };
+  const persistenceChanged = disposables.add(new Emitter<void>());
   const loop = {
-    status: () => ({ state: 'idle', pendingTurnIds: [], hasPendingRequests: false }),
+    status: () => loopStatus,
+    onDidChangePersistence: persistenceChanged.event,
   } as unknown as IAgentLoopService;
+  const changePersistence = (status: AgentLoopStatus): void => {
+    loopStatus = status;
+    persistenceChanged.fire();
+  };
   const tasks = { list: () => seedTasks } as unknown as IAgentTaskService;
   const restoreHooks: Array<() => Promise<void>> = [];
   const dispatcher = {
@@ -127,7 +135,7 @@ function harness(
     bus.published
       .filter((e) => e.type === 'agent.activity.updated')
       .map((e) => e as unknown as AgentActivityState);
-  return { bus, view, updates, restore };
+  return { bus, view, updates, restore, changePersistence };
 }
 
 describe('AgentActivityView', () => {
@@ -142,6 +150,19 @@ describe('AgentActivityView', () => {
   it('starts with an empty, not-busy snapshot', () => {
     const { view } = harness();
     expect(view.state()).toEqual({ lifecycle: 'ready', background: [] });
+  });
+
+  it('publishes failed saving separately from the retained execution and clears it after recovery', () => {
+    const { bus, view, updates, changePersistence } = harness();
+    bus.publish(new TurnStarted({ turnId: 1, origin: { kind: 'user' } }));
+    changePersistence({ state: 'running', activeTurnId: 1, finalizing: true, pendingTurnIds: [], hasPendingRequests: false,
+      persistenceFailure: { executionOutcome: 'completed', message: 'storage append failed' } });
+    expect(view.state()).toMatchObject({ turn: { turnId: 1 }, persistenceFailure: { executionOutcome: 'completed', message: 'storage append failed' } });
+    expect(updates().at(-1)).toMatchObject({ persistenceFailure: { executionOutcome: 'completed' } });
+    changePersistence({ state: 'idle', finalizing: false, pendingTurnIds: [], hasPendingRequests: false });
+    bus.publish(new TurnEnded({ turnId: 1, reason: 'completed' }));
+    expect(view.state().persistenceFailure).toBeUndefined();
+    expect(view.state()).toMatchObject({ lastTurn: { turnId: 1, reason: 'completed' } });
   });
 
   it('folds task.started / task.terminated into the background slice', () => {

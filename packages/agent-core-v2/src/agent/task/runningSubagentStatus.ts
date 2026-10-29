@@ -1,4 +1,5 @@
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import type { IAgentTaskService } from '#/agent/task/task';
 import { escapeXmlTags } from '#/_base/utils/xml-escape';
@@ -39,7 +40,8 @@ export function runningSubagentStatus(
     if (handle.id === excludedAgentId) continue;
     if (handle.accessor.get(IAgentScopeContext).parentAgentId !== parentAgentId) continue;
     const state = handle.accessor.get(IAgentExecutionService).status().state;
-    if (state === 'idle' || state === 'broken' || state === 'closed') running.delete(handle.id);
+    const savingFailed = handle.accessor.get(IAgentLoopService)?.status().persistenceFailure !== undefined;
+    if (savingFailed || state === 'idle' || state === 'broken' || state === 'closed') running.delete(handle.id);
     else running.set(handle.id, running.get(handle.id) ?? handle.id);
   }
   if (running.size === 0) return undefined;

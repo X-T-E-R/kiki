@@ -2041,6 +2041,10 @@ describe('AgentTranscriptLiveAdapter', () => {
       since: 1500,
     });
 
+    feed(ev({ type: 'agent.activity.updated', lifecycle: 'ready', turn: turn({}), background: [],
+      persistenceFailure: { executionOutcome: 'completed', message: 'Turn execution ended, but saving failed.' } }));
+    expect(tx.getMeta().agent?.phase).toMatchObject({ kind: 'interrupted', turnId: 1, reason: 'error', message: 'Turn execution ended, but saving failed.' });
+
     feed(
       ev({
         type: 'agent.activity.updated',

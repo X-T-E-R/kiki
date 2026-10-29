@@ -100,6 +100,41 @@ async function listAgents(
 }
 
 describe('AgentListTool', () => {
+  it.each(['completed', 'failed', 'cancelled'] as const)('uses a committed %s outcome when its task is no longer retained', async (status) => {
+    for (const execution of [undefined, { worker: 'idle' as const }]) {
+      const tool = makeTool({ agents: { worker: { ...childMeta({}), status, taskId: 'old-task', completedAt: 10 } }, execution });
+      expect((await listAgents(tool)).agents).toEqual([]);
+      expect((await listAgents(tool, { include_finished: true })).agents[0]?.status)
+        .toBe(status === 'completed' ? 'completed' : status === 'failed' ? 'errored' : 'interrupted');
+    }
+  });
+
+  it.each(['completed', 'failed', 'cancelled'] as const)('uses a matching committed %s outcome above a stale running task', async (status) => {
+    const tool = makeTool({ agents: { worker: { ...childMeta({}), status, taskId: 'task-1', completedAt: 10 } },
+      execution: { worker: 'idle' }, tasks: [{ agentId: 'worker', status: 'running' }] });
+    expect((await listAgents(tool)).agents).toEqual([]);
+    expect((await listAgents(tool, { include_finished: true })).agents[0]?.status)
+      .toBe(status === 'completed' ? 'completed' : status === 'failed' ? 'errored' : 'interrupted');
+  });
+
+  it('retains an already lost task despite a matching metadata outcome', async () => {
+    const tool = makeTool({ agents: { worker: { ...childMeta({}), status: 'completed', taskId: 'task-1', completedAt: 10 } },
+      tasks: [{ agentId: 'worker', status: 'lost' }] });
+    expect((await listAgents(tool, { include_finished: true })).agents[0]?.status).toBe('interrupted');
+  });
+
+  it('keeps a later active execution ahead of the previous committed outcome', async () => {
+    const tool = makeTool({ agents: { worker: { ...childMeta({}), status: 'completed', completedAt: 10 } },
+      execution: { worker: 'running' } });
+    expect((await listAgents(tool)).agents[0]?.status).toBe('running');
+  });
+
+  it('does not replace a newer tracking task with an older committed outcome', async () => {
+    const tool = makeTool({ agents: { worker: { ...childMeta({}), status: 'completed', taskId: 'old-task', completedAt: 10 } },
+      tasks: [{ agentId: 'worker', status: 'running', startedAt: 20 }] });
+    expect((await listAgents(tool)).agents[0]?.status).toBe('running');
+  });
+
   it.each([undefined, 'failed', 'completed'] as const)('keeps a persistence-blocked child discoverable with task status %s', async (status) => {
     const tool = makeTool({ agents: { worker: childMeta({ name: 'worker' }) }, execution: { worker: 'running' },
       loops: { worker: { state: 'running', activeTurnId: 3, finalizing: true, pendingTurnIds: [], hasPendingRequests: false,

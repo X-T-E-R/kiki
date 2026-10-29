@@ -92,6 +92,9 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
     this.seedFromLoop();
     this.seedFromTasks();
     this.seedFromFullCompaction();
+    if (this.loop.onDidChangePersistence !== undefined) {
+      this._register(this.loop.onDidChangePersistence(() => { this.publish(); }));
+    }
     this._register(
       this.dispatcher.hooks.onDidRestore.register('activityView', async (_ctx, next) => {
         this.seedLastTurnFromWire();
@@ -374,6 +377,7 @@ export class AgentActivityView extends Disposable implements IAgentActivityView 
       lifecycle: this.lifecycle,
       turn: t === undefined ? undefined : t.snapshot(),
       lastTurn: this.lastTurn,
+      persistenceFailure: this.loop.status().persistenceFailure,
       background: [...this.background.values()],
     };
     if (activityEqual(this.current, next)) return;
@@ -417,6 +421,8 @@ class MutableTurn {
 
 function activityEqual(a: AgentActivityState, b: AgentActivityState): boolean {
   if (a.lifecycle !== b.lifecycle) return false;
+  if (a.persistenceFailure?.executionOutcome !== b.persistenceFailure?.executionOutcome ||
+      a.persistenceFailure?.message !== b.persistenceFailure?.message) return false;
   if ((a.turn === undefined) !== (b.turn === undefined)) return false;
   if (a.turn !== undefined && b.turn !== undefined) {
     const ta = a.turn;

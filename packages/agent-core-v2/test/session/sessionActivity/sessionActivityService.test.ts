@@ -400,6 +400,23 @@ describe('ISessionActivityView (Session scope aggregate of agent activity + inte
     expect(view.state().executing).toBe(false);
   });
 
+  it('keeps failed saving pending without reporting execution and observes recovery directly', () => {
+    const changed = disposables.add(new Emitter<void>());
+    let failure: { executionOutcome: 'completed'; message: string } | undefined;
+    lifecycle.addAgent('saved-child', new Map<unknown, unknown>([
+      [IAgentExecutionService, { status: () => ({ state: 'running' }) }],
+      [IAgentLoopService, { status: () => ({ state: 'running', finalizing: true, persistenceFailure: failure }), onDidChangePersistence: changed.event }],
+    ]));
+    const { view } = viewWithChanges();
+    expect(view.state()).toMatchObject({ busy: true, executing: true });
+    failure = { executionOutcome: 'completed', message: 'save failed' };
+    changed.fire();
+    expect(view.state()).toMatchObject({ busy: true, executing: false });
+    failure = undefined;
+    changed.fire();
+    expect(view.state()).toMatchObject({ busy: true, executing: true });
+  });
+
   it('counts finite process and media work but not resident services or questions as execution', async () => {
     let kind = 'process';
     let lifetime = 'finite';

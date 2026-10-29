@@ -88,6 +88,26 @@ describe('AgentRoster busy state', () => {
 
 
 describe('AgentRoster metadata identity and state', () => {
+  it('renders failed saving from the live phase above a retained running task without a running timer', async () => {
+    const startedAt = '2026-01-01T00:00:00.000Z';
+    const main = replay('main', [{ op: 'task.upsert', task: { taskId: 'saved-task', kind: 'subagent', state: 'running',
+      agentId: 'saved-child', detached: false, startedAt, outputTail: '' } }]);
+    const child = replay('saved-child', [{ op: 'meta.merge', meta: { agent: { phase: { kind: 'interrupted', turnId: 1,
+      reason: 'error', message: 'Turn execution ended, but saving failed. Restore writable storage.', at: Date.parse(startedAt) + 60_000 } } } }]);
+    const forest = sessionAgentForestFromAgentSnapshots(new Map([['main', main], ['saved-child', child]]), [{
+      id: 'saved-child', session_id: 'fixture-session', kind: 'subagent', description: 'Saved worker', label: 'Saved worker',
+      status: 'running', activity_status: 'unknown', status_source: 'metadata', live: true,
+    }]);
+    expect(forest.byId['saved-child']).toMatchObject({ status: 'failed', busy: false });
+    const container = await renderRoster(forest);
+    const saved = container.querySelector<HTMLElement>('[data-agent-id="saved-child"]');
+    expect(saved?.dataset['rosterBucket']).toBe('ended');
+    expect(saved?.querySelector<HTMLElement>('[data-agent-status]')?.dataset['agentStatus']).toBe('failed');
+    expect(saved?.textContent).toContain('saving failed');
+    expect(saved?.textContent).not.toContain('Working');
+    expect(saved?.querySelector('.status-dot-busy')).toBeNull();
+  });
+
   it('renders recorded names and distinct completed, idle, lost and unknown states without historical running timers', async () => {
     const at = '2026-01-01T00:00:00.000Z';
     const old = replay('main', [{ op: 'task.upsert', task: { taskId: 'old', kind: 'subagent', state: 'running', agentId: 'named', detached: false, startedAt: at, outputTail: '' } }]);
