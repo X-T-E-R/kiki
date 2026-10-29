@@ -1424,6 +1424,10 @@ export class KikiClient {
     return this.run(() => this.rest.sessions.create(body));
   }
 
+  getSessionCreation(creationId: string, signal?: AbortSignal): Promise<import('@kiki/protocol').SessionCreationStatus> {
+    return this.run(() => this.rest.sessions.creationStatus(creationId, { signal }));
+  }
+
   saveEphemeralSession(sessionId: string): Promise<Session> {
     return this.run(() => this.rest.sessions.saveEphemeral(sessionId));
   }

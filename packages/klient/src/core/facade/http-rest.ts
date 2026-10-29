@@ -431,6 +431,7 @@ export interface HttpRestFacade {
     list(query?: HttpRestListSessionsQuery, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ListSessionsResponse>;
     listEphemeral(query?: Pick<HttpRestListSessionsQuery, 'before_id' | 'page_size' | 'workspace_id' | 'persona'>): Promise<import('@kiki/protocol').ListEphemeralSessionsResponse>;
     create(body: SessionCreate): Promise<Session>;
+    creationStatus(creationId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').SessionCreationStatus>;
     saveEphemeral(sessionId: string): Promise<Session>;
     endEphemeral(sessionId: string, body?: { readonly worktree?: 'keep' | 'remove' }): Promise<import('@kiki/protocol').EndEphemeralSessionResponse>;
     compact(sessionId: string, body?: { readonly instruction?: string }): Promise<import('@kiki/protocol').CompactSessionResponse>;

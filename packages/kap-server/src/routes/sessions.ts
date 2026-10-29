@@ -67,7 +67,7 @@ import {
 import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
 import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
-import { deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, worktreeRemovalOutcomeSchema } from '@kiki/protocol';
+import { deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, worktreeRemovalOutcomeSchema, sessionCreationStatusSchema } from '@kiki/protocol';
 import { deleteArchivedSessions } from '../services/archivedSessionDeletion';
 import { toRestContextBreakdown } from '../protocol/context-usage';
 import { ErrorCode } from '../protocol/error-codes';
@@ -299,6 +299,19 @@ export function registerSessionsRoutes(
   const overlayResourcesBySession = new Map<string, Set<string>>();
   const pendingOverlayCleanups = new Set<Promise<void>>();
   const createReceipts = new SessionCreateReceiptStore(core);
+  const creationStatusRoute = defineRoute({
+    method: 'GET', path: '/sessions/creation/:creation_id',
+    params: z.object({ creation_id: z.string().uuid().transform((value) => value.toLowerCase()) }),
+    success: { data: sessionCreationStatusSchema },
+    errors: { [ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN]: {} },
+    description: 'Read a session creation receipt without starting or waiting for creation', tags: ['sessions'],
+  }, async (req, reply) => {
+    try {
+      const connectionScope = sessionCreateConnectionScope({ peer: peerAudience(req)?.grantId, web: webPrincipal(req)?.sessionId });
+      reply.send(okEnvelope(await createReceipts.status(connectionScope, req.params.creation_id), req.id));
+    } catch (error) { reply.send(mapSessionError(req, error)); }
+  });
+  app.get(creationStatusRoute.path, creationStatusRoute.options, creationStatusRoute.handler as Parameters<SessionRouteHost['get']>[2]);
   const log = core.accessor.get(ILogService);
   const trackOverlayCleanup = (result: void | Promise<void>): void => {
     if (!(result instanceof Promise)) return;

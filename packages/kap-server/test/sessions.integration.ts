@@ -657,6 +657,9 @@ describe('server-v2 /api/sessions', () => {
     const first = postJsonWithSignal<SessionWire>('/api/sessions', body, controller.signal).catch((error: unknown) => error);
     try {
       await enteredPromise;
+      const pending = await getJson<import('@kiki/protocol').SessionCreationStatus>(`/api/sessions/creation/${creationId}`);
+      expect(pending.body).toMatchObject({ code: 0, data: { creation_id: creationId, session_id: `session_${creationId}`, status: 'pending' } });
+      expect(create).toHaveBeenCalledTimes(1);
       const second = postJson<SessionWire>('/api/sessions', body);
       controller.abort();
       expect(await first).toBeInstanceOf(Error);
@@ -668,6 +671,10 @@ describe('server-v2 /api/sessions', () => {
       const lateReplay = await postJson<SessionWire>('/api/sessions', body);
       expect(lateReplay.body.code).toBe(0);
       expect(lateReplay.body.data).toEqual(replayed.body.data);
+      const completed = await getJson<import('@kiki/protocol').SessionCreationStatus>(`/api/sessions/creation/${creationId}`);
+      expect(completed.body).toMatchObject({ code: 0, data: { status: 'completed', session: { id: replayed.body.data.id } } });
+      const missing = await getJson<import('@kiki/protocol').SessionCreationStatus>('/api/sessions/creation/48d489f0-ecad-4f70-a3d3-7e4f772e6110');
+      expect(missing.body).toMatchObject({ code: 0, data: { status: 'missing' } });
       expect(create).toHaveBeenCalledTimes(1);
     } finally {
       release();
