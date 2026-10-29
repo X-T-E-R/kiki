@@ -337,7 +337,7 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 
 **`AgentList`** 列出当前 Agent 的直属子 Agent。可选参数 `include_finished` 默认为 false。实例正在启动、运行或取消时，即使之前的后台任务已完成或超时，也会以 `running` 保持可见。执行已结束但最终保存失败的子 Agent 会以 `persistence_failed` 保持可见，`persistence_failure` 包含轮次 ID、执行结果和存储错误。执行器处于故障状态时显示 `errored`；其他情况采用最近一次后台任务状态，没有任务记录则为 `untracked`。传 `true` 才会额外包含已结束或出错的子 Agent。最多返回 50 条，运行中的排在前面；装不下的数量记在 `omitted`。每条记录含 `agent_id`、可选的 `name` 与 `profile`，以及 `status`。`running` 不代表一定有跟踪中的后台任务或之后的完成通知；用 `TaskList` 查看跟踪中的工作。
 
-Native Agent 最终保存失败时，应先恢复存储可写，不要重复提示词或工具调用。Agent 会有界退避重试同一次保存；耗尽后，下一次日志成功写入，或读取历史等会刷新受影响日志的请求，会再次触发恢复。恢复后原任务继续收尾并发送通知，不重跑已执行的工作。显式 resume 或消息投递也会先尝试补齐保存；若存储仍不可用，会返回存储错误，而不是 `already running` 或无限等待。停止任务仍然有效，保存恢复不会重新启动已停止的任务。
+Native Agent 最终保存失败时，应先恢复存储可写，不要重复提示词或工具调用。初始退避结束后，Agent 会对磁盘满和暂态存储故障继续每五分钟重试，无需再发消息或读取历史。日志成功写入可以提前触发这次重试；检测到日志损坏时会停止低频恢复，等待检查。恢复后原任务继续收尾并发送通知，不重跑已执行的工作。显式 resume 或消息投递也会先尝试补齐保存；若存储仍不可用，会返回存储错误，而不是 `already running` 或无限等待。停止任务仍然有效，保存恢复不会重新启动已停止的任务。
 
 **`AgentSend`** 把非空的 `message` 发给直属子 Agent。`target` 可以是 `AgentRun` 当时传入的 `name`，也可以是 agent id。子 Agent 以 native 方式运行时，消息会在下一个 step 边界进入当前工作；Codex 和支持 steer 的 ACP 子 Agent 可以在运行期间收到。已经停止的子 Agent，包括运行在消息进入上下文之前结束的情况，会沿用原来的模型、profile、工具和上下文继续。外部子 Agent 已保存的消息按到达顺序进入这同一个绑定，一封接一封，不需要另一次 resume。调度容量已满时，这次继续会等到一个正在运行的子 Agent 结束，不会超出上限再开一跑。如果没有运行会释放容量，或者外部 resume 打不开原来的会话，这条消息仍留在原来的 `message_id` 下。发送方随后会收到原因、error code、目标和这个 id。用 AgentRun 继续同一个子 Agent：`resume` 设为该 agent id，`prompt` 设为空字符串，`description` 设为简短标签。不要再次调用 AgentSend，不要在 `prompt` 里重复这条已保存的消息，也不要设置 `new_window`。这次失败不会另开一个新的远端会话。这次继续是普通的子任务，完成时父 Agent 照常收到通知。匹配到多个直属子 Agent、或一个都匹配不到时调用失败——先用 `AgentList` 再换成不含糊的值重试。邮箱满了说明未读排队消息太多，等子 Agent 消化一些再发。
 

@@ -732,18 +732,14 @@ describe('dispatch resume after cancellation with deferred task notifications', 
     const taskId = tasks.registerTask(new SubagentTask({ agentId: CHILD, profileName: 'example-worker',
       completion: run.completion.then((result) => ({ result: result.summary })) }, 'Save original work', controller));
     await expect(run.turn.result).rejects.toMatchObject({ details: { executionOutcome: 'completed', persistenceOutcome: 'failed' } });
-    if (exhaust) {
-      await vi.advanceTimersByTimeAsync(1_000_000);
-      const exhausted = failures;
-      await vi.advanceTimersByTimeAsync(1_000_000);
-      expect(failures).toBe(exhausted);
-    } else await vi.advanceTimersByTimeAsync(2_600);
+    if (exhaust) await vi.advanceTimersByTimeAsync(402_600);
+    else await vi.advanceTimersByTimeAsync(2_600);
     expect(loop.status()).toMatchObject({ state: 'running', finalizing: true, persistenceFailure: { executionOutcome: 'completed' } });
     expect(tasks.list(true)).toMatchObject([{ taskId, status: 'running' }]);
     expect(ctx.get(IAgentExecutionService).status().state).toBe('running');
     expect(action).toHaveBeenCalledTimes(1);
     expect(ctx.llmCalls).toHaveLength(2);
-    return { ctx, parent, notificationEnd, ...view, loop, action, run, tasks, taskId, controller, unblock: () => { blocked = false; }, cleanup: async () => {
+    return { ctx, parent, notificationEnd, ...view, loop, action, run, tasks, taskId, controller, failures: () => failures, unblock: () => { blocked = false; }, cleanup: async () => {
       blocked = false;
       vi.useRealTimers();
       expect(await loop.recoverPersistence()).toBe(true);
@@ -751,6 +747,71 @@ describe('dispatch resume after cancellation with deferred task notifications', 
       await tasks.wait(taskId);
     } };
   }
+
+  it('recovers an ENOSPC task after a ninety-minute outage without new reads, writes, or enqueues', async () => {
+    const fixture = await persistenceBlockedChild(true);
+    const { ctx, loop, run, tasks, taskId, action } = fixture;
+    try {
+      const before = fixture.failures();
+      await vi.advanceTimersByTimeAsync(90 * 60_000);
+      expect(fixture.failures() - before).toBe(36);
+      fixture.unblock();
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(tasks.list(true)).toMatchObject([{ taskId, status: 'running' }]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await run.completion).toMatchObject({ summary: 'Original result.' });
+      expect(loop.status()).toMatchObject({ state: 'idle', finalizing: false });
+      await tasks.wait(taskId);
+      await fixture.notificationEnd;
+      const notifications = fixture.parent.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'task' && message.origin.taskId === taskId);
+      expect(notifications).toHaveLength(1);
+      expect(JSON.stringify(notifications)).toContain('Original result.');
+      expect(action).toHaveBeenCalledTimes(1);
+      expect(ctx.llmCalls).toHaveLength(2);
+      expect((await journal(ctx)).filter((record) => record.type === 'turn.ended' && record['turnId'] === run.turn.id)).toHaveLength(1);
+    } finally { await fixture.cleanup(); }
+  });
+
+  it('stops slow recovery when a journal prefix no longer matches', async () => {
+    const fixture = await persistenceBlockedChild(true);
+    const { ctx, loop } = fixture;
+    const storage = ctx.get(IFileSystemStorageService);
+    const scope = ctx.get(IAgentScopeContext).scope();
+    const original = (await storage.read(scope, 'wire.jsonl'))!;
+    const changed = original.slice();
+    changed[changed.length - 1] = 0;
+    const recovery = vi.spyOn(loop, 'recoverPersistence');
+    try {
+      await storage.write(scope, 'wire.jsonl', changed);
+      fixture.unblock();
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(recovery).toHaveBeenCalledTimes(1);
+      expect(loop.status()).toMatchObject({ finalizing: true, persistenceFailure: { message: expect.stringContaining('changed journal bytes') } });
+      const store = ctx.get(IAppendLogStore);
+      store.append('recovery-evidence', 'events.jsonl', { storage: 'writable' });
+      await store.flush('recovery-evidence', 'events.jsonl');
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      expect(recovery).toHaveBeenCalledTimes(1);
+    } finally {
+      await storage.write(scope, 'wire.jsonl', original);
+      await fixture.cleanup();
+    }
+  });
+
+  it('disposal stops slow recovery timers and write-event wakeups', async () => {
+    const fixture = await persistenceBlockedChild(true);
+    const { ctx, loop } = fixture;
+    const recovery = vi.spyOn(loop, 'recoverPersistence');
+    try {
+      await (loop as IAgentLoopService & { dispose(): void | Promise<void> }).dispose();
+      fixture.unblock();
+      const store = ctx.get(IAppendLogStore);
+      store.append('recovery-evidence', 'events.jsonl', { storage: 'writable' });
+      await store.flush('recovery-evidence', 'events.jsonl');
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+      expect(recovery).not.toHaveBeenCalled();
+    } finally { await fixture.cleanup(); }
+  });
 
   it.each([false, true])('automatically completes the original task after ENOSPC committed=%s recovers during extended backoff', async (committed) => {
     const fixture = await persistenceBlockedChild(true, committed, false);

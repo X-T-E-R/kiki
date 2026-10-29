@@ -53,6 +53,7 @@ import type {
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { StorageErrors } from '#/persistence/interface/storage';
 import { LOOP_CONTROL_SECTION, type LoopControl } from './configSection';
 import {
   createMaxStepsExceededError,
@@ -110,7 +111,9 @@ export const loopLastRequestTraceIdKey = defineState<string | undefined>(
 export const loopDisposingKey = defineState<boolean>('loop.disposing', () => false);
 
 const MAX_STEP_SIGNAL_LISTENERS = 64;
-const PERSISTENCE_RECOVERY_DELAYS_MS = [100, 500, 2000, 10_000, 30_000, 60_000, 300_000] as const;
+const PERSISTENCE_SLOW_RECOVERY_DELAY_MS = 300_000;
+const PERSISTENCE_RECOVERY_DELAYS_MS = [100, 500, 2000, 10_000, 30_000, 60_000, PERSISTENCE_SLOW_RECOVERY_DELAY_MS] as const;
+const PERSISTENCE_CONTINUING_RECOVERY_CODES = new Set<string>([StorageErrors.codes.STORAGE_DISK_FULL, ...StorageErrors.retryable]);
 const PERSISTENCE_WRITE_WAKE_COOLDOWN_MS = 30_000;
 
 export class AgentLoopService extends Disposable implements IAgentLoopService {
@@ -159,7 +162,12 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   ) {
     super();
     this._register(appendLog.onDidWrite(() => {
-      if (this.disposing || this.finalization?.error === undefined || this.persistenceRecoveryTimer !== undefined || Date.now() < this.persistenceWriteWakeAfter) return;
+      const finalization = this.finalization;
+      if (this.disposing || finalization?.error === undefined || Date.now() < this.persistenceWriteWakeAfter) return;
+      if (isError2(finalization.error) && finalization.error.code === StorageErrors.codes.STORAGE_CORRUPTED) return;
+      if (this.persistenceRecoveryTimer !== undefined && (finalization.recoveryAttempts ?? 0) < PERSISTENCE_RECOVERY_DELAYS_MS.length) return;
+      clearTimeout(this.persistenceRecoveryTimer);
+      this.persistenceRecoveryTimer = undefined;
       this.persistenceWriteWakeAfter = Date.now() + PERSISTENCE_WRITE_WAKE_COOLDOWN_MS;
       void this.recoverPersistence();
     }));
@@ -725,7 +733,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private schedulePersistenceRecovery(finalization: NonNullable<AgentLoopService['finalization']>): void {
     if (this.disposing || this.finalization !== finalization || this.persistenceRecoveryTimer !== undefined) return;
     const attempt = finalization.recoveryAttempts ?? 0;
-    const delay = PERSISTENCE_RECOVERY_DELAYS_MS[attempt];
+    const continuing = isError2(finalization.error) && PERSISTENCE_CONTINUING_RECOVERY_CODES.has(finalization.error.code);
+    const delay = PERSISTENCE_RECOVERY_DELAYS_MS[attempt] ?? (continuing ? PERSISTENCE_SLOW_RECOVERY_DELAY_MS : undefined);
     if (delay === undefined) return;
     finalization.recoveryAttempts = attempt + 1;
     this.persistenceRecoveryTimer = setTimeout(() => {
