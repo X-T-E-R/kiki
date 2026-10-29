@@ -3273,7 +3273,6 @@ export const zh = {
   'st.decision.fix.openConnection': '打开连接',
   'st.decision.fix.addService': '添加决策服务',
   'st.decision.saveFailed': '无法保存：{detail}',
-  'st.decision.source': '来源',
   'st.decision.sourceNone': '未选择',
   'st.decision.change': '更改',
   'st.decision.sourceHint': '在 AI › 默认 › 谁来做判断 中选择。',

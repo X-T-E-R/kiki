@@ -3300,7 +3300,6 @@ export const en = {
   'st.decision.fix.openConnection': 'Open connection',
   'st.decision.fix.addService': 'Add a decision service',
   'st.decision.saveFailed': 'Could not save: {detail}',
-  'st.decision.source': 'Source',
   'st.decision.sourceNone': 'Not chosen',
   'st.decision.change': 'Change',
   'st.decision.sourceHint': 'Chosen under AI › Defaults › Who decides.',
