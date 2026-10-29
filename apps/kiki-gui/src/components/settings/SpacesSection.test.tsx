@@ -143,6 +143,7 @@ async function click(selector: string) {
 
 async function type(selector: string, value: string) {
   const input = document.querySelector<HTMLInputElement>(selector)!;
+
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
   await act(async () => { setter.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); });
 }
@@ -599,10 +600,11 @@ describe('direct remote settings control operations', () => {
     expect(document.querySelector<HTMLInputElement>('[data-space-name]')!.value).toBe('Local Draft');
     expect(document.body.textContent).toContain('Local folder access denied');
     expect(host.openSpace).not.toHaveBeenCalled();
-    await click('[data-space-create] button[type="button"]:last-of-type');
+    // Closing the panel is the header's ×; the attach entry lives on the list.
+    await click('button[aria-label="Close"]');
     await click('[data-space-attach-open]');
     await type('[data-space-attach-path]', 'D:\\existing');
-    await click('[data-space-attach] button[type="submit"]');
+    await click('[data-space-attach-submit]');
     expect(homes.attach).toHaveBeenCalledWith({ path: 'D:\\existing' });
     expect(homes.list.mock.calls.length).toBeGreaterThan(1);
     for (const spy of Object.values(remote.homes)) expect(spy).not.toHaveBeenCalled();

@@ -10,8 +10,8 @@ import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { SshProfilesPanel } from '../SshProfilesPanel';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
-import { Dialog } from '../Dialog';
 import { useGuardedNavigate } from '../dirtyGuard';
+import { InlineEditor } from '../InlineEditor';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { WorktreesCard } from './WorktreesCard';
@@ -54,7 +54,7 @@ function WorkspacesList() {
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
-  const [renaming, setRenaming] = useState<Workspace | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   const [removing, setRemoving] = useState<Workspace | null>(null);
   const [bulkRemoving, setBulkRemoving] = useState<readonly Workspace[] | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -63,6 +63,14 @@ function WorkspacesList() {
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
+  };
+
+  const applyRenamed = (echoed: Workspace) => {
+    queryClient.setQueryData(['workspaces', 'catalog'], (current: ListWorkspaceCatalogResponse | undefined) =>
+      current === undefined ? current : { items: current.items.map((ws) => ws.id === echoed.id ? echoed : ws) },
+    );
+    setRenamingId(null);
+    invalidate();
   };
 
   const togglePinned = (workspace: Workspace) => {
@@ -112,7 +120,10 @@ function WorkspacesList() {
             pinBusy={pinBusy}
             onPin={togglePinned}
             onBulkPin={bulkPin}
-            onRename={setRenaming}
+            renamingId={renamingId}
+            onRename={(workspace) => { setRenamingId(workspace.id); }}
+            onRenameDone={applyRenamed}
+            onRenameCancel={() => { setRenamingId(null); }}
             onRemove={setRemoving}
             onBulkRemove={setBulkRemoving}
             onNewSession={(workspace) => { void navigate(`/new?workspace=${encodeURIComponent(workspace.id)}`); }}
@@ -136,19 +147,6 @@ function WorkspacesList() {
         {feedback !== null ? <FeedbackLine feedback={feedback} /> : null}
       </div>
 
-      {renaming !== null ? (
-        <WorkspaceRenameDialog
-          workspace={renaming}
-          onClose={() => setRenaming(null)}
-          onRenamed={(echoed) => {
-            queryClient.setQueryData(['workspaces', 'catalog'], (current: ListWorkspaceCatalogResponse | undefined) =>
-              current === undefined ? current : { items: current.items.map((ws) => ws.id === echoed.id ? echoed : ws) },
-            );
-            setRenaming(null);
-            invalidate();
-          }}
-        />
-      ) : null}
       {removing !== null ? (
         <ConfirmDialog
           open
@@ -216,12 +214,15 @@ const byRecent = (a: Workspace, b: Workspace) => Date.parse(b.last_opened_at) - 
  * Each row keeps one visible verb (New session) and the pin mark; rename
  * and unregister live in the row's ⋯ menu so 80 rows are not 320 buttons.
  */
-function WorkspaceList({ items, pinBusy, onPin, onBulkPin, onRename, onRemove, onBulkRemove, onNewSession, onOpenDetail }: {
+function WorkspaceList({ items, pinBusy, onPin, onBulkPin, renamingId, onRename, onRenameDone, onRenameCancel, onRemove, onBulkRemove, onNewSession, onOpenDetail }: {
   items: readonly Workspace[];
   pinBusy: string | null;
   onPin: (workspace: Workspace) => void;
   onBulkPin: (targets: readonly Workspace[], pinned: boolean) => void;
+  renamingId: string | null;
   onRename: (workspace: Workspace) => void;
+  onRenameDone: (echoed: Workspace) => void;
+  onRenameCancel: () => void;
   onRemove: (workspace: Workspace) => void;
   onBulkRemove: (targets: readonly Workspace[]) => void;
   onNewSession: (workspace: Workspace) => void;
@@ -257,7 +258,9 @@ function WorkspaceList({ items, pinBusy, onPin, onBulkPin, onRename, onRemove, o
   const renderRow = (ws: Workspace) => (
     <WorkspaceRow workspace={ws} density={view.density} selecting={view.selected.size > 0} checked={view.selected.has(ws.id)}
       onCheck={() => { view.toggleSelected(ws.id); }} pinBusy={pinBusy === ws.id || pinBusy === 'bulk'}
-      onPin={() => { onPin(ws); }} onRename={() => { onRename(ws); }} onRemove={() => { onRemove(ws); }}
+      renaming={renamingId === ws.id}
+      onPin={() => { onPin(ws); }} onRename={() => { onRename(ws); }} onRenameDone={onRenameDone} onRenameCancel={onRenameCancel}
+      onRemove={() => { onRemove(ws); }}
       onNewSession={() => { onNewSession(ws); }} onOpenDetail={() => { onOpenDetail(ws); }} />
   );
 
@@ -301,7 +304,7 @@ function WorkspaceList({ items, pinBusy, onPin, onBulkPin, onRename, onRemove, o
 }
 const ROW_ICON = 'flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:text-ink-faint pointer-coarse:h-11 pointer-coarse:w-11';
 
-function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy, onPin, onRename, onRemove, onNewSession, onOpenDetail }: {
+function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy, renaming, onPin, onRename, onRenameDone, onRenameCancel, onRemove, onNewSession, onOpenDetail }: {
   workspace: Workspace;
   density: ListDensity;
   /** Some row is selected: every box shows, not only the hovered one. */
@@ -309,8 +312,11 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
   checked: boolean;
   onCheck: () => void;
   pinBusy: boolean;
+  renaming: boolean;
   onPin: () => void;
   onRename: () => void;
+  onRenameDone: (echoed: Workspace) => void;
+  onRenameCancel: () => void;
   onRemove: () => void;
   onNewSession: () => void;
   onOpenDetail: () => void;
@@ -335,13 +341,14 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
   return (
     <div data-workspace-row={workspace.id} data-selected={checked ? '' : undefined}
       style={{ minHeight: LIST_ROW_HEIGHT[density] }}
-      className={`group/row flex h-full items-center gap-1 pr-1.5 pl-1 transition-colors ${checked ? 'bg-ink/[0.035]' : 'hover:bg-ink/[0.02]'}`}>
+      className={`group/row transition-colors ${checked ? 'bg-ink/[0.035]' : 'hover:bg-ink/[0.02]'}`}>
+    <div className="flex h-full items-center gap-1 pr-1.5 pl-1">
       <RowCheck quiet={!selecting} checked={checked} onChange={onCheck} label={t('st.list.selectRow', { name: workspace.name })} />
       <div className="min-w-0 flex-1 py-1">
         <div className="flex min-w-0 items-baseline gap-2">
           {/* The name is the way into the workspace's own page: one move,
               reachable by keyboard, that does not compete with the row's
-              verbs to the right of it. */}
+              verbs to the right of it. Renaming unfolds under the row. */}
           <button
             type="button"
             data-workspace-open={workspace.id}
@@ -415,6 +422,64 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
           ]} />
       ) : null}
     </div>
+    {/* One value on the row: the input exists only while renaming (Esc cancels). */}
+    <InlineEditor open={renaming} lazy className="mx-1 mb-1">
+      <WorkspaceRenameEditor workspace={workspace} onDone={onRenameDone} onCancel={onRenameCancel} />
+    </InlineEditor>
+    </div>
+  );
+}
+
+function WorkspaceRenameEditor({ workspace, onDone, onCancel }: {
+  workspace: Workspace;
+  onDone: (echoed: Workspace) => void;
+  onCancel: () => void;
+}) {
+  const { client } = useConnection();
+  const { t } = useI18n();
+  const [name, setName] = useState(workspace.name);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = () => {
+    const trimmed = name.trim();
+    if (trimmed === '' || trimmed.length > 100 || busy) return;
+    setBusy(true);
+    setError(null);
+    void client
+      .renameWorkspaceCatalog(workspace.id, trimmed)
+      .then(onDone)
+      .catch((cause: unknown) => {
+        setBusy(false);
+        setError(cause instanceof Error ? cause.message : String(cause));
+      });
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-2" data-workspace-rename={workspace.id}>
+      <input
+        data-autofocus
+        aria-label={t('st.workspaces.renameTitle')}
+        className="min-w-0 max-w-[42ch] flex-1 rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-selected-ink"
+        value={name}
+        maxLength={100}
+        onChange={(event) => { setName(event.target.value); }}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') submit();
+          if (event.key === 'Escape') { event.preventDefault(); onCancel(); }
+        }}
+      />
+      <button
+        type="button"
+        disabled={busy || name.trim() === '' || name.trim() === workspace.name}
+        onClick={submit}
+        className={PRIMARY_BUTTON}
+      >
+        {busy ? t('common.saving') : t('common.save')}
+      </button>
+      <button type="button" onClick={onCancel} className={SECONDARY_BUTTON}>{t('common.cancel')}</button>
+      {error !== null ? <FeedbackLine feedback={{ tone: 'error', text: error }} /> : null}
+    </div>
   );
 }
 
@@ -451,61 +516,5 @@ function TrustReadFailure({ items }: { readonly items: readonly Workspace[] }) {
         });
       }}>{t('common.retry')}</button>
     </div>
-  );
-}
-
-function WorkspaceRenameDialog({
-  workspace,
-  onClose,
-  onRenamed,
-}: {
-  workspace: Workspace;
-  onClose: () => void;
-  onRenamed: (workspace: Workspace) => void;
-}) {
-  const { client } = useConnection();
-  const { t } = useI18n();
-  const [name, setName] = useState(workspace.name);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = () => {
-    const trimmed = name.trim();
-    if (trimmed === '' || trimmed.length > 100 || busy) return;
-    setBusy(true);
-    setError(null);
-    void client
-      .renameWorkspaceCatalog(workspace.id, trimmed)
-      .then(onRenamed)
-      .catch((cause: unknown) => {
-        setBusy(false);
-        setError(cause instanceof Error ? cause.message : String(cause));
-      });
-  };
-
-  return (
-    <Dialog onClose={onClose} ariaLabel={t('st.workspaces.renameTitle')} overlayId="workspace-rename-dialog">
-      <h2 className="font-display text-[18px] font-semibold text-ink">{t('st.workspaces.renameTitle')}</h2>
-      <input
-        data-autofocus
-        className="mt-3 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-selected-ink"
-        value={name}
-        maxLength={100}
-        onChange={(event) => { setName(event.target.value); }}
-        onKeyDown={(event) => { if (event.key === 'Enter') submit(); }}
-      />
-      {error !== null ? <div className="mt-2"><FeedbackLine feedback={{ tone: 'error', text: error }} /></div> : null}
-      <div className="mt-4 flex justify-end gap-2">
-        <button type="button" onClick={onClose} className={SECONDARY_BUTTON}>{t('common.cancel')}</button>
-        <button
-          type="button"
-          disabled={busy || name.trim() === '' || name.trim() === workspace.name}
-          onClick={submit}
-          className={PRIMARY_BUTTON}
-        >
-          {busy ? t('common.saving') : t('common.save')}
-        </button>
-      </div>
-    </Dialog>
   );
 }

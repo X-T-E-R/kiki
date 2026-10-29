@@ -42,7 +42,6 @@ import { useGuardedNavigate } from '../dirtyGuard';
 import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
-import { AgentProfileEditorDialog } from './AgentProfileEditorDialog';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
 import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
@@ -193,7 +192,6 @@ export function NamedAgentProfileRow({
     (profile.request_params !== undefined && Object.keys(profile.request_params).length > 0) ||
     (profile.model_profiles?.length ?? 0) > 0 ||
     constraints !== undefined;
-  const [editorOpen, setEditorOpen] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [rowSaved, pingRowSaved] = useSavedTick();
   const saveRaw = async (rawText: string) => {
@@ -371,7 +369,14 @@ export function NamedAgentProfileRow({
             {t('st.namedAgents.newSession')}
           </button>
           {writable && showEditor ? (
-            <button type="button" className={SECONDARY_BUTTON} onClick={() => { setFeedback(null); setEditorOpen(true); }}>
+            <button type="button" className={SECONDARY_BUTTON}
+              data-agent-edit={profile.name}
+              onClick={() => {
+                setFeedback(null);
+                const params = new URLSearchParams(window.location.search);
+                params.set(AGENT_QUERY_PARAM, profile.name);
+                void navigate(`/settings/agents?${params.toString()}`);
+              }}>
               {t('st.namedAgents.edit')}
             </button>
           ) : null}
@@ -381,17 +386,6 @@ export function NamedAgentProfileRow({
         <p data-toggle-scope-hint className="sr-only">
           {t('st.namedAgents.namedToggleHint')}
         </p>
-      ) : null}
-      {editorOpen ? (
-        <AgentProfileEditorDialog
-          profile={profile}
-          onClose={() => { setEditorOpen(false); }}
-          onSaved={(updated) => {
-            onUpdated(updated);
-            setFeedback(null);
-            pingRowSaved();
-          }}
-        />
       ) : null}
       <>
           {summaryChips.length > 0 ? (

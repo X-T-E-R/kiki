@@ -8,7 +8,7 @@ import { I18nProvider } from '../../../i18n';
 import { SubagentToolSettingsCard } from './ToolSettingsCard';
 import { openOptions } from '../testControls';
 
-const { client, editorProps, guardState } = vi.hoisted(() => ({
+const { client, navigated, guardState } = vi.hoisted(() => ({
   guardState: { value: undefined as { confirmDiscard?: (id: string, action: () => void) => void } | undefined },
   client: {
     getConfig: vi.fn(),
@@ -17,19 +17,16 @@ const { client, editorProps, guardState } = vi.hoisted(() => ({
     listNamedAgentProfiles: vi.fn(),
     updateNamedAgentProfile: vi.fn(),
   },
-  editorProps: { profiles: [] as string[] },
+  navigated: { targets: [] as string[] },
 }));
 vi.mock('../../../state/connection', () => ({ useConnection: () => ({ client }) }));
 vi.mock('../../dirtyGuard', () => ({
   useDirtyReporter: vi.fn(),
-  useGuardedNavigate: () => vi.fn(),
-  useDirtyGuard: () => guardState.value,
-}));
-vi.mock('../AgentProfileEditorDialog', () => ({
-  AgentProfileEditorDialog: ({ profile }: { profile: NamedAgentProfile }) => {
-    editorProps.profiles.push(profile.name);
-    return <div data-profile-editor={profile.name} />;
+  useGuardedNavigate: () => (target: unknown) => {
+    navigated.targets.push(String(target));
+    return Promise.resolve();
   },
+  useDirtyGuard: () => guardState.value,
 }));
 
 const TOOL = (name: string, source: ToolDescriptor['source'], description: string, extra: Partial<ToolDescriptor> = {}): ToolDescriptor => ({
@@ -75,7 +72,7 @@ function catalog(items: readonly NamedAgentProfile[]) {
 
 beforeEach(() => {
   vi.resetAllMocks();
-  editorProps.profiles = [];
+  navigated.targets = [];
   // The app shell asks before a draft is replaced; tests pick confirm or cancel.
   guardState.value = { confirmDiscard: (_id, action) => { action(); } };
   localStorage.setItem('kiki.locale', 'en');
@@ -418,11 +415,11 @@ describe('subagent tool settings', () => {
     expect(detail()!.querySelector('[data-tool-detail-allow], [data-tool-detail-deny]')).toBeNull();
   });
 
-  it('offers the existing profile editor for a writable agent and no write path for a built-in', async () => {
+  it('opens the profile detail for a writable agent and no write path for a built-in', async () => {
     await render();
     await selectObject('explore');
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-subagent-tools-edit-lists]')!.click(); });
-    expect(editorProps.profiles).toContain('explore');
+    expect(navigated.targets.some((target) => target.includes('agent=explore'))).toBe(true);
     await selectObject('general');
     expect(container.querySelector('[data-subagent-tools-edit-lists]')).toBeNull();
     expect(row('Bash')!.querySelector('button[data-tool-allow], button[data-tool-deny]')).toBeNull();
