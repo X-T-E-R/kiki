@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, type Hash } from 'node:crypto';
 
 export const WIRE_TRANSCRIPT_RECEIPT_KEY = 'wire.transcript-receipt.json';
 
@@ -29,13 +29,23 @@ export function parseWireTranscriptReceipt(value: unknown): WireTranscriptReceip
   return receipt as unknown as WireTranscriptReceipt;
 }
 
-export async function digestWireBytes(chunks: AsyncIterable<Uint8Array>): Promise<{
-  size: number; sha256: string; lines: number; endsWithNewline: boolean;
-}> {
-  const hash = createHash('sha256');
-  let size = 0;
-  let lines = 0;
-  let endsWithNewline = false;
+/** Resumable digest of a wire byte prefix; `hash` is owned by the state and never finalized. */
+export interface WireDigestState {
+  readonly hash: Hash;
+  readonly size: number;
+  readonly lines: number;
+  readonly endsWithNewline: boolean;
+}
+
+/** Digest of an empty prefix. */
+export function emptyWireDigestState(): WireDigestState {
+  return { hash: createHash('sha256'), size: 0, lines: 0, endsWithNewline: false };
+}
+
+/** Extends a copy of `state` with `chunks`; the input state stays reusable. */
+export async function extendWireDigest(state: WireDigestState, chunks: AsyncIterable<Uint8Array>): Promise<WireDigestState> {
+  const hash = state.hash.copy();
+  let { size, lines, endsWithNewline } = state;
   for await (const chunk of chunks) {
     size += chunk.byteLength;
     if (!Number.isSafeInteger(size)) throw new Error('wire transcript exceeds safe byte length');
@@ -45,5 +55,18 @@ export async function digestWireBytes(chunks: AsyncIterable<Uint8Array>): Promis
     }
     if (chunk.byteLength > 0) endsWithNewline = chunk.at(-1) === 0x0a;
   }
-  return { size, sha256: hash.digest('hex'), lines, endsWithNewline };
+  return { hash, size, lines, endsWithNewline };
+}
+
+/** Final digest values of a resumable state without consuming it. */
+export function wireDigestOf(state: WireDigestState): {
+  size: number; sha256: string; lines: number; endsWithNewline: boolean;
+} {
+  return { size: state.size, sha256: state.hash.copy().digest('hex'), lines: state.lines, endsWithNewline: state.endsWithNewline };
+}
+
+export async function digestWireBytes(chunks: AsyncIterable<Uint8Array>): Promise<{
+  size: number; sha256: string; lines: number; endsWithNewline: boolean;
+}> {
+  return wireDigestOf(await extendWireDigest(emptyWireDigestState(), chunks));
 }

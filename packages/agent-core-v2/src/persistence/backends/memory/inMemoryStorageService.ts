@@ -12,6 +12,7 @@ import {
   StorageErrors,
   type IStorageLock,
   type StorageAppendOptions,
+  type StorageFileStat,
   type StorageLockOptions,
   type StorageReadRange,
   type StorageWriteOptions,
@@ -29,6 +30,8 @@ export class InMemoryStorageService implements IFileSystemStorageService {
   private readonly watchers = new Map<string, WatchEntry>();
   private readonly locks = new Map<string, symbol>();
   private readonly mtimes = new Map<string, number>();
+  private readonly revisions = new Map<string, number>();
+  private serial = 0;
 
   async read(scope: string, key: string): Promise<Uint8Array | undefined> {
     return this.scopes.get(scope)?.get(key);
@@ -169,6 +172,12 @@ export class InMemoryStorageService implements IFileSystemStorageService {
     return this.mtimes.get(this.watchKey(scope, key));
   }
 
+  async stat(scope: string, key: string): Promise<StorageFileStat | undefined> {
+    const size = this.scopes.get(scope)?.get(key)?.byteLength;
+    if (size === undefined) return undefined;
+    return { size, identity: this.watchKey(scope, key), revision: `${this.revisions.get(this.watchKey(scope, key))}` };
+  }
+
   pathFor(_scope: string, _key: string): undefined {
     return undefined;
   }
@@ -204,7 +213,10 @@ export class InMemoryStorageService implements IFileSystemStorageService {
   }
 
   private notifyWatchers(scope: string, key: string): void {
-    this.watchers.get(this.watchKey(scope, key))?.emitter.fire();
+    const id = this.watchKey(scope, key);
+    if (this.scopes.get(scope)?.has(key)) this.revisions.set(id, ++this.serial);
+    else this.revisions.delete(id);
+    this.watchers.get(id)?.emitter.fire();
   }
 
   private watchKey(scope: string, key: string): string {

@@ -14,6 +14,7 @@ import type {
   IFileSystemStorageService,
   IStorageLock,
   StorageAppendOptions,
+  StorageFileStat,
   StorageLockOptions,
   StorageReadOptions,
   StorageReadRange,
@@ -310,6 +311,21 @@ export class FileStorageService implements IFileSystemStorageService {
     const filePath = this.pathFor(scope, key);
     try {
       return (await stat(filePath)).mtimeMs;
+    } catch (error) {
+      if (isEnoent(error)) return undefined;
+      throw toStorageIoError(error, { path: filePath, op: 'stat' });
+    }
+  }
+
+  async stat(scope: string, key: string): Promise<StorageFileStat | undefined> {
+    const filePath = this.pathFor(scope, key);
+    try {
+      const info = await stat(filePath, { bigint: true });
+      return {
+        size: Number(info.size),
+        identity: info.ino > 0n ? `${info.dev}:${info.ino}:${info.birthtimeNs}` : undefined,
+        revision: `${info.mtimeNs}:${info.ctimeNs}`,
+      };
     } catch (error) {
       if (isEnoent(error)) return undefined;
       throw toStorageIoError(error, { path: filePath, op: 'stat' });

@@ -29,11 +29,14 @@ export function registerAgentHooksRoutes(app: RouteHost, core: Scope): void {
       const binding = { ...persisted.binding, modelId: persisted.binding.modelAlias === undefined ? undefined : models.resolveId(persisted.binding.modelAlias) };
       reply.send(okEnvelope(projectHookInspection(snapshot, binding, persisted.clock), req.id));
     };
-    if (core.accessor.get(ISessionManager).get(req.params.session_id) !== undefined) {
+    const live = core.accessor.get(ISessionManager).get(req.params.session_id);
+    const agent = live?.accessor.get(IAgentLifecycleService).get(req.params.agent_id);
+    if (agent !== undefined) { reply.send(okEnvelope(await agent.accessor.get(IAgentHookRules).inspect(), req.id)); return; }
+    if (live !== undefined) {
       await withSessionOperation(core, req.params.session_id, async session => {
         if (session === undefined) { reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id)); return; }
-        const agent = session.accessor.get(IAgentLifecycleService).get(req.params.agent_id);
-        if (agent !== undefined) { reply.send(okEnvelope(await agent.accessor.get(IAgentHookRules).inspect(), req.id)); return; }
+        const resident = session.accessor.get(IAgentLifecycleService).get(req.params.agent_id);
+        if (resident !== undefined) { reply.send(okEnvelope(await resident.accessor.get(IAgentHookRules).inspect(), req.id)); return; }
         const metadata = (await session.accessor.get(ISessionMetadata).read()).agents?.[req.params.agent_id];
         if (metadata === undefined) { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent does not exist in this session', req.id)); return; }
         const rules = session.accessor.get(IHookRulesSession);

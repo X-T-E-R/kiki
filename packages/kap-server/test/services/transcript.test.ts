@@ -1921,7 +1921,8 @@ describe('TranscriptService live integration', () => {
       const childPage = await readSessionViewTranscriptPage(service, 's1', { agentId: 'child' });
       expect(childPage).toMatchObject({ agent_id: 'child' });
       expect(childPage?.items.at(-1)).toMatchObject({ turnId: 't48' });
-      expect(verify).toHaveBeenCalledTimes(1);
+      expect(childPage?.coverage).toMatchObject({ kind: 'unknown' });
+      expect(verify.mock.calls.length).toBeGreaterThan(1);
       child.bus.emit(ev({ type: 'turn.started', turnId: 49, origin: { kind: 'user' }, prompt: 'child live while main proof waits' }));
       expect(service.forSessionLive('s1')?.getAgent('child')?.getTurn('t49')).toMatchObject({ prompt: 'child live while main proof waits' });
       const controller = new AbortController(); controller.abort();

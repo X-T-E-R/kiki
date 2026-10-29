@@ -115,6 +115,7 @@ const RETAINED_COLD_TURN_ENTRY_BYTES = 8 << 20;
 const COLD_SNAPSHOT_CACHE_MAX_ENTRIES = 32;
 const FIRST_SCREEN_WINDOW_BYTES = 1 << 20;
 const FIRST_SCREEN_WINDOW_MAX_BYTES = 8 << 20;
+const LIVE_EPOCH_VERIFY_WAIT_MS = 1_500;
 const COLD_WIRE_WINDOW_MAX_BYTES = FIRST_SCREEN_WINDOW_MAX_BYTES;
 const COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES = 32 << 20;
 const COLD_WIRE_WINDOWS_MAX_ENTRIES = 4;
@@ -694,6 +695,10 @@ export class TranscriptService {
     return wire?.verifyTranscriptLiveEpoch === undefined || wire.isTranscriptLiveEpochVerified?.() === true;
   }
 
+  /**
+   * Proves the live epoch against durable wire. A proof that has not settled within
+   * a short bound reports unverified while the shared verification continues.
+   */
   async verifyTranscriptLiveCoverage(sessionId: string, agentId: string): Promise<boolean> {
     const wire = this.live.get(sessionId)?.agentWires.get(agentId);
     return wire?.verifyTranscriptLiveEpoch === undefined || await this.hasVerifiedLiveEpoch(sessionId, agentId);
@@ -2688,12 +2693,16 @@ export class TranscriptService {
     const session = getLiveSessionById(this.deps.core.accessor, sessionId);
     const agent = session?.accessor.get(IAgentLifecycleService).get(agentId);
     if (agent === undefined) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const verified = await wire.verifyTranscriptLiveEpoch();
+      const expired = new Promise<false>((resolve) => { timer = setTimeout(() => { resolve(false); }, LIVE_EPOCH_VERIFY_WAIT_MS); });
+      const verified = await Promise.race([wire.verifyTranscriptLiveEpoch(), expired]);
       return verified && this.live.get(sessionId) === entry &&
         session?.accessor.get(IAgentLifecycleService).get(agentId) === agent;
     } catch {
       return false;
+    } finally {
+      clearTimeout(timer);
     }
   }
 

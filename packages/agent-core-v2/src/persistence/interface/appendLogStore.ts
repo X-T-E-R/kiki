@@ -78,12 +78,20 @@ export interface ColdSealResult {
   readonly originalRetained: true;
 }
 
+/** A process-local revision invalidated by observed metadata changes outside successful appends; absent identity disables incremental digest reuse. */
+export interface AppendLogSourceRevision {
+  readonly revision: number;
+  readonly size: number;
+  readonly identity?: string;
+}
+
 export interface IAppendLogStore {
   readonly _serviceBrand: undefined;
 
   readonly onDidWrite: Event<AppendLogWrite>;
   registerProjection<T>(projection: AppendLogProjection<T>): IDisposable;
   generation(scope: string, key: string): Promise<string>;
+  sourceRevision?(scope: string, key: string): Promise<AppendLogSourceRevision | undefined>;
 
   append<R>(scope: string, key: string, record: R, options?: AppendLogOptions): void;
   read<R>(scope: string, key: string, options?: AppendLogReadOptions): AsyncIterable<R>;

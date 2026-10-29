@@ -149,6 +149,13 @@ export interface StorageReadOptions {
   readonly chunkBytes?: number;
 }
 
+/** One metadata observation; revision changes with mtime or ctime, and identity is absent when the backend cannot identify the file reliably. */
+export interface StorageFileStat {
+  readonly size: number;
+  readonly identity?: string;
+  readonly revision: string;
+}
+
 export interface IFileSystemStorageService {
   readonly _serviceBrand: undefined;
 
@@ -173,6 +180,7 @@ export interface IFileSystemStorageService {
   moveDirectory(sourceScope: string, targetScope: string): Promise<void>;
   size(scope: string, key: string): Promise<number | undefined>;
   mtime(scope: string, key: string): Promise<number | undefined>;
+  stat?(scope: string, key: string): Promise<StorageFileStat | undefined>;
   pathFor(scope: string, key: string): string | undefined;
   /** Signals key invalidation; node-fs also reconciles key metadata when its watcher becomes ready. */
   watch?(scope: string, key: string): Event<void>;

@@ -5,7 +5,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
 
-import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, StorageErrors, type StorageFileStat } from '#/persistence/interface/storage';
 import { discardColdSegments, discardColdUnlocked, readLogicalBytes, sealColdSegments, withColdExclusive } from '#/persistence/coldSegmentLog';
 import { withColdReaderGate } from '#/persistence/backends/node-fs/fileLock';
 import {
@@ -13,6 +13,7 @@ import {
   IAppendLogStore,
   type AppendLogOptions,
   type AppendLogReadOptions,
+  type AppendLogSourceRevision,
   type AppendLogWrite,
   type AppendLogCommit,
   type AppendLogProjection,
@@ -68,6 +69,7 @@ interface LogState {
   ready: Promise<void>;
   retirement: Promise<void> | undefined;
   position?: AppendPosition;
+  source?: { revision: number; stat: StorageFileStat | undefined };
   uncertainAppend?: {
     readonly start: AppendPosition;
     readonly encoded: Uint8Array;
@@ -120,6 +122,47 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
   async generation(scope: string, key: string): Promise<string> {
     await this.logs.get(logId(scope, key))?.flushPromise?.catch(() => undefined);
     return this.readGeneration(scope, key);
+  }
+
+  async sourceRevision(scope: string, key: string): Promise<AppendLogSourceRevision | undefined> {
+    if (this.storage.stat === undefined) return undefined;
+    await this.flush(scope, key);
+    const state = this.state(scope, key);
+    const source = state.source ??= { revision: 0, stat: undefined };
+    const info = await this.storage.stat(scope, key);
+    if (state.flushPromise !== undefined) {
+      source.revision++;
+      source.stat = undefined;
+      return undefined;
+    }
+    this.observeSource(source, info);
+    return info === undefined ? undefined : { revision: source.revision, size: info.size, identity: info.identity };
+  }
+
+  private observeSource(source: NonNullable<LogState['source']>, info: StorageFileStat | undefined): void {
+    const previous = source.stat;
+    if (previous?.identity !== info?.identity || previous?.size !== info?.size || previous?.revision !== info?.revision) source.revision++;
+    source.stat = info;
+  }
+
+  private async appendObserved(scope: string, key: string, state: LogState, data: Uint8Array): Promise<void> {
+    const source = state.source;
+    if (source === undefined || this.storage.stat === undefined) {
+      await this.storage.append(scope, key, data, { durable: true });
+      return;
+    }
+    const before = await this.storage.stat(scope, key).catch(() => undefined);
+    this.observeSource(source, before);
+    try {
+      await this.storage.append(scope, key, data, { durable: true });
+    } catch (error) {
+      source.revision++;
+      source.stat = undefined;
+      throw error;
+    }
+    const after = await this.storage.stat(scope, key).catch(() => undefined);
+    if (before === undefined || after === undefined || before.identity !== after.identity || after.size !== before.size + data.byteLength) source.revision++;
+    source.stat = after;
   }
 
   private async readGeneration(scope: string, key: string): Promise<string> {
@@ -251,6 +294,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
             const generation = randomUUID();
             await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), { atomic: true });
             state.position = undefined;
+            if (state.source !== undefined) state.source.revision++;
             await this.storage.write(scope, key, encoded, { atomic: true });
             const boundary = encoded.slice(-4096);
             committed = { generation, offset: encoded.byteLength, boundary };
@@ -423,7 +467,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       if (existing.byteLength !== end - from ||
         !existing.subarray(0, start.boundary.byteLength).equals(start.boundary) ||
         !existing.subarray(start.boundary.byteLength).equals(encoded.subarray(0, written))) throw mismatch();
-      await this.storage.append(scope, key, encoded.subarray(written), { durable: true });
+      await this.appendObserved(scope, key, state, encoded.subarray(written));
       await this.publishAppend(scope, key, state, start, encoded, pending.prepared);
       state.pending.splice(0, pending.count);
       state.uncertainAppend = undefined;
@@ -548,7 +592,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       }
       const start = state.position;
       try {
-        await this.storage.append(scope, key, encoded, { durable: true });
+        await this.appendObserved(scope, key, state, encoded);
         wrote = true;
         if (wroteBox !== undefined) wroteBox.value = true;
       } catch (error) {
