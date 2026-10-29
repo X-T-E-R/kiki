@@ -1,28 +1,25 @@
 /**
- * 浏览器控制 → the browsers themselves. Every saved connection is one row: may
- * the Agent use it (the box), what it is and where it runs, the state the
- * control service last reported, and a quiet tag on the default. The default
- * itself is chosen in one place, the select on the list's header line.
+ * 浏览器控制 → the browsers themselves. Every saved connection is one row in
+ * an accordion: the summary says its name, where it runs in plain words, a
+ * status word with a dot, and a quiet tag on the default; pressing it opens
+ * that connection's editor inline under the row — the list stays visible —
+ * and never changes state. Every state change lives on an explicit control:
+ * the row's 允许 switch, or the ⋯ menu's own items (设为默认, 检查, 连接或
+ * 断开, 删除).
  *
- * The card shows one thing at a time. Pressing a row replaces the list with
- * that connection as a flat form, with a back row; Add replaces it with the
- * ways to get a browser — the sources Kiki can prepare, then a manual form.
- * The same sources stay manageable (switch, prepare, check) in a fold under
- * the list.
- *
- * Allowed and default are written straight from the list; they are two
- * separate facts, and the default tag never ticks the box. A connection whose
- * source is switched off keeps its box as stored, greyed, so turning the source
- * back on restores exactly what was there.
+ * Allowed and default are two separate facts, written from their own places:
+ * the switch from the row, the default only from 设为默认, shown only by the
+ * tag. A connection whose source is switched off keeps its stored allowance,
+ * greyed, so turning the source back on restores exactly what was there.
  *
  * Three things stay apart in the form on purpose:
  *
  *   config   name / id / type / driver and profile paths or CDP endpoint —
  *            saved by the draft footer, never by a runtime action;
- *   runtime  check / connect / disconnect, which use the *saved* config and are
- *            therefore offered only while the draft is clean;
- *   state    the control service's own `status`, worded as the service words it
- *            and shown only when the service said something. No state is
+ *   runtime  check / connect / disconnect, which use the *saved* config and
+ *            are therefore offered only while the draft is clean;
+ *   state    the control service's own `status`, worded as the service words
+ *            it and shown only when the service said something. No state is
  *            inferred here, and a connection that is not running is drawn as
  *            normal, not as a problem.
  *
@@ -30,7 +27,7 @@
  * pressing check / connect does that.
  */
 
-import { useContext, useEffect, useMemo, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -47,16 +44,17 @@ import {
 } from '../../../lib/browserRest';
 import type { BrowserConnection, BrowserConnectionRow, BrowserConnectionType, BrowserOwnership } from '../../../lib/browserRest';
 import { ConfirmDialog } from '../../ConfirmDialog';
-import { FeedbackLine, Hint, InlineError, SaveStatus, Toggle, type Feedback } from '../../controls';
+import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../../controls';
 import { useDirtyGuard } from '../../dirtyGuard';
 import { Icon } from '../../icons';
 import { Tag } from '../../capabilities/primitives';
 import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../../ui';
 import { AdvancedDetails } from '../fields';
+import { RowFrame } from '../RowFrame';
+import { SpaceRowMenu, type SpaceMenuItem } from '../spaces/SpaceRowMenu';
 import { SecretField } from '../SecretField';
 import { SettingsCardMountContext, SettingsFlashContext } from '../SectionCard';
 import { FieldIssue, FORM_LABEL, SettingsDraftFooter, SettingsSelect } from '../SettingsPrimitives';
-import { useInstantSave } from '../useInstantSave';
 import { useSavedTick } from '../useSavedTick';
 import { BrowserRuntimeDetails, BrowserStateMark, OtherBrowserEcosystems } from './BrowserBits';
 import { BrowserSetupWizard } from './BrowserSetupWizard';
@@ -93,12 +91,13 @@ function typeLabel(t: ReturnType<typeof useI18n>['t'], type: BrowserConnectionTy
  * The styles this connection may be saved as.
  *
  * A record whose stored shape has no second reading keeps its own style as the
- * only choice: the extension's runtime root and pipe, Ego Lite's CLI fields, and
- * the bridge, which has no address at all. Those three are locks, not routes —
- * the Kimi route only probes the local bridge and never saves a connection, so
- * this picker is the one place a person creates a bridge record. A profile or a
- * CDP record may be switched to any of the three, including to the bridge; that
- * is an explicit choice on a saved id, never an automatic rewrite.
+ * only choice: the extension's runtime root and pipe, Ego Lite's CLI fields,
+ * and the bridge, which has no address at all. Those three are locks, not
+ * routes — the Kimi route only probes the local bridge and never saves a
+ * connection, so this picker is the one place a person creates a bridge
+ * record. A profile or a CDP record may be switched to any of the three,
+ * including to the bridge; that is an explicit choice on a saved id, never an
+ * automatic rewrite.
  */
 function typeChoices(
   t: ReturnType<typeof useI18n>['t'],
@@ -124,11 +123,11 @@ function typeChoices(
 }
 
 /**
- * What the two run actions are called on this branch, and what the check really
- * does. The words differ per type because the work does: a profile starts the
- * managed driver, a CDP connection tests a driver before attaching to an
- * address, Ego Lite runs its own check, and the bridge only asks its local
- * daemon whether the extension is there.
+ * What the two run actions are called on this branch, and what the check
+ * really does. The words differ per type because the work does: a profile
+ * starts the managed driver, a CDP connection tests a driver before attaching
+ * to an address, Ego Lite runs its own check, and the bridge only asks its
+ * local daemon whether the extension is there.
  */
 function runtimeLabels(t: ReturnType<typeof useI18n>['t'], type: BrowserConnectionType): { check: string; checkHint: string; connect: string } {
   if (type === 'ego-lite') {
@@ -152,11 +151,10 @@ function deleteConsequenceKey(type: BrowserConnectionType): I18nKey {
 }
 
 /**
- * Where the browser actually is: a role word for a connection Kiki drives on
- * its own server (the literal hostname belongs in the detail, not on every
- * row), the bridge that carries a Kimi connection, and the endpoint's own host
- * for a borrowed browser, which is the fact that tells two CDP connections
- * apart.
+ * Where the browser actually is, in plain words: Kiki's own managed browser on
+ * this server, the person's own browser reached through the bridge, or the
+ * machine a CDP endpoint names — never the storage type id. An id this page
+ * cannot place stays as the endpoint's own host.
  */
 function locationLabel(t: ReturnType<typeof useI18n>['t'], row: BrowserConnectionRow): string {
   if (row.type === 'codex-extension') return row.browserId ?? t('st.browser.location.unknown');
@@ -197,6 +195,149 @@ function DraftField({ id, label, value, onChange, issue, hint, placeholder, mono
   );
 }
 
+/** One accordion row: summary + switch + ⋯, and the editor inline when open. */
+function BrowserRow({ row, card }: { readonly row: BrowserConnectionRow; readonly card: BrowserCardHandle }) {
+  const { t } = useI18n();
+  const { allowance, codexPending } = card;
+  const source = allowance.sourceOf(row);
+  const sourceOn = allowance.sourceEnabled(source);
+  const chosen = allowance.isChosen(row);
+  const isDefault = card.defaultBrowser !== '' && card.defaultBrowser === row.id;
+  const authUnknown = row.type === 'codex-extension' && codexPending.has(row.browserId ?? row.id);
+  const open = card.selectedId === row.id;
+  const anchorRef = useRef<HTMLButtonElement>(null);
+  const [menuRect, setMenuRect] = useState<DOMRect | null>(null);
+
+  const live = LIVE_STATES.has(row.status.state);
+  const canRun = row.enabled !== false && !card.busyAction;
+  const labels = runtimeLabels(t, row.type);
+
+  const items: SpaceMenuItem[] = [
+    {
+      key: 'default',
+      label: isDefault ? t('st.browser.menu.clearDefault') : t('st.browser.menu.setDefault'),
+      run: () => { if (isDefault) card.onClearDefault(row); else card.onSetDefault(row); },
+    },
+    {
+      key: 'check',
+      label: labels.check,
+      blockedReason: !canRun ? t('st.browser.menu.runBlocked') : undefined,
+      run: () => { card.onCheck(row); },
+    },
+    live
+      ? {
+        key: 'disconnect',
+        label: t('st.browser.disconnect'),
+        blockedReason: !canRun ? t('st.browser.menu.runBlocked') : undefined,
+        run: () => { card.onDisconnect(row); },
+      }
+      : {
+        key: 'connect',
+        label: labels.connect,
+        blockedReason: !canRun || LIVE_BLOCKING_CONNECT.has(row.status.state) ? t('st.browser.menu.runBlocked') : undefined,
+        run: () => { card.onConnect(row); },
+      },
+    { key: 'delete', label: t('st.browser.delete'), danger: true, separatorBefore: true, run: () => { card.onDelete(row); } },
+  ];
+
+  return (
+    <RowFrame
+      data={{
+        'data-browser-row': row.id,
+        'data-browser-row-allowed': allowance.isEffective(row) ? 'true' : 'false',
+        'data-browser-source-off': source !== undefined && !sourceOn ? 'true' : undefined,
+      }}
+      open={open}
+      onToggle={() => { card.onToggleRow(row); }}
+      bodyId={`browser-row-body-${row.id}`}
+      expandLabel={t('st.browser.menu.openRow', { name: row.name })}
+      name={row.name}
+      marks={(
+        <span className="flex shrink-0 items-center gap-1.5">
+          {row.status.currentCall === undefined ? null : <Tag tone="accent">{t('st.browser.currentControl')}</Tag>}
+          {authUnknown ? <span data-browser-status-tag="auth_unknown"><Tag tone="warn">{t('st.browser.status.authUnknown')}</Tag></span> : null}
+          <BrowserStateMark state={row.enabled ? row.status.state : 'disabled'} />
+          {isDefault ? <span data-browser-default-tag={row.id}><Tag tone="accent">{t('st.browser.defaultActive')}</Tag></span> : null}
+        </span>
+      )}
+      subtitle={(
+        <>
+          <span className="shrink-0" data-browser-row-type={row.type}>{typeLabel(t, row.type)}</span>
+          <span aria-hidden>·</span>
+          <span className="min-w-0 max-w-full truncate" title={locationLabel(t, row)}
+            data-browser-identity={row.type === 'codex-extension' ? (row.browserId ?? row.id) : undefined}>
+            {locationLabel(t, row)}
+          </span>
+          {source === undefined || sourceOn ? null : (
+            <>
+              <span aria-hidden>·</span>
+              <span className="shrink-0 text-amber-ink" data-browser-source-tag={source}>
+                {t('st.browser.row.sourceOff', { source: card.sourceName(source) })}
+              </span>
+            </>
+          )}
+        </>
+      )}
+      control={(
+        <>
+          <span data-browser-allow-switch={row.id} className="contents">
+            <Toggle
+              layout="bare"
+              label={t('st.browser.row.allow', { name: row.name })}
+              checked={chosen}
+              disabled={card.rowBusy || !sourceOn}
+              onChange={(next) => { card.onToggleAllowed(row, next); }}
+            />
+          </span>
+          <button
+            ref={anchorRef}
+            type="button"
+            data-browser-row-menu-button={row.id}
+            aria-label={t('st.browser.menu.open', { name: row.name })}
+            aria-haspopup="menu"
+            aria-expanded={menuRect !== null}
+            onClick={() => { setMenuRect(anchorRef.current?.getBoundingClientRect() ?? null); }}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink"
+          >
+            <Icon name="more" size={14} />
+          </button>
+          {menuRect !== null ? (
+            <SpaceRowMenu
+              anchor={menuRect}
+              anchorElement={anchorRef.current}
+              items={items}
+              ariaLabel={t('st.browser.menu.open', { name: row.name })}
+              onClose={() => { setMenuRect(null); }}
+            />
+          ) : null}
+        </>
+      )}
+    >
+      {open ? card.renderDetail() : null}
+    </RowFrame>
+  );
+}
+
+/** The pieces of the card a row needs; the card builds it once. */
+export interface BrowserCardHandle {
+  readonly allowance: ReturnType<typeof useBrowserAllowance>;
+  readonly codexPending: ReadonlySet<string>;
+  readonly defaultBrowser: string;
+  readonly selectedId: string | undefined;
+  readonly rowBusy: boolean;
+  readonly busyAction: RuntimeAction | null;
+  readonly sourceName: (source: BrowserSourceId) => string;
+  readonly onToggleRow: (row: BrowserConnectionRow) => void;
+  readonly onToggleAllowed: (row: BrowserConnectionRow, next: boolean) => void;
+  readonly onSetDefault: (row: BrowserConnectionRow) => void;
+  readonly onClearDefault: (row: BrowserConnectionRow) => void;
+  readonly onCheck: (row: BrowserConnectionRow) => void;
+  readonly onConnect: (row: BrowserConnectionRow) => void;
+  readonly onDisconnect: (row: BrowserConnectionRow) => void;
+  readonly onDelete: (row: BrowserConnectionRow) => void;
+  readonly renderDetail: () => React.ReactNode;
+}
+
 export function BrowserConnectionCard() {
   const { client, scopeId } = useConnection();
   const { t, locale } = useI18n();
@@ -204,7 +345,6 @@ export function BrowserConnectionCard() {
   const navigate = useNavigate();
   const guard = useDirtyGuard();
   const allowance = useBrowserAllowance();
-  const defaultSave = useInstantSave();
 
   const query = allowance.connectionsQuery;
   const rows = allowance.connections;
@@ -245,7 +385,6 @@ export function BrowserConnectionCard() {
   const [attempted, setAttempted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<RuntimeAction | null>(null);
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   /** Where the last feedback belongs: beside the run actions, or beside the save row. */
@@ -254,6 +393,8 @@ export function BrowserConnectionCard() {
   const [flagOff, setFlagOff] = useState(false);
   const [outcome, setOutcome] = useState<{ readonly action: RuntimeAction; readonly status: BrowserStatus } | null>(null);
   const [justSaved, pingSaved] = useSavedTick();
+  /** The row whose deletion is being confirmed, kept apart from the open draft. */
+  const [deleteTarget, setDeleteTarget] = useState<BrowserConnectionRow | null>(null);
 
   const dirty = draft !== null && isDirtyDraft(draft);
   const editorId = `browser-control:${scopeId}:${draft?.original?.id ?? 'new'}`;
@@ -342,19 +483,20 @@ export function BrowserConnectionCard() {
   };
 
   const remove = async () => {
-    const connection = draft?.original;
-    if (connection === undefined) return;
+    const connection = deleteTarget;
+    if (connection === null) return;
     setDeleting(true);
     setFeedback(null);
     setFeedbackAt('form');
     try {
       await browserApi(client).remove(connection.id);
-      setConfirmingDelete(false);
-      apply(null);
+      setDeleteTarget(null);
+      // Deleting the open row closes its editor; the list keeps the rest open.
+      if (draft?.original?.id === connection.id) apply(null);
       await reload();
       setFeedback({ tone: 'success', text: t('st.browser.deleted', { name: connection.name }) });
     } catch (error) {
-      setConfirmingDelete(false);
+      setDeleteTarget(null);
       reportFailure(error);
     } finally {
       setDeleting(false);
@@ -392,354 +534,285 @@ export function BrowserConnectionCard() {
         : ownership === 'managed-profile' ? t('st.browser.disconnectMeaningManaged')
           : t('st.browser.disconnectMeaningUnknown');
 
-  const list = (
-    <nav aria-label={t('st.browser.connectionsTitle')} className="min-w-0 space-y-2">
-      {query.isLoading ? <p className="text-[13px] text-ink-faint" role="status">{t('st.browser.loading')}</p> : null}
-      {query.isError ? <InlineError error={query.error} /> : null}
-      {query.isSuccess && rows.length === 0 ? (
-        <div data-browser-empty className="space-y-1.5 py-2">
-          <p className="text-[13px] text-ink">{t('st.browser.emptyTitle')}</p>
-          <Hint>{t('st.browser.emptyBody')}</Hint>
-        </div>
-      ) : null}
-      {rows.length > 0 ? (
-        <ul className="divide-y divide-hairline/70" data-browser-list>
-          {rows.map((row) => {
-            const source = allowance.sourceOf(row);
-            const sourceOn = allowance.sourceEnabled(source);
-            const chosen = allowance.isChosen(row);
-            const isDefault = defaultBrowser !== '' && defaultBrowser === row.id;
-            const authUnknown = row.type === 'codex-extension' && codexPending.has(row.browserId ?? row.id);
-            const selected = selectedId === row.id;
-            return (
-              <li key={row.id} data-browser-row={row.id} data-browser-row-allowed={allowance.isEffective(row) ? 'true' : 'false'}
-                className={`flex min-w-0 items-start gap-2.5 py-2 pl-1 pr-1 ${selected ? 'bg-ink/[0.03]' : ''}`}>
-                <input
-                  type="checkbox"
-                  className="mt-[3px] h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-hairline-strong text-selected-ink focus:ring-0 disabled:cursor-not-allowed"
-                  data-browser-allow-checkbox={row.id}
-                  aria-label={t('st.browser.row.allow', { name: row.name })}
-                  checked={chosen}
-                  disabled={rowBusy || !sourceOn}
-                  onChange={(event) => { void toggleAllowed(row, event.target.checked); }}
-                />
-                <button type="button" data-browser-connection={row.id}
-                  aria-current={selected ? 'true' : undefined}
-                  onClick={() => { open(draftOf(row)); }}
-                  className="group min-w-0 flex-1 text-left outline-none focus-visible:underline">
-                  <span className="flex w-full min-w-0 items-baseline gap-2">
-                    <span className="min-w-0 truncate text-[13px] text-ink group-hover:underline group-hover:underline-offset-2" title={row.name}>{row.name}</span>
-                    {row.name === row.id ? null : <span className="min-w-0 shrink truncate font-mono text-[11px] text-ink-faint">{row.id}</span>}
-                    <span className="ml-auto flex shrink-0 items-center gap-1.5">
-                      {row.status.currentCall === undefined ? null : <Tag tone="accent">{t('st.browser.currentControl')}</Tag>}
-                      {authUnknown ? (
-                        <span data-browser-status-tag="auth_unknown"><Tag tone="warn">{t('st.browser.status.authUnknown')}</Tag></span>
-                      ) : null}
-                      <BrowserStateMark state={row.enabled ? row.status.state : 'disabled'} />
-                      {isDefault ? <span data-browser-default-tag={row.id}><Tag tone="accent">{t('st.browser.defaultActive')}</Tag></span> : null}
-                    </span>
-                  </span>
-                  <span className="mt-0.5 flex w-full min-w-0 flex-wrap items-baseline gap-x-1.5 text-[12px] text-ink-faint">
-                    <span className="shrink-0" data-browser-row-type={row.type}>{typeLabel(t, row.type)}</span>
-                    <span aria-hidden>·</span>
-                    <span className="min-w-0 max-w-full truncate" title={locationLabel(t, row)}
-                      data-browser-identity={row.type === 'codex-extension' ? (row.browserId ?? row.id) : undefined}>
-                      {locationLabel(t, row)}
-                    </span>
-                    {source === undefined || sourceOn ? null : (
-                      <>
-                        <span aria-hidden>·</span>
-                        <span className="shrink-0 text-amber-ink" data-browser-source-tag={source}>
-                          {t('st.browser.row.sourceOff', { source: sourceName(source) })}
-                        </span>
-                      </>
-                    )}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
-      <FeedbackLine feedback={rowFeedback} />
-    </nav>
-  );
-
   /** An issue is shown once the field has something in it, or once Save was pressed. */
   const issueText = (field: keyof typeof issues, hasContent: boolean): string | null => {
     const key = issues[field];
     return key !== undefined && (attempted || hasContent) ? t(key) : null;
   };
 
-  const detail = draft === null ? null : (
-    <div className="min-w-0 space-y-4" data-browser-detail={draft.original?.id ?? 'new'}>
-      <BackRow label={t('st.browser.connectionsTitle')} onBack={() => { open(null); }} />
-
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <h3 className="text-[15px] font-medium text-ink" data-browser-detail-name>
-            {draft.name.trim() === '' ? t('st.browser.newTitle') : draft.name}
-          </h3>
-          <p className="flex flex-wrap items-baseline gap-x-2 text-[12px] text-ink-faint">
-            <span className="font-mono">{isNewDraft(draft) ? t('st.browser.idPending') : draft.id}</span>
-            <span>{typeLabel(t, draft.type)}</span>
-            {/* The location that differs: for a profile it is the server Kiki
-                drives; for CDP the machine the endpoint names. The bridge has no
-                address at all, so it shows the server whose daemon runs it. */}
-            {selectedStatus === undefined ? null : (
-              <span className="min-w-0 break-all font-mono" data-browser-execution-host>
-                {draft.type === 'agent-browser-cdp'
-                  ? endpointHost(draft.original?.endpointDisplay) ?? t('st.browser.location.unknown')
-                  : selectedStatus.executionHost}
-              </span>
-            )}
-          </p>
+  /** The editor an open row expands inline under itself. No back row: the row
+   *  above it is the way back (click again to close), and the list never left. */
+  const renderDetail = (): React.ReactNode => {
+    if (draft === null) return null;
+    return (
+      <div className="min-w-0 space-y-4" data-browser-detail={draft.original?.id ?? 'new'}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <h3 className="text-[15px] font-medium text-ink" data-browser-detail-name>
+              {draft.name.trim() === '' ? t('st.browser.newTitle') : draft.name}
+            </h3>
+            <p className="flex flex-wrap items-baseline gap-x-2 text-[12px] text-ink-faint">
+              <span className="font-mono">{isNewDraft(draft) ? t('st.browser.idPending') : draft.id}</span>
+              <span>{typeLabel(t, draft.type)}</span>
+              {selectedStatus === undefined ? null : (
+                <span className="min-w-0 break-all font-mono" data-browser-execution-host>
+                  {draft.type === 'agent-browser-cdp'
+                    ? endpointHost(draft.original?.endpointDisplay) ?? t('st.browser.location.unknown')
+                    : selectedStatus.executionHost}
+                </span>
+              )}
+            </p>
+          </div>
+          {isNewDraft(draft) ? null : (
+            <div className="flex shrink-0 items-center gap-2.5">
+              {selectedRow === undefined ? null : (
+                <span data-browser-detail-allowed={allowance.isEffective(selectedRow) ? 'true' : 'false'}>
+                  <Tag tone={allowance.isEffective(selectedRow) ? 'accent' : 'faint'}>
+                    {t(allowance.isEffective(selectedRow) ? 'st.browser.status.allowed' : 'st.browser.state.disabled')}
+                  </Tag>
+                </span>
+              )}
+              <button type="button" className={DANGER_GHOST_BUTTON} data-browser-delete
+                disabled={deleting || saving}
+                onClick={() => { if (selectedRow !== undefined) setDeleteTarget(selectedRow); }}>
+                {t('st.browser.delete')}
+              </button>
+            </div>
+          )}
         </div>
-        {isNewDraft(draft) ? null : (
-          <div className="flex shrink-0 items-center gap-2.5">
-            {selectedRow === undefined ? null : (
-              <span data-browser-detail-allowed={allowance.isEffective(selectedRow) ? 'true' : 'false'}>
-                <Tag tone={allowance.isEffective(selectedRow) ? 'accent' : 'faint'}>
-                  {t(allowance.isEffective(selectedRow) ? 'st.browser.status.allowed' : 'st.browser.state.disabled')}
-                </Tag>
+
+        {isNewDraft(draft) ? <Hint>{t('st.browser.createHint')}</Hint> : null}
+
+        {isNewDraft(draft) || selectedStatus === undefined ? null : (
+          <div className="space-y-2 pt-4" data-browser-runtime>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <BrowserStateMark state={liveEnabled ? selectedStatus.state : 'disabled'} />
+              {selectedStatus.driverVersion === undefined ? null : (
+                <span className="text-[11px] text-ink-faint" data-browser-driver-line>
+                  {t('st.browser.driverLine', { version: selectedStatus.driverVersion })}
+                </span>
+              )}
+              {selectedStatus.checkedAt === undefined ? null : (
+                <span className="text-[11px] text-ink-faint">{t('st.browser.checkedAt', { at: whenText(locale, selectedStatus.checkedAt) ?? '' })}</span>
+              )}
+              <span className="ml-auto flex flex-wrap items-center gap-2">
+                <button type="button" className={SECONDARY_BUTTON} data-browser-check
+                  disabled={busy !== null || saving || dirty || !liveEnabled}
+                  title={runLabels.checkHint}
+                  onClick={() => { void run('check', () => browserApi(client).check(draft.id)); }}>
+                  {busy === 'check' ? t('st.browser.checking') : runLabels.check}
+                </button>
+                <button type="button" className={SECONDARY_BUTTON} data-browser-connect
+                  disabled={busy !== null || saving || dirty || !liveEnabled || LIVE_BLOCKING_CONNECT.has(selectedStatus.state)}
+                  onClick={() => { void run('connect', () => browserApi(client).connect(draft.id)); }}>
+                  {busy === 'connect' ? t('st.browser.connecting') : runLabels.connect}
+                </button>
+                {LIVE_STATES.has(selectedStatus.state) ? (
+                  <button type="button" className={SECONDARY_BUTTON} data-browser-disconnect
+                    disabled={busy !== null || saving || deleting}
+                    title={t('st.browser.disconnectHint')}
+                    onClick={() => { void run('disconnect', () => browserApi(client).disconnect(draft.id)); }}>
+                    {busy === 'disconnect' ? t('st.browser.disconnecting') : t('st.browser.disconnect')}
+                  </button>
+                ) : null}
               </span>
+            </div>
+
+            {outcome === null ? null : (
+              <div className="space-y-1.5" data-browser-outcome={`${outcome.action}:${outcome.status.state}`}>
+                <p role="status" className={`text-[12px] ${outcome.status.state === 'failed' || outcome.status.state === 'unconfirmed' ? 'text-danger' : 'text-ink-soft'}`}>
+                  {outcomeText(t, outcome.action, outcome.status, draft.type)}
+                  {whenText(locale, outcome.status.checkedAt) === undefined ? '' : ` · ${whenText(locale, outcome.status.checkedAt)}`}
+                </p>
+                {outcome.action !== 'disconnect' || outcome.status.error !== undefined ? null : (
+                  <p className="max-w-[62ch] text-[12px] text-ink-faint">{ownershipText(outcome.status.ownership, draft.type)}</p>
+                )}
+                {outcome.status.error === undefined || outcome.status.error === selectedStatus.error ? null : (
+                  <p className="max-w-[72ch] break-words text-[12px] text-danger">{outcome.status.error}</p>
+                )}
+              </div>
             )}
-            <button type="button" className={DANGER_GHOST_BUTTON} data-browser-delete
-              disabled={deleting || saving}
-              onClick={() => { setConfirmingDelete(true); }}>
-              {t('st.browser.delete')}
-            </button>
+
+            {selectedStatus.error === undefined ? null : (
+              <p role="alert" data-browser-error className="max-w-[72ch] break-words text-[12px] leading-[18px] text-danger">
+                {selectedStatus.error}
+              </p>
+            )}
+            {currentCall === undefined ? null : (
+              <p className="text-[12px] text-ink-soft" data-browser-caller>
+                {t('st.browser.callerLine', { session: currentCall.sessionId, agent: currentCall.agentId, tool: currentCall.tool })}
+              </p>
+            )}
+            {selectedStatus.state === 'unconfirmed' ? <Hint>{t('st.browser.state.unconfirmedHint')}</Hint> : null}
+            {liveEnabled ? null : <Hint>{t('st.browser.disabledHint')}</Hint>}
+            {dirty ? <Hint>{t('st.browser.dirtyRuntimeHint')}</Hint> : null}
+            {LIVE_STATES.has(selectedStatus.state) ? <Hint>{ownershipText(selectedStatus.ownership, draft.type)}</Hint> : null}
+            {dirty || LIVE_STATES.has(selectedStatus.state) ? null : <Hint>{runLabels.checkHint}</Hint>}
+            {dirty && LIVE_STATES.has(selectedStatus.state) ? <Hint>{t('st.browser.saveEndsSession')}</Hint> : null}
+
+            <BrowserRuntimeDetails id={draft.id} type={draft.type} status={selectedStatus} />
+            {feedbackAt === 'runtime' ? <FeedbackLine feedback={feedback} /> : null}
+            {flagOff ? (
+              <button type="button" className={SECONDARY_BUTTON} data-browser-open-flag
+                onClick={() => { void navigate(NATIVE_BROWSER_FLAG_TRIP); }}>
+                {t('st.browser.flagOffAction')}
+              </button>
+            ) : null}
           </div>
         )}
-      </div>
 
-      {isNewDraft(draft) ? <Hint>{t('st.browser.createHint')}</Hint> : null}
-
-      {isNewDraft(draft) || selectedStatus === undefined ? null : (
-        <div className="space-y-2 border-t border-hairline pt-4" data-browser-runtime>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <BrowserStateMark state={liveEnabled ? selectedStatus.state : 'disabled'} />
-            {selectedStatus.driverVersion === undefined ? null : (
-              <span className="text-[11px] text-ink-faint" data-browser-driver-line>
-                {t('st.browser.driverLine', { version: selectedStatus.driverVersion })}
-              </span>
-            )}
-            {selectedStatus.checkedAt === undefined ? null : (
-              <span className="text-[11px] text-ink-faint">{t('st.browser.checkedAt', { at: whenText(locale, selectedStatus.checkedAt) ?? '' })}</span>
-            )}
-            <span className="ml-auto flex flex-wrap items-center gap-2">
-              <button type="button" className={SECONDARY_BUTTON} data-browser-check
-                disabled={busy !== null || saving || dirty || !liveEnabled}
-                title={runLabels.checkHint}
-                onClick={() => { void run('check', () => browserApi(client).check(draft.id)); }}>
-                {busy === 'check' ? t('st.browser.checking') : runLabels.check}
-              </button>
-              <button type="button" className={SECONDARY_BUTTON} data-browser-connect
-                disabled={busy !== null || saving || dirty || !liveEnabled || LIVE_BLOCKING_CONNECT.has(selectedStatus.state)}
-                onClick={() => { void run('connect', () => browserApi(client).connect(draft.id)); }}>
-                {busy === 'connect' ? t('st.browser.connecting') : runLabels.connect}
-              </button>
-              {LIVE_STATES.has(selectedStatus.state) ? (
-                // Releasing uses the connection as it is saved, not the form:
-                // an edited draft is not a reason to keep someone holding a
-                // running browser. Only this action's own flight, a save that
-                // would end the session anyway, or an open delete stops it.
-                <button type="button" className={SECONDARY_BUTTON} data-browser-disconnect
-                  disabled={busy !== null || saving || deleting}
-                  title={t('st.browser.disconnectHint')}
-                  onClick={() => { void run('disconnect', () => browserApi(client).disconnect(draft.id)); }}>
-                  {busy === 'disconnect' ? t('st.browser.disconnecting') : t('st.browser.disconnect')}
-                </button>
-              ) : null}
-            </span>
+        <fieldset disabled={saving || deleting} className="min-w-0 space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            {isNewDraft(draft) ? (
+              <DraftField id="browser-id" label={t('st.browser.fieldId')} mono placeholder="research" dataAttr="data-browser-id-input"
+                value={draft.id} issue={issueText('id', draft.id.trim() !== '')} hint={t('st.browser.fieldIdHint')}
+                onChange={(id) => { setDraft({ ...draft, id }); }} />
+            ) : null}
+            <DraftField id="browser-name" label={t('st.browser.fieldName')} dataAttr="data-browser-name-input"
+              value={draft.name} issue={issueText('name', draft.name.trim() !== '')}
+              onChange={(name) => { setDraft({ ...draft, name }); }} />
+            <div className="space-y-1.5">
+              <span className={FORM_LABEL} id="browser-type-label">{t('st.browser.fieldType')}</span>
+              <SettingsSelect<BrowserConnectionType> id="browser-type" variant="form"
+                ariaLabel={t('st.browser.fieldType')} value={draft.type} dataAttr="data-browser-type"
+                choices={typeChoices(t, draft.original)}
+                onChange={(type) => { setDraft({ ...draft, type }); }} />
+            </div>
           </div>
 
-          {/* What the last action did, then the state's own reason once. */}
-          {outcome === null ? null : (
-            <div className="space-y-1.5" data-browser-outcome={`${outcome.action}:${outcome.status.state}`}>
-              <p role="status" className={`text-[12px] ${outcome.status.state === 'failed' || outcome.status.state === 'unconfirmed' ? 'text-danger' : 'text-ink-soft'}`}>
-                {outcomeText(t, outcome.action, outcome.status, draft.type)}
-                {whenText(locale, outcome.status.checkedAt) === undefined ? '' : ` · ${whenText(locale, outcome.status.checkedAt)}`}
-              </p>
-              {outcome.action !== 'disconnect' || outcome.status.error !== undefined ? null : (
-                <p className="max-w-[62ch] text-[12px] text-ink-faint">{ownershipText(outcome.status.ownership, draft.type)}</p>
-              )}
-              {outcome.status.error === undefined || outcome.status.error === selectedStatus.error ? null : (
-                <p className="max-w-[72ch] break-words text-[12px] text-danger">{outcome.status.error}</p>
-              )}
-            </div>
-          )}
+          {draft.original !== undefined && draft.original.type !== draft.type ? <Hint>{t('st.browser.typeChangeHint')}</Hint> : null}
 
-          {/* The state's own reason, exactly once: the outcome above carries the
-              same sentence only when it is news. */}
-          {selectedStatus.error === undefined ? null : (
-            <p role="alert" data-browser-error className="max-w-[72ch] break-words text-[12px] leading-[18px] text-danger">
-              {selectedStatus.error}
-            </p>
-          )}
-          {currentCall === undefined ? null : (
-            <p className="text-[12px] text-ink-soft" data-browser-caller>
-              {t('st.browser.callerLine', { session: currentCall.sessionId, agent: currentCall.agentId, tool: currentCall.tool })}
-            </p>
-          )}
-          {selectedStatus.state === 'unconfirmed' ? <Hint>{t('st.browser.state.unconfirmedHint')}</Hint> : null}
-          {liveEnabled ? null : <Hint>{t('st.browser.disabledHint')}</Hint>}
-          {dirty ? <Hint>{t('st.browser.dirtyRuntimeHint')}</Hint> : null}
-          {/* What releasing this connection does to the browser itself, shown
-              whenever there is something live to release — including under an
-              edited draft, because that is when the enabled Disconnect button
-              next to two disabled ones needs its own explanation. */}
-          {LIVE_STATES.has(selectedStatus.state) ? <Hint>{ownershipText(selectedStatus.ownership, draft.type)}</Hint> : null}
-          {/* What checking really does, while pressing it is still a decision. */}
-          {dirty || LIVE_STATES.has(selectedStatus.state) ? null : <Hint>{runLabels.checkHint}</Hint>}
-          {dirty && LIVE_STATES.has(selectedStatus.state) ? <Hint>{t('st.browser.saveEndsSession')}</Hint> : null}
-
-          <BrowserRuntimeDetails id={draft.id} type={draft.type} status={selectedStatus} />
-          {feedbackAt === 'runtime' ? <FeedbackLine feedback={feedback} /> : null}
-          {/* The refusal names the flag; this is the same trip the SSH page
-              offers, to the rows that hold it. */}
-          {flagOff ? (
-            <button type="button" className={SECONDARY_BUTTON} data-browser-open-flag
-              onClick={() => { void navigate(NATIVE_BROWSER_FLAG_TRIP); }}>
-              {t('st.browser.flagOffAction')}
-            </button>
-          ) : null}
-        </div>
-      )}
-
-      <fieldset disabled={saving || deleting} className="min-w-0 space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2">
-          {isNewDraft(draft) ? (
-            <DraftField id="browser-id" label={t('st.browser.fieldId')} mono placeholder="research" dataAttr="data-browser-id-input"
-              value={draft.id} issue={issueText('id', draft.id.trim() !== '')} hint={t('st.browser.fieldIdHint')}
-              onChange={(id) => { setDraft({ ...draft, id }); }} />
-          ) : null}
-          <DraftField id="browser-name" label={t('st.browser.fieldName')} dataAttr="data-browser-name-input"
-            value={draft.name} issue={issueText('name', draft.name.trim() !== '')}
-            onChange={(name) => { setDraft({ ...draft, name }); }} />
-          <div className="space-y-1.5">
-            <span className={FORM_LABEL} id="browser-type-label">{t('st.browser.fieldType')}</span>
-            <SettingsSelect<BrowserConnectionType> id="browser-type" variant="form"
-              ariaLabel={t('st.browser.fieldType')} value={draft.type} dataAttr="data-browser-type"
-              choices={typeChoices(t, draft.original)}
-              onChange={(type) => { setDraft({ ...draft, type }); }} />
-          </div>
-        </div>
-
-        {draft.original !== undefined && draft.original.type !== draft.type ? <Hint>{t('st.browser.typeChangeHint')}</Hint> : null}
-
-        {draft.type === 'codex-extension' ? (
-          <dl className="space-y-2 text-[12px]" data-browser-official-binding>
-            <dt className={FORM_LABEL}>{t('st.browser.runtimeRoot')}</dt><dd className="break-all font-mono text-ink-soft">{draft.original?.runtimeRoot}</dd>
-            <dt className={FORM_LABEL}>{t('st.browser.browserId')}</dt><dd className="break-all font-mono text-ink-soft">{draft.original?.browserId}</dd>
-          </dl>
-        ) : draft.type === 'ego-lite' ? (
-          <AdvancedDetails summary={t('st.browser.advanced')} data-browser-advanced>
-            <div className="space-y-3">
-              <DraftField id="browser-cli-path" label={t('st.browser.fieldCliPath')} mono dataAttr="data-browser-cli-input"
-                value={draft.cliPath} issue={issueText('cliPath', draft.cliPath.trim() !== '')}
-                hint={t('st.browser.fieldCliPathHint')}
-                onChange={(cliPath) => { setDraft({ ...draft, cliPath }); }} />
-              <DraftField id="browser-profile-id" label={t('st.browser.fieldProfileId')} dataAttr="data-browser-profile-id-input"
-                value={draft.profileId} issue={null} hint={t('st.browser.fieldProfileIdHint')}
-                onChange={(profileId) => { setDraft({ ...draft, profileId }); }} />
-              <DraftField id="browser-server-name" label={t('st.browser.fieldServerName')} dataAttr="data-browser-server-name-input"
-                value={draft.serverName} issue={null} hint={t('st.browser.fieldServerNameHint')}
-                onChange={(serverName) => { setDraft({ ...draft, serverName }); }} />
-            </div>
-          </AdvancedDetails>
-        ) : draft.type === 'agent-browser-profile' ? (
-          <div className="space-y-4">
-            <div className="space-y-1" data-browser-headed>
-              <Toggle label={t('st.browser.fieldHeaded')} checked={draft.headed}
-                onChange={(headed) => { setDraft({ ...draft, headed }); }} />
-              <Hint>{t('st.browser.fieldHeadedHint')}</Hint>
-            </div>
-            <DraftField id="browser-profile-path" label={t('st.browser.fieldProfilePath')} mono dataAttr="data-browser-profile-input"
-              value={draft.profilePath} issue={issueText('profilePath', draft.profilePath.trim() !== '')}
-              placeholder={t('st.browser.profilePlaceholder')}
-              hint={t('st.browser.fieldProfilePathHint')}
-              onChange={(profilePath) => { setDraft({ ...draft, profilePath }); }} />
+          {draft.type === 'codex-extension' ? (
+            <dl className="space-y-2 text-[12px]" data-browser-official-binding>
+              <dt className={FORM_LABEL}>{t('st.browser.runtimeRoot')}</dt><dd className="break-all font-mono text-ink-soft">{draft.original?.runtimeRoot}</dd>
+              <dt className={FORM_LABEL}>{t('st.browser.browserId')}</dt><dd className="break-all font-mono text-ink-soft">{draft.original?.browserId}</dd>
+            </dl>
+          ) : draft.type === 'ego-lite' ? (
             <AdvancedDetails summary={t('st.browser.advanced')} data-browser-advanced>
               <div className="space-y-3">
-                <DraftField id="browser-executable-path" label={t('st.browser.fieldExecutablePath')} mono dataAttr="data-browser-executable-input"
-                  value={draft.executablePath} issue={issueText('executablePath', draft.executablePath.trim() !== '')}
-                  hint={t('st.browser.fieldExecutablePathHint')}
-                  onChange={(executablePath) => { setDraft({ ...draft, executablePath }); }} />
+                <DraftField id="browser-cli-path" label={t('st.browser.fieldCliPath')} mono dataAttr="data-browser-cli-input"
+                  value={draft.cliPath} issue={issueText('cliPath', draft.cliPath.trim() !== '')}
+                  hint={t('st.browser.fieldCliPathHint')}
+                  onChange={(cliPath) => { setDraft({ ...draft, cliPath }); }} />
+                <DraftField id="browser-profile-id" label={t('st.browser.fieldProfileId')} dataAttr="data-browser-profile-id-input"
+                  value={draft.profileId} issue={null} hint={t('st.browser.fieldProfileIdHint')}
+                  onChange={(profileId) => { setDraft({ ...draft, profileId }); }} />
+                <DraftField id="browser-server-name" label={t('st.browser.fieldServerName')} dataAttr="data-browser-server-name-input"
+                  value={draft.serverName} issue={null} hint={t('st.browser.fieldServerNameHint')}
+                  onChange={(serverName) => { setDraft({ ...draft, serverName }); }} />
+              </div>
+            </AdvancedDetails>
+          ) : draft.type === 'agent-browser-profile' ? (
+            <div className="space-y-4">
+              <div className="space-y-1" data-browser-headed>
+                <Toggle label={t('st.browser.fieldHeaded')} checked={draft.headed}
+                  onChange={(headed) => { setDraft({ ...draft, headed }); }} />
+                <Hint>{t('st.browser.fieldHeadedHint')}</Hint>
+              </div>
+              <DraftField id="browser-profile-path" label={t('st.browser.fieldProfilePath')} mono dataAttr="data-browser-profile-input"
+                value={draft.profilePath} issue={issueText('profilePath', draft.profilePath.trim() !== '')}
+                placeholder={t('st.browser.profilePlaceholder')}
+                hint={t('st.browser.fieldProfilePathHint')}
+                onChange={(profilePath) => { setDraft({ ...draft, profilePath }); }} />
+              <AdvancedDetails summary={t('st.browser.advanced')} data-browser-advanced>
+                <div className="space-y-3">
+                  <DraftField id="browser-executable-path" label={t('st.browser.fieldExecutablePath')} mono dataAttr="data-browser-executable-input"
+                    value={draft.executablePath} issue={issueText('executablePath', draft.executablePath.trim() !== '')}
+                    hint={t('st.browser.fieldExecutablePathHint')}
+                    onChange={(executablePath) => { setDraft({ ...draft, executablePath }); }} />
+                  <DraftField id="browser-driver-path" label={t('st.browser.fieldDriverPath')} mono dataAttr="data-browser-driver-input"
+                    value={draft.driverPath} issue={issueText('driverPath', draft.driverPath.trim() !== '')}
+                    placeholder={t('st.browser.driverPlaceholder')}
+                    hint={t('st.browser.fieldDriverPathHint', { version: AGENT_BROWSER_VERSION, markers: AGENT_BROWSER_MARKERS })}
+                    onChange={(driverPath) => { setDraft({ ...draft, driverPath }); }} />
+                </div>
+              </AdvancedDetails>
+            </div>
+          ) : draft.type === 'kimi-webbridge' || draft.type === 'webbridge-command' ? (
+            <div data-browser-bridge>
+              <Hint>{t('st.browser.bridgeHint')}</Hint>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <SecretField label={t('st.browser.fieldEndpoint')} source={draft.original?.endpointConfigured === true ? 'kiki' : 'none'}
+                  draft={draft.endpoint} clearable={false}
+                  reveal={draft.original === undefined
+                    ? undefined
+                    : async () => (await client.revealSecret({ kind: 'browser_endpoint', browser_id: draft.original!.id })).value}
+                  onChange={(endpoint) => { setDraft({ ...draft, endpoint }); }}
+                  sourceText={draft.original?.endpointConfigured === true ? t('st.browser.endpointSource') : undefined}
+                  hint={t('st.browser.fieldEndpointHint')} />
+                {draft.original?.endpointDisplay === undefined ? null : (
+                  <p className="font-mono text-[11px] text-ink-faint" data-browser-endpoint-host>
+                    {t('st.browser.endpointHostLine', { host: endpointHost(draft.original.endpointDisplay) ?? draft.original.endpointDisplay })}
+                  </p>
+                )}
+                <FieldIssue id="browser-endpoint-issue" text={issueText('endpoint', draft.endpoint.mode === 'set')} />
+              </div>
+              <AdvancedDetails summary={t('st.browser.advanced')} data-browser-advanced>
                 <DraftField id="browser-driver-path" label={t('st.browser.fieldDriverPath')} mono dataAttr="data-browser-driver-input"
                   value={draft.driverPath} issue={issueText('driverPath', draft.driverPath.trim() !== '')}
                   placeholder={t('st.browser.driverPlaceholder')}
                   hint={t('st.browser.fieldDriverPathHint', { version: AGENT_BROWSER_VERSION, markers: AGENT_BROWSER_MARKERS })}
                   onChange={(driverPath) => { setDraft({ ...draft, driverPath }); }} />
-              </div>
-            </AdvancedDetails>
-          </div>
-        ) : draft.type === 'kimi-webbridge' || draft.type === 'webbridge-command' ? (
-          <div data-browser-bridge>
-            <Hint>{t('st.browser.bridgeHint')}</Hint>
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <div className="space-y-1.5">
-              <SecretField label={t('st.browser.fieldEndpoint')} source={draft.original?.endpointConfigured === true ? 'kiki' : 'none'}
-                draft={draft.endpoint} clearable={false}
-                reveal={draft.original === undefined
-                  ? undefined
-                  : async () => (await client.revealSecret({ kind: 'browser_endpoint', browser_id: draft.original!.id })).value}
-                onChange={(endpoint) => { setDraft({ ...draft, endpoint }); }}
-                sourceText={draft.original?.endpointConfigured === true ? t('st.browser.endpointSource') : undefined}
-                hint={t('st.browser.fieldEndpointHint')} />
-              {draft.original?.endpointDisplay === undefined ? null : (
-                <p className="font-mono text-[11px] text-ink-faint" data-browser-endpoint-host>
-                  {t('st.browser.endpointHostLine', { host: endpointHost(draft.original.endpointDisplay) ?? draft.original.endpointDisplay })}
-                </p>
-              )}
-              <FieldIssue id="browser-endpoint-issue" text={issueText('endpoint', draft.endpoint.mode === 'set')} />
+              </AdvancedDetails>
             </div>
-            <AdvancedDetails summary={t('st.browser.advanced')} data-browser-advanced>
-              <DraftField id="browser-driver-path" label={t('st.browser.fieldDriverPath')} mono dataAttr="data-browser-driver-input"
-                value={draft.driverPath} issue={issueText('driverPath', draft.driverPath.trim() !== '')}
-                placeholder={t('st.browser.driverPlaceholder')}
-                hint={t('st.browser.fieldDriverPathHint', { version: AGENT_BROWSER_VERSION, markers: AGENT_BROWSER_MARKERS })}
-                onChange={(driverPath) => { setDraft({ ...draft, driverPath }); }} />
-            </AdvancedDetails>
-          </div>
-        )}
+          )}
 
-      </fieldset>
+        </fieldset>
 
-      {feedbackAt === 'form' || isNewDraft(draft) ? <FeedbackLine feedback={feedback} /> : null}
+        {feedbackAt === 'form' || isNewDraft(draft) ? <FeedbackLine feedback={feedback} /> : null}
 
-      <SettingsDraftFooter id={editorId} dirty={dirty} saving={saving} saved={justSaved}
-        saveLabel={isNewDraft(draft) ? t('st.browser.create') : t('st.browser.save')}
-        persistent={isNewDraft(draft)}
-        onSave={() => { void save(); }}
-        // Discard is the person answering the question already; asking again
-        // through the guard would be a second confirmation for one decision.
-        onDiscard={() => { apply(draft.original === undefined ? null : draftOf(draft.original)); }} />
+        <SettingsDraftFooter id={editorId} dirty={dirty} saving={saving} saved={justSaved}
+          saveLabel={isNewDraft(draft) ? t('st.browser.create') : t('st.browser.save')}
+          persistent={isNewDraft(draft)}
+          onSave={() => { void save(); }}
+          // Discard is the person answering the question already; asking again
+          // through the guard would be a second confirmation for one decision.
+          onDiscard={() => { apply(draft.original === undefined ? null : draftOf(draft.original)); }} />
+      </div>
+    );
+  };
 
-      <ConfirmDialog open={confirmingDelete} overlayId="confirm-browser-delete" busy={deleting}
-        title={t('st.browser.deleteTitle', { name: draft.original?.name ?? '' })}
-        body={t('st.browser.deleteBody')}
-        consequences={[
-          t(deleteConsequenceKey(draft.type)),
-          ...(selectedStatus !== undefined && LIVE_STATES.has(selectedStatus.state) ? [t('st.browser.deleteEndsSession')] : []),
-          ...(query.data?.defaultBrowser === draft.original?.id ? [t('st.browser.deleteDefault')] : []),
-        ]}
-        confirmLabel={t('st.browser.delete')}
-        onCancel={() => { setConfirmingDelete(false); }}
-        onConfirm={() => { void remove(); }} />
-    </div>
-  );
+  /** A row's open summary only expands it; the actions a ⋯ item asks for run
+   *  against the saved record, never against a half-typed draft. */
+  const card: BrowserCardHandle = {
+    allowance,
+    codexPending,
+    defaultBrowser,
+    selectedId,
+    rowBusy,
+    busyAction: busy,
+    sourceName,
+    onToggleRow: (row) => {
+      // Clicking a row only ever opens or closes its editor; the guard's own
+      // ask keeps an edited draft from being replaced silently.
+      if (selectedId === row.id) open(null);
+      else open(draftOf(row));
+    },
+    onToggleAllowed: (row, next) => { void toggleAllowed(row, next); },
+    onSetDefault: (row) => { void rowWrite(() => allowance.writeDefault(row.id, false)); },
+    onClearDefault: (row) => { void rowWrite(() => allowance.writeDefault(row.id, true)); },
+    onCheck: (row) => { void run('check', () => browserApi(client).check(row.id)); },
+    onConnect: (row) => { void run('connect', () => browserApi(client).connect(row.id)); },
+    onDisconnect: (row) => { void run('disconnect', () => browserApi(client).disconnect(row.id)); },
+    onDelete: (row) => { setDeleteTarget(row); },
+    renderDetail,
+  };
 
   const empty = query.isSuccess && rows.length === 0;
 
   const addView = (
     <div className="min-w-0 space-y-4" data-browser-add-view>
-      <BackRow label={t('st.browser.connectionsTitle')} onBack={() => { setAdding(false); }} />
+      <button type="button" data-browser-back
+        className="inline-flex items-center gap-1 rounded text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:underline"
+        onClick={() => { setAdding(false); }}>
+        <Icon name="arrowLeft" size={12} />{t('st.browser.connectionsTitle')}
+      </button>
       <h3 className="text-[15px] font-medium text-ink">{t('st.browser.add')}</h3>
       <BrowserSetupWizard />
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-hairline pt-3.5" data-browser-add-manual-row>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pt-3.5" data-browser-add-manual-row>
         <div className="min-w-0">
           <p className="text-[14px] font-medium text-ink">{t('st.browser.addManual')}</p>
           <p className="mt-0.5 text-[12.5px] text-ink-soft">{t('st.browser.addManualHint')}</p>
@@ -759,11 +832,7 @@ export function BrowserConnectionCard() {
   const listView = (
     <div className="min-w-0 space-y-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <div className="mr-auto min-w-0">
-          {empty || query.isError ? null : (
-            <DefaultSelect allowance={allowance} save={defaultSave} />
-          )}
-        </div>
+        <div className="mr-auto min-w-0" />
         <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-browser-add
           disabled={saving || deleting}
           onClick={() => { setAdding(true); }}>
@@ -771,75 +840,53 @@ export function BrowserConnectionCard() {
           {t('st.browser.add')}
         </button>
       </div>
-      {list}
+      <div aria-label={t('st.browser.connectionsTitle')} className="min-w-0">
+        {query.isLoading ? <p className="text-[13px] text-ink-faint" role="status">{t('st.browser.loading')}</p> : null}
+        {query.isError ? <InlineError error={query.error} /> : null}
+        {empty ? (
+          <div data-browser-empty className="space-y-1.5 py-2">
+            <p className="text-[13px] text-ink">{t('st.browser.emptyTitle')}</p>
+            <Hint>{t('st.browser.emptyBody')}</Hint>
+          </div>
+        ) : null}
+        {rows.length > 0 ? (
+          <div className="divide-y divide-hairline/70" data-browser-list>
+            {rows.map((row) => (
+              <BrowserRow key={row.id} row={row} card={card} />
+            ))}
+          </div>
+        ) : null}
+        <FeedbackLine feedback={rowFeedback} />
+      </div>
       <FeedbackLine feedback={feedback} />
       <SourcesFold defaultOpen={empty} />
     </div>
   );
 
   return (
-    <div className="min-w-0" data-browser-connections data-browser-view={draft !== null ? 'detail' : adding ? 'add' : 'list'}>
-      {draft !== null ? detail : adding ? addView : listView}
-    </div>
-  );
-}
-
-/** The back row of a view that replaced the list. */
-function BackRow({ label, onBack }: { readonly label: string; readonly onBack: () => void }) {
-  return (
-    <button type="button" data-browser-back
-      className="inline-flex items-center gap-1 rounded text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:underline"
-      onClick={onBack}>
-      <Icon name="arrowLeft" size={12} />{label}
-    </button>
-  );
-}
-
-/**
- * The one place the default is chosen. The select lists the allowed
- * connections plus the current default whatever its state; picking one never
- * allows it, and "choose each time" clears it.
- */
-function DefaultSelect({ allowance, save }: {
-  readonly allowance: ReturnType<typeof useBrowserAllowance>;
-  readonly save: ReturnType<typeof useInstantSave>;
-}) {
-  const { t } = useI18n();
-  const flashId = useContext(SettingsFlashContext);
-  const onCardMount = useContext(SettingsCardMountContext);
-  useEffect(() => { onCardMount?.('st-card-browser-default'); }, [onCardMount]);
-  const { connections, defaultBrowser, connectionsQuery } = allowance;
-  const choices = useMemo(() => [
-    { value: '', label: t('st.browser.defaultNone'), hint: t('st.browser.defaultNoneHint') },
-    ...connections
-      .filter((connection) => connection.enabled || connection.id === defaultBrowser)
-      .map((connection) => ({
-        value: connection.id,
-        label: connection.name,
-        hint: connection.enabled ? connection.id : `${connection.id} · ${t('st.browser.state.disabled')}`,
-      })),
-  ], [connections, defaultBrowser, t]);
-  return (
-    <div
-      className={`space-y-1.5 scroll-mt-4 ${flashId === 'st-card-browser-default' ? 'settings-card-flash' : ''}`}
-      id="st-card-browser-default"
-      data-settings-card="st-card-browser-default"
-    >
-      <span className="flex flex-wrap items-center gap-2 text-[12px] text-ink-soft">
-        <span id="browser-default-label">{t('st.browser.defaultLabel')}</span>
-        <SettingsSelect
-          id="browser-default"
-          ariaLabel={t('st.browser.defaultLabel')}
-          dataAttr="data-browser-default"
-          value={defaultBrowser}
-          choices={choices}
-          disabled={save.saving || connectionsQuery.isLoading}
-          onChange={(next) => { void save.run(() => allowance.writeDefault(next, next === '')); }}
-          variant="row"
-        />
-        <SaveStatus saving={save.saving} saved={save.saved} />
-      </span>
-      <FeedbackLine feedback={save.error} />
+    <div className="min-w-0" data-browser-connections data-browser-view={adding ? 'add' : 'list'}>
+      {adding ? addView : (
+        <>
+          {/* A connection being created has no row yet: its editor renders in
+              place under the list header, the way an existing one renders
+              under its own row. */}
+          {draft !== null && selectedId === undefined ? renderDetail() : null}
+          {listView}
+        </>
+      )}
+      {deleteTarget !== null ? (
+        <ConfirmDialog open overlayId="confirm-browser-delete" busy={deleting}
+          title={t('st.browser.deleteTitle', { name: deleteTarget.name })}
+          body={t('st.browser.deleteBody')}
+          consequences={[
+            t(deleteConsequenceKey(deleteTarget.type)),
+            ...(LIVE_STATES.has(deleteTarget.status.state) ? [t('st.browser.deleteEndsSession')] : []),
+            ...(defaultBrowser === deleteTarget.id ? [t('st.browser.deleteDefault')] : []),
+          ]}
+          confirmLabel={t('st.browser.delete')}
+          onCancel={() => { setDeleteTarget(null); }}
+          onConfirm={() => { void remove(); }} />
+      ) : null}
     </div>
   );
 }
@@ -867,10 +914,14 @@ function SourcesFold({ defaultOpen }: { readonly defaultOpen: boolean }) {
       data-settings-card="st-card-browser-setup"
       data-browser-sources
       open={open}
-      onToggle={(event) => { setOpen((event.currentTarget as HTMLDetailsElement).open); }}
-      className={`scroll-mt-4 border-t border-hairline pt-3 ${flashId === 'st-card-browser-setup' ? 'settings-card-flash' : ''}`}
+      className={`scroll-mt-4 pt-3 ${flashId === 'st-card-browser-setup' ? 'settings-card-flash' : ''}`}
     >
-      <summary className="cursor-pointer select-none text-[13px] text-ink-soft hover:text-ink">
+      {/* Explicit state, not the DOM's own toggle: jsdom never fires the
+          event, so a controlled `open` would always swallow the click. */}
+      <summary
+        className="cursor-pointer select-none text-[13px] text-ink-soft hover:text-ink"
+        onClick={(event) => { event.preventDefault(); setOpen((current) => !current); }}
+      >
         {t('st.browser.setup.title')}
       </summary>
       <div className="pt-3">
@@ -892,3 +943,4 @@ function outcomeText(t: ReturnType<typeof useI18n>['t'], action: RuntimeAction, 
   if (action === 'connect') return status.state === 'ready' ? t('st.browser.outcome.connected') : t('st.browser.outcome.connectIncomplete');
   return status.state === 'disconnected' ? t('st.browser.outcome.disconnected') : t('st.browser.outcome.disconnectIncomplete');
 }
+

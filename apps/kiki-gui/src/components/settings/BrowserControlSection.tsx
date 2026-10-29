@@ -1,28 +1,23 @@
 /**
- * Settings → 浏览器与电脑. Two tabs; this file draws the tab strip and the
- * browser tab, in the order a person decides:
+ * Settings → 浏览器. One page, two stacked sections (this one, then 电脑
+ * below it); the tab strip that used to split them is gone — `?tab=browser`
+ * now only scrolls this section into view, so old links keep landing here.
  *
- *   1  the verdict: may the Agent reach a browser at all, and the first gate to
- *      fix when it may not — with the master switch and its new-session default
- *   2  the browsers themselves: one list, the default, and the way to add one
- *      (the sources Kiki can prepare are part of adding, and stay manageable in
- *      a fold under the list)
- *
- * Allowed and default are separate facts and are said separately: a default
- * that is not allowed is called out, never treated as allowed. Allowed is a
- * configuration fact — it is not "connected" and not "a call succeeded".
+ * The section leads with the capability header: the name, one sentence about
+ * what the Agent can reach right now, the master 启用 switch, and the
+ * new-session default under it. Under the header: the browser list — one row
+ * per connection whose body opens its editor inline without leaving the list,
+ * with an explicit 允许 switch and a ⋯ menu (设为默认 / 检查 / 连接或断开 /
+ * 删除) — then the single 添加浏览器 entry, and one 高级 fold for the session
+ * tool policy and the source management the old list header carried.
  */
 
+import { useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
 import {
-  BROWSER_CONTROL_SETTINGS_DEFAULT_TAB,
-  BROWSER_CONTROL_SETTINGS_TABS,
-  browserControlTabLabelKey,
   browserControlVerdict,
   isBrowserControlEnabled,
-  normalizeBrowserControlTab,
-  type BrowserControlSettingsTab,
   type BrowserControlVerdict,
 } from '@kiki/session-core/settings';
 
@@ -30,64 +25,34 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { browserKeys } from '../../lib/browserRest';
 import { FeedbackLine } from '../controls';
-import { useGuardedNavigate } from '../dirtyGuard';
-import { DefaultOnSwitch, optionalCapabilityState } from '../capabilities/optionalCapabilityUi';
+import { optionalCapabilityState } from '../capabilities/optionalCapabilityUi';
 import { ComputerControlSection } from './ComputerControlSection';
+import { CapabilityHeader } from './CapabilityHeader';
 import { SectionCard } from './SectionCard';
 import { useInstantSave } from './useInstantSave';
 import { BrowserConnectionCard } from './browserControl/BrowserConnectionCard';
 import { BrowserToolPolicy } from './browserControl/BrowserToolPolicy';
-import { CapabilitySwitch, ControlVerdictLine } from './browserControl/ControlVerdict';
 import { useBrowserAllowance } from './browserControl/browserAllowance';
+import { AdvancedDetails } from './fields';
 
 export function BrowserControlSection() {
-  const { t } = useI18n();
-  const navigate = useGuardedNavigate();
-  const { search } = useLocation();
-  const rawTab = new URLSearchParams(search).get('tab');
-  const tab: BrowserControlSettingsTab = normalizeBrowserControlTab(rawTab) ?? BROWSER_CONTROL_SETTINGS_DEFAULT_TAB;
+  const { hash } = useLocation();
+  const rawTab = new URLSearchParams(useLocation().search).get('tab');
 
-  const selectTab = (next: BrowserControlSettingsTab) => {
-    if (next === tab) return;
-    const params = new URLSearchParams(search);
-    params.set('tab', next);
-    void navigate(`/settings/browser-control?${params.toString()}`);
-  };
+  // `?tab=browser` (and a `#st-card-browser-*` hash) is an address for this
+  // section, not a view to swap: the page renders both sections, and the tab
+  // only says where the scroll lands. The computer tab is handled the same
+  // way inside ComputerControlSection.
+  useEffect(() => {
+    if (rawTab !== 'browser') return;
+    const target = hash !== '' ? document.querySelector(hash) : document.querySelector('[data-settings-browser-control]');
+    target?.scrollIntoView({ block: 'start' });
+  }, [rawTab, hash]);
 
   return (
-    <div className="space-y-6">
-      <div role="tablist" aria-label={t('st.section.browserControl')} className="flex flex-wrap gap-1 border-b border-hairline">
-        {BROWSER_CONTROL_SETTINGS_TABS.map((candidate) => {
-          const active = candidate === tab;
-          return (
-            <button
-              key={candidate}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              data-browser-control-tab={candidate}
-              onClick={() => { selectTab(candidate); }}
-              className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
-                active
-                  ? 'border-ink font-medium text-ink'
-                  : 'border-transparent text-ink-soft hover:text-ink'
-              }`}
-            >
-              {t(browserControlTabLabelKey(candidate))}
-            </button>
-          );
-        })}
-      </div>
-      {tab === 'computer' ? (
-        <ComputerControlSection />
-      ) : (
-        <div className="space-y-6" data-settings-browser-control>
-          <BrowserStatusCard />
-          <SectionCard id="st-card-browser-connections" title={t('st.browser.connectionsTitle')}>
-            <BrowserConnectionCard />
-          </SectionCard>
-        </div>
-      )}
+    <div className="space-y-6" data-settings-browser-control>
+      <BrowserSection />
+      <ComputerControlSection />
     </div>
   );
 }
@@ -109,8 +74,7 @@ function verdictText(t: ReturnType<typeof useI18n>['t'], verdict: BrowserControl
   }
 }
 
-/** May the Agent drive a browser at all: the verdict, the switch, its default, the session's tool choice. */
-function BrowserStatusCard() {
+function BrowserSection() {
   const { client, scopeId } = useConnection();
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -157,44 +121,49 @@ function BrowserStatusCard() {
   };
 
   return (
-    <SectionCard id="st-card-browser-enabled" title={t('st.browser.title')}>
-      <div className="space-y-3" data-browser-control-enabled={isEnabled ? 'true' : 'false'}>
-        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
-          <ControlVerdictLine
-            attr="data-browser-verdict"
-            kind={loading ? 'loading' : verdict.kind}
-            tone={loading ? 'unknown' : verdict.tone}
-            text={text}
-            detail={detail}
-          />
-          <CapabilitySwitch
-            id="browser-master-switch"
-            attr="data-browser-enabled-switch"
-            label={t('st.browser.enabledLabel')}
-            checked={isEnabled}
-            disabled={locked}
-            saving={save.saving}
-            saved={save.saved}
-            onChange={handleToggle}
-          />
-        </div>
-        {allowance.toolPolicyPartial && verdict.kind === 'allowed' ? (
-          <p className="text-[12px] text-amber-ink" data-browser-toolpolicy-partial>{t('st.browser.toolPolicyPartial')}</p>
-        ) : null}
-        <DefaultOnSwitch
-          id="browser"
-          state={browserCapability}
-          disabled={defaultSave.saving}
-          onChange={(next) => {
+    <>
+      <SectionCard id="st-card-browser-enabled" title={t('st.browser.title')}>
+        <CapabilityHeader
+          title={t('st.browser.title')}
+          verdict={{ kind: loading ? 'loading' : verdict.kind, tone: loading ? 'unknown' : verdict.tone, text, detail }}
+          enabled={isEnabled}
+          onEnabledChange={handleToggle}
+          enabledLockedReason={browserHostLocked ? t('st.browser.verdict.hostLocked') : undefined}
+          saving={save.saving}
+          saved={save.saved}
+          defaultOn={browserCapability === undefined ? undefined : {
+            checked: browserCapability.default_on,
+            locked: browserCapability.unresolved || browserCapability.host_locked,
+          }}
+          onDefaultOnChange={(next) => {
             void defaultSave.run(async () => {
               await client.patchConfig({ optional_capabilities: { defaults: { browser: next } } });
               await queryClient.invalidateQueries({ queryKey: ['config', scopeId] });
             });
           }}
-        />
-        <BrowserToolPolicy enabled={isEnabled} />
-        <FeedbackLine feedback={save.error ?? defaultSave.error} />
-      </div>
-    </SectionCard>
+          defaultOnSaving={defaultSave.saving}
+          attrs={{
+            enabled: 'data-browser-control-enabled',
+            verdict: 'data-browser-verdict',
+            enabledSwitch: 'data-browser-enabled-switch',
+            defaultOn: 'data-capability-default-browser',
+          }}
+        >
+          {allowance.toolPolicyPartial && verdict.kind === 'allowed' ? (
+            <p className="text-[12px] text-amber-ink" data-browser-toolpolicy-partial>{t('st.browser.toolPolicyPartial')}</p>
+          ) : null}
+          <FeedbackLine feedback={save.error ?? defaultSave.error} />
+        </CapabilityHeader>
+      </SectionCard>
+
+      <SectionCard id="st-card-browser-connections" title={t('st.browser.connectionsTitle')}>
+        <BrowserConnectionCard />
+        <AdvancedDetails summary={t('st.browser.advanced')} data-browser-advanced-fold>
+          <div className="space-y-4 pt-1">
+            <BrowserToolPolicy enabled={isEnabled} />
+          </div>
+        </AdvancedDetails>
+      </SectionCard>
+    </>
   );
 }
