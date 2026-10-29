@@ -10,6 +10,7 @@ export function acpMcpServers(
   cwd: string,
   envLookup: (name: string) => string | undefined,
   allowedTransports?: readonly ('stdio' | 'http' | 'sse')[],
+  childDefaults: Readonly<Record<string, string>> = {},
 ): AcpMcpServer[] {
   const servers: AcpMcpServer[] = [];
   for (const entry of view.list()) {
@@ -25,7 +26,7 @@ export function acpMcpServers(
         name: entry.name,
         command: config.command,
         args: [...config.args ?? []],
-        env: Object.entries(config.env ?? {}).map(([name, value]) => ({ name, value })),
+        env: Object.entries({ ...childDefaults, ...config.env }).map(([name, value]) => ({ name, value })),
       });
       continue;
     }

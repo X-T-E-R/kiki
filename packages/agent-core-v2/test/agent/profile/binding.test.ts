@@ -8,6 +8,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { Event } from '#/_base/event';
 import { IMemoryStore } from '#/app/memory/memoryStore';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { IThreadCommunicationService } from '#/app/threadCommunication/threadCommunication';
 import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
@@ -988,6 +989,9 @@ describe('AgentProfileService.bind', () => {
     expect(service.data().executorPrompt).toEqual({ body: 'HARNESS_BODY', append: 'HARNESS_APPEND', delivery: 'preamble', include: include ?? ['workspace_info'] });
     expect(service.data().systemPrompt.startsWith('HARNESS_BODY\n\nHARNESS_APPEND')).toBe(true);
     expect(service.data().systemPrompt.includes('## workspace_info')).toBe(include === undefined);
+    expect(service.data().systemPrompt.includes('## Space')).toBe(include === undefined);
+    expect(service.data().systemPrompt.includes(`Kiki home (server host): ${JSON.stringify(ctx.get(IBootstrapService).homeDir)}`)).toBe(include === undefined);
+    expect(service.data().systemPrompt).not.toContain('See runtime snapshot');
     expect(service.data().execution?.sources).toMatchObject({ 'executor_prompt.body': 'harness-settings',
       'executor_prompt.append': 'harness-settings', 'executor_prompt.delivery': 'profile', 'executor_prompt.include': include === undefined ? 'harness-settings' : 'profile' });
     const before = service.data();

@@ -50,6 +50,17 @@ function createClient(
 }
 
 describe('StdioMcpClient', () => {
+  it('starts the real MCP child with active defaults before config env', async () => {
+    vi.stubEnv('KIKI_HOME', 'ambient-main');
+    const client = createClient({ transport: 'stdio', command: process.execPath, args: [cwdStdioFixture] }, { childDefaults: { KIKI_HOME: 'active-space' } });
+    const explicit = createClient({ transport: 'stdio', command: process.execPath, args: [cwdStdioFixture], env: { KIKI_HOME: 'explicit-space' } }, { childDefaults: { KIKI_HOME: 'active-space' } });
+    try {
+      await client.connect(); await explicit.connect();
+      expect((await client.callTool('get_home', {})).content).toEqual([{ type: 'text', text: 'active-space' }]);
+      expect((await explicit.callTool('get_home', {})).content).toEqual([{ type: 'text', text: 'explicit-space' }]);
+      expect(process.env['KIKI_HOME']).toBe('ambient-main');
+    } finally { await client.close(); await explicit.close(); vi.unstubAllEnvs(); }
+  });
   it.skipIf(process.platform !== 'win32').each(['close', 'exit', 'injected stdout-end'])('reaps the owned MCP root and detached leaf after %s without touching another owner', async (action) => {
     const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
     const script = fileURLToPath(new URL('./fixtures/tree-stdio-server.mjs', import.meta.url));
@@ -697,6 +708,15 @@ describe('StdioMcpClient', () => {
 });
 
 describe('mergeStdioEnv', () => {
+  it('defaults local MCP to the active home and preserves explicit remote choices', () => {
+    const parent = { KIKI_HOME: 'local-main', KIMI_CODE_HOME: 'vendor', PATH: '/bin' };
+    expect(mergeStdioEnv(undefined, parent, { KIKI_HOME: 'active' })['KIKI_HOME']).toBe('active');
+    expect(mergeStdioEnv({ KIKI_HOME: 'chosen' }, parent, { KIKI_HOME: 'active' })['KIKI_HOME']).toBe('chosen');
+    expect(mergeStdioEnv(undefined, parent, { KIKI_HOME: 'active' }, false)['KIKI_HOME']).toBeUndefined();
+    expect(mergeStdioEnv({ KIKI_HOME: '/remote/chosen' }, parent, { KIKI_HOME: 'active' }, false)['KIKI_HOME']).toBe('/remote/chosen');
+    expect(mergeStdioEnv(undefined, parent, { KIKI_HOME: 'active' })['KIMI_CODE_HOME']).toBe('vendor');
+  });
+
   it('enables NODE_USE_ENV_PROXY for a proxy set only in the server config.env', () => {
     const merged = mergeStdioEnv({ HTTP_PROXY: 'http://corp:3128' }, { PATH: '/usr/bin' });
     expect(merged['HTTP_PROXY']).toBe('http://corp:3128');

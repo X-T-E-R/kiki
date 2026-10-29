@@ -43,17 +43,25 @@ export function externalHintAlreadyRecorded(
   });
 }
 
-export function externalPromptHints(history: readonly ContextMessage[], delivered: ReadonlySet<string>): ExternalPromptHint[] {
+export function externalPromptHints(history: readonly ContextMessage[], delivered: ReadonlySet<string>, includeSpace = false): ExternalPromptHint[] {
   const lastReply = history.findLastIndex((message) => message.role === 'assistant');
   const hints: ExternalPromptHint[] = [];
   let bytes = 0;
-  for (const message of history.slice(lastReply + 1)) {
+  const isRuntime = (message: ContextMessage): boolean => message.origin?.kind === 'injection' && message.origin.variant === 'runtime_snapshot';
+  const pending = history.slice(lastReply + 1).toSorted((a, b) => includeSpace ? Number(isRuntime(b)) - Number(isRuntime(a)) : 0);
+  for (const message of pending) {
     const origin = message.origin;
     if (origin === undefined || !(
       origin.kind === 'injection' || origin.kind === 'task' || origin.kind === 'agent_message'
     )) continue;
     if (message.id !== undefined && delivered.has(message.id)) continue;
-    const text = message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n').trim();
+    let text = message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n').trim();
+    const space = isRuntime(message) ? /^## Space\n[\s\S]*?(?=\n## |<\/system-reminder>|$)/m.exec(text)?.[0].trim() : undefined;
+    if (space !== undefined && !includeSpace) {
+      text = text.replace(space, '').trim();
+      if (!/^## /m.test(text)) continue;
+    }
+    if (space !== undefined && includeSpace && bytes + Buffer.byteLength(text, 'utf8') > 8 * 1024) text = space;
     if (text.length === 0) continue;
     const size = Buffer.byteLength(text, 'utf8');
     if (hints.length >= 16) {

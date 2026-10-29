@@ -7,6 +7,7 @@ import { ErrorCodes, Error2 } from '#/errors';
 import { HostProcessError, HostProcessErrorCode, type IHostProcess } from '#/os/interface/hostProcess';
 import type { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 import { proxyEnvForChild, reconcileChildNoProxy } from '#/_base/utils/proxy';
+import { mergeChildEnv } from '#/_base/execEnv/childEnv';
 import { abortable } from '#/_base/utils/abort';
 import { canonicalWorkspaceRoot } from '#/_base/utils/paths';
 import {
@@ -40,6 +41,7 @@ export interface StdioMcpClientOptions {
   readonly startupTimeoutMs?: number;
   readonly toolCallTimeoutMs?: number;
   readonly defaultCwd?: string;
+  readonly childDefaults?: Readonly<Record<string, string>>;
   readonly runtimeResolver: IRuntimeResolver;
   readonly workspaceId: string;
   readonly runtimeId: string;
@@ -354,19 +356,19 @@ class RuntimeStdioTransport implements Transport {
       this.spawnWork = lease.runtime.process!.spawn(
         this.config.command,
         this.config.args,
-        { cwd, env: mergeStdioEnv(this.config.env), ownedProcessTree: this.ownedProcessTree },
+        { cwd, env: mergeStdioEnv(this.config.env, process.env, this.options.childDefaults, lease.runtime.identity.runtimeId === 'local'), ownedProcessTree: this.ownedProcessTree },
       );
-      const process = await this.spawnWork;
-      this.process = process;
-      process.stdin.on('error', (error: Error) => this.onerror?.(error));
-      process.stdout.on('data', (chunk: Buffer | string) => this.onData(chunk));
-      process.stdout.on('end', () => { if (!this.computerControl) this.finish(); });
-      process.stdout.on('error', (error: Error) => this.onerror?.(error));
-      process.stderr.on('data', (chunk: Buffer | string) => {
+      const child = await this.spawnWork;
+      this.process = child;
+      child.stdin.on('error', (error: Error) => this.onerror?.(error));
+      child.stdout.on('data', (chunk: Buffer | string) => this.onData(chunk));
+      child.stdout.on('end', () => { if (!this.computerControl) this.finish(); });
+      child.stdout.on('error', (error: Error) => this.onerror?.(error));
+      child.stderr.on('data', (chunk: Buffer | string) => {
         this.stderr.push(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
       });
-      process.stderr.on('error', (error: Error) => this.onerror?.(error));
-      void process.wait().then(
+      child.stderr.on('error', (error: Error) => this.onerror?.(error));
+      void child.wait().then(
         () => { this.finish(); },
         (error: unknown) => {
           this.onerror?.(error instanceof Error ? error : new Error(String(error)));
@@ -500,12 +502,11 @@ class BoundedTail {
 export function mergeStdioEnv(
   configEnv?: Record<string, string>,
   parentEnv: Readonly<Record<string, string | undefined>> = process.env,
+  childDefaults?: Readonly<Record<string, string>>,
+  local = true,
 ): Record<string, string> {
-  const merged: Record<string, string> = {};
-  for (const [key, value] of Object.entries(parentEnv)) {
-    if (value !== undefined) merged[key] = value;
-  }
-  if (configEnv !== undefined) Object.assign(merged, configEnv);
+  const parent = local ? parentEnv : Object.fromEntries(Object.entries(parentEnv).filter(([name]) => name.toUpperCase() !== 'KIKI_HOME'));
+  const merged = mergeChildEnv(parent, local ? childDefaults : {}, configEnv);
   Object.assign(merged, proxyEnvForChild(merged));
   reconcileChildNoProxy(merged, configEnv);
   return merged;

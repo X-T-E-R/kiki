@@ -3,6 +3,8 @@ import { ErrorCodes, Error2 } from '#/errors';
 import { Disposable } from '#/_base/di/lifecycle';
 import { ILogService } from '#/_base/log/log';
 import { IAgentIdentity } from '#/app/agentIdentity/agentIdentity';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { IMcpOAuthService } from '#/app/mcpConfig/oauthService';
@@ -68,6 +70,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentIdentity private readonly identity: IAgentIdentity,
     @ref(ISessionManager) sessionLifecycle: LiveRef<ISessionManager>,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IPluginService private readonly plugins?: IPluginService,
     @IPluginUsageService private readonly usage?: IPluginUsageService,
   ) {
@@ -77,6 +80,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     this.workspaceId = workspace.workspaceId;
     this.oauthService = oauthService;
     this.manager = new McpConnectionManager({
+      childDefaults: kikiChildDefaults(this.bootstrap.homeDir),
       log: this.log,
       oauthService: this.oauthService,
       stdioCwd: this.stdioCwd,
@@ -191,6 +195,7 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     const configuredGlobalNames = new Set<string>();
     const isFileServer = (name: string): boolean => this.mcpConfig.isFileServer?.(name) ?? Object.hasOwn(this.mcpConfig.servers(), name);
     const sessionManager = new McpConnectionManager({
+      childDefaults: kikiChildDefaults(this.bootstrap.homeDir),
       log: this.log,
       oauthService: this.oauthService,
       stdioCwd: opts?.stdioCwd ?? this.stdioCwd,

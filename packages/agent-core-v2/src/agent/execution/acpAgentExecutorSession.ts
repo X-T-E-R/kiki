@@ -37,6 +37,7 @@ import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/exec
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 import {
   agentExecutorBindingFingerprint,
   agentExecutorBindingMatches,
@@ -700,7 +701,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const servers = this.#harnessMcp !== undefined ? [this.#harnessMcp.server]
       : this.context.descriptor.supportsMcp === false || mcp === undefined ? []
         : acpMcpServers(mcp.connectionManager, roots.workDir,
-          (name) => process.env[name], this.context.descriptor.mcpTransports);
+          (name) => process.env[name], this.context.descriptor.mcpTransports,
+          kikiChildDefaults(this.context.agent.accessor.get(IBootstrapService).homeDir));
     return {
       cwd: roots.workDir,
       additionalDirectories: roots.additionalDirs,

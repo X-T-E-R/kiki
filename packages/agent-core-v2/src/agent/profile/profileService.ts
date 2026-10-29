@@ -965,7 +965,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       ? await this.resolvePromptFieldSnapshot(role, execution.effective.model ?? '')
       : await this.promptFields.resolve({ global: { surface: 'global', overrides: this.config.get<PromptConfig>(PROMPT_SECTION)?.overrides },
         context: { executor: requested.executor, modelAlias: execution.effective.model, delegationPosition: 'main' } });
-    const renderContext = { ...context, persona: '', promptVariables: this.config.get<PromptConfig>(PROMPT_SECTION)?.variables, promptFields: fields.values };
+    const renderContext = { ...this.states.get(dynamicPromptKey)?.context ?? context, space: projectSpaceIdentity(this.bootstrap), persona: '', promptVariables: this.config.get<PromptConfig>(PROMPT_SECTION)?.variables, promptFields: fields.values };
     const body = role === undefined ? '' : modelPromptLayers(role).reduce((text, layer) => applyMatchedModelProfilePrompt(text,
       layer.entries, execution.effective.model ?? '', (id) => id, 'main'), role.renderSystemPrompt(renderContext).text);
     const systemPrompt = hasPrompt ? renderExternalPrompt({ executor: requested.executor, executorPrompt }, renderContext,
@@ -3638,7 +3638,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (previous?.hash !== hash || previous.enabled !== enabled) {
       await this.dispatcher.dispatch(new ProfileDynamicSnapshot({ enabled, revision: (previous?.revision ?? 0) + 1, context: effective, content, hash }));
     }
-    return enabled ? stablePromptContext(effective) : effective;
+    return enabled && (profile?.executor ?? 'native') === 'native' ? stablePromptContext(effective) : effective;
   }
 
   private async readMemoryForPersonaOverride(persona: PersonaSnapshot | null | undefined): Promise<string> {

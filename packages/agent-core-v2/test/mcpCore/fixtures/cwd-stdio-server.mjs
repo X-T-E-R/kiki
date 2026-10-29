@@ -14,4 +14,8 @@ server.registerTool(
   }),
 );
 
+server.registerTool('get_home', { inputSchema: {} }, () => ({
+  content: [{ type: 'text', text: process.env.KIKI_HOME ?? '(unset)' }],
+}));
+
 await server.connect(new StdioServerTransport());

@@ -108,6 +108,7 @@ export * from '#/os/backends/node-local/hostFsService';
 export * from '#/os/backends/node-local/hostFsWatchService';
 export * from '#/os/backends/node-local/hostProcessService';
 export * from '#/os/backends/node-local/hostTerminalService';
+export * from '#/app/bootstrap/hostChildServices';
 export * from '#/agent/tools/os/bash/bash';
 import '#/agent/tools/os/bash/bashTool';
 export * from '#/agent/tools/os/glob/glob';

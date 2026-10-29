@@ -796,16 +796,18 @@ describe('AgentExecutionService', () => {
     await ix.dispose();
   });
 
-  it('captures the external binding after safe-boundary profile reconciliation', async () => {
+  it.each([true, false])('captures the external binding and selected Space hint after reconciliation (workspace_info=%s)', async (includeSpace) => {
     const ix = new TestInstantiationService();
-    const data = { executorId: 'grok-acp', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1', systemPrompt: 'before reconciliation', renderGeneration: 1 } satisfies Partial<ProfileData>;
+    const data = { executorId: 'grok-acp', executorProtocol: 'acp-v1', executorDescriptorRevision: 'r1', systemPrompt: 'before reconciliation', renderGeneration: 1,
+      executorPrompt: { include: includeSpace ? ['workspace_info' as const] : [] } } satisfies Partial<ProfileData>;
     const captured: AgentExecutorContext[] = [];
+    const prompts: string[] = [];
     const provider: AgentExecutorProvider = {
       id: 'fixture-acp', protocol: 'acp-v1', validateOptions: () => ({}), validateBinding: binding => ({ ok: true, binding }),
       create: context => {
         captured.push(context);
         return {
-          run: async () => ({ agentId: 'agent-test', completion: Promise.resolve({ summary: 'done' }), turn: { id: 1, signal: new AbortController().signal, ready: Promise.resolve(), result: Promise.resolve({ type: 'completed', steps: 1, truncated: false }), cancel: () => false } }),
+          run: async (request) => { prompts.push(request.kind === 'retry' ? '' : request.prompt); return { agentId: 'agent-test', completion: Promise.resolve({ summary: 'done' }), turn: { id: 1, signal: new AbortController().signal, ready: Promise.resolve(), result: Promise.resolve({ type: 'completed', steps: 1, truncated: false }), cancel: () => false } }; },
           status: () => ({ state: 'idle' }), cancel: () => false, settled: async () => {}, shutdown: async () => {}, hooks: createHooks(['onWillRun']),
         };
       },
@@ -815,6 +817,7 @@ describe('AgentExecutionService', () => {
     ix.stub(IAgentContextInjectorService, { reconcileAllAtSafeBoundary: async () => {
       data.systemPrompt = 'after reconciliation';
       data.renderGeneration = 2;
+      ix.stub(IAgentContextMemoryService, { get: () => [{ role: 'user', content: [{ type: 'text', text: '## Space\nKiki home (server host): "space-home"\n\n## Available skills\n' + 'x'.repeat(9_000) }], toolCalls: [], origin: { kind: 'injection', variant: 'runtime_snapshot' } }] });
     } });
     try {
       const handle = await service.run({ kind: 'prompt', prompt: 'continue' }, { signal: new AbortController().signal });
@@ -822,6 +825,7 @@ describe('AgentExecutionService', () => {
       await service.settled();
       expect(captured).toHaveLength(1);
       expect(captured[0]!.binding).toMatchObject({ systemPrompt: 'after reconciliation', renderGeneration: 2 });
+      expect(prompts[0]?.includes('Kiki home (server host): "space-home"')).toBe(includeSpace);
     } finally { await service.dispose(); await ix.dispose(); }
   });
 

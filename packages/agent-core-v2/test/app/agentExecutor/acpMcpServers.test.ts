@@ -23,6 +23,18 @@ function view(servers: Record<string, { config: McpServerConfig; status?: McpSer
 }
 
 describe('ACP session MCP forwarding', () => {
+  it('forwards the active home default to stdio only and keeps explicit overrides', () => {
+    const servers = acpMcpServers(view({
+      inherited: { config: { transport: 'stdio', command: 'mcp' } },
+      explicit: { config: { transport: 'stdio', command: 'mcp', env: { KIKI_HOME: 'chosen', KIMI_CODE_HOME: 'vendor' } } },
+      remote: { config: { transport: 'http', url: 'https://mcp.example/rpc' } },
+    }), '/work', () => undefined, undefined, { KIKI_HOME: 'active' });
+    expect(servers).toEqual([
+      { name: 'inherited', command: 'mcp', args: [], env: [{ name: 'KIKI_HOME', value: 'active' }] },
+      { name: 'explicit', command: 'mcp', args: [], env: [{ name: 'KIKI_HOME', value: 'chosen' }, { name: 'KIMI_CODE_HOME', value: 'vendor' }] },
+      { type: 'http', name: 'remote', url: 'https://mcp.example/rpc', headers: [] },
+    ]);
+  });
   it.each(Object.entries(BUILTIN_AGENT_EXECUTORS))('binds %s to the existing native tool bridge only when its transport supports it', async (id, descriptor) => {
     const acquired: unknown[] = [];
     const lease: HarnessMcpLease = { server: { name: 'kiki', command: 'fixture-mcp', args: [], env: [] }, dispose: () => {} };

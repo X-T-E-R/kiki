@@ -178,6 +178,16 @@ function deferred() {
 }
 
 describe('plugin host lifecycle', () => {
+  it('uses the same active home in the real plugin child env and RPC context', async () => {
+    const tools = (await parseManifest(fixture)).manifest!.kiki!.tools!;
+    const host = new PluginHost('space-home-fixture', join(fixture, 'entry.mjs'), tools, [], [], undefined, 'space-home');
+    vi.stubEnv('KIKI_HOME', 'ambient-main');
+    try {
+      const result = await host.execute('fixture_echo', { kikiHome: true }, new AbortController().signal);
+      expect(result.output).toBe(JSON.stringify({ env: 'space-home', context: 'space-home' }));
+      expect(process.env['KIKI_HOME']).toBe('ambient-main');
+    } finally { await host.stopAndWait(); vi.unstubAllEnvs(); }
+  });
   it('routes IM history through the real child, preserves opaque cursors and typed unknown end', async () => {
     const { host, root, historyMessage } = await historyHost();
     const events: unknown[] = [];
