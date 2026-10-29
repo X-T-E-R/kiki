@@ -106,6 +106,7 @@ function readDailyDraftSettings(storageKey: string): PersistedNewSessionDraft {
       modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
       effortFromProfile: typeof record['effortFromProfile'] === 'boolean' ? record['effortFromProfile'] : undefined,
       prefillSource: typeof record['prefillSource'] === 'string' ? record['prefillSource'] : undefined,
+      dismissedPersonaSource: typeof record['dismissedPersonaSource'] === 'string' ? record['dismissedPersonaSource'] : undefined,
     };
   } catch {
     return {};
@@ -137,6 +138,7 @@ function readScopedNewSessionDraft(scopeId: string): PersistedNewSessionDraft {
       modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
       effortFromProfile: typeof record['effortFromProfile'] === 'boolean' ? record['effortFromProfile'] : undefined,
       prefillSource: typeof record['prefillSource'] === 'string' ? record['prefillSource'] : undefined,
+      dismissedPersonaSource: typeof record['dismissedPersonaSource'] === 'string' ? record['dismissedPersonaSource'] : undefined,
     };
   } catch {
     return {};
@@ -536,9 +538,12 @@ export function useNewSessionDraft({
   );
   // The persona bound at creation. Kept for this window only (like the
   // temporary choice); `?persona=` prefills it from the Personas page.
-  const [selectedPersonaId, setSelectedPersonaId] = useState<string | undefined>(initialPersona);
+  const personaPrefillSource = initialPersona === undefined ? undefined : JSON.stringify([initialPersona, prefillNavigationKey ?? null]);
+  const restoredPersona = personaPrefillSource !== undefined && initialRestoredDraft.dismissedPersonaSource === personaPrefillSource ? undefined : initialPersona;
+  const [dismissedPersonaSource, setDismissedPersonaSource] = useState(initialRestoredDraft.dismissedPersonaSource);
+  const [selectedPersonaId, setSelectedPersonaId] = useState<string | undefined>(restoredPersona);
   const [persona, setPersonaState] = useState<PersonaSnapshot | undefined>(undefined);
-  const [personaPending, setPersonaPending] = useState(initialPersona !== undefined);
+  const [personaPending, setPersonaPending] = useState(restoredPersona !== undefined);
   const [selectionRevision, setSelectionRevision] = useState(0);
   const [profileCatalogTransitionPending, setProfileCatalogTransitionPending] = useState(false);
   const profileCatalogTransitionRef = useRef(false);
@@ -757,6 +762,7 @@ export function useNewSessionDraft({
         modelFromProfile: modelOverrideFromProfile.current || modelOverrideFromPersona.current,
         effortFromProfile: effortOverrideFromProfile.current || effortOverrideFromPersona.current,
         prefillSource,
+        dismissedPersonaSource,
       });
       return;
     }
@@ -770,8 +776,9 @@ export function useNewSessionDraft({
       modelFromProfile: modelOverrideFromProfile.current || modelOverrideFromPersona.current,
       effortFromProfile: effortOverrideFromProfile.current || effortOverrideFromPersona.current,
       prefillSource,
+      dismissedPersonaSource,
     });
-  }, [dailySettingsKey, draftScopeId, workspaceId, effectiveWorkspace?.id, cwd, agentProfile, execution, modelOverride, effortOverride, selectionRevision, prefillSource]);
+  }, [dailySettingsKey, draftScopeId, workspaceId, effectiveWorkspace?.id, cwd, agentProfile, execution, modelOverride, effortOverride, selectionRevision, prefillSource, dismissedPersonaSource]);
 
   // A daily draft starts in the persona's own workspace when the persona names
   // one and the user has not already chosen for this draft. A directory the
@@ -1312,13 +1319,26 @@ export function useNewSessionDraft({
     }
   }, [beginProfileCatalogTransition, host]);
 
+  const personaSelectionRef = useRef(0);
+  const clearPersonaSelection = useCallback(() => {
+    personaSelectionRef.current += 1;
+    setSelectedPersonaId(undefined);
+    setPersonaState(undefined);
+    setPersonaPending(false);
+    modelOverrideFromPersona.current = false;
+    effortOverrideFromPersona.current = false;
+    setDismissedPersonaSource(personaPrefillSource);
+    setError(null);
+  }, [personaPrefillSource]);
+
   const setAgentProfile = useCallback((name: string) => {
     const items = agentProfilesQuery.data?.items;
     if (items === undefined) return;
     const profile = items.find((item) => item.name === name && item.main === true && !item.disabled);
     if (profile === undefined) return;
+    clearPersonaSelection();
     applyAgentProfile(items, profile.name);
-  }, [agentProfilesQuery.data, applyAgentProfile]);
+  }, [agentProfilesQuery.data, applyAgentProfile, clearPersonaSelection]);
 
   /**
    * The draft's engine. A bare external engine keeps its own model, effort and
@@ -1327,13 +1347,10 @@ export function useNewSessionDraft({
    * profile brings that profile's own pins.
    */
   const setExecution = useCallback((next: ExecutionChoice) => {
+    clearPersonaSelection();
     setExecutionState(next);
-    const profileChanged = next.profile !== agentProfile;
+    const profileChanged = next.profile !== agentProfile || selectedPersonaId !== undefined;
     if (next.profile === undefined) {
-      personaSelectionRef.current += 1;
-      setSelectedPersonaId(undefined);
-      setPersonaState(undefined);
-      setPersonaPending(false);
       if (next.executor !== execution.executor) {
         setModelOverrideState(undefined);
         setEffortOverrideState(undefined);
@@ -1361,7 +1378,7 @@ export function useNewSessionDraft({
     }
     setAgentProfileState(next.profile ?? DEFAULT_AGENT_PROFILE);
     setSelectionRevision((value) => value + 1);
-  }, [agentProfilesQuery.data, agentProfile, applyAgentProfile, execution.executor]);
+  }, [agentProfilesQuery.data, agentProfile, applyAgentProfile, clearPersonaSelection, execution.executor, selectedPersonaId]);
 
   /**
    * Bind (or clear) a persona. Its profile becomes the draft's profile so the
@@ -1398,16 +1415,16 @@ export function useNewSessionDraft({
 
   // A persona read that lands after a newer pick has committed must not speak
   // for the newer pick: two slower/faster round trips are not a user's order.
-  const personaSelectionRef = useRef(0);
   const selectPersona = useCallback((id: string | undefined) => {
+    if (id === undefined) {
+      clearPersonaSelection();
+      applyPersona(undefined);
+      return;
+    }
+    setDismissedPersonaSource(undefined);
     setSelectedPersonaId(id);
     const token = personaSelectionRef.current + 1;
     personaSelectionRef.current = token;
-    if (id === undefined) {
-      applyPersona(undefined);
-      setError(null);
-      return;
-    }
     const choices = { model: modelChoiceRevision.current, effort: effortChoiceRevision.current };
     setPersonaPending(true);
     setError(null);
@@ -1419,10 +1436,10 @@ export function useNewSessionDraft({
         setError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => { if (personaSelectionRef.current === token) setPersonaPending(false); });
-  }, [applyPersona, client]);
+  }, [applyPersona, clearPersonaSelection, client]);
 
   // `?persona=` from the Personas page's "Start a chat" — applied immediately by ID
-  const initialPersonaRef = useRef(initialPersona);
+  const initialPersonaRef = useRef(restoredPersona);
   useEffect(() => {
     const id = initialPersonaRef.current;
     if (id === undefined) return;

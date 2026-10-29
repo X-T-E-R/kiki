@@ -346,6 +346,7 @@ describe('persisted /new draft scalars', () => {
     modelFromProfile: true,
     effortFromProfile: false,
     prefillSource: JSON.stringify(['wd-1', 'workspace-main', 'entry-fixture']),
+    dismissedPersonaSource: JSON.stringify(['assistant-persona', 'entry-fixture']),
   };
   const transientState = {
     permissionMode: 'yolo',
@@ -401,6 +402,7 @@ describe('persisted /new draft scalars', () => {
       modelFromProfile: 'true',
       effortFromProfile: 1,
       prefillSource: { workspace: 'wd-1' },
+      dismissedPersonaSource: 1,
     }));
 
     expect(readNewSessionDraft()).toEqual({
@@ -408,6 +410,7 @@ describe('persisted /new draft scalars', () => {
       modelFromProfile: undefined,
       effortFromProfile: undefined,
       prefillSource: undefined,
+      dismissedPersonaSource: undefined,
     });
   });
 });

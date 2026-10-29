@@ -119,6 +119,7 @@ function DraftHarness(props: { initialWorkspaceId?: string; initialProfile?: str
     model: state.modelOverride, defaultModel: undefined, serverDefaultModel: state.inheritedDefault,
     modelSource: state.modelSource, agentProfile: state.agentProfile, onChangeAgentProfile: state.setAgentProfile,
     execution: state.execution, onChangeExecution: state.setExecution,
+    personaPick: { value: state.persona?.definition, onChange: state.selectPersona },
     permissionMode: state.permissionMode, planMode: state.planMode, goalObjective: state.goalObjective,
     efforts: state.supportedEfforts, effort: state.effectiveEffort, agentProfileCatalogMode: state.agentProfileCatalogMode,
     attachments: state.attachments, onChangeAttachments: state.setAttachments, onChangeModel: state.setModelOverride,
@@ -1890,6 +1891,85 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(navigate.mock.calls[0]?.[1].state).toMatchObject({
       model: modelPicked ? 'fixture/selected-model' : undefined, thinking: effortPicked ? 'low' : undefined,
     });
+  });
+
+  it.each([false, true])('keeps a named profile chosen after selecting a persona (loaded=%s)', async (loaded) => {
+    const persona = deferred<Awaited<ReturnType<typeof client.getPersona>>>();
+    client.getPersona.mockReturnValue(persona.promise);
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'),
+      profile('persona-profile', 'fixture/persona-model', 'high'),
+      profile('selected-profile', 'fixture/selected-model', 'low'),
+    ] });
+    client.listModels.mockResolvedValue({ items: [model('fixture/persona-model', 'high'), model('fixture/selected-model', 'low')] });
+    await renderDraft({ initialPersona: 'assistant-persona', composer: true });
+    await settleDraft((value) => value.personaPending && !value.agentProfileCatalogPending);
+    const resolvePersona = () => persona.resolve({ definition: {
+      id: 'assistant-persona', name: 'Assistant', profile: 'persona-profile',
+    }, systemPrompt: 'Help the user.' });
+    if (loaded) {
+      resolvePersona();
+      await settleDraft((value) => !value.personaPending && value.persona !== undefined);
+    }
+    const container = containers.at(-1)!;
+    const click = async (selector: string) => {
+      const element = container.querySelector(selector);
+      expect(element, selector).not.toBeNull();
+      await act(async () => { element!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    };
+    await click('#composer-profile-select');
+    await click('[data-execution-profile="selected-profile"]');
+    if (!loaded) await act(async () => { resolvePersona(); });
+    let state = await settleDraft((value) => !value.personaPending);
+    expect(state.selectedPersonaId).toBeUndefined();
+    expect(state.persona).toBeUndefined();
+    expect(state.agentProfile).toBe('selected-profile');
+    expect(state.modelOverride).toBe('fixture/selected-model');
+    expect(state.effectiveEffort).toBe('low');
+    await unmountDraft();
+    await renderDraft({ initialPersona: 'assistant-persona' });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending && value.selectionReady);
+    expect(client.getPersona).toHaveBeenCalledTimes(1);
+    expect(state.agentProfile).toBe('selected-profile');
+    expect(state.modelOverride).toBe('fixture/selected-model');
+    expect(state.effectiveEffort).toBe('low');
+    client.createSession.mockRejectedValueOnce(new ApiError({ code: -2, msg: 'Request timed out', data: null }));
+    const body = await sentBody(state);
+    expect(body.persona).toBeUndefined();
+    expect(body.agent_config).toMatchObject({ profile: 'selected-profile', model: 'fixture/selected-model', thinking: 'low' });
+    await settleDraft((value) => !value.creationPending);
+    await unmountDraft();
+    await renderDraft({ initialPersona: 'assistant-persona' });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending && value.selectionReady);
+    client.getSessionCreation.mockResolvedValueOnce({ creation_id: body.creation_id!, session_id: `session_${body.creation_id}`, status: 'missing' });
+    await act(async () => { await state.retryCreation(); });
+    expect(client.createSession.mock.calls[1]![0]).toEqual(body);
+    expect(navigate.mock.calls[0]?.[1].state).toMatchObject({ model: 'fixture/selected-model', thinking: 'low' });
+    expect(client.getPersona).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['local', 'remote', 'daily'])('restores a profile choice but applies a new persona entry (%s)', async (kind) => {
+    if (kind === 'remote') { scope.id = 'ssh:example'; scope.label = 'Example'; }
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), profile('persona-profile', 'fixture/persona-model', 'high'), profile('selected-profile', 'fixture/selected-model', 'low')] });
+    client.listModels.mockResolvedValue({ items: [model('fixture/persona-model', 'high'), model('fixture/selected-model', 'low')] });
+    client.getPersona.mockResolvedValue({ definition: { id: 'assistant-persona', name: 'Assistant', profile: 'persona-profile' } });
+    const props = { initialPersona: 'assistant-persona', prefillNavigationKey: 'entry-one', isDailyDraft: kind === 'daily' };
+    await renderDraft(props);
+    let state = await settleDraft((value) => !value.personaPending && value.persona !== undefined && !value.agentProfileCatalogPending);
+    await act(async () => { state.setAgentProfile('selected-profile'); });
+    await unmountDraft();
+    await renderDraft(props);
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(state.selectedPersonaId).toBeUndefined();
+    expect(state.personaPending).toBe(false);
+    expect(state.agentProfile).toBe('selected-profile');
+    expect(state.modelOverride).toBe('fixture/selected-model');
+    expect(client.getPersona).toHaveBeenCalledTimes(1);
+    await unmountDraft();
+    await renderDraft({ ...props, prefillNavigationKey: 'entry-two' });
+    state = await settleDraft((value) => !value.personaPending && value.persona !== undefined);
+    expect(client.getPersona).toHaveBeenCalledTimes(2);
+    expect(state.agentProfile).toBe('persona-profile');
+    expect(state.modelOverride).toBe('fixture/persona-model');
   });
 
   it('applies a newly selected persona default after an earlier explicit model and effort choice', async () => {

@@ -2454,9 +2454,7 @@ export function Composer({
             busy={busy}
             disabled={variant === 'subagent' && disabled}
             onChange={(next) => {
-              if (next.profile === undefined && next.profile_file === undefined) {
-                personaPick?.onChange(undefined);
-              }
+              if (pickedPersona !== undefined) personaPick?.onChange(undefined);
               onChangeExecution(next);
             }}
             catalog={executorCatalog}
