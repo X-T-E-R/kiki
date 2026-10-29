@@ -944,6 +944,7 @@ class FixtureServer {
     // mutate this state and append journal records, so the page's save / delete
     // / undo / inbox paths are all exercisable against the real wire shapes.
     this.memory = structuredClone(data.memory ?? { enabled: true, approval: 'auto', budget: 2_000, workspaces: {} });
+    this.memoryAdvisor = structuredClone(data.memoryAdvisor);
     this.memoryEntries = new Map(
       Object.entries(structuredClone(data.memoryEntries ?? {})).map(([scope, entries]) => [scope, entries]),
     );
@@ -1096,15 +1097,45 @@ class FixtureServer {
    */
   routeMemory(res, path, query, body, method) {
     if (!path.startsWith('/memory')) return false;
-    const settings = () => ({ ...this.memory, effective_enabled: this.memory.enabled === true });
+    // A seeded `memoryAdvisor` rides the same settings envelope: without it the
+    // response fails the client's `advisor_status` validation and every memory
+    // surface shows the bad-data error instead of the advisor's real state.
+    const settings = () => ({
+      ...this.memory,
+      effective_enabled: this.memory.enabled === true,
+      ...(this.memoryAdvisor === undefined ? {} : structuredClone(this.memoryAdvisor)),
+    });
 
     if (path === '/memory/settings') {
       if (method === 'PATCH') {
         for (const field of ['enabled', 'approval', 'budget']) {
           if (body?.[field] !== undefined) this.memory[field] = body[field];
         }
+        // Sparse advisor merge: `advisor: null` removes the block, a key set
+        // to `null` clears it, anything omitted stays as saved.
+        if (body?.advisor !== undefined && this.memoryAdvisor !== undefined) {
+          if (body.advisor === null) delete this.memoryAdvisor.advisor;
+          else {
+            this.memoryAdvisor.advisor ??= {};
+            for (const [field, value] of Object.entries(body.advisor)) {
+              if (value === null) delete this.memoryAdvisor.advisor[field];
+              else this.memoryAdvisor.advisor[field] = value;
+            }
+          }
+          const mode = this.memoryAdvisor.advisor?.mode;
+          const configured = mode === 'off' ? 'off'
+            : this.memoryAdvisor.advisor?.source === undefined && this.memoryAdvisor.advisor?.selector === undefined ? 'unconfigured' : 'ready';
+          this.memoryAdvisor.advisor_status.state = this.memory.enabled === true ? configured : 'disabled';
+        }
       }
       this.envelope(res, settings());
+      return true;
+    }
+    if (path === '/memory/advisor/probe') {
+      const destination = this.memoryAdvisor?.advisor_status?.destination;
+      this.envelope(res, destination === undefined
+        ? { ok: false, duration_ms: 0, status: { state: 'unconfigured', consent_required: false, reason: 'unconfigured' } }
+        : { ok: true, duration_ms: 42, usage_known: false, status: { state: 'ready', consent_required: false, destination } });
       return true;
     }
     const wsMatch = /^\/memory\/workspaces\/([^/]+)\/settings$/.exec(path);

@@ -324,12 +324,14 @@ export function DecisionSourceSummary({ consumer, source, status, legacy }: {
   const chatLabel = (id: string) => modelsQuery.data?.items.find((item) => item.id === id)?.display_name;
   return (
     <div data-decision-summary={consumer} data-decision-problem={problem ?? undefined} className="space-y-1">
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="text-[13px] text-ink-soft">{t('st.decision.source')}</span>
-        <span data-decision-summary-value className={`min-w-0 break-all ${source === undefined ? 'text-[12.5px] text-ink-soft' : 'font-mono text-[12px] text-ink'}`}>
+      {/* One line: the value in the middle, the way to change it on the right
+          edge — not three loose words the eye has to reassemble. */}
+      <div className="flex items-baseline gap-3">
+        <span className={`min-w-0 flex-1 truncate ${source === undefined ? 'text-[13px] text-ink-faint' : 'font-mono text-[12px] text-ink'}`}
+          data-decision-summary-value>
           {source === undefined ? legacy ?? t('st.decision.sourceNone') : sourceLabel(source, providersQuery.data?.items, chatLabel)}
         </span>
-        <button type="button" data-decision-change className={LINK} onClick={() => { void navigate(DECISION_JUDGES_ROUTE); }}>
+        <button type="button" data-decision-change className={`shrink-0 ${LINK}`} onClick={() => { void navigate(DECISION_JUDGES_ROUTE); }}>
           {t('st.decision.change')}
         </button>
       </div>
