@@ -2,7 +2,7 @@
 
 Kiki remembers the things you would otherwise re-explain every session: how you like your code reviewed, which project fact you confirmed last week, where a reference lives. Memory is on by default, entries are stored on the machine running Kiki, and every write shows up as one line in the conversation. The optional [Memory Advisor](#memory-advisor) sends context to a model you choose after you confirm its destination.
 
-This page covers the scope choices on the **/memory** page, the review inbox, model-assisted recommendations, and how to turn memory off. For what the agent does inside one session — compression, the message queue, the task board — see [Work that runs long](/en/features/long-work).
+This page covers the scope choices on the **/memory** page, reviewed Markdown edits, the review inbox, model-assisted recommendations, and how to turn memory off. For what the agent does inside one session — compression, the message queue, the task board — see [Work that runs long](/en/features/long-work).
 
 ::: warning Shared memory homes
 A Kiki older than 0.3.2 does not know the **Basis** and **Validity** fields below, and a write from that version can drop them from an entry. If two Kiki installations share one memory home — a desktop app and a CLI on the same `KIKI_HOME`, or a rollback to an earlier build — upgrade each of them to 0.3.2 or later. A field that has already been dropped is not restored for you: an entry that has lost one reads **Not recorded**, and putting it back means recording the basis or the check again from the original instruction or source material.
@@ -26,11 +26,11 @@ In the main agent's `TodoList` notes, `directives` and `decided` can point at an
 
 An entry can record two things about itself, and both change how you should read it.
 
-**Basis** is the content's evidence: `human` (something you asked for or accepted), `observed` (checkable material or an observation), `derived` (Kiki's own inference or a relay of what someone else said), or `unknown`. The detail view spells each one out and shows the note and any source locators behind it. An older entry that has no basis recorded reads **Not recorded** — a gap in the record, not a judgment about the content. Once you have material you can check it against, ask Kiki to record the basis and the check for that entry; the fields are written through the memory tools, not by the editor on the **/memory** page. Kiki will not invent one, and it does not treat a line as yours just because the write happened in your turn.
+**Basis** is the content's evidence: `human` (something you asked for or accepted), `observed` (checkable material or an observation), `derived` (Kiki's own inference or a relay of what someone else said), or `unknown`. The detail view spells each one out and shows the note and any source locators behind it. An older entry that has no basis recorded reads **Not recorded** — a gap in the record, not a judgment about the content. Once you have material you can check it against, record the basis and check through the memory tools or a [reviewed Markdown import](#edit-a-markdown-export). Kiki will not invent one, and it does not treat a line as yours just because the write happened in your turn.
 
 **Validity** is the check to run before trusting a changing fact. It carries a `check` describing what must be verified, and optionally an `until` timestamp. An entry with a check reads **Before relying on it: Check again**; one past its `until` reads **Past its endpoint** and stays on disk as a historical lead rather than a current premise; one with no recorded validity reads **No check was recorded**. Passing `until` never deletes or archives anything on its own.
 
-Changing an entry's title, type or content on the page keeps its recorded basis and check. When the basis or the check needs to change, ask Kiki to update them at the same time. See [Built-in Tools](/en/reference/tools#memory-tools) for the tool-level contract.
+Changing an entry's title, type or content on the page keeps its recorded basis and check. When those attributes need to change, update them along with the content through the tools or the Markdown import. See [Built-in Tools](/en/reference/tools#memory-tools) for the tool-level contract.
 
 ## What the page lets you choose
 
@@ -72,6 +72,16 @@ If the entry changed while you had it open, saving is refused and you are asked 
 
 Saving an entry that changes nothing — the same title, content, pin state and recorded attributes — produces no new version and nothing to undo, and the page says **No change**. Re-submitting an edit you already saved is the normal way to land here. Changing only the basis or the check is still a change, and does get its own version.
 
+## Edit a Markdown export
+
+For a home already using SQLite, the authenticated [Memory API](/en/server/rest-api#markdown-export-and-import) lets you edit one complete entry as Markdown, then review it before saving. Explicit API management remains available when agent memory access is off.
+
+1. Export the current entry and edit the returned document. Keep its scope, ID, revision, origin and source coordinates intact; update the complete content, basis and check together when they change.
+2. Preview the document with its source-file locator and your reason. Compare the complete incoming and current entries. Only a preview with `canApply: true` can be confirmed; an unchanged document needs no write, and an already admitted source resolves to its current corrected entry.
+3. Confirm that preview with the returned token. It lasts ten minutes and expires on a server restart or authority change. If another edit or forget happened in the meantime, export the current state, reconcile your changes and preview again.
+
+A genuinely new document uses `id: new`, `revision: null` and `origin: null`. Renaming an old file or changing its ID does not restore a forgotten source. Import does not approve pending proposals, revive retired entries or move entries to another scope; use their review or restoration actions first. In read-only recovery mode you can export, but must [resume editing](#backend-migration-and-recovery) before previewing or applying an import.
+
 ## Backend migration and recovery
 
 Existing memory homes keep their file backend until you explicitly migrate them through the authenticated [Memory API](/en/server/rest-api#backend-migration-and-recovery). Before migration, upgrade or stop every other process writing that home. Migration pauses normal edits while it imports and validates the source; its saved operation ID lets you continue after a pause or restart. Once complete, the same tools and editor use SQLite, and the original files remain unchanged.
@@ -92,7 +102,7 @@ Memory Advisor uses a model you choose to recommend saved entries for the curren
 2. Under **Sending memory out**, choose the workspace and inspect the destination. **Allow sending** permits the current request, task notes, relevant tool-error context, memory titles, short excerpts and selected complete entries to be sent there. Confirmation is specific to that workspace, provider and origin. Changing the provider or origin requires confirmation again; **Revoke** withdraws it. Common secret patterns are masked before sending, while ordinary sensitive facts can remain.
 3. Optionally choose **Test with sample data**. It tests the saved connection with made-up content, including while the advisor is off. Your saved entries are not read for this test. A failure names the issue so you can correct the model, protocol, endpoint or credentials and try again.
 
-The **Advisor** switch in the memory-page header and the command in `Ctrl-K` change the same global setting. Turning it off preserves the model and destination confirmations, cancels unfinished recommendations, and restores the previous memory selection and text. Turning it back on uses **Rank**. The separate **Allow memory** switch controls all memory access.
+The **Advisor** switch in the memory-page header and the command in `Ctrl-K` change the same global setting. Turning it off preserves the model and destination confirmations, cancels unfinished recommendations, and restores the previous memory selection and text. Turning it back on uses **Rank**. The separate **Allow memory** switch controls all agent memory access.
 
 In **Advanced**, **Rank** places recommendations before keyword matches within the existing complete-entry budget. **Select** also leaves out entries explicitly judged unsuitable; exact ID references, pinned entries and entries not yet judged remain eligible. **Pair score** supports **Rank** only. A recommendation does not replace an entry's evidence or required validity check. Children use the advisor only within their effective memory and model permissions, and can be excluded with **Advise subagents**.
 

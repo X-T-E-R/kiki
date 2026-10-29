@@ -592,6 +592,9 @@ Both `PATCH` variants accept `{ name?, pinned? }`, with at least one field requi
 | `POST /api/memory/{scope}/forget` | Irreversibly forget the confirmed target set |
 | `GET /api/memory/{scope}/{id}/provenance` | Read original sources, human adjudications and related IDs |
 | `GET /api/memory/{scope}/{id}/revisions/{revision}` | Read an exact historical revision; URL-encode the revision |
+| `GET /api/memory/{scope}/{id}/export` | Export one complete revision-bound Markdown document and its entry |
+| `POST /api/memory/{scope}/import-preview` | Compare a Markdown document with the current governed entry |
+| `POST /api/memory/{scope}/import` | Apply an explicitly confirmed preview token |
 
 An advisor selector is `{ protocol: "chat_json" | "system_one" | "pair_score", model, endpoint? }`, where `model` is a configured alias and a non-chat `endpoint` must share the origin of that model's `effective_base_url`. `mode` is `off`, `rank` or `select`; `pair_score` supports `rank` only. `{ "advisor": { "mode": "off" } }` preserves the selector and other preferences. `advisor: null` removes the block; `selector: null` clears only the selector. Updates apply without restarting.
 
@@ -615,6 +618,23 @@ Two metadata fields are optional and behave differently on omission:
 `covered_by` is accepted for `archive` only, as `{ id, expected_revision }` of the retained active entry in the same scope. The stored entry records the same dependency as `{ id, revision }` — the revision you sent — and it is re-checked when the retirement is applied, so an archive against a replacement that has since changed fails rather than dropping a rule that is still needed.
 
 `GET /api/memory/{scope}/{id}` returns the full entry plus `scope`, a `target` of `{ scope, id, expected_revision }`, an `applicability` of `expired`, `recheck` or `unrecorded`, and `complete: true`. The `target` is an addressing object, not a request body: `scope` and `id` belong in the path, the owning workspace or persona in the query string, and `expected_revision` is the one field the `PUT` body takes from it — alongside the `action`, `type`, `title`, `body` and `reason` for the change you are making. Read an entry before writing to it. A `PUT` whose `expected_revision` no longer matches returns the `40944` code, and the response's `details` carries the domain's own `code` and `recovery` while the numeric envelope code stays the one existing clients already handle.
+
+#### Markdown export and import
+
+These three routes require a completed SQLite migration and the same scope ownership query parameters as ordinary entry reads. They remain available for explicit management while agent memory access is off. Read-only recovery permits export but refuses preview and import.
+
+`GET /api/memory/{scope}/{id}/export` returns `{ markdown, entry }` in the normal envelope. `markdown` is a complete `kiki-memory-v1` document: JSON or YAML frontmatter followed by the full body. Preserve `format`, `scope`, `id`, `revision`, `origin: { id, revision }` and source coordinates when editing an existing entry. A genuinely new document uses `id: "new"`, `revision: null`, `origin: null` and `status: "active"`. The file also carries `type`, `title`, `status`, `pinned`, optional `basis` and `validity`. In this complete-document format, `validity: null` or omitting `validity` clears the check, unlike a partial `PUT`. The body limit remains 1,500 characters.
+
+Send `{ markdown, source_locator, reason }` to `POST /api/memory/{scope}/import-preview`. Use a stable source-file locator; it is recorded as provenance, not fetched by the server. The entire document is limited to 65,536 UTF-16 units, the locator to 2,000 characters and the reason to 500. Unknown request fields are rejected. The response uses camelCase fields:
+
+- **`incoming`, `current`**: the complete parsed document and current governed entry, or `current: null` for a new target. Review both before confirming.
+- **`action`**: `create`, `update`, `unchanged` or `retained`. `unchanged` needs no write; `retained` resolves a previously admitted source to its current entry rather than replaying old content.
+- **`canApply`, `issue`**: only `canApply: true` permits confirmation. A blocked preview can include `issue: { code, recovery }`, for example for a stale revision, duplicate title or inactive target.
+- **`previewToken`, `expiresAt`**: present for a confirmable preview. The token binds the complete reviewed input to this server process and authority epoch for ten minutes.
+
+To confirm, send `{ preview_token: previewToken, operation_id: UUID, confirm_import: true }` to `POST /api/memory/{scope}/import` with the same scope owner. Do not resend or reconstruct the edited document. Success returns the normal `{ entry, operationId, outcome, warnings? }` write result. The confirmed import is recorded as your write while preserving the original Markdown source.
+
+The server rechecks the target revision and source barriers when applying. A concurrent edit or forget cannot be overwritten; revision conflicts return `40944` with domain details. An expired, altered or pre-restart token returns `40001`. Export the current entry, reconcile the document and preview again after either failure or an authority change. Changing an old file's ID, title or locator does not revive its corrected or forgotten source. Import cannot approve pending proposals, restore retired entries or move entries between scopes; use the ordinary review or restoration operation first.
 
 #### Backend migration and recovery
 

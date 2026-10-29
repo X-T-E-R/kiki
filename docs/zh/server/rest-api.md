@@ -592,6 +592,9 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 | `POST /api/memory/{scope}/forget` | 不可逆地忘记已确认的目标集合 |
 | `GET /api/memory/{scope}/{id}/provenance` | 读取原始来源、人工裁决与关联 ID |
 | `GET /api/memory/{scope}/{id}/revisions/{revision}` | 读取精确历史版本；revision 需 URL 编码 |
+| `GET /api/memory/{scope}/{id}/export` | 导出单条完整、绑定版本的 Markdown 文档及条目 |
+| `POST /api/memory/{scope}/import-preview` | 比较 Markdown 文档与当前受治理条目 |
+| `POST /api/memory/{scope}/import` | 应用明确确认过的预览 token |
 
 顾问选择器为 `{ protocol: "chat_json" | "system_one" | "pair_score", model, endpoint? }`，`model` 是已配置 alias，非对话协议的 `endpoint` 须与该模型的 `effective_base_url` 同源。`mode` 取 `off`、`rank` 或 `select`；`pair_score` 只支持 `rank`。`{ "advisor": { "mode": "off" } }` 保留选择器和其他设置。`advisor: null` 删除整个配置块，`selector: null` 只清除选择器。修改无需重启即可生效。
 
@@ -615,6 +618,23 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 `covered_by` 只在 `archive` 时接受，填同一范围内保留的生效条目的 `{ id, expected_revision }`。存下来的条目以 `{ id, revision }` 记录同一依赖——就是你发过去的那个 revision——并且在真正执行归档时会重新核验，所以对着已经变了的替代条目归档会失败，而不是丢掉仍然需要的规则。
 
 `GET /api/memory/{scope}/{id}` 返回完整条目，外加 `scope`、取 `{ scope, id, expected_revision }` 的 `target`、取 `expired` / `recheck` / `unrecorded` 的 `applicability`，以及 `complete: true`。`target` 是用来定位的对象，不是请求体：`scope` 和 `id` 放路径上，归属的工作区或角色放查询串上，`PUT` 请求体里只有 `expected_revision` 这一个字段取自它，其余是你这次要写的 `action`、`type`、`title`、`body` 和 `reason`。写之前先读：`expected_revision` 对不上的 `PUT` 会返回 `40944`，响应的 `details` 带着 domain 自己的 `code` 与 `recovery`，而信封里的数值 code 仍是既有客户端已在处理的那一个。
+
+#### Markdown 导出与导入
+
+这三个路由要求已完成 SQLite 迁移，归属查询参数与普通条目读取相同。即使 Agent 的记忆访问已关闭，仍可用于显式管理。只读恢复模式允许导出，但拒绝预览和导入。
+
+`GET /api/memory/{scope}/{id}/export` 在通常的信封中返回 `{ markdown, entry }`。`markdown` 是完整的 `kiki-memory-v1` 文档，由 JSON 或 YAML Frontmatter 加完整正文组成。编辑已有条目时，保留 `format`、`scope`、`id`、`revision`、`origin: { id, revision }` 与来源坐标。真正的新文档使用 `id: "new"`、`revision: null`、`origin: null` 和 `status: "active"`。文件还包含 `type`、`title`、`status`、`pinned`、可选的 `basis` 与 `validity`。这一完整文档格式与部分更新的 `PUT` 不同：`validity: null` 或省略 `validity` 都会清除复核条件。正文上限仍为 1,500 字符。
+
+向 `POST /api/memory/{scope}/import-preview` 发送 `{ markdown, source_locator, reason }`。使用稳定的源文件定位；服务会将其记为来源，不会据此获取文件。完整文档上限为 65,536 个 UTF-16 代码单元，定位上限为 2,000 字符，理由上限为 500 字符。请求中未定义的字段会被拒绝。响应使用 camelCase 字段：
+
+- **`incoming`、`current`**：完整解析后的文档及当前受治理条目；新目标的 `current` 为 `null`。确认前核对两者。
+- **`action`**：`create`、`update`、`unchanged` 或 `retained`。`unchanged` 无需写入；`retained` 将已接收来源指向其当前条目，不重放旧内容。
+- **`canApply`、`issue`**：只有 `canApply: true` 才可确认。被阻止的预览可含 `issue: { code, recovery }`，说明版本过期、标题重复或目标未生效等问题。
+- **`previewToken`、`expiresAt`**：可确认的预览才返回。这一 token 将完整的已审载荷绑定到当前服务进程与存储权威 epoch，十分钟内有效。
+
+确认时，向 `POST /api/memory/{scope}/import` 发送 `{ preview_token: previewToken, operation_id: UUID, confirm_import: true }`，保持相同范围归属，不重新提交或拼装编辑后的文档。成功返回通常的 `{ entry, operationId, outcome, warnings? }` 写入结果；这次导入记为你的写入，同时保留原始 Markdown 来源。
+
+服务在应用时重新核验目标版本与来源屏障。并发编辑或遗忘不能被覆盖；版本冲突返回 `40944` 及 domain 详情。过期、篡改或重启前的 token 返回 `40001`。遇到这两类失败或存储权威状态变化后，重新导出当前条目，合并修改并再次预览。给旧文件换 ID、标题或定位不会重新启用已纠正或遗忘的来源。导入不能批准待审提议、恢复已退出条目或跨范围移动条目；请先使用通常的审批或恢复操作。
 
 #### 后端迁移与恢复
 

@@ -299,3 +299,55 @@ describe('Memory authority management over authenticated HTTP', () => {
     } finally { await server.close(); await rm(home, { force: true, recursive: true }); }
   }, 30_000);
 });
+
+describe('revision-bound Markdown import over authenticated HTTP', () => {
+  it('exports and previews complete edits, confirms once and blocks stale or forgotten source replay', async () => {
+    await mkdir(join(process.cwd(), '.tmp'), { recursive: true });
+    const home = await mkdtemp(join(process.cwd(), '.tmp', 'memory-markdown-http-'));
+    const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    const base = `http://127.0.0.1:${server.port}/api/memory`;
+    const request = async (method: string, path: string, body?: unknown) => {
+      const response = await fetch(`${base}${path}`, { method, headers: authHeaders(server, { 'content-type': 'application/json' }), body: body === undefined ? undefined : JSON.stringify(body) });
+      expect(response.status).toBe(200);
+      return await response.json() as { code: number; data: any; details?: { code: string; recovery: string } };
+    };
+    try {
+      expect((await fetch(`${base}/global/m_example/export`)).status).toBe(401);
+      await server.core.accessor.get(ISessionIndex).prepare();
+      expect((await request('POST', '/authority/migrate', { operation_id: '10000000-0000-4000-8000-000000000001', older_writers_stopped: true })).data.backend).toBe('sqlite');
+      await request('PATCH', '/settings', { enabled: false });
+      const input = { type: 'feedback', title: 'Markdown deployment rule', body: 'Use 9 workers; never upload output; isolated tests remain allowed.', reason: 'Owner instruction' };
+      const saved = (await request('PUT', '/global/new', input)).data.entry;
+      const exported = (await request('GET', `/global/${saved.id}/export`)).data;
+      expect(exported.entry).toMatchObject({ id: saved.id, revision: saved.revision, body: input.body });
+      expect(exported.markdown).toContain(saved.revision);
+      const source = { markdown: exported.markdown.replace('Use 9 workers', 'Use 5 workers'), source_locator: 'file:///example/memory/rule.md', reason: 'Reviewed Markdown correction' };
+      const preview = (await request('POST', '/global/import-preview', source)).data;
+      expect(preview).toMatchObject({ canApply: true, action: 'update', current: { body: input.body }, incoming: { body: source.markdown.split('\n---\n')[1].trim() } });
+      const confirmation = { preview_token: preview.previewToken, operation_id: '10000000-0000-4000-8000-000000000002' };
+      expect((await request('POST', '/global/import', confirmation)).code).toBe(40001);
+      expect((await request('GET', `/global/${saved.id}`)).data.body).toBe(input.body);
+      const applied = await request('POST', '/global/import', { ...confirmation, confirm_import: true });
+      expect(applied.code).toBe(0);
+      expect(applied.data.entry.body).toBe('Use 5 workers; never upload output; isolated tests remain allowed.');
+      expect((await request('POST', '/global/import-preview', source)).data).toMatchObject({ canApply: false, action: 'retained', current: { id: saved.id, revision: applied.data.entry.revision } });
+      const currentFile = (await request('GET', `/global/${saved.id}/export`)).data.markdown;
+      const concurrent = (await request('POST', '/global/import-preview', { ...source, markdown: currentFile.replace('Use 5 workers', 'Use 7 workers') })).data;
+      const corrected = (await request('PUT', `/global/${saved.id}`, { ...input, action: 'update', expected_revision: applied.data.entry.revision, body: 'Use 3 workers; retain the isolated-test exception.' })).data.entry;
+      const stale = await request('POST', '/global/import', { preview_token: concurrent.previewToken, operation_id: '10000000-0000-4000-8000-000000000003', confirm_import: true });
+      expect(stale.details?.code).toBe('revision_conflict');
+      expect((await request('GET', `/global/${saved.id}`)).data.body).toBe(corrected.body);
+      const forget = (await request('POST', '/global/forget-preview', { ids: [saved.id] })).data;
+      expect((await request('POST', '/global/forget', { operation_id: '10000000-0000-4000-8000-000000000004', confirm_irreversible: true, targets: forget.targets.map((entry: { id: string; expectedRevision: string }) => ({ id: entry.id, expected_revision: entry.expectedRevision })) })).code).toBe(0);
+      const match = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(exported.markdown)!;
+      const renamed = `---\n${JSON.stringify({ ...JSON.parse(match[1]!), id: 'new', revision: null, title: 'Renamed original extraction' })}\n---\n${match[2]}`;
+      const rejected = await request('POST', '/global/import-preview', { ...source, markdown: renamed, source_locator: 'file:///example/renamed.md' });
+      expect(rejected.details?.code).toBe('inactive_target');
+      expect((await request('GET', '/global')).data.items).toEqual([]);
+      const fresh = (await request('PUT', '/global/new', { ...input, title: 'Distinct new owner instruction' })).data.entry;
+      expect((await request('POST', '/authority/recover-readonly', { confirm_readonly: true })).code).toBe(0);
+      expect((await request('GET', `/global/${fresh.id}/export`)).code).toBe(0);
+      expect((await request('POST', '/global/import-preview', source)).code).toBe(40001);
+    } finally { await server.close(); await rm(home, { force: true, recursive: true }); }
+  }, 30_000);
+});
