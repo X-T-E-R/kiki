@@ -16,14 +16,14 @@ export interface UsageSourceChanges {
   onDidChange(listener: (sessionKey?: string) => void): { dispose(): void };
 }
 
-type WatchSource = (root: string, listener: (filename: string | null) => void) => {
+type WatchSource = (root: string, listener: (filename: string | null, event?: 'rename' | 'change') => void) => {
   close(): void;
   on(event: 'error', listener: (error: unknown) => void): unknown;
 };
 
 const watchSource: WatchSource = (root, listener) => watch(root, {
   recursive: true, persistent: false,
-}, (_event, filename) => { listener(filename); });
+}, (event, filename) => { listener(filename, event); });
 
 export class UsageSourceTracker extends Disposable implements UsageSourceChanges {
   private watching = false;
@@ -63,12 +63,12 @@ export class UsageSourceTracker extends Disposable implements UsageSourceChanges
         core.accessor.get(ILogService).warn('usage source watch failed; validating sources on each query', { error: String(error) });
       };
       try {
-        const watcher = createWatch(root, (filename) => {
+        const watcher = createWatch(root, (filename, event) => {
           const parts = filename?.split(/[\\/]/);
           if (parts === undefined || parts.length < 2) {
             invalidate();
           } else if (parts.length <= 2 || (parts[2] === 'agents' && (
-            parts.length <= 4 || (parts.length === 5 && parts[4] === AGENT_WIRE_RECORD_KEY)
+            parts.length <= 4 && event !== 'change' || (parts.length === 5 && parts[4] === AGENT_WIRE_RECORD_KEY)
           ))) {
             invalidate(`${parts[0]}\0${parts[1]}`);
           }

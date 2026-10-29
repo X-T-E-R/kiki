@@ -219,27 +219,25 @@ describe('server /api/usage', () => {
     const service = new UsageAggregationService(core, Date.now, {}, sources);
     const changed: Array<string | undefined> = [];
     sources.onDidChange((key) => { changed.push(key); });
+    const readComplete = (output: number) => vi.waitFor(async () => {
+      const response = await service.query({});
+      expect(response.summary.tokens.output, JSON.stringify(changed)).toBe(output);
+      expect(response.reliability).toMatchObject({ complete: true, incomplete_sessions: 0, incomplete_reason: null });
+      return response;
+    });
     try {
       expect(sources.ready).toBe(true);
-      const cold = await service.query({});
-      expect(cold.summary.tokens.output).toBe(160);
+      const cold = await readComplete(160);
       expect(await service.query({})).toEqual(cold);
       const logs = core.accessor.get(IAppendLogStore);
       const wireScope = `sessions/${WS_A}/session-high/agents/main`;
       logs.append(wireScope, 'wire.jsonl', usageRecord(BASE_TIME + 4 * DAY, 'billing-a', 7));
       await logs.flush(wireScope, 'wire.jsonl');
-      const live = await service.query({});
-      expect(live.summary.tokens.output).toBe(167);
-      expect(live.reliability.complete).toBe(true);
+      await readComplete(167);
       await writeWire(home as string, WS_A, 'session-high', 'main', [usageRecord(BASE_TIME + DAY, 'billing-a', 5)]);
-      await vi.waitFor(async () => {
-        const rewritten = await service.query({});
-        expect(rewritten.summary.tokens.output, JSON.stringify(changed)).toBe(15);
-        expect(rewritten.reliability.complete).toBe(true);
-      });
+      await readComplete(15);
       await writeWire(home as string, WS_A, 'session-high', 'child', [usageRecord(BASE_TIME + DAY, 'billing-a', 3)]);
-      await vi.waitFor(async () => { expect((await service.query({})).summary.tokens.output).toBe(18); });
-      expect((await service.query({})).reliability.complete).toBe(true);
+      await readComplete(18);
     } finally {
       service.dispose();
       sources.dispose();

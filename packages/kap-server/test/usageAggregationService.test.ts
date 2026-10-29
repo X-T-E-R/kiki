@@ -918,10 +918,10 @@ describe('UsageAggregationService cache budgets', () => {
     const changes = { ready: true, onDidChange: (callback: typeof listener) => { listener = callback; return { dispose: () => {} }; } };
     const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [usageRecord(1)] }, () => now,
       {}, undefined, undefined, undefined, async () => { if (signalDuringRead) listener('w\0s'); }, async () => { probes++; }, changes);
-    await query(f.service);
+    expect((await query(f.service)).reliability.complete).toBe(false);
     signalDuringRead = false;
     const first = probes;
-    await query(f.service);
+    expect((await query(f.service)).reliability.complete).toBe(true);
     expect(probes - first).toBe(3);
     const checked = probes;
     now += 5 * 60_000;
@@ -1674,7 +1674,7 @@ describe('UsageSourceTracker', () => {
       return typeof value === 'function' ? value.bind(target) : value;
     } });
     const logs = new AppendLogStore(storage);
-    let signal: (filename: string | null) => void = () => {};
+    let signal: (filename: string | null, event?: 'rename' | 'change') => void = () => {};
     let failed: (error: unknown) => void = () => {};
     let watches = 0;
     let disposed = false;
@@ -1702,10 +1702,15 @@ describe('UsageSourceTracker', () => {
     const count = changes.length;
     signal('w/s/media');
     signal('w/s/agents/main/blobs');
+    signal('w/s/agents', 'change');
+    signal('w/s/agents/child', 'change');
+    signal('w/s/agents/child/wire.jsonl.cold.lock', 'rename');
     expect(changes).toHaveLength(count);
-    signal('w/s/agents/main/wire.jsonl');
+    signal('w/s/agents/main/wire.jsonl', 'change');
+    expect(changes).toHaveLength(count + 1);
     expect(changes.at(-1)).toBe('w\0s');
-    signal('w\\s\\agents\\child');
+    signal('w\\s\\agents\\child', 'rename');
+    expect(changes).toHaveLength(count + 2);
     expect(changes.at(-1)).toBe('w\0s');
     signal(null);
     expect(changes.at(-1)).toBeUndefined();
