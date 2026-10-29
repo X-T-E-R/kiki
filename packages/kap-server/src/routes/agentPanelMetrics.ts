@@ -17,7 +17,6 @@ import { summarizeUsageFacts } from '@kiki/agent-core-v2/agent/usage/usageFact';
 import type { AgentPanelMetrics } from '@kiki/protocol';
 import type { IModelPricingService } from '../pricing/modelPricingService';
 import { usageRuntime } from '../usage/usageRuntime';
-import type { NormalizedUsageRecord } from '../usage/usageAggregationService';
 
 const EMPTY_USAGE: TokenUsage = {
   inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0,
@@ -336,26 +335,6 @@ function emptyPersistedUsage(partial = false): PersistedUsage {
     usage: { ...EMPTY_USAGE }, byModel: {}, records: 0, knownUsageRecords: 0,
     partial, complete: !partial,
   };
-}
-
-function applyPersistedUsageRecord(state: PersistedUsage, record: NormalizedUsageRecord): void {
-  if (record.invalid) {
-    state.partial = true;
-    return;
-  }
-  state.records += 1;
-  const reported = record.usage.inputOther + record.usage.output +
-    record.usage.inputCacheRead + record.usage.inputCacheCreation;
-  const known = record.usageKnown !== false && !(record.usageKnown === undefined && reported === 0);
-  if (!known) {
-    state.partial = true;
-    return;
-  }
-  state.knownUsageRecords += 1;
-  addUsage(state.usage, record.usage);
-  const byModel = state.byModel[record.model] ?? { ...EMPTY_USAGE };
-  addUsage(byModel, record.usage);
-  state.byModel[record.model] = byModel;
 }
 
 function toPersistedMetrics(state: PersistedUsage, pricing?: IModelPricingService): AgentPanelMetrics {

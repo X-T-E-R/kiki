@@ -56,6 +56,7 @@ import { TurnStarted } from '@kiki/agent-core-v2/agent/loop/turnEvents';
 import { AgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycleService';
 import { sessionWarningsResponseSchema } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 import { encodeLegacyWorkDirKey, encodeWorkDirKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
+import type { UsageAccountingSnapshot } from '@kiki/protocol';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -102,6 +103,7 @@ interface SessionWire {
     tokens_by_model?: Record<string, number>;
     by_model?: Record<string, number>;
     cost_unknown_models?: string[];
+    accounting?: UsageAccountingSnapshot;
     context_tokens: number;
     context_limit: number;
     turn_count: number;
@@ -2073,10 +2075,21 @@ describe('server-v2 /api/sessions', () => {
     expect(got.body.data.usage.total_cost_usd).toBeCloseTo(0.00008295, 12);
     expect(got.body.data.usage.by_model?.['claude-sonnet-4-5']).toBeCloseTo(0.00008295, 12);
 
+    const { accounting, ...legacyUsage } = got.body.data.usage;
+    expect(accounting).toMatchObject({
+      version: 2,
+      subject: { scope: 'session', session_id: id },
+      tokens: { input_other: 111, output: 23, input_cache_read: 4, input_cache_creation: 1 },
+      tokens_unknown: false,
+      cost_unknown: true,
+      complete: true,
+      covered_at: expect.any(Number),
+    });
+    expect(accounting?.cost_usd_estimated).toBeCloseTo(0.00008295, 12);
+    expect(accounting?.source_revision).toContain('main:');
+    expect(accounting?.source_revision).toContain('cold-usage-worker:');
     const listed = await getJson<PageWire>('/api/sessions');
-    expect(listed.body.data.items.find((item) => item.id === id)?.usage).toEqual(
-      got.body.data.usage,
-    );
+    expect(listed.body.data.items.find((item) => item.id === id)?.usage).toEqual(legacyUsage);
   });
 
   it('keeps subagent usage in cold and resumed session projections after restart', async () => {
@@ -2134,8 +2147,24 @@ describe('server-v2 /api/sessions', () => {
     expect(coldUsage?.total_cost_usd).toBeGreaterThan(0);
     expect(coldUsage?.by_model?.['claude-sonnet-4-5']).toBeGreaterThan(0);
 
+    expect(coldUsage?.accounting).toBeUndefined();
     const snapshot = await getJson<{ session: SessionWire }>(`/api/sessions/${id}/snapshot`);
-    expect(snapshot.body.data.session.usage).toEqual(coldUsage);
+    const { accounting, ...legacyUsage } = snapshot.body.data.session.usage;
+    expect(legacyUsage).toEqual(coldUsage);
+    expect(accounting).toMatchObject({
+      version: 2,
+      subject: { scope: 'session', session_id: id },
+      tokens: { input_other: 15, output: 13, input_cache_read: 13, input_cache_creation: 13 },
+      tokens_unknown: false,
+      cost_unknown: true,
+      complete: true,
+      covered_at: expect.any(Number),
+    });
+    expect(accounting?.cost_usd_estimated).toBeCloseTo(0.0001419, 12);
+    expect(accounting?.source_revision).toContain('main:');
+    expect(accounting?.source_revision).toContain('restart-usage-worker:');
+    const browse = await getJson<{ session: SessionWire }>(`/api/klient/session-view/${id}/snapshot`);
+    expect(browse.body.data.session.usage).toEqual(coldUsage);
     const warmListed = await getJson<PageWire>('/api/sessions');
     expect(warmListed.body.data.items.find((item) => item.id === id)?.usage).toEqual(coldUsage);
   });

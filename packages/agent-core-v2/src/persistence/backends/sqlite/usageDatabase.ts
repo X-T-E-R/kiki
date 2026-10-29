@@ -8,7 +8,7 @@ import type { UsageFact } from '../../../agent/usage/usageFact.ts';
 import type { UsageReadModelAggregate, UsageReadModelQuery, UsageReadModelResult, UsageReadModelSession, UsageSourceHead, UsageImportProgress, UsageSourcePage } from '../../interface/usageReadModel.ts';
 import type { UsageStoreOperation } from './usageProtocol.ts';
 
-const COST_OVERFLOW = Symbol('usage.cost_overflow');
+const COST_OVERFLOW = new Error('Usage cost overflow');
 const APPLICATION_ID = 0x4b555332;
 const COLUMNS = 'time,model,upstream_model,source_agent,agent,parent_agent,provider,model_alias,profile,turn,input_other,output,cache_read,cache_creation,state,mask,known,usage_scope,executor';
 const EMPTY = { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 };
@@ -254,7 +254,7 @@ export class UsageDatabase {
 
   private query(query: UsageReadModelQuery, finiteCosts = false): UsageReadModelResult {
     const meta = this.db.prepare('SELECT * FROM meta WHERE id=1').get()!;
-    const revision = `${meta['epoch']}:${meta['revision']}`;
+    const revision = `${text(meta['epoch'])}:${Number(meta['revision'])}`;
     if (query.expectedRevision !== undefined && query.expectedRevision !== revision) throw Object.assign(new Error('Usage data changed; restart pagination'), { code: 'usage.revision_changed' });
     this.db.exec('CREATE TEMP TABLE IF NOT EXISTS quote(model TEXT PRIMARY KEY,i REAL,o REAL,r REAL,c REAL) WITHOUT ROWID; DELETE FROM quote');
     const quote = this.db.prepare('INSERT INTO quote VALUES(?,?,?,?,?)');
@@ -362,12 +362,13 @@ export class UsageDatabase {
   }
 }
 
-function nullable(value: unknown): string | null { return value === null || value === undefined ? null : String(value); }
+function text(value: unknown): string { if (typeof value !== 'string') throw new TypeError('Invalid Usage text column'); return value; }
+function nullable(value: unknown): string | null { return value === null || value === undefined ? null : text(value); }
 function tokenOf(row: Row): typeof EMPTY { return { inputOther: Number(row['input_other']), output: Number(row['output']), inputCacheRead: Number(row['cache_read']), inputCacheCreation: Number(row['cache_creation']) }; }
 function aggregateOf(row: Row): UsageReadModelAggregate { return { usage: tokenOf(row), cost: Number(row['cost']), costUnknown: Boolean(row['cost_unknown']), knownRecords: Number(row['known'] ?? 0), missingRecords: Number(row['missing'] ?? 0), legacyZeroRecords: Number(row['legacy'] ?? 0) }; }
 function maskOf(fact: UsageFact): number { return Number(fact.usage.inputOther !== 0) | Number(fact.usage.output !== 0) << 1 | Number(fact.usage.inputCacheRead !== 0) << 2 | Number(fact.usage.inputCacheCreation !== 0) << 3; }
 function sourceHeadOf(row: Row): UsageSourceHead {
-  return { dataGeneration: String(row['generation']), checkpoint: row['checkpoint'] === null ? undefined : JSON.parse(String(row['checkpoint'])), pendingCheckpoint: row['building_checkpoint'] === null ? undefined : JSON.parse(String(row['building_checkpoint'])), journalOffset: Number(row['journal_offset']), journalSize: Number(row['journal_size']), ordinal: Number(row['ordinal']), revision: Number(row['revision']) };
+  return { dataGeneration: String(row['generation']), checkpoint: row['checkpoint'] === null ? undefined : JSON.parse(text(row['checkpoint'])), pendingCheckpoint: row['building_checkpoint'] === null ? undefined : JSON.parse(text(row['building_checkpoint'])), journalOffset: Number(row['journal_offset']), journalSize: Number(row['journal_size']), ordinal: Number(row['ordinal']), revision: Number(row['revision']) };
 }
 function factOf(row: Row): UsageFact {
   const fact: UsageFact = { time: Number(row['time']), model: String(row['model']), usage: tokenOf(row), invalid: Number(row['state']) === 3 || undefined, upstreamModelId: nullable(row['upstream_model']) ?? undefined, sourceAgentId: nullable(row['source_agent']) ?? undefined, agentId: nullable(row['agent']) ?? undefined, parentAgentId: nullable(row['parent_agent']) ?? undefined, provider: nullable(row['provider']) ?? undefined, modelAlias: nullable(row['model_alias']) ?? undefined, profileName: nullable(row['profile']) ?? undefined, turnId: row['turn'] === null ? undefined : Number(row['turn']), usageScope: row['usage_scope'] === 'turn' ? 'turn' : row['usage_scope'] === 'session' ? 'session' : undefined, executorId: nullable(row['executor']) ?? undefined };

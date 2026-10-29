@@ -327,7 +327,7 @@ describe('SqliteQueryStore', () => {
     expect(await next.get('queue', '19999')).toEqual({ id: 19999 });
   });
 
-  it('reclaims a killed process staging pair on reopen while a real peer resumes its paused fact build', async () => {
+  it('reclaims a killed process staging pair while a real peer finishes its staged fact publication', async () => {
     const script = join(home, 'staging-owner.mts');
     const loader = new URL('../../../../../../build/register-raw-text-loader.mjs', import.meta.url).href;
     const module = (relative: string) => JSON.stringify(new URL(relative, import.meta.url).href);
@@ -343,26 +343,42 @@ describe('SqliteQueryStore', () => {
       import { AppendLogStore } from ${module('../../../../src/persistence/backends/node-fs/appendLogStore.ts')};
       import { SqliteQueryStore } from ${module('../../../../src/persistence/backends/sqlite/sqliteQueryStore.ts')};
       import { IUsageFactStore, UsageFactStore } from ${module('../../../../src/app/usageFacts/usageFactStore.ts')};
+      import { IUsageReadModel } from ${module('../../../../src/persistence/interface/usageReadModel.ts')};
+      import { SqliteUsageReadModel } from ${module('../../../../src/persistence/backends/sqlite/sqliteUsageReadModel.ts')};
       import { stubBootstrap } from ${module('../../../app/bootstrap/stubs.ts')};
       import { stubLog } from ${module('../../../_base/log/stubs.ts')};
       const scope = 'sessions/example/session/agents/main';
+      const target = 'usage-build-target';
       const ix = new TestInstantiationService();
       const storage = new FileStorageService(process.argv[2]);
       ix.stub(IBootstrapService, stubBootstrap(process.argv[2])); ix.stub(ILogService, stubLog()); ix.stub(IFileSystemStorageService, storage);
-      ix.set(IQueryStore, new SyncDescriptor(SqliteQueryStore)); ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore)); ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
-      const facts = ix.get(IUsageFactStore), query = ix.get(IQueryStore);
+      ix.set(IQueryStore, new SyncDescriptor(SqliteQueryStore)); ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore)); ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel)); ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
+      const model = ix.get(IUsageReadModel), facts = ix.get(IUsageFactStore), logs = ix.get(IAppendLogStore), query = ix.get(IQueryStore);
+      const staging = await query.createStaging!(scope);
       if (process.argv[3] === 'seed') await facts.commit(scope, 0, { generation:'legacy', offset:800, size:800, mtimeMs:1, boundaryHash:'', valid:true }, Array.from({length:800}, (_,time) => ({time,model:'example',usageKnown:true,usage:{inputOther:1,output:2,inputCacheRead:0,inputCacheCreation:0}})));
-      for (let pass = 0; pass < 10; pass++) {
-        await facts.read(scope, undefined, undefined, {budget:{remainingRecords:256}});
-        const progress = Reflect.get(facts, 'indexing').get(scope);
-        if (progress?.copied > 0) { process.send({type:'ready',stage:progress.stage,publication:progress.publication}); break; }
-        if (pass === 9) throw new Error('staging pause not reached');
-      }
+      const put = <T extends { readonly time: number }>(collection: string, rows: readonly T[], start = 0) => rows.map((row,index) => ({kind:'put' as const,collection,key:String(start+index),value:row,columns:{time:row.time}}));
+      const first = await facts.read(scope, undefined, undefined, {budget:{remainingRecords:256}});
+      const records = [...first.records];
+      let cursor = first.nextCursor;
+      while (cursor !== undefined) { const page = await facts.read(scope, undefined, undefined, {budget:{remainingRecords:256}, cursor}); records.push(...page.records); cursor = page.nextCursor; }
+      if (records.length !== 800) throw new Error('expected 800 facts, got ' + records.length);
+      await query.batch(put(staging.stage, records));
+      await query.batch(put(staging.publication, records.slice(0, 256)));
+      process.send({type:'ready',stage:staging.stage,publication:staging.publication});
       process.on('message', async () => {
         try {
-          const snapshot = await facts.read(scope);
-          process.send({type:'complete',count:snapshot.records.length,output:snapshot.records.reduce((sum,row) => sum+row.usage.output,0)});
-          await ix.get(IAppendLogStore).close(); await query.close(); await ix.dispose(); await storage.close(); process.disconnect();
+          for (let start = 256; start < records.length; start += 256) {
+            const end = Math.min(start + 256, records.length);
+            const page = await query.pageByColumn<typeof records[number]>(staging.stage, {column:'time',bounds:{gte:start,lt:end},limit:end-start});
+            if (page.items.length !== end - start) throw new Error('expected ' + (end - start) + ' staged facts, got ' + page.items.length);
+            await query.batch(put(staging.publication, page.items, start));
+          }
+          const committed = await query.batchIf!([{collection:target,key:'head',value:undefined}], [{kind:'put',collection:target,key:'head',value:{count:records.length}}], {source:staging.publication,collection:target,replace:true});
+          if (!committed) throw new Error('usage build target already committed');
+          await staging.dispose();
+          const result = await query.pageByColumn<typeof records[number]>(target, {column:'time',limit:records.length});
+          process.send({type:'complete',count:result.items.length,output:result.items.reduce((sum,row) => sum+row.usage.output,0)});
+          await model.close(); await logs.close(); await logs.drainRetirements(); await query.close(); await ix.dispose(); await storage.close(); process.disconnect();
         } catch (error) { process.send({type:'failure',message:String(error.stack)}); process.exit(1); }
       });
     `);
@@ -375,7 +391,7 @@ describe('SqliteQueryStore', () => {
           if (value['type'] === type) { child.off('message', message); child.off('exit', exit); resolve(value); }
           else if (value['type'] === 'failure') reject(new Error(String(value['message'])));
         };
-        const exit = (code: number | null) => reject(new Error(`stage child exited ${code}: ${stderr}`));
+        const exit = (code: number | null) => { reject(new Error(`stage child exited ${code}: ${stderr}`)); };
         child.on('message', message); child.once('exit', exit); child.once('error', reject);
       });
     }

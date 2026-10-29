@@ -88,7 +88,18 @@ const pricingStub: IModelPricingService = {
   ready: Promise.resolve(),
   getPricing: async () => ({ items: [], overrides: {} }),
   setPricing: async () => ({ items: [], overrides: {} }),
-  resolve: () => undefined,
+  resolve: (model) => model === 'unknown-price' ? undefined : {
+    requestedModel: model,
+    catalogModel: model,
+    strategy: 'exact',
+    currency: 'USD',
+    prices: {
+      inputCostPerToken: 0.001,
+      outputCostPerToken: 0.001,
+      cacheReadInputTokenCost: 0.001,
+      cacheCreationInputTokenCost: 0.001,
+    },
+  },
   calculate: (model, usage) => {
     if (model === 'unknown-price') return undefined;
     return (
