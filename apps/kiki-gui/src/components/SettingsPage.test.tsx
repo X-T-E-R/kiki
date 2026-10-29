@@ -645,7 +645,7 @@ describe('SettingsPage memory advisor', () => {
   it('echoes an older model setting as the source in effect and links to Who decides', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
     const container = await renderSettings('/settings/memory', { guarded: true });
-    expect(card(container).querySelector('[data-decision-summary-value]')?.textContent).toBe('Using an older setting: cheap-judge.');
+    expect(card(container).querySelector('[data-decision-summary-value]')?.textContent).toBe('Still using the source saved in the older settings: cheap-judge.');
     await click(card(container).querySelector('[data-decision-change]')!);
     await flush();
     expect(container.querySelector('[data-test-location]')?.textContent ?? '').toContain('/settings/ai?tab=defaults');
@@ -681,7 +681,7 @@ describe('SettingsPage memory advisor', () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
     const container = await renderSettings('/settings/memory');
     await click(card(container).querySelector('[data-memory-advisor-remove]')!);
-    await click([...document.querySelectorAll('button')].find((button) => button.textContent === 'Remove settings')!);
+    await click(card(container).querySelector('[data-memory-advisor-remove-do]')!);
     await flush();
     expect(advisorFake.patches.at(-1)).toEqual({ advisor: null });
   });
@@ -708,7 +708,7 @@ describe('SettingsPage memory advisor', () => {
     const container = await renderSettings('/settings/memory');
     client.patchMemoryAdvisorSettings.mockRejectedValueOnce(new Error('config is read-only'));
     await click(card(container).querySelector('[data-memory-advisor-remove]')!);
-    const confirm = () => [...document.querySelectorAll('button')].find((button) => button.textContent === 'Remove settings');
+    const confirm = () => card(container).querySelector<HTMLElement>('[data-memory-advisor-remove-do]');
     await click(confirm()!);
     await flush();
     expect(confirm()).toBeDefined();
@@ -717,7 +717,7 @@ describe('SettingsPage memory advisor', () => {
     await click(confirm()!);
     await flush();
     expect(advisorFake.patches.at(-1)).toEqual({ advisor: null });
-    expect(confirm()).toBeUndefined();
+    expect(confirm()).toBeNull();
   });
 
   it('accepts one heading-switch write at a time', async () => {
@@ -845,10 +845,9 @@ describe('SettingsPage batch-3 leaves', () => {
     const card = container.querySelector('#st-card-conn-server')!;
     expect(card.querySelector('[data-conn-url]')?.textContent).toBe('http://127.0.0.1:8080');
     expect(card.querySelector('[data-conn-no-token]')).toBeNull();
-    // In a browser the desktop server card is only its title and "desktop only" badge.
-    const ownedCard = container.querySelector('#st-card-conn-owned')!;
-    expect(ownedCard.textContent).toContain('Desktop only');
-    expect(ownedCard.querySelector('button')).toBeNull();
+    // The browser cannot restart the desktop's own server, so the card is
+    // absent there rather than a "desktop only" shell.
+    expect(container.querySelector('#st-card-conn-owned')).toBeNull();
 
     await click(card.querySelector('[data-conn-edit]')!);
     const urlInput = card.querySelector<HTMLInputElement>('#st-conn-url')!;
@@ -1068,11 +1067,7 @@ describe('SettingsPage batch-3 leaves', () => {
     const tasks = await renderSettings('/settings/tasks');
     expect(tasks.querySelector('#st-card-task-policy')).not.toBeNull();
     expect(tasks.querySelector('#st-card-task-policy')!.textContent).toContain('Maximum running tasks');
-    expect(tasks.querySelector('#st-card-cron [data-settings-diagnostics]')).not.toBeNull();
-    const diagnosticsScope = tasks.querySelector('#st-card-cron [data-settings-panel-scope]');
-    expect(diagnosticsScope?.getAttribute('data-settings-panel-scope')).toBe('readOnly');
-    expect(diagnosticsScope?.textContent).toBe('diagnostic view');
-    expect(tasks.querySelector('#st-card-cron input, #st-card-cron [role="switch"]')).toBeNull();
+    expect(tasks.querySelector('#st-card-cron')).toBeNull();
 
     const sessions = await renderSettings('/settings/communication');
     const messaging = sessions.querySelector('#st-card-agent-messaging')!;
@@ -1085,7 +1080,12 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(developer.querySelector('#st-card-token-counting')).not.toBeNull();
     expect(developer.querySelector('#st-card-resource-limits')).not.toBeNull();
     expect(developer.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle reclamation (s)');
-    expect(developer.querySelector('#st-card-cron')).toBeNull();
+    // Cron is a read-only readout here, not a form.
+    expect(developer.querySelector('#st-card-cron [data-settings-diagnostics]')).not.toBeNull();
+    const diagnosticsScope = developer.querySelector('#st-card-cron [data-settings-panel-scope]');
+    expect(diagnosticsScope?.getAttribute('data-settings-panel-scope')).toBe('readOnly');
+    expect(diagnosticsScope?.textContent).toBe('diagnostic view');
+    expect(developer.querySelector('#st-card-cron input, #st-card-cron [role="switch"]')).toBeNull();
 
     const agents = await renderSettings('/settings/agents');
     await flush();
@@ -1379,20 +1379,17 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(extensions.querySelector('[data-test-location]')?.textContent).toBe('/settings/extensions?tab=mcp');
     expect(extensions.querySelector('#st-card-mcp')).not.toBeNull();
 
+    // Browser & computer now renders both its halves on one page; the legacy
+    // computer-control address still resolves to the same section.
     const browser = await renderSettings('/settings/browser-control', { guarded: true });
     await flush();
-    expect(browser.querySelector('[data-browser-control-tab="browser"]')?.getAttribute('aria-selected')).toBe('true');
     expect(browser.querySelector('#st-card-browser-enabled')).not.toBeNull();
-
-    await click(browser.querySelector('[data-browser-control-tab="computer"]')!);
-    await flush();
-    expect(browser.querySelector('[data-test-location]')?.textContent).toBe('/settings/browser-control?tab=computer');
     expect(browser.querySelector('#st-card-computer-enabled')).not.toBeNull();
 
     const legacyComputer = await renderSettings('/settings/computer-control', { guarded: true });
     await flush();
     expect(legacyComputer.querySelector('[data-test-location]')?.textContent).toBe('/settings/browser-control?tab=computer');
-    expect(legacyComputer.querySelector('[data-browser-control-tab="computer"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(legacyComputer.querySelector('#st-card-computer-enabled')).not.toBeNull();
   });
 
   it('switches between Agents & profiles and Dispatch & subagents tabs on Agents', async () => {
@@ -1466,6 +1463,10 @@ describe('SettingsPage search ownership', () => {
     rendered.delete('st-card-subagent-profiles');
     // The board card stays on disk for the direct AgentTaskSettings test. Settings does not mount it.
     rendered.delete('st-card-agent-board');
+    // An open plugin's own page renders its cards only for a chosen plugin;
+    // the search index does not index per-plugin cards.
+    rendered.delete('st-card-plugin-settings');
+    rendered.delete('st-card-plugin-manage');
     expect([...rendered].filter((id) => !indexed.has(id))).toEqual([]);
     expect([...indexed].filter((id) => !rendered.has(id))).toEqual([]);
     } finally {

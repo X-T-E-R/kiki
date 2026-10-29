@@ -12,10 +12,8 @@ import {
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { StatusDot } from '../capabilities/primitives';
-import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, SaveStatus, Toggle, type Feedback } from '../controls';
 import { useMemoryAdvisor } from '../memory/useMemoryAdvisor';
-import { DANGER_GHOST_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { DecisionSourceSummary } from './DecisionSources';
 import { SectionCard } from './SectionCard';
 import { SettingsGroup } from './fields';
@@ -23,6 +21,9 @@ import { useSavedTick } from './useSavedTick';
 
 /** Which write a save status belongs to, so only that row says "Saved". */
 type WriteSlot = 'switch' | 'remove';
+
+/** Quiet text action, the same weight as the summary row's 更改. */
+const LINK = 'text-[12px] font-medium text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink disabled:text-ink-faint disabled:no-underline';
 
 /**
  * Memory Advisor: what it is for in one line, the on switch, and which
@@ -95,26 +96,43 @@ export function MemoryAdvisorSettingsCard() {
           <DecisionSourceSummary consumer="memory" source={config?.source} status={status?.source_status}
             legacy={config?.source === undefined && config?.selector !== undefined
               ? t('st.decision.row.memoryLegacy', { model: config.selector.model }) : undefined} />
-          {destination !== undefined ? <ProbeRow result={probe.data} error={probe.error} pending={probe.isPending} onRun={() => { probe.mutate(destination); }} /> : null}
-        </SettingsGroup>
-        {config !== undefined ? (
-          <div>
-            <button type="button" data-memory-advisor-remove className={DANGER_GHOST_BUTTON} disabled={busy}
-              onClick={() => { setConfirmRemove(true); }}>{t('memory.advisor.remove')}</button>
+          {/* Secondary actions stay quiet, one line under the source they act
+              on: the test link, and removal as plain danger text that asks
+              in place instead of opening a dialog. */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            {destination !== undefined ? (
+              <button type="button" data-memory-advisor-test className={LINK} disabled={probe.isPending}
+                onClick={() => { probe.mutate(destination); }}>
+                {probe.isPending ? t('memory.advisor.testing') : t('memory.advisor.test')}
+              </button>
+            ) : null}
+            {config !== undefined && !confirmRemove ? (
+              <button type="button" data-memory-advisor-remove className={`${LINK} text-danger`} disabled={busy}
+                onClick={() => { setConfirmRemove(true); }}>{t('memory.advisor.remove')}</button>
+            ) : null}
           </div>
-        ) : null}
-        <ConfirmDialog open={confirmRemove} title={t('memory.advisor.removeTitle')} body={t('memory.advisor.removeBody')}
-          confirmLabel={t('memory.advisor.removeConfirm')} busy={advisor.save.isPending}
-          onCancel={() => { setConfirmRemove(false); advisor.save.reset(); }}
-          onConfirm={() => { void write('remove', { advisor: null }).then((ok) => { if (ok) setConfirmRemove(false); }); }}>
-          {/* A refused removal keeps the dialog open: the reason sits here and
-              the same button tries again. */}
-          {slot === 'remove' && advisor.save.isError ? (
-            <p data-memory-advisor-remove-error role="alert" className="text-[12px] leading-snug text-danger">
-              {t('memory.advisor.saveFailed', { detail: errorText(locale, advisor.save.error) })}
-            </p>
+          <ProbeFeedback result={probe.data} error={probe.error} pending={probe.isPending} />
+          {config !== undefined && confirmRemove ? (
+            <div data-memory-advisor-remove-confirm className="space-y-1.5">
+              <p className="max-w-[62ch] text-[12px] leading-snug text-ink-soft">{t('memory.advisor.removeBody')}</p>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                <button type="button" data-memory-advisor-remove-do className={`${LINK} text-danger`} disabled={advisor.save.isPending}
+                  onClick={() => { void write('remove', { advisor: null }).then((ok) => { if (ok) setConfirmRemove(false); }); }}>
+                  {advisor.save.isPending ? t('common.saving') : t('memory.advisor.removeConfirm')}
+                </button>
+                <button type="button" className={LINK} disabled={advisor.save.isPending}
+                  onClick={() => { setConfirmRemove(false); advisor.save.reset(); }}>{t('common.cancel')}</button>
+              </div>
+              {/* A refused removal stays in place: the reason sits here and
+                  the same button tries again. */}
+              {slot === 'remove' && advisor.save.isError ? (
+                <p data-memory-advisor-remove-error role="alert" className="text-[12px] leading-snug text-danger">
+                  {t('memory.advisor.saveFailed', { detail: errorText(locale, advisor.save.error) })}
+                </p>
+              ) : null}
+            </div>
           ) : null}
-        </ConfirmDialog>
+        </SettingsGroup>
 
         <FeedbackLine feedback={feedback} />
       </div>
@@ -123,15 +141,14 @@ export function MemoryAdvisorSettingsCard() {
 }
 
 /**
- * The optional synthetic check. It goes to the confirmed destination only, so
- * it is offered once a destination exists; the result line says how the
- * selector answered, or why it did not, in the same reasons the status uses.
+ * The synthetic check's result line: how the selector answered, or why it did
+ * not, in the same reasons the status uses. The link that runs it sits in the
+ * action row above.
  */
-function ProbeRow({ result, error, pending, onRun }: {
+function ProbeFeedback({ result, error, pending }: {
   readonly result: MemoryAdvisorProbeResult | undefined;
   readonly error: unknown;
   readonly pending: boolean;
-  readonly onRun: () => void;
 }) {
   const { t, locale } = useI18n();
   const reasonKey = memoryAdvisorReasonKey(result?.status.reason);
@@ -147,12 +164,7 @@ function ProbeRow({ result, error, pending, onRun }: {
         }
           : { tone: 'error', text: t('memory.advisor.testFailed', { reason: reasonKey === undefined ? t(`memory.advisor.state.${result.status.state}` as I18nKey) : t(reasonKey) }) };
   return (
-    <div data-memory-advisor-probe className="space-y-1.5 pt-2">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <button type="button" data-memory-advisor-test className={SECONDARY_BUTTON} disabled={pending} onClick={onRun}>
-          {pending ? t('memory.advisor.testing') : t('memory.advisor.test')}
-        </button>
-      </div>
+    <div data-memory-advisor-probe>
       <FeedbackLine feedback={feedback} />
     </div>
   );
