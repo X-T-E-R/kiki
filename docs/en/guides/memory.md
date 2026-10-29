@@ -20,7 +20,9 @@ Search comes in two modes. The default searches for a subject, title or alias an
 
 Search returns the complete body, evidence, check and revision when the whole entry fits its response budget: 24,000 UTF-16 units and 6,000 estimated tokens, including metadata. The agent can reuse an item marked `complete: true` without another read. An item marked `complete: false` is a reference with an exact `MemoryRead` target; the agent reads that target before using or changing its content. Bodies are never cut short to fit. If reference metadata alone exceeds the budget, restart with a smaller `page_size`. List mode returns references.
 
-In the main agent's `TodoList` notes, `directives` and `decided` can point at an entry by id, like `[m_id]`. At compaction the handoff carries each referenced entry's current title, follows replacements, and marks archived entries as withdrawn.
+Each agent can keep explicit entry IDs such as `[m_id]` in any section of its current `TodoList` notes. Kiki deduplicates these links for automatic recall; only entries visible to that agent, active, unexpired and within the complete-entry budget can enter its working set.
+
+Compaction handles links in `directives` and `decided` separately. With SQLite, the handoff keeps references for a fresh `MemoryRead`; the file-backed path includes current titles, follows replacements and marks archived entries as inactive.
 
 ## Where an entry came from, and when to check it
 

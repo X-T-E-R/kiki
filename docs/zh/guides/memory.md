@@ -20,7 +20,9 @@ Agent 用 `MemoryWrite` 写，用 `MemorySearch` 和 `MemoryRead` 读。搜索�
 
 搜索会在回包预算内提供整条正文、依据、复核条件和版本：包括元数据在内，最多 24,000 个 UTF-16 代码单元及 6,000 个估算 token。Agent 可以直接复用 `complete: true` 的条目，无需再读一次。`complete: false` 的条目只提供引用和精确的 `MemoryRead` 目标；使用或修改内容前，Agent 会完整读取该目标。正文不会为了塞进预算而截短。如果引用元数据本身就超过预算，缩小 `page_size` 后重新搜索。清单模式返回引用。
 
-main agent 的 `TodoList` 笔记可以在 `directives` 和 `decided` 里用条目 id 引用记忆，比如 `[m_id]`。压缩时，交接文本会带上每条被引用条目的当前标题、跟随替代条目，并把已归档的条目标为已撤回。
+每个 Agent 都可以在自己当前 `TodoList` 笔记的任意段落中用条目 ID 引用记忆，比如 `[m_id]`。Kiki 会先对这些引用去重，再用于自动召回；只有该 Agent 可见、处于生效状态、未过期且能完整放入预算的条目，才会进入它的工作集。
+
+压缩时，`directives` 和 `decided` 中的引用另行解析。使用 SQLite 时，交接文本保留引用，供后续通过 `MemoryRead` 重新读取；文件存储路径则带上当前标题、跟随替代条目，并把已归档条目标为不生效。
 
 ## 依据与有效性
 
