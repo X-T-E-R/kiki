@@ -64,7 +64,7 @@
 //     activityView.lastTurn                           src/agent/activityView/activityViewService.ts
 //     activityView.lifecycle                          src/agent/activityView/activityViewService.ts
 //     activityView.turn                               src/agent/activityView/activityViewService.ts
-//     agentCollaboration.materializedMessages         src/session/agentCollaboration/messageReceiptState.ts
+//     agentCollaboration.materializedMessages.v2      src/session/agentCollaboration/messageReceiptState.ts
 //     agentCollaboration.messageReceipts              src/session/agentCollaboration/messageReceiptState.ts
 //     agentPlugin.sessionStartRefreshPending          src/agent/plugin/agentPluginService.ts
 //     agentsMdReminder.cwd                            src/agent/agentsMdReminder/agentsMdReminderService.ts
@@ -8071,8 +8071,8 @@ export interface AgentStateSnapshot {
   // replayable · durable — folds: StaleGuardRecorded, StaleGuardCleared
   'staleGuard': /* StaleGuardModelState — packages/agent-core-v2/src/features/staleGuard/staleGuardOps.ts */ Map<string, number>;
   // src/session/agentCollaboration/messageReceiptState.ts
-  // replayable · durable — folds: ContextAppendMessage
-  'agentCollaboration.materializedMessages': Record<string, true>;
+  // replayable · durable — folds: ContextAppendMessage, TurnPrompt, TurnSteer
+  'agentCollaboration.materializedMessages.v2': Record<string, true>;
   // replayable · durable — folds: AgentMessageDelivered
   'agentCollaboration.messageReceipts': Record<string, true>;
   // src/session/cron/cronOps.ts

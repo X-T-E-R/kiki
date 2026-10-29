@@ -10,6 +10,7 @@ import { IAgentPromptService, type PromptInput } from '#/agent/prompt/prompt';
 import { IAgentLoopService, TurnPersistenceError, type Turn, type TurnResult } from '#/agent/loop/loop';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import type { AgentProfileSummaryPolicy } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { hasMailboxMessageInContext } from '#/session/agentCollaboration/messageIdentity';
 
 import type { AgentRunHandle, AgentRunRequest } from './subagent';
 
@@ -70,7 +71,7 @@ export async function runAgentTurn(
       : request.kind === 'mailbox'
         ? await (await promptService.enqueue({
             message: request.message,
-            alreadyMaterialized: true,
+            alreadyMaterialized: hasMailboxMessageInContext(target.accessor.get(IAgentContextMemoryService).get(), request.message),
             signal: options.signal,
           })).launched
         : await promptService.retry();

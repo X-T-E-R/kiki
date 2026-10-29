@@ -53,6 +53,7 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { applyPromptMetadataUpdate } from '#/session/sessionMetadata/promptMetadata';
 import { ISessionHistoryMutationService } from '#/session/historyMutation/historyMutation';
 import { KeyReservationRegistry } from '#/session/dispatch/reservation';
+import { hasMailboxMessageInContext } from '#/session/agentCollaboration/messageIdentity';
 import type { PartsTransformer, WireRecord } from '#/wire/record';
 import { IWireService } from '#/wire/wire';
 import { IBlobStore } from '#/persistence/interface/blobStore';
@@ -2451,7 +2452,9 @@ export class AgentPromptService implements IAgentPromptService {
         candidate.message = { ...candidate.message, content: this.repairKnownTruncatedImages(candidate.id, candidate.message.content) };
       }
       const batch = selected.map(candidate => ({ ...this.extractCompressionCaptions(candidate.message),
-        alreadyMaterialized: candidate.alreadyMaterialized,
+        alreadyMaterialized: candidate.message.origin?.kind === 'agent_message'
+          ? hasMailboxMessageInContext(this.context.get(), candidate.message)
+          : candidate.alreadyMaterialized,
       }));
       const message = selected.length === 1 ? batch[0]!.message : mergeSteerMessages(batch);
       const captions = batch[0]!.captions;
@@ -2469,7 +2472,7 @@ export class AgentPromptService implements IAgentPromptService {
           const candidate = selected[index]!;
           if (candidate !== item) this.pending.splice(this.pending.indexOf(candidate), 1);
           const materialized = batch[index]!;
-          if (!candidate.alreadyMaterialized) this.appendPrompt(materialized.message, materialized.captions);
+          if (!materialized.alreadyMaterialized) this.appendPrompt(materialized.message, materialized.captions);
           candidate.state = 'blocked'; candidate.launchedDeferred.resolve(undefined);
           candidate.completionDeferred.resolve({ promptId: candidate.id, result: undefined, state: 'blocked' });
           this.publishCompleted(candidate, 'blocked');
@@ -2511,7 +2514,7 @@ export class AgentPromptService implements IAgentPromptService {
       let turn: Turn | undefined;
       if ((this.profile.data().executorId ?? 'native') === 'native') {
         const receipt = this.loop.enqueue(
-          new PromptStepRequest(deliveredMessage, captions, this.reminders, this.providerType(), item.alreadyMaterialized, recovered ? 'recovery' : undefined, item.id, deliverableBatch,
+          new PromptStepRequest(deliveredMessage, captions, this.reminders, this.providerType(), deliverableBatch[0]?.alreadyMaterialized === true, recovered ? 'recovery' : undefined, item.id, deliverableBatch,
             deliverable.length > 1 ? () => {
               void this.dispatcher.dispatch(new PromptSteered({ activePromptId: item.id,
                 promptIds: deliverable.slice(1).map(candidate => candidate.id),
