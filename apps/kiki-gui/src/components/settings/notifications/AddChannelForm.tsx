@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useId, useState } from 'react';
 import type { NotificationProviderDescriptor, NotificationSettings } from '@kiki/klient';
 import { errorText } from '@kiki/session-core/i18n';
 
@@ -10,34 +10,23 @@ import { KEEP_SECRET, SecretField, type SecretDraft } from '../SecretField';
 import { FieldIssue, FORM_LABEL, SettingsDraftFooter, SettingsSelect } from '../SettingsPrimitives';
 import { JSON_TEXTAREA } from './fieldControls';
 import {
-  fieldLabel, freshRevision, instanceSlots, isAddable, nextId, parseJsonObject, providerGuideKey, providerLabel, reasonKey, slotSpec, unavailableProviders,
+  fieldLabel, freshRevision, instanceSlots, nextId, parseJsonObject, providerGuideKey, providerLabel, slotSpec,
 } from './model';
 import { useNotificationWrites } from './useNotifications';
 
-const NEW = '__new__';
-
 /**
- * Create form for a built-in channel (Draft mode: one commit). It either
- * reuses an existing connection of the same type, so several channels share
- * one bot or webhook, or creates a new one from the provider schema. The
- * types the registry lists but cannot send with yet are named under the
- * picker, not offered.
+ * Create form for one alert channel of a chosen type (Draft mode: one
+ * commit). It always creates a new connection from the provider schema; a
+ * channel's connection is edited in its own row.
  */
-export function AddChannelForm({ settings, providers, onDone }: {
+export function AddChannelForm({ settings, provider, onDone }: {
   settings: NotificationSettings;
-  providers: readonly NotificationProviderDescriptor[];
+  provider: NotificationProviderDescriptor;
   onDone: (channelId: string | null) => void;
 }) {
   const { t, locale } = useI18n();
   const { api, apply, refresh } = useNotificationWrites();
   const scope = useId();
-  const addable = useMemo(() => providers.filter(isAddable), [providers]);
-  const unavailable = useMemo(() => unavailableProviders(providers), [providers]);
-  const [providerId, setProviderId] = useState(addable[0]?.id ?? '');
-  const provider = addable.find((candidate) => candidate.id === providerId);
-  const existing = Object.entries(settings.provider_instances).filter(([, instance]) => instance.provider_id === providerId);
-  const [connection, setConnection] = useState<string>(NEW);
-  const connectionId = connection !== NEW && existing.some(([id]) => id === connection) ? connection : NEW;
   const [label, setLabel] = useState('');
   const [values, setValues] = useState<Record<string, string>>({});
   const [secrets, setSecrets] = useState<Record<string, SecretDraft>>({});
@@ -45,9 +34,8 @@ export function AddChannelForm({ settings, providers, onDone }: {
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
 
-  if (provider === undefined) return null;
   const typeName = providerLabel(t, provider.id);
-  const fields = connectionId === NEW ? provider.instance_fields : [];
+  const fields = provider.instance_fields;
   const dirty = label !== '' || Object.values(values).some((value) => value !== '') || Object.values(secrets).some((draft) => draft.mode === 'set');
   const key = (kind: 'i' | 't', name: string) => `${kind}.${name}`;
   const setValue = (name: string, value: string) => {
@@ -81,32 +69,29 @@ export function AddChannelForm({ settings, providers, onDone }: {
     setSaving(true);
     setFeedback(null);
     try {
-      let instanceId = connectionId;
-      if (instanceId === NEW) {
-        instanceId = nextId(provider.id.replace(/_/gu, '-'), Object.keys(settings.provider_instances));
-        const options: Record<string, unknown> = {};
-        const slots = instanceSlots(settings, instanceId);
-        const writes: [string, string][] = [];
-        for (const field of fields) {
-          const name = key('i', field.key);
-          if (field.kind === 'secret') {
-            const draft = secrets[name];
-            if (draft?.mode !== 'set' || draft.value.trim() === '') continue;
-            const spec = slotSpec(provider.id, instanceId, field.purpose ?? field.key);
-            const slotId = `${instanceId}.${field.purpose ?? field.key}`;
-            slots[slotId] = spec;
-            options[field.key] = slotId;
-            writes.push([slotId, draft.value.trim()]);
-            continue;
-          }
-          const text = (values[name] ?? '').trim();
-          if (text === '') continue;
-          options[field.key] = field.kind === 'number' ? Number(text)
-            : field.kind === 'json' ? (parseJsonObject(text) as { value: unknown }).value : text;
+      const instanceId = nextId(provider.id.replace(/_/gu, '-'), Object.keys(settings.provider_instances));
+      const options: Record<string, unknown> = {};
+      const slots = instanceSlots(settings, instanceId);
+      const writes: [string, string][] = [];
+      for (const field of fields) {
+        const name = key('i', field.key);
+        if (field.kind === 'secret') {
+          const draft = secrets[name];
+          if (draft?.mode !== 'set' || draft.value.trim() === '') continue;
+          const spec = slotSpec(provider.id, instanceId, field.purpose ?? field.key);
+          const slotId = `${instanceId}.${field.purpose ?? field.key}`;
+          slots[slotId] = spec;
+          options[field.key] = slotId;
+          writes.push([slotId, draft.value.trim()]);
+          continue;
         }
-        apply(await api.upsertInstance(instanceId, { provider_id: provider.id, enabled: true, revision: freshRevision(), options }, slots));
-        for (const [slotId, value] of writes) await api.setCredential(slotId, value);
+        const text = (values[name] ?? '').trim();
+        if (text === '') continue;
+        options[field.key] = field.kind === 'number' ? Number(text)
+          : field.kind === 'json' ? (parseJsonObject(text) as { value: unknown }).value : text;
       }
+      apply(await api.upsertInstance(instanceId, { provider_id: provider.id, enabled: true, revision: freshRevision(), options }, slots));
+      for (const [slotId, value] of writes) await api.setCredential(slotId, value);
       const target: Record<string, unknown> = {};
       for (const field of provider.target_fields) {
         const text = (values[key('t', field.key)] ?? '').trim();
@@ -143,29 +128,13 @@ export function AddChannelForm({ settings, providers, onDone }: {
   const advanced = fields.filter((field) => field.kind === 'json');
 
   return (
-    <div className="space-y-4" data-notify-add>
+    <div className="space-y-4" data-notify-add={provider.id}>
+      {providerGuideKey(provider.id) !== undefined ? (
+        <p className="text-[12.5px] leading-5 text-ink-soft" data-notify-guide={provider.id}>
+          {t(providerGuideKey(provider.id)!)}
+        </p>
+      ) : null}
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="min-w-0 space-y-1">
-          <span id={`${scope}-provider`} className={FORM_LABEL}>{t('st.notify.provider')}</span>
-          <SettingsSelect variant="form" id={`${scope}-provider-select`} ariaLabel={t('st.notify.provider')} value={providerId}
-            dataAttr="data-notify-add-provider" disabled={saving}
-            choices={addable.map((candidate) => ({ value: candidate.id, label: providerLabel(t, candidate.id) }))}
-            onChange={(next) => { setProviderId(next); setConnection(NEW); setValues({}); setSecrets({}); setIssues({}); }} />
-        </div>
-        {existing.length > 0 ? (
-          <div className="min-w-0 space-y-1">
-            <span className={FORM_LABEL}>{t('st.notify.connection')}</span>
-            <SettingsSelect variant="form" id={`${scope}-connection`} ariaLabel={t('st.notify.connection')} value={connectionId}
-              dataAttr="data-notify-add-connection" disabled={saving}
-              choices={[...existing.map(([id, instance]) => ({ value: id, label: instance.label ?? id })), { value: NEW, label: t('st.notify.newConnection') }]}
-              onChange={setConnection} />
-          </div>
-        ) : null}
-        {providerGuideKey(provider.id) !== undefined && connectionId === NEW ? (
-          <p className="text-[12px] leading-5 text-ink-soft sm:col-span-2" data-notify-guide={provider.id}>
-            {t(providerGuideKey(provider.id)!)}
-          </p>
-        ) : null}
         <div className="min-w-0 space-y-1">
           <label htmlFor={`${scope}-label`} className={FORM_LABEL}>{`${t('st.notify.name')} · ${t('st.notify.optional')}`}</label>
           <input id={`${scope}-label`} className={INPUT} value={label} placeholder={typeName} autoComplete="off"
@@ -207,28 +176,13 @@ export function AddChannelForm({ settings, providers, onDone }: {
                   value={values[name] ?? ''} spellCheck={false} placeholder='{"host": "10.0.0.5"}'
                   aria-invalid={issues[name] !== undefined} onChange={(event) => { setValue(name, event.target.value); }} />
                 <FieldIssue id={`${scope}-${name}-issue`} text={issues[name] ?? null} />
-                {field.key === 'private_grant' ? <p className="text-[11px] text-ink-faint">{t('st.notify.field.privateGrantHint')}</p> : null}
               </div>
             );
           })}
         </AdvancedDetails>
       ) : null}
-      {unavailable.length > 0 ? (
-        <div className="space-y-0.5" data-notify-unavailable>
-          <p className="text-[12px] font-medium text-ink-soft">{t('st.notify.unavailableTitle')}</p>
-          <ul className="space-y-0.5">
-            {unavailable.map((candidate) => (
-              <li key={candidate.id} data-notify-unavailable-provider={candidate.id} className="flex flex-wrap items-baseline gap-x-2 text-[12px] leading-5">
-                <span className="text-ink">{providerLabel(t, candidate.id)}</span>
-                <span className="text-amber-ink">{t('st.notify.state.dependency')}</span>
-                <span className="text-ink-faint">{t(reasonKey(candidate.status_reason))}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
       <FeedbackLine feedback={feedback} />
-      <SettingsDraftFooter id="notify-add" persistent dirty={dirty || connectionId !== NEW} saving={saving}
+      <SettingsDraftFooter id="notify-add" persistent dirty={dirty || (fields.length === 0 && provider.target_fields.length === 0)} saving={saving}
         saveLabel={t('st.notify.add')} onSave={() => void submit()} onDiscard={() => { onDone(null); }} />
     </div>
   );

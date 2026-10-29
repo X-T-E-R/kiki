@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -9,10 +9,15 @@ import type { ImProviderKind, ImSessionSnapshot } from '@kiki/protocol';
 
 import { I18nProvider } from '../../../i18n';
 import { createImSettingsFixture, imChannelSnapshot, imSettingsSnapshot } from '../../../../fixtures/im-channels.fixture';
-import { ImSessionCard } from './ImSessionCard';
+import { ChannelsCard } from './ChannelsCard';
 
 let fixture = createImSettingsFixture();
-vi.mock('../../../state/connection', () => ({ useConnection: () => ({ scopeId: 'fixture', client: fixture.client }) }));
+const notifications = {
+  getSettings: async () => ({ global: { enabled: true, suppress_viewing_session: true, min_work_ms: 0, work_stable_ms: 3_000, question_delay_ms: 10_000 }, provider_instances: {}, channels: {}, credential_slots: {} }),
+  listProviders: async () => [],
+  listDeliveries: async () => [],
+};
+vi.mock('../../../state/connection', () => ({ useConnection: () => ({ scopeId: 'fixture', client: { ...fixture.client, notifications, getConfig: async () => ({}) } }) }));
 
 const empty: ImSessionSnapshot = { policy: { allowed: true, default_enabled: true }, instances: [], bindings: [], discoveries: [], strangers: [], voice_fallbacks: 0 };
 const roots: Root[] = [];
@@ -32,6 +37,11 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
+function Harness() {
+  const [adding, setAdding] = useState(false);
+  return <ChannelsCard adding={adding} setAdding={setAdding} />;
+}
+
 async function settle() { await new Promise((resolve) => setTimeout(resolve, 20)); }
 async function render(width = '1100px') {
   await act(async () => { for (const root of roots.splice(0)) root.unmount(); });
@@ -50,7 +60,7 @@ async function render(width = '1100px') {
       <MemoryRouter>
         <QueryClientProvider client={client}>
           <I18nProvider>
-            <ImSessionCard />
+            <Harness />
           </I18nProvider>
         </QueryClientProvider>
       </MemoryRouter>,
@@ -78,10 +88,20 @@ async function choose(container: ParentNode, selector: string, value: string) {
   await click(document.body, `[data-option-value="${value}"]`);
 }
 function binding(container: ParentNode, id: string) { return container.querySelector<HTMLElement>(`[data-im-binding="${id}"]`)!; }
+/** Opens "Add channel", picks the platform and, where it offers both, the two-way route. */
+async function addTwoWay(brand: string) {
+  await click(document.body, '[data-notify-add-open]');
+  await click(document.body, `[data-channel-brand="${brand}"]`);
+  const route = document.body.querySelector<HTMLButtonElement>('[data-channel-route^="im:"]');
+  if (route !== null) await click(document.body, `[data-channel-route="${route.getAttribute('data-channel-route')}"]`);
+}
+async function rules(container: ParentNode) {
+  await act(async () => { container.querySelector<HTMLDetailsElement>('[data-im-rules]')!.open = true; await settle(); });
+}
 
 const platforms: ImProviderKind[] = ['wechat_bridge', 'feishu_app', 'onebot_v11', 'telegram'];
 
-describe('ImSessionCard channel management', () => {
+describe('ChannelsCard two-way accounts', () => {
   it('shows plugin labels and uses the namespaced kind when a label is unavailable', async () => {
     const state = imChannelSnapshot('plugin:fixture-qq/account');
     state.instances[0] = { ...state.instances[0]!, label: 'Study QQ' };
@@ -161,7 +181,6 @@ describe('ImSessionCard channel management', () => {
     expect(group.querySelector('[data-im-binding-busy="steer"]')?.getAttribute('aria-pressed')).toBe('true');
     expect(group.querySelector('[data-im-binding-policy="off"]')?.getAttribute('aria-pressed')).toBe('true');
 
-    await click(container, '[data-im-start-bind="account-a"]');
     fixture.discover('account-a', 'immediate-discovery');
     await click(container, '[data-im-refresh-discovery]');
     const discovery = container.querySelector<HTMLElement>('[data-im-discovery="immediate-discovery"]')!;
@@ -184,12 +203,11 @@ describe('ImSessionCard channel management', () => {
     fixture = createImSettingsFixture(imSettingsSnapshot());
     const container = await render('360px');
     const original = fixture.read().bindings;
-    await click(container, '[data-im-start-bind="account-a"]');
-    expect(container.querySelector('[data-im-bind-flow="account-a"]')?.textContent).toContain('direct message from each contact');
+    expect(container.querySelector('[data-im-bind-flow="account-a"]')?.textContent).toContain('Have the contact send a direct message');
     expect(container.querySelector('[data-im-bind-flow="account-a"] [data-im-target]')).toBeNull();
     fixture.discover('account-a', 'wx-new');
     fixture.discover('account-tg', 'tg-new');
-    await click(container, '[data-im-bind-flow="account-a"] [data-im-refresh-discovery]');
+    await click(container, '[data-im-account="account-a"] [data-im-refresh-discovery]');
     const wx = container.querySelector<HTMLElement>('[data-im-discovery="wx-new"]')!;
     const tg = container.querySelector<HTMLElement>('[data-im-discovery="tg-new"]')!;
     await click(wx, '[data-im-target-kind="session"]');
@@ -229,6 +247,7 @@ describe('ImSessionCard channel management', () => {
 
   it('keeps the global master authoritative and preserves explicit off through default changes', async () => {
     const container = await render();
+    await rules(container);
     await click(container, '#im-default');
     expect(fixture.read().policy.default_enabled).toBe(false);
     expect(fixture.read().bindings[1]?.session_enabled).toBe(false);
@@ -358,14 +377,14 @@ describe('ImSessionCard channel management', () => {
     fixture = createImSettingsFixture(state);
     const check = vi.spyOn(fixture.client.imSessions, 'check').mockResolvedValueOnce({ ok: false, account_id: 'account-a' });
     const container = await render('360px');
-    expect(container.querySelector('[data-im-bind-flow]')?.textContent).toContain('Start listening');
+    expect(container.querySelector('[data-im-bind-flow]')?.textContent).toContain('Start listening to add conversations.');
     expect(container.querySelector('[data-im-target]')).toBeNull();
     await click(container, '[data-im-bind-listen]');
     expect(fixture.calls.some((item) => item.operation === 'listen')).toBe(false);
     await click(container, '[data-im-bind-listen]');
     expect(fixture.calls).toContainEqual({ operation: 'listen', id: 'account-a', body: true });
     check.mockClear();
-    await click(container, '[data-im-listen="account-a"]');
+    await click(container, '[data-im-listen="account-a"] input');
     expect(check).not.toHaveBeenCalled();
     expect(fixture.calls.at(-1)).toEqual({ operation: 'listen', id: 'account-a', body: false });
   });
@@ -378,9 +397,8 @@ describe('ImSessionCard channel management', () => {
     expect(container.querySelector('[data-im-instance-state]')?.getAttribute('data-im-instance-state')).toBe(connection);
     expect(container.querySelector('[data-im-instance-state]')?.textContent).not.toBe('Listening');
     if (connection === 'auth_expired') {
-      await click(container, '[data-im-reauthorize="account-a"]');
-      expect(container.querySelector('[data-im-connect-drawer]')?.classList.contains('hidden')).toBe(false);
-      expect(container.querySelector('[data-im-instance="account-a"]')).not.toBeNull();
+      await click(container, '[data-im-reauthorize-now="account-a"]');
+      expect(container.querySelector('[data-im-account="account-a"] [data-im-instance="account-a"] [data-im-wechat]')).not.toBeNull();
     }
     if (connection === 'stopped') {
       await click(container, '[data-im-retry-connection="account-a"]');
@@ -451,6 +469,7 @@ describe('ImSessionCard channel management', () => {
     fixture = createImSettingsFixture(state);
     const container = await render();
     expect(container.querySelector('[data-im-instance-state]')?.textContent).toBe('Connection stopped');
+    expect(container.querySelector('[data-im-retry-connection="account-a"]')).not.toBeNull();
   });
 
   it.each(platforms)('keeps platform %s text restrictions accurate', async (kind) => {
@@ -463,71 +482,86 @@ describe('ImSessionCard channel management', () => {
     expect(container.querySelector('[data-im-text="edit"]') !== null).toBe(live);
     expect(container.querySelector('[data-im-binding-text="edit"]') !== null).toBe(live);
     if (!live) expect(container.querySelector(`[data-im-text-fixed="${kind}"]`)?.textContent).toBe('Full text');
-    expect(container.textContent?.includes('QQ cannot take a file.')).toBe(kind === 'onebot_v11');
+    expect(container.textContent).not.toContain('QQ cannot take a file.');
   });
 
   it.each(['en', 'zh'])('uses %s channel terminology and readable per-channel controls at wide and narrow widths', async (locale) => {
     localStorage.setItem('kiki.locale', locale);
     for (const width of ['360px', '1100px']) {
       const container = await render(width);
-      expect(container.textContent).toContain(locale === 'en' ? 'IM accounts & channels' : 'IM 账号与渠道');
-      expect(container.textContent).toContain(locale === 'en' ? 'Add channel' : '新增渠道');
+      expect(container.textContent).toContain(locale === 'en' ? 'My channels' : '我的渠道');
+      expect(container.textContent).toContain(locale === 'en' ? 'Add channel' : '添加渠道');
+      expect(container.textContent).toContain(locale === 'en' ? 'Two-way' : '可对话');
       expect(container.textContent).not.toMatch(/Phone|手机/);
       expect(container.querySelectorAll('[data-im-binding-target]')).toHaveLength(2);
     }
   });
 
-  it('pastes new accounts without implicitly selecting an existing account', async () => {
+  it('adds a Telegram bot from the add panel as a new account and starts listening', async () => {
     fixture = createImSettingsFixture(imSettingsSnapshot());
     const container = await render();
-    await click(container, '[data-im-connect-toggle]');
-    expect(container.querySelector('[data-im-instance=""]')).not.toBeNull();
-    await input(container, '[data-im-paste]', 'fixture-bot-token');
-    await click(container, '[data-im-check]');
+    await addTwoWay('telegram');
+    expect(document.body.querySelector('[data-im-instance]')).toBeNull();
+    expect(document.body.querySelector('[data-im-wechat]')).toBeNull();
+    await input(document.body, '[data-im-paste-field="token"]', '123456789:fixture-token-not-real-0000');
+    await click(document.body, '[data-im-paste-panel="telegram"] [data-im-check]');
     expect(fixture.calls).toContainEqual({ operation: 'paste', id: undefined });
+    expect(fixture.calls.filter((item) => item.operation === 'listen').at(-1)).toMatchObject({ body: true });
+    expect(container.querySelector('[data-channel-add]')).toBeNull();
   });
 
-  it('draws a QR payload, cancels and retries an expired code without authorizing a real account', async () => {
+  it('shows the WeChat QR only on the WeChat path, then cancels and asks for a new code after expiry', async () => {
     fixture = createImSettingsFixture(empty);
     vi.spyOn(fixture.client.imSessions, 'pollWechatQr').mockResolvedValue({ status: 'expired' });
     const container = await render('360px');
-    await click(container, '[data-im-wechat-scan]');
-    expect(container.querySelector('[data-im-wechat-image]')?.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
+    expect(container.querySelector('[data-notify-empty]')).not.toBeNull();
+    await click(document.body, '[data-notify-add-open]');
+    expect(document.body.querySelector('[data-im-wechat]')).toBeNull();
+    await click(document.body, '[data-channel-brand="discord"]');
+    expect(document.body.querySelector('[data-im-wechat]')).toBeNull();
+    await click(document.body, '[data-channel-back]');
+    await click(document.body, '[data-channel-brand="wechat"]');
+    expect(document.body.querySelector('[data-im-wechat-image]')?.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_550)); });
-    expect(container.textContent).toContain('This code expired.');
-    await click(container, '[data-im-wechat-retry]');
-    await click(container, '[data-im-wechat-cancel]');
-    expect(container.querySelector('[data-im-wechat-image]')).toBeNull();
+    expect(document.body.textContent).toContain('This code expired.');
+    await click(document.body, '[data-im-wechat-retry]');
+    await click(document.body, '[data-im-wechat-cancel]');
+    expect(document.body.querySelector('[data-im-wechat-image]')).toBeNull();
     expect(fixture.calls.at(-1)).toEqual({ operation: 'cancelWechatQr', id: 'fixture-login' });
   });
 
-  it.each(['poll', 'verification'] as const)('starts only the WeChat account identified by confirmed %s', async (route) => {
+  it.each(['poll', 'verification'] as const)('adds another WeChat account and starts only the one confirmed by %s', async (route) => {
     const state = imChannelSnapshot();
     state.instances = ['wx-old', 'wx-new'].map((id) => ({ id, provider_kind: 'wechat_bridge', listening: false, configured: true, account_id: id, adapter: 'stopped' }));
+    state.bindings = [];
     fixture = createImSettingsFixture(state);
     const poll = vi.spyOn(fixture.client.imSessions, 'pollWechatQr').mockResolvedValueOnce(route === 'poll' ? { status: 'confirmed', provider_instance_id: 'wx-new' } : { status: 'need_verifycode' });
     const container = await render();
-    await click(container, '[data-im-connect-toggle]');
-    await click(container, '[data-im-wechat-scan]');
+    expect(container.querySelectorAll('[data-channel-row^="im:"]')).toHaveLength(2);
+    await addTwoWay('wechat');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_550)); });
     if (route === 'verification') {
-      await input(container, '[data-im-wechat-verify]', 'fixture-code');
+      await input(document.body, '[data-im-wechat-verify]', 'fixture-code');
       poll.mockResolvedValueOnce({ status: 'confirmed', provider_instance_id: 'wx-new' });
-      await click(container, '[data-im-wechat-verify-submit]');
+      await click(document.body, '[data-im-wechat-verify-submit]');
     }
+    await act(settle);
     expect(fixture.calls.filter((item) => item.operation === 'listen')).toEqual([{ operation: 'listen', id: 'wx-new', body: true }]);
+    expect(container.querySelector('[data-channel-add]')).toBeNull();
   });
 
-  it('restarts an authorized account whose listening intent remained on after authorization expired', async () => {
+  it('re-authorizes an expired WeChat account inside its row and restarts it', async () => {
     const state = imChannelSnapshot();
     state.instances[0] = { ...state.instances[0]!, listening: true, adapter: 'stopped', connection: 'auth_expired', connection_detail: { code: 'auth_expired' } };
     fixture = createImSettingsFixture(state);
     vi.spyOn(fixture.client.imSessions, 'pollWechatQr').mockResolvedValueOnce({ status: 'confirmed', provider_instance_id: 'account-a' });
     const container = await render();
-    expect(container.querySelector('[data-im-connection-detail]')?.tagName).toBe('P');
-    await click(container, '[data-im-reauthorize]');
-    await click(container, '[data-im-wechat-scan]');
+    const account = container.querySelector<HTMLElement>('[data-im-account="account-a"]')!;
+    expect(account.querySelector('[data-im-connection-detail]')?.tagName).toBe('P');
+    await click(account, '[data-im-reauthorize-now="account-a"]');
+    expect(account.querySelector('[data-im-wechat]')).not.toBeNull();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_550)); });
+    await act(settle);
     expect(fixture.calls.filter((item) => item.operation === 'listen')).toEqual([{ operation: 'listen', id: 'account-a', body: true }]);
     expect(container.querySelector('[data-im-instance-state]')?.textContent).toBe('Listening');
     expect(container.querySelector('[data-im-connection-detail]')).toBeNull();
@@ -536,9 +570,8 @@ describe('ImSessionCard channel management', () => {
   it('does not guess an account when QR confirmation lacks an instance ID', async () => {
     fixture = createImSettingsFixture(imChannelSnapshot());
     vi.spyOn(fixture.client.imSessions, 'pollWechatQr').mockResolvedValueOnce({ status: 'confirmed' });
-    const container = await render();
-    await click(container, '[data-im-connect-toggle]');
-    await click(container, '[data-im-wechat-scan]');
+    await render();
+    await addTwoWay('wechat');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_550)); });
     expect(fixture.calls.filter((item) => item.operation === 'listen' || item.operation === 'check')).toEqual([]);
   });
@@ -546,10 +579,8 @@ describe('ImSessionCard channel management', () => {
   it('supports Discord OAuth invite generation and saves bot token without auto-listening', async () => {
     fixture = createImSettingsFixture(imSettingsSnapshot());
     const container = await render();
-    await click(container, '[data-im-connect-toggle]');
-    await click(container, '[data-im-setup-mode="discord"]');
+    await addTwoWay('discord');
 
-    expect(container.querySelector('[data-im-cap-voice="discord"]')?.textContent).toContain('ordinary audio files are sent as attachment');
     await input(container, '[data-im-discord-app-id]', '123456789012345678');
     await input(container, '[data-im-discord-guild-id]', '987654321098765432');
     await click(container, '[data-im-discord-install-btn]');
@@ -568,9 +599,9 @@ describe('ImSessionCard channel management', () => {
       body: { action: 'save', provider_kind: 'discord', fields: { bot_token: 'discord-bot-secret-token' } },
     });
     expect(fixture.calls.some((item) => item.operation === 'listen')).toBe(false);
-    expect(container.querySelector('[data-im-setup-saved-notice]')?.textContent).toContain('Credential saved for account-discord');
+    expect(document.body.querySelector('[data-im-setup-saved-notice]')?.textContent).toContain('Credential saved.');
 
-    await click(container, '[data-im-platform-setup="discord"] [data-im-check]');
+    await click(document.body, '[data-im-platform-setup="discord"] [data-im-check]');
     expect(fixture.calls).toContainEqual({ operation: 'check', id: 'account-discord' });
     expect(fixture.calls).toContainEqual({ operation: 'listen', id: 'account-discord', body: true });
   });
@@ -578,8 +609,7 @@ describe('ImSessionCard channel management', () => {
   it('supports Slack manifest link and OAuth token exchange without auto-listening', async () => {
     fixture = createImSettingsFixture(imSettingsSnapshot());
     const container = await render();
-    await click(container, '[data-im-connect-toggle]');
-    await click(container, '[data-im-setup-mode="slack"]');
+    await addTwoWay('slack');
 
     await input(container, '[data-im-slack-app-name]', 'Kiki Team');
     await click(container, '[data-im-slack-manifest-btn]');
@@ -620,17 +650,15 @@ describe('ImSessionCard channel management', () => {
       },
     });
     expect(fixture.calls.some((item) => item.operation === 'listen')).toBe(false);
-    expect(container.querySelector('[data-im-setup-saved-notice]')?.textContent).toContain('Credential saved for account-slack');
+    expect(document.body.querySelector('[data-im-setup-saved-notice]')?.textContent).toContain('Credential saved.');
   });
 
   it('supports Matrix .well-known discovery, SSO exchange, password login, and surfaces unencrypted rooms notice', async () => {
     fixture = createImSettingsFixture(imSettingsSnapshot());
     const container = await render();
-    await click(container, '[data-im-connect-toggle]');
-    await click(container, '[data-im-setup-mode="matrix"]');
+    await addTwoWay('matrix');
 
-    expect(container.querySelector('[data-im-cap-matrix-unencrypted]')?.textContent).toContain('Unencrypted rooms only');
-    expect(container.querySelector('[data-im-cap-voice="matrix"]')?.textContent).toContain('ordinary audio files are sent as m.audio');
+    expect(document.body.querySelector('[data-im-cap-matrix-unencrypted]')?.textContent).toBe('Unencrypted rooms only');
 
     await input(container, '[data-im-matrix-server]', '@bot:example.test');
     await click(container, '[data-im-matrix-discover-btn]');
@@ -659,103 +687,71 @@ describe('ImSessionCard channel management', () => {
       },
     });
     expect(fixture.calls.some((item) => item.operation === 'listen')).toBe(false);
-    expect(container.querySelector('[data-im-setup-saved-notice]')?.textContent).toContain('Credential saved for account-matrix');
-    expect(container.querySelector('[data-im-account="account-matrix"] [data-im-account-matrix-unencrypted]')?.textContent).toContain('Unencrypted rooms only');
+    expect(document.body.querySelector('[data-im-setup-saved-notice]')?.textContent).toContain('Credential saved.');
   });
 
-  it('controls local conversation internal channel independently of reply mode and shows bound media capabilities', async () => {
+  it('shows bound media capabilities and keeps reply mode independent', async () => {
     fixture = createImSettingsFixture(imChannelSnapshot('matrix'));
     const container = await render();
     const contact = binding(container, 'binding-contact');
     await click(contact, '[data-im-binding-options-toggle]');
     await act(settle);
-
     expect(contact.querySelector('[data-im-binding-text="edit"]')).not.toBeNull();
     expect(contact.querySelector('[data-im-binding-media]')?.textContent).toContain('Image / File / Audio / Video');
     expect(contact.querySelector('[data-im-binding-media]')?.textContent).not.toContain('Voice');
-    expect(contact.querySelector('[data-im-binding-voice-note]')?.textContent).toContain('m.audio');
-
-    const internalToggle = contact.querySelector<HTMLInputElement>('#im-internal-binding-contact')!;
-    expect(internalToggle.checked).toBe(true);
-    // Internal channel is permanently enabled on backend; UI toggle is disabled with hint
-    expect(internalToggle.disabled).toBe(true);
-    expect(contact.querySelector('[data-im-internal-channel]')?.textContent).toContain('Replies remain visible here');
-
-    // Reply mode remains independent
+    expect(contact.querySelector('#im-internal-binding-contact')).toBeNull();
     await click(contact, '[data-im-binding-text="edit"]');
     expect(fixture.read().bindings[0]?.reply).toBe('edit');
   });
 
-  it('scopes saved target and drafts when switching accounts, creating new accounts, or reauthorizing', async () => {
+  it('creates a new Discord bot every time from the add panel and re-authorizes an existing one only from its row', async () => {
     const state = imSettingsSnapshot();
     state.instances.push(
       { id: 'discord-a', provider_kind: 'discord', label: 'Bot A', account_id: 'bot-a', listening: false, configured: true, adapter: 'stopped' },
-      { id: 'discord-b', provider_kind: 'discord', label: 'Bot B', account_id: 'bot-b', listening: true, configured: true, adapter: 'running', connection: 'auth_expired', connection_detail: { code: 'auth_expired' } },
       { id: 'matrix-expired', provider_kind: 'matrix', label: 'Matrix Team', account_id: '@team:example.test', listening: true, configured: true, adapter: 'stopped', connection: 'auth_expired', connection_detail: { code: 'auth_expired' } },
     );
     fixture = createImSettingsFixture(state);
     const container = await render();
-    await click(container, '[data-im-connect-toggle]');
-    await click(container, '[data-im-setup-mode="discord"]');
+    await addTwoWay('discord');
+    expect(document.body.querySelector('#im-instance')).toBeNull();
+    await input(document.body, '[data-im-setup-field="bot_token"]', 'token-for-new');
+    await click(document.body, '[data-im-setup-save]');
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'setup', body: { action: 'save', provider_kind: 'discord', fields: { bot_token: 'token-for-new' } } });
+    await click(document.body, '[data-im-platform-setup="discord"] [data-im-check]');
+    expect(fixture.calls.filter((item) => item.operation === 'listen').at(-1)).toEqual({ operation: 'listen', id: 'account-discord', body: true });
 
-    // Select discord-a and save a bot token
-    await choose(container, '#im-instance', 'discord-a');
-    await input(container, '[data-im-setup-field="bot_token"]', 'token-for-a');
-    await click(container, '[data-im-setup-save]');
-    expect(fixture.calls.at(-1)).toEqual({
-      operation: 'setup',
-      body: { action: 'save', provider_kind: 'discord', instance_id: 'discord-a', fields: { bot_token: 'token-for-a' } },
-    });
-    expect(container.querySelector('[data-im-setup-saved-notice]')?.textContent).toContain('Credential saved for discord-a');
-    expect(container.querySelector<HTMLInputElement>('[data-im-setup-field="bot_token"]')?.value).toBe('');
+    const row = container.querySelector<HTMLElement>('[data-im-account="discord-a"]')!;
+    await click(row, 'button[aria-controls]');
+    await click(row, '[data-im-reauthorize="discord-a"]');
+    await input(row, '[data-im-setup-field="bot_token"]', 'token-for-a');
+    await click(row, '[data-im-setup-save]');
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'setup', body: { action: 'save', provider_kind: 'discord', instance_id: 'discord-a', fields: { bot_token: 'token-for-a' } } });
+    expect(row.querySelector('[data-im-setup-saved-notice]')).not.toBeNull();
 
-    // Switch selector to discord-b -> saved notice for discord-a is cleared and check targets discord-b
-    await choose(container, '#im-instance', 'discord-b');
-    expect(container.querySelector('[data-im-setup-saved-notice]')).toBeNull();
-    await click(container, '[data-im-platform-setup="discord"] [data-im-check]');
-    expect(fixture.calls.filter((item) => item.operation === 'check').at(-1)).toEqual({ operation: 'check', id: 'discord-b' });
-    expect(fixture.calls.filter((item) => item.operation === 'listen').at(-1)).toEqual({ operation: 'listen', id: 'discord-b', body: true });
-
-    // Reopen drawer, save discord-a again, then switch to "New account" ('') -> check button disappears and no stale saved notice remains
-    await click(container, '[data-im-connect-toggle]');
-    await choose(container, '#im-instance', 'discord-a');
-    await input(container, '[data-im-setup-field="bot_token"]', 'token-for-a-2');
-    await click(container, '[data-im-setup-save]');
-    expect(container.querySelector('[data-im-setup-saved-notice]')?.textContent).toContain('Credential saved for discord-a');
-
-    await choose(container, '#im-instance', '');
-    expect(container.querySelector('[data-im-setup-saved-notice]')).toBeNull();
-    expect(container.querySelector('[data-im-platform-setup="discord"] [data-im-check]')).toBeNull();
-
-    // Clicking "Authorize again" on matrix-expired switches platform to matrix, selects matrix-expired, and checks matrix-expired
-    await click(container, '[data-im-reauthorize="matrix-expired"]');
-    expect(container.querySelector('[data-im-platform-setup="matrix"]')).not.toBeNull();
-    expect(container.querySelector('[data-im-setup-saved-notice]')).toBeNull();
-    await click(container, '[data-im-platform-setup="matrix"] [data-im-check]');
+    const matrix = container.querySelector<HTMLElement>('[data-im-account="matrix-expired"]')!;
+    await click(matrix, '[data-im-reauthorize-now="matrix-expired"]');
+    expect(matrix.querySelector('[data-im-platform-setup="matrix"]')).not.toBeNull();
+    await click(matrix, '[data-im-platform-setup="matrix"] [data-im-check]');
     expect(fixture.calls.filter((item) => item.operation === 'check').at(-1)).toEqual({ operation: 'check', id: 'matrix-expired' });
   });
 
-  it('shows setupCatalog error with retry recovery while keeping WeChat and paste setup available', async () => {
+  it('keeps setup-catalog platforms listed as unavailable with retry, while WeChat and paste stay addable', async () => {
     fixture = createImSettingsFixture(imSettingsSnapshot());
     const setupCatalogSpy = vi.spyOn(fixture.client.imSessions, 'setupCatalog').mockRejectedValueOnce(new Error('setup_catalog_offline'));
-    const container = await render();
-    await click(container, '[data-im-connect-toggle]');
+    await render();
+    await click(document.body, '[data-notify-add-open]');
     await act(settle);
-
-    expect(container.querySelector('[data-im-setup-catalog-error]')?.textContent).toContain(
-      'Could not load Discord, Slack and Matrix setup options. Try again.',
-    );
-    expect(container.querySelector('[data-im-wechat-scan]')).not.toBeNull();
-    expect(container.querySelector('[data-im-paste]')).not.toBeNull();
-
-    await click(container, '[data-im-setup-catalog-retry]');
+    expect(document.body.querySelector('[data-im-setup-catalog-error]')?.textContent).toContain('Could not load Discord, Slack and Matrix setup options. Try again.');
+    expect(document.body.querySelector<HTMLButtonElement>('[data-channel-brand="discord"]')?.disabled).toBe(true);
+    expect(document.body.querySelector<HTMLButtonElement>('[data-channel-brand="wechat"]')?.disabled).toBe(false);
+    expect(document.body.querySelector<HTMLButtonElement>('[data-channel-brand="other"]')?.disabled).toBe(false);
+    await click(document.body, '[data-im-setup-catalog-retry]');
     await act(settle);
-
     expect(setupCatalogSpy).toHaveBeenCalledTimes(2);
-    expect(container.querySelector('[data-im-setup-catalog-error]')).toBeNull();
-    expect(container.querySelector('[data-im-setup-mode="discord"]')).not.toBeNull();
-    expect(container.querySelector('[data-im-setup-mode="slack"]')).not.toBeNull();
-    expect(container.querySelector('[data-im-setup-mode="matrix"]')).not.toBeNull();
+    expect(document.body.querySelector('[data-im-setup-catalog-error]')).toBeNull();
+    for (const brand of ['discord', 'slack', 'matrix']) {
+      expect(document.body.querySelector<HTMLButtonElement>(`[data-channel-brand="${brand}"]`)?.disabled).toBe(false);
+    }
   });
 
   it('guides connected 0-discovery accounts through step-by-step binding and pre-selects a target from 50+ sessions without false bound state', async () => {
@@ -782,10 +778,7 @@ describe('ImSessionCard channel management', () => {
     const container = await render();
     const flow = container.querySelector<HTMLElement>('[data-im-bind-flow="wx-live"]')!;
     expect(flow).not.toBeNull();
-    expect(flow.querySelector('[data-im-bind-steps]')?.textContent).toContain('1. Send a message to the bot');
-    expect(flow.querySelector('[data-im-preselect-pending-hint]')?.textContent).toContain(
-      'Waiting for an incoming message to discover the sender identity before binding can be confirmed.',
-    );
+    expect(flow.textContent).toContain('Have the contact send a direct message');
     expect(container.querySelectorAll('[data-im-binding]')).toHaveLength(0);
 
     // Pre-select a session target from the 50+ session list via search
@@ -799,7 +792,7 @@ describe('ImSessionCard channel management', () => {
 
     // Inbound message arrives -> discovery appears above with the pre-selected session target ready
     fixture.discover('wx-live', 'wx-inbound-1');
-    await click(flow, '[data-im-refresh-discovery]');
+    await click(container, '[data-im-account="wx-live"] [data-im-refresh-discovery]');
     const discovery = container.querySelector<HTMLElement>('[data-im-discovery="wx-inbound-1"]')!;
     expect(discovery).not.toBeNull();
     expect(discovery.querySelector('[data-im-target="session:session-42"]')).not.toBeNull();
@@ -857,7 +850,7 @@ describe('ImSessionCard channel management', () => {
     );
   });
 
-  it('keeps WeChat QR polling alive when the Connect SidePanel is closed without cancelling', async () => {
+  it('keeps WeChat QR polling alive when the add panel is closed without cancelling', async () => {
     const state = imChannelSnapshot();
     state.instances = [{ id: 'wx-bg', provider_kind: 'wechat_bridge', listening: false, configured: true, account_id: 'wx-bg', adapter: 'stopped' }];
     fixture = createImSettingsFixture(state);
@@ -866,13 +859,12 @@ describe('ImSessionCard channel management', () => {
       .mockResolvedValueOnce({ status: 'confirmed', provider_instance_id: 'wx-bg' });
 
     const container = await render();
-    await click(container, '[data-im-connect-toggle]');
-    await click(container, '[data-im-wechat-scan]');
+    await addTwoWay('wechat');
     expect(container.querySelector('[data-im-wechat-image]')).not.toBeNull();
 
-    // Close the SidePanel via the toggle button without clicking cancel
-    await click(container, '[data-im-connect-toggle]');
-    expect(container.querySelector('[data-im-connect-drawer]')).toBeNull();
+    // Close the panel without cancelling the scan.
+    await click(document.body, '[data-channel-add] button[aria-label="Close"]');
+    expect(container.querySelector('[data-channel-add]')).toBeNull();
     expect(fixture.calls.some((item) => item.operation === 'cancelWechatQr')).toBe(false);
 
     // Let two poll intervals fire while the panel is closed

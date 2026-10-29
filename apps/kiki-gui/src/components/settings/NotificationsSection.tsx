@@ -1,33 +1,25 @@
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import type { NotificationChannel, NotificationDelivery } from '@kiki/klient';
 import type { ImSessionSnapshot } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { FeedbackLine } from '../controls';
-import { Icon } from '../icons';
-import { SidePanel } from '../SidePanel';
-import { SECONDARY_BUTTON } from '../ui';
-import { AddChannelForm } from './notifications/AddChannelForm';
 import { AwayNotificationsCard } from './notifications/AwayNotificationsCard';
-import { ChannelRow } from './notifications/ChannelRow';
-import { channelState, isAddable, providerLabel, sortedChannels } from './notifications/model';
-import { ImSessionCard } from './notifications/ImSessionCard';
+import { ATTENTION_STATES, ChannelsCard } from './notifications/ChannelsCard';
+import { IM_KEY, instanceNeedsAttention } from './notifications/imModel';
+import { channelState } from './notifications/model';
 import { NotificationRulesCard } from './notifications/NotificationRulesCard';
 import { SceneMatrix } from './notifications/SceneMatrix';
 import { useNotificationData } from './notifications/useNotifications';
-import { SectionCard, SettingsFlashContext } from './SectionCard';
-import { ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec, type ListSortSpec } from './list';
+import { SettingsFlashContext } from './SectionCard';
 
 const ADD_CARD = 'st-card-notify-add';
 
-type ChannelEntry = readonly [string, NotificationChannel];
-
 /**
- * Three questions, one tab each: where can Kiki reach me (chat accounts and
- * push channels, with their credentials and health), when should it (the
+ * Three questions, one tab each: where can Kiki reach me and can I answer
+ * (every channel, with its credentials and health), when should it (the
  * shared rules and which channel hears which moment), and what does this
  * device do on its own (system notifications).
  */
@@ -52,9 +44,6 @@ const CARD_TO_TAB: Readonly<Record<string, NotifySubTab>> = {
   'st-card-notify-away': 'device',
 };
 
-/** States a channel can be in that ask the user to do something. */
-const ATTENTION = new Set(['dependency', 'unauthorized', 'connection', 'noCredential']);
-
 function resolveInitialTab(search: string, hash: string, flashId: string | null): NotifySubTab {
   const cleanHash = hash.replace(/^#/, '');
   if (cleanHash !== '' && CARD_TO_TAB[cleanHash] !== undefined) {
@@ -78,19 +67,19 @@ function tabLabelKey(tab: NotifySubTab): I18nKey {
 }
 
 /**
- * Settings → Notifications & messages: Channels & accounts (two-way chat
- * accounts, then one-way push channels), When to notify (the shared rules and
- * the channel × moment table), and This device (system notifications).
+ * Settings → Notifications & messages: Channels & accounts (one list of every
+ * channel, two-way or alerts only, with one add entry), When to notify (the
+ * shared rules and the channel × moment table), and This device (system
+ * notifications).
  */
 export function NotificationsSection() {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const { settings, providers, deliveries } = useNotificationData();
+  const { settings, providers } = useNotificationData();
   const { hash, search } = useLocation();
   const flashId = useContext(SettingsFlashContext);
   const target = hash === `#${ADD_CARD}` || flashId === ADD_CARD;
   const [adding, setAdding] = useState(target);
-  const [opened, setOpened] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<NotifySubTab>(() => resolveInitialTab(search, hash, flashId));
   const tabsRef = useRef<HTMLDivElement>(null);
 
@@ -112,43 +101,14 @@ export function NotificationsSection() {
   useEffect(() => { if (target) setAdding(true); }, [target]);
 
   const data = settings.data;
-  const imCached = queryClient.getQueryData<ImSessionSnapshot>(['im-sessions']);
-  const imNeedsAttention = imCached !== undefined && (
-    imCached.discoveries.length > 0 ||
-    imCached.instances.some((inst) => (inst.inbound_diagnostics?.length ?? 0) > 0 || inst.connection === 'auth_expired' || (inst.listening && (inst.connection === 'stopped' || inst.adapter === 'stopped' || inst.adapter === 'missing')))
-  );
+  const imCached = queryClient.getQueryData<ImSessionSnapshot>(IM_KEY);
+  const imNeedsAttention = imCached !== undefined && imCached.instances.some((inst) =>
+    instanceNeedsAttention(inst, imCached.discoveries.filter((item) => item.provider_instance_id === inst.id).length));
   const pushPaused = data !== undefined && !data.global.enabled;
-  const registry = useMemo(() => providers.data ?? [], [providers.data]);
-  const channels = useMemo<readonly ChannelEntry[]>(() => (data === undefined ? [] : sortedChannels(data)), [data]);
-  const byChannel = new Map<string, NotificationDelivery[]>();
-  for (const row of deliveries.data ?? []) byChannel.set(row.channel_id, [...(byChannel.get(row.channel_id) ?? []), row]);
-  const canAdd = registry.some(isAddable);
-
-  const providerOf = useCallback(
-    (channel: NotificationChannel) => registry.find((provider) => provider.id === data?.provider_instances[channel.provider_instance_id]?.provider_id),
-    [registry, data],
-  );
-  const nameOf = useCallback(([, channel]: ChannelEntry) => {
-    const instance = data?.provider_instances[channel.provider_instance_id];
-    return channel.label ?? instance?.label ?? providerLabel(t, instance?.provider_id ?? '');
-  }, [data, t]);
-  const keyOf = useCallback(([id]: ChannelEntry) => id, []);
-  const textOf = useCallback((entry: ChannelEntry) => [nameOf(entry), providerOf(entry[1])?.id], [nameOf, providerOf]);
-  const filters = useMemo<readonly ListFilterSpec<ChannelEntry>[]>(() => [
-    { id: 'enabled', label: t('st.notify.filter.enabled'), test: ([, channel]) => channel.enabled },
-    { id: 'disabled', label: t('st.notify.filter.disabled'), test: ([, channel]) => !channel.enabled },
-    {
-      id: 'attention', label: t('st.notify.filter.attention'), tone: 'attention',
-      test: ([, channel]) => data !== undefined && ATTENTION.has(channelState(channel, data.provider_instances[channel.provider_instance_id], providerOf(channel), data.credential_slots)),
-    },
-  ], [t, data, providerOf]);
-  const sorts = useMemo<readonly ListSortSpec<ChannelEntry>[]>(() => [
-    { id: 'order', label: t('st.list.sort.order'), compare: () => 0 },
-    { id: 'name', label: t('st.list.sort.name'), compare: (a, b) => nameOf(a).localeCompare(nameOf(b)) },
-  ], [t, nameOf]);
-  const view = useListView({ listId: 'notify-channels', items: channels, keyOf, textOf, filters, sorts });
-  const channelsNeedAttention = data !== undefined && channels.some(([, channel]) =>
-    ATTENTION.has(channelState(channel, data.provider_instances[channel.provider_instance_id], providerOf(channel), data.credential_slots)));
+  const registry = providers.data ?? [];
+  const channelsNeedAttention = data !== undefined && Object.values(data.channels).some((channel) => ATTENTION_STATES.has(channelState(
+    channel, data.provider_instances[channel.provider_instance_id],
+    registry.find((provider) => provider.id === data.provider_instances[channel.provider_instance_id]?.provider_id), data.credential_slots)));
   const panel = (tab: NotifySubTab, children: React.ReactNode) => (
     <div id={`notify-panel-${tab}`} role="tabpanel" aria-labelledby={`notify-tab-${tab}`} className={activeTab === tab ? 'space-y-5' : 'hidden'}>
       {children}
@@ -233,53 +193,7 @@ export function NotificationsSection() {
     <div className="space-y-5">
       {tabBar}
 
-      {panel('accounts', <>
-        <ImSessionCard />
-        {pushBody ?? (data === undefined ? null : (
-          <SectionCard
-            id="st-card-notify-channels"
-            title={t('st.notify.pushTitle')}
-            actions={canAdd && !adding ? (
-              <button type="button" data-notify-add-open className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
-                onClick={() => { setAdding(true); }}>
-                <Icon name="plus" size={12} />
-                {t('st.notify.choose')}
-              </button>
-            ) : undefined}
-          >
-            <div className="space-y-3">
-              {!data.global.enabled ? (
-                <p className="text-[12px] text-amber-ink" data-notify-paused-banner>{t('st.notify.paused')}</p>
-              ) : null}
-              {channels.length > 0 ? (
-                <>
-                  <ListToolbar view={view} total={channels.length} filters={filters} sorts={sorts}
-                    searchLabel={t('st.notify.search')} searchPlaceholder={t('st.notify.searchPlaceholder')} />
-                  {view.visible.length === 0 ? (
-                    <ListEmpty kind="no-match" title={t('st.notify.noMatchTitle')}
-                      body={view.query.trim() !== '' ? t('st.notify.noMatches', { query: view.query.trim() }) : undefined}
-                      onClear={view.clear} />
-                  ) : (
-                    <div data-notify-channels className={data.global.enabled ? '' : 'opacity-60'}>
-                      <ListBody items={view.visible} keyOf={keyOf} density={view.density} label={t('st.notify.pushTitle')}
-                        virtualizeAfter={Number.POSITIVE_INFINITY}
-                        renderRow={([id, channel]) => (
-                          <ChannelRow channelId={id} channel={channel} settings={data}
-                            provider={providerOf(channel)}
-                            deliveries={byChannel.get(id) ?? []} defaultOpen={opened === id} density={view.density} />
-                        )} />
-                    </div>
-                  )}
-                </>
-              ) : !adding ? (
-                <div data-notify-empty>
-                  <ListEmpty kind="none" title={t('st.notify.emptyTitle')} body={t('st.notify.emptyBody')} />
-                </div>
-              ) : null}
-            </div>
-          </SectionCard>
-        ))}
-      </>)}
+      {panel('accounts', <ChannelsCard adding={adding} setAdding={setAdding} />)}
 
       {panel('rules', pushBody ?? (data === undefined ? null : <>
         <NotificationRulesCard global={data.global} />
@@ -288,18 +202,6 @@ export function NotificationsSection() {
 
       {panel('device', <AwayNotificationsCard />)}
 
-      {adding && data !== undefined ? (
-        <SidePanel
-          title={t('st.notify.addTitle')}
-          overlayId="settings-add-notify-channel"
-          onClose={() => { setAdding(false); }}
-        >
-          <div id="st-card-notify-add">
-            <AddChannelForm settings={data} providers={registry}
-              onDone={(channelId) => { setAdding(false); if (channelId !== null) setOpened(channelId); }} />
-          </div>
-        </SidePanel>
-      ) : null}
     </div>
   );
 }

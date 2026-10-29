@@ -1,6 +1,7 @@
 import type { NotificationChannel, NotificationInstance, NotificationProviderDescriptor, NotificationSettings } from '@kiki/klient';
 import { describe, expect, it } from 'vitest';
 
+import { addCatalog, brandAvailable, hasBothKinds, pasteText, routeKey } from './catalog';
 import { channelState, instanceSlots, isAddable, nextId, parseJsonObject, slotEnvFor, unavailableProviders } from './model';
 
 const telegram: NotificationProviderDescriptor = {
@@ -64,5 +65,36 @@ describe('parseJsonObject', () => {
     expect(parseJsonObject('{"host":"10.0.0.5"}')).toEqual({ ok: true, value: { host: '10.0.0.5' } });
     expect(parseJsonObject('[1]').ok).toBe(false);
     expect(parseJsonObject('{bad').ok).toBe(false);
+  });
+});
+
+describe('add catalog', () => {
+  const setup = { platforms: [{ provider_kind: 'discord' as const, methods: ['token'], fields: [], portal_url: 'https://example.test', instructions: [],
+    capabilities: { inbound: [], outbound: [], threads: true, edit_text: true, callbacks: false, encrypted_rooms: false, voice_rendering: 'unsupported', audio_rendering: 'attachment', transport: 'gateway' } }] };
+  const webhook: NotificationProviderDescriptor = { ...telegram, id: 'discord_webhook' };
+
+  it('merges both registries into one card per brand, two-way route first', () => {
+    const brands = addCatalog(setup, false, [telegram, webhook, toast, script]);
+    const discord = brands.find((brand) => brand.id === 'discord')!;
+    expect(discord.routes.map((option) => routeKey(option.route))).toEqual(['im:discord', 'push:discord_webhook']);
+    expect(hasBothKinds(discord)).toBe(true);
+    const tg = brands.find((brand) => brand.id === 'telegram')!;
+    expect(tg.routes.map((option) => routeKey(option.route))).toEqual(['im:paste:telegram', 'push:telegram']);
+    expect(brands.find((brand) => brand.id === 'wechat')!.routes.map((option) => routeKey(option.route))).toEqual(['im:wechat']);
+    expect(brands.map((brand) => brand.id)).not.toContain('script');
+  });
+
+  it('keeps unavailable types listed but not addable', () => {
+    const brands = addCatalog(undefined, true, [toast]);
+    expect(brandAvailable(brands.find((brand) => brand.id === 'windows')!)).toBe(false);
+    expect(brandAvailable(brands.find((brand) => brand.id === 'slack')!)).toBe(false);
+    expect(brandAvailable(brands.find((brand) => brand.id === 'wechat')!)).toBe(true);
+  });
+
+  it('composes paste text in the formats the server parser reads', () => {
+    expect(pasteText('telegram', { token: ' 1:abc ' })).toBe('1:abc');
+    expect(pasteText('feishu', { appId: 'cli_x', appSecret: 's' })).toBe('app_id: cli_x\napp_secret: s');
+    expect(pasteText('qq', { endpoint: 'ws://127.0.0.1:3001' })).toBe('onebot: ws://127.0.0.1:3001');
+    expect(pasteText('qq', { endpoint: 'ws://h', accessToken: 't' })).toBe('onebot: ws://h\naccess_token: t');
   });
 });
