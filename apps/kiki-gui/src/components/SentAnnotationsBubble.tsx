@@ -9,8 +9,7 @@
  * made before this change keep applying.
  */
 
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { createPortal } from 'react-dom';
+import { useRef, useSyncExternalStore, useState } from 'react';
 
 import {
   annotationOverrideId,
@@ -21,9 +20,8 @@ import {
   type TimelineAnnotation,
 } from '@kiki/session-core/composer';
 import { useI18n } from '../i18n';
-import { clampOverlayPosition } from '../lib/overlayPosition';
-import { floatingSurfaceZIndex, registerOverlay } from '../lib/uiBusy';
 import { Icon } from './icons';
+import { AnchoredPopover, usePopover } from './overlays';
 
 interface SentNote {
   readonly id: string;
@@ -125,96 +123,8 @@ function NoteBubble({
   readonly title: string;
   readonly label: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const anchorRef = useRef<HTMLButtonElement>(null);
-
-  return (
-    <>
-      <button
-        ref={anchorRef}
-        type="button"
-        data-annotation-bubble={blockId}
-        data-annotation-bubble-note={noteId}
-        aria-expanded={open}
-        aria-label={ariaLabel}
-        title={title}
-        onClick={() => { setOpen((value) => !value); }}
-        className="flex h-7 min-w-0 max-w-full items-center gap-1 rounded-full bg-paper px-2 text-[12px] font-medium text-ink-soft shadow-[var(--kiki-sheet-shadow)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9"
-      >
-        <span aria-hidden className="flex shrink-0 text-accent-ink/80"><Icon name="edit" size={12} /></span>
-        <span className="min-w-0 truncate">{label}</span>
-      </button>
-      {open ? (
-        <SentNotesPopover
-          notes={notes}
-          anchorRef={anchorRef}
-          onClose={() => { setOpen(false); }}
-        />
-      ) : null}
-    </>
-  );
-}
-
-function SentNotesPopover({
-  notes,
-  anchorRef,
-  onClose,
-}: {
-  readonly notes: readonly SentNote[];
-  readonly anchorRef: React.RefObject<HTMLButtonElement | null>;
-  readonly onClose: () => void;
-}) {
   const { t } = useI18n();
-  const panelRef = useRef<HTMLDivElement>(null);
-  const [panelSize, setPanelSize] = useState<{ width: number; height: number } | null>(null);
-
-  useLayoutEffect(() => {
-    const panel = panelRef.current;
-    if (panel === null) return;
-    const next = { width: panel.offsetWidth, height: panel.offsetHeight };
-    setPanelSize((previous) =>
-      previous?.width === next.width && previous.height === next.height ? previous : next,
-    );
-  }, [notes]);
-
-  useEffect(() => {
-    const unregister = registerOverlay('sent-annotations');
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      if (event.target instanceof Element && event.target.closest('[data-annotation-bubble-input]') !== null) return;
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      const panel = panelRef.current;
-      if (panel !== null && event.target instanceof Node && panel.contains(event.target)) return;
-      if (anchorRef.current !== null && event.target instanceof Node && anchorRef.current.contains(event.target)) return;
-      onClose();
-    };
-    const onResize = () => { onClose(); };
-    window.addEventListener('keydown', onKeyDown, true);
-    window.addEventListener('pointerdown', onPointerDown, true);
-    window.addEventListener('resize', onResize);
-    return () => {
-      unregister();
-      window.removeEventListener('keydown', onKeyDown, true);
-      window.removeEventListener('pointerdown', onPointerDown, true);
-      window.removeEventListener('resize', onResize);
-    };
-  }, [onClose, anchorRef]);
-
-  const anchor = anchorRef.current?.getBoundingClientRect();
-  const viewport = { width: window.innerWidth, height: window.innerHeight };
-  const measured = panelSize ?? { width: Math.min(320, viewport.width - 16), height: 0 };
-  const anchorBox = anchor ?? { left: 8, top: 8, right: 8, bottom: 8 };
-  const below = anchorBox.bottom + 6;
-  const above = anchorBox.top - measured.height - 6;
-  const preferredTop =
-    panelSize !== null && below + measured.height + 8 > viewport.height && above >= 8
-      ? above
-      : below;
-  const position = clampOverlayPosition(anchorBox.right - measured.width, preferredTop, measured, viewport);
+  const pop = usePopover();
 
   const saveNote = (id: string, comment: string) => {
     writeAnnotationOverride(id, { ...getAnnotationOverridesSnapshot()[id], comment });
@@ -223,23 +133,35 @@ function SentNotesPopover({
     writeAnnotationOverride(id, { ...getAnnotationOverridesSnapshot()[id], deleted: true });
   };
 
-  return createPortal(
-    <div
-      ref={panelRef}
-      data-annotation-bubble-panel
-      role="dialog"
-      aria-label={t('transcript.annotation.notesAria')}
-      tabIndex={-1}
-      className="anim-enter fixed w-80 max-w-[calc(100vw-1rem)] rounded-xl border border-hairline bg-panel p-1.5 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.35)]"
-      style={{ top: position.top, left: position.left, zIndex: floatingSurfaceZIndex(null) }}
-    >
-      <ul className="max-h-[min(40vh,320px)] overflow-y-auto">
-        {notes.map((note) => (
-          <SentNoteRow key={note.id} note={note} onSave={saveNote} onRemove={removeNote} />
-        ))}
-      </ul>
-    </div>,
-    document.body,
+  return (
+    <>
+      <button
+        {...pop.triggerProps}
+        type="button"
+        data-annotation-bubble={blockId}
+        data-annotation-bubble-note={noteId}
+        aria-label={ariaLabel}
+        title={title}
+        className="flex h-7 min-w-0 max-w-full items-center gap-1 rounded-full bg-paper px-2 text-[12px] font-medium text-ink-soft shadow-[var(--kiki-sheet-shadow)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-9"
+      >
+        <span aria-hidden className="flex shrink-0 text-accent-ink/80"><Icon name="edit" size={12} /></span>
+        <span className="min-w-0 truncate">{label}</span>
+      </button>
+      <AnchoredPopover
+        {...pop.popoverProps}
+        label={t('transcript.annotation.notesAria')}
+        align="end"
+        widthClassName="w-80"
+        className="p-1.5"
+        data={{ 'data-annotation-bubble-panel': '' }}
+      >
+        <ul className="max-h-[min(40vh,320px)] overflow-y-auto">
+          {notes.map((note) => (
+            <SentNoteRow key={note.id} note={note} onSave={saveNote} onRemove={removeNote} />
+          ))}
+        </ul>
+      </AnchoredPopover>
+    </>
   );
 }
 
@@ -283,6 +205,7 @@ function SentNoteRow({
           <textarea
             rows={3}
             data-annotation-bubble-input
+            data-autofocus
             autoFocus
             value={draft}
             aria-label={t('annotationTray.editAria', { quote: quoteLabel })}

@@ -200,6 +200,13 @@ function buttonByText(text: string): HTMLElement {
   return button;
 }
 
+/** The in-panel step-back control (an icon button, so it is found by its label). */
+function backButton(): HTMLElement {
+  const button = dialog().querySelector<HTMLElement>('[aria-label="Back"]');
+  if (button === null) throw new Error('panel back button not found');
+  return button;
+}
+
 /**
  * A step scroller whose box can actually change, so the "there is more below"
  * edge is exercised against a real measurement instead of a fixed constant.
@@ -324,8 +331,8 @@ describe('OnboardingWizard', () => {
     await toAppearanceStep();
     expect(dialog().querySelector('[data-onboarding-header="compact"]')).not.toBeNull();
     expect(dialog().querySelector('[data-onboarding-header="full"]')).toBeNull();
-    // The step keeps one title; the close and the progress stay reachable.
-    expect(dialog().querySelector('h2')).toBeNull();
+    // The panel header owns the step title now; the close and the progress stay reachable.
+    expect(dialog().querySelector('h2')?.textContent).toBe('Appearance & theme');
     expect(dialog().textContent).toContain('Step 2 of 3');
     expect(dialog().querySelector('[aria-label="Close setup"]')).not.toBeNull();
   });
@@ -362,11 +369,11 @@ describe('OnboardingWizard', () => {
     expect(dialog().textContent).toContain('Step 3 of 3');
     expect(dialog().querySelector('[data-onboarding-depart]')).not.toBeNull();
 
-    await click(buttonByText('Back'));
+    await click(backButton());
     expect(dialog().textContent).toContain('Step 2 of 3');
     expect(dialog().querySelector('[data-onboarding-appearance]')).not.toBeNull();
 
-    await click(buttonByText('Back'));
+    await click(backButton());
     expect(dialog().textContent).toContain('Step 1 of 3');
     expect(dialog().textContent).toContain('How should Kiki work with you?');
   });
@@ -374,19 +381,10 @@ describe('OnboardingWizard', () => {
   it('scrolls the step itself and leaves the header and footer outside that scroller', async () => {
     await mount();
     const scroller = dialog().querySelector<HTMLElement>('[data-onboarding-step-scroll]')!;
-    // height:100% never became the scrollport; the row clipped the step.
     expect(scroller.className.split(/\s+/)).not.toContain('h-full');
     expect(scroller.className).toContain('overflow-y-auto');
     expect(scroller.className).toContain('min-h-0');
     expect(scroller.className).toContain('flex-1');
-    const frame = scroller.parentElement;
-    expect(frame?.className).toContain('min-h-0');
-    expect(frame?.className).toContain('overflow-hidden');
-    expect(frame?.className).toContain('flex-col');
-    // The cap stays a cap. A fitting step must not be pinned to 85vh.
-    expect(dialog().className).toContain('max-h-[85vh]');
-    expect(dialog().className.split(/\s+/)).not.toContain('h-[85vh]');
-    expect(dialog().className.split(/\s+/)).not.toContain('h-full');
     expect(scroller.contains(buttonByText('Next'))).toBe(false);
     expect(scroller.contains(buttonByText('Set up later'))).toBe(false);
     expect(dialog().querySelector('[aria-label="Close setup"]')?.closest('[data-onboarding-step-scroll]')).toBeNull();
@@ -548,7 +546,7 @@ describe('OnboardingWizard', () => {
     await toAgreementStep();
     await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
     await click(buttonByText('Next'));
-    await click(buttonByText('Back'));
+    await click(backButton());
     expect(dialog().querySelector('[data-onboarding-voice="concise"]')?.getAttribute('aria-checked')).toBe('true');
     await click(dialog().querySelector('[data-onboarding-voice="detailed"]')!);
     await act(async () => { roots.pop()!.unmount(); });

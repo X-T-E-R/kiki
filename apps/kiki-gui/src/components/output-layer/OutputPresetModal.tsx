@@ -1,15 +1,17 @@
 /**
- * OutputPresetModal — dialog for creating and editing Output Layer presets.
- * Direct access to saveable preset configurations without credential duplication.
+ * OutputPresetModal — the create/edit panel for Output Layer presets (the
+ * side-panel tier: one form that walks one object, never stacked over the
+ * preset picker). Direct access to saveable preset configurations without
+ * credential duplication.
  */
 
 import { useState, useId, useMemo, useRef, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useOptionalConnection } from '../../state/connection';
 import { useI18n } from '../../i18n';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { Icon } from '../icons';
 import { SearchableSelect } from '../SearchableSelect';
+import { SidePanel } from '../SidePanel';
 import { buildCatalogModelOptions, useProviderGroupLabel } from '../modelSelectOptions';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from '../ui';
 import type { OutputLayerPreset, OutputLayerSettings } from './types';
@@ -184,33 +186,42 @@ export function OutputPresetModal({
   };
 
   return (
-    <Dialog
-      ariaLabel={isEditing ? t('outputPreset.editAria') : t('outputPreset.addAria')}
-      overlayId={overlayId}
-      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md}`}
+    <SidePanel
+      title={isEditing ? t('outputPreset.editTitle') : t('outputPreset.addTitle')}
+      overlayId={`output-preset-${overlayId}`}
+      width="md"
       onClose={onClose}
+      footer={(
+        <>
+          {isEditing ? (
+            <button
+              type="button"
+              onClick={() => { void handleDelete(); }}
+              disabled={saving}
+              className={`rounded px-2.5 py-1 text-[12px] font-medium text-danger hover:bg-danger/10 ${
+                saving ? 'opacity-50 cursor-not-allowed' : ''
+              }`}
+            >
+              {t('outputPreset.delete')}
+            </button>
+          ) : null}
+          <div className="ml-auto flex items-center gap-2">
+            <button type="button" onClick={onClose} disabled={saving} className={SECONDARY_BUTTON}>
+              {t('common.cancel')}
+            </button>
+            <button
+              type="button"
+              onClick={() => { void handleSave(); }}
+              disabled={saving}
+              className={`${PRIMARY_BUTTON} ${saving ? 'opacity-50 cursor-not-allowed' : ''}`}
+            >
+              {saving ? t('outputPreset.saving') : t('outputPreset.save')}
+            </button>
+          </div>
+        </>
+      )}
     >
       <div className="space-y-4">
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-hairline pb-3">
-          <div className="flex items-center gap-2">
-            <span className="flex h-7 w-7 items-center justify-center rounded-md bg-accent/10 text-accent">
-              <Icon name="sliders" size={16} />
-            </span>
-            <h2 className="text-[15px] font-semibold text-ink">
-              {isEditing ? t('outputPreset.editTitle') : t('outputPreset.addTitle')}
-            </h2>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-ink-faint hover:bg-ink/[0.04] hover:text-ink"
-            aria-label={t('common.close')}
-          >
-            <Icon name="close" size={14} />
-          </button>
-        </div>
-
         {!isEditing && templates.length > 0 ? (
           <div>
             <label htmlFor={`${overlayId}-template`} className="mb-1 block text-[12px] font-medium text-ink-soft">{t('outputPreset.templateLabel')}</label>
@@ -440,38 +451,7 @@ export function OutputPresetModal({
             {saveError}
           </div>
         ) : null}
-
-        {/* Footer Actions */}
-        <div className="flex items-center justify-between border-t border-hairline pt-3">
-          <div>
-            {isEditing ? (
-              <button
-                type="button"
-                onClick={() => { void handleDelete(); }}
-                disabled={saving}
-                className={`rounded px-2.5 py-1 text-[12px] font-medium text-danger hover:bg-danger/10 ${
-                  saving ? 'opacity-50 cursor-not-allowed' : ''
-                }`}
-              >
-                {t('outputPreset.delete')}
-              </button>
-            ) : null}
-          </div>
-          <div className="flex items-center gap-2">
-            <button type="button" onClick={onClose} disabled={saving} className={SECONDARY_BUTTON}>
-              {t('common.cancel')}
-            </button>
-            <button
-              type="button"
-              onClick={() => { void handleSave(); }}
-              disabled={saving}
-              className={`${PRIMARY_BUTTON} ${saving ? 'opacity-50 cursor-not-allowed' : ''}`}
-            >
-              {saving ? t('outputPreset.saving') : t('outputPreset.save')}
-            </button>
-          </div>
-        </div>
       </div>
-    </Dialog>
+    </SidePanel>
   );
 }

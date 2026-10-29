@@ -40,10 +40,9 @@ import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
 import { InspectorSection } from '../agent-panel/InspectorSection';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { Dialog } from '../Dialog';
 import { FeedbackLine, SavedTick } from '../controls';
-import { Icon } from '../icons';
 import { useSavedTick } from '../settings/useSavedTick';
+import { SidePanel } from '../SidePanel';
 import { PRIMARY_BUTTON } from '../ui';
 
 export interface PersonaSettingsUpdateProps {
@@ -300,46 +299,26 @@ export function PersonaSettingsDialog({ sessionId, onClose }: PersonaSettingsUpd
   if (controller.status === 'absent') return null;
 
   return (
-    <Dialog
-      onClose={onClose}
-      ariaLabel={t('persona.binding.menu')}
+    <SidePanel
+      title={t('persona.binding.menu')}
+      description={state === undefined ? undefined : (
+        <span data-persona-binding-state-word>{t(STATE_KEY[state])}</span>
+      )}
       overlayId="persona-settings"
-      overlayClassName="fixed inset-0 z-50 flex justify-end bg-shell/40 backdrop-blur-[2px]"
-      panelClassName="anim-enter flex h-full w-full max-w-full flex-col overflow-hidden bg-panel text-ink outline-none shadow-2xl min-[768px]:max-w-[440px]"
+      width="md"
+      onClose={onClose}
+      data={{
+        'data-persona-settings-dialog': controller.settings?.personaId ?? 'none',
+        'data-persona-binding-state': state ?? 'none',
+      }}
     >
-      <div
-        data-persona-settings-dialog={controller.settings?.personaId ?? 'none'}
-        data-persona-binding-state={state}
-        className="flex min-h-0 flex-1 flex-col"
-      >
-        <div className="flex shrink-0 items-center justify-between gap-3 px-5 py-4">
-          <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
-            <h2 className="text-[14px] font-medium">{t('persona.binding.menu')}</h2>
-            {state === undefined ? null : (
-              <span data-persona-binding-state-word className="text-[12px] text-ink-faint">{t(STATE_KEY[state])}</span>
-            )}
-          </div>
-          <button
-            type="button"
-            data-autofocus
-            data-persona-settings-close
-            aria-label={t('agentPanel.detailClose')}
-            onClick={onClose}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded text-ink-soft hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40"
-          >
-            <Icon name="close" size={14} />
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6">
-          {controller.status === 'loading' ? (
-            <p role="status" data-persona-binding-loading className="text-[13px] text-ink-faint">{t('persona.binding.loading')}</p>
-          ) : controller.status === 'error' ? (
-            <PersonaSettingsError controller={controller} />
-          ) : (
-            <PersonaSettingsActions controller={controller} />
-          )}
-        </div>
-      </div>
-    </Dialog>
+      {controller.status === 'loading' ? (
+        <p role="status" data-persona-binding-loading className="text-[13px] text-ink-faint">{t('persona.binding.loading')}</p>
+      ) : controller.status === 'error' ? (
+        <PersonaSettingsError controller={controller} />
+      ) : (
+        <PersonaSettingsActions controller={controller} />
+      )}
+    </SidePanel>
   );
 }

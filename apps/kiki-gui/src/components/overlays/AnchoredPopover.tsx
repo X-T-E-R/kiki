@@ -48,12 +48,16 @@ export interface AnchoredPopoverProps {
   readonly widthClassName?: string;
   readonly className?: string;
   readonly data?: Record<`data-${string}`, string>;
+  /** Extra key handling: return true when the event was consumed. */
+  readonly onSurfaceKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => boolean;
+  /** Focus this selector on open instead of `[data-autofocus]` / the first control. */
+  readonly initialFocusSelector?: string;
   readonly children: ReactNode;
 }
 
 export function AnchoredPopover({
   open, onClose, anchorRef, id, label, side = 'below', align = 'start',
-  widthClassName = 'w-[20rem]', className = '', data, children,
+  widthClassName = 'w-[20rem]', className = '', data, onSurfaceKeyDown, initialFocusSelector, children,
 }: AnchoredPopoverProps) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const [style, setStyle] = useState<CSSProperties>({ visibility: 'hidden', left: 0, top: 0 });
@@ -100,7 +104,8 @@ export function AnchoredPopover({
     if (!open) return;
     const unregister = registerOverlay(`popover:${id}`);
     const surface = surfaceRef.current;
-    const first = surface?.querySelector<HTMLElement>('[data-autofocus]:not([disabled])')
+    const first = (initialFocusSelector === undefined ? null : surface?.querySelector<HTMLElement>(initialFocusSelector))
+      ?? surface?.querySelector<HTMLElement>('[data-autofocus]:not([disabled])')
       ?? surface?.querySelector<HTMLElement>(FOCUSABLE) ?? surface;
     first?.focus();
     const onPointerDown = (event: PointerEvent) => {
@@ -115,7 +120,7 @@ export function AnchoredPopover({
       const active = document.activeElement;
       if (active === null || active === document.body || surface?.contains(active) === true) anchorRef.current?.focus();
     };
-  }, [open, id, anchorRef, close]);
+  }, [open, id, anchorRef, close, initialFocusSelector]);
 
   if (!open) return null;
   return createPortal(
@@ -139,6 +144,7 @@ export function AnchoredPopover({
         }, 0);
       }}
       onKeyDown={(event) => {
+        if (onSurfaceKeyDown?.(event) === true) return;
         if (event.key !== 'Escape' || event.defaultPrevented) return;
         event.preventDefault();
         event.stopPropagation();

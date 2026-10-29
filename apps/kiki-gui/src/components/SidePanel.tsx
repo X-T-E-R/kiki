@@ -38,6 +38,8 @@ export function SidePanel({
   data,
   back,
   stepKey,
+  dismissible,
+  closeAriaLabel,
 }: {
   title: string;
   /** One line under the title: what this panel changes. */
@@ -54,6 +56,10 @@ export function SidePanel({
   back?: { readonly label: string; readonly onClick: () => void; readonly data?: Record<`data-${string}`, string> };
   /** Changes with the step, so the body re-enters and scrolls to top. */
   stepKey?: string;
+  /** Forwarded to Dialog: false keeps scrim clicks and a bare Escape from closing. */
+  dismissible?: boolean;
+  /** Override for the header close button's accessible name (a wizard's exit is a decision). */
+  closeAriaLabel?: string;
 }) {
   const { t } = useI18n();
   return (
@@ -62,6 +68,7 @@ export function SidePanel({
       ariaLabel={title}
       overlayId={overlayId}
       overlayData={data}
+      dismissible={dismissible ?? true}
       overlayClassName="fixed inset-0 z-50 flex justify-end bg-shell/20"
       panelClassName={`kiki-side-panel flex h-full w-full max-w-full flex-col overflow-hidden bg-panel shadow-[var(--kiki-sheet-shadow),-16px_0_48px_-20px_rgb(var(--kiki-shadow-ink)/0.35)] outline-none sm:rounded-l-[var(--kiki-sheet-radius)] ${WIDTHS[width]}`}
     >
@@ -79,7 +86,7 @@ export function SidePanel({
         <button
           type="button"
           onClick={onClose}
-          aria-label={t('common.close')}
+          aria-label={closeAriaLabel ?? t('common.close')}
           className="-mr-2 flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11"
         >
           <Icon name="close" size={16} />
