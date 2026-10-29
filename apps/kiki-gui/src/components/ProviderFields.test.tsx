@@ -27,10 +27,10 @@ import { I18nProvider } from '../i18n';
 import { accountState, needsSignInAction } from './accountSignInState';
 import { AccountConnectionPanel } from './AccountConnectionPanel';
 import { NewProviderWizard, ProviderEditor } from './ProviderFields';
-import { DirtyGuardContext } from './dirtyGuard';
 import { ConnectionsTab } from './settings/ProvidersSection';
 import { SettingsCardMountContext } from './settings/SectionCard';
 import { optionLabels, optionValues, openOptions, openPanel, pickValue } from './settings/testControls';
+import { RouterDirtyGuard } from './settings/testDirtyGuard';
 
 const listDiscoveredModels = vi.fn(async () => ({ items: [] as Array<{ provider_id: string; fetched_at: number | null; attempted_at: number; models: Array<{ remote_id: string }> }> }));
 const refreshProvider = vi.fn();
@@ -266,9 +266,9 @@ async function renderSurface(children: ReactNode) {
         <MemoryRouter>
           <QueryClientProvider client={client}>
             <I18nProvider>
-              <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
+              <RouterDirtyGuard reportDirty={reportDirty}>
                 {content}
-              </DirtyGuardContext.Provider>
+              </RouterDirtyGuard>
             </I18nProvider>
           </QueryClientProvider>
         </MemoryRouter>,
@@ -382,9 +382,9 @@ describe('ProviderEditor save channel', () => {
           <MemoryRouter>
             <QueryClientProvider client={client}>
               <I18nProvider>
-                <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
+                <RouterDirtyGuard reportDirty={reportDirty}>
                   <ProviderEditor provider={provider} models={FAST_MODELS} onSaved={onSaved} />
-                </DirtyGuardContext.Provider>
+                </RouterDirtyGuard>
               </I18nProvider>
             </QueryClientProvider>
           </MemoryRouter>,
@@ -680,7 +680,7 @@ describe('ProviderEditor save channel', () => {
     // The alias and the upstream id are both on the row.
     const modelRow = row.querySelector<HTMLElement>('[data-provider-models] [data-model-row="kimi-code/kimi-k2"]')!;
     expect(modelRow.textContent).toContain('kimi-k2');
-    await act(async () => { modelRow.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!.click(); });
+    await act(async () => { modelRow.querySelector<HTMLButtonElement>('button[data-detail-trigger]')!.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const editor = document.body.querySelector<HTMLElement>('[data-model-row-editor="kimi-code/kimi-k2"]')!;
     expect(editor).not.toBeNull();
@@ -705,7 +705,7 @@ describe('ProviderEditor save channel', () => {
     const { container } = await renderSurface(<ConnectionsTab />);
     const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="edge:gateway"]')!;
     await act(async () => { row.open = true; });
-    await act(async () => { row.querySelector<HTMLButtonElement>('[data-model-row="fast"] button[aria-haspopup="dialog"]')!.click(); });
+    await act(async () => { row.querySelector<HTMLButtonElement>('[data-model-row="fast"] button[data-detail-trigger]')!.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const remove = () => document.body.querySelector<HTMLButtonElement>('[data-model-remove="fast"]')!;
     await act(async () => { remove().click(); });

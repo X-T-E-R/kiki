@@ -353,7 +353,7 @@ describe('the model row editor', () => {
     const row = container.querySelector<HTMLElement>('[data-model-row="demo/model"]')!;
     // The row's first button is the default-model star; the second opens the
     // detail panel the editor lives in.
-    const open = row.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]');
+    const open = row.querySelector<HTMLButtonElement>('button[data-detail-trigger]');
     if (open === null) throw new Error('the model row has no open control');
     await act(async () => { open.click(); });
     await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 0); }); });

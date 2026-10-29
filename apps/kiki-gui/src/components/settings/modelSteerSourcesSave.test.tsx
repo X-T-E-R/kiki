@@ -23,7 +23,7 @@ import type { GetModelResponse, ModelCatalogItem, ProviderCatalogItem } from '@k
 import type { ServerConnection } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../../i18n';
-import { DirtyGuardContext } from '../dirtyGuard';
+import { RouterDirtyGuard } from './testDirtyGuard';
 
 const CONNECTION: ServerConnection = { url: 'https://server.example.test/', token: 'test-token' };
 
@@ -176,9 +176,9 @@ async function renderCard(): Promise<void> {
       <MemoryRouter>
         <QueryClientProvider client={client}>
           <I18nProvider>
-            <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
+            <RouterDirtyGuard reportDirty={reportDirty}>
               <ProviderModelsHarness />
-            </DirtyGuardContext.Provider>
+            </RouterDirtyGuard>
           </I18nProvider>
         </QueryClientProvider>
       </MemoryRouter>,

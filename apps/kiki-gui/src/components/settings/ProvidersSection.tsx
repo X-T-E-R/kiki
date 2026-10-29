@@ -17,7 +17,7 @@ import { SECONDARY_BUTTON } from '../ui';
 import { DecisionConnectionsCard } from './DecisionConnections';
 import { ExternalEnginesList, ExternalEnginesVisibilitySwitch } from './ExternalEnginesSection';
 import { ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec, type ListSortSpec } from './list';
-import { MODEL_QUERY_PARAM, ModelMaintenance, ProviderModelList } from './ModelsSection';
+import { MODEL_QUERY_PARAM, ModelDetailSplit, ModelMaintenance, ProviderModelList } from './ModelsSection';
 import { SectionCard, SettingsCardMountContext } from './SectionCard';
 
 const KIND_ORDER: readonly ConnectionKind[] = ['api', 'account', 'local'];
@@ -158,8 +158,7 @@ export function ProvidersSection() {
         models={models}
         defaultOpen={requestedModel !== null && models.some((model) => model.id === requestedModel && model.provider_id === provider.id)}
         modelList={(
-          <ProviderModelList providerId={provider.id} models={models}
-            inheritedImageTypes={provider.images?.accepted_types} onChanged={refreshProviderData} />
+          <ProviderModelList providerId={provider.id} models={models} />
         )}
         managed={accountProviders.has(provider.id)}
         modelCount={modelCount(provider.id)}
@@ -200,7 +199,7 @@ export function ProvidersSection() {
     </button>
   );
 
-  return (
+  const page = (
     <div className="space-y-6">
       {/* One search over every configured connection, then the three zones:
           API key, account sign-in, and services on this machine (HTTP and CLI).
@@ -286,7 +285,16 @@ export function ProvidersSection() {
       </div>
 
       <ModelMaintenance />
+    </div>
+  );
 
+  // A model opened from any connection edits in the page: the connections
+  // fold into a rail and the model takes the column (`?model=<id>`).
+  return (
+    <>
+      <ModelDetailSplit list={page} models={modelsQuery.data?.items ?? []} providers={allProviders}
+        ready={modelsQuery.isSuccess} onChanged={refreshProviderData}
+        providerLabel={(id) => methodFor(id)?.label ?? id} />
       {addOpen && !empty ? (
         <SidePanel
           title={t('st.connections.addTitle')}
@@ -306,7 +314,7 @@ export function ProvidersSection() {
           </div>
         </SidePanel>
       ) : null}
-    </div>
+    </>
   );
 }
 

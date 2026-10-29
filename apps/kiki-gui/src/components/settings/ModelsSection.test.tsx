@@ -26,6 +26,7 @@ import { CatalogRefreshCard, GlobalDefaultsCard, ThinkingCard } from './ModelsSe
 import { ProviderModelsHarness } from './testProviderModels';
 import { ModelSwitchCard } from './ModelSwitchCard';
 import { optionLabels, pickValue } from './testControls';
+import { RouterDirtyGuard } from './testDirtyGuard';
 
 const listDiscoveredModels = vi.fn();
 const refreshAllProviders = vi.fn();
@@ -148,11 +149,11 @@ async function renderCard(
       <MemoryRouter>
         <QueryClientProvider client={client}>
           <I18nProvider>
-            <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
+            <RouterDirtyGuard reportDirty={reportDirty}>
               <DefaultModelBar tab="providers" />
               <ProviderModelsHarness />
               <CatalogRefreshCard />
-            </DirtyGuardContext.Provider>
+            </RouterDirtyGuard>
           </I18nProvider>
         </QueryClientProvider>
       </MemoryRouter>,
@@ -1463,6 +1464,8 @@ describe('ModelCatalogRowEditor usage policy', () => {
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
       if (document.querySelector('[data-main-usage-policy]') !== null) break;
     }
+    // Let the detail pane's focus-to-heading frame land before a popover opens.
+    await act(async () => { await new Promise((resolve) => requestAnimationFrame(() => { resolve(undefined); })); });
     return document.body;
   };
 
@@ -1476,7 +1479,9 @@ describe('ModelCatalogRowEditor usage policy', () => {
   const row = (field: string) => document.querySelector<HTMLElement>(`[data-usage-row="${field}"]`)!;
   const shared = (field: string) => row(field).querySelector<HTMLElement>(`[data-usage-shared="${field}"]`)!;
   const identity = (field: string, position: string) =>
-    row(field).querySelector<HTMLElement>(`[data-usage-identities="${field}"] [data-usage-position="${position}"]`)!;
+    document.querySelector<HTMLElement>(`[data-usage-identities="${field}"] [data-usage-position="${position}"]`)!;
+  // The per-agent layer is an anchored popover portaled to <body>; absent while closed.
+  const identities = (field: string) => document.querySelector<HTMLElement>(`[data-usage-identities="${field}"]`);
   const identityInput = (field: string, position: string) => identity(field, position).querySelector<HTMLInputElement>('input[data-usage-value]')!;
   const toggle = (field: string) => row(field).querySelector<HTMLButtonElement>('[data-usage-identity-toggle]')!;
   const expand = async (field: string) => {
@@ -1555,9 +1560,9 @@ describe('ModelCatalogRowEditor usage policy', () => {
     expect(toggle('thinking_effort').textContent).toBe('Main agent');
     expect(row('service_tier').querySelector('[data-usage-override-marker]')).toBeNull();
     // Collapsed until asked for; the shared value stays the first thing on the row.
-    expect(row('thinking_effort').querySelector<HTMLElement>('[data-usage-identities]')!.hidden).toBe(true);
+    expect(identities('thinking_effort')).toBeNull();
     await expand('thinking_effort');
-    expect(row('thinking_effort').querySelector<HTMLElement>('[data-usage-identities]')!.hidden).toBe(false);
+    expect(identities('thinking_effort')).not.toBeNull();
     expect(identity('thinking_effort', 'main').querySelector('[data-usage-restore]')).not.toBeNull();
     expect(identity('thinking_effort', 'independent').querySelector('[data-usage-restore]')).toBeNull();
   });
@@ -1600,7 +1605,7 @@ describe('ModelCatalogRowEditor usage policy', () => {
     await act(async () => { toggle('context_budget').click(); });
     await saveModel();
     expect(updateModel).not.toHaveBeenCalled();
-    expect(row('context_budget').querySelector<HTMLElement>('[data-usage-identities]')!.hidden).toBe(false);
+    expect(identities('context_budget')).not.toBeNull();
     expect(identity('context_budget', 'main').querySelector('[data-usage-issue="context_budget"]')?.textContent).toBe('Use a whole number of tokens, 1 or more.');
     expect(identityInput('context_budget', 'main').value).toBe('0');
     await act(async () => { setInputValue(identityInput('context_budget', 'main'), '4096'); });
@@ -1634,7 +1639,7 @@ describe('ModelCatalogRowEditor usage policy', () => {
     expect(field().value).toBe('abc');
     await saveModel();
     expect(updateModel).not.toHaveBeenCalled();
-    expect(row('context_budget').querySelector('[data-usage-issue]')).not.toBeNull();
+    expect(identity('context_budget', 'main').querySelector('[data-usage-issue]')).not.toBeNull();
   });
 
   it('clears one position without touching the other', async () => {

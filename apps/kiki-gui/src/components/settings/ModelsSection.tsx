@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useLocation, useSearchParams } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 
 import type {
   GenerationParametersPatch,
@@ -10,6 +10,7 @@ import type {
   ModelGenerationMigrationPreviewResponse,
   ModelProtocol,
   ModelSteeringSource,
+  ProviderCatalogItem,
 } from '@kiki/protocol';
 
 import { errorText, issueText, type I18nKey } from '@kiki/session-core/i18n';
@@ -118,7 +119,7 @@ import {
 import { DisclosureChevron, Icon } from '../icons';
 import { selectGlobalDefaultModel } from './defaultModelSelection';
 import { OriginBadge } from './spaces/OriginBadge';
-import { SidePanel } from '../SidePanel';
+import { DetailBack, DetailRailGroup, DetailRailItem, DetailSplit, useDetailParam } from '../overlays';
 import { LIST_ROW_HEIGHT, ListBody, type ListDensity } from './list';
 
 function requestIdentityDraftsEqual(
@@ -228,27 +229,23 @@ export const MODEL_QUERY_PARAM = 'model';
 /**
  * The stored models of one connection, inside its provider editor.
  *
- * This is the only place a stored model is edited: a row opens the complete
- * model editor (`ModelDetailPanel`) beside the list, which reads the model
- * entity and saves one sparse patch under its revision. The provider form
- * around it owns the connection and the rows that do not exist yet; it never
+ * A row opens the model's detail in the page (`ModelDetailSplit`, the
+ * in-page detail tier): the connections fold into a rail and the editor
+ * takes the column, addressed by `?model=<id>`. The provider form around the
+ * rows owns the connection and the rows that do not exist yet; it never
  * writes a stored model's fields itself, so there is one draft per model.
  *
- * The star sets the global new-session default; `?model=<id>` opens that
- * model's editor, which is how search hits and older links to the retired
- * Models tab arrive.
+ * The star sets the global new-session default.
  */
-export function ProviderModelList({ providerId, models, inheritedImageTypes, onChanged }: {
+export function ProviderModelList({ providerId, models }: {
   providerId: string;
   /** Every configured model; the list keeps this connection's own. */
   models: readonly ModelCatalogItem[];
-  inheritedImageTypes: readonly string[] | undefined;
-  onChanged: () => Promise<void>;
 }) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const detail = useDetailParam(MODEL_QUERY_PARAM);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [tick, ping] = useSavedTick();
@@ -261,24 +258,6 @@ export function ProviderModelList({ providerId, models, inheritedImageTypes, onC
         || (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id)),
     [models, providerId, defaultModel],
   );
-  const requested = searchParams.get(MODEL_QUERY_PARAM);
-  const [editing, setEditing] = useState<string | null>(() =>
-    requested !== null && own.some((item) => item.id === requested) ? requested : null);
-  // A link that arrives while this page is already open (a search hit) asks
-  // for its model through the same query.
-  useEffect(() => {
-    if (requested !== null && own.some((item) => item.id === requested)) setEditing(requested);
-  }, [requested, own]);
-  const editingItem = own.find((item) => item.id === editing);
-
-  const close = () => {
-    setEditing(null);
-    if (searchParams.has(MODEL_QUERY_PARAM)) {
-      const next = new URLSearchParams(searchParams);
-      next.delete(MODEL_QUERY_PARAM);
-      setSearchParams(next, { replace: true });
-    }
-  };
 
   const selectDefaultModel = async (item: ModelCatalogItem) => {
     setBusy(true);
@@ -306,9 +285,9 @@ export function ProviderModelList({ providerId, models, inheritedImageTypes, onC
               roles={roles.get(item.id)}
               attention={false}
               busy={busy}
-              open={item.id === editing}
+              open={item.id === detail.selected}
               onSetDefault={() => void selectDefaultModel(item)}
-              onOpen={() => { setEditing(item.id); }}
+              onOpen={() => { detail.open(item.id); }}
             />
           )} />
       ) : (
@@ -316,21 +295,105 @@ export function ProviderModelList({ providerId, models, inheritedImageTypes, onC
       )}
       <SavedTick show={tick} />
       <FeedbackLine feedback={feedback} />
-      {editingItem !== undefined ? (
-        <ModelDetailPanel
-          key={editingItem.id}
-          item={editingItem}
-          inheritedImageTypes={inheritedImageTypes}
-          isDefault={editingItem.id === defaultModel}
-          defaultBusy={busy}
-          roles={roles.get(editingItem.id)}
-          onSetDefault={() => void selectDefaultModel(editingItem)}
-          onSaved={onChanged}
-          onClose={close}
-        />
-      ) : null}
     </div>
   );
+}
+
+/**
+ * The connections page with one model open in it. `list` is the page as it
+ * reads without a model; with `?model=<id>` it folds into a rail of
+ * connections and their models, and the model editor takes the column. No
+ * scrim, nothing modal: the rail switches models, Back or Close returns, and
+ * an unsaved draft is guarded by the shared leave prompt.
+ */
+export function ModelDetailSplit({ list, models, providers, ready, providerLabel, onChanged }: {
+  list: React.ReactNode;
+  models: readonly ModelCatalogItem[];
+  providers: readonly ProviderCatalogItem[];
+  /** The model list has loaded; a `?model=` naming no model then closes. */
+  ready: boolean;
+  /** Rail heading per connection; defaults to its id. */
+  providerLabel?: (providerId: string) => string;
+  onChanged: () => Promise<void>;
+}) {
+  const { client } = useConnection();
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const detail = useDetailParam(MODEL_QUERY_PARAM);
+  const [busy, setBusy] = useState(false);
+  const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
+  const defaultModel = configQuery.data?.default_model;
+  const roles = useModelRoles();
+  const item = detail.selected === null ? undefined : models.find((model) => model.id === detail.selected);
+  // A link to a model that is not there (removed, or never was) lands on the list.
+  useEffect(() => {
+    if (ready && detail.selected !== null && item === undefined) detail.close();
+  }, [ready, detail.selected, item, detail.close]);
+
+  const groups = useMemo(() => [...new Set(models.map((model) => model.provider_id))].map((id) => ({
+    id,
+    models: models.filter((model) => model.provider_id === id)
+      .toSorted((a, b) => (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id)),
+  })), [models]);
+
+  const setDefault = async (target: ModelCatalogItem) => {
+    setBusy(true);
+    try {
+      await selectGlobalDefaultModel(client, queryClient, target).completed;
+    } catch {
+      // The editor's default control re-reads config; nothing to keep here.
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const rail = <div data-model-rail>
+    {groups.map((group) => (
+      <DetailRailGroup key={group.id} label={providerLabel?.(group.id) ?? group.id} count={group.models.length}>
+        {group.models.map((model) => (
+          <DetailRailItem key={model.id} itemKey={model.id} label={model.display_name ?? model.id}
+            current={model.id === item?.id}
+            trailing={model.id === defaultModel ? <Icon name="starFilled" size={12} className="shrink-0 text-ink-soft" /> : undefined}
+            onSelect={() => { detail.open(model.id); }} />
+        ))}
+      </DetailRailGroup>
+    ))}
+  </div>;
+
+  const editor = item === undefined ? null : (
+    <div data-model-detail={item.id} className="flex min-w-0 flex-col gap-4">
+      <header className="flex flex-wrap items-start gap-x-3 gap-y-2">
+        <div className="basis-full md:hidden">
+          <DetailBack label={t('st.providerModels.title')} onClick={detail.close} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 data-detail-heading tabIndex={-1} className="truncate font-display text-[20px] leading-tight text-ink outline-none">{item.display_name ?? item.id}</h3>
+          <p className="mt-1 truncate font-mono text-[11.5px] text-ink-faint">{item.id}</p>
+        </div>
+        <button type="button" onClick={detail.close} aria-label={t('common.close')} title={t('common.close')} data-detail-close
+          className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink md:flex">
+          <Icon name="close" size={14} />
+        </button>
+      </header>
+      <div data-model-row-editor={item.id} className="flex min-w-0 flex-col">
+        <ModelCatalogRowEditor
+          key={item.id}
+          item={item}
+          inheritedImageTypes={providers.find((provider) => provider.id === item.provider_id)?.images?.accepted_types}
+          isDefault={item.id === defaultModel}
+          defaultBusy={busy}
+          roles={roles.get(item.id)}
+          onSetDefault={() => void setDefault(item)}
+          onSaved={onChanged}
+          onClose={detail.close}
+          onRemoved={detail.close}
+        />
+      </div>
+    </div>
+  );
+
+  return <DetailSplit selected={item?.id ?? null} label={t('st.providerModels.title')} list={list} rail={rail} detail={editor}
+    data={{ 'data-model-split': '' }} />;
 }
 
 /**
@@ -999,7 +1062,7 @@ const MODEL_ISSUE_KEYS: Readonly<Record<string, I18nKey>> = {
 /**
  * One catalog row: star (global default), name + remote id, context, the
  * jobs it serves, capability words. The whole row opens the model's detail
- * panel; nothing expands in place, so a 40-model list never reflows.
+ * in the page; nothing expands in place, so a 40-model list never reflows.
  */
 function ModelRow({
   item,
@@ -1020,7 +1083,7 @@ function ModelRow({
   /** Its connection is not working. */
   attention: boolean;
   busy: boolean;
-  /** Its detail panel is open. */
+  /** Its detail is open. */
   open: boolean;
   onSetDefault: () => void;
   onOpen: () => void;
@@ -1051,8 +1114,8 @@ function ModelRow({
       <button
         type="button"
         aria-label={t('st.models.editAria', { model: item.id })}
-        aria-haspopup="dialog"
         aria-expanded={open}
+        data-detail-trigger={item.id}
         title={t('st.models.editTitle')}
         onClick={onOpen}
         className="flex min-h-8 min-w-0 flex-1 items-center gap-3 self-stretch rounded-md pr-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40"
@@ -1087,80 +1150,14 @@ function ModelRow({
 }
 
 /**
- * The model's editor, in a side panel beside the list rather than inside
- * the row. Closing with unsaved changes asks first; the list and its scroll
- * position stay exactly where they were.
- */
-function ModelDetailPanel({
-  item,
-  inheritedImageTypes,
-  isDefault = false,
-  defaultBusy = false,
-  roles,
-  onSetDefault,
-  onSaved,
-  onClose,
-}: {
-  item: ModelCatalogItem;
-  inheritedImageTypes: readonly string[] | undefined;
-  isDefault?: boolean;
-  defaultBusy?: boolean;
-  /** The jobs this model is the default for; named before it is removed. */
-  roles?: readonly string[];
-  onSetDefault?: () => void;
-  onSaved: () => Promise<void>;
-  onClose: () => void;
-}) {
-  const { t } = useI18n();
-  const [dirty, setDirty] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  const requestClose = () => { if (dirty) setConfirming(true); else onClose(); };
-  return (
-    <SidePanel
-      title={item.display_name ?? item.id}
-      description={<span className="font-mono text-[11px]">{item.id}</span>}
-      overlayId={`catalog-model:${item.id}`}
-      onClose={requestClose}
-      width="lg"
-      data={{ 'data-model-detail': item.id }}
-    >
-      <div data-model-row-editor={item.id} className="flex min-h-full flex-col">
-        <ModelCatalogRowEditor
-          item={item}
-          inheritedImageTypes={inheritedImageTypes}
-          isDefault={isDefault}
-          defaultBusy={defaultBusy}
-          onSetDefault={onSetDefault}
-          roles={roles}
-          onSaved={onSaved}
-          onDirtyChange={setDirty}
-          onClose={requestClose}
-          onRemoved={onClose}
-        />
-      </div>
-      <ConfirmDialog
-        open={confirming}
-        overlayId={`catalog-model-discard:${item.id}`}
-        title={t('st.dirty.leaveTitle')}
-        body={t('st.dirty.leaveBody')}
-        confirmLabel={t('st.dirty.leaveConfirm')}
-        cancelLabel={t('st.dirty.stay')}
-        onConfirm={() => { setConfirming(false); onClose(); }}
-        onCancel={() => { setConfirming(false); }}
-      />
-    </SidePanel>
-  );
-}
-
-/**
  * In-place editor for one catalog row. Opening the row reads the model entity
  * (`GET /models/{id}`), so the editor works from the stored record — its local
  * alias, its exact remote id, its revision and its issues — instead of
  * rebuilding anything from the list projection. Saving sends only the fields
  * the user changed together with the revision that read returned, so a
  * concurrent edit surfaces as a conflict instead of a silent overwrite.
- * Closing is explicit: the parent keeps this editor mounted while the row is
- * collapsed, and only a Close that survives the discard guard drops the draft.
+ * Closing goes through the page's guarded navigation: an unsaved draft gets
+ * the shared leave prompt, and only a confirmed leave drops it.
  */
 function ModelCatalogRowEditor({
   item,
@@ -1170,7 +1167,6 @@ function ModelCatalogRowEditor({
   roles,
   onSetDefault,
   onSaved,
-  onDirtyChange,
   onClose,
   onRemoved,
 }: {
@@ -1181,7 +1177,6 @@ function ModelCatalogRowEditor({
   roles?: readonly string[];
   onSetDefault?: () => void;
   onSaved: () => Promise<void>;
-  onDirtyChange: (dirty: boolean) => void;
   onClose: () => void;
   /** The model is gone; close without asking about drafts it no longer has. */
   onRemoved?: () => void;
@@ -1405,9 +1400,6 @@ function ModelCatalogRowEditor({
     || promptsDirty || bodySavesDirty || steerSourcesDirty || protocolDirty;
   const dirty = modelDirty || recipeDraftDirty;
   useDirtyReporter(`catalog-model:${item.id}`, dirty);
-  // The row owns the collapse/close decision, and the draft stays dirty while
-  // the editor is hidden, so the parent needs this flag either way.
-  useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
 
   if (entityQuery.isError) return <InlineError error={entityQuery.error} />;
   if (entity === undefined || draft === null || baseline === null || engine === null || engineBaseline === null) {
@@ -1710,7 +1702,7 @@ function ModelCatalogRowEditor({
 
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-6" data-model-editor-layout>
-      <div className="sticky -top-4 z-10 -mx-5 -mt-4 border-b border-hairline bg-panel px-5 pt-2">
+      <div className="sticky top-0 z-10 border-b border-hairline bg-canvas pt-1">
         <div role="tablist" aria-label={t('st.modelEditor.navAria')} className="-mb-px flex items-end gap-4 overflow-x-auto"
           onKeyDown={(event) => {
             const index = tabs.findIndex((tab) => tab.id === activeEditorTab);
@@ -2022,13 +2014,13 @@ function ModelCatalogRowEditor({
         </AdvancedDisclosure>
       </div>
       {/*
-        The actions stay pinned to the bottom of the panel: on a form this long
+        The actions stay pinned to the bottom of the detail: on a form this long
         the save button used to be a scroll away from the field just edited.
         A failed or conflicting save keeps every draft, and the error sits
         right beside the button that produced it.
       */}
       <div
-        className="sticky -bottom-4 z-10 -mx-5 -mb-4 mt-auto flex flex-wrap items-center gap-2 border-t border-hairline bg-panel px-5 py-3"
+        className="sticky bottom-0 z-10 mt-auto flex flex-wrap items-center gap-2 border-t border-hairline bg-canvas/95 py-3 backdrop-blur-sm"
         data-model-editor-actions
       >
         <button type="button" className={PRIMARY_BUTTON} disabled={saving || !modelDirty} onClick={() => void save()}>

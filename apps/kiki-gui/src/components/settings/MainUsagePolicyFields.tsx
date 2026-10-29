@@ -4,8 +4,9 @@
  *
  * Each row edits the shared value — the one every agent uses. An identity
  * (`main`, `independent`) may carry its own value on top of a row; that layer
- * opens under the row it belongs to, so the difference is read and restored in
- * the same place the shared value is set, and there is still one Save.
+ * opens in a popover anchored to the row's "Per agent" control (the anchored
+ * popover tier, `overlays/AnchoredPopover`), so the difference is read and
+ * restored right where the shared value is set, and there is still one Save.
  *
  * Three states a field can be in, and they stay three because the engine reads
  * them apart:
@@ -26,6 +27,7 @@ import { useEffect, useState } from 'react';
 import { useI18n } from '../../i18n';
 import { formatCompactTokens, parseCompactInput } from '../../lib/autoCompact';
 import { SMALL_INPUT } from '../ui';
+import { AnchoredPopover, usePopover } from '../overlays';
 import { effortLabel } from './profileEditor/profileDraft';
 import { SettingHelp } from './SettingHelp';
 import { SettingsSelect } from './SettingsPrimitives';
@@ -135,10 +137,11 @@ function UsageRow({
   const overridden = USAGE_POSITIONS.filter((position) =>
     usageFieldValue(view.draft[position] ?? EMPTY_USAGE_BRANCH, field) !== '');
   const flagged = view.issue !== null && view.issue.field === field;
-  const [open, setOpen] = useState(false);
-  useEffect(() => { if (flagged) setOpen(true); }, [flagged]);
-  const expanded = open || flagged;
-  const panelId = `${fieldId}-identities`;
+  const popover = usePopover();
+  const { setOpen } = popover;
+  // A save refused on an identity value opens the popover that holds it.
+  useEffect(() => { if (flagged) setOpen(true); }, [flagged, setOpen]);
+  const expanded = popover.open;
   // Without an override the toggle stays out of sight until the row is
   // hovered or anything in it has focus; it never leaves the tab order.
   const quiet = overridden.length === 0 && !expanded;
@@ -149,8 +152,7 @@ function UsageRow({
         <label htmlFor={sharedControl === undefined ? fieldId : undefined} className="text-[12px] font-medium text-ink-soft">{label}</label>
         <button type="button" data-usage-identity-toggle={field}
           data-usage-toggle-quiet={quiet ? '' : undefined}
-          aria-expanded={expanded} aria-controls={panelId}
-          onClick={() => { setOpen(!expanded); }}
+          {...popover.triggerProps}
           className={`inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11.5px] transition-[color,background-color,opacity] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:h-9 ${
             overridden.length > 0
               ? 'bg-selected-ink/10 font-medium text-selected-ink hover:bg-selected-ink/15'
@@ -174,13 +176,16 @@ function UsageRow({
         <p role="alert" className="text-[12px] text-danger" data-usage-shared-issue={field}>{sharedIssue}</p>
       )}
       {below}
-      <div id={panelId} hidden={!expanded} data-usage-identities={field}
-        className="space-y-1.5 rounded-md bg-ink/[0.025] px-2.5 py-2">
-        {USAGE_POSITIONS.map((position) => (
-          <IdentityLine key={position} field={field} position={position} modelId={modelId} label={label}
-            view={view} efforts={efforts} disabled={disabled} onChange={onChange} />
-        ))}
-      </div>
+      <AnchoredPopover {...popover.popoverProps} label={t('st.usagePolicy.perAgentTitle', { field: label })} align="end"
+        widthClassName="w-[22rem]" data={{ 'data-usage-identities': field }}>
+        <p className="mb-2 text-[12px] font-medium text-ink-soft">{t('st.usagePolicy.perAgentTitle', { field: label })}</p>
+        <div className="space-y-2">
+          {USAGE_POSITIONS.map((position) => (
+            <IdentityLine key={position} field={field} position={position} modelId={modelId} label={label}
+              view={view} efforts={efforts} disabled={disabled} onChange={onChange} />
+          ))}
+        </div>
+      </AnchoredPopover>
     </div>
   );
 }
