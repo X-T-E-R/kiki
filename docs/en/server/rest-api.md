@@ -584,8 +584,9 @@ Both `PATCH` variants accept `{ name?, pinned? }`, with at least one field requi
 | `GET /api/memory/{scope}/journal` | Change history, optionally narrowed to one `id` |
 | `POST /api/memory/{scope}/undo` | Undo one operation by `operation_id` |
 | `GET /api/memory/authority` | Read the persisted backend, mode, epoch and migration progress |
-| `POST /api/memory/authority/migrate` | Start or continue an explicitly authorized migration |
-| `POST /api/memory/authority/cancel` | Cancel the matching paused migration and restore legacy editing |
+| `POST /api/memory/authority/retry` | Retry the persisted startup migration using its operation ID |
+| `POST /api/memory/authority/migrate` | Compatibility endpoint for one bounded migration batch |
+| `POST /api/memory/authority/cancel` | Cancel the matching paused maintenance batch |
 | `POST /api/memory/authority/recover-readonly` | Save a governed recovery package and enter read-only mode |
 | `POST /api/memory/authority/resume-editing` | Resume SQLite editing with the current recovery ID and epoch |
 | `POST /api/memory/{scope}/forget-preview` | Expand exact IDs into the complete source-lineage target set |
@@ -638,7 +639,11 @@ The server rechecks the target revision and source barriers when applying. A con
 
 #### Backend migration and recovery
 
-Existing homes keep their legacy authority until migration is explicitly requested. Upgrade or stop every other writer sharing that home before sending `{ operation_id: UUID, older_writers_stopped: true, max_pages?: 1..64 }` to `authority/migrate`. The default is eight bounded import pages. A response with `mode: "migrating"` keeps normal edits blocked: repeat the same operation ID to continue. If `migration.issues` reports invalid sources or broken links, cancel with `{ operation_id }`, repair the sources and start a new operation. A completed migration returns `backend: "sqlite", mode: "active"`; the existing editor and tool entry points then write SQLite without changing the original legacy files. Older binaries that do not understand the marker must remain stopped.
+App startup automatically runs the existing SQLite migration pipeline, including for new homes and when `memory.enabled=false`. Normal Memory store preparation, reads and writes share that startup operation. Completed homes reuse SQLite without importing again; read-only recovery stays read-only. Storage upgrade does not enable agent memory access or authorize advisor egress.
+
+`GET authority` reports `backend`, `mode`, `epoch` and the persisted `migration`. During migration, `migration.id` is the operation ID, `namespaces` names the discovered scopes, `index` counts completed namespaces, and optional `after` is the last committed source key in the current namespace. Optional `phase` is `importing`, `validating` or `failed`; `issues` contains `{ scope, key, issue }`, and `failure` supplies `{ code, message }`. Invalid sources preserve the original files and block ordinary memory access instead of falling back to an older copy. Repair the reported sources, then send `{ operation_id: migration.id }` to `authority/retry`, or restart to resume the same operation. After an uncertain response, read status before retrying. Completion returns `backend: "sqlite", mode: "active", migrationId`; the same-ID retry also reconciles an already completed operation.
+
+The compatibility `authority/migrate` endpoint still accepts `{ operation_id: UUID, max_pages?: 1..64 }` for a bounded maintenance batch; the default is eight pages. The old `older_writers_stopped: true` field is optional and is not sent by startup. `authority/cancel` accepts `{ operation_id }` for a paused batch, not a running automatic operation; subsequent normal preparation starts the automatic upgrade again. Upgrade other installations sharing the home: the marker and write barrier govern compatible writers, not pre-protocol binaries.
 
 Send `{ confirm_readonly: true }` to `authority/recover-readonly` to save the current governed SQLite database, its legacy-shaped current-view export and a manifest under `store/memory-recovery-v1/<recoveryId>`. The response includes `recoveryId`, `scope`, `generation`, `namespaces` and `mode: "readonly"`. Reads continue from SQLite and mutations are refused. To resume normal editing, read `authority` and send `{ recovery_id: recoveryId, expected_epoch: epoch }` to `authority/resume-editing`. A changed recovery ID or epoch is rejected. The full database preserves post-cutover operations, corrections, proposals and forget barriers; the Markdown export is only the compatible current-view representation.
 

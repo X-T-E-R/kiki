@@ -584,8 +584,9 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 | `GET /api/memory/{scope}/journal` | 改动历史，可用 `id` 收窄到单条 |
 | `POST /api/memory/{scope}/undo` | 按 `operation_id` 撤销一次操作 |
 | `GET /api/memory/authority` | 读取持久化的后端、模式、epoch 与迁移进度 |
-| `POST /api/memory/authority/migrate` | 开始或继续一次明确授权的迁移 |
-| `POST /api/memory/authority/cancel` | 取消匹配的暂停迁移，恢复旧文件后端编辑 |
+| `POST /api/memory/authority/retry` | 用已保存的操作 ID 重试启动迁移 |
+| `POST /api/memory/authority/migrate` | 单批有界迁移的兼容入口 |
+| `POST /api/memory/authority/cancel` | 取消匹配的暂停维护批次 |
 | `POST /api/memory/authority/recover-readonly` | 保存受治理恢复包，进入只读模式 |
 | `POST /api/memory/authority/resume-editing` | 用当前恢复 ID 与 epoch 恢复 SQLite 编辑 |
 | `POST /api/memory/{scope}/forget-preview` | 将精确 ID 展开为完整来源链目标集合 |
@@ -638,7 +639,11 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 
 #### 后端迁移与恢复
 
-已有家目录继续使用旧文件权威，直到明确请求迁移。发送 `{ operation_id: UUID, older_writers_stopped: true, max_pages?: 1..64 }` 到 `authority/migrate` 前，先升级或停止所有共用该家目录的其他写入进程。默认每次导入八个有界页。响应为 `mode: "migrating"` 时，普通编辑保持阻塞；用同一个操作 ID 继续。如果 `migration.issues` 报告非法来源或断链，先用 `{ operation_id }` 取消，修复来源后再发起新操作。完成时返回 `backend: "sqlite", mode: "active"`，原编辑器和工具入口随即改写 SQLite，旧文件保持原样。不认识该标记的旧二进制必须保持停止。
+App 启动自动执行已有 SQLite 迁移流程，新家目录和 `memory.enabled=false` 的家目录也一样。普通 Memory store 的准备、读取和写入共享这次启动操作。已完成的家目录复用 SQLite，不重复导入；只读恢复状态保持只读。存储升级不会开启 Agent 记忆访问，也不会授权顾问外发。
+
+`GET authority` 返回 `backend`、`mode`、`epoch` 和持久化的 `migration`。迁移期间，`migration.id` 是操作 ID，`namespaces` 列出发现的范围，`index` 是已完成的命名空间数，可选 `after` 是当前命名空间最后提交的来源 key。可选 `phase` 取 `importing`、`validating` 或 `failed`；`issues` 含 `{ scope, key, issue }`，`failure` 提供 `{ code, message }`。来源无效时保留原文件、阻止普通记忆访问，不会退回过时副本。修复报告的来源后，向 `authority/retry` 发送 `{ operation_id: migration.id }`，或重启后继续同一操作。回执不确定时先读状态，再决定是否重试。完成时返回 `backend: "sqlite", mode: "active", migrationId`；同 ID 重试也能对账已经完成的操作。
+
+兼容入口 `authority/migrate` 仍接受 `{ operation_id: UUID, max_pages?: 1..64 }` 执行有界维护批次，默认八页。旧字段 `older_writers_stopped: true` 已可省略，启动流程不会发送它。`authority/cancel` 接受 `{ operation_id }` 取消暂停的批次，不取消正在运行的自动操作；之后正常准备存储时会再次自动升级。共用家目录的其他安装也应升级：标记和写屏障约束支持协议的写入进程，无法约束协议发布前的旧二进制。
 
 向 `authority/recover-readonly` 发送 `{ confirm_readonly: true }`，将当前受治理 SQLite 数据库、旧格式的当前视图导出及 manifest 保存到 `store/memory-recovery-v1/<recoveryId>`。响应含 `recoveryId`、`scope`、`generation`、`namespaces` 与 `mode: "readonly"`。读取继续使用 SQLite，修改被拒绝。恢复正常编辑时，先读 `authority`，再向 `authority/resume-editing` 发送 `{ recovery_id: recoveryId, expected_epoch: epoch }`；恢复 ID 或 epoch 已变化时会拒绝。完整数据库保留切换后的操作、纠错、提案和遗忘屏障，Markdown 导出只表达兼容的当前视图。
 

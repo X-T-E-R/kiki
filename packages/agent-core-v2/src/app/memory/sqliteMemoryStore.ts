@@ -116,7 +116,8 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     }
     let input = original;
     const candidate = input.id === undefined ? undefined : objects.get(input.id)?.entry ?? undefined;
-    if (input.action === 'create' ? input.id !== undefined || input.expectedRevision !== undefined : input.id === undefined || !input.expectedRevision) fail('invalid_input', 'Existing targets require ID and revision; create accepts neither');
+    if (input.action !== 'create' && !input.expectedRevision) throw new MemoryDomainError('missing_revision', 'Memory revision is required', 'Read the complete target and copy its latest revision.');
+    if (input.action === 'create' ? input.id !== undefined || input.expectedRevision !== undefined : input.id === undefined) fail('invalid_input', 'Existing targets require ID and revision; create accepts neither');
     if (input.action !== 'create' && (candidate === undefined || candidate.revision !== input.expectedRevision)) fail('revision_conflict', 'Memory revision conflict');
     let accepted: MemoryEntry | undefined;
     if (candidate?.status === 'pending' && !input.pending) {

@@ -6,7 +6,10 @@ const queues = new WeakMap<IFileSystemStorageService, Promise<void>>();
 
 export const MEMORY_AUTHORITY_SCOPE = 'store/memory-authority-v1';
 const issueSchema = z.object({ scope: z.string(), key: z.string(), issue: z.string() }).strict();
-const migrationSchema = z.object({ id: z.string().uuid(), namespaces: z.array(z.string()).max(1000), index: z.number().int().nonnegative(), after: z.string().optional(), issues: z.array(issueSchema).max(1000) }).strict();
+const migrationSchema = z.object({
+  id: z.string().uuid(), namespaces: z.array(z.string()).max(1000), index: z.number().int().nonnegative(), after: z.string().optional(), issues: z.array(issueSchema).max(1000),
+  phase: z.enum(['importing', 'validating', 'failed']).optional(), failure: z.object({ code: z.string(), message: z.string() }).strict().optional(),
+}).strict();
 const authoritySchema = z.object({
   version: z.literal(1), epoch: z.number().int().nonnegative(), backend: z.enum(['legacy', 'sqlite']),
   mode: z.enum(['active', 'migrating', 'readonly']), migration: migrationSchema.optional(),

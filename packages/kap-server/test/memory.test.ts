@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { MemoryConfigSchema, IConfigService, IMemoryStore, IMemorySelector, ISessionManager, advisorStatus, ISessionIndex, IWorkspaceService, type MemoryConfig, type Scope } from '@kiki/agent-core-v2';
+import { MemoryConfigSchema, IConfigService, IMemoryStore, IMemorySelector, ISessionManager, advisorStatus, ISessionIndex, IWorkspaceService, decodeMemoryEntry, type MemoryConfig, type Scope } from '@kiki/agent-core-v2';
 import { registerMemoryRoutes } from '../src/routes/memory';
 import { startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -223,7 +223,7 @@ describe('memory REST', () => {
       expect(edited.data.entry.validity).toEqual(validity);
       const read = await request('GET', `/${original.id}`);
       expect(read.data).toMatchObject({ scope: { kind: 'global' }, target: { scope: 'global', id: original.id, expected_revision: edited.data.entry.revision }, applicability: 'recheck', complete: true });
-      const retained = (await request('PUT', '/new', { ...body, title: 'Retained complete rule' })).data.entry;
+      const retained = (await request('PUT', '/new', { ...body, title: 'Retained complete rule', body: 'The retained authority owns the schedule; preserve the specialist exception.' })).data.entry;
       const proposal = await server.core.accessor.get(IMemoryStore).put({ action: 'archive', scope: { kind: 'global' }, id: original.id, expectedRevision: edited.data.entry.revision, reason: 'Consolidation review', source: { writer: 'agent' }, pending: true, covered_by: { id: retained.id, expected_revision: retained.revision } });
       const accepted = await request('PUT', `/${proposal.entry.id}`, { action: 'update', type: proposal.entry.type, title: proposal.entry.title, body: proposal.entry.body, expected_revision: proposal.entry.revision, reason: 'Approve consolidation' });
       expect(accepted.code).toBe(0);
@@ -236,8 +236,11 @@ describe('memory REST', () => {
       const list = await request('GET', '?mode=list&page_size=1&statuses=active,pending,archived');
       expect(list.data.coverage).toMatchObject({ complete: true, exhausted: false });
       expect(list.data.next_cursor).toEqual(expect.any(String));
-      await request('PUT', '/new', { ...body, title: 'Concurrent addition' });
-      const invalid = await request('GET', `?cursor=${encodeURIComponent(list.data.next_cursor)}`);
+      const added = await request('PUT', '/new', { ...body, title: 'Concurrent addition', body: 'A separately confirmed condition for this pagination change.' });
+      const continuation = await request('GET', `?cursor=${encodeURIComponent(list.data.next_cursor)}`);
+      expect(continuation.code).toBe(0);
+      expect(continuation.data.items.every((entry: { id: string }) => entry.id !== added.data.entry.id)).toBe(true);
+      const invalid = await request('GET', '?cursor=invalid');
       expect(invalid.details?.code).toBe('cursor_invalidated');
       expect((await request('GET', '?mode=search&query=!!!')).details?.code).toBe('invalid_query');
       const journal = (await request('GET', '/journal')).data;
@@ -250,7 +253,75 @@ describe('memory REST', () => {
 });
 
 describe('Memory authority management over authenticated HTTP', () => {
-  it('migrates the existing editor, previews exact irreversible targets and resumes editing from read-only recovery', async () => {
+  const legacyPayload = (id: string) => `---\n${JSON.stringify({ id, type: 'feedback', title: 'Startup deployment rule', status: 'active', pinned: true, created: '2026-01-01', updated: '2026-01-01', source: { writer: 'user' }, reason: 'Owner instruction' })}\n---\nUse 9 workers; retain the 17-unit exception.\n`;
+  it('automatically upgrades a disabled legacy home at startup and keeps new writes and readonly state across restarts', async () => {
+    await mkdir(join(process.cwd(), '.tmp'), { recursive: true });
+    const home = await mkdtemp(join(process.cwd(), '.tmp', 'memory-startup-http-'));
+    await mkdir(join(home, 'memory/global/entries'), { recursive: true });
+    await writeFile(join(home, 'config.toml'), '[memory]\nenabled = false\n');
+    const raw = legacyPayload('m_startup_example');
+    const sourcePath = join(home, 'memory/global/entries/m_startup_example.md');
+    await writeFile(sourcePath, raw);
+    const open = () => startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    let server = await open();
+    const request = async (method: string, path: string, body?: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/memory${path}`, { method, headers: authHeaders(server, { 'content-type': 'application/json' }), body: body === undefined ? undefined : JSON.stringify(body) });
+      expect(response.status).toBe(200);
+      return await response.json() as { code: number; data: any };
+    };
+    try {
+      await vi.waitFor(async () => { expect((await request('GET', '/authority')).data).toMatchObject({ backend: 'sqlite', mode: 'active' }); }, { timeout: 5000 });
+      const state = (await request('GET', '/authority')).data;
+      expect((await request('GET', '/settings')).data).toMatchObject({ enabled: false, effective_enabled: false });
+      const original = decodeMemoryEntry(raw);
+      expect((await request('GET', `/global/${original.id}`)).data).toMatchObject(JSON.parse(JSON.stringify(original)));
+      const edit = await request('PUT', `/global/${original.id}`, { action: 'update', type: original.type, title: original.title, expected_revision: original.revision, body: 'Use 5 workers; retain the 17-unit exception.', reason: 'Post-upgrade correction' });
+      expect(edit.code).toBe(0);
+      expect(await readFile(sourcePath, 'utf8')).toBe(raw);
+      const checkpoint = await server.core.accessor.get(IMemoryStore).checkpoint!();
+      await server.close(); server = await open();
+      await vi.waitFor(async () => { expect((await request('GET', '/authority')).data).toEqual(state); }, { timeout: 5000 });
+      expect(await server.core.accessor.get(IMemoryStore).checkpoint!()).toBe(checkpoint);
+      expect((await request('GET', `/global/${original.id}`)).data.revision).toBe(edit.data.entry.revision);
+      const recovery = await request('POST', '/authority/recover-readonly', { confirm_readonly: true });
+      const readonly = (await request('GET', '/authority')).data;
+      expect(recovery.code).toBe(0);
+      await server.close(); server = await open();
+      await vi.waitFor(async () => { expect((await request('GET', '/authority')).data).toEqual(readonly); }, { timeout: 5000 });
+      expect((await request('GET', `/global/${original.id}`)).data.body).toBe(edit.data.entry.body);
+      expect((await request('PUT', '/global/new', { type: 'feedback', title: 'Blocked startup edit', body: 'Do not resume editing automatically.', reason: 'Fixture' })).code).toBe(40001);
+      expect((await request('GET', '/settings')).data.enabled).toBe(false);
+    } finally { await server.close(); await rm(home, { force: true, recursive: true }); }
+  }, 30_000);
+
+  it('shows startup source failures without fallback and retries a repaired source with the persisted operation id', async () => {
+    await mkdir(join(process.cwd(), '.tmp'), { recursive: true });
+    const home = await mkdtemp(join(process.cwd(), '.tmp', 'memory-startup-failure-'));
+    await mkdir(join(home, 'memory/global/entries'), { recursive: true });
+    const sourcePath = join(home, 'memory/global/entries/m_startup_repaired.md');
+    await writeFile(sourcePath, 'Invalid original Memory payload');
+    const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    const request = async (method: string, path: string, body?: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${server.port}/api/memory${path}`, { method, headers: authHeaders(server, { 'content-type': 'application/json' }), body: body === undefined ? undefined : JSON.stringify(body) });
+      expect(response.status).toBe(200);
+      return await response.json() as { code: number; data: any };
+    };
+    try {
+      await vi.waitFor(async () => { expect((await request('GET', '/authority')).data.migration?.phase).toBe('failed'); }, { timeout: 5000 });
+      const state = (await request('GET', '/authority')).data;
+      expect(state).toMatchObject({ backend: 'legacy', mode: 'migrating', migration: { failure: { code: 'memory.source_invalid' }, issues: [{ scope: 'memory/global', key: 'entries/m_startup_repaired.md', issue: 'Invalid memory frontmatter' }] } });
+      expect(await readFile(sourcePath, 'utf8')).toBe('Invalid original Memory payload');
+      expect((await request('GET', '/global')).code).toBe(40001);
+      const raw = legacyPayload('m_startup_repaired');
+      await writeFile(sourcePath, raw);
+      const retry = await request('POST', '/authority/retry', { operation_id: state.migration.id });
+      expect(retry).toMatchObject({ code: 0, data: { backend: 'sqlite', mode: 'active', migrationId: state.migration.id } });
+      expect((await request('GET', '/global/m_startup_repaired')).data).toMatchObject(JSON.parse(JSON.stringify(decodeMemoryEntry(raw))));
+      expect(await readFile(sourcePath, 'utf8')).toBe(raw);
+    } finally { await server.close(); await rm(home, { force: true, recursive: true }); }
+  }, 30_000);
+
+  it('starts a new SQLite editor, previews exact irreversible targets and resumes editing from read-only recovery', async () => {
     await mkdir(join(process.cwd(), '.tmp'), { recursive: true });
     const home = await mkdtemp(join(process.cwd(), '.tmp', 'memory-authority-http-'));
     const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
@@ -261,14 +332,12 @@ describe('Memory authority management over authenticated HTTP', () => {
       return await response.json() as { code: number; msg: string; data: any };
     };
     try {
-      expect((await request('GET', '/authority')).data).toMatchObject({ backend: 'legacy', mode: 'active' });
+      await server.core.accessor.get(IMemoryStore).prepare!();
+      const state = (await request('GET', '/authority')).data;
+      expect(state).toMatchObject({ backend: 'sqlite', mode: 'active' });
       const input = { type: 'feedback', title: 'Deployment procedure', body: 'Use 9 workers; never upload output.', reason: 'Owner instruction' };
       const saved = (await request('PUT', '/global/new', input)).data.entry;
-      const operationId = 'a552707f-d8b9-4f37-9c83-cb9d872a4150';
-      expect((await request('POST', '/authority/migrate', { operation_id: operationId })).code).toBe(40001);
-      const switched = await request('POST', '/authority/migrate', { operation_id: operationId, older_writers_stopped: true });
-      expect(switched.code).toBe(0);
-      expect(switched.data).toMatchObject({ backend: 'sqlite', mode: 'active' });
+      expect((await request('POST', '/authority/retry', { operation_id: state.migrationId })).data).toEqual(state);
       const edited = await request('PUT', `/global/${saved.id}`, { ...input, action: 'update', expected_revision: saved.revision, body: 'Use 5 workers; never upload output.' });
       expect(edited.code).toBe(0);
       const current = edited.data.entry;
@@ -314,7 +383,8 @@ describe('revision-bound Markdown import over authenticated HTTP', () => {
     try {
       expect((await fetch(`${base}/global/m_example/export`)).status).toBe(401);
       await server.core.accessor.get(ISessionIndex).prepare();
-      expect((await request('POST', '/authority/migrate', { operation_id: '10000000-0000-4000-8000-000000000001', older_writers_stopped: true })).data.backend).toBe('sqlite');
+      await server.core.accessor.get(IMemoryStore).prepare!();
+      expect((await request('GET', '/authority')).data.backend).toBe('sqlite');
       await request('PATCH', '/settings', { enabled: false });
       const input = { type: 'feedback', title: 'Markdown deployment rule', body: 'Use 9 workers; never upload output; isolated tests remain allowed.', reason: 'Owner instruction' };
       const saved = (await request('PUT', '/global/new', input)).data.entry;

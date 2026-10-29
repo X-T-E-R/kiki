@@ -84,7 +84,9 @@ A genuinely new document uses `id: new`, `revision: null` and `origin: null`. Re
 
 ## Backend migration and recovery
 
-Existing memory homes keep their file backend until you explicitly migrate them through the authenticated [Memory API](/en/server/rest-api#backend-migration-and-recovery). Before migration, upgrade or stop every other process writing that home. Migration pauses normal edits while it imports and validates the source; its saved operation ID lets you continue after a pause or restart. Once complete, the same tools and editor use SQLite, and the original files remain unchanged.
+Starting the upgraded Kiki automatically migrates existing memory through the SQLite import and validation pipeline. New homes use SQLite too. No migration button, old-writer confirmation or experimental switch is required. The same tools and editor wait for the upgrade, then use SQLite; original files remain unchanged, and subsequent starts reuse the completed database. Storage migration preserves **Allow memory**: if it is off, agents still receive no saved memory and the advisor sends none out.
+
+If the upgrade stops, the [Memory API](/en/server/rest-api#backend-migration-and-recovery) reports its saved operation ID, last committed page and source issues. Normal memory access stays blocked instead of reading an older copy. Repair the reported source and retry that operation, or restart to resume it. Upgrade other installations sharing the home as well; the backend marker governs compatible writers, not binaries released before that protocol.
 
 The API can also save a governed recovery package and switch SQLite to read-only mode. Current entries stay readable, including corrections made after migration; editing resumes only with the current recovery ID and epoch returned by the API. Keep the full database backup: Markdown exports current entries and pending proposals, while the database also retains immutable revisions, correction records and forget barriers. Do not restore an old file directory over newer governed memory.
 

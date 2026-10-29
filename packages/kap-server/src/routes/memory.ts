@@ -59,8 +59,11 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
   add('get', defineRoute({ method: 'GET', path: '/memory/authority', success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, () => authority().status());
   }));
-  add('post', defineRoute({ method: 'POST', path: '/memory/authority/migrate', body: z.object({ operation_id: z.string().uuid(), older_writers_stopped: z.literal(true), max_pages: z.number().int().min(1).max(64).optional() }).strict(), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, () => authority().migrate({ operationId: req.body.operation_id, olderWritersStopped: true, maxPages: req.body.max_pages }));
+  add('post', defineRoute({ method: 'POST', path: '/memory/authority/migrate', body: z.object({ operation_id: z.string().uuid(), older_writers_stopped: z.literal(true).optional(), max_pages: z.number().int().min(1).max(64).optional() }).strict(), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
+    await handle(req.id, reply, () => authority().migrate({ operationId: req.body.operation_id, maxPages: req.body.max_pages }));
+  }));
+  add('post', defineRoute({ method: 'POST', path: '/memory/authority/retry', body: z.object({ operation_id: z.string().uuid() }).strict(), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
+    await handle(req.id, reply, () => authority().retryMigration(req.body.operation_id));
   }));
   add('post', defineRoute({ method: 'POST', path: '/memory/authority/cancel', body: z.object({ operation_id: z.string().uuid() }).strict(), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, () => authority().cancelMigration(req.body.operation_id));

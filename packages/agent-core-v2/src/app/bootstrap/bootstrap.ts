@@ -23,6 +23,7 @@ import { IAtomicTomlDocumentStore, type IAtomicDocumentStore } from '#/persisten
 import { createJsonDocumentReader, TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileSkillDiscovery } from '#/app/skillCatalog/fileSkillDiscovery';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
+import { IMemoryAuthorityService } from '#/app/memory/memoryAuthorityStore';
 import { readSpaceHome, type SpaceHome } from './spaceHome';
 import { prepareSpaceResourceProjection, readSpaceSourceSelections } from '#/persistence/backends/node-fs/spaceResourceProjection';
 
@@ -194,6 +195,7 @@ export function bootstrapSeed(input: BootstrapInput): ScopeSeed {
 
 export interface BootstrapResult {
   readonly app: Scope;
+  readonly memoryReady: ReturnType<IMemoryAuthorityService['prepare']>;
 }
 
 export function bootstrap(input: BootstrapInput, extraSeeds: ScopeSeed = []): BootstrapResult {
@@ -203,7 +205,9 @@ export function bootstrap(input: BootstrapInput, extraSeeds: ScopeSeed = []): Bo
   });
   void cleanupOrphanedEphemeralSessions(options.homeDir).catch(() => undefined);
   void cleanupExpiredSessionLocks(options.homeDir).catch(() => undefined);
-  return { app };
+  const memoryReady = app.accessor.get(IMemoryAuthorityService).prepare();
+  void memoryReady.catch(() => undefined);
+  return { app, memoryReady };
 }
 
 function storageSeed(options: IBootstrapOptions): ScopeSeed {

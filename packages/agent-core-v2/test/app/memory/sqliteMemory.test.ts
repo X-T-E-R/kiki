@@ -683,24 +683,23 @@ function managedMemory() {
   ix.set(IMemoryAuthorityService, new SyncDescriptor(MemoryAuthorityService));
   return { memory: ix.get(IMemoryStore), authority: ix.get(IMemoryAuthorityService), legacy: ix.get(ILegacyMemoryStore) };
 }
-const migration = () => ({ operationId: randomUUID(), olderWritersStopped: true as const });
+const migration = () => ({ operationId: randomUUID() });
 const createManaged = (memory: IMemoryStore, title: string, body = 'Use 9 workers; never upload output.') => memory.put({ action: 'create', scope: global, type: 'feedback', title, body, reason: 'Owner guidance', source });
 
 describe('single Memory authority and isolated recovery', () => {
   it('keeps legacy authoritative during shadow import and routes the same tools to SQLite after cutover without dual writes', async () => {
     const { memory, authority, legacy } = managedMemory();
-    const saved = await createManaged(memory, 'Stable identity');
+    const saved = await createManaged(legacy, 'Stable identity');
     const initial = await storage.read('memory/global', `entries/${saved.entry.id}.md`);
     await ix.get(IMemoryShadowImport).run(global);
     expect((await authority.status()).backend).toBe('legacy');
-    expect(await memory.get(global, saved.entry.id)).toEqual(saved.entry);
     await memory.prepare?.();
-    expect(memory.snapshot).toBeUndefined();
-    const before = await memory.checkpoint!();
-    const active = await authority.migrate(migration());
-    expect(active).toMatchObject({ backend: 'sqlite', mode: 'active' });
+    expect(await authority.status()).toMatchObject({ backend: 'sqlite', mode: 'active' });
     expect(await memory.get(global, saved.entry.id)).toEqual(saved.entry);
-    expect((await memory.snapshot!([global])).generation).not.toBe(before);
+    const before = await memory.checkpoint!();
+    await memory.prepare?.();
+    expect(await memory.checkpoint!()).toBe(before);
+    expect((await memory.snapshot!([global])).entries).toContainEqual({ ...saved.entry, scope: global });
     const tool = ix.get(IMemoryWriteTool);
     const execution = tool.resolveExecution({ action: 'update', id: saved.entry.id, scope: 'global', expected_revision: saved.entry.revision, type: 'feedback', title: saved.entry.title, body: 'Use 5 workers; never upload output.', reason: 'Owner correction' });
     if (!('execute' in execution)) throw new Error('Expected normal Memory write execution');
@@ -714,13 +713,13 @@ describe('single Memory authority and isolated recovery', () => {
   });
 
   it('reconciles a legacy deletion and an incremental correction after a completed shadow pass', async () => {
-    const { memory, authority } = managedMemory();
-    const deleted = await createManaged(memory, 'Delete after shadow');
-    const corrected = await createManaged(memory, 'Correct after shadow');
+    const { memory, authority, legacy } = managedMemory();
+    const deleted = await createManaged(legacy, 'Delete after shadow');
+    const corrected = await createManaged(legacy, 'Correct after shadow');
     await ix.get(IMemoryShadowImport).run(global);
-    const operation = await memory.delete(global, deleted.entry.id, deleted.entry.revision);
-    const latest = await memory.put({ action: 'update', scope: global, id: corrected.entry.id, expectedRevision: corrected.entry.revision, type: corrected.entry.type, title: corrected.entry.title, body: 'Use 5 workers with the original exception.', reason: 'Correction before cutover', source });
-    expect((await authority.migrate(migration())).backend).toBe('sqlite');
+    const operation = await legacy.delete(global, deleted.entry.id, deleted.entry.revision);
+    const latest = await legacy.put({ action: 'update', scope: global, id: corrected.entry.id, expectedRevision: corrected.entry.revision, type: corrected.entry.type, title: corrected.entry.title, body: 'Use 5 workers with the original exception.', reason: 'Correction before cutover', source });
+    expect((await authority.prepare()).backend).toBe('sqlite');
     expect(await memory.get(global, deleted.entry.id)).toBeUndefined();
     expect(await memory.get(global, corrected.entry.id)).toEqual(latest.entry);
     expect((await memory.undo(global, operation))?.body).toBe(deleted.entry.body);
@@ -728,34 +727,65 @@ describe('single Memory authority and isolated recovery', () => {
 
   it('persists the paused write barrier across reopen and resumes the exact migration', async () => {
     let managed = managedMemory();
-    const saved = await createManaged(managed.memory, 'Paused migration');
+    const saved = await createManaged(managed.legacy, 'Paused migration');
     const input = migration();
     const paused = await managed.authority.migrate({ ...input, maxPages: 1 });
     expect(paused.mode).toBe('migrating');
-    await expect(createManaged(managed.memory, 'Blocked write')).rejects.toThrow('write barrier');
     await expect(createManaged(managed.legacy, 'Blocked old writer')).rejects.toThrow('write barrier');
     await close();
     bind();
     managed = managedMemory();
     expect((await managed.authority.status()).migration?.id).toBe(input.operationId);
-    expect((await managed.authority.migrate(input)).mode).toBe('active');
+    await managed.memory.prepare?.();
+    expect(await managed.authority.status()).toMatchObject({ mode: 'active', migrationId: input.operationId });
     expect(await managed.memory.get(global, saved.entry.id)).toEqual(saved.entry);
     await expect(managed.authority.migrate(migration())).rejects.toThrow('different migration');
   });
 
-  it('reports malformed source payloads and keeps edits blocked until explicit cancellation and repair', async () => {
-    const { memory, authority } = managedMemory();
-    await storage.write('memory/global', 'entries/m_broken.md', new TextEncoder().encode('Malformed source payload'));
+  it('cancels a paused maintenance batch without disabling the next automatic preparation', async () => {
+    const { memory, legacy, authority } = managedMemory();
+    const saved = await createManaged(legacy, 'Retain through maintenance cancellation');
     const input = migration();
-    const state = await authority.migrate(input);
-    expect(state).toMatchObject({ backend: 'legacy', mode: 'migrating' });
-    expect(state.migration?.issues).toContainEqual(expect.objectContaining({ key: 'entries/m_broken.md', issue: 'Invalid memory frontmatter' }));
-    await expect(createManaged(memory, 'No silent partial cutover')).rejects.toThrow('write barrier');
+    expect((await authority.migrate({ ...input, maxPages: 1 })).mode).toBe('migrating');
     await expect(authority.cancelMigration(randomUUID())).rejects.toThrow('does not match');
-    expect((await authority.cancelMigration(input.operationId)).mode).toBe('active');
+    expect(await authority.cancelMigration(input.operationId)).toMatchObject({ backend: 'legacy', mode: 'active' });
+    await memory.prepare!();
+    expect((await authority.status()).backend).toBe('sqlite');
+    expect(await memory.get(global, saved.entry.id)).toEqual(saved.entry);
+  });
+
+  it('resumes the persisted startup operation after its importing process exits without cleanup', async () => {
+    const { legacy, memory, authority } = managedMemory();
+    const first = await createManaged(legacy, 'Interrupted startup rule');
+    const persona = { kind: 'persona', personaId: 'startup-example' } as const;
+    const second = await legacy.put({ action: 'create', scope: persona, type: 'reference', title: 'Persona retained through restart', body: 'Retain this exact persona-only condition.', reason: 'Owner instruction', source });
+    const run = promisify(execFile)(process.execPath, ['--import', 'tsx', '--import', '../../build/register-raw-text-loader.mjs', 'test/fixtures/memoryStartupInterrupted.mts', home], { cwd: process.cwd(), timeout: 20_000 });
+    const crashed = await run.then(() => { throw new Error('Expected interrupted startup'); }, (error: { code: number; stdout: string; stderr: string }) => error);
+    expect(crashed.code, crashed.stderr).toBe(73);
+    const interrupted = JSON.parse(crashed.stdout.trim());
+    expect(interrupted).toMatchObject({ backend: 'legacy', mode: 'migrating', migration: { phase: 'importing', index: 1 } });
+    expect((await authority.status()).migration?.id).toBe(interrupted.migration.id);
+    await memory.prepare!();
+    expect(await authority.status()).toMatchObject({ backend: 'sqlite', mode: 'active', migrationId: interrupted.migration.id });
+    expect(await memory.get(global, first.entry.id)).toEqual(first.entry);
+    expect(await memory.get(persona, second.entry.id)).toEqual(second.entry);
+  }, 30_000);
+
+  it('preserves malformed source payloads, reports failure and retries the same operation after repair', async () => {
+    const { memory, authority } = managedMemory();
+    const raw = new TextEncoder().encode('Malformed source payload');
+    await storage.write('memory/global', 'entries/m_broken.md', raw);
+    await expect(memory.prepare!()).rejects.toThrow('startup migration failed');
+    const state = await authority.status();
+    expect(state).toMatchObject({ backend: 'legacy', mode: 'migrating', migration: { phase: 'failed', failure: { code: 'memory.source_invalid' } } });
+    expect(state.migration?.issues).toContainEqual(expect.objectContaining({ key: 'entries/m_broken.md', issue: 'Invalid memory frontmatter' }));
+    expect(new Uint8Array((await storage.read('memory/global', 'entries/m_broken.md'))!)).toEqual(raw);
+    await expect(memory.list(global)).rejects.toThrow('startup migration failed');
+    await expect(createManaged(memory, 'No silent partial cutover')).rejects.toThrow('startup migration failed');
+    await expect(authority.retryMigration(randomUUID())).rejects.toThrow('does not match');
     await storage.delete('memory/global', 'entries/m_broken.md');
-    await createManaged(memory, 'Repaired source');
-    expect((await authority.migrate(migration())).backend).toBe('sqlite');
+    expect(await authority.retryMigration(state.migration!.id)).toMatchObject({ backend: 'sqlite', migrationId: state.migration!.id });
+    expect((await createManaged(memory, 'Repaired source')).outcome).toBe('applied');
   });
 
   it('fails closed on a corrupted marker and reconciles an uncertain marker publication by status', async () => {
@@ -771,15 +801,17 @@ describe('single Memory authority and isolated recovery', () => {
       if (!interrupted && args[0] === MEMORY_AUTHORITY_SCOPE && new TextDecoder().decode(args[2]).includes('"backend":"sqlite"')) { interrupted = true; throw new Error('Publication acknowledgement lost'); }
     };
     const input = migration();
-    await expect(authority.migrate(input)).rejects.toThrow('acknowledgement lost');
+    expect(await authority.migrate(input)).toMatchObject({ backend: 'sqlite', migrationId: input.operationId });
     expect(await authority.migrate(input)).toMatchObject({ backend: 'sqlite', mode: 'active', migrationId: input.operationId });
-    expect((await createManaged(memory, 'Write after reconciliation')).outcome).toBe('applied');
+    await close();
+    bind();
+    expect((await createManaged(managedMemory().memory, 'Write after reconciliation')).outcome).toBe('applied');
   });
 
   it('backs up post-cutover operations, adjudications, proposals and forget barriers before read-only recovery', async () => {
     let managed = managedMemory();
-    const original = await createManaged(managed.memory, 'Corrected rule');
-    const forgotten = await createManaged(managed.memory, 'Forgotten rule', 'Unique forgotten source text.');
+    const original = await createManaged(managed.legacy, 'Corrected rule');
+    const forgotten = await createManaged(managed.legacy, 'Forgotten rule', 'Unique forgotten source text.');
     const originalRaw = new TextDecoder().decode((await storage.read('memory/global', `entries/${forgotten.entry.id}.md`))!);
     expect((await managed.authority.migrate(migration())).backend).toBe('sqlite');
     const changed = await managed.memory.put({ action: 'update', scope: global, id: original.entry.id, expectedRevision: original.entry.revision, type: original.entry.type, title: original.entry.title, body: 'Use 5 workers; never upload output.', reason: 'Human correction after cutover', source });
@@ -1043,11 +1075,11 @@ describe('revision-bound Memory Markdown imports', () => {
 
 describe('single Memory authority safe-boundary activation', () => {
   it('preserves all four namespaces and pending revision targets through migration', async () => {
-    const { memory, authority } = managedMemory();
+    const { memory, authority, legacy } = managedMemory();
     const targets: MemoryScope[] = [global, workspace, { kind: 'persona', personaId: 'example-role' }, { kind: 'persona_workspace', workspaceId: workspace.workspaceId, personaId: 'example-role' }];
-    const saved = await Promise.all(targets.map((scope) => memory.put({ action: 'create', scope, type: 'feedback', title: 'Scoped instruction', body: 'Preserve this complete scoped condition.', reason: 'Owner instruction', source })));
-    const pending = await memory.put({ action: 'update', scope: targets[3]!, id: saved[3]!.entry.id, expectedRevision: saved[3]!.entry.revision, type: 'feedback', title: 'Scoped instruction', body: 'Proposed scoped correction.', reason: 'Review correction', source: { writer: 'agent' }, pending: true });
-    expect((await authority.migrate(migration())).backend).toBe('sqlite');
+    const saved = await Promise.all(targets.map((scope) => legacy.put({ action: 'create', scope, type: 'feedback', title: 'Scoped instruction', body: 'Preserve this complete scoped condition.', reason: 'Owner instruction', source })));
+    const pending = await legacy.put({ action: 'update', scope: targets[3]!, id: saved[3]!.entry.id, expectedRevision: saved[3]!.entry.revision, type: 'feedback', title: 'Scoped instruction', body: 'Proposed scoped correction.', reason: 'Review correction', source: { writer: 'agent' }, pending: true });
+    expect((await authority.prepare()).backend).toBe('sqlite');
     for (const [index, scope] of targets.entries()) expect(await memory.get(scope, saved[index]!.entry.id)).toEqual(saved[index]!.entry);
     expect(await memory.get(targets[3]!, pending.entry.id)).toEqual(pending.entry);
     const approved = await memory.put({ action: 'update', scope: targets[3]!, id: pending.entry.id, expectedRevision: pending.entry.revision, type: pending.entry.type, title: pending.entry.title, body: pending.entry.body, reason: 'Approve preserved proposal', source });
@@ -1055,17 +1087,17 @@ describe('single Memory authority safe-boundary activation', () => {
     expect(approved.entry.id).toBe(saved[3]!.entry.id);
   });
 
-  it('resolves the current backend before main and child working sets without changing legacy snapshot availability', async () => {
-    const { memory, authority } = managedMemory();
-    const saved = await createManaged(memory, 'Deployment instructions');
+  it('automatically prepares SQLite before main and child working sets', async () => {
+    const { legacy, authority } = managedMemory();
+    const saved = await createManaged(legacy, 'Deployment instructions');
     ix.stub(IConfigService, { get: <T>() => ({ enabled: true, approval: 'auto', budget: 2_000, workspaces: {} }) as T });
     ix.stub(IAgentScopeContext, { agentId: 'main' });
     ix.stub(IAgentContextMemoryService, { get: () => [] });
     ix.set(IAgentMemorySnapshot, new SyncDescriptor(AgentMemorySnapshot));
     const main = ix.get(IAgentMemorySnapshot);
     await main.get();
-    expect(main.workingSet).toBe(false);
-    await authority.migrate(migration());
+    expect(main.workingSet).toBe(true);
+    expect((await authority.status()).backend).toBe('sqlite');
     expect(await main.refreshIfDirty('Deployment instructions')).toContain(saved.entry.body);
     expect(main.workingSet).toBe(true);
     ix.stub(IAgentScopeContext, { agentId: 'child-example' });
@@ -1077,9 +1109,9 @@ describe('single Memory authority safe-boundary activation', () => {
   });
 
   it('rejects missing or truncated SQLite authority instead of opening an empty replacement or stale legacy view', async () => {
-    const { memory, authority } = managedMemory();
-    const saved = await createManaged(memory, 'Do not restore stale legacy content');
-    await authority.migrate(migration());
+    const { memory, legacy } = managedMemory();
+    const saved = await createManaged(legacy, 'Do not restore stale legacy content');
+    await memory.prepare!();
     await close();
     await rm(join(home, 'store', 'memory-sqlite-v1'), { recursive: true });
     bind();

@@ -44,7 +44,9 @@ export interface MemoryImportPreview {
 export interface IMemoryAuthorityService {
   readonly _serviceBrand: undefined;
   status(): Promise<MemoryAuthorityState>;
-  migrate(input: { readonly operationId: string; readonly olderWritersStopped: true; readonly maxPages?: number }, signal?: AbortSignal): Promise<MemoryAuthorityState>;
+  prepare(): Promise<MemoryAuthorityState>;
+  retryMigration(operationId: string): Promise<MemoryAuthorityState>;
+  migrate(input: { readonly operationId: string; readonly maxPages?: number }, signal?: AbortSignal): Promise<MemoryAuthorityState>;
   cancelMigration(operationId: string): Promise<MemoryAuthorityState>;
   recoverReadOnly(): Promise<MemoryRecoveryPackage>;
   resumeEditing(recoveryId: string, expectedEpoch: number): Promise<MemoryAuthorityState>;
@@ -75,7 +77,7 @@ export class MemoryAuthorityStore extends Disposable implements IMemoryStore {
   private sqlite?: ISqliteMemoryStore;
   private backend: 'legacy' | 'sqlite' = 'legacy';
   constructor(
-    @ILegacyMemoryStore private readonly legacy: IMemoryStore,
+    @ILegacyMemoryStore legacy: IMemoryStore,
     @IFileSystemStorageService storage: IFileSystemStorageService,
     @IInstantiationService private readonly instantiation: IInstantiationService,
   ) {
@@ -91,25 +93,28 @@ export class MemoryAuthorityStore extends Disposable implements IMemoryStore {
     return this.sqlite;
   }
   private async state(): Promise<MemoryAuthorityState> {
-    const state = await this.authority.read();
+    let state = await this.authority.read();
+    if (state.backend === 'legacy') {
+      await this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryAuthorityService)).prepare();
+      state = await this.authority.read();
+    }
+    if (state.backend !== 'sqlite') invalid('Memory startup migration has not completed; inspect authority status and retry the same operation');
     this.backend = state.backend;
     return state;
   }
   async prepare(): Promise<void> { await this.state(); }
   private async read<T>(operation: (store: IMemoryStore) => Promise<T>): Promise<T> {
-    const state = await this.state();
-    const result = await operation(state.backend === 'legacy' ? this.legacy : this.sqliteStore());
-    if (state.backend === 'legacy' && (await this.state()).backend !== 'legacy') return operation(this.sqliteStore());
-    return result;
+    await this.state();
+    return operation(this.sqliteStore());
   }
   private async mutate<T>(operation: (store: IMemoryStore) => Promise<T>, signal?: AbortSignal): Promise<T> {
     const state = await this.state();
-    assertMemoryAuthorityWritable(state, state.backend);
-    return state.backend === 'legacy' ? operation(this.legacy) : this.authority.write('sqlite', () => operation(this.sqliteStore()), signal);
+    assertMemoryAuthorityWritable(state, 'sqlite');
+    return this.authority.write('sqlite', () => operation(this.sqliteStore()), signal);
   }
   async checkpoint(): Promise<string> {
     const state = await this.state();
-    return state.backend === 'legacy' ? `legacy:${state.epoch}` : `sqlite:${state.epoch}:${await this.sqliteStore().checkpoint()}`;
+    return `sqlite:${state.epoch}:${await this.sqliteStore().checkpoint()}`;
   }
   private readonly takeSnapshot = async (scopes: readonly MemoryScope[]): Promise<MemoryStoreSnapshot> => {
     const state = await this.state();
@@ -132,10 +137,13 @@ export class MemoryAuthorityStore extends Disposable implements IMemoryStore {
   importLorebook(...args: Parameters<IMemoryStore['importLorebook']>): ReturnType<IMemoryStore['importLorebook']> { return this.mutate((store) => store.importLorebook(...args)); }
 }
 
-export class MemoryAuthorityService implements IMemoryAuthorityService {
+export class MemoryAuthorityService extends Disposable implements IMemoryAuthorityService {
   declare readonly _serviceBrand: undefined;
   private readonly authority: MemoryAuthorityAccess;
   private readonly importSalt = randomUUID();
+  private readonly shutdown = new AbortController();
+  private preparation?: Promise<MemoryAuthorityState>;
+  private preparing = false;
   constructor(
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IMemoryScopes private readonly scopes: IMemoryScopes,
@@ -144,8 +152,40 @@ export class MemoryAuthorityService implements IMemoryAuthorityService {
     @IMemoryShadowImport private readonly shadow: IMemoryShadowImport,
     @IMemoryPersistence private readonly persistence: IMemoryPersistence,
     @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
-  ) { this.authority = new MemoryAuthorityAccess(storage); }
+  ) { super(); this.authority = new MemoryAuthorityAccess(storage); }
+  override async dispose(): Promise<void> {
+    this.shutdown.abort();
+    await this.preparation?.catch(() => undefined);
+    await super.dispose();
+  }
   status(): Promise<MemoryAuthorityState> { return this.authority.read(); }
+  prepare(): Promise<MemoryAuthorityState> {
+    if (this.preparation === undefined) {
+      this.preparing = true;
+      this.preparation = this.prepareMigration().finally(() => { this.preparing = false; });
+    }
+    return this.preparation;
+  }
+  private async prepareMigration(): Promise<MemoryAuthorityState> {
+    let state = await this.authority.read();
+    let restart = true;
+    while (state.backend === 'legacy') {
+      state = await this.advance(undefined, 8, this.shutdown.signal, restart);
+      restart = false;
+      if (state.migration?.phase === 'failed') invalid(`Memory startup migration failed: ${state.migration.failure?.message ?? 'Inspect the reported source issues'}`);
+    }
+    await this.sqlite.checkpoint();
+    return state;
+  }
+  async retryMigration(operationId: string): Promise<MemoryAuthorityState> {
+    z.string().uuid().parse(operationId);
+    const state = await this.authority.read();
+    if ((state.backend === 'sqlite' ? state.migrationId : state.migration?.id) !== operationId) invalid('Memory migration does not match the retry');
+    if (state.backend === 'sqlite') return state;
+    if (this.preparing) return this.prepare();
+    this.preparation = undefined;
+    return this.prepare();
+  }
   private async discover(): Promise<string[]> {
     const bases = new Set(['memory/global']);
     for (const id of await this.storage.list('memory/global/personas')) {
@@ -164,36 +204,65 @@ export class MemoryAuthorityService implements IMemoryAuthorityService {
     if (bases.size > 1000) invalid('Memory migration exceeds 1000 namespaces');
     return [...bases].toSorted();
   }
-  async migrate(input: { readonly operationId: string; readonly olderWritersStopped: true; readonly maxPages?: number }, signal?: AbortSignal): Promise<MemoryAuthorityState> {
-    z.object({ operationId: z.string().uuid(), olderWritersStopped: z.literal(true), maxPages: z.number().int().min(1).max(64).optional() }).strict().parse(input);
+  async migrate(input: { readonly operationId: string; readonly maxPages?: number }, signal?: AbortSignal): Promise<MemoryAuthorityState> {
+    z.object({ operationId: z.string().uuid(), maxPages: z.number().int().min(1).max(64).optional() }).strict().parse(input);
+    return this.advance(input.operationId, input.maxPages ?? 8, signal);
+  }
+  private advance(operationId: string | undefined, maxPages: number, signal?: AbortSignal, restart = false): Promise<MemoryAuthorityState> {
     return this.authority.exclusive(async (lease) => {
       let state = await lease.read();
       if (state.backend === 'sqlite') {
-        if (state.migrationId !== input.operationId) invalid('SQLite Memory already has a different migration');
+        if (operationId !== undefined && state.migrationId !== operationId) invalid('SQLite Memory already has a different migration');
         return state;
       }
-      if (state.mode === 'migrating' && state.migration!.id !== input.operationId) invalid('A different Memory migration is in progress');
-      if (state.mode === 'active') {
-        state = { ...state, mode: 'migrating', migration: { id: input.operationId, namespaces: await this.discover(), index: 0, issues: [] } };
-        await lease.publish(state);
-      }
-      for (let page = 0; page < (input.maxPages ?? 8) && state.migration!.index < state.migration!.namespaces.length; page++) {
+      if (operationId !== undefined && state.mode === 'migrating' && state.migration!.id !== operationId) invalid('A different Memory migration is in progress');
+      const id = state.migration?.id ?? operationId ?? randomUUID();
+      try {
+        if (state.mode === 'active' || restart && (state.migration?.phase === 'failed' || state.migration!.issues.length > 0)) {
+          state = { ...state, mode: 'migrating', migration: { id, namespaces: [], index: 0, issues: [], phase: 'importing' } };
+          await lease.publish(state);
+        }
+        if (state.migration!.namespaces.length === 0) {
+          state = { ...state, migration: { ...state.migration!, namespaces: await this.discover() } };
+          await lease.publish(state);
+        }
+        for (let page = 0; page < maxPages && state.migration!.index < state.migration!.namespaces.length; page++) {
+          signal?.throwIfAborted();
+          const progress = state.migration!;
+          const base = progress.namespaces[progress.index]!;
+          const result = await this.shadow.run(parseNamespace(base), progress.after, signal);
+          const issues = [...progress.issues, ...result.issues].slice(0, 1000);
+          state = { ...state, migration: { ...progress, phase: 'importing', failure: undefined, issues, index: result.complete ? progress.index + 1 : progress.index, after: result.complete ? undefined : result.nextKey } };
+          await lease.publish(state);
+        }
+        let progress = state.migration!;
+        if (progress.index !== progress.namespaces.length && progress.issues.length === 0) return state;
+        if (progress.issues.length === 0) {
+          progress = { ...progress, phase: 'validating' };
+          state = { ...state, migration: progress };
+          await lease.publish(state);
+          const issues = await this.validateAndReconcile(progress.namespaces, progress.id);
+          progress = { ...progress, issues: issues.slice(0, 1000) };
+        }
+        if (progress.issues.length > 0) {
+          state = { ...state, migration: { ...progress, phase: 'failed', failure: { code: 'memory.source_invalid', message: `Memory source validation found ${progress.issues.length} issue(s); repair the listed sources and retry this operation` } } };
+          await lease.publish(state);
+          return state;
+        }
+        await this.sqlite.checkpoint();
         signal?.throwIfAborted();
-        const progress = state.migration!;
-        const base = progress.namespaces[progress.index]!;
-        const result = await this.shadow.run(parseNamespace(base), progress.after, signal);
-        const issues = [...progress.issues, ...result.issues].slice(0, 1000);
-        state = { ...state, migration: { ...progress, issues, index: result.complete ? progress.index + 1 : progress.index, after: result.complete ? undefined : result.nextKey } };
-        await lease.publish(state);
+        const active: MemoryAuthorityState = { version: 1, epoch: state.epoch + 1, backend: 'sqlite', mode: 'active', migrationId: progress.id };
+        await lease.publish(active);
+        return active;
+      } catch (error) {
+        const current = await lease.read();
+        if (current.backend === 'sqlite' && current.migrationId === id) return current;
+        if (current.migration?.id === id && !signal?.aborted) {
+          const code = (error as { code?: unknown })?.code;
+          await lease.publish({ ...current, migration: { ...current.migration, phase: 'failed', failure: { code: typeof code === 'string' ? code : 'memory.migration_failed', message: error instanceof Error ? error.message : String(error) } } });
+        }
+        throw error;
       }
-      const progress = state.migration!;
-      if (progress.index !== progress.namespaces.length || progress.issues.length > 0) return state;
-      const issues = await this.validateAndReconcile(progress.namespaces, progress.id);
-      if (issues.length > 0) { state = { ...state, migration: { ...progress, issues: issues.slice(0, 1000) } }; await lease.publish(state); return state; }
-      signal?.throwIfAborted();
-      const active: MemoryAuthorityState = { version: 1, epoch: state.epoch + 1, backend: 'sqlite', mode: 'active', migrationId: progress.id };
-      await lease.publish(active);
-      return active;
     }, signal);
   }
   private async validateAndReconcile(bases: readonly string[], operationId: string): Promise<Array<{ scope: string; key: string; issue: string }>> {
@@ -232,14 +301,17 @@ export class MemoryAuthorityService implements IMemoryAuthorityService {
     for (const base of await this.persistence.namespaces()) if (!bases.includes(base)) issues.push({ scope: base, key: '', issue: 'unmatched_shadow_namespace' });
     return issues;
   }
-  cancelMigration(operationId: string): Promise<MemoryAuthorityState> {
-    return this.authority.exclusive(async (lease) => {
+  async cancelMigration(operationId: string): Promise<MemoryAuthorityState> {
+    if (this.preparing) invalid('Wait for the automatic Memory startup operation before cancelling a paused maintenance batch');
+    const state = await this.authority.exclusive(async (lease) => {
       const state = await lease.read();
       if (state.mode !== 'migrating' || state.migration?.id !== operationId) invalid('Memory migration does not match the cancellation');
       const active: MemoryAuthorityState = { version: 1, epoch: state.epoch + 1, backend: 'legacy', mode: 'active' };
       await lease.publish(active);
       return active;
     });
+    this.preparation = undefined;
+    return state;
   }
   private async requireSqlite(): Promise<void> { if ((await this.authority.read()).backend !== 'sqlite') invalid('This Memory governance operation requires completed SQLite migration'); }
   async exportMarkdown(scope: MemoryScope, id: string): Promise<{ markdown: string; entry: MemoryEntry }> {
