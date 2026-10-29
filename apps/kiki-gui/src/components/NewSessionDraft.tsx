@@ -71,6 +71,7 @@ import {
 } from '../lib/agentProfileCatalog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { runNewSessionHandoff } from '../lib/newSessionHandoff';
+import { readFirstSessionMessage, writeFirstSessionMessage, type FirstSessionMessage } from '../lib/newSessionCreation';
 import { spaceStorage, type SpaceStorage } from '../lib/spaceStorage';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
@@ -156,6 +157,9 @@ export interface PersistedCreationIntent {
   readonly creationId: string;
   readonly sessionId: string;
   readonly bodyKey: string;
+  readonly body?: SessionCreate;
+  readonly handoff?: FirstSessionMessage;
+  readonly sshHosts?: readonly SshHostAttachment[];
   readonly status: 'pending' | 'accepted' | 'unknown' | 'conflict';
   readonly evidence?: string;
   readonly reason?: string;
@@ -190,6 +194,9 @@ export function readPersistedCreationIntent(scopeKey: string, storage: SpaceStor
       creationId,
       sessionId,
       bodyKey,
+      body: typeof record['body'] === 'object' && record['body'] !== null ? record['body'] as SessionCreate : undefined,
+      handoff: typeof record['handoff'] === 'object' && record['handoff'] !== null ? record['handoff'] as FirstSessionMessage : undefined,
+      sshHosts: Array.isArray(record['sshHosts']) ? record['sshHosts'] as SshHostAttachment[] : undefined,
       status,
       evidence: typeof record['evidence'] === 'string' ? record['evidence'] : undefined,
       reason: typeof record['reason'] === 'string' ? record['reason'] : undefined,
@@ -865,6 +872,7 @@ export function useNewSessionDraft({
     intent?.status === 'accepted' ? t('new.creationAccepted')
       : intent?.status === 'unknown' ? t('new.creationUnknown') : null, [t]);
   const [creationNotice, setCreationNotice] = useState<string | null>(() => noticeForIntent(initialIntent));
+  const [hasPreviousCreation, setHasPreviousCreation] = useState(() => readPersistedCreationIntent(`${scopeIntentKey}:previous`, intentScope.storage) !== undefined);
   const creationIntent = useRef<CreationWait | undefined>(undefined);
   const draftRef = useRef(draft);
   draftRef.current = draft;
@@ -889,20 +897,48 @@ export function useNewSessionDraft({
     setCreatedSessionId(saved?.status === 'accepted' || saved?.status === 'unknown' ? saved.sessionId : undefined);
     setCreationNotice(noticeForIntent(saved));
     setError(saved?.error ?? null);
+    setHasPreviousCreation(readPersistedCreationIntent(`${scopeIntentKey}:previous`, intentScope.storage) !== undefined);
   }, [scopeIntentKey, intentScope, noticeForIntent]);
 
   const cancelCreation = useCallback(() => {
     if (creationIntent.current === undefined) return;
     creationIntent.current.cancelled = true;
+    creationIntent.current.stopWaiting?.();
+    creationIntent.current = undefined;
     setBusy(false);
+    setCreationPending(false);
     setCreationNotice(t('new.creationWaiting'));
   }, [t]);
-  const openCreatedSession = useCallback(() => {
-    const accepted = createdForRetry.current;
-    if (accepted === undefined || accepted.status === 'conflict' || creationIntent.current !== undefined) return;
-    if (accepted.status === 'accepted') queryClient.setQueryData(['space-view-target', scopeId, 'session', accepted.sessionId], true);
-    void navigate(`/s/${accepted.sessionId}`);
-  }, [navigate, queryClient, scopeId]);
+  const [checkingCreation, setCheckingCreation] = useState(false);
+  const checkCreation = useCallback(async () => {
+    const pending = createdForRetry.current;
+    if (pending === undefined || checkingCreation || creationIntent.current !== undefined) return;
+    setCheckingCreation(true);
+    try {
+      const receipt = await client.getSessionCreation(pending.creationId);
+      if (!intentScope.active || createdForRetry.current?.creationId !== pending.creationId) return;
+      const next: PersistedCreationIntent = {
+        ...pending,
+        status: receipt.status === 'completed' ? 'accepted' : pending.status === 'conflict' ? 'conflict' : 'unknown',
+        evidence: receipt.status,
+        sessionId: receipt.session?.id ?? receipt.session_id,
+        error: receipt.failure?.message,
+      };
+      createdForRetry.current = next;
+      writePersistedCreationIntent(scopeIntentKey, next, intentScope.storage);
+      setCreatedSessionId(next.status === 'accepted' ? next.sessionId : undefined);
+      setCreationNotice(noticeForIntent(next));
+      setError(next.error ?? null);
+      return next;
+    } catch (cause) {
+      if (intentScope.active) setError(errorText(locale, cause));
+    } finally { if (intentScope.active) setCheckingCreation(false); }
+  }, [checkingCreation, client, intentScope, locale, noticeForIntent, scopeIntentKey]);
+  const creationActions = useRef<{ resume(openOnly?: boolean): void | Promise<void> }>({ resume: () => {} });
+  const openCreatedSession = useCallback(async () => {
+    if (createdForRetry.current?.status !== 'accepted') await checkCreation();
+    if (intentScope.active && createdForRetry.current?.status === 'accepted') return creationActions.current.resume(true);
+  }, [checkCreation, intentScope]);
   const createThenNavigate = useCallback((handoff: {
     initialPrompt?: string;
     initialPresentation?: import('@kiki/transcript').TextPresentation;
@@ -920,17 +956,17 @@ export function useNewSessionDraft({
      * handoff below.
      */
     goalObjectiveOverride?: string;
-  }) => {
+  }, recovery?: { openOnly?: boolean }) => {
     const context = sendContextRef.current;
     if (creationIntent.current !== undefined) return;
     const trimmedCwd = context.cwd.trim();
     // A free-text cwd must be an absolute path — a relative one would be
     // resolved against the server's own cwd and silently land elsewhere.
-    if (trimmedCwd !== '' && (sshLabel === null ? !isAbsoluteCwdPath(trimmedCwd) : !isAbsoluteRemoteCwdPath(trimmedCwd))) {
+    if (recovery === undefined && trimmedCwd !== '' && (sshLabel === null ? !isAbsoluteCwdPath(trimmedCwd) : !isAbsoluteRemoteCwdPath(trimmedCwd))) {
       setError(sshLabel === null ? t('new.cwdInvalid') : t('connect.sshCwdInvalid'));
       return;
     }
-    if (context.busy || profileCatalogTransitionRef.current) return;
+    if (recovery === undefined && (context.busy || profileCatalogTransitionRef.current)) return;
     const bodyWithoutCreation = buildNewSessionCreate({
       cwd: trimmedCwd,
       workspaceId: (context.workspaceId !== '' && context.workspaceId !== AUTO_WORKSPACE_ID) ? context.workspaceId : context.effectiveWorkspace?.id,
@@ -954,19 +990,35 @@ export function useNewSessionDraft({
     // releases the latch for retry.
     const bodyKey = JSON.stringify([draftScopeId, bodyWithoutCreation]);
     const retry = createdForRetry.current;
-    if (retry !== undefined && retry.bodyKey !== bodyKey) {
+    if (retry !== undefined && recovery === undefined && (retry.bodyKey !== bodyKey || retry.status !== 'accepted')) {
       setCreationNotice(noticeForIntent(retry));
-      return;
+      return checkCreation().then(() => undefined);
     }
+    if (retry?.status === 'conflict') return;
 
     const creationId = retry?.creationId ?? crypto.randomUUID().toLowerCase();
     const targetSessionId = retry?.sessionId ?? `session_${creationId}`;
-    const body: SessionCreate = {
+    const body: SessionCreate = retry?.body ?? {
       ...bodyWithoutCreation,
       creation_id: creationId,
     };
+    const frozenHandoff: FirstSessionMessage = retry?.handoff ?? {
+      ...handoff,
+      initialPromptId: `new-session:${creationId}`,
+      model: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
+      thinking: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) && context.effectiveEffort !== '' ? context.effectiveEffort : undefined,
+      permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
+      planMode: context.planMode,
+      goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
+      appendTiming: readSettings().defaultAppendTiming,
+      ephemeral: context.ephemeral,
+      personaGreetingReply: handoff.initialPrompt !== undefined && hasGreeting(context.persona) ? true : undefined,
+      execution: context.execution,
+    };
+    handoff = { ...frozenHandoff, sshHosts: retry?.sshHosts ?? handoff.sshHosts };
 
     const intent: CreationWait = { cancelled: false };
+    const stoppedWaiting = new Promise<void>((resolve) => { intent.stopWaiting = resolve; });
     creationIntent.current = intent;
     const submittedDraft = draftRef.current;
     if (trimmedCwd === '') {
@@ -977,14 +1029,18 @@ export function useNewSessionDraft({
     setCreationPending(true);
     setCreationNotice(null);
     setError(null);
-    let outcome: PersistedCreationIntent | undefined = retry?.status === 'accepted' ? retry : {
-      creationId, sessionId: targetSessionId, bodyKey, status: 'unknown',
+    let outcome: PersistedCreationIntent | undefined = {
+      ...retry, creationId, sessionId: targetSessionId, bodyKey: retry?.bodyKey ?? bodyKey, body, handoff: frozenHandoff,
+      sshHosts: handoff.sshHosts, status: retry?.status === 'accepted' ? 'accepted' : 'unknown',
     };
     const saveOutcome = () => {
-      if (!intentScope.active) {
-        const saved = readPersistedCreationIntent(scopeIntentKey, intentScope.storage);
-        if (saved?.creationId !== creationId || (saved.status === 'accepted' && outcome?.status !== 'accepted')) return;
+      if (intentScope.active && createdForRetry.current?.creationId !== creationId) {
+        if (outcome !== undefined) writePersistedCreationIntent(`${scopeIntentKey}:previous:${creationId}`, outcome, intentScope.storage);
+        return;
       }
+      const saved = readPersistedCreationIntent(scopeIntentKey, intentScope.storage);
+      if (saved !== undefined && (saved.creationId !== creationId || (saved.status === 'accepted' && outcome?.status !== 'accepted'))) return;
+      if (!intentScope.active && saved?.creationId !== creationId) return;
       if (outcome === undefined) clearPersistedCreationIntent(scopeIntentKey, intentScope.storage);
       else writePersistedCreationIntent(scopeIntentKey, outcome, intentScope.storage);
       if (intentScope.active) createdForRetry.current = outcome;
@@ -999,13 +1055,13 @@ export function useNewSessionDraft({
     const creation = (retry !== undefined && retry.status === 'accepted')
       ? Promise.resolve({ id: retry.sessionId })
       : client.createSession(body);
-    return creation
+    const operation = creation
       .then(async (session) => {
-        outcome = { bodyKey, sessionId: session.id, creationId, status: 'accepted' };
+        outcome = { ...outcome!, sessionId: session.id, status: 'accepted' };
         saveOutcome();
         void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
         void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-        if (!intentScope.active) return;
+        if (!intentScope.active || createdForRetry.current?.creationId !== creationId) return;
         setCreatedSessionId(session.id);
         if (intent.cancelled) {
           setCreationNotice(noticeForIntent(outcome));
@@ -1045,15 +1101,17 @@ export function useNewSessionDraft({
         writeComposerState(session.id, {
           attachments: effectiveAttachments ?? [],
           annotations: [],
-          permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
-          planMode: context.planMode,
+          permissionMode: frozenHandoff.permissionMode,
+          planMode: frozenHandoff.planMode,
           planGate: undefined,
-          goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
-          modelOverride: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
-          effortOverride: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) && context.effectiveEffort !== ''
-            ? context.effectiveEffort : undefined,
-          execution: context.execution,
+          goalObjective: frozenHandoff.goalObjective,
+          modelOverride: frozenHandoff.model,
+          effortOverride: frozenHandoff.thinking,
+          execution: frozenHandoff.execution,
         });
+        if (readFirstSessionMessage(scopeId, session.id) === undefined) {
+          writeFirstSessionMessage(scopeId, session.id, { message: frozenHandoff, status: 'ready' }, intentScope.storage);
+        }
 
         // Creation already confirmed this target in this connection scope.
         // Let the route mount immediately while its guard revalidates it.
@@ -1062,26 +1120,7 @@ export function useNewSessionDraft({
         const navigateToSession = (onCancel: () => void) => navigate(targetPath, {
           state: {
             createdSession: { id: session.id, scopeId },
-            initialPrompt: handoff.initialPrompt,
-            initialPresentation: handoff.initialPresentation,
-            initialAttachments: handoff.initialAttachments,
-            initialSkill: handoff.initialSkill,
-            // The first message of a bare external engine must reach the
-            // session with the same emptiness as the create did: these ride
-            // the handoff into SessionView's own send path, so a displayed
-            // default re-sent here would re-introduce the very override the
-            // create body just declined to send.
-            model: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
-            thinking: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) && context.effectiveEffort !== ''
-              ? context.effectiveEffort : undefined,
-            permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
-            planMode: context.planMode,
-            goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
-            ephemeral: context.ephemeral,
-            // The greeting was the last thing on screen and this is the first
-            // message: the engine materializes it as history from the frozen
-            // persona (the client never sends the greeting text itself).
-            personaGreetingReply: handoff.initialPrompt !== undefined && hasGreeting(context.persona) ? true : undefined,
+            ...frozenHandoff,
           },
           replace: false,
         }, onCancel);
@@ -1138,11 +1177,11 @@ export function useNewSessionDraft({
           outcome = { ...outcome, error: message };
         } else if (isConflictCreationError(cause)) {
           const details = cause instanceof ApiError ? (cause.details as { reason?: string } | undefined) : undefined;
-          outcome = { creationId, sessionId: targetSessionId, bodyKey, status: 'conflict', reason: details?.reason, error: message };
+          outcome = { ...outcome!, status: 'conflict', reason: details?.reason, error: message };
         } else if (isUnknownCreationError(cause)) {
           const details = cause instanceof ApiError ? (cause.details as { session_id?: string; evidence?: string } | undefined) : undefined;
           outcome = {
-            creationId, sessionId: details?.session_id ?? targetSessionId, bodyKey,
+            ...outcome!, sessionId: details?.session_id ?? targetSessionId,
             status: 'unknown', evidence: details?.evidence, error: message,
           };
         } else {
@@ -1150,7 +1189,7 @@ export function useNewSessionDraft({
           outcome = retry === undefined ? undefined : { ...retry, error: message };
         }
         saveOutcome();
-        if (!intentScope.active) return;
+        if (!intentScope.active || (createdForRetry.current !== undefined && createdForRetry.current.creationId !== creationId)) return;
         setBusy(false);
         setError(message);
         setCreatedSessionId(outcome?.status === 'accepted' || outcome?.status === 'unknown' ? outcome.sessionId : undefined);
@@ -1160,9 +1199,52 @@ export function useNewSessionDraft({
         if (!intentScope.active || creationIntent.current !== intent) return;
         creationIntent.current = undefined;
         setCreationPending(false);
+        setBusy(false);
         if (intent.cancelled) setCreationNotice(noticeForIntent(createdForRetry.current));
       });
-  }, [client, connectionId, draftKey, draftScopeId, intentScope, locale, router, scopeId, scopeIntentKey, spaceKey, sshLabel, navigate, noticeForIntent, queryClient, t]);
+    return Promise.race([operation, stoppedWaiting]);
+  }, [checkCreation, client, connectionId, draftKey, draftScopeId, intentScope, locale, router, scopeId, scopeIntentKey, spaceKey, sshLabel, navigate, noticeForIntent, queryClient, t]);
+  creationActions.current.resume = (openOnly) => {
+    const retry = createdForRetry.current;
+    if (retry === undefined) return;
+    return createThenNavigate({ ...retry.handoff, sshHosts: retry.sshHosts }, { openOnly });
+  };
+  const retryCreation = useCallback(async () => {
+    const pending = createdForRetry.current;
+    if (pending === undefined) return;
+    const receipt = pending.status === 'accepted' ? pending : await checkCreation();
+    if (!intentScope.active || receipt === undefined) return;
+    if (receipt.status === 'accepted' || receipt.evidence === 'missing') return creationActions.current.resume();
+  }, [checkCreation, intentScope]);
+  const startNewCreation = useCallback(() => {
+    if (creationIntent.current !== undefined) return;
+    const previous = createdForRetry.current;
+    if (previous !== undefined) {
+      writePersistedCreationIntent(`${scopeIntentKey}:previous:${previous.creationId}`, previous, intentScope.storage);
+      writePersistedCreationIntent(`${scopeIntentKey}:previous`, previous, intentScope.storage);
+      setHasPreviousCreation(true);
+    }
+    clearPersistedCreationIntent(scopeIntentKey, intentScope.storage);
+    createdForRetry.current = undefined;
+    setCreatedSessionId(undefined);
+    setCreationNotice(null);
+    setError(null);
+  }, [intentScope, scopeIntentKey]);
+  const restorePreviousCreation = useCallback(() => {
+    if (creationIntent.current !== undefined) return;
+    const archived = readPersistedCreationIntent(`${scopeIntentKey}:previous`, intentScope.storage);
+    if (archived === undefined) return;
+    const previous = readPersistedCreationIntent(`${scopeIntentKey}:previous:${archived.creationId}`, intentScope.storage) ?? archived;
+    const current = createdForRetry.current;
+    if (current !== undefined) writePersistedCreationIntent(`${scopeIntentKey}:previous`, current, intentScope.storage);
+    else clearPersistedCreationIntent(`${scopeIntentKey}:previous`, intentScope.storage);
+    writePersistedCreationIntent(scopeIntentKey, previous, intentScope.storage);
+    createdForRetry.current = previous;
+    setHasPreviousCreation(current !== undefined);
+    setCreatedSessionId(previous.status === 'accepted' || previous.status === 'unknown' ? previous.sessionId : undefined);
+    setCreationNotice(noticeForIntent(previous));
+    setError(previous.error ?? null);
+  }, [intentScope, noticeForIntent, scopeIntentKey]);
 
   const send = useCallback((
     text: string,
@@ -1355,6 +1437,13 @@ export function useNewSessionDraft({
     creationNotice,
     createdSessionId,
     openCreatedSession,
+    checkCreation,
+    checkingCreation,
+    retryCreation,
+    startNewCreation,
+    hasPreviousCreation,
+    restorePreviousCreation,
+    hasCreationIntent: createdForRetry.current !== undefined,
     cancelCreation,
     selectionReady,
     targetReady,

@@ -30,6 +30,13 @@ const firstRun = vi.hoisted(() => ({
   needsProviderSetup: false,
   selectionReady: true,
   creationPending: false,
+  creationNotice: null as string | null,
+  createdSessionId: undefined as string | undefined,
+  checkingCreation: false,
+  retryCreation: vi.fn(async () => {}),
+  openCreatedSession: vi.fn(async () => {}),
+  startNewCreation: vi.fn(),
+  hasCreationIntent: false,
   seat: undefined as import('./ConversationShell').ConversationSeat | undefined,
   workspacesFailed: false,
   workspacesError: null as string | null,
@@ -78,9 +85,14 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
       attachments: [],
       busy: false,
       creationPending: firstRun.creationPending,
-      creationNotice: null,
-      createdSessionId: undefined,
-      openCreatedSession: () => {},
+      creationNotice: firstRun.creationNotice,
+      createdSessionId: firstRun.createdSessionId,
+      openCreatedSession: firstRun.openCreatedSession,
+      checkCreation: async () => {},
+      checkingCreation: firstRun.checkingCreation,
+      retryCreation: firstRun.retryCreation,
+      startNewCreation: firstRun.startNewCreation,
+      hasCreationIntent: firstRun.hasCreationIntent,
       selectionReady: firstRun.selectionReady,
       targetReady: true,
       workspacesFailed: firstRun.workspacesFailed,
@@ -145,6 +157,10 @@ beforeEach(() => {
   firstRun.needsProviderSetup = false;
   firstRun.selectionReady = true;
   firstRun.creationPending = false;
+  firstRun.creationNotice = null;
+  firstRun.createdSessionId = undefined;
+  firstRun.checkingCreation = false;
+  firstRun.hasCreationIntent = false;
   firstRun.seat = undefined;
   firstRun.execution = { executor: 'native', profile: 'agent', overrides: undefined };
   firstRun.workspacesFailed = false;
@@ -383,6 +399,27 @@ describe('the /new page', () => {
     const provider = firstRun.seat?.composer as import('react').ReactElement<{ children: import('react').ReactElement<{ disabled: boolean; sendDisabled: boolean }> }>;
     expect(provider.props.children.props.sendDisabled).toBe(true);
     expect(provider.props.children.props.disabled).toBe(false);
+  });
+
+  it('exposes recovery, open, and new-attempt actions for an unresolved creation', async () => {
+    firstRun.hasCreationIntent = true;
+    firstRun.creationNotice = 'Creation is not confirmed yet. Check the result to continue with the same session. Starting another conversation keeps this attempt for later.';
+    firstRun.createdSessionId = 'session-example';
+    const container = await mountNewSessionPage();
+    const recovery = container.querySelector<HTMLElement>('[data-new-creation-recovery]');
+    expect(recovery?.textContent).toContain('Creation is not confirmed yet');
+    const buttons = Array.from(recovery?.querySelectorAll<HTMLButtonElement>('button') ?? []);
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      'Check and continue',
+      'Open created session',
+      'Start another conversation',
+    ]);
+    await act(async () => { buttons[0]?.click(); });
+    await act(async () => { buttons[1]?.click(); });
+    await act(async () => { buttons[2]?.click(); });
+    expect(firstRun.retryCreation).toHaveBeenCalledTimes(1);
+    expect(firstRun.openCreatedSession).toHaveBeenCalledTimes(1);
+    expect(firstRun.startNewCreation).toHaveBeenCalledTimes(1);
   });
 
   it('shows automatic workspace creation without a workspace-required warning', async () => {

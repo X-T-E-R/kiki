@@ -34,6 +34,7 @@ const { client, navigate, scope } = vi.hoisted(() => ({
     listNamedAgentProfiles: vi.fn(),
     getAuth: vi.fn(),
     createSession: vi.fn(),
+    getSessionCreation: vi.fn(),
     getPersona: vi.fn(),
     setPluginUsage: vi.fn(),
     setSessionOptionalCapability: vi.fn(),
@@ -84,6 +85,11 @@ beforeEach(() => {
   client.listNamedAgentProfiles.mockReset().mockResolvedValue({ items: [] });
   client.getAuth.mockReset().mockResolvedValue({ ready: true });
   client.createSession.mockReset().mockResolvedValue({ id: 'session-new' });
+  client.getSessionCreation.mockReset().mockImplementation(async (creationId: string) => ({
+    creation_id: creationId,
+    session_id: `session_${creationId}`,
+    status: 'pending',
+  }));
   client.getPersona.mockReset();
   client.setPluginUsage.mockReset().mockResolvedValue({});
   client.setSessionOptionalCapability.mockReset().mockResolvedValue({});
@@ -787,7 +793,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     await act(async () => { await state.send(state.draft, state.attachments); });
     state = latestDraftState!;
     expect(state.error).toContain(`code ${code}`);
-    expect(state.creationNotice).toBe(code < 0 ? 'Creation could not be confirmed. Your draft is kept. Check the session list before trying again to avoid creating a second session.' : null);
+    expect(state.creationNotice).toBe(code < 0 ? 'Creation is not confirmed yet. Check the result to continue with the same session. Starting another conversation keeps this attempt for later.' : null);
     expect(state.busy).toBe(false);
     expect(state.creationPending).toBe(false);
     expect(state.workspaceId).toBe('wd_selected');
@@ -797,7 +803,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it('makes cancellation visible until late acceptance and opens the accepted session even after choices change without a second create', async () => {
+  it('releases pending state on cancellation, ignores late navigation, and opens the frozen accepted handoff explicitly', async () => {
     client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
     const creation = deferred<{ id: string }>();
     client.createSession.mockReturnValue(creation.promise);
@@ -807,27 +813,29 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = latestDraftState!;
     let submission: Promise<unknown> | undefined;
     await act(async () => { submission = state.send(state.draft, []); });
+    const firstBody = client.createSession.mock.calls[0]![0] as SessionCreate;
+    const firstPromptId = `new-session:${firstBody.creation_id}`;
     state = latestDraftState!;
     await act(async () => { state.cancelCreation(); state.setCwd('/workspace/other'); });
     state = latestDraftState!;
-    expect(state.creationPending).toBe(true);
+    expect(state.creationPending).toBe(false);
     expect(state.busy).toBe(false);
-    expect(state.creationNotice).toContain('Waiting for the creation result');
+    expect(state.creationNotice).toContain('Stopped waiting');
     await act(async () => { await state.send('Must not re-create while waiting', []); });
     expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(client.getSessionCreation).toHaveBeenCalledWith(firstBody.creation_id);
     await act(async () => { creation.resolve({ id: 'session-accepted' }); await submission; });
-    state = await settleDraft((value) => value.selectionReady && !value.creationPending);
-    expect(state.createdSessionId).toBe('session-accepted');
+    state = await settleDraft((value) => value.createdSessionId === 'session-accepted' && !value.creationPending);
     expect(state.creationNotice).toContain('The session was created');
-    await act(async () => { await state.send(state.draft, []); });
-    expect(client.createSession).toHaveBeenCalledTimes(1);
     expect(navigate).not.toHaveBeenCalled();
-    await act(async () => { state.openCreatedSession(); });
-    expect(navigate).toHaveBeenCalledExactlyOnceWith('/s/session-accepted');
+    await act(async () => { await state.openCreatedSession(); });
+    expect(navigate).toHaveBeenCalledExactlyOnceWith('/s/session-accepted', expect.objectContaining({
+      state: expect.objectContaining({ initialPrompt: 'Preserve me', initialPromptId: firstPromptId }),
+    }), expect.any(Function));
     expect(latestDraftState?.draft).toBe('Preserve me');
   });
 
-  it.each(['prompt', 'skill'] as const)('cancels the first %s before handoff, keeps its draft and selections, and reuses the real created session on retry', async (kind) => {
+  it.each(['prompt', 'skill'] as const)('cancels the first %s before handoff, keeps its draft and selections, and reuses the frozen first handoff on retry', async (kind) => {
     client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
     client.listModels.mockResolvedValue({ items: [model('fixture/manual', 'high')] });
     const creation = deferred<{ id: string }>();
@@ -851,6 +859,8 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(client.createSession).toHaveBeenCalledTimes(1);
     state = latestDraftState!;
     await act(async () => { state.cancelCreation(); state.updateDraft(`${text}\nMore context`); });
+    expect(latestDraftState?.creationPending).toBe(false);
+    expect(latestDraftState?.busy).toBe(false);
     await act(async () => { creation.resolve({ id: 'session-created-once' }); await submission; });
     expect(navigate).not.toHaveBeenCalled();
     state = latestDraftState!;
@@ -862,8 +872,9 @@ describe('useNewSessionDraft agent profile scope', () => {
     await act(async () => { await state.send(state.draft, state.attachments); });
     expect(client.createSession).toHaveBeenCalledTimes(1);
     expect(navigate).toHaveBeenCalledWith('/s/session-created-once', expect.objectContaining({
-      state: expect.objectContaining({ initialPrompt: `${text}\nMore context`, initialAttachments: attachments,
-        model: 'fixture/manual', thinking: 'high' }),
+      state: expect.objectContaining(kind === 'prompt'
+        ? { initialPrompt: text, initialAttachments: attachments, model: 'fixture/manual', thinking: 'high' }
+        : { initialSkill: { name: 'review', args: '--fix', attachments, userInput: text }, model: 'fixture/manual', thinking: 'high' }),
     }), expect.any(Function));
   });
 
@@ -2198,9 +2209,10 @@ describe('new-session SSH creation handoff', () => {
     expect(client.klient.rest.ssh.addSessionHost).toHaveBeenCalledWith('session-new', 'example-host');
     expect(navigate).not.toHaveBeenCalled();
     await act(async () => { join.resolve({}); await sending; });
-    // The join is a session fact; the message itself carries no host.
+    // The join is a session fact, while the frozen handoff carries it only as
+    // session setup metadata; it must not become first-message content.
     const carried = navigate.mock.calls[0]![1]!.state as Record<string, unknown>;
-    expect(JSON.stringify(carried)).not.toContain('example-host');
+    expect(carried['sshHosts']).toEqual(hosts);
     expect(navigate).toHaveBeenCalledWith('/s/session-new', expect.objectContaining({ state: expect.objectContaining(kind === 'prompt'
       ? { initialAttachments: [], initialPrompt: 'Inspect' } : { initialSkill: { name: 'inspect', args: '--new\nKeep this line.', attachments: [], userInput: '/inspect --new\nKeep this line.' } }) }), expect.any(Function));
   });
@@ -2643,7 +2655,7 @@ describe('new-session idempotent creation_id intent and error recovery', () => {
     expect(localStorage.getItem('kiki.draft.new.intent.local')).toBeNull();
   });
 
-  it('preserves draft, shows unknown notice, and reuses identical creation_id on retry after timeout or 50006', async () => {
+  it('preserves the unknown intent and only GETs while the receipt is pending', async () => {
     client.createSession.mockRejectedValueOnce(new ApiError({
       code: ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN,
       msg: 'Creation outcome unknown',
@@ -2661,52 +2673,139 @@ describe('new-session idempotent creation_id intent and error recovery', () => {
     expect(state.busy).toBe(false);
     expect(state.creationPending).toBe(false);
     expect(state.draft).toBe('Recover after unknown outcome');
-    expect(state.creationNotice).toBe('Creation could not be confirmed. Your draft is kept. Check the session list before trying again to avoid creating a second session.');
+    expect(state.creationNotice).toBe('Creation is not confirmed yet. Check the result to continue with the same session. Starting another conversation keeps this attempt for later.');
     expect(client.createSession).toHaveBeenCalledTimes(1);
     const firstCreationId = client.createSession.mock.calls[0]![0].creation_id;
     expect(state.createdSessionId).toBe(`session_${firstCreationId}`);
 
-    // Retry sending with same body reuses identical creation_id
-    client.createSession.mockResolvedValueOnce({ id: `session_${firstCreationId}` });
-    await act(async () => { await state.send(state.draft, []); });
-    expect(client.createSession).toHaveBeenCalledTimes(2);
-    expect(client.createSession.mock.calls[1]![0].creation_id).toBe(firstCreationId);
-    expect(navigate).toHaveBeenCalledWith(`/s/session_${firstCreationId}`, expect.anything(), expect.any(Function));
+    client.getSessionCreation.mockResolvedValueOnce({
+      creation_id: firstCreationId,
+      session_id: `session_${firstCreationId}`,
+      status: 'pending',
+    });
+    await act(async () => { await state.retryCreation(); });
+    expect(client.getSessionCreation).toHaveBeenCalledExactlyOnceWith(firstCreationId);
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
   });
 
-  it('survives refresh after timeout or 50006 and provides openCreatedSession without duplicate create', async () => {
+  it('retries a receipt the server says is missing with the original id and body', async () => {
+    client.createSession.mockRejectedValueOnce(new ApiError({
+      code: ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN,
+      msg: 'Creation outcome unknown',
+      data: null,
+      details: { evidence: 'session_absent' },
+    }));
+
+    await renderDraft();
+    let state = await settleDraft((value) => value.selectionReady);
+    await act(async () => {
+      state.updateDraft('Retry after authoritative missing');
+      state.setPermissionMode('review');
+      state.setPlanMode(true);
+    });
+    state = latestDraftState!;
+    await act(async () => { await state.send(state.draft, []); });
+    state = latestDraftState!;
+    const firstBody = client.createSession.mock.calls[0]![0] as SessionCreate;
+    const creationId = firstBody.creation_id!;
+
+    await act(async () => {
+      state.updateDraft('Edited before recovery');
+      state.setPermissionMode('yolo');
+      state.setPlanMode(false);
+    });
+    state = latestDraftState!;
+    client.getSessionCreation.mockResolvedValueOnce({
+      creation_id: creationId,
+      session_id: `session_${creationId}`,
+      status: 'missing',
+    });
+    client.createSession.mockResolvedValueOnce({ id: `session_${creationId}` });
+    await act(async () => { await state.retryCreation(); });
+    expect(client.getSessionCreation).toHaveBeenCalledExactlyOnceWith(creationId);
+    expect(client.createSession).toHaveBeenCalledTimes(2);
+    expect(client.createSession.mock.calls[1]![0]).toEqual(firstBody);
+    expect(navigate).toHaveBeenCalledWith(`/s/session_${creationId}`, expect.anything(), expect.any(Function));
+  });
+
+  it.each(['open', 'retry'] as const)('survives refresh with frozen body, handoff, and prompt id, then %s after a completed GET', async (action) => {
     client.createSession.mockRejectedValueOnce(new ApiError({
       code: -2,
       msg: 'Request timed out',
       data: null,
     }));
 
+    const attachment = { kind: 'file' as const, path: '/workspace/input.txt', name: 'input.txt', isDir: false };
+    const presentation = { spans: [{ start: 0, end: 8, kind: 'selection' as const, quote: 'Preserve' }] };
     await renderDraft();
     let state = await settleDraft((value) => value.selectionReady);
-    await act(async () => { state.updateDraft('Preserve through reload'); });
-    state = latestDraftState!;
+    await act(async () => {
+      state.setCwd('/workspace/original');
+      state.updateDraft('Preserve through reload');
+      state.setAttachments([attachment]);
+      state.setPermissionMode('review');
+      state.setPlanMode(true);
+    });
+    state = await settleDraft((value) => value.cwd === '/workspace/original' && value.draft === 'Preserve through reload');
 
-    await act(async () => { await state.send(state.draft, []); });
+    await act(async () => { await state.send(state.draft, state.attachments, { presentation }); });
     state = latestDraftState!;
-    const creationId = client.createSession.mock.calls[0]![0].creation_id;
-    expect(state.creationNotice).toContain('Creation could not be confirmed');
+    const firstBody = client.createSession.mock.calls[0]![0] as SessionCreate;
+    const creationId = firstBody.creation_id!;
+    const initialPromptId = `new-session:${creationId}`;
+    expect(state.creationNotice).toContain('Creation is not confirmed yet');
+    const persisted = JSON.parse(localStorage.getItem('kiki.draft.new.intent.local') ?? 'null') as Record<string, unknown>;
+    expect(persisted['body']).toEqual(firstBody);
+    expect(persisted['handoff']).toMatchObject({
+      initialPrompt: 'Preserve through reload',
+      initialAttachments: [attachment],
+      initialPresentation: presentation,
+      initialPromptId,
+      permissionMode: 'review',
+      planMode: true,
+    });
 
-    // Simulate page refresh / remounting /new
     await unmountDraft();
     await renderDraft();
     state = await settleDraft((value) => value.selectionReady);
-
     expect(state.draft).toBe('Preserve through reload');
-    expect(state.creationNotice).toContain('Creation could not be confirmed');
+    expect(state.creationNotice).toContain('Creation is not confirmed yet');
     expect(state.createdSessionId).toBe(`session_${creationId}`);
 
-    // Opening created session navigates to the exact session without creating again
-    await act(async () => { state.openCreatedSession(); });
-    expect(navigate).toHaveBeenCalledWith(`/s/session_${creationId}`);
+    await act(async () => {
+      state.updateDraft('Edited after reload');
+      state.setCwd('/workspace/changed');
+      state.setPermissionMode('yolo');
+      state.setPlanMode(false);
+    });
+    state = latestDraftState!;
+    client.getSessionCreation.mockResolvedValueOnce({
+      creation_id: creationId,
+      session_id: `session_${creationId}`,
+      status: 'completed',
+      session: { id: `session_${creationId}` },
+    });
+    await act(async () => {
+      if (action === 'open') await state.openCreatedSession();
+      else await state.retryCreation();
+    });
+    expect(client.getSessionCreation).toHaveBeenCalledExactlyOnceWith(creationId);
     expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith(`/s/session_${creationId}`, expect.objectContaining({
+      state: expect.objectContaining({
+        initialPrompt: 'Preserve through reload',
+        initialAttachments: [attachment],
+        initialPresentation: presentation,
+        initialPromptId,
+        permissionMode: 'review',
+        planMode: true,
+      }),
+    }), expect.any(Function));
+    expect(state.draft).toBe('Edited after reload');
   });
 
-  it('blocks creating a duplicate session when user changes body under an unconfirmed intent', async () => {
+  it('checks an unconfirmed intent instead of creating a duplicate when the current body changes', async () => {
     client.createSession.mockRejectedValueOnce(new ApiError({
       code: ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN,
       msg: 'Outcome unknown',
@@ -2721,6 +2820,7 @@ describe('new-session idempotent creation_id intent and error recovery', () => {
 
     await act(async () => { await state.send(state.draft, []); });
     expect(client.createSession).toHaveBeenCalledTimes(1);
+    const creationId = client.createSession.mock.calls[0]![0].creation_id;
 
     // Modify draft and cwd to change the body
     await act(async () => {
@@ -2729,10 +2829,11 @@ describe('new-session idempotent creation_id intent and error recovery', () => {
     });
     state = latestDraftState!;
 
-    // Send attempt is blocked to prevent silently generating a new ID or duplicate session
+    // A changed body only checks the persisted intent; it cannot silently POST a new request.
     await act(async () => { await state.send(state.draft, []); });
+    expect(client.getSessionCreation).toHaveBeenCalledWith(creationId);
     expect(client.createSession).toHaveBeenCalledTimes(1);
-    expect(state.creationNotice).toContain('Creation could not be confirmed');
+    expect(state.creationNotice).toContain('Creation is not confirmed yet');
     expect(state.draft).toBe('Changed draft');
   });
 
@@ -2770,7 +2871,7 @@ describe('new-session creation recovery at the component boundary', () => {
     creationId: string; sessionId: string; bodyKey: string; status: string; evidence?: string; reason?: string;
   } | null;
 
-  it('remounts while POST is still held, restores the exact pending identity and body, and only replays on an explicit send', async () => {
+  it('remounts while POST is still held, restores the exact pending identity, and only replays after a missing receipt', async () => {
     const gate = deferred<{ id: string }>();
     client.createSession.mockReturnValueOnce(gate.promise);
     await renderDraft();
@@ -2790,14 +2891,23 @@ describe('new-session creation recovery at the component boundary', () => {
     await renderDraft();
     state = await ready();
     expect(state.createdSessionId).toBe(sessionId);
-    expect(state.creationNotice).toContain('Creation could not be confirmed');
+    expect(state.creationNotice).toContain('Creation is not confirmed yet');
     expect(state.creationPending).toBe(false);
     expect(state.draft).toBe('Keep the in-flight draft');
     expect(state.cwd).toBe('/workspace/original');
     expect(client.createSession).toHaveBeenCalledTimes(1);
     expect(navigate).not.toHaveBeenCalled();
-    client.createSession.mockResolvedValueOnce({ id: sessionId });
+
     await act(async () => { await state.send(state.draft, []); });
+    expect(client.getSessionCreation).toHaveBeenCalledExactlyOnceWith(firstBody.creation_id);
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+
+    client.getSessionCreation.mockResolvedValueOnce({
+      creation_id: firstBody.creation_id!, session_id: sessionId, status: 'missing',
+    });
+    client.createSession.mockResolvedValueOnce({ id: sessionId });
+    await act(async () => { await state.retryCreation(); });
     expect(client.createSession.mock.calls[1]![0]).toEqual(firstBody);
     expect(navigate).toHaveBeenCalledTimes(1);
     await act(async () => { gate.resolve({ id: sessionId }); await original; });
@@ -2813,7 +2923,7 @@ describe('new-session creation recovery at the component boundary', () => {
     'session_read_error',
     'receipt_read_error',
     'future_diagnostic_evidence',
-  ])('keeps timeout/50006 evidence %s unknown and replays exactly the same create body', async (evidence) => {
+  ])('keeps timeout/50006 evidence %s unknown and only retries after the receipt says missing', async (evidence) => {
     client.createSession.mockRejectedValueOnce(new ApiError({
       code: evidence === undefined ? -2 : ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN,
       msg: 'Unconfirmed creation', data: null, details: { evidence },
@@ -2825,13 +2935,28 @@ describe('new-session creation recovery at the component boundary', () => {
     await act(async () => { await state.send(state.draft, []); });
     state = latestDraftState!;
     const firstBody = client.createSession.mock.calls[0]![0] as SessionCreate;
-    expect(state.creationNotice).toContain('Creation could not be confirmed');
+    const creationId = firstBody.creation_id!;
+    expect(state.creationNotice).toContain('Creation is not confirmed yet');
     expect(storedIntent()?.status).toBe('unknown');
     expect(storedIntent()?.evidence).toBe(evidence);
     expect(navigate).not.toHaveBeenCalled();
-    client.createSession.mockResolvedValueOnce({ id: `session_${firstBody.creation_id}` });
-    await act(async () => { await state.send(state.draft, []); });
-    expect(client.createSession.mock.calls[1]![0]).toEqual(firstBody);
+
+    const missing = evidence === 'session_absent';
+    client.getSessionCreation.mockResolvedValueOnce({
+      creation_id: creationId,
+      session_id: `session_${creationId}`,
+      status: missing ? 'missing' : 'pending',
+    });
+    if (missing) client.createSession.mockResolvedValueOnce({ id: `session_${creationId}` });
+    await act(async () => { await state.retryCreation(); });
+    expect(client.getSessionCreation).toHaveBeenCalledExactlyOnceWith(creationId);
+    if (missing) {
+      expect(client.createSession).toHaveBeenCalledTimes(2);
+      expect(client.createSession.mock.calls[1]![0]).toEqual(firstBody);
+    } else {
+      expect(client.createSession).toHaveBeenCalledTimes(1);
+      expect(navigate).not.toHaveBeenCalled();
+    }
   });
 
   it.each(['unknown', 'body_mismatch', 'session_id_exists'])('does not turn a cancelled %s result or a later body change into acceptance', async (result) => {
@@ -2853,13 +2978,16 @@ describe('new-session creation recovery at the component boundary', () => {
       await sending;
     });
     state = latestDraftState!;
-    if (result === 'unknown') expect(state.creationNotice).toContain('Creation could not be confirmed');
+    if (result === 'unknown') expect(state.creationNotice).toContain('Creation is not confirmed yet');
     else expect(state.creationNotice).toBeNull();
     expect(state.creationNotice ?? '').not.toContain('The session was created');
     expect(storedIntent()).toMatchObject({ status: result === 'unknown' ? 'unknown' : 'conflict' });
     if (result !== 'unknown') expect(storedIntent()?.reason).toBe(result);
     await act(async () => { state.setCwd('/workspace/changed'); state.updateDraft('Keep the edited draft'); });
     state = await ready();
+    if (result !== 'unknown') {
+      client.getSessionCreation.mockRejectedValueOnce(new ApiError({ code: ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT, msg: 'Creation receipt unavailable', data: null }));
+    }
     await act(async () => { await state.send(state.draft, []); });
     state = latestDraftState!;
     expect(client.createSession).toHaveBeenCalledTimes(1);
@@ -2874,9 +3002,75 @@ describe('new-session creation recovery at the component boundary', () => {
     if (result !== 'unknown') {
       expect(state.error).toContain('40948');
       expect(state.createdSessionId).toBeUndefined();
-      await act(async () => { state.openCreatedSession(); });
+      await act(async () => { await state.openCreatedSession(); });
       expect(navigate).not.toHaveBeenCalled();
     }
+  });
+
+  it('does not let a late response from a cancelled attempt affect a new attempt', async () => {
+    const oldCreation = deferred<{ id: string }>();
+    const newCreation = deferred<{ id: string }>();
+    client.createSession.mockReturnValueOnce(oldCreation.promise).mockReturnValueOnce(newCreation.promise);
+    await renderDraft();
+    let state = await ready();
+    await act(async () => { state.updateDraft('Old attempt'); });
+    state = latestDraftState!;
+    let oldSubmission: Promise<unknown> | undefined;
+    await act(async () => { oldSubmission = state.send(state.draft, []); });
+    const oldBody = client.createSession.mock.calls[0]![0] as SessionCreate;
+    await act(async () => { latestDraftState!.cancelCreation(); });
+    expect(latestDraftState?.creationPending).toBe(false);
+    expect(latestDraftState?.busy).toBe(false);
+
+    await act(async () => { latestDraftState!.startNewCreation(); });
+    state = latestDraftState!;
+    expect(state.hasCreationIntent).toBe(false);
+    expect(state.createdSessionId).toBeUndefined();
+    await act(async () => { state.updateDraft('New attempt'); });
+    state = latestDraftState!;
+    let newSubmission: Promise<unknown> | undefined;
+    await act(async () => { newSubmission = state.send(state.draft, []); });
+    const newBody = client.createSession.mock.calls[1]![0] as SessionCreate;
+    expect(newBody.creation_id).not.toBe(oldBody.creation_id);
+    expect(latestDraftState?.creationPending).toBe(true);
+    expect(latestDraftState?.busy).toBe(true);
+
+    await act(async () => { oldCreation.resolve({ id: `session_${oldBody.creation_id}` }); await oldSubmission; });
+    state = latestDraftState!;
+    expect(state.createdSessionId).toBeUndefined();
+    expect(state.creationPending).toBe(true);
+    expect(state.busy).toBe(true);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(storedIntent()).toMatchObject({ creationId: newBody.creation_id, status: 'pending' });
+
+    await act(async () => { newCreation.resolve({ id: `session_${newBody.creation_id}` }); await newSubmission; });
+    expect(navigate).toHaveBeenCalledWith(`/s/session_${newBody.creation_id}`, expect.anything(), expect.any(Function));
+    expect(navigate).not.toHaveBeenCalledWith(`/s/session_${oldBody.creation_id}`, expect.anything(), expect.anything());
+  });
+
+  it('can recover the previous attempt after starting another conversation and refreshing', async () => {
+    const oldCreation = deferred<{ id: string }>();
+    client.createSession.mockReturnValueOnce(oldCreation.promise);
+    await renderDraft();
+    let state = await ready();
+    await act(async () => { state.updateDraft('Original frozen message'); });
+    let sending: Promise<void> | undefined;
+    await act(async () => { sending = latestDraftState!.send('Original frozen message', []); });
+    const oldBody = client.createSession.mock.calls[0]![0] as SessionCreate;
+    await act(async () => { latestDraftState!.cancelCreation(); latestDraftState!.startNewCreation(); });
+    await act(async () => { oldCreation.resolve({ id: `session_${oldBody.creation_id}` }); await sending; });
+    expect(navigate).not.toHaveBeenCalled();
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    await renderDraft();
+    state = await ready();
+    expect(state.hasPreviousCreation).toBe(true);
+    await act(async () => { state.restorePreviousCreation(); });
+    state = latestDraftState!;
+    expect(state.createdSessionId).toBe(`session_${oldBody.creation_id}`);
+    await act(async () => { await state.openCreatedSession(); });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith(`/s/session_${oldBody.creation_id}`, expect.objectContaining({ state: expect.objectContaining({ initialPrompt: 'Original frozen message', initialPromptId: `new-session:${oldBody.creation_id}` }) }), expect.any(Function));
   });
 
   it('clears a definite create failure instead of recovering it as an unknown pending request on reload', async () => {

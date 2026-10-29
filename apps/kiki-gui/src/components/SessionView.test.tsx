@@ -8,6 +8,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { PromptItem, Session } from '@kiki/protocol';
+import { submitFirstSessionMessage, readFirstSessionMessage, writeFirstSessionMessage, clearFirstSessionMessage, type FirstSessionMessageRecord } from '../lib/newSessionCreation';
+import { configureSpaceStorage, spaceStorage } from '../lib/spaceStorage';
 import { resolveComposerModelOverrides, type ComposerModelBindingChange, type PersistedComposerScalars } from '@kiki/session-core/composer';
 
 import {
@@ -2890,5 +2892,62 @@ describe('recovered-queue hold gate', () => {
     expect(sessionA.key).toBe('session-a');
     expect(sessionB.key).toBe('session-b');
     expect(sessionB.key).not.toBe(sessionA.key);
+  });
+});
+
+
+describe('new-session durable first message', () => {
+  const frozen = (): FirstSessionMessageRecord => ({
+    status: 'ready',
+    message: { initialPromptId: 'new-session:example-create', initialPrompt: 'Original message', planMode: true, personaGreetingReply: true },
+    submission: { promptId: 'new-session:example-create', text: 'Original message', content: [{ type: 'text', text: 'Original message' }], skills: [{ name: 'example-skill', args: 'original' }], planMode: true, personaGreetingReply: true, model: undefined, thinking: undefined },
+  });
+
+  it('saves the exact submission before sending and only queries after refresh or a lost response', async () => {
+    const record = frozen();
+    let saved = record;
+    let release!: (value: string) => void;
+    const submit = vi.fn(() => new Promise<string>((resolve) => { release = resolve; }));
+    const save = (value: FirstSessionMessageRecord) => { saved = structuredClone(value); };
+    const first = submitFirstSessionMessage({ record, save, read: vi.fn(), submit });
+    expect(saved).toEqual({ ...record, status: 'submitted' });
+    expect(submit).toHaveBeenCalledExactlyOnceWith(record.submission);
+    const read = vi.fn().mockResolvedValue('accepted');
+    await expect(submitFirstSessionMessage({ record: structuredClone(saved), save, read, submit })).resolves.toBe('accepted');
+    expect(read).toHaveBeenCalledExactlyOnceWith(record.message.initialPromptId);
+    expect(submit).toHaveBeenCalledTimes(1);
+    release('accepted');
+    await expect(first).resolves.toBe('accepted');
+  });
+
+  it('never auto-replays an unknown first message and only explicitly retries after an authoritative missing receipt', async () => {
+    const record = { ...frozen(), status: 'submitted' as const };
+    const submit = vi.fn().mockResolvedValue('accepted');
+    const save = vi.fn();
+    const read = vi.fn().mockRejectedValueOnce(new Error('read timed out')).mockResolvedValue(undefined);
+    await expect(submitFirstSessionMessage({ record, save, read, submit, retryMissing: true })).rejects.toThrow('read timed out');
+    await expect(submitFirstSessionMessage({ record, save, read, submit })).rejects.toThrow('no confirmed receipt');
+    expect(submit).not.toHaveBeenCalled();
+    await expect(submitFirstSessionMessage({ record, save, read, submit, retryMissing: true })).resolves.toBe('accepted');
+    expect(submit).toHaveBeenCalledExactlyOnceWith(record.submission);
+    expect(save).toHaveBeenCalledWith(record);
+  });
+
+  it('preserves held receipts without replaying and keeps late writes in their original home and connection', async () => {
+    const record = { ...frozen(), status: 'submitted' as const };
+    const submit = vi.fn();
+    const held = { admission: 'held' };
+    await expect(submitFirstSessionMessage({ record, save: vi.fn(), read: async () => held, submit })).resolves.toEqual(held);
+    expect(submit).not.toHaveBeenCalled();
+    configureSpaceStorage({ homeId: 'first-message-a' });
+    const captured = spaceStorage.capture();
+    configureSpaceStorage({ homeId: 'first-message-b' });
+    writeFirstSessionMessage('connection-a', 'session-shared', record, captured);
+    expect(readFirstSessionMessage('connection-a', 'session-shared')).toBeUndefined();
+    configureSpaceStorage({ homeId: 'first-message-a' });
+    expect(readFirstSessionMessage('connection-b', 'session-shared')).toBeUndefined();
+    expect(readFirstSessionMessage('connection-a', 'session-shared')).toEqual(record);
+    clearFirstSessionMessage('connection-a', 'session-shared');
+    configureSpaceStorage(null);
   });
 });

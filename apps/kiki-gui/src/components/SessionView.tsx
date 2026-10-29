@@ -137,6 +137,8 @@ import {
   type UserBlock,
 } from '@kiki/session-core/session';
 import { settingsCardRoute, shortCwd } from '@kiki/session-core/sessions';
+import { readFirstSessionMessage, writeFirstSessionMessage, clearFirstSessionMessage, submitFirstSessionMessage, type FirstSessionMessageRecord, type FirstSessionSubmission } from '../lib/newSessionCreation';
+import { spaceStorage } from '../lib/spaceStorage';
 import {
   composerDefaultsForProfile,
   modelSwitchPreferencesToWire,
@@ -1053,6 +1055,7 @@ export function initialBindingStillPending(input: {
 }
 
 interface SessionCreateHandoff {
+  readonly initialPromptId?: string;
   readonly initialPrompt?: string;
   readonly initialPresentation?: import('@kiki/transcript').TextPresentation;
   readonly initialAttachments?: readonly ComposerAttachment[];
@@ -1101,6 +1104,7 @@ export function parseSessionCreateHandoff(state: unknown): SessionCreateHandoff 
   if (typeof state !== 'object' || state === null) return {};
   const raw = state as SessionCreateHandoff;
   return {
+    initialPromptId: typeof raw.initialPromptId === 'string' ? raw.initialPromptId : undefined,
     initialPrompt: typeof raw.initialPrompt === 'string' ? raw.initialPrompt : undefined,
     initialPresentation: readTextPresentation(raw.initialPresentation),
     initialAttachments: Array.isArray(raw.initialAttachments) ? raw.initialAttachments : undefined,
@@ -1826,7 +1830,7 @@ export function SessionView({
   const host = useHost();
   const { id } = useParams<{ id: string }>();
   const sessionId = id!;
-  const { client, socket, meta, wsStatus } = useConnection();
+  const { client, socket, meta, wsStatus, scopeId } = useConnection();
   const { slots } = useConversationShell();
   const terminalAvailable = terminalCapabilityAvailable(meta.capabilities);
   const { t, tp, locale } = useI18n();
@@ -1847,7 +1851,8 @@ export function SessionView({
   sessionIdRef.current = sessionId;
   // Throttle for the ambiguous y/n hint (epoch ms of the last toast).
   const lastAmbiguityToastRef = useRef(0);
-  const createHandoff = parseSessionCreateHandoff(location.state);
+  const firstMessageRef = useRef<FirstSessionMessageRecord | undefined>(readFirstSessionMessage(scopeId, sessionId));
+  const createHandoff = parseSessionCreateHandoff(firstMessageRef.current?.message ?? location.state);
   // Deep-link locators: /s/{id}?turn=N (search hits, the /usage drilldown)
   // and ?block={blockId} go through the timeline's one locate entry, which
   // pages older history in, opens folds, and says so when the place is gone.
@@ -2010,6 +2015,7 @@ export function SessionView({
     text: string;
     content: MessageContent[];
     contentKey: string;
+    submissionKey: string;
     createdAt: string;
     slow: boolean;
     preserved: boolean;
@@ -3086,7 +3092,7 @@ export function SessionView({
   const actions = useMemo(() => {
     if (controller === null) return null;
     return {
-      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string; readonly now?: boolean; readonly personaGreetingReply?: boolean; readonly appendTiming?: DeferredAppendTiming; readonly presentation?: import('@kiki/transcript').TextPresentation }) => {
+      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string; readonly now?: boolean; readonly personaGreetingReply?: boolean; readonly appendTiming?: DeferredAppendTiming; readonly presentation?: import('@kiki/transcript').TextPresentation; readonly firstMessage?: FirstSessionMessageRecord }) => {
         // Selection carry-overs ride the prompt text as plain-text prefixes —
         // annotations first (blockquote + comment per segment), then the plain
         // quote as a Markdown blockquote — exactly what the transcript renders
@@ -3094,7 +3100,7 @@ export function SessionView({
         const carry = selectionCarryoverPresentation(annotations, quotes);
         const quotedText = `${carry.prefix}${text}`;
         const presentation = { spans: [...carry.presentation.spans, ...(options?.presentation?.spans ?? []).map((span) => ({ ...span, start: span.start + carry.prefix.length, end: span.end + carry.prefix.length }))] };
-        const content = buildPromptContent(quotedText, composerAttachments, presentation.spans.length === 0 ? undefined : presentation);
+        const content = options?.firstMessage?.submission?.content ?? buildPromptContent(quotedText, composerAttachments, presentation.spans.length === 0 ? undefined : presentation);
         if (content === null || pendingSendRef.current) return;
         const textPart = content.find((part) => part.type === 'text');
         // Local echo shows the mention-folded text; a media-only message
@@ -3264,11 +3270,35 @@ export function SessionView({
             });
         }
         const contentKey = JSON.stringify(content);
+        const firstMessage = options?.firstMessage;
+        const frozen = firstMessage?.message;
+        const submissionBody = {
+          text: echoText, content,
+          profile: firstMessage === undefined ? profileSwitch.profile : undefined,
+          execution: firstMessage === undefined ? profileSwitch.execution : undefined,
+          model: firstMessage === undefined ? profileSwitch.model : frozen?.model,
+          thinking: firstMessage === undefined ? profileSwitch.thinking : frozen?.thinking,
+          modelSwitchMode: firstMessage === undefined && modelControlTouched && !rebindsAgent ? modelSwitchMode : undefined,
+          permissionMode: firstMessage === undefined ? profileSwitch.permissionMode : frozen?.permissionMode,
+          planMode: firstMessage === undefined ? planMode : frozen?.planMode,
+          planGate: firstMessage === undefined ? planGate : undefined,
+          goalObjective: firstMessage === undefined ? promptGoalObjective(options) : frozen?.goalObjective,
+          appendTiming: frozen?.appendTiming ?? options?.appendTiming ?? liveSettings.defaultAppendTiming,
+          personaGreetingReply: options?.personaGreetingReply,
+          skills: frozen?.initialSkill === undefined ? undefined : [{ name: frozen.initialSkill.name, args: frozen.initialSkill.args === '' ? undefined : frozen.initialSkill.args }],
+        };
+        const submissionKey = JSON.stringify(submissionBody);
         const retryablePending = pendingSubmissionRef.current;
         const retryableStatus = retryablePending?.status === 'offline';
-        const submissionId = retryableStatus && retryablePending.text === echoText && retryablePending.contentKey === contentKey
+        const submissionId = frozen?.initialPromptId ?? (retryableStatus && retryablePending.submissionKey === submissionKey
           ? retryablePending.id
-          : crypto.randomUUID();
+          : crypto.randomUUID());
+        const retainedFirst = firstMessageRef.current;
+        if (firstMessage === undefined && retainedFirst?.status === 'submitted' && retainedFirst.submission?.promptId === submissionId) {
+          pendingSendRef.current = false;
+          pendingRetryRef.current?.run();
+          return;
+        }
         // The captured payload, notes and identity belong to X, not whatever
         // the user composes after a failure toast appears.
         const sentAnnotations = annotations;
@@ -3295,21 +3325,20 @@ export function SessionView({
         // Returned to the composer: it holds its send latch until this round
         // settles, which is what blocks a rapid duplicate send (and releases
         // for a retry when the submit fails).
-        const submission = {
-          promptId: submissionId,
-          text: echoText,
-          content,
-          profile: profileSwitch.profile,
-          execution: profileSwitch.execution,
-          model: profileSwitch.model,
-          thinking: profileSwitch.thinking,
-          modelSwitchMode: modelControlTouched && !rebindsAgent ? modelSwitchMode : undefined,
-          permissionMode: profileSwitch.permissionMode,
-          planMode,
-          planGate,
-          goalObjective: promptGoalObjective(options),
-          appendTiming: options?.appendTiming ?? liveSettings.defaultAppendTiming,
-          personaGreetingReply: options?.personaGreetingReply,
+        const submission: FirstSessionSubmission = firstMessage?.submission ?? { ...submissionBody, promptId: submissionId };
+        const firstStorage = spaceStorage.capture();
+        let firstRecord: FirstSessionMessageRecord | undefined = firstMessage === undefined ? undefined : { ...firstMessage, submission };
+        const saveFirstRecord = (record: FirstSessionMessageRecord) => {
+          firstRecord = record;
+          firstMessageRef.current = record;
+          writeFirstSessionMessage(scopeId, sessionId, record, firstStorage);
+        };
+        if (firstRecord !== undefined) saveFirstRecord(firstRecord);
+        const clearFirstRecord = () => {
+          if (firstRecord === undefined) return;
+          clearFirstSessionMessage(scopeId, sessionId, firstStorage);
+          if (firstMessageRef.current?.message.initialPromptId === submissionId) firstMessageRef.current = undefined;
+          firstRecord = undefined;
         };
         let accepted = false;
         const submitCaptured = (first = false): Promise<void> | undefined => {
@@ -3345,32 +3374,48 @@ export function SessionView({
             text: echoText,
             content,
             contentKey,
+            submissionKey,
             createdAt: new Date().toISOString(),
             slow: false,
             preserved: currentPending?.id === submissionId ? currentPending.preserved : false,
             retryable: false,
             status: 'sending',
           });
+          const send = (captured: FirstSessionSubmission) => controller.sendPrompt({
+            ...captured,
+            onPreservation: (persisted: boolean) => {
+              setPendingSubmission((current) => current?.id === submissionId ? { ...current, preserved: persisted } : current);
+              if (persisted) releaseComposition(first && firstMessage === undefined);
+              else pushToast({ tone: 'info', text: t('sv.submissionRecovery.degraded') });
+            },
+            onAcknowledged: () => releaseComposition(),
+          });
           const request = resume
             ? controller.resumeDurableIngress(submissionId, {
-              admission: 'durable', content: submission.content, prompt_id: submission.promptId,
+              admission: 'durable', content: submission.content!, prompt_id: submission.promptId,
               profile: submission.profile, execution: submission.execution, model: submission.model,
               thinking: submission.thinking, permission_mode: submission.permissionMode,
               plan_mode: submission.planMode, plan_gate: submission.planGate,
               goal_objective: submission.goalObjective, append_timing: submission.appendTiming,
-              persona_greeting_reply: submission.personaGreetingReply,
+              persona_greeting_reply: submission.personaGreetingReply, skills: submission.skills,
             })
-            : controller.sendPrompt({
-              ...submission,
-              onPreservation: (persisted) => {
-                setPendingSubmission((current) => current?.id === submissionId ? { ...current, preserved: persisted } : current);
-                if (persisted) releaseComposition(first);
-                else pushToast({ tone: 'info', text: t('sv.submissionRecovery.degraded') });
+            : firstRecord === undefined ? send(submission) : submitFirstSessionMessage({
+              record: firstRecord, save: saveFirstRecord, submit: send, retryMissing: !first,
+              read: async (promptId) => {
+                if (client.sessions.getDurableIngress === undefined) throw new Error('Durable prompt recovery is unavailable on this transport');
+                try {
+                  const receipt = await client.sessions.getDurableIngress(sessionId, promptId);
+                  void controller.refreshDurableIngress();
+                  return receipt;
+                } catch (cause) {
+                  if (cause instanceof ApiError && cause.code === API_CODES.PROMPT_NOT_FOUND) return undefined;
+                  throw cause;
+                }
               },
-              onAcknowledged: () => releaseComposition(),
             });
           return request
           .then((result) => {
+            clearFirstRecord();
             const admissionRejected = result.admission === 'failed' || result.admission === 'cancelled';
             if (admissionRejected) {
               restoreCapturedSubmission();
@@ -4378,65 +4423,39 @@ boundExecution,
   }, []);
 
 
-  // Submit the prompt or skill that was drafted on /new, now that the live
-  // controller is subscribed and will receive the stream.
   useEffect(() => {
-    if (
-      controller === null ||
-      actions === null ||
-      !sessionSendReady
-    ) {
-      return;
-    }
-    const submission = resolveSessionCreateSubmission({
+    if (controller === null || actions === null) return;
+    const handoff = {
       ...initialOptionsRef.current,
       initialPrompt: initialPromptRef.current,
       initialSkill: initialSkillRef.current,
-    });
+    };
+    const submission = resolveSessionCreateSubmission(handoff);
     if (submission === undefined) return;
+    const record = firstMessageRef.current ?? {
+      message: { ...handoff, initialPromptId: handoff.initialPromptId ?? `new-session:${sessionId}` },
+      status: 'ready' as const,
+    };
+    firstMessageRef.current = record;
+    writeFirstSessionMessage(scopeId, sessionId, record);
     initialSkillRef.current = undefined;
     initialPromptRef.current = undefined;
     initialOptionsRef.current = {};
-    // Fire-and-forget: strip the one-shot nav state from history so a refresh
-    // doesn't resend the drafted prompt or re-activate the skill.
     void navigate(location.pathname, { replace: true });
-    if (submission.kind === 'skill') {
-      const recovery = submission.userInput ?? `/${submission.name}${submission.args === '' ? '' : ` ${submission.args}`}`;
-      updateDraft(recovery);
+    const text = submission.kind === 'skill'
+      ? submission.userInput ?? `/${submission.name}${submission.args === '' ? '' : ` ${submission.args}`}`
+      : submission.text;
+    if (draftRef.current === '') {
+      updateDraft(stripThreadRefContext(text));
       updateAttachments(submission.attachments);
-      void actions.activateSkill(
-        submission.name,
-        submission.args,
-        submission.attachments,
-        submission.goalObjective,
-        recovery,
-      );
-      return;
     }
-    // Seed the session draft first: if this send fails, the text stays
-    // recoverable in the composer (and in localStorage across reloads).
-    updateDraft(stripThreadRefContext(submission.text));
-    updateAttachments(submission.attachments);
-    void actions.send(
-      submission.text,
-      submission.attachments,
-      submission.goalObjective === undefined && submission.personaGreetingReply !== true && submission.presentation === undefined
-        ? undefined
-        : {
-            goalObjective: submission.goalObjective,
-            personaGreetingReply: submission.personaGreetingReply,
-            presentation: submission.presentation,
-          },
-    );
-  }, [
-    controller,
-    actions,
-    sessionSendReady,
-    location.pathname,
-    navigate,
-    updateDraft,
-    updateAttachments,
-  ]);
+    void actions.send(text, submission.attachments, {
+      firstMessage: record,
+      goalObjective: submission.goalObjective,
+      personaGreetingReply: record.message.personaGreetingReply,
+      presentation: submission.kind === 'prompt' ? submission.presentation : undefined,
+    });
+  }, [controller, actions, scopeId, sessionId, location.pathname, navigate, updateDraft, updateAttachments]);
 
   // Away notifications from the live stream: the open session reports a new
   // approval / question or a turn that failed without waiting for the
