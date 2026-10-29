@@ -1,3 +1,4 @@
+import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
@@ -39,7 +40,7 @@ export class AgentContextProjectorService implements IAgentContextProjectorServi
     @ILogService private readonly log: ILogService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentStateService private readonly states: IAgentStateService,
-    @IAgentMemorySnapshot private readonly memory: IAgentMemorySnapshot,
+    @ref(IAgentMemorySnapshot) private readonly memory: LiveRef<IAgentMemorySnapshot>,
   ) {
     this.states.contributeState(contextProjectorLastRepairSignatureKey);
   }
@@ -75,7 +76,7 @@ export class AgentContextProjectorService implements IAgentContextProjectorServi
     fn: (history: readonly ContextMessage[], onAnomaly?: OnAnomaly) => Message[],
   ): readonly Message[] {
     const anomalies: ProjectionAnomaly[] = [];
-    const result = fn(projectCurrentMemory(messages, this.memory.projectionView), (anomaly) => anomalies.push(anomaly));
+    const result = fn(projectCurrentMemory(messages, this.memory.current?.projectionView), (anomaly) => anomalies.push(anomaly));
     this.reportProjectionRepairs(anomalies);
     return result;
   }

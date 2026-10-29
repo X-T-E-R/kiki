@@ -25,6 +25,7 @@ import {
   type ProjectionPolicy,
 } from '#/agent/contextProjector/contextProjector';
 import { AgentContextProjectorService } from '#/agent/contextProjector/contextProjectorService';
+import { AgentMemorySnapshot, IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { IAgentCognitionAnchorService } from '#/agent/cognition/cognitionAnchor';
 import {
   AgentLLMRequesterService,
@@ -554,6 +555,25 @@ function createRequestIdentityRegistry(): RequestIdentityRegistry {
   });
   return ix.createInstance(RequestIdentityRegistry);
 }
+
+describe('Agent context projection without a Memory consumer', () => {
+  it.each([false, true])('preserves the original projector dependencies when Memory is registered=%s', (registered) => {
+    const ix = disposables.add(new TestInstantiationService(undefined, true));
+    ix.stub(ILogService, { warn: () => {} });
+    ix.stub(ITelemetryService, recordingTelemetry([]));
+    ix.set(IAgentStateService, new AgentStateService());
+    if (registered) ix.set(IAgentMemorySnapshot, new SyncDescriptor(AgentMemorySnapshot));
+    ix.set(IAgentContextProjectorService, new SyncDescriptor(AgentContextProjectorService));
+    const projector = ix.get(IAgentContextProjectorService);
+    const canonical = structuredClone(history);
+    const strip = projector.captureMediaStripSnapshot(history);
+    for (const policy of [{}, { structure: 'strict' }, { media: 'degraded' }, { media: { strip } }] satisfies ProjectionPolicy[]) {
+      expect(projector.project(history, policy)).toMatchObject(history);
+    }
+    expect(history).toEqual(canonical);
+    if (registered) expect(ix.cascade.stateOf(IAgentMemorySnapshot)).toBe('Pending');
+  });
+});
 
 describe('AgentLLMRequesterService prompt snapshot invalidation', () => {
   it('keeps a turn prompt stable until an explicit safe-boundary invalidation', async () => {

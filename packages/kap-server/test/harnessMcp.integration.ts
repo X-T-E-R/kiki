@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { IHarnessMcpService, IAgentProfileService, IAgentExecutorRegistry, IAgentProfileRegistry, IAgentLoopService, IAgentPromptService, normalizeAgentProfile,
+import { IHarnessMcpService, IAgentProfileService, IAgentExecutorRegistry, IAgentProfileRegistry, IAgentLoopService, IAgentPromptService, IWireService, normalizeAgentProfile,
   ensureMainAgent, resumeSessionById, type IAgentScopeHandle } from '@kiki/agent-core-v2';
 import { acquireHarnessMcp } from '@kiki/agent-core-v2/agent/execution/harnessMcpLease';
 import { executionBindingSchema, type ExecutionSelection } from '@kiki/protocol';
@@ -179,6 +179,7 @@ describe('harness context authority', () => {
         expect(main.accessor.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'hook_result' && message.origin.event === 'kiki:grok:Stop')).toHaveLength(0);
       } finally { grokLease.dispose(); }
       await expect(grokLease.contextHook!('Stop')).rejects.toThrow('closed');
+      await main.accessor.get(IWireService).flush();
       const { TRANSCRIPT_COVERAGE_VERSION } = await import('@kiki/transcript');
       const projected = await fetch(`${endpoint}/api/sessions/${sessionId}/transcript?agent_id=main&transcript_coverage_version=${TRANSCRIPT_COVERAGE_VERSION}`, { headers: authHeaders(server) });
       const projectedBody = await projected.json();

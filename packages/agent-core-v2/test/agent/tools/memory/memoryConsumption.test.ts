@@ -17,7 +17,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
-import { IMemoryStore } from '#/app/memory/memoryStore';
+import { IMemoryStore, MemoryStore } from '#/app/memory/memoryStore';
 import { ISqliteMemoryStore, SqliteMemoryStore } from '#/app/memory/sqliteMemoryStore';
 import { IMemoryPersistence } from '#/persistence/interface/memoryPersistence';
 import { SqliteMemoryPersistence } from '#/persistence/backends/sqliteMemory/sqliteMemoryPersistence';
@@ -127,7 +127,7 @@ function memoryAgent(storage?: IFileSystemStorageService, agentId = 'main', stor
     sessionService(ISessionInstructionsProvider, { _serviceBrand: undefined, ready: Promise.resolve(), agentsMd: '', agentsMdWarning: undefined, agentsMdPaths: [], onDidChange: Event.None as Event<void> }),
     agentService(IAgentScopeContext, { _serviceBrand: undefined, agentId, scope: (key) => `sessions/test-workspace/test-session/agents/${agentId}${key ? `/${key}` : ''}` }),
     appService(IFileSystemStorageService, storage ?? new DirectoryMemoryStorage()),
-    ...(store === undefined ? [] : [appService(IMemoryStore, store)]),
+    appService(IMemoryStore, store ?? new SyncDescriptor(MemoryStore)),
     ...(selector === undefined ? [] : [appService(IMemorySelector, selector)]),
     { autoConfigure: storage === undefined, initialConfig: { [MEMORY_SECTION]: MemoryConfigSchema.parse({}), [LOOP_CONTROL_SECTION]: LoopControlSchema.parse({}) } });
   installReadableCapabilityOrigins(ctx);
@@ -157,7 +157,7 @@ function requestText(ctx: TestAgentContext): string {
   return request.history.flatMap((message) => message.content.flatMap((part) => part.type === 'text' ? [part.text] : [])).join('\n');
 }
 
-describe('actual default memory contract consumption', () => {
+describe('actual default prompt and legacy Memory contract consumption', () => {
   it('sends the current default system, schema and merged E1/M1 through an actual mock LLM request', async () => {
     const ctx = await defaultAgent();
     await prompt(ctx, '以后回答都用中文');
@@ -506,6 +506,41 @@ describe('canonical Memory actual request working sets', () => {
     await prompt(ctx, 'Recheck the observed Memory reference before continuing');
     expect(requestText(ctx)).toContain(changed.entry.body);
     expect(requestText(ctx)).not.toContain(saved.entry.body);
+  });
+
+  it.each(['fresh', 'compact'] as const)('preserves exact governed Memory references through a %s model switch and rereads the current validity', async (mode) => {
+    const store = await canonicalMemory();
+    const scope = { kind: 'workspace', workspaceId: sessionContext.workspaceId } as const;
+    const saved = await store.put({ action: 'create', scope, type: 'project', title: 'Conditional capacity', body: 'Use exactly 17 workers only for the named batch.', validity: { until: '2020-01-01T00:00:00Z', check: 'Read the earlier capacity schedule.' }, reason: 'Supported endpoint', source: { writer: 'agent', session: sessionContext.sessionId } });
+    const ctx = memoryAgent(undefined, 'main', store);
+    ctx.kimiConfig = { ...ctx.kimiConfig, [MEMORY_SECTION]: MemoryConfigSchema.parse({ budget: 0 }) };
+    ctx.get(IDynamicPromptInjection);
+    await ctx.get(IAgentProfileService).applyProfile(ctx.get(IBuiltinAgentProfileLoader).getDefault());
+    ctx.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
+    ctx.mockNextResponse({ type: 'function', id: 'switch-read', name: 'MemoryRead', arguments: JSON.stringify({ id: saved.entry.id, scope: 'workspace' }) });
+    await prompt(ctx, 'Retrieve the conditional capacity');
+    expect(requestText(ctx)).toContain(saved.entry.body);
+    const old = ctx.kimiConfig.models!['mock-model']!;
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, 'next-model': { ...old, model: 'next-model' } } };
+    await ctx.get(ISessionMetadata).registerAgent('main', { type: 'main', model: 'mock-model' });
+    if (mode === 'compact') ctx.mockNextResponse({ type: 'text', text: 'Recheck governed Memory before continuing.' });
+    expect(await ctx.get(IAgentModelSwitchService).execute({ operationId: `canonical-memory-${mode}`, model: 'next-model', mode })).toMatchObject({ state: 'completed' });
+    const text = ctx.get(IAgentContextMemoryService).get().flatMap((message) => message.content.flatMap((part) => part.type === 'text' ? [part.text] : [])).join('\n');
+    const reference = JSON.parse(text.split('\n').find((line) => line.startsWith('- {') && line.includes('"observed_revision"'))!.slice(2)) as { scope: MemoryScope; id: string; observed_revision: string };
+    expect(reference).toEqual({ scope, id: saved.entry.id, observed_revision: saved.entry.revision });
+    expect(text).toContain('Historical observations only');
+    expect(text).not.toContain(saved.entry.title);
+    expect(text).not.toContain(saved.entry.body);
+    expect(text).not.toContain(saved.entry.validity!.check);
+    const changed = await store.put({ action: 'update', scope, id: saved.entry.id, expectedRevision: saved.entry.revision, type: saved.entry.type, title: saved.entry.title, body: 'Use exactly 9 workers only for the named batch.', validity: { until: '2020-01-01T00:00:00Z', check: 'Read the current capacity schedule.' }, reason: 'Human correction', source: { writer: 'user' } });
+    ctx.mockNextResponse({ type: 'function', id: 'switch-reread', name: 'MemoryRead', arguments: JSON.stringify({ id: reference.id, scope: reference.scope.kind }) });
+    await prompt(ctx, 'Recheck the observed Memory reference');
+    expect(requestText(ctx)).toContain(changed.entry.body);
+    expect(requestText(ctx)).toContain(changed.entry.validity!.check);
+    expect(requestText(ctx)).toContain('"status":"active"');
+    expect(requestText(ctx)).toContain('"applicability":"expired"');
+    expect(requestText(ctx)).not.toContain(saved.entry.body);
+    expect(requestText(ctx)).not.toContain(saved.entry.validity!.check);
   });
 
   it('validates inherited explicit tool payloads in an actual lifecycle fork before its first request', async () => {
