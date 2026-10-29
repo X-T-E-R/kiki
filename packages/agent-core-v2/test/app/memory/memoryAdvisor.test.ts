@@ -116,7 +116,7 @@ function fixture(
           mode: options.mode ?? 'rank',
           selector: { protocol: options.protocol ?? 'chat_json', model: 'chosen' },
           source: options.source,
-          first_step_wait_ms: options.wait ?? 0,
+          first_step_wait_ms: 'wait' in options ? options.wait : 0,
           timeout_ms: options.timeout ?? 1000,
           max_calls_per_turn: options.maxCalls ?? 3,
         },
@@ -641,6 +641,48 @@ describe('Memory Advisor lifecycle and snapshot publication', () => {
     await flush();
     expect(f.published()).not.toContain('use=');
   });
+  it.each([
+    { protocol: 'system_one' as const, wait: undefined, expected: 3_000 },
+    { protocol: 'pair_score' as const, wait: undefined, expected: 3_000 },
+    { protocol: 'chat_json' as const, wait: undefined, expected: 1_500 },
+    { protocol: 'system_one' as const, wait: 1_500, expected: 1_500 },
+  ])('waits $expected ms on the first step for $protocol with first_step_wait_ms=$wait', async ({ protocol, wait, expected }) => {
+    vi.useFakeTimers();
+    const gate = deferred<Awaited<ReturnType<IMemorySelector['call']>>>();
+    const f = fixture({ protocol, wait, timeout: 10_000, call: async () => gate.promise, selector: {
+      _serviceBrand: undefined,
+      describe: (config) => advisorStatus('ready', { destination, protocol: config?.selector?.protocol, applicability: 'full_units' }),
+      call: async () => gate.promise,
+      probe: async () => { throw new Error('unused'); },
+    } });
+    expect(f.settings().advisor?.first_step_wait_ms).toBe(wait);
+    let done = false;
+    const step = f.step().then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(expected - 1);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await step;
+    expect(done).toBe(true);
+    gate.resolve([]);
+  });
+  it('lets the default first-step wait follow a source switch without saving it', async () => {
+    vi.useFakeTimers();
+    const gate = deferred<Awaited<ReturnType<IMemorySelector['call']>>>();
+    const f = fixture({ protocol: 'system_one', wait: undefined, timeout: 10_000, call: async () => gate.promise, selector: {
+      _serviceBrand: undefined,
+      describe: (config) => advisorStatus('ready', { destination, protocol: config?.selector?.protocol, applicability: 'full_units' }),
+      call: async () => gate.promise,
+      probe: async () => { throw new Error('unused'); },
+    } });
+    f.configure({ advisor: { ...f.settings().advisor, selector: { protocol: 'chat_json', model: 'chosen' } } });
+    expect(f.settings().advisor?.first_step_wait_ms).toBeUndefined();
+    let done = false;
+    const step = f.step().then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(1_500);
+    await step;
+    expect(done).toBe(true);
+    gate.resolve([]);
+  });
   it('cancels an in-flight request when permissions are revoked', async () => {
     const gate = deferred<Awaited<ReturnType<IMemorySelector['call']>>>();
     const f = fixture({ call: async () => gate.promise });
@@ -905,6 +947,15 @@ describe('Advisor governed protocols', () => {
       expect.objectContaining({ inputOther: 17, output: 4 }),
       true,
     );
+  });
+  it('reports the effective first-step wait and the default of the resolved source protocol', () => {
+    const decision = selector('system_one');
+    const config = input('system_one').config;
+    expect(config.first_step_wait_ms).toBeUndefined();
+    expect(decision.service.describe(config, workspace)).toMatchObject({ first_step_wait_ms: 3_000, first_step_wait_default_ms: 3_000 });
+    expect(decision.service.describe({ ...config, first_step_wait_ms: 1_500 }, workspace)).toMatchObject({ first_step_wait_ms: 1_500, first_step_wait_default_ms: 3_000 });
+    const chat = selector().service.describe(input('chat_json').config, workspace);
+    expect(chat).toMatchObject({ protocol: 'chat_json', first_step_wait_ms: 1_500, first_step_wait_default_ms: 1_500 });
   });
   it('describes System One choices so discovery reads defaults and exceptions the answer depends on', async () => {
     const f = selector();

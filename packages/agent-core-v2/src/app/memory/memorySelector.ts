@@ -1,9 +1,11 @@
 import { z } from 'zod';
-import type {
-  MemoryAdvisorConfig,
-  MemoryAdvisorFailure,
-  MemoryAdvisorProbeResult,
-  MemoryAdvisorStatus,
+import {
+  MEMORY_ADVISOR_FIRST_STEP_WAIT_DEFAULTS,
+  memoryAdvisorFirstStepWaitMs,
+  type MemoryAdvisorConfig,
+  type MemoryAdvisorFailure,
+  type MemoryAdvisorProbeResult,
+  type MemoryAdvisorStatus,
 } from '@kiki/protocol';
 import { createDecorator } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -209,6 +211,8 @@ export class MemorySelector extends Service implements IMemorySelector {
       return advisorStatus(config.mode === 'off' ? 'off' : reason !== undefined ? 'failed' : 'ready', {
         reason, source_status: status, destination: status.destination, provider: resolved.providerName, origin: resolved.endpoint.origin,
         protocol: resolved.protocol, model: resolved.alias ?? resolved.name, consent_required: false,
+        first_step_wait_ms: memoryAdvisorFirstStepWaitMs(config, resolved.protocol),
+        first_step_wait_default_ms: MEMORY_ADVISOR_FIRST_STEP_WAIT_DEFAULTS[resolved.protocol],
         applicability: resolved.protocol === 'pair_score' ? 'rank_only' : 'full_units',
       });
     } catch (error) {

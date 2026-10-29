@@ -1026,6 +1026,8 @@ categories = ["policy_compliance", "no_secret_egress", "no_irreversible_damage",
 
 `allow_threshold` 和 `deny_threshold` 的范围都是 0.5–1；置信度低于对应阈值时会询问你。`categories` 从上面五个名称中选择 System One 的是非检查项。`timeout_ms` 接受 100–30,000 毫秒；未覆盖时沿用 `backend` 的默认超时：`model`（默认）为 8 秒，`jev` 为 4 秒。
 
+记忆顾问另有 `[memory.advisor] first_step_wait_ms`（0–5000 毫秒）。未设置时，首步对 `system_one` 或 `pair_score` 来源最多等待 3000 毫秒，对对话模型最多等待 1500 毫秒，并跟随当前来源变化。显式设置的值始终优先。详见[记忆顾问](../guides/memory.md#记忆顾问)。
+
 未设置 `source` 的旧配置继续使用 `backend = "model"` 加模型别名，或 `backend = "jev"` 加可选远端模型名（默认 `jev-latest`）。旧 Jev 依次读取 `credentials.toml` 中的 `[permission.reviewer].api_key`、服务器的 `TYPESAFE_API_KEY`；两者都没有时，改为询问你。选择旧 `backend = "jev"` 即允许向 TypeSafe 发送上述审查内容，旧的 `jev_consent` 键会被忽略。新 `source` 优先；API 的 `source: null` 同时清除来源和旧模型选择，并将 `backend` 重置为 `model`，使 Reviewer 回到未配置状态。
 
 保存过旧 Reviewer 密钥时，**移到连接**会在服务器端转存，浏览器不会为这项操作读取密钥。部分完成时保留并发修改：先刷新、核对设置再重试；连接持有不同密钥时，换一个新连接名。之后通过现有连接编辑器显示、复制、编辑或清除凭证。持有 Kiki bearer 令牌的人可通过已鉴权的密钥 API 显示密钥。

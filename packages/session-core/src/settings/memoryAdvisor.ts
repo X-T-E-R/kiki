@@ -10,7 +10,9 @@
  */
 
 import {
+  MEMORY_ADVISOR_FIRST_STEP_WAIT_DEFAULTS,
   memoryAdvisorConfigSchema,
+  memoryAdvisorFirstStepWaitMs,
   type MemoryAdvisorConfig,
   type MemoryAdvisorFailure,
   type MemoryAdvisorPatch,
@@ -56,13 +58,30 @@ function rangeOf(field: MemoryAdvisorNumberField): MemoryAdvisorRange {
   return {
     min: node.minValue ?? 0,
     max: node.maxValue ?? Number.MAX_SAFE_INTEGER,
-    fallback: MEMORY_ADVISOR_DEFAULTS[field],
+    fallback: MEMORY_ADVISOR_DEFAULTS[field] ?? MEMORY_ADVISOR_FIRST_STEP_WAIT_DEFAULTS.chat_json,
   };
 }
 
 export const MEMORY_ADVISOR_RANGES: Readonly<Record<MemoryAdvisorNumberField, MemoryAdvisorRange>> = Object.fromEntries(
   MEMORY_ADVISOR_NUMBER_FIELDS.map((field) => [field, rangeOf(field)]),
 ) as Record<MemoryAdvisorNumberField, MemoryAdvisorRange>;
+
+/**
+ * The value a tuning field shows and whether it is the user's own. The
+ * first-step wait has no single default: an unset value follows the resolved
+ * source protocol, which the server reports on the status.
+ */
+export function memoryAdvisorNumberValue(
+  field: MemoryAdvisorNumberField,
+  config: MemoryAdvisorConfig | undefined,
+  status: MemoryAdvisorStatus | undefined,
+): { readonly value: number; readonly fallback: number; readonly explicit: boolean } {
+  const fallback = field === 'first_step_wait_ms'
+    ? status?.first_step_wait_default_ms ?? memoryAdvisorFirstStepWaitMs(undefined, status?.source_status?.protocol ?? status?.protocol ?? config?.selector?.protocol)
+    : MEMORY_ADVISOR_RANGES[field].fallback;
+  const saved = config?.[field];
+  return { value: saved ?? fallback, fallback, explicit: saved !== undefined };
+}
 
 /** A whole number inside the schema range, or `null` when the text is not one. */
 export function parseMemoryAdvisorNumber(field: MemoryAdvisorNumberField, text: string): number | null {

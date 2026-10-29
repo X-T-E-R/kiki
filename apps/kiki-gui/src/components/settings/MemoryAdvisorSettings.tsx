@@ -9,6 +9,7 @@ import {
   MEMORY_ADVISOR_NUMBER_FIELDS,
   MEMORY_ADVISOR_RANGES,
   memoryAdvisorModePatch,
+  memoryAdvisorNumberValue,
   memoryAdvisorReasonKey,
   parseMemoryAdvisorNumber,
   type MemoryAdvisorNumberField,
@@ -127,13 +128,25 @@ export function MemoryAdvisorSettingsCard() {
             <div className="grid gap-x-6 gap-y-1 pt-1 sm:grid-cols-2" data-memory-advisor-numbers>
               {MEMORY_ADVISOR_NUMBER_FIELDS.map((field) => {
                 const range = MEMORY_ADVISOR_RANGES[field];
+                const shown = memoryAdvisorNumberValue(field, config, status);
+                const followsSource = field === 'first_step_wait_ms';
                 return (
                   <SettingField key={field} label={t(`memory.advisor.field.${field}` as I18nKey)} htmlFor={`memory-advisor-${field}`}
-                    detail={t('memory.advisor.fieldDefault', { value: range.fallback })}>
+                    detail={t('memory.advisor.fieldDefault', { value: shown.fallback })}>
                     {statusFor(field)}
+                    {followsSource && !shown.explicit ? (
+                      <span data-memory-advisor-wait-default className="text-[12px] text-ink-faint">{t('agentPanel.default')}</span>
+                    ) : null}
+                    {followsSource && shown.explicit && config !== undefined ? (
+                      <button type="button" data-memory-advisor-wait-reset disabled={busy}
+                        className="text-[12px] font-medium text-ink-soft underline-offset-2 hover:text-ink hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                        onClick={() => { void write(field, { advisor: { first_step_wait_ms: null } }); }}>
+                        {t('composer.modelResetDefault')}
+                      </button>
+                    ) : null}
                     <CommitInput id={`memory-advisor-${field}`} dataAttr={`data-memory-advisor-${field.replaceAll('_', '-')}`}
                       className="w-24 text-right" inputMode="numeric" disabled={busy}
-                      value={String(config?.[field] ?? range.fallback)}
+                      value={String(shown.value)}
                       validate={(text) => (parseMemoryAdvisorNumber(field, text) === null ? t('memory.advisor.fieldInvalid', { min: range.min, max: range.max }) : null)}
                       onCommit={(text) => { void write(field, { advisor: { [field]: Number(text) } }); }} />
                   </SettingField>

@@ -1,4 +1,4 @@
-import type { MemoryAdvisorFailure, MemoryAdvisorStatus } from '@kiki/protocol';
+import { memoryAdvisorFirstStepWaitMs, type MemoryAdvisorFailure, type MemoryAdvisorStatus } from '@kiki/protocol';
 import { createDecorator } from '#/_base/di/instantiation';
 import { Service } from '#/_base/di/service';
 import { toDisposable } from '#/_base/di/lifecycle';
@@ -338,8 +338,9 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
           if (this.controller === controller) this.pending = undefined;
         });
     }
-    if (context.firstStepOfTurn && this.pending !== undefined && config.first_step_wait_ms > 0)
-      await waitForAdvice(this.pending, config.first_step_wait_ms, context.signal);
+    const wait = memoryAdvisorFirstStepWaitMs(config, described.protocol ?? config.selector?.protocol);
+    if (context.firstStepOfTurn && this.pending !== undefined && wait > 0)
+      await waitForAdvice(this.pending, wait, context.signal);
     if (this.completed !== undefined && this.completed.fingerprint === this.fingerprint) {
       this.snapshot.setAdvice?.(this.completed);
       this.currentStatus = this.completed.status;

@@ -468,7 +468,7 @@ workspaces = {  }
     # model: string
     # endpoint: string
   # source: object | object
-  # first_step_wait_ms: integer (default: 1500)
+  # first_step_wait_ms: integer
   # timeout_ms: integer (default: 6000)
   # max_calls_per_turn: integer (default: 3)
   # candidate_chars: integer (default: 120)
