@@ -187,7 +187,13 @@ export interface HttpRestSearchMessagesResponse {
   readonly items: readonly HttpRestSearchMessageHit[];
   readonly has_more: boolean;
   readonly page_token?: string;
-  readonly incomplete?: 'candidate_cap' | 'postings_budget' | 'deadline';
+  readonly incomplete?: 'candidate_cap' | 'postings_budget' | 'deadline' | 'scan_budget';
+  readonly coverage?: {
+    readonly domain: 'full_text';
+    readonly complete: boolean;
+    readonly gaps: readonly string[];
+    readonly scanned: { readonly bytes: number; readonly records: number };
+  };
   readonly index_state: {
     readonly state: 'building' | 'ready' | 'readonly' | 'unavailable';
     readonly indexed_sessions: number;

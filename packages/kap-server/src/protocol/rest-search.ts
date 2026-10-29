@@ -38,7 +38,13 @@ export const searchMessagesResponseSchema = z.object({
   items: z.array(searchMessageHitSchema),
   has_more: z.boolean(),
   page_token: z.string().optional(),
-  incomplete: z.enum(['candidate_cap', 'postings_budget', 'deadline']).optional(),
+  incomplete: z.enum(['candidate_cap', 'postings_budget', 'deadline', 'scan_budget']).optional(),
+  coverage: z.object({
+    domain: z.literal('full_text'),
+    complete: z.boolean(),
+    gaps: z.array(z.string()),
+    scanned: z.object({ bytes: z.number(), records: z.number() }),
+  }).optional(),
   index_state: z.object({
     state: z.enum(['building', 'ready', 'readonly', 'unavailable']),
     indexed_sessions: z.number(),

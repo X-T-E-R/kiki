@@ -853,6 +853,8 @@ PATCH 原位修改绑定。扩大范围与其他已启用入站绑定重叠时�
 
 `POST /api/search` 接受 `query`，默认搜索用户与 Assistant 正文及会话标题。设置 `include_tool_output: true` 才纳入工具结果和 Shell 输出，思考块、工具名称和工具输入始终排除。`role` 可选 `user`、`assistant`、`tool` 或 `title`，其中 `role: "tool"` 显式选择工具结果。相同内容范围适用于在线会话与已有索引；改变范围会使旧 `page_token` 失效，应去掉令牌重新查询。
 
+`container.session_id` 指向在线会话时，搜索使用有界的驻留正文与共享历史导航投影。请求截止时间和客户端取消同时覆盖准备与匹配阶段。在线响应包含 `coverage: { domain: "full_text", complete, gaps, scanned: { bytes, records } }`。`incomplete: "scan_budget"` 表示扫描未完成或有历史被跳过，`incomplete: "deadline"` 表示时间或文本预算已用尽。部分页为空不等于没有匹配；`has_more` 为真时，使用 `page_token` 继续。续页复用已完成的准备，令牌在 60 秒后过期；令牌失效时应去掉它重新查询。`gaps` 也会说明页内排序和超出扫描额度的记录。部分结果的计数应显示为下限，即使已经没有可继续的令牌。
+
 `POST /api/search/retry` 不需要请求体。索引器因连续内存压力停止后，调用它清除退避并重新启动已停止的索引写入。默认 SQLite 后端和 MiniDB 后端都适用。已发布索引中的文档仍可搜索；这次调用不删除、也不重建该索引。成功时沿用普通信封，`data.retried` 为 `true`。Klient 方法为 `rest.search.retry()`。
 
 ### 用量来源分组

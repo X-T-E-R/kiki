@@ -410,6 +410,33 @@ describe('find bar in the timeline', () => {
     off();
   });
 
+  it('marks bounded server results as a floor and aborts old queries and closed searches', async () => {
+    const off = installSessionShortcut();
+    const signals: AbortSignal[] = [];
+    const searchMessages = vi.fn(async (_body: unknown, signal?: AbortSignal) => {
+      signals.push(signal!);
+      return { items: [], has_more: false, incomplete: 'scan_budget' as const,
+        coverage: { domain: 'full_text' as const, complete: false, gaps: ['record_exceeds_page_budget'], scanned: { bytes: 128, records: 0 } },
+        index_state: { state: 'ready' as const, indexed_sessions: 1, total_sessions: 1, documents: 0 }, source: 'live' as const };
+    });
+    setFindSearchForTests({ searchMessages });
+    const { container } = await mount(timeline([user('u1', 'needle', 't1')], { hasMoreHistory: false }));
+    press(document.body, { key: 'f', ctrlKey: true });
+    await settle();
+    const field = container.querySelector<HTMLInputElement>('[data-find-input]')!;
+    await typeQuery(field, 'needle');
+    await settle(350);
+    expect(container.querySelector('[data-find-count]')?.textContent).toBe('1 / 1+');
+    await typeQuery(field, 'different');
+    expect(signals[0]!.aborted).toBe(true);
+    await settle(350);
+    expect(container.querySelector('[data-find-count]')?.textContent).toBe('– / 0+');
+    press(field, { key: 'Escape' });
+    await settle();
+    expect(signals.at(-1)!.aborted).toBe(true);
+    off();
+  });
+
   it('notes matches the loaded pages cannot hold and links the global search', async () => {
     const off = installSessionShortcut();
     const searchMessages = vi.fn(async () => ({

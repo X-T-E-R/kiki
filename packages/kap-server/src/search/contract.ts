@@ -1,4 +1,5 @@
 export interface GlobalSearchQuery {
+  readonly signal?: AbortSignal;
   /** Keyword(s), required. */
   readonly query: string;
   /**
@@ -136,7 +137,7 @@ export interface GlobalSearchIndexState {
  * Which backend served the page:
  *   - 'index' — the SQLite full-text index (the default; always used when the
  *     container session is not live in this process);
- *   - 'live' — an in-memory scan of the live session's `TranscriptStore`
+ *   - 'live' — bounded resident text plus shared canonical history navigation
  *     (container-scoped queries on a session resumed in this process).
  * Scores are only comparable within one source.
  */
@@ -150,13 +151,21 @@ export type GlobalSearchSource = 'live' | 'index';
  *   - 'postings_budget' — the postings-visit budget stopped the index-side
  *     candidate scan early (hot term/n-gram), so candidates are a subset;
  *   - 'deadline' — the query's work budget (wall-clock deadline or processed
- *     text volume) ran out during matching/confirmation.
+ *     text volume) ran out during preparation or matching;
+ *   - 'scan_budget' — bounded live preparation or canonical scanning remains,
+ *     or source coverage has gaps described by `coverage`.
  * A page token from a changed index generation is NOT reported here — it
  * fails the request with `invalid_page_token` (see the file header).
  */
-export type GlobalSearchIncomplete = 'candidate_cap' | 'postings_budget' | 'deadline';
+export type GlobalSearchIncomplete = 'candidate_cap' | 'postings_budget' | 'deadline' | 'scan_budget';
 
 export interface GlobalSearchPage {
+  readonly coverage?: {
+    readonly domain: 'full_text';
+    readonly complete: boolean;
+    readonly gaps: readonly string[];
+    readonly scanned: { readonly bytes: number; readonly records: number };
+  };
   readonly items: GlobalSearchHit[];
   readonly hasMore: boolean;
   /** Present iff `hasMore`. */

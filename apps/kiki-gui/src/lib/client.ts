@@ -201,7 +201,13 @@ export interface SearchMessagesResponse {
   items: SearchMessageHit[];
   has_more: boolean;
   page_token?: string;
-  incomplete?: 'candidate_cap' | 'postings_budget' | 'deadline';
+  incomplete?: 'candidate_cap' | 'postings_budget' | 'deadline' | 'scan_budget';
+  coverage?: {
+    domain: 'full_text';
+    complete: boolean;
+    gaps: readonly string[];
+    scanned: { readonly bytes: number; readonly records: number };
+  };
   index_state: {
     state: 'building' | 'ready' | 'readonly' | 'unavailable';
     indexed_sessions: number;

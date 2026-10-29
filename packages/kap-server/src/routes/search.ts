@@ -1,8 +1,10 @@
 import { type Scope } from '@kiki/agent-core-v2';
 import { z } from 'zod';
+import type { FastifyReply } from 'fastify';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import {
@@ -65,6 +67,7 @@ function toWirePage(page: GlobalSearchPage): SearchMessagesResponse {
     has_more: page.hasMore,
     page_token: page.pageToken,
     incomplete: page.incomplete,
+    coverage: page.coverage === undefined ? undefined : { ...page.coverage, gaps: [...page.coverage.gaps] },
     index_state: {
       state: page.indexState.state,
       indexed_sessions: page.indexState.indexedSessions,
@@ -94,7 +97,8 @@ export function registerSearchRoutes(app: SearchRouteHost, core: Scope): void {
     },
     async (req, reply) => {
       try {
-        const page = await core.accessor.get(IGlobalSearchService).search(toServiceQuery(req.body));
+        const page = await withReplyCloseSignal(reply as FastifyReply, (signal) =>
+          core.accessor.get(IGlobalSearchService).search({ ...toServiceQuery(req.body), signal }), req);
         reply.send(okEnvelope(toWirePage(page), req.id));
       } catch (error) {
         if (

@@ -1273,7 +1273,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   remoteConnections.start();
   usageExport.start();
   try {
-    core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService);
+    core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService, navigation());
   } catch (error) {
     logger.warn(
       { err: error instanceof Error ? error.message : String(error) },
