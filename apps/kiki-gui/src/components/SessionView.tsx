@@ -990,8 +990,8 @@ export function sessionAbsenceShouldLeaveRoute(message: string, sessionId: strin
  * Permission/plan pills are controlled by the server-reported store
  * fields (snapshot agent_config + `agent.status.updated`): another client —
  * or the server itself — can move them. The local override is only an
- * optimistic echo: an uncommitted pill click wins until the store reports the
- * same value, then `shouldClearModeOverride` retires it.
+ * optimistic echo: a local pick wins until its save settles and the store
+ * reports the same value, then `shouldClearModeOverride` retires it.
  */
 export function resolveControlledValue<T>(
   override: T | undefined,
@@ -1926,14 +1926,16 @@ export function SessionView({
   // rail's owner when the user is looking at an embedded subagent view — the
   // routed agent page (selectedAgentId) owns the rail through AgentWorkspace.
   const [panelFocusAgent, setPanelFocusAgent] = useState<string | undefined>(undefined);
-  // Permission/plan are store-controlled (see resolveControlledValue):
-  // local state is only the optimistic echo of an uncommitted pill click.
   const [permissionOverride, setPermissionOverride] = useState<PermissionMode | undefined>(
     restoredComposer.permissionMode ?? initialOptionsRef.current.permissionMode,
   );
   const [planOverride, setPlanOverride] = useState(
     restoredComposer.planMode ?? initialOptionsRef.current.planMode,
   );
+  const modeWriteQueue = useRef(Promise.resolve());
+  const modeWriteRevision = useRef({ permission: 0, plan: 0 });
+  const [permissionWriting, setPermissionWriting] = useState(false);
+  const [planWriting, setPlanWriting] = useState(false);
   // Plan gate: session-scoped pick restored from composer chrome. Unlike the
   // mode pills there is no server echo to reconcile against (the wire only
   // takes `plan_gate` per prompt), so the override simply persists.
@@ -2443,8 +2445,6 @@ export function SessionView({
   // and focused. Other conversations and hidden mounted views stay unread.
   useViewedSession(host, sessionId, state.session?.last_seq);
 
-  // Store-controlled pills: the server-reported value wins unless a local
-  // click is still waiting to be committed with the next prompt.
   const permissionMode = resolveControlledValue(
     permissionOverride,
     state.permissionMode,
@@ -2452,15 +2452,15 @@ export function SessionView({
   );
   const planMode = resolveControlledFlag(planOverride, state.planMode, state.loaded, defaults.defaultPlanMode);
   useEffect(() => {
-    if (shouldClearModeOverride(permissionOverride, state.permissionMode)) {
+    if (!permissionWriting && shouldClearModeOverride(permissionOverride, state.permissionMode)) {
       setPermissionOverride(undefined);
     }
-  }, [permissionOverride, state.permissionMode]);
+  }, [permissionOverride, permissionWriting, state.permissionMode]);
   useEffect(() => {
-    if (state.loaded && shouldClearModeOverride(planOverride, state.planMode)) {
+    if (!planWriting && state.loaded && shouldClearModeOverride(planOverride, state.planMode)) {
       setPlanOverride(undefined);
     }
-  }, [planOverride, state.loaded, state.planMode]);
+  }, [planOverride, planWriting, state.loaded, state.planMode]);
 
   // A session that is definitely gone cannot recover: toast the reason, keep the
   // card visible for a beat, then fall back home (clearing the remembered id
@@ -2835,12 +2835,44 @@ export function SessionView({
       );
     },
   }), [canonicalModel, client, modelSwitchActionPending, modelSwitches.switches, runModelSwitchAction, sessionId]);
+  const persistModeChange = useCallback((
+    patch: { permission_mode?: PermissionMode; plan_mode?: boolean },
+    onFailure: () => void,
+    onSettled: () => void,
+  ) => {
+    modeWriteQueue.current = modeWriteQueue.current.then(async () => {
+      await client.updateSessionProfile(sessionId, { agent_config: patch });
+    }).catch((error: unknown) => {
+      onFailure();
+      pushToast({ tone: 'error', text: t('sv.modeUpdateFailed', {
+        detail: error instanceof Error ? error.message : String(error),
+      }) });
+    }).finally(onSettled);
+  }, [client, sessionId, t]);
   const handlePermissionChange = useCallback((mode: PermissionMode | undefined) => {
-    // Clicking the mode back to what the session already had is still a
-    // deliberate choice to approve in this mode, so it counts as touched.
     permissionTouchedRef.current = true;
     setPermissionOverride(mode);
-  }, []);
+    if (mode === undefined) return;
+    const revision = ++modeWriteRevision.current.permission;
+    setPermissionWriting(true);
+    persistModeChange({ permission_mode: mode }, () => {
+      if (revision !== modeWriteRevision.current.permission) return;
+      permissionTouchedRef.current = false;
+      setPermissionOverride(undefined);
+    }, () => {
+      if (revision === modeWriteRevision.current.permission) setPermissionWriting(false);
+    });
+  }, [persistModeChange]);
+  const handlePlanChange = useCallback((enabled: boolean) => {
+    setPlanOverride(enabled);
+    const revision = ++modeWriteRevision.current.plan;
+    setPlanWriting(true);
+    persistModeChange({ plan_mode: enabled }, () => {
+      if (revision === modeWriteRevision.current.plan) setPlanOverride(undefined);
+    }, () => {
+      if (revision === modeWriteRevision.current.plan) setPlanWriting(false);
+    });
+  }, [persistModeChange]);
   const handleEffortChange = useCallback((effort: string | undefined) => {
     setEffortOverride(effort);
     setEffortChoice({ model: sessionModel, thinking: state.thinkingEffort });
@@ -4925,7 +4957,7 @@ boundExecution,
             onChangeExecution={handleExecutionChange}
             onRebuildContext={handleContextRebuild}
             onChangePermissionMode={handlePermissionChange}
-            onChangePlanMode={setPlanOverride}
+            onChangePlanMode={handlePlanChange}
             onChangePlanGate={setPlanGateOverride}
             onChangeGoalMode={setGoalMode}
             onChangeEffort={handleEffortChange}

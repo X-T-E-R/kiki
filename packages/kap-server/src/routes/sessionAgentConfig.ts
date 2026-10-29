@@ -4,7 +4,6 @@ import {
   Error2,
   IAgentExecutionService,
   IAgentGoalService,
-  IAgentLifecycleService,
   IAgentPermissionModeService,
   IAgentPlanService,
   IAgentProfileService,
@@ -27,7 +26,7 @@ export async function applySessionAgentConfig(
   const agent = await ensureMainAgent(session);
 
   const profile = agent.accessor.get(IAgentProfileService);
-  const execution = agentConfig.execution ?? ((agentConfig.model !== undefined || agentConfig.thinking !== undefined || agentConfig.permission_mode !== undefined) && agentConfig.profile === undefined
+  const execution = agentConfig.execution ?? ((agentConfig.model !== undefined || agentConfig.thinking !== undefined) && agentConfig.profile === undefined
     ? profile.data().execution?.selection : undefined);
   let selectionConsumed = false;
   if (execution !== undefined) {
@@ -124,8 +123,8 @@ export async function applyAgentRuntimeControls(
 ): Promise<void> {
   if (agentConfig.permission_mode !== undefined) {
     agent.accessor
-      .get(IAgentLifecycleService)
-      .broadcastPermissionMode(agentConfig.permission_mode as PermissionMode);
+      .get(IAgentPermissionModeService)
+      .setModeAndBroadcast(agentConfig.permission_mode);
   }
   if (agentConfig.plan_mode !== undefined) {
     const plan = agent.accessor.get(IAgentPlanService);

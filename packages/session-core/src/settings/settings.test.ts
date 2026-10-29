@@ -2301,6 +2301,10 @@ describe('computer-use preference settings', () => {
 });
 
 describe('browser-control settings helpers', () => {
+  it('marks the browser runtime gate as live for existing sessions', () => {
+    expect(experimentalFlagHome('native_browser')?.effect).toBe('now');
+  });
+
   it('reads browser control enabled state from config or experimental flag and creates patch', () => {
     expect(isBrowserControlEnabled({})).toBe(true);
     expect(isBrowserControlEnabled({ browser_control: { enabled: true } })).toBe(true);

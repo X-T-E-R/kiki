@@ -26,6 +26,8 @@ Long tool output and other large fields arrive in stages. **Continue loading** p
 
 The input box accepts free-form text. `Enter` sends; `Shift-Enter` / `Ctrl-J` insert a newline. You can paste images and video from the clipboard, as long as the current model accepts them — [Interaction and input](/en/guides/interaction) covers the details.
 
+In an existing conversation, changing **Approvals** or switching between **Normal** and **Plan** saves immediately, without sending a message. With native execution, the next tool approval uses the new permission mode, and Plan mode's restrictions apply to subsequent tool calls in the running turn. A request already waiting for approval still needs your decision. If saving fails, the control returns to the session's reported mode and shows the error.
+
 `↑` and `↓` move the caret inside the draft, including on a wrapped line. They browse earlier prompts only from the start of the text (`↑`) or the end (`↓`): this conversation keeps its own list, and the new-session page keeps one for that workspace. A text selection, `Shift`, an IME composition, or an open `/` or `@` menu keeps the key. `Esc`, or `↓` past the newest entry, restores the draft from before that browse.
 
 Select a passage in the conversation and choose **Quote** to add it above the input box. You can add several passages and remove each one separately. Sending includes those passages; references added while a send is awaiting confirmation stay in the draft. Type `@` to find workspace files, then choose **Load more** or scroll to the end of the matches to load another page.

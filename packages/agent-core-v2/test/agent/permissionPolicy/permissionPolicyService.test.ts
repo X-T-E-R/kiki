@@ -11,6 +11,7 @@ import { ILogService } from '#/_base/log/log';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IModelCatalog } from '#/kosong/model/catalog';
+import { IRequestAdmission } from '#/kosong/model/requestAdmission';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionApprovalService } from '#/session/approval/approval';
 import { AgentToolApprovalService } from '#/agent/toolApproval/toolApprovalService';
@@ -907,6 +908,7 @@ describe('AgentPermissionPolicyService chain', () => {
         yield { type: 'finish', message: { content: [{ type: 'text', text: '{"outcome":"deny","confidence":0.99}' }] } };
       });
       ix.stub(IModelCatalog, { getRequester: () => ({ request: review }) as never });
+      ix.stub(IRequestAdmission, { acquire: async () => ({ release() {} }) });
       const userApproval = vi.fn(async () => ({ decision: 'rejected' as const }));
       ix.stub(ISessionApprovalService, { request: userApproval, enqueue: (request) => ({ ...request, id: request.id! }), decide: () => {} });
       ix.set(IAgentToolApprovalService, new SyncDescriptor(AgentToolApprovalService));

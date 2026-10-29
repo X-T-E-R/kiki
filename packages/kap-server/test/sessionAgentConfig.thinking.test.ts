@@ -28,6 +28,7 @@ function harness(data: ProfileData, executionState: 'idle' | 'running' = 'idle')
     bind: [] as Array<Record<string, unknown>>,
     setThinking: [] as string[],
     restore: 0,
+    permission: [] as string[],
   };
   const profile = {
     data: () => data,
@@ -42,7 +43,10 @@ function harness(data: ProfileData, executionState: 'idle' | 'running' = 'idle')
       get(id: unknown): unknown {
         if (id === IAgentProfileService) return profile;
         if (id === IAgentExecutionService) return { status: () => ({ state: executionState }) };
-        if (id === IAgentPermissionModeService) return { setMode: () => undefined };
+        if (id === IAgentPermissionModeService) return {
+          setMode: () => undefined,
+          setModeAndBroadcast: (mode: string) => { calls.permission.push(mode); },
+        };
         throw new Error('unexpected agent service');
       },
     },
@@ -142,6 +146,18 @@ describe('applySessionAgentConfig thinking null', () => {
     }, 'running');
     await expect(applySessionAgentConfig(session, { profile: 'agent', thinking: null })).rejects.toThrow(/idle agent/);
     expect(calls.bind).toEqual([]);
+    expect(calls.restore).toBe(0);
+  });
+});
+
+describe('applySessionAgentConfig live permissions', () => {
+  it.each(['native', 'example-acp'])('updates a running %s permission mode without rebinding its execution', async (executor) => {
+    const selection = { executor, profile: 'agent', overrides: { model: 'example/model', thinking: 'high' } };
+    const { session, calls } = harness({ profileName: 'agent', execution: { selection, effective: {} } }, 'running');
+    await applySessionAgentConfig(session, { permission_mode: 'yolo' });
+    expect(calls.permission).toEqual(['yolo']);
+    expect(calls.bind).toEqual([]);
+    expect(calls.setThinking).toEqual([]);
     expect(calls.restore).toBe(0);
   });
 });
