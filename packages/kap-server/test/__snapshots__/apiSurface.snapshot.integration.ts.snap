@@ -446,11 +446,31 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/memory/{scope}/{id}/export",
+    ],
+    [
+      "GET",
+      "/api/memory/{scope}/{id}/provenance",
+    ],
+    [
+      "GET",
+      "/api/memory/{scope}/{id}/revisions/{revision}",
+    ],
+    [
+      "GET",
       "/api/memory/{scope}/inbox",
     ],
     [
       "GET",
       "/api/memory/{scope}/journal",
+    ],
+    [
+      "GET",
+      "/api/memory/advisor/status",
+    ],
+    [
+      "GET",
+      "/api/memory/authority",
     ],
     [
       "GET",
@@ -1374,7 +1394,47 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/memory/{scope}/forget",
+    ],
+    [
+      "POST",
+      "/api/memory/{scope}/forget-preview",
+    ],
+    [
+      "POST",
+      "/api/memory/{scope}/import",
+    ],
+    [
+      "POST",
+      "/api/memory/{scope}/import-preview",
+    ],
+    [
+      "POST",
       "/api/memory/{scope}/undo",
+    ],
+    [
+      "POST",
+      "/api/memory/advisor/probe",
+    ],
+    [
+      "POST",
+      "/api/memory/authority/cancel",
+    ],
+    [
+      "POST",
+      "/api/memory/authority/migrate",
+    ],
+    [
+      "POST",
+      "/api/memory/authority/recover-readonly",
+    ],
+    [
+      "POST",
+      "/api/memory/authority/resume-editing",
+    ],
+    [
+      "POST",
+      "/api/memory/authority/retry",
     ],
     [
       "POST",

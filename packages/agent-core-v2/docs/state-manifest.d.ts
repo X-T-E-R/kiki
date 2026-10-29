@@ -2515,6 +2515,7 @@ export interface AgentStateSnapshot {
       readonly usedContextTokensTrusted?: boolean;
       readonly maxContextTokens?: number;
       readonly onTraceId?: (traceId: string | null) => void;
+      readonly onRequestAttempt?: () => void;
       readonly rawResponseObserver?: /* RawResponseObserver — packages/agent-core-v2/src/kosong/contract/provider.ts */ {
         start: (response: {
           status: number;

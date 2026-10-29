@@ -118,7 +118,8 @@ export function historyDirectoryWindowGuard(): (record: Record<string, unknown>)
         const delivery = record['delivery'] as { turnId?: unknown } | undefined;
         const id = message['id'];
         const kind = (message['origin'] as { kind?: string } | undefined)?.kind ?? 'user';
-        if (delivery?.turnId !== undefined && !turns.has(String(delivery.turnId))) unsupported();
+        const turnId = delivery?.turnId;
+        if (turnId !== undefined && ((typeof turnId !== 'number' && typeof turnId !== 'string') || !turns.has(String(turnId)))) unsupported();
         if (delivery === undefined && id !== currentPrompt && !steered.has(String(id)) &&
             !['injection', 'agent_message', 'task'].includes(kind)) {
           const count = credits.get(kind) ?? 0;
@@ -130,7 +131,8 @@ export function historyDirectoryWindowGuard(): (record: Record<string, unknown>)
     if (type !== 'context.append_loop_event') return;
     const event = record['event'] as Record<string, unknown> | undefined;
     if (event === undefined) return;
-    if (event['turnId'] !== undefined && !turns.has(String(event['turnId']))) unsupported();
+    const turnId = event['turnId'];
+    if (turnId !== undefined && ((typeof turnId !== 'number' && typeof turnId !== 'string') || !turns.has(String(turnId)))) unsupported();
     if (event['type'] === 'step.begin') {
       if (typeof event['uuid'] !== 'string') unsupported();
       steps.add(event['uuid'] as string);

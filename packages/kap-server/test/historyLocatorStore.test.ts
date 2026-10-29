@@ -16,6 +16,7 @@ import { IWorkspaceService as WorkspaceToken, type IWorkspaceService } from '@ki
 import { TranscriptWireAdapter } from '@kiki/transcript';
 import { HistoryLocatorStore, HISTORY_NAV_COLLECTION } from '../src/services/history/historyLocatorStore';
 import { HistoryNavigationDb } from '../src/services/history/historyNavigationDb';
+import { historyDirectoryWindowGuard } from '../src/services/history/historyDirectoryWindow';
 import * as logicalWire from '../src/services/history/logicalWireRead';
 import { historyArchiveSeed } from '../src/services/historyArchive';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
@@ -67,6 +68,18 @@ const lines = [
 ];
 
 describe('history navigation source rows', () => {
+  it.each(['delivery', 'event'])('validates scalar turn identities in directory %s records', (kind) => {
+    const record = (turnId: unknown): Record<string, unknown> => kind === 'delivery'
+      ? { type: 'context.append_message', message: { role: 'user', id: 'delivered' }, delivery: { turnId } }
+      : { type: 'context.append_loop_event', event: { type: 'step.begin', uuid: 'step', turnId } };
+    const guard = historyDirectoryWindowGuard();
+    guard({ type: 'turn.prompt', turnId: 4, promptId: 'p4' });
+    for (const turnId of [4, '4']) expect(() => guard(record(turnId))).not.toThrow();
+    for (const turnId of [5, '5', null, {}, ['4']]) {
+      expect(() => guard(record(turnId))).toThrow('history_directory_window_unsupported');
+    }
+  });
+
   it('serves newest directory content and readable refs before projecting a large older prefix', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'history-nav-tail-directory-'));
     const wirePath = join(dir, 'wire.jsonl');
