@@ -62,7 +62,7 @@ describe('decision connections', () => {
     const origin = `http://127.0.0.1:${port}`;
     const active = await boot();
     const source = { kind: 'connection', connection: 'judgment' };
-    const created = await request('POST', '/providers', { id: 'judgment', type: 'system_one', base_url: `${origin}/v1`, default_model: 'any-remote-model' });
+    const created = await request('POST', '/providers', { id: 'judgment', type: 'system_one', base_url: `${origin}/v1`, api_key_env: 'TYPESAFE_API_KEY', default_model: 'any-remote-model' });
     expect(created.code).toBe(0);
     expect(created.data).toMatchObject({ service: 'decision', decision_protocol: 'system_one', default_model: 'any-remote-model', models: [], has_api_key: true, api_key_env: 'TYPESAFE_API_KEY' });
     expect((await request('GET', '/models')).data.items).toEqual([]);
@@ -197,6 +197,46 @@ describe('decision connections', () => {
       const credentials = await readFile(join(home!, 'credentials', 'credentials.toml'), 'utf8');
       expect(credentials).toContain(change === 'key' ? 'synthetic-new-key' : 'synthetic-old-key');
     } finally { subscription.dispose(); }
+  });
+
+  it('keeps custom System One connections keyless with a TypeSafe process key and preserves the explicit Jev environment preset', async () => {
+    vi.stubEnv('TYPESAFE_API_KEY', 'synthetic-typesafe-key');
+    const calls: { path: string; authorization?: string; token?: string | string[] }[] = [];
+    upstream = createServer(async (req, res) => {
+      let text = ''; for await (const chunk of req) text += String(chunk);
+      const body = JSON.parse(text);
+      calls.push({ path: req.url ?? '', authorization: req.headers.authorization, token: req.headers['x-decision-token'] });
+      const answers = Object.fromEntries(Object.entries(body.questions).map(([name, raw]) => {
+        const question = raw as { criteria: Record<string, string> };
+        const choice = question.criteria['read'] === undefined ? 'apply' : 'read';
+        return [name, { type: 'choice', choice, confidence: 1, probabilities: Object.fromEntries(Object.keys(question.criteria).map((key) => [key, key === choice ? 1 : 0])) }];
+      }));
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ answers }));
+    });
+    await new Promise<void>((resolve) => upstream!.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${(upstream.address() as { port: number }).port}`;
+    const active = await boot();
+    expect((await request('POST', '/providers', { id: 'local', type: 'system_one', base_url: `${origin}/v1`, default_model: 'synthetic-model' })).code).toBe(0);
+    const local = (await request('GET', '/providers/local')).data;
+    expect(local).toMatchObject({ has_api_key: false, effective_base_url: `${origin}/v1` });
+    expect(local).not.toHaveProperty('api_key_env');
+    const configured = (await request('GET', '/config')).data.providers.local;
+    expect(configured).toMatchObject({ has_api_key: false });
+    expect(configured).not.toHaveProperty('api_key_env');
+    expect((await request('POST', '/secrets:reveal', { ref: { kind: 'provider_api_key', provider_id: 'local' } })).data).toEqual({ source: 'none' });
+    const source = { kind: 'connection', connection: 'local' };
+    expect((await request('POST', '/decision/probe', { source, confirm_destination: `local@${origin}` })).data).toMatchObject({ ok: true, status: { credential_source: 'none' } });
+    expect(calls).toEqual(Array.from({ length: 2 }, () => ({ path: '/v1/systemone', authorization: undefined, token: undefined })));
+    expect((await request('PATCH', '/providers/local', { decision_endpoint: 'https://api.typesafe.ai/v1/systemone' })).code).not.toBe(0);
+    expect((await request('PATCH', '/providers/local', { decision_endpoint: '/custom/systemone', custom_headers: { 'X-Decision-Token': 'synthetic-header-key' } })).code).toBe(0);
+    expect((await request('POST', '/decision/probe', { source, confirm_destination: `local@${origin}` })).data).toMatchObject({ ok: true, status: { credential_source: 'headers' } });
+    expect(calls.slice(2)).toEqual(Array.from({ length: 2 }, () => ({ path: '/custom/systemone', authorization: undefined, token: 'synthetic-header-key' })));
+    expect((await request('POST', '/providers', { id: 'typesafe', type: 'system_one', base_url: 'https://api.typesafe.ai/v1', api_key_env: 'TYPESAFE_API_KEY', default_model: 'jev-latest' })).code).toBe(0);
+    expect((await request('GET', '/providers/typesafe')).data).toMatchObject({ has_api_key: true, api_key_env: 'TYPESAFE_API_KEY', effective_base_url: 'https://api.typesafe.ai/v1' });
+    expect(await active.core.accessor.get(IModelCatalog).getConnectionEndpoint('typesafe').authProvider.getAuth()).toEqual({ apiKey: 'synthetic-typesafe-key' });
+    expect((await request('PATCH', '/providers/typesafe', { decision_endpoint: `${origin}/systemone` })).code).not.toBe(0);
+    expect(calls).toHaveLength(4);
   });
 
   it('keeps keyless legacy HTTP selectors usable and accepts arbitrary custom auth headers on new connections', async () => {

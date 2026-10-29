@@ -134,6 +134,32 @@ describe('Model assembly (pure data)', () => {
       expect(() => catalog.getConnectionEndpoint('judgment')).toThrow('does not exist');
     } finally { await host.dispose(); vi.unstubAllEnvs(); }
   });
+  it('scopes implicit System One credentials to the exact TypeSafe origin', async () => {
+    vi.stubEnv('TYPESAFE_API_KEY', 'synthetic-typesafe-key');
+    const sections: ProvidersSection = {
+      same: { type: 'system_one', baseUrl: 'https://API.TYPESAFE.AI:443/custom', decisionEndpoint: '/judge' },
+      custom: { type: 'system_one', baseUrl: 'https://judge.example.test/v1' },
+      subdomain: { type: 'system_one', baseUrl: 'https://api.typesafe.ai.example.test/v1' },
+      userinfo: { type: 'system_one', baseUrl: 'https://api.typesafe.ai@judge.example.test/v1' },
+      insecure: { type: 'system_one', baseUrl: 'http://api.typesafe.ai/v1' },
+      port: { type: 'system_one', baseUrl: 'https://api.typesafe.ai:444/v1' },
+      malformed: { type: 'system_one', baseUrl: 'not a URL' },
+      bag: { type: 'system_one', baseUrl: 'https://judge.example.test/v1', env: { TYPESAFE_API_KEY: 'synthetic-bag-key' } },
+    };
+    const { host, catalog } = createHost({ providers: sections });
+    try {
+      const items = Object.fromEntries((await catalog.listProviders()).map((item) => [item.id, item]));
+      for (const id of Object.keys(sections)) {
+        const trusted = id === 'same';
+        const endpoint = catalog.getConnectionEndpoint(id);
+        expect(endpoint.credentialSource).toBe(trusted ? 'env' : 'none');
+        expect(endpoint.credentialEnv).toBe(trusted ? 'TYPESAFE_API_KEY' : undefined);
+        expect(await endpoint.authProvider.getAuth()).toEqual(trusted ? { apiKey: 'synthetic-typesafe-key' } : undefined);
+        expect(items[id]?.has_api_key).toBe(trusted);
+        expect(items[id]?.api_key_env).toBe(trusted ? 'TYPESAFE_API_KEY' : undefined);
+      }
+    } finally { await host.dispose(); vi.unstubAllEnvs(); }
+  });
   it('routes sibling model protocol overrides through real SDK payloads, streams and errors without changing the provider', async () => {
     const provider = { type: 'openai', baseUrl: 'https://example.test/v1', apiKey: 'fixture-key', requestIdentity: { preset: 'none' as const } };
     const common = { provider: 'edge', model: 'gpt-5', maxContextSize: 8192, capabilities: ['thinking', 'tool_use'], supportEfforts: ['high'], adaptiveThinking: true };

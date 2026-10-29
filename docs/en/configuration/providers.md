@@ -19,7 +19,7 @@ The `type` field in the `providers` table selects the connection's request forma
 
 Chat connections stream by default. Capabilities such as thinking, vision, and tool use are matched automatically by model name prefix — you typically do not need to declare them manually. Decision connections return judgments or scores and do not add entries to the chat model catalog.
 
-**Credential priority**: a model's own credential wins; otherwise Kiki uses the provider's `api_key`, then its explicitly configured `api_key_env` variable. Without `api_key_env`, the existing `[providers.<name>.env]` credential fallback remains unchanged. The `system_one` type also provides the TypeSafe default address and `TYPESAFE_API_KEY` fallback. See [Config overrides: provider credentials](./overrides.md#provider-credentials) for the full priority and an environment-variable example.
+**Credential priority**: a model's own credential wins; otherwise Kiki uses the provider's `api_key`, then its explicitly configured `api_key_env` variable. Without `api_key_env`, the existing `[providers.<name>.env]` credential fallback remains unchanged. The `system_one` type provides the TypeSafe default address; its implicit `TYPESAFE_API_KEY` fallback applies only to the `https://api.typesafe.ai` origin. For another service, select its key or environment variable explicitly, or leave credentials unset when it needs none. See [Config overrides: provider credentials](./overrides.md#provider-credentials) for the full priority and an environment-variable example.
 
 ### Decision connections
 

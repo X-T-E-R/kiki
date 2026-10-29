@@ -83,11 +83,22 @@ export interface ExplainedProviderEndpoint {
   readonly baseUrlIsDefault?: boolean;
 }
 
+const TYPESAFE_ORIGIN = 'https://api.typesafe.ai';
+
 export function resolveProviderApiKey(
-  provider: Pick<ProviderConfig, 'type' | 'apiKey' | 'apiKeyEnv' | 'env'>,
+  provider: Pick<ProviderConfig, 'type' | 'baseUrl' | 'apiKey' | 'apiKeyEnv' | 'env'>,
 ): ResolvedProviderApiKey {
-  const fallback: ExplainedProviderEndpoint = provider.type === undefined ? {} : explainProviderEndpoint(provider.type, provider.type === 'system_one' ? { TYPESAFE_API_KEY: process.env['TYPESAFE_API_KEY'], ...provider.env } : provider.env ?? {});
+  const env = provider.type === 'system_one'
+    ? { TYPESAFE_API_KEY: process.env['TYPESAFE_API_KEY'], ...provider.env }
+    : provider.env ?? {};
+  const fallback: ExplainedProviderEndpoint = provider.type === undefined || (provider.type === 'system_one' && !hasTypeSafeOrigin(provider.baseUrl))
+    ? {} : explainProviderEndpoint(provider.type, env);
   return resolveConfiguredProviderApiKey(provider, { apiKey: fallback.apiKey, envName: fallback.apiKeyEnvName });
+}
+
+function hasTypeSafeOrigin(baseUrl: string | undefined): boolean {
+  try { return new URL(baseUrl?.trim() || TYPESAFE_ORIGIN).origin === TYPESAFE_ORIGIN; }
+  catch { return false; }
 }
 
 export function explainProviderEndpoint(
@@ -96,7 +107,7 @@ export function explainProviderEndpoint(
 ): ExplainedProviderEndpoint {
   if (providerType === 'system_one') {
     const apiKey = env['TYPESAFE_API_KEY'];
-    return { baseUrl: 'https://api.typesafe.ai/v1', baseUrlIsDefault: true,
+    return { baseUrl: `${TYPESAFE_ORIGIN}/v1`, baseUrlIsDefault: true,
       apiKey, apiKeyEnvName: apiKey ? 'TYPESAFE_API_KEY' : undefined };
   }
   const definition = getProviderDefinition(providerType);

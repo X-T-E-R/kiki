@@ -19,7 +19,7 @@ Kiki 可以同时连接多家模型提供商。API 密钥是适用范围最广�
 
 对话连接默认流式返回。thinking、视觉、工具调用等能力按模型名前缀自动匹配，通常无需手动声明。决策连接返回判断或分数，不会向对话模型目录添加条目。
 
-**凭证优先级**：模型自身的凭证优先；否则先取供应商的 `api_key`，再取显式配置的 `api_key_env` 变量。未设置 `api_key_env` 时，原有 `[providers.<name>.env]` 凭证备用来源保持不变。`system_one` 还提供 TypeSafe 默认地址及 `TYPESAFE_API_KEY` 备用来源。完整优先级与环境变量示例见[配置覆盖：供应商凭证](./overrides.md#供应商凭证)。
+**凭证优先级**：模型自身的凭证优先；否则先取供应商的 `api_key`，再取显式配置的 `api_key_env` 变量。未设置 `api_key_env` 时，原有 `[providers.<name>.env]` 凭证备用来源保持不变。`system_one` 提供 TypeSafe 默认地址，仅当地址与 `https://api.typesafe.ai` 同源时才隐式读取 `TYPESAFE_API_KEY`。其他服务可显式选择密钥或环境变量；无需认证时可不填。完整优先级与环境变量示例见[配置覆盖：供应商凭证](./overrides.md#供应商凭证)。
 
 ### 决策连接
 

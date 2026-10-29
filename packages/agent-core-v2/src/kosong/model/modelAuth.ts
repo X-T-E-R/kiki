@@ -171,7 +171,7 @@ export function explainModelEndpointOrigin(
 
 export function explainModelAuthOrigin(
   model: Pick<ModelRecord, 'apiKey' | 'oauth' | 'protocol'>,
-  provider?: Pick<ProviderConfig, 'apiKey' | 'apiKeyEnv' | 'oauth' | 'type' | 'env'>,
+  provider?: Pick<ProviderConfig, 'baseUrl' | 'apiKey' | 'apiKeyEnv' | 'oauth' | 'type' | 'env'>,
 ): BindingOriginExplanation {
   if (nonEmpty(model.apiKey) !== undefined || model.oauth !== undefined) return { source: 'model' };
   if (nonEmpty(provider?.apiKey) !== undefined) return { source: 'provider' };

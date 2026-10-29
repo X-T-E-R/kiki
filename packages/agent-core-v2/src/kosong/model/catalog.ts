@@ -178,7 +178,7 @@ export interface ProviderCredentialState {
 
 export function providerCredentialFields(
   providerId: string,
-  provider: Pick<ProviderConfig, 'type' | 'apiKey' | 'apiKeyEnv' | 'env'>,
+  provider: Pick<ProviderConfig, 'type' | 'baseUrl' | 'apiKey' | 'apiKeyEnv' | 'env'>,
 ): { api_key?: string; api_key_env?: string } {
   if (providerId === ENV_MODEL_PROVIDER_KEY) {
     return { api_key_env: provider.apiKey?.trim() ? 'KIKI_MODEL_API_KEY' : undefined };

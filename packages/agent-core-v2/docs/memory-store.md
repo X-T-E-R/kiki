@@ -80,7 +80,7 @@ External execution passes the outbound request text explicitly and carries the s
 
 Configure `memory.advisor.source` with a decision connection or a normal chat model alias. Decision connections use provider types `system_one` and `pair_score`; they own the address, credentials, optional same-origin `decision_endpoint` and arbitrary remote `default_model`. They contain no chat model records, need no context size and do not participate in chat discovery. `IModelCatalog.getConnectionEndpoint` resolves their effective address, headers and existing auth provider without constructing a chat requester.
 
-This example lets Advisor and Permission Reviewer share one environment-backed connection. `system_one` defaults to `https://api.typesafe.ai/v1` and reuses `TYPESAFE_API_KEY`; an explicit `base_url` may select any compatible service.
+This example lets Advisor and Permission Reviewer share one environment-backed connection. `system_one` defaults to `https://api.typesafe.ai/v1` and implicitly reuses `TYPESAFE_API_KEY` only on the `https://api.typesafe.ai` origin. An explicit `base_url` may select any compatible service; for another origin, set `api_key_env` or `api_key` explicitly, or leave both unset for a keyless or header-authenticated service.
 
 ```toml
 [providers.judgment]
