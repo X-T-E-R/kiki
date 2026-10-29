@@ -3568,7 +3568,7 @@ export interface AgentStateSnapshot {
       readonly operationId: string;
       readonly model: string;
       readonly mode: /* ModelSwitchMode — packages/agent-core-v2/src/agent/modelSwitch/modelSwitch.ts */ 'direct' | 'compact' | 'fresh';
-      readonly thinking?: string;
+      readonly thinking?: string | null;
       readonly selectedFromModel?: string;
     };
     readonly receipt: /* ModelSwitchReceipt — packages/agent-core-v2/src/agent/modelSwitch/modelSwitch.ts */ {
@@ -7147,7 +7147,7 @@ export interface AgentStateSnapshot {
       readonly operationId: string;
       readonly model: string;
       readonly mode: /* ModelSwitchMode — packages/agent-core-v2/src/agent/modelSwitch/modelSwitch.ts */ 'direct' | 'compact' | 'fresh';
-      readonly thinking?: string;
+      readonly thinking?: string | null;
       readonly selectedFromModel?: string;
     };
     readonly receipt: /* ModelSwitchReceipt — packages/agent-core-v2/src/agent/modelSwitch/modelSwitch.ts */ {
