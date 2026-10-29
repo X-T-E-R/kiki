@@ -174,8 +174,8 @@ export function decisionConnectionDestination(
   return decisionDestination(provider.id, decisionConnectionEndpoint(provider.effective_base_url ?? provider.base_url, protocol, provider.decision_endpoint));
 }
 
-/** The settings card that owns which source each consumer uses. */
-export const DECISION_JUDGES_ROUTE = '/settings/ai?tab=defaults#st-card-decision-judges';
+/** The settings card that owns which source each consumer uses: the decision-models card in Models & providers. */
+export const DECISION_JUDGES_ROUTE = '/settings/ai?tab=providers#st-card-decision-connections';
 /** The connections card, opened on the add flow for a decision service. */
 export const DECISION_CONNECTIONS_ROUTE = '/settings/ai?tab=providers#st-card-decision-connections';
 /** The same card with its add form open. */

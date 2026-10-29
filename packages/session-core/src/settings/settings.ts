@@ -2002,7 +2002,6 @@ const AI_TAB_BY_CARD: Readonly<Record<string, AiSettingsTab>> = {
   'st-card-model-migration': 'providers',
   'st-card-decision-connections': 'providers',
   'st-card-global-defaults': 'defaults',
-  'st-card-decision-judges': 'defaults',
   'st-card-model-switch': 'defaults',
   'st-card-thinking': 'defaults',
   'st-card-auto-compact': 'defaults',
@@ -2561,8 +2560,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'ai', tab: 'providers', cardId: 'st-card-catalog-refresh', titleKey: 'st.catalogRefresh.title', keywordKeys: ['st.catalogRefresh.hint', 'st.catalogRefresh.getModels'], synonyms: ['模型目录刷新', 'catalog refresh', '获取模型', 'get models'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-model-migration', titleKey: 'st.modelMigration.title', keywordKeys: ['st.modelMigration.hint', 'st.modelMigration.preview', 'st.modelMigration.restore'], synonyms: ['model migration', '模型迁移', '旧版模型参数', 'model parameters backup'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-global-defaults', titleKey: 'st.defaults.globalTitle', keywordKeys: ['st.models.providerLabel', 'st.defaults.globalHint'] },
-  { section: 'ai', tab: 'defaults', cardId: 'st-card-decision-judges', titleKey: 'st.decision.judgesTitle', keywordKeys: ['st.decision.judgesHint', 'st.decision.row.reviewer', 'st.decision.row.memory'], synonyms: ['decision model', '决策模型', 'judge', '判断', 'reviewer source', '审查来源', 'memory advisor source', '顾问来源', 'Jev', 'TypeSafe', 'System One', 'rerank', '重排'] },
-  { section: 'ai', tab: 'providers', cardId: 'st-card-decision-connections', titleKey: 'st.decision.connectionsTitle', keywordKeys: ['st.decision.connectionsHint', 'st.decision.preset.jev', 'st.decision.preset.system_one', 'st.decision.preset.pair_score'], synonyms: ['decision service', '决策服务', 'Jev', 'TypeSafe', 'System One', 'rerank', 'classifier', '重排', '分类器', 'GLiClass'] },
+  { section: 'ai', tab: 'providers', cardId: 'st-card-decision-connections', titleKey: 'st.decision.connectionsTitle', keywordKeys: ['st.decision.judgesHint', 'st.decision.row.reviewer', 'st.decision.row.memory', 'st.decision.connectionsHint', 'st.decision.preset.jev', 'st.decision.preset.system_one', 'st.decision.preset.pair_score'], synonyms: ['decision model', '决策模型', 'judge', '判断', 'who decides', '谁来做判断', 'reviewer source', '审查来源', 'memory advisor source', '顾问来源', 'decision service', '决策服务', 'Jev', 'TypeSafe', 'System One', 'rerank', 'classifier', '重排', '分类器', 'GLiClass'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-model-switch', titleKey: 'st.modelSwitch.title', keywordKeys: ['st.modelSwitch.defaultMode', 'st.modelSwitch.confirm', 'st.modelSwitch.rulesTitle', 'st.modelSwitch.ruleFrom'], synonyms: ['模型切换', 'model switch', 'switch model', '换模型', '切换方式', '全新上下文', 'fresh context', '压缩后切换', 'exception rule', '例外规则'] },
   { section: 'ai', tab: 'identity', cardId: 'st-card-request-identity', titleKey: 'st.requestIdentity.defaultTitle', keywordKeys: ['st.requestIdentity.defaultLabel', 'st.requestIdentity.defaultHint'], synonyms: ['请求身份', 'request identity', 'User-Agent', 'UA', 'header', '请求头', 'fingerprint', '指纹'] },
   { section: 'ai', tab: 'identity', cardId: 'st-card-identity-profiles', titleKey: 'st.identity.listTitle', keywordKeys: ['st.identity.userAgentLabel', 'st.identity.headersLabel', 'st.identity.paramsLabel', 'st.identity.duplicate'], synonyms: ['Codex', 'Claude Code', 'Grok', 'originator', 'X-Stainless'] },
@@ -2764,6 +2762,8 @@ export const LEGACY_CARD_ALIASES: Readonly<Record<string, { readonly section: st
   // The cross-provider model list retired with the Models tab; each model is
   // edited inside its connection now.
   'st-card-models': { section: 'ai', cardId: 'st-card-providers' },
+  // Who decides joined the decision services: one card holds the choice and the keys.
+  'st-card-decision-judges': { section: 'ai', cardId: 'st-card-decision-connections' },
   'st-card-sidecar': { section: 'agents', cardId: 'st-card-subagent-limits' },
   'st-card-subagent-timeout': { section: 'agents', cardId: 'st-card-subagent-limits' },
   'st-card-subagent-profiles': { section: 'agents', cardId: 'st-card-main-agents' },

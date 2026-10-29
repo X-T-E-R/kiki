@@ -6,10 +6,10 @@
  * and link here.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { DecisionSource, DecisionSourceStatus, ProviderCatalogItem } from '@kiki/protocol';
+import { providerIdSchema, type DecisionSource, type DecisionSourceStatus, type MoveReviewerKeyResult, type ProviderCatalogItem } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import {
   DECISION_CONNECTION_ADD_ROUTE,
@@ -37,9 +37,8 @@ import { useMemoryAdvisor } from '../memory/useMemoryAdvisor';
 import { buildCatalogModelOptions, useProviderGroupLabel } from '../modelSelectOptions';
 import { hostLabel } from '../providerPresets';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
-import { INPUT } from '../ui';
-import { SectionCard } from './SectionCard';
-import { SettingsDraftFooter } from './SettingsPrimitives';
+import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { FieldIssue, SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
 const PICKER =
@@ -134,21 +133,33 @@ interface JudgeRowModel {
   readonly loading: boolean;
   readonly error: unknown;
   readonly write: (source: DecisionSource | null) => Promise<void>;
+  /** Older-settings cleanup that belongs to this job (the reviewer's own Jev key). */
+  readonly extra?: React.ReactNode;
 }
 
 /**
- * "Who decides": approval review and Memory Advisor, one row each. A pick
- * saves at once; a model name for a connection is a small draft with its own
- * save. Each row writes only its own consumer's `source`, never the advisor's
- * on/off, so picking a source does not switch anything on.
+ * "Who decides": approval review and Memory Advisor, one row each, at the
+ * top of the decision-models card. A pick saves at once; a model name for a
+ * connection is a small draft with its own save. Each row writes only its own
+ * consumer's `source`, never the advisor's on/off, so picking a source does
+ * not switch anything on.
  */
-export function DecisionJudgesCard() {
+export function DecisionJudgeRows() {
   const { client } = useConnection();
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const advisor = useMemoryAdvisor();
   const reviewer = configQuery.data?.permission?.reviewer;
+  const [moved, setMoved] = useState<string | null>(null);
+  // While an older key is still saved for the reviewer, moving it stays
+  // offered, whatever the source says by now: a move that stopped half way,
+  // a reload or a later change must not strand that key.
+  const legacyJev = reviewer?.source === undefined && reviewer?.backend === 'jev';
+  const keySource = reviewer?.apiKeySource ?? (reviewer?.hasApiKey === true ? 'kiki' : 'none');
+  const reviewerExtra = keySource === 'kiki' ? <LegacyJevKey source={reviewer?.source} onMoved={setMoved} />
+    : legacyJev ? <LegacyJevEnv keyEnv={reviewer?.apiKeyEnv} />
+      : moved !== null ? <p role="status" className="text-[12px] text-success">{t('st.reviewer.moveDone', { id: moved })}</p> : null;
   const advisorConfig = advisor.data?.advisor;
   const rows: readonly (JudgeRowModel & { readonly label: string; readonly help: string; readonly unset: string })[] = [
     {
@@ -166,6 +177,7 @@ export function DecisionJudgesCard() {
       write: async (source) => {
         queryClient.setQueryData(['config'], await client.patchConfig({ permission: { reviewer: { source } } }));
       },
+      extra: reviewerExtra,
     },
     {
       consumer: 'memory',
@@ -185,18 +197,13 @@ export function DecisionJudgesCard() {
     },
   ];
   return (
-    <SectionCard id="st-card-decision-judges" title={t('st.decision.judgesTitle')}>
-      <div className="space-y-3">
-        <Hint>{t('st.decision.judgesHint')}</Hint>
-        <div className="divide-y divide-hairline">
-          {rows.map((row) => <JudgeRow key={row.consumer} {...row} />)}
-        </div>
-      </div>
-    </SectionCard>
+    <div className="divide-y divide-hairline" data-decision-judges>
+      {rows.map((row) => <JudgeRow key={row.consumer} {...row} />)}
+    </div>
   );
 }
 
-function JudgeRow({ consumer, label, help, unset, source, status, legacy, loading, error, write }: JudgeRowModel & {
+function JudgeRow({ consumer, label, help, unset, source, status, legacy, loading, error, write, extra }: JudgeRowModel & {
   readonly label: string;
   readonly help: string;
   readonly unset: string;
@@ -266,6 +273,7 @@ function JudgeRow({ consumer, label, help, unset, source, status, legacy, loadin
         ) : null}
         {error !== null && error !== undefined ? <InlineError error={error} /> : null}
         <FeedbackLine feedback={feedback} />
+        {extra !== undefined && extra !== null ? <div className="mt-2">{extra}</div> : null}
       </div>
       <div className="min-w-0 space-y-2">
         <DecisionSourcePicker id={pickerId} consumer={consumer} value={source} ariaLabel={label}
@@ -336,6 +344,104 @@ export function DecisionSourceSummary({ consumer, source, status, legacy }: {
         </button>
       </div>
       {problem !== null ? <p role="alert" className="max-w-[62ch] text-[12px] leading-snug text-danger">{t(DECISION_SOURCE_PROBLEM_KEYS[problem])}</p> : null}
+    </div>
+  );
+}
+/** A Jev key from the environment needs no move: a Jev connection reads the same variable. */
+function LegacyJevEnv({ keyEnv }: { readonly keyEnv?: string }) {
+  const { t } = useI18n();
+  const navigate = useGuardedNavigate();
+  return (
+    <div data-reviewer-legacy="env" className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+      <p className="max-w-[62ch] text-[12px] leading-snug text-ink-soft">{t('st.reviewer.legacyEnv', { name: keyEnv ?? 'TYPESAFE_API_KEY' })}</p>
+      <button type="button" data-reviewer-add-jev className={SECONDARY_BUTTON}
+        onClick={() => { void navigate(DECISION_CONNECTION_ADD_ROUTE); }}>{t('st.reviewer.addJev')}</button>
+    </div>
+  );
+}
+
+/**
+ * A TypeSafe key still saved in the reviewer's own settings. The server moves
+ * it (the browser never holds it) into a connection and points the reviewer
+ * there. Shown for as long as that key is saved, so a move that stopped part
+ * way can be finished after a refresh or a reload; nothing retries on its own.
+ * The connection the reviewer already points at may be named again (it may
+ * hold the moved key); otherwise a free ID is needed, and the server keeps a
+ * connection that holds a different key as it is.
+ */
+function LegacyJevKey({ source, onMoved }: {
+  readonly source: DecisionSource | undefined;
+  /** A finished move clears the key, and with it this block; the card keeps the word. */
+  readonly onMoved: (id: string) => void;
+}) {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
+  const taken = new Set((providersQuery.data?.items ?? []).map((item) => item.id));
+  const [partial, setPartial] = useState<MoveReviewerKeyResult | null>(null);
+  const pointed = source?.kind === 'connection' && taken.has(source.connection) ? source.connection : undefined;
+  const reusable = partial?.connection ?? pointed;
+  const [id, setId] = useState('');
+  const [touched, setTouched] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  // Until the person types, the field follows the facts: the connection the
+  // reviewer points at, or the first free `typesafe` ID.
+  useEffect(() => {
+    if (touched || !providersQuery.isSuccess) return;
+    if (reusable !== undefined) { setId(reusable); return; }
+    if (!taken.has('typesafe')) { setId('typesafe'); return; }
+    for (let n = 2; ; n++) if (!taken.has(`typesafe-${n}`)) { setId(`typesafe-${n}`); break; }
+  }, [providersQuery.isSuccess, providersQuery.data, reusable, touched]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const trimmed = id.trim();
+  const idIssue = trimmed === '' || trimmed === reusable ? null
+    : !providerIdSchema.safeParse(trimmed).success ? t('st.decision.idInvalid')
+      : taken.has(trimmed) ? t('st.decision.idTaken') : null;
+  const move = async () => {
+    if (moving || trimmed === '' || idIssue !== null) return;
+    setMoving(true); setFeedback(null);
+    try {
+      const result = await client.moveReviewerKey(trimmed);
+      // One request per click. The server keeps newer settings when it meets
+      // them, so the cards re-read and say what is true now.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['config'] }),
+        queryClient.invalidateQueries({ queryKey: ['providers'] }),
+      ]);
+      setTouched(false);
+      if (result.state === 'complete') {
+        setPartial(null);
+        onMoved(result.connection);
+      } else {
+        setPartial(result);
+        setFeedback({ tone: 'error', text: t('st.reviewer.movePartial') });
+      }
+    } catch (error) {
+      setFeedback({ tone: 'error', text: t('st.reviewer.moveFailed', { detail: errorText(locale, error) }) });
+    } finally { setMoving(false); }
+  };
+  return (
+    <div data-reviewer-legacy="key" data-reviewer-move={partial?.state ?? 'idle'} className="space-y-2">
+      <p className="max-w-[62ch] text-[12px] leading-snug text-ink-soft">
+        {source === undefined ? t('st.reviewer.legacyKey') : t('st.reviewer.legacyKeyLeft')}
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="block space-y-1">
+          <span className="block text-[12px] text-ink-soft">{t('st.reviewer.moveId')}</span>
+          <input data-reviewer-move-id className={`${INPUT} w-48 font-mono`} value={id}
+            disabled={moving} spellCheck={false} autoComplete="off" aria-invalid={idIssue !== null}
+            aria-describedby={idIssue === null ? undefined : 'reviewer-move-id-issue'}
+            onChange={(event) => { setId(event.target.value); setTouched(true); setFeedback(null); }} />
+        </label>
+        <button type="button" data-reviewer-move-key className={SECONDARY_BUTTON}
+          disabled={moving || trimmed === '' || idIssue !== null || !providersQuery.isSuccess} onClick={() => void move()}>
+          {moving ? t('st.reviewer.moving') : partial !== null ? t('common.retry') : t('st.reviewer.moveKey')}
+        </button>
+      </div>
+      <FieldIssue id="reviewer-move-id-issue" text={idIssue} />
+      <FeedbackLine feedback={feedback} />
     </div>
   );
 }

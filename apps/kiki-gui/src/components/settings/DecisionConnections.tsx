@@ -1,9 +1,10 @@
 /**
- * Decision services in Connections: Jev, any System One service, and rerank
- * or classifier endpoints. Each is an ordinary connection, so its address,
- * key, reveal and removal work the way every other connection's do; it only
- * has no chat models. Which job uses which service is chosen elsewhere
- * (AI › Defaults › Who decides), never here.
+ * Decision models, in Models & providers: which service each job asks
+ * (approval review, Memory Advisor), then the services — Jev, any System One
+ * service, and rerank or classifier endpoints. Each service is an ordinary
+ * connection, so its address, key, reveal and removal work the way every
+ * other connection's do; it only has no chat models. This card is the only
+ * place a decision source is chosen or a decision key is entered.
  */
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
@@ -31,6 +32,7 @@ import { DisclosureChevron, Icon } from '../icons';
 import { hostLabel } from '../providerPresets';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
+import { DecisionJudgeRows } from './DecisionSources';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails, SettingField } from './fields';
 import { FieldIssue, SettingsDraftFooter, SettingsSegmented } from './SettingsPrimitives';
@@ -133,27 +135,39 @@ export function DecisionConnectionsCard({ providers, configuredIds, onChanged }:
   const requested = params.get(DECISION_CONNECTION_PARAM);
   const [adding, setAdding] = useState(hash === ADD_HASH);
   useEffect(() => { if (hash === ADD_HASH) setAdding(true); }, [hash]);
+  // The one home for decision models: which job uses what on top, then the
+  // services themselves with their address and key. No other page asks for
+  // a decision key or picks a decision source.
   return (
-    <SectionCard id="st-card-decision-connections" title={t('st.decision.connectionsTitle')}
-      actions={adding ? undefined : (
-        <button type="button" data-decision-add className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
-          onClick={() => { setAdding(true); }}>
-          <Icon name="plus" size={12} />{t('st.decision.add')}
-        </button>
-      )}>
-      <div className="space-y-3" data-decision-connections>
-        {providers.length === 0 ? <Hint>{t('st.decision.connectionsHint')}</Hint> : (
-          <div className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline" data-decision-list>
-            {providers.map((provider) => (
-              <DecisionConnectionRow key={provider.id} provider={provider} defaultOpen={requested === provider.id} onChanged={onChanged} />
-            ))}
+    <SectionCard id="st-card-decision-connections" title={t('st.decision.connectionsTitle')}>
+      <div className="space-y-6" data-decision-connections>
+        <div className="space-y-2">
+          <Hint>{t('st.decision.judgesHint')}</Hint>
+          <DecisionJudgeRows />
+        </div>
+        <div className="space-y-2" data-decision-services>
+          <div className="flex min-h-8 items-center justify-between gap-3">
+            <p className="text-[13px] font-medium text-ink">{t('st.decision.servicesTitle')}</p>
+            {adding ? null : (
+              <button type="button" data-decision-add className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+                onClick={() => { setAdding(true); }}>
+                <Icon name="plus" size={12} />{t('st.decision.add')}
+              </button>
+            )}
           </div>
-        )}
-        {adding ? (
-          <NewDecisionConnection configuredIds={configuredIds}
-            onCancel={() => { setAdding(false); }}
-            onCreated={async () => { await onChanged(); setAdding(false); }} />
-        ) : null}
+          {providers.length === 0 ? <Hint>{t('st.decision.connectionsHint')}</Hint> : (
+            <div className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline" data-decision-list>
+              {providers.map((provider) => (
+                <DecisionConnectionRow key={provider.id} provider={provider} defaultOpen={requested === provider.id} onChanged={onChanged} />
+              ))}
+            </div>
+          )}
+          {adding ? (
+            <NewDecisionConnection configuredIds={configuredIds}
+              onCancel={() => { setAdding(false); }}
+              onCreated={async () => { await onChanged(); setAdding(false); }} />
+          ) : null}
+        </div>
       </div>
     </SectionCard>
   );

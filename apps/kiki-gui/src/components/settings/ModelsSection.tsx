@@ -59,7 +59,6 @@ import { effortLabel } from './profileEditor/profileDraft';
 import { SettingField } from './fields';
 import { useInstantSave } from './useInstantSave';
 import { LoopLimitsCard } from './LoopLimitsCard';
-import { DecisionJudgesCard } from './DecisionSources';
 import { ModelSwitchCard } from './ModelSwitchCard';
 import {
   ModelEngineFieldError,
@@ -1038,7 +1037,6 @@ export function DefaultsTab() {
   return (
     <div className="space-y-6">
       <GlobalDefaultsCard />
-      <DecisionJudgesCard />
       <ModelSwitchCard />
       <ThinkingCard />
       <GlobalCompactionCard />

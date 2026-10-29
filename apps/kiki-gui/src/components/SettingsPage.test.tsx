@@ -642,13 +642,13 @@ describe('SettingsPage memory advisor', () => {
     expect(client.probeMemoryAdvisor).toHaveBeenCalledWith('typesafe@https://api.typesafe.ai');
   });
 
-  it('echoes an older model setting as the source in effect and links to Who decides', async () => {
+  it('echoes an older model setting as the source in effect and links to Decision models', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
     const container = await renderSettings('/settings/memory', { guarded: true });
     expect(card(container).querySelector('[data-decision-summary-value]')?.textContent).toBe('Still using the source saved in the older settings: cheap-judge.');
     await click(card(container).querySelector('[data-decision-change]')!);
     await flush();
-    expect(container.querySelector('[data-test-location]')?.textContent ?? '').toContain('/settings/ai?tab=defaults');
+    expect(container.querySelector('[data-test-location]')?.textContent ?? '').toContain('/settings/ai?tab=providers#st-card-decision-connections');
   });
   it('turns only the advisor off: the mode alone is written, memory stays on, the model and consent stay', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' }, egress_ack: [{ workspace_id: 'ws-beta', destination: 'openai:https://api.example.test' }] };
