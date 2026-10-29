@@ -75,7 +75,7 @@ import {
 } from './transcript';
 import { emptyOlderSnapshot } from './transcript/selectors';
 import { collectTranscriptContentRefs, patchTranscriptContent, patchAgentTranscriptContent, replaceAgentContentEntity, replaceSnapshotContentEntity, snapshotContentEntity, transcriptContentEntity } from './transcript/content';
-import { applyContentSegment, carryContentHydration, restoreContentPreview, sameContentRef, type ContentRef, type ContentSource, type ContentWindow } from '@kiki/transcript';
+import { adoptContentPreviewField, applyContentSegment, carryContentHydration, contentPathValue, restoreContentPreview, sameContentRef, type ContentRef, type ContentSource, type ContentWindow } from '@kiki/transcript';
 import { isModelSwitchQueueId } from './modelSwitchQueue';
 import { questionAnswerTexts } from './transcript/questionAnswers';
 import { interactionToBlock } from './transcript/project';
@@ -2452,6 +2452,49 @@ export class SessionController {
     }
   }
 
+  /** Replace one changed timeline field from a fresh canonical preview and return its first continuation reference. */
+  private async refreshTimelineFieldPreview(agentId: string, ref: ContentRef, signal: AbortSignal): Promise<ContentRef | 'complete' | undefined> {
+    const source = ref.source;
+    if ((source.kind !== 'turn' && source.kind !== 'frame') || signal.aborted || this.closed) return undefined;
+    const turnId = source.kind === 'turn' ? source.id : source.turnId;
+    if (turnId === undefined) return undefined;
+    const items = this.composeAgentSnapshot(agentId).items;
+    const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === turnId);
+    if (index < 0) return undefined;
+    const nextTurn = items.slice(index + 1).find((item) => item.kind === 'turn');
+    const page = await this.readPreparedContent(() => this.view.transcript.page(
+      { agentId, beforeTurn: nextTurn?.kind === 'turn' ? nextTurn.turnId : undefined, pageSize: 1 },
+      { signal },
+    ), signal);
+    if (this.closed || signal.aborted || page.agent_id !== agentId || page.read?.stale !== undefined) return undefined;
+    const turn = page.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
+    const preview: ContentWindow | undefined = turn === undefined ? undefined : source.kind === 'turn' ? turn
+      : turn.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
+    const samePath = (candidate: ContentRef) => candidate.path.length === ref.path.length && candidate.path.every((part, partIndex) => part === ref.path[partIndex]);
+    const candidate = preview?.contentRefs?.find((current) => samePath(current) && current.kind === ref.kind);
+    if (preview === undefined || candidate?.revision === ref.revision ||
+      (candidate === undefined && contentPathValue(preview, ref.path) === undefined)) return undefined;
+    const current = this.contentEntity(agentId, source);
+    if (current === undefined || !(current.contentRefs ?? []).some((entry) => sameContentRef(entry, ref))) return undefined;
+    let adopted: ContentWindow;
+    try { adopted = adoptContentPreviewField(current, preview, ref.path); } catch { return undefined; }
+    const store = this.agentTranscripts.get(agentId);
+    let installed = store !== undefined && transcriptContentEntity(store, source) !== undefined && replaceAgentContentEntity(store, source, adopted);
+    if (!installed) {
+      const older = this.olderPages.get(agentId);
+      if (older !== undefined && snapshotContentEntity(older, source) !== undefined) {
+        this.olderPages.set(agentId, replaceSnapshotContentEntity(older, source, adopted));
+        installed = true;
+      }
+    }
+    if (!installed || signal.aborted) return undefined;
+    this.forestDirtyAgents.add(agentId);
+    this.pendingTranscriptAgents.add(agentId);
+    this.flushFrames();
+    if (candidate === undefined) return 'complete';
+    return this.contentEntity(agentId, source)?.contentRefs?.find((entry) => sameContentRef(entry, candidate));
+  }
+
   private installTurnStructureRef(agentId: string, ref: ContentRef, fresh: ContentRef): boolean {
     if (ref.source.kind !== 'turn') return false;
     const turnId = ref.source.id;
@@ -2554,12 +2597,18 @@ export class SessionController {
           }
         }
         const refreshKey = this.turnStructureRefreshKey(agentId, ref);
-        if (this.isTurnStructureRef(ref) && error instanceof RPCError && error.code === 40922 &&
+        const structure = this.isTurnStructureRef(ref);
+        if ((structure || ref.source.kind === 'turn' || ref.source.kind === 'frame') && error instanceof RPCError && error.code === 40922 &&
           !this.closed && !controller.signal.aborted && !this.turnStructureRefreshKeys.has(refreshKey)) {
           this.turnStructureRefreshKeys.add(refreshKey);
           try {
-            const fresh = await this.refreshTurnStructurePreview(agentId, ref, controller.signal);
-            if (fresh !== undefined && !this.closed && !controller.signal.aborted) {
+            const fresh = structure ? await this.refreshTurnStructurePreview(agentId, ref, controller.signal)
+              : await this.refreshTimelineFieldPreview(agentId, ref, controller.signal);
+            if (fresh === 'complete' && !this.closed && !controller.signal.aborted) {
+              this.setDetailLoad(agentId, key, undefined);
+              return true;
+            }
+            if (fresh !== undefined && fresh !== 'complete' && !this.closed && !controller.signal.aborted) {
               // The replacement read registers its own controller. The older gesture only knows the stale ref, so cancel that read when this preview is aborted.
               const continuedPromise = this.loadContentSegment(agentId, fresh);
               const abortContinued = () => { this.cancelContentSegment(agentId, fresh); };

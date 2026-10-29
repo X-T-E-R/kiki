@@ -212,6 +212,19 @@ export function mergeContentPreview<T extends ContentWindow>(current: T, preview
   return result;
 }
 
+/** Replace one stale field and its continuation references with a fresh preview's field, forgetting hydration under that path. */
+export function adoptContentPreviewField<T extends ContentWindow>(current: T, preview: ContentWindow, path: readonly (string | number)[]): T {
+  const value = contentPathValue(preview, path);
+  if (value === undefined) throw new Error('content path unavailable');
+  const under = (candidate: ContentRef) => path.every((part, index) => candidate.path[index] === part);
+  const root = clonePath(current, path, () => value) as T;
+  const result = { ...root, contentRefs: [...(current.contentRefs ?? []).filter((candidate) => !under(candidate)), ...(preview.contentRefs ?? []).filter(under)] };
+  const versions = new Map(hydratedVersions.get(current as object));
+  for (const key of versions.keys()) if (under({ path: JSON.parse(key) } as ContentRef)) versions.delete(key);
+  hydratedVersions.set(result, versions);
+  return result;
+}
+
 export function sameContentRef(left: ContentRef, right: ContentRef): boolean {
   return left.revision === right.revision && left.kind === right.kind && left.offset === right.offset && left.total === right.total &&
     (left.direction ?? 'forward') === (right.direction ?? 'forward') &&

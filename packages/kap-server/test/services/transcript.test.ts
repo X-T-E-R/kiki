@@ -3530,7 +3530,7 @@ describe('TranscriptService live integration', () => {
         try {
           const unchanged = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't26' });
           expect(unchanged?.items.filter((item) => item.kind === 'turn')).toHaveLength(20);
-          expect(scans).toHaveLength(2);
+          expect(scans).toHaveLength(3);
         } finally { clock.mockRestore(); }
       } finally {
         service.dispose();

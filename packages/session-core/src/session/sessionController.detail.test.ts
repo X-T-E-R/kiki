@@ -1826,6 +1826,66 @@ describe('hidden prefix turn preview', () => {
     } finally { controller.close(); }
   });
 
+  it.each(['main', 'child'] as const)('refreshes a changed %s text reference from one fresh preview and finishes the new body', async (agentId) => {
+    const turn = (prompt: string): TranscriptTurn => ({ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt, steps: [] });
+    const original = turn(`ORIGINAL ${'o'.repeat(40_000)}`);
+    const rewritten = turn(`REWRITTEN ${'r'.repeat(50_000)} TAIL`);
+    const source = { kind: 'turn' as const, id: 't1' };
+    const stale = boundedEntity(original, source, undefined, agentId, 'tail');
+    const content = vi.fn(segmentRead(rewritten));
+    const { controller, deliver, view } = harness(undefined, content);
+    vi.mocked(view.transcript.page).mockImplementation((async () => ({
+      session_id: 'session_test', agent_id: agentId, has_more: false,
+      tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [],
+      coverage: { kind: 'tail', hasMoreOlder: false }, items: [boundedEntity(rewritten, source, undefined, agentId, 'tail')],
+    })) as NonNullable<SessionViewFacade['transcript']['page']>);
+    await controller.open();
+    if (agentId === 'child') controller.retainAgentView('text-child', agentId, 'delta');
+    deliver(resetEvent(agentId, emptySnapshot({ items: [stale] }), 2));
+    try {
+      const ref = controller.contentRefsFor(agentId, source).find((candidate) => candidate.path[0] === 'prompt');
+      if (ref === undefined) throw new Error('missing prompt reference');
+      expect(await controller.loadContentSegment(agentId, ref)).toBe(true);
+      for (let reads = 0; ; reads += 1) {
+        const next = controller.contentRefsFor(agentId, source).find((candidate) => candidate.path[0] === 'prompt');
+        if (next === undefined) break;
+        expect(reads).toBeLessThan(20);
+        expect(await controller.loadContentSegment(agentId, next)).toBe(true);
+      }
+      expect(view.transcript.page).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(view.transcript.page).mock.calls[0]?.[0]).toEqual({ agentId, beforeTurn: undefined, pageSize: 1 });
+      expect(content.mock.calls.slice(1).every(([input]) => input.agentId === agentId && input.ref.revision !== ref.revision)).toBe(true);
+      const state = agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+      expect(Object.values(state.detailLoads).some((load) => load.status === 'error')).toBe(false);
+      expect(blockText(controller, 'REWRITTEN') || state.blocks.some((block) => 'text' in block && typeof block.text === 'string' && block.text.endsWith(' TAIL'))).toBe(true);
+      const body = state.blocks.find((block) => 'text' in block && typeof block.text === 'string' && block.text.startsWith('REWRITTEN'));
+      expect(body && 'text' in body ? body.text : undefined).toBe(rewritten.prompt);
+      expect(state.blocks.some((block) => 'text' in block && typeof block.text === 'string' && block.text.startsWith('ORIGINAL'))).toBe(false);
+    } finally { controller.close(); }
+  });
+
+  it('reports a text reference that changes again after its one refresh', async () => {
+    const turn = (prompt: string): TranscriptTurn => ({ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt, steps: [] });
+    const source = { kind: 'turn' as const, id: 't1' };
+    const stale = boundedEntity(turn(`ORIGINAL ${'o'.repeat(40_000)}`), source, undefined, 'main', 'tail');
+    const content = vi.fn(segmentRead(turn(`SERVER ${'s'.repeat(40_000)}`)));
+    const { controller, deliver, view } = harness(undefined, content);
+    vi.mocked(view.transcript.page).mockImplementation((async () => ({
+      session_id: 'session_test', agent_id: 'main', has_more: false,
+      tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [],
+      coverage: { kind: 'tail', hasMoreOlder: false }, items: [boundedEntity(turn(`PREVIEW ${'p'.repeat(40_000)}`), source, undefined, 'main', 'tail')],
+    })) as NonNullable<SessionViewFacade['transcript']['page']>);
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [stale] }), 2));
+    try {
+      const ref = controller.contentRefsFor('main', source).find((candidate) => candidate.path[0] === 'prompt')!;
+      expect(await controller.loadContentSegment('main', ref)).toBe(false);
+      expect(view.transcript.page).toHaveBeenCalledTimes(1);
+      expect(content).toHaveBeenCalledTimes(2);
+      expect(Object.values(controller.getState().detailLoads)).toContainEqual(expect.objectContaining({ status: 'error' }));
+    } finally { controller.close(); }
+  });
+
   it('surfaces a second structure conflict instead of paging the turn again', async () => {
     const fixture = hiddenPrefixFixture();
     const content = vi.fn(segmentRead(fixture.insertedAgain));
