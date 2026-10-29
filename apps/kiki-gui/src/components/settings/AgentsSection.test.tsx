@@ -252,7 +252,7 @@ describe('default main profile settings', () => {
   it('states plainly that nothing is declared rather than implying a restriction', async () => {
     await render();
     const row = container.querySelector('[data-default-agent="true"]')!;
-    expect(row.querySelector('[data-subagent-policy="undeclared"]')?.textContent).toBe('Not declared');
+    expect(row.querySelector('[data-subagent-policy="undeclared"]')?.textContent).toBe('Default');
     expect(row.textContent).not.toContain('Not reported');
     expect(row.textContent).not.toContain('Advisory');
   });
@@ -823,7 +823,7 @@ describe('child agent dispatch rights', () => {
     client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, can_spawn_subagents: undefined }] });
     await render();
     const row = container.querySelector('[data-default-agent="true"]')!;
-    expect(row.querySelector('[data-subagent-policy="undeclared"]')?.textContent).toBe('Not declared');
+    expect(row.querySelector('[data-subagent-policy="undeclared"]')?.textContent).toBe('Default');
     expect(row.textContent).not.toContain('Advisory');
     expect(row.textContent).not.toContain('Strict');
   });
@@ -838,7 +838,7 @@ describe('child agent dispatch rights', () => {
     // One three-state control: a switch could not express "not declared", so
     // the segments carry the whole value.
     const choices = dialog.querySelectorAll<HTMLButtonElement>('[data-profile-field="canSpawnSubagents"] [data-dispatch-can-spawn-mode]');
-    expect([...choices].map((button) => button.textContent)).toEqual(['Not declared', 'Allowed', 'Off']);
+    expect([...choices].map((button) => button.textContent)).toEqual(['Default', 'Allowed', 'Off']);
     expect(dialog.querySelector('[data-dispatch-can-spawn-mode="on"][aria-pressed="true"]')).not.toBeNull();
     await act(async () => { choices[2]!.click(); });
     await act(async () => { [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });

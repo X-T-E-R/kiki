@@ -151,10 +151,10 @@ export function createContextCompactWalker({ page, shot, selectSession, resizeVi
     await page.locator('#st-card-auto-compact').scrollIntoViewIfNeeded();
     await shot(`context-compact-global-card-${theme}`);
     await page.goto(settingsUrl('/settings/agents'), { waitUntil: 'domcontentloaded' });
-    // The profile editor keeps the compaction point under Advanced.
+    // The profile editor keeps the compaction point on the Advanced tab.
     await page.waitForSelector('[data-team-open="builder"]', { timeout: 15_000 });
     await page.locator('[data-team-open="builder"]').click();
-    await page.locator('[data-profile-section="advanced"] > summary').click();
+    await page.locator('[role="dialog"] [data-profile-tab="advanced"]').click();
     await page.waitForSelector('[data-profile-auto-compact]', { timeout: 5000 });
     await page.locator('[data-profile-auto-compact]').evaluate((element) => element.scrollIntoView({ block: 'center' }));
     await shot(`context-compact-profile-${theme}`);

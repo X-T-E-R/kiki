@@ -71,7 +71,6 @@ export function KikiContextField({ draft, baseline, engine, disabled, onChange }
   const support = hookSupport(draft.executor);
   const hooksOn = on('hooks');
   return <div data-kiki-context className="space-y-3">
-    <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.kikiContext.intro', { engine })}</p>
     <ul className="space-y-3">
       <CapabilityRow id="subagents" label={t('st.profiles.kikiSubagents')} hint={t('st.profiles.kikiSubagentsHint', { engine })}
         tools={DELEGATION_SHOWN} moreTools={kikiDelegationTools().filter((name) => !DELEGATION_SHOWN.includes(name)).length} checked={draft.allowKikiSubagents} disabled={disabled}
@@ -111,6 +110,5 @@ export function KikiContextField({ draft, baseline, engine, disabled, onChange }
         {t('st.kikiContext.clear')}
       </button> : null}
     </div>
-    <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.kikiContext.scope')}</p>
   </div>;
 }

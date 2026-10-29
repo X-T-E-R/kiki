@@ -2473,11 +2473,11 @@ async function scenarioSettingsAgents() {
   await shot('settings-agents-main');
 
   const list = page.locator('#st-card-main-agents');
-  await list.locator('[data-team-filter="subagent"]').click();
-  await page.waitForSelector('[data-team-row="reviewer"]', { timeout: 5000 });
-  if (await list.locator('[data-team-row="agent"]').count()) {
-    throw new Error('the Subagent filter must hide main agents');
+  await page.waitForSelector('[data-team-group="subagent"] [data-team-row="reviewer"]', { timeout: 5000 });
+  if (await list.locator('[data-team-group="subagent"] [data-team-row="agent"]').count()) {
+    throw new Error('main agents must not appear among the helpers');
   }
+  await list.locator('[data-team-group="subagent"]').scrollIntoViewIfNeeded();
   await shot('settings-agents-filtered');
   await list.locator('[data-team-open="reviewer"]').click();
   const prompt = page.locator('[data-agent-detail="reviewer"] #profile-prompt');
@@ -2491,7 +2491,6 @@ async function scenarioSettingsAgents() {
   await page.click(`text=${S.dirtyDiscard}`);
   await page.waitForSelector('[data-profile-editor]', { state: 'detached', timeout: 5000 });
 
-  await list.locator('[data-team-filter="all"]').click();
   await list.locator('[data-profile-new]').click();
   await page.waitForSelector('[data-agent-create]', { timeout: 5000 });
   for (const start of ['copy', 'template', 'blank']) {
@@ -2507,7 +2506,7 @@ async function scenarioSettingsAgents() {
   await page.click(`text=${S.dirtyDiscard}`).catch(() => undefined);
   await page.waitForSelector('[data-agent-create]', { state: 'detached', timeout: 5000 });
   await list.locator('[data-team-open="reviewer"]').click();
-  await page.locator('[data-profile-section="advanced"] > summary').click();
+  await page.locator('[role="dialog"] [data-profile-tab="advanced"]').click();
   await shot('settings-agents-advanced');
   await page.locator('[role="dialog"] [data-agent-back]').click();
   await resizeViewport(390);

@@ -69,6 +69,9 @@ async function open(name: string) {
   await act(async () => container.querySelector<HTMLButtonElement>(`[data-team-open="${name}"]`)!.click());
   await settle();
 }
+async function openTab(tab: string) {
+  await act(async () => sheet().querySelector<HTMLButtonElement>(`[data-profile-tab="${tab}"]`)!.click());
+}
 async function save() {
   await act(async () => buttonIn(sheet(), 'Save').click());
   await settle();
@@ -112,14 +115,19 @@ describe('agents team view', () => {
   it('lists every agent with model, effort and whom it may call, and flags an alias the catalog lacks', async () => {
     await render();
     const rows = [...container.querySelectorAll<HTMLElement>('[data-team-row]')].map((row) => row.dataset['teamRow']);
-    // Grouped by source (global before built-in); main agents first within a group.
-    expect(rows).toEqual(['agent', 'reviewer', 'explore']);
+    // Grouped by what the user talks to: main agents, then the helpers they dispatch.
+    expect(rows).toEqual(['agent', 'explore', 'reviewer']);
     const lead = container.querySelector('[data-team-row="agent"]')!;
     expect(lead.querySelector('[data-team-dispatch]')?.textContent).toContain('reviewer, explore');
     expect(lead.querySelector('[data-team-effort]')?.textContent).toContain('High');
     const reviewer = container.querySelector('[data-team-row="reviewer"]')!;
-    // An empty preset list says what it is: no preset selectable, path still works.
-    expect(reviewer.querySelector('[data-team-dispatch]')?.textContent).toContain('No preset selectable here.');
+    // An empty preset list reads as a quiet fact, not a warning.
+    expect(reviewer.querySelector('[data-team-dispatch]')?.textContent).toContain('No presets');
+    // An undeclared list is the neutral default.
+    expect(container.querySelector('[data-team-row="explore"] [data-team-dispatch]')?.textContent).toContain('Default');
+    // Where the file lives is a row tag, not a group: a built-in says so, your own folder says nothing.
+    expect(container.querySelector('[data-team-row="explore"] [data-team-tag="source"]')?.textContent).toBe('Built-in');
+    expect(container.querySelector('[data-team-row="reviewer"] [data-team-tag="source"]')).toBeNull();
     expect(reviewer.querySelector('[data-team-warning]')).not.toBeNull();
     expect(container.querySelector('[data-team-warnings]')?.textContent).toContain('1 setting needs attention');
     // A built-in is read-only: its cells are text, not pickers.
@@ -137,45 +145,24 @@ describe('agents team view', () => {
     expect(container.querySelector('[data-saved-tick]')).not.toBeNull();
   });
 
-  it('filters to main agents', async () => {
-    await render();
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-team-filter="main"]')!.click());
-    expect(container.querySelectorAll('[data-team-row]')).toHaveLength(1);
-  });
-
-  it('groups workspace, global and built-in agents, main above subagents, and hides an empty group', async () => {
+  it('groups main agents above helpers, tags the project source, and hides an empty group', async () => {
     const local: NamedAgentProfile = { ...sub, name: 'local-lead', main: true, source: 'workspace', source_file: '/fixture/.kiki/agents/local-lead.md' };
     const localSub: NamedAgentProfile = { ...sub, name: 'local-helper', source: 'workspace', source_file: '/fixture/.kiki/agents/local-helper.md' };
     client.listNamedAgentProfiles.mockResolvedValue({ items: [main, sub, explore, localSub, local], complete: true });
     await render();
     const groups = [...container.querySelectorAll<HTMLElement>('[data-team-group]')];
-    expect(groups.map((group) => group.dataset['teamGroup'])).toEqual(['workspace', 'global', 'builtin']);
-    expect([...groups[0]!.querySelectorAll<HTMLElement>('[data-team-row]')].map((row) => row.dataset['teamRow'])).toEqual(['local-lead', 'local-helper']);
-    expect([...groups[0]!.querySelectorAll<HTMLElement>('[data-team-kind]')].map((row) => row.dataset['teamKind'])).toEqual(['main', 'subagent']);
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [main, sub, explore], complete: true });
+    expect(groups.map((group) => group.dataset['teamGroup'])).toEqual(['main', 'subagent']);
+    expect([...groups[0]!.querySelectorAll<HTMLElement>('[data-team-row]')].map((row) => row.dataset['teamRow'])).toEqual(['agent', 'local-lead']);
+    expect(container.querySelector('[data-team-row="local-helper"] [data-team-tag="source"]')?.textContent).toBe('Project');
+    // Engine status lives on the providers page; this page has no status strip and no layout switch.
+    expect(container.querySelector('[data-agent-passthrough-presets]')).toBeNull();
+    expect(container.querySelector('[data-team-layout]')).toBeNull();
+    // Disabling by name is a rare action kept in one quiet fold at the bottom.
+    expect(container.querySelector('details[data-disabled-by-name-fold]')?.hasAttribute('open')).toBe(false);
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [sub, explore], complete: true });
     await act(async () => { await queries.invalidateQueries(); });
     await settle();
-    expect(container.querySelector('[data-team-group="workspace"]')).toBeNull();
-  });
-
-  it('shows each main agent with its roster, lease pins winning over the member pin', async () => {
-    const second: NamedAgentProfile = { ...sub, name: 'lead-two', main: true, source_file: '/fixture/lead-two/SYSTEM.md', allowed_subagents: ['agent'] };
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [main, sub, explore, second], complete: true });
-    await render();
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-team-layout="teams"]')!.click());
-    const teams = [...container.querySelectorAll<HTMLElement>('[data-roster-team]')].map((team) => team.dataset['rosterTeam']);
-    expect(teams).toEqual(['agent', 'lead-two']);
-    const lead = container.querySelector('[data-roster-team="agent"]')!;
-    expect([...lead.querySelectorAll<HTMLElement>('[data-roster-member]')].map((row) => row.dataset['rosterMember'])).toEqual(['reviewer', 'explore']);
-    const leased = lead.querySelector('[data-roster-member="explore"]')!;
-    expect(leased.textContent).toContain('fixture/lite');
-    expect(leased.textContent).toContain('set by agent');
-    expect(lead.querySelector('[data-roster-member="reviewer"]')?.textContent).toContain('typo/model');
-    // A main agent called by name is shown as it is, marked Main.
-    expect(container.querySelector('[data-roster-team="lead-two"] [data-roster-member="agent"]')?.textContent).toContain('Main');
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-roster-team="agent"] [data-roster-open="explore"]')!.click());
-    await settle();
-    expect(sheet().querySelector('[data-agent-detail="explore"]')).not.toBeNull();
+    expect(container.querySelector('[data-team-group="main"]')).toBeNull();
   });
 
   it('greys a shadowed file and says which file wins', async () => {
@@ -244,13 +231,14 @@ describe('profile editor sheet', () => {
     expect(sheet().querySelector('[data-profile-diagnostic="shadows"] [data-shadowed-file="/fixture/agent/old/SYSTEM.md"]')).not.toBeNull();
   });
 
-  it('sets and clears spawn constraints under Advanced', async () => {
+  it('sets and clears what dispatched helpers may use on the dispatch tab', async () => {
     const constrained = { ...main, spawn_constraints: { allowed_models: ['fixture/lite'], disallowed_tools: ['WebFetch'] } };
     client.listNamedAgentProfiles.mockResolvedValue({ items: [constrained, sub, explore], complete: true });
     client.updateNamedAgentProfile.mockResolvedValue(constrained);
     await render();
     await open('agent');
-    const advanced = sheet().querySelector<HTMLElement>('[data-profile-section="advanced"]')!;
+    await openTab('dispatch');
+    const advanced = sheet().querySelector<HTMLElement>('[data-model-rules="spawn"]')!;
     expect(advanced.querySelector('[data-alias-chips="spawn-allowed-models"] [data-alias-chip="fixture/lite"]')).not.toBeNull();
     await act(async () => advanced.querySelector<HTMLButtonElement>('[data-spawn-effort="max"]')!.click());
     await save();
@@ -269,7 +257,7 @@ describe('profile editor sheet', () => {
     // preset file given by path still works, so it is not a save blocker.
     const field = sheet().querySelector<HTMLElement>('[data-dispatch-allowed]')!;
     expect(field.getAttribute('data-declared')).toBe('true');
-    expect(field.querySelector('[data-dispatch-allowed-empty]')?.textContent).toContain('A definition supplied by path is unaffected by this list');
+    expect(field.querySelector('[data-dispatch-allowed-empty]')?.textContent).toBe('No presets');
     // Nothing is edited, so the footer is not a save blocker: the old
     // "empty list" rejection is gone with the removed three-way control.
     expect(sheet().querySelector('[data-settings-draft]')?.getAttribute('data-dirty')).not.toBe('true');
@@ -415,6 +403,22 @@ describe('profile editor sheet', () => {
     expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('claude-helper', expect.objectContaining({
       executor_prompt: { delivery: 'append', include: ['agents_md'], per_engine: { 'claude-acp': { delivery: 'preamble', include: ['agents_md', 'memory_snapshot'] } } },
     }));
+  });
+
+  it('splits the sheet into question tabs, moves by arrow keys, marks unsaved tabs and locks the file tab', async () => {
+    await render();
+    await open('agent');
+    const tabs = [...sheet().querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Who it is', 'How it runs', 'Who it dispatches', 'Tools', 'Advanced', 'File']);
+    expect(sheet().querySelector('[data-profile-panel="identity"]')?.hasAttribute('hidden')).toBe(false);
+    await act(async () => { tabs[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
+    expect(sheet().querySelector('[data-profile-tab="run"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(sheet().querySelector('[data-profile-tab="run"]'));
+    expect(sheet().querySelector('[data-profile-panel="identity"]')?.hasAttribute('hidden')).toBe(true);
+    await typeIn(sheet().querySelector<HTMLTextAreaElement>('#profile-prompt')!, 'Edited');
+    expect(sheet().querySelector('[data-profile-tab="identity"] [data-profile-tab-dirty]')).not.toBeNull();
+    expect(sheet().querySelector('[data-profile-tab="run"] [data-profile-tab-dirty]')).toBeNull();
+    expect(sheet().querySelector<HTMLButtonElement>('[data-profile-tab="raw"]')!.disabled).toBe(true);
   });
 
   it('guards a dirty draft when the sheet closes and discards on request', async () => {
@@ -569,9 +573,11 @@ describe('profile menu restriction and advice editor', () => {
     client.updateNamedAgentProfile.mockResolvedValue({ ...main, preferred_models: ['fixture/lite'], preferred_efforts: ['low'] });
     await render();
     await open('agent');
-    expect(sheet().querySelector('[data-profile-section="soft-advice"]')?.textContent).toContain('Soft advice');
-    await choose(sheet().querySelector<HTMLElement>('#preferred-models-add')!, 'fixture/lite');
-    await choose(sheet().querySelector<HTMLElement>('#preferred-efforts-add')!, 'low');
+    await openTab('run');
+    const rules = sheet().querySelector<HTMLElement>('[data-model-rules="self"]')!;
+    expect([...rules.querySelectorAll('[data-rule-column]')].map((node) => node.textContent)).toEqual(['Only these', 'Prefer', 'Avoid', 'Never']);
+    await choose(rules.querySelector<HTMLElement>('#preferred-models-add')!, 'fixture/lite');
+    await act(async () => rules.querySelector<HTMLButtonElement>('[data-preferred-effort="low"]')!.click());
     await save();
     expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', {
       scope: 'user', workspace_id: 'ws-one', source_file: main.source_file,

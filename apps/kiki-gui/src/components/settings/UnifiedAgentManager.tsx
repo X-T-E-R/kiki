@@ -26,7 +26,7 @@ import { engineLabel, useExecutorCatalog } from './profileEditor/engines';
 import { NewProfile } from './profileEditor/NewProfile';
 import { ProfileEditor } from './profileEditor/ProfileEditor';
 import { isWritable, writeScope } from './profileEditor/profileDraft';
-import { TeamView, type TeamFilter, type TeamRow } from './profileEditor/TeamView';
+import { TeamView, type TeamRow } from './profileEditor/TeamView';
 import { useSavedTick } from './useSavedTick';
 
 // Identity of the file, not of one workspace's registration: a refetch can
@@ -47,7 +47,6 @@ export function UnifiedAgentManager() {
   const queryClient = useQueryClient();
   const guard = useDirtyGuard();
   const navigate = useGuardedNavigate();
-  const [filter, setFilter] = useState<TeamFilter>('all');
   const [workspaceId, setWorkspaceId] = useState<string>();
   const [sheet, setSheet] = useState<Sheet>(null);
   const [toggleSaving, setToggleSaving] = useState(false);
@@ -175,8 +174,7 @@ export function UnifiedAgentManager() {
       !profiles.some((profile) => profile.name === name)),
     [configQuery.data, profiles],
   );
-  const removed = shippedEntries.filter((entry) => entry.managed && entry.status === 'removed'
-    && (filter === 'all' || (filter === 'main') === entry.main));
+  const removed = shippedEntries.filter((entry) => entry.managed && entry.status === 'removed');
 
   /**
    * Whether the handoff knows where the session should run.
@@ -191,58 +189,16 @@ export function UnifiedAgentManager() {
 
   const workspacePicker = workspaceOptions.length > 0 ? <SearchableSelect id="agents-workspace-select" options={workspaceOptions}
     value={selectedWorkspaceId ?? ''} ariaLabel={t('new.workspace')} buttonClassName={SETTINGS_SELECT_TRIGGER}
-    triggerLabel={<span className="text-ink-soft">{t('st.profiles.resolveIn')} <span className="text-ink">{workspaceOptions.find((option) => option.value === selectedWorkspaceId)?.label}</span></span>}
+    triggerLabel={<span className="text-ink-soft">{t('st.profiles.project')} <span className="text-ink">{workspaceOptions.find((option) => option.value === selectedWorkspaceId)?.label}</span></span>}
     onChange={(next) => { if (next !== selectedWorkspaceId) { setWorkspaceId(next); setSheet(null); } }} /> : null;
 
   return <SectionCard id="st-card-main-agents" title={t('st.agentManager.title')}>
     <div className="space-y-4">
-      <Hint>{t('st.profiles.teamIntro')}</Hint>
-      <div
-        data-agent-passthrough-presets
-        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-panel/60 px-3 py-2 text-[12px]"
-      >
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium text-ink-soft">{t('composer.profileGroupPassthrough')}：</span>
-          <span
-            data-passthrough-preset="native"
-            className="inline-flex items-center gap-1.5 rounded-full border border-hairline bg-paper px-2.5 py-0.5 text-[12px] font-medium text-ink"
-          >
-            <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden />
-            Kiki
-            <span className="text-[11px] font-normal text-ink-faint">· {t('composer.profilePassthroughBadge')}</span>
-          </span>
-          {executors.filter((item) => item.id !== 'native').map((item) => {
-            const ready = item.status === 'ready';
-            const needsSetup = item.status === 'unknown';
-            return (
-              <span
-                key={item.id}
-                data-passthrough-preset={item.id}
-                className={`inline-flex items-center gap-1.5 rounded-full border border-hairline bg-paper px-2.5 py-0.5 text-[12px] ${ready ? 'font-medium text-ink' : 'text-ink-soft'}`}
-              >
-                <span
-                  className={`h-1.5 w-1.5 rounded-full ${ready ? 'bg-success' : needsSetup ? 'bg-amber-rule' : 'bg-ink-faint/50'}`}
-                  aria-hidden
-                />
-                {engineLabel(item.id, item.label ?? item.id, executors)}
-              </span>
-            );
-          })}
-        </div>
-        <button
-          type="button"
-          data-agent-passthrough-manage
-          onClick={() => { void navigate('/settings/providers#st-card-engines'); }}
-          className="text-[12px] font-medium text-accent-ink hover:underline"
-        >
-          {t('st.providers.zone2.title')} →
-        </button>
+      <div className="flex min-h-8 flex-wrap items-center justify-between gap-2" data-agents-scope>
+        {workspacePicker ?? <span />}
+        <SaveStatus saving={quickSaving !== undefined} saved={quickSaved} />
       </div>
-      <TeamView rows={rows} models={models} filter={filter} onFilter={setFilter} savingKey={quickSaving}
-        toolbar={<>
-          <SaveStatus saving={quickSaving !== undefined} saved={quickSaved} />
-          {workspacePicker}
-        </>}
+      <TeamView rows={rows} models={models} savingKey={quickSaving}
         // Beside "New agent", because that is the verb this one stands in for —
         // not in the filter row, where it read as another workspace control.
         newActions={
@@ -290,13 +246,8 @@ export function UnifiedAgentManager() {
       {/* The handoff is disabled while this is unresolved; say why rather than
           leaving a dead button. */}
       {!askKikiReady && workspacesQuery.isError ? <InlineError error={workspacesQuery.error} /> : null}
-      <AdvancedDetails summary={t('st.agentManager.disabledByName')}>
-        <p className="max-w-[72ch] text-[11.5px] leading-5 text-ink-faint">{t('st.agentManager.disabledByNameHint')}</p>
-        <p className="font-mono text-[11px] leading-5 text-ink-soft">
-          {t('st.agentIdentity.disabledProfiles')} ={' '}
-          {(configQuery.data?.disabled_named_profiles ?? []).join(', ') || '—'}
-        </p>
-        <div className="flex flex-wrap items-center gap-2">
+      <AdvancedDetails summary={t('st.agentManager.disabledByName')} data-disabled-by-name-fold className="border-t border-hairline pt-3 text-[11px] text-ink-soft">
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           <input
             className={`${INPUT} font-mono`}
             value={namedDisabled ?? ''}
