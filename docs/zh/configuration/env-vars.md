@@ -144,7 +144,7 @@ kiki
 | `KIKI_MCP_TOOL_TIMEOUT_MS` | 所有 MCP server 的全局默认单次工具调用超时（毫秒）；优先级高于 `config.toml` 的 `[mcp] tool_timeout_ms`，但低于 `mcp.json` 中单个 server 的 `toolTimeoutMs`（默认 `60000`） | `1` 到 `2147483647` 的整数；非法值被忽略 |
 | `KIKI_LOOP_MAX_STEPS_PER_TURN` | Agent 单轮最大步数；优先级高于 `config.toml` 的 `[loop_control] max_steps_per_turn`（不设或 `0` 表示无上限） | 非负整数；非法值被忽略 |
 | `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP` | 单步失败后的最大总尝试次数（含首次尝试）；优先级高于 `config.toml` 的 `[loop_control] max_attempts_per_step`（默认 `5`） | 非负整数；非法值被忽略 |
-| `KIKI_INFINITE_RETRY` | 无限重试失败的 LLM 请求，涵盖轮次内步骤、compaction、HTTP 400/404 和额度错误。等待按指数退避（32 秒封顶）并尊重 `Retry-After`。取消、本地准入拒绝、已观察到的输出或工具执行、`retry = false`、单次请求的 `retry: 'never'` 仍阻止重试；一次性 [`Continue.` 请求](./config-files.md#loop-control)也不会重试。上下文溢出仍走上下文恢复。适用于端点可能短暂故障的长时间无人值守评测 | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
+| `KIKI_INFINITE_RETRY` | 无限重试失败的 LLM 请求，涵盖轮次内步骤、compaction、HTTP 400/404 和额度错误。等待按指数退避（32 秒封顶）并尊重 `Retry-After`。原生轮次的连接中断仍受[有界重试预算](./config-files.md#retry)约束，不会因此无限重发部分响应。取消、本地准入拒绝、安全拒绝、供应商托管工具输出、`retry = false` 和单次请求的 `retry: 'never'` 仍阻止重试；一次性 [`Continue.` 请求](./config-files.md#loop-control)也不会重试。上下文溢出仍走上下文恢复。适用于端点可能短暂故障的长时间无人值守评测 | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
 | `KIKI_TOKEN_COUNTING_STRATEGY` | 对外上报的上下文 token 计数（上下文大小显示）；优先级高于 `config.toml` 的 `[token_counting] strategy`（默认 `measured+estimated`） | `measured+estimated`、`measured`、`estimated`（不区分大小写）；非法值被忽略 |
 | `NB_SEARCH_CONFIG` | 内置搜索与抓取模块的 canonical JSON 配置路径；Kiki 的 `[nb_search]` patch 在它之后应用 | 文件路径 |
 | `NB_SEARCH_HOME` | 内置搜索与抓取模块的数据目录 | 目录路径 |
