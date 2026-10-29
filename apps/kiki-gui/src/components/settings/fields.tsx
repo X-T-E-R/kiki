@@ -19,6 +19,7 @@
  */
 
 import { Hint } from '../controls';
+import { Icon } from '../icons';
 import { SettingHelp } from './SettingHelp';
 
 /**
@@ -140,8 +141,12 @@ export function AdvancedDetails({
   children: React.ReactNode;
 } & React.DetailsHTMLAttributes<HTMLDetailsElement>) {
   return (
-    <details className="text-[11px] text-ink-soft" {...rest}>
-      <summary className="cursor-pointer select-none font-medium text-ink-soft hover:text-ink">
+    // The same chevron and 12px text as every other fold in the app, not the
+    // browser's ▶ marker at 11px: a collapsed tail should read as one quiet,
+    // familiar control wherever it sits.
+    <details className="text-[12px] text-ink-soft" {...rest}>
+      <summary className="-ml-1 inline-flex min-h-7 cursor-pointer list-none select-none items-center gap-1 rounded px-1 font-medium text-ink-soft outline-none transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
+        <Icon name="chevron" size={12} className="shrink-0 text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] ease-out [details[open]>summary>&]:rotate-90 motion-reduce:transition-none" />
         {summary}
       </summary>
       <div className="mt-1.5 space-y-1.5 leading-relaxed">{children}</div>
