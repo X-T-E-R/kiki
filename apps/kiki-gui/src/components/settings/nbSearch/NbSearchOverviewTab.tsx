@@ -1,7 +1,6 @@
 /**
  * 概览: can the assistant search and read pages right now, and what needs a
- * hand. Everything that configures how (sources, layering) lives on the
- * advanced tab; this page only points at it.
+ * hand. A degraded tool names the tab that fixes it, inline on its own row.
  */
 
 import type { NbSearchCapabilities, NbSearchTestStatus } from '@kiki/protocol';
@@ -16,7 +15,7 @@ export function NbSearchOverviewTab({
   capabilities,
   readiness,
   onNavigateToSearch,
-  onNavigateToAdvanced,
+  onNavigateToFetch,
 }: {
   capabilities: NbSearchCapabilities;
   readiness: {
@@ -24,7 +23,7 @@ export function NbSearchOverviewTab({
     readonly fetch: NbSearchTestStatus['search'];
   };
   onNavigateToSearch: () => void;
-  onNavigateToAdvanced: () => void;
+  onNavigateToFetch: () => void;
 }) {
   const { t } = useI18n();
   // The selection line names the service the way the service cards do — the
@@ -47,10 +46,31 @@ export function NbSearchOverviewTab({
     }
     return id;
   };
-  const anyPartial =
-    capabilities.providers.instances.some((instance) => instance.issues.length > 0) ||
-    capabilities.search.lanes.some((lane) => lane.issues.length > 0) ||
-    capabilities.fetch.pipelines.some((pipeline) => pipeline.issues.length > 0);
+  const searchState = webSearchState(readiness.search);
+  const fetchState = fetchUrlState(readiness.fetch);
+  // A row earns its fix link when the tool is not quietly working: unconfigured
+  // already has the amber fail-closed note below, so only degraded and
+  // unavailable rows carry one.
+  const searchFix = searchState === 'degraded' || searchState === 'unavailable' ? (
+    <button
+      type="button"
+      onClick={onNavigateToSearch}
+      className="text-[11px] font-medium text-selected-ink hover:underline"
+      data-nb-search-goto-search
+    >
+      {t('st.nbSearch.gotoServices')}
+    </button>
+  ) : null;
+  const fetchFix = fetchState === 'degraded' || fetchState === 'unavailable' ? (
+    <button
+      type="button"
+      onClick={onNavigateToFetch}
+      className="text-[11px] font-medium text-selected-ink hover:underline"
+      data-nb-search-goto-fetch
+    >
+      {t('st.nbSearch.gotoFetch')}
+    </button>
+  ) : null;
 
   return (
     <SectionCard id="st-card-search-status" title={t('st.nbSearch.statusTitle')}>
@@ -59,16 +79,19 @@ export function NbSearchOverviewTab({
           <NbSearchReadinessRow
             label={t('st.nbSearch.webSearch')}
             desc={t('st.nbSearch.webSearchDesc')}
-            state={webSearchState(readiness.search)}
+            state={searchState}
             readiness={readiness.search}
             selectionLabel={selectionLabel}
+            action={searchFix}
           />
           <NbSearchReadinessRow
             label={t('st.nbSearch.fetchUrl')}
             desc={t('st.nbSearch.fetchUrlDesc')}
-            state={fetchUrlState(readiness.fetch)}
+            state={fetchState}
             readiness={readiness.fetch}
             selectionLabel={selectionLabel}
+            issueContext="fetch"
+            action={fetchFix}
           />
         </div>
 
@@ -79,23 +102,9 @@ export function NbSearchOverviewTab({
               type="button"
               onClick={onNavigateToSearch}
               className={`${SECONDARY_BUTTON} text-[11px] font-medium shrink-0`}
-              data-nb-search-goto-search
+              data-nb-search-goto-search-unconfigured
             >
               {t('st.nbSearch.gotoServices')}
-            </button>
-          </div>
-        ) : null}
-
-        {anyPartial ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-paper p-3 text-[11.5px] text-ink-soft">
-            <p className="min-w-0 flex-1">{t('st.nbSearch.partialReadyHint')}</p>
-            <button
-              type="button"
-              onClick={onNavigateToAdvanced}
-              className={`${SECONDARY_BUTTON} text-[11px] font-medium shrink-0`}
-              data-nb-search-goto-advanced
-            >
-              {t('st.nbSearch.gotoDiagnostics')}
             </button>
           </div>
         ) : null}

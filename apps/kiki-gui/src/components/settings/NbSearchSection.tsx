@@ -503,8 +503,8 @@ export function NbSearchSection() {
           onNavigateToSearch={() => {
             selectTab('search');
           }}
-          onNavigateToAdvanced={() => {
-            selectTab('advanced');
+          onNavigateToFetch={() => {
+            selectTab('fetch');
           }}
         />
       </div>

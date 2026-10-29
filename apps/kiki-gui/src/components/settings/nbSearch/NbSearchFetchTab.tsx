@@ -100,7 +100,7 @@ export function NbSearchFetchTab({
               title={t('st.nbSearch.chainEmpty')}
             />
           ) : (
-            <div className="space-y-2" data-nb-search-fetch-chain>
+            <div className="divide-y divide-hairline rounded-lg border border-hairline" data-nb-search-fetch-chain>
               {defaultChain.pipelines.map((pipelineId, index) => {
                 const instance = cardInstance(capabilities, draft, profiles, 'pipeline', pipelineId);
                 return (

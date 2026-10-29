@@ -1,7 +1,9 @@
 /**
- * One service, one card. The head answers "is this working and is it the
- * default"; the body (open on demand, or automatically while something needs
- * attention) answers "paste the key, switch it on, make it the default".
+ * One service, one row. The collapsed row answers "is this working and is it
+ * the default" — name, 默认 tag, facts line, a status word with a dot, the
+ * enable switch and the chevron. The body answers "paste the key, make it the
+ * default": keys first, then one 高级 fold (read source, key status, order and
+ * cache, options), and a quiet footer line with 设为默认 / 移除此服务.
  *
  * The row never picks the default by being clicked — the click model the
  * settings pass settled on: row opens, an explicit 设为默认 button defaults.
@@ -15,12 +17,13 @@ import type { NbSearchCapabilities, NbSearchKeyUsageView, NbSearchManagedCredent
 import { setNbSearchCredentialEnv, type NbSearchDraft } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../../i18n';
-import { Icon } from '../../icons';
 import { Hint, Toggle } from '../../controls';
-import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../../ui';
+import { SECONDARY_BUTTON } from '../../ui';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { AdvancedDetails, SettingField } from '../fields';
 import { FieldIssue, SettingsSelect } from '../SettingsPrimitives';
+import { RowFrame } from '../RowFrame';
+import { Tag } from '../../capabilities/primitives';
 import { NbSearchMultiKeyEditor, type KeyDraft } from './NbSearchMultiKeyEditor';
 import { NbSearchKeyUsagePanel } from './NbSearchKeyUsagePanel';
 import { costLabelKey, latencyLabelKey, type ServiceCard } from './types';
@@ -204,8 +207,7 @@ export function NbSearchServiceCard({
 
   const needsAttention = info !== null && info.enabled
     && info.credentialRequirement !== 'none'
-    && instance !== undefined
-    && !instance.credential.configured
+    && (instance === undefined || !instance.credential.configured)
     && keyDraft.mode === 'keep';
   const [open, setOpen] = useState(defaultOpen || needsAttention);
   useEffect(() => {
@@ -288,141 +290,55 @@ export function NbSearchServiceCard({
     costKey === undefined ? card.cost : t(costKey),
   ].filter((part): part is string => part !== undefined);
 
-  return (
-    <div
-      className="rounded-lg border border-hairline"
-      data-nb-search-service-card={card.id}
-      data-nb-search-service-kind={kind}
-    >
-      <div className="flex items-start gap-1 px-3 py-2">
+  const showMakeDefault = onMakeDefault !== undefined && defaultState === 'none';
+  const footer = showMakeDefault || onRemoveService !== undefined ? (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1" data-nb-search-service-footer>
+      {showMakeDefault ? (
         <button
           type="button"
-          aria-expanded={open}
-          data-nb-search-service-open={card.id}
-          onClick={() => { setOpen((current) => !current); }}
-          className="flex min-w-0 flex-1 items-baseline gap-2 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40"
+          className="text-[12px] font-medium text-selected-ink transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={saving}
+          data-nb-search-service-make-default={card.id}
+          onClick={onMakeDefault}
         >
-          <span className="min-w-0 flex-1">
-            <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-              <span className="min-w-0 break-words text-[13px] font-medium text-ink">{card.title}</span>
-              {defaultState === 'default' ? (
-                <span className="shrink-0 rounded-full bg-panel px-1.5 py-px text-[11px] font-medium text-ink shadow-[var(--kiki-sheet-shadow)]" data-nb-search-service-default>
-                  {t('st.nbSearch.services.defaultBadge')}
-                </span>
-              ) : null}
-              {defaultState === 'inherit' ? (
-                <span className="shrink-0 text-[11px] text-ink-faint" data-nb-search-service-inherit>
-                  {t('st.nbSearch.services.inheritBadge')}
-                </span>
-              ) : null}
-            </span>
-            <span className="mt-0.5 block text-[12px] text-ink-faint">
-              {[card.subtitle, ...tiers].join(' · ')}
-            </span>
-          </span>
-          <span className={`shrink-0 text-[12px] ${state.className}`} data-nb-search-service-state={state.key}>
-            {t(state.key === 'ready'
-              ? 'st.nbSearch.services.stateReady'
-              : state.key === 'needsKey'
-                ? 'st.nbSearch.services.stateNeedsKey'
-                : state.key === 'off'
-                  ? 'st.nbSearch.services.stateOff'
-                  : 'st.nbSearch.services.stateUnavailable')}
-          </span>
+          {t('st.nbSearch.services.makeDefault')}
         </button>
-        <span className="flex shrink-0 items-center gap-0.5 pt-0.5">
-          {chain !== undefined ? (
-            <>
-              <button
-                type="button"
-                className={`${SECONDARY_BUTTON} px-1.5 py-1`}
-                aria-label={t('st.nbSearch.movePipelineUp', { n: chain.position + 1 })}
-                title={t('st.nbSearch.movePipelineUp', { n: chain.position + 1 })}
-                disabled={saving || chain.position === 0}
-                data-nb-search-fetch-up
-                onClick={() => { chain.onMove(-1); }}
-              >
-                <Icon name="arrowDown" size={12} className="rotate-180" />
-              </button>
-              <button
-                type="button"
-                className={`${SECONDARY_BUTTON} px-1.5 py-1`}
-                aria-label={t('st.nbSearch.movePipelineDown', { n: chain.position + 1 })}
-                title={t('st.nbSearch.movePipelineDown', { n: chain.position + 1 })}
-                disabled={saving || chain.position === chain.length - 1}
-                data-nb-search-fetch-down
-                onClick={() => { chain.onMove(1); }}
-              >
-                <Icon name="arrowDown" size={12} />
-              </button>
-              <button
-                type="button"
-                className={`${SECONDARY_BUTTON} px-1.5 py-1 text-danger hover:border-danger/40`}
-                aria-label={t('st.nbSearch.removePipeline', { n: chain.position + 1 })}
-                title={t('st.nbSearch.removePipeline', { n: chain.position + 1 })}
-                disabled={saving || chain.length === 1}
-                data-nb-search-fetch-remove
-                onClick={chain.onRemove}
-              >
-                <Icon name="close" size={12} />
-              </button>
-            </>
-          ) : null}
-          <button
-            type="button"
-            aria-expanded={open}
-            aria-label={open ? t('st.nbSearch.custom.close') : t('st.nbSearch.services.openService', { name: card.title })}
-            title={open ? t('st.nbSearch.custom.close') : t('st.nbSearch.services.openService', { name: card.title })}
-            className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${open ? 'text-ink' : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'}`}
-            onClick={() => { setOpen((current) => !current); }}
-          >
-            <Icon name="chevron" size={12} className={open ? 'rotate-90' : ''} />
-          </button>
-        </span>
-      </div>
+      ) : null}
+      {onRemoveService !== undefined ? (
+        <button
+          type="button"
+          className="text-[12px] font-medium text-danger transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={saving}
+          data-nb-search-service-remove
+          onClick={() => { setConfirmRemove(true); }}
+        >
+          {t('st.nbSearch.services.removeService')}
+        </button>
+      ) : null}
+    </div>
+  ) : null;
 
-      {open ? (
-        <div className="space-y-3 px-3 pb-3" data-nb-search-service-body={card.id}>
-          {/* The card that already is the default — explicit or inherited —
-              offers no default action; every other card does. */}
-          {onMakeDefault !== undefined && defaultState === 'none' ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                className={SECONDARY_BUTTON}
-                disabled={saving}
-                data-nb-search-service-make-default={card.id}
-                onClick={onMakeDefault}
-              >
-                {t('st.nbSearch.services.makeDefault')}
-              </button>
-            </div>
-          ) : null}
+  const body = open ? (
+    <div className="space-y-3" data-nb-search-service-body={card.id}>
+      {info !== null && editableInstanceId !== undefined && info.credentialRequirement !== 'none' ? (
+        <div className="space-y-2">
+          <NbSearchMultiKeyEditor
+            instanceId={editableInstanceId}
+            source={credentialSource.source}
+            envName={envTrimmed === '' ? credentialSource.envName : envTrimmed}
+            draft={keyDraft}
+            onChange={onKeyDraftChange}
+            read={readCredential}
+            disabled={saving}
+          />
+        </div>
+      ) : null}
 
-          {info !== null && editableInstanceId !== undefined ? (
-            <Toggle
-              layout="row"
-              label={t('st.nbSearch.service.enabledLabel')}
-              checked={info.enabled}
-              disabled={saving}
-              onChange={(enabled) => {
-                onChange(setServiceEnabled(draft, editableInstanceId!, info.providerId, enabled));
-              }}
-            />
-          ) : null}
-
-          {info !== null && editableInstanceId !== undefined && info.credentialRequirement !== 'none' ? (
-            <div className="space-y-2">
-              <NbSearchMultiKeyEditor
-                instanceId={editableInstanceId}
-                source={credentialSource.source}
-                envName={envTrimmed === '' ? credentialSource.envName : envTrimmed}
-                draft={keyDraft}
-                onChange={onKeyDraftChange}
-                read={readCredential}
-                disabled={saving}
-              />
-              <AdvancedDetails summary={t('st.nbSearch.service.credentialEnvAdvanced')} data-nb-search-credential-env-section>
+      {info !== null && editableInstanceId !== undefined ? (
+        <AdvancedDetails summary={t('st.nbSearch.service.advancedSummary')} data-nb-search-service-advanced>
+          <div className="space-y-3">
+            {info.credentialRequirement !== 'none' ? (
+              <div data-nb-search-credential-env-section>
                 <SettingField
                   layout="stack"
                   label={t('st.nbSearch.credentialEnvLabel')}
@@ -431,11 +347,12 @@ export function NbSearchServiceCard({
                 >
                   <input
                     id={`${editableInstanceId}-cred-env`}
-                    className={`${INPUT} font-mono`}
+                    className="w-full rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] text-ink outline-none transition-colors placeholder:font-sans placeholder:text-ink-faint focus:border-selected-ink disabled:cursor-not-allowed disabled:opacity-50"
                     value={credentialEnv}
                     placeholder={credentialPlaceholder}
                     spellCheck={false}
                     autoComplete="off"
+                    disabled={saving}
                     data-nb-search-credential-env
                     aria-invalid={envProblem !== null}
                     onChange={(event) => {
@@ -445,122 +362,211 @@ export function NbSearchServiceCard({
                   />
                   <FieldIssue id={`${editableInstanceId}-cred-env-issue`} text={envProblem} />
                 </SettingField>
-              </AdvancedDetails>
-            </div>
-          ) : null}
+              </div>
+            ) : null}
 
-          {info !== null && editableInstanceId !== undefined && info.credentialRequirement !== 'none' ? (
-            <AdvancedDetails summary={t('st.nbSearch.keyUsage.title')}>
+            {info.credentialRequirement !== 'none' ? (
               <NbSearchKeyUsagePanel
                 instanceId={editableInstanceId}
                 readUsage={(refresh) => readKeyUsage(editableInstanceId!, refresh)}
               />
-            </AdvancedDetails>
-          ) : null}
+            ) : null}
 
-          {info !== null && editableInstanceId !== undefined ? (
-            <AdvancedDetails summary={t('st.nbSearch.service.advancedSection')} data-nb-search-service-advanced>
-              <div className="space-y-3">
-                {info.needsEndpoint ? (
-                  <SettingField
-                    layout="stack"
-                    label={t('st.nbSearch.baseUrlLabel')}
-                    htmlFor={`${editableInstanceId}-base-url`}
-                    help={baseUrlProblem === null ? t('st.nbSearch.service.baseUrlHint') : undefined}
-                  >
-                    <input
-                      id={`${editableInstanceId}-base-url`}
-                      className={`${INPUT} font-mono`}
-                      value={providerDraft?.baseUrl ?? ''}
-                      placeholder={t('st.nbSearch.service.baseUrlDefault')}
-                      spellCheck={false}
-                      autoComplete="off"
-                      data-nb-search-base-url
-                      aria-invalid={baseUrlProblem !== null}
-                      onChange={(event) => { patchProvider({ baseUrl: event.target.value }); }}
-                    />
-                    <FieldIssue id={`${editableInstanceId}-base-url-issue`} text={baseUrlProblem} />
-                  </SettingField>
-                ) : null}
+            {info.needsEndpoint ? (
+              <SettingField
+                layout="stack"
+                label={t('st.nbSearch.baseUrlLabel')}
+                htmlFor={`${editableInstanceId}-base-url`}
+                help={baseUrlProblem === null ? t('st.nbSearch.service.baseUrlHint') : undefined}
+              >
+                <input
+                  id={`${editableInstanceId}-base-url`}
+                  className="w-full rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] text-ink outline-none transition-colors placeholder:font-sans placeholder:text-ink-faint focus:border-selected-ink disabled:cursor-not-allowed disabled:opacity-50"
+                  value={providerDraft?.baseUrl ?? ''}
+                  placeholder={t('st.nbSearch.service.baseUrlDefault')}
+                  spellCheck={false}
+                  autoComplete="off"
+                  disabled={saving}
+                  data-nb-search-base-url
+                  aria-invalid={baseUrlProblem !== null}
+                  onChange={(event) => { patchProvider({ baseUrl: event.target.value }); }}
+                />
+                <FieldIssue id={`${editableInstanceId}-base-url-issue`} text={baseUrlProblem} />
+              </SettingField>
+            ) : null}
 
-                <SettingField label={t('st.nbSearch.service.keyStrategy')} layout="row" help={t('st.nbSearch.service.keyStrategyHint')}>
-                  <SettingsSelect<KeyStrategyChoice>
-                    ariaLabel={t('st.nbSearch.service.keyStrategy')}
-                    dataAttr="data-nb-search-key-strategy"
-                    value={strategyValue}
-                    disabled={saving}
-                    choices={[
-                      { value: 'default', label: t('st.nbSearch.service.keyStrategyInherit') },
-                      { value: 'round-robin', label: t('st.nbSearch.service.keyStrategyRoundRobin') },
-                      { value: 'priority', label: t('st.nbSearch.service.keyStrategyPriority') },
-                    ]}
-                    onChange={(next) => {
-                      patchProvider({ keyStrategy: next === 'default' ? undefined : next });
-                    }}
-                  />
-                </SettingField>
+            <SettingField label={t('st.nbSearch.service.keyStrategy')} layout="row" help={t('st.nbSearch.service.keyStrategyHint')}>
+              <SettingsSelect<KeyStrategyChoice>
+                ariaLabel={t('st.nbSearch.service.keyStrategy')}
+                dataAttr="data-nb-search-key-strategy"
+                value={strategyValue}
+                disabled={saving}
+                choices={[
+                  { value: 'default', label: t('st.nbSearch.service.keyStrategyInherit') },
+                  { value: 'round-robin', label: t('st.nbSearch.service.keyStrategyRoundRobin') },
+                  { value: 'priority', label: t('st.nbSearch.service.keyStrategyPriority') },
+                ]}
+                onChange={(next) => {
+                  patchProvider({ keyStrategy: next === 'default' ? undefined : next });
+                }}
+              />
+            </SettingField>
 
-                <SettingField
-                  label={t('st.nbSearch.service.balanceTtl')}
-                  htmlFor={`${editableInstanceId}-balance-ttl`}
-                  help={t('st.nbSearch.service.balanceTtlHint')}
-                >
-                  <input
-                    id={`${editableInstanceId}-balance-ttl`}
-                    className={INPUT}
-                    inputMode="numeric"
-                    value={providerDraft?.balanceTtlMs ?? ''}
-                    placeholder="60000"
-                    spellCheck={false}
-                    autoComplete="off"
-                    data-nb-search-balance-ttl
-                    aria-invalid={ttlProblem !== null}
-                    onChange={(event) => { patchProvider({ balanceTtlMs: event.target.value }); }}
-                  />
-                </SettingField>
-                <FieldIssue id={`${editableInstanceId}-balance-ttl-issue`} text={ttlProblem} />
-              </div>
-            </AdvancedDetails>
-          ) : null}
+            <SettingField
+              label={t('st.nbSearch.service.balanceTtl')}
+              htmlFor={`${editableInstanceId}-balance-ttl`}
+              help={t('st.nbSearch.service.balanceTtlHint')}
+            >
+              <input
+                id={`${editableInstanceId}-balance-ttl`}
+                className="w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-selected-ink disabled:cursor-not-allowed disabled:opacity-50"
+                inputMode="numeric"
+                value={providerDraft?.balanceTtlMs ?? ''}
+                placeholder="60000"
+                spellCheck={false}
+                autoComplete="off"
+                disabled={saving}
+                data-nb-search-balance-ttl
+                aria-invalid={ttlProblem !== null}
+                onChange={(event) => { patchProvider({ balanceTtlMs: event.target.value }); }}
+              />
+              <FieldIssue id={`${editableInstanceId}-balance-ttl-issue`} text={ttlProblem} />
+            </SettingField>
 
-          {info !== null && editableInstanceId !== undefined && info.hasOptions ? (
-            <AdvancedDetails summary={t('st.nbSearch.service.optionsSection')} data-nb-search-options>
-              <label className="block text-[12px] font-medium text-ink-soft">
+            {info.hasOptions ? (
+              <label className="block text-[12px] font-medium text-ink-soft" data-nb-search-options>
                 {t('st.nbSearch.optionsLabel')}
                 <textarea
-                  className={`${INPUT} mt-1 min-h-16 font-mono`}
+                  className="mt-1 min-h-16 w-full rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] text-ink outline-none transition-colors placeholder:font-sans placeholder:text-ink-faint focus:border-selected-ink disabled:cursor-not-allowed disabled:opacity-50"
                   value={providerDraft?.optionsJson ?? ''}
                   placeholder="{}"
                   spellCheck={false}
+                  disabled={saving}
                   data-nb-search-options-json
                   onChange={(event) => { patchProvider({ optionsJson: event.target.value }); }}
                 />
+                <FieldIssue id={`${editableInstanceId}-options-issue`} text={optionsProblem} />
               </label>
-              <FieldIssue id={`${editableInstanceId}-options-issue`} text={optionsProblem} />
-            </AdvancedDetails>
-          ) : null}
-
-          {info !== null && info.credentialRequirement === 'none' ? (
-            <Hint>{t('st.nbSearch.service.keylessHint')}</Hint>
-          ) : null}
-
-          {children}
-
-          {onRemoveService !== undefined ? (
-            <div>
-              <button
-                type="button"
-                className={DANGER_GHOST_BUTTON}
-                disabled={saving}
-                data-nb-search-service-remove
-                onClick={() => { setConfirmRemove(true); }}
-              >
-                {t('st.nbSearch.services.removeService')}
-              </button>
-            </div>
-          ) : null}
-        </div>
+            ) : null}
+          </div>
+        </AdvancedDetails>
       ) : null}
+
+      {info !== null && info.credentialRequirement === 'none' ? (
+        <Hint>{t('st.nbSearch.service.keylessHint')}</Hint>
+      ) : null}
+
+      {children}
+
+      {footer}
+    </div>
+  ) : null;
+
+  const cardBodyId = `nb-search-service-body-${card.id.replace(/[^A-Za-z0-9_-]+/g, '-')}`;
+
+  return (
+    <>
+      <RowFrame
+        data={{
+          'data-nb-search-service-card': card.id,
+          'data-nb-search-service-kind': kind,
+        }}
+        open={open}
+        onToggle={() => { setOpen((current) => !current); }}
+        bodyId={cardBodyId}
+        expandLabel={open ? t('st.nbSearch.custom.close') : t('st.nbSearch.services.openService', { name: card.title })}
+        name={card.title}
+        marks={(
+          <span className="flex shrink-0 items-center gap-2">
+            {defaultState === 'default' ? (
+              <span data-nb-search-service-default><Tag tone="accent">{t('st.nbSearch.services.defaultBadge')}</Tag></span>
+            ) : null}
+            {defaultState === 'inherit' ? (
+              <span className="text-[11px] text-ink-faint" data-nb-search-service-inherit>
+                {t('st.nbSearch.services.inheritBadge')}
+              </span>
+            ) : null}
+          </span>
+        )}
+        subtitle={(
+          <>
+            <span className="shrink-0">{card.subtitle}</span>
+            {tiers.map((tier) => (
+              <span key={tier} className="shrink-0">
+                <span aria-hidden>· </span>{tier}
+              </span>
+            ))}
+            <span className={`inline-flex shrink-0 items-center gap-1.5 ${state.className}`} data-nb-search-service-state={state.key}>
+              <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
+                state.key === 'needsKey' ? 'bg-amber-rule'
+                  : state.key === 'ready' ? 'bg-ink-soft'
+                    : 'bg-hairline-strong'
+              }`} />
+              {t(state.key === 'ready'
+                ? 'st.nbSearch.services.stateReady'
+                : state.key === 'needsKey'
+                  ? 'st.nbSearch.services.stateNeedsKey'
+                  : 'st.nbSearch.services.stateUnavailable')}
+            </span>
+          </>
+        )}
+        control={(
+          <>
+            {chain !== undefined ? (
+              <span className="flex items-center gap-0.5">
+                <button
+                  type="button"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label={t('st.nbSearch.movePipelineUp', { n: chain.position + 1 })}
+                  title={t('st.nbSearch.movePipelineUp', { n: chain.position + 1 })}
+                  disabled={saving || chain.position === 0}
+                  data-nb-search-fetch-up
+                  onClick={() => { chain.onMove(-1); }}
+                >
+                  <span aria-hidden className="text-[11px]">↑</span>
+                </button>
+                <button
+                  type="button"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label={t('st.nbSearch.movePipelineDown', { n: chain.position + 1 })}
+                  title={t('st.nbSearch.movePipelineDown', { n: chain.position + 1 })}
+                  disabled={saving || chain.position === chain.length - 1}
+                  data-nb-search-fetch-down
+                  onClick={() => { chain.onMove(1); }}
+                >
+                  <span aria-hidden className="text-[11px]">↓</span>
+                </button>
+                <button
+                  type="button"
+                  className="flex h-7 w-7 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label={t('st.nbSearch.removePipeline', { n: chain.position + 1 })}
+                  title={t('st.nbSearch.removePipeline', { n: chain.position + 1 })}
+                  disabled={saving || chain.length === 1}
+                  data-nb-search-fetch-remove
+                  onClick={chain.onRemove}
+                >
+                  <span aria-hidden className="text-[12px]">×</span>
+                </button>
+              </span>
+            ) : null}
+            {info !== null && editableInstanceId !== undefined ? (
+              <span data-nb-search-service-enabled={card.id} className="contents">
+                <Toggle
+                  layout="bare"
+                  label={t('st.nbSearch.service.enabledLabel')}
+                  checked={info.enabled}
+                  disabled={saving}
+                  onChange={(enabled) => {
+                    onChange(setServiceEnabled(draft, editableInstanceId!, info.providerId, enabled));
+                  }}
+                />
+              </span>
+            ) : null}
+          </>
+        )}
+      >
+        {body}
+      </RowFrame>
 
       {onRemoveService !== undefined ? (
         <ConfirmDialog
@@ -573,6 +579,6 @@ export function NbSearchServiceCard({
           onConfirm={() => { setConfirmRemove(false); onRemoveService(); }}
         />
       ) : null}
-    </div>
+    </>
   );
 }

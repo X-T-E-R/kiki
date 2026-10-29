@@ -217,10 +217,7 @@ export function NbSearchLanesTab({
   return (
     <SectionCard id="st-card-search-providers" title={t('st.nbSearch.providersTitle')}>
       <div className="space-y-4" data-nb-search-services-tab>
-        <Hint>{t('st.nbSearch.services.pageHint')}</Hint>
-
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-[12px] font-medium text-ink-soft">{t('st.nbSearch.services.listTitle')}</p>
+        <div className="flex flex-wrap items-center justify-end gap-2">
           {directoryOpen ? (
             <button
               type="button"
@@ -314,7 +311,7 @@ export function NbSearchLanesTab({
             )}
           />
         ) : (
-          <div className="space-y-2" data-nb-search-service-cards>
+          <div className="divide-y divide-hairline rounded-lg border border-hairline" data-nb-search-service-cards>
             {activeCards.map((card) => (
               <NbSearchServiceCard
                 key={card.id}
@@ -364,23 +361,23 @@ export function NbSearchLanesTab({
                 />
               );
             })}
-            {draft.defaultSearchLane !== '' ? (
-              <div className="flex flex-wrap items-center gap-2 px-1">
-                <button
-                  type="button"
-                  className={SECONDARY_BUTTON}
-                  disabled={saving}
-                  data-nb-search-clear-default
-                  onClick={() => {
-                    advanced.onChange(clearDefaultLane(draft));
-                  }}
-                >
-                  {t('st.nbSearch.services.followSourceDefault')}
-                </button>
-              </div>
-            ) : null}
           </div>
         )}
+        {draft.defaultSearchLane !== '' ? (
+          <div className="flex flex-wrap items-center gap-2 px-1">
+            <button
+              type="button"
+              className={SECONDARY_BUTTON}
+              disabled={saving}
+              data-nb-search-clear-default
+              onClick={() => {
+                advanced.onChange(clearDefaultLane(draft));
+              }}
+            >
+              {t('st.nbSearch.services.followSourceDefault')}
+            </button>
+          </div>
+        ) : null}
 
         <AdvancedDetails
           summary={t('st.nbSearch.services.advancedMethods')}

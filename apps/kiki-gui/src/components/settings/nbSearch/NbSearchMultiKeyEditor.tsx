@@ -337,7 +337,7 @@ export function NbSearchMultiKeyEditor({
               aria-label={t('st.nbSearch.keys.placeholder')}
               placeholder={t('st.nbSearch.keys.placeholder')}
               data-key-input
-              className={`${INPUT} min-w-0 flex-1 font-mono`}
+              className={`${INPUT} min-w-0 flex-1 font-mono placeholder:font-sans placeholder:text-ink-faint`}
               onChange={(event) => { setNewKey(event.target.value); }}
               onKeyDown={(event) => {
                 if (event.key !== 'Enter') return;

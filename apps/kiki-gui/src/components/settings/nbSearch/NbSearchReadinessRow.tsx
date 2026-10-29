@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import type { NbSearchTestStatus } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../../i18n';
@@ -41,6 +42,8 @@ export function NbSearchReadinessRow({
   state,
   readiness,
   selectionLabel,
+  issueContext = 'search',
+  action,
 }: {
   label: string;
   /** One plain sentence on what this tool does for the assistant. */
@@ -49,6 +52,10 @@ export function NbSearchReadinessRow({
   readiness: NbSearchTestStatus['search'];
   /** Human name for `readiness.selection` ("Exa 搜索"); the row never prints the raw lane or pipeline id. */
   selectionLabel?: (selection: string) => string;
+  /** Which tool the issues describe: a fetch row never says "search method". */
+  issueContext?: 'search' | 'fetch';
+  /** The inline fix link a degraded row carries ("去「网页抓取」处理"). */
+  action?: ReactNode;
 }) {
   const { t } = useI18n();
   return (
@@ -56,6 +63,7 @@ export function NbSearchReadinessRow({
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-[12.5px] font-semibold text-ink">{label}</span>
         <NbSearchStateBadge state={state} />
+        {action !== undefined && action !== null ? <span className="ml-auto shrink-0">{action}</span> : null}
       </div>
       {desc !== undefined ? <p className="mt-0.5 text-[11px] text-ink-faint">{desc}</p> : null}
       {readiness.selection !== undefined ? (
@@ -68,7 +76,7 @@ export function NbSearchReadinessRow({
           })}
         </p>
       ) : null}
-      <NbSearchIssues issues={readiness.issues} />
+      <NbSearchIssues issues={readiness.issues} context={issueContext} />
     </div>
   );
 }
