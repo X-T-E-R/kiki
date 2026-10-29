@@ -115,6 +115,7 @@ import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { IHostClock } from '#/os/interface/hostClock';
 import { IEventBus } from '#/app/event/eventBus';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
+import { projectSpaceIdentity } from '#/app/bootstrap/spaceIdentity';
 import { dynamicPromptKey, ProfileDynamicSnapshot, dynamicPromptContent, promptSectionHash, stablePromptContext, legacyEnvironmentContext } from './dynamicPrompt';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -1975,6 +1976,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.publishMemoryProjection(await this.memorySnapshot.get(this.states.get(dynamicPromptKey)?.context.memory));
   }
 
+  async reconcileSpaceSnapshot(): Promise<void> {
+    const previous = this.states.get(dynamicPromptKey);
+    if (previous === undefined && this.profileState.profileName === undefined) return;
+    const space = projectSpaceIdentity(this.bootstrap);
+    if (JSON.stringify(previous?.context.space) === JSON.stringify(space)) return;
+    const context = { ...previous?.context, space };
+    const content = dynamicPromptContent(context);
+    await this.dispatcher.dispatch(new ProfileDynamicSnapshot({ enabled: previous?.enabled ?? false,
+      revision: (previous?.revision ?? 0) + 1, context, content, hash: promptSectionHash(content) }));
+  }
+
   async reconcileMemorySnapshot(): Promise<void> {
     if (this.states.get(dynamicPromptKey)?.enabled !== true) return;
     const memory = await this.memorySnapshot.refreshIfDirty();
@@ -3601,6 +3613,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const memory = await this.readMemoryForPersonaOverride(personaOverride);
     const context: SystemPromptContext = {
       ...base,
+      space: projectSpaceIdentity(this.bootstrap),
       agentsMdFiles: base.agentsMdFiles?.map((file) => ({ ...file, runtimeId })),
       cwd: view.workDir,
       osKind: env.osKind,

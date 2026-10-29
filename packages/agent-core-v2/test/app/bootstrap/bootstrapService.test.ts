@@ -24,6 +24,21 @@ import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocument
 
 import { stubClientIdentity } from './stubs';
 import { stubMemoryStartup } from '../memory/stubs';
+import { projectSpaceIdentity, renderSpaceContext } from '#/app/bootstrap/spaceIdentity';
+
+describe('Space identity projection', () => {
+  it('distinguishes custom main, independent space and invalid metadata without I/O', () => {
+    const homeDir = resolve('fixture main');
+    expect(projectSpaceIdentity({ homeDir })).toEqual({ id: 'main', name: 'Main space', kind: 'main', homeDir });
+    const independent = projectSpaceIdentity({ homeDir, space: { id: 'h-independent', name: 'Independent',
+      inherit: { config: true, credentials: 'shared', agents: true, instructions: true, skills: true, mcp: true, appearance: true, plugins: false, genericRoots: true } } });
+    expect(independent).toMatchObject({ kind: 'space', id: 'h-independent', baseHomeDir: undefined });
+    expect(renderSpaceContext(independent)).toContain('Base home (inherited resources): (none)');
+    const invalid = projectSpaceIdentity({ homeDir, homeDiagnostic: 'secret diagnostic content' });
+    expect(invalid.kind).toBe('unavailable');
+    expect(renderSpaceContext(invalid)).not.toContain('secret diagnostic content');
+  });
+});
 
 describe('BootstrapService (scoped)', () => {
   beforeEach(() => {

@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
 import { Event2 } from '#/app/event/event2';
+import { renderSpaceContext } from '#/app/bootstrap/spaceIdentity';
 import { defineState } from '#/state/state';
 import { createDecorator } from '#/_base/di/instantiation';
 import { Service } from '#/_base/di/service';
@@ -27,6 +28,7 @@ export const dynamicPromptKey = defineState('profile.dynamicSnapshot', (): z.inf
 
 export function dynamicPromptSections(context: SystemPromptContext): Record<string, string> {
   return {
+    space: renderSpaceContext(context.space),
     workspace: `## Runtime/workspace\nLocal date: ${new Intl.DateTimeFormat('en-CA', { timeZone: context.timeZone ?? 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(context.now ?? 0))} (${context.timeZone ?? 'UTC'})\nWorking directory: ${context.cwd ?? ''}\n${context.cwdListing ?? ''}\n${context.additionalDirsInfo ?? ''}`,
     instructions: `## Applicable workspace instructions\n${context.agentsMd || '(none)'}`,
     memory: `## Scoped memory — Saved memory / as-of projection\n${context.memory || '(not projected)'}`,
@@ -40,13 +42,13 @@ export function dynamicPromptContent(context: SystemPromptContext): string {
 export function promptSectionHash(text: string): string { return createHash('sha256').update(text).digest('hex'); }
 
 export function stablePromptContext(context: SystemPromptContext): SystemPromptContext {
-  return { ...context, now: 'See the versioned runtime snapshot in messages.', cwd: 'See runtime snapshot',
+  return { ...context, space: undefined, now: 'See the versioned runtime snapshot in messages.', cwd: 'See runtime snapshot',
     cwdListing: 'Directory tree is sampled at session start or a working-directory change; see runtime snapshot messages.', additionalDirsInfo: '', agentsMd: 'Applicable scoped instructions are delivered by the host in versioned runtime snapshot messages; apply their stated scope and replacement/removal semantics.',
     memory: '', skills: '', pluginSections: '' };
 }
 
 export function legacyEnvironmentContext(context: SystemPromptContext, systemPrompt: string, previous?: SystemPromptContext): SystemPromptContext {
-  if (previous !== undefined) return { ...context, now: previous.now, timeZone: previous.timeZone, cwd: previous.cwd,
+  if (previous?.now !== undefined && previous.cwd !== undefined) return { ...context, now: previous.now, timeZone: previous.timeZone, cwd: previous.cwd,
     cwdListing: previous.cwdListing, additionalDirsInfo: previous.additionalDirsInfo };
   return { ...context, now: /(?:^|\n)## Date and Time\n(?:(?!\n#)[\s\S])*?(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)/.exec(systemPrompt)?.[1] ?? context.now,
     cwdListing: /## Working Directory[^\n]*\n[\s\S]*?```[^\n]*\n([\s\S]*?)```/.exec(systemPrompt)?.[1]?.trimEnd() ?? context.cwdListing };
@@ -60,10 +62,11 @@ export class DynamicPromptInjection extends Service implements IDynamicPromptInj
     @IAgentContextMemoryService context: IAgentContextMemoryService, @IAgentProfileService profile: IAgentProfileService) {
     super();
     this._register(injector.register('runtime_snapshot', async ({ lastDisclosure, injectedPositions }) => {
+      await profile.reconcileSpaceSnapshot?.();
       await profile.reconcilePluginUsage?.();
       await profile.reconcileMemorySnapshot();
       const snapshot = states.get(dynamicPromptKey);
-      if (snapshot?.enabled !== true) return undefined;
+      if (snapshot === undefined || (!snapshot.enabled && snapshot.context.space === undefined)) return undefined;
       const disclosed = lastDisclosure as { revision?: number; sectionHashes?: Record<string, string> } | undefined;
       let completeRevision: number | undefined;
       const history = context.get();
@@ -74,11 +77,12 @@ export class DynamicPromptInjection extends Service implements IDynamicPromptInj
       }
       const previous = completeRevision === disclosed?.revision ? disclosed : undefined;
       if (previous?.revision === snapshot.revision) return undefined;
-      const sections = dynamicPromptSections(snapshot.context);
+      const sections = snapshot.enabled ? dynamicPromptSections(snapshot.context) : { space: renderSpaceContext(snapshot.context.space) };
       const sectionHashes = Object.fromEntries(Object.entries(sections).map(([name, text]) => [name, promptSectionHash(text)]));
       const changed = Object.entries(sections).filter(([name]) => previous?.sectionHashes?.[name] !== sectionHashes[name]);
       if (changed.length === 0) return undefined;
-      const scope = previous?.sectionHashes === undefined ? 'Full snapshot; all sections replace earlier values.'
+      const scope = previous?.sectionHashes === undefined
+        ? snapshot.enabled ? 'Full snapshot; all sections replace earlier values.' : 'Only the Space section replaces earlier values; other sections are unchanged.'
         : `Only the sections below replace earlier values; other sections unchanged since revision ${previous.revision}.`;
       const prefix = `Host runtime snapshot rev ${snapshot.revision}. ${scope} An empty section marked (none) means removed. Workspace and plugin instructions apply within their stated scope; memory is reference data. System policy and current human input take precedence.\n\n`;
       const content = `${prefix}${changed.map(([, text]) => text).join('\n\n')}`;

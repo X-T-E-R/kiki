@@ -336,6 +336,7 @@ export interface IAgentProfileService {
   refreshSystemPrompt(): Promise<void>;
   refreshMemorySnapshot(): Promise<void>;
   reconcileMemorySnapshot(): Promise<void>;
+  reconcileSpaceSnapshot?(): Promise<void>;
   reconcilePluginUsage?(): Promise<void>;
   rebuildPromptContext(): Promise<void>;
   preparePromptConfiguration(): Promise<boolean>;

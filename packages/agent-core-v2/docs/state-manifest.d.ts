@@ -3662,6 +3662,13 @@ export interface AgentStateSnapshot {
         readonly scope: string;
         readonly runtimeId: string;
       }[];
+      readonly space?: /* KikiSpaceContext — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly id: string;
+        readonly name: string;
+        readonly kind: 'main' | 'space' | 'unavailable';
+        readonly homeDir: string;
+        readonly baseHomeDir?: string;
+      };
       readonly cwd?: string;
       readonly cwdListing?: string;
       readonly agentsMd?: string;
@@ -4843,6 +4850,13 @@ export interface AgentStateSnapshot {
       }[];
       readonly systemPromptMode?: 'replace' | 'append' | 'prepend' | 'inherit';
       readonly systemPrompt: (context: /* AgentProfileContext — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly space?: /* KikiSpaceContext — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly id: string;
+          readonly name: string;
+          readonly kind: 'main' | 'space' | 'unavailable';
+          readonly homeDir: string;
+          readonly baseHomeDir?: string;
+        };
         readonly cwd?: string;
         readonly cwdListing?: string;
         readonly agentsMd?: string;
@@ -4864,6 +4878,13 @@ export interface AgentStateSnapshot {
         [key: string]: unknown;
       }) => string;
       readonly renderSystemPrompt: (context: /* AgentProfileContext — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly space?: /* KikiSpaceContext — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly id: string;
+          readonly name: string;
+          readonly kind: 'main' | 'space' | 'unavailable';
+          readonly homeDir: string;
+          readonly baseHomeDir?: string;
+        };
         readonly cwd?: string;
         readonly cwdListing?: string;
         readonly agentsMd?: string;
