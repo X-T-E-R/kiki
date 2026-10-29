@@ -57,8 +57,8 @@ try {
   const output = await runKimi(['--version'], { KIKI_NATIVE_ASSET_SMOKE: '1' });
   assertIncludes(output, `Native asset smoke passed: ${target}`, 'native asset smoke');
   assertIncludes(output, 'MiniDb worker build passed', 'MiniDb worker smoke');
-  assertIncludes(output, 'query-store worker ready', 'query-store worker smoke');
-  assertIncludes(output, 'mailbox worker ready', 'mailbox worker smoke');
+  assertIncludes(output, 'query-store and usage read-model workers ready', 'query-store and usage read-model worker smoke');
+  assertIncludes(output, 'mailbox and memory workers ready', 'mailbox and memory worker smoke');
   assertIncludes(output, 'PTY input/resize/exit/kill passed', 'PTY smoke');
   console.log(output.trim());
 } finally {
