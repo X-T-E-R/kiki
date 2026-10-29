@@ -202,7 +202,7 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
       return;
     }
     const described = this.selector.describe(config, this.session.workspaceId);
-    if (described.state === 'failed' || described.consent_required) {
+    if (described.state === 'failed') {
       this.cancel();
       this.currentStatus = { ...described, state: 'failed' };
       return;

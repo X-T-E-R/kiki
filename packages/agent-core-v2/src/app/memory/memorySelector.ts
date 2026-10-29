@@ -193,17 +193,16 @@ export class MemorySelector extends Service implements IMemorySelector {
     super();
   }
 
-  describe(config: MemoryAdvisorConfig | undefined, workspaceId?: string): MemoryAdvisorStatus {
+  describe(config: MemoryAdvisorConfig | undefined, _workspaceId?: string): MemoryAdvisorStatus {
     if (config === undefined || (config.source === undefined && config.selector === undefined))
       return advisorStatus(config?.mode === 'off' ? 'off' : 'unconfigured', { reason: config?.mode === 'off' ? undefined : 'unconfigured' });
     try {
       const resolved = this.resolve(config);
       const status = decisionSourceStatus(resolved);
-      const consent = workspaceId === undefined || !config.egress_ack.some((ack) => ack.workspace_id === workspaceId && ack.destination === status.destination);
-      const reason = config.mode === 'select' && resolved.protocol === 'pair_score' ? 'capability_mismatch' : status.state === 'auth' ? 'auth' : consent ? 'consent_required' : undefined;
-      return advisorStatus(config.mode === 'off' ? 'off' : reason !== undefined && reason !== 'consent_required' ? 'failed' : 'ready', {
+      const reason = config.mode === 'select' && resolved.protocol === 'pair_score' ? 'capability_mismatch' : status.state === 'auth' ? 'auth' : undefined;
+      return advisorStatus(config.mode === 'off' ? 'off' : reason !== undefined ? 'failed' : 'ready', {
         reason, source_status: status, destination: status.destination, provider: resolved.providerName, origin: resolved.endpoint.origin,
-        protocol: resolved.protocol, model: resolved.alias ?? resolved.name, consent_required: consent,
+        protocol: resolved.protocol, model: resolved.alias ?? resolved.name, consent_required: false,
         applicability: resolved.protocol === 'pair_score' ? 'rank_only' : 'full_units',
       });
     } catch (error) {
@@ -399,7 +398,7 @@ export class MemorySelector extends Service implements IMemorySelector {
     )
       return {
         ok: false,
-        status: { ...status, state: 'failed', reason: status.reason ?? 'consent_required' },
+        status: { ...status, state: 'failed', reason: status.reason ?? 'protocol' },
         duration_ms: Date.now() - started,
         usage_known: false,
       };

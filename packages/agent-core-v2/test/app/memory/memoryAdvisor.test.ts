@@ -1,3 +1,4 @@
+import { createServer, type Server } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { memoryAdvisorConfigSchema } from '@kiki/protocol';
 import { TestInstantiationService } from '#/_base/di/test';
@@ -91,6 +92,9 @@ function fixture(
     wait?: number;
     timeout?: number;
     maxCalls?: number;
+    source?: import('@kiki/protocol').DecisionSource;
+    protocol?: 'chat_json' | 'system_one' | 'pair_score';
+    selector?: IMemorySelector;
     call?: (input: MemorySelectorCall) => ReturnType<IMemorySelector['call']>;
   } = {},
 ) {
@@ -109,11 +113,11 @@ function fixture(
       ? undefined
       : {
           mode: options.mode ?? 'rank',
-          selector: { protocol: 'chat_json', model: 'chosen' },
+          selector: { protocol: options.protocol ?? 'chat_json', model: 'chosen' },
+          source: options.source,
           first_step_wait_ms: options.wait ?? 0,
           timeout_ms: options.timeout ?? 1000,
           max_calls_per_turn: options.maxCalls ?? 3,
-          egress_ack: [{ workspace_id: workspace, destination }],
         },
   });
   let query = 'Need advice without literal overlap';
@@ -132,7 +136,7 @@ function fixture(
   const tools = new OrderedHookSlot<ToolDidExecuteContext>();
   let published = '';
   const calls = vi.fn(
-    options.call ??
+    options.call ?? options.selector?.call.bind(options.selector) ??
       (async (input: MemorySelectorCall) => {
         input.stats.requests++;
         return input.units.map((unit) => ({
@@ -217,12 +221,12 @@ function fixture(
   ix.stub(IEventBus, { subscribe: () => ({ dispose() {} }) });
   ix.stub(ILogService, { debug() {} });
   ix.stub(IMemorySelector, {
-    describe: (config) =>
+    describe: options.selector?.describe.bind(options.selector) ?? ((config) =>
       advisorStatus('ready', {
         destination,
         model: config?.selector?.model,
         applicability: 'full_units',
-      }),
+      })),
     call: calls,
   });
   ix.set(IAgentMemorySnapshot, new SyncDescriptor(AgentMemorySnapshot));
@@ -251,6 +255,7 @@ function fixture(
       requestId++;
     },
     settings: () => settings,
+    connectionChanged: () => configChanges.fire({ domain: 'providers', source: 'set', value: {}, previousValue: undefined }),
     configure: (patch: Record<string, unknown>) => {
       settings = MemoryConfigSchema.parse({ ...settings, ...patch });
       configChanges.fire({
@@ -310,7 +315,7 @@ describe('Memory Advisor lifecycle and snapshot publication', () => {
         );
     },
   );
-  it('prepares lazy snapshot authority only after Advisor consent and permissions are admitted', async () => {
+  it('prepares lazy snapshot authority only when Advisor is enabled and permissions are admitted', async () => {
     const active = fixture({ lazy: true, wait: 100 });
     await active.step();
     expect(active.prepare).toHaveBeenCalled();
@@ -363,6 +368,63 @@ describe('Memory Advisor lifecycle and snapshot publication', () => {
       ).text,
     );
     expect(f.calls).toHaveBeenCalledTimes(1);
+  });
+  it.each(['source', 'legacy'] as const)('calls a configured %s without acknowledgements, cancels an old origin and keeps off byte-identical', async (kind) => {
+    const firstStarted = deferred<void>();
+    const releaseFirst = deferred<void>();
+    const requests: string[] = [];
+    async function upstream(old: boolean): Promise<{ server: Server; origin: string }> {
+      const server = createServer(async (req, res) => {
+        let text = ''; for await (const chunk of req) text += String(chunk);
+        requests.push(old ? 'old' : 'new');
+        const body = JSON.parse(text);
+        if (old) { firstStarted.resolve(); await releaseFirst.promise; }
+        const answers = Object.fromEntries(Object.entries(body.questions).map(([handle, raw]) => {
+          const question = raw as { criteria: Record<string, string> };
+          const choice = question.criteria['read'] !== undefined ? 'read' : old ? 'history' : 'apply';
+          return [handle, { type: 'choice', choice, confidence: 1, probabilities: Object.fromEntries(Object.keys(question.criteria).map((name) => [name, name === choice ? 1 : 0])) }];
+        }));
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ answers }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      disposables.push({ async dispose() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); } });
+      return { server, origin: `http://127.0.0.1:${(server.address() as { port: number }).port}` };
+    }
+    const old = await upstream(true);
+    const next = await upstream(false);
+    let baseUrl = `${old.origin}/v1`;
+    const ix = new TestInstantiationService();
+    disposables.push(ix);
+    const model = () => ({ id: 'chosen', name: 'synthetic-model', providerName: 'example', baseUrl, headers: {}, capabilities: UNKNOWN_CAPABILITY, alwaysThinking: false, authProvider: { getAuth: async () => undefined }, credentialSource: 'none' as const });
+    ix.stub(IModelCatalog, { get: () => model() as Model, getConnectionEndpoint: () => ({ ...model(), protocol: 'system_one', defaultModel: 'synthetic-model' }) });
+    ix.stub(IRequestAdmission, { acquire: async () => ({ release() {} }) });
+    ix.set(IMemorySelector, new SyncDescriptor(MemorySelector));
+    const f = fixture({ selector: ix.get(IMemorySelector), protocol: 'system_one', source: kind === 'source' ? { kind: 'connection', connection: 'example' } : undefined, timeout: 5_000 });
+    expect(f.settings().advisor?.egress_ack).toEqual([]);
+    expect(f.advisor.status()).toMatchObject({ state: 'ready', consent_required: false, origin: old.origin });
+    await f.step();
+    await firstStarted.promise;
+    const oldSignal = f.calls.mock.calls[0]![0].signal;
+    baseUrl = `${next.origin}/v1`;
+    f.connectionChanged();
+    expect(oldSignal.aborted).toBe(true);
+    expect(f.advisor.status()).toMatchObject({ state: 'ready', consent_required: false, origin: next.origin });
+    await f.step(1, false);
+    await vi.waitFor(() => expect(f.advisor.status().state).toBe('selected'));
+    await f.step(1, false);
+    expect(f.published()).toContain('use=apply');
+    expect(f.published()).not.toContain('use=history');
+    releaseFirst.resolve();
+    await flush();
+    expect(requests).toEqual(['old', 'new', 'new']);
+    const saved = f.settings().advisor;
+    f.configure({ advisor: { ...saved, mode: 'off' } });
+    await f.step(2);
+    expect(f.advisor.status()).toMatchObject({ state: 'off', consent_required: false });
+    expect(f.settings().advisor).toEqual({ ...saved, mode: 'off' });
+    expect(f.published()).toBe(renderMemoryWorkingSet({ generation: 'g1', entries: f.entries() }, 'Need advice without literal overlap', 4_000, 1_000).text);
+    expect(requests).toEqual(['old', 'new', 'new']);
   });
   it('drops old advice immediately on request changes and permits only the new single flight', async () => {
     const first = deferred<Awaited<ReturnType<IMemorySelector['call']>>>();
@@ -704,7 +766,6 @@ describe('Advisor governed protocols', () => {
     return {
       config: memoryAdvisorConfigSchema.parse({
         selector: { protocol, model: 'chosen' },
-        egress_ack: [{ workspace_id: workspace, destination }],
       }),
       stage: 'judge',
       query: 'Synthetic task',
@@ -826,10 +887,11 @@ describe('Advisor governed protocols', () => {
       reason: 'capability_mismatch',
     });
   });
-  it('binds consent to provider and origin, rejects cross-origin credential egress, and probes synthetic data only after explicit destination confirmation', async () => {
+  it('does not require acknowledgements, rejects cross-origin endpoints, and binds synthetic probes to the requested destination', async () => {
     const f = selector();
     const call = input('system_one');
-    expect(f.service.describe(call.config, 'other-workspace').consent_required).toBe(true);
+    expect(f.service.describe(call.config, 'other-workspace')).toMatchObject({ state: 'ready', consent_required: false });
+    expect(f.service.describe({ ...call.config, egress_ack: [{ workspace_id: 'old-workspace', destination: 'old@https://old.test' }] })).toMatchObject({ state: 'ready', consent_required: false });
     const config = {
       ...call.config,
       selector: { ...call.config.selector!, endpoint: 'https://another.test/systemone' },
@@ -837,7 +899,7 @@ describe('Advisor governed protocols', () => {
     expect(f.service.describe(config, workspace).reason).toBe('protocol');
     const http = vi.fn();
     vi.stubGlobal('fetch', http);
-    expect((await f.service.probe(call.config, 'wrong')).ok).toBe(false);
+    expect(await f.service.probe(call.config, 'wrong')).toMatchObject({ ok: false, status: { reason: 'protocol', consent_required: false } });
     expect(http).not.toHaveBeenCalled();
     vi.stubGlobal(
       'fetch',

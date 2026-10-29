@@ -33,7 +33,7 @@ function setup(lazy = false) {
     replace: async (_section: string, value: MemoryConfig) => { settings = MemoryConfigSchema.parse(value); },
   };
   const workspaces = { get: async (id: string) => id === 'wd_example_0123456789ab' ? { id } : undefined };
-  const selector = { describe: (advisor: MemoryConfig['advisor']) => advisorStatus(advisor?.mode === 'off' ? 'off' : 'ready', { destination: 'example@https://example.test', consent_required: true }), probe: vi.fn(async () => ({ ok: false, status: advisorStatus('failed', { reason: 'consent_required' }), duration_ms: 0, usage_known: false })) };
+  const selector = { describe: (advisor: MemoryConfig['advisor']) => advisorStatus(advisor?.mode === 'off' ? 'off' : 'ready', { destination: 'example@https://example.test', consent_required: false }), probe: vi.fn(async () => ({ ok: false, status: advisorStatus('failed', { reason: 'protocol' }), duration_ms: 0, usage_known: false })) };
   const services = new Map<unknown, unknown>([[IMemoryStore, store], [IConfigService, config], [IWorkspaceService, workspaces], [IMemorySelector, selector], [ISessionManager, { get: () => undefined }]]);
   const getService = vi.fn((key: unknown) => services.get(key));
   const core = { accessor: { get: getService } } as unknown as Scope;
@@ -56,14 +56,17 @@ describe('memory REST', () => {
     await api.request('patch', '/memory/settings', { body: { enabled: true, advisor: { mode: 'off', selector: { protocol: 'chat_json', model: 'any-user-model' } } } });
     await api.request('get', '/memory/settings'); expect(api.prepare).not.toHaveBeenCalled();
     const enabled = await api.request('patch', '/memory/settings', { body: { advisor: { mode: 'rank' } } });
-    expect(api.prepare).toHaveBeenCalledOnce(); expect(enabled.data.advisor_status.state).toBe('ready');
+    expect(api.prepare).toHaveBeenCalledOnce(); expect(enabled.data.advisor_status).toMatchObject({ state: 'ready', consent_required: false });
+    expect(enabled.data.advisor.egress_ack).toEqual([]);
     expect((await api.request('get', '/memory/settings')).data.advisor_status.state).toBe('ready');
   });
   it('patches advisor preferences sparsely, preserves the selector when toggled off, and supports explicit removal', async () => {
     const api = setup();
-    await api.request('patch', '/memory/settings', { body: { enabled: true, advisor: { selector: { protocol: 'chat_json', model: 'any-user-model' }, timeout_ms: 2000 } } });
+    const oldAck = [{ workspace_id: 'old-workspace', destination: 'old@https://old.test' }];
+    await api.request('patch', '/memory/settings', { body: { enabled: true, advisor: { selector: { protocol: 'chat_json', model: 'any-user-model' }, timeout_ms: 2000, egress_ack: oldAck } } });
     const disabled = await api.request('patch', '/memory/settings', { body: { advisor: { mode: 'off' } } });
-    expect(disabled.data.advisor).toMatchObject({ mode: 'off', timeout_ms: 2000, selector: { model: 'any-user-model' } });
+    expect(disabled.data.advisor).toMatchObject({ mode: 'off', timeout_ms: 2000, selector: { model: 'any-user-model' }, egress_ack: oldAck });
+    expect(disabled.data.advisor_status.consent_required).toBe(false);
     expect(disabled.data.advisor_status.state).toBe('off');
     await api.request('patch', '/memory/settings', { body: { advisor: { mode: 'rank', selector: null } } });
     expect(api.getSettings().advisor?.selector).toBeUndefined();
