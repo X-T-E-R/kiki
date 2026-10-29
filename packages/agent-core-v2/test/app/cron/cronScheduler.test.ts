@@ -19,12 +19,14 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { stubClientIdentity } from '../bootstrap/stubs';
+import { stubMemoryStartup } from '../memory/stubs';
 
 import { createServices } from '#/_base/di/test';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { Emitter, Event } from '#/_base/event';
 import { IBootstrapService, bootstrap } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IMemoryAuthorityService } from '#/app/memory/memoryAuthorityStore';
 import { ICronScheduler } from '#/app/cron/cronScheduler';
 import { CronSchedulerService } from '#/app/cron/cronSchedulerService';
 import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
@@ -146,13 +148,18 @@ describe('print bootstrap scoped Cron scheduling', () => {
       withLifecycleSerialization: async (_id: string, action: () => Promise<void>) => action(),
     } as unknown as ISessionManager;
     const cfg: CronConfig = { disabled: false, debug: false, noJitter: true, noStale: true, manualTick: false, ...config };
-    const { app } = bootstrap({ homeDir: home, osHomeDir: home, cwd: home, env: {}, interactive: false, clientIdentity: stubClientIdentity }, [
+    const memoryStartup = stubMemoryStartup();
+    const prepareMemory = vi.spyOn(memoryStartup, 'prepare');
+    const { app, memoryReady } = bootstrap({ homeDir: home, osHomeDir: home, cwd: home, env: {}, interactive: false, clientIdentity: stubClientIdentity }, [
       [IConfigService, { ready: Promise.resolve(), get: () => cfg, onDidSectionChange: Event.None } as unknown as IConfigService],
+      [IMemoryAuthorityService, memoryStartup],
       [ISessionManager, manager],
       [IHostFsWatchService, { _serviceBrand: undefined, watch: () => ({ ready: Promise.resolve(), onDidChange: Event.None, dispose: () => {} }) }],
       [ITelemetryService, { track2: () => {} } as unknown as ITelemetryService],
     ]);
     try {
+      expect(prepareMemory).toHaveBeenCalledExactlyOnceWith();
+      await expect(memoryReady).resolves.toMatchObject({ backend: 'sqlite', mode: 'active' });
       expect(app.accessor.get(IBootstrapService).interactive).toBe(false);
       const store = app.accessor.get(ICronTaskPersistence);
       const inventory = vi.spyOn(store, 'listWorkspaceIds');

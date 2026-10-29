@@ -7,6 +7,7 @@ import { IMemoryStore, MemoryStore, memoryApplicability, type MemoryEntry } from
 import { IMemoryScopes, type MemoryScope } from '#/app/memory/memoryScopes';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { MEMORY_AUTHORITY_SCOPE } from '#/persistence/memoryAuthority';
 import { IMemoryReadTool, IMemorySearchTool, IMemoryWriteTool, MemoryReadTool, MemorySearchTool, MemoryWriteTool } from '#/agent/tools/memory/memoryTools';
 import { IAgentMemorySnapshot, type MemoryPersonaContext } from '#/app/memory/memorySnapshot';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -650,7 +651,8 @@ describe('memory query read reuse and pending-only writes', () => {
     expect(lists).not.toHaveBeenCalled();
     expect(writes.mock.calls.map((call) => call[1])).toEqual([`inbox/${pending.entry.id}.md`]);
     expect(append).toHaveBeenCalledTimes(1);
-    expect(locks).toHaveBeenCalledTimes(1);
+    expect(locks.mock.calls.map(([scope, key]) => [scope, key])).toEqual([[MEMORY_AUTHORITY_SCOPE, 'writer'], [base, 'memory-write']]);
+    expect(locks.mock.invocationCallOrder[1]).toBeLessThan(append.mock.invocationCallOrder[0]!);
     expect(append.mock.invocationCallOrder[0]).toBeLessThan(writes.mock.invocationCallOrder[0]!);
     expect(writes.mock.calls[0]![3]).toEqual({ atomic: true });
     expect(await storage.read(base, 'MEMORY.md')).toEqual(catalog);
@@ -686,7 +688,7 @@ describe('memory write capacity scans and namespace isolation', () => {
     expect(page.next_cursor).not.toBeNull();
   }, 30_000);
 
-  it('keeps a cancelled queued writer behind its predecessor while other namespaces and light reads complete', async () => {
+  it('preserves queued-writer order and the home-wide Memory barrier without blocking light reads', async () => {
     const base = pathFor(global);
     const release = promiseWithResolvers<void>();
     const entered = promiseWithResolvers<void>();
@@ -702,27 +704,39 @@ describe('memory write capacity scans and namespace isolation', () => {
     });
     const locks = vi.spyOn(storage, 'acquireLock');
     const first = save('First queued rule', global);
-    await entered.promise;
-    const firstEntry = (await store.list(global))[0]!;
-    const controller = new AbortController();
-    const cancelled = store.put({ action: 'create', scope: global, type: 'reference', title: 'Cancelled rule', body: 'Must not be written.', reason: 'Fixture', source, signal: controller.signal });
-    const rejected = expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
-    controller.abort();
-    await rejected;
-    const third = save('Third queued rule', global);
+    const pending: Promise<unknown>[] = [first];
     try {
+      await entered.promise;
+      const firstEntry = (await store.list(global))[0]!;
+      const controller = new AbortController();
+      const cancelled = store.put({ action: 'create', scope: global, type: 'reference', title: 'Cancelled rule', body: 'Must not be written.', reason: 'Fixture', source, signal: controller.signal });
+      pending.push(cancelled);
+      const rejected = expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
       expect(await store.get(global, firstEntry.id)).toEqual(firstEntry);
-      const unrelated = await save('Other namespace', workspace);
-      expect(unrelated.entry.status).toBe('active');
+      controller.abort();
+      await rejected;
+      const completed = vi.fn();
+      const third = save('Third queued rule', global).then((result) => { completed('global'); return result; });
+      const other = save('Other namespace', workspace).then((result) => { completed('workspace'); return result; });
+      pending.push(third, other);
+      expect(await store.get(global, firstEntry.id)).toEqual(firstEntry);
       await storage.write('sessions/example', 'meta.json', encoder.encode('{}'));
       expect(Array.from((await storage.read('sessions/example', 'meta.json'))!)).toEqual(Array.from(encoder.encode('{}')));
-      expect(locks.mock.calls.filter(([scope]) => scope === base)).toHaveLength(1);
-    } finally { release.resolve(); }
-    await Promise.all([first, third]);
-    const journal = await store.journal(global);
-    expect(journal).toHaveLength(2);
-    expect((await store.list(global)).map((entry) => entry.title)).not.toContain('Cancelled rule');
-    expect(locks.mock.calls.filter(([scope]) => scope === base)).toHaveLength(2);
+      expect(completed).not.toHaveBeenCalled();
+      expect(locks.mock.calls.map(([scope, key]) => [scope, key])).toEqual([[MEMORY_AUTHORITY_SCOPE, 'writer'], [base, 'memory-write']]);
+      release.resolve();
+      const [savedFirst, savedThird, savedOther] = await Promise.all([first, third, other]);
+      expect(savedOther.entry.status).toBe('active');
+      expect((await store.journal(global)).map(({ operationId }) => operationId)).toEqual([savedFirst.operationId, savedThird.operationId]);
+      expect((await store.journal(workspace)).map(({ operationId }) => operationId)).toEqual([savedOther.operationId]);
+      expect((await store.list(global)).map((entry) => entry.title).toSorted()).toEqual(['First queued rule', 'Third queued rule']);
+      expect(locks.mock.calls.filter(([scope]) => scope === MEMORY_AUTHORITY_SCOPE).map(([, key]) => key)).toEqual(['writer', 'writer', 'writer']);
+      expect(locks.mock.calls.filter(([scope]) => scope === base).map(([, key]) => key)).toEqual(['memory-write', 'memory-write']);
+      expect(locks.mock.calls.filter(([scope]) => scope === pathFor(workspace)).map(([, key]) => key)).toEqual(['memory-write']);
+    } finally {
+      release.resolve();
+      await Promise.allSettled(pending);
+    }
   });
 
   it('cancels an active capacity scan before journaling and releases its namespace for the next writer', async () => {

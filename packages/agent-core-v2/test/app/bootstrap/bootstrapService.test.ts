@@ -16,12 +16,14 @@ import {
   resolveBootstrapOptions,
 } from '#/app/bootstrap/bootstrap';
 import { BootstrapService } from '#/app/bootstrap/bootstrapService';
+import { IMemoryAuthorityService } from '#/app/memory/memoryAuthorityStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 
 import { stubClientIdentity } from './stubs';
+import { stubMemoryStartup } from '../memory/stubs';
 
 describe('BootstrapService (scoped)', () => {
   beforeEach(() => {
@@ -135,8 +137,9 @@ describe('resolveBootstrapOptions', () => {
 
 describe('bootstrap() storage seeding', () => {
   it('seeds IFileSystemStorageService as a FileStorageService instance', async () => {
-    const { app } = bootstrap({ homeDir: '/tmp/kimi-home', clientIdentity: stubClientIdentity });
+    const { app, memoryReady } = bootstrap({ homeDir: '/tmp/kimi-home', clientIdentity: stubClientIdentity }, [[IMemoryAuthorityService, stubMemoryStartup()]]);
     try {
+      await expect(memoryReady).resolves.toMatchObject({ backend: 'sqlite', mode: 'active' });
       const storage = app.accessor.get(IFileSystemStorageService);
       expect(storage).toBeInstanceOf(FileStorageService);
     } finally {
@@ -159,8 +162,9 @@ describe('bootstrap() storage seeding', () => {
     }));
     const expiredAt = new Date(Date.now() - 5_000);
     await utimes(lockPath, expiredAt, expiredAt);
-    const { app } = bootstrap({ homeDir: root, clientIdentity: stubClientIdentity });
+    const { app, memoryReady } = bootstrap({ homeDir: root, clientIdentity: stubClientIdentity }, [[IMemoryAuthorityService, stubMemoryStartup()]]);
     try {
+      await expect(memoryReady).resolves.toMatchObject({ backend: 'sqlite', mode: 'active' });
       await expect.poll(async () => (await readdir(lockDir)).includes('orphan.lock')).toBe(false);
     } finally {
       await app.dispose();
@@ -175,13 +179,14 @@ describe('bootstrap() storage seeding', () => {
     const configPath = join(activeHome, 'active.toml');
     await mkdir(activeHome);
     await writeFile(configPath, 'default_model = "grok-4.6"\n', { encoding: 'utf8', flag: 'wx' });
-    const { app } = bootstrap({
+    const { app, memoryReady } = bootstrap({
       homeDir: runtimeHome,
       configPath,
       configReadOnly: true,
       clientIdentity: stubClientIdentity,
-    });
+    }, [[IMemoryAuthorityService, stubMemoryStartup()]]);
     try {
+      await expect(memoryReady).resolves.toMatchObject({ backend: 'sqlite', mode: 'active' });
       const store = app.accessor.get(IAtomicTomlDocumentStore);
       expect(await store.get('', 'active.toml')).toEqual({ default_model: 'grok-4.6' });
       await expect(store.getText('', 'active.toml')).resolves.toBe('default_model = "grok-4.6"\n');
