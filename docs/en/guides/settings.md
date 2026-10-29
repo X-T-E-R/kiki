@@ -231,7 +231,7 @@ On **Settings → Models & agents → Agents → Agent profiles** (`/settings/ag
 
 Session controls stay at `/settings/sessions` (**Sessions & work → Sessions**). **Sessions & work → Workspaces** opens workspaces and does not replace these addresses.
 
-That page also carries **Task and background policy** — how many background tasks may run, the timeout that applies to Bash tasks, and what a non-interactive run does with work still in flight — and **Cron operations**, a read-only readout of the scheduled-task runtime. The task fields are stored under [`background`](../configuration/config-files.md#background).
+That page also carries **Task and background policy** — how many background tasks may run, the timeout that applies to Bash tasks, and what a non-interactive run does with work still in flight. The task fields are stored under [`background`](../configuration/config-files.md#background). **Cron operations**, the scheduled-task runtime's read-only diagnostics, lives under **Advanced → Developer & labs** (`/settings/developer#st-card-cron`). Existing cron links open the card there.
 
 **Import history** (`/settings/sessions/import`) opens Kiki's built-in importer, also available from **New session**. No plugin installation or activation is needed for the built-in formats; see [Session history import](../customization/plugins.md#session-history-import).
 

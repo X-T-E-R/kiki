@@ -10,6 +10,64 @@ import { fid, sessionRecord, ts } from './helpers.mjs';
 const SID = 'session_fixture_settings';
 const WSID = 'wd_fixture_000000000000';
 
+const STAINLESS_HEADERS = [
+  { name: 'x-app', value: 'cli' },
+  { name: 'anthropic-dangerous-direct-browser-access', value: 'true' },
+  { name: 'X-Stainless-Lang', value: 'js' },
+  { name: 'X-Stainless-Package-Version', value: '0.94.0' },
+  { name: 'X-Stainless-OS', value: '{stainless_os}' },
+  { name: 'X-Stainless-Arch', value: '{stainless_arch}' },
+  { name: 'X-Stainless-Runtime', value: 'node' },
+  { name: 'X-Stainless-Runtime-Version', value: 'v26.3.0' },
+  { name: 'X-Stainless-Retry-Count', value: '0' },
+  { name: 'X-Stainless-Timeout', value: '600' },
+];
+
+const identityBuiltin = (id, label, base_preset, track, user_agent, headers) => ({
+  id, builtin: true, label, base_preset, track,
+  version: track === null ? { mode: 'kiki' } : { mode: 'track' },
+  user_agent, headers, params: [],
+});
+
+const IDENTITY_PROFILES = [
+  identityBuiltin('kimi_code', 'Kimi Code', 'kimi_code', null, '', []),
+  identityBuiltin('codex', 'Codex CLI', 'codex_compatible', 'codex_cli',
+    'codex_cli_rs/{version} ({os_type} {os_version}; {arch})',
+    [{ name: 'originator', value: 'codex_cli_rs' }, { name: 'version', value: '{version}' }]),
+  identityBuiltin('claude_code', 'Claude Code', 'claude_code_compatible', 'claude_code',
+    'claude-cli/{version} (external, cli)', STAINLESS_HEADERS),
+  identityBuiltin('grok_build', 'Grok Build', 'grok_build_compatible', 'grok_cli',
+    'grok-shell/{version} ({grok_os}; {grok_arch})',
+    [{ name: 'x-grok-client-identifier', value: 'grok-shell' }, { name: 'x-grok-client-version', value: '{version}' }]),
+  identityBuiltin('none', 'None', 'none', null, '', []),
+];
+
+const IDENTITY_TRACKS = [
+  {
+    id: 'codex_cli', npm_package: '@openai/codex', cli_command: 'codex',
+    current: { version: '0.159.2', origin: 'npm', source_detail: '@openai/codex', at: ts(300) },
+    builtin: { version: '0.158.0', origin: 'builtin', source_detail: '@openai/codex', at: ts(43_200) },
+    candidate: null,
+    history: [{ version: '0.158.0', origin: 'builtin', source_detail: '@openai/codex', at: ts(43_200) }],
+    pinned: false,
+    last_check: { source: 'npm', at: ts(300), ok: true, version: '0.159.2' },
+  },
+  {
+    id: 'claude_code', npm_package: '@anthropic-ai/claude-code', cli_command: 'claude',
+    current: { version: '2.1.285', origin: 'builtin', source_detail: '@anthropic-ai/claude-code', at: ts(43_200) },
+    builtin: { version: '2.1.285', origin: 'builtin', source_detail: '@anthropic-ai/claude-code', at: ts(43_200) },
+    candidate: null, history: [], pinned: false,
+    last_check: { source: 'npm', at: ts(720), ok: true, version: '2.1.285' },
+  },
+  {
+    id: 'grok_cli', npm_package: '@xai-official/grok', cli_command: 'grok',
+    current: { version: '1.0.44', origin: 'builtin', source_detail: '@xai-official/grok', at: ts(43_200) },
+    builtin: { version: '1.0.44', origin: 'builtin', source_detail: '@xai-official/grok', at: ts(43_200) },
+    candidate: null, history: [], pinned: false,
+    last_check: { source: 'npm', at: ts(1440), ok: true, version: '1.0.44' },
+  },
+];
+
 const SEARCH_SOURCE_CONFIGURATION = {
   lanes: {
     'exa.search': { provider_instance_id: 'exa.default', operation_id: 'search', latency: 'fast', cost: 'cheap' },
@@ -479,6 +537,53 @@ export default {
         type: 'skill',
       },
     ],
+  },
+  // Request identity: the five built-ins and one track each, so the identity
+  // tab opens on real rows instead of the "no seed" failure path.
+  requestIdentity: {
+    catalog: {
+      profiles: IDENTITY_PROFILES,
+      tracks: IDENTITY_TRACKS,
+      manifest_url: null,
+      usage: [
+        { scope: 'global', label: 'global', effective_profile: 'kimi_code', effective_preset: 'kimi_code' },
+        { scope: 'provider', provider_id: 'fixture', label: 'fixture', effective_profile: 'kimi_code', effective_preset: 'kimi_code' },
+        { scope: 'provider', provider_id: 'alt', label: 'alt', authored: { preset: 'none' }, effective_profile: 'none', effective_preset: 'none' },
+      ],
+      observations: [],
+    },
+    lineage: {},
+    checks: {},
+  },
+  // The memory advisor, ready on the decision connection the defaults tab
+  // also lists: the settings reads (defaults, memory) validate against the
+  // full advisor shape, so the seed carries both the config and its status.
+  memoryAdvisor: {
+    advisor: {
+      mode: 'rank',
+      source: { kind: 'model', model: 'fixture/kiki-lite' },
+      timeout_ms: 6000,
+      max_calls_per_turn: 3,
+      candidate_chars: 120,
+      catalog_page_items: 40,
+      max_catalog_pages: 2,
+      max_full_units: 8,
+      judge_input_tokens: 12000,
+      apply_to_children: true,
+      egress_ack: [],
+    },
+    advisor_status: {
+      state: 'ready',
+      consent_required: false,
+      protocol: 'chat_json',
+      model: 'fixture/kiki-lite',
+      source_status: { state: 'ready', protocol: 'chat_json', model: 'fixture/kiki-lite' },
+      logical_calls: 0,
+      requests: 0,
+      retries: 0,
+      displaced_ids: [],
+      unjudged_count: 0,
+    },
   },
   workspaces: [
     {

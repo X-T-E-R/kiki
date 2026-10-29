@@ -31,7 +31,7 @@ import { SectionCard, SettingsCardMountContext, SettingsFlashContext } from './S
 import { SessionTitlePromptField } from './SessionTitlePromptField';
 import { SettingHelp } from './SettingHelp';
 import { SETTINGS_SELECT_TRIGGER, SettingsSegmented } from './SettingsPrimitives';
-import { CronRuntimeCard, TaskPolicyCard } from './TaskRuntimeSettings';
+import { TaskPolicyCard } from './TaskRuntimeSettings';
 import {
   EMPTY_GUARD_DRAFT,
   guardDraftFromGlobalEffective,
@@ -428,10 +428,10 @@ function ConversationHistoryCard() {
 /**
  * Sessions, in three tabs: Conversations (history and titles), Agent
  * behavior (plan mode, questions, messaging), and Background work (task
- * limits, cron diagnostics, and the runtime flags the page appends there).
- * The tab is the `?tab=` query, so search hits, card hashes and the retired
- * `/settings/tasks`, `/runtime` and `/communication` addresses land on the
- * tab that mounts their card.
+ * limits). Cron diagnostics are a developer readout and live under
+ * Developer & labs. The tab is the `?tab=` query, so search hits, card
+ * hashes and the retired `/settings/tasks`, `/runtime` and `/communication`
+ * addresses land on the tab that mounts their card.
  */
 export function SessionsSection() {
   const { t } = useI18n();
@@ -496,10 +496,7 @@ export function SessionsSection() {
             <AgentMessagingCard />
           </>
         ) : tab === 'runtime' ? (
-          <>
-            <TaskPolicyCard />
-            <CronRuntimeCard />
-          </>
+          <TaskPolicyCard />
         ) : (
           <>
             <ConversationHistoryCard />

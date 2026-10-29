@@ -12,6 +12,7 @@ import { LoopLimitsCard } from './LoopLimitsCard';
 import { RetryPolicyCard } from './RetryPolicyCard';
 import { SessionResidencyCard } from './SessionResidencyCard';
 import { CronRuntimeCard, TaskPolicyCard } from './TaskRuntimeSettings';
+import { TasksSection } from './TasksSection';
 import { WorktreePolicy } from './WorktreePolicy';
 import { commitText, pickValue, selectText } from './testControls';
 
@@ -227,6 +228,12 @@ describe('config gap cards', () => {
     // The draft is still the user's, not the last stored value.
     expect(maxRunning.value).toBe('6');
     expect(save.hasAttribute('disabled')).toBe(false);
+  });
+
+  it('keeps background limits on Tasks without duplicating developer cron diagnostics', async () => {
+    const container = await render(<TasksSection />);
+    expect(container.querySelector('#st-card-task-policy')).not.toBeNull();
+    expect(container.querySelector('#st-card-cron')).toBeNull();
   });
 
   it('shows cron diagnostics as on/off in readable units and never as controls', async () => {

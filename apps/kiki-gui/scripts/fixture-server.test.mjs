@@ -136,6 +136,24 @@ async function memoryRequest(server, method, path, body) {
   return response.json();
 }
 
+test('settings fixture echoes memory advisor changes and clears before returning the response', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'settings' });
+  try {
+    const initial = await memoryRequest(server, 'GET', 'settings');
+    assert.equal(initial.data.advisor_status.state, 'ready');
+    const changed = await memoryRequest(server, 'PATCH', 'settings', { advisor: { max_calls_per_turn: 5 } });
+    assert.equal(changed.data.advisor.max_calls_per_turn, 5);
+    assert.equal(changed.data.advisor.mode, initial.data.advisor.mode);
+    assert.deepEqual((await memoryRequest(server, 'GET', 'settings')).data, changed.data);
+    assert.equal((await memoryRequest(server, 'POST', 'advisor/probe', {})).data.ok, true);
+    const cleared = await memoryRequest(server, 'PATCH', 'settings', { advisor: null });
+    assert.equal(cleared.data.advisor, undefined);
+    assert.equal(cleared.data.advisor_status.state, 'unconfigured');
+    assert.deepEqual((await memoryRequest(server, 'GET', 'settings')).data, cleared.data);
+    assert.equal((await memoryRequest(server, 'POST', 'advisor/probe', {})).data.ok, false);
+  } finally { await server.stop(); }
+});
+
 test('memory provenance fixture exposes a real pending create and preserves its metadata through acceptance and Undo', async () => {
   const server = await startFixtureServer({ port: 0, scenario: 'memory-provenance' });
   try {
