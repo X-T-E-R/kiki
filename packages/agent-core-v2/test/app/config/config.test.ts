@@ -1632,13 +1632,14 @@ describe('retry config section', () => {
 
   it('loads policy entries written with snake_case keys', async () => {
     const { config, disposables } = await createConfig(
-      '[retry]\nmax_attempts = 3\n\n[[retry.policies]]\nmatch = "provider.rate_limit"\n' +
+      '[retry]\nmax_attempts = 3\nretry_partial_responses = false\n\n[[retry.policies]]\nmatch = "provider.rate_limit"\n' +
         'models = ["gemini-4-argon"]\nproviders = ["google-native"]\n' +
         'max_attempts = 2\nbackoff = 1500\nretry = false\n',
     );
 
     expect(config.get<RetryConfig>(RETRY_SECTION)).toEqual({
       maxAttempts: 3,
+      retryPartialResponses: false,
       policies: [{
         match: 'provider.rate_limit',
         models: ['gemini-4-argon'],
@@ -1721,6 +1722,7 @@ describe('retry config section', () => {
     const { config, disposables, readText } = await createConfig('[retry]\nmax_attempts = 2\n');
 
     await config.set(RETRY_SECTION, {
+      retryPartialResponses: false,
       policies: [{
         match: 'APIConnectionError',
         models: ['gemini-4-argon'],
@@ -1737,7 +1739,11 @@ describe('retry config section', () => {
     expect(onDisk).toContain('providers = [ "google-native" ]');
     expect(onDisk).toContain('max_attempts = 3');
     expect(onDisk).toContain('backoff = 200');
+    expect(onDisk).toContain('retry_partial_responses = false');
     expect(onDisk).not.toContain('maxAttempts');
+    const reloaded = await createConfig(onDisk);
+    expect(reloaded.config.get<RetryConfig>(RETRY_SECTION)?.retryPartialResponses).toBe(false);
+    await reloaded.disposables.dispose();
 
     await disposables.dispose();
   });
