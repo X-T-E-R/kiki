@@ -155,6 +155,7 @@ export class ExternalTurnRecorder {
   #partOrdinal = 0;
   #ended = false;
   #lastAssistantText = '';
+  readonly #settledWaiters = new Set<(settled: boolean) => void>();
 
   constructor(
     private readonly agent: AgentExecutorAgentContext,
@@ -201,6 +202,40 @@ export class ExternalTurnRecorder {
   }
 
   async record(event: ExternalExecutorEvent): Promise<void> {
+    try {
+      await this.#record(event);
+    } finally {
+      this.#notifyToolsSettled();
+    }
+  }
+
+  /** Resolves `true` once no recorded tool call is still running, or `false` when the turn ends or `signal` aborts first. */
+  toolsSettled(signal: AbortSignal): Promise<boolean> {
+    if (this.#ended || signal.aborted) return Promise.resolve(false);
+    if (![...this.#tools.values()].some((tool) => !tool.terminal)) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const waiter = (settled: boolean) => {
+        signal.removeEventListener('abort', aborted);
+        resolve(settled);
+      };
+      const aborted = () => {
+        this.#settledWaiters.delete(waiter);
+        resolve(false);
+      };
+      this.#settledWaiters.add(waiter);
+      signal.addEventListener('abort', aborted, { once: true });
+    });
+  }
+
+  #notifyToolsSettled(): void {
+    if (this.#settledWaiters.size === 0) return;
+    if (!this.#ended && [...this.#tools.values()].some((tool) => !tool.terminal)) return;
+    const waiters = [...this.#settledWaiters];
+    this.#settledWaiters.clear();
+    for (const waiter of waiters) waiter(!this.#ended);
+  }
+
+  async #record(event: ExternalExecutorEvent): Promise<void> {
     if (!(event.type === 'message.delta' && event.role === 'user')) {
       this.#commitUserSegments();
     }
@@ -799,6 +834,7 @@ export class ExternalTurnRecorder {
   ): Promise<void> {
     if (this.#ended) return;
     this.#ended = true;
+    this.#notifyToolsSettled();
     this.#flushSegment();
     this.#commitUserSegments();
     for (const tool of this.#tools.values()) {

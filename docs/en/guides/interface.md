@@ -44,7 +44,7 @@ To pick the timing for a message you submit, hover the send button or focus it a
 
 With the native executor, compatible queued messages ready at the same safe step are sent together as one model input. Steering and submit hooks run once for that batch; each original message keeps its own history entry and result. A message added after that step has begun stays in a later batch.
 
-A profile or engine change needs a separate turn even with **Send now**. Messages with different execution settings are not batched together. For external engines, the handshake determines whether sending into the current turn is available. AGY CLI currently does not support it; Kiki keeps messages queued for the next turn. If delivery is unconfirmed, the queue pauses: check the timeline before deciding whether to resume it.
+A profile or engine change needs a separate turn even with **Send now**. Messages with different execution settings are not batched together. For external engines, the handshake determines whether sending into the current turn is available. AGY CLI delivers the message at its next model call in the same turn; if the turn ends first, Kiki keeps the message queued for the next turn. For any external engine, Kiki waits up to 60 seconds for a running tool call to finish before sending; otherwise the message stays queued. If delivery is unconfirmed, the queue pauses: check the timeline before deciding whether to resume it.
 
 When the main agent is blocked waiting on a foreground `AgentRun`, **Send now** moves that wait to the background without stopping the child, which still reports back when it completes; plain queueing does not.
 

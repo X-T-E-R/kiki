@@ -1,6 +1,8 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { EXTERNAL_INTERACTION_NOT_OWNED_CODE as CORE_INTERACTION_NOT_OWNED_CODE } from '@kiki/agent-core-v2';
+import { EXTERNAL_INTERACTION_NOT_OWNED_CODE as CORE_INTERACTION_NOT_OWNED_CODE, SendMessageToThreadToolInputSchema } from '@kiki/agent-core-v2';
+import { compileToolArgsValidator, validateToolArgs } from '@kiki/agent-core-v2/tool/args-validator';
+import { toInputJsonSchema } from '@kiki/agent-core-v2/tool/input-schema';
 import {
   delegationProcedureTable,
   type DelegationProcedureName,
@@ -13,6 +15,7 @@ import {
   createKikiMcpServer,
   EXTERNAL_INTERACTION_NOT_OWNED_CODE,
   kikiMcpConfigFromEnv,
+  mcpToolInputSchema,
 } from '../src/mcp/server';
 
 const close: Array<() => Promise<void>> = [];
@@ -89,7 +92,10 @@ describe('Kiki external delegation MCP projector', () => {
       name: 'board_read', toolName: 'kiki_board_read', description: 'Read the board.', parameters,
     }] }, contextCall });
     const catalog = await client.listTools();
-    expect(catalog.tools.find((tool) => tool.name === 'kiki_board_read')?.inputSchema).toEqual({ ...parameters, type: 'object' });
+    expect(catalog.tools.find((tool) => tool.name === 'kiki_board_read')?.inputSchema).toEqual(kind === 'union'
+      ? { type: 'object', additionalProperties: false, required: ['action'],
+        properties: { action: { anyOf: [{ type: 'string', const: 'preview' }, { type: 'string', const: 'list' }] } } }
+      : { ...parameters, type: 'object' });
     expect(catalog.tools.find((tool) => tool.name === 'kiki_dispatch')?.inputSchema.properties).toHaveProperty('message');
     const valid = await client.callTool({ name: 'kiki_board_read', arguments: { action: 'preview' } });
     expect(valid.isError).not.toBe(true);
@@ -116,6 +122,76 @@ describe('Kiki external delegation MCP projector', () => {
     expect((await client.callTool({ name: tool.toolName, arguments: {} })).isError).toBe(true);
     expect(contextCall).toHaveBeenCalledTimes(1);
     expect((await client.listTools()).tools).toEqual([]);
+  });
+
+  it.each(['static', 'dynamic'] as const)('lists the native ThreadSend union as one %s object schema while the original validator still rejects mixed or missing branches', async (catalogKind) => {
+    const parameters = toInputJsonSchema(SendMessageToThreadToolInputSchema);
+    expect(Array.isArray(parameters['anyOf'])).toBe(true);
+    const validator = compileToolArgsValidator(parameters);
+    const tool = { name: 'ThreadSend', toolName: 'kiki_ThreadSend', description: 'Send to a thread.', parameters };
+    const contextCall = vi.fn(async (input: { name: string; arguments: Record<string, unknown> }) => {
+      const error = validateToolArgs(validator, input.arguments as never);
+      return error === null ? { output: 'sent' } : { output: error, isError: true };
+    });
+    const contextCatalog = catalogKind === 'static'
+      ? { delegation: false, tools: [tool] }
+      : { delegation: false, nativeTools: true, tools: [tool] };
+    const { client } = await connect(fakeKlient(), { contextCatalog, contextCall,
+      contextList: catalogKind === 'dynamic' ? async () => contextCatalog : undefined });
+    const listed = (await client.listTools()).tools.find((entry) => entry.name === 'kiki_ThreadSend');
+    const schema = listed?.inputSchema as Record<string, unknown>;
+    expect(['anyOf', 'oneOf', 'allOf'].filter((key) => key in schema)).toEqual([]);
+    expect(schema).toMatchObject({ $schema: parameters['$schema'], type: 'object', required: ['content'], additionalProperties: false });
+    expect(Object.keys(schema['properties'] as object).sort()).toEqual(['content', 'idempotency_key', 'mentions', 'room', 'thread']);
+    expect(listed?.description).toBe('Send to a thread.\n\nInput constraint: use one of these parameter sets: (thread, content, idempotency_key) or (room, content).');
+    const sent = { thread: { workspace_id: 'workspace-example', session_id: 'session-example' }, content: 'nonce', idempotency_key: 'nonce' };
+    expect((await client.callTool({ name: 'kiki_ThreadSend', arguments: sent })).isError).not.toBe(true);
+    expect(contextCall).toHaveBeenLastCalledWith({ name: 'ThreadSend', arguments: sent }, expect.any(AbortSignal));
+    for (const invalid of [{ ...sent, room: 'room-example' }, { content: 'nonce' }, { thread: sent.thread, content: 'nonce' }]) {
+      expect(validateToolArgs(validator, invalid as never)).not.toBeNull();
+      expect((await client.callTool({ name: 'kiki_ThreadSend', arguments: invalid })).isError).toBe(true);
+    }
+  });
+
+  it('folds only the root combinator: local $defs references, root constraints and allOf intersections survive', () => {
+    const parameters = {
+      $schema: 'http://json-schema.org/draft-07/schema#', title: 'Example', description: 'Root description', minProperties: 1,
+      definitions: { Name: { type: 'string', minLength: 1 } },
+      $defs: { Target: { type: 'object', properties: { id: { $ref: '#/definitions/Name' } }, required: ['id'], additionalProperties: false } },
+      allOf: [
+        { type: 'object', properties: { target: { $ref: '#/$defs/Target' }, mode: { type: 'string', enum: ['a', 'b'] }, shared: { type: 'string' } }, required: ['target'] },
+        { type: 'object', properties: { target: {}, mode: { type: 'string', enum: ['b', 'c'] }, shared: { type: 'string' }, extra: { type: 'number' } }, required: ['mode'], additionalProperties: false },
+      ],
+    };
+    const { schema, constraint } = mcpToolInputSchema(parameters);
+    expect(constraint).toBeUndefined();
+    expect(schema).toEqual({
+      $schema: parameters.$schema, title: 'Example', description: 'Root description', minProperties: 1,
+      definitions: parameters.definitions, $defs: parameters.$defs, type: 'object', additionalProperties: false,
+      required: ['target', 'mode'],
+      properties: {
+        target: { $ref: '#/$defs/Target' },
+        mode: { allOf: [{ type: 'string', enum: ['a', 'b'] }, { type: 'string', enum: ['b', 'c'] }] },
+        shared: { type: 'string' },
+        extra: { type: 'number' },
+      },
+    });
+    const validator = compileToolArgsValidator(schema as Record<string, unknown>);
+    expect(validateToolArgs(validator, { target: { id: 'x' }, mode: 'b' })).toBeNull();
+    expect(validateToolArgs(validator, { target: { id: 'x' }, mode: 'a' })).not.toBeNull();
+    expect(validateToolArgs(validator, { target: { id: '' }, mode: 'b' })).not.toBeNull();
+    expect(validateToolArgs(validator, { target: { id: 'x' }, mode: 'b', unknown: true })).not.toBeNull();
+  });
+
+  it('keeps a property that an open union branch leaves undeclared unconstrained, and resolves branch $ref', () => {
+    const $defs = { B: { properties: { a: { type: 'number' }, b: { type: 'string' } }, required: ['b'], additionalProperties: false } };
+    const { schema, constraint } = mcpToolInputSchema({ type: 'object', $defs, oneOf: [
+      { properties: { a: { type: 'string' } }, required: ['a'] },
+      { $ref: '#/$defs/B' },
+    ] });
+    expect(schema).toEqual({ type: 'object', $defs, required: [],
+      properties: { a: { anyOf: [{ type: 'string' }, { type: 'number' }] }, b: {} } });
+    expect(constraint).toBe('Input constraint: use exactly one of these parameter sets: (a) or (b).');
   });
 
   it('registers the thirteen table-owned tools and preserves text/structured parity', async () => {

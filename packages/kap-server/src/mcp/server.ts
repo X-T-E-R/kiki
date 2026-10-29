@@ -107,9 +107,10 @@ export function createKikiMcpServer(
     const catalog = async (signal: AbortSignal) => options.contextList?.(signal) ?? options.contextCatalog!;
     server.server.registerCapabilities({ tools: { listChanged: true } });
     server.server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => ({
-      tools: (await catalog(extra.signal)).tools.map((tool) => ({
-        name: tool.toolName, description: tool.description, inputSchema: { ...tool.parameters, type: 'object' as const },
-      })),
+      tools: (await catalog(extra.signal)).tools.map((tool) => {
+        const projected = mcpToolInputSchema(tool.parameters);
+        return { name: tool.toolName, description: withInputConstraint(tool.description, projected.constraint), inputSchema: projected.schema };
+      }),
     }));
     server.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       try {
@@ -168,8 +169,9 @@ export function createKikiMcpServer(
   }
 
   for (const tool of options.contextCatalog?.tools ?? []) {
+    const projected = mcpToolInputSchema(tool.parameters);
     const registered = registrar.registerTool(tool.toolName, {
-      description: tool.description,
+      description: withInputConstraint(tool.description, projected.constraint),
       inputSchema: z.fromJSONSchema(tool.parameters),
       annotations: { readOnlyHint: contextReadOnlyTools.has(tool.toolName), destructiveHint: !contextReadOnlyTools.has(tool.toolName), openWorldHint: false },
     }, async (input, extra) => {
@@ -182,7 +184,7 @@ export function createKikiMcpServer(
       }
     });
     tools.set(tool.toolName, registered);
-    inputSchemas.set(tool.toolName, { ...tool.parameters, type: 'object' });
+    inputSchemas.set(tool.toolName, projected.schema);
   }
   if (tools.size > 0) server.server.setRequestHandler(ListToolsRequestSchema, () => ({
     tools: [...tools].filter(([, tool]) => tool.enabled).map(([name, tool]) => ({
@@ -414,6 +416,146 @@ function utf8PagePrefix(
     consumed += width;
   }
   return { text: value.slice(0, consumed), consumed };
+}
+
+type JsonObject = Record<string, unknown>;
+
+const ROOT_COMBINATORS = ['allOf', 'anyOf', 'oneOf'] as const;
+const MAX_REF_DEPTH = 16;
+
+interface ObjectShape {
+  readonly properties: Map<string, unknown>;
+  readonly required: ReadonlySet<string>;
+  readonly closed: boolean;
+}
+
+function jsonObject(value: unknown): value is JsonObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function unconstrained(schema: unknown): boolean {
+  return schema === true || jsonObject(schema) && Object.keys(schema).length === 0;
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+}
+
+function resolveLocalRef(root: JsonObject, ref: string): unknown {
+  if (ref === '#') return root;
+  if (!ref.startsWith('#/')) return undefined;
+  let current: unknown = root;
+  for (const raw of ref.slice(2).split('/')) {
+    const key = decodeURIComponent(raw).replaceAll('~1', '/').replaceAll('~0', '~');
+    if (Array.isArray(current) && /^\d+$/.test(key)) current = current[Number(key)];
+    else if (jsonObject(current) && Object.hasOwn(current, key)) current = current[key];
+    else return undefined;
+  }
+  return current;
+}
+
+function intersectShapes(left: ObjectShape, right: ObjectShape): ObjectShape {
+  const properties = new Map(left.properties);
+  for (const [key, schema] of right.properties) {
+    const known = properties.get(key);
+    properties.set(key, known === undefined || unconstrained(known) || sameJson(known, schema) ? schema
+      : unconstrained(schema) ? known : { allOf: [known, schema] });
+  }
+  const allowed = (shape: ObjectShape, key: string) => !shape.closed || shape.properties.has(key);
+  for (const key of [...properties.keys()]) if (!allowed(left, key) || !allowed(right, key)) properties.delete(key);
+  return { properties, required: new Set([...left.required, ...right.required]), closed: left.closed || right.closed };
+}
+
+function unionShapes(branches: readonly ObjectShape[]): ObjectShape {
+  const keys = new Set(branches.flatMap((branch) => [...branch.properties.keys()]));
+  const properties = new Map<string, unknown>();
+  for (const key of keys) {
+    if (branches.some((branch) => !branch.properties.has(key) && !branch.closed)) {
+      properties.set(key, {});
+      continue;
+    }
+    const variants: unknown[] = [];
+    for (const branch of branches) {
+      const schema = branch.properties.get(key);
+      if (schema !== undefined && !variants.some((entry) => sameJson(entry, schema))) variants.push(schema);
+    }
+    properties.set(key, variants.length === 1 ? variants[0] : { anyOf: variants });
+  }
+  const [first, ...rest] = branches;
+  const required = new Set([...first?.required ?? []].filter((key) => rest.every((branch) => branch.required.has(key))));
+  return { properties, required, closed: branches.length > 0 && branches.every((branch) => branch.closed) };
+}
+
+function objectShape(node: unknown, root: JsonObject, depth: number): ObjectShape {
+  const open: ObjectShape = { properties: new Map(), required: new Set(), closed: false };
+  if (!jsonObject(node) || depth > MAX_REF_DEPTH) return open;
+  let shape: ObjectShape = {
+    properties: new Map(jsonObject(node['properties']) ? Object.entries(node['properties']) : []),
+    required: new Set(strings(node['required'])),
+    closed: node['additionalProperties'] === false,
+  };
+  if (typeof node['$ref'] === 'string') shape = intersectShapes(shape, objectShape(resolveLocalRef(root, node['$ref']), root, depth + 1));
+  for (const branch of Array.isArray(node['allOf']) ? node['allOf'] : []) shape = intersectShapes(shape, objectShape(branch, root, depth + 1));
+  for (const combinator of ['anyOf', 'oneOf'] as const) {
+    const branches = (Array.isArray(node[combinator]) ? node[combinator] as unknown[] : []).filter((branch) => branch !== false);
+    if (branches.length > 0) shape = intersectShapes(shape, unionShapes(branches.map((branch) => objectShape(branch, root, depth + 1))));
+  }
+  return shape;
+}
+
+function inlineRemovedRefs(value: unknown, root: JsonObject, depth = 0): unknown {
+  if (Array.isArray(value)) return value.map((item) => inlineRemovedRefs(item, root, depth));
+  if (!jsonObject(value)) return value;
+  const ref = value['$ref'];
+  if (typeof ref === 'string' && /^#\/(allOf|anyOf|oneOf)(\/|$)/.test(ref) && depth < MAX_REF_DEPTH) {
+    const { $ref: _removed, ...siblings } = value;
+    const target = inlineRemovedRefs(resolveLocalRef(root, ref), root, depth + 1);
+    return Object.keys(siblings).length === 0 ? target : { allOf: [target, inlineRemovedRefs(siblings, root, depth)] };
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, inlineRemovedRefs(child, root, depth)]));
+}
+
+function rootAlternatives(parameters: JsonObject): string | undefined {
+  const parts: string[] = [];
+  for (const combinator of ['anyOf', 'oneOf'] as const) {
+    if (!Array.isArray(parameters[combinator])) continue;
+    const sets = (parameters[combinator] as unknown[]).filter(jsonObject)
+      .map((branch) => [...objectShape(branch, parameters, 0).required]);
+    const distinct = [...new Map(sets.map((keys) => [keys.join('\u0000'), keys])).values()];
+    if (distinct.length < 2) continue;
+    const listed = distinct.map((keys) => keys.length === 0 ? '(no required parameters)' : `(${keys.join(', ')})`).join(' or ');
+    parts.push(combinator === 'oneOf' ? `use exactly one of these parameter sets: ${listed}` : `use one of these parameter sets: ${listed}`);
+  }
+  return parts.length === 0 ? undefined : `Input constraint: ${parts.join('; ')}.`;
+}
+
+/**
+ * Projects a native tool's input schema onto the MCP tool shape that model clients accept.
+ * Only a root `allOf`/`anyOf`/`oneOf` is folded, because some clients drop tools whose
+ * schema root is a combinator; every other root keyword, including `$schema`, `$defs`,
+ * `definitions` and root constraints, is kept so local references still resolve. `allOf`
+ * intersects its branches, while `anyOf`/`oneOf` keep a property schema for each branch and
+ * require only fields every branch requires; the alternatives are returned as readable text.
+ * Calls are still validated by Kiki against the unchanged original schema.
+ */
+export function mcpToolInputSchema(parameters: JsonObject): { readonly schema: Tool['inputSchema']; readonly constraint?: string } {
+  if (!ROOT_COMBINATORS.some((key) => Array.isArray(parameters[key]))) return { schema: { ...parameters, type: 'object' } };
+  const shape = objectShape(parameters, parameters, 0);
+  const schema: JsonObject = Object.fromEntries(Object.entries(parameters)
+    .filter(([key]) => !(ROOT_COMBINATORS as readonly string[]).includes(key) && key !== '$ref'));
+  schema['type'] = 'object';
+  schema['properties'] = inlineRemovedRefs(Object.fromEntries(shape.properties), parameters);
+  schema['required'] = [...shape.required];
+  if (shape.closed) schema['additionalProperties'] = false;
+  return { schema: schema as Tool['inputSchema'], constraint: rootAlternatives(parameters) };
+}
+
+function withInputConstraint(description: string, constraint: string | undefined): string {
+  return constraint === undefined ? description : `${description}\n\n${constraint}`;
 }
 
 function contextToolResult(data: { output: unknown; isError?: boolean }): CallToolResult {

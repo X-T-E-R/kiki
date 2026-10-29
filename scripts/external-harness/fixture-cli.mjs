@@ -3,9 +3,11 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
-async function invokeHook(payload) {
+async function invokeHook(payload, event = 'PreToolUse') {
   const hooks = JSON.parse(await readFile('.agents/hooks.json', 'utf8'));
-  const definition = hooks['kiki-agy-permission-bridge'].PreToolUse[0].hooks[0];
+  const definition = event === 'PostInvocation' ? hooks['kiki-agy-steering-bridge'].PostInvocation[0]
+    : hooks['kiki-agy-permission-bridge']?.PreToolUse[0].hooks[0];
+  if (!definition) throw Object.assign(Error('No owned hook'), { code: 'ENOENT' });
   const shell = process.platform === 'win32' ? process.env.ComSpec : '/bin/sh';
   const args = process.platform === 'win32' ? ['/d', '/s', '/c', definition.command] : ['-c', definition.command];
   const child = spawn(shell, args, { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
@@ -43,6 +45,21 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (input.message.content === 'tool-hang') {
     process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation,
       step_update: { step_type: 'tool', step_index: turns, tool_name: 'run_command', state: 'ACTIVE', tool_info: { parameters: { command: 'example' } } } }) + '\n');
+    continue;
+  }
+  if (input.message.content === 'steer-loop') {
+    const tool = { step_type: 'tool', step_index: turns, tool_name: 'run_command', tool_info: { parameters: { CommandLine: 'example' } } };
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation, step_update: { ...tool, state: 'ACTIVE' } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'step_update', conversation_id: conversation, step_update: { ...tool, state: 'DONE', tool_info: { ...tool.tool_info, output: 'done' } } }) + '\n');
+    let injected = [];
+    for (let invocationNum = 1; invocationNum <= 200 && injected.length === 0; invocationNum++) {
+      const output = await invokeHook({ conversationId: conversation, invocationNum, initialNumSteps: 1, workspacePaths: [process.cwd()] }, 'PostInvocation');
+      injected = output.terminationBehavior === 'force_continue' ? output.injectSteps ?? [] : [];
+      if (!injected.length) await new Promise(done => setTimeout(done, 25));
+    }
+    const response = `steered:${injected.map(step => step.userMessage).join('|')}`;
+    process.stdout.write(JSON.stringify({ event: 'step_update', step_update: { step_type: 'agent_response', step_index: turns * 2, state: 'DONE', text_delta: response } }) + '\n');
+    process.stdout.write(JSON.stringify({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS', response, num_turns: turns } }) + '\n');
     continue;
   }
   if (input.message.content === 'malformed') { process.stdout.write('not-json\n'); continue; }

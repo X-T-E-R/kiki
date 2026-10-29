@@ -176,6 +176,8 @@ export interface AgentExecutorDescriptor {
   readonly extraArgs?: readonly string[];
   readonly startupTimeoutMs?: number;
   readonly shutdownGraceMs?: number;
+  /** Wait after closing the adapter stdin before platform termination; lets a self-cleaning adapter release owned workspace files. */
+  readonly stdinCloseGraceMs?: number;
   readonly modelBinding?: string;
   readonly modelArgs?: readonly string[];
   readonly modelConfigCategory?: string;

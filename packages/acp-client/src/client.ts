@@ -663,6 +663,7 @@ export class AcpProcessClient {
         this.#steeringDetached = true;
         return true;
       }
+      if (outcome === 'deliveryUnknown') return 'unknown';
       return false;
     } catch (error) {
       if (error instanceof RequestError && error.code !== RequestError.requestCancelled().code) return false;
@@ -1370,6 +1371,15 @@ export class AcpProcessClient {
     try {
       if (child.exitCode !== null) return;
       const grace = this.#descriptor.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
+      const eofGrace = this.#descriptor.stdinCloseGraceMs ?? 0;
+      if (eofGrace > 0 && !child.stdin.destroyed && !child.stdin.writableEnded) {
+        try { child.stdin.end(); } catch {}
+        const closedAfterEof = await Promise.race([
+          child.wait().then(() => true, () => true),
+          delay(eofGrace).then(() => false),
+        ]);
+        if (closedAfterEof) return;
+      }
       await this.#sendTermination(child, false);
       const exited = await Promise.race([
         child.wait().then(() => true, () => true),

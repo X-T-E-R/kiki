@@ -260,6 +260,39 @@ describe('AcpProcessClient limits and observers', () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
+  it.each([5_000, undefined] as const)('closes stdin before platform termination only when an EOF grace is configured (%s)', async (stdinCloseGraceMs) => {
+    const { child, toAgent, fromAgent } = (() => {
+      const toAgent = new PassThrough();
+      const fromAgent = new PassThrough();
+      let exitCode: number | null = null;
+      let resolveExit!: (code: number) => void;
+      const exit = new Promise<number>((resolve) => { resolveExit = resolve; });
+      const finish = () => { if (exitCode === null) { exitCode = 0; resolveExit(0); } };
+      toAgent.on('finish', () => setTimeout(finish, 10));
+      const child = { pid: 7, get exitCode() { return exitCode; }, stdin: toAgent, stdout: fromAgent, stderr: new PassThrough(),
+        wait: () => exit, kill: vi.fn(async () => finish()), dispose: () => {} } satisfies HostProcessLike;
+      return { child, toAgent, fromAgent };
+    })();
+    let buffer = '';
+    toAgent.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString();
+      for (;;) {
+        const end = buffer.indexOf('\n');
+        if (end === -1) break;
+        const request = JSON.parse(buffer.slice(0, end)) as { id?: number; method: string };
+        buffer = buffer.slice(end + 1);
+        if (request.method === 'initialize') fromAgent.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: 1, agentCapabilities: {} } }) + '\n');
+        if (request.method === 'session/new') fromAgent.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'session-1' } }) + '\n');
+      }
+    });
+    const client = new AcpProcessClient({ spawn: async () => child }, { id: 'fixture', command: 'fixture', shutdownGraceMs: 20, stdinCloseGraceMs },
+      { platform: 'linux' });
+    await client.openSession({ cwd: 'C:/workspace' });
+    await client.shutdown();
+    expect(toAgent.writableEnded).toBe(stdinCloseGraceMs !== undefined);
+    expect(child.kill).toHaveBeenCalledTimes(stdinCloseGraceMs === undefined ? 1 : 0);
+  });
+
   it('fails startup when EOF ends an unterminated malformed frame', async () => {
     const dispose = vi.fn<() => void>();
     const client = new AcpProcessClient(

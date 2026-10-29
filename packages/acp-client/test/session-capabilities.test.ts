@@ -518,6 +518,16 @@ describe('AcpProcessClient steering consumption', () => {
     await expect(pending).resolves.toBe('unknown');
   });
 
+  it('reports an adapter delivery-unknown steering outcome as unknown so it is not replayed', async () => {
+    const { client, turn } = await duringPrompt('deliveryUnknown');
+    try {
+      await expect(client.steer([{ type: 'text', text: 'later' }])).resolves.toBe('unknown');
+    } finally {
+      await turn.cancel();
+      await client.shutdown();
+    }
+  });
+
   it.each(['promptRequired', 'unknown', 'reject', 'abort'] as const)('leaves %s unconsumed', async (outcome) => {
     const { client, turn } = await duringPrompt(outcome);
     try {

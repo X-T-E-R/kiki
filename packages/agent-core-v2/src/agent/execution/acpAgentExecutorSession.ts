@@ -122,6 +122,7 @@ const HANDOFF_BEGIN = '--- BEGIN KIKI PRIOR TRANSCRIPT HANDOFF ---';
 const HANDOFF_END = '--- END KIKI PRIOR TRANSCRIPT HANDOFF ---';
 const MAX_HANDOFF_TURNS = 8;
 const MAX_HANDOFF_BYTES = 32 * 1024;
+const STEER_TOOL_BOUNDARY_MS = 60_000;
 
 export class AcpAgentExecutorSession implements AgentExecutorSession {
   readonly hooks = createHooks<{ onWillRun: { signal: AbortSignal } }, 'onWillRun'>([
@@ -167,6 +168,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           env: executorProcessEnv(context.descriptor),
           startupTimeoutMs: context.descriptor.startupTimeoutMs,
           shutdownGraceMs: context.descriptor.shutdownGraceMs,
+          stdinCloseGraceMs: context.descriptor.stdinCloseGraceMs,
           clientName: 'kiki-agent-core-v2',
         },
         { permissionHandler,
@@ -528,6 +530,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   async steer(message: ContextMessage): Promise<boolean | 'unknown'> {
     const active = this.#active;
     if (active === undefined || active.turn.signal.aborted || this.#client.steer === undefined) return false;
+    const boundary = AbortSignal.any([active.turn.signal, AbortSignal.timeout(STEER_TOOL_BOUNDARY_MS)]);
+    if (!await active.recorder.toolsSettled(boundary) || this.#active !== active) return false;
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
     return this.#client.steer([
       { type: 'text', text },
