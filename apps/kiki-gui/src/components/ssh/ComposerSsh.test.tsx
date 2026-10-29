@@ -404,10 +404,15 @@ describe('ComposerSsh', () => {
     expect(ssh.addSessionHost).toHaveBeenCalledWith('sess-1', 'newhost');
     expect(document.body.querySelector('[data-ssh-host-form="create"]')).toBeNull();
 
-    // The panel must not be blank: it lists hosts, including the new one.
+    // The panel must not be blank: it lists both the previously joined host and
+    // the newly added one (the reported failure was a blank panel right here).
     const panelAfter = container.querySelector('[data-composer-ssh-panel]');
     expect(panelAfter).not.toBeNull();
+    expect(panelAfter!.querySelector('[data-composer-ssh-host="h1"]')).not.toBeNull();
     expect(panelAfter!.querySelector('[data-composer-ssh-host="newhost"]')).not.toBeNull();
     expect(panelAfter!.textContent?.trim()).not.toBe('');
+
+    // The resident strip keeps showing both chips (SSH 2), not a blank card.
+    expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(2);
   });
 });
