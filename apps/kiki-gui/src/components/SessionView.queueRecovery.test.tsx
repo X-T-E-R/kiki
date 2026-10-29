@@ -8,7 +8,7 @@ import { I18nProvider } from '../i18n';
 import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 import { SubmissionRecovery } from './SubmissionRecovery';
-import { preserveSubmission, readUnconfirmedSubmissions, readDraft, writeDraft, resetDraftMemoryForTests, readComposerState, writeComposerState, createQuote, selectionCarryoverPresentation } from '@kiki/session-core/composer';
+import { preserveSubmission, readUnconfirmedSubmissions, readDraft, writeDraft, resetDraftMemoryForTests, resetComposerMemoryForTests, readComposerState, writeComposerState, createQuote, selectionCarryoverPresentation } from '@kiki/session-core/composer';
 import { createViewState, type UserBlock } from '@kiki/session-core/session';
 import { emptySessionUsage, type PromptItem, type SessionPendingInteraction } from '@kiki/protocol';
 import { ApiError } from '@kiki/session-core/transport';
@@ -126,6 +126,7 @@ beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.clear();
   resetDraftMemoryForTests();
+  resetComposerMemoryForTests();
   localStorage.setItem('kiki.locale', 'en');
   vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
   container = document.createElement('div'); document.body.append(container);
@@ -1048,6 +1049,20 @@ describe('live composer mode controls', () => {
     await act(async () => { rejectFirst(new Error('first write failed')); });
     expect(fixture.updateSessionProfile).toHaveBeenNthCalledWith(2, 'session-example', { agent_config: { permission_mode: 'yolo' } });
     expect(container.querySelector('button[aria-label="Approvals"]')?.textContent).toContain('Full access');
+  });
+
+  it('saves the plan gate immediately and rolls a failed change back', async () => {
+    await mountLiveComposer();
+    await click('[data-add-menu-trigger]');
+    await click('[data-add-menu-mode]');
+    await click('[data-mode-switch="plan"]');
+    await click('[data-mode-switch="planGate"]');
+    expect(fixture.updateSessionProfile).toHaveBeenLastCalledWith('session-example', { agent_config: { plan_gate: 'gated' } });
+    expect(container.querySelector('[data-mode-switch="planGate"]')?.getAttribute('aria-checked')).toBe('false');
+    fixture.updateSessionProfile.mockRejectedValueOnce(new Error('gate write failed'));
+    await click('[data-mode-switch="planGate"]');
+    expect(container.querySelector('[data-mode-switch="planGate"]')?.getAttribute('aria-checked')).toBe('false');
+    expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error', text: expect.stringContaining('gate write failed') }));
   });
 
   it('rolls back a failed plan entry', async () => {

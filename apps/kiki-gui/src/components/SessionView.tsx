@@ -1937,9 +1937,6 @@ export function SessionView({
   const modeWriteRevision = useRef({ permission: 0, plan: 0 });
   const [permissionWriting, setPermissionWriting] = useState(false);
   const [planWriting, setPlanWriting] = useState(false);
-  // Plan gate: session-scoped pick restored from composer chrome. Unlike the
-  // mode pills there is no server echo to reconcile against (the wire only
-  // takes `plan_gate` per prompt), so the override simply persists.
   const [planGateOverride, setPlanGateOverride] = useState<PromptPlanGate | undefined>(
     restoredComposer.planGate,
   );
@@ -2512,10 +2509,7 @@ export function SessionView({
   });
   const serverDefaultModel = configQuery.data?.default_model;
 
-  // Effective plan gate for the next prompt: the session pick wins, then the
-  // global `[plan] gate` default, then the engine's built-in 'free'. The agent
-  // never echoes its gate, so nothing clears the override once set.
-  const planGate = resolvePlanGate(planGateOverride, configQuery.data?.plan?.gate);
+  const planGate = resolvePlanGate(planGateOverride, state.session?.agent_config?.plan_gate ?? configQuery.data?.plan?.gate);
 
   const modelsQuery = useQuery({
     queryKey: ['models'],
@@ -2693,10 +2687,12 @@ export function SessionView({
         }, choice.editingRevision);
         modelSwitches.refresh();
       } else {
-        setModelOverride(choice.toModel);
-        setModelChoice({ model: sessionModel, thinking: state.thinkingEffort });
-        setModelTouched(true);
-        setModelSwitchMode(choice.mode);
+        const receipt = await client.switchAgentModel(sessionId, MAIN_AGENT_ID, {
+          operationId: crypto.randomUUID(), model: choice.toModel, mode: choice.mode,
+          selectedFromModel: choice.fromModel,
+        });
+        if (receipt.state === 'failed') throw new Error(receipt.error?.message ?? t('modelSwitch.listFailed'));
+        modelSwitches.refresh();
       }
       setModelSwitchDialog(undefined);
     } catch (error) {
@@ -2845,7 +2841,7 @@ export function SessionView({
     },
   }), [canonicalModel, client, modelSwitchActionPending, modelSwitches.switches, runModelSwitchAction, sessionId]);
   const persistModeChange = useCallback((
-    patch: { permission_mode?: PermissionMode; plan_mode?: boolean },
+    patch: { permission_mode?: PermissionMode; plan_mode?: boolean; plan_gate?: PromptPlanGate },
     onFailure: () => void,
     onSettled: () => void,
   ) => {
@@ -2882,14 +2878,40 @@ export function SessionView({
       if (revision === modeWriteRevision.current.plan) setPlanWriting(false);
     });
   }, [persistModeChange]);
+  const confirmedPlanGate = useRef<PromptPlanGate | undefined>(undefined);
+  const planGateRevision = useRef(0);
+  const handlePlanGateChange = useCallback((gate: PromptPlanGate) => {
+    const revision = ++planGateRevision.current;
+    setPlanGateOverride(gate);
+    modeWriteQueue.current = modeWriteQueue.current.then(async () => {
+      await client.updateSessionProfile(sessionId, { agent_config: { plan_gate: gate } });
+      confirmedPlanGate.current = gate;
+    }).catch((error: unknown) => {
+      if (revision === planGateRevision.current) setPlanGateOverride(confirmedPlanGate.current);
+      pushToast({ tone: 'error', text: t('sv.modeUpdateFailed', {
+        detail: error instanceof Error ? error.message : String(error),
+      }) });
+    });
+  }, [client, sessionId, t]);
   const handleEffortChange = useCallback((effort: string | undefined) => {
-    setEffortOverride(effort);
-    setEffortChoice({ model: sessionModel, thinking: state.thinkingEffort });
-    // Only the effort was moved. Marking the model as touched here is what
-    // promoted the untouched model id into an override, so a pick in one
-    // control must never speak for the other.
-    setEffortTouched(true);
-  }, [sessionModel, state.thinkingEffort]);
+    if (pendingProfile !== undefined || executionPending || initialBindingPending || harness !== undefined || currentBoundModel === undefined) {
+      setEffortOverride(effort);
+      setEffortChoice({ model: sessionModel, thinking: state.thinkingEffort });
+      setEffortTouched(true);
+      return;
+    }
+    void client.switchAgentModel(sessionId, MAIN_AGENT_ID, {
+      operationId: crypto.randomUUID(), model: modelSwitches.dependency?.input.model ?? currentBoundModel,
+      thinking: effort === '' ? null : effort ?? null, mode: 'direct',
+    }).then(receipt => {
+      if (receipt.state === 'failed') throw new Error(receipt.error?.message ?? t('modelSwitch.listFailed'));
+      modelSwitches.refresh();
+    }).catch((error: unknown) => {
+      pushToast({ tone: 'error', text: t('subagent.effortChangeFailed', {
+        detail: error instanceof Error ? error.message : String(error),
+      }) });
+    });
+  }, [client, currentBoundModel, executionPending, harness, initialBindingPending, modelSwitches, pendingProfile, sessionId, sessionModel, state.thinkingEffort, t]);
   // Applying an incoming binding's pins is that binding taking ownership, not
   // the user moving a control, so both flags drop together. Kept as one helper
   // because the two flags are only ever cleared as a pair.
@@ -3177,7 +3199,7 @@ export function SessionView({
         // of its own; the local cause lets the queue notice name it.
         const ownTurnReason: SendNowOwnTurnReason | undefined = rebindsAgent
           ? 'binding'
-          : modelControlTouched && modelSwitchMode !== undefined ? 'model' : undefined;
+          : modelControlTouched && modelSwitchMode !== undefined || modelSwitches.dependency !== undefined ? 'model' : undefined;
         const requiresOwnTurn = ownTurnReason !== undefined;
         const completeControls = () => completeSkillControlSelection({
           controlled: { content, profile: profileSwitch.profile, execution: profileSwitch.execution,
@@ -3320,6 +3342,7 @@ export function SessionView({
           model: firstMessage === undefined ? profileSwitch.model : frozen?.model,
           thinking: firstMessage === undefined ? profileSwitch.thinking : frozen?.thinking,
           modelSwitchMode: firstMessage === undefined && modelControlTouched && !rebindsAgent ? modelSwitchMode : undefined,
+          afterModelSwitch: firstMessage === undefined && !rebindsAgent ? modelSwitches.dependency?.input.operationId : undefined,
           permissionMode: firstMessage === undefined ? profileSwitch.permissionMode : frozen?.permissionMode,
           planMode: firstMessage === undefined ? planMode : frozen?.planMode,
           planGate: firstMessage === undefined ? planGate : undefined,
@@ -4967,7 +4990,7 @@ boundExecution,
             onRebuildContext={handleContextRebuild}
             onChangePermissionMode={handlePermissionChange}
             onChangePlanMode={handlePlanChange}
-            onChangePlanGate={setPlanGateOverride}
+            onChangePlanGate={handlePlanGateChange}
             onChangeGoalMode={setGoalMode}
             onChangeEffort={handleEffortChange}
             onSend={handleComposerSend}

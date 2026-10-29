@@ -4143,10 +4143,12 @@ describe('Composer restored selection diagnostics', () => {
     await click(high);
     expect(onChangeEffort).toHaveBeenCalledWith('high');
     expect(onChangeExecution).not.toHaveBeenCalled();
-    expect(high.getAttribute('aria-checked')).toBe('true');
-    expect(high.className).toContain('bg-panel');
-    expect(high.className).not.toContain('bg-ink');
-    expect(high.className).not.toContain('text-paper');
+    expect(high.getAttribute('aria-checked')).toBe('false');
+    const selected = container.querySelector<HTMLButtonElement>('[data-execution-effort="medium"]')!;
+    expect(selected.getAttribute('aria-checked')).toBe('true');
+    expect(selected.className).toContain('bg-panel');
+    expect(selected.className).not.toContain('bg-ink');
+    expect(selected.className).not.toContain('text-paper');
     await click(container.querySelector('[data-execution-effort=""]')!);
     expect(onChangeEffort).toHaveBeenLastCalledWith('');
     expect(onChangeExecution).not.toHaveBeenCalled();
@@ -5186,6 +5188,12 @@ describe('session SSH stays resident and rides no message', () => {
     expect(line.textContent).toContain('Reasoning change → max');
     expect(chip.textContent).toBe('Reasoning change → max');
     expect(line.textContent).not.toContain('Switching to');
+  });
+
+  it('shows Default on both pending effort reset surfaces', async () => {
+    const { container } = await renderComposer({ pendingModelSwitch: { from: 'fixture/model', to: 'fixture/model', mode: 'direct', originalThinking: 'high', targetThinking: null } });
+    expect(container.querySelector('[data-model-switch-pending-line]')?.textContent).toContain('Reasoning change → Default');
+    expect(container.querySelector('[data-model-switch-pending]')?.textContent).toBe('Reasoning change → Default');
   });
 
   it('shows next-message runtime controls as one cancellable prompt chip', async () => {

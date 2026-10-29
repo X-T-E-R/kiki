@@ -126,6 +126,9 @@ export async function applyAgentRuntimeControls(
       .get(IAgentPermissionModeService)
       .setModeAndBroadcast(agentConfig.permission_mode);
   }
+  if (agentConfig.plan_gate !== undefined) {
+    agent.accessor.get(IAgentPlanService).setGate(agentConfig.plan_gate);
+  }
   if (agentConfig.plan_mode !== undefined) {
     const plan = agent.accessor.get(IAgentPlanService);
     const active = (await plan.status()) !== null;
@@ -140,11 +143,13 @@ export async function applyAgentRuntimeControls(
 export async function readAgentRuntimeControls(agent: IAgentScopeHandle): Promise<{
   permission_mode?: PermissionMode;
   plan_mode?: boolean;
+  plan_gate?: 'free' | 'gated';
 }> {
   try {
     return {
       permission_mode: agent.accessor.get(IAgentPermissionModeService).mode,
       plan_mode: (await agent.accessor.get(IAgentPlanService).status()) !== null,
+      plan_gate: agent.accessor.get(IAgentPlanService).planGate,
     };
   } catch {
     return {};

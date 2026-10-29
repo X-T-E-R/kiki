@@ -80,6 +80,9 @@ describe('mergeSessionQueueRows', () => {
 });
 
 describe('pendingModelSwitchChange', () => {
+  it.each(['high', undefined])('treats clearing %s to the default as an effort change', originalThinking => {
+    expect(pendingModelSwitchChange({ from: 'example/model', to: 'example/model', mode: 'direct', originalThinking, targetThinking: null })).toBe('effort');
+  });
   it('names only a real same-model effort difference as reasoning', () => {
     expect(pendingModelSwitchChange({ from: 'example/model', to: 'example/model', mode: 'direct', originalThinking: 'high', targetThinking: 'max' })).toBe('effort');
     expect(pendingModelSwitchChange({ from: 'example/old', to: 'example/new', mode: 'direct', originalThinking: 'high', targetThinking: 'max' })).toBe('model');

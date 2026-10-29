@@ -2339,8 +2339,10 @@ export function Composer({
     from: pendingModelSwitch.from === undefined ? undefined : resolveCatalogModel(models, pendingModelSwitch.from)?.id ?? pendingModelSwitch.from,
     to: resolveCatalogModel(models, pendingModelSwitch.to)?.id ?? pendingModelSwitch.to,
   });
+  const pendingSwitchEffort = pendingModelSwitch?.targetThinking === null
+    ? t('composer.execution.defaultEffort') : pendingModelSwitch?.targetThinking;
   const pendingSwitchLabel = pendingModelSwitch === undefined ? undefined
-    : pendingSwitchChange === 'effort' ? pendingModelSwitch.targetThinking
+    : pendingSwitchChange === 'effort' ? pendingSwitchEffort
       : resolveCatalogModel(models, pendingModelSwitch.to)?.display_name ?? pendingModelSwitch.to;
   const pendingSwitchPrefix = pendingSwitchChange === 'model' ? 'modelSwitch.pendingChipPrefix'
     : `modelSwitch.pendingChipPrefix.${pendingSwitchChange}` as I18nKey;
@@ -2612,7 +2614,7 @@ export function Composer({
       ),
     });
   }
-  if (variant !== 'subagent') {
+  if (variant !== 'subagent' || (!disabled && !externalExecution)) {
     statusSegments.push({
       key: 'permission',
       node: (
@@ -2624,7 +2626,7 @@ export function Composer({
         />
       ),
     });
-    if (sessionId !== undefined) {
+    if (variant !== 'subagent' && sessionId !== undefined) {
       statusSegments.push({
         key: 'output-layer',
         node: <OutputLayerSelect sessionId={sessionId} />,
@@ -2683,7 +2685,7 @@ export function Composer({
             <span className="min-w-0 break-words">
               {t(pendingSwitchLine, {
                 model: pendingSwitchLabel ?? pendingModelSwitch.to,
-                effort: pendingModelSwitch.targetThinking ?? '',
+                effort: pendingSwitchEffort ?? '',
                 mode: t(`modelSwitch.modeName.${pendingModelSwitch.mode}` as I18nKey),
               })}
             </span>
@@ -3219,7 +3221,7 @@ export function Composer({
               onAttach={openAttachPicker}
               onRebuild={onRebuildContext === undefined ? undefined : () => { setContextRebuildConfirm(true); }}
               rebuildDisabled={busy || contextRebuildBusy}
-              runMode={variant === 'subagent' ? undefined : runModeControls}
+              runMode={variant === 'subagent' && (disabled || externalExecution) ? undefined : runModeControls}
               ssh={ssh.available ? { count: ssh.joinedCount, renderPanel: ssh.renderPanel, hosts: ssh.hosts, onToggleHost: ssh.toggleHost } : undefined}
               skills={skillCatalogReady && onActivateSkill !== undefined ? {
                 items: skillMenuItems,

@@ -29,7 +29,7 @@ import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 import { resolveCompiledGuiStylesheet } from '../testSupport/compiledGuiStylesheet';
 
-const { listNamedAgentProfiles, listModels, sendPrompt, submitPrompt, steerQueued, sendPromptNow, promptResult, fixture, abort, getExecutorModels } = vi.hoisted(() => ({
+const { listNamedAgentProfiles, listModels, sendPrompt, submitPrompt, steerQueued, sendPromptNow, promptResult, fixture, abort, getExecutorModels, switchAgentModel } = vi.hoisted(() => ({
   listNamedAgentProfiles: vi.fn(),
   listModels: vi.fn(),
   sendPrompt: vi.fn(),
@@ -39,7 +39,8 @@ const { listNamedAgentProfiles, listModels, sendPrompt, submitPrompt, steerQueue
   promptResult: { current: { status: 'started' as 'started' | 'queued', prompt_id: 'prompt-1' } },
   abort: vi.fn(),
   getExecutorModels: vi.fn(),
-  fixture: { session: undefined as Session | undefined, busy: false, profile: 'agent', model: undefined as string | undefined },
+  switchAgentModel: vi.fn(),
+  fixture: { session: undefined as Session | undefined, busy: false, profile: 'agent', model: undefined as string | undefined, switches: [] as import('../lib/client').QueuedModelSwitch[] },
 }));
 
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
@@ -51,7 +52,11 @@ vi.mock('../state/connection', () => {
     getSessionGoal: () => Promise.resolve(null),
     getAgentCapabilities: () => Promise.resolve({ context: 'live', available: false, targets: [] }),
     listModels,
-    listAgentModelSwitches: () => Promise.resolve([]),
+    switchAgentModel,
+    listAgentModelSwitches: () => Promise.resolve(fixture.switches),
+    cancelAgentModelSwitch: async (_sessionId: string, _agentId: string, operationId: string) => {
+      fixture.switches = fixture.switches.map(entry => entry.input.operationId === operationId ? { ...entry, queueIndex: -1, receipt: { ...entry.receipt, state: 'cancelled' } } : entry);
+    },
     subscribeAgentModelSwitches: () => ({ ready: Promise.resolve(), dispose: () => {} }),
     klient: {
       session: () => ({
@@ -252,6 +257,10 @@ const dialogButton = (container: HTMLElement, label: string) =>
   [...ui(container).querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')]
     .find((button) => button.textContent?.trim() === label);
 
+const queueModelSwitchCancel = (container: HTMLElement) =>
+  [...ui(container).querySelectorAll<HTMLButtonElement>('[data-queue-model-switch-actions] button')]
+    .find((button) => button.textContent?.trim() === 'Cancel');
+
 const composerInput = (container: HTMLElement) =>
   ui(container).querySelector<HTMLTextAreaElement>('textarea[data-composer]');
 
@@ -291,6 +300,13 @@ beforeEach(() => {
   steerQueued.mockReset().mockResolvedValue(undefined);
   sendPromptNow.mockReset().mockResolvedValue({ outcome: 'sent' });
   abort.mockReset().mockResolvedValue(undefined);
+  fixture.switches = [];
+  switchAgentModel.mockReset().mockImplementation(async (_sessionId: string, _agentId: string, input: import('../lib/client').ModelSwitchInput) => {
+    const receipt = { operationId: input.operationId, agentId: 'main', state: 'pending' as const,
+      fromModel: fixture.model ?? '', toModel: input.model, mode: input.mode };
+    fixture.switches.push({ input, receipt, revision: 0, originalBinding: { model: fixture.model ?? '', thinking: 'medium' }, queueIndex: fixture.switches.length });
+    return receipt;
+  });
   listModels.mockReset().mockResolvedValue({ items: [] });
   getExecutorModels.mockReset().mockResolvedValue({
     executor_id: 'claude-acp', source: 'negotiated', provenance: 'acp_negotiation', revision: '1', apply_state: 'ready', observed_at: Date.now(),
@@ -600,7 +616,7 @@ async function waitForElement(container: HTMLElement, selector: string): Promise
   throw new Error(`missing ${selector}`);
 }
 
-describe('a model switch waiting for the next message', () => {
+describe('standalone model switches and dependent messages', () => {
   beforeEach(() => {
     fixture.model = 'fixture/live-model';
     listModels.mockResolvedValue({
@@ -624,23 +640,27 @@ describe('a model switch waiting for the next message', () => {
     expect(container.querySelector('[data-runtime-controls-pending]')).toBeNull();
     expect(sendPrompt).not.toHaveBeenCalled();
 
-    await click(dialogButton(container, 'Switch when idle'));
+    await click(dialogButton(container, 'Switch at next step'));
     expect(container.querySelector('[role="alertdialog"]')).toBeNull();
-    expect(profileTrigger(container)?.textContent).toContain('next message');
-    expect(container.querySelector('#composer-execution-select')?.textContent).toContain('Other');
-    expect(container.querySelector('#composer-execution-select')?.textContent).not.toContain('next message');
-    expect(container.querySelectorAll('[data-execution-cancel-pending]')).toHaveLength(1);
+    expect(switchAgentModel).toHaveBeenCalledWith('session-a', 'main', expect.objectContaining({ model: 'fixture/other-model', mode: 'direct' }));
+    expect(profileTrigger(container)?.textContent).not.toContain('next message');
+    expect(container.querySelector('[data-model-switch-pending="direct"]')?.textContent).toContain('Other');
+    await click(await waitForElement(container, '[data-header-toggle="queue"]'));
+    expect((await waitForElement(container, '[data-queue-model-switch]')).textContent).toContain('fixture/other-model');
     expect(container.querySelector('[data-runtime-controls-pending]')).toBeNull();
+    expect(sendPrompt).not.toHaveBeenCalled();
 
     await sendNextMessage(container);
     expect(sendPrompt).toHaveBeenCalledTimes(1);
-    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ model: 'fixture/other-model', modelSwitchMode: 'direct' });
+    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ afterModelSwitch: fixture.switches[0]!.input.operationId });
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).model).toBeUndefined();
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).thinking).toBeUndefined();
     expect(submitPrompt).toHaveBeenCalledTimes(1);
-    expect(submitPrompt.mock.calls[0]?.[1]).toMatchObject({ model: 'fixture/other-model', model_switch_mode: 'direct' });
+    expect(submitPrompt.mock.calls[0]?.[1]).toMatchObject({ after_model_switch: fixture.switches[0]!.input.operationId });
+    expect(submitPrompt.mock.calls[0]?.[1].model).toBeUndefined();
+    expect(submitPrompt.mock.calls[0]?.[1].model_switch_mode).toBeUndefined();
     expect(submitPrompt.mock.calls[0]?.[1].execution).toBeUndefined();
     expect(submitPrompt.mock.calls[0]?.[1].thinking).toBeUndefined();
-    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).execution).toBeUndefined();
-    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).thinking).toBeUndefined();
     expect(abort).not.toHaveBeenCalled();
   });
 
@@ -650,7 +670,7 @@ describe('a model switch waiting for the next message', () => {
     await click(dialogButton(container, 'Cancel'));
     expect(container.querySelector('[role="alertdialog"]')).toBeNull();
     expect(profileTrigger(container)?.textContent).not.toContain('next message');
-    expect(container.querySelector('[data-execution-cancel-pending]')).toBeNull();
+    expect(container.querySelector('[data-queue-model-switch]')).toBeNull();
     expect(container.querySelector('#composer-execution-select')?.textContent).not.toContain('Other');
     await sendNextMessage(container);
     const submission = submissionOf(sendPrompt.mock.calls[0]?.[0]);
@@ -667,10 +687,16 @@ describe('a model switch waiting for the next message', () => {
     const { container } = await mount();
     await pickModel(container);
     const confirmFrame = container.innerHTML;
-    await click(dialogButton(container, 'Switch when idle'));
+    await click(dialogButton(container, 'Switch at next step'));
+    expect(container.querySelector('[data-header-toggle="queue"]')?.getAttribute('aria-expanded')).toBe('false');
+    await click(await waitForElement(container, '[data-header-toggle="queue"]'));
+    await waitForElement(container, '[data-queue-model-switch]');
     const pendingFrame = container.innerHTML;
-    await click(container.querySelector('[data-execution-cancel-pending]'));
+    await click(queueModelSwitchCancel(container));
+    await settle();
+    await settle();
     expect(profileTrigger(container)?.textContent).not.toContain('next message');
+    expect(container.querySelector('[data-queue-model-switch]')).toBeNull();
     expect(container.querySelector('#composer-execution-select')?.textContent).not.toContain('Other');
     const cancelledFrame = container.innerHTML;
     await pickModel(container);
@@ -700,7 +726,7 @@ describe('a model switch waiting for the next message', () => {
           }
         });
         expect(await page.locator('[role="alertdialog"]').count()).toBe(name === 'confirm' || name === 'reselected' ? 1 : 0);
-        expect(await page.locator('[data-execution-cancel-pending]').count()).toBe(name === 'pending' ? 1 : 0);
+        expect(await page.locator('[data-queue-model-switch-actions]').count()).toBe(name === 'pending' ? 1 : 0);
         await page.screenshot({ path: join(directory, `${name}.png`) });
         await writeFile(join(directory, `${name}.html`), frame);
       }
@@ -715,7 +741,8 @@ describe('a model switch waiting for the next message', () => {
     const { container } = await mount();
     await pickModel(container);
     await click(container.querySelector('[data-model-switch-mode="compact"]'));
-    await click(dialogButton(container, 'Switch when idle'));
+    await click(dialogButton(container, 'Switch at next step'));
+    await waitForElement(container, '[data-model-switch-pending="compact"]');
     await type('continue on the new model', container);
     await act(async () => {
       composerInput(container)?.dispatchEvent(new KeyboardEvent('keydown', {
@@ -723,8 +750,15 @@ describe('a model switch waiting for the next message', () => {
       }));
     });
     await settle();
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ afterModelSwitch: fixture.switches[0]!.input.operationId });
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).model).toBeUndefined();
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).thinking).toBeUndefined();
     expect(submitPrompt).toHaveBeenCalledTimes(1);
-    expect(submitPrompt.mock.calls[0]?.[1]).toMatchObject({ model: 'fixture/other-model', model_switch_mode: 'compact' });
+    expect(submitPrompt.mock.calls[0]?.[1]).toMatchObject({ after_model_switch: fixture.switches[0]!.input.operationId });
+    expect(submitPrompt.mock.calls[0]?.[1].model).toBeUndefined();
+    expect(submitPrompt.mock.calls[0]?.[1].thinking).toBeUndefined();
+    expect(submitPrompt.mock.calls[0]?.[1].model_switch_mode).toBeUndefined();
     expect(sendPromptNow).not.toHaveBeenCalled();
     expect(steerQueued).not.toHaveBeenCalled();
   });
@@ -733,13 +767,20 @@ describe('a model switch waiting for the next message', () => {
     listModels.mockResolvedValue({ items: [catalogModel('fixture/live-model', 'Live'), catalogModel('fixture/other-model', 'Other'), catalogModel('fixture/third-model', 'Third')] });
     const { container } = await mount();
     await pickModel(container);
-    await click(dialogButton(container, 'Switch when idle'));
+    await click(dialogButton(container, 'Switch at next step'));
     await pickModel(container, 'fixture/third-model');
     await click(dialogButton(container, 'Cancel'));
-    expect(container.querySelector('#composer-execution-select')?.textContent).toContain('Other');
+    expect(container.querySelector('#composer-execution-select')?.textContent).toContain('fixture/live-model');
+    expect(container.querySelector('#composer-execution-select')?.textContent).not.toContain('Other');
+    expect(fixture.switches).toHaveLength(1);
     await sendNextMessage(container);
-    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).model).toBe('fixture/other-model');
+    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ afterModelSwitch: fixture.switches[0]!.input.operationId });
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).model).toBeUndefined();
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).thinking).toBeUndefined();
     expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).execution).toBeUndefined();
+    expect(submitPrompt.mock.calls[0]?.[1]).toMatchObject({ after_model_switch: fixture.switches[0]!.input.operationId });
+    expect(submitPrompt.mock.calls[0]?.[1].model).toBeUndefined();
+    expect(submitPrompt.mock.calls[0]?.[1].thinking).toBeUndefined();
   });
 
   it('sends the confirmed model even when the live native binding contains an older model override', async () => {
@@ -749,10 +790,16 @@ describe('a model switch waiting for the next message', () => {
     } } } as Session;
     const { container } = await mount();
     await pickModel(container);
-    await click(dialogButton(container, 'Switch when idle'));
+    await click(dialogButton(container, 'Switch at next step'));
     await sendNextMessage(container);
-    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).model).toBe('fixture/other-model');
+    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ afterModelSwitch: fixture.switches[0]!.input.operationId });
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).model).toBeUndefined();
+    expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).thinking).toBeUndefined();
     expect(submissionOf(sendPrompt.mock.calls[0]?.[0]).execution).toBeUndefined();
+    expect(submitPrompt.mock.calls[0]?.[1]).toMatchObject({ after_model_switch: fixture.switches[0]!.input.operationId });
+    expect(submitPrompt.mock.calls[0]?.[1].model).toBeUndefined();
+    expect(submitPrompt.mock.calls[0]?.[1].thinking).toBeUndefined();
+    expect(submitPrompt.mock.calls[0]?.[1].execution).toBeUndefined();
   });
 });
 
@@ -779,6 +826,13 @@ describe('same-executor model selection across a profile switch', () => {
     await settle();
   }
 
+  async function chooseEffort(container: HTMLElement, effort: string): Promise<void> {
+    await click(await waitForElement(container, '#composer-execution-select'));
+    await click(await waitForElement(container, `[data-execution-effort="${effort}"]`));
+    await click(await waitForElement(container, '#composer-execution-select'));
+    await settle();
+  }
+
   async function chooseProfile(container: HTMLElement, name: string): Promise<void> {
     await click(profileTrigger(container));
     await settle();
@@ -798,12 +852,8 @@ describe('same-executor model selection across a profile switch', () => {
       model_profiles: [{ alias: liveModel, thinking_effort: 'low' }],
     })] });
     let { container } = await mount();
-    if (manual) {
-      await click(await waitForElement(container, '#composer-execution-select'));
-      await click(await waitForElement(container, '[data-execution-effort="medium"]'));
-      await click(await waitForElement(container, '#composer-execution-select'));
-    }
     await chooseProfile(container, 'pinned');
+    if (manual) await chooseEffort(container, 'medium');
     expect(container.querySelector('#composer-execution-select')?.textContent).toContain(manual ? 'medium' : 'high');
     await chooseLiveModel(container);
     expect(container.querySelector('#composer-execution-select')?.textContent).toContain(manual ? 'medium' : 'low');
@@ -814,6 +864,7 @@ describe('same-executor model selection across a profile switch', () => {
     resetComposerMemoryForTests();
     ({ container } = await mount());
     await chooseProfile(container, 'pinned');
+    if (manual) await chooseEffort(container, 'medium');
     expect(container.querySelector('#composer-execution-select')?.textContent).toContain(manual ? 'medium' : 'high');
     await chooseLiveModel(container);
     expect(container.querySelector('#composer-execution-select')?.textContent).toContain(manual ? 'medium' : 'low');
@@ -971,20 +1022,29 @@ describe('effort-only changes stay on the current engine', () => {
     expect(container.textContent).not.toContain('Switch to Kiki?');
     expect(container.textContent).not.toContain('This engine did not report its models.');
     expect(container.textContent).not.toContain('Could not validate choices');
+    expect(switchAgentModel).toHaveBeenCalledWith('session-a', 'main', expect.objectContaining({ model: liveModel, thinking: 'high', mode: 'direct' }));
     const trigger = container.querySelector('#composer-execution-select');
     expect(trigger?.textContent).toContain(liveModel);
-    expect(trigger?.textContent).toContain('high');
-    expect(high.getAttribute('aria-checked')).toBe('true');
-    expect(high.className).toContain('bg-panel');
-    expect(high.className).not.toContain('text-paper');
+    expect(trigger?.textContent).toContain('medium');
+    expect(trigger?.textContent).not.toContain('high');
+    expect(container.querySelector('[data-model-switch-pending="direct"]')?.textContent).toContain('high');
+    expect(high.getAttribute('aria-checked')).toBe('false');
+    const live = container.querySelector<HTMLButtonElement>('[data-execution-effort="medium"]')!;
+    expect(live.getAttribute('aria-checked')).toBe('true');
+    expect(live.className).toContain('bg-panel');
+    expect(live.className).not.toContain('text-paper');
 
     await sendNextMessage(container);
     expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ afterModelSwitch: fixture.switches[0]!.input.operationId });
     const submission = submissionOf(sendPrompt.mock.calls[0]?.[0]);
-    expect(submission.thinking).toBe('high');
+    expect(submission.thinking).toBeUndefined();
     expect(submission.execution).toBeUndefined();
     expect(submission.model).toBeUndefined();
     expect(submission.profile).toBeUndefined();
+    expect(submitPrompt.mock.calls[0]?.[1]).toMatchObject({ after_model_switch: fixture.switches[0]!.input.operationId });
+    expect(submitPrompt.mock.calls[0]?.[1].thinking).toBeUndefined();
+    expect(submitPrompt.mock.calls[0]?.[1].model).toBeUndefined();
   }, 60_000);
 
   it('renders the selected native effort capsule in the historical panel color', async () => {
@@ -994,7 +1054,7 @@ describe('effort-only changes stay on the current engine', () => {
     await click(await waitForElement(container, '#composer-execution-select'));
     await click(await waitForElement(container, '[data-execution-effort="high"]'));
     await settle();
-    const selectedButton = container.querySelector<HTMLButtonElement>('[data-execution-effort="high"]');
+    const selectedButton = container.querySelector<HTMLButtonElement>('[data-execution-effort="medium"]');
     expect(selectedButton?.getAttribute('aria-checked')).toBe('true');
     expect(selectedButton?.className ?? '').toContain('bg-panel');
     const track = selectedButton?.parentElement;
@@ -1019,8 +1079,8 @@ describe('effort-only changes stay on the current engine', () => {
       // The capsules exist before the stylesheet, so transition-colors starts
       // on the unstyled button face. Settle on the token the class actually sets.
       await page.evaluate(() => { for (const animation of document.getAnimations()) animation.finish(); });
-      const selected = page.locator('[data-execution-effort="high"]');
-      const idle = page.locator('[data-execution-effort="medium"]');
+      const selected = page.locator('[data-execution-effort="medium"]');
+      const idle = page.locator('[data-execution-effort="high"]');
       const color = await selected.evaluate((el) => {
         const style = getComputedStyle(el);
         return { backgroundColor: style.backgroundColor, color: style.color, className: el.className };
@@ -1139,4 +1199,43 @@ describe('effort-only changes stay on the current engine', () => {
     expect(submission.model).toBeUndefined();
     expect(submission.profile).toBeUndefined();
   }, 60_000);
+});
+
+describe('live model and effort controls', () => {
+  beforeEach(() => {
+    fixture.model = 'fixture/live-model';
+    listModels.mockResolvedValue({ items: [catalogModel('fixture/live-model', 'Live'), catalogModel('fixture/other-model', 'Other')] });
+    switchAgentModel.mockReset().mockResolvedValue({ state: 'pending' });
+  });
+
+  it('submits a confirmed model switch without sending the draft', async () => {
+    const { container } = await mount();
+    await type('keep this draft', container);
+    await click(await waitForElement(container, '#composer-execution-select'));
+    await click(await waitForElement(container, '[data-execution-model="fixture/other-model"]'));
+    await click(dialogButton(container, 'Switch at next step'));
+    expect(switchAgentModel).toHaveBeenCalledWith('session-a', 'main', expect.objectContaining({ model: 'fixture/other-model', mode: 'direct' }));
+    expect(sendPrompt).not.toHaveBeenCalled();
+    expect(composerInput(container)?.value).toBe('keep this draft');
+  });
+
+  it('clears native effort through the explicit null switch contract', async () => {
+    const { container } = await mount();
+    await click(await waitForElement(container, '#composer-execution-select'));
+    await click(await waitForElement(container, '[data-execution-effort=""]'));
+    expect(switchAgentModel).toHaveBeenCalledWith('session-a', 'main', expect.objectContaining({ model: 'fixture/live-model', thinking: null, mode: 'direct' }));
+    expect(sendPrompt).not.toHaveBeenCalled();
+  });
+
+  it('submits an effort-only change and leaves the live value after failure', async () => {
+    switchAgentModel.mockRejectedValueOnce(new Error('effort binding failed'));
+    const { container } = await mount();
+    await click(await waitForElement(container, '#composer-execution-select'));
+    await click(await waitForElement(container, '[data-effort="high"]'));
+    expect(switchAgentModel).toHaveBeenCalledWith('session-a', 'main', expect.objectContaining({ model: 'fixture/live-model', thinking: 'high', mode: 'direct' }));
+    expect(sendPrompt).not.toHaveBeenCalled();
+    expect(getToasts().some(toast => toast.text.includes('effort binding failed'))).toBe(true);
+    expect(container.querySelector('#composer-execution-select')?.textContent).toContain('medium');
+    expect(container.querySelector('#composer-execution-select')?.textContent).not.toContain('high');
+  });
 });

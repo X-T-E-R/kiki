@@ -1251,10 +1251,16 @@ function ChildAgentWorkspace({
   const handleChangeAgentEffort = async (effort: string | undefined) => {
     if (!agentKnown || agentTerminal || effort === undefined || effort === displayEffort) return;
     try {
-      await client.setAgentEffort(sessionId, agentId, effort);
-      // The rail's per-agent capability read is what echoes this agent's
-      // effective effort; refetch it so the pick reads as applied rather than
-      // as a stale default.
+      if (externalExecutor) await client.setAgentEffort(sessionId, agentId, effort);
+      else {
+        const model = modelSwitches.dependency?.input.model ?? displayModel;
+        if (model === undefined) return;
+        const receipt = await client.switchAgentModel(sessionId, agentId, {
+          operationId: crypto.randomUUID(), model, thinking: effort === '' ? null : effort, mode: 'direct',
+        });
+        if (receipt.state === 'failed') throw new Error(receipt.error?.message ?? t('modelSwitch.listFailed'));
+        modelSwitches.refresh();
+      }
       await queryClient.invalidateQueries({
         queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: agentId }],
       });
@@ -1298,6 +1304,63 @@ function ChildAgentWorkspace({
       total_cost_usd: null,
     };
   }, [displayUsage]);
+  const [permissionOverride, setPermissionOverride] = useState<PermissionMode>();
+  const [planOverride, setPlanOverride] = useState<boolean>();
+  const [permissionWriting, setPermissionWriting] = useState(false);
+  const [planWriting, setPlanWriting] = useState(false);
+  const runtimeWriteQueue = useRef(Promise.resolve());
+  const runtimeRevision = useRef({ permission: 0, plan: 0 });
+  const confirmedRuntime = useRef<{ permission?: PermissionMode; plan?: boolean }>({});
+  const permissionMode = permissionOverride ?? agentLiveState.permissionMode ?? 'manual';
+  const planMode = planOverride ?? agentLiveState.planMode ?? false;
+  const persistRuntimeControl = (run: () => Promise<void>, rollback: () => void, settled: () => void) => {
+    runtimeWriteQueue.current = runtimeWriteQueue.current.then(run).catch((error: unknown) => {
+      rollback();
+      pushToast({ tone: 'error', text: t('sv.modeUpdateFailed', {
+        detail: error instanceof Error ? error.message : String(error),
+      }) });
+    }).finally(settled);
+  };
+  const handlePermissionChange = (mode: PermissionMode | undefined) => {
+    if (mode === undefined || composerDisabled) return;
+    const revision = ++runtimeRevision.current.permission;
+    setPermissionWriting(true);
+    setPermissionOverride(mode);
+    persistRuntimeControl(async () => {
+      const agent = klient.session(sessionId).agent(agentId);
+      await agent.setPermission(mode, { broadcast: false });
+      const effective = await agent.getPermission();
+      confirmedRuntime.current.permission = effective;
+      if (runtimeRevision.current.permission === revision) setPermissionOverride(effective);
+    }, () => {
+      if (runtimeRevision.current.permission === revision) setPermissionOverride(confirmedRuntime.current.permission);
+    }, () => {
+      if (runtimeRevision.current.permission === revision) setPermissionWriting(false);
+    });
+  };
+  const handlePlanChange = (enabled: boolean) => {
+    if (composerDisabled) return;
+    const revision = ++runtimeRevision.current.plan;
+    setPlanWriting(true);
+    setPlanOverride(enabled);
+    persistRuntimeControl(async () => {
+      const agent = klient.session(sessionId).agent(agentId);
+      if (enabled) await agent.enterPlan();
+      else await agent.exitPlan();
+      confirmedRuntime.current.plan = enabled;
+    }, () => {
+      if (runtimeRevision.current.plan === revision) setPlanOverride(confirmedRuntime.current.plan);
+    }, () => {
+      if (runtimeRevision.current.plan === revision) setPlanWriting(false);
+    });
+  };
+  useEffect(() => {
+    if (!permissionWriting && permissionOverride === agentLiveState.permissionMode) setPermissionOverride(undefined);
+  }, [permissionOverride, permissionWriting, agentLiveState.permissionMode]);
+  useEffect(() => {
+    if (!planWriting && planOverride === agentLiveState.planMode) setPlanOverride(undefined);
+  }, [planOverride, planWriting, agentLiveState.planMode]);
+
   // One filtered list per publish, so the annotation tray's derivation keys
   // on a stable array instead of re-collecting on every render.
   const agentBlocks = useMemo(
@@ -1371,6 +1434,7 @@ function ChildAgentWorkspace({
           {t('diagnostics.error')} · {executorBindingQuery.error.message}
           <button type="button" className="ml-2 underline" onClick={() => { void executorBindingQuery.refetch(); }}>{t('common.retry')}</button>
         </p> : null}
+        {externalExecutor ? <p data-runtime-modes-external className="px-6 text-[12px] text-ink-faint">{t('subagent.runtimeModesExternal')}</p> : null}
         <Composer
           variant="subagent" replyingTo={displayName} busy={headerBusy} disabled={composerDisabled}
           boundExecution={childExecution}
@@ -1378,7 +1442,7 @@ function ChildAgentWorkspace({
           disabledPlaceholder={t('subagent.composerUnavailable')}
           value={draft} onChange={handleDraftChange}
           model={displayModel} defaultModel={displayModel} serverDefaultModel={displayModel}
-          modelSource="session" permissionMode={agentLiveState.permissionMode ?? ('manual' as PermissionMode)}
+          modelSource="session" permissionMode={permissionMode}
           pendingModelSwitch={modelSwitches.active === undefined ? undefined : {
             from: modelSwitches.active.receipt.fromModel,
             to: modelSwitches.active.receipt.toModel,
@@ -1390,14 +1454,14 @@ function ChildAgentWorkspace({
             detail: modelSwitches.error.message,
             onRetry: modelSwitches.refresh,
           }}
-          planMode={false} efforts={supportedEfforts} effort={displayEffort}
+          planMode={planMode} efforts={supportedEfforts} effort={displayEffort}
           contextUsage={displayContextTokens !== undefined && displayMaxContextTokens !== undefined
             ? { used: displayContextTokens, limit: displayMaxContextTokens } : undefined}
           contextAutoCompact={contextAutoCompact}
           sessionUsage={composerUsage} sessionId={sessionId} agentId={agentId} agentProfileCatalogMode={{ mode: 'disabled' }}
           attachments={attachments} onChangeAttachments={handleAttachmentsChange}
-          onChangeModel={handleChangeAgentModel} onChangePermissionMode={() => {}}
-          onChangePlanMode={() => {}}
+          onChangeModel={handleChangeAgentModel} onChangePermissionMode={handlePermissionChange}
+          onChangePlanMode={handlePlanChange}
           onChangeEffort={(effort) => { void handleChangeAgentEffort(effort); }}
           onSend={handleComposerSend}
           onActivateSkill={handleActivateSkill}

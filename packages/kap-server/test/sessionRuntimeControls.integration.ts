@@ -5,6 +5,7 @@ import {
   IAgentLifecycleService,
   IAgentLoopService,
   IAgentPermissionModeService,
+  IAgentPlanService,
   IAgentProfileService,
   IModelCatalogMutationService,
   ISessionApprovalService,
@@ -12,6 +13,8 @@ import {
   getLiveSessionById,
 } from '@kiki/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
+import { createKlient } from '@kiki/klient/http';
+import { bearerToken } from './helpers/auth';
 import { promiseGate, usePromptFixture } from './helpers/promptFixture';
 
 describe('live session runtime controls', () => {
@@ -97,6 +100,57 @@ describe('live session runtime controls', () => {
     expect(changed.body.code, changed.body.msg).toBe(0);
     expect(child.accessor.get(IAgentPermissionModeService).mode).toBe('yolo');
     expect(limited.accessor.get(IAgentPermissionModeService).mode).toBe('manual');
+  });
+
+  it('addresses child modes through the HTTP facade without changing its parent or sibling', async () => {
+    const id = await fixture.createSession(fixture.home!);
+    const lifecycle = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(IAgentLifecycleService);
+    const child = await lifecycle.create({ agentId: 'child' });
+    const sibling = await lifecycle.create({ agentId: 'sibling' });
+    const parentPermission = lifecycle.get('main')!.accessor.get(IAgentPermissionModeService).mode;
+    const siblingPermission = sibling.accessor.get(IAgentPermissionModeService).mode;
+    child.accessor.get(IAgentPermissionModeService).setModeCeiling('manual');
+    const klient = createKlient({ endpoint: fixture.base!, token: bearerToken(fixture.server!) });
+    try {
+      const agent = klient.session(id).agent('child');
+      await agent.setPermission('yolo', { broadcast: false });
+      expect(await agent.getPermission()).toBe('manual');
+      expect(lifecycle.get('main')!.accessor.get(IAgentPermissionModeService).mode).toBe(parentPermission);
+      expect(sibling.accessor.get(IAgentPermissionModeService).mode).toBe(siblingPermission);
+      await agent.enterPlan();
+      expect(await agent.getPlan()).not.toBeNull();
+      expect(await lifecycle.get('main')!.accessor.get(IAgentPlanService).status()).toBeNull();
+      await agent.exitPlan();
+      expect(await agent.getPlan()).toBeNull();
+    } finally { await klient.close(); }
+  });
+
+  it('accepts an effort reset through the standalone REST model-switch route', async () => {
+    const id = await fixture.createSession(fixture.home!);
+    const main = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+    const profile = main.accessor.get(IAgentProfileService);
+    await profile.bind({ profile: 'agent', model: 'stub', thinking: 'low' });
+    const changed = await fixture.call('POST', `/api/sessions/${id}/agents/main/model-switches`, {
+      operationId: 'rest-effort-default', model: 'stub', thinking: null, mode: 'direct',
+    });
+    expect(changed.body.code, changed.body.msg).toBe(0);
+    expect(changed.body.data).toMatchObject({ state: 'completed', binding: { model: 'stub', thinking: 'high' } });
+    expect(profile.getEffectiveThinkingLevel()).toBe('high');
+  });
+
+  it('updates the active plan gate without another prompt', async () => {
+    const id = await fixture.createSession(fixture.home!);
+    const session = getLiveSessionById(fixture.server!.core.accessor, id)!;
+    const plan = session.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentPlanService);
+    await plan.enter();
+    plan.setGate('gated');
+    expect(plan.planGate).toBe('gated');
+    const changed = await fixture.call('POST', `/api/sessions/${id}/profile`, { agent_config: { plan_gate: 'free' } });
+    expect(changed.body.code, changed.body.msg).toBe(0);
+    expect(plan.planGate).toBe('free');
+    const snapshot = await fixture.call<{ session: { agent_config: { plan_gate: string } } }>('GET', `/api/sessions/${id}/snapshot`);
+    expect(snapshot.body.data.session.agent_config.plan_gate).toBe('free');
+    expect(await plan.status()).not.toBeNull();
   });
 
   it.each(['auto', 'yolo'] as const)('keeps an already pending approval explicit after switching to %s', async (mode) => {

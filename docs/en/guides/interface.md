@@ -26,7 +26,9 @@ Long tool output and other large fields arrive in stages. **Continue loading** p
 
 The input box accepts free-form text. `Enter` sends; `Shift-Enter` / `Ctrl-J` insert a newline. You can paste images and video from the clipboard, as long as the current model accepts them — [Interaction and input](/en/guides/interaction) covers the details.
 
-In an existing conversation, changing **Approvals** or switching between **Normal** and **Plan** saves immediately, without sending a message. With native execution, the next tool approval uses the new permission mode, and Plan mode's restrictions apply to subsequent tool calls in the running turn. A request already waiting for approval still needs your decision. If saving fails, the control returns to the session's reported mode and shows the error.
+In an existing conversation, changing **Approvals**, switching between **Normal** and **Plan**, or changing the Plan gate saves immediately, without sending a message. With native execution, the next tool approval uses the new permission mode, Plan mode's restrictions apply to subsequent tool calls in the running turn, and the gate controls the next plan submission. A request already waiting for approval still needs your decision. If saving fails, the control returns to the session's reported setting and shows the error.
+
+Changing a native model or thinking effort also needs no message: the current request finishes, and the new binding applies before the next model request. The pending indicator names the change; open the queue to cancel it before preparation starts. A failed switch keeps the current binding and shows the error. **Default** clears the manual effort and restores the persona's pinned effort, then the selected model's profile default, then the model default. A profile or engine change remains attached to your next message.
 
 `↑` and `↓` move the caret inside the draft, including on a wrapped line. They browse earlier prompts only from the start of the text (`↑`) or the end (`↓`): this conversation keeps its own list, and the new-session page keeps one for that workspace. A text selection, `Shift`, an IME composition, or an open `/` or `@` menu keeps the key. `Esc`, or `↓` past the newest entry, restores the draft from before that browse.
 
@@ -53,6 +55,8 @@ When the main agent is blocked waiting on a foreground `AgentRun`, **Send now** 
 Stop the main agent before it has replied or called a tool and the interrupted prompt goes back into the session draft with its attachments, next to any edits you had not sent. A prompt the agent already answered or was steered by is not restored, and recovered attachments need the full prompt in the loaded transcript and stay in memory until you restart the app.
 
 After a restart, queued messages come back held until you decide. **Send now** on one message sends only that one; **Resume queue** releases the rest. **Later** just hides the explanation — the resume button remains, and anything you submit meanwhile keeps queuing until you resume.
+
+A native subagent's **Approvals** and **Plan** controls apply immediately to that agent alone; its permission ceiling still applies. External subagents show an explanation instead of these controls because their executor owns those modes.
 
 In a subagent's input box the stop button is disabled while the stop request is in flight. If it fails, the notice says why and the button comes back so you can retry. Stopping one run leaves the subagent's other queued messages alone.
 

@@ -31,6 +31,11 @@ const harness = vi.hoisted(() => ({
   scopeId: 'direct:one',
   listModels: vi.fn(),
   getAgentExecutor: vi.fn(),
+  agent: vi.fn(),
+  setPermission: vi.fn(),
+  getPermission: vi.fn(),
+  enterPlan: vi.fn(),
+  exitPlan: vi.fn(),
   getExecutorModels: vi.fn(),
   sendAgentMessage: vi.fn(),
   isNativeAgent: vi.fn(),
@@ -80,7 +85,7 @@ vi.mock('../../state/connection', () => {
   };
   const connection = () => ({ scopeId: harness.scopeId, client,
     klient: {
-      session: () => ({ getAgentExecutor: harness.getAgentExecutor }),
+      session: () => ({ getAgentExecutor: harness.getAgentExecutor, agent: harness.agent }),
       global: {
         agentPanel: {
           read: (query: unknown, options: { signal: AbortSignal }) =>
@@ -148,6 +153,12 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   harness.listModels.mockResolvedValue({ items: [] });
   harness.getAgentExecutor.mockResolvedValue('native');
+  harness.switchAgentModel.mockImplementation(async (_sessionId, agentId, input) => ({ operationId: input.operationId, agentId, state: 'pending', fromModel: input.model, toModel: input.model, mode: input.mode }));
+  harness.agent.mockReturnValue({ setPermission: harness.setPermission, getPermission: harness.getPermission, enterPlan: harness.enterPlan, exitPlan: harness.exitPlan });
+  harness.getPermission.mockResolvedValue('auto');
+  harness.setPermission.mockResolvedValue(undefined);
+  harness.enterPlan.mockResolvedValue(undefined);
+  harness.exitPlan.mockResolvedValue(undefined);
   harness.getExecutorModels.mockResolvedValue(externalModelCatalog());
   harness.readCapabilities.mockResolvedValue({
     context: 'live',
@@ -1316,7 +1327,7 @@ it('applies a picked thinking effort through the agent facade and refreshes the 
   expect(high).not.toBeNull();
   await act(async () => { high?.click(); });
   await settle();
-  expect(harness.setAgentEffort).toHaveBeenCalledWith('session', 'child', 'high');
+  expect(harness.switchAgentModel).toHaveBeenCalledWith('session', 'child', expect.objectContaining({ model: 'kiki-pro', thinking: 'high', mode: 'direct' }));
   expect(invalidate).toHaveBeenCalledWith({
     queryKey: ['agentCapabilities', { session_id: 'session', agent_id: 'child' }],
   });
@@ -1340,7 +1351,7 @@ it('keeps the effort pick disabled for a terminal subagent', async () => {
 
 it('toasts a failed effort change and leaves the live effort selected', async () => {
   harness.listModels.mockResolvedValue(EFFORT_CATALOG);
-  harness.setAgentEffort.mockRejectedValue(new Error('agent restore failed'));
+  harness.switchAgentModel.mockRejectedValue(new Error('agent restore failed'));
   await renderWorkspace({
     forest: testForest('running', true, { model: 'kiki-pro', thinkingEffort: 'medium' }),
   });
@@ -1352,7 +1363,7 @@ it('toasts a failed effort change and leaves the live effort selected', async ()
     dock.querySelector<HTMLButtonElement>('[data-effort="high"]')?.click();
   });
   await settle();
-  expect(harness.setAgentEffort).toHaveBeenCalledWith('session', 'child', 'high');
+  expect(harness.switchAgentModel).toHaveBeenCalledWith('session', 'child', expect.objectContaining({ model: 'kiki-pro', thinking: 'high', mode: 'direct' }));
   expect(harness.pushToast).toHaveBeenCalledWith({
     tone: 'error',
     text: translate('en', 'subagent.effortChangeFailed', { detail: 'agent restore failed' }),
@@ -2223,4 +2234,49 @@ it('keeps a failed legacy executor read retryable without choosing a native exec
   expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(true);
   expect(dock.textContent).toContain('executor metadata unavailable');
   expect(dock.querySelector('button')?.textContent).toBe(translate('en', 'common.retry'));
+});
+
+async function clickRuntimeControl(selector: string) {
+  const button = dock.querySelector<HTMLButtonElement>(selector);
+  expect(button, selector).not.toBeNull();
+  await act(async () => button!.click());
+}
+
+it('updates only the selected child permission and displays its effective ceiling', async () => {
+  harness.getPermission.mockResolvedValue('manual');
+  await renderWorkspace({ forest: testForest('running', true) });
+  await settle();
+  await clickRuntimeControl('button[aria-label="Approvals"]');
+  await clickRuntimeControl('[data-permission-mode="yolo"]');
+  expect(harness.agent).toHaveBeenCalledWith('child');
+  expect(harness.setPermission).toHaveBeenCalledWith('yolo', { broadcast: false });
+  expect(dock.querySelector('button[aria-label="Approvals"]')?.textContent).toContain('Ask every time');
+  expect(harness.sendAgentMessage).not.toHaveBeenCalled();
+});
+
+it('hides child runtime mode controls when an external executor owns them', async () => {
+  await renderWorkspace({ forest: testForest('running', true, { executorId: 'example-acp', model: 'vendor/model' }) });
+  await settle();
+  expect(dock.querySelector('[data-runtime-modes-external]')?.textContent).toBe(translate('en', 'subagent.runtimeModesExternal'));
+  expect(dock.querySelector('button[aria-label="Approvals"]')).toBeNull();
+  await clickRuntimeControl('[data-add-menu-trigger]');
+  expect(dock.querySelector('[data-add-menu-mode]')).toBeNull();
+  expect(harness.setPermission).not.toHaveBeenCalled();
+  expect(harness.enterPlan).not.toHaveBeenCalled();
+});
+
+it('enters and exits child plan mode live and restores a failed choice', async () => {
+  await renderWorkspace({ forest: testForest('running', true) });
+  await settle();
+  await clickRuntimeControl('[data-add-menu-trigger]');
+  await clickRuntimeControl('[data-add-menu-mode]');
+  await clickRuntimeControl('[data-mode-switch="plan"]');
+  expect(harness.enterPlan).toHaveBeenCalledOnce();
+  expect(dock.querySelector('[data-mode-switch="plan"]')?.getAttribute('aria-checked')).toBe('true');
+  harness.exitPlan.mockRejectedValueOnce(new Error('child mode write failed'));
+  await clickRuntimeControl('[data-mode-switch="normal"]');
+  expect(dock.querySelector('[data-mode-switch="plan"]')?.getAttribute('aria-checked')).toBe('true');
+  expect(harness.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error', text: expect.stringContaining('child mode write failed') }));
+  await clickRuntimeControl('[data-mode-switch="normal"]');
+  expect(dock.querySelector('[data-mode-switch="normal"]')?.getAttribute('aria-checked')).toBe('true');
 });
