@@ -25,7 +25,7 @@ import {
 } from '@kiki/transcript';
 
 import type { TranscriptService } from '../../services/transcript/transcriptService';
-import { boundedEntity, readContentSegment } from './boundedContent';
+import { boundedEntity, ContentChangedError, readContentSegment } from './boundedContent';
 import { boundedAttachment, boundedTranscriptOps, boundedTranscriptResponse, boundedTranscriptSnapshot, boundedTranscriptPageSource, historyAnchorMatches, historyDigestAnchor, itemKey, TRANSCRIPT_WINDOW_BYTES } from './boundedTranscript';
 
 const DETAIL_PAGE_BYTES = 48 * 1024;
@@ -35,8 +35,25 @@ export async function readSessionViewTranscriptContent(
   service: TranscriptService, sessionId: string,
   input: { readonly agentId: string; readonly ref: ContentRef; readonly range?: boolean; readonly signal?: AbortSignal },
 ): Promise<ContentSegment | undefined> {
+  const resident = residentTimelineEntity(service, sessionId, input.agentId, input.ref.source);
+  if (resident !== undefined) {
+    input.signal?.throwIfAborted();
+    try {
+      return readContentSegment(resident, input.ref, input.range, input.agentId, DETAIL_PAGE_BYTES);
+    } catch (error) {
+      if (!(error instanceof ContentChangedError)) throw error;
+    }
+  }
   const entity = await readSessionViewCanonicalEntity(service, sessionId, input);
   return entity === undefined ? undefined : readContentSegment(entity, input.ref, input.range, input.agentId, DETAIL_PAGE_BYTES);
+}
+
+function residentTimelineEntity(service: TranscriptService, sessionId: string, agentId: string, source: ContentRef['source']): object | undefined {
+  if (source.kind !== 'turn' && source.kind !== 'frame') return undefined;
+  if (typeof service.forSessionLive !== 'function') return undefined;
+  const turn = service.forSessionLive(sessionId)?.getAgent(agentId)?.getTurn(source.kind === 'turn' ? source.id : source.turnId ?? '');
+  if (turn === undefined || source.kind === 'turn') return turn;
+  return turn.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
 }
 
 export async function readSessionViewCanonicalEntity(

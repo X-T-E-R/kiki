@@ -1318,6 +1318,47 @@ describe('TranscriptService live integration', () => {
     } finally { releaseFlush(); service.dispose(); await database.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   }, 40_000);
 
+  it('continues a live preview from its resident turn when durable history has not proven it', async () => {
+    const home = await seedWireHome(undefined, true);
+    const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+    const agents = new FakeAgents();
+    const main = agents.add('main', { wire: { ...stubAgentWire(),
+      verifyTranscriptLiveEpoch: async () => false, isTranscriptLiveEpochVerified: () => false } });
+    const service = new TranscriptService({ homeDir: home,
+      core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
+    const database = HistoryNavigationDb.lazy(join(home, 'navigation.sqlite'));
+    const navigation = new HistoryLocatorStore(database, service);
+    service.setHistoryLocatorReader(() => navigation);
+    try {
+      const store = service.forSessionLive('s1')!;
+      await service.whenReady('s1');
+      const persisted = [
+        { type: 'turn.prompt', turnId: 1, promptId: 'p1', input: [{ type: 'text', text: `persisted ${'p'.repeat(40_000)}` }], origin: { kind: 'user' }, time: 3_000 },
+        { type: 'turn.ended', turnId: 1, reason: 'completed', time: 4_000 },
+      ];
+      await appendFixtureFile(path, persisted.map(record => JSON.stringify(record)).join('\n') + '\n');
+      const live = `live ${'l'.repeat(40_000)}`;
+      main.bus.emit(ev({ ...persisted[0], input: [{ type: 'text', text: live }] }));
+      main.bus.emit(ev(persisted[1]!));
+      expect(store.getAgent('main')?.getTurn('t1')).toMatchObject({ prompt: live });
+      const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
+      let turn = page?.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === 't1');
+      if (turn === undefined) throw new Error('Expected the live turn preview');
+      expect(turn.contentRefs?.some(ref => ref.path[0] === 'prompt')).toBe(true);
+      for (let reads = 0; turn.contentRefs?.length; reads += 1) {
+        expect(reads).toBeLessThan(100);
+        const segment = await readSessionViewTranscriptContent(service, 's1', { agentId: 'main', ref: turn.contentRefs[0]! });
+        turn = applyContentSegment(turn, segment!);
+      }
+      expect(turn.prompt).toBe(live);
+      const durable = (await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' }))?.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === 't1');
+      const staleRef = durable?.contentRefs?.find(ref => ref.path[0] === 'prompt');
+      if (staleRef === undefined) throw new Error('Expected a prompt reference');
+      await expect(readSessionViewTranscriptContent(service, 's1', { agentId: 'main', ref: { ...staleRef, revision: '0'.repeat(64) } }))
+        .rejects.toThrow('Content changed');
+    } finally { service.dispose(); await database.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  });
+
   it.runIf(process.env['KIKI_TRANSCRIPT_GC_FIXTURE'] === '1')('collects released payloads across fixed multi-agent rounds and rereads every completed turn', async () => {
     expect(globalThis.gc).toBeTypeOf('function');
     const home = await seedWireHome(undefined, true);
