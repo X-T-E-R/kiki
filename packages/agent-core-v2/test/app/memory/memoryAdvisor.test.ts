@@ -876,11 +876,9 @@ describe('Advisor governed protocols', () => {
     const f = selector();
     const http = vi.fn(async (_url, init) => {
       const body = JSON.parse(init.body);
-      expect(body.questions.c0.criteria).toEqual({
-        apply: 'apply',
-        history: 'history',
-        skip: 'skip',
-      });
+      expect(Object.keys(body.questions.c0.criteria)).toEqual(['apply', 'history', 'skip']);
+      expect(body.questions.c0.criteria.apply).toContain('current premise');
+      expect(body.questions.c0.criteria.history).toContain('without current authority');
       expect(new Headers(init.headers).get('authorization')).toBe('Bearer synthetic-key');
       return Response.json({
         model: 'arbitrary-remote-name',
@@ -907,6 +905,21 @@ describe('Advisor governed protocols', () => {
       expect.objectContaining({ inputOther: 17, output: 4 }),
       true,
     );
+  });
+  it('describes System One choices so discovery reads defaults and exceptions the answer depends on', async () => {
+    const f = selector();
+    const http = vi.fn(async (_url, init) => {
+      const criteria = JSON.parse(init.body).questions.c0.criteria;
+      expect(Object.keys(criteria)).toEqual(['read', 'skip']);
+      expect(criteria.read).toContain('default, exception');
+      expect(criteria.skip).not.toBe('skip');
+      return Response.json({
+        answers: { c0: { type: 'choice', choice: 'read', confidence: 0.4, probabilities: { read: 0.7, skip: 0.3 } } },
+      });
+    });
+    vi.stubGlobal('fetch', http);
+    expect(await f.service.call({ ...input('system_one'), stage: 'discover' })).toEqual([{ handle: 'c0', use: 'read' }]);
+    expect(http).toHaveBeenCalledOnce();
   });
   it('uses standard rerank index/score output without manufacturing applicability and rejects select mode', async () => {
     const f = selector();
