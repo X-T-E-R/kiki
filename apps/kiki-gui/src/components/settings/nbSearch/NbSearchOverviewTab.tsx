@@ -8,7 +8,8 @@ import type { NbSearchCapabilities, NbSearchTestStatus } from '@kiki/protocol';
 import { SectionCard } from '../SectionCard';
 import { useI18n } from '../../../i18n';
 import { SECONDARY_BUTTON } from '../../ui';
-import { fetchUrlState, webSearchState } from './types';
+import { fetchUrlState, providerLabelKey, webSearchState } from './types';
+import { engineLaneProfiles } from './serviceCards';
 import { NbSearchReadinessRow } from './NbSearchReadinessRow';
 
 export function NbSearchOverviewTab({
@@ -26,6 +27,26 @@ export function NbSearchOverviewTab({
   onNavigateToAdvanced: () => void;
 }) {
   const { t } = useI18n();
+  // The selection line names the service the way the service cards do — the
+  // engine's lane / pipeline ids never print on this page.
+  const engineProfiles = engineLaneProfiles(capabilities);
+  const selectionLabel = (id: string): string => {
+    const profile = engineProfiles[id];
+    if (profile !== undefined) {
+      const labelKey = providerLabelKey(profile.provider_id);
+      const provider = labelKey === undefined ? profile.provider_id : t(labelKey);
+      const lane = capabilities.search.lanes.find((candidate) => candidate.id === id);
+      if (lane?.output.channel === 'results') return `${provider} ${t('st.nbSearch.operation.search')}`;
+      return provider;
+    }
+    const pipeline = capabilities.fetch.pipelines.find((candidate) => candidate.id === id);
+    const stageProvider = pipeline?.stages[0]?.id;
+    if (stageProvider !== undefined) {
+      const labelKey = providerLabelKey(stageProvider);
+      return labelKey === undefined ? stageProvider : t(labelKey);
+    }
+    return id;
+  };
   const anyPartial =
     capabilities.providers.instances.some((instance) => instance.issues.length > 0) ||
     capabilities.search.lanes.some((lane) => lane.issues.length > 0) ||
@@ -40,12 +61,14 @@ export function NbSearchOverviewTab({
             desc={t('st.nbSearch.webSearchDesc')}
             state={webSearchState(readiness.search)}
             readiness={readiness.search}
+            selectionLabel={selectionLabel}
           />
           <NbSearchReadinessRow
             label={t('st.nbSearch.fetchUrl')}
             desc={t('st.nbSearch.fetchUrlDesc')}
             state={fetchUrlState(readiness.fetch)}
             readiness={readiness.fetch}
+            selectionLabel={selectionLabel}
           />
         </div>
 

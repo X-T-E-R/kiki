@@ -40,12 +40,15 @@ export function NbSearchReadinessRow({
   desc,
   state,
   readiness,
+  selectionLabel,
 }: {
   label: string;
   /** One plain sentence on what this tool does for the assistant. */
   desc?: string;
   state: ReadinessState;
   readiness: NbSearchTestStatus['search'];
+  /** Human name for `readiness.selection` ("Exa 搜索"); the row never prints the raw lane or pipeline id. */
+  selectionLabel?: (selection: string) => string;
 }) {
   const { t } = useI18n();
   return (
@@ -57,7 +60,12 @@ export function NbSearchReadinessRow({
       {desc !== undefined ? <p className="mt-0.5 text-[11px] text-ink-faint">{desc}</p> : null}
       {readiness.selection !== undefined ? (
         <p className="mt-1 text-[11px] text-ink-soft">
-          {t('st.nbSearch.currentSelection', { selection: readiness.selection })}
+          {t('st.nbSearch.currentSelection', {
+            selection: readiness.selection
+              .split('→')
+              .map((part) => selectionLabel?.(part.trim()) ?? part.trim())
+              .join(' → '),
+          })}
         </p>
       ) : null}
       <NbSearchIssues issues={readiness.issues} />
