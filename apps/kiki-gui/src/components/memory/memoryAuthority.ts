@@ -3,8 +3,11 @@
  * every control on /memory.
  *
  * `governed` gates the SQLite-only reads and actions (sources, decisions,
- * historical revisions, permanent forget). `writable` gates every edit; a
- * `legacy` or `migrating` store is an automatic upgrade still running. A
+ * historical revisions, permanent forget). `writable` gates every edit; only
+ * `migrating` (the automatic startup upgrade) and `readonly` withhold it. A
+ * `legacy` file store that is not migrating keeps its ordinary reads and
+ * edits: a server without the automatic upgrade stays there, and the server
+ * enforces any barrier of its own. A
  * server that cannot answer (an older build without the route, or a failed
  * read) stays on the behaviour the page always had: edits remain available,
  * the server keeps enforcing revisions, and nothing governed is offered. The
@@ -52,7 +55,7 @@ export function useMemoryAuthorityQuery(enabled = true): MemoryAuthorityView {
     // A running upgrade is followed closely; a failed one waits for the reader.
     refetchInterval: (current) => {
       const migration = current.state.data?.migration;
-      const upgrading = current.state.data?.backend === 'legacy' && current.state.data.mode !== 'readonly';
+      const upgrading = current.state.data?.mode === 'migrating';
       return upgrading && migration?.phase !== 'failed' ? MIGRATION_POLL_MS : 30_000;
     },
     retry: false,
@@ -72,9 +75,7 @@ export function useMemoryAuthorityQuery(enabled = true): MemoryAuthorityView {
     state,
     kind,
     governed: kind === 'governed' || (kind === 'readonly' && state?.backend === 'sqlite'),
-    // A file store is only ever seen while the startup upgrade has not
-    // finished, and ordinary memory access waits for it.
-    writable: kind === 'governed' || kind === 'unknown',
+    writable: kind === 'legacy' || kind === 'governed' || kind === 'unknown',
     error: query.error,
     loading: query.isPending && enabled,
     refetch: () => { void query.refetch(); },

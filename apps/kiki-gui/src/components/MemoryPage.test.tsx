@@ -1964,18 +1964,29 @@ describe('MemoryPage governed store', () => {
   const legacy = { version: 1, epoch: 0, backend: 'legacy', mode: 'active' } as const;
   const current = () => fixtureEntry({ id: 'm_deploy', title: 'Deployment procedure', body: 'Use 5 workers.', revision: 'mem2:rev-current' });
 
-  it('treats a file store as an upgrade in progress: no reads, no edits, no manual migration', async () => {
+  it('keeps a file store that is not migrating readable and editable, with no upgrade shown and no manual migration', async () => {
     const list = seedMemories({ 'global::': [current()] });
     vi.spyOn(client, 'memoryAuthority').mockResolvedValue(legacy);
     const provenance = vi.spyOn(client, 'memoryProvenance');
+    const put = vi.spyOn(client, 'putMemory').mockResolvedValue({ entry: current(), operationId: 'op_1', outcome: 'applied' });
     const container = await renderPage();
-    expect(container.querySelector('[data-memory-store="legacy"]')!.textContent).toContain('Upgrading');
-    expect(container.querySelector('[data-memory-write-hold="upgrading"] [data-memory-upgrade="starting"]')).not.toBeNull();
-    expect(container.querySelector('[data-memory-row]')).toBeNull();
-    expect(container.querySelector<HTMLButtonElement>('[data-memory-new]')!.disabled).toBe(true);
-    for (const selector of ['[data-memory-recover]', '[data-memory-upgrade-retry]', '[data-memory-coverage]']) expect(container.querySelector(selector)).toBeNull();
-    expect(container.textContent).not.toMatch(/older writers|stopped every/iu);
-    expect(list).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-memory-store="legacy"]')!.textContent).toBe('File store');
+    for (const selector of ['[data-memory-write-hold]', '[data-memory-upgrade]', '[data-memory-recover]', '[data-memory-upgrade-retry]']) expect(container.querySelector(selector)).toBeNull();
+    expect(container.textContent).not.toMatch(/upgrad|older writers|stopped every/iu);
+    expect(list).toHaveBeenCalled();
+    expect(container.querySelector<HTMLButtonElement>('[data-memory-new]')!.disabled).toBe(false);
+    await click(container, '[data-memory-row="m_deploy"]');
+    for (const selector of ['[data-memory-edit]', '[data-memory-pin]', '[data-memory-delete]']) expect(container.querySelector(selector)).not.toBeNull();
+    expect(container.querySelector('[data-memory-forget-open]')).toBeNull();
+    await click(container, '[data-memory-edit]');
+    const input = container.querySelector<HTMLTextAreaElement>('[data-memory-body]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Use 4 workers.');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await flush();
+    await click(container, '[data-memory-save]');
+    expect(put).toHaveBeenCalledWith({ scope: 'global' }, 'm_deploy', expect.objectContaining({ action: 'update', body: 'Use 4 workers.' }));
     expect(provenance).not.toHaveBeenCalled();
   });
 

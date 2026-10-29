@@ -24,11 +24,12 @@
  * The store in charge (`/memory/authority`) decides the rest. The governed
  * store adds sources, decisions and historical revisions to the detail, and a
  * separate permanent Forget behind an exact preview (memory/MemoryGovernance).
- * While the store is migrating or a read-only recovery copy, everything stays
- * readable and every edit control is withheld. Starting Kiki upgrades a file
- * store to SQLite on its own; until it finishes the page shows that upgrade's
- * progress and recovery (memory/MemoryUpgrade) and reads nothing else, because
- * the store answers no ordinary read in the meantime. It is never started here.
+ * A read-only recovery copy stays readable with every edit control withheld.
+ * Starting Kiki upgrades a file store to SQLite on its own; while the store
+ * reports `migrating`, the page shows that upgrade's progress and recovery
+ * (memory/MemoryUpgrade), withholds every edit and reads nothing else, because
+ * the store answers no ordinary read in the meantime. It is never started
+ * here. A file store that is not migrating keeps its ordinary reads and edits.
  *
  * The Inbox tab exists only while `approval` is `review` — with the default
  * `auto` there is nothing pending, so there is no tab.
@@ -500,7 +501,7 @@ function MemoryScopeView({
   const queryClient = useQueryClient();
   const { writable, kind } = useMemoryAuthority();
   // The store answers no ordinary read until its automatic upgrade is done.
-  const upgrading = kind === 'legacy' || kind === 'migrating';
+  const upgrading = kind === 'migrating';
   const [params] = useSearchParams();
   const linkedEntry = params.get('entry');
   const linkedTab = params.get('tab');

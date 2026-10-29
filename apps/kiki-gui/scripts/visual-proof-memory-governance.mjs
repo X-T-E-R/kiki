@@ -2,8 +2,8 @@
  * Governed-store memory screenshots, walked through the real controls on a
  * production build: sources and decisions, an earlier revision, the forget
  * preview with its stale-preview refusal and the completed forget, read-only
- * recovery and its resume, and the automatic startup upgrade with its
- * stopped-and-retried path.
+ * recovery and its resume, the unchanged file-store page, and the automatic
+ * startup upgrade with its stopped-and-retried path.
  *
  *   node scripts/visual-proof-memory-governance.mjs [--matrix=all]
  *
@@ -186,6 +186,23 @@ const scenarios = [
       await page.waitForSelector('[data-memory-store="governed"]', { timeout: 30_000 });
       await page.waitForSelector('[data-memory-row="m_deploy_workers"]', { timeout: 15_000 });
       if (view.width > 600) await shot('upgrade-done');
+    },
+  },
+  {
+    // A file store that is not migrating (a server without the automatic
+    // upgrade) keeps the ordinary page: entries, edits, no upgrade status.
+    name: 'memory-governance-legacy',
+    fixture: 'memory',
+    matrix: ['width'],
+    run: async ({ page, link, shot }) => {
+      await page.goto(link('/memory'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-memory-store="legacy"]', { timeout: 30_000 });
+      if (await page.locator('[data-memory-upgrade], [data-memory-write-hold]').count() !== 0) throw new Error('file store shows an upgrade');
+      await openEntry(page, 'm_20260926_d4e5f6');
+      await page.waitForSelector('[data-memory-governance="legacy"]', { timeout: 15_000 });
+      if (await page.locator('[data-memory-forget-open]').count() !== 0) throw new Error('Forget offered on the file store');
+      if (await page.locator('[data-memory-edit]').count() === 0) throw new Error('file store lost Edit');
+      await shot('legacy-detail');
     },
   },
   {

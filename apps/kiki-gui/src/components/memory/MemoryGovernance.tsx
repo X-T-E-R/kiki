@@ -104,8 +104,8 @@ export function MemoryStoreStatus() {
   return (
     <>
       <span data-memory-store={kind} className="flex items-center gap-1.5">
-        <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${kind === 'governed' ? 'bg-accent' : kind === 'unknown' ? 'border border-ink-faint' : 'bg-amber-ink'}`} />
-        <span className={kind === 'readonly' || kind === 'migrating' || kind === 'legacy' ? 'font-medium text-amber-ink' : undefined}>{t(authority.state?.migration?.phase === 'failed' ? 'memory.store.upgradeStopped' : STORE_LABEL[kind])}</span>
+        <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${kind === 'governed' ? 'bg-accent' : kind === 'legacy' ? 'bg-ink-faint' : kind === 'unknown' ? 'border border-ink-faint' : 'bg-amber-ink'}`} />
+        <span className={kind === 'readonly' || kind === 'migrating' ? 'font-medium text-amber-ink' : undefined}>{t(authority.state?.migration?.phase === 'failed' ? 'memory.store.upgradeStopped' : STORE_LABEL[kind])}</span>
       </span>
       {kind === 'governed' ? (
         <button type="button" data-memory-recover onClick={() => { setConfirm(true); }} className="text-ink-soft hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink">
@@ -150,12 +150,12 @@ export function MemoryWriteHold() {
       refresh();
     },
   });
-  if (authority.kind !== 'readonly' && authority.kind !== 'migrating' && authority.kind !== 'legacy') return null;
+  if (authority.kind !== 'readonly' && authority.kind !== 'migrating') return null;
   const readonly = authority.kind === 'readonly';
   // The automatic upgrade has its own status; it is never started from here.
   if (!readonly) {
     return (
-      <div data-memory-write-hold={authority.kind === 'legacy' ? 'upgrading' : 'migrating'} className="mb-4 border-l-2 border-amber-rule pl-3">
+      <div data-memory-write-hold="migrating" className="mb-4 border-l-2 border-amber-rule pl-3">
         <MemoryUpgradeStatus />
       </div>
     );

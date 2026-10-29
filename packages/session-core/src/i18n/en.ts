@@ -6853,7 +6853,7 @@ export const en = {
   'memory.coveredBy.changed': 'The retained entry has changed since this merge. Read its current version.',
   'memory.coveredBy.unavailable': 'The retained entry could not be loaded.',
   'memory.savedUnchanged': 'The content did not change, so no new version was created.',
-  'memory.store.legacy': 'Upgrading',
+  'memory.store.legacy': 'File store',
   'memory.store.governed': 'Governed store',
   'memory.store.migrating': 'Upgrading',
   'memory.store.upgradeStopped': 'Upgrade stopped',

@@ -6774,7 +6774,7 @@ export const zh = {
   'memory.coveredBy.changed': '承接条目在归并后已改变，请读它的当前版本。',
   'memory.coveredBy.unavailable': '暂时无法读取承接条目。',
   'memory.savedUnchanged': '内容没有变化，未产生新版本。',
-  'memory.store.legacy': '正在升级',
+  'memory.store.legacy': '文件存储',
   'memory.store.governed': '受治理存储',
   'memory.store.migrating': '正在升级',
   'memory.store.upgradeStopped': '升级已停止',
