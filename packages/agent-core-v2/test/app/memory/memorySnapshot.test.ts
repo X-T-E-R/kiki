@@ -37,7 +37,7 @@ beforeEach(() => {
   ix.stub(IAgentScopeContext, { agentId: 'example-child' });
   ix.stub(ISessionTodoService, { getNotes: (agentId) => { requestedAgent = agentId; return { notes }; } });
   ix.stub(IMemoryStore, {
-    onDidChange: Event.None,
+    onDidChange: Event.None as Event<import('#/app/memory/memoryStore').MemoryStoreChange>,
     checkpoint: async () => view.generation,
     snapshot: async (scopes) => ({ ...view, entries: view.entries.filter((entry) => scopes.some((visible) => JSON.stringify(visible) === JSON.stringify(entry.scope))) }),
   });
