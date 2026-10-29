@@ -43,11 +43,14 @@ export type RetryPolicy = z.infer<typeof RetryPolicySchema>;
  * `[retry]` — retry policy for agent steps, Output Layer and session titles.
  * `max_attempts` bounds the total attempts including the first; for agent steps
  * it takes precedence over `[loop_control] max_attempts_per_step`. A provider
- * retry-after hint still wins over any configured `backoff`.
+ * retry-after hint still wins over any configured `backoff`. `retry_partial_responses`
+ * defaults to enabled for native agent turns; false disables replay after observed
+ * output without disabling zero-output connection recovery.
  */
 export const RetryConfigSchema = z
   .object({
     maxAttempts: z.number().int().min(1).optional(),
+    retryPartialResponses: z.boolean().optional(),
     policies: z.array(RetryPolicySchema).optional(),
   })
   .strict();
@@ -72,8 +75,10 @@ export const retryToToml = (value: unknown, rawSnake: unknown): unknown => {
   if (!isPlainObject(value)) return value;
   const out = cloneRecord(rawSnake);
   delete out['max_attempts'];
+  delete out['retry_partial_responses'];
   delete out['policies'];
   setDefined(out, 'max_attempts', value['maxAttempts']);
+  setDefined(out, 'retry_partial_responses', value['retryPartialResponses']);
   const policies = value['policies'];
   if (Array.isArray(policies)) {
     out['policies'] = policies.map((entry) =>

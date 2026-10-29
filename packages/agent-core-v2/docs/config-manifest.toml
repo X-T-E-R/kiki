@@ -922,6 +922,7 @@ rules = []
 
 [retry]
 # max_attempts: integer
+# retry_partial_responses: boolean
 # policies: object[] — one entry per item:
   # match: string
   # models: string[]

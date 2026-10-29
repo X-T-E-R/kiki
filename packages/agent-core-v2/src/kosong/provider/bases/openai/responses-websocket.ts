@@ -616,6 +616,7 @@ export class ResponsesWebSocketError extends Error {
 export class ResponsesWebSocketTransport {
   private _socket: ResponsesWS | null = null;
   private _socketKey: string | undefined;
+  private _connectedAt: bigint | undefined;
   private _capabilities: ResponsesWebSocketCapabilities | undefined;
   private _baseline: Baseline | null = null;
   private _fullRebase: Baseline | null = null;
@@ -835,6 +836,7 @@ export class ResponsesWebSocketTransport {
     connectionKey: string,
     signal: AbortSignal | undefined,
   ): Promise<ActiveConnection> {
+    if (this._connectedAt !== undefined && process.hrtime.bigint() - this._connectedAt >= 55n * 60n * 1_000_000_000n) this._closeCurrent();
     if (this._socket !== null && this._socketKey === connectionKey && socketReady(this._socket)) {
       return { socket: this._socket, stream: this._socket.stream(), interruptionGeneration: this._interruptionGeneration };
     }
@@ -906,6 +908,7 @@ export class ResponsesWebSocketTransport {
         );
         this._capabilities = capabilities;
         this._socketKey = connectionKey;
+        this._connectedAt = process.hrtime.bigint();
         this._armConnectionLifetime(socket, capabilities);
         return { socket, stream, interruptionGeneration: this._interruptionGeneration };
       }
@@ -1241,6 +1244,7 @@ export class ResponsesWebSocketTransport {
     if (socket === null || (expected !== undefined && socket !== expected)) return;
     this._socket = null;
     this._socketKey = undefined;
+    this._connectedAt = undefined;
     this._capabilities = undefined;
     this._lifetimeExpired = false;
     if (this._lifetimeTimer !== undefined) {

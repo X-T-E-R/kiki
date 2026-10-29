@@ -132,8 +132,14 @@ function asRawObject(value: unknown): RawObject | null {
   return value as RawObject;
 }
 
-function transportStatusError(error: unknown): APIStatusError | undefined {
-  if (!(error instanceof ResponsesWebSocketError) || error.status === undefined || error.status < 400 || error.status > 599) return undefined;
+function transportStatusError(error: unknown): ChatProviderError | undefined {
+  if (!(error instanceof ResponsesWebSocketError)) return undefined;
+  if (error.code === 'websocket_connection_limit_reached') {
+    return attachErrorDetails(new APIConnectionError(error.message), {
+      errorSource: 'provider_event', nativeCode: error.code, upstreamErrorCode: error.code, execution: 'not_executed',
+    });
+  }
+  if (error.status === undefined || error.status < 400 || error.status > 599) return undefined;
   return attachErrorDetails(new APIStatusError(error.status, error.message), {
     errorSource: 'provider_event', nativeCode: error.code, execution: error.execution,
   });
@@ -1342,7 +1348,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
       }
       if (diagnostics.endSource === 'in_progress') {
         diagnostics.endSource = 'eof';
-        throw new ChatProviderError('OpenAI Responses stream ended before a terminal response event.');
+        throw new APIConnectionError('OpenAI Responses stream ended before a terminal response event.');
       }
     } catch (error: unknown) {
       if (this._cancelled || isAbortError(error)) {
@@ -1355,6 +1361,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
       if (diagnostics.endSource !== 'event_error' && diagnostics.endSource !== 'eof') diagnostics.endSource = readingEvent ? 'sdk_error' : 'local_error';
       const failure = attachStreamDiagnostics(transportStatusError(error) ?? transportClosureError(error) ?? transportLocalError(error) ?? convertOpenAIError(error, this._convertErrorHook), diagnostics);
       if (this._observedOutput) noteExecutedRequestDelivery(failure);
+      if (this._continuationBlocked) attachErrorDetails(failure, { retry: false });
       throw failure;
     } finally {
       if (diagnostics.endSource === 'in_progress') diagnostics.endSource = 'cancelled';

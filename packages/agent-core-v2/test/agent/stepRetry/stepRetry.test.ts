@@ -28,6 +28,11 @@ import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
 import { IConfigService } from '#/app/config/config';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentTaskService } from '#/agent/task/task';
+import { SubagentTask } from '#/agent/tools/agent/subagent-task';
 import type { LoopErrorContext, LoopErrorHandler } from '#/agent/loop/loop';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { registerLogServices } from '../../_base/log/stubs';
@@ -173,7 +178,7 @@ describe('stepRetry plugin', () => {
     ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
-        if (calls === 1) throw new APIConnectionError('terminated');
+        if (calls === 1) throw new APIStatusError(503, 'temporary');
         return {
           id: 'retry-response',
           message: {
@@ -515,8 +520,9 @@ describe('stepRetry plugin', () => {
 
     const result = await runTurn(1);
 
-    expect(result).toEqual({ type: 'completed', steps: 2, truncated: false });
+    expect(result).toEqual({ type: 'completed', steps: 1, truncated: false });
     expect(calls).toBe(2);
+    expect(wireLoopEvents('step.begin')).toHaveLength(1);
     expect(rpcEvents('turn.step.retrying')).toEqual([
       expect.objectContaining({
         args: expect.objectContaining({
@@ -820,7 +826,7 @@ describe('stepRetry plugin', () => {
 
     const result = await runTurn(1);
 
-    expect(result).toEqual({ type: 'completed', steps: 2, truncated: false });
+    expect(result).toEqual({ type: 'completed', steps: 1, truncated: false });
     expect(calls).toBe(2);
     expect(rpcEvents('turn.step.retrying')).toEqual([
       expect.objectContaining({ args: expect.objectContaining({ maxAttempts: 2 }) }),
@@ -867,11 +873,76 @@ describe('stepRetry plugin', () => {
     );
 
     const result = await runTurn(1);
-    expect(result).toEqual({ type: 'completed', steps: 2, truncated: false });
+    expect(result).toEqual({ type: 'completed', steps: 1, truncated: false });
     expect(calls).toBe(2);
     expect(rpcEvents('turn.step.retrying')).toEqual([
       expect.objectContaining({ args: expect.objectContaining({ delayMs: 1, maxAttempts: 2, errorName: 'APIConnectionError' }) }),
     ]);
+  });
+
+  it('retracts interrupted text and tool deltas before executing the completed tool exactly once', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const action = vi.fn(async () => ({ output: 'saved once' }));
+    ctx = createRetryTestAgent(llmGenerateServices(async (_provider, _system, _tools, _history, callbacks) => {
+      calls++;
+      if (calls === 1) {
+        await callbacks?.onMessagePart?.({ type: 'text', text: 'discarded answer' });
+        await callbacks?.onMessagePart?.({ type: 'function', id: 'save-work', name: 'SaveWork', arguments: '{}' });
+        throw new APIConnectionError('websocket closed before terminal event (code 1012)');
+      }
+      if (calls === 2) return { id: 'complete-tool', message: { role: 'assistant', content: [],
+        toolCalls: [{ type: 'function', id: 'save-work', name: 'SaveWork', arguments: '{}' }] },
+        usage: emptyUsage(), finishReason: 'tool_calls', rawFinishReason: 'tool_calls' };
+      return { id: 'complete-text', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], toolCalls: [] },
+        usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
+    }), { initialConfig: { retry: { policies: [{ match: 'APIConnectionError', backoff: 1 }] } } });
+    ctx.get(IAgentPermissionModeService).setMode('yolo', 'ambient');
+    ctx.get(IAgentToolRegistryService).register({ name: 'SaveWork', description: 'Save fixture work.', parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'SaveWork', execute: action }) });
+    ctx.get(IAgentProfileService).update({ activeToolNames: ['SaveWork'] });
+    expect((await runTurn(1)).type).toBe('completed');
+    expect(calls).toBe(3);
+    expect(action).toHaveBeenCalledTimes(1);
+    expect(rpcEvents('response.attempt.discarded')).toEqual([expect.objectContaining({ args: expect.objectContaining({
+      partIds: [expect.any(String)], toolCallIds: ['save-work'],
+    }) })]);
+    expect(JSON.stringify(ctx.contextData().history)).not.toContain('discarded answer');
+    expect(wireLoopEvents('tool.call')).toHaveLength(1);
+    expect(wireLoopEvents('tool.call')[0]).toMatchObject({ toolCallId: 'save-work' });
+  });
+
+  it('settles exhausted interrupted child work as failed and resumes the same execution', async () => {
+    let interrupted = true;
+    let calls = 0;
+    ctx = createRetryTestAgent(llmGenerateServices(async (_provider, _system, _tools, _history, callbacks) => {
+      calls++;
+      if (interrupted) {
+        await callbacks?.onMessagePart?.({ type: 'text', text: 'uncommitted answer' });
+        throw new APIConnectionError('websocket closed before terminal event (code 1012)');
+      }
+      return { id: 'resumed', message: { role: 'assistant', content: [{ type: 'text', text: 'resumed result' }], toolCalls: [] },
+        usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
+    }), { initialConfig: { retry: { policies: [{ match: 'APIConnectionError', backoff: 1 }] } } });
+    const tasks = ctx.get(IAgentTaskService);
+    const executor = ctx.get(IAgentExecutionService);
+    const controller = new AbortController();
+    const run = await executor.run({ kind: 'prompt', prompt: 'Continue existing work.' }, { signal: controller.signal });
+    const taskId = tasks.registerTask(new SubagentTask({ agentId: 'existing-child', profileName: 'example-worker',
+      completion: run.completion.then(result => ({ result: result.summary })) }, 'Interrupted work', controller));
+    await tasks.suppressTerminalNotification(taskId);
+    const outcome = run.completion.catch((error: unknown) => error);
+    expect(await outcome).toMatchObject({ code: 'provider.connection_error' });
+    expect(await tasks.wait(taskId)).toMatchObject({ status: 'failed', stopReason: expect.stringContaining('1012') });
+    expect(calls).toBe(5);
+    expect(ctx.get(IAgentLoopService).status()).toMatchObject({ state: 'idle', finalizing: false });
+    expect(executor.status().state).toBe('idle');
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(4);
+    expect(JSON.stringify(ctx.contextData().history)).not.toContain('uncommitted answer');
+    interrupted = false;
+    const resumed = await executor.run({ kind: 'prompt', prompt: 'Resume and finish.' }, { signal: new AbortController().signal });
+    expect(await resumed.completion).toMatchObject({ summary: 'resumed result' });
+    expect(calls).toBe(6);
   });
 
   it.each(['recover', 'exhaust', 'disabled'] as const)('applies the bounded turn policy to a WebSocket connection-limit event: %s', async mode => {

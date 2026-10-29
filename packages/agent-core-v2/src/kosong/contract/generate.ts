@@ -1,4 +1,5 @@
 import { APIEmptyResponseError, createAbortError, isAbortError, noteExecutedRequestDelivery, readProviderEventErrorCode } from './errors';
+import { attachErrorDetails } from '#/errors';
 import { attachStreamDiagnostics, type StreamDiagnostics } from './streamDiagnostics';
 import {
   isContentPart,
@@ -248,6 +249,7 @@ export async function generate(
     return result;
   } catch (error) {
     flushPending();
+    if (stream.thinkingOnlyRecoveryBlocked === true) attachErrorDetails(error, { retry: false });
     if (typeof error === 'object' && error !== null && stream.usage !== null) generateFailureUsage.set(error, stream.usage);
     recordThinkingOnlyFacts(error, message, stream);
     if (!isAbortError(error) && readGenerateFailureFacts(error) === undefined &&

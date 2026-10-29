@@ -357,14 +357,31 @@ const NON_RETRYABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
 ]);
 
 export function isRetryableGenerateError(error: unknown): boolean {
-  if (isAbortError(error) || requestDeliveryProvenance(error) === 'executed') return false;
+  return isRetryableProviderFailure(error, false);
+}
+
+/** Only an uncommitted model-request boundary that can retract partial output may replay these network failures. This does not authorize replaying tools or other provider-side effects. */
+export function isRetryableRequestInterruption(error: unknown): boolean {
+  if (!isRetryableProviderFailure(error, true)) return false;
+  const visited = new Set<object>();
+  let current = error;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    if (current instanceof ChatProviderError && current.code === PROVIDER_CONNECTION_ERROR_CODE) return true;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return false;
+}
+
+function isRetryableProviderFailure(error: unknown, retractableOutput: boolean): boolean {
+  if (isAbortError(error) || (!retractableOutput && requestDeliveryProvenance(error) === 'executed')) return false;
   const visited = new Set<object>();
   let current = error;
   let providerError = error;
   while (typeof current === 'object' && current !== null && !visited.has(current)) {
     visited.add(current);
     const details = providerErrorMetadata(current);
-    if (details['retry'] === false || details['request_output'] === 'observed') return false;
+    if (details['retry'] === false || (!retractableOutput && details['request_output'] === 'observed')) return false;
     const code = details['upstreamErrorCode'];
     if (typeof code === 'string' && NON_RETRYABLE_PROVIDER_CODES.has(code)) return false;
     if (current instanceof ChatProviderError) providerError = current;
@@ -401,7 +418,7 @@ export function isRetryableGenerateError(error: unknown): boolean {
   return false;
 }
 
-const NETWORK_RE = /network|connection|connect|disconnect|terminated/i;
+const NETWORK_RE = /network|connection|connect|disconnect|terminated|ECONNRESET|EPIPE|socket hang up|unexpected EOF/i;
 const TIMEOUT_RE = /timed?\s*out|timeout|deadline/i;
 
 export function classifyBaseApiError(message: string): ChatProviderError {
