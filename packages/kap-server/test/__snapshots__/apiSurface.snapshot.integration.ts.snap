@@ -938,6 +938,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/usage/sessions/{sessionId}/accounting",
+    ],
+    [
+      "GET",
       "/api/work-presets",
     ],
     [

@@ -48,7 +48,7 @@ interface PersistedMetricsFlight {
   waiters: number;
   sharedWaiters: number;
   settled: boolean;
-  readonly detach: boolean;
+  detach: boolean;
 }
 
 interface PersistedMetricsState {
@@ -172,7 +172,7 @@ export async function readPersistedAgentPanelMetrics(
     for (const agentId of missing) result.set(agentId, toPersistedMetrics(emptyPersistedUsage(true)));
     return Object.freeze(Object.fromEntries(result));
   }
-  const limitsKey = options.complete === true ? 'complete' : [
+  const limitsKey = [
     options.limits?.maxRecords ?? PERSISTED_METRICS_SCAN_MAX_RECORDS,
     options.limits?.maxBytes ?? PERSISTED_METRICS_SCAN_MAX_BYTES,
     options.limits?.wallTimeMs ?? PERSISTED_METRICS_SCAN_WALL_TIME_MS,
@@ -180,6 +180,7 @@ export async function readPersistedAgentPanelMetrics(
   const flightKey = `${missing.toSorted().map(keyFor).join('\0')}\0${limitsKey}`;
   let flight = state.flights.get(flightKey);
   if (flight !== undefined) {
+    flight.detach ||= options.complete === true;
     flight.sharedWaiters += 1;
     log.info('agent panel persisted metrics scan shared', {
       workspace_id: workspaceId, session_id: sessionId, cache_state: 'shared',
@@ -195,7 +196,7 @@ export async function readPersistedAgentPanelMetrics(
     let created!: PersistedMetricsFlight;
     const promise = Promise.resolve().then(() => scanPersistedAgentPanelMetrics(
       core, workspaceId, sessionId, missing, options.agentIds !== undefined,
-      options.complete === true ? undefined : options.limits, options.complete === true,
+      options.limits,
       controller.signal, () => created.sharedWaiters,
     )).then((scanResult) => {
       if (scanResult.budgetCapped || revision !== state.revision || controller.signal.aborted) return scanResult;
@@ -213,7 +214,8 @@ export async function readPersistedAgentPanelMetrics(
       created.settled = true;
       if (state.flights.get(flightKey) === created) state.flights.delete(flightKey);
     });
-    created = { controller, promise, waiters: 0, sharedWaiters: 0, settled: false, detach: false };
+    created = { controller, promise, waiters: 0, sharedWaiters: 0, settled: false, detach: options.complete === true };
+    void promise.catch(() => undefined);
     flight = created;
     state.flights.set(flightKey, flight);
   }
@@ -299,7 +301,6 @@ async function scanPersistedAgentPanelMetrics(
   agentIds: readonly string[],
   targeted: boolean,
   requestedLimits: Partial<PersistedAgentPanelMetricsLimits> | undefined,
-  complete: boolean,
   signal: AbortSignal,
   sharedWaiters: () => number,
 ): Promise<PersistedMetricsScanResult> {
@@ -307,9 +308,9 @@ async function scanPersistedAgentPanelMetrics(
   const rows = await usageRuntime(core).service.readAgentUsage(workspaceId, sessionId, agentIds, {
     signal,
     summaryOnly: true,
-    maxRecords: complete ? undefined : requestedLimits?.maxRecords ?? PERSISTED_METRICS_SCAN_MAX_RECORDS,
-    maxBytes: complete ? undefined : requestedLimits?.maxBytes ?? PERSISTED_METRICS_SCAN_MAX_BYTES,
-    deadlineAt: complete ? undefined : startedAt + (requestedLimits?.wallTimeMs ?? PERSISTED_METRICS_SCAN_WALL_TIME_MS),
+    maxRecords: requestedLimits?.maxRecords ?? PERSISTED_METRICS_SCAN_MAX_RECORDS,
+    maxBytes: requestedLimits?.maxBytes ?? PERSISTED_METRICS_SCAN_MAX_BYTES,
+    deadlineAt: startedAt + (requestedLimits?.wallTimeMs ?? PERSISTED_METRICS_SCAN_WALL_TIME_MS),
   });
   const usages: Record<string, PersistedUsage> = {};
   let partial = false;

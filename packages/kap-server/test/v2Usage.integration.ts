@@ -4,13 +4,15 @@ import { join } from 'node:path';
 
 import { IAppendLogStore, ISessionIndex, type SessionSummary } from '@kiki/agent-core-v2';
 import { Event } from '@kiki/agent-core-v2/_base/event';
-import { usageResponseSchema, usageRescanStatusSchema, type UsageResponse } from '@kiki/protocol';
+import { HttpChannel } from '@kiki/klient/http';
+import { usageAccountingSnapshotSchema, usageResponseSchema, usageRescanStatusSchema, type UsageResponse } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { type RunningServer, startServer } from '../src/start';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
 import { UsageSourceTracker } from '../src/usage/usageSourceTracker';
+import { usageRuntime } from '../src/usage/usageRuntime';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
@@ -211,6 +213,35 @@ describe('server /api/usage', () => {
       await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 } as never);
       home = undefined;
     }
+  });
+
+  it('keeps ordinary session GET off the accounting flight and exposes independent bounded accounting', async () => {
+    const core = (server as RunningServer).core;
+    const service = usageRuntime(core).service;
+    const index = core.accessor.get(ISessionIndex);
+    const get = index.get.bind(index);
+    vi.spyOn(index, 'get').mockImplementation(async (id) => {
+      const row = await get(id);
+      return row === undefined ? row : { ...row, cwd: home };
+    });
+    const accounting = vi.spyOn(service, 'readSessionAccounting');
+    const point = await authedFetch(server as RunningServer, base, '/api/sessions/session-high');
+    const row = await point.json() as { code: number; data: { usage?: { accounting?: unknown } } };
+    expect(row.code).toBe(0);
+    expect(usageAccountingSnapshotSchema.parse(row.data.usage?.accounting)).toMatchObject({ complete: false, freshness: 'unverified' });
+    expect(accounting).not.toHaveBeenCalled();
+    const channel = new HttpChannel({ endpoint: base, token: server!.localOwnerToken });
+    try {
+      const snapshot = await channel.rest.sessionUsageAccounting('session-high', { signal: AbortSignal.timeout(2_000) });
+      expect(usageAccountingSnapshotSchema.parse(snapshot)).toMatchObject({ complete: true, freshness: 'current', tokens: { output: 150 } });
+    } finally { channel.close(); }
+    expect(accounting).toHaveBeenCalledOnce();
+    const repeated = await authedFetch(server as RunningServer, base, '/api/sessions/session-high');
+    const saved = await repeated.json() as { data: { usage: { accounting: unknown } } };
+    expect(usageAccountingSnapshotSchema.parse(saved.data.usage.accounting)).toMatchObject({ complete: true, freshness: 'current', tokens: { output: 150 } });
+    expect(accounting).toHaveBeenCalledOnce();
+    const missing = await authedFetch(server as RunningServer, base, '/api/usage/sessions/missing/accounting');
+    expect((await missing.json() as { code: number }).code).toBe(40401);
   });
 
   it('refreshes warmed usage after committed live appends, external wire rewrites and new agents', async () => {

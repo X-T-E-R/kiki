@@ -193,7 +193,7 @@ describe('canonical current-agent cumulative usage', () => {
     canonicalMocks.connection = {
       spaceKey: 'main',
       scopeId: 'local',
-      client: { getSession: canonicalMocks.read },
+      client: { klient: { rest: { sessionUsageAccounting: canonicalMocks.read }, events: { on: () => ({ dispose: () => {} }) } } },
       klient: { global: { agentPanel: { read: agentRead } } },
     };
     canonicalMocks.read.mockImplementation((id: string, options: { signal: AbortSignal }) => {
@@ -222,26 +222,22 @@ describe('canonical current-agent cumulative usage', () => {
     expect(canonicalMocks.read).toHaveBeenCalledWith('session_a', { signal: expect.any(AbortSignal) });
     expect(agentRead).not.toHaveBeenCalled();
     first.resolve({
-      id: 'session_a',
-      usage: {
-        ...usage,
-        accounting: {
-          version: 2,
-          subject: { session_id: 'session_a', scope: 'session' },
-          covered_at: 1,
-          complete: true,
-          tokens: { input_other: 10, output: 0, input_cache_read: 0, input_cache_creation: 0 },
-          tokens_unknown: true,
-          cost_usd_estimated: 0.01,
-          cost_unknown: true,
-        },
-      },
+      version: 2,
+      subject: { session_id: 'session_a', scope: 'session' },
+      covered_at: 1,
+      complete: true,
+      freshness: 'stale',
+      tokens: { input_other: 10, output: 0, input_cache_read: 0, input_cache_creation: 0 },
+      tokens_unknown: true,
+      cost_usd_estimated: 0.01,
+      cost_unknown: true,
     });
     await act(async () => { await first.promise; });
     const detail = container.querySelector('[data-context-usage]');
     expect(detail?.textContent).toContain('Input10');
     expect(detail?.textContent).toContain('$0.010');
     expect(detail?.querySelector('[data-usage-accounting-known-subtotal]')).not.toBeNull();
+    expect(detail?.querySelector('[data-context-usage-freshness="stale"]')?.textContent).toBe('May be out of date');
 
     await act(async () => {
       root.render(
@@ -257,6 +253,43 @@ describe('canonical current-agent cumulative usage', () => {
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
     expect(signals[1]?.aborted).toBe(true);
     await act(async () => { root.unmount(); });
+  });
+
+  it('continues incomplete session accounting and keeps freshness independent of source coverage', async () => {
+    vi.useFakeTimers();
+    let root: Root | undefined;
+    const accounting = {
+      version: 2, subject: { session_id: 'session_a', scope: 'session' }, covered_at: 1,
+      complete: false, freshness: 'unverified', tokens: { input_other: 10, output: 0, input_cache_read: 0, input_cache_creation: 0 },
+      tokens_unknown: false, cost_usd_estimated: 0.01, cost_unknown: false,
+    };
+    canonicalMocks.connection = {
+      spaceKey: 'main', scopeId: 'local',
+      client: { klient: { rest: { sessionUsageAccounting: canonicalMocks.read }, events: { on: () => ({ dispose: () => {} }) } } },
+    };
+    canonicalMocks.read.mockResolvedValueOnce(accounting)
+      .mockResolvedValueOnce({ ...accounting, complete: true, freshness: 'current', tokens_unknown: true });
+    try {
+      const container = document.createElement('div');
+      document.body.append(container);
+      containers.push(container);
+      root = createRoot(container);
+      await act(async () => { root!.render(<I18nProvider><MemoryRouter><ContextMeter used={40_000} limit={200_000} usageScope="session" sessionId="session_a" /></MemoryRouter></I18nProvider>); });
+      expect(canonicalMocks.read).not.toHaveBeenCalled();
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
+      expect(container.querySelector('[data-context-usage-freshness="unverified"]')?.textContent).toBe('Not yet checked');
+      await act(async () => { vi.advanceTimersByTime(249); });
+      expect(canonicalMocks.read).toHaveBeenCalledTimes(1);
+      await act(async () => { vi.advanceTimersByTime(1); });
+      expect(canonicalMocks.read).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[data-context-usage-freshness]')).toBeNull();
+      expect(container.querySelector('[data-context-usage-error]')?.textContent).toContain('Some usage or prices are unknown');
+      await act(async () => { vi.advanceTimersByTime(14_999); });
+      expect(canonicalMocks.read).toHaveBeenCalledTimes(2);
+    } finally {
+      if (root !== undefined) await act(async () => { root!.unmount(); });
+      vi.useRealTimers();
+    }
   });
 
   it('keeps child-agent usage self-scoped without reading the session record', async () => {

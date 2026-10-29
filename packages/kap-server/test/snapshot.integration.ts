@@ -2136,7 +2136,8 @@ describe('cold session snapshot', () => {
     void full.catch(() => {});
     const workspaceReads = vi.spyOn(server!.core.accessor.get(IWorkspaceService), 'get');
     try {
-      await vi.waitFor(() => expect(readAccounting).toHaveBeenCalledOnce());
+      expect((await full).usage?.accounting).toMatchObject({ ...accounting, freshness: 'current' });
+      expect(readAccounting).not.toHaveBeenCalled();
       const response = await fetch(`${base}/api/klient/session-view/${sessionId}/snapshot`, {
         headers: authHeaders(server as RunningServer), signal: AbortSignal.timeout(2_000),
       });
@@ -2153,11 +2154,11 @@ describe('cold session snapshot', () => {
       expect(complete.epoch).toBe(preview.epoch);
       expect(complete.agent_counts?.total).toBe(preview.agent_counts?.total);
       expect(workspaceReads).not.toHaveBeenCalled();
-      expect(readAccounting).toHaveBeenCalledOnce();
+      expect(readAccounting).not.toHaveBeenCalled();
       expect(capabilities).not.toHaveBeenCalled();
-      expect(fullResolved).toBe(false);
+      expect(fullResolved).toBe(true);
       gate.resolve();
-      expect((await full).usage?.accounting).toEqual(accounting);
+      expect((await full).usage?.accounting).toMatchObject({ ...accounting, freshness: 'current' });
       expect(getLiveSessionById(server!.core.accessor, sessionId)).toBeUndefined();
     } finally {
       gate.resolve();

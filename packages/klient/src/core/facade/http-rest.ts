@@ -365,6 +365,7 @@ export interface HttpRestFacade {
     readonly expires_at: number;
   } | undefined>;
   usage(query: Record<string, string | readonly string[] | number | boolean | undefined>, options?: HttpRestRequestOptions): Promise<UsageResponse>;
+  sessionUsageAccounting(sessionId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').UsageAccountingSnapshot>;
   requestGovernance(): Promise<import('@kiki/protocol').RequestGovernanceSnapshot>;
   agentActivity(): Promise<import('@kiki/protocol').AgentActivitySnapshot>;
   readonly usageRescan: {

@@ -1735,7 +1735,7 @@ export async function resolveSessionBindingFacts(
   if (facts.live && facts.usage?.accounting?.complete) return facts;
   if (options.includeAccounting !== false) {
     try {
-      const accounting = await usageRuntime(core).service.readSessionAccounting(workspaceId, sessionId, signal);
+      const accounting = usageRuntime(core).service.readSessionAccountingSnapshot(workspaceId, sessionId, facts.usage?.accounting);
       facts = { ...facts, usage: { ...(facts.usage ?? emptySessionUsage()), accounting } };
     } catch (error) {
       signal?.throwIfAborted();

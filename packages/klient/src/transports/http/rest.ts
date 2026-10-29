@@ -119,6 +119,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     }),
 
     usage: (query, options) => transport.json('/usage', { query, signal: options?.signal }),
+    sessionUsageAccounting: (sessionId, options) => transport.json(`/usage/sessions/${encodeURIComponent(sessionId)}/accounting`, { signal: options?.signal }),
     requestGovernance: () => transport.json('/usage/realtime'),
     agentActivity: () => transport.json('/usage/realtime/agents'),
     usageRescan: {
