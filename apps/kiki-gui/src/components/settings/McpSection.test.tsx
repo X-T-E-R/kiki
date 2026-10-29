@@ -25,11 +25,13 @@ import { McpSection } from './McpSection';
 const list = vi.hoisted(() => vi.fn());
 const listWorkspaceCatalog = vi.hoisted(() => vi.fn());
 const getConfig = vi.hoisted(() => vi.fn());
+const listMcpServers = vi.hoisted(() => vi.fn());
+const listTools = vi.hoisted(() => vi.fn());
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     klient: { global: { mcp: { list } } },
-    client: { listWorkspaceCatalog, getConfig },
+    client: { listWorkspaceCatalog, getConfig, listMcpServers, listTools },
     scopeId: 'fixture-server',
   }),
 }));
@@ -64,6 +66,8 @@ beforeEach(() => {
   list.mockReset().mockResolvedValue(ENTRIES);
   listWorkspaceCatalog.mockReset().mockResolvedValue({ items: [RECENT, TWO] });
   getConfig.mockReset().mockResolvedValue({ mcp: {} });
+  listMcpServers.mockReset().mockResolvedValue({ servers: [] });
+  listTools.mockReset().mockResolvedValue({ tools: [] });
 });
 afterEach(async () => {
   await act(async () => { for (const root of roots.splice(0)) root.unmount(); });
@@ -128,10 +132,14 @@ describe('the MCP leaf a workspace page links to', () => {
     expect(container.querySelector('[data-mcp-server]')).toBeNull();
   });
 
-  it('leaves the leaf as it was when no workspace is named', async () => {
+  it('manages the server-wide entries in place when no workspace is named', async () => {
     const container = await render('/settings/mcp');
-    expect(list).not.toHaveBeenCalled();
+    // The global list, addressed at no workspace's root — managed in place, not
+    // a link away.
+    expect(list).toHaveBeenCalledWith({});
+    expect(list.mock.calls.every((call) => (call[0] as { cwd?: string }).cwd === undefined)).toBe(true);
     expect(container.querySelector('[data-mcp-workspace-missing]')).toBeNull();
+    expect(container.querySelector('[data-mcp-server="remote"]')).not.toBeNull();
     // The server-wide defaults are still on the leaf; they are not a workspace's.
     expect(container.querySelector('#st-card-mcp-timeouts')).not.toBeNull();
   });

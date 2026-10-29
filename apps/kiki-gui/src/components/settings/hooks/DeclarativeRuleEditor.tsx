@@ -79,12 +79,17 @@ function hasConditions(match: HookMatchConfig): boolean {
  * save-time errors; switching inject → observe and back keeps the typed text
  * or file in local state so nothing is lost mid-edit. The component remounts
  * per rule id (`key`), which resets those stashes between rules.
+ *
+ * The kind choice (text rule vs command rule) is the editor's own: a rule's
+ * type is picked here, not by two separate add buttons. Switching to a
+ * command rule replaces this editor through `onConvertToCommand`.
  */
-export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove }: {
+export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove, onConvertToCommand }: {
   readonly rule: HookRuleConfig;
   readonly issues: readonly DraftIssue[];
   readonly onChange: (patch: Partial<HookRuleConfig>) => void;
   readonly onRemove: () => void;
+  readonly onConvertToCommand?: () => void;
 }) {
   const { t } = useI18n();
   const idPrefix = useId();
@@ -166,7 +171,23 @@ export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove }: {
           <Toggle layout="inline" label={t('st.hooks.ruleEnabled')} checked={rule.enabled} onChange={(enabled) => onChange({ enabled })} />
         </div>
       </div>
-      <Hint>{t('st.hooks.ruleIdHint')}</Hint>
+
+      {onConvertToCommand !== undefined ? (
+        <div className="grid gap-1" data-hook-field="kind">
+          <span className={FORM_LABEL}>{t('st.hooks.kind')}</span>
+          <SettingsSegmented<'declarative' | 'command'>
+            ariaLabel={t('st.hooks.kind')}
+            dataAttr="data-hook-kind"
+            value="declarative"
+            onChange={(next) => { if (next === 'command') onConvertToCommand(); }}
+            choices={[
+              { value: 'declarative', label: t('st.hooks.kind.declarative') },
+              { value: 'command', label: t('st.hooks.kind.command') },
+            ]}
+          />
+          <Hint>{t('st.hooks.kind.declarativeHint')}</Hint>
+        </div>
+      ) : null}
 
       <div className="grid gap-1">
         <span className={FORM_LABEL}>{t('st.hooks.event')}</span>

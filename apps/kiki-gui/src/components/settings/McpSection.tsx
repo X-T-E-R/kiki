@@ -6,8 +6,8 @@ import type { WorkspaceCatalogEntry } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import { mcpTimeoutsPatch, workspacesSettingsPath } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
+import { toolDisplayName } from '../../lib/pluginCatalog';
 import { useConnection } from '../../state/connection';
-import { CapabilityLink } from '../capabilities/CapabilityLink';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { Spinner } from '../icons';
 import { McpConfigManager } from './McpConfigManager';
@@ -128,9 +128,77 @@ export function McpSection() {
   return (
     <div className="space-y-6">
       <SectionCard id="st-card-mcp" title={t('st.mcp.title')}>
-        <CapabilityLink kind="mcp" />
+        <GlobalMcpEntries />
       </SectionCard>
       <McpTimeoutsCard />
+    </div>
+  );
+}
+
+/**
+ * The server-wide entries, managed in place: global configuration joined with
+ * the live runtime list, so a server is added, edited, tested, restarted and
+ * removed on the page where the reader looks for it. The same queries the
+ * Capabilities MCP view reads, so both surfaces show one state.
+ */
+function GlobalMcpEntries() {
+  const { client, klient } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const [feedback, setFeedback] = useState<Feedback>(null);
+
+  const entriesQuery = useQuery({
+    queryKey: ['mcp-managed-servers', ''],
+    queryFn: () => klient.global.mcp.list({}),
+    staleTime: 60_000,
+  });
+  const runtimeQuery = useQuery({
+    queryKey: ['mcp-servers'],
+    queryFn: () => client.listMcpServers(),
+    staleTime: 15_000,
+    refetchInterval: (query) => query.state.data?.servers.some((server) => server.status === 'connecting') === true ? 2_000 : false,
+  });
+  const toolsQuery = useQuery({
+    queryKey: ['tools', 'global'],
+    queryFn: () => client.listTools(),
+    staleTime: 30_000,
+    retry: false,
+  });
+
+  const toolsByServer = new Map<string, string[]>();
+  for (const tool of toolsQuery.data?.tools ?? []) {
+    if (tool.source !== 'mcp' || tool.mcp_server_id === undefined) continue;
+    const bucket = toolsByServer.get(tool.mcp_server_id) ?? [];
+    bucket.push(toolDisplayName(tool.name));
+    toolsByServer.set(tool.mcp_server_id, bucket);
+  }
+
+  const restart = async (serverId: string) => {
+    setFeedback(null);
+    try {
+      await client.restartMcpServer(serverId);
+      setFeedback({ tone: 'success', text: t('st.mcp.restartRequested') });
+      await queryClient.invalidateQueries({ queryKey: ['mcp-servers'] });
+    } catch (error) {
+      setFeedback({ tone: 'error', text: errorText(locale, error) });
+    }
+  };
+
+  return (
+    <div data-mcp-global>
+      <McpConfigManager
+        cwd=""
+        entries={entriesQuery.data ?? []}
+        loading={entriesQuery.isLoading}
+        error={entriesQuery.error}
+        onEcho={(servers) => { queryClient.setQueryData(['mcp-managed-servers', ''], servers); }}
+        runtime={{
+          servers: runtimeQuery.data?.servers ?? [],
+          toolsByServer,
+          onRestart: restart,
+        }}
+      />
+      <FeedbackLine feedback={feedback} />
     </div>
   );
 }

@@ -5,7 +5,7 @@ import { LEGACY_HOOK_EVENTS, type LegacyHookConfig } from '@kiki/protocol';
 import { useI18n } from '../../../i18n';
 import { Hint } from '../../controls';
 import { DANGER_GHOST_BUTTON, INPUT } from '../../ui';
-import { FORM_LABEL, SettingsSelect } from '../SettingsPrimitives';
+import { FORM_LABEL, SettingsSegmented, SettingsSelect } from '../SettingsPrimitives';
 import type { DraftIssue } from './hooksDraft';
 
 /** First issue message for one field of this rule, if any. */
@@ -17,14 +17,18 @@ function fieldIssue(issues: readonly DraftIssue[], field: string): string | null
  * Editor for one legacy command rule. Works on the top-level legacy array and
  * on `legacy` inside a v2 object — the parent owns the shape. New rules start
  * with an empty command; the save path reports that against this rule.
+ *
+ * The kind choice (text rule vs command rule) is the editor's own; switching
+ * to a text rule replaces this editor through `onConvertToDeclarative`.
  */
-export function LegacyRuleEditor({ rule, ruleLabel, issues, onChange, onRemove }: {
+export function LegacyRuleEditor({ rule, ruleLabel, issues, onChange, onRemove, onConvertToDeclarative }: {
   readonly rule: LegacyHookConfig;
   /** Row label for the remove button's aria (e.g. its 1-based position). */
   readonly ruleLabel: string;
   readonly issues: readonly DraftIssue[];
   readonly onChange: (patch: Partial<LegacyHookConfig>) => void;
   readonly onRemove: () => void;
+  readonly onConvertToDeclarative?: () => void;
 }) {
   const { t } = useI18n();
   const idPrefix = useId();
@@ -34,6 +38,22 @@ export function LegacyRuleEditor({ rule, ruleLabel, issues, onChange, onRemove }
   const timeoutIssue = fieldIssue(issues, 'timeout');
   return (
     <div className="space-y-3" data-hook-editor="legacy">
+      {onConvertToDeclarative !== undefined ? (
+        <div className="grid gap-1" data-hook-field="kind">
+          <span className={FORM_LABEL}>{t('st.hooks.kind')}</span>
+          <SettingsSegmented<'declarative' | 'command'>
+            ariaLabel={t('st.hooks.kind')}
+            dataAttr="data-hook-kind"
+            value="command"
+            onChange={(next) => { if (next === 'declarative') onConvertToDeclarative(); }}
+            choices={[
+              { value: 'declarative', label: t('st.hooks.kind.declarative') },
+              { value: 'command', label: t('st.hooks.kind.command') },
+            ]}
+          />
+          <Hint>{t('st.hooks.kind.commandHint')}</Hint>
+        </div>
+      ) : null}
       <div className="grid gap-1">
         <span className={FORM_LABEL}>{t('st.hooks.event')}</span>
         <SettingsSelect<LegacyHookConfig['event']>
