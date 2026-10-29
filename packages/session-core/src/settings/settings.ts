@@ -2411,7 +2411,7 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   ai: { scopes: ['server'], purposeKey: 'st.purpose.ai' },
   'connection-services': { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.connectionServices' },
   identity: { scopes: ['server'], purposeKey: 'st.purpose.identity' },
-  agents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.agents' },
+  agents: { scopes: ['server', 'workspace'] },
   subagents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.subagents' },
   sessions: { scopes: ['server'], purposeKey: 'st.purpose.sessions' },
   notifications: { scopes: ['server'], purposeKey: 'st.purpose.notifications' },

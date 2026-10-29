@@ -41,11 +41,11 @@ export function SubagentsField({ draft, onChange, profiles, models, disabled, se
       <div className="grid min-w-0 gap-8 sm:grid-cols-2">
         <NameListField id="preferred" list={policy.preferredSubagents} policy={policy} known={policy.allowedSubagents?.map((entry) => entry.name)}
           onChange={onChange} disabled={disabled}
-          titleKey="st.profiles.dispatchPreferred" emptyKey="st.profiles.dispatchEmptyPreferred"
+          titleKey="st.profiles.dispatchPreferred"
           addLabel={t('st.profiles.dispatchAddToPreferred')} />
         <NameListField id="deny" list={policy.denySubagents} policy={policy} known={policy.allowedSubagents?.map((entry) => entry.name)}
           onChange={onChange} disabled={disabled}
-          titleKey="st.profiles.dispatchDeny" emptyKey="st.profiles.dispatchEmptyDeny"
+          titleKey="st.profiles.dispatchDeny"
           addLabel={t('st.profiles.dispatchAddToDeny')} />
       </div>
     </div>}
@@ -177,7 +177,7 @@ function PresetListField({ policy, onChange, profiles, models, disabled, self }:
                 onChange={(value) => update(index, { modelAlias: value })} />
             </div>
             <EffortPicker id={`lease-effort-${entry.name}`} value={entry.effort} disabled={disabled}
-              unsetLabel={t('st.profiles.leaseInherits', { value: ownEffort ?? t('st.profiles.effortUnset') })}
+              unsetLabel={t('st.profiles.leaseInherits', { value: ownEffort !== undefined ? effortLabel(ownEffort) : t('st.profiles.effortUnset') })}
               unsetTrigger={<span className="truncate text-ink-soft">{ownEffort !== undefined ? effortLabel(ownEffort) : t('st.profiles.effortUnset')}</span>}
               ariaLabel={`${entry.name} · ${t('st.profiles.leaseEffort')}`}
               onChange={(value) => update(index, { effort: value })} />
@@ -219,7 +219,7 @@ function PresetListField({ policy, onChange, profiles, models, disabled, self }:
  * name sets, so both are chips plus a free-text add — a name the catalog does
  * not carry is still a legal entry, and it is marked rather than refused.
  */
-function NameListField({ id, list, policy, known, onChange, disabled, titleKey, emptyKey, addLabel }: {
+function NameListField({ id, list, policy, known, onChange, disabled, titleKey, addLabel }: {
   id: string;
   list: readonly string[] | undefined;
   policy: SubagentPolicyDraft;
@@ -228,7 +228,6 @@ function NameListField({ id, list, policy, known, onChange, disabled, titleKey, 
   onChange: (next: Pick<ProfileDraft, 'subagentPolicy'>) => void;
   disabled: boolean;
   titleKey: 'st.profiles.dispatchPreferred' | 'st.profiles.dispatchDeny';
-  emptyKey: 'st.profiles.dispatchEmptyPreferred' | 'st.profiles.dispatchEmptyDeny';
   addLabel: string;
 }) {
   const { t } = useI18n();
@@ -236,12 +235,12 @@ function NameListField({ id, list, policy, known, onChange, disabled, titleKey, 
   const setList = (next: readonly string[]) => onChange({
     subagentPolicy: { ...policy, [id === 'deny' ? 'denySubagents' : 'preferredSubagents']: next },
   });
-  return <div className="space-y-1.5" data-dispatch-names={id} data-declared={list === undefined ? 'false' : 'true'}>
-    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+  return <div className="min-w-0 space-y-2" data-dispatch-names={id} data-declared={list === undefined ? 'false' : 'true'}>
+    <div className="flex h-7 items-center gap-2">
       <span className="min-w-0 text-[13px] font-semibold text-ink">{t(titleKey)}</span>
       {list !== undefined && list.length > 0 ? <button type="button" data-dispatch-clear={id} disabled={disabled}
         onClick={() => setList([])}
-        className="h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink disabled:opacity-50">
+        className="h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-faint hover:bg-ink/[0.04] hover:text-ink disabled:opacity-50">
         {t(id === 'deny' ? 'st.profiles.dispatchClearDeny' : 'st.profiles.dispatchClearPreferred')}</button> : null}
     </div>
     <div className="flex flex-wrap items-center gap-1.5">
@@ -260,15 +259,14 @@ function NameListField({ id, list, policy, known, onChange, disabled, titleKey, 
         </span>;
       })}
       <SearchableSelect id={`dispatch-add-${id}`} value="" options={[]} allowCustomValue disabled={disabled} hideFilter
-        ariaLabel={addLabel} searchPlaceholder={addLabel} emptyText={t('st.profiles.noMoreAgents')}
+        ariaLabel={addLabel} searchPlaceholder={addLabel} emptyText={t('st.profiles.noMoreAgents')} hideChevron
         triggerLabel={<span className="inline-flex items-center gap-1"><Icon name="plus" size={12} />{addLabel}</span>}
-        buttonClassName="inline-flex h-7 items-center rounded-md px-2 text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink disabled:opacity-50"
+        buttonClassName={`inline-flex h-7 items-center rounded-md px-2 ${(list ?? []).length === 0 ? '-ml-2' : ''} text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink disabled:opacity-50`}
         onChange={(name) => {
           const value = name.trim();
           if (value !== '' && !(list ?? []).includes(value)) setList([...(list ?? []), value]);
         }} />
     </div>
-    {(list ?? []).length === 0 ? <p className="text-[12px] text-ink-faint">{t(emptyKey)}</p> : null}
   </div>;
 }
 
