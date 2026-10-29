@@ -112,7 +112,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
           try {
             const todos = this.instantiation.invokeFunction((accessor) => accessor.get(ISessionTodoService));
             const notes = todos.getNotes(this.agent.agentId).notes;
-            const references = [...(notes?.decided ?? '').matchAll(/\[(m_[a-zA-Z0-9_]+)\]/g)].slice(0, 20).map((match) => match[0]).join(' ');
+            const references = [...new Set(Object.values(notes ?? {}).flatMap((text) => [...text.matchAll(/\[(m_[a-zA-Z0-9_]+)\]/g)].map((match) => match[0])))].slice(0, 20).join(' ');
             task = [notes?.goal, notes?.directives, notes?.next, references].filter(Boolean).join('\n');
           } catch {}
           const currentRequest = [this.inbound, task].filter(Boolean).join('\n');
