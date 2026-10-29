@@ -192,7 +192,7 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
       if (!MEMORY_PERSONA_ID_PATTERN.test(id)) invalid(`Unsupported legacy persona namespace: ${id}`);
       bases.add(`memory/global/personas/${id}`);
     }
-    for (const id of new Set([...await this.storage.list('memory/workspaces'), ...await this.scopes.listWorkspaceIds?.() ?? []])) {
+    for (const id of await this.storage.list('memory/workspaces')) {
       if (!MEMORY_WORKSPACE_ID_PATTERN.test(id)) invalid(`Unsupported legacy workspace namespace: ${id}`);
       const base = `memory/workspaces/${id}`;
       bases.add(base);

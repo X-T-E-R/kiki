@@ -12,8 +12,10 @@ import { join } from 'node:path';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { IMemoryScopes, type MemoryScope } from '#/app/memory/memoryScopes';
-import { ILegacyMemoryStore, IMemoryStore, MemoryStore, type MemoryEntry } from '#/app/memory/memoryStore';
+import { IMemoryScopes, MemoryScopes, type MemoryScope } from '#/app/memory/memoryScopes';
+import { ILegacyMemoryStore, IMemoryStore, MemoryStore, decodeMemoryEntry, type MemoryEntry } from '#/app/memory/memoryStore';
+import { IWorkspacePersistence } from '#/app/workspace/workspacePersistence';
+import { stubClientIdentity } from '../bootstrap/stubs';
 import { IMemoryAuthorityService, MemoryAuthorityService, MemoryAuthorityStore } from '#/app/memory/memoryAuthorityStore';
 import { MemoryAuthorityAccess, MEMORY_AUTHORITY_SCOPE } from '#/persistence/memoryAuthority';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -687,6 +689,78 @@ const migration = () => ({ operationId: randomUUID() });
 const createManaged = (memory: IMemoryStore, title: string, body = 'Use 9 workers; never upload output.') => memory.put({ action: 'create', scope: global, type: 'feedback', title, body, reason: 'Owner guidance', source });
 
 describe('single Memory authority and isolated recovery', () => {
+  it.each([false, true])('automatically migrates a cold App with an unprepared session index and disabled Memory (failed marker: %s)', async (failed) => {
+    const { bootstrap, logSeed, resolveLoggingConfig } = await import('#/index');
+    const { ISessionIndex } = await import('#/app/sessionIndex/sessionIndex');
+    const targets: MemoryScope[] = [global, workspace, { kind: 'persona', personaId: 'cold-start' }, { kind: 'persona_workspace', workspaceId: workspace.workspaceId, personaId: 'cold-start' }];
+    const entries = targets.map((scope, index) => {
+      const id = `m_cold_start_${index}`;
+      const raw = `---\n${JSON.stringify({ id, type: 'feedback', title: `Cold startup sentinel ${index}`, status: 'active', pinned: true, created: '2026-01-01', updated: '2026-01-01', source, reason: 'Owner instruction' })}\n---\nRetain the pinned sentinel and exact exception ${index + 17}.\n`;
+      return { scope, id, raw, entry: decodeMemoryEntry(raw) };
+    });
+    for (const item of entries) await storage.write(pathFor(item.scope), `entries/${item.id}.md`, new TextEncoder().encode(item.raw));
+    await writeFile(join(home, 'config.toml'), '[memory]\nenabled = false\n');
+    const interruptedId = randomUUID();
+    if (failed) await storage.write(MEMORY_AUTHORITY_SCOPE, 'backend.json', new TextEncoder().encode(JSON.stringify({ version: 1, epoch: 0, backend: 'legacy', mode: 'migrating', migration: { id: interruptedId, namespaces: [], index: 0, issues: [], phase: 'failed', failure: { code: 'session.index_building', message: 'session index is building' } } })));
+    const env = { KIKI_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL: 'true' };
+    const open = () => bootstrap({ homeDir: home, clientIdentity: stubClientIdentity, env }, logSeed(resolveLoggingConfig({ homeDir: home, env })));
+    let app = open();
+    try {
+      expect(app.app.accessor.get(ISessionIndex).status()).toMatchObject({ source: 'read-model', state: 'uninitialized' });
+      const state = await app.memoryReady;
+      expect(state).toMatchObject({ backend: 'sqlite', mode: 'active' });
+      if (failed) expect(state.migrationId).toBe(interruptedId);
+      const memory = app.app.accessor.get(IMemoryStore);
+      for (const item of entries) {
+        expect(await memory.get(item.scope, item.id)).toEqual(item.entry);
+        expect(new TextDecoder().decode((await storage.read(pathFor(item.scope), `entries/${item.id}.md`))!)).toBe(item.raw);
+      }
+      expect(app.app.accessor.get(IConfigService).get<{ enabled: boolean }>('memory').enabled).toBe(false);
+      expect(app.app.accessor.get(ISessionIndex).status().state).toBe('uninitialized');
+      const checkpoint = await memory.checkpoint!();
+      await app.app.dispose();
+      app = open();
+      expect(await app.memoryReady).toEqual(state);
+      expect(await app.app.accessor.get(IMemoryStore).checkpoint!()).toBe(checkpoint);
+      for (const item of entries) expect(await app.app.accessor.get(IMemoryStore).get(item.scope, item.id)).toEqual(item.entry);
+      expect(app.app.accessor.get(IConfigService).get<{ enabled: boolean }>('memory').enabled).toBe(false);
+    } finally { await app.app.dispose(); }
+  }, 60_000);
+
+  it('resolves registered and on-disk Memory workspaces without legacy workspace discovery', async () => {
+    const registered = 'wd_registered_abcdef012345';
+    const catalog = vi.fn(async () => ({ workspaces: [{ id: registered, root: '/example', name: 'Example', createdAt: 1, lastOpenedAt: 1, pinned: false }], deletedIds: [] }));
+    ix.stub(IWorkspacePersistence, { load: catalog });
+    ix.set(IMemoryScopes, new SyncDescriptor(MemoryScopes));
+    const scopes = ix.get(IMemoryScopes);
+    await storage.write(pathFor(workspace), 'entries/m_existing.md', new TextEncoder().encode('Existing namespace'));
+    expect(await scopes.resolve(workspace)).toBe(pathFor(workspace));
+    expect(catalog).not.toHaveBeenCalled();
+    expect(await scopes.resolve({ kind: 'workspace', workspaceId: registered })).toBe(`memory/workspaces/${registered}`);
+    expect(await scopes.listWorkspaceIds!()).toEqual([registered, workspace.workspaceId]);
+    await expect(scopes.resolve({ kind: 'workspace', workspaceId: 'wd_unknown_0123456789ab' })).rejects.toThrow('Workspace not found');
+    await expect(scopes.resolve({ kind: 'workspace', workspaceId: '../invalid' })).rejects.toThrow('Invalid workspace id');
+  });
+
+  it('reports real Memory namespace storage failures without publishing SQLite authority', async () => {
+    const { authority } = managedMemory();
+    const original = storage.list.bind(storage);
+    const failure = Object.assign(new Error('Memory directory cannot be read'), { code: 'storage.io_failed' });
+    vi.spyOn(storage, 'list').mockImplementation((scope, prefix) => scope === 'memory/workspaces' ? Promise.reject(failure) : original(scope, prefix));
+    await expect(authority.prepare()).rejects.toBe(failure);
+    expect(await authority.status()).toMatchObject({ backend: 'legacy', mode: 'migrating', migration: { phase: 'failed', failure: { code: failure.code, message: failure.message } } });
+    const resolver = new TestInstantiationService();
+    resolver.stub(IWorkspacePersistence, { load: async () => undefined });
+    resolver.stub(IFileSystemStorageService, storage);
+    resolver.set(IMemoryScopes, new SyncDescriptor(MemoryScopes));
+    try {
+      await expect(resolver.get(IMemoryScopes).listWorkspaceIds!()).rejects.toBe(failure);
+      const size = vi.spyOn(storage, 'size').mockRejectedValue(failure);
+      await expect(resolver.get(IMemoryScopes).resolve(workspace)).rejects.toBe(failure);
+      size.mockRestore();
+    } finally { await resolver.dispose(); }
+  });
+
   it('keeps legacy authoritative during shadow import and routes the same tools to SQLite after cutover without dual writes', async () => {
     const { memory, authority, legacy } = managedMemory();
     const saved = await createManaged(legacy, 'Stable identity');
@@ -728,6 +802,7 @@ describe('single Memory authority and isolated recovery', () => {
   it('persists the paused write barrier across reopen and resumes the exact migration', async () => {
     let managed = managedMemory();
     const saved = await createManaged(managed.legacy, 'Paused migration');
+    await mkdir(join(home, pathFor(workspace)), { recursive: true });
     const input = migration();
     const paused = await managed.authority.migrate({ ...input, maxPages: 1 });
     expect(paused.mode).toBe('migrating');
@@ -745,6 +820,7 @@ describe('single Memory authority and isolated recovery', () => {
   it('cancels a paused maintenance batch without disabling the next automatic preparation', async () => {
     const { memory, legacy, authority } = managedMemory();
     const saved = await createManaged(legacy, 'Retain through maintenance cancellation');
+    await mkdir(join(home, pathFor(workspace)), { recursive: true });
     const input = migration();
     expect((await authority.migrate({ ...input, maxPages: 1 })).mode).toBe('migrating');
     await expect(authority.cancelMigration(randomUUID())).rejects.toThrow('does not match');
