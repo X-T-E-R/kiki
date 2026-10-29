@@ -228,7 +228,7 @@ export class GrepTool implements IGrepTool {
     const { exitCode, stderrText, bufferTruncated, stderrTruncated, timedOut } = runResult;
     let { stdoutText } = runResult;
 
-    if (exitCode !== 0 && exitCode !== 1 && !timedOut) {
+    if (!timedOut && (exitCode !== 0 && exitCode !== 1 || exitCode === 1 && stderrText.trim() !== '')) {
       return {
         isError: true,
         output: formatRipgrepError(exitCode, stderrText, stderrTruncated),

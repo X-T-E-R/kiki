@@ -5,7 +5,7 @@ import * as nodeOs from 'node:os';
 import * as nodePath from 'node:path';
 
 export type OsKind = string;
-export type ShellName = 'bash' | 'sh';
+export type ShellName = 'bash' | 'sh' | 'powershell' | 'cmd';
 export type PathClass = 'posix' | 'win32';
 
 export class ProbeShellNotFoundError extends Error {

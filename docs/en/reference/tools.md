@@ -12,14 +12,14 @@ For the full original receipt, add `raw: true` to `HistoryList`, `HistoryRead`, 
 
 ## File Tools
 
-File tools handle reading, writing, and searching the local filesystem — the foundation for code analysis and modification tasks.
+File tools handle reading, writing, and searching files — the foundation for code analysis and modification tasks. With native SSH enabled, `Read`, `Write`, `Edit`, `Grep`, `Glob`, and `ReadMediaFile` also accept `host` or an `ssh://host/path` address. Paths belong to the selected host; use native Windows paths such as `E:/project` on Windows SSH hosts. Results identify the host, platform, and execution shell.
 
 | Tool | Default Approval | Description |
 | --- | --- | --- |
 | `Read` | Auto-allow | Read a text file's contents |
 | `Write` | Auto-allow inside a trusted workspace; blocked or approval outside | Create or overwrite a file |
 | `Edit` | Auto-allow inside a trusted workspace; blocked or approval outside | Precise string replacement |
-| `Grep` | Auto-allow | Full-text search powered by ripgrep |
+| `Grep` | Auto-allow | Search file contents |
 | `Glob` | Auto-allow | Find files by glob pattern |
 | `ReadMediaFile` | Auto-allow | Read an image or video file |
 
@@ -33,7 +33,7 @@ An explicit absolute path can read outside the workspace, subject to sensitive-f
 
 **`Edit`** accepts `path`, `old_string` (the exact text to replace), and `new_string` (the replacement text). By default it replaces only one unique match; if the same content appears multiple times in the file, the tool returns an error and suggests using `replace_all: true`. `old_string` and `new_string` must not be identical. `Write` and `Edit` resolve links before approval: a link in a skill directory does not grant permission to write its target. If a target changes between approval and execution, retry the call after reviewing the new target.
 
-**`Grep`** invokes ripgrep to search file contents, supporting regular expressions (`pattern`), a search path (`path`), file type filtering (`type`, e.g., `ts`, `py`), glob filtering (`glob`), and output mode (`output_mode`: `files_with_matches` / `content` / `count_matches`; defaults to `files_with_matches`). `content` mode supports context lines (`-A`, `-B`, `-C`), case-insensitive matching (`-i`), line numbers (`-n`, default true), and multiline matching (`multiline`). All modes support `offset` + `head_limit` pagination; `head_limit` defaults to 250 and `0` means unlimited. Sensitive files such as `.env` files and private keys are automatically filtered out; set `include_ignored=true` to search files ignored by `.gitignore`, though sensitive files remain filtered.
+**`Grep`** searches file contents with ripgrep, or PowerShell on Windows SSH hosts. It supports regular expressions (`pattern`), a search path (`path`), file type filtering (`type`, e.g., `ts`, `py`), glob filtering (`glob`), and output mode (`output_mode`: `files_with_matches` / `content` / `count_matches`; defaults to `files_with_matches`). `content` mode supports context lines (`-A`, `-B`, `-C`), case-insensitive matching (`-i`), line numbers (`-n`, default true), and multiline matching (`multiline`). Windows SSH uses .NET regular expressions; an invalid expression or unsupported file type returns an error. Use `glob` if the requested type is unavailable. All modes support `offset` + `head_limit` pagination; `head_limit` defaults to 250 and `0` means unlimited. Sensitive files such as `.env` files and private keys are automatically filtered out; set `include_ignored=true` to search files ignored by `.gitignore`, though sensitive files remain filtered.
 
 **`Glob`** matches files in a specified directory (`path`; defaults to the working directory) by glob pattern (`pattern`). Results are sorted by modification time in descending order, returning 100 entries by default. It respects `.gitignore`, `.ignore`, and `.rgignore` by default; set `include_ignored=true` to include ignored files such as build outputs, while sensitive files remain filtered. Brace patterns such as `*.{ts,tsx}` are supported, and broad wildcard patterns are allowed.
 
@@ -62,7 +62,7 @@ When a command is only a file read, search, or text-file write, `Bash` still run
 
 A foreground command that hits its timeout is not killed by default: it keeps running as a background task, with a fresh copy of the 600s background budget. Set [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) to `false` under `[background]` to kill timed-out foreground commands instead, and change the background budget itself with [`bash_task_timeout_s`](../configuration/config-files.md#background) (`0` = no timeout; print mode defaults to no timeout).
 
-stdin is always closed, so an interactive command receives EOF immediately. A stopped or timed-out task is terminated with SIGTERM, then SIGKILL after the 5-second grace period. On Windows, Git Bash is used by default.
+stdin is always closed, so an interactive command receives EOF immediately. A stopped or timed-out task is terminated with SIGTERM, then SIGKILL after the 5-second grace period. Local Windows commands use Git Bash by default. With native SSH enabled, pass `host` to run on an SSH host; Windows SSH commands use PowerShell syntax and native Windows paths, without requiring Git Bash on that host. Results and joined-host announcements show the remote platform and shell after the first connection.
 
 On Windows, a local `Bash` command can leave processes running after the command itself exits. Those processes belong to the Kiki backend that started them. They keep running if you [close only the desktop](../getting-started/desktop-app.md#windows-tray-and-opening-files). Stopping that backend, or an unexpected exit, stops each of those command trees and leaves other programs on the machine alone.
 

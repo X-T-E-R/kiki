@@ -63,7 +63,9 @@ export function toolApprovalRule(name: string, subject: string, runtime: Runtime
 export function tagSshResult(result: ExecutableToolResult, runtime: Runtime | string): ExecutableToolResult {
   const id = typeof runtime === 'string' ? runtime === 'local' ? 'local' : `ssh:${runtime}` : runtime.identity.runtimeId;
   if (!id.startsWith('ssh:')) return result;
+  const environment = typeof runtime === 'string' ? '' : `\nplatform: ${runtime.environment.osKind}\nshell: ${runtime.environment.shellName}`;
+  const header = `host: ${id.slice(4)}${environment}`;
   return typeof result.output === 'string'
-    ? { ...result, output: `host: ${id.slice(4)}\n${result.output}` }
-    : { ...result, note: `${result.note ?? ''}<system>host: ${id.slice(4)}</system>` };
+    ? { ...result, output: `${header}\n${result.output}` }
+    : { ...result, note: `${result.note ?? ''}<system>${header}</system>` };
 }

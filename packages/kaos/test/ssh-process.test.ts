@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
+import { SshWindowsOutput } from '#/ssh-output';
 
 import { describe, expect, test } from 'vitest';
 
@@ -220,4 +221,14 @@ describe('SSHProcess.kill()', () => {
     expect(stdout).toContain('ready');
     expect(stdout).toContain('cleanup done');
   }, 10000);
+});
+
+describe('Windows SSH output', () => {
+  test('preserves split UTF-8 and renders multiline CLIXML errors without progress records', async () => {
+    const bytes = Buffer.from('中文\n#< CLIXML\r\n<Objs>\n<Obj S="progress"><MS>noise</MS></Obj>\n<S S="Error">错误 &amp; detail_x000D__x000A_</S>\n</Objs>\nplain\n');
+    const stream = Readable.from([bytes.subarray(0, 1), bytes.subarray(1, 4), bytes.subarray(4)]).pipe(new SshWindowsOutput(936));
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk as Buffer));
+    expect(Buffer.concat(chunks).toString('utf8')).toBe('中文\n错误 & detail\r\nplain\n');
+  });
 });

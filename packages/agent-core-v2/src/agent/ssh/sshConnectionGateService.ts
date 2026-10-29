@@ -63,7 +63,18 @@ export class SshConnectionGateService extends Disposable {
           const target = await this.hosts.resolveTarget(record.id, workspaceId);
           if (joined[record.id] !== sshHostFingerprint(record, target)) continue;
           current[record.id] = sshHostFingerprint(record, target);
-          lines[record.id] = `host: ${JSON.stringify(record.id)} — ${record.name} — ${target.user}@${target.hostname}:${target.port}${record.roots ? `, roots: ${record.roots.join(', ')}` : ''}${record.description ? ` · ${record.description}` : ''}`;
+          let environment = ', platform: not yet probed, shell: not yet probed';
+          try {
+            const lease = this.runtime.acquireFor?.(record.id, []);
+            if (lease !== undefined) {
+              try {
+                const env = lease.runtime.environment;
+                if (env.osVersion !== 'unknown') environment = `, platform: ${env.osKind}, shell: ${env.shellName}`;
+              } finally { lease.dispose(); }
+            }
+          } catch {
+          }
+          lines[record.id] = `host: ${JSON.stringify(record.id)} — ${record.name} — ${target.user}@${target.hostname}:${target.port}${environment}${record.roots ? `, roots: ${record.roots.join(', ')}` : ''}${record.description ? ` · ${record.description}` : ''}`;
         } catch {
           continue;
         }

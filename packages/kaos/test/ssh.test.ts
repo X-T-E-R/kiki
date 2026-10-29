@@ -1058,9 +1058,7 @@ describe('SSHKaos mock success paths', () => {
     expect(matches).toEqual(['/tree/sub/a.txt']);
   });
 
-  it('glob silently skips unreadable directories', async () => {
-    // If readdir() fails the generator should return without throwing —
-    // makes glob tolerant of permission-limited subtrees.
+  it('glob reports unreadable directories', async () => {
     const sftp = {
       realpath(p: string, cb: (err: Error | null, abs: string) => void): void {
         cb(null, p);
@@ -1073,11 +1071,7 @@ describe('SSHKaos mock success paths', () => {
     };
     const kaos = makeFakeKaos(sftp);
 
-    const matches: string[] = [];
-    for await (const m of kaos.glob('/locked', '*.txt')) {
-      matches.push(m);
-    }
-    expect(matches).toEqual([]);
+    await expect(kaos.glob('/locked', '*.txt').next()).rejects.toThrow(KaosPermissionError);
   });
 
   // ── readLines empty-file early return ─────────────────────────────
@@ -1227,11 +1221,7 @@ describe('SSHKaos mock success paths', () => {
 
   // ── glob error handling in the ** branch ──────────────────────────
 
-  it('glob ** silently aborts when readdir fails', async () => {
-    // Similar to the non-`**` readdir-error test, but forcing the code
-    // through the `**` case's own try/catch. Passing a bare `**` pattern
-    // takes the `currentPattern === '**'` branch, and the failing
-    // readdir exercises the swallow-and-return path inside it.
+  it('glob ** reports readdir failures after yielding its base path', async () => {
     const sftp = {
       realpath(p: string, cb: (err: Error | null, abs: string) => void): void {
         cb(null, p);
@@ -1244,14 +1234,9 @@ describe('SSHKaos mock success paths', () => {
     };
     const kaos = makeFakeKaos(sftp, '/tree');
 
-    const matches: string[] = [];
-    for await (const m of kaos.glob('/tree', '**')) {
-      matches.push(m);
-    }
-    // Pattern `**` with zero-directory match yields basePath itself
-    // BEFORE the readdir even runs, so we still see `/tree`. The
-    // important bit is that no exception propagates out.
-    expect(matches).toEqual(['/tree']);
+    const matches = kaos.glob('/tree', '**');
+    expect(await matches.next()).toMatchObject({ value: '/tree', done: false });
+    await expect(matches.next()).rejects.toThrow(KaosPermissionError);
   });
 
   // ── readBytes ──────────────────────────────────────────────────────

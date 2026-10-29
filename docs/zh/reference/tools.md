@@ -12,14 +12,14 @@
 
 ## 文件类
 
-文件类工具负责读取、写入、搜索本地文件系统，是代码分析和修改任务的基础工具。
+文件类工具负责读取、写入和搜索文件，是代码分析和修改任务的基础工具。启用原生 SSH 后，`Read`、`Write`、`Edit`、`Grep`、`Glob` 和 `ReadMediaFile` 还支持 `host` 参数或 `ssh://host/path` 地址。路径属于所选主机；Windows SSH 主机使用 `E:/project` 这样的原生 Windows 路径。结果会标明主机、平台和执行 Shell。
 
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
 | `Read` | 自动放行 | 读取文本文件内容 |
 | `Write` | 受信任工作区内自动放行；工作区外拦截或需审批 | 创建或覆盖文件 |
 | `Edit` | 受信任工作区内自动放行；工作区外拦截或需审批 | 精确字符串替换 |
-| `Grep` | 自动放行 | 基于 ripgrep 的全文搜索 |
+| `Grep` | 自动放行 | 搜索文件内容 |
 | `Glob` | 自动放行 | 按 glob 模式查找文件 |
 | `ReadMediaFile` | 自动放行 | 读取图片或视频文件 |
 
@@ -29,7 +29,7 @@
 
 **`Edit`** 接受 `path`、`old_string`（要替换的精确文本）和 `new_string`（替换后的文本）。默认只替换唯一一处匹配，若文件中存在多处相同内容会报错并提示使用 `replace_all: true`。`old_string` 与 `new_string` 不能相同。`Write` 与 `Edit` 在审批前解析符号链接：链接位于 Skill 目录不等于已获准写入其目标。审批后若目标发生变化，请重新检查目标并重试调用。
 
-**`Grep`** 调用 ripgrep 搜索文件内容，支持正则表达式（`pattern`）、搜索路径（`path`）、文件类型过滤（`type`，如 `ts`、`py`）、glob 过滤（`glob`）和输出模式（`output_mode`：`files_with_matches` / `content` / `count_matches`，默认 `files_with_matches`）。`content` 模式支持上下文行（`-A`、`-B`、`-C`）、忽略大小写（`-i`）、行号（`-n`，默认 true）、跨行匹配（`multiline`）。所有模式支持 `offset` + `head_limit` 分页，`head_limit` 默认 250、传 0 表示不限。`.env`、私钥等敏感文件会被自动过滤；`include_ignored=true` 可搜索被 `.gitignore` 忽略的文件，但敏感文件仍保持过滤。
+**`Grep`** 使用 ripgrep 搜索文件内容，在 Windows SSH 主机上则使用 PowerShell。它支持正则表达式（`pattern`）、搜索路径（`path`）、文件类型过滤（`type`，如 `ts`、`py`）、glob 过滤（`glob`）和输出模式（`output_mode`：`files_with_matches` / `content` / `count_matches`，默认 `files_with_matches`）。`content` 模式支持上下文行（`-A`、`-B`、`-C`）、忽略大小写（`-i`）、行号（`-n`，默认 true）、跨行匹配（`multiline`）。Windows SSH 使用 .NET 正则表达式；表达式无效或文件类型不受支持时会报错，类型不可用时可改用 `glob`。所有模式支持 `offset` + `head_limit` 分页，`head_limit` 默认 250、传 0 表示不限。`.env`、私钥等敏感文件会被自动过滤；`include_ignored=true` 可搜索被 `.gitignore` 忽略的文件，但敏感文件仍保持过滤。
 
 **`Glob`** 按 glob 模式（`pattern`）在指定目录（`path`，默认工作目录）中匹配文件，结果按修改时间倒序排列，默认返回 100 条。默认尊重 `.gitignore`、`.ignore` 和 `.rgignore`；设置 `include_ignored=true` 可包含构建产物等被忽略的文件，但敏感文件仍会被过滤。支持 `*.{ts,tsx}` 这类花括号模式，也允许宽泛通配符模式。
 
@@ -54,7 +54,7 @@
 
 如果命令只是在读文件、搜索文件或写文本文件，`Bash` 仍照常执行，但结果末尾可能附一行提示，指向 `Read`、`Grep`/`Glob` 或 `Write`/`Edit`。每类提示在一个会话中最多出现三次；在 [`[background]`](../configuration/config-files.md#background) 下设置 `bash_file_tool_hints = false` 可关闭提示，不改变执行与审批行为。
 
-前台模式会阻塞当前轮次，直到命令结束或超时；命令运行期间，TUI 会把 stdout 和 stderr 流式显示在正在运行的 `Bash` 工具卡片中。前台命令超时后默认不会被终止，而是转为后台任务继续运行（受 600 秒默认后台超时约束，即超时转入后台的命令会重新获得最多 600 秒的运行时间）；如需恢复超时即终止的行为，将 `[background]` 的 [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) 设为 `false`。600 秒的默认后台超时可通过 [`bash_task_timeout_s`](../configuration/config-files.md#background) 配置（`0` = 无超时），且在 print 模式（`kiki -p`）下默认无超时。后台模式立即返回任务 ID，任务结束时自动通知 Agent。stdin 始终被关闭，交互式命令会立即收到 EOF。任务被停止或后台超时时采用两阶段终止策略（SIGTERM → 5 秒宽限期 → SIGKILL），确保进程可靠结束。Windows 平台默认使用 Git Bash。
+前台模式会阻塞当前轮次，直到命令结束或超时；命令运行期间，TUI 会把 stdout 和 stderr 流式显示在正在运行的 `Bash` 工具卡片中。前台命令超时后默认不会被终止，而是转为后台任务继续运行（受 600 秒默认后台超时约束，即超时转入后台的命令会重新获得最多 600 秒的运行时间）；如需恢复超时即终止的行为，将 `[background]` 的 [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) 设为 `false`。600 秒的默认后台超时可通过 [`bash_task_timeout_s`](../configuration/config-files.md#background) 配置（`0` = 无超时），且在 print 模式（`kiki -p`）下默认无超时。后台模式立即返回任务 ID，任务结束时自动通知 Agent。stdin 始终被关闭，交互式命令会立即收到 EOF。任务被停止或后台超时时采用两阶段终止策略（SIGTERM → 5 秒宽限期 → SIGKILL），确保进程可靠结束。本地 Windows 命令默认使用 Git Bash。启用原生 SSH 后，传入 `host` 可在 SSH 主机上执行；Windows SSH 命令使用 PowerShell 语法和原生 Windows 路径，无需在远端安装 Git Bash。首次连接后，结果和已加入主机的公告会标明远端平台与 Shell。
 
 在 Windows 上，本地 `Bash` 命令结束后，它拉起的进程还可以继续跑。这些进程归启动它们的那个 Kiki 后端。[仅退出桌面](../getting-started/desktop-app.md#窗口、托盘与打开文件)时它们继续运行。该后端停止或异常退出时，会清掉这些命令各自的进程树，机器上的其他程序留在原地。
 

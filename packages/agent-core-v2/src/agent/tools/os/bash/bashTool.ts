@@ -116,7 +116,10 @@ export class BashTool implements IBashTool {
   }
 
   get description(): string {
-    const renderedDescription = renderBashDescription(inspectAgentRuntime(this.runtime).environment.shellName);
+    const base = renderBashDescription(inspectAgentRuntime(this.runtime).environment.shellName);
+    const renderedDescription = this.runtime.nativeSshEnabled?.() === true
+      ? `${base}\nFor SSH Windows hosts, this tool executes PowerShell with native Windows paths, not Bash. Use PowerShell syntax (Get-ChildItem, $env:NAME; which and && may be unavailable). Results identify the remote platform and shell.`
+      : base;
     if (!this.allowBackground()) return withoutBackgroundDescription(renderedDescription);
     const description = this.autoBackgroundOnTimeout()
       ? renderedDescription
@@ -162,7 +165,7 @@ export class BashTool implements IBashTool {
         const withHint = hint !== undefined && typeof result.output === 'string'
           ? { ...result, output: `${result.output}\n${hint}` }
           : result;
-        return tagSshResult(withHint, target.host ?? this.runtime.inspect());
+        return tagSshResult(withHint, runtime);
       },
     };
   }
@@ -174,6 +177,9 @@ export class BashTool implements IBashTool {
     command: string,
     local: boolean,
   ): Promise<IHostProcess> {
+    if (!local && env.shellName === 'powershell') {
+      return processService.spawn(env.shellPath, ['-Command', command], { cwd: effectiveCwd, env: { NO_COLOR: '1', TERM: 'dumb' } });
+    }
     const shellCwd = getShellPathBridge(env).toShellPath(effectiveCwd);
     const shellCommand = `cd ${shellQuote(shellCwd)} && ${command}`;
     const noninteractiveEnv: Record<string, string> = {
@@ -217,7 +223,7 @@ export class BashTool implements IBashTool {
     try {
       const view = new RuntimeWorkspaceView(lease.runtime, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
       const env = lease.runtime.environment;
-      command = env.osKind === 'Windows' ? rewriteWindowsNullRedirect(args.command) : args.command;
+      command = env.osKind === 'Windows' && env.shellName === 'bash' ? rewriteWindowsNullRedirect(args.command) : args.command;
       const effectiveCwd = view.resolve(args.cwd ?? view.workDir, view.workDir, this.permissionMode.mode === 'yolo');
       proc = lease.track(await this.spawn(lease.runtime.process!, env, effectiveCwd, command, lease.runtime.identity.runtimeId === 'local'));
     } catch (error) {
