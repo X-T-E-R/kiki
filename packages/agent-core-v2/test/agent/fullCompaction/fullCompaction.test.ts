@@ -425,7 +425,7 @@ describe('FullCompaction', () => {
     expect(ctx.llmCalls).toHaveLength(0);
     expect(ctx.compactHistory().some((message) => message.text === 'old user one')).toBe(true);
     expect(ctx.compactHistory().some((message) => message.text === 'recent user two')).toBe(true);
-    expect(ctx.compactHistory().some((message) => message.text?.includes('reviewed not confirmed'))).toBe(true);
+    expect(ctx.compactHistory().some((message) => message.text?.includes('handoff review pending'))).toBe(true);
   });
 
   it('runs manual compaction and applies the compacted context', async () => {
@@ -1979,7 +1979,7 @@ describe('FullCompaction', () => {
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
       { role: 'user', text: 'recent user two' },
-      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nCompacted prefix.\n\n## Standing directives\n(none recorded in notes)\n\n## User input since notes\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"} (source coordinate unavailable)\n- unknown (user): recent user two · HistorySearch {scope:'this_session', agent_id:"main", query:"recent user two"} (source coordinate unavailable)\n\nApply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.` },
+      { role: 'user', text: `${COMPACTION_SUMMARY_PREFIX}\nCompacted prefix.\n\n## Standing directives\n(none recorded in notes)\n\n## User input since notes\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"}\n- unknown (user): recent user two · HistorySearch {scope:'this_session', agent_id:"main", query:"recent user two"}\n\nApply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.` },
       { role: 'user', text: 'new user while compacting' },
     ]);
     await ctx.expectResumeMatches();
@@ -2262,7 +2262,7 @@ describe('FullCompaction', () => {
         messages:
           user: text "old user one"
           user: text "old user two"
-          user: text "The following handoff was assembled without a summarizing model. It may not cover removed history. Verify completed claims and use HistorySearch/HistoryRead for details.\\n\\n## Window\\nmain/1\\nRemoved history boundary: source coordinate unavailable → source coordinate unavailable; the compaction cut may be inside a turn\\nfirst: source coordinate unavailable · source coordinate unavailable\\nlast: source coordinate unavailable · source coordinate unavailable\\n\\n## Working notes\\n(empty)\\n\\n## Standing directives\\n(none recorded in notes)\\n\\n## User input since notes\\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user one\\"} (source coordinate unavailable)\\n- unknown (user): old user two · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user two\\"} (source coordinate unavailable)\\n\\nApply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.\\n\\n## Notes metadata\\nrevision 0 · written none · reviewed not confirmed\\n\\n## Last conclusion\\nold assistant two\\nsource coordinate unavailable · source coordinate unavailable\\n\\n## History\\nsource coordinate unavailable · source coordinate unavailable\\nHistorySearch {scope:'this_session', agent_id:'main', query:'<terms>'}"
+          user: text "The following handoff was assembled without a summarizing model. Use the source reads below to recover details and verify claims.\\n\\n## Working notes\\n(empty)\\n\\n## Standing directives\\n(none recorded in notes)\\n\\n## User input since notes\\n- unknown (user): old user one · [source 1]\\n- unknown (user): old user two · [source 2]\\n\\nApply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.\\n\\n## Last conclusion\\nold assistant two\\n\\n## Window\\nmain/1\\nRemoved history boundary: part of the earlier conversation; the cut may be inside a turn\\nNotes written none · handoff review pending\\n\\n## History\\n\\nHistorySearch {scope:'this_session', agent_id:'main', query:'<terms>'}\\n\\n## Source reads\\n- [source 1] HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user one\\"}\\n- [source 2] HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user two\\"}"
           user: text "recent user three"
           assistant: text "recent assistant three"
           user: text "Answer after compacting"
@@ -3060,7 +3060,7 @@ describe('FullCompaction', () => {
       (none recorded in notes)
 
       ## User input since notes
-      - unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"} (source coordinate unavailable)
+      - unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"}
 
       Apply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.",
           "user: Retry after provider overflow",
@@ -3826,7 +3826,7 @@ describe('FullCompaction', () => {
       (none recorded in notes)
 
       ## User input since notes
-      - unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"} (source coordinate unavailable)
+      - unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:"main", query:"old user one"}
 
       Apply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.",
           "user: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
