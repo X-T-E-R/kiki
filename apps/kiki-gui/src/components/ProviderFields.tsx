@@ -452,9 +452,7 @@ export function ImagePolicyEditor({
           ]}
         />
       </div>
-      {value.imageAcceptedTypes === null ? (
-        <Hint>{t('st.images.inheritHint')}</Hint>
-      ) : (
+      {value.imageAcceptedTypes === null ? null : (
         <ChipSelect
           values={value.imageAcceptedTypes}
           knownOptions={KNOWN_IMAGE_MIME_TYPES}
@@ -733,7 +731,6 @@ function ModelDraftRow({
                 buttonClassName={`${INPUT} flex items-center justify-between gap-2 text-left font-mono`}
                 panelClassName="anim-enter absolute left-0 top-full z-40 mt-1 w-[min(30rem,calc(100vw-48px))] overflow-hidden rounded-xl border border-hairline bg-panel shadow-[0_12px_32px_-12px_rgba(28,25,23,0.35)]"
               />
-              <Hint>{t('st.providers.catalogModelHint')}</Hint>
               {selectedIsSuggestion ? (
                 <p data-model-suggestion className="text-[11px] font-medium text-accent-ink">
                   {t('st.providers.catalogSuggestionNote')}
@@ -758,7 +755,6 @@ function ModelDraftRow({
             endpointEnv={selectedChoice?.source === 'configured' ? selectedChoice.endpointEnv : undefined}
             authEnv={selectedChoice?.source === 'configured' ? selectedChoice.authEnv : undefined}
             onChange={onProtocolChange}
-            showHint={false}
           />
           <div className="space-y-1">
             <p className={FORM_LABEL}>{t('st.compact.windowLabel')}</p>
@@ -796,7 +792,6 @@ function ModelDraftRow({
               addPlaceholder={t('st.chips.addPlaceholder')}
               removeLabel={(value) => t('st.chips.removeAria', { value })}
             />
-            <Hint>{t('st.models.capabilitiesHint')}</Hint>
           </div>
           <AdvancedDisclosure id={`draft-model-${index}`} summary={t('st.models.draftAdvancedSummary')}>
             <ImagePolicyEditor
@@ -809,7 +804,6 @@ function ModelDraftRow({
               onChange={(identity) => { onChange(identity); }}
               label={t('st.models.requestIdentity')}
               inheritLabel={t('st.requestIdentity.inheritProvider')}
-              hint={t('st.models.requestIdentityHint')}
               customProfiles={customProfiles}
             />
           </AdvancedDisclosure>
@@ -1162,7 +1156,6 @@ export function ProviderFields({
           onChange={(identity) => { onChange({ ...draft, ...identity }); }}
           label={t('st.providers.requestIdentity')}
           inheritLabel={t('st.requestIdentity.inheritGlobal')}
-          hint={t('st.providers.requestIdentityHint')}
           customProfiles={customProfiles}
         />
         <ImagePolicyEditor
@@ -1759,9 +1752,6 @@ export function SavedGenerationParametersEditor({
       <p className="text-[11px] font-semibold text-ink-soft">
         {scope === 'provider' ? (zh ? '供应商默认请求参数' : 'Provider request defaults') : (zh ? '此模型的请求参数' : 'Model request parameters')}
       </p>
-      <Hint>{scope === 'provider'
-        ? (zh ? '影响此供应商下未覆盖的模型；已有模型及角色覆盖保持优先。' : 'Applies to models without local overrides; model and profile overrides take precedence.')
-        : (zh ? '继承值来自供应商的默认。' : 'Inherits provider defaults.')}</Hint>
       {ownedKeys.map((key) => {
         const value = draft[key];
         const mode = value === undefined ? 'inherit' : typeof value === 'object' ? 'api_default' : 'custom';

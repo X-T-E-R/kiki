@@ -82,14 +82,13 @@ import {
   STEER_SCOPES, STEER_SOURCES,
   type ModelSteerSourcesDraft, type SteerSourceDraft,
 } from './modelSteerSourceDraft';
-import { scopeDifferenceSummary, type EditScope } from './modelEditScope';
+import { PROMPT_POSITIONS, type EditScope } from './modelEditScope';
 import { cognitionSlotPatchAtScope, initialSlotText, slotView, type CognitionSlot } from './modelCognitionBodies';
 import {
   EMPTY_USAGE_BRANCH,
   USAGE_POLICY_FIELDS,
   USAGE_POSITIONS,
   usageBranchDraft,
-  countUsageDifferences,
   usageBranchProblem,
   usageEffectiveFor,
   setUsageText,
@@ -993,6 +992,8 @@ const MODEL_ISSUE_KEYS: Readonly<Record<string, I18nKey>> = {
   'model.protocol_unresolved': 'st.models.issue.protocolUnresolved',
   'model.request_identity_invalid': 'st.models.issue.requestIdentityInvalid',
   'model.override_routing_rejected': 'st.models.issue.overrideRouting',
+  'recipe-selected': 'st.models.issue.recipeSelected',
+  'recipe-unavailable': 'st.models.issue.recipeUnavailable',
 };
 
 /**
@@ -1123,7 +1124,7 @@ function ModelDetailPanel({
       width="lg"
       data={{ 'data-model-detail': item.id }}
     >
-      <div data-model-row-editor={item.id}>
+      <div data-model-row-editor={item.id} className="flex min-h-full flex-col">
         <ModelCatalogRowEditor
           item={item}
           inheritedImageTypes={inheritedImageTypes}
@@ -1213,10 +1214,8 @@ function ModelCatalogRowEditor({
   const [usage, setUsage] = useState<UsagePolicyDraft | null>(null);
   const [usageBaseline, setUsageBaseline] = useState<UsagePolicyDraft | null>(null);
   const [usageIssue, setUsageIssue] = useState<{ position: UsagePosition; field: UsagePolicyField } | null>(null);
-  const [usageScope, setUsageScope] = useState<'shared' | UsagePosition>('shared');
-  // One scope for the page. The two prompt groups and the usage group all have
-  // a real per-identity layer on the wire; the rest of the model does not, and
-  // stays a single set of shared values whichever tab is open.
+  // Which agents the Prompts tab is writing for. Usage values carry their own
+  // per-identity line under each row in Basics, so this scope is prompts-only.
   const [editScope, setEditScope] = useState<EditScope>('shared');
   // The prompt groups get their own draft rather than riding the engine draft,
   // because they are whole objects with a branch each: rebuilding them from the
@@ -1248,7 +1247,7 @@ function ModelCatalogRowEditor({
   const [steerSourcesBaseline, setSteerSourcesBaseline] = useState<ModelSteerSourcesDraft | null>(null);
   const [steerIssue, setSteerIssue] = useState<ModelSteeringSource | undefined>(undefined);
   const steerSourcesDirty = steerSources !== null && steerSourcesBaseline !== null && !steerSourcesEqual(steerSources, steerSourcesBaseline);
-  const [activeEditorTab, setActiveEditorTab] = useState<'basics' | 'advanced'>('basics');
+  const [activeEditorTab, setActiveEditorTab] = useState<EditorTab>('basics');
 
   useEffect(() => {
     if (entity === undefined || steerSourcesDirty) return;
@@ -1298,25 +1297,10 @@ function ModelCatalogRowEditor({
   for (const [key, text] of Object.entries(bodyDraft)) {
     if (key.startsWith(`${editScope}:`)) scopedBodyDraft[key.slice(editScope.length + 1)] = text;
   }
-  /**
-   * What this identity actually differs on, in words. Naming the groups beats a
-   * badge per field: the reader learns which group to go to instead of decoding
-   * a colour.
-   */
-  const scopeBranch = editScope === 'shared' ? undefined : prompts === null ? undefined : {
-    cognition: prompts.cognition[editScope],
-    fields: prompts.fields[editScope],
-  };
-  const scopeDifferences = editScope === 'shared' || scopeBranch === undefined || usage === null
-    ? 0
-    : countUsageDifferences(usage[editScope] ?? EMPTY_USAGE_BRANCH);
-  const scopeSummary = editScope === 'shared' || scopeBranch === undefined
-    ? undefined
-    : scopeDifferenceSummary({
-      usageFields: countUsageDifferences(usage?.[editScope] ?? EMPTY_USAGE_BRANCH),
-      promptsCustom: scopeBranch.cognition.kind === 'custom' || scopeBranch.fields.kind === 'custom',
-      promptsOff: scopeBranch.cognition.kind === 'off' || scopeBranch.fields.kind === 'off',
-    });
+  /** Identities whose prompts differ from the shared ones, for the "Applies to" marker. */
+  const customizedScopes = new Set<EditScope>(prompts === null ? [] : PROMPT_POSITIONS.filter((position) =>
+    prompts.cognition[position].kind === 'custom' || prompts.cognition[position].kind === 'off'
+    || prompts.fields[position].kind === 'custom' || prompts.fields[position].kind === 'off'));
   // The shared scope of the parameter group writes the model's own generation
   // parameters, which live in `parameters` rather than on the entity root.
   const [sharedGeneration, setSharedGeneration] = useState<GenerationParametersWire>({});
@@ -1400,39 +1384,16 @@ function ModelCatalogRowEditor({
     setUsageBaseline(next);
   }, [entity, usageDirty, usageBaseline]);
 
-  /**
-   * The compaction point and track, read through whichever scope is on screen.
-   *
-   * An identity inherits the shared window and input limit but carries its own
-   * budget and trigger point, and the engine resolves the two with the same
-   * lower-of-the-two rule it uses everywhere else: a difference can tighten the
-   * budget, never widen it past the shared value. Feeding the shared numbers
-   * while an identity was on screen would show one scope's ceiling above the
-   * other scope's number, and dragging the track would write the shared point.
-   *
-   * This resolves the scope the engine would; it is not a second solver, and it
-   * never invents a value the shared layer or the identity does not hold.
-   */
+  // The compaction track measures the shared point. An identity's own point is
+  // a plain token count on its line under the row, like its other values.
   const sharedContextBudget = engine !== null && /^\d+$/.test(engine.contextBudget.trim())
     ? Number(engine.contextBudget.trim()) : undefined;
-  const compactionScope: UsagePosition | 'shared' = usageScope;
-  const identityBudget = compactionScope === 'shared' || usage === null
-    ? undefined
-    : identityUsageNumber(usage[compactionScope]?.contextBudget);
-  const identityPoint = compactionScope === 'shared' || usage === null
-    ? undefined
-    : identityUsageNumber(usage[compactionScope]?.autoCompact);
   const compaction = useModelCompactionTrack({
     windowTokens: draft?.maxContextSize ?? 0,
     inputTokens: engine !== null && /^\d+$/.test(engine.maxInputSize.trim()) ? Number(engine.maxInputSize.trim()) : undefined,
-    // The budget on screen is the one that actually limits this scope.
-    contextBudget: minOptional(sharedContextBudget, identityBudget),
+    contextBudget: sharedContextBudget,
     overrides: engine?.overrides,
-    // An identity that sets no point of its own is still measured against the
-    // model's shared point, unsaved edits included: the track answers "where
-    // does this scope land", and for an inheriting scope that is the shared
-    // value rather than the global default the engine would otherwise use.
-    autoCompact: compactionScope === 'shared' ? autoCompact : (identityPoint ?? autoCompact),
+    autoCompact,
     loopControl: configQuery.data?.loop_control,
   });
 
@@ -1453,55 +1414,30 @@ function ModelCatalogRowEditor({
     return <Hint>{t('st.models.loading')}</Hint>;
   }
 
-  /**
-   * Editing in the shared scope writes the model's own value. Each field goes
-   * to the draft that already owns it, so one Save writes both layers and no
-   * value is ever held in two places at once. `thinking_effort`, `service_tier`
-   * and `max_completion_tokens` live in `parameters`, which this editor writes
-   * through a sparse patch alongside the rest.
-   */
-  /**
-   * The compaction point, read and written through whichever scope is on
-   * screen: the shared scope edits the model's own value, an identity scope
-   * edits only its difference. One control, two layers.
-   */
-  const compactionPoint: number | undefined = compactionScope === 'shared' ? autoCompact : identityPoint;
-  const setCompactionPoint = (next: number | undefined) => {
-    if (compactionScope === 'shared') { setAutoCompact(next); return; }
-    if (usage === null) return;
-    setUsage({
-      ...usage,
-      [compactionScope]: setUsageText(
-        usage[compactionScope] ?? EMPTY_USAGE_BRANCH, 'auto_compact', next === undefined ? '' : String(next)),
-    });
-  };
-
-  // The shared scope falls back to the global default, so it keeps the shared
-  // hint. An identity scope inherits the shared value, which the scope line
-  // above already states, so the global-default sentence would be false here.
-  const compactionHint = compaction.hint === undefined
-    ? undefined
-    : compaction.hint === t('st.compact.pointHint')
-      ? (compactionScope === 'shared' ? compaction.hint : t('st.compact.pointHintIdentity'))
-      : compaction.hint;
+  // Only the clamp warning changes what someone should type; the general
+  // "empty uses the global default" sentence is what the placeholder says.
+  const compactionHint = compaction.hint === t('st.compact.pointHint') ? undefined : compaction.hint;
   const compactionTrack = (
-    <div className="space-y-1 pt-1">
-      <CompactPointTrack
-        label={t('st.compact.trackLabel')}
-        dataAttribute={`model:${entity.id}`}
-        usable={compaction.usable}
-        bounds={compaction.bounds}
-        reserved={compaction.reserved}
-        value={compaction.trackValue}
-        title={compaction.trackTitle}
-        reason={compaction.trackReason}
-        pinned={compaction.overridden}
-        onChange={(tokens) => { if (!saving) setCompactionPoint(tokens); }}
-      />
-
-    </div>
+    <CompactPointTrack
+      label={t('st.compact.trackLabel')}
+      dataAttribute={`model:${entity.id}`}
+      usable={compaction.usable}
+      bounds={compaction.bounds}
+      reserved={compaction.reserved}
+      value={compaction.trackValue}
+      title={compaction.trackTitle}
+      reason={compaction.trackReason}
+      pinned={compaction.overridden}
+      onChange={(tokens) => { if (!saving) setAutoCompact(tokens); }}
+    />
   );
 
+  /**
+   * Editing a shared row writes the model's own value. Each field goes to the
+   * draft that already owns it, so one Save writes every layer and no value is
+   * held in two places. `thinking_effort`, `service_tier` and
+   * `max_completion_tokens` live in `parameters`, written as a sparse patch.
+   */
   const applySharedUsageEdit = (edit: SharedUsageEdit) => {
     if (edit['auto_compact'] !== undefined) {
       setAutoCompact(edit['auto_compact'] === '' ? undefined : Number(edit['auto_compact']));
@@ -1753,146 +1689,131 @@ function ModelCatalogRowEditor({
 
   const sectionId = (section: EditorSectionName) => `model-editor-${section}-${entity.id}`;
 
+  // Known server issues get their own copy and lose the field path, which is
+  // a config key rather than something a person reads. The Recipe notice is
+  // stated in the Recipe tab, so it is not repeated as a page-wide banner.
+  const recipeSelected = entity.issues.some((issue) => issue.code === 'recipe-selected');
+  const bannerIssues = entity.issues.filter((issue) => issue.code !== 'recipe-selected');
+  const efforts = sortThinkingEffortsForDisplay([...draft.supportEfforts]);
+  const tabs: readonly { id: EditorTab; label: string; badge?: string }[] = [
+    { id: 'basics', label: t('st.modelEditor.tab.basics') },
+    { id: 'prompts', label: t('st.modelEditor.tab.prompts') },
+    { id: 'recipe', label: t('st.modelEditor.tab.recipe'), badge: entity.recipe === undefined ? undefined : t('st.modelEditor.recipeOn') },
+    { id: 'advanced', label: t('st.modelEditor.tab.advanced') },
+  ];
+  const tabId = (tab: EditorTab) => `model-editor-tab-${tab}-${entity.id}`;
+  const panelId = (tab: EditorTab) => `model-editor-panel-${tab}-${entity.id}`;
+  const focusTab = (tab: EditorTab) => {
+    setActiveEditorTab(tab);
+    document.getElementById(tabId(tab))?.focus();
+  };
+
   return (
-    <div className="min-w-0 space-y-7" data-model-editor-layout>
-      <div className="sticky -top-4 z-10 -mx-5 -mt-4 flex flex-wrap items-center justify-between gap-3 border-b border-hairline bg-panel px-5 py-2.5">
-        <div role="tablist" aria-label={t('st.modelEditor.navAria')} className="flex items-center gap-1">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeEditorTab === 'basics'}
-            data-model-editor-tab="basics"
-            onClick={() => { setActiveEditorTab('basics'); }}
-            className={`h-7 shrink-0 rounded-md px-3 text-[12.5px] transition-colors ${
-              activeEditorTab === 'basics'
-                ? 'bg-ink/[0.08] font-medium text-ink'
-                : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
-            }`}
-          >
-            {t('st.modelEditor.tab.basics')}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeEditorTab === 'advanced'}
-            data-model-editor-tab="advanced"
-            onClick={() => { setActiveEditorTab('advanced'); }}
-            className={`h-7 shrink-0 rounded-md px-3 text-[12.5px] transition-colors ${
-              activeEditorTab === 'advanced'
-                ? 'bg-ink/[0.08] font-medium text-ink'
-                : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
-            }`}
-          >
-            {t('st.modelEditor.tab.advanced')}
-          </button>
+    <div className="flex min-w-0 flex-1 flex-col gap-6" data-model-editor-layout>
+      <div className="sticky -top-4 z-10 -mx-5 -mt-4 border-b border-hairline bg-panel px-5 pt-2">
+        <div role="tablist" aria-label={t('st.modelEditor.navAria')} className="-mb-px flex items-end gap-4 overflow-x-auto"
+          onKeyDown={(event) => {
+            const index = tabs.findIndex((tab) => tab.id === activeEditorTab);
+            if (event.key === 'ArrowRight') { event.preventDefault(); focusTab(tabs[(index + 1) % tabs.length]!.id); }
+            if (event.key === 'ArrowLeft') { event.preventDefault(); focusTab(tabs[(index - 1 + tabs.length) % tabs.length]!.id); }
+            if (event.key === 'Home') { event.preventDefault(); focusTab(tabs[0]!.id); }
+            if (event.key === 'End') { event.preventDefault(); focusTab(tabs[tabs.length - 1]!.id); }
+          }}>
+          {tabs.map((tab) => {
+            const selected = activeEditorTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                id={tabId(tab.id)}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                aria-controls={panelId(tab.id)}
+                tabIndex={selected ? 0 : -1}
+                data-model-editor-tab={tab.id}
+                onClick={() => { setActiveEditorTab(tab.id); }}
+                className={`inline-flex h-9 shrink-0 items-center gap-1.5 border-b-2 px-0.5 text-[13px] outline-none transition-colors focus-visible:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 ${
+                  selected ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
+                }`}
+              >
+                {tab.label}
+                {tab.badge === undefined ? null : (
+                  <span data-model-editor-tab-badge={tab.id}
+                    className="rounded bg-selected-ink/10 px-1.5 py-px text-[10.5px] font-medium text-selected-ink">{tab.badge}</span>
+                )}
+              </button>
+            );
+          })}
         </div>
-        <ModelEditScopeSwitch
-          scope={editScope}
-          summary={scopeSummary}
-          differences={scopeDifferences}
-          onScopeChange={(next) => { setEditScope(next); setUsageScope(next); }}
-        />
       </div>
-      <div hidden={activeEditorTab !== 'basics'} className="space-y-6">
-        <div
-          data-model-default-control={item.id}
-          data-is-default={isDefault ? 'true' : 'false'}
-          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-hairline bg-paper/60 p-3"
-        >
-          <div className="min-w-0 flex-1 space-y-0.5">
-            <div className="flex items-center gap-2">
-              <Icon name={isDefault ? 'starFilled' : 'star'} size={14} className={isDefault ? 'text-ink' : 'text-ink-faint'} />
-              <span className="text-[12.5px] font-medium text-ink">
-                {isDefault ? t('st.models.currentDefault') : t('st.models.setDefaultAction')}
-              </span>
+      {bannerIssues.length > 0 ? (
+        <ul role="status" data-model-issues className="space-y-0.5 rounded-md bg-amber-card px-3 py-2 text-[12px] leading-5 text-amber-ink">
+          {bannerIssues.map((issue, index) => {
+            const key = MODEL_ISSUE_KEYS[issue.code];
+            const text = key === undefined
+              ? `${issue.path}: ${issue.message}`
+              : issue.code === 'model.override_routing_rejected'
+                ? t(key, { fields: issue.message })
+                : t(key);
+            return <li key={`${issue.code}-${index}`} data-model-issue={issue.code}>{text}</li>;
+          })}
+        </ul>
+      ) : null}
+      <div id={panelId('basics')} role="tabpanel" aria-labelledby={tabId('basics')} hidden={activeEditorTab !== 'basics'} className="space-y-8">
+        <EditorSection id={sectionId('basics')} title={t('st.modelEditor.section.model')}
+          aside={(
+            <div data-model-default-control={item.id} data-is-default={isDefault ? 'true' : 'false'} className="flex items-center">
               {isDefault ? (
-                <span
-                  data-default-badge
-                  className="inline-flex items-center rounded bg-selected-ink/10 px-1.5 py-0.5 text-[11px] font-medium text-selected-ink"
-                >
-                  {t('st.models.default')}
+                <span data-default-badge className="inline-flex items-center gap-1 rounded bg-selected-ink/10 px-1.5 py-0.5 text-[11.5px] font-medium text-selected-ink">
+                  <Icon name="starFilled" size={12} />
+                  {t('st.models.currentDefault')}
                 </span>
+              ) : onSetDefault !== undefined ? (
+                <button type="button" data-set-default-button disabled={defaultBusy} onClick={onSetDefault}
+                  className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint pointer-coarse:h-9">
+                  <Icon name="star" size={12} />
+                  {t('st.models.unstarredTitle')}
+                </button>
               ) : null}
             </div>
-            <p className="text-[11.5px] leading-snug text-ink-faint">
-              {t('st.models.defaultScopeHint')}
-            </p>
-          </div>
-          {!isDefault && onSetDefault !== undefined ? (
-            <button
-              type="button"
-              data-set-default-button
-              className={`${SECONDARY_BUTTON} shrink-0 text-[12px]`}
-              disabled={defaultBusy || isDefault}
-              onClick={onSetDefault}
-            >
-              {t('st.models.unstarredTitle')}
-            </button>
-          ) : null}
-        </div>
-        <EditorSection id={sectionId('basics')} title={t('st.modelEditor.nav.basics')} note={t('st.modelEditor.basicsNote')}>
-        {entity.issues.length > 0 ? (
-          <p role="status" className="rounded-md bg-amber-card px-3 py-1.5 text-[12px] leading-4 text-amber-ink">
-            {entity.issues.map((issue) => {
-              const key = MODEL_ISSUE_KEYS[issue.code];
-              const text = key === undefined
-                ? issue.message
-                : issue.code === 'model.override_routing_rejected'
-                  ? t(key, { fields: issue.message })
-                  : t(key);
-              return `${issue.path}: ${text}`;
-            }).join(' · ')}
-          </p>
-        ) : null}
-        <div className="grid gap-3 sm:grid-cols-2">
-          {/*
-            The ID the provider is asked for. Searchable over what the provider
-            reported and open to any other value, the same picker the provider
-            form uses for its rows. The local alias underneath never changes here.
-          */}
-          <div className="min-w-0 space-y-1" data-model-remote-id={entity.id}>
-            <p className={FORM_LABEL}>{t('st.models.remoteIdLabel')}</p>
-            <SearchableSelect
-              options={remoteIdOptions}
-              value={draft.remoteId}
-              onChange={(remoteId) => { setDraft({ ...draft, remoteId }); }}
-              ariaLabel={t('st.models.remoteIdAria', { model: entity.id })}
-              allowCustomValue
-              customValueLabel={(id) => t('st.providers.useCustomModel', { id })}
-              searchPlaceholder={t('st.providers.modelSearchPlaceholder')}
-              emptyText={t('st.providers.catalogEmpty')}
-              disabled={saving}
-              buttonClassName={`${INPUT} flex items-center justify-between gap-2 text-left font-mono`}
-            />
-            <input
-              type="text"
-              className="sr-only"
-              aria-label={t('st.models.remoteIdAria', { model: entity.id })}
-              value={draft.remoteId}
-              onChange={(event) => { setDraft({ ...draft, remoteId: event.target.value }); }}
-            />
-            <p className="truncate font-mono text-[11px] text-ink-faint" title={entity.id}>{t('st.models.aliasLine', { alias: entity.id })}</p>
-          </div>
-          <label className={`${FORM_LABEL} min-w-0`}>
-            {t('st.models.displayNameLabel')}
-            <input
-              className={`${INPUT} mt-1 font-normal`}
-              aria-label={t('st.models.displayNameAria', { model: entity.id })}
-              value={draft.displayName}
-              onChange={(event) => { setDraft({ ...draft, displayName: event.target.value }); }}
-              placeholder={entity.remote_id}
-            />
-          </label>
-        </div>
-        {/*
-          Provider and request format side by side: the format is a property of
-          this model's requests to that provider, so reading them together is
-          what makes "follow the provider" mean something. Request identity is a
-          different question (who the request claims to be) and stays under
-          Advanced.
-        */}
-        <div className="space-y-1">
+          )}>
           <div className="grid gap-3 sm:grid-cols-2">
+            {/*
+              The ID the provider is asked for: searchable over what the provider
+              reported and open to any other value. The local alias never changes here.
+            */}
+            <div className="min-w-0 space-y-1" data-model-remote-id={entity.id}>
+              <p className={FORM_LABEL}>{t('st.models.remoteIdLabel')}</p>
+              <SearchableSelect
+                options={remoteIdOptions}
+                value={draft.remoteId}
+                onChange={(remoteId) => { setDraft({ ...draft, remoteId }); }}
+                ariaLabel={t('st.models.remoteIdAria', { model: entity.id })}
+                allowCustomValue
+                customValueLabel={(id) => t('st.providers.useCustomModel', { id })}
+                searchPlaceholder={t('st.providers.modelSearchPlaceholder')}
+                emptyText={t('st.providers.catalogEmpty')}
+                disabled={saving}
+                buttonClassName={`${INPUT} flex items-center justify-between gap-2 text-left font-mono`}
+              />
+              <input
+                type="text"
+                className="sr-only"
+                aria-label={t('st.models.remoteIdAria', { model: entity.id })}
+                value={draft.remoteId}
+                onChange={(event) => { setDraft({ ...draft, remoteId: event.target.value }); }}
+              />
+            </div>
+            <label className={`${FORM_LABEL} min-w-0`}>
+              {t('st.models.displayNameLabel')}
+              <input
+                className={`${INPUT} mt-1 font-normal`}
+                aria-label={t('st.models.displayNameAria', { model: entity.id })}
+                value={draft.displayName}
+                onChange={(event) => { setDraft({ ...draft, displayName: event.target.value }); }}
+                placeholder={entity.remote_id}
+              />
+            </label>
             <div className="min-w-0 space-y-1">
               <p className={FORM_LABEL}>{t('st.modelEditor.provider')}</p>
               <p className="flex h-8 min-w-0 items-center rounded-md bg-ink/[0.03] px-3 font-mono text-[12.5px] text-ink-soft" title={entity.provider_id}>
@@ -1910,26 +1831,53 @@ function ModelCatalogRowEditor({
               authEnv={entity.auth_env}
               onChange={setProtocol}
               disabled={saving}
-              showHint={false}
             />
           </div>
-          <Hint>{t('st.modelProtocol.hint')}</Hint>
-        </div>
-        <ModelContextFields
-          modelId={entity.id}
-          windowTokens={draft.maxContextSize}
-          inputTokens={/^\d+$/.test(engine.maxInputSize.trim()) ? Number(engine.maxInputSize.trim()) : undefined}
-          contextBudget={/^\d+$/.test(engine.contextBudget.trim()) ? Number(engine.contextBudget.trim()) : undefined}
-          overrides={engine.overrides}
-          onWindowChange={(maxContextSize) => { setDraft({ ...draft, maxContextSize }); }}
-          autoCompact={autoCompact}
-          onAutoCompactChange={setAutoCompact}
-          loopControl={configQuery.data?.loop_control}
-          hideCompaction
-        />
-        <div className={FORM_LABEL}>
-          {t('st.chips.efforts')}
-          <div className="mt-1.5 font-normal">
+        </EditorSection>
+        <EditorSection id={sectionId('usage')} title={t('st.modelEditor.section.usage')}>
+          {usage !== null ? (
+            <MainUsagePolicyFields
+              modelId={entity.id}
+              view={usagePolicyView(entity, usage, usageDirty, usageIssue, autoCompact, engine, sharedGeneration)}
+              efforts={efforts}
+              onSharedChange={applySharedUsageEdit}
+              onChange={(next) => { setUsage(next); setUsageIssue(null); }}
+              sharedIssue={engineIssue?.field === 'contextBudget' ? { field: 'context_budget', text: engineIssue.text } : null}
+              compactionTrack={compactionTrack}
+              compactionControl={(
+                <CompactPointField
+                  dataAttribute={`model:${entity.id}`}
+                  labelClassName="sr-only"
+                  label={t('st.compact.pointLabel')}
+                  value={autoCompact}
+                  onChange={setAutoCompact}
+                  disabled={saving}
+                  windowTokens={compaction.usable}
+                  placeholder={compaction.inheritedLabel}
+                  presets={compaction.presets}
+                  presetsLabel={compaction.presetsLabel}
+                  hint={compactionHint}
+                />
+              )}
+              disabled={saving}
+            />
+          ) : null}
+        </EditorSection>
+        <EditorSection id={sectionId('capabilities')} title={t('st.modelEditor.section.capabilities')}>
+          <ModelContextFields
+            modelId={entity.id}
+            windowTokens={draft.maxContextSize}
+            inputTokens={/^\d+$/.test(engine.maxInputSize.trim()) ? Number(engine.maxInputSize.trim()) : undefined}
+            contextBudget={/^\d+$/.test(engine.contextBudget.trim()) ? Number(engine.contextBudget.trim()) : undefined}
+            overrides={engine.overrides}
+            onWindowChange={(maxContextSize) => { setDraft({ ...draft, maxContextSize }); }}
+            autoCompact={autoCompact}
+            onAutoCompactChange={setAutoCompact}
+            loopControl={configQuery.data?.loop_control}
+            hideCompaction
+          />
+          <div className="space-y-1.5">
+            <p className={FORM_LABEL}>{t('st.chips.efforts')}</p>
             <ChipSelect
               values={draft.supportEfforts}
               knownOptions={KNOWN_EFFORTS}
@@ -1939,44 +1887,32 @@ function ModelCatalogRowEditor({
               removeLabel={(value) => t('st.chips.removeAria', { value })}
             />
           </div>
-        </div>
-        {/*
-          Capabilities sit on the ordinary surface of the editor, not inside the
-          advanced fold: what this model can do is one of the two or three things
-          a person opens this panel to decide, and folding it away is what let a
-          model's real submitted capabilities go unchecked.
-        */}
-        <div className="space-y-1" data-model-capabilities={entity.id}>
-          <p className={FORM_LABEL}>{t('st.chips.capabilities')}</p>
-          <ChipSelect
-            values={draft.capabilities}
-            knownOptions={KNOWN_CAPABILITIES}
-            onChange={(capabilities) => { setDraft({ ...draft, capabilities }); }}
-            ariaLabel={t('st.models.capsAria', { model: entity.id })}
-            addPlaceholder={t('st.chips.addPlaceholder')}
-            removeLabel={(value) => t('st.chips.removeAria', { value })}
-          />
-          <Hint>{t('st.models.capabilitiesHint')}</Hint>
-        </div>
-      </EditorSection>
+          <div className="space-y-1.5" data-model-capabilities={entity.id}>
+            <p className={FORM_LABEL}>{t('st.chips.capabilities')}</p>
+            <ChipSelect
+              values={draft.capabilities}
+              knownOptions={KNOWN_CAPABILITIES}
+              onChange={(capabilities) => { setDraft({ ...draft, capabilities }); }}
+              ariaLabel={t('st.models.capsAria', { model: entity.id })}
+              addPlaceholder={t('st.chips.addPlaceholder')}
+              removeLabel={(value) => t('st.chips.removeAria', { value })}
+            />
+          </div>
+        </EditorSection>
       </div>
-      <div hidden={activeEditorTab !== 'advanced'} className="space-y-6">
-      <EditorSection id={sectionId('identity')} title={t('st.modelEditor.nav.identity')} note={t('st.modelEditor.identityNote')}>
-        {/*
-          The prompt prose, always open and right under the scope switch. What a
-          model is told is the reason to open this section. Editing a readable
-          file-backed slot saves its text onto the model without touching the file.
-        */}
+      <div id={panelId('prompts')} role="tabpanel" aria-labelledby={tabId('prompts')} hidden={activeEditorTab !== 'prompts'} className="space-y-6">
+        <ModelEditScopeSwitch scope={editScope} customized={customizedScopes} onScopeChange={setEditScope} />
+        {recipeSelected ? (
+          <p className="text-[12px] text-selected-ink" data-prompts-recipe-note>{t('st.models.issue.recipeSelected')}</p>
+        ) : null}
         <ModelPromptBodies
           modelId={entity.id}
           bodies={entity.cognition_bodies}
           scope={editScope}
           branchSelection={branchSelectionFor(editScope, prompts)}
           draft={scopedBodyDraft}
-          // Typing is the decision. A slot backed by an author file converts to
-          // a body on the model when this page saves, exactly like any other
-          // field; asking again per slot made the one confirmation the page did
-          // offer easy to miss and easy to skip by accident.
+          // Typing is the decision: a slot backed by an author file converts to
+          // a body on the model when this page saves, like any other field.
           onDraftChange={(slot, text) => {
             const key = bodyKey(editScope, slot);
             setBodyDraft((current) => ({ ...current, [key]: text }));
@@ -1989,66 +1925,43 @@ function ModelCatalogRowEditor({
           }}
           disabled={saving}
         />
-        {usage !== null ? (
-          <MainUsagePolicyFields
-            modelId={entity.id}
-            scope={usageScope}
-            view={usagePolicyView(entity, usage, usageDirty, usageIssue, autoCompact, engine, sharedGeneration)}
-            onSharedChange={applySharedUsageEdit}
-            onChange={(next) => { setUsage(next); setUsageIssue(null); }}
-            compaction={compactionTrack}
-            compactionControl={(
-              <CompactPointField
-                dataAttribute={`model:${entity.id}`}
-                labelClassName="sr-only"
-                label={t('st.compact.pointLabel')}
-                value={compactionPoint}
-                onChange={setCompactionPoint}
+        <div className="space-y-1">
+          {/*
+            The sources that can start a turn without a person typing. Most are
+            simply off, so they stay folded; the body stays mounted so an edit
+            survives collapsing it.
+          */}
+          <AdvancedDisclosure id={`model-steer-${entity.id}`} label={t('st.steerSource.disclosure')} summary={t('st.steerSource.summary')}>
+            <div className="space-y-3">
+              <ModelSteerSources
+                bodies={entity.cognition_bodies}
+                scope={editScope}
+                draft={steerSources}
+                branchOff={branchSelectionFor(editScope, prompts) === 'off'}
+                identityInheritsShared={editScope !== 'shared' && branchSelectionFor(editScope, prompts) === 'common'}
+                onDraftChange={setSteerSource}
                 disabled={saving}
-                windowTokens={compaction.usable}
-                placeholder={compactionScope === 'shared'
-                  ? compaction.inheritedLabel
-                  : t('st.usagePolicy.inheritSharedPoint')}
-                presets={compaction.presets}
-                presetsLabel={compaction.presetsLabel}
-                hint={compactionHint}
               />
-            )}
-            disabled={saving}
-          />
+              {steerIssue !== undefined ? (
+                <p role="alert" className="text-[12px] leading-5 text-danger" data-steer-source-issue>
+                  {t('st.steerSource.cadenceCount')}
+                </p>
+              ) : null}
+            </div>
+          </AdvancedDisclosure>
+          <AdvancedDisclosure id={`model-prompt-structure-${entity.id}`} label={t('st.modelEditor.group.promptStructure')}
+            defaultOpen={engineIssue?.field === 'cognition' || engineIssue?.field === 'promptOverrides'}>
+            <ModelEngineFields part="prompts" modelId={entity.id} value={engine} issue={engineIssue} disabled={saving}
+              onChange={(next) => { setEngine(next); setEngineIssue(null); }} />
+          </AdvancedDisclosure>
+        </div>
+      </div>
+      <div id={panelId('recipe')} role="tabpanel" aria-labelledby={tabId('recipe')} hidden={activeEditorTab !== 'recipe'} className="space-y-4">
+        {recipeSelected ? (
+          <p className="rounded-md bg-selected-ink/[0.07] px-3 py-2 text-[12px] leading-5 text-selected-ink" data-model-recipe-issue>
+            {t('st.models.issue.recipeSelected')}
+          </p>
         ) : null}
-        {/*
-          The sources that can start a turn without a person typing. They sit
-          under their own disclosure at the end of the identity section, because
-          for most models every one of them is simply off and an always-open
-          list of nine rows would push the configuration people do use out of
-          view. The body stays mounted so an edit survives collapsing it.
-        */}
-        <AdvancedDisclosure id={`model-steer-${entity.id}`} summary={t('st.steerSource.summary')}>
-          <div className="space-y-3">
-            <ModelSteerSources
-              bodies={entity.cognition_bodies}
-              scope={editScope}
-              draft={steerSources}
-              branchOff={branchSelectionFor(editScope, prompts) === 'off'}
-              identityInheritsShared={editScope !== 'shared' && branchSelectionFor(editScope, prompts) === 'common'}
-              onDraftChange={setSteerSource}
-              disabled={saving}
-            />
-            {steerIssue !== undefined ? (
-              <p role="alert" className="text-[12px] leading-5 text-danger" data-steer-source-issue>
-                {t('st.steerSource.cadenceCount')}
-              </p>
-            ) : null}
-          </div>
-        </AdvancedDisclosure>
-      </EditorSection>
-      {/*
-        Which recipe a model uses is a decision about the model as a whole, so
-        it is its own section outside the identity scope: under an identity it
-        would read as "this recipe is for the main agent only".
-      */}
-      <EditorSection id={sectionId('recipe')} title={t('st.modelEditor.nav.recipe')} note={t('st.modelEditor.recipeNote')}>
         <ModelRecipeField
           modelId={entity.id}
           modelName={draft.displayName.trim() === '' ? entity.id : draft.displayName.trim()}
@@ -2057,31 +1970,44 @@ function ModelCatalogRowEditor({
           disabled={saving}
           onDraftChange={setRecipeDraftDirty}
         />
-      </EditorSection>
-      <EditorSection id={sectionId('advanced')} title={t('st.modelEditor.nav.advanced')} note={t('st.modelEditor.advancedNote')}>
-        <AdvancedDisclosure id={`model-${entity.id}`} summary={t('st.models.advancedSummary')}>
+      </div>
+      <div id={panelId('advanced')} role="tabpanel" aria-labelledby={tabId('advanced')} hidden={activeEditorTab !== 'advanced'}
+        className="space-y-1" data-model-advanced-groups>
+        {/*
+          Named groups, each folded. A group opens on its own when the last
+          save was refused for a field inside it, so the error is never hidden.
+        */}
+        <AdvancedDisclosure id={`model-${entity.id}`} label={t('st.modelEditor.group.requestIdentity')}
+          defaultOpen={draft.requestIdentityChoice !== 'inherit'}>
           <RequestIdentityLayerEditor
             value={draft}
             onChange={(identity) => { setDraft({ ...draft, ...identity }); }}
             label={t('st.models.requestIdentity')}
             inheritLabel={t('st.requestIdentity.inheritProvider')}
-            hint={t('st.models.requestIdentityHint')}
           />
+        </AdvancedDisclosure>
+        <AdvancedDisclosure id={`model-images-${entity.id}`} label={t('st.modelEditor.group.images')}>
           <ImagePolicyEditor
             value={draft}
             onChange={(images) => { setDraft({ ...draft, ...images }); }}
             inheritLabel={t('st.images.inheritProvider')}
           />
+        </AdvancedDisclosure>
+        <AdvancedDisclosure id={`model-sampling-${entity.id}`} label={t('st.modelEditor.group.sampling')}>
           {/*
-            Effort, tier and the token cap have their one entrance in the
-            identity section's usage fields above; a second editor for the same
-            keys here was a second save entrance into the same patch field.
-            What remains is what would otherwise have no editor at all.
+            Effort, tier and the token cap have their one entrance in Basics;
+            only temperature and top_p remain here.
           */}
           <SavedGenerationParametersEditor scope="model" id={entity.id} onSaved={onSaved} keys={['temperature', 'top_p']} />
+        </AdvancedDisclosure>
+        <AdvancedDisclosure id={`model-engine-${entity.id}`} label={t('st.modelEditor.group.engine')}
+          defaultOpen={engineIssue !== null && engineIssue.field !== 'contextBudget'
+            && engineIssue.field !== 'cognition' && engineIssue.field !== 'promptOverrides'}>
           <ModelEngineFields modelId={entity.id} value={engine} issue={engineIssue} disabled={saving}
             onChange={(next) => { setEngine(next); setEngineIssue(null); }} />
-          <div className="border-t border-hairline pt-3" data-model-behavior={entity.id}>
+        </AdvancedDisclosure>
+        <AdvancedDisclosure id={`model-guard-${entity.id}`} label={t('st.modelEditor.group.questionGuard')}>
+          <div data-model-behavior={entity.id}>
             <QuestionGuardFields
               scope="model"
               draft={behavior}
@@ -2094,7 +2020,6 @@ function ModelCatalogRowEditor({
             />
           </div>
         </AdvancedDisclosure>
-      </EditorSection>
       </div>
       {/*
         The actions stay pinned to the bottom of the panel: on a form this long
@@ -2103,7 +2028,7 @@ function ModelCatalogRowEditor({
         right beside the button that produced it.
       */}
       <div
-        className="sticky -bottom-4 z-10 -mx-5 -mb-4 flex flex-wrap items-center gap-2 border-t border-hairline bg-panel px-5 py-3"
+        className="sticky -bottom-4 z-10 -mx-5 -mb-4 mt-auto flex flex-wrap items-center gap-2 border-t border-hairline bg-panel px-5 py-3"
         data-model-editor-actions
       >
         <button type="button" className={PRIMARY_BUTTON} disabled={saving || !modelDirty} onClick={() => void save()}>
@@ -2147,26 +2072,22 @@ function ModelCatalogRowEditor({
   );
 }
 
-type EditorSectionName = 'basics' | 'identity' | 'recipe' | 'advanced';
+type EditorTab = 'basics' | 'prompts' | 'recipe' | 'advanced';
+type EditorSectionName = 'basics' | 'usage' | 'capabilities';
 
-/**
- * One section of the model editor: a quiet heading with the one fact that
- * matters about where its values are stored (shared, per identity, whole
- * model). The heading takes focus when the section bar jumps to it, so a
- * keyboard user lands where a pointer user is looking.
- */
-function EditorSection({ id, title, note, children }: {
+/** One named group inside a tab: a quiet heading, an optional action at its end. */
+function EditorSection({ id, title, aside, children }: {
   id: string;
   title: string;
-  note: string;
+  aside?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const headingId = `${id}-title`;
   return (
-    <section id={id} aria-labelledby={headingId} className="min-w-0 scroll-mt-14 space-y-4" data-model-editor-section={id}>
-      <header className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 border-b border-hairline pb-1.5">
-        <h3 id={headingId} tabIndex={-1} className="text-[13px] font-semibold text-ink outline-none">{title}</h3>
-        <p className="min-w-0 text-[12px] text-ink-faint">{note}</p>
+    <section id={id} aria-labelledby={headingId} className="min-w-0 space-y-4" data-model-editor-section={id}>
+      <header className="flex min-h-7 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+        <h3 id={headingId} className="text-[13px] font-semibold text-ink">{title}</h3>
+        {aside}
       </header>
       {children}
     </section>

@@ -24,7 +24,7 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import {
-  COGNITION_SLOTS, initialSlotText, restoreHint, savesAsInlineText, slotView,
+  COGNITION_SLOTS, initialSlotText, savesAsInlineText, slotView,
   type CognitionSlot, type SlotView,
 } from './modelCognitionBodies';
 import type { EditScope } from './modelEditScope';
@@ -199,9 +199,6 @@ function PromptBodyField({ slot, label, view, text, onChange, disabled }: {
                 ))}
               </ul>
             ) : null}
-            {restoreHint(view ?? { slot: 'overlay', source: 'unset', text: '', files: [], writable: false, sourceReadOnly: true, error: undefined }) === undefined ? null : (
-              <p className="text-[11px] leading-5 text-ink-faint">{t('st.modelPrompt.restoreHint')}</p>
-            )}
           </div>
         </>
       )}

@@ -34,7 +34,8 @@ export function RequestIdentityLayerEditor({
   onChange: (value: RequestIdentityLayerDraft) => void;
   label: string;
   inheritLabel: string;
-  hint: string;
+  /** One line under the picker, only when it changes what to pick. */
+  hint?: string;
   /** Why the last save was refused (bad JSON, empty custom layer); shown under the textarea. */
   issue?: string | null;
   /** Custom identities from Settings → Request identity, offered after the built-ins. */
@@ -106,7 +107,7 @@ export function RequestIdentityLayerEditor({
             ]}
           />
         </div>
-        <Hint>{hint}</Hint>
+        {hint === undefined ? null : <Hint>{hint}</Hint>}
       </div>
       )}
       {authored ? (

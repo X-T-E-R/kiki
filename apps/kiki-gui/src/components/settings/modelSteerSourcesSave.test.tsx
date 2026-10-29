@@ -411,7 +411,7 @@ describe('a source belongs to one identity and one level', () => {
     await renderCard();
     await openEditorWithSources();
     await act(async () => { scopeButton('main').click(); });
-    expect(document.body.querySelector('[data-steer-identity-inherited]')!.textContent).toContain('separate copy of the full group');
+    expect(document.body.querySelector('[data-steer-identity-inherited]')!.textContent).toContain('Uses the shared settings');
     expect(sourceModeButton('thread', 'inherit').getAttribute('aria-pressed')).toBe('true');
     expect(sourceModeButton('cron', 'custom').getAttribute('aria-pressed')).toBe('true');
     expect(sourceModeButton('agent', 'off').getAttribute('aria-pressed')).toBe('true');

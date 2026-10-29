@@ -433,7 +433,7 @@ describe('ProviderEditor save channel', () => {
     getProviderEntity.mockResolvedValue({ ...COLON_PROVIDER, revision: 'provider-rev-1', defaults: { temperature: 0, max_completion_tokens: 8192 } });
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
     const editor = container.querySelector<HTMLElement>('[data-generation-editor="provider:edge:gateway"]')!;
-    expect(editor.textContent).toContain('models without local overrides');
+    expect(editor.textContent).toContain('Provider request defaults');
     // The provider defaults entrance keeps all five parameters; on a model row
     // three of them move to the identity section's usage fields.
     for (const label of ['Temperature mode', 'Top P mode', 'Max generated tokens mode', 'Thinking mode / effort mode', 'Service tier mode']) {
