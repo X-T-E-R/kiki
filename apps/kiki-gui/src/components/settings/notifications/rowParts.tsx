@@ -1,5 +1,4 @@
 import type { ReactNode } from 'react';
-import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../../i18n';
 import { DisclosureChevron, Icon } from '../../icons';
@@ -9,23 +8,6 @@ import type { BrandId } from './catalog';
 const MARK: Readonly<Record<BrandId, string>> = {
   wechat: 'WX', telegram: 'TG', feishu: 'FS', qq: 'QQ', discord: 'DC', slack: 'SL', matrix: 'MX',
   wecom: 'WC', dingtalk: 'DT', http: '{ }', email: '@', windows: '', other: '…', plugin: 'P',
-};
-
-export const BRAND_KEY: Readonly<Record<BrandId, I18nKey>> = {
-  wechat: 'st.channels.brand.wechat',
-  telegram: 'st.channels.brand.telegram',
-  feishu: 'st.channels.brand.feishu',
-  qq: 'st.channels.brand.qq',
-  discord: 'st.channels.brand.discord',
-  slack: 'st.channels.brand.slack',
-  matrix: 'st.channels.brand.matrix',
-  wecom: 'st.channels.brand.wecom',
-  dingtalk: 'st.channels.brand.dingtalk',
-  http: 'st.channels.brand.http',
-  email: 'st.channels.brand.email',
-  windows: 'st.channels.brand.windows',
-  other: 'st.channels.brand.other',
-  plugin: 'st.channels.brand.plugin',
 };
 
 /**

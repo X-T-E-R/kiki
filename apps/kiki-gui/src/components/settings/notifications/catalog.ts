@@ -8,6 +8,7 @@
 
 import type { NotificationProviderDescriptor } from '@kiki/klient';
 import type { ImProviderKind, ImSetupCatalog, ImSetupProvider } from '@kiki/protocol';
+import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { isAddable, NEVER_ADDABLE } from './model';
 
@@ -47,6 +48,24 @@ export const BRAND_ORDER: readonly BrandId[] = [
   'wechat', 'telegram', 'feishu', 'qq', 'discord', 'slack', 'matrix',
   'wecom', 'dingtalk', 'http', 'email', 'windows', 'other', 'plugin',
 ];
+
+/** One localized name per platform: the grid, the panel title and a row without its own name all use it. */
+export const BRAND_KEY: Readonly<Record<BrandId, I18nKey>> = {
+  wechat: 'st.channels.brand.wechat',
+  telegram: 'st.channels.brand.telegram',
+  feishu: 'st.channels.brand.feishu',
+  qq: 'st.channels.brand.qq',
+  discord: 'st.channels.brand.discord',
+  slack: 'st.channels.brand.slack',
+  matrix: 'st.channels.brand.matrix',
+  wecom: 'st.channels.brand.wecom',
+  dingtalk: 'st.channels.brand.dingtalk',
+  http: 'st.channels.brand.http',
+  email: 'st.channels.brand.email',
+  windows: 'st.channels.brand.windows',
+  other: 'st.channels.brand.other',
+  plugin: 'st.channels.brand.plugin',
+};
 
 const PUSH_BRAND: Readonly<Record<string, BrandId>> = {
   telegram: 'telegram',

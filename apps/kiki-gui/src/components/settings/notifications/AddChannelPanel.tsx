@@ -11,14 +11,14 @@ import { SidePanel } from '../../SidePanel';
 import { SECONDARY_BUTTON } from '../../ui';
 import { AddChannelForm } from './AddChannelForm';
 import {
-  addCatalog, brandAvailable, hasBothKinds, routeKey,
+  addCatalog, BRAND_KEY, brandAvailable, hasBothKinds, routeKey,
   type BrandEntry, type BrandId, type ChannelRoute, type RouteOption,
 } from './catalog';
 import { IM_KEY } from './imModel';
 import { PlatformSetupForm, WechatScan } from './ImSetup';
 import { reasonKey } from './model';
 import { PasteSetupForm } from './PasteSetupForm';
-import { BRAND_KEY, CapabilityTag, PlatformMark } from './rowParts';
+import { CapabilityTag, PlatformMark } from './rowParts';
 import { useImAction, useStartListening, type WechatQr } from './useImSessions';
 
 /** What a two-way route is called when a brand offers both kinds. */
@@ -166,7 +166,10 @@ function RoutePicker({ brand, value, onChange }: { brand: BrandEntry; value: str
               </span>
               <span className="text-[13px] font-medium text-ink">{t(routeTitleKey(option.route))}</span>
             </span>
-            <span className="pl-[22px] text-[12px] leading-4 text-ink-faint">{t(routeHintKey(option.route))}</span>
+            <span className="pl-[22px] text-[12px] leading-4 text-ink-faint">
+              {option.unavailable === 'setupCatalog' ? t('st.channels.unavailable.setup')
+                : option.unavailable === 'dependency' ? t(reasonKey(option.reason)) : t(routeHintKey(option.route))}
+            </span>
           </button>
         );
       })}

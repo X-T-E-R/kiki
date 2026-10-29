@@ -156,21 +156,28 @@ function AccountProblems({ account, state, busy, onRetry, onReauthorize }: {
   onReauthorize: () => void;
 }) {
   const { t } = useI18n();
+  if (state === 'auth_expired') {
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[13px] leading-5" data-im-problems={account.id}>
+        <p className="min-w-0 flex-1 text-amber-ink" data-im-connection-detail>{t('st.im.authExpiredHint')}</p>
+        <button type="button" className={SECONDARY_BUTTON} data-im-reauthorize-now={account.id} onClick={onReauthorize}>{t('st.im.reauthorize')}</button>
+        {(account.inbound_diagnostics?.length ?? 0) > 0 ? <div className="basis-full"><InboundFailures diagnostics={account.inbound_diagnostics!} /></div> : null}
+      </div>
+    );
+  }
   const lines = [
     account.connection_detail !== undefined ? <ConnectionFailure key="detail" detail={account.connection_detail} /> : null,
     (account.inbound_diagnostics?.length ?? 0) > 0 ? <InboundFailures key="inbound" diagnostics={account.inbound_diagnostics!} /> : null,
     account.conflict === 'webhook' ? <p key="webhook" data-im-webhook className="text-amber-ink">{t('st.im.webhook')}</p> : null,
     account.adapter === 'missing' ? <p key="missing" data-im-missing className="text-ink-soft">{t('st.im.missing')}</p> : null,
   ].filter(Boolean);
-  const fix = state === 'auth_expired'
-    ? <button type="button" className={PRIMARY_BUTTON} data-im-reauthorize-now={account.id} onClick={onReauthorize}>{t('st.im.reauthorize')}</button>
-    : state === 'stopped' && account.listening
-      ? <button type="button" className={PRIMARY_BUTTON} data-im-retry-connection={account.id} disabled={busy || account.adapter === 'missing'} onClick={onRetry}>{t('st.im.retryConnection')}</button>
-      : null;
+  const fix = state === 'stopped' && account.listening
+    ? <button type="button" className={PRIMARY_BUTTON} data-im-retry-connection={account.id} disabled={busy || account.adapter === 'missing'} onClick={onRetry}>{t('st.im.retryConnection')}</button>
+    : null;
   if (lines.length === 0 && fix === null) return null;
   return (
     <div className="space-y-2 rounded-lg bg-amber-card/60 px-3.5 py-3 text-[13px] leading-5" data-im-problems={account.id}>
-      {lines.length === 0 && state === 'auth_expired' ? <p className="text-amber-ink">{t('st.im.authExpiredHint')}</p> : lines}
+      {lines}
       {fix}
     </div>
   );

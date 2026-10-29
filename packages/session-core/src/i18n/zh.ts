@@ -9024,7 +9024,7 @@ export const zh = {
   'st.notify.jsonInvalid': '请输入 JSON 对象，例如 {"host": "10.0.0.5"}。',
   'st.channels.title': '我的渠道',
   'st.channels.add': '添加渠道',
-  'st.channels.addBrand': '添加{brand}',
+  'st.channels.addBrand': '添加 {brand}',
   'st.channels.back': '换个平台',
   'st.channels.emptyTitle': 'Kiki 还联系不到你',
   'st.channels.emptyBody': '连上微信、Telegram 或群机器人，在手机上收到 Kiki，也能直接回它。',

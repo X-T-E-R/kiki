@@ -1,7 +1,10 @@
 import type { NotificationChannel, NotificationInstance, NotificationProviderDescriptor, NotificationSettings } from '@kiki/klient';
+import type { ImProviderKind } from '@kiki/protocol';
+import { translate, type I18nKey } from '@kiki/session-core/i18n';
 import { describe, expect, it } from 'vitest';
 
 import { addCatalog, brandAvailable, hasBothKinds, pasteText, routeKey } from './catalog';
+import { instanceDisplayName } from './imModel';
 import { channelState, instanceSlots, isAddable, nextId, parseJsonObject, slotEnvFor, unavailableProviders } from './model';
 
 const telegram: NotificationProviderDescriptor = {
@@ -91,10 +94,46 @@ describe('add catalog', () => {
     expect(brandAvailable(brands.find((brand) => brand.id === 'wechat')!)).toBe(true);
   });
 
+  it('offers two-way on every platform the setup catalog lists, beside its webhook', () => {
+    const platform = setup.platforms[0]!;
+    const listed = { platforms: (['discord', 'slack', 'matrix'] as const).map((provider_kind) => ({ ...platform, provider_kind })) };
+    const providers = ['discord_webhook', 'slack_webhook', 'matrix'].map((id) => ({ ...telegram, id }));
+    const brands = addCatalog(listed, false, providers);
+    for (const id of ['discord', 'slack', 'matrix'] as const) {
+      const brand = brands.find((entry) => entry.id === id)!;
+      expect(brand.routes.map((option) => [option.route.kind, option.unavailable])).toEqual([['im', undefined], ['push', undefined]]);
+      expect(brandAvailable(brand)).toBe(true);
+    }
+  });
+
+  it('keeps a card addable when only one of its purposes is unavailable', () => {
+    const webhook = { ...telegram, id: 'discord_webhook' };
+    const discord = addCatalog(undefined, true, [webhook]).find((brand) => brand.id === 'discord')!;
+    expect(discord.routes.map((option) => [option.route.kind, option.unavailable])).toEqual([['im', 'setupCatalog'], ['push', undefined]]);
+    expect(brandAvailable(discord)).toBe(true);
+    const missingWebhook = { ...toast, id: 'discord_webhook' };
+    const viaBot = addCatalog(setup, false, [missingWebhook]).find((brand) => brand.id === 'discord')!;
+    expect(viaBot.routes.map((option) => [option.route.kind, option.unavailable])).toEqual([['im', undefined], ['push', 'dependency']]);
+    expect(brandAvailable(viaBot)).toBe(true);
+  });
+
   it('composes paste text in the formats the server parser reads', () => {
     expect(pasteText('telegram', { token: ' 1:abc ' })).toBe('1:abc');
     expect(pasteText('feishu', { appId: 'cli_x', appSecret: 's' })).toBe('app_id: cli_x\napp_secret: s');
     expect(pasteText('qq', { endpoint: 'ws://127.0.0.1:3001' })).toBe('onebot: ws://127.0.0.1:3001');
     expect(pasteText('qq', { endpoint: 'ws://h', accessToken: 't' })).toBe('onebot: ws://h\naccess_token: t');
+  });
+});
+
+describe('account names', () => {
+  const zh = (key: I18nKey) => translate('zh', key);
+  const account = (label: string | undefined, provider_kind: ImProviderKind = 'wechat_bridge') => ({ id: 'a', provider_kind, label, configured: true, listening: true, adapter: 'running' as const });
+
+  it('uses the platform name the add grid uses when the label only repeats the platform', () => {
+    expect(instanceDisplayName(account('WeChat'), zh)).toBe('微信');
+    expect(instanceDisplayName(account(undefined), zh)).toBe('微信');
+    expect(instanceDisplayName(account('feishu_app', 'feishu_app'), zh)).toBe('飞书');
+    expect(instanceDisplayName(account('QQ (OneBot)', 'onebot_v11'), zh)).toBe('QQ');
+    expect(instanceDisplayName(account('Kiki bot', 'telegram'), zh)).toBe('Kiki bot');
   });
 });

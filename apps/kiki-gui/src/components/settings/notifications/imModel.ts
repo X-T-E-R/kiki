@@ -14,9 +14,10 @@ import {
   type ImSetupCatalog,
   type ImSetupProvider,
 } from '@kiki/protocol';
-import type { I18nKey } from '@kiki/session-core/i18n';
+import { translate, type I18nKey } from '@kiki/session-core/i18n';
 
 import type { useI18n } from '../../../i18n';
+import { BRAND_KEY, brandOfIm, type BrandId } from './catalog';
 
 export const IM_KEY = ['im-sessions'] as const;
 export type ImInstanceStatus = ImSessionSnapshot['instances'][number];
@@ -80,10 +81,27 @@ export function providerDisplayName(kind: ImProviderKind, t: Translator): string
   return builtin.success ? t(`st.im.provider.${builtin.data}`) : kind;
 }
 
-/** The account's own name; the platform is shown by the row's mark, not repeated here. */
+/**
+ * The account's own name. A missing label, or one that only repeats the
+ * platform in either language ("WeChat", "微信", the provider kind), falls
+ * back to the platform's one localized name, the same one the add grid uses.
+ */
 export function instanceDisplayName(item: ImInstanceStatus, t: Translator): string {
-  if (item.label === undefined || item.label.trim() === '' || item.label === item.provider_kind) return providerDisplayName(item.provider_kind, t);
-  return item.label;
+  const brand = brandOfIm(item.provider_kind);
+  const platform = brand === 'plugin' ? providerDisplayName(item.provider_kind, t) : t(BRAND_KEY[brand]);
+  const label = item.label?.trim() ?? '';
+  if (label === '' || genericNames(item.provider_kind, brand).has(label.toLowerCase())) return platform;
+  return label;
+}
+
+function genericNames(kind: ImProviderKind, brand: BrandId): Set<string> {
+  const names = new Set([kind.toLowerCase()]);
+  const builtin = builtinImProviderKindSchema.safeParse(kind);
+  for (const locale of ['en', 'zh'] as const) {
+    if (brand !== 'plugin') names.add(translate(locale, BRAND_KEY[brand]).toLowerCase());
+    if (builtin.success) names.add(translate(locale, `st.im.provider.${builtin.data}`).toLowerCase());
+  }
+  return names;
 }
 
 export type ImAccountState = 'listening' | 'starting' | 'reconnecting' | 'auth_expired' | 'stopped' | 'paused';
