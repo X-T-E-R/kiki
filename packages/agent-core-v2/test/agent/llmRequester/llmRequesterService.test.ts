@@ -1794,7 +1794,7 @@ describe('AgentLLMRequesterService interrupted response retry', () => {
     })]);
   });
 
-  it('exhausts five attempts without falling through to the outer step retry or infinite retry', async () => {
+  it.each([undefined, 99])('exhausts five attempts without outer or infinite retry when configured budget=%s', async maxAttempts => {
     vi.useFakeTimers();
     let calls = 0;
     const requester = createRequester({ value: 0 }, null);
@@ -1805,7 +1805,9 @@ describe('AgentLLMRequesterService interrupted response retry', () => {
       noteExecutedRequestDelivery(error);
       throw error;
     };
-    const { service, events } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    const { service, events } = createService(requester, undefined, {
+      env: { [KIKI_INFINITE_RETRY_ENV]: '1' }, retryConfig: { maxAttempts },
+    });
     const onAttemptRetry = vi.fn();
     const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry });
     const result = pending.catch((error: unknown) => error);

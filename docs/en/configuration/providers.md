@@ -141,7 +141,7 @@ If the gateway explicitly reports missing history before execution, Kiki sends t
 
 Connection interruptions use the [request retry policy](./config-files.md#retry), including closes before the terminal event with code 1000, 1001, 1006, 1012, or no code. A retry retires the old socket and sends the full current history on a new connection; `previous_response_id` is not a continuation cursor for the interrupted response. A pre-execution `websocket_connection_limit_reached` rejection also reconnects and resends. After 55 minutes of connection use, Kiki proactively replaces the socket before the next request without interrupting a response in progress.
 
-Native agent turns can discard partial text, thinking (including encrypted thinking), and unfinished local tool calls before resending. Refusals, provider-hosted tool output, explicit non-retryable errors, and cancellation still stop replay. Each retry appears in the UI and logs, and the default budget is five attempts including the first. After exhaustion, a child task fails with its existing context available for `AgentRun` resume.
+Native agent turns can discard partial text, thinking (including encrypted thinking), and unfinished local tool calls before resending. Refusals, provider-hosted tool output, explicit non-retryable errors, and cancellation still stop replay. Each retry appears in the UI and logs, with at most five attempts including the first; configuration can lower this limit but cannot raise it. After exhaustion, a child task fails with its existing context available for `AgentRun` resume.
 
 ## `/provider` — interactive provider management
 

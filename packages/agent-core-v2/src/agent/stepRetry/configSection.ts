@@ -45,7 +45,8 @@ export type RetryPolicy = z.infer<typeof RetryPolicySchema>;
  * it takes precedence over `[loop_control] max_attempts_per_step`. A provider
  * retry-after hint still wins over any configured `backoff`. `retry_partial_responses`
  * defaults to enabled for native agent turns; false disables replay after observed
- * output without disabling zero-output connection recovery.
+ * output without disabling zero-output connection recovery. Connection interruption
+ * retries are capped at five total attempts; configured budgets may lower that cap.
  */
 export const RetryConfigSchema = z
   .object({

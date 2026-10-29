@@ -758,8 +758,8 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         if (source?.type === 'turn' && isRetryableRequestInterruption(error)) {
           const discardedPartialOutput = attemptObservedOutput || !isRetryableGenerateError(error);
           if (discardedPartialOutput && (retryConfig?.retryPartialResponses === false || onAttemptRetry === undefined)) throw error;
-          const maxAttempts = Math.max(retryPolicy?.maxAttempts ?? retryConfig?.maxAttempts ??
-            this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxAttemptsPerStep ?? DEFAULT_MAX_RETRY_ATTEMPTS, 1);
+          const maxAttempts = Math.min(DEFAULT_MAX_RETRY_ATTEMPTS, Math.max(retryPolicy?.maxAttempts ?? retryConfig?.maxAttempts ??
+            this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxAttemptsPerStep ?? DEFAULT_MAX_RETRY_ATTEMPTS, 1));
           onAttemptRetry?.();
           if (interruptionAttempt >= maxAttempts) {
             const details = { retry: false, retry_exhausted: true, retry_attempts: interruptionAttempt };
