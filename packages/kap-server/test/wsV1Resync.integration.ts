@@ -23,8 +23,10 @@ import {
   type TranscriptCursor,
   type TranscriptDetailListResponse,
   type TranscriptOperation,
+  type TranscriptRead,
   type TranscriptTask,
 } from '@kiki/transcript';
+import { TurnEnded } from '@kiki/agent-core-v2/agent/loop/turnOps';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { WebSocket } from 'ws';
 
@@ -65,6 +67,7 @@ interface TranscriptResetPayload {
   grade: 'turn' | 'block' | 'delta';
   coverage: TranscriptCoverage;
   cursor: TranscriptCursor;
+  read?: TranscriptRead;
 }
 
 interface TranscriptOpsPayload {
@@ -179,6 +182,7 @@ function applyTranscriptFrame(transcript: AgentTranscript, frame: Frame): void {
         snapshot: payload.snapshot,
         grade: payload.grade,
         coverage: payload.coverage,
+        read: payload.read,
       },
     ]);
     return;
@@ -588,14 +592,18 @@ describe('server-v2 /api/ws resync', () => {
     c1.ws.close();
     await c1.closed;
 
-    emitAgentEvent(
-      sid,
-      { type: 'turn.ended', turnId: 1, reason: 'completed' } as unknown as Event2<any>,
-    );
     await seedMainAgentMessages(sid, [
       { role: 'user', content: [{ type: 'text', text: 'second prompt' }], toolCalls: [] },
       { role: 'assistant', content: [{ type: 'text', text: 'second answer' }], toolCalls: [] },
     ]);
+    const wire = getLiveSessionById(server!.core.accessor, sid)!.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IWireService);
+    const ended = new TurnEnded({ turnId: 1, reason: 'completed' });
+    wire.appendRecord(ended.serialize());
+    await wire.flush();
+    emitAgentEvent(sid, ended);
+    const durableEndings = [];
+    for await (const record of wire.readJournal()) if (record.type === TurnEnded.type && record['turnId'] === 1) durableEndings.push(record);
+    expect(durableEndings).toHaveLength(1);
 
     c2 = await openConn(wsUrl, server!.localOwnerToken);
     await c2.next((f) => f.type === 'server_hello');

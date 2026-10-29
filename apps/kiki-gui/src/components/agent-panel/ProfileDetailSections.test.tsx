@@ -17,10 +17,21 @@ import { ProfileDetailSections, type ProfileDetailSectionsProps } from './Profil
 import { AgentDetailDrawer } from './AgentDetailDrawer';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
-const { client, panelRead } = vi.hoisted(() => ({
-  client: { listNamedAgentProfiles: vi.fn(), readHostFile: vi.fn() }, panelRead: vi.fn(),
-}));
-vi.mock('../../state/connection', () => ({ useOptionalConnection: () => ({ client, klient: { global: { agentPanel: { read: panelRead } } }, scopeId: 'local' }) }));
+const { client, klient, panelRead } = vi.hoisted(() => {
+  const panelRead = vi.fn();
+  const events = { on: vi.fn(() => ({ ready: Promise.resolve(), dispose: vi.fn() })) };
+  const klient = {
+    global: { agentPanel: { read: panelRead } },
+    events,
+    session: vi.fn(() => ({ events })),
+  };
+  return {
+    client: { listNamedAgentProfiles: vi.fn(), readHostFile: vi.fn() },
+    klient,
+    panelRead,
+  };
+});
+vi.mock('../../state/connection', () => ({ useOptionalConnection: () => ({ client, klient, scopeId: 'local' }) }));
 
 const BOUND_FILE = '/ws-one/.kiki/agents/agent.md';
 const OTHER_FILE = '/ws-two/.kiki/agents/agent.md';

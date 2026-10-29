@@ -1901,7 +1901,7 @@ export class SessionController {
     const oldestTurn = snapshot.items.find((item) => item.kind === 'turn')?.turnId;
     if (oldestTurn !== undefined) this.olderPageTurns.set(agentId, oldestTurn);
     else this.olderPageTurns.delete(agentId);
-    store.apply([{ op: 'reset', agentId, snapshot, coverage }]);
+    store.apply([{ op: 'reset', agentId, snapshot, coverage, grade: grade === 'off' ? undefined : grade, read }]);
     for (const target of this.contentReaders.values()) if (target.agentId === agentId) target.blocked = false;
     for (const [key, entry] of retainedBodies) {
       const entity = this.contentEntity(agentId, entry.source);

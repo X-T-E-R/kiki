@@ -7,9 +7,18 @@ import {
   transcriptDetailQuerySchema,
   transcriptDetailResponseSchema,
   transcriptOperationSchema,
+  transcriptProvenanceSchema,
 } from '#/contract/schema';
 
 describe('windowed transcript global contract', () => {
+  it('preserves absolute wire spans and rejects empty or reversed coordinates', () => {
+    const provenance = { source: 'legacy-wire', recordSpan: { startByteOffset: 9_000_000, endByteOffset: 9_000_100 } };
+    expect(transcriptProvenanceSchema.parse(provenance)).toEqual(provenance);
+    for (const endByteOffset of [8_999_999, 9_000_000]) expect(transcriptProvenanceSchema.safeParse({
+      ...provenance, recordSpan: { ...provenance.recordSpan, endByteOffset },
+    }).success).toBe(false);
+  });
+
   it('accepts legacy arrays plus optional coverage and references', () => {
     const snapshot = agentTranscriptSnapshotSchema.parse({
       items: [], tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {},

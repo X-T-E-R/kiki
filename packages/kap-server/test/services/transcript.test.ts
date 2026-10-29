@@ -1916,10 +1916,10 @@ describe('TranscriptService live integration', () => {
       core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
     try {
       const store = service.forSessionLive('s1', { tailFirst: true })!;
-      const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
+      const visible = await service.ensureAgentHistory('s1', 'main', { tailFirst: true });
       expect(verify).not.toHaveBeenCalled();
-      expect(page?.items.at(-1)).toMatchObject({ turnId: 't48' });
-      expect(page?.tool_call_count).toBeUndefined();
+      expect(visible?.getItems().at(-1)).toMatchObject({ turnId: 't48' });
+      expect(visible?.snapshot().toolCallCountKnown).toBe(false);
       const cursor = service.getTranscriptCursor('s1', 'main');
       const events: { ops: readonly TranscriptOperation[]; seq: number }[] = [];
       service.onSessionOps('s1', (event, position) => { events.push({ ops: event.ops, seq: position.seq }); });
@@ -3501,7 +3501,7 @@ describe('TranscriptService live integration', () => {
       const home = await seedWireHomeWithTool();
       const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
       const large = 'x'.repeat(50_000);
-      await appendFile(wirePath, `${Array.from({ length: 90 }, (_, index) => JSON.stringify({
+      await appendFile(wirePath, `${Array.from({ length: 190 }, (_, index) => JSON.stringify({
         type: 'turn.prompt', turnId: index + 1, promptId: `large-${index}`,
         input: [{ type: 'text', text: large }], origin: { kind: 'user' }, time: 6_000 + index,
       })).join('\n')}\n`);
@@ -3519,18 +3519,18 @@ describe('TranscriptService live integration', () => {
       try {
         const size = (await fsPromises.stat(wirePath)).size;
         const first = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
-        const second = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't71' });
-        expect(size).toBeGreaterThan(4 << 20);
+        const second = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't171' });
+        expect(size).toBeGreaterThan(8 << 20);
         expect(first?.items.length).toBeGreaterThan(0);
         expect(second?.items.length).toBeGreaterThan(0);
         expect(jsonBytes(first)).toBeLessThanOrEqual(1 << 20);
         expect(jsonBytes(second)).toBeLessThanOrEqual(1 << 20);
-        expect(first?.items.map((item) => item.kind === 'turn' ? item.ordinal : -1)).toEqual(Array.from({ length: first!.items.length }, (_, index) => 91 - first!.items.length + index));
-        expect(second?.items.map((item) => item.kind === 'turn' ? item.ordinal : -1)).toEqual(Array.from({ length: second!.items.length }, (_, index) => 71 - second!.items.length + index));
+        expect(first?.items.map((item) => item.kind === 'turn' ? item.ordinal : -1)).toEqual(Array.from({ length: first!.items.length }, (_, index) => 191 - first!.items.length + index));
+        expect(second?.items.map((item) => item.kind === 'turn' ? item.ordinal : -1)).toEqual(Array.from({ length: second!.items.length }, (_, index) => 171 - second!.items.length + index));
         expect(first?.coverage.kind).toBe('unknown');
         expect(second?.coverage.kind).toBe('unknown');
-        const third = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't51' });
-        expect(third?.items.map((item) => item.kind === 'turn' ? item.ordinal : -1)).toEqual(Array.from({ length: third!.items.length }, (_, index) => 51 - third!.items.length + index));
+        const third = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't151' });
+        expect(third?.items.map((item) => item.kind === 'turn' ? item.ordinal : -1)).toEqual(Array.from({ length: third!.items.length }, (_, index) => 151 - third!.items.length + index));
         expect(scans).toBe(3);
         expect(service.memoryReport().coldReads.bytes).toBeLessThan(size);
         const tail = first!.items.at(-1)!;
@@ -3541,7 +3541,7 @@ describe('TranscriptService live integration', () => {
           expect(segment).toBeDefined();
           original = applyContentSegment(original, segment!);
         }
-        expect(original).toMatchObject({ kind: 'turn', turnId: 't90', prompt: large });
+        expect(original).toMatchObject({ kind: 'turn', turnId: 't190', prompt: large });
         expect(scans).toBe(3);
         expect(navigation.canonicalReadReport()).toMatchObject({ replays: 0, replayRecords: 0 });
         expect(navigation.canonicalReadReport().replayBytes).toBeLessThan(51_000);
@@ -5038,8 +5038,10 @@ it.each([0, 12])('continues a budget-clipped resident baseline from its tail bou
 });
 
 
-it.each([{ turnId: 0, prepared: false }, { turnId: 7, prepared: true }, { turnId: 7, prepared: false }])(
-  'recovers only the opening header of a long orphan tail (%j)', async ({ turnId, prepared }) => {
+it.each([{ turnId: 0, prepared: false, warmed: false }, { turnId: 7, prepared: true, warmed: false },
+  { turnId: 7, prepared: false, warmed: false }, { turnId: 0, prepared: false, warmed: true },
+  { turnId: 7, prepared: true, warmed: true }])(
+  'recovers only the opening header of a long orphan tail (%j)', async ({ turnId, prepared, warmed }) => {
     const home = await mkdtemp(join(tmpdir(), 'transcript-orphan-header-'));
     const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
     await mkdir(wireDir, { recursive: true });
@@ -5060,7 +5062,13 @@ it.each([{ turnId: 0, prepared: false }, { turnId: 7, prepared: true }, { turnId
     service.setHistoryLocatorReader(() => navigation);
     try {
       if (prepared) { while (!(await navigation.scan('s1', 'main'))?.complete) {} }
+      if (warmed) {
+        const baseline = await readColdSessionViewBaseline(service, 's1', 'main', 'delta', new AbortController().signal);
+        expect(baseline?.snapshot.items.find(item => item.kind === 'turn')).toMatchObject({ prompt: undefined, origin: { kind: 'other' } });
+        expect(service.memoryReport().coldReads.completed).toBe(1);
+      }
       const projectionBefore = navigation.canonicalReadReport().projectionBytes;
+      const readsBefore = service.memoryReport().coldReads;
       const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
       const turn = page?.items.filter(item => item.kind === 'turn').find(item => item.turnId === `t${turnId}`);
       expect(turn?.steps.length).toBeGreaterThan(0);
@@ -5069,8 +5077,8 @@ it.each([{ turnId: 0, prepared: false }, { turnId: 7, prepared: true }, { turnId
       expect(page?.read).toMatchObject({ readiness: 'partial', reason: 'source_unverified' });
       expect(page?.has_more).toBe(true);
       expect(page?.next_cursor).toBeDefined();
-      expect(service.memoryReport().coldReads.bytes).toBeLessThan(3 << 20);
-      expect(service.memoryReport().coldReads.completed).toBe(turnId === 0 ? 2 : 1);
+      expect(service.memoryReport().coldReads.bytes - readsBefore.bytes).toBeLessThan(3 << 20);
+      expect(service.memoryReport().coldReads.completed - readsBefore.completed).toBe(turnId === 0 ? 2 : 1);
       expect(navigation.canonicalReadReport().projectionBytes).toBe(projectionBefore);
       expect(navigation.canonicalReadReport().replayBytes).toBeLessThan(1024);
       if (turnId === 7 && !prepared) {

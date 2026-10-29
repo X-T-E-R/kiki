@@ -588,7 +588,7 @@ async function readSnapshotMessageSource(
     const captured = await broadcaster.getSnapshotState(sessionId, { timing, captureMessages: true,
       capture: async () => metadata.snapshot().createdAt });
     timing.signal?.throwIfAborted();
-    return loadCapturedMessageHistoryTail(main, sessionId, captured.captured ?? summary.createdAt,
+    return await loadCapturedMessageHistoryTail(main, sessionId, captured.captured ?? summary.createdAt,
       captured.contextMessages, captured.contextMessageTimes, SNAPSHOT_MESSAGE_PAGE_SIZE);
   } finally {
     await timeSessionViewPhase('snapshot_content_release', fields, async () => lease.dispose(), timing);

@@ -621,6 +621,56 @@ describe('TranscriptWireAdapter', () => {
     return transcript;
   };
 
+  it('keeps source-addressed legacy identities stable across window extension and indexed replay', () => {
+    const positioned: TranscriptWireRecord[] = [
+      { type: 'turn.prompt', turnId: 7, input: [{ type: 'text', text: 'question' }] },
+      { type: 'context.append_message', message: { role: 'assistant', content: [{ type: 'text', text: 'answer' }] } },
+    ];
+    const identities = (prefix: number, indexed: boolean) => {
+      const transcript = new AgentTranscript('main');
+      const reducer = new TranscriptFactReducer(transcript);
+      const adapter = new TranscriptWireAdapter('main');
+      for (let index = 0; index < prefix; index += 1) adapter.add({ type: 'fixture.padding' });
+      const factIds: string[] = [];
+      for (let index = 0; index < positioned.length; index += 1) {
+        const facts = adapter.add(positioned[index]!, {
+          ordinal: indexed ? 100 + index : undefined, startByteOffset: 10_000 + index * 100, endByteOffset: 10_100 + index * 100,
+        });
+        factIds.push(...facts.map(fact => fact.factId));
+        reducer.apply(facts);
+      }
+      const turn = transcript.getTurn('t7');
+      return { factIds, messageId: turn?.message?.messageId, stepId: turn?.steps[0]?.stepId, frameId: turn?.steps[0]?.frames[0]?.frameId };
+    };
+    const expected = { factIds: ['wire:v2:b10000:turn.prompt', 'wire:v2:b10100:context.append_message'],
+      messageId: 'legacy:v1:b10000:message', stepId: 'legacy:v1:b10100:step', frameId: 'legacy:v1:b10100:part0' };
+    expect(identities(0, false)).toEqual(expected);
+    expect(identities(13, false)).toEqual(expected);
+    expect(identities(0, true)).toEqual(expected);
+  });
+
+  it.each([false, true])('projects truthful source coordinates with known absolute ordinal=%s', (indexed) => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main');
+    const positioned: TranscriptWireRecord[] = records.map(record => record.type !== 'context.append_loop_event' ? record : {
+      ...record, event: { ...(record['event'] as Record<string, unknown>), uuid: undefined },
+    });
+    positioned[1] = records[1]!;
+    for (let index = 0; index < positioned.length; index += 1) reducer.apply(adapter.add(positioned[index]!, {
+      ordinal: indexed ? 100 + index : undefined, startByteOffset: 10_000 + index * 100, endByteOffset: 10_100 + index * 100,
+    }));
+    reducer.apply(adapter.finish());
+    const snapshot = agentTranscriptSnapshotSchema.parse(transcript.snapshot());
+    const turn = snapshot.items.find(item => item.kind === 'turn');
+    const tool = turn?.steps.flatMap(step => step.frames).find(frame => frame.kind === 'tool');
+    expect(tool?.part?.provenance).toEqual(indexed
+      ? { source: 'legacy-wire', recordOrdinal: 103 }
+      : { source: 'legacy-wire', recordSpan: { startByteOffset: 10_300, endByteOffset: 10_400 } });
+    expect(turn?.message?.provenance).toEqual({ source: 'engine' });
+    expect(adapter.checkpoint().recordOrdinal).toBe((indexed ? 100 : 0) + positioned.length);
+  });
+
   it('omits hidden reasoning summaries and opaque detail records from cold frames', () => {
     const part = (uuid: string, value: Record<string, unknown>): TranscriptWireRecord => ({
       type: 'context.append_loop_event',

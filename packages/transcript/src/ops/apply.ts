@@ -162,24 +162,28 @@ function carryRemovedItemIds(
 
 function applyReset(state: AgentState, op: Extract<TranscriptOperation, { op: 'reset' }>): ApplyResult {
   const coverage = op.coverage ?? fullCoverage(op.snapshot.hasMoreOlder ?? false);
-  const items = reconcileItems(state.items, op.snapshot.items, coverage);
+  const liveWatermark = op.read?.source === 'live' && op.read.stale === undefined &&
+    op.read.watermark?.transcript?.epoch !== undefined;
+  const items = reconcileItems(state.items, op.snapshot.items, coverage, liveWatermark, op.grade);
   const preserveExisting = coverage.kind === 'unknown';
-  const tasks = stabilizeMap(state.tasks, op.snapshot.tasks, (value) => value.taskId, preserveExisting);
+  const tasks = stabilizeMap(state.tasks, op.snapshot.tasks, (value) => value.taskId, preserveExisting, liveWatermark);
   const interactions = stabilizeMap(
     state.interactions,
     op.snapshot.interactions,
     (value) => value.interactionId,
     preserveExisting,
+    liveWatermark,
   );
   const attachments = stabilizeMap(
     state.attachments,
     op.snapshot.attachments,
     (value) => value.attachmentId,
     preserveExisting,
+    liveWatermark,
   );
-  const todos = stabilizeMap(state.todos, op.snapshot.todos, (value) => value.todoId, preserveExisting);
-  const prompts = stabilizeMap(state.prompts, op.snapshot.prompts, (value) => value.promptId, preserveExisting);
-  const metaCandidate = preserveExisting ? { ...op.snapshot.meta, ...state.meta } : op.snapshot.meta;
+  const todos = stabilizeMap(state.todos, op.snapshot.todos, (value) => value.todoId, preserveExisting, liveWatermark);
+  const prompts = stabilizeMap(state.prompts, op.snapshot.prompts, (value) => value.promptId, preserveExisting, liveWatermark);
+  const metaCandidate = preserveExisting ? liveWatermark ? { ...state.meta, ...op.snapshot.meta } : { ...op.snapshot.meta, ...state.meta } : op.snapshot.meta;
   const meta = transcriptValueEquals(state.meta, metaCandidate) ? state.meta : metaCandidate;
   const toolCallCount = toolCallCountAfterReset(
     state,
@@ -278,13 +282,16 @@ function reconcileItems(
   current: readonly TranscriptItem[],
   incoming: readonly TranscriptItem[],
   coverage: TranscriptCoverage,
+  liveWatermark: boolean,
+  grade?: 'turn' | 'block' | 'delta',
 ): readonly TranscriptItem[] {
   const currentById = new Map(current.map((item) => [itemIdOf(item), item]));
   const stableIncoming = incoming.map((item) => {
     const existing = currentById.get(itemIdOf(item));
     let candidate = item;
     if (item.kind === 'turn' && existing?.kind === 'turn') {
-      const retained = mergeContentPreview(existing, item);
+      const retained = mergeContentPreview(existing, liveWatermark && coverage.kind === 'unknown' && grade === 'turn'
+        ? { ...item, steps: existing.steps } : item);
       candidate = carryContentHydration(retained, { ...retained, steps: retained.steps.map((step) => {
         const previous = existing.steps.find((entry) => entry.stepId === step.stepId);
         return previous === undefined ? step : { ...step, frames: step.frames.map((frame) => {
@@ -301,7 +308,11 @@ function reconcileItems(
   if (coverage.kind === 'unknown') {
     const next = [...current];
     for (const item of stableIncoming) {
-      if (next.some((candidate) => itemIdOf(candidate) === itemIdOf(item))) continue;
+      const index = next.findIndex((candidate) => itemIdOf(candidate) === itemIdOf(item));
+      if (index !== -1) {
+        if (liveWatermark) next[index] = item;
+        continue;
+      }
       if (item.kind === 'turn') {
         const before = next.findIndex((candidate) => candidate.kind === 'turn' && candidate.ordinal > item.ordinal);
         next.splice(before === -1 ? next.length : before, 0, item);
@@ -329,12 +340,13 @@ function stabilizeMap<K, V>(
   incoming: readonly V[],
   keyOf: (value: V) => K,
   preserveExisting = false,
+  liveWatermark = false,
 ): ReadonlyMap<K, V> {
   const next = preserveExisting ? new Map(current) : new Map<K, V>();
   for (const value of incoming) {
     const key = keyOf(value);
     const existing = current.get(key);
-    next.set(key, preserveExisting && existing !== undefined ? existing
+    next.set(key, preserveExisting && !liveWatermark && existing !== undefined ? existing
       : existing !== undefined && transcriptValueEquals(existing, value) ? existing : value);
   }
   if (current.size !== next.size) return next;

@@ -2994,6 +2994,30 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
+  it.each(['main', 'child-1'])('advances a live watermarked unknown reset and rejects stale state for %s', async (agentId) => {
+    const { controller, flushAll } = await openTranscriptController();
+    const off = agentId === 'main' ? () => {} : controller.subscribeAgent(agentId, vi.fn());
+    const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    try {
+      const running = userTurnSnapshot({ streaming: true, assistantText: 'partial answer' });
+      controller.handleTranscript(resetEvent(agentId, running, 1));
+      flushAll();
+      const ended = resetEvent(agentId, userTurnSnapshot({ assistantText: 'complete answer' }), 2, true);
+      if (ended.type !== 'transcript.reset') throw new Error('Expected transcript reset');
+      controller.handleTranscript({ ...ended, coverage: { kind: 'unknown', hasMoreOlder: true },
+        read: { source: 'live', readiness: 'partial', reason: 'source_unverified', watermark: { transcript: ended.cursor } } });
+      flushAll();
+      expect(state()).toMatchObject({ historyCoverageKind: 'unknown', hasMoreHistory: true });
+      expect(state().blocks.some(block => block.kind === 'assistant' && block.text === 'complete answer')).toBe(true);
+      controller.handleTranscript({ ...ended, cursor: { ...ended.cursor, seq: 1 }, snapshot: running,
+        coverage: { kind: 'unknown', hasMoreOlder: true },
+        read: { source: 'live', readiness: 'partial', reason: 'source_unverified', watermark: { transcript: { ...ended.cursor, seq: 1 } } } });
+      flushAll();
+      expect(state().blocks.some(block => block.kind === 'assistant' && block.text === 'complete answer')).toBe(true);
+      expect(controller.getAgentTranscriptCursor(agentId)).toEqual(ended.cursor);
+    } finally { off(); controller.close(); }
+  });
+
   it('does not adopt snapshot messages or in-flight text on open', async () => {
     const { controller, client, socket } = await openTranscriptController();
     expect(client.snapshot).toHaveBeenCalledWith('session_test', { transcript: true });

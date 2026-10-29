@@ -251,12 +251,11 @@ async function readSessionViewTranscriptPageRaw(
   const anchored = input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined;
   const singleBeforeTurn = input.beforeTurn !== undefined && input.pageSize === 1;
   const sourceDirection: 'head' | 'tail' = input.afterTurn !== undefined || input.afterItem !== undefined || (anchored && !singleBeforeTurn) ? 'head' : 'tail';
-  const store = transcriptService.forSessionLive(sessionId, { tailFirst: !anchored });
+  const store = transcriptService.forSessionLive(sessionId);
   if (store !== undefined) {
-    const transcript = await transcriptService.ensureAgentHistory(sessionId, input.agentId, { tailFirst: !anchored, signal: input.signal });
+    const transcript = await transcriptService.ensureAgentHistory(sessionId, input.agentId, { signal: input.signal });
     if (transcript === undefined) return undefined;
-    const liveVerified = anchored ? await transcriptService.verifyTranscriptLiveCoverage(sessionId, input.agentId)
-      : transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId);
+    const liveVerified = await transcriptService.verifyTranscriptLiveCoverage(sessionId, input.agentId);
     if (transcript.hasMoreOlder && (anchored || !transcript.getItems().some(item => item.kind === 'turn'))) {
       const loaded = await readColdTranscriptPage(transcriptService, sessionId, input, sourceDirection, 'derived');
       if (loaded === undefined) return undefined;
@@ -624,7 +623,7 @@ async function readColdTranscriptPage(
   const boundary = () => typeof transcriptService.coldWindowBoundary === 'function' ? transcriptService.coldWindowBoundary(sessionId, input.agentId) : undefined;
   const initialBoundary = await boundary();
   const anchored = input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined;
-  const initialSnapshot = await transcriptService.readColdPageSnapshot(sessionId, input.agentId, project, input.signal, false, undefined, anchored, !anchored);
+  const initialSnapshot = await transcriptService.readColdPageSnapshot(sessionId, input.agentId, project, input.signal, false, undefined, anchored);
   if (initialSnapshot === undefined) return undefined;
   let snapshot: AgentTranscriptSnapshot = initialSnapshot;
   const anchor = requestedAnchor(input);

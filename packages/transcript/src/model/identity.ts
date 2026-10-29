@@ -3,6 +3,7 @@ export type TranscriptMessageRole = 'user' | 'assistant' | 'tool' | 'system';
 export interface TranscriptProvenance {
   readonly source: 'engine' | 'legacy-wire';
   readonly recordOrdinal?: number;
+  readonly recordSpan?: { readonly startByteOffset: number; readonly endByteOffset: number };
   readonly partOrdinal?: number;
 }
 

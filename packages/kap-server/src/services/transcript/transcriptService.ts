@@ -48,6 +48,7 @@ import {
   type TranscriptOperation,
   type TranscriptResidentLimits,
   type TranscriptWireAdapterCheckpoint,
+  type TranscriptWireRecordPosition,
   type ToolCountSetOp,
   type TranscriptTaskRef,
   type TranscriptTurn,
@@ -344,12 +345,17 @@ export interface TranscriptOpsCatchup {
   readonly complete: boolean;
 }
 
+interface ColdWireRecord {
+  readonly record: ContextRecord;
+  readonly position: TranscriptWireRecordPosition;
+}
+
 interface ColdWireWindow {
   readonly fingerprint: string;
   start: number;
   end: number;
   entire: boolean;
-  records: ContextRecord[];
+  records: ColdWireRecord[];
   snapshot: AgentTranscriptSnapshot;
   bytes: number;
   droppedTail?: boolean;
@@ -1821,7 +1827,12 @@ export class TranscriptService {
     signal?.throwIfAborted();
     if (info === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
-    if (!tailFirst && info.size <= FIRST_SCREEN_WINDOW_MAX_BYTES && !this.coldWireWindows.has(wirePath)) {
+    if (!tailFirst && info.size <= FIRST_SCREEN_WINDOW_MAX_BYTES) {
+      if (this.coldWireWindows.has(wirePath)) {
+        this.forgetColdWindow(wirePath);
+        this.retainedColdTurns.delete(wirePath);
+        this.deleteColdSnapshotCache(wirePath);
+      }
       return this.readLegacyColdPageSnapshot(sessionId, agentId, project, signal);
     }
     const retained = this.retainedColdTurns.get(wirePath);
@@ -1842,7 +1853,9 @@ export class TranscriptService {
       return this.publishColdWindow(sessionId, agentId, wirePath, fingerprint, extended, project, opened);
     }
     const cached = this.coldSnapshotCache.get(wirePath);
-    if (cached !== undefined && cached.fingerprint === fingerprint && cached.expiresAt > Date.now() && cached.pageOnly) {
+    const cachedWindow = this.coldWireWindows.get(wirePath);
+    if (cached !== undefined && cached.fingerprint === fingerprint && cached.expiresAt > Date.now() && cached.pageOnly &&
+        (tailFirst || cachedWindow?.entire === true || (cachedWindow !== undefined && cachedWindow.end < info.size) || cachedWindow?.headers !== undefined)) {
       signal?.throwIfAborted();
       this.assertReadableAgent(sessionId, agentId);
       this.admitColdSnapshotCache(wirePath, fingerprint, cached.snapshot, true);
@@ -1972,7 +1985,8 @@ export class TranscriptService {
     captureReplayState?: (state: TranscriptReplayState) => void, resolveHeaders = true,
   ): Promise<ColdWireWindow | undefined> {
     const existing = this.coldWireWindows.get(wirePath);
-    if (existing !== undefined && existing.fingerprint === fingerprint && existing.payloadEvicted !== true) {
+    if (existing !== undefined && existing.fingerprint === fingerprint && existing.payloadEvicted !== true &&
+        (!resolveHeaders || existing.entire || existing.end < info.size || existing.headers !== undefined)) {
       if (preserveOpenTurnIds !== undefined || captureReplayState !== undefined) {
         existing.snapshot = this.projectColdRecords(agentId, existing.records, existing.entire, preserveOpenTurnIds, captureReplayState, existing);
       }
@@ -2064,9 +2078,9 @@ export class TranscriptService {
     return extended;
   }
 
-  private fitOlderColdWindow(agentId: string, older: readonly ContextRecord[], window: ColdWireWindow,
+  private fitOlderColdWindow(agentId: string, older: readonly ColdWireRecord[], window: ColdWireWindow,
     preserveOpenTurnIds?: () => readonly string[], captureReplayState?: (state: TranscriptReplayState) => void,
-  ): { keepFrom: number; records: ContextRecord[]; snapshot: AgentTranscriptSnapshot; bytes: number; droppedTail: boolean } {
+  ): { keepFrom: number; records: ColdWireRecord[]; snapshot: AgentTranscriptSnapshot; bytes: number; droppedTail: boolean } {
     const projectFrom = (keepFrom: number, oldCount: number) => {
       const records = [...older.slice(keepFrom), ...window.records.slice(0, oldCount)];
       const snapshot = this.projectColdRecords(agentId, records, false, preserveOpenTurnIds, captureReplayState, window);
@@ -2119,7 +2133,7 @@ export class TranscriptService {
     return fitted;
   }
 
-  private coldWindowBytes(snapshot: AgentTranscriptSnapshot, records: readonly ContextRecord[]): number {
+  private coldWindowBytes(snapshot: AgentTranscriptSnapshot, records: readonly ColdWireRecord[]): number {
     return estimateColdSnapshotBytes([snapshot, records], COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES + 1);
   }
 
@@ -2168,7 +2182,7 @@ export class TranscriptService {
     }
   }
 
-  private projectColdRecords(agentId: string, records: readonly ContextRecord[], sawEntireFile: boolean,
+  private projectColdRecords(agentId: string, records: readonly ColdWireRecord[], sawEntireFile: boolean,
     preserveOpenTurnIds?: () => readonly string[], captureReplayState?: (state: TranscriptReplayState) => void,
     recovered?: Pick<ColdWireWindow, 'headers' | 'headerAttachments'>,
   ): AgentTranscriptSnapshot {
@@ -2188,9 +2202,11 @@ export class TranscriptService {
         turnHeaders: recovered.headers.map(({ steps: _steps, ...header }) => [header.turnId, { ...header, state: 'running', endedAt: undefined }]),
         canonicalTurns: recovered.headers.map((turn) => turn.turnId) });
     }
-    for (const record of records) {
+    const startOrdinal = records[0]?.position.ordinal;
+    for (let index = 0; index < records.length; index += 1) {
+      const { record, position } = records[index]!;
       if (typeof record.type !== 'string') throw new Error('wire.jsonl: invalid record');
-      reducer.apply(adapter.add(record));
+      reducer.apply(adapter.add(record, { ...position, ordinal: startOrdinal === undefined ? position.ordinal : startOrdinal + index }));
     }
     const preservedTurns: TranscriptTurn[] = [];
     for (const turnId of preserveOpenTurnIds?.() ?? []) {
@@ -2282,11 +2298,11 @@ export class TranscriptService {
   }
 
   private async readWireRangeInLane(wirePath: string, start: number, end: number, signal: AbortSignal): Promise<{
-    records: ContextRecord[];
+    records: ColdWireRecord[];
     recordStarts: number[];
     complete: boolean;
   }> {
-    const records: ContextRecord[] = [];
+    const records: ColdWireRecord[] = [];
     const recordStarts: number[] = [];
     const startedAt = Date.now();
     const read = await this.wireRecordReader(wirePath, {
@@ -2296,7 +2312,8 @@ export class TranscriptService {
       signal,
       onRecord: (record, span) => {
         if (record === null || typeof record !== 'object' || typeof record.type !== 'string') throw new Error('wire.jsonl: invalid record');
-        records.push(record);
+        records.push({ record, position: { startByteOffset: span.startByteOffset, endByteOffset: span.endByteOffset,
+          ordinal: start === 0 ? span.ordinal : undefined } });
         recordStarts.push(span.startByteOffset);
       },
     });

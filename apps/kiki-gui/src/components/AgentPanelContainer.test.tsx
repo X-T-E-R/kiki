@@ -206,11 +206,13 @@ it('defers agent panel reads until visible and stops reads while hidden', async 
   await render('child', { visible: false });
   expect(getAgentCapabilities).not.toHaveBeenCalled();
   await render('child', { visible: true });
-  expect(getAgentCapabilities.mock.calls.map((call) => call[0])).toEqual([
-    { session_id: 'session', agent_id: 'child', metrics_only: true },
+  const reads = getAgentCapabilities.mock.calls.map((call) => call[0]);
+  expect(reads).toHaveLength(3);
+  expect(reads).toEqual(expect.arrayContaining([
     { session_id: 'session', agent_id: 'child' },
+    { session_id: 'session', agent_id: 'child', metrics_only: true },
     { session_id: 'session', agent_id: 'child', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['child'] },
-  ]);
+  ]));
   await render('child', { visible: false });
   expect(getAgentCapabilities).toHaveBeenCalledTimes(3);
 });

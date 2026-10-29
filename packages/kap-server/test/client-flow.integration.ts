@@ -618,15 +618,16 @@ describe('GUI shared client against an isolated KAP host', () => {
     let ready = false;
     let liveChildBaselineEpoch: string | undefined;
     const subscribe = view.subscribe.bind(view);
-    const subscriptionSpy = vi.spyOn(view, 'subscribe').mockImplementation((options, callback) =>
-      subscribe(options, (signal) => {
-        if (signal.type === 'ready') ready = true;
-        if (signal.type === 'transcript' && signal.event.type === 'transcript.reset' &&
-          signal.event.agent_id === child.id && signal.event.cursor.epoch !== undefined &&
-          !signal.event.cursor.epoch.startsWith('cold:')) liveChildBaselineEpoch = signal.event.cursor.epoch;
-        callback(signal);
-      }),
-    );
+    const bootstrap = view.bootstrap!.bind(view);
+    const observe = (callback: Parameters<typeof view.subscribe>[1]) => (signal: Parameters<typeof callback>[0]) => {
+      if (signal.type === 'ready') ready = true;
+      if (signal.type === 'transcript' && signal.event.type === 'transcript.reset' &&
+        signal.event.agent_id === child.id && signal.event.cursor.epoch !== undefined &&
+        !signal.event.cursor.epoch.startsWith('cold:')) liveChildBaselineEpoch = signal.event.cursor.epoch;
+      callback(signal);
+    };
+    const subscriptionSpy = vi.spyOn(view, 'subscribe').mockImplementation((options, callback) => subscribe(options, observe(callback)));
+    const bootstrapSpy = vi.spyOn(view, 'bootstrap').mockImplementation((options, callback) => bootstrap(options, observe(callback)));
     const controller = new SessionController(client.sessions, view, id);
     const mainChanges = vi.fn();
     const childChanges = vi.fn();
@@ -696,6 +697,7 @@ describe('GUI shared client against an isolated KAP host', () => {
       offMain();
       offChild();
       subscriptionSpy.mockRestore();
+      bootstrapSpy.mockRestore();
       controller.close();
     }
   }, 40000);

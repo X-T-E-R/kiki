@@ -12,6 +12,10 @@ export const agentIdSchema = z.string().min(1);
 export const transcriptProvenanceSchema = z.object({
   source: z.enum(['engine', 'legacy-wire']),
   recordOrdinal: z.number().int().nonnegative().optional(),
+  recordSpan: z.object({
+    startByteOffset: z.number().int().nonnegative(),
+    endByteOffset: z.number().int().nonnegative(),
+  }).refine(span => span.endByteOffset > span.startByteOffset).optional(),
   partOrdinal: z.number().int().nonnegative().optional(),
 });
 

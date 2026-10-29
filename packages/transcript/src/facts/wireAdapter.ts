@@ -19,6 +19,14 @@ import type { TodoItem, TranscriptTodo } from '../model/todo';
 import type { StepHeader, TurnHeader, TranscriptOperation } from '../ops/operation';
 import { safetyBoundaryIndex } from '../ops/framePlace';
 import type { StepUsage, TranscriptTurnExecution, TurnCancellation, TurnOrigin } from '../model/turn';
+import type { TranscriptProvenance } from '../model/identity';
+
+/** Absolute logical-wire byte bounds; ordinal is supplied only when its full-prefix position is known. Positioned legacy identities use byte addresses. */
+export interface TranscriptWireRecordPosition {
+  readonly ordinal?: number;
+  readonly startByteOffset: number;
+  readonly endByteOffset: number;
+}
 
 export interface TranscriptWireRecord {
   readonly type: string;
@@ -55,10 +63,7 @@ export interface PendingSteer {
   readonly presentation?: import('../contract/presentation').TextPresentation;
   readonly media: readonly PendingSteerMedia[];
   readonly revision: number;
-  readonly provenance: {
-    readonly source: 'legacy-wire' | 'engine';
-    readonly recordOrdinal?: number;
-  };
+  readonly provenance: TranscriptProvenance;
   readonly origin: unknown;
 }
 
@@ -170,6 +175,7 @@ export class TranscriptWireAdapter {
   #todo: TranscriptTodo | undefined;
   #plan: { readonly reviewPath?: string; readonly version?: number } | undefined;
   #recordOrdinal = 0;
+  #recordPosition: TranscriptWireRecordPosition | undefined;
   #legacyTurnOrdinal = 0;
   #lastRecordTime: number | undefined;
   #currentTurnId: string | undefined;
@@ -330,15 +336,18 @@ export class TranscriptWireAdapter {
     this.rebuildFrameOrder();
   }
 
-  add(record: TranscriptWireRecord): TranscriptFact[] {
-    const ordinal = this.#recordOrdinal++;
+  add(record: TranscriptWireRecord, position?: TranscriptWireRecordPosition): TranscriptFact[] {
+    this.#recordPosition = position;
+    const ordinal = position?.ordinal ?? this.#recordOrdinal;
+    this.#recordOrdinal = ordinal + 1;
     if (record.time !== undefined) this.#lastRecordTime = record.time;
     const operations = this.operations(record, ordinal);
     if (operations.length === 0) return [];
     this.rememberProjection(operations, ordinal);
     return [
       {
-        factId: transcriptWireFactId(record, ordinal),
+        factId: position === undefined ? transcriptWireFactId(record, ordinal)
+          : transcriptWireFactId(record) ?? `wire:v2:b${position.startByteOffset}:${record.type}`,
         durability: durableRecord(record.type) ? 'durable' : 'transient',
         operations,
       },
@@ -348,6 +357,18 @@ export class TranscriptWireAdapter {
   hasTaskNotification(record: TranscriptWireRecord): boolean {
     const id = taskNotificationIdOfRecord(record);
     return id !== undefined && (this.#deliveredTaskNotifications.has(id) || this.#projectedTaskNotificationIds.has(id));
+  }
+
+  private recordIdentity(ordinal: number): string {
+    return this.#recordPosition === undefined ? `legacy:v1:r${ordinal}` : `legacy:v1:b${this.#recordPosition.startByteOffset}`;
+  }
+
+  private recordProvenance(ordinal: number, source: TranscriptProvenance['source'] = 'legacy-wire', partOrdinal?: number): TranscriptProvenance {
+    if (source === 'engine') return { source, recordOrdinal: undefined, partOrdinal };
+    const position = this.#recordPosition;
+    return position !== undefined && position.ordinal === undefined
+      ? { source, recordSpan: { startByteOffset: position.startByteOffset, endByteOffset: position.endByteOffset }, partOrdinal }
+      : { source, recordOrdinal: ordinal, partOrdinal };
   }
 
   private rememberProjection(operations: readonly TranscriptOperation[], ordinal: number): void {
@@ -1331,13 +1352,10 @@ export class TranscriptWireAdapter {
       origin: mapOrigin(record['origin']),
       promptId: stringOf(record['promptId']),
       message: {
-        messageId: messageId ?? `legacy:v1:r${ordinal}:message`,
+        messageId: messageId ?? `${this.recordIdentity(ordinal)}:message`,
         role: 'user',
         revision: numberOf(record['revision']) ?? 0,
-        provenance: {
-          source: promptId === undefined ? 'legacy-wire' : 'engine',
-          recordOrdinal: promptId === undefined ? ordinal : undefined,
-        },
+        provenance: this.recordProvenance(ordinal, promptId === undefined ? 'legacy-wire' : 'engine'),
         lineage: lineageOf(record['lineage']),
       },
       prompt: materialized?.prompt ?? (headerOnly ? undefined : prompt.length > 0 ? prompt : undefined),
@@ -1368,7 +1386,7 @@ export class TranscriptWireAdapter {
     const media = mediaPartsOf(input);
     if (text.length === 0 && media.length === 0) return [];
     const explicitPromptId = stringOf(record['promptId']);
-    const promptId = explicitPromptId ?? `legacy:v1:r${ordinal}:steer`;
+    const promptId = explicitPromptId ?? `${this.recordIdentity(ordinal)}:steer`;
     const pending = this.#pendingSteers.get(turnId);
     const steer: PendingSteer = {
       promptId,
@@ -1377,10 +1395,7 @@ export class TranscriptWireAdapter {
       presentation: contentTextPresentation(input),
       media,
       revision: numberOf(record['revision']) ?? 0,
-      provenance: {
-        source: explicitPromptId === undefined ? 'legacy-wire' : 'engine',
-        recordOrdinal: explicitPromptId === undefined ? ordinal : undefined,
-      },
+      provenance: this.recordProvenance(ordinal, explicitPromptId === undefined ? 'legacy-wire' : 'engine'),
       origin: record['origin'],
     };
     if (pending === undefined) this.#pendingSteers.set(turnId, [steer]);
@@ -1471,7 +1486,7 @@ export class TranscriptWireAdapter {
     const origin = objectOf(message?.['origin']);
     if (origin?.['kind'] === 'external_record') return [];
     if (message === undefined || role === undefined || role === 'system') return [];
-    const messageId = stringOf(message['id']) ?? `legacy:v1:r${ordinal}:message`;
+    const messageId = stringOf(message['id']) ?? `${this.recordIdentity(ordinal)}:message`;
     const content = arrayOf(message['content']);
     if (role === 'user') {
       const notificationId = taskNotificationIdOfMessage(message);
@@ -1550,7 +1565,7 @@ export class TranscriptWireAdapter {
           messageId,
           role: 'user',
           revision: 0,
-          provenance: { source: 'legacy-wire', recordOrdinal: ordinal },
+          provenance: this.recordProvenance(ordinal),
         },
         prompt: prompt.length > 0 ? prompt : undefined,
         presentation: contentTextPresentation(openingContent),
@@ -1585,7 +1600,7 @@ export class TranscriptWireAdapter {
     ordinal: number,
     canonical?: Readonly<Record<string, unknown>>,
   ): TranscriptOperation[] {
-    const messageId = stringOf(canonical?.['messageId']) ?? stringOf(message['id']) ?? `legacy:v1:r${ordinal}:message`;
+    const messageId = stringOf(canonical?.['messageId']) ?? stringOf(message['id']) ?? `${this.recordIdentity(ordinal)}:message`;
     if (this.#deliveries.has(messageId)) return this.reviseDeliveredUserFrame(messageId, message);
     const origin = objectOf(message['origin']);
     const current = this.#currentTurnId === undefined ? undefined : this.#turnHeaders.get(this.#currentTurnId);
@@ -1690,7 +1705,7 @@ export class TranscriptWireAdapter {
         kind: 'text', frameId: messageId,
         part: {
           partId: messageId, messageId, revision: numberOf(message['revision']) ?? 0,
-          provenance: { source: canonical === undefined ? 'legacy-wire' : 'engine', recordOrdinal: canonical === undefined ? ordinal : undefined },
+          provenance: this.recordProvenance(ordinal, canonical === undefined ? 'legacy-wire' : 'engine'),
         },
         role: 'user', text,
         presentation: contentTextPresentation(content),
@@ -1738,7 +1753,7 @@ export class TranscriptWireAdapter {
     if (turnId === undefined) return [];
     let step = this.#steps.get(turnId);
     if (step === undefined) {
-      step = { stepId: `legacy:v1:r${ordinal}:step`, ordinal: 1 };
+      step = { stepId: `${this.recordIdentity(ordinal)}:step`, ordinal: 1 };
       this.#steps.set(turnId, step);
     }
     const previousStep = this.#stepHeaders.get(step.stepId);
@@ -1758,7 +1773,7 @@ export class TranscriptWireAdapter {
     for (let partOrdinal = 0; partOrdinal < content.length; partOrdinal += 1) {
       const part = objectOf(content[partOrdinal]);
       const type = stringOf(part?.['type']);
-      const partId = `legacy:v1:r${ordinal}:part${partOrdinal}`;
+      const partId = `${this.recordIdentity(ordinal)}:part${partOrdinal}`;
       if (type === 'text') {
         operations.push({
           op: 'frame.upsert',
@@ -1771,7 +1786,7 @@ export class TranscriptWireAdapter {
               partId,
               messageId,
               revision: 0,
-              provenance: { source: 'legacy-wire', recordOrdinal: ordinal, partOrdinal },
+              provenance: this.recordProvenance(ordinal, 'legacy-wire', partOrdinal),
             },
             role: 'assistant',
             text: stringOf(part?.['text']) ?? '',
@@ -1790,7 +1805,7 @@ export class TranscriptWireAdapter {
               partId,
               messageId,
               revision: 0,
-              provenance: { source: 'legacy-wire', recordOrdinal: ordinal, partOrdinal },
+              provenance: this.recordProvenance(ordinal, 'legacy-wire', partOrdinal),
             },
             text: stringOf(part?.['think']) ?? '',
           },
@@ -1808,7 +1823,7 @@ export class TranscriptWireAdapter {
           partId: toolCallId,
           messageId,
           revision: 0,
-          provenance: { source: 'legacy-wire', recordOrdinal: ordinal },
+          provenance: this.recordProvenance(ordinal),
         },
         toolCallId,
         name: stringOf(call?.['name']) ?? '',
@@ -1837,7 +1852,7 @@ export class TranscriptWireAdapter {
     if (type === 'step.begin') {
       const turnId = turnIdOf(event['turnId'], this.#turns.at(-1));
       if (turnId === undefined) return [];
-      const stepId = stringOf(event['uuid']) ?? `legacy:v1:r${ordinal}:step`;
+      const stepId = stringOf(event['uuid']) ?? `${this.recordIdentity(ordinal)}:step`;
       const stepOrdinal = numberOf(event['step']) ?? 1;
       const step: StepHeader = {
         kind: 'step',
@@ -1939,16 +1954,13 @@ export class TranscriptWireAdapter {
     const part = objectOf(event['part']);
     if (stepId === undefined || turnId === undefined || part === undefined) return [];
     const type = stringOf(part['type']);
-    const partId = stringOf(event['uuid']) ?? `legacy:v1:r${ordinal}:part0`;
+    const partId = stringOf(event['uuid']) ?? `${this.recordIdentity(ordinal)}:part0`;
     const identity = {
       partId,
       messageId: stepId,
       revision: numberOf(event['revision']) ?? 0,
-      provenance: {
-        source: stringOf(event['uuid']) === undefined ? 'legacy-wire' as const : 'engine' as const,
-        recordOrdinal: stringOf(event['uuid']) === undefined ? ordinal : undefined,
-        partOrdinal: stringOf(event['uuid']) === undefined ? 0 : undefined,
-      },
+      provenance: this.recordProvenance(ordinal, stringOf(event['uuid']) === undefined ? 'legacy-wire' : 'engine',
+        stringOf(event['uuid']) === undefined ? 0 : undefined),
     };
     if (type === 'text' && mediaOf(part) === undefined) {
       return [
@@ -2112,10 +2124,7 @@ export class TranscriptWireAdapter {
         partId: stringOf(event['uuid']) ?? toolCallId,
         messageId: stepId,
         revision: numberOf(event['revision']) ?? 0,
-        provenance: {
-          source: stringOf(event['uuid']) === undefined ? 'legacy-wire' : 'engine',
-          recordOrdinal: stringOf(event['uuid']) === undefined ? ordinal : undefined,
-        },
+        provenance: this.recordProvenance(ordinal, stringOf(event['uuid']) === undefined ? 'legacy-wire' : 'engine'),
       },
       toolCallId,
       name: name ?? '',

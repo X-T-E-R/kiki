@@ -174,6 +174,34 @@ describe('AgentTranscript', () => {
     expect(tx.getItems().filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(['t0', 't1', 't2']);
   });
 
+  it.each(['turn', 'delta'] as const)('advances a watermarked live unknown %s reset without discarding older turns or global entities', (grade) => {
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'older' } },
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin: { kind: 'user' }, prompt: 'newer' } },
+      { op: 'step.upsert', turnId: 't1', step: { kind: 'step', turnId: 't1', stepId: 't1.1', ordinal: 1, state: 'completed' } },
+      { op: 'frame.upsert', turnId: 't1', stepId: 't1.1', frame: { kind: 'text', role: 'assistant', frameId: 't1.1.a1', text: 'retained answer' } },
+      { op: 'task.upsert', task: { taskId: 'task-0', kind: 'subagent', name: 'older', state: 'completed', detached: false, outputTail: 'kept' } },
+      { op: 'task.upsert', task: { taskId: 'task-1', kind: 'subagent', name: 'newer', state: 'running', detached: false, outputTail: '' } },
+    ]);
+    tx.apply([{ op: 'reset', agentId: 'main', grade, coverage: { kind: 'unknown', hasMoreOlder: true },
+      read: { source: 'live', readiness: 'partial', reason: 'source_unverified', watermark: { transcript: { epoch: 'live-1', seq: 8 } } },
+      snapshot: { items: [
+        { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'newer', endedAt: '2026-01-01T00:00:00.000Z', steps: [] },
+      ], tasks: [
+        { taskId: 'task-1', kind: 'subagent', name: 'newer', state: 'completed', detached: false, outputTail: 'done' },
+      ], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, toolCallCountKnown: false },
+    }]);
+    expect(tx.getTurn('t0')?.prompt).toBe('older');
+    expect(tx.getTurn('t1')).toMatchObject({ state: 'completed', endedAt: '2026-01-01T00:00:00.000Z' });
+    expect(tx.getTurn('t1')?.steps.length).toBe(grade === 'turn' ? 1 : 0);
+    if (grade === 'turn') expect(tx.getTurn('t1')?.steps[0]?.frames[0]).toMatchObject({ text: 'retained answer' });
+    expect(tx.getTask('task-0')?.outputTail).toBe('kept');
+    expect(tx.getTask('task-1')).toMatchObject({ state: 'completed', outputTail: 'done' });
+    expect(tx.snapshot().toolCallCountKnown).toBe(false);
+    expect(tx.hasMoreOlder).toBe(true);
+  });
+
   it('does not downgrade an overlapping completed turn or entity on an unknown reset', () => {
     const tx = new AgentTranscript('main');
     tx.apply([

@@ -307,8 +307,6 @@ describe('disposed agent capability snapshots', () => {
     });
     const appendLog = server!.core.accessor.get(IAppendLogStore);
     const readStream = vi.spyOn(server!.core.accessor.get(IFileSystemStorageService), 'readStream');
-    expect((await readCapabilities(sessionId, child.id)).profile).toMatchObject({ model: 'stub-alt' });
-    expect(readStream).not.toHaveBeenCalled();
     const scope = agentScopeOf(
       sessionScopeOf(
         workspacePersistenceScope('sessions', session.accessor.get(ISessionContext).workspaceId),
@@ -316,6 +314,9 @@ describe('disposed agent capability snapshots', () => {
       ),
       child.id,
     );
+    const wireReads = () => readStream.mock.calls.filter(([readScope, key]) => readScope === scope && key === AGENT_WIRE_RECORD_KEY);
+    expect((await readCapabilities(sessionId, child.id)).profile).toMatchObject({ model: 'stub-alt' });
+    expect(wireReads()).toHaveLength(0);
     appendLog.append(scope, AGENT_WIRE_RECORD_KEY, new ConfigUpdate({
       modelAlias: 'stub',
       thinkingEffort: 'low',
@@ -323,7 +324,9 @@ describe('disposed agent capability snapshots', () => {
     await appendLog.flush(scope, AGENT_WIRE_RECORD_KEY);
     const refreshed = await readCapabilities(sessionId, child.id);
     expect(refreshed.profile).toMatchObject({ model: 'stub', thinking_effort: 'low' });
-    expect(readStream).toHaveBeenCalledTimes(2);
+    expect(wireReads()).toHaveLength(2);
+    expect((await readCapabilities(sessionId, child.id)).profile).toEqual(refreshed.profile);
+    expect(wireReads()).toHaveLength(2);
   });
 
   it('replays actual request evidence for a disposed agent and keeps legacy anchor evidence unknown', async () => {

@@ -368,7 +368,7 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 `GET /api/sessions/{session_id}/transcript/detail` 读取一条实体。查询参数 `agent_id` 是普通 Agent id，`kind` 取 `task`、`attachment`、`prompt` 或 `tool`，`id` 是该实体的 id。`kind=tool` 时，`lookup.status` 为 `found`、`preparing` 或 `not_found`。`found` 带有 `turnId`、`stepId` 和 `frame`。返回的 `frame`，以及 task、attachment、prompt 正文，可能带 `contentRefs`；用下面的 POST 续读。`preparing` 表示这次调用尚未在会话的源历史中定位到，用同一请求重试。此时 `read.source` 为 `derived`，`read.readiness` 为 `preparing`。`not_found` 表示已经定位的历史里没有这次调用。
 
-已在内存中覆盖完整的会话直接返回实时工具调用，`read.source` 为 `live`，`readiness` 为 `ready`。已定位的冷会话返回 `cold` 和 `ready`，正文从这份源历史回放。
+已在内存中覆盖完整的会话直接返回实时工具调用，`read.source` 为 `live`，`readiness` 为 `ready`。已定位的冷会话返回 `cold` 和 `ready`，正文从这份源历史回放。旧格式消息与内容块的 `provenance` 在已知时携带绝对 `recordOrdinal`。有界冷窗口尚未验证文件前缀时，改为携带逻辑 wire 中的绝对字节范围 `recordSpan: { startByteOffset, endByteOffset }`，省略 `recordOrdinal`。不要把缺失的序号当作零，也不要从分页位置推算。实体 ID 是不透明标识；历史导航就绪后，仍应原样提交返回的引用。
 
 转录页把大字段留在 `contentRefs` 里。每条引用包含 `source`、`revision`、`path`、`kind`（`text`、`array` 或 `object`）、`offset` 和 `total`。用 `POST /api/klient/session-view/{session_id}/transcript/content` 继续读取，JSON 为 `{ "agentId", "ref" }`，`ref` 原样送回。HTTP 状态保持 200，结果在信封里。`code: 0` 返回 `value`；字段还有剩余时带 `next`。把这份 `next` 原样作为下一次的 `ref` 提交，直到响应不再带 `next`。再次提交同一条 `ref` 读到的仍是这一段；`"range": true` 不会推进 `offset`。对文本引用，它只限制已经放在 `offset` 上的那段切片（大约 4096 个字符，且仍在字段预算内），快照引用会忽略 `range`。单页预算为 64 KiB，每个字段切片瞄准其中一半，即 32 KiB。
 

@@ -288,6 +288,61 @@ describe('source-backed canonical detail', () => {
     } finally { gate.mockRestore(); await f.close(); }
   });
 
+  it.each(['retained', 'projected'] as const)('keeps absolute source coordinates in an unindexed large %s detail and upgrades indexed ordinals', async (mode) => {
+    const prefix = Array.from({ length: 13 }, () => ({ type: 'fixture.padding', text: 'x'.repeat(700_000) }));
+    const target = turnRecords(100, 'EXACT TAIL 汉😀');
+    const legacyText = 'SOURCE ADDRESSED 汉😀 '.repeat(100);
+    target.splice(6, 0, event({ type: 'content.part', turnId: 100, stepUuid: 'step-100', part: { type: 'text', text: legacyText } }));
+    const records = [...prefix, ...target];
+    const f = await fixture(records);
+    let scans = 0;
+    const reader = new HistoryCanonicalReader(f.db, f.service, async () => {
+      scans += 1;
+      return { complete: false, nextByteOffset: 1, ordinal: 1, bytesRead: 1, recordsRead: 1, incarnation: 'test', incompleteReason: 'byte_budget' };
+    });
+    try {
+      expect(Buffer.byteLength(records.map(line).join(''))).toBeGreaterThan(8 << 20);
+      if (mode === 'retained') await f.service.readColdPageSnapshot('s', 'main', snapshot => snapshot,
+        new AbortController().signal, false, undefined, false, true);
+      const retained = vi.spyOn(f.service, 'readRetainedColdTurn');
+      const projected = vi.spyOn(f.service, 'readProjectedColdTurn');
+      const source = { kind: 'turn' as const, id: 't100' };
+      const lookup = await reader.readEntity('s', 'main', source, new AbortController().signal);
+      expect(lookup.status).toBe('found');
+      if (lookup.status !== 'found') throw new Error('Missing tail detail');
+      const actual = lookup.entity as TranscriptTurn;
+      const tool = actual.steps.flatMap(step => step.frames).find(frame => frame.kind === 'tool');
+      const startByteOffset = Buffer.byteLength([...prefix, ...target.slice(0, 3)].map(line).join(''));
+      expect(tool).toMatchObject({ output: 'EXACT TAIL 汉😀', part: { provenance: {
+        source: 'legacy-wire', recordSpan: { startByteOffset, endByteOffset: startByteOffset + Buffer.byteLength(line(target[3]!)) },
+      } } });
+      expect(tool?.part?.provenance.recordOrdinal).toBeUndefined();
+      expect(retained).toHaveBeenCalled();
+      expect(projected).toHaveBeenCalledTimes(mode === 'retained' ? 0 : 1);
+      expect(scans).toBe(mode === 'retained' ? 0 : 1);
+      expect(f.service.memoryReport().coldReads.bytes).toBeLessThan(3 << 20);
+      expect(reader.report()).toMatchObject({ replays: 0, projectionBytes: scans });
+      const legacyStart = Buffer.byteLength([...prefix, ...target.slice(0, 6)].map(line).join(''));
+      const frameSource = { kind: 'frame' as const, id: `legacy:v1:b${legacyStart}:part0`, turnId: 't100', stepId: 'step-100' };
+      expect(actual.steps.flatMap(step => step.frames).find(frame => frame.frameId === frameSource.id)).toMatchObject({ text: legacyText });
+      await f.service.readColdPageSnapshot('s', 'main', snapshot => snapshot, new AbortController().signal, true, 2 << 20);
+      expect(await reader.readEntity('s', 'main', frameSource, new AbortController().signal)).toMatchObject({
+        status: 'found', entity: { frameId: frameSource.id, text: legacyText, part: { provenance: { recordSpan: {
+          startByteOffset: legacyStart, endByteOffset: legacyStart + Buffer.byteLength(line(target[6]!)),
+        } } } },
+      });
+      const cancelled = new AbortController(); cancelled.abort();
+      await expect(reader.readEntity('s', 'main', source, cancelled.signal)).rejects.toMatchObject({ name: 'AbortError' });
+      while (!(await f.nav.scan('s', 'main'))?.complete) {}
+      expect(await reader.readEntity('s', 'main', source, new AbortController().signal)).toEqual({ status: 'found', entity: canonical(records) });
+      expect(reader.report()).toMatchObject({ replays: 1, replayRecords: target.length });
+      expect(await reader.readEntity('s', 'main', frameSource, new AbortController().signal)).toMatchObject({
+        status: 'found', entity: { frameId: frameSource.id, text: legacyText, part: { provenance: { recordOrdinal: prefix.length + 6 } } },
+      });
+      expect(reader.report()).toMatchObject({ replays: 2, replayRecords: target.length * 2 });
+    } finally { reader.invalidate(); await f.close(); }
+  });
+
   it('keeps a cold detail prefix valid during a live append without caching it as the newer source', async () => {
     const f = await fixture(turnRecords(100, 'saved response'));
     const read = f.service.readProjectedColdTurn.bind(f.service);

@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { getKeybindings, KeybindingsManager, setKeybindings, TUI_KEYBINDINGS, visibleWidth } from '@kiki/pi-tui';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { Session, SessionSnapshotResponse } from '@kiki/protocol';
+import type { SessionViewFacade, SessionViewSignal } from '@kiki/klient/session-view';
+import type { TranscriptOpsCatchupResponse, TranscriptResponse } from '@kiki/transcript';
 import { SessionController } from '@kiki/session-core/session/sessionController';
 import { API_CODES, ApiError } from '@kiki/session-core/transport';
 
@@ -26,6 +29,103 @@ function freshUploadExpiry(): number {
 
 function uploadMeta(id: string, expiresAt: number): { id: string; expires_at: string } {
   return { id, expires_at: new Date(expiresAt).toISOString() };
+}
+
+function sessionSnapshot(sessionId: string): SessionSnapshotResponse {
+  const session = {
+    id: sessionId,
+    workspace_id: 'wd_fixture_000000000000',
+    title: 'Fixture session',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    busy: false,
+    main_turn_active: false,
+    metadata: { cwd: 'C:\\repo' },
+    agent_config: { model: 'model-a' },
+    usage: {
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_creation_tokens: 0,
+      total_cost_usd: 0,
+      context_tokens: 0,
+      context_limit: 0,
+      turn_count: 0,
+    },
+    permission_rules: [],
+    message_count: 0,
+    last_seq: 0,
+  } satisfies Session;
+  return {
+    as_of_seq: 0,
+    epoch: 'epoch-1',
+    session,
+    messages: { items: [], has_more: false },
+    in_flight_turn: null,
+    pending_approvals: [],
+    pending_questions: [],
+    subagents: [],
+  };
+}
+
+function transcriptPage(sessionId: string): TranscriptResponse {
+  return {
+    session_id: sessionId,
+    agent_id: 'main',
+    items: [],
+    has_more: false,
+    tasks: [],
+    interactions: [],
+    attachments: [],
+    todos: [],
+    prompts: [],
+    meta: {},
+    agents: [],
+    pending_interactions: [],
+    coverage: { kind: 'full', hasMoreOlder: false },
+  };
+}
+
+function transcriptCatchup(sessionId: string): TranscriptOpsCatchupResponse {
+  return {
+    session_id: sessionId,
+    agent_id: 'main',
+    epoch: 'epoch-1',
+    batches: [],
+    through_seq: 0,
+    complete: true,
+  };
+}
+
+function sessionView(sessionId: string): SessionViewFacade {
+  return {
+    snapshot: vi.fn(async () => sessionSnapshot(sessionId)),
+    transcript: {
+      page: vi.fn(async () => transcriptPage(sessionId)),
+      catchUp: vi.fn(async () => transcriptCatchup(sessionId)),
+    },
+    subscribe: (_input, onSignal) => {
+      let closed = false;
+      const ready: SessionViewSignal = {
+        type: 'ready',
+        generation: 0,
+        currentSessionCursor: { seq: 0, epoch: 'epoch-1' },
+        reconnected: false,
+      };
+      queueMicrotask(() => {
+        if (closed) return;
+        onSignal(ready);
+      });
+      return {
+        updateSessionCursor: vi.fn(),
+        setTranscriptGrades: vi.fn(),
+        updateTranscriptCursor: vi.fn(),
+        restart: vi.fn(),
+        nudge: vi.fn(),
+        close: vi.fn(() => { closed = true; }),
+      };
+    },
+  };
 }
 
 function driver(
@@ -185,6 +285,7 @@ function driver(
     agent: vi.fn(() => agentFacade),
     fork: vi.fn(async () => ({ id: 'fork-1' })),
     agents: vi.fn(async () => ({})),
+    view: sessionView('session-1'),
   };
   const configFacade = {
     get: vi.fn(async () => undefined),
@@ -228,7 +329,7 @@ function driver(
   const klientClose = vi.fn();
   internal.client.klient = {
     close: klientClose,
-    session: vi.fn(() => sessionFacade),
+    session: vi.fn((sessionId: string) => ({ ...sessionFacade, view: sessionView(sessionId) })),
     global: {
       config: configFacade,
       plugins: pluginsFacade,

@@ -224,6 +224,9 @@ export class HistoryCanonicalReader {
     if (source.kind !== 'turn' && source.kind !== 'frame') throw new Error('history_canonical_unsupported_source');
     const turnId = source.kind === 'turn' ? source.id : source.turnId;
     if (turnId === undefined) throw new Error('history_canonical_turn_required');
+    signal?.throwIfAborted();
+    const indexed = await this.readIndexedEntity(session, agent, source, signal);
+    if (indexed !== undefined) return indexed;
     if (signal !== undefined) {
       const cached = await this.readDirectCached(session, agent, source, signal);
       if (cached !== undefined) return { status: 'found', entity: cached };
@@ -242,6 +245,27 @@ export class HistoryCanonicalReader {
     }
     const entity = source.kind === 'turn' ? await this.readTurn(prepared, agent, turnId, signal, true) :
       await this.readFrame(prepared, agent, turnId, source.stepId, source.id, signal);
+    return entity === undefined ? { status: 'not_found' } : { status: 'found', entity };
+  }
+
+  private async readIndexedEntity(session: string, agent: string, source: ContentSource,
+    signal?: AbortSignal): Promise<CanonicalEntityLookup | undefined> {
+    const turnId = source.kind === 'turn' ? source.id : source.turnId;
+    if (turnId === undefined) throw new Error('history_canonical_turn_required');
+    const generation = this.generation;
+    const context = await this.sourceContext(session, agent, signal);
+    const db = await this.database.ready();
+    const manifest = db.readManifest(context.scope);
+    if (manifest?.complete !== true || !db.hasCanonicalSources(context.scope)) return undefined;
+    const proof = await historyNavigationProof(context.wirePath, manifest.offset, signal);
+    signal?.throwIfAborted();
+    if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
+    if (proof.size !== manifest.offset || !matchesNavigationProof(manifest.source, proof)) return undefined;
+    const current = db.readManifest(context.scope);
+    if (current === undefined || sourceFingerprint(current) !== sourceFingerprint(manifest)) throw new Error('history_source_changed');
+    const prepared: Prepared = { ...context, db, manifest };
+    const entity = source.kind === 'turn' ? await this.readTurn(prepared, agent, turnId, signal, true)
+      : await this.readFrame(prepared, agent, turnId, source.stepId, source.id, signal);
     return entity === undefined ? { status: 'not_found' } : { status: 'found', entity };
   }
 
@@ -492,7 +516,8 @@ export class HistoryCanonicalReader {
     const cached = this.getCached(key, fingerprint);
     if (cached !== undefined && cached.entity.kind !== 'turn') return cached.entity;
     const generation = this.generation;
-    const turn = await this.readTurn(input, agent, turnId, signal);
+    const byteIdentities = /^legacy:v1:b\d+:/.test(frameId) || (stepId !== undefined && /^legacy:v1:b\d+:/.test(stepId));
+    const turn = await this.readTurn(input, agent, turnId, signal, false, byteIdentities);
     signal?.throwIfAborted();
     if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
     const current = input.db.readManifest(input.scope);
@@ -503,19 +528,19 @@ export class HistoryCanonicalReader {
   }
 
   private async readTurn(input: Prepared, agent: string, turnId: string, signal?: AbortSignal,
-    allowOversized = false): Promise<TranscriptTurn | undefined> {
+    allowOversized = false, byteIdentities = false): Promise<TranscriptTurn | undefined> {
     const generation = this.generation;
     signal?.throwIfAborted();
     const { scope, manifest } = input;
     const fingerprint = sourceFingerprint(manifest);
-    const key = `${scope}\0${turnId}`;
+    const key = byteIdentities ? `${scope}\0${turnId}\0byte-identities` : `${scope}\0${turnId}`;
     const cached = this.getCached(key, fingerprint);
     if (cached !== undefined && cached.entity.kind === 'turn') return cached.entity;
     const flightKey = `${key}\0${fingerprint}`;
     let flight = this.flights.get(flightKey);
     if (flight === undefined || flight.controller.signal.aborted) {
       const controller = new AbortController();
-      const promise = this.transcript.scheduleHistoryRead(controller.signal, signal => this.replay(input, agent, turnId, signal)).then((turn) => {
+      const promise = this.transcript.scheduleHistoryRead(controller.signal, signal => this.replay(input, agent, turnId, signal, byteIdentities)).then((turn) => {
         controller.signal.throwIfAborted();
         if (turn !== undefined && input.db.readManifest(scope)?.generation === manifest.generation &&
             input.db.readManifest(scope)?.offset === manifest.offset) this.admit(key, fingerprint, turn);
@@ -557,12 +582,12 @@ export class HistoryCanonicalReader {
     }
   }
 
-  private async replay(input: Prepared, agent: string, turnId: string, signal: AbortSignal): Promise<TranscriptTurn | undefined> {
-    return (await this.replaySnapshot(input, agent, turnId, signal))?.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
+  private async replay(input: Prepared, agent: string, turnId: string, signal: AbortSignal, byteIdentities: boolean): Promise<TranscriptTurn | undefined> {
+    return (await this.replaySnapshot(input, agent, turnId, signal, undefined, byteIdentities))?.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
   }
 
   private async replaySnapshot(input: Prepared, agent: string, turnId: string, signal: AbortSignal,
-    maxBytes?: number): Promise<AgentTranscriptSnapshot | undefined> {
+    maxBytes?: number, byteIdentities = false): Promise<AgentTranscriptSnapshot | undefined> {
     const seed = input.db.canonicalSeed(input.scope, turnId);
     if (seed === undefined) return undefined;
     const draft = new AgentTranscriptDraft(agent);
@@ -619,7 +644,7 @@ export class HistoryCanonicalReader {
           if (hashHistoryRecord(bytes) !== span.digest) throw new Error('history_source_changed');
           if (span.ordinal !== expectedOrdinal) adapter.restore({ ...adapter.checkpoint(), recordOrdinal: span.ordinal });
           const record = JSON.parse(bytes.toString('utf8')) as { type: string; [key: string]: unknown };
-          reducer.apply(adapter.add(record));
+          reducer.apply(adapter.add(record, byteIdentities ? { ordinal: span.ordinal, startByteOffset: span.start, endByteOffset: span.end } : undefined));
           expectedOrdinal = span.ordinal + 1;
           ordinal = span.ordinal;
           sliceRecords += 1;

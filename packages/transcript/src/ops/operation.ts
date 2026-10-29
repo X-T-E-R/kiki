@@ -32,6 +32,7 @@ export type TranscriptCoverage =
       readonly hasMoreOlder: boolean;
     };
 
+/** Live epoch-watermarked reads replace overlapping entities even when coverage is unknown; callers reject stale cursors before applying. */
 export interface ResetOp {
   readonly op: 'reset';
   readonly agentId: AgentId;

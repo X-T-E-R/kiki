@@ -5,7 +5,7 @@
  * inspector parts (agent-panel/*).
  */
 
-import { memo, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { MAIN_AGENT_ID, type AgentForest, type Block, type NoticeBlock, type SessionViewState } from '@kiki/session-core/session';
