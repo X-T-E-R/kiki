@@ -25,7 +25,7 @@ import { IEventDispatcher } from './eventDispatcher';
 import { StateError, StateErrors } from './errors';
 import {
   decodeReplayCheckpointGraph,
-  encodeReplayCheckpointGraph,
+  encodeReplayCheckpointGraphAsync,
   type ReplayCheckpointGraph,
 } from './replayCheckpointCodec';
 import {
@@ -147,6 +147,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
 
   private restorePhase: RestorePhase = 'new';
   private checkpointSave: Promise<boolean> | undefined;
+  private savedCheckpoint: { readonly revision: number; readonly wire: ReplayCheckpointEnvelope['wire'] } | undefined;
   private growthCheckpointTimer: ReturnType<typeof setTimeout> | undefined;
   private growthCheckpointBaseline = 0;
   private checkpointGeneration = 0;
@@ -189,6 +190,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     this._register(
       this.agentState.onDidWithdrawReplayable((key) => {
         this.metas.delete(key);
+        this.liveRevision += 1;
         this.folded = this.foldContributions(view);
       }),
     );
@@ -236,6 +238,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     }
     this.rollback(key, meta, patchId - 1);
     meta.checkpoints = meta.checkpoints.filter((id) => id < patchId);
+    this.liveRevision += 1;
   }
 
   dispatchDurably(event: Event2<any>): Promise<void> {
@@ -530,6 +533,9 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       phase = 'journal_identity';
       const wire = await this.wire.journalIdentity();
       if (!this.checkpointStable(generation, revision)) return false;
+      const saved = this.savedCheckpoint;
+      if (saved?.revision === revision && saved.wire.size === wire.size &&
+        saved.wire.mtimeMs === wire.mtimeMs && saved.wire.headHash === wire.headHash) return true;
       phase = 'journal_digest';
       const prefixSha256 = this.wire.journalSha256 === undefined
         ? undefined
@@ -541,10 +547,10 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         states: keys.map((key) => ({
           name: key.name,
           value: this.agentState.get(key),
-          meta: structuredClone(this.ensureMeta(key)),
+          meta: this.ensureMeta(key),
         })),
       };
-      const graph = encodeReplayCheckpointGraph(payload);
+      const graph = await encodeReplayCheckpointGraphAsync(payload);
       if (!this.checkpointStable(generation, revision)) return false;
       const coveredAppendedBytes = this.wire.appendedByteCount?.() ?? this.growthCheckpointBaseline;
       const envelope: ReplayCheckpointEnvelope = {
@@ -555,8 +561,9 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         graph,
       };
       phase = 'write';
-      await docs.set(checkpointScope, REPLAY_CHECKPOINT_KEY, envelope);
+      await docs.set(checkpointScope, REPLAY_CHECKPOINT_KEY, envelope, { cooperative: true });
       if (!this.isCheckpointGenerationCurrent(generation)) return this.skipReplayCheckpoint('disposed');
+      this.savedCheckpoint = { revision, wire };
       this.growthCheckpointBaseline = coveredAppendedBytes;
       return true;
     } catch (error) {

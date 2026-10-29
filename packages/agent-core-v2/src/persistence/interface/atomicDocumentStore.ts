@@ -13,7 +13,8 @@ export interface IAtomicDocumentStore {
   readonly _serviceBrand: undefined;
 
   get<T>(scope: string, key: string): Promise<T | undefined>;
-  set<T>(scope: string, key: string, value: T): Promise<void>;
+  /** Cooperative encoding is opt-in for large plain JSON documents; ordinary writes retain their codec semantics. */
+  set<T>(scope: string, key: string, value: T, options?: { readonly cooperative?: boolean }): Promise<void>;
   update<T>(
     scope: string,
     key: string,

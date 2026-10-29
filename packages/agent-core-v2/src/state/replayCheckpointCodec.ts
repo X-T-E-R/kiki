@@ -17,10 +17,11 @@ export interface ReplayCheckpointGraph {
 const MAX_DEPTH = 128;
 const MAX_NODES = 500_000;
 
-export function encodeReplayCheckpointGraph(value: unknown): ReplayCheckpointGraph {
+function* checkpointGraph(value: unknown): Generator<void, ReplayCheckpointGraph> {
   const seen = new Map<object, number>();
   const nodes: EncodedNode[] = [];
-  const encode = (candidate: unknown, depth: number): EncodedValue => {
+  function* encode(candidate: unknown, depth: number): Generator<void, EncodedValue> {
+    yield;
     if (depth > MAX_DEPTH) throw new Error('replay checkpoint graph exceeds maximum depth');
     if (candidate === undefined) return { type: 'undefined' };
     if (candidate === null || typeof candidate === 'boolean' || typeof candidate === 'number' || typeof candidate === 'string') {
@@ -36,32 +37,63 @@ export function encodeReplayCheckpointGraph(value: unknown): ReplayCheckpointGra
     nodes.push({ kind: 'object', values: [] });
     let node: EncodedNode;
     if (Array.isArray(candidate)) {
-      node = { kind: 'array', values: candidate.map((entry) => encode(entry, depth + 1)) };
+      const values: EncodedValue[] = [];
+      for (let index = 0; index < candidate.length; index += 1) values.push(yield* encode(candidate[index], depth + 1));
+      node = { kind: 'array', values };
     } else if (candidate instanceof Map) {
-      node = {
-        kind: 'map',
-        values: [...candidate].map(([key, entry]) => [encode(key, depth + 1), encode(entry, depth + 1)]),
-      };
+      const values: [EncodedValue, EncodedValue][] = [];
+      for (const [key, entry] of candidate) values.push([yield* encode(key, depth + 1), yield* encode(entry, depth + 1)]);
+      node = { kind: 'map', values };
     } else if (candidate instanceof Set) {
-      node = { kind: 'set', values: [...candidate].map((entry) => encode(entry, depth + 1)) };
+      const values: EncodedValue[] = [];
+      for (const entry of candidate) values.push(yield* encode(entry, depth + 1));
+      node = { kind: 'set', values };
     } else if (candidate instanceof Date) {
       node = { kind: 'date', value: candidate.toISOString() };
     } else if (candidate instanceof Uint8Array) {
-      node = { kind: 'bytes', value: Buffer.from(candidate).toString('base64') };
+      const parts: string[] = [];
+      for (let offset = 0; offset < candidate.length; offset += 49_152) {
+        parts.push(Buffer.from(candidate.buffer, candidate.byteOffset + offset, Math.min(49_152, candidate.length - offset)).toString('base64'));
+        yield;
+      }
+      node = { kind: 'bytes', value: parts.join('') };
     } else {
       const prototype = Object.getPrototypeOf(candidate);
       if (prototype !== Object.prototype && prototype !== null) {
         throw new Error('replay checkpoint graph contains an unsupported object');
       }
-      node = {
-        kind: 'object',
-        values: Object.entries(candidate).map(([key, entry]) => [key, encode(entry, depth + 1)]),
-      };
+      const values: [string, EncodedValue][] = [];
+      for (const key in candidate) {
+        if (Object.hasOwn(candidate, key)) values.push([key, yield* encode((candidate as Record<string, unknown>)[key], depth + 1)]);
+      }
+      node = { kind: 'object', values };
     }
     nodes[ref] = node;
     return { ref };
-  };
-  return { version: 1, root: encode(value, 0), nodes };
+  }
+  return { version: 1, root: yield* encode(value, 0), nodes };
+}
+
+export function encodeReplayCheckpointGraph(value: unknown): ReplayCheckpointGraph {
+  const graph = checkpointGraph(value);
+  let step = graph.next();
+  while (!step.done) step = graph.next();
+  return step.value;
+}
+
+export async function encodeReplayCheckpointGraphAsync(value: unknown): Promise<ReplayCheckpointGraph> {
+  const graph = checkpointGraph(value);
+  let deadline = performance.now() + 4;
+  let steps = 0;
+  let step = graph.next();
+  while (!step.done) {
+    if (++steps % 64 === 0 && performance.now() >= deadline) {
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      deadline = performance.now() + 4;
+    }
+    step = graph.next();
+  }
+  return step.value;
 }
 
 export function decodeReplayCheckpointGraph(graph: ReplayCheckpointGraph): unknown {

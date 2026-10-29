@@ -115,7 +115,7 @@ function prompt(text: string, queueIndex: number) {
   }).serialize();
 }
 
-function harness(storage = new InMemoryStorageService(), extraKey?: ReplayableStateKey<Record<string, true>>): Harness {
+function harness<T = Record<string, true>>(storage = new InMemoryStorageService(), extraKey?: ReplayableStateKey<T>): Harness {
   const root = disposables.add(new TestInstantiationService());
   root.stub(IFileSystemStorageService, storage);
   root.stub(ILogService, noopLogger);
@@ -212,6 +212,54 @@ async function ticks(): Promise<void> {
 }
 
 describe('replay checkpoint tail', () => {
+  it('saves and reopens sixty-three MiB of state without a long uninterrupted encoding slice', async () => {
+    const text = 'x'.repeat(32_256);
+    const key = defineState('checkpoint.large', () => Array.from({ length: 2048 }, () => text))
+      .replayable({ schema: z.array(z.string()) });
+    const first = harness(undefined, key);
+    await first.wire.seal();
+    let running = true;
+    let beats = 0;
+    let previous = performance.now();
+    let maxStallMs = 0;
+    const heartbeat = (): void => {
+      const now = performance.now();
+      maxStallMs = Math.max(maxStallMs, now - previous);
+      previous = now;
+      beats += 1;
+      if (running) setImmediate(heartbeat);
+    };
+    setImmediate(heartbeat);
+    try {
+      await first.dispatcher.restore();
+      await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+    } finally {
+      running = false;
+    }
+    expect(beats).toBeGreaterThan(1);
+    expect(maxStallMs).toBeLessThan(100);
+    process.stdout.write(`checkpoint63MiB maxStallMs=${maxStallMs.toFixed(2)} yields=${beats}\n`);
+    const reopened = harness(first.storage, key);
+    await reopened.dispatcher.restore();
+    expect(reopened.state.get(key)).toEqual(first.state.get(key));
+  });
+
+  it('does not read state or write a checkpoint again for an unchanged agent', async () => {
+    const first = await checkpointed();
+    const reads = vi.spyOn(first.state, 'get');
+    const writes = vi.spyOn(first.docs, 'set');
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+    expect(reads).not.toHaveBeenCalled();
+    expect(writes).not.toHaveBeenCalled();
+    await first.dispatcher.dispatch(new ContextAppendMessage({ message: message('user', 'changed') }));
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+    expect(writes).toHaveBeenCalledTimes(1);
+    writes.mockClear();
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+    expect(writes).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])('rebuilds mailbox evidence from a legacy checkpoint without losing pending input, consumed=%s', async (consumed) => {
     const legacyKey = defineState('agentCollaboration.materializedMessages', (): Record<string, true> => ({}))
       .replayable({ schema: z.record(z.string(), z.literal(true)) })
@@ -465,6 +513,7 @@ describe('replay checkpoint tail', () => {
 
   it('keeps growth pending when a later append lands during checkpoint I/O', async () => {
     const first = await checkpointed();
+    await first.dispatcher.dispatch(new ContextAppendMessage({ message: message('user', 'before save') }));
     vi.useFakeTimers();
     const originalSet = first.docs.set.bind(first.docs);
     const entered = deferred();
@@ -669,6 +718,7 @@ describe('replay checkpoint tail', () => {
 
   it('keeps the previous checkpoint when a turn event arrives during the save', async () => {
     const first = await checkpointed();
+    await first.dispatcher.dispatch(new ContextAppendMessage({ message: message('user', 'before save') }));
     const before = await first.docs.get<{ wire: { size: number } }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
     const original = first.wire.journalSha256?.bind(first.wire);
     let nested = false;
