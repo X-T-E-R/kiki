@@ -505,7 +505,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
       <FeedbackLine feedback={feedback} />
       {failure !== null ? <p role="alert" className="text-[12px] leading-5 text-danger" data-recipe-author-failure>{failure}</p> : null}
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-hairline pt-3">
+      <div className="flex flex-wrap items-center gap-2 pt-3">
         {/*
           One primary action, and it is the package. "Apply to model" is not
           here on purpose: saving a recipe and binding a model are two different
@@ -672,7 +672,7 @@ function SteerSourceSection({ declaration, files, onChange, onInline, onSegments
   const declared = declaration?.prompts?.steering_sources ?? {};
 
   return (
-    <section className="space-y-2 border-t border-hairline pt-4" data-recipe-steer-sources>
+    <section className="space-y-2 pt-4" data-recipe-steer-sources>
       <button type="button" aria-expanded={open} onClick={() => { setOpen(!open); }}
         className="flex min-h-7 w-full items-center gap-1.5 rounded-md px-1 text-left outline-none transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40">
         <Chevron open={open} className="text-ink-soft" />

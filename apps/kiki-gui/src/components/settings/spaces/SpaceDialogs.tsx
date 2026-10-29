@@ -205,7 +205,7 @@ export function SpaceCredentialsDialog({ client: controlClient, space, onClose, 
         {target === 'isolated' ? (
           <>
             <p className="mt-4 text-[13px] leading-relaxed text-ink-soft">{t('st.spaces.credToIsolatedNote', { name: space.name })}</p>
-            <fieldset className="mt-4 border-t border-hairline pt-3" data-space-copy-ssh>
+            <fieldset className="mt-4 pt-3" data-space-copy-ssh>
               <legend className="sr-only">{t('st.spaces.copySsh', { name: space.name })}</legend>
               <div className="flex items-baseline justify-between gap-3">
                 <p aria-hidden className="text-[13px] font-medium text-ink">{t('st.spaces.copySsh', { name: space.name })}</p>

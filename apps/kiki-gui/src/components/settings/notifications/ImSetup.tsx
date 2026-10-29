@@ -250,7 +250,7 @@ export function PlatformSetupForm({ platform, instanceId, savedInstanceId, onSav
                   {t('st.im.setup.slack.oauthBegin')}
                 </button>
                 {slackAttemptId !== undefined ? (
-                  <div className="space-y-2 border-t border-hairline pt-2" data-im-slack-oauth-complete-form>
+                  <div className="space-y-2 pt-2" data-im-slack-oauth-complete-form>
                     <div className="grid gap-2 sm:grid-cols-2">
                       <label className="block space-y-1">
                         <span className={FORM_LABEL}>{t('st.im.setup.slack.clientSecret')}</span>
@@ -474,7 +474,7 @@ export function PlatformSetupForm({ platform, instanceId, savedInstanceId, onSav
                 {t('st.im.setup.matrix.ssoBegin')}
               </button>
               {matrixAttemptId !== undefined ? (
-                <div className="space-y-2 border-t border-hairline pt-2" data-im-matrix-sso-complete-form>
+                <div className="space-y-2 pt-2" data-im-matrix-sso-complete-form>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <label className="block space-y-1">
                       <span className={FORM_LABEL}>{t('st.im.setup.matrix.callbackUri')}</span>

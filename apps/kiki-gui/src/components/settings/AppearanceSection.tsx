@@ -319,7 +319,7 @@ export function AppearanceSection() {
       <SectionCard id="st-card-skin-files" title={t('st.skin.filesTitle')} scope={appearanceScope}>
         <div className="space-y-6">
           <AppearancePacks />
-          <div className="border-t border-hairline pt-5">
+          <div className="pt-5">
             <SkinFiles />
           </div>
         </div>

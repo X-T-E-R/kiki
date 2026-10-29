@@ -483,7 +483,7 @@ function AuthorizationPanel({ requests, api, onChanged }: {
       <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.xc.authHint')}</p>
       {requests.map((request) => (
         <div key={request.id} data-xc-authorization={request.id}
-          className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 border-t border-hairline pt-2">
+          className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 pt-2">
           <div className="min-w-0 flex-1">
             <p className="truncate text-[13px] font-medium text-ink">{request.clientName ?? request.clientId}</p>
             {request.scopes.length > 0 ? (
@@ -693,7 +693,7 @@ function ConnectionRow({ connection, api, onChanged }: {
               </Fact>
             </dl>
             <LocalAccess connectionId={connection.id} api={api} />
-            <div className="space-y-1 border-t border-hairline pt-3">
+            <div className="space-y-1 pt-3">
               <p className="text-[12px] font-medium text-ink-soft">{t('st.xc.sessions')}</p>
               {sessionsQuery.isLoading ? <Hint>{t('st.xc.loading')}</Hint> : null}
               {sessionsQuery.isError ? (
@@ -722,7 +722,7 @@ function ConnectionRow({ connection, api, onChanged }: {
                 </ul>
               ) : null}
             </div>
-            <div className="flex flex-wrap items-center gap-2 border-t border-hairline pt-3">
+            <div className="flex flex-wrap items-center gap-2 pt-3">
               {!revoked ? (
                 <>
                   <button type="button" data-xc-edit className={SECONDARY_BUTTON} disabled={busy}
@@ -913,7 +913,7 @@ export function ExternalClientsSection() {
           </button>
         ) : null}
         {adding && api !== undefined ? (
-          <div data-xc-create-panel className="space-y-3 border-t border-hairline pt-4">
+          <div data-xc-create-panel className="space-y-3 pt-4">
             <CreateConnection api={api} onCreated={() => { setAdding(false); refresh(); }} />
             <button type="button" data-xc-create-cancel
               className="min-h-8 rounded-md px-2.5 text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink"
@@ -925,12 +925,12 @@ export function ExternalClientsSection() {
         {/* A pending authorization is the most time-sensitive thing here, so it
             answers first, above the list, never below it. */}
         {authorizations.length > 0 && api !== undefined ? (
-          <div className="border-t border-hairline pt-4">
+          <div className="pt-4">
             <AuthorizationPanel requests={authorizations} api={api} onChanged={refresh} />
           </div>
         ) : null}
         {listener !== undefined && api !== undefined ? (
-          <div className="border-t border-hairline pt-4">
+          <div className="pt-4">
             <details data-xc-access-details className="group/xc-access">
               <summary className="flex min-h-8 cursor-pointer list-none items-center gap-1.5 text-[12px] text-ink-soft transition-colors hover:text-ink [&::-webkit-details-marker]:hidden">
                 <DisclosureChevron open={false} className="transition-transform group-open/xc-access:rotate-90" />
@@ -938,7 +938,7 @@ export function ExternalClientsSection() {
               </summary>
               <div className="mt-2 space-y-3">
                 <ListenerPanel listener={listener} api={api} onChanged={refresh} />
-                <div className="border-t border-hairline pt-3">
+                <div className="pt-3">
                   <RemoteAccess listener={listener} />
                 </div>
               </div>

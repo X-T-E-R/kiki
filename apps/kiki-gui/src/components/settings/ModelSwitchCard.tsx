@@ -247,7 +247,7 @@ export function ModelSwitchCard() {
           />
           <Hint>{t('st.modelSwitch.confirmHint')}</Hint>
         </div>
-        <div className="border-t border-hairline pt-3">
+        <div className="pt-3">
           <div className="flex items-center justify-between gap-2">
             <p className="text-[12px] font-medium text-ink-soft">{t('st.modelSwitch.rulesTitle')}</p>
             <button type="button" data-model-switch-rule-add className={`${SECONDARY_BUTTON} h-7 px-2 text-[12px]`} onClick={addRule}>
@@ -318,7 +318,7 @@ export function ModelSwitchCard() {
             </ul>
           )}
           {draft !== undefined ? (
-            <div data-model-switch-rule-editor={draft.id} className="mt-3 space-y-3 border-t border-hairline pt-3">
+            <div data-model-switch-rule-editor={draft.id} className="mt-3 space-y-3 pt-3">
               <div className="flex flex-wrap items-end gap-3">
                 <label className="min-w-40 flex-1">
                   <span className={FORM_LABEL}>{t('st.modelSwitch.ruleFrom')}</span>

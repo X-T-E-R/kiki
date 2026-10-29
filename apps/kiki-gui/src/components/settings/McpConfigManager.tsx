@@ -740,7 +740,7 @@ export function McpConfigManager({
         </div>
       ) : null}
       {error !== null ? <InlineError error={error} /> : null}
-      <section aria-label={t('st.mcp.storedOAuthTitle')} className="border-t border-hairline pt-3" data-mcp-credentials>
+      <section aria-label={t('st.mcp.storedOAuthTitle')} className="pt-3" data-mcp-credentials>
         <Disclosure
           label={savedCredentials !== undefined && savedCredentials.length > 0 ? `${t('st.mcp.storedOAuthTitle')} · ${savedCredentials.length}` : t('st.mcp.storedOAuthTitle')}
           open={credentialsOpen}

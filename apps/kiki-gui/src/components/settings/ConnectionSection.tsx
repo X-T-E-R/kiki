@@ -205,7 +205,7 @@ function CurrentConnectionContent() {
           </div>
 
           {!isSsh && editingEndpoint ? <form
-            className="space-y-4 border-t border-hairline pt-3"
+            className="space-y-4 pt-3"
             onSubmit={(event) => { event.preventDefault(); applyDrafts(); }}
           >
             <div className="space-y-1.5">
@@ -253,7 +253,7 @@ function CurrentConnectionContent() {
 
           {/* Same connection, so the waits live with the address rather than a
               second card: the two numbers this device applies to requests on it. */}
-          <div id="st-card-conn-timeout" className="grid gap-x-8 gap-y-3 border-t border-hairline pt-3 sm:grid-cols-2">
+          <div id="st-card-conn-timeout" className="grid gap-x-8 gap-y-3 pt-3 sm:grid-cols-2">
             <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
               <label htmlFor="st-conn-request-timeout" className="text-[13px] text-ink">{t('st.conn.timeoutLabel')}</label>
               <span className="flex items-center gap-1.5">
@@ -288,7 +288,7 @@ function CurrentConnectionContent() {
             </div>
           </div>
 
-          <div id="st-card-conn-disconnect" className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-t border-hairline pt-3">
+          <div id="st-card-conn-disconnect" className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 pt-3">
             <p className="text-[12.5px] text-ink-soft">
               {isSsh ? t('connect.sshDisconnectBody') : t('st.conn.disconnectBody')}
             </p>

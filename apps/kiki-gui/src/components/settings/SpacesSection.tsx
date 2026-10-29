@@ -87,7 +87,7 @@ function CurrentSpaceSettings({ target }: { target: SpaceSettingsTarget | null }
   const here = currentSpace();
   const selected = target === null ? null : { ...target, identity: { ...target.identity, homeId: currentSpaceId() } };
   return (
-    <section id="st-card-space-overrides" className="border-t border-hairline pt-6" data-space-settings-section>
+    <section id="st-card-space-overrides" className="pt-6" data-space-settings-section>
       <SpaceSettingsDetail target={selected} name={here?.name ?? currentSpaceId()} />
     </section>
   );

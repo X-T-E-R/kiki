@@ -274,7 +274,7 @@ export function PluginsView({
             </div>
           )}
           {route.view === 'market' ? (
-            <div className="border-t border-hairline pt-3">
+            <div className="pt-3">
               <Disclosure label={t('cap.advanced')} open={advanced} onToggle={() => { setAdvanced((value) => !value); }} dataAttrs={{ 'data-plugins-advanced': '' }}>
                 <div className="max-w-[560px] space-y-4 pb-1">
                   <CatalogSourceField />

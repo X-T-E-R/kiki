@@ -310,7 +310,7 @@ export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = 
         <FeedbackLine feedback={testFeedback} />
       </div>
     ) : null}
-    {expanded ? <div data-im-binding-details={binding.id} className="space-y-3 border-t border-hairline/60 pt-3">
+    {expanded ? <div data-im-binding-details={binding.id} className="space-y-3 pt-3">
       <IdentityIds identity={binding.identity} singleLine={false} />
       <label className="block max-w-sm space-y-1">
         <span className={FORM_LABEL}>{t('st.im.searchTarget')}</span>

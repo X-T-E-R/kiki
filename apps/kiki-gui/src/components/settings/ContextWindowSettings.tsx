@@ -254,7 +254,7 @@ export function ModelContextFields({
         ? t('st.compact.pointClampHint', { tokens: formatCompactTokens(bounds?.ceil ?? 0) })
         : formatCompactTokens(trackValue ?? autoCompact);
   return (
-    <div data-model-context-fields className="space-y-3 border-t border-hairline pt-3">
+    <div data-model-context-fields className="space-y-3 pt-3">
       <div className="space-y-1">
         <p className="text-[12px] font-medium text-ink-soft">{t('st.compact.windowLabel')}</p>
         <ContextStepper value={windowTokens} onChange={onWindowChange} ariaLabel={t('st.models.contextAria', { model: modelId })} />

@@ -121,7 +121,7 @@ function EngineVisibilityToggle({ item, overrides, display }: {
 
   return (
     <div data-engine-visible={item.id} data-visible={visible ? 'true' : 'false'}
-      className="space-y-1 border-t border-hairline pt-3">
+      className="space-y-1 pt-3">
       <Toggle
         layout="row"
         label={t('st.engines.showInList', { engine: item.label })}
@@ -683,7 +683,7 @@ function EngineOverrides({ item, program, onCheck }: { item: ExecutorCatalogItem
   };
 
   return (
-    <details data-engine-advanced className="border-t border-hairline pt-3 [&[open]]:space-y-3">
+    <details data-engine-advanced className="pt-3 [&[open]]:space-y-3">
       <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-ink-soft [&::-webkit-details-marker]:hidden">
         <DisclosureChevron open={false} className="text-ink-faint" />
         {t('st.engines.advanced')}
@@ -1008,7 +1008,7 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
               </dl>
             </div>
 
-            <section data-engine-section="run" className="space-y-3 border-t border-hairline pt-5">
+            <section data-engine-section="run" className="space-y-3 pt-5">
               <h3 className="text-[13px] font-medium text-ink">{runModeCopy(locale).title}</h3>
               <EngineRunMode item={item} savedDefaults={savedDefaults} onSaved={refetchConfig} variant="panel" />
               <EngineDefaults item={item} saved={savedDefaults} onSaved={refetchConfig} />
@@ -1018,7 +1018,7 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
               <EngineVisibilityToggle item={item} overrides={overrides} display={display} />
               {item.default_profile === true ? <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.defaultProfile')}</p> : null}
               {localSessionEngine(item.id) !== undefined ? (
-                <div data-engine-local-sessions className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-hairline pt-3">
+                <div data-engine-local-sessions className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-3">
                   <div className="min-w-0 flex-1">
                     <p className="text-[12px] font-medium text-ink-soft">{t('localSessions.settingsTitle')}</p>
                     <p className="text-[12px] leading-4 text-ink-faint">{t('localSessions.settingsHint', { engine: item.label })}</p>
@@ -1028,7 +1028,7 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
               ) : null}
             </section>
 
-            <section data-engine-section="details" className="space-y-4 border-t border-hairline pt-5">
+            <section data-engine-section="details" className="space-y-4 pt-5">
               {shown !== undefined && shown.diagnostics.length > 0 ? (
                 <div data-engine-diagnostics className="space-y-1">
                   <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.diagnostics')}</p>
@@ -1089,7 +1089,7 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
             </section>
 
             {customRegistration ? (
-              <section data-engine-registration={item.id} className="space-y-1.5 border-t border-hairline pt-5">
+              <section data-engine-registration={item.id} className="space-y-1.5 pt-5">
                 <button type="button" data-engine-remove-registration className={DANGER_GHOST_BUTTON}
                   disabled={removing} aria-busy={removing} onClick={() => { void removeRegistration(); }}>
                   {t('common.remove')}

@@ -483,7 +483,7 @@ function RecipeImportForm({ onInstalled, onApply }: {
       </div>
 
       {previewed !== null ? (
-        <div className="space-y-2 border-t border-hairline pt-3" data-recipe-preview>
+        <div className="space-y-2 pt-3" data-recipe-preview>
           <p className="font-display text-[15px] text-ink">{previewed.summary.name}</p>
           <p className="font-mono text-[11px] text-ink-faint">
             {previewed.summary.version} · {recipeRevisionShort(previewed.resolved.revision)}

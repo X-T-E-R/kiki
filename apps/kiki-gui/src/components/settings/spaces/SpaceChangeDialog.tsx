@@ -218,7 +218,7 @@ function SpaceChangeDialogContext({ target, spaceName, canPush, request, onClose
             <ul className="mt-3" data-space-change-rows data-space-plan={preview?.action}>{sections.changed.map(row)}</ul>
 
             {sections.same.length > 0 ? (
-              <div className="mt-2 border-t border-hairline pt-2">
+              <div className="mt-2 pt-2">
                 <button type="button" data-space-change-same-toggle aria-expanded={showSame}
                   className="flex w-full items-center gap-1.5 rounded px-1 py-1 text-left text-[12px] text-ink-soft outline-none transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
                   onClick={() => { setShowSame((value) => !value); }}>
@@ -230,7 +230,7 @@ function SpaceChangeDialogContext({ target, spaceName, canPush, request, onClose
             ) : null}
 
             {sections.groups.length > 0 ? (
-              <div className="mt-3 border-t border-hairline pt-2">
+              <div className="mt-3 pt-2">
                 <ul data-space-change-group-rows>
                   {sections.groups.map((group) => (
                     <li key={group.id}>

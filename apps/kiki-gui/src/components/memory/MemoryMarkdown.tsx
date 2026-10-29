@@ -433,7 +433,7 @@ function ImportPreview({ target, preview, reason, onOpenEntry }: {
   const currentEntry = preview.current;
   const tone = preview.canApply ? 'text-ink' : 'text-amber-ink';
   return (
-    <section data-memory-import-preview-result={preview.action} data-memory-import-can-apply={preview.canApply ? 'true' : 'false'} className="space-y-4 border-t border-hairline pt-4">
+    <section data-memory-import-preview-result={preview.action} data-memory-import-can-apply={preview.canApply ? 'true' : 'false'} className="space-y-4 pt-4">
       <div className="space-y-1">
         <p className={`text-[14px] font-medium ${tone}`}>{t(ACTION_TEXT[preview.action])}</p>
         {issue !== undefined ? <p data-memory-import-issue={preview.issue!.code} className="text-[12px] leading-relaxed text-amber-ink">{t(issue)}</p> : null}
@@ -504,7 +504,7 @@ function EntryMeta({ scope, id, revision, pinned, basedOn = false, pinnedChanged
 }) {
   const { t } = useI18n();
   return (
-    <dl data-memory-import-meta className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-t border-hairline pt-2 text-[12px]">
+    <dl data-memory-import-meta className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 pt-2 text-[12px]">
       <dt className="text-ink-faint">{t('memory.markdown.meta.scope')}</dt>
       <dd data-memory-import-meta-scope className="min-w-0 truncate text-ink-soft">{scopeText(scope, t)}</dd>
       <dt className="text-ink-faint">{t('memory.markdown.meta.id')}</dt>

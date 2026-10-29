@@ -807,7 +807,7 @@ export function CatalogRefreshCard() {
           disabled={busy}
         />
         {choice !== undefined ? (
-          <div className="space-y-3 border-t border-hairline pt-3" data-catalog-refresh-form>
+          <div className="space-y-3 pt-3" data-catalog-refresh-form>
             <Hint>{t('st.catalogRefresh.saveHint')}</Hint>
             <label className={FORM_LABEL}>{t('st.catalogRefresh.alias')}
               <input className={`${INPUT} mt-1 font-normal`} value={alias} disabled={busy} onChange={(event) => { setAlias(event.target.value); }} />
@@ -1012,7 +1012,7 @@ export function ModelMaintenance() {
   const [open, setOpen] = useState(linked);
   useEffect(() => { if (linked) setOpen(true); }, [linked, hash]);
   return (
-    <details className="group border-t border-hairline pt-4" data-models-maintenance open={open}
+    <details className="group pt-4" data-models-maintenance open={open}
       onToggle={(event) => { setOpen(event.currentTarget.open); }}>
       <summary className="flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-1 text-[12px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink [&::-webkit-details-marker]:hidden">
         <DisclosureChevron open={false} className="text-ink-soft transition-transform group-open:rotate-90" />

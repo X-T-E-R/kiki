@@ -57,7 +57,7 @@ export function MemoryAdvisorRuntime({ workspaceId, config }: {
   const failure = read.isError && read.variables?.sessionId === sessionId && read.variables.agentId === agent ? read.error : undefined;
 
   return (
-    <div data-memory-advisor-runtime className="space-y-1 border-t border-hairline pt-3">
+    <div data-memory-advisor-runtime className="space-y-1 pt-3">
       <p className="text-[13px] font-medium text-ink">{t('memory.advisor.runtime')}</p>
       <Hint>{t('memory.advisor.runtimeHint')}</Hint>
       {sessions.length === 0 && !sessionsQuery.isPending ? (

@@ -240,7 +240,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
         <textarea id="profile-when" rows={4} className={`${INPUT} text-[13px] leading-snug`} value={draft.whenToUse} disabled={disabled}
           placeholder={t('st.profiles.whenToUsePlaceholder')} onChange={(event) => set('whenToUse', event.target.value)} />
       </Field>
-      <div data-profile-field="main" className="space-y-1 border-t border-hairline pt-4">
+      <div data-profile-field="main" className="space-y-1 pt-4">
         <Toggle layout="row" label={t('st.profiles.mainToggle')} checked={draft.main} disabled={disabled} onChange={(value) => set('main', value)} />
         <p className="text-[11.5px] leading-snug text-ink-faint">{t(draft.main ? 'st.profiles.mainOnHint' : 'st.profiles.mainOffHint')}</p>
       </div>

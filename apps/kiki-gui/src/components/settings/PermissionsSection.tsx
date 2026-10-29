@@ -100,7 +100,7 @@ function PermissionDefaultCard() {
         <p data-permission-mode-hint className={`max-w-[62ch] text-[12px] leading-snug ${mode === 'yolo' ? 'text-amber-ink' : 'text-ink-soft'}`}>
           {t(`st.defaults.permission.${mode}Hint`)}
         </p>
-        <div className="space-y-1 border-t border-hairline pt-3">
+        <div className="space-y-1 pt-3">
           <span className="block text-[13px] font-medium text-ink">{t('st.perm.dangerousBash')}</span>
           <SettingsSegmented ariaLabel={t('st.perm.dangerousBash')} value={dangerousBash}
             disabled={saving || configQuery.data === undefined} onChange={(next) => void applyDangerousBash(next)}

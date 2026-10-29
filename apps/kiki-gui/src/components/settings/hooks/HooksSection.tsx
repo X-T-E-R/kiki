@@ -495,7 +495,7 @@ export function HooksSection() {
                 // occasional; they open by themselves only when something is
                 // already set there.
                 <details data-hooks-sources open={draft !== null && draft.shape === 'v2' && (draft.config.files.length > 0 || draft.config.disabled.length > 0) ? true : undefined}
-                  className="group border-t border-hairline pt-3">
+                  className="group pt-3">
                   <summary className="inline-flex min-h-7 cursor-pointer select-none items-center gap-1 text-[12px] font-medium text-ink-soft hover:text-ink pointer-coarse:min-h-11">
                     <Icon name="chevron" size={12} className="text-ink-faint transition-transform group-open:rotate-90 motion-reduce:transition-none" />
                     {t('st.advanced.disclosure')}

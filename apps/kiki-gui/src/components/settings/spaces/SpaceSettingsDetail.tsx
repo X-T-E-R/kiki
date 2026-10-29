@@ -217,7 +217,7 @@ function SpaceSettingsDetailContext({ target, name, onDetailChange }: SpaceSetti
       )}
 
       {ownsAppearance && authority.deviceConflict ? (
-        <div className="space-y-2 border-t border-hairline pt-4" data-space-device-conflict>
+        <div className="space-y-2 pt-4" data-space-device-conflict>
           <p className="text-[13px] font-medium text-ink">{t('st.spaces.device.title')}</p>
           <p className="text-[12px] leading-4 text-ink-soft">{t('st.spaces.device.body')}</p>
           <div className="flex flex-wrap gap-2">

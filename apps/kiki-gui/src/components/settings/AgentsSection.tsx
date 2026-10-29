@@ -405,7 +405,7 @@ export function NamedAgentProfileRow({
           {subagentLeases.length > 0 ? (
             <SubagentLeaseList items={subagentLeases} variant="compact" />
           ) : null}
-          <details className="mt-2 border-t border-hairline pt-2" data-technical-details>
+          <details className="mt-2 pt-2" data-technical-details>
             <summary className="cursor-pointer select-none text-[12px] font-medium text-ink-faint hover:text-ink-soft">
               {t('st.namedAgents.technicalDetails')}
             </summary>
@@ -462,7 +462,7 @@ export function NamedAgentProfileRow({
         onDirtyChange={onRawDirtyChange}
       />
       {effective && profile.main === true && workspaceFallbackId !== undefined ? (
-        <div className="mt-3 border-t border-hairline pt-2">
+        <div className="mt-3 pt-2">
           <AgentCapabilitiesPanel query={{ workspace_id: workspaceFallbackId, profile: profile.name }} />
         </div>
       ) : null}

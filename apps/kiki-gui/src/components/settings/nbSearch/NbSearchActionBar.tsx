@@ -31,7 +31,7 @@ export function NbSearchActionBar({
 
   return (
     <div
-      className="mt-2 flex flex-col gap-2 border-t border-hairline pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-3 sm:gap-y-2"
+      className="mt-2 flex flex-col gap-2 pt-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-3 sm:gap-y-2"
       data-search-action-bar
     >
       <div className="flex min-w-0 flex-1 items-center gap-2">

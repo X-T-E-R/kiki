@@ -316,7 +316,7 @@ export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove, onConv
         </div>
       </DependentField>
 
-      <div className="border-t border-hairline pt-3" data-hook-field="match">
+      <div className="pt-3" data-hook-field="match">
         <button
           type="button"
           aria-expanded={matchOpen}

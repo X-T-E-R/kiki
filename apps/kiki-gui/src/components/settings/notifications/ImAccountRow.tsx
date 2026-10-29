@@ -120,7 +120,7 @@ export function ImAccountRow({ account, data, catalog, setupPlatform, initialTar
         </div>}
       </section>}
 
-      <section className="space-y-3 border-t border-hairline pt-4" data-im-account-settings={account.id}>
+      <section className="space-y-3 pt-4" data-im-account-settings={account.id}>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[12px]">
           <span className="text-ink-faint">{t('st.channels.accountId')}</span>
           <span className="min-w-0 break-all font-mono text-ink-soft" data-im-adapter={account.adapter}>{account.account_id ?? account.id}</span>

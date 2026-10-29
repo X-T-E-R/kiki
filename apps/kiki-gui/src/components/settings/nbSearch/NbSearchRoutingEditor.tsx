@@ -642,7 +642,7 @@ export function NbSearchRoutingEditor({
 
       {/* Local, offline plan preview. It calls the engine's own selector: no
           provider is contacted, so nothing here can cost anything. */}
-      <div className="space-y-2 border-t border-hairline pt-3">
+      <div className="space-y-2 pt-3">
         <label className={FORM_LABEL}>
           {t('st.nbSearch.routing.previewTitle')}
           <input

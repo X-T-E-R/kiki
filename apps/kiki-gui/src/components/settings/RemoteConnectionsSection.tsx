@@ -143,7 +143,7 @@ export function RemoteConnectionsSection() {
         <CloudflareEntry />
 
         {identity.data !== undefined && identity.data !== null ? (
-          <div className="border-t border-hairline pt-4" data-remote-self-identity>
+          <div className="pt-4" data-remote-self-identity>
             <CopyField id="remote-self-identity" dataAttr="self"
               label={t('st.remote.identityTitle')}
               value={identityBlock(identity.data.identity)}

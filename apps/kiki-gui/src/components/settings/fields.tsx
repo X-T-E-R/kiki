@@ -36,7 +36,7 @@ export function SettingsGroup({
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-2 border-t border-hairline pt-5 first:border-t-0 first:pt-0" data-settings-group>
+    <div className="space-y-2 pt-5 first:pt-0" data-settings-group>
       <div>
         <p className="text-[13px] font-medium text-ink">{title}</p>
         {help !== undefined ? <Hint>{help}</Hint> : null}

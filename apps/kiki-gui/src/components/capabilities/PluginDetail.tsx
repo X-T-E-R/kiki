@@ -306,7 +306,7 @@ export function PluginDetail({
         </aside>
       </div>
 
-      <div className="mt-8 border-t border-hairline pt-4">
+      <div className="mt-8 pt-4">
         <Disclosure label={t('cap.advanced')} open={advanced} onToggle={() => { setAdvanced((value) => !value); }} dataAttrs={{ 'data-plugin-advanced': '' }}>
           <div className="space-y-6">
             <FactList

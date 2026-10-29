@@ -85,7 +85,7 @@ function ExperimentalRow({ id, override, effective }: { id: string; override: bo
 
   const labelId = `experimental-flag-${id}-label`;
   return (
-    <div data-experimental-row={id} className="grid gap-x-6 gap-y-2 border-t border-hairline py-3 first:border-t-0 first:pt-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+    <div data-experimental-row={id} className="grid gap-x-6 gap-y-2 py-3 first:pt-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
       <div className="min-w-0 space-y-0.5">
         <p className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
           <span id={labelId} className="text-[13px] text-ink">{name}</span>

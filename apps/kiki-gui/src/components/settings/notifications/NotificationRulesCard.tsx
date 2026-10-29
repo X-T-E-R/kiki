@@ -131,7 +131,7 @@ export function NotificationRulesCard({ global, part = 'all' }: { global: Notifi
           </div>
         </DependentField>
         {part === 'all' ? <FeedbackLine feedback={save.error} /> : null}
-        <dl className="grid gap-x-6 gap-y-2 border-t border-hairline pt-3 sm:grid-cols-[8rem_minmax(0,1fr)]" data-notify-facts>
+        <dl className="grid gap-x-6 gap-y-2 pt-3 sm:grid-cols-[8rem_minmax(0,1fr)]" data-notify-facts>
           <dt className="text-[12px] text-ink-soft">{t('st.notify.privacyLabel')}</dt>
           <dd><Hint>{t('st.notify.privacy')}</Hint></dd>
           <dt className="text-[12px] text-ink-soft">{t('st.notify.runtimeLabel')}</dt>

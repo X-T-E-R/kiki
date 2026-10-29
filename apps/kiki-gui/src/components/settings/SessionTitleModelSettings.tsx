@@ -128,7 +128,7 @@ export function SessionTitleModelControls({
   const selectedValue = draft ?? '';
 
   return (
-    <div className="space-y-2 border-t border-hairline pt-3">
+    <div className="space-y-2 pt-3">
       <Hint>{t('st.sessionTitleModel.hint')}</Hint>
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <label htmlFor="session-title-model" className="text-[12px] font-medium text-ink">

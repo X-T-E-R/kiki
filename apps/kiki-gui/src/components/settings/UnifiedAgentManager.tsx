@@ -259,7 +259,7 @@ export function UnifiedAgentManager() {
       {/* The handoff is disabled while this is unresolved; say why rather than
           leaving a dead button. */}
       {!askKikiReady && workspacesQuery.isError ? <InlineError error={workspacesQuery.error} /> : null}
-      <AdvancedDetails summary={t('st.agentManager.disabledByName')} data-disabled-by-name-fold className="border-t border-hairline pt-3 text-[11px] text-ink-soft">
+      <AdvancedDetails summary={t('st.agentManager.disabledByName')} data-disabled-by-name-fold className="pt-3 text-[11px] text-ink-soft">
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <input
             className={`${INPUT} font-mono`}

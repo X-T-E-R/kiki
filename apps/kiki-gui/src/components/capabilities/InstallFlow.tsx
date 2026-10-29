@@ -337,7 +337,7 @@ export function InstallFlow({
             {/* Only a fresh install decides where it lands. An update carries no
                 choice: every switch it had stays exactly as it was. */}
             {!updating ? (
-              <fieldset className="border-t border-hairline pt-4" data-install-scope={choice}>
+              <fieldset className="pt-4" data-install-scope={choice}>
                 <legend className="text-[12px] font-medium text-ink-soft">{t('cap.install.scope.title')}</legend>
                 <div className="mt-2 space-y-1">
                   {scopeOptions.map((option) => (

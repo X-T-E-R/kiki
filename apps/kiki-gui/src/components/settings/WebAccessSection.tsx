@@ -445,7 +445,7 @@ function AddressDisclosure({ open, onToggle, state, draft, onDraft, onApply, app
         )}
         {state.insecure ? <p className="text-[12px] leading-snug text-amber-ink" data-web-access-insecure-hint>{t('st.web.insecureHint')}</p> : null}
 
-        <div className="space-y-2.5 border-t border-hairline pt-3" data-web-access-address-form>
+        <div className="space-y-2.5 pt-3" data-web-access-address-form>
           <SettingField label={t('st.web.hostField')} htmlFor="web-access-host" layout="stack" help={t('st.web.hostHint')}>
             <input id="web-access-host" data-web-access-host className={INPUT} inputMode="url" spellCheck={false}
               placeholder={t('st.web.hostPlaceholder')} value={draft.host}
