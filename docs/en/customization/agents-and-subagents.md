@@ -23,7 +23,9 @@ The main agent dispatches sub-agents on its own as the work calls for it, and yo
 
 Each dispatch appears as an approval request unless it matches an allow rule or YOLO mode is active, so you can read the task description before it runs. A sub-agent can run in the background and returns its result to the main agent on completion; you can also resume an existing sub-agent to continue the same task.
 
-A live background-task completion can wake an idle main agent even when a provider or runtime error paused its goal. Receiving the result leaves that goal paused; use `/goal resume` to continue it. An explicit user pause, cancellation, or exhausted goal budget holds the affected task results until your next authorized prompt. A completion queued just as a successful turn ends is delivered in a new turn without another user message.
+A live background-task completion wakes an idle main agent, including after its goal completes, is removed, or is replaced. A provider or runtime error that paused the goal does not prevent delivery; receiving the result leaves that goal paused. Use `/goal resume` to continue a paused goal. A completion queued just as a successful turn ends is delivered in a new turn without another user message.
+
+If you paused a task's goal yourself, cancelled the turn that launched it, or exhausted the current goal's budget, its result does not wake the idle main agent. Held results are delivered when it next runs, such as when you send another message. Tasks launched after a cancellation can still wake it.
 
 ## Named child agents
 

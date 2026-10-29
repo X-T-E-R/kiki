@@ -1683,20 +1683,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private notificationAdmission(info: AgentTaskInfo): StepRequestAdmission {
     const goal = this.currentGoal();
     const lastEnded = this.states.has(turnKey) ? this.states.get(turnKey).lastEnded : undefined;
-    if (this.loop.status().lastTurnResult === 'cancelled' || lastEnded?.reason === 'cancelled') {
+    if (lastEnded?.reason === 'cancelled' && info.ownerTurnId === lastEnded.turnId) {
       return 'activeOrNextTurn';
     }
-    if (goal?.status === 'active') return 'activeOrNewTurn';
-    if (goal !== null &&
-      ((goal.status === 'blocked' && info.goalId === goal.goalId) ||
-        (goal.status === 'paused' && goal.statusActor === 'runtime' &&
-          (info.goalId === undefined || info.goalId === goal.goalId))) &&
-      (goal.budgetLimits.tokenBudget === undefined || goal.tokensUsed < goal.budgetLimits.tokenBudget) &&
-      (goal.budgetLimits.turnBudget === undefined || goal.turnsUsed < goal.budgetLimits.turnBudget) &&
-      (goal.budgetLimits.wallClockBudgetMs === undefined || goal.wallClockMs < goal.budgetLimits.wallClockBudgetMs)) {
-      return 'activeOrNewTurn';
+    if (goal !== null && goal.status !== 'complete' &&
+      ((goal.status === 'paused' && goal.statusActor === 'user' && info.goalId === goal.goalId) ||
+        (goal.budgetLimits.tokenBudget !== undefined && goal.tokensUsed >= goal.budgetLimits.tokenBudget) ||
+        (goal.budgetLimits.turnBudget !== undefined && goal.turnsUsed >= goal.budgetLimits.turnBudget) ||
+        (goal.budgetLimits.wallClockBudgetMs !== undefined && goal.wallClockMs >= goal.budgetLimits.wallClockBudgetMs))) {
+      return 'activeOrNextTurn';
     }
-    return goal !== null || info.goalId !== undefined ? 'activeOrNextTurn' : 'activeOrNewTurn';
+    return 'activeOrNewTurn';
   }
 
   private async commitMaterializedNotifications(signal: AbortSignal): Promise<void> {
