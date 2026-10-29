@@ -2112,8 +2112,8 @@ export function browserControlTabLabelKey(tab: BrowserControlSettingsTab): I18nK
  * Sub-pages of the "Sessions" leaf, one question each: what happens to my
  * conversations (archive, import, titles), how an agent behaves inside a
  * session (plan mode, questions, messaging), and how background work runs
- * (task limits, cron diagnostics, the runtime flags). The ids double as the
- * `?tab=` deep-link parameter.
+ * (task limits, the runtime flags). The ids double as the `?tab=` deep-link
+ * parameter.
  */
 export const SESSIONS_SETTINGS_TABS = ['conversations', 'behavior', 'runtime'] as const;
 export type SessionsSettingsTab = (typeof SESSIONS_SETTINGS_TABS)[number];
@@ -2128,7 +2128,6 @@ const SESSIONS_TAB_BY_CARD: Readonly<Record<string, SessionsSettingsTab>> = {
   'st-card-questions': 'behavior',
   'st-card-agent-messaging': 'behavior',
   'st-card-task-policy': 'runtime',
-  'st-card-cron': 'runtime',
   'st-card-exp-sessions': 'runtime',
 };
 
@@ -2586,7 +2585,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'connection-services', cardId: 'st-card-host-skill', tab: 'clients', titleKey: 'st.hostSkill.title', keywordKeys: ['st.hostSkill.host.claude', 'st.hostSkill.host.codex', 'st.hostSkill.host.grok'], synonyms: ['kiki-as-subagent', 'subagent', '子智能体', 'Claude Code', 'Codex', 'Grok'] },
   { section: 'extensions', tab: 'skills', cardId: 'st-card-skill-catalog', titleKey: 'st.skills.catalogTitle', keywordKeys: ['cap.filterPlaceholder'], synonyms: ['能力', 'capabilities', '技能目录', 'skill catalog'] },
   { section: 'sessions', cardId: 'st-card-task-policy', tab: 'runtime', titleKey: 'st.taskPolicy.title', keywordKeys: ['st.taskPolicy.hint', 'st.taskPolicy.maxRunningTasks', 'st.taskPolicy.bashTimeout', 'st.taskPolicy.keepAlive', 'st.taskPolicy.fileToolHints'], synonyms: ['runtime', '运行时', 'background tasks', '后台任务'] },
-  { section: 'sessions', cardId: 'st-card-cron', tab: 'runtime', titleKey: 'st.cron.title', keywordKeys: ['st.cron.hint', 'st.cron.poll'], synonyms: ['cron', '定时任务', 'environment diagnostics', '环境诊断'] },
+  { section: 'developer', cardId: 'st-card-cron', titleKey: 'st.cron.title', keywordKeys: ['st.cron.hint', 'st.cron.poll'], synonyms: ['cron', '定时任务', 'environment diagnostics', '环境诊断'] },
   { section: 'sessions', cardId: 'st-card-agent-messaging', tab: 'behavior', titleKey: 'st.sessions.messagingTitle', keywordKeys: ['st.communication.threadCommunication', 'st.communication.notifyParent', 'st.sessions.delegationSub', 'st.sessions.delegationIndependent'], synonyms: ['thread communication', '线程通信', 'notify parent', '通知父代理', 'AgentNotify', 'agent communication', '智能体通信'] },
   { section: 'developer', cardId: 'st-card-token-counting', titleKey: 'st.communication.tokenCountingTitle', keywordKeys: ['st.communication.tokenCounting', 'st.communication.tokenCountingHint'], synonyms: ['token counting', 'token 计数'] },
   { section: 'general', cardId: 'st-card-append-timing', titleKey: 'st.communication.appendTimingTitle', keywordKeys: ['st.communication.appendTimingHint', 'st.communication.appendTiming'], synonyms: ['append timing', 'queue timing', '排队时机', '追加时机'] },

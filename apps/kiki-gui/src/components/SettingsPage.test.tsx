@@ -971,7 +971,7 @@ describe('SettingsPage batch-3 leaves', () => {
     const container = await renderSettings('/settings/runtime');
     expect(container.querySelector('#st-card-runtime')).toBeNull();
     expect(container.querySelector('#st-card-task-policy')).not.toBeNull();
-    expect(container.querySelector('#st-card-cron')).not.toBeNull();
+    expect(container.querySelector('#st-card-cron')).toBeNull();
     expect(container.querySelector('#st-card-tools')).toBeNull();
   });
 
@@ -1224,7 +1224,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(card.textContent).toContain('Advanced configuration for permissions, loop controls, and background tasks. Validated on save.');
     expect(card.textContent).not.toContain('kap-server');
     const order = [...container.querySelectorAll('[data-settings-card]')].map((node) => node.id);
-    expect(order).toEqual(['st-card-resource-limits', 'st-card-retry', 'st-card-session-residency', 'st-card-token-counting', 'st-card-memory-advisor-tuning', 'st-card-advanced', 'st-card-labs', 'st-card-exp-developer']);
+    expect(order).toEqual(['st-card-resource-limits', 'st-card-retry', 'st-card-session-residency', 'st-card-token-counting', 'st-card-memory-advisor-tuning', 'st-card-cron', 'st-card-advanced', 'st-card-labs', 'st-card-exp-developer']);
 
     const writes = client.patchConfig.mock.calls.length;
     await setTextarea(card.querySelector('textarea')!, '{');

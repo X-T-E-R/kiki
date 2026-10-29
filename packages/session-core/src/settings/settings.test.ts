@@ -1740,7 +1740,7 @@ describe('settings route resolver', () => {
     expect(resolveSettingsRoute('retired-section', '#st-card-runtime'))
       .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-task-policy', tab: 'runtime' });
     expect(resolveSettingsRoute('runtime', '#st-card-cron'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-cron', tab: 'runtime' });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-cron', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-communication'))
       .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: 'behavior' });
     expect(resolveSettingsRoute('runtime', '#st-card-resource-limits'))

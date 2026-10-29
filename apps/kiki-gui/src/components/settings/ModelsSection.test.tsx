@@ -878,7 +878,7 @@ describe('GlobalDefaultsCard', () => {
     expect(container.querySelector('[data-default-row="fast"]')!.textContent).toContain('small background jobs');
     // No title model, so the title row says the honest thing: nothing writes
     // a title on its own. A fast model is not a title source any more.
-    expect(container.querySelector('[data-default-row="session-title"]')!.textContent).toContain('No model picked, so no title is written on its own.');
+    expect(container.querySelector('[data-default-row="session-title"]')!.textContent).toContain('Not set; titles are not written automatically.');
     expect(container.querySelector('[data-default-row="session-title"]')!.textContent).not.toContain('Falls back to fast model');
     await act(async () => { subagentRow.querySelector<HTMLButtonElement>('#st-default-subagent-model')!.click(); });
     const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent?.includes('Kimi K2'))!;

@@ -3355,11 +3355,11 @@ export const en = {
   'st.defaults.planGateTimeoutInvalid': 'Timeout must be at least 5 seconds.',
   'st.defaults.planModeHint': 'New sessions start in plan mode: the model proposes a plan before acting. Whether it waits for your confirmation depends on the permission mode.',
   'st.defaults.planGateTimeoutHint': 'Only used while approval is required. Unanswered entry requests are rejected after this many seconds.',
-  'st.defaults.globalTitle': 'Default models',
+  'st.defaults.globalTitle': 'A model for each job',
   'st.defaults.globalModelLabel': 'Default model',
   'st.defaults.pickModel': 'Browse available models',
   'st.defaults.tabHint': 'Defaults for brand-new sessions; sessions already running keep their own choices.',
-  'st.defaults.globalHint': 'Running sessions keep their own model.',
+  'st.defaults.globalHint': 'The model new sessions use sits above the tabs; these are the models every other job falls back to.',
   'st.composer.title': 'Composer & session',
   'st.composer.questions': 'Questions from the agent',
   'st.composer.questionsDontBlock': 'Don’t block',
@@ -3559,7 +3559,7 @@ export const en = {
   'st.defaults.row.newSessionHelp': 'The model a new session starts with. Change it per session from the composer.',
   'st.defaults.row.title': 'Session titles',
   'st.defaults.row.titleHelp': 'Names sessions in the background. A small, fast model is enough.',
-  'st.defaults.row.titleUnset': 'No model picked, so no title is written on its own.',
+  'st.defaults.row.titleUnset': 'Not set; titles are not written automatically.',
   'st.defaults.row.subagent': 'Subagents',
   'st.defaults.row.subagentHelp': 'Used only when a subagent has no other pin: not from the dispatch, route, caller lease or its profile.',
   'st.defaults.row.subagentUnset': 'Not set',
@@ -3908,6 +3908,7 @@ export const en = {
   'st.section.identity': "Request identity",
   'st.purpose.identity': 'Which client a request presents itself as, and where that client version comes from.',
   'st.identity.listTitle': "Identities",
+  'st.identity.purpose': 'How the requests Kiki sends to a provider identify themselves. The default works; most people never change it.',
   'st.identity.builtinGroup': "Built in",
   'st.identity.customGroup': "Your identities",
   'st.identity.customEmpty': "Duplicate a built-in identity to edit its User-Agent, headers and body fields.",
@@ -5378,13 +5379,15 @@ export const en = {
     'The current copy pins model {model}; the original has no pin, so after the restore dispatches without an explicit model_alias use the default model instead.',
   'st.shipped.restored': 'Original restored and agents reloaded.',
   'st.subagentDefault.title': 'Default subagent',
-  'st.subagentDefault.hint': 'Used when AgentRun does not specify an agent.',
-  'st.subagentDefault.label': 'Default agent for AgentRun',
+  'st.subagentDefault.hint': 'Used when a dispatched task does not name a subagent.',
+  'st.subagentDefault.label': 'Default subagent',
   'st.subagentDefault.strict': 'Require an explicit agent',
   'st.subagentDefault.strictHint':
     'Dispatches that omit the agent fail with an error instead of falling back to a default.',
   'st.subagentDefault.unresolvable':
     'The default "{name}" is not among the loaded agents; dispatches without an explicit agent cannot resolve it.',
+  'st.subagentDefault.fallbackMissing':
+    'The engine fallback "{name}" is not among the loaded agents; dispatches that omit one may not resolve it. You can pick another here.',
   'st.subagentDefault.disabledTarget':
     '"{name}" is disabled; while disabled it is not invoked as a subagent.',
   'st.subagentDefault.noModelPin':
@@ -5888,8 +5891,7 @@ export const en = {
   'st.about.build': 'Build',
   'st.about.serverId': 'Server ID',
   'st.about.backend': 'Backend',
-  'st.about.browserHint':
-    'The browser build has no auto-updater. Open this page in the Kiki desktop app to check for and install updates.',
+  'st.about.technical': 'Technical details',
   'st.about.channel': 'Update channel',
   'st.about.stable': 'Stable',
   'st.about.beta': 'Beta',

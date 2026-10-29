@@ -147,7 +147,7 @@ describe('config gap cards', () => {
     for (const suffix of ['On by default.', 'Off by default.']) {
       expect(card.textContent).not.toContain(suffix);
     }
-    expect(card.textContent).toContain('keeps running as a background task instead of being stopped.');
+    expect(card.textContent).toContain('keeps running as a background task.');
     expect(card.textContent).toContain('leaves running background tasks alone instead of stopping them.');
     expect(card.textContent).toContain('add a short hint pointing to Read, Grep or Edit.');
     const openHelp = async (label: string): Promise<string> => {
