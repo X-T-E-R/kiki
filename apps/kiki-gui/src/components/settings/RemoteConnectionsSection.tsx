@@ -88,19 +88,14 @@ export function RemoteConnectionsSection() {
       : t('st.remote.configures', { origin: connectionAddress(control.baseUrl), home: controlHomeLabel });
 
   return (
-    <SectionCard id="st-card-remote-connections" title={t('st.remote.outboundTitle')} scope="server" actions={control !== null ? (
-      <button type="button" data-remote-add className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
-        onClick={() => { setDialog({ kind: 'add' }); }}>
-        <Icon name="plus" size={12} />{t('st.remote.add')}
-      </button>
-    ) : undefined}>
+    <SectionCard id="st-card-remote-connections" title={t('st.remote.outboundTitle')} scope="server">
       <div className="space-y-4" data-remote-connections>
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
           <p className="min-w-0 text-[12.5px] text-ink-soft" data-remote-source>{sourceLine}</p>
           <span className="flex shrink-0 items-center gap-4">
-            {/* The other direction lives with the rest of inbound access. */}
+            {/* The other direction is the gate card on the same view. */}
             <button type="button" data-remote-inbound-link className="text-[12.5px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink"
-              onClick={() => { void navigate('/settings/connection-services?tab=kiki#st-card-inbound-connections'); }}>
+              onClick={() => { document.getElementById('st-card-inbound-connections')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>
               {t('st.inbound.title')}
             </button>
             <button type="button" data-remote-diagnostics className="text-[12.5px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink"
@@ -115,7 +110,13 @@ export function RemoteConnectionsSection() {
 
         {connections.isSuccess && records.length === 0 ? (
           <div data-remote-empty>
-            <ListEmpty kind="none" title={t('st.remote.emptyTitle')} body={t('st.remote.emptyBody')} />
+            <ListEmpty kind="none" title={t('st.remote.emptyTitle')} body={t('st.remote.emptyBody')}
+              action={control !== null ? (
+                <button type="button" data-remote-add className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
+                  onClick={() => { setDialog({ kind: 'add' }); }}>
+                  <Icon name="plus" size={12} />{t('st.remote.add')}
+                </button>
+              ) : undefined} />
           </div>
         ) : null}
 
@@ -126,6 +127,15 @@ export function RemoteConnectionsSection() {
                 onEnter={() => { enterRemoteSpace(record.id, record.label); }}
                 onMenu={(anchor, element) => { setMenu({ record, anchor, anchorElement: element }); }} />
             ))}
+          </div>
+        ) : null}
+
+        {records.length > 0 && control !== null ? (
+          <div className="flex justify-end">
+            <button type="button" data-remote-add className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
+              onClick={() => { setDialog({ kind: 'add' }); }}>
+              <Icon name="plus" size={12} />{t('st.remote.add')}
+            </button>
           </div>
         ) : null}
 

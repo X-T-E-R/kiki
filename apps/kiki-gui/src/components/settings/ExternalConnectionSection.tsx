@@ -533,7 +533,7 @@ function AvailableTunnelContent({
               {t('connect.copyLink')}
             </button>
           </div>
-          <Hint>{t('st.conn.ext.unverified')}</Hint>
+          <Hint>{t('st.conn.ext.reachUnverified')}</Hint>
         </div>
       ) : null}
 

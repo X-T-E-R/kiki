@@ -111,6 +111,8 @@ function SshHostsSettings() {
   const [busy, setBusy] = useState<string | null>(null);
   const [rowFeedback, setRowFeedback] = useState<{ id: string; feedback: Feedback } | null>(null);
 
+  // Kiki's own hosts come first (they are the editable ones), the system
+  // config's aliases after; one list, one order.
   const kikiHosts = hosts.filter((host) => host.source === 'kiki');
   const configHosts = hosts.filter((host) => host.source === 'ssh-config');
   // Kiki hosts that shadow a discovered alias keep the alias visible as "overridden".
@@ -140,8 +142,7 @@ function SshHostsSettings() {
     <>
       <SectionCard id="st-card-ssh-hosts" title={t('st.ssh.hostsTitle')}>
         <div className="space-y-5">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <p className="mr-auto max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.ssh.intro')}</p>
+          <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
             <button type="button" data-ssh-add-host className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
               onClick={() => { setForm({ kind: 'create' }); }}>
               <Icon name="plus" size={12} />
@@ -159,12 +160,12 @@ function SshHostsSettings() {
             </div>
           ) : null}
 
-          {kikiHosts.length > 0 ? (
-            <HostGroup
-              id="kiki"
-              label={t('st.ssh.group.kiki')}
-              note={t('st.ssh.group.kikiNote')}
-              hosts={kikiHosts}
+          {hosts.length > 0 ? (
+            // One list: where a host lives is a tag on its row, not a group the
+            // reader has to learn. Kiki's own hosts first (they are the ones the
+            // user can edit), the system config's aliases after.
+            <HostList
+              hosts={hosts}
               statusFor={statusFor}
               busy={busy}
               feedbackFor={(id) => (rowFeedback?.id === id ? rowFeedback.feedback : null)}
@@ -173,20 +174,6 @@ function SshHostsSettings() {
               onRemoteSpace={(host) => { setRemoteSpace({ profileId: host.id }); }}
               onDelete={(host) => { setConfirm({ kind: 'delete', host }); }}
               onWriteBack={(host) => { setConfirm({ kind: 'write-back', host }); }}
-              onDisconnect={(host) => void run(host, () => sshApi(client).disconnect(host.id), t('st.ssh.disconnected'))}
-            />
-          ) : null}
-
-          {configHosts.length > 0 ? (
-            <HostGroup
-              id="ssh-config"
-              label={t('st.ssh.group.config')}
-              note={t('st.ssh.group.configNote')}
-              hosts={configHosts}
-              statusFor={statusFor}
-              busy={busy}
-              feedbackFor={(id) => (rowFeedback?.id === id ? rowFeedback.feedback : null)}
-              overridden={overridden}
               onOverride={(host) => { setForm({ kind: 'override', host }); }}
               onDisconnect={(host) => void run(host, () => sshApi(client).disconnect(host.id), t('st.ssh.disconnected'))}
             />
@@ -252,13 +239,10 @@ function SshHostsSettings() {
   );
 }
 
-function HostGroup({
-  id, label, note, hosts, statusFor, busy, feedbackFor, overridden,
+function HostList({
+  hosts, statusFor, busy, feedbackFor, overridden,
   onEdit, onRemoteSpace, onDelete, onWriteBack, onOverride, onDisconnect,
 }: {
-  id: 'kiki' | 'ssh-config';
-  label: string;
-  note: string;
   hosts: readonly SshHost[];
   statusFor: (id: string) => SshHostStatus | undefined;
   busy: string | null;
@@ -272,30 +256,23 @@ function HostGroup({
   onDisconnect: (host: SshHost) => void;
 }) {
   return (
-    <div data-ssh-group={id}>
-      <p className="flex h-7 items-baseline gap-1.5 text-[12px]">
-        <span className="font-medium text-ink-soft">{label}</span>
-        <span className="text-ink-faint tabular-nums">{hosts.length}</span>
-        <span className="ml-1 truncate text-ink-faint">{note}</span>
-      </p>
-      <div className="mt-0.5 overflow-hidden rounded-lg border border-hairline bg-panel">
-        {hosts.map((host) => (
-          <HostRow
-            key={host.id}
-            host={host}
-            status={statusFor(host.id)}
-            busy={busy === host.id}
-            feedback={feedbackFor(host.id)}
-            overridesConfig={overridden.has(host.id)}
-            onEdit={onEdit}
-            onRemoteSpace={onRemoteSpace}
-            onDelete={onDelete}
-            onWriteBack={onWriteBack}
-            onOverride={onOverride}
-            onDisconnect={onDisconnect}
-          />
-        ))}
-      </div>
+    <div className="overflow-hidden rounded-lg border border-hairline bg-panel">
+      {hosts.map((host) => (
+        <HostRow
+          key={host.id}
+          host={host}
+          status={statusFor(host.id)}
+          busy={busy === host.id}
+          feedback={feedbackFor(host.id)}
+          overridesConfig={overridden.has(host.id)}
+          onEdit={host.source === 'kiki' ? onEdit : undefined}
+          onRemoteSpace={host.source === 'kiki' ? onRemoteSpace : undefined}
+          onDelete={host.source === 'kiki' ? onDelete : undefined}
+          onWriteBack={host.source === 'kiki' ? onWriteBack : undefined}
+          onOverride={host.source === 'ssh-config' ? onOverride : undefined}
+          onDisconnect={onDisconnect}
+        />
+      ))}
     </div>
   );
 }
@@ -341,6 +318,9 @@ function HostRow({
             {secondLine}
           </span>
         </span>
+        {fromConfig ? (
+          <span className="hidden shrink-0 text-[12px] text-ink-faint sm:inline" data-ssh-source-tag>{t('st.ssh.row.fromConfig')}</span>
+        ) : null}
         {host.agentAccess === 'hidden' ? (
           <span className="hidden shrink-0 text-[12px] text-ink-faint sm:inline">{t('st.ssh.row.hidden')}</span>
         ) : null}

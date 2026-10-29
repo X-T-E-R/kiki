@@ -46,7 +46,6 @@ import { SpaceDot } from './spaces/SpaceDot';
 import { SpaceRowMenu, type SpaceMenuItem } from './spaces/SpaceRowMenu';
 import { SpaceCredentialsCard } from './spaces/SubspaceCards';
 import { SpaceSettingsDetail } from './spaces/SpaceSettingsDetail';
-import { RemoteConnectionsSection } from './RemoteConnectionsSection';
 
 /**
  * Settings → Spaces (§9.1). The main space manages the list; a space sees the
@@ -67,7 +66,6 @@ export function SpacesSection() {
       <WindowModeCard sub={sub} />
       {controlClient === null ? <Hint>{t('st.spaces.loading')}</Hint> : <>
         <SpaceListCard sub={sub} client={controlClient} target={controlTarget} openLocalSpace={openLocalSpace} />
-        <RemoteConnectionsSection />
         {sub ? <SpaceCredentialsCard client={controlClient} onEnterMain={() => openLocalSpace(MAIN_SPACE_ID, mode)} /> : null}
         {sub ? <CurrentSpaceSettings target={controlTarget} /> : null}
       </>}
@@ -133,6 +131,7 @@ function WindowModeCard({ sub }: { sub: boolean }) {
   const host = useHost();
   const { t } = useI18n();
   const [prefs, setPrefs] = useState(readDesktopPrefs);
+  // Windowing only exists on the desktop app; the browser shows no card at all.
   const desktop = host.kind === 'tauri';
   // What the running process uses; a new choice waits for the next launch.
   const [launched] = useState(() => launchWindowMode(readDesktopPrefs().windowMode));
@@ -152,10 +151,11 @@ function WindowModeCard({ sub }: { sub: boolean }) {
     if (host.kind === 'tauri') void host.writeDesktopPrefs({ windowMode });
   };
 
-  const aside = !desktop ? t('st.spaces.windowBrowserHint') : sub ? t('st.spaces.windowSubHint') : undefined;
+  if (!desktop) return null;
+  const aside = sub ? t('st.spaces.windowSubHint') : undefined;
   return (
     <SectionCard id="st-card-space-window" title={t('st.spaces.windowTitle')} scope="app" aside={aside}>
-      {desktop && !sub ? (
+      {!sub ? (
         <fieldset className="space-y-2" data-space-window-mode={prefs.windowMode}>
           <legend className="sr-only">{t('st.spaces.windowTitle')}</legend>
           <div className="grid gap-2 sm:grid-cols-2">
@@ -420,7 +420,14 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
                   onClick={() => { enter(space); }}>
                   {entering === space.id ? t('sidebar.space.starting', { name: label }) : t(mode === 'switch' ? 'st.spaces.switch' : 'st.spaces.open')}
                 </button>
-              ) : null}
+              ) : (
+                // The browser cannot open another space; looking at and changing
+                // what it holds is the row's primary action there.
+                <button type="button" data-space-settings-open={space.id} className={SECONDARY_BUTTON}
+                  onClick={() => { setDialog({ kind: 'settings', space }); }}>
+                  {t('st.spaces.settingsMenu')}
+                </button>
+              )}
             </>
           )}
           {!sub ? (
@@ -447,16 +454,31 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
 
         {items.length > 0 ? (
           <>
-            <ListToolbar view={view} total={ordered.length} filters={filters} sorts={sorts}
-              searchLabel={t('st.spaces.search')} searchPlaceholder={t('st.spaces.searchPlaceholder')}
-              actions={!sub ? (
-                <>
-                  <button type="button" data-space-new className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`} onClick={() => { setDialog({ kind: 'create' }); }}>
-                    <Icon name="plus" size={12} />{t('st.spaces.new')}
-                  </button>
-                  <button type="button" data-space-attach-open className={SECONDARY_BUTTON} onClick={() => { setDialog({ kind: 'attach' }); }}>{t('st.spaces.attach')}</button>
-                </>
-              ) : undefined} />
+            {/* A short list needs no filter or sort: the create entries sit on
+                the card head then, the toolbar only when the list earns it. */}
+            {ordered.length < 8 ? (
+              <div className="flex items-center justify-end gap-2">
+                {!sub ? (
+                  <>
+                    <button type="button" data-space-new className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`} onClick={() => { setDialog({ kind: 'create' }); }}>
+                      <Icon name="plus" size={12} />{t('st.spaces.new')}
+                    </button>
+                    <button type="button" data-space-attach-open className={SECONDARY_BUTTON} onClick={() => { setDialog({ kind: 'attach' }); }}>{t('st.spaces.attach')}</button>
+                  </>
+                ) : null}
+              </div>
+            ) : (
+              <ListToolbar view={view} total={ordered.length} filters={filters} sorts={sorts}
+                searchLabel={t('st.spaces.search')} searchPlaceholder={t('st.spaces.searchPlaceholder')}
+                actions={!sub ? (
+                  <>
+                    <button type="button" data-space-new className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`} onClick={() => { setDialog({ kind: 'create' }); }}>
+                      <Icon name="plus" size={12} />{t('st.spaces.new')}
+                    </button>
+                    <button type="button" data-space-attach-open className={SECONDARY_BUTTON} onClick={() => { setDialog({ kind: 'attach' }); }}>{t('st.spaces.attach')}</button>
+                  </>
+                ) : undefined} />
+            )}
             {view.visible.length === 0 ? (
               <ListEmpty kind="no-match" title={t('st.spaces.noMatchTitle')}
                 body={view.query.trim() !== '' ? t('st.spaces.noMatches', { query: view.query.trim() }) : undefined}
@@ -473,7 +495,6 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
             <ListEmpty kind="none" title={t('st.spaces.emptyTitle')} body={t('st.spaces.emptyBody')} />
           </div>
         ) : null}
-        {!desktop && others.length > 0 ? <Hint>{t('st.spaces.desktopOnly')}</Hint> : null}
         <FeedbackLine feedback={feedback} />
       </div>
 

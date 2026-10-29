@@ -40,6 +40,7 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, Toggle, type Feedback } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { HostSkillInstallCard } from './HostSkillInstallCard';
 import { ListEmpty } from './list';
 import { SectionCard } from './SectionCard';
 
@@ -425,7 +426,7 @@ function ListenerPanel({ listener, api, onChanged }: {
       {listener.state === 'error' && listener.error !== undefined ? (
         <p data-xc-listener-error className="text-[12px] leading-4 text-danger">{listener.error}</p>
       ) : null}
-      <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.xc.listenerDiscoveryHint')}</p>
+
       <Field label={t('st.xc.publicUrl')} hint={t('st.xc.publicUrlHint')} htmlFor="xc-public-url">
         <div className="flex flex-wrap items-center gap-2">
           <input id="xc-public-url" data-xc-public-url className={`${INPUT} min-w-0 flex-1 font-mono text-[11.5px]`}
@@ -443,6 +444,18 @@ function ListenerPanel({ listener, api, onChanged }: {
 }
 
 // ---- pending authorizations ----
+
+/** Scope ids are protocol words; the row names what the client can do. */
+const SCOPE_LABEL: Readonly<Record<string, I18nKey>> = {
+  'tools:read': 'st.xc.scope.toolsRead',
+  'tools:write': 'st.xc.scope.toolsWrite',
+  'history:read': 'st.xc.scope.historyRead',
+};
+
+function scopeLabel(scope: string, t: (key: I18nKey) => string): string {
+  const key = SCOPE_LABEL[scope];
+  return key === undefined ? scope : t(key);
+}
 
 function AuthorizationPanel({ requests, api, onChanged }: {
   requests: readonly ExternalClientAuthorization[];
@@ -474,7 +487,9 @@ function AuthorizationPanel({ requests, api, onChanged }: {
           <div className="min-w-0 flex-1">
             <p className="truncate text-[13px] font-medium text-ink">{request.clientName ?? request.clientId}</p>
             {request.scopes.length > 0 ? (
-              <p className="truncate font-mono text-[11.5px] text-ink-faint">{request.scopes.join(' · ')}</p>
+              <p className="truncate text-[11.5px] text-ink-faint" data-xc-auth-scopes>
+                {request.scopes.map((scope) => scopeLabel(scope, t)).join(' · ')}
+              </p>
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -907,6 +922,8 @@ export function ExternalClientsSection() {
             </button>
           </div>
         ) : null}
+        {/* A pending authorization is the most time-sensitive thing here, so it
+            answers first, above the list, never below it. */}
         {authorizations.length > 0 && api !== undefined ? (
           <div className="border-t border-hairline pt-4">
             <AuthorizationPanel requests={authorizations} api={api} onChanged={refresh} />
@@ -914,12 +931,23 @@ export function ExternalClientsSection() {
         ) : null}
         {listener !== undefined && api !== undefined ? (
           <div className="border-t border-hairline pt-4">
-            <ListenerPanel listener={listener} api={api} onChanged={refresh} />
-            <div className="mt-3 border-t border-hairline pt-3">
-              <RemoteAccess listener={listener} />
-            </div>
+            <details data-xc-access-details className="group/xc-access">
+              <summary className="flex min-h-8 cursor-pointer list-none items-center gap-1.5 text-[12px] text-ink-soft transition-colors hover:text-ink [&::-webkit-details-marker]:hidden">
+                <DisclosureChevron open={false} className="transition-transform group-open/xc-access:rotate-90" />
+                {t('st.xc.accessTitle')}
+              </summary>
+              <div className="mt-2 space-y-3">
+                <ListenerPanel listener={listener} api={api} onChanged={refresh} />
+                <div className="border-t border-hairline pt-3">
+                  <RemoteAccess listener={listener} />
+                </div>
+              </div>
+            </details>
           </div>
         ) : null}
+        {/* The other job this tab answers: using Kiki from inside another
+            client, which installs a skill there rather than granting access. */}
+        <HostSkillInstallCard />
       </div>
     </SectionCard>
   );

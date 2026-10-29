@@ -5,8 +5,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { errorText, issueText } from '@kiki/session-core/i18n';
 import {
   clearRestartRequirement,
-  MAX_REQUEST_TIMEOUT_SECONDS,
-  MIN_REQUEST_TIMEOUT_SECONDS,
   readSettings,
   validateRequestTimeoutSeconds,
   validateReadingTimeoutSeconds,
@@ -23,7 +21,6 @@ import { FeedbackLine, Hint, SavedTick, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
-import { SettingField } from './fields';
 import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
 import { CommitInput, SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
@@ -253,87 +250,84 @@ function CurrentConnectionContent() {
             />
             {draftsDirty ? <Hint>{t('st.conn.applyHint')}</Hint> : null}
           </form> : null}
-        </div>
-      </SectionCard>
 
-      <SectionCard id="st-card-conn-timeout" title={t('st.conn.timeoutTitle')}>
-        {/* One number on this device: it saves itself on blur/Enter. */}
-        <SettingField
-          label={t('st.conn.timeoutLabel')}
-          htmlFor="st-conn-request-timeout"
-          help={t('st.conn.timeoutHint', { minimum: MIN_REQUEST_TIMEOUT_SECONDS, maximum: MAX_REQUEST_TIMEOUT_SECONDS })}
-        >
-          <SavedTick show={timeoutSaved} />
-          <CommitInput
-            id="st-conn-request-timeout"
-            className="w-24 text-right"
-            inputMode="numeric"
-            value={String(savedRequestTimeout)}
-            validate={timeoutIssue}
-            onCommit={(text) => { saveRequestTimeout(Number(text)); }}
-          />
-        </SettingField>
-        <SettingField label={t('st.conn.readingTimeoutLabel')} htmlFor="st-conn-reading-timeout" detail={t('st.conn.readingTimeoutHint')}>
-          <SavedTick show={readingTimeoutSaved} />
-          <CommitInput id="st-conn-reading-timeout" className="w-24 text-right" inputMode="numeric"
-            value={String(savedReadingTimeout)}
-            validate={(text) => {
-              const issue = validateReadingTimeoutSeconds(text === '' ? Number.NaN : Number(text));
-              return issue === null ? null : issueText(locale, issue);
-            }}
-            onCommit={(text) => {
-              const seconds = Number(text);
-              writeSettings({ readingTimeoutSeconds: seconds });
-              setSavedReadingTimeout(seconds);
-              pingReadingTimeoutSaved();
-            }} />
-        </SettingField>
+          {/* Same connection, so the waits live with the address rather than a
+              second card: the two numbers this device applies to requests on it. */}
+          <div id="st-card-conn-timeout" className="grid gap-x-8 gap-y-3 border-t border-hairline pt-3 sm:grid-cols-2">
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+              <label htmlFor="st-conn-request-timeout" className="text-[13px] text-ink">{t('st.conn.timeoutLabel')}</label>
+              <span className="flex items-center gap-1.5">
+                <SavedTick show={timeoutSaved} />
+                <CommitInput
+                  id="st-conn-request-timeout"
+                  className="w-20 text-right"
+                  inputMode="numeric"
+                  value={String(savedRequestTimeout)}
+                  validate={timeoutIssue}
+                  onCommit={(text) => { saveRequestTimeout(Number(text)); }}
+                />
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+              <label htmlFor="st-conn-reading-timeout" className="text-[13px] text-ink">{t('st.conn.readingTimeoutLabel')}</label>
+              <span className="flex items-center gap-1.5">
+                <SavedTick show={readingTimeoutSaved} />
+                <CommitInput id="st-conn-reading-timeout" className="w-20 text-right" inputMode="numeric"
+                  value={String(savedReadingTimeout)}
+                  validate={(text) => {
+                    const issue = validateReadingTimeoutSeconds(text === '' ? Number.NaN : Number(text));
+                    return issue === null ? null : issueText(locale, issue);
+                  }}
+                  onCommit={(text) => {
+                    const seconds = Number(text);
+                    writeSettings({ readingTimeoutSeconds: seconds });
+                    setSavedReadingTimeout(seconds);
+                    pingReadingTimeoutSaved();
+                  }} />
+              </span>
+            </div>
+          </div>
+
+          <div id="st-card-conn-disconnect" className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-t border-hairline pt-3">
+            <p className="text-[12.5px] text-ink-soft">
+              {isSsh ? t('connect.sshDisconnectBody') : t('st.conn.disconnectBody')}
+            </p>
+            <button
+              type="button"
+              data-conn-disconnect
+              className={DANGER_GHOST_BUTTON}
+              onClick={() => { setConfirmDisconnect(true); }}
+            >
+              {t('sidebar.disconnect')}
+            </button>
+          </div>
+        </div>
       </SectionCard>
 
       <ConnectionLogCard />
 
-      {!isSsh ? (
-        <SectionCard
-          id="st-card-conn-owned"
-          title={t('st.conn.ownedTitle')}
-          badge="desktop"
-        >
-          {isDesktop ? (
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-                <p className="text-[12.5px] text-ink-soft">
-                  {t('st.conn.ownedBody')}
-                  {busySessions !== undefined && busySessions > 0 ? (
-                    <span className="ml-2 text-ink" data-conn-busy-sessions>
-                      {t('st.conn.busySessions', { count: busySessions })}
-                    </span>
-                  ) : null}
-                </p>
-                <button type="button" className={SECONDARY_BUTTON} disabled={restarting} onClick={() => { setConfirmRestart(true); }}>
-                  {restarting ? t('st.conn.restarting') : t('st.conn.restart')}
-                </button>
-              </div>
-              <FeedbackLine feedback={feedback} />
+      {/* The browser cannot restart the desktop's own server, so the card is
+          simply absent there rather than a "desktop only" shell. */}
+      {!isSsh && isDesktop ? (
+        <SectionCard id="st-card-conn-owned" title={t('st.conn.ownedTitle')}>
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+              <p className="text-[12.5px] text-ink-soft">
+                {t('st.conn.ownedBody')}
+                {busySessions !== undefined && busySessions > 0 ? (
+                  <span className="ml-2 text-ink" data-conn-busy-sessions>
+                    {t('st.conn.busySessions', { count: busySessions })}
+                  </span>
+                ) : null}
+              </p>
+              <button type="button" className={SECONDARY_BUTTON} disabled={restarting} onClick={() => { setConfirmRestart(true); }}>
+                {restarting ? t('st.conn.restarting') : t('st.conn.restart')}
+              </button>
             </div>
-          ) : null}
+            <FeedbackLine feedback={feedback} />
+          </div>
         </SectionCard>
       ) : null}
-
-      <SectionCard id="st-card-conn-disconnect" title={t('st.conn.disconnectTitle')}>
-        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-          <p className="text-[12.5px] text-ink-soft">
-            {isSsh ? t('connect.sshDisconnectBody') : t('st.conn.disconnectBody')}
-          </p>
-          <button
-            type="button"
-            data-conn-disconnect
-            className={DANGER_GHOST_BUTTON}
-            onClick={() => { setConfirmDisconnect(true); }}
-          >
-            {t('sidebar.disconnect')}
-          </button>
-        </div>
-      </SectionCard>
 
       <ConfirmDialog
         open={confirmDisconnect}

@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
-import type { I18nKey } from '@kiki/session-core/i18n';
 import {
-  PLUGIN_SETTINGS_QUERY_KEY,
   SETTINGS_NAV_TREE,
   buildSettingsSearchIndex,
   canonicalNavSection,
@@ -127,7 +125,6 @@ export function SettingsSearch({
 export function SettingsNavTree({
   active,
   activeTab,
-  activePluginId,
   onNavigate,
   onAfterNavigate,
   tree = SETTINGS_NAV_TREE,
@@ -135,12 +132,6 @@ export function SettingsNavTree({
   /** Null on the unknown-section page: tree stays visible, nothing highlighted. */
   active: SectionId | null;
   activeTab?: string | null;
-  /**
-   * The installed plugin whose own settings page is open, when one is. The
-   * Plugins group expands to name it, so the reader can see where they are
-   * without opening anything.
-   */
-  activePluginId?: string | null;
   onNavigate: (section: SectionId) => void;
   /** Drawer hosts pass a close hook; the desktop rail leaves it unset. */
   onAfterNavigate?: () => void;
@@ -149,12 +140,7 @@ export function SettingsNavTree({
 }) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
-  // The Plugins group lists what is installed, so the reader can jump straight
-  // to one plugin's settings without going back through the list first. It
-  // reads the query the list reads, so it costs nothing extra and never shows
-  // a plugin the list would not.
   const installed = useOptionalInstalledPlugins();
-  const plugins = installed.plugins;
   const labelFor = (id: string) => SECTIONS.find((section) => section.id === id)?.labelKey;
   const activeCanonical = active !== null ? canonicalNavSection(active, activeTab) : null;
 
@@ -173,8 +159,10 @@ export function SettingsNavTree({
     const labelKey = labelFor(id);
     if (labelKey === undefined) return null;
     const isPluginContainer = id === 'plugins' || id === 'extensions';
-    const isCurrent = (id === active || id === activeCanonical) && !(isPluginContainer && activePluginId !== null && activePluginId !== undefined);
-    const errored = errorLeaves.has(id) || isPluginContainer && plugins.some((plugin) => plugin.state === 'error' || plugin.hasErrors);
+    const isCurrent = id === active || id === activeCanonical;
+    // A plugin in an error state still belongs to the extensions leaf even
+    // though the tree no longer lists installed plugins under it.
+    const errored = errorLeaves.has(id) || isPluginContainer && installed.plugins.some((plugin) => plugin.state === 'error' || plugin.hasErrors);
     return (
       <button
         key={id}
@@ -194,14 +182,8 @@ export function SettingsNavTree({
     );
   };
 
-  const nbSearchSubtabs: readonly { tab: string; labelKey: I18nKey }[] = [
-    { tab: 'overview', labelKey: 'st.nbSearch.tab.overview' },
-    { tab: 'search', labelKey: 'st.nbSearch.tab.search' },
-    { tab: 'fetch', labelKey: 'st.nbSearch.tab.fetch' },
-    { tab: 'providers', labelKey: 'st.nbSearch.tab.providers' },
-    { tab: 'advanced', labelKey: 'st.nbSearch.tab.advanced' },
-  ];
-
+  // A page's tabs and an open plugin's page live inside the page itself; the
+  // tree stays two levels: intent groups and the leaves a reader navigates to.
   const groups = tree.filter(
     (node): node is SettingsNavGroupSpec => node.kind === 'group' && node.sections.length > 0,
   );
@@ -214,55 +196,7 @@ export function SettingsNavTree({
             {t(node.labelKey)}
           </p>
           <div className="flex flex-col gap-0.5">
-            {node.sections.map((id) => (
-              <div key={id} className="flex flex-col">
-                {leafButton(id)}
-                {id === 'search' && (active === 'search' || activeCanonical === 'search') ? (
-                  <div className="mt-0.5 flex flex-col gap-0.5" data-settings-nav-subtabs="search">
-                    {nbSearchSubtabs.map((sub) => (
-                      <button
-                        key={sub.tab}
-                        type="button"
-                        data-settings-nav-subtab={sub.tab}
-                        onClick={() => {
-                          onNavigate(`search?tab=${sub.tab}` as unknown as SectionId);
-                          onAfterNavigate?.();
-                        }}
-                        className="row-interactive flex h-7 items-center pl-5 pr-2 text-left text-[12px] text-ink-soft hover:text-ink"
-                      >
-                        {t(sub.labelKey)}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-                {(id === 'plugins' || id === 'extensions') && (active === id || activeCanonical === id) && plugins.length > 0 ? (
-                  <div className="mt-0.5 flex flex-col gap-0.5" data-settings-nav-subtabs="plugins">
-                    {plugins.map((plugin) => (
-                      <button
-                        key={plugin.id}
-                        type="button"
-                        data-settings-nav-plugin={plugin.id}
-                        aria-current={activePluginId === plugin.id ? 'page' : undefined}
-                        onClick={() => {
-                          onNavigate(`plugins?${PLUGIN_SETTINGS_QUERY_KEY}=${encodeURIComponent(plugin.id)}` as unknown as SectionId);
-                          onAfterNavigate?.();
-                        }}
-                        className={`row-interactive flex min-h-7 items-center gap-1.5 truncate py-1 pl-5 pr-2 text-left text-[12px] ${
-                          activePluginId === plugin.id ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
-                        }`}
-                      >
-                        <span className="min-w-0 flex-1 truncate">{plugin.displayName}</span>
-                        {plugin.state === 'error' || plugin.hasErrors ? (
-                          <span className="shrink-0 text-[11px] font-medium text-danger">{t('cap.state.error')}</span>
-                        ) : plugin.enabled ? null : (
-                          <span className="shrink-0 text-[11px] text-ink-faint">{t('cap.state.off')}</span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ))}
+            {node.sections.map((id) => leafButton(id))}
           </div>
         </div>
       ))}
@@ -273,14 +207,12 @@ export function SettingsNavTree({
 export function SettingsNav({
   active,
   activeTab,
-  activePluginId,
   searchFocusToken,
   onNavigate,
   onSearchHit,
 }: {
   active: SectionId | null;
   activeTab?: string | null;
-  activePluginId?: string | null;
   searchFocusToken: string | null;
   onNavigate: (section: SectionId) => void;
   onSearchHit: (entry: SettingsSearchEntry) => void;
@@ -292,7 +224,7 @@ export function SettingsNav({
         focusToken={searchFocusToken}
         onSearchHit={onSearchHit}
         navTree={SETTINGS_NAV_TREE}
-        idle={<SettingsNavTree active={active} activeTab={activeTab} activePluginId={activePluginId} onNavigate={onNavigate} tree={SETTINGS_NAV_TREE} />}
+        idle={<SettingsNavTree active={active} activeTab={activeTab} onNavigate={onNavigate} tree={SETTINGS_NAV_TREE} />}
       />
     </nav>
   );

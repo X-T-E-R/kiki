@@ -11,7 +11,6 @@
 
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { relativeTime } from '@kiki/session-core/util/time';
@@ -34,7 +33,6 @@ export function InboundConnectionsSection() {
   const { client, localClient } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const control = host.kind === 'tauri' ? localClient : client;
   const status = useInboundStatus(control);
   const api = control === null ? null : connectionsApi(control);
@@ -61,9 +59,9 @@ export function InboundConnectionsSection() {
 
   return (
     <SectionCard id="st-card-inbound-connections" title={t('st.inbound.title')} scope="server" actions={(
-      // The other direction: Kikis this one connects to live on Spaces.
+      // The other direction is the outbound card on the same view.
       <button type="button" data-inbound-outbound-link className="text-[12.5px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink"
-        onClick={() => { void navigate('/settings/spaces#st-card-remote-connections'); }}>
+        onClick={() => { document.getElementById('st-card-remote-connections')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>
         {t('st.remote.outboundTitle')}
       </button>
     )}>

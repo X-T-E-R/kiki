@@ -1420,10 +1420,10 @@ describe('settings nav groups (IA purpose)', () => {
     expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts', 'notifications']);
     expect(sectionsOf('models-agents')).toEqual(['ai', 'agents']);
     expect(sectionsOf('sessions-work')).toEqual(['sessions', 'workspaces', 'memory']);
-    expect(sectionsOf('capabilities')).toEqual(['extensions', 'search', 'browser-control']);
-    expect(sectionsOf('rules')).toEqual(['permissions', 'hooks']);
+    expect(sectionsOf('capabilities')).toEqual(['extensions', 'search', 'browser-control', 'hooks']);
+    expect(sectionsOf('rules')).toEqual(['permissions']);
     expect(sectionsOf('connection')).toEqual(['connection', 'spaces', 'ssh', 'connection-services']);
-    expect(sectionsOf('advanced')).toEqual(['developer', 'about']);
+    expect(sectionsOf('advanced')).toEqual(['about', 'developer']);
     expect(resolveSettingsRoute('external-clients', '')).toMatchObject({ section: 'connection-services' });
     // Legacy routes resolve to their canonical merged leaf instead of landing on "unknown setting".
     expect(resolveSettingsRoute('extensions', '')).toMatchObject({ section: 'extensions' });
@@ -1441,7 +1441,7 @@ describe('settings nav groups (IA purpose)', () => {
     expect(settingsGroupForSection('external-clients')).toBeUndefined();
     expect(settingsGroupForSection('workspaces')?.id).toBe('sessions-work');
     expect(settingsGroupForSection('spaces')?.id).toBe('connection');
-    expect(placed.at(-1)).toBe('about');
+    expect(placed.at(-1)).toBe('developer');
     for (const retired of ['runtime', 'experimental', 'capabilities', 'advanced', 'automation', 'communication', 'identity', 'subagents', 'tasks', 'skills', 'mcp', 'plugins', 'computer-control', 'labs']) {
       expect(settingsGroupForSection(retired), retired).toBeUndefined();
     }
