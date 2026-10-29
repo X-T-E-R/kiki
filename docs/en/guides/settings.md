@@ -126,7 +126,7 @@ The dialog's three choices are saved rather than repeated each time: **Remind me
 
 ## Memory
 
-**Settings → Memory** (`/settings/memory`) separates the overall **Allow memory** switch from **Memory Advisor**. The advisor card shows its source and links to **Defaults → Who decides** to change it. Here you confirm a destination for each workspace and test the saved source with sample data; **Advanced** contains selection and request budgets. The memory-page header and `Ctrl-K` provide the same global advisor switch; turning it off retains the source and confirmations and restores the previous memory selection and text. See [Memory Advisor](./memory.md#memory-advisor) for setup and what is sent.
+**Settings → Memory** (`/settings/memory`) separates the overall **Allow memory** switch from **Memory Advisor**. The advisor card shows its source and links to **Defaults → Who decides** to change it. Choose a source and enable the advisor to start using it, or test the saved source with sample data. **Advanced** contains selection and request budgets and diagnostics. The memory-page header and `Ctrl-K` provide the same global advisor switch; turning it off retains the configuration and restores the previous memory selection and text. See [Memory Advisor](./memory.md#memory-advisor) for setup.
 
 ## Agents
 

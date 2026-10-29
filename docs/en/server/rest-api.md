@@ -213,7 +213,7 @@ Configuration reads expose `reviewer.source_status` and `advisor_status.source_s
 | `POST /api/decision/probe` | Test `{ source, confirm_destination }` with synthetic content; returns `{ ok, status, duration_ms, reason? }` |
 | `POST /api/decision/move-reviewer-key` | Move a saved legacy Reviewer key on the server; body `{ connection }`, response `{ connection, state, retryable }` |
 
-Pass the exact destination reported for the source as `confirm_destination`. The decision probe reads no user memory and does not save a source or workspace consent. Its `status` uses the source-status shape above. The [saved-advisor probe](#memory) instead uses the saved advisor configuration and returns advisor status and optional token usage.
+Pass the exact destination reported for the source as `confirm_destination` to bind the test to that service. The decision probe reads no user memory and does not save a source. Its `status` uses the source-status shape above. The [saved-advisor probe](#memory) instead uses the saved advisor configuration and returns advisor status and optional token usage.
 
 Key movement creates a connection without exposing the key to the caller, switches the Reviewer source, then removes the old key. `complete` confirms all stages; `connection_saved` and `source_switched` identify the completed stage when a later write fails or concurrent settings change. Refresh the connection and Reviewer before retrying. Reuse the name only when it still represents the same key and settings; if the Reviewer key changed while the connection holds the old key, choose a new name. Conflicting connections and newer settings are preserved. Environment-variable Jev connections need no key movement.
 
@@ -587,7 +587,7 @@ Both `PATCH` variants accept `{ name?, pinned? }`, with at least one field requi
 
 | Method and path | Description |
 | --- | --- |
-| `GET /api/memory/settings` | Read the memory section, with `effective_enabled`, optional `advisor` and `advisor_status`; optional `workspace_id` resolves workspace consent |
+| `GET /api/memory/settings` | Read the memory section, with `effective_enabled`, optional `advisor` and `advisor_status`; optional `workspace_id` resolves effective memory access for that workspace |
 | `PATCH /api/memory/settings` | Change `enabled`, `approval`, `budget` or sparse `advisor` fields; accepts the same optional `workspace_id` |
 | `POST /api/memory/advisor/probe` | Test the saved advisor source using synthetic content; body: `{ confirm_destination }` |
 | `GET /api/memory/advisor/status` | Read a live agent's status with `session_id` and optional `agent_id` (default `main`); returns `null` for a cold or absent agent |
@@ -614,11 +614,13 @@ Both `PATCH` variants accept `{ name?, pinned? }`, with at least one field requi
 | `POST /api/memory/{scope}/import-preview` | Compare a Markdown document with the current governed entry |
 | `POST /api/memory/{scope}/import` | Apply an explicitly confirmed preview token |
 
-Set `advisor.source` to a [decision source](#decision-connections). It takes precedence over an existing `selector`. Sparse `{ "advisor": { "mode": "off" } }` preserves the source, destination confirmations and other preferences. `mode` is `off`, `rank` or `select`; `pair_score` supports `rank` only. `advisor: null` removes the whole block; `source: null` clears both the source and legacy selector, while `selector: null` clears only the selector. Updates apply without restarting.
+Set `advisor.source` to a [decision source](#decision-connections). It takes precedence over an existing `selector`. Sparse `{ "advisor": { "mode": "off" } }` preserves the source and other preferences. `mode` is `off`, `rank` or `select`; `pair_score` supports `rank` only. `advisor: null` removes the whole block; `source: null` clears both the source and legacy selector, while `selector: null` clears only the selector. Updates apply without restarting.
 
 The legacy selector remains `{ protocol: "chat_json" | "system_one" | "pair_score", model, endpoint? }`, where `model` is a configured alias and a non-chat `endpoint` must share the origin of that model's `effective_base_url`. New connection sources keep the protocol and endpoint on the connection instead.
 
-For automatic recommendations, read the settings with `workspace_id`, inspect `advisor_status.destination`, then save that exact value in `advisor.egress_ack` as `{ workspace_id, destination }`, preserving any confirmations for other workspaces. The confirmation covers context sent to that provider and origin; see [Memory Advisor](../guides/memory.md#memory-advisor) for the content sent. The probe requires an explicit matching `confirm_destination`, reads no saved entries, and works while automatic advice is off. It returns `{ ok, status, duration_ms, input_tokens?, output_tokens?, usage_known }`.
+Configuring a source and enabling the advisor starts recommendations using that service. Existing `advisor.egress_ack` values remain readable and are preserved, but do not gate requests; `advisor_status.consent_required` is `false`. Changing the destination cancels unfinished recommendations and recomputes against the new service. See [Memory Advisor](../guides/memory.md#memory-advisor) for setup.
+
+The probe requires `confirm_destination` to match the current `advisor_status.destination`, binding this test request to the service. It reads no saved entries and works while automatic advice is off. It returns `{ ok, status, duration_ms, input_tokens?, output_tokens?, usage_known }`.
 
 Status carries `state`, optional `reason`, destination and model, plus `logical_calls`, real `requests`, `retries`, `recommended_count`, directory `enumeration`, `unjudged_count` and `displaced_ids`. Settings status describes configuration readiness; `/advisor/status` reads runtime outcomes without starting or resuming an agent.
 

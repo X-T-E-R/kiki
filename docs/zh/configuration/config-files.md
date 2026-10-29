@@ -1022,7 +1022,7 @@ timeout_ms = 8000
 categories = ["policy_compliance", "no_secret_egress", "no_irreversible_damage", "no_outward_effect", "prompt_injection_absent"]
 ```
 
-使用决策服务时，设置 `source = { kind = "connection", connection = "judgment" }`，复用该连接的现有凭证及远端 `default_model`；可在 source 中加 `model` 覆盖远端名称。权限审查接受 `system_one`，`pair_score` 只用于记忆排序。选择来源即允许将上述有限审查内容发送给它；记忆顾问保留自身的来源及工作区确认。在**设置 → 模型与提供商 → 默认值 → 谁来做判断**中分别选择两处来源；权限设置保留审查阈值和超时。
+使用决策服务时，设置 `source = { kind = "connection", connection = "judgment" }`，复用该连接的现有凭证及远端 `default_model`；可在 source 中加 `model` 覆盖远端名称。权限审查接受 `system_one`，`pair_score` 只用于记忆排序。选择来源即允许将上述有限审查内容发送给它；记忆顾问保留自身的来源及启用开关。在**设置 → 模型与提供商 → 默认值 → 谁来做判断**中分别选择两处来源；权限设置保留审查阈值和超时。
 
 `allow_threshold` 和 `deny_threshold` 的范围都是 0.5–1；置信度低于对应阈值时会询问你。`categories` 从上面五个名称中选择 System One 的是非检查项。`timeout_ms` 接受 100–30,000 毫秒；未覆盖时沿用 `backend` 的默认超时：`model`（默认）为 8 秒，`jev` 为 4 秒。
 

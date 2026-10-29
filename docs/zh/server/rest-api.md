@@ -213,7 +213,7 @@ home 中存在旧格式消息邮箱，或升级尚未完成时，服务会先进
 | `POST /api/decision/probe` | 用虚构内容测试 `{ source, confirm_destination }`，返回 `{ ok, status, duration_ms, reason? }` |
 | `POST /api/decision/move-reviewer-key` | 在服务器上转存已保存的旧 Reviewer 密钥；请求 `{ connection }`，返回 `{ connection, state, retryable }` |
 
-`confirm_destination` 须使用该来源报告的精确目的地。决策连接测试不读取用户记忆，不保存来源或工作区同意；`status` 使用上述来源状态结构。[已保存顾问的测试](#记忆)则读取顾问配置，返回顾问状态及可选 token 用量。
+`confirm_destination` 须使用该来源报告的精确目的地，将本次测试绑定到该服务。决策连接测试不读取用户记忆，不保存来源；`status` 使用上述来源状态结构。[已保存顾问的测试](#记忆)则读取顾问配置，返回顾问状态及可选 token 用量。
 
 密钥转存会先创建连接，切换 Reviewer 来源，再删除旧密钥；调用方不会收到密钥。`complete` 表示全部完成，`connection_saved` 和 `source_switched` 表示后续写入失败或遇到并发设置变化前完成的阶段。重试前先刷新连接和 Reviewer；只有名称仍对应同一密钥和设置时才沿用，Reviewer 密钥已换新而连接仍持旧密钥时应换新名称。冲突连接和较新设置会保留。通过环境变量使用 Jev 时无需转存。
 
@@ -587,7 +587,7 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 
 | 方法与路径 | 说明 |
 | --- | --- |
-| `GET /api/memory/settings` | 读取记忆配置，含 `effective_enabled`、可选 `advisor` 及 `advisor_status`；可选 `workspace_id` 用于判断工作区外发确认 |
+| `GET /api/memory/settings` | 读取记忆配置，含 `effective_enabled`、可选 `advisor` 及 `advisor_status`；可选 `workspace_id` 用于判断该工作区的有效记忆访问设置 |
 | `PATCH /api/memory/settings` | 修改 `enabled`、`approval`、`budget` 或稀疏 `advisor` 字段；接受同一可选 `workspace_id` |
 | `POST /api/memory/advisor/probe` | 用虚构内容测试已保存的顾问来源；请求体为 `{ confirm_destination }` |
 | `GET /api/memory/advisor/status` | 用 `session_id` 和可选 `agent_id`（默认 `main`）读取 live Agent 状态；冷会话或不存在的 Agent 返回 `null` |
@@ -614,11 +614,13 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 | `POST /api/memory/{scope}/import-preview` | 比较 Markdown 文档与当前受治理条目 |
 | `POST /api/memory/{scope}/import` | 应用明确确认过的预览 token |
 
-将 `advisor.source` 设为[决策来源](#决策连接)，优先于已有 `selector`。稀疏 `{ "advisor": { "mode": "off" } }` 保留来源、目的地确认及其他设置。`mode` 取 `off`、`rank` 或 `select`；`pair_score` 只支持 `rank`。`advisor: null` 删除整个配置块；`source: null` 同时清除来源和旧 selector，`selector: null` 则只清除 selector。修改无需重启即可生效。
+将 `advisor.source` 设为[决策来源](#决策连接)，优先于已有 `selector`。稀疏 `{ "advisor": { "mode": "off" } }` 保留来源及其他设置。`mode` 取 `off`、`rank` 或 `select`；`pair_score` 只支持 `rank`。`advisor: null` 删除整个配置块；`source: null` 同时清除来源和旧 selector，`selector: null` 则只清除 selector。修改无需重启即可生效。
 
 旧选择器仍为 `{ protocol: "chat_json" | "system_one" | "pair_score", model, endpoint? }`，`model` 是已配置 alias，非对话协议的 `endpoint` 须与该模型的 `effective_base_url` 同源。新的连接来源将协议及端点保存在连接上。
 
-自动推荐前，带 `workspace_id` 读取设置，核对 `advisor_status.destination`，再以 `{ workspace_id, destination }` 将这个精确值保存到 `advisor.egress_ack`，并保留其他工作区的确认。确认允许将上下文发给该供应商和 origin；发送内容见[记忆顾问](../guides/memory.md#记忆顾问)。探针要求显式传入匹配的 `confirm_destination`，不读取已存条目，自动推荐关闭时也可测试。返回 `{ ok, status, duration_ms, input_tokens?, output_tokens?, usage_known }`。
+配置来源并开启顾问后，即使用该服务推荐。旧的 `advisor.egress_ack` 值仍可读取和保留，但不再作为请求门槛；`advisor_status.consent_required` 为 `false`。更换目的地会取消尚未完成的推荐，使用新服务重新计算。配置步骤见[记忆顾问](../guides/memory.md#记忆顾问)。
+
+探针的 `confirm_destination` 须匹配当前 `advisor_status.destination`，将本次测试请求绑定到该服务。探针不读取已存条目，自动推荐关闭时也可测试。返回 `{ ok, status, duration_ms, input_tokens?, output_tokens?, usage_known }`。
 
 状态包含 `state`、可选 `reason`、目的地及模型，以及逻辑轮数 `logical_calls`、实际请求 `requests`、重试 `retries`、推荐数 `recommended_count`、目录覆盖 `enumeration`、未判断数 `unjudged_count` 和挤出条目 `displaced_ids`。设置状态说明配置是否就绪；`/advisor/status` 读取实际运行结果，不会启动或恢复 Agent。
 

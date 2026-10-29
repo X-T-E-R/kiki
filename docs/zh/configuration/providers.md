@@ -41,11 +41,11 @@ source = { kind = "connection", connection = "judgment" }
 source = { kind = "connection", connection = "judgment" }
 ```
 
-`default_model` 是发送给远端决策服务的模型名。来源可通过 `model` 覆盖它，也可用 `{ kind = "model", model = "review-model" }` 选择已有对话模型别名。修改一方的来源不会改变另一方。记忆推荐还需工作区的[目的地确认](../guides/memory.md#记忆顾问)；保存来源会保留已有的关闭设置。
+`default_model` 是发送给远端决策服务的模型名。来源可通过 `model` 覆盖它，也可用 `{ kind = "model", model = "review-model" }` 选择已有对话模型别名。修改一方的来源不会改变另一方。[记忆顾问](../guides/memory.md#记忆顾问)开启后使用所选来源；保存来源会保留已有的关闭设置。
 
 重排器使用 `type = "pair_score"`，填写其 `base_url` 和远端 `default_model`。配对分数支持记忆**排序**，不支持**筛选**或权限审查。默认在基础路径后添加 `/systemone` 或 `/rerank`；服务使用其他路由时，可用 `decision_endpoint` 填写路径或完整 URL，须与基础地址同源（协议、主机和端口相同），且不含嵌入式凭据。
 
-两种连接均使用现有提供商凭证字段和自定义请求头。允许无认证 HTTP 请求的服务可不填凭证；显式指定的 `api_key_env` 无值且无其他认证方式时，会报告认证问题，上游返回 401 或 403 时也一样。API 密钥通过现有连接凭证字段或 `credentials.toml` 保存。确认目的地后，[决策连接测试](../server/rest-api.md#决策连接)只发送虚构内容。
+两种连接均使用现有提供商凭证字段和自定义请求头。允许无认证 HTTP 请求的服务可不填凭证；显式指定的 `api_key_env` 无值且无其他认证方式时，会报告认证问题，上游返回 401 或 403 时也一样。API 密钥通过现有连接凭证字段或 `credentials.toml` 保存。[决策连接测试](../server/rest-api.md#决策连接)使用虚构内容验证所选服务。
 
 旧的 Reviewer `backend = "jev"` 和顾问 `selector` 配置继续可用。显式[整理 Reviewer 密钥](../server/rest-api.md#决策连接)会在服务器上转存旧密钥、切换 Reviewer 来源，再清除旧字段。部分完成时会保留较新的设置：先刷新并核对连接和 Reviewer，再重试。若 Reviewer 密钥已换新、目标连接仍持旧密钥，应选择新的连接名；冲突连接始终保留。使用环境变量的连接无需转存密钥。
 

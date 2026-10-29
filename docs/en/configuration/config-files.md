@@ -1036,7 +1036,7 @@ timeout_ms = 8000
 categories = ["policy_compliance", "no_secret_egress", "no_irreversible_damage", "no_outward_effect", "prompt_injection_absent"]
 ```
 
-For a decision service, set `source = { kind = "connection", connection = "judgment" }`. It uses that connection's existing credentials and remote `default_model`; add `model` to the source to override the remote name. Reviewer accepts `system_one`, while `pair_score` is only for memory ranking. Choosing a source permits the limited reviewer input above to be sent to it; Memory Advisor keeps its own source and workspace confirmations. In **Settings → Models & providers → Defaults → Who decides**, select the two sources independently. The permission settings keep the review thresholds and timeout.
+For a decision service, set `source = { kind = "connection", connection = "judgment" }`. It uses that connection's existing credentials and remote `default_model`; add `model` to the source to override the remote name. Reviewer accepts `system_one`, while `pair_score` is only for memory ranking. Choosing a source permits the limited reviewer input above to be sent to it; Memory Advisor keeps its own source and enable switch. In **Settings → Models & providers → Defaults → Who decides**, select the two sources independently. The permission settings keep the review thresholds and timeout.
 
 `allow_threshold` and `deny_threshold` each accept 0.5–1; lower confidence asks you. `categories` selects the System One yes/no checks from the five names above. `timeout_ms` accepts 100–30,000 milliseconds. Without an override, the existing `backend` setting supplies the timeout default: 8 seconds for `model` (the default), 4 seconds for `jev`.
 
