@@ -6228,7 +6228,7 @@ async function scenarioSettingsAppearance() {
     for (const [width, height, label] of [[1440, 1000, 'desktop'], [390, 844, 'mobile']]) {
       await page.setViewportSize({ width, height });
       await page.goto(link('/settings/appearance'), { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('[data-appearance-preview]', { timeout: 15_000 });
+      await page.waitForSelector('[data-appearance-page]', { timeout: 15_000 });
       await page.waitForTimeout(350);
       await shot(`appearance-${skin}-${theme}-${label}`);
     }
@@ -6239,7 +6239,7 @@ async function scenarioSettingsAppearance() {
   // prose font is a select over the registered presets now.
   await setLook('paper', 'light');
   await page.goto(link('/settings/appearance'), { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('[data-appearance-preview]', { timeout: 15_000 });
+  await page.waitForSelector('[data-appearance-page]', { timeout: 15_000 });
   await page.locator(`[data-font-role="prose"] [aria-label="${S.proseFontLabel}"]`).click();
   await page.waitForSelector('[role="listbox"] [role="option"]', { timeout: 5000 });
   await page.getByRole('option', { name: S.proseSans, exact: true }).click();

@@ -406,15 +406,15 @@ async function scenarioPack(page) {
     await clearBackground(page);
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
-      await open(page, '/settings/appearance', '#st-card-appearance-packs');
-      await page.locator('#st-card-appearance-packs').scrollIntoViewIfNeeded();
+      await open(page, '/settings/appearance', '#st-card-skin-files');
+      await page.locator('#st-card-skin-files').scrollIntoViewIfNeeded();
       await page.waitForSelector('[data-pack="dusk-harbor"] [data-pack-preview] img', { timeout: 15_000 });
       await shot(page, `pack-list-${theme}-${width}`);
       if (width === 1440 && theme === 'light') {
         await page.click('[data-pack-use="dusk-harbor"]');
         await page.waitForSelector('[data-kiki-backdrop-item]', { timeout: 15_000 });
         check(await page.evaluate(() => document.documentElement.dataset.skin === 'dusk-harbor'), 'Use pack selects the pack colors');
-        await page.locator('#st-card-appearance-packs').scrollIntoViewIfNeeded();
+        await page.locator('#st-card-skin-files').scrollIntoViewIfNeeded();
         await shot(page, 'pack-in-use-light-1440');
         await page.click('[data-pack-delete="dusk-harbor"]');
         await page.waitForSelector('[role="dialog"], [role="alertdialog"]', { timeout: 5000 });

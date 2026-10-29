@@ -60,7 +60,7 @@ export function GeneralSection() {
 
   return (
     <>
-      <SectionCard id="st-card-language" title={t('st.language.title')}>
+      <SectionCard id="st-card-language" title={t('st.language.regionTitle')}>
         <SettingField label={t('st.language.title')} labelId="language-label">
           <SettingsSegmented<Locale>
             ariaLabelledBy="language-label"
@@ -72,9 +72,7 @@ export function GeneralSection() {
         </SettingField>
       </SectionCard>
 
-      <SettingsTransferCard />
-
-      <SectionCard id="st-card-composer" title={t('st.composer.title')}>
+      <SectionCard id="st-card-composer" title={t('st.composer.title')} scope="app">
         <div className="space-y-1">
           <SettingField
             label={t('st.composer.sendShortcut')}
@@ -97,6 +95,10 @@ export function GeneralSection() {
             />
           </SettingField>
           <div data-settings-field className="space-y-0.5 py-1">
+            <SpacePrefOrigin item="defaultAppendTiming" label={t('st.communication.appendTimingTitle')} />
+          </div>
+          <AppendTimingField />
+          <div data-settings-field className="space-y-0.5 py-1">
             <Toggle
               layout="row"
               label={t('st.composer.persistDrafts')}
@@ -117,6 +119,11 @@ export function GeneralSection() {
               </button>
             </div>
           </div>
+        </div>
+      </SectionCard>
+
+      <SectionCard id="st-card-ui-behavior" title={t('st.uiBehavior.title')} scope="app">
+        <div className="space-y-1">
           <div data-settings-field className="space-y-0.5 py-1">
             <Toggle
               layout="row"
@@ -147,46 +154,39 @@ export function GeneralSection() {
             <Hint>{t('st.composer.worktreeConfirmHint')}</Hint>
             <SpacePrefOrigin item="worktreeSkipConfirm" label={t('st.composer.worktreeConfirm')} />
           </div>
-          <div className="space-y-0.5">
-            <SpacePrefOrigin item="defaultAppendTiming" label={t('st.communication.appendTimingTitle')} />
-          </div>
-          <AppendTimingField />
         </div>
       </SectionCard>
 
-      <SectionCard id="st-card-sidebar-nav" title={t('st.sidebarNav.title')}>
-        <div className="space-y-2">
-          <Hint>{t('st.sidebarNav.hint')}</Hint>
-          <div data-sidebar-nav-toggles className="grid gap-2 sm:grid-cols-2">
-            {ALL_SIDEBAR_NAV_KEYS.map((key) => {
-              const isPinned = layoutPrefs.pinnedNavItems.includes(key);
-              const label = key === 'personas'
-                ? t('persona.nav')
-                : key === 'discover'
-                  ? t('discovery.title')
-                  : t(`nav.${key}`);
-              return (
-                <div key={key} data-nav-item-toggle={key} className="py-1">
-                  <Toggle
-                    layout="row"
-                    label={label}
-                    checked={isPinned}
-                    onChange={(checked) => {
-                      const next = checked
-                        ? Array.from(new Set([...layoutPrefs.pinnedNavItems, key]))
-                        : layoutPrefs.pinnedNavItems.filter((k) => k !== key);
-                      writeLayoutPreferences({ pinnedNavItems: next });
-                    }}
-                  />
-                </div>
-              );
-            })}
-          </div>
+      <SectionCard id="st-card-sidebar-nav" title={t('st.sidebarNav.title')} scope="app" aside={t('st.sidebarNav.hint')}>
+        <div data-sidebar-nav-toggles className="grid gap-2 sm:grid-cols-2">
+          {ALL_SIDEBAR_NAV_KEYS.map((key) => {
+            const isPinned = layoutPrefs.pinnedNavItems.includes(key);
+            const label = key === 'personas'
+              ? t('persona.nav')
+              : key === 'discover'
+                ? t('discovery.title')
+                : t(`nav.${key}`);
+            return (
+              <div key={key} data-nav-item-toggle={key} className="py-1">
+                <Toggle
+                  layout="row"
+                  label={label}
+                  checked={isPinned}
+                  onChange={(checked) => {
+                    const next = checked
+                      ? Array.from(new Set([...layoutPrefs.pinnedNavItems, key]))
+                      : layoutPrefs.pinnedNavItems.filter((k) => k !== key);
+                    writeLayoutPreferences({ pinnedNavItems: next });
+                  }}
+                />
+              </div>
+            );
+          })}
         </div>
       </SectionCard>
 
-      <SectionCard id="st-card-desktop" title={t('st.desktop.title')} effect="desktop" aside={isDesktop ? undefined : t('st.desktop.browserHint')}>
-        {isDesktop ? (
+      {isDesktop ? (
+        <SectionCard id="st-card-desktop" title={t('st.desktop.title')} effect="desktop" scope="app">
           <fieldset className="space-y-4">
             {/* System notifications live on Notifications & messages. */}
             <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t('st.desktop.title')}>
@@ -196,13 +196,13 @@ export function GeneralSection() {
               ] as const).map((option) => {
                 const selected = desktopPrefs.closeToTray === option.closeToTray;
                 return (
-                  <label
+                  <div
                     key={option.titleKey}
-                    className={`cursor-pointer rounded-lg p-3 transition-colors ${
-                      selected ? 'bg-panel shadow-[var(--kiki-sheet-shadow)]' : 'bg-ink/[0.03] hover:bg-ink/[0.05]'
+                    className={`rounded-lg p-3 transition-colors ${
+                      selected ? 'bg-panel shadow-[var(--kiki-sheet-shadow)]' : 'bg-ink/[0.03]'
                     }`}
                   >
-                    <span className="flex items-start gap-2">
+                    <label className="flex cursor-pointer items-start gap-2">
                       <input
                         type="radio"
                         name="close-behavior"
@@ -214,14 +214,16 @@ export function GeneralSection() {
                         <span className="block text-[13px] font-medium text-ink">{t(option.titleKey)}</span>
                         <span className="mt-0.5 block text-[12px] text-ink-faint">{t(option.descriptionKey)}</span>
                       </span>
-                    </span>
-                  </label>
+                    </label>
+                  </div>
                 );
               })}
             </div>
           </fieldset>
-        ) : null}
-      </SectionCard>
+        </SectionCard>
+      ) : null}
+
+      <SettingsTransferCard />
       {confirmClearDrafts ? (
         <ConfirmDialog
           open

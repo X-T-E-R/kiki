@@ -263,7 +263,7 @@ const SCENARIOS = [
     tags: ['smoke', 'settings', 'appearance'],
     async run(page, link) {
       await page.goto(link('/settings/appearance'), { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('[data-appearance-preview]', { timeout: 20_000 });
+      await page.waitForSelector('[data-appearance-page]', { timeout: 20_000 });
       return [await shot(page, 'settings-appearance')];
     },
   },

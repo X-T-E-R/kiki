@@ -118,37 +118,36 @@ async function pickFont(role: string, value: string) {
 }
 
 describe('AppearanceSection', () => {
-  it('renders every card, the preview, and no draft bar', () => {
-    for (const id of ['st-card-appearance', 'st-card-appearance-background', 'st-card-appearance-type', 'st-card-appearance-layout', 'st-card-appearance-packs', 'st-card-skin-files']) {
+  it('renders every card and no draft bar', () => {
+    for (const id of ['st-card-appearance', 'st-card-appearance-layout', 'st-card-appearance-background', 'st-card-appearance-type', 'st-card-skin-files']) {
       expect(container.querySelector(`#${id}`), id).not.toBeNull();
     }
-    expect(container.querySelector('[data-appearance-preview] .kiki-prose')).not.toBeNull();
     expect(container.querySelector('[data-settings-draft]')).toBeNull();
     // Nothing to restore at the defaults.
     expect(container.querySelector('[data-appearance-restore]')).toBeNull();
   });
 
+  it('puts the theme and the skin tiles first and keeps shape controls ahead of type', () => {
+    const ids = [...container.querySelectorAll('[id^="st-card"]')].map((node) => node.id);
+    expect(ids).toEqual(['st-card-appearance', 'st-card-appearance-layout', 'st-card-appearance-background', 'st-card-appearance-type', 'st-card-skin-files']);
+  });
+
   it('marks appearance cards as device-scoped without an identified space', () => {
-    for (const id of ['st-card-appearance', 'st-card-appearance-background', 'st-card-appearance-type', 'st-card-appearance-layout', 'st-card-appearance-packs']) {
+    for (const id of ['st-card-appearance', 'st-card-appearance-background', 'st-card-appearance-type', 'st-card-appearance-layout', 'st-card-skin-files']) {
       expect(container.querySelector<HTMLElement>(`#${id} [data-settings-panel-scope]`)?.dataset['settingsPanelScope'], id).toBe('app');
     }
-    expect(container.querySelector('#st-card-appearance-packs')?.textContent).not.toContain('connected server');
+    expect(container.querySelector('#st-card-skin-files')?.textContent).not.toContain('connected server');
   });
 
   it('marks portable appearance cards as space-scoped and keeps device-only controls clear', async () => {
     appearanceConnection.meta = { server_id: 'server-a', current_space_id: 'h-acme' };
     await renderAppearance();
 
-    for (const id of ['st-card-appearance', 'st-card-appearance-background', 'st-card-appearance-type', 'st-card-appearance-layout']) {
+    for (const id of ['st-card-appearance', 'st-card-appearance-background', 'st-card-appearance-type', 'st-card-appearance-layout', 'st-card-skin-files']) {
       expect(container.querySelector<HTMLElement>(`#${id} [data-settings-panel-scope]`)?.dataset['settingsPanelScope'], id).toBe('space');
     }
-    const packs = container.querySelector<HTMLElement>('#st-card-appearance-packs [data-settings-panel-scope]');
-    expect(packs?.dataset['settingsPanelScope']).toBe('space');
-    expect(packs?.textContent).toContain(translate('en', 'st.scope.space'));
-
     const skinFiles = container.querySelector<HTMLElement>('#st-card-skin-files [data-settings-panel-scope]');
-    expect(skinFiles?.dataset['settingsPanelScope']).toBe('app');
-    expect(skinFiles?.textContent).toContain(translate('en', 'st.scope.device'));
+    expect(skinFiles?.textContent).toContain(translate('en', 'st.scope.space'));
 
     const motionField = container.querySelector('[data-motion-choice]')?.closest('[data-settings-field]');
     expect(motionField?.textContent).toContain(translate('en', 'st.scope.device'));
@@ -182,7 +181,7 @@ describe('AppearanceSection', () => {
     expect(container.querySelector('[data-appearance-restore]')).not.toBeNull();
   });
 
-  it('shows exactly six built-in families with localized pair names and descriptions', () => {
+  it('shows exactly six built-in families with localized pair names and no prose descriptions', () => {
     const families = ['paper', 'porcelain', 'celadon', 'apricot', 'iris', 'contrast'];
     const choices = [...container.querySelectorAll<HTMLElement>('[data-skin-choice]')].map((node) => node.dataset['skinChoice']);
     expect(choices.filter((id) => families.includes(id!))).toEqual(families);
@@ -191,7 +190,7 @@ describe('AppearanceSection', () => {
     }
     const paper = button('[data-skin-choice="paper"]');
     expect(paper.textContent).toContain(translate('en', 'st.skin.name.paper'));
-    expect(paper.querySelector('[data-skin-description]')?.textContent).toBe(translate('en', 'st.skin.desc.paperPair'));
+    expect(container.querySelector('[data-skin-description]')).toBeNull();
   });
 
   it('restores every customization, keeps the theme choice, and can undo it', async () => {

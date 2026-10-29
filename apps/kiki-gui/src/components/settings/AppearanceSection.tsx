@@ -24,7 +24,6 @@ import { prefersDark, resolveTheme } from '../../lib/theme';
 import { Hint } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
 import { AppearancePacks } from './AppearancePacks';
-import { AppearancePreview } from './AppearancePreview';
 import { BackgroundSettings, useBackgroundPrefs } from './BackgroundSettings';
 import { SectionCard } from './SectionCard';
 import { SettingField } from './fields';
@@ -97,9 +96,10 @@ function skinFaceName(variable: '--font-sans' | '--font-mono', tweak: string | u
 
 /**
  * Settings → Appearance. Every control applies the moment it changes, so the
- * app (and the preview at the top) is the feedback; there is no draft to save.
- * The one page-level action is "Restore defaults", which keeps an undo; it is
- * only there once something is customized (the theme choice does not count).
+ * app itself is the feedback; there is no draft to save. The first choice is
+ * the theme and the skin tiles — the page's protagonist. The one page-level
+ * action is "Restore defaults", which keeps an undo; it is only there once
+ * something is customized (the theme choice does not count).
  */
 export function AppearanceSection() {
   const { t } = useI18n();
@@ -149,39 +149,41 @@ export function AppearanceSection() {
 
   return (
     <div className="space-y-6" data-appearance-page data-skin-settings>
-      <div className="space-y-2">
-        <AppearancePreview />
-        <div className={`flex-wrap items-center gap-x-3 gap-y-1 ${undo === null && atDefaults ? 'hidden' : 'flex min-h-8'}`} data-appearance-actions>
-          {undo !== null ? (
-            <>
-              <span role="status" className="text-[12px] text-ink-soft">{t('st.appearance.restored')}</span>
+      <SectionCard
+        id="st-card-appearance"
+        title={t('st.appearance.colorTitle')}
+        scope={appearanceScope}
+        actions={(
+          <div className={`flex-wrap items-center gap-x-3 gap-y-1 ${undo === null && atDefaults ? 'hidden' : 'flex'}`} data-appearance-actions>
+            {undo !== null ? (
+              <>
+                <span role="status" className="text-[12px] text-ink-soft">{t('st.appearance.restored')}</span>
+                <button
+                  type="button"
+                  className="text-[12px] font-medium text-ink-soft underline-offset-2 hover:text-ink hover:underline"
+                  onClick={() => { writeAppearance(undo); setUndo(null); }}
+                >
+                  {t('st.appearance.undo')}
+                </button>
+              </>
+            ) : null}
+            {!atDefaults ? (
               <button
                 type="button"
-                className="text-[12px] font-medium text-ink-soft underline-offset-2 hover:text-ink hover:underline"
-                onClick={() => { writeAppearance(undo); setUndo(null); }}
+                data-appearance-restore
+                className={SECONDARY_BUTTON}
+                onClick={() => {
+                  const before = readAppearance();
+                  writeAppearance(defaultAppearanceFor(before));
+                  setUndo(before);
+                }}
               >
-                {t('st.appearance.undo')}
+                {t('st.appearance.restoreDefaults')}
               </button>
-            </>
-          ) : null}
-          {!atDefaults ? (
-            <button
-              type="button"
-              data-appearance-restore
-              className={`${SECONDARY_BUTTON} ml-auto`}
-              onClick={() => {
-                const before = readAppearance();
-                writeAppearance(defaultAppearanceFor(before));
-                setUndo(before);
-              }}
-            >
-              {t('st.appearance.restoreDefaults')}
-            </button>
-          ) : null}
-        </div>
-      </div>
-
-      <SectionCard id="st-card-appearance" title={t('st.appearance.colorTitle')} scope={appearanceScope}>
+            ) : null}
+          </div>
+        )}
+      >
         <div className="space-y-2">
           <SettingField label={t('st.appearance.theme')} labelId="theme-label">
             <SpacePrefOrigin item="theme" label={t('st.appearance.theme')} />
@@ -196,13 +198,15 @@ export function AppearanceSection() {
             />
           </SettingField>
           <div className="space-y-2 py-1" data-settings-field>
-            <div className="space-y-0.5">
-              <span id="skin-label" className="text-[13px] text-ink">{t('st.skin.title')}</span>
-              <p className="text-[12px] leading-4 text-ink-faint">{t('st.skin.hint')}</p>
-            </div>
+            <span id="skin-label" className="block text-[13px] text-ink">{t('st.skin.title')}</span>
             <SpacePrefOrigin item="skin" label={t('st.skin.title')} />
             <SkinPicker theme={theme} labelledBy="skin-label" />
           </div>
+        </div>
+      </SectionCard>
+
+      <SectionCard id="st-card-appearance-layout" title={t('st.appearance.layoutTitle')} scope={appearanceScope}>
+        <div className="space-y-2">
           <SettingField label={t('st.skin.accent')} htmlFor="skin-accent" help={t('st.skin.accentHint')}>
             <SpacePrefOrigin item="tweaks" label={t('st.skin.accent')} />
             <input
@@ -217,6 +221,48 @@ export function AppearanceSection() {
                 {t('st.skin.accentReset')}
               </button>
             ) : null}
+          </SettingField>
+          <SettingField label={t('st.skin.radius')} htmlFor="skin-radius">
+            <input
+              id="skin-radius"
+              type="range"
+              min={0}
+              max={24}
+              step={2}
+              value={tweaks.radius ?? RADIUS_DEFAULT}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                setTweak('radius', next === RADIUS_DEFAULT ? undefined : next);
+              }}
+              className="w-40 accent-[var(--color-selected-ink)]"
+            />
+            <span className="w-10 text-right text-[12px] text-ink-faint tabular-nums">{tweaks.radius ?? RADIUS_DEFAULT}px</span>
+          </SettingField>
+          <SettingField label={t('st.skin.density')} labelId="skin-density-label">
+            <SettingsSegmented<'compact' | 'default' | 'roomy'>
+              ariaLabelledBy="skin-density-label"
+              value={densityOf(tweaks.spacing)}
+              onChange={(value) => {
+                setTweak('spacing', value === 'default' ? undefined : DENSITY_CHOICES.find((choice) => choice.value === value)?.rem);
+              }}
+              choices={[
+                { value: 'compact', label: t('st.skin.densityCompact') },
+                { value: 'default', label: t('st.skin.densityDefault') },
+                { value: 'roomy', label: t('st.skin.densityRoomy') },
+              ]}
+            />
+          </SettingField>
+          <SettingField label={t('st.appearance.motion')} labelId="motion-label" help={t('st.appearance.motionHint')}>
+            <SettingsSegmented<MotionPreference>
+              ariaLabelledBy="motion-label"
+              dataAttr="data-motion-choice"
+              value={settings.motion}
+              onChange={(choice) => { setLocal({ motion: choice }); }}
+              choices={(['system', 'reduce', 'full'] as MotionPreference[]).map((choice) => ({
+                value: choice, label: t(`st.appearance.motion.${choice}`),
+              }))}
+            />
+            {inSpace ? <span className="text-[12px] text-ink-faint">{t('st.scope.device')}</span> : null}
           </SettingField>
         </div>
       </SectionCard>
@@ -270,59 +316,13 @@ export function AppearanceSection() {
         </div>
       </SectionCard>
 
-      <SectionCard id="st-card-appearance-layout" title={t('st.appearance.layoutTitle')} scope={appearanceScope}>
-        <div className="space-y-2">
-          <SettingField label={t('st.skin.radius')} htmlFor="skin-radius">
-            <input
-              id="skin-radius"
-              type="range"
-              min={0}
-              max={24}
-              step={2}
-              value={tweaks.radius ?? RADIUS_DEFAULT}
-              onChange={(event) => {
-                const next = Number(event.target.value);
-                setTweak('radius', next === RADIUS_DEFAULT ? undefined : next);
-              }}
-              className="w-40 accent-[var(--color-selected-ink)]"
-            />
-            <span className="w-10 text-right text-[12px] text-ink-faint tabular-nums">{tweaks.radius ?? RADIUS_DEFAULT}px</span>
-          </SettingField>
-          <SettingField label={t('st.skin.density')} labelId="skin-density-label">
-            <SettingsSegmented<'compact' | 'default' | 'roomy'>
-              ariaLabelledBy="skin-density-label"
-              value={densityOf(tweaks.spacing)}
-              onChange={(value) => {
-                setTweak('spacing', value === 'default' ? undefined : DENSITY_CHOICES.find((choice) => choice.value === value)?.rem);
-              }}
-              choices={[
-                { value: 'compact', label: t('st.skin.densityCompact') },
-                { value: 'default', label: t('st.skin.densityDefault') },
-                { value: 'roomy', label: t('st.skin.densityRoomy') },
-              ]}
-            />
-          </SettingField>
-          <SettingField label={t('st.appearance.motion')} labelId="motion-label" help={t('st.appearance.motionHint')}>
-            <SettingsSegmented<MotionPreference>
-              ariaLabelledBy="motion-label"
-              dataAttr="data-motion-choice"
-              value={settings.motion}
-              onChange={(choice) => { setLocal({ motion: choice }); }}
-              choices={(['system', 'reduce', 'full'] as MotionPreference[]).map((choice) => ({
-                value: choice, label: t(`st.appearance.motion.${choice}`),
-              }))}
-            />
-            {inSpace ? <span className="text-[12px] text-ink-faint">{t('st.scope.device')}</span> : null}
-          </SettingField>
+      <SectionCard id="st-card-skin-files" title={t('st.skin.filesTitle')} scope={appearanceScope}>
+        <div className="space-y-6">
+          <AppearancePacks />
+          <div className="border-t border-hairline pt-5">
+            <SkinFiles />
+          </div>
         </div>
-      </SectionCard>
-
-      <SectionCard id="st-card-appearance-packs" title={t('st.pack.title')} scope={appearanceScope}>
-        <AppearancePacks />
-      </SectionCard>
-
-      <SectionCard id="st-card-skin-files" title={t('st.skin.filesTitle')} scope="app">
-        <SkinFiles />
       </SectionCard>
     </div>
   );
