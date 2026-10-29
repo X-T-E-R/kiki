@@ -1496,6 +1496,7 @@ export class AgentTestContext {
   async restorePersisted(): Promise<void> {
     await this.ready;
     await this.dispatcher.restore();
+    await this.get(IAgentTaskService).resumeRestoration?.();
   }
 
   private async restoreRecordsOnly(records: readonly WireRecord[]): Promise<void> {
@@ -1504,6 +1505,7 @@ export class AgentTestContext {
     const log = this.get(IAppendLogStore);
     await log.rewrite(scope, AGENT_WIRE_RECORD_KEY, records);
     await this.dispatcher.restore();
+    await this.get(IAgentTaskService).resumeRestoration?.();
   }
 
   private async dispatchRecordsOnly(records: readonly WireRecord[]): Promise<void> {

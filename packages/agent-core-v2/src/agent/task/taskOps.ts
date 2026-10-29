@@ -50,6 +50,10 @@ export class TaskSettlementReady extends Event2<TaskSettlementReadyPayload> {
 }
 export interface TaskSettlementReady extends TaskSettlementReadyPayload {}
 
+export class TaskRestorationSettled extends Event2<Record<string, never>> {
+  static override readonly type = 'task.restoration_settled';
+}
+
 const taskNotifiedSchema: z.ZodType<AgentTaskNotificationContext> = z.object({
   notificationType: z.string(),
   title: z.string(),

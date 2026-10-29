@@ -4,6 +4,8 @@ import { BugIndicatingError } from '#/_base/errors/errors';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
+import { ILogService } from '#/_base/log/log';
+import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
 import { type CollectionView } from '#/_base/di/collection';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -165,6 +167,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     @EventStateContribution view: CollectionView<EventStateContributionRecord>,
     @ref(IAtomicDocumentStore) private readonly docs: LiveRef<IAtomicDocumentStore>,
     @ref(IAgentScopeContext) private readonly scope: LiveRef<IAgentScopeContext>,
+    @ref(ILogService) private readonly log: LiveRef<ILogService>,
   ) {
     super();
     this.folded = this.foldContributions(view);
@@ -641,25 +644,27 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       );
     }
     this.restorePhase = 'restoring';
+    const context = { agentId: this.scope.current?.agentId };
+    const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(this.log.current, context, name, action);
     try {
-      const checkpointRestored = await this.restoreReplayCheckpoint();
+      const checkpointRestored = await phase('checkpoint_restore', () => this.restoreReplayCheckpoint());
       if (checkpointRestored === undefined) {
-        await this.replayJournal();
+        await phase('journal_replay', () => this.replayJournal());
       } else if (checkpointRestored.tailByte !== undefined) {
         try {
-          await this.replayJournal(checkpointRestored.tailByte);
+          await phase('journal_tail_replay', () => this.replayJournal(checkpointRestored.tailByte));
         } catch (error) {
           if (!(error instanceof JournalTailUnreadableError)) throw error;
           this.resetReplayableState();
-          await this.replayJournal();
+          await phase('journal_replay', () => this.replayJournal());
         }
       }
-      await this.rehydrateStates();
+      await phase('state_rehydrate', () => this.rehydrateStates());
       this.restorePhase = 'ready';
       if (checkpointRestored === undefined || checkpointRestored.tailByte !== undefined) {
         void this.saveReplayCheckpoint().catch(onUnexpectedError);
       }
-      await this.hooks.onDidRestore.run({});
+      await phase('restore_hooks', () => this.hooks.onDidRestore.run({}));
     } catch (error) {
       this.restorePhase = 'failed';
       throw error;

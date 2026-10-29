@@ -5,6 +5,7 @@ import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { Emitter } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
+import { timeRestorePhase } from './restoreTiming';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { join } from 'pathe';
@@ -397,11 +398,12 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       this.subscribeInteractionBus(handle);
       this.subscribeUsage(handle);
       this.onWillCreateEmitter.fire(handle);
-      await handle.accessor.get(IEventDispatcher).restore();
+      const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(this.log, { sessionId: this.ctx.sessionId, agentId }, name, action);
+      await phase('agent_replay', () => handle.accessor.get(IEventDispatcher).restore());
       const beforeBinding = handle.accessor.get(IAgentProfileService).data();
       const writesBinding = opts.binding !== undefined || (opts.restoreBinding !== undefined &&
         beforeBinding.execution === undefined && beforeBinding.profileName === undefined && beforeBinding.routeId === undefined);
-      const restoreFellBack = await this.bindBootstrap(handle, opts);
+      const restoreFellBack = await phase('agent_binding', () => this.bindBootstrap(handle, opts));
       const binding = handle.accessor.get(IAgentProfileService).data();
       if (writesBinding) bootstrapBinding = { execution: binding.execution, personaId: binding.personaId, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
         thinkingEffortExplicit: binding.thinkingEffortExplicit, executor: binding.executorId ?? 'native', executorProtocol: binding.executorProtocol,
@@ -411,10 +413,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         await this.validateRestoredBinding(handle, opts.restoreBinding, restoreFellBack);
       }
       const profile = handle.accessor.get(IAgentProfileService).data();
-      if ((profile.executorId ?? 'native') === 'native') {
+      if ((profile.executorId ?? 'native') === 'native' && profile.boundProfile?.promptContextPending !== true) {
         handle.accessor.get(IAgentMediaToolsRegistrar).refresh();
-        await handle.accessor.get(IAgentToolActivationService).activate();
-        await handle.accessor.get(IAgentPluginToolService).ready();
+        await phase('agent_tools', () => handle.accessor.get(IAgentToolActivationService).activate());
+        await phase('agent_plugin_tools', () => handle.accessor.get(IAgentPluginToolService).ready());
       }
       if (priorAgentMeta !== undefined || opts.restoreBinding !== undefined) {
         await handle.accessor.get(IAgentProfileService).warnRestoredUnavailableTools();
@@ -456,7 +458,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       this.assertCreateStillCurrent(agentId, slot, generation);
       slot.handle = handle;
       if (opts.deferCreateEvent === true) slot.deferredCreateEvent = true;
-      else this.onDidCreateEmitter.fire(handle);
+      else this.announceAgentCreated(handle);
       return handle;
     } catch (error) {
       slot.deferredCreateEvent = false;
@@ -505,8 +507,15 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const slot = this.slots.get(agentId);
     if (slot === undefined || !slot.deferredCreateEvent) return;
     slot.deferredCreateEvent = false;
-    if (slot.handle !== undefined) this.onDidCreateEmitter.fire(slot.handle);
+    if (slot.handle !== undefined) this.announceAgentCreated(slot.handle);
     this.releaseSlot(agentId, slot);
+  }
+
+  private announceAgentCreated(handle: IAgentScopeHandle): void {
+    this.onDidCreateEmitter.fire(handle);
+    void handle.accessor.get(IAgentTaskService).resumeRestoration?.().catch((error) => {
+      this.log.error('agent task restoration failed', { agentId: handle.id, error });
+    });
   }
 
   async discard(agentId: string): Promise<void> {

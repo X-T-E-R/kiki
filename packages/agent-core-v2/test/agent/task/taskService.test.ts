@@ -1657,7 +1657,30 @@ describe('AgentTaskService', () => {
     return ix;
   }
 
-  it('rebuilds wait-delivered keys on restore and skips their re-delivery', async () => {
+  it('finishes replay before task inventory recovery and keeps recovery single-flight', async () => {
+    const docs = mapBackedDocs();
+    let release!: (keys: readonly string[]) => void;
+    const gate = new Promise<readonly string[]>((resolve) => { release = resolve; });
+    const list = vi.spyOn(docs, 'list').mockReturnValue(gate);
+    const ix = buildWiredAgentIx('main', docs, new InMemoryStorageService(), stubContextMemory());
+    const tasks = ix.get(IAgentTaskService);
+    await ix.get(IEventDispatcher).restore();
+    expect(list).not.toHaveBeenCalled();
+    expect(tasks.hasUnfinishedWork()).toBe(true);
+    const recovery = tasks.resumeRestoration!();
+    expect(tasks.resumeRestoration!()).toBe(recovery);
+    await vi.waitFor(() => expect(list).toHaveBeenCalled());
+    await ix.get(IEventDispatcher).dispatch(new TaskWaitDelivered({ keys: ['fixture-admission'] }));
+    await ix.get(IEventDispatcher).flush();
+    const persisted = [];
+    for await (const record of ix.get(IWireService).readJournal()) persisted.push(record);
+    expect(persisted).toContainEqual(expect.objectContaining({ type: 'task.waitDelivered', keys: ['fixture-admission'] }));
+    release([]);
+    await recovery;
+    expect(tasks.hasUnfinishedWork()).toBe(false);
+  });
+
+  it('rebuilds wait-delivered keys on restore and wakes an idle main once for an undelivered completion', async () => {
     const docs = mapBackedDocs();
     const bytes = new InMemoryStorageService();
 
@@ -1674,8 +1697,16 @@ describe('AgentTaskService', () => {
 
     const context2 = stubContextMemory();
     const two = buildWiredAgentIx('main', docs, bytes, context2);
-    two.get(IAgentTaskService);
+    const restoredTasks = two.get(IAgentTaskService);
     await two.get(IEventDispatcher).restore();
+    await restoredTasks.resumeRestoration?.();
+    const restoredLoop = two.get(IAgentLoopService) as StubLoop;
+    expect(restoredLoop.launches).toHaveLength(1);
+    restoredLoop.drainNextBatch(context2);
+    await runWillBeginStepHooks(restoredLoop);
+    await restoredTasks.resumeRestoration?.();
+    expect(restoredLoop.drainNextBatch(context2)).toBeUndefined();
+    expect(restoredLoop.launches).toHaveLength(1);
 
     const keyA = taskA;
     expect(two.get(IAgentStateService).get(taskNotificationDeliveryKey)).toContain(keyA);
@@ -1776,6 +1807,7 @@ describe('AgentTaskService', () => {
     restoreHook = mainIx.get(IEventDispatcher).hooks.onDidRestore;
 
     await restoreHook.run({});
+    await main.resumeRestoration?.();
 
     expect(main.list(false)).toEqual([
       expect.objectContaining({ taskId, description: 'legacy task', status: 'completed', receiptVerification: 'legacy_unverified' }),
