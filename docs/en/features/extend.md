@@ -36,7 +36,7 @@ A **custom prompt command** is the lightweight sibling: just a prompt snippet yo
 
 ## MCP servers
 
-[Model Context Protocol](/en/server/mcp) servers let the agent call tools exposed by external processes or services — a database, a GitHub tracker, a local filesystem. Kiki connects as an MCP client over three transports: **stdio** (Kiki starts the server as a child process), **HTTP** (an already-running endpoint), and **SSE** (a legacy streaming transport; prefer HTTP for new servers). Configure them in `mcp.json` at the user level (`~/.kiki/mcp.json`) or the project level (`.kiki/mcp.json`), and manage them interactively with `/kiki-ops help me configure MCP` or inspect status with `/mcp`. A project-level server in an untrusted folder shows its transport and launch target in the trust prompt — read it before you trust the folder.
+[Model Context Protocol](/en/server/mcp) servers let the agent call tools exposed by external processes or services — a database, a GitHub tracker, a local filesystem. Kiki connects as an MCP client over three transports: **stdio** (Kiki starts the server as a child process), **HTTP** (an already-running endpoint), and **SSE** (a legacy streaming transport; prefer HTTP for new servers). Configure them in `mcp.json` at the user level (`$KIKI_HOME/mcp.json`; default `~/.kiki/mcp.json`) or the project level (`.kiki/mcp.json`), and manage them interactively with `/kiki-ops help me configure MCP` or inspect status with `/mcp`. A project-level server in an untrusted folder shows its transport and launch target in the trust prompt — read it before you trust the folder.
 
 MCP tools reach the agent exactly like built-in tools, with the same approval model. See [Model Context Protocol](/en/server/mcp).
 

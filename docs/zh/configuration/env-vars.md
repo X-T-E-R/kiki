@@ -12,9 +12,17 @@ Kiki 自有运行时开关统一使用 `KIKI_*` 前缀。`KIMI_API_KEY` 和 `KIM
 
 ## 核心路径
 
+### 当前 Kiki home
+
+`<home>` 指服务器主机上当前 Space 解析出的 Kiki home。对于支持 `--home` 的子命令，解析顺序为：显式 `--home` > `KIKI_HOME` > OS home 下的默认 `~/.kiki`。只有文档明确支持 `--home` 的子命令可用该显式覆盖；根命令 `kiki` 不提供全局 `--home`。`KIMI_CODE_HOME` 不选择这个 home——它仅供 vendor Kimi Code 集成使用，例如外部 Kimi CLI 或其 OAuth 凭证目录。
+
+本地子进程默认继承当前 Space 的 Kiki home；子进程环境里显式提供的 `KIKI_HOME` 仍然覆盖这个默认值。SSH 和其他远端子进程不会收到本地 Kiki home，而是在远端主机上解析自己的 home。
+
+当前配置、会话、memory 和日志使用 `<home>`。base home 可以提供选定的继承资源，启用共享凭证时凭证也可能从 base 读取；这不表示所有文件都会搬到同一路径，或从同一路径共享。Shell 示例中，若 `KIKI_HOME` 指向当前 home，请把路径写成 `"$KIKI_HOME/..."`。
+
 ### `KIKI_HOME`
 
-覆盖数据根目录，默认 `~/.kiki`。设置后，配置与凭证文件、会话、日志、OAuth 凭据等全部数据都落到新路径下。桌面应用的 OAuth 凭据也跟随 `KIKI_HOME`：未设置时默认在兼容家目录 `~/.kimi-code/`（见[数据路径](./data-locations.md)）。
+在没有受支持的子命令级 `--home` 时选择运行时 home，默认是 `~/.kiki`。解析完成后，配置与凭证文件、会话、日志、OAuth 凭据和其他运行时数据会使用这个 home，但仍受上面的继承与共享凭证规则约束。桌面应用的 OAuth 凭据也跟随 `KIKI_HOME`：未设置时默认在兼容家目录 `~/.kimi-code/`（见[数据路径](./data-locations.md)）。
 
 ```sh
 export KIKI_HOME="/path/to/custom/kiki"

@@ -19,6 +19,7 @@ import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { kikiDefinitionReadRoots } from '#/app/bootstrap/definitionReadRoots';
 import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
 import {
   DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS,
@@ -104,7 +105,8 @@ export class GlobTool implements IGlobTool {
     const view = new RuntimeWorkspaceView(inspected, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const roots = inspected.identity.runtimeId.startsWith('ssh:') ? [] : this.skillCatalog?.catalog.getSkillRoots() ?? [];
-    const workspace = withDefinitionReadRoots(this.workspaceConfig(view), roots, env.homeDir);
+    const workspace = withDefinitionReadRoots(this.workspaceConfig(view), roots, env.homeDir,
+      inspected.identity.runtimeId === 'local' ? kikiDefinitionReadRoots(this.bootstrap) : []);
     const pathOptions = { env, workspace, operation: 'search' as const, shellPathBridge: runtimeShellPathBridge(inspected) };
     let path: string | undefined;
     let implicitExternal = false;

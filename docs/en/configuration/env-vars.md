@@ -12,9 +12,17 @@ The separate `KIKI_MODEL_*` family can supply a temporary model and key — see 
 
 ## Core paths
 
+### Current Kiki home
+
+`<home>` means the resolved Kiki home for the current Space on the server host. For a subcommand that supports `--home`, Kiki resolves it in this order: explicit `--home` > `KIKI_HOME` > the OS home default `~/.kiki`. Only subcommands that document `--home` accept that explicit override; the root `kiki` command does not. `KIMI_CODE_HOME` does not select this home — it is reserved for vendor Kimi Code integrations, such as an external Kimi CLI or its OAuth credential directory.
+
+Local child processes inherit the current Space's Kiki home by default. An explicit `KIKI_HOME` supplied in a child environment still overrides that default. SSH and other remote children do not receive the local Kiki home; they resolve their own home on the remote host.
+
+Use `<home>` for current config, sessions, memory, and logs. A base home can supply selected inherited resources, and shared credentials may use that base when configured; this does not mean every file moves to or is shared from the same path. In shell examples, quote paths as `"$KIKI_HOME/..."` when `KIKI_HOME` names the current home.
+
 ### `KIKI_HOME`
 
-Overrides the data root directory; the default is `~/.kiki`. Once set, the config and credentials files, sessions, logs, OAuth credentials, and all other data land under the new path. The desktop app's OAuth credentials follow `KIKI_HOME` too: unset, they default to the compatibility home `~/.kimi-code/` (see [Data locations](./data-locations.md)).
+Selects the runtime home when no supported command-specific `--home` is supplied; the default is `~/.kiki`. Once resolved, config and credentials files, sessions, logs, OAuth credentials, and other runtime data use that home subject to the inheritance and shared-credential rules above. The desktop app's OAuth credentials follow `KIKI_HOME` too: when it is unset, they default to the compatibility home `~/.kimi-code/` (see [Data locations](./data-locations.md)).
 
 ```sh
 export KIKI_HOME="/path/to/custom/kiki"

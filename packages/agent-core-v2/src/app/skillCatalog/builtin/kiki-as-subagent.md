@@ -45,7 +45,7 @@ tool_timeout_sec = 30
 default_tools_approval_mode = "approve"
 ```
 
-Use **short MCP calls**, never an hours-long `kiki_wait`: progress notifications from MCP do not wake Codex. The host must be an active, non-ephemeral desktop/TUI daemon thread; `codex exec` and ephemeral threads cannot receive `codex queue`. Add this to Kiki's own `~/.kiki/config.toml` (merge existing hooks):
+Use **short MCP calls**, never an hours-long `kiki_wait`: progress notifications from MCP do not wake Codex. The host must be an active, non-ephemeral desktop/TUI daemon thread; `codex exec` and ephemeral threads cannot receive `codex queue`. Add this to Kiki's current `<home>/config.toml` (use `"$KIKI_HOME/config.toml"` when `KIKI_HOME` selects that home; default: `~/.kiki/config.toml`), merging existing hooks:
 
 ```toml
 [[hooks]]

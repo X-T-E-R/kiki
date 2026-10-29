@@ -112,7 +112,7 @@ Hook 是权限规则的补充，不是操作系统沙箱，也不能代你批准
 下面这条 hook 会在每次后台任务完成时，在终端标题栏闪一下通知（macOS 需要安装 `terminal-notifier`）：
 
 ```toml
-# 写在 ~/.kiki/config.toml 里
+# 写在当前 <home>/config.toml 里（默认 ~/.kiki/config.toml）
 [[hooks]]
 event = "Notification"           # 触发时机：后台任务状态变化时
 matcher = "task\\.completed"     # 只关心"已完成"的通知
@@ -123,7 +123,7 @@ command = "terminal-notifier -title Kimi -message 'Task done'"
 
 ## Legacy 规则字段
 
-每条 legacy 规则是 `~/.kiki/config.toml` 中 `[[hooks]]` 数组里的一项：
+每条 legacy 规则是当前 `<home>/config.toml`（默认 `~/.kiki/config.toml`）中 `[[hooks]]` 数组里的一项：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -221,7 +221,7 @@ Hook 命令的工作目录是当前会话的项目目录。非 Windows 平台上
 [[hooks]]
 event = "PreToolUse"
 matcher = "Bash"
-command = "node ~/.kiki/hooks/block-dangerous-bash.mjs"
+command = "node \"$KIKI_HOME/hooks/block-dangerous-bash.mjs\""
 timeout = 5
 ```
 

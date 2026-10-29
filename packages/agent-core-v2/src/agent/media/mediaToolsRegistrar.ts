@@ -10,6 +10,8 @@ import { IEventBus } from '#/app/event/eventBus';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IFlagService } from '#/app/flag/flag';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { kikiDefinitionReadRoots } from '#/app/bootstrap/definitionReadRoots';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { type ModelRequester } from '#/kosong/model/modelRequester';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
@@ -42,6 +44,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     @IFlagService private readonly flags: IFlagService,
     @IAgentStateService private readonly states: IAgentStateService,
     @ISessionSkillCatalog private readonly skillCatalog?: ISessionSkillCatalog,
+    @IBootstrapService private readonly bootstrap?: IBootstrapService,
   ) {
     super();
     this.states.contributeState(mediaRegisteredKeyKey);
@@ -121,6 +124,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     const workspaceCtx = this.workspaceCtx;
     const skillCatalog = this.skillCatalog;
     const runtime = this.runtime;
+    const definitionRoots = kikiDefinitionReadRoots(this.bootstrap);
     let requester: ModelRequester | undefined;
     if (model !== undefined) {
       try {
@@ -139,7 +143,7 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
           return inspectAgentWorkspaceRoots(runtime, workspaceCtx).additionalDirs ?? [];
         },
         get definitionReadRoots() {
-          return skillCatalog?.catalog.getSkillRoots() ?? [];
+          return [...skillCatalog?.catalog.getSkillRoots() ?? [], ...definitionRoots];
         },
       },
       capabilities,

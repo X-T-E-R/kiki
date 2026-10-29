@@ -105,7 +105,7 @@ pattern = "Bash(rm -rf*)"
 [[hooks]]
 event = "PreToolUse"
 matcher = "Bash"
-command = "node ~/.kiki/hooks/check-bash.mjs"
+command = "node \"$KIKI_HOME/hooks/check-bash.mjs\""
 timeout = 5
 ```
 

@@ -106,6 +106,7 @@ it('reports the requested home and stops its pre-ready tree before releasing the
   ].join('\n'));
   expect(daemonSpawns()).toHaveLength(1);
   expect(daemonSpawns()[0]?.[1]).toEqual(expect.arrayContaining(['serve', '--home', homeDir]));
+  expect(daemonSpawns()[0]?.[2].env['KIKI_HOME']).toBe(homeDir);
   expect(children[0]!.exitCode).toBe(137);
   expect(mocks.unref).not.toHaveBeenCalled();
   expect(mocks.sleep).toHaveBeenCalledExactlyOnceWith(250, undefined, { signal: expect.any(AbortSignal) });

@@ -187,17 +187,15 @@ export function isWithinWorkspace(
 export function withDefinitionReadRoots<T extends WorkspaceConfig>(
   workspace: T,
   skillRoots: readonly string[],
-  homeDir: string,
+  osHomeDir: string,
+  kikiRoots: readonly string[] = [],
 ): T & { readonly definitionReadRoots: readonly string[] } {
   const definitionReadRoots = [...new Set([
     ...workspace.definitionReadRoots ?? [],
     ...skillRoots,
-    pathe.join(homeDir, '.agents/skills'),
-    pathe.join(homeDir, '.agents/agents'),
-    pathe.join(homeDir, '.kiki/agents'),
-    pathe.join(homeDir, '.kiki/skills'),
-    pathe.join(homeDir, '.kiki/commands'),
-    pathe.join(homeDir, '.kiki/docs'),
+    pathe.join(osHomeDir, '.agents/skills'),
+    pathe.join(osHomeDir, '.agents/agents'),
+    ...kikiRoots,
   ])];
   return { ...workspace, definitionReadRoots };
 }

@@ -17,7 +17,7 @@ Help the user use, configure, and troubleshoot the installed Kiki. Creating or e
 
 ## Ground truth: installed docs
 
-Docs matching this version live in `<KIKI_HOME>/docs/{en,zh}/` (`KIKI_HOME`, else `~/.kiki`; on the server host). `Grep`/`Read` them before stating a key, command, or behavior; cite the path. Never use upstream Kimi Code docs; if the docs do not settle it, say so.
+Docs matching this version live at the current Space's resolved `<home>/docs/{en,zh}/` on the server host. Read the Product docs path named in the Space section first; if that path is not exposed or unavailable, report that instead of guessing `~/.kiki`. The default `~/.kiki` path is only a default location, not proof of the current home. `Grep`/`Read` them before stating a key, command, or behavior; cite the path. Never use upstream Kimi Code docs; if the docs do not settle it, say so.
 
 | Topic | Doc |
 | --- | --- |

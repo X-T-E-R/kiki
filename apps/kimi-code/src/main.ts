@@ -181,14 +181,6 @@ function bootstrap(): void {
         ? `model-pricing:failed code=${pricingInstall.errorCode} sha256=${pricingInstall.assetSha256 ?? 'unknown'}`
         : `model-pricing:${pricingInstall.status}`,
   );
-  const docsInstall = installKikiDocs({ kikiHome: resolveKikiHome() });
-  startupTrace(
-    docsInstall.status === 'installed'
-      ? `product-docs:installed source=${docsInstall.source} files=${docsInstall.fileCount} written=${docsInstall.writtenFiles} removed=${docsInstall.removedFiles} backed-up=${docsInstall.backedUpFiles} sha256=${docsInstall.contentSha256}`
-      : docsInstall.status === 'failed'
-        ? `product-docs:failed code=${docsInstall.errorCode}`
-        : `product-docs:${docsInstall.status}`,
-  );
   if (runNativeAssetSmokeIfRequested()) return;
 
   // Start the background cleanup of stale native cache. Fire-and-forget; must not block startup or throw.
@@ -238,6 +230,18 @@ function bootstrap(): void {
       });
     },
   );
+
+  program.hook('preAction', (_root, command) => {
+    const options = command.optsWithGlobals<{ home?: string }>();
+    const docsInstall = installKikiDocs({ kikiHome: resolveKikiHome(options.home) });
+    startupTrace(
+      docsInstall.status === 'installed'
+        ? `product-docs:installed source=${docsInstall.source} files=${docsInstall.fileCount} written=${docsInstall.writtenFiles} removed=${docsInstall.removedFiles} backed-up=${docsInstall.backedUpFiles} sha256=${docsInstall.contentSha256}`
+        : docsInstall.status === 'failed'
+          ? `product-docs:failed code=${docsInstall.errorCode}`
+          : `product-docs:${docsInstall.status}`,
+    );
+  });
 
   void program.parseAsync(process.argv).catch((error: unknown) => {
     if (error instanceof CommanderError && error.exitCode === 0) {

@@ -32,7 +32,7 @@ when_to_use: The user wants to write, modify, debug, or ship a Kiki plugin direc
 
 ## 3. 写 manifest
 
-`kimi.plugin.json`（或 `.kimi-plugin/plugin.json`）常用字段：`name`（plugin id，匹配 `[a-z0-9][a-z0-9_-]{0,63}`）、`version`、`description`、`icon`（`./` 路径的 svg/png，≤64 KB）、`skills`、`interface`。Kiki 专属贡献写在 `x-kiki` 里：`engines.kiki`、`entry`、`tools`、`permissions`、`settings`、`panels`、`commands`。字段全集、每项限制和 diagnostics 读法写在安装版本的 `customization/plugins.md`（`<KIKI_HOME>/docs/{en,zh}/`，本机 Kiki_HOME 未设置时为 `~/.kiki`）里，先读它再定字段，不要凭印象写。
+`kimi.plugin.json`（或 `.kimi-plugin/plugin.json`）常用字段：`name`（plugin id，匹配 `[a-z0-9][a-z0-9_-]{0,63}`）、`version`、`description`、`icon`（`./` 路径的 svg/png，≤64 KB）、`skills`、`interface`。Kiki 专属贡献写在 `x-kiki` 里：`engines.kiki`、`entry`、`tools`、`permissions`、`settings`、`panels`、`commands`。字段全集、每项限制和 diagnostics 读法写在服务器主机当前 Space 的 `<home>/docs/{en,zh}/customization/plugins.md` 里；先读 Space 段给出的已解析 Product docs 路径再定字段，不要凭印象写。若该路径未暴露或不可用，报告文档不可用，不要猜 `~/.kiki`；`~/.kiki` 仅是默认位置说明。
 
 - 有 `tools`、`sessionSources`、`panels`、`commands`、`settings`、`themes` 任何一项就必须写 `engines.kiki`；声明了 `tools` 或 `sessionSources` 还必须有 `entry`。
 - 所有 `./` 路径（`skills`、`agents`、`commands`、`icon`、`systemPromptPath`、panel、entry）解析符号链接后仍须留在 plugin 根目录内。

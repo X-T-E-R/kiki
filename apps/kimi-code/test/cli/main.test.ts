@@ -17,10 +17,13 @@ import { handleMainCommand, main } from '#/main';
 const mocks = vi.hoisted(() => {
   const parse = vi.fn();
   const parseAsync = vi.fn(() => Promise.resolve());
+  const hook = vi.fn();
   return {
     parse,
     parseAsync,
-    createProgram: vi.fn(() => ({ parse, parseAsync })),
+    hook,
+    installKikiDocs: vi.fn(() => ({ status: 'source-missing' })),
+    createProgram: vi.fn(() => ({ parse, parseAsync, hook })),
     getVersion: vi.fn(() => '0.0.1-alpha.2'),
     validateOptions: vi.fn(),
     runShell: vi.fn(),
@@ -75,6 +78,8 @@ vi.mock('@kiki/node-sdk', async () => {
 vi.mock('../../src/cli/commands', () => ({
   createProgram: mocks.createProgram,
 }));
+
+vi.mock('../../src/native/product-docs', () => ({ installKikiDocs: mocks.installKikiDocs }));
 
 vi.mock('../../src/cli/version', async () => {
   const actual = await vi.importActual<typeof import('../../src/cli/version.js')>(
@@ -168,6 +173,19 @@ async function runHandleMainCommand(opts: CLIOptions): Promise<number | null> {
 
 describe('main entry command handling', () => {
   let homeDir: string;
+
+  it('installs docs only after parsing the selected command home', async () => {
+    main();
+    await waitForProgramArgs();
+    expect(mocks.installKikiDocs).not.toHaveBeenCalled();
+    const preAction = mocks.hook.mock.calls.find(([name]) => name === 'preAction')?.[1] as (_: unknown, command: Command) => void;
+    expect(preAction).toBeTypeOf('function');
+    const command = new Command('fixture').option('--home <dir>').action(() => {});
+    await command.parseAsync(['--home', join(homeDir, 'selected-space')], { from: 'user' });
+    preAction(undefined, command);
+    expect(mocks.installKikiDocs).toHaveBeenCalledWith({ kikiHome: join(homeDir, 'selected-space') });
+    expect(await readdir(homeDir)).not.toContain('docs');
+  });
   afterEach(async () => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();

@@ -204,7 +204,7 @@ Omitting `sessionId` exports the most recent session in the current directory (w
 kiki export <sessionId> -o ~/Desktop/my-session.zip
 ```
 
-The export includes everything in the session directory, diagnostic logs included, plus the global log at `~/.kiki/logs/kimi-code.log` (the name is inherited from the project's earlier naming). Add `--no-include-global-log` to leave that one out.
+The export includes everything in the session directory, diagnostic logs included, plus the current home's global log at `<home>/logs/kimi-code.log` (default `~/.kiki/logs/kimi-code.log`; the name is inherited from the project's earlier naming). Add `--no-include-global-log` to leave that one out.
 
 You can also export from inside the TUI without leaving the interactive session:
 

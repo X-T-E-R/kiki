@@ -14,7 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getTextBuildWorkerRuntimeState,
   resetTextBuildWorkerRuntime,
@@ -520,6 +520,19 @@ describe('native assets', () => {
         'test-target',
       ),
     ).toThrow(/duplicate assetKey/);
+  });
+
+  it('materializes docs only in the explicit Space home with a stale ambient main', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kiki-space-docs-'));
+    const main = join(root, 'main');
+    const selected = join(root, 'space');
+    vi.stubEnv('KIKI_HOME', main);
+    try {
+      const source = fakeDocsSource({ 'en/index.md': '# English\n', 'zh/index.md': '# 中文\n' });
+      expect(installKikiDocs({ ...source, kikiHome: selected })).toMatchObject({ status: 'installed', fileCount: 2 });
+      expect(readFileSync(join(selected, 'docs/en/index.md'), 'utf8')).toBe('# English\n');
+      expect(existsSync(main)).toBe(false);
+    } finally { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); }
   });
 
   it('materializes SEA docs by content hash and backs up user edits before refresh', () => {

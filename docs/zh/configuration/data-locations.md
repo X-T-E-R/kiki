@@ -1,11 +1,11 @@
 # 数据路径
 
-Kiki 默认把运行时数据——配置文件、会话历史、登录凭据、诊断日志——存放在 `~/.kiki/` 下。本页帮你搞清楚每类数据在哪里、用来做什么，以及需要时怎么清理或搬迁。
+Kiki 把运行时数据——配置文件、会话历史、登录凭据、诊断日志——存放在服务器主机当前 Space 的 `<home>` 下。`<home>` 指当前 Space 解析出的 Kiki home；只有没有受支持的显式 `--home` 且未设置 `KIKI_HOME` 时，`~/.kiki/` 才是默认值。本页帮你搞清楚每类数据在哪里、用来做什么，以及需要时怎么清理或搬迁。
 
 ::: warning 桌面 OAuth 凭据的默认位置不同
-未设置 `KIKI_HOME` 时，桌面应用的运行时数据（配置、会话、`server.token`）在 `~/.kiki/`，但它的 OAuth 凭据默认在兼容家目录 `~/.kimi-code/`（`~/.kimi-code/credentials/`）。如果本机已有 Moonshot 的 `~/.kimi-code/credentials/kimi-code.json`，桌面会直接使用这份令牌，而不是处于未登录状态——并且删除 `~/.kiki/` **不会**清掉它。先跑 `kiki login` 则令牌写在 `~/.kiki/credentials/`，之后不带桌面环境变量启动的 daemon 找不到桌面那边的令牌。
+没有选择受支持的显式 `--home` 且未设置 `KIKI_HOME` 时，桌面应用的运行时数据（配置、会话、`server.token`）在 `~/.kiki/`，但它的 OAuth 凭据默认在兼容家目录 `~/.kimi-code/`（`~/.kimi-code/credentials/`）。如果本机已有 Moonshot 的 `~/.kimi-code/credentials/kimi-code.json`，桌面会直接使用这份令牌，而不是处于未登录状态——并且删除 `~/.kiki/` **不会**清掉它。先跑 `kiki login` 则令牌写在 `~/.kiki/credentials/`，之后不带桌面环境变量启动的 daemon 找不到桌面那边的令牌。
 
-设置 `KIKI_HOME` 会把运行时数据和桌面 OAuth 凭据一起挪到该路径。桌面设置里也可以自行选择兼容家目录。kimi-cli 时代的 `~/.kimi` 目录从不被读取，也不会被导入。
+设置 `KIKI_HOME` 会把该 home 选定的运行时数据和桌面 OAuth 凭据一起挪到该路径。桌面设置里也可以自行选择兼容家目录。kimi-cli 时代的 `~/.kimi` 目录从不被读取，也不会被导入。
 :::
 
 ## 数据根目录
@@ -22,11 +22,11 @@ Kiki 默认把运行时数据——配置文件、会话历史、登录凭据、
 export KIKI_HOME="$HOME/.config/kiki"
 ```
 
-设置后，配置、供应商凭证、会话、日志、OAuth 凭据、Kiki 专属用户级 Skills、全局 `AGENTS.md` 等 **Kiki 数据**都会落到新路径下。`KIKI_HOME` 的完整说明见[环境变量](./env-vars.md)。
+解析完成后，当前配置、会话、memory、日志和其他运行时数据归属于 `<home>`。base home 可以提供选定的继承资源，启用共享凭证时凭证也可能从 base 读取；这不表示所有 Kiki 文件都会搬到同一路径，或从同一路径共享。Shell 路径中，若 `KIKI_HOME` 指向 `<home>`，请写成 `"$KIKI_HOME/..."`。`KIKI_HOME` 的完整说明见[环境变量](./env-vars.md)。
 
 ::: tip 提示
 
-**通用 `.agents` 资源**仍放在真实 OS home 下，以便跨工具共享。例如，用户级通用 Skills 仍位于 `~/.agents/skills/`，而 Kiki 专属用户级 Skills 会随 `KIKI_HOME` 移动到 `$KIKI_HOME/skills/`。
+**通用 `.agents` 资源**仍放在真实 OS home 下，以便跨工具共享。例如，用户级通用 Skills 仍位于 `~/.agents/skills/`，而 Kiki 专属用户级 Skills 会随当前 home 移动；当 `KIKI_HOME` 指向它时，路径写作 `"$KIKI_HOME/skills/"`。
 :::
 
 ## 目录结构
@@ -78,7 +78,7 @@ $KIKI_HOME  （默认 ~/.kiki）
 - **`mcp.json`**：用户级 MCP server 声明，启动时与项目内的 `.kiki/mcp.json` 合并加载。详见 [MCP](../server/mcp.md)。
 - **`skills/`**：Kiki 专属用户级 Skills。该目录会随 `KIKI_HOME` 移动；跨工具通用 Skills 仍可放在 `~/.agents/skills/`。详见 [Agent Skills](../customization/skills.md)。
 - **`cognition/`**：`[models."<alias>".cognition]` 引用的提示词文件，路径相对于数据根目录。详见[模型认知](./config-files.md#模型认知)。
-- **`hooks/`**：`[[hooks]]` command 路径引用的脚本文件（如 `node ~/.kiki/hooks/check-bash.mjs`）。详见 [Hooks](../customization/hooks.md)。
+- **`hooks/`**：`[[hooks]]` command 路径引用的脚本文件（当前 home 可写作 `node "$KIKI_HOME/hooks/check-bash.mjs"`）。详见 [Hooks](../customization/hooks.md)。
 - **`plugins/installed.json`**：记录已安装的 plugin、每个 plugin 的启用状态，以及通过 `/plugins` 或 `/plugins mcp disable|enable` 修改的 MCP server 能力状态。本地路径和 zip URL 安装的文件会复制到 `plugins/managed/<id>/`。详见 [Plugins](../customization/plugins.md)。
 - **`credentials/`**：权限受限的凭据目录，请求权限为目录 `0o700`、文件 `0o600`。托管供应商的 OAuth 登录态存为 `credentials/<name>.json`，MCP server 凭据存在 `credentials/mcp/` 子目录下。在 Windows 上，要靠这个目录挡住其他本机用户，请自行核查文件及其父目录的 ACL。
 - **`workspaces.json` 与 `workspaces/`**：分别记录已注册工作区，以及新会话未指定工作区时 Kiki 创建的项目目录。每个自动创建的会话使用独立目录；这里是工作文件，与 `sessions/` 下的会话历史不同。

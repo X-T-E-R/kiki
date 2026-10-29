@@ -204,7 +204,7 @@ kiki export <sessionId>
 kiki export <sessionId> -o ~/Desktop/my-session.zip
 ```
 
-导出包含会话目录下的全部文件（含诊断日志），以及全局日志 `~/.kiki/logs/kimi-code.log`（文件名沿用项目早期的命名）。不需要它就加 `--no-include-global-log`。
+导出包含会话目录下的全部文件（含诊断日志），以及当前 home 的全局日志 `<home>/logs/kimi-code.log`（默认 `~/.kiki/logs/kimi-code.log`；文件名沿用项目早期的命名）。不需要它就加 `--no-include-global-log`。
 
 也可以在 TUI 内导出，无需离开交互界面：
 

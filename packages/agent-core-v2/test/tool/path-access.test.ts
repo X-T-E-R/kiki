@@ -15,6 +15,7 @@ import { GlobTool } from '#/agent/tools/os/glob/globTool';
 import { IWriteTool } from '#/agent/tools/os/write/write';
 import { WriteTool } from '#/agent/tools/os/write/writeTool';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { kikiDefinitionReadRoots } from '#/app/bootstrap/definitionReadRoots';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
@@ -103,15 +104,29 @@ describe('isSensitiveFile', () => {
 describe('withDefinitionReadRoots', () => {
   const workspace = { workspaceDir: '/repo', additionalDirs: ['/extra'] };
 
+  it('projects current definitions and inherited agents without admitting base docs or the whole home', () => {
+    const roots = kikiDefinitionReadRoots({ homeDir: '/spaces/current', userAgentProfileHomeDir: '/profiles', baseHomeDir: '/spaces/base' });
+    expect(roots).toContain('/spaces/current/docs');
+    expect(roots).toContain('/profiles/agents');
+    expect(roots).toContain('/spaces/base/agents');
+    expect(roots).not.toContain('/spaces/base/docs');
+    expect(roots).not.toContain('/spaces/current');
+    expect(withDefinitionReadRoots(workspace, [], '/remote/user').definitionReadRoots).not.toContain('/remote/user/.kiki/docs');
+  });
+
   it('keeps project write roots separate from registered user definitions and docs', () => {
-    const configured = withDefinitionReadRoots(workspace, ['/other/skills'], '/home/user');
+    const configured = withDefinitionReadRoots(workspace, ['/other/skills'], '/home/user', ['/spaces/current/agents', '/spaces/current/skills', '/spaces/current/commands', '/spaces/current/docs', '/spaces/base/agents']);
     expect(configured.additionalDirs).toEqual(['/extra']);
     expect(configured.definitionReadRoots).toEqual(expect.arrayContaining([
       '/other/skills', '/home/user/.agents/skills', '/home/user/.agents/agents',
-      '/home/user/.kiki/agents', '/home/user/.kiki/skills', '/home/user/.kiki/commands',
-      '/home/user/.kiki/docs',
+      '/spaces/current/agents', '/spaces/current/skills', '/spaces/current/commands',
+      '/spaces/current/docs', '/spaces/base/agents',
     ]));
     expect(configured.definitionReadRoots).not.toContain('/home/user/.kiki');
+    expect(configured.definitionReadRoots).not.toContain('/home/user/.kiki/docs');
+    expect(configured.definitionReadRoots).not.toContain('/spaces/base/docs');
+    expect(configured.definitionReadRoots).not.toContain('/spaces/current');
+    expect(configured.definitionReadRoots).not.toContain('/spaces/base');
   });
 });
 
@@ -255,6 +270,29 @@ describe('resolveRealPathAccessPath', () => {
     if (resolved.isError === true) throw new Error(JSON.stringify(resolved.output));
     return resolved.execute({ turnId: 1, toolCallId: 'file-admission', signal: new AbortController().signal });
   }
+
+  it('reads current-home docs through Read without granting writes or default-main docs access', async () => {
+    const services = fileTools([]);
+    const docs = join(root, 'docs');
+    await mkdir(docs);
+    const current = join(docs, 'guide.md');
+    await writeFile(current, 'current Space docs');
+    const read = await services.get(IReadTool).resolveExecution({ path: '../docs/guide.md' });
+    if (read.isError === true) throw new Error(String(read.output));
+    expect(read.accesses).toMatchObject([{ implicitExternal: false }]);
+    expect(await execute(read)).toMatchObject({ output: expect.stringContaining('current Space docs') });
+    const write = await services.get(IWriteTool).resolveExecution({ path: current, content: 'changed' });
+    if (write.isError === true) throw new Error(String(write.output));
+    expect(write.accesses).toMatchObject([{ kind: 'file', operation: 'write', path: current.replaceAll('\\', '/') }]);
+    await expect(resolveRealPathAccess(current, { ...options('write'), workspace: withDefinitionReadRoots(options().workspace, [], root, kikiDefinitionReadRoots(services.get(IBootstrapService))) }, fs)).resolves.toMatchObject({ outsideWorkspace: true });
+    expect(await readFile(current, 'utf8')).toBe('current Space docs');
+    const defaultDocs = join(root, '.kiki', 'docs');
+    await mkdir(defaultDocs, { recursive: true });
+    const old = join(defaultDocs, 'guide.md');
+    await writeFile(old, 'unselected main');
+    await expect(services.get(IReadTool).resolveExecution({ path: '../.kiki/docs/guide.md' })).rejects.toMatchObject({ code: 'PATH_OUTSIDE_WORKSPACE' });
+    await expect(services.get(IWriteTool).resolveExecution({ path: '../docs/guide.md', content: 'changed' })).rejects.toMatchObject({ code: 'PATH_OUTSIDE_WORKSPACE' });
+  });
 
   it('keeps native Read, Glob and Write usable with an uncreated additional root', async () => {
     const missingRoot = join(root, 'future', 'nested');

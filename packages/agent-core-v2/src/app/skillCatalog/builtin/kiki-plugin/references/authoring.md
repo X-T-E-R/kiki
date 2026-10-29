@@ -1,6 +1,6 @@
 # Plugin 制作参考
 
-字段全集、每项限制、安装语义和 diagnostics 读法，以安装版本的 `customization/plugins.md` 为准：`<KIKI_HOME>/docs/{en,zh}/customization/plugins.md`（未设置 KIKI_HOME 时为 `~/.kiki`，在服务端主机上）。本文只放写工具时反复要用、且已核实的事实。
+字段全集、每项限制、安装语义和 diagnostics 读法，以服务器主机当前 Space 的 `<home>/docs/{en,zh}/customization/plugins.md` 为准。先读取 Space 段给出的已解析 Product docs 路径；如果该路径未暴露或不可用，报告文档不可用，不要猜 `~/.kiki`；`~/.kiki` 仅是默认位置说明。本文只放写工具时反复要用、且已核实的事实。
 
 ## 最小 manifest
 
