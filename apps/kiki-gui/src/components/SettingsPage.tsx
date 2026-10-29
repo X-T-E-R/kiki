@@ -504,7 +504,8 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   // A feature page ends with the experimental flags that change it; tabbed
   // pages show them on one tab only, so a hit on the rows lands where they are.
   const experimentalTab = active === null ? undefined : experimentalTabForSection(active);
-  const showExperimental = active !== null && active !== 'labs'
+  // A plugin's own page is about that plugin; the page's flags stay on the list.
+  const showExperimental = active !== null && active !== 'labs' && activePluginId === null
     && (experimentalTab === undefined || currentTab === experimentalTab);
 
   // A workspace's own page names the workspace in the breadcrumb, the way an

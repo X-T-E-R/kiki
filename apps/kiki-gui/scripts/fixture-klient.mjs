@@ -1661,6 +1661,9 @@ export class FixtureKlient {
         const plugin = server.plugins.find((entry) => entry.id === inputValue.id);
         if (plugin === undefined) throw invalid('plugin.not_found', 40419);
         plugin.enabled = inputValue.enabled === true;
+        const defaultOn = typeof inputValue.defaultEnabled === 'boolean' ? inputValue.defaultEnabled : plugin.enabled;
+        plugin.defaultEnabled = defaultOn;
+        plugin.globalEnabled = plugin.enabled && defaultOn;
         return undefined;
       }
       case 'pluginService.removePlugin': {

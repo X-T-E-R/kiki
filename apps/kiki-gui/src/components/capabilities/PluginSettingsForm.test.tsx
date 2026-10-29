@@ -170,18 +170,21 @@ describe('PluginSettingsForm', () => {
     expect(container.textContent).not.toContain('openai__cleared');
     expect(container.textContent).not.toContain('openai__removed');
     expect(container.querySelector('[data-plugin-setting="defaultImageProvider"] select')?.textContent).toContain('openai-image');
+    // Groups are rows; their fields stay closed until the row is opened.
+    expect(container.querySelector('[data-plugin-setting="openai__baseUrl"]')).toBeNull();
+    // A removed source is a quiet row with Restore, in place of its fields.
+    expect(container.querySelector('[data-plugin-setting-group="google"] [data-plugin-setting-restore="google__removed"]')).not.toBeNull();
+    // The group switch is the group's own control, not a field inside it.
+    expect(container.querySelector('[data-plugin-setting-group-switch="openai"] input[type="checkbox"]')).not.toBeNull();
+    await click(container.querySelector('[data-plugin-setting-group-open="openai"]')!);
     expect(container.querySelector('[data-plugin-setting="openai__baseUrl"]')).not.toBeNull();
-    expect(container.querySelector('[data-plugin-setting="google__baseUrl"]')).toBeNull();
-    expect(container.querySelector('[data-plugin-setting-restore="google__removed"]')).toBeNull();
-    const advanced = container.querySelector<HTMLDetailsElement>('[data-plugin-settings-advanced]');
+    expect(container.querySelector('[data-plugin-setting="openai__enabled"]')).toBeNull();
+    const advanced = container.querySelector<HTMLDetailsElement>('[data-plugin-settings-advanced="openai"]');
     expect(advanced?.open).toBe(false);
     expect(advanced?.querySelector('[data-plugin-setting="openai__note"] textarea')).not.toBeNull();
-
-    await click(container.querySelector('[data-plugin-setting-group="google"]')!);
-    expect(container.querySelector('[data-plugin-setting="openai__baseUrl"]')).toBeNull();
     expect(container.querySelector('[data-plugin-setting="google__baseUrl"]')).toBeNull();
-    expect(container.querySelector('[data-plugin-setting-restore="google__removed"]')).not.toBeNull();
     await click(container.querySelector('[data-plugin-setting-restore="google__removed"]')!);
+    await click(container.querySelector('[data-plugin-setting-group-open="google"]')!);
     expect(container.querySelector<HTMLInputElement>('[data-plugin-setting="google__baseUrl"] input')?.value).toBe('https://example.test/v1');
     await click(save(container));
     expect(setPluginSettings).toHaveBeenCalledWith('demo', { google__removed: false });
@@ -214,8 +217,12 @@ describe('PluginSettingsForm', () => {
     });
 
     const container = await renderAtLocale('zh');
-    expect(container.querySelector('[data-plugin-setting-group="openai"]')?.textContent).toBe('OpenAI 媒体');
-    expect(container.querySelector('[data-plugin-setting-group="google"]')?.textContent).toBe('Google 媒体');
+    const title = (id: string) => container.querySelector(`[data-plugin-setting-group="${id}"] [data-plugin-setting-group-title]`)?.textContent;
+    expect(title('openai')).toBe('OpenAI 媒体');
+    expect(title('google')).toBe('Google 媒体');
+    // A closed row says what is set, without opening it.
+    expect(container.querySelector('[data-plugin-setting-group="openai"] [data-plugin-setting-group-summary]')?.textContent).toContain('API 密钥已设置');
+    await click(container.querySelector('[data-plugin-setting-group-open="openai"]')!);
     const openai = container.querySelector('[data-plugin-setting="openai__baseUrl"]')!;
     expect(openai.querySelector('label')?.textContent).toBe('API 基础地址');
     expect(openai.textContent).toContain('图像请求发送到的地址。');
@@ -223,16 +230,16 @@ describe('PluginSettingsForm', () => {
     expect(secret.textContent).toContain('API 密钥');
     expect(secret.textContent).toContain('已保存在 Kiki 凭据中');
     // The untranslated field in the same locale keeps its own English text.
-    await click(container.querySelector('[data-plugin-setting-group="google"]')!);
+    await click(container.querySelector('[data-plugin-setting-group-open="google"]')!);
     const google = container.querySelector('[data-plugin-setting="google__baseUrl"]')!;
     expect(google.querySelector('label')?.textContent).toBe('API base URL');
     expect(google.textContent).toContain('Still English, by choice.');
-    await click(container.querySelector('[data-plugin-setting-group="openai"]')!);
+    await click(container.querySelector('[data-plugin-setting-group-open="openai"]')!);
 
     await type(input(container, 'openai__baseUrl'), 'https://example.test/openai');
     await click(container.querySelector('[data-locale-switch]')!);
     expect(container.querySelector('[data-locale-switch]')?.getAttribute('data-locale-switch')).toBe('en');
-    expect(container.querySelector('[data-plugin-setting-group="openai"]')?.textContent).toBe('OpenAI Media');
+    expect(title('openai')).toBe('OpenAI Media');
     expect(container.querySelector('[data-plugin-setting="openai__baseUrl"] label')?.textContent).toBe('API base URL');
     expect(container.querySelector('[data-plugin-setting="openai__baseUrl"]')?.textContent).toContain('Where image requests are sent.');
     expect(input(container, 'openai__baseUrl').value).toBe('https://example.test/openai');
@@ -268,6 +275,7 @@ describe('PluginSettingsForm', () => {
 
     const container = await render();
     expect(container.querySelector('[data-plugin-settings-global] [data-plugin-setting="defaultImageProvider"]')).not.toBeNull();
+    await click(container.querySelector('[data-plugin-setting-group-open="openai"]')!);
     const panel = container.querySelector('[data-plugin-setting-group-panel="openai"]');
     expect(panel).not.toBeNull();
     expect(panel?.querySelector('[data-plugin-setting="defaultImageProvider"]')).toBeNull();

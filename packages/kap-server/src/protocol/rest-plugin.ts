@@ -21,6 +21,7 @@ export const pluginSummarySchema = z.object({
   icon: z.string().optional(),
   enabled: z.boolean(),
   globalEnabled: z.boolean(),
+  defaultEnabled: z.boolean().optional(),
   state: z.enum(['ok', 'error']),
   skillCount: z.number(),
   mcpServerCount: z.number(),

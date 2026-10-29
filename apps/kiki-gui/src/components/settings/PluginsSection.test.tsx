@@ -56,6 +56,7 @@ const getPlugin = vi.fn(async (): Promise<PluginInfo> => ({
 const getConfig = vi.fn(async () => ({}));
 const patchConfig = vi.fn(async (body: unknown) => body);
 const setPluginEnabled = vi.fn(async () => ({ ok: true }));
+const setPluginState = vi.fn(async () => ({ ok: true }));
 const removePlugin = vi.fn(async () => ({ ok: true }));
 const installPlugin = vi.fn(async () => PLUGIN);
 const PLAN = {
@@ -137,6 +138,7 @@ Object.assign(mocks.client, {
   getConfig,
   patchConfig,
   setPluginEnabled,
+  setPluginState,
   removePlugin,
   installPlugin,
   previewPlugin,
@@ -181,6 +183,7 @@ afterEach(() => {
   getConfig.mockClear();
   patchConfig.mockClear();
   setPluginEnabled.mockClear();
+  setPluginState.mockClear();
   removePlugin.mockClear();
   installPlugin.mockClear();
   previewPlugin.mockClear();
@@ -365,38 +368,32 @@ describe('PluginsSection', () => {
     expect(row.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
   });
 
-  it('offers a way back from “decide later” without touching the master switch', async () => {
-    // A plugin installed with the global default off keeps the master on, so
-    // the switch beside its name already reads on and cannot express the
-    // choice. The row must offer that choice explicitly, and turning the
-    // master off and on again is NOT a way to get it.
-    const later = { ...PLUGIN, globalEnabled: false };
+  it('says what a plugin does for new sessions, and changes the default only on its own page', async () => {
+    // A plugin installed with "decide later" is enabled but not on by default.
+    // The row says so in words; it has one switch, and that switch never moves
+    // the default. The default is its own switch on the plugin's page.
+    const later = { ...PLUGIN, globalEnabled: false, defaultEnabled: false };
     listPlugins.mockResolvedValue({ plugins: [later] });
-    setPluginEnabled.mockClear();
     const container = await renderLeafAt('/settings/plugins');
     await flush();
     const row = container.querySelector('[data-plugin-row="notes"]')!;
-    expect(row.querySelector('[data-plugin-global-default]')!.getAttribute('data-plugin-global-default')).toBe('off');
-    const action = row.querySelector<HTMLButtonElement>('[data-plugin-enable-everywhere="notes"]')!;
-    expect(action.textContent).toBe('Enable everywhere');
-    // The master switch is on and stays on: one write, and it is the one that
-    // sets the default.
-    expect(row.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
-    // Setting the default is not opening the plugin. A user who reaches for
-    // this action to change the default must not be carried out of the list
-    // into that plugin's page on the way.
-    await click(action);
+    expect(row.querySelector('[data-plugin-status]')!.getAttribute('data-plugin-status')).toBe('on-demand');
+    expect(row.textContent).toContain('On when you turn it on');
+    expect(row.querySelectorAll('[role="switch"]')).toHaveLength(1);
+    await click(row.querySelector('input[type="checkbox"]')!);
     await flush();
-    expect(setPluginEnabled).toHaveBeenCalledExactlyOnceWith('notes', true);
+    expect(setPluginState).toHaveBeenCalledExactlyOnceWith('notes', { enabled: false, defaultEnabled: false });
+    expect(setPluginEnabled).not.toHaveBeenCalled();
     expect(locationOf(container)).toBe('/settings/plugins');
-    expect(container.querySelector('[data-plugin-settings-page]')).toBeNull();
-  });
 
-  it('offers no such action once the global default is already on', async () => {
-    listPlugins.mockResolvedValue({ plugins: [{ ...PLUGIN, globalEnabled: true }] });
-    const container = await renderLeaf();
+    setPluginState.mockClear();
+    const page = await renderPlugin('notes');
+    const defaultSwitch = page.querySelector('[data-plugin-default-switch] input[type="checkbox"]') as HTMLInputElement;
+    expect(defaultSwitch.checked).toBe(false);
+    await click(defaultSwitch);
     await flush();
-    expect(container.querySelector('[data-plugin-enable-everywhere]')).toBeNull();
+    expect(setPluginState).toHaveBeenCalledExactlyOnceWith('notes', { enabled: true, defaultEnabled: true });
+    listPlugins.mockResolvedValue({ plugins: [PLUGIN] });
   });
 
   it('toggles a plugin off through the enable switch', async () => {
@@ -643,8 +640,9 @@ describe('PluginsSection', () => {
     const container = await renderLeaf();
     const row = container.querySelector('[data-plugin-row="notes"]')!;
     expect(row.textContent).toContain('Notes');
-    expect(row.textContent).toContain('v1.0.0');
     expect(row.textContent).toContain('Local folder');
+    expect(row.textContent).toContain('On in new sessions');
+    expect(row.textContent).toContain('1 skill');
     expect(row.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
     // The market stays in Capabilities: this leaf links there once, and offers
     // no catalog address of its own.
@@ -732,7 +730,8 @@ describe('PluginsSection', () => {
     const container = await renderLeaf();
     await click(container.querySelector('[data-plugin-row="notes"] input[type="checkbox"]')!);
     await flush();
-    expect(setPluginEnabled).toHaveBeenCalledWith('notes', false);
+    expect(setPluginState).toHaveBeenCalledWith('notes', { enabled: false, defaultEnabled: true });
+    expect(container.querySelector('[data-plugin-settings-page]')).toBeNull();
   });
 
   it('gives an installed plugin its own page: name, a way back, its switch and its form', async () => {
@@ -1157,7 +1156,7 @@ describe('InstallFlow scope choice', () => {
     for (let attempt = 0; attempt < 20 && container.querySelector('[data-plugin-settings="notes"]') === null; attempt += 1) await flush();
     const scopeCard = container.querySelector('[data-plugin-effective-scope="notes"]');
     expect(scopeCard).not.toBeNull();
-    expect(scopeCard?.querySelector('[data-plugin-scope-global="on"]')).not.toBeNull();
+    expect(scopeCard?.getAttribute('data-plugin-scope-global')).toBe('on');
     expect(scopeCard?.querySelector('[data-plugin-scope-workspaces]')?.getAttribute('href')).toBe('/settings/workspaces');
     expect(container.querySelector('[data-plugin-settings-sticky-footer]')).not.toBeNull();
   });
@@ -1226,7 +1225,9 @@ describe('workspace usage cache subscription', () => {
     queryClient.setQueryData(alpha, usage('ws-a', 'Alpha', 4, 'on'));
 
     const container = await renderSurfaces(queryClient);
-    const summary = () => container.querySelector('[data-plugin-row="notes"] [data-plugin-scope-summary]')?.textContent ?? '';
+    // The page lists only workspaces with their own choice, named with it.
+    const summary = () => [...container.querySelectorAll('[data-plugin-scope-workspace]')]
+      .map((row) => `${row.querySelector('span')?.textContent}: ${row.querySelector('[aria-pressed="true"]')?.textContent}`).join(' ');
     expect(pressed(container, 'ws-a')).toBe('on');
     expect(summary()).toContain('Alpha: On');
     expect(queryClient.getQueryCache().findAll({ queryKey: ['plugin-usage'] }).every((query) => query.getObserversCount() === 0)).toBe(true);
@@ -1278,7 +1279,8 @@ describe('workspace usage cache subscription', () => {
     });
     expect(queryClient.getQueryData(alpha)).toMatchObject({ revision: 6, plugins: [{ override: 'inherit' }] });
     expect(queryClient.getQueryData(['plugin-usage', { workspace_id: 'ws-a', stale: true }])).toMatchObject({ revision: 2, plugins: [{ override: 'on' }] });
-    expect(pressed(container, 'ws-a')).toBe('inherit');
+    // Back on the default: no longer an exception, so the row leaves the list.
+    expect(container.querySelector('[data-plugin-scope-workspace="ws-a"]')).toBeNull();
     expect(summary()).not.toContain('Alpha: On');
     expect(summary()).not.toContain('Alpha: Off');
     expect(getPluginUsage).not.toHaveBeenCalled();

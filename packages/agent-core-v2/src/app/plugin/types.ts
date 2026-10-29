@@ -164,6 +164,8 @@ export interface PluginSummary {
   readonly icon?: string;
   readonly enabled: boolean;
   readonly globalEnabled: boolean;
+  /** Whether workspaces without their own choice use the plugin; kept while the plugin is turned off. */
+  readonly defaultEnabled?: boolean;
   readonly state: PluginState;
   readonly skillCount: number;
   readonly mcpServerCount: number;

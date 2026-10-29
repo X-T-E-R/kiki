@@ -575,7 +575,7 @@ export function registerPluginsRoutes(
       method: 'POST',
       path: '/plugins/{tail}',
       params: pluginIdParamSchema,
-      body: z.union([z.object({ deleteData: z.boolean().optional() }).strict(), pluginPrerequisiteInstallSchema]).optional(),
+      body: z.union([z.object({ deleteData: z.boolean().optional() }).strict(), z.object({ defaultEnabled: z.boolean() }).strict(), pluginPrerequisiteInstallSchema]).optional(),
       success: { data: z.object({ ok: z.literal(true) }) },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: {},
@@ -601,11 +601,11 @@ export function registerPluginsRoutes(
       try {
         switch (parsed.action) {
           case 'enable':
-            await plugins.setPluginEnabled({ id: parsed.id, enabled: true });
+          case 'disable': {
+            const defaultEnabled = req.body && 'defaultEnabled' in req.body ? req.body.defaultEnabled : undefined;
+            await plugins.setPluginEnabled({ id: parsed.id, enabled: parsed.action === 'enable', defaultEnabled });
             break;
-          case 'disable':
-            await plugins.setPluginEnabled({ id: parsed.id, enabled: false });
-            break;
+          }
           case 'remove':
             await plugins.removePlugin({ id: parsed.id, deleteData: req.body && 'deleteData' in req.body ? req.body.deleteData : undefined });
             break;

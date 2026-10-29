@@ -3672,8 +3672,10 @@ class FixtureServer {
         // outranks it, and turning the master back on is also how a plugin
         // installed with "decide later" gets its default back.
         const on = action === 'enable';
+        const defaultOn = typeof body?.defaultEnabled === 'boolean' ? body.defaultEnabled : on;
         this.plugins[index].enabled = on;
-        this.plugins[index].globalEnabled = on;
+        this.plugins[index].defaultEnabled = defaultOn;
+        this.plugins[index].globalEnabled = on && defaultOn;
       }
       return this.envelope(res, { ok: true });
     }

@@ -238,6 +238,13 @@ describe('PluginManager', () => {
       expect(reinstalled.enabled).toBe(true);
       expect(reinstalled.defaultEnabled).toBe(true);
       expect(manager.summaries()[0]).toEqual(expect.objectContaining({ enabled: true, globalEnabled: true }));
+
+      await manager.setEnabled('other', true, false);
+      expect(manager.get('other')).toEqual(expect.objectContaining({ enabled: true, defaultEnabled: false }));
+      expect(manager.summaries()[0]).toEqual(expect.objectContaining({ enabled: true, globalEnabled: false, defaultEnabled: false }));
+
+      await manager.setEnabled('other', false, true);
+      expect(manager.summaries()[0]).toEqual(expect.objectContaining({ enabled: false, globalEnabled: false, defaultEnabled: true }));
     } finally {
       await rm(sourceRoot, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }

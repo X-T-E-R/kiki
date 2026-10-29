@@ -254,14 +254,14 @@ export class PluginManager {
     }
   }
 
-  async setEnabled(id: string, enabled: boolean): Promise<void> {
+  async setEnabled(id: string, enabled: boolean, defaultEnabled: boolean = enabled): Promise<void> {
     const key = normalizePluginId(id);
     const current = this.records.get(key);
     if (current === undefined) throw pluginNotFound(id);
     assertMutable(current);
-    if (current.enabled === enabled && current.defaultEnabled === enabled) return;
+    if (current.enabled === enabled && current.defaultEnabled === defaultEnabled) return;
     const next = new Map(this.records);
-    next.set(key, { ...current, enabled, defaultEnabled: enabled, updatedAt: new Date().toISOString() });
+    next.set(key, { ...current, enabled, defaultEnabled, updatedAt: new Date().toISOString() });
     await this.persist(next);
     this.records = next;
   }
@@ -890,6 +890,7 @@ function recordToSummary(record: PluginRecord): PluginSummary {
     icon: record.manifest?.icon,
     enabled: record.enabled,
     globalEnabled: record.enabled && (record.defaultEnabled ?? record.enabled),
+    defaultEnabled: record.defaultEnabled ?? record.enabled,
     state: record.state,
     skillCount: record.skillCount,
     mcpServerCount: Object.keys(record.manifest?.mcpServers ?? {}).length,

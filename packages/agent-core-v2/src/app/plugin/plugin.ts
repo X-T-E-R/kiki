@@ -30,6 +30,8 @@ export interface InstallPluginInput {
 export interface SetPluginEnabledInput {
   readonly id: string;
   readonly enabled: boolean;
+  /** Default for workspaces without their own choice; omitted follows `enabled`. */
+  readonly defaultEnabled?: boolean;
 }
 
 export interface SetPluginMcpServerEnabledInput {
