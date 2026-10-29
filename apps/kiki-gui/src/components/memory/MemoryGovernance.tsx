@@ -37,6 +37,7 @@ import { VersionBlock } from '../MemoryHistory';
 import { memoryTargetKey } from '../persona/PersonaMemoryScope';
 import { parseMemoryEntry } from './memoryReceipt';
 import { MEMORY_AUTHORITY_QUERY_KEY, useMemoryAuthority, type MemoryStoreKind } from './memoryAuthority';
+import { MemoryUpgradeStatus } from './MemoryUpgrade';
 
 const LABEL = 'text-[12px] font-medium text-ink-soft';
 const QUIET = 'rounded-sm text-[12px] text-ink-soft underline underline-offset-2 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-60';
@@ -103,8 +104,8 @@ export function MemoryStoreStatus() {
   return (
     <>
       <span data-memory-store={kind} className="flex items-center gap-1.5">
-        <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${kind === 'governed' ? 'bg-accent' : kind === 'legacy' ? 'bg-ink-faint' : kind === 'unknown' ? 'border border-ink-faint' : 'bg-amber-ink'}`} />
-        <span className={kind === 'readonly' || kind === 'migrating' ? 'font-medium text-amber-ink' : undefined}>{t(STORE_LABEL[kind])}</span>
+        <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${kind === 'governed' ? 'bg-accent' : kind === 'unknown' ? 'border border-ink-faint' : 'bg-amber-ink'}`} />
+        <span className={kind === 'readonly' || kind === 'migrating' || kind === 'legacy' ? 'font-medium text-amber-ink' : undefined}>{t(authority.state?.migration?.phase === 'failed' ? 'memory.store.upgradeStopped' : STORE_LABEL[kind])}</span>
       </span>
       {kind === 'governed' ? (
         <button type="button" data-memory-recover onClick={() => { setConfirm(true); }} className="text-ink-soft hover:text-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink">
@@ -149,8 +150,16 @@ export function MemoryWriteHold() {
       refresh();
     },
   });
-  if (authority.kind !== 'readonly' && authority.kind !== 'migrating') return null;
+  if (authority.kind !== 'readonly' && authority.kind !== 'migrating' && authority.kind !== 'legacy') return null;
   const readonly = authority.kind === 'readonly';
+  // The automatic upgrade has its own status; it is never started from here.
+  if (!readonly) {
+    return (
+      <div data-memory-write-hold={authority.kind === 'legacy' ? 'upgrading' : 'migrating'} className="mb-4 border-l-2 border-amber-rule pl-3">
+        <MemoryUpgradeStatus />
+      </div>
+    );
+  }
   return (
     <div data-memory-write-hold={authority.kind} role="status" className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-l-2 border-amber-rule pl-3 text-[13px] leading-relaxed text-ink-soft">
       <p className="min-w-0 flex-1 basis-[28ch]">{t(readonly ? 'memory.store.readonlyBanner' : 'memory.store.migratingBanner')}</p>

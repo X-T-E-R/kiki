@@ -25,8 +25,10 @@
  * store adds sources, decisions and historical revisions to the detail, and a
  * separate permanent Forget behind an exact preview (memory/MemoryGovernance).
  * While the store is migrating or a read-only recovery copy, everything stays
- * readable and every edit control is withheld; the file store keeps the page
- * exactly as it was. Migration itself is not started from here.
+ * readable and every edit control is withheld. Starting Kiki upgrades a file
+ * store to SQLite on its own; until it finishes the page shows that upgrade's
+ * progress and recovery (memory/MemoryUpgrade) and reads nothing else, because
+ * the store answers no ordinary read in the meantime. It is never started here.
  *
  * The Inbox tab exists only while `approval` is `review` — with the default
  * `auto` there is nothing pending, so there is no tab.
@@ -496,7 +498,9 @@ function MemoryScopeView({
   const { t, tp, locale } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
-  const { writable } = useMemoryAuthority();
+  const { writable, kind } = useMemoryAuthority();
+  // The store answers no ordinary read until its automatic upgrade is done.
+  const upgrading = kind === 'legacy' || kind === 'migrating';
   const [params] = useSearchParams();
   const linkedEntry = params.get('entry');
   const linkedTab = params.get('tab');
@@ -541,6 +545,7 @@ function MemoryScopeView({
         } : { cursor }, signal),
         (page) => queryClient.setQueryData(queryKey, page), signal,
       ),
+      enabled: !upgrading,
       staleTime: 5_000, retry: false,
     };
   }) });
@@ -557,7 +562,7 @@ function MemoryScopeView({
       (cursor) => client.memoryInbox(target, cursor === undefined ? { page_size: 20 } : { cursor }, signal),
       (page) => queryClient.setQueryData(['memory-inbox', targetKey(target)], page), signal,
     ),
-    enabled: review,
+    enabled: review && !upgrading,
     staleTime: 5_000, retry: false,
   });
 
@@ -593,8 +598,9 @@ function MemoryScopeView({
   });
   const selectedEntry = selected?.entry.content_complete === false ? selectedDetail.data : selected?.entry;
   useEffect(() => {
-    if (!readingEntries && !listQuery.isError && !coverageIncomplete && selectedId !== null && selected === undefined) setSelectedId(null);
-  }, [readingEntries, listQuery.isError, coverageIncomplete, selectedId, selected]);
+    // Nothing is read while the store upgrades, so an absent row is not proof the entry is gone.
+    if (!upgrading && !readingEntries && !listQuery.isError && !coverageIncomplete && selectedId !== null && selected === undefined) setSelectedId(null);
+  }, [upgrading, readingEntries, listQuery.isError, coverageIncomplete, selectedId, selected]);
   const filtersActive = search.trim() !== '' || typeFilter !== 'all' || showInactive;
 
   const detail = creating ? (
@@ -707,7 +713,7 @@ function MemoryScopeView({
         ) : null}
         <MemoryWriteHold />
 
-        {readError !== null && readError !== undefined || coverageIncomplete ? (
+        {!upgrading && (readError !== null && readError !== undefined || coverageIncomplete) ? (
           <div
             data-memory-coverage
             role="status"
@@ -801,7 +807,7 @@ function MemoryScopeView({
                   single-axis scroller computes the other axis to `auto` — that
                   would add a scrollbar nobody can use. */}
               <div data-memory-rows className="lg:min-h-0 lg:flex-1 lg:overflow-x-hidden lg:overflow-y-auto lg:overscroll-y-contain">
-                {listQuery.isPending || readingEntries && entries.length === 0 && !listQuery.isError ? (
+                {upgrading && entries.length === 0 ? null : listQuery.isPending || readingEntries && entries.length === 0 && !listQuery.isError ? (
                   <p role="status" className="flex items-center gap-2 py-8 text-[13px] text-ink-faint">
                     <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
                     {t('memory.loading')}

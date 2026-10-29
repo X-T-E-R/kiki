@@ -4,7 +4,7 @@
  * `@kiki/klient`; this module only preserves GUI-facing wire shapes.
  */
 
-import { nbSearchCapabilitiesSchema, nbSearchKeyUsageViewSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, documentPreviewResponseSchema, workPresetMutationResponseSchema, workPresetsResponseSchema, storageMigrationViewSchema, type DocumentPreviewRequest, type DocumentPreviewResponse, type NbSearchKeyUsageView, type NbSearchManagedCredentialView, type WorkPresetMutationResponse, type WorkPresetPreference, type WorkPresetsResponse, type StorageMigrationAction, type StorageMigrationView } from '@kiki/protocol';
+import { nbSearchCapabilitiesSchema, nbSearchKeyUsageViewSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, documentPreviewResponseSchema, workPresetMutationResponseSchema, workPresetsResponseSchema, storageMigrationViewSchema, type DeferredAppendTiming, type DocumentPreviewRequest, type DocumentPreviewResponse, type NbSearchKeyUsageView, type NbSearchManagedCredentialView, type WorkPresetMutationResponse, type WorkPresetPreference, type WorkPresetsResponse, type StorageMigrationAction, type StorageMigrationView } from '@kiki/protocol';
 import { createConnectionTransport, createKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
 import { translate } from '@kiki/session-core/i18n';
 import type { PromptConfig } from '@kiki/agent-profiles/promptConfig';
@@ -682,10 +682,11 @@ export const MEMORY_NOT_FOUND = 40423;
 export const MEMORY_REVISION_CONFLICT = 40944;
 
 /**
- * Which store currently owns memory (`GET /memory/authority`). `legacy` is the
- * file store every older install runs; `sqlite` adds source, decision and
- * revision records plus permanent forget. `migrating` holds a write barrier
- * and `readonly` is a recovery copy; neither accepts edits.
+ * Which store currently owns memory (`GET /memory/authority`). Starting Kiki
+ * upgrades a `legacy` file store to `sqlite` automatically; until that
+ * finishes (`migrating`, or a `legacy` home whose upgrade has not begun),
+ * ordinary memory reads and writes wait. `sqlite` adds source, decision and
+ * revision records plus permanent forget; `readonly` is a recovery copy.
  */
 export interface MemoryAuthorityState {
   readonly version: 1;
@@ -694,10 +695,15 @@ export interface MemoryAuthorityState {
   readonly mode: 'active' | 'migrating' | 'readonly';
   readonly migration?: {
     readonly id: string;
+    /** Discovered scopes; empty until discovery has run. */
     readonly namespaces: readonly string[];
+    /** How many of `namespaces` are fully imported. */
     readonly index: number;
+    /** Last committed source key inside the current namespace. */
     readonly after?: string;
     readonly issues: readonly { readonly scope: string; readonly key: string; readonly issue: string }[];
+    readonly phase?: 'importing' | 'validating' | 'failed';
+    readonly failure?: { readonly code: string; readonly message: string };
   };
   readonly migrationId?: string;
   readonly recoveryId?: string;
@@ -1750,6 +1756,7 @@ export class KikiClient {
     content: readonly MessageContent[] | undefined,
     idempotencyKey: string,
     afterModelSwitch?: string,
+    appendTiming?: DeferredAppendTiming,
   ): Promise<AgentMessageReceipt | null> {
     const session = this.klient.session(sessionId);
     const executor = await this.run(() => session.getAgentExecutor(agentId));
@@ -1770,6 +1777,7 @@ export class KikiClient {
         content: promptContent,
         agent_id: agentId,
         after_model_switch: afterModelSwitch,
+        append_timing: appendTiming,
         // Attachments and main retain their ordinary prompt semantics.
         prompt_id: keyedNativeChild ? idempotencyKey : undefined,
       });
@@ -3098,6 +3106,15 @@ export class KikiClient {
 
   resumeMemoryEditing(recoveryId: string, expectedEpoch: number): Promise<MemoryAuthorityState> {
     return this.memoryRequest('POST', '/memory/authority/resume-editing', { body: { recovery_id: recoveryId, expected_epoch: expectedEpoch } });
+  }
+
+  /**
+   * Retries the persisted startup upgrade under its own operation id. A
+   * completed operation answers with the completed state, so a retry after a
+   * lost answer cannot start a second upgrade.
+   */
+  retryMemoryMigration(operationId: string): Promise<MemoryAuthorityState> {
+    return this.memoryRequest('POST', '/memory/authority/retry', { body: { operation_id: operationId }, timeoutMs: 120_000 });
   }
 
   /** The entry's current revision as one complete `kiki-memory-v1` file. */

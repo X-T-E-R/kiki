@@ -1964,17 +1964,18 @@ describe('MemoryPage governed store', () => {
   const legacy = { version: 1, epoch: 0, backend: 'legacy', mode: 'active' } as const;
   const current = () => fixtureEntry({ id: 'm_deploy', title: 'Deployment procedure', body: 'Use 5 workers.', revision: 'mem2:rev-current' });
 
-  it('keeps every ordinary edit on the file store and offers no governed action', async () => {
-    seedMemories({ 'global::': [current()] });
+  it('treats a file store as an upgrade in progress: no reads, no edits, no manual migration', async () => {
+    const list = seedMemories({ 'global::': [current()] });
     vi.spyOn(client, 'memoryAuthority').mockResolvedValue(legacy);
     const provenance = vi.spyOn(client, 'memoryProvenance');
     const container = await renderPage();
-    expect(container.querySelector('[data-memory-store="legacy"]')).not.toBeNull();
-    expect(container.querySelector('[data-memory-recover]')).toBeNull();
-    await click(container, '[data-memory-row="m_deploy"]');
-    for (const selector of ['[data-memory-edit]', '[data-memory-pin]', '[data-memory-delete]']) expect(container.querySelector(selector)).not.toBeNull();
-    expect(container.querySelector('[data-memory-forget-open]')).toBeNull();
-    expect(container.querySelector('[data-memory-governance="legacy"]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-store="legacy"]')!.textContent).toContain('Upgrading');
+    expect(container.querySelector('[data-memory-write-hold="upgrading"] [data-memory-upgrade="starting"]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-row]')).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('[data-memory-new]')!.disabled).toBe(true);
+    for (const selector of ['[data-memory-recover]', '[data-memory-upgrade-retry]', '[data-memory-coverage]']) expect(container.querySelector(selector)).toBeNull();
+    expect(container.textContent).not.toMatch(/older writers|stopped every/iu);
+    expect(list).not.toHaveBeenCalled();
     expect(provenance).not.toHaveBeenCalled();
   });
 
@@ -2088,15 +2089,18 @@ describe('MemoryPage governed store', () => {
     expect(container.querySelector('[data-memory-write-hold]')).toBeNull();
   });
 
-  it('holds edits behind a paused migration and offers no migration control', async () => {
-    seedMemories({ 'global::': [current()] });
-    vi.spyOn(client, 'memoryAuthority').mockResolvedValue({ ...legacy, mode: 'migrating', migration: { id: '00000000-0000-4000-8000-000000000002', namespaces: ['memory/global'], index: 0, issues: [] } });
+  it('shows the running upgrade with its real counts and offers no migration control', async () => {
+    const list = seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue({ ...legacy, mode: 'migrating', migration: { id: '00000000-0000-4000-8000-000000000002', namespaces: ['memory/global', 'memory/personas/lin-lan', 'memory/workspaces/wd_a'], index: 1, after: 'm_release_owner', issues: [], phase: 'importing' } });
+    const retry = vi.spyOn(client, 'retryMemoryMigration');
     const container = await renderPage();
-    expect(container.querySelector('[data-memory-write-hold="migrating"]')).not.toBeNull();
-    expect(container.querySelector('[data-memory-resume]')).toBeNull();
-    expect(container.querySelector('[data-memory-recover]')).toBeNull();
-    await click(container, '[data-memory-row="m_deploy"]');
-    expect(container.querySelector('[data-memory-edit]')).toBeNull();
+    const status = container.querySelector('[data-memory-write-hold="migrating"] [data-memory-upgrade="importing"]')!;
+    expect(status.querySelector('[data-memory-upgrade-progress="1/3"]')!.textContent).toBe('1 of 3 imported');
+    expect(status.textContent).toContain('memory/personas/lin-lan · m_release_owner');
+    expect(status.textContent).not.toMatch(/%/u);
+    for (const selector of ['[data-memory-resume]', '[data-memory-recover]', '[data-memory-upgrade-retry]', '[data-memory-row]']) expect(container.querySelector(selector)).toBeNull();
+    expect(list).not.toHaveBeenCalled();
+    expect(retry).not.toHaveBeenCalled();
   });
 
   it('keeps an open draft when the store turns read-only, sends no save, and saves the same draft after editing resumes', async () => {
@@ -2525,5 +2529,84 @@ describe('MemoryPage Markdown import recovery', () => {
     await press('[data-memory-import-preview]');
     expect(dialog().querySelector('[data-memory-import-meta-changed]')).toBeNull();
     expect([...dialog().querySelectorAll('[data-memory-import-meta-pinned]')].map((node) => node.getAttribute('data-memory-import-meta-pinned'))).toEqual(['false', 'false']);
+  });
+});
+
+describe('MemoryPage automatic upgrade', () => {
+  const operation = '6f1d2c3b-4a5e-4f60-8172-93a4b5c6d7e8';
+  const namespaces = ['memory/global', 'memory/personas/lin-lan'];
+  const sqlite = { version: 1, epoch: 3, backend: 'sqlite', mode: 'active', migrationId: operation } as const;
+  const issues = [
+    { scope: 'memory/global', key: 'm_deploy', issue: 'legacy_journal_head_mismatch' },
+    { scope: 'memory/global', key: 'm_owner', issue: 'current_revision_preserved' },
+    { scope: 'memory/personas/lin-lan', key: '', issue: 'legacy_inventory_incomplete' },
+    { scope: 'memory/global', key: 'm_a', issue: 'legacy_head_missing' },
+    { scope: 'memory/global', key: 'm_b', issue: 'duplicate_legacy_identity' },
+    { scope: 'memory/global', key: 'notes.md', issue: 'unreadable_source' },
+  ];
+  const failed = { version: 1, epoch: 2, backend: 'legacy', mode: 'migrating', migration: { id: operation, namespaces, index: 2, issues, phase: 'failed', failure: { code: 'memory.source_invalid', message: 'Memory source validation found 6 issue(s); repair the listed sources and retry this operation' } } } as const;
+  const running = { ...failed, migration: { id: operation, namespaces, index: 0, issues: [], phase: 'importing' } } as const;
+  const current = () => fixtureEntry({ id: 'm_deploy', title: 'Deployment procedure', revision: 'mem2:rev-current' });
+
+  it('lists the sources that stopped the upgrade in its own words, without the raw English message', async () => {
+    seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue(failed);
+    const container = await renderPage();
+    const status = container.querySelector('[data-memory-upgrade="failed"]')!;
+    expect(status.querySelector('[data-memory-upgrade-failure="memory.source_invalid"]')!.textContent).toBe('6 sources need repair. Fix them, then retry the upgrade.');
+    expect(container.querySelector('[data-memory-store]')!.textContent).toBe('Upgrade stopped');
+    expect(status.textContent).not.toContain('Memory source validation found');
+    expect(status.querySelectorAll('[data-memory-upgrade-issue]')).toHaveLength(5);
+    expect(status.querySelector('[data-memory-upgrade-issue="legacy_journal_head_mismatch"]')!.textContent).toContain('memory/global · m_deploy');
+    await click(container, '[data-memory-upgrade-issues-toggle]');
+    const unknown = container.querySelector('[data-memory-upgrade-issue="unreadable_source"]')!;
+    expect(unknown.textContent).toContain('This source could not be imported');
+    expect(unknown.textContent).toContain('unreadable_source');
+    expect(container.querySelector('[data-memory-upgrade-progress="2/2"]')).not.toBeNull();
+  });
+
+  it('retries the same operation, and after a lost answer reads the status instead of retrying blindly', async () => {
+    seedMemories({ 'global::': [current()] });
+    const authority = vi.spyOn(client, 'memoryAuthority').mockResolvedValue(failed);
+    const retry = vi.spyOn(client, 'retryMemoryMigration').mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const container = await renderPage();
+    const reads = authority.mock.calls.length;
+    authority.mockResolvedValue(running);
+    await click(container, '[data-memory-upgrade-retry]');
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(retry).toHaveBeenCalledWith(operation);
+    expect(authority.mock.calls.length).toBeGreaterThan(reads);
+    expect(container.querySelector('[data-memory-upgrade="importing"]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-upgrade-retry-unconfirmed]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-upgrade-retry]')).toBeNull();
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-reads entries when the upgrade completes, keeping the selected entry and reaching edits', async () => {
+    const list = seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryProvenance').mockResolvedValue({ sources: [], adjudications: [], relatedObjectIds: ['m_deploy'] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue(running);
+    const { container, queryClient } = await mountPage('/memory?entry=m_deploy');
+    expect(list).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-memory-detail]')).toBeNull();
+    await act(async () => { queryClient.setQueryData(['memory-authority'], sqlite); });
+    await flush();
+    expect(list).toHaveBeenCalled();
+    expect(container.querySelector('[data-memory-upgrade]')).toBeNull();
+    expect(container.querySelector('[data-memory-detail="m_deploy"]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-edit]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-store="governed"]')).not.toBeNull();
+  });
+
+  it('leaves read-only recovery to its own resume and offers no upgrade retry', async () => {
+    seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryProvenance').mockResolvedValue({ sources: [], adjudications: [], relatedObjectIds: ['m_deploy'] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue({ ...sqlite, mode: 'readonly', recoveryId: 'recovery-1' });
+    const retry = vi.spyOn(client, 'retryMemoryMigration');
+    const container = await renderPage();
+    expect(container.querySelector('[data-memory-write-hold="readonly"]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-resume]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-upgrade]')).toBeNull();
+    expect(retry).not.toHaveBeenCalled();
   });
 });

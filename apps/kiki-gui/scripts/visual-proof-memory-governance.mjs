@@ -2,7 +2,8 @@
  * Governed-store memory screenshots, walked through the real controls on a
  * production build: sources and decisions, an earlier revision, the forget
  * preview with its stale-preview refusal and the completed forget, read-only
- * recovery and its resume, and the unchanged file-store page.
+ * recovery and its resume, and the automatic startup upgrade with its
+ * stopped-and-retried path.
  *
  *   node scripts/visual-proof-memory-governance.mjs [--matrix=all]
  *
@@ -169,17 +170,37 @@ const scenarios = [
     },
   },
   {
-    name: 'memory-governance-legacy',
-    fixture: 'memory',
+    // The startup upgrade, walked through the status reads that drive it: no
+    // migration control, real scope counts, then the governed page.
+    name: 'memory-upgrade',
+    fixture: 'memory-upgrade',
     matrix: ['width'],
-    run: async ({ page, link, shot }) => {
+    run: async ({ page, view, link, shot }) => {
       await page.goto(link('/memory'), { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('[data-memory-store="legacy"]', { timeout: 30_000 });
-      await openEntry(page, 'm_20260926_d4e5f6');
-      await page.waitForSelector('[data-memory-governance="legacy"]', { timeout: 15_000 });
-      if (await page.locator('[data-memory-forget-open]').count() !== 0) throw new Error('Forget offered on the file store');
-      if (await page.locator('[data-memory-edit]').count() === 0) throw new Error('file store lost Edit');
-      await shot('legacy-detail');
+      await page.waitForSelector('[data-memory-upgrade="importing"]', { timeout: 30_000 });
+      for (const selector of ['[data-memory-upgrade-retry]', '[data-memory-row]', '[data-memory-recover]']) {
+        if (await page.locator(selector).count() !== 0) throw new Error(`${selector} offered during the upgrade`);
+      }
+      if (/%/u.test(await page.locator('[data-memory-upgrade]').innerText())) throw new Error('upgrade invents a percentage');
+      await shot('upgrade-running');
+      await page.waitForSelector('[data-memory-store="governed"]', { timeout: 30_000 });
+      await page.waitForSelector('[data-memory-row="m_deploy_workers"]', { timeout: 15_000 });
+      if (view.width > 600) await shot('upgrade-done');
+    },
+  },
+  {
+    name: 'memory-upgrade-failed',
+    fixture: 'memory-upgrade-failed',
+    matrix: ['width'],
+    run: async ({ page, view, link, shot }) => {
+      await page.goto(link('/memory'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-memory-upgrade="failed"]', { timeout: 30_000 });
+      if (await page.locator('[data-memory-upgrade-issue]').count() !== 5) throw new Error('issue list is not capped at five');
+      await shot('upgrade-failed');
+      await page.locator('[data-memory-upgrade-retry]').click();
+      await page.waitForSelector('[data-memory-store="governed"]', { timeout: 30_000 });
+      await page.waitForSelector('[data-memory-row="m_deploy_workers"]', { timeout: 15_000 });
+      if (view.width > 600) await shot('upgrade-retried');
     },
   },
 ];

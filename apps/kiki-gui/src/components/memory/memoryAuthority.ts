@@ -3,15 +3,16 @@
  * every control on /memory.
  *
  * `governed` gates the SQLite-only reads and actions (sources, decisions,
- * historical revisions, permanent forget). `writable` gates every edit. A
+ * historical revisions, permanent forget). `writable` gates every edit; a
+ * `legacy` or `migrating` store is an automatic upgrade still running. A
  * server that cannot answer (an older build without the route, or a failed
  * read) stays on the behaviour the page always had: edits remain available,
  * the server keeps enforcing revisions, and nothing governed is offered. The
  * page never infers a governed store it has not been told about.
  */
 
-import { createContext, useContext } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { createContext, useContext, useEffect, useRef } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { MemoryAuthorityState } from '../../lib/client';
 import { useConnection } from '../../state/connection';
@@ -37,23 +38,43 @@ export function memoryStoreKind(state: MemoryAuthorityState | undefined): Memory
   return state.backend === 'sqlite' ? 'governed' : 'legacy';
 }
 
+/** How often a running upgrade is re-read. */
+export const MIGRATION_POLL_MS = 2_000;
+
 export function useMemoryAuthorityQuery(enabled = true): MemoryAuthorityView {
   const { client } = useConnection();
+  const queryClient = useQueryClient();
   const query = useQuery({
     queryKey: MEMORY_AUTHORITY_QUERY_KEY,
     queryFn: ({ signal }) => client.memoryAuthority(signal),
     enabled,
     staleTime: 10_000,
-    refetchInterval: 30_000,
+    // A running upgrade is followed closely; a failed one waits for the reader.
+    refetchInterval: (current) => {
+      const migration = current.state.data?.migration;
+      const upgrading = current.state.data?.backend === 'legacy' && current.state.data.mode !== 'readonly';
+      return upgrading && migration?.phase !== 'failed' ? MIGRATION_POLL_MS : 30_000;
+    },
     retry: false,
   });
   const state = query.data;
   const kind = memoryStoreKind(state);
+  // When the upgrade finishes, everything read while it ran is re-read. The
+  // selection and any open draft are page state and stay where they are.
+  const previous = useRef(kind);
+  useEffect(() => {
+    if ((previous.current === 'migrating' || previous.current === 'legacy') && kind === 'governed') {
+      for (const key of ['memory', 'memory-journal', 'memory-related', 'memory-inbox', 'memory-provenance', 'memory-detail']) void queryClient.invalidateQueries({ queryKey: [key] });
+    }
+    previous.current = kind;
+  }, [kind, queryClient]);
   return {
     state,
     kind,
     governed: kind === 'governed' || (kind === 'readonly' && state?.backend === 'sqlite'),
-    writable: kind === 'legacy' || kind === 'governed' || kind === 'unknown',
+    // A file store is only ever seen while the startup upgrade has not
+    // finished, and ordinary memory access waits for it.
+    writable: kind === 'governed' || kind === 'unknown',
     error: query.error,
     loading: query.isPending && enabled,
     refetch: () => { void query.refetch(); },
