@@ -466,6 +466,7 @@ workspaces = {  }
     # protocol: "chat_json" | "system_one" | "pair_score"
     # model: string
     # endpoint: string
+  # source: object | object
   # first_step_wait_ms: integer (default: 1500)
   # timeout_ms: integer (default: 6000)
   # max_calls_per_turn: integer (default: 3)
@@ -693,6 +694,7 @@ web = { allowed = true }
 # dangerous_bash: "on" | "off" | "default"
 
 # [permission.reviewer]
+  # source: object | object
   # backend: "model" | "jev" (default: "model")
   # model: string
   # api_key: string
@@ -770,6 +772,7 @@ enter_approval_timeout_ms = 60000
 # [providers."<name>"]
   # model_source: "static" | "discover" | "oauth-catalog"
   # base_url: string
+  # decision_endpoint: string
   # custom_headers: record<string, string>
   # default_model: string
   # defaults: object

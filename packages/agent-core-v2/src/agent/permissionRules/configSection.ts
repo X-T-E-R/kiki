@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { dangerousBashGuardSchema, permissionRuleConfigSchema } from '@kiki/protocol';
+import { dangerousBashGuardSchema, permissionRuleConfigSchema, decisionSourceSchema } from '@kiki/protocol';
 
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import type { IConfigService } from '#/app/config/config';
@@ -28,6 +28,7 @@ export const ReviewerCategorySchema = z.enum([
 ]);
 
 export const PermissionReviewerConfigSchema = z.object({
+  source: decisionSourceSchema.optional(),
   backend: z.enum(['model', 'jev']).default('model'),
   model: z.string().min(1).optional(),
   apiKey: z.string().min(1).optional(),

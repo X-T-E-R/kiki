@@ -9,7 +9,9 @@ import type { IAgentContextMemoryService } from '#/agent/contextMemory/contextMe
 import type { RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import type { ResolvedToolExecutionHookContext } from '#/agent/toolExecutor/toolHooks';
 import type { IConfigService } from '#/app/config/config';
-import { IModelCatalog } from '#/kosong/model/catalog';
+import { IModelCatalog, StaticAuthProvider } from '#/kosong/model/catalog';
+import { requestDecision, resolveDecisionSource, type ResolvedDecisionSource } from '#/kosong/model/decision';
+import type { RequestAdmissionPort } from '#/kosong/model/requestAdmission';
 import {
   PERMISSION_SECTION,
   PermissionReviewerConfigSchema,
@@ -55,6 +57,7 @@ export interface ReviewerVerdict {
 export interface ReviewerDependencies {
   readonly config: IConfigService;
   readonly catalog: IModelCatalog;
+  readonly admission?: RequestAdmissionPort;
   readonly memory: IAgentContextMemoryService;
   readonly workspace: RuntimeWorkspaceRoots;
   readonly owner: { readonly sessionId: string; readonly agentId: string; readonly parentAgentId?: string };
@@ -153,10 +156,7 @@ export async function reviewPermission(
   const startedAt = Date.now();
   try {
     if (controller.signal.aborted) return undefined;
-    const operation = config.backend === 'jev'
-      ? reviewWithJev(config, input, dependencies.apiKey ?? config.apiKey ?? process.env['TYPESAFE_API_KEY'], controller.signal, dependencies.fetch ?? fetch)
-      : reviewWithModel(config, input, dependencies.catalog, controller.signal, diagnostic, dependencies.owner);
-    if (config.backend === 'jev') diagnostic.stage = 'jev';
+    const operation = reviewConfigured(config, input, dependencies, controller.signal, diagnostic);
     const verdict = await Promise.race([
       operation,
       new Promise<undefined>((resolve) => controller.signal.addEventListener('abort', () => resolve(undefined), { once: true })),
@@ -237,25 +237,37 @@ async function reviewWithModel(
   return { outcome: accepted, confidence, reason: redact(rationale), backend: 'model' };
 }
 
+async function reviewConfigured(config: ReviewerConfig, input: string, dependencies: ReviewerDependencies, signal: AbortSignal,
+  diagnostic: { -readonly [K in keyof ReviewerDiagnostic]: ReviewerDiagnostic[K] }): Promise<ReviewerVerdict | undefined> {
+  if (config.source?.kind === 'model') return reviewWithModel({ ...config, model: config.source.model }, input, dependencies.catalog, signal, diagnostic, dependencies.owner);
+  if (config.source === undefined && config.backend === 'model') return reviewWithModel(config, input, dependencies.catalog, signal, diagnostic, dependencies.owner);
+  let source: ResolvedDecisionSource;
+  if (config.source !== undefined) {
+    source = resolveDecisionSource(dependencies.catalog, config.source);
+    if (source.protocol !== 'system_one') return undefined;
+  } else {
+    const apiKey = dependencies.apiKey ?? config.apiKey ?? process.env['TYPESAFE_API_KEY'];
+    if (!apiKey) return undefined;
+    source = { id: 'legacy:jev', name: config.model ?? 'jev-latest', providerName: 'legacy:jev', protocol: 'system_one', endpoint: new URL('https://api.typesafe.ai/v1/systemone'), headers: {}, authProvider: new StaticAuthProvider(apiKey), credentialSource: 'provider' };
+  }
+  diagnostic.stage = 'jev';
+  return reviewWithJev(config, input, source, signal, dependencies);
+}
+
 async function reviewWithJev(
   config: ReviewerConfig,
   input: string,
-  apiKey: string | undefined,
+  source: ResolvedDecisionSource,
   signal: AbortSignal,
-  fetcher: typeof fetch,
+  dependencies: ReviewerDependencies,
 ): Promise<ReviewerVerdict | undefined> {
-  if (!apiKey) return undefined;
   const questions = Object.fromEntries(config.categories.map((category) => [category, {
     type: 'noul', instructions: QUESTIONS[category],
   }]));
-  const response = await fetcher('https://api.typesafe.ai/v1/systemone', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ state: { value: input }, model: config.model ?? 'jev-latest', questions }),
-    signal,
-  });
-  if (!response.ok) return undefined;
-  const parsed = jevResponseSchema.safeParse(await response.json() as unknown);
+  const response = await requestDecision({ source, signal, admission: dependencies.admission, fetcher: dependencies.fetch,
+    attribution: { ...dependencies.owner, purpose: 'permission_review', logicalRequestId: crypto.randomUUID(), waitBudget: { waitedMs: 0 } },
+    body: { state: { value: input }, model: source.name, questions } });
+  const parsed = jevResponseSchema.safeParse(response);
   if (!parsed.success) return undefined;
   const values = config.categories.map((category) => parsed.data.answers[category]?.noul);
   if (values.some((value) => value === undefined)) return undefined;

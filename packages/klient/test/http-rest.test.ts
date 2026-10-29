@@ -23,6 +23,28 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it('validates decision sources and synthetic probes without exposing a secret-moving value', async () => {
+    const source = { kind: 'connection' as const, connection: 'judgment', model: 'arbitrary-remote-name' };
+    const probe = { ok: true, status: { state: 'ready', protocol: 'system_one', connection: 'judgment', credential_source: 'env', credential_env: 'TYPESAFE_API_KEY' }, duration_ms: 3 };
+    const moved = { connection: 'judgment', state: 'complete', retryable: false };
+    const fetcher = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer fixture-token' });
+      const body = jsonRequestBody(init?.body);
+      if (String(input).endsWith('/decision/probe')) {
+        expect(body).toEqual({ source, confirm_destination: 'judgment@https://example.test' });
+        return envelope(probe);
+      }
+      expect(body).toEqual({ connection: 'judgment' });
+      return envelope(moved);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture-token', fetch: fetcher as typeof fetch });
+    try {
+      expect(await channel.rest.decision.probe({ source, confirm_destination: 'judgment@https://example.test' })).toEqual(probe);
+      expect(await channel.rest.decision.moveReviewerKey({ connection: 'judgment' })).toEqual(moved);
+      await expect(channel.rest.decision.probe({ source: { ...source, endpoint: 'https://other.test' } as typeof source, confirm_destination: 'wrong' })).rejects.toThrow();
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    } finally { await channel.close(); }
+  });
   it('exposes validated memory settings, sparse advisor toggles, synthetic probes and live status', async () => {
     const status = { state: 'off', consent_required: false, logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0 };
     const settings = { enabled: true, approval: 'auto', budget: 2000, workspaces: {}, effective_enabled: true, advisor_status: status };

@@ -12,6 +12,7 @@ import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtim
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IConfigService } from '#/app/config/config';
 import { IModelCatalog } from '#/kosong/model/catalog';
+import { IRequestAdmission } from '#/kosong/model/requestAdmission';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { reviewPermission, type ReviewerVerdict } from './permissionReviewer';
 import type {
@@ -351,6 +352,7 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
         verdict = await this.instantiation.invokeFunction((accessor) => reviewPermission({
           config: accessor.get(IConfigService),
           catalog: accessor.get(IModelCatalog),
+          admission: accessor.get(IRequestAdmission),
           memory: accessor.get(IAgentContextMemoryService),
           workspace: runtime === undefined ? workspace : inspectAgentWorkspaceRoots(runtime, workspace),
           owner: { sessionId: this.session.sessionId, agentId: this.scopeContext.agentId, parentAgentId: this.scopeContext.parentAgentId },

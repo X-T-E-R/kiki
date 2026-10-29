@@ -1,4 +1,5 @@
 import { assertProviderCredential, assertProviderHeaders, parseKimiCodeCustomHeaders, sanitizeProviderError } from '@kiki/oauth';
+import { decisionProtocolForProviderType } from '@kiki/protocol';
 
 import { IRequestAdmission, type RequestAdmissionPort } from './requestAdmission';
 import { Disposable } from '#/_base/di/lifecycle';
@@ -36,6 +37,7 @@ import { resolveRequestCompression, resolveResponsesWebSocket } from '../provide
 
 import {
   type AuthProvider,
+  type ConnectionEndpoint,
   IModelCatalog,
   type Model,
   type ModelCatalogItem,
@@ -123,7 +125,29 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     return this.entry(id, recipeSettings).requester;
   }
 
+  getConnectionEndpoint(providerId: string): ConnectionEndpoint {
+    const provider = this.providers.get(providerId);
+    if (provider === undefined) throw new Error2(CONFIG_INVALID_ERROR_CODE, `Connection "${providerId}" does not exist`);
+    const auth = resolveModelAuthMaterial({ modelId: `connection:${providerId}`, model: { provider: providerId }, provider, providerName: providerId });
+    const headers = resolveOutboundHeaders(provider.type, provider.customHeaders, this.hostRequestHeaders);
+    const key = resolveProviderApiKey(provider);
+    return {
+      providerName: providerId,
+      baseUrl: resolveConfiguredModelBaseUrl({}, provider),
+      defaultModel: provider.defaultModel,
+      protocol: decisionProtocolForProviderType(provider.type),
+      decisionEndpoint: provider.decisionEndpoint,
+      headers,
+      authProvider: this.buildAuthProvider(providerId, auth),
+      credentialSource: auth.apiKey !== undefined ? (provider.apiKey?.trim() ? 'provider' : 'env') : auth.oauth !== undefined ? 'oauth' : Object.values(provider.customHeaders ?? {}).some(Boolean) || Object.keys(headers).some((name) => /^(authorization|x-api-key)$/i.test(name) && headers[name]) ? 'headers' : 'none',
+      credentialEnv: key.envName,
+    };
+  }
+
   getConnectionRequester(providerId: string, modelName: string, maxContextSize: number): ModelRequester {
+    if (decisionProtocolForProviderType(this.providers.get(providerId)?.type) !== undefined) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE, 'Decision connections cannot be used for chat');
+    }
     if (this.providers.get(providerId) === undefined) {
       throw new Error2(CONFIG_INVALID_ERROR_CODE, `Connection "${providerId}" does not exist`);
     }
@@ -234,6 +258,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     >();
     for (const [modelId, record] of Object.entries(models)) {
       const providerType = this.providerTypeOf(record);
+      if (decisionProtocolForProviderType(providerType) !== undefined) continue;
       try {
         const model = this.get(modelId);
         const option = { item: toProtocolModel(model, record, providerType, this.providerConfigOf(record)), model };
@@ -362,6 +387,9 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     const routingModel = effectiveModelConfig(configuredModel);
     const { providerConfig, providerName, resolvedBaseUrl: rawBaseUrl } =
       this.resolveProviderContext(id, routingModel, trace);
+    if (decisionProtocolForProviderType(providerConfig?.type) !== undefined) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE, 'Decision connections cannot be used for chat');
+    }
     trace.capture(TRACE.providerConfig, providerConfig);
     trace.capture(TRACE.providerName, providerName);
     trace.capture(TRACE.rawBaseUrl, rawBaseUrl);
@@ -451,6 +479,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     trace.capture(TRACE.hostHeaders, this.hostRequestHeaders.headers);
     trace.capture(TRACE.thirdPartyHeaders, this.hostRequestHeaders.thirdPartyHeaders);
     trace.capture(TRACE.identitySlug, this.hostRequestHeaders.identitySlug);
+    const headers = resolveOutboundHeaders(providerConfig?.type, providerConfig?.customHeaders, this.hostRequestHeaders);
     return {
       model: {
         id,
@@ -467,11 +496,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           this.providers.transportDefaults().responsesWebSocket,
           providerConfig?.responsesWebSocket,
         ),
-        headers: resolveOutboundHeaders(
-          providerConfig?.type,
-          providerConfig?.customHeaders,
-          this.hostRequestHeaders,
-        ),
+        headers,
         capabilities,
         maxContextSize: model.maxContextSize,
         maxInputSize: model.maxInputSize,
@@ -499,6 +524,8 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         providerName,
         imagePolicy,
         authProvider,
+        credentialSource: auth.apiKey !== undefined ? (model.apiKey !== undefined ? 'model' : providerConfig?.apiKey?.trim() ? 'provider' : 'env') : auth.oauth !== undefined ? 'oauth' : Object.values(providerConfig?.customHeaders ?? {}).some(Boolean) || Object.keys(headers).some((name) => /^(authorization|x-api-key)$/i.test(name) && headers[name]) ? 'headers' : 'none',
+        credentialEnv: model.apiKey === undefined ? resolveProviderApiKey({ ...providerConfig, type: providerType }).envName : undefined,
         providerOptions,
       },
       credentials: probeCredentials(auth),

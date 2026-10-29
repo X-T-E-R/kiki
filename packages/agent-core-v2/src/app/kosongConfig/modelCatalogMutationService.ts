@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import {
+  decisionProtocolForProviderType,
   modelBehaviorFromWire,
   modelBehaviorToWire,
   patchModelBehavior,
@@ -27,6 +28,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ConfigTarget, IConfigService, type ConfigDiagnostic } from '#/app/config/config';
 import { deepEqual } from '#/app/config/sectionDiff';
+import { withoutUndefined } from '#/app/config/configPure';
 import { camelToSnake, transformPlainObject } from '#/app/config/toml';
 import { CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
 import { modelBindingOriginFields, toProtocolProvider } from '#/kosong/model/catalog';
@@ -34,6 +36,7 @@ import { resolveProviderCredentialState } from '#/kosong/model/catalogService';
 import { ModelCatalogErrors } from '#/kosong/model/errors';
 import { deriveProviderId, nonEmpty, resolveConfiguredModelBaseUrl } from '#/kosong/model/modelAuth';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
+import { decisionEndpoint } from '#/kosong/model/decision';
 import type { ModelRecord, ModelsSection } from '#/kosong/model/model';
 import { parametersFromWire, parametersToWire, patchGenerationParameters, resolveGenerationParameters, patchModelUsagePolicy, resolveModelUsage, usagePolicyFromWire, usagePolicyToWire, usageParametersToWire } from '#/kosong/model/parameters';
 import { explainModelProtocol, resolveModelProtocol } from '#/kosong/model/modelProtocol';
@@ -328,19 +331,6 @@ function assertTokenBudget(field: string, value: number): void {
   }
 }
 
-function withoutUndefined(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(withoutUndefined);
-  if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      if (entry === undefined) continue;
-      out[key] = withoutUndefined(entry);
-    }
-    return out;
-  }
-  return value;
-}
-
 function setCleared(target: object, key: string): void {
   (target as Record<string, unknown>)[key] = undefined;
 }
@@ -463,9 +453,22 @@ function applyNamedValues(
   return Object.keys(next).length === 0 ? undefined : next;
 }
 
+function validateDecisionConnection(provider: ProviderConfig): void {
+  const protocol = decisionProtocolForProviderType(provider.type);
+  if (protocol === undefined) {
+    if (provider.decisionEndpoint !== undefined) throw new Error2(CONFIG_INVALID_ERROR_CODE, 'decision_endpoint requires a decision connection');
+    return;
+  }
+  const baseUrl = resolveConfiguredModelBaseUrl({}, provider);
+  if (baseUrl === undefined && provider.decisionEndpoint === undefined) return;
+  try { decisionEndpoint(baseUrl, protocol, provider.decisionEndpoint); }
+  catch { throw new Error2(CONFIG_INVALID_ERROR_CODE, 'Decision endpoint must be HTTP(S), have no embedded credential, and stay on the connection origin'); }
+}
+
 function applyProviderPatch(provider: ProviderConfig, patch: PatchProviderRequest): ProviderConfig {
   const next: ProviderConfig = { ...provider };
   if (patch.type !== undefined) next.type = patch.type;
+  if (patch.decision_endpoint !== undefined) next.decisionEndpoint = patch.decision_endpoint ?? undefined;
   if (patch.base_url !== undefined) {
     if (patch.base_url !== null && patch.base_url.includes('${')) {
       throw new Error2(
@@ -666,6 +669,7 @@ export class ModelCatalogMutationService
           `provider ${providerId} does not exist`,
         );
       }
+      if (decisionProtocolForProviderType(providers[providerId]?.type) !== undefined) throw new Error2(CONFIG_INVALID_ERROR_CODE, 'Decision connections do not contain chat models');
       const id = nonEmpty(request.id) ?? `${providerId}/${request.remote_id}`;
       if (effectiveModelsOf(this.config)[id] !== undefined) {
         throw new Error2(ModelCatalogErrors.codes.MODEL_ALREADY_EXISTS, `model ${id} already exists`);
@@ -784,7 +788,7 @@ export class ModelCatalogMutationService
           );
         }
       }
-      const provider: ProviderConfig = { type: request.type };
+      const provider: ProviderConfig = { type: request.type, decisionEndpoint: request.decision_endpoint };
       if (request.api_key !== undefined && request.api_key !== '') provider.apiKey = request.api_key;
       if (request.api_key_env !== undefined) provider.apiKeyEnv = request.api_key_env;
       const baseUrl = request.base_url === undefined ? undefined : nonEmpty(request.base_url);
@@ -829,8 +833,9 @@ export class ModelCatalogMutationService
         nextModels[`${id}/${entry.remote_id}`] = record;
       }
       if (request.default_model !== undefined) {
-        provider.defaultModel = `${id}/${request.default_model}`;
+        provider.defaultModel = decisionProtocolForProviderType(request.type) === undefined ? `${id}/${request.default_model}` : request.default_model;
       }
+      validateDecisionConnection(provider);
       const sections: Record<string, unknown> = {
         [PROVIDERS_SECTION]: { ...providers, [id]: provider },
         [MODELS_SECTION]: nextModels,
@@ -863,7 +868,10 @@ export class ModelCatalogMutationService
         }
       }
       const next = applyProviderPatch(provider, request);
-      if (request.default_model !== undefined && next.defaultModel !== undefined) {
+      validateDecisionConnection(next);
+      if (decisionProtocolForProviderType(next.type) !== undefined && Object.values(modelsOf(this.config)).some((record) => providerRefOf(record) === id))
+        throw new Error2(CONFIG_INVALID_ERROR_CODE, 'Remove chat models before changing this connection to a decision service');
+      if (request.default_model !== undefined && next.defaultModel !== undefined && decisionProtocolForProviderType(next.type) === undefined) {
         const bound = modelsOf(this.config)[next.defaultModel];
         if (bound === undefined || providerRefOf(bound) !== id) {
           throw new Error2(
@@ -901,14 +909,15 @@ export class ModelCatalogMutationService
       if (provider.oauth !== undefined) {
         throw oauthManagedError(id, 'use POST /oauth/logout');
       }
-      const models = modelsOf(this.config);
+      const localModels = this.config.inspect<ModelsSection>(MODELS_SECTION).userValue;
+      const models = localModels ?? {};
       const { [id]: _removedProvider, ...restProviders } = providers;
       const restModels = Object.fromEntries(
         Object.entries(models).filter(([, record]) => providerRefOf(record) !== id),
       );
       await this.writeSections(
         { [PROVIDERS_SECTION]: restProviders, [MODELS_SECTION]: restModels },
-        { [PROVIDERS_SECTION]: providers, [MODELS_SECTION]: models },
+        { [PROVIDERS_SECTION]: providers, [MODELS_SECTION]: localModels },
       );
     });
   }

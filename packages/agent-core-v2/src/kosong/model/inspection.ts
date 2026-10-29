@@ -13,6 +13,7 @@ import { getProviderDefinition } from '../provider/providerDefinition';
 import type { ResolvedImagePolicy } from '../provider/providerImagePolicy';
 
 import type { ModelRecord } from './model';
+import type { Model } from './catalog';
 import { explainModelProtocol } from './modelProtocol';
 import type { GenerationParameters, ResolvedGenerationParameters } from './parameters';
 import type { ResolvedModelAuthMaterial } from './model.types';
@@ -45,6 +46,8 @@ export interface InspectedResolvedModel {
   readonly generationParameters?: GenerationParameters;
   readonly preferredThinkingEffort?: string;
   readonly alwaysThinking: boolean;
+  readonly credentialSource?: Model['credentialSource'];
+  readonly credentialEnv?: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly imagePolicy: ResolvedImagePolicy;
   readonly providerOptions?: ProtocolProviderOptions;
@@ -249,6 +252,8 @@ interface ResolvedModelLike {
   readonly generationParameters?: GenerationParameters;
   readonly preferredThinkingEffort?: string;
   readonly alwaysThinking: boolean;
+  readonly credentialSource?: Model['credentialSource'];
+  readonly credentialEnv?: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly imagePolicy: ResolvedImagePolicy;
   readonly providerOptions?: ProtocolProviderOptions;
@@ -424,6 +429,8 @@ export function assembleModelInspection(args: {
       generationParameters: generation.values,
       preferredThinkingEffort: model.preferredThinkingEffort,
       alwaysThinking: model.alwaysThinking,
+      credentialSource: model.credentialSource,
+      credentialEnv: model.credentialEnv,
       headers: model.headers,
       imagePolicy: model.imagePolicy,
       providerOptions: model.providerOptions,

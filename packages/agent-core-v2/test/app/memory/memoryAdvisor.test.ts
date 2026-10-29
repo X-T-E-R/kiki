@@ -655,7 +655,7 @@ describe('Memory Advisor lifecycle and snapshot publication', () => {
 });
 
 describe('Advisor governed protocols', () => {
-  function selector() {
+  function selector(protocol: 'system_one' | 'pair_score' = 'system_one') {
     const ix = new TestInstantiationService();
     disposables.push(ix);
     const model = {
@@ -685,7 +685,8 @@ describe('Advisor governed protocols', () => {
         },
       };
     });
-    ix.stub(IModelCatalog, { get: () => model, getRequester: () => ({ model, request }) });
+    ix.stub(IModelCatalog, { get: () => model, getRequester: () => ({ model, request }),
+      getConnectionEndpoint: () => ({ ...model, protocol, defaultModel: 'connection-default', credentialSource: 'provider' }) });
     const release = vi.fn();
     const acquire = vi.fn(async () => ({ release }));
     ix.stub(IRequestAdmission, { acquire });
@@ -713,6 +714,51 @@ describe('Advisor governed protocols', () => {
       attribution,
     };
   }
+  it('prefers new model sources over legacy selectors without changing chat request behavior', async () => {
+    const f = selector();
+    const call = input('pair_score');
+    call.config.source = { kind: 'model', model: 'chosen' };
+    expect(await f.service.call(call)).toEqual([{ handle: 'c0', use: 'apply' }]);
+    expect(f.request).toHaveBeenCalledOnce();
+    expect(f.acquire).not.toHaveBeenCalled();
+  });
+  it('uses connection protocol and arbitrary model overrides, and releases admission on HTTP failure', async () => {
+    const f = selector('pair_score');
+    const call = input('chat_json');
+    call.config.source = { kind: 'connection', connection: 'example', model: 'custom-remote-id' };
+    const http = vi.fn(async (_url, init) => {
+      expect(JSON.parse(init.body).model).toBe('custom-remote-id');
+      return Response.json({ results: [{ index: 0, relevance_score: 0.8 }] });
+    });
+    vi.stubGlobal('fetch', http);
+    expect(await f.service.call(call)).toEqual([{ handle: 'c0', score: 0.8 }]);
+    expect(f.request).not.toHaveBeenCalled();
+    expect(f.service.describe(call.config, workspace)).toMatchObject({ protocol: 'pair_score', applicability: 'rank_only', consent_required: false });
+    for (const [status, reason] of [[401, 'auth'], [429, 'rate_limited']] as const) {
+      http.mockImplementationOnce(async () => Response.json({}, { status }));
+      await expect(f.service.call(call)).rejects.toMatchObject({ reason });
+    }
+    http.mockImplementationOnce(async () => new Response('{malformed', { headers: { 'content-type': 'application/json' } }));
+    await expect(f.service.call(call)).rejects.toMatchObject({ reason: 'invalid_output' });
+    expect(f.release).toHaveBeenCalledTimes(4);
+  });
+  it.each(['aborted', 'timeout'] as const)('ends a synthetic connection probe on %s and never accepts a late result', async (reason) => {
+    const f = selector();
+    const call = input('system_one');
+    call.config.timeout_ms = 100;
+    call.config.source = { kind: 'connection', connection: 'example' };
+    const gate = deferred<Response>();
+    const started = deferred<void>();
+    vi.stubGlobal('fetch', vi.fn(async () => { started.resolve(); return gate.promise; }));
+    const controller = new AbortController();
+    const pending = f.service.probe(call.config, destination, controller.signal);
+    await started.promise;
+    if (reason === 'aborted') controller.abort();
+    expect(await pending).toMatchObject({ ok: false, status: { reason } });
+    gate.resolve(Response.json({ answers: {} }));
+    await flush();
+    expect(f.release).toHaveBeenCalledOnce();
+  });
   it('keeps chat retries separate from logical calls and records known and unknown usage per actual attempt', async () => {
     const f = selector();
     const call = input('chat_json');
@@ -737,7 +783,7 @@ describe('Advisor governed protocols', () => {
         history: 'history',
         skip: 'skip',
       });
-      expect(init.headers.Authorization).toBe('Bearer synthetic-key');
+      expect(new Headers(init.headers).get('authorization')).toBe('Bearer synthetic-key');
       return Response.json({
         model: 'arbitrary-remote-name',
         answers: {

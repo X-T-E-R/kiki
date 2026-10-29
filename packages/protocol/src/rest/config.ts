@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { decisionSourceSchema, decisionSourceStatusSchema } from '../decision';
 
 import { requestCompressionWireSchema, requestIdentityPolicySchema, responsesWebSocketWireSchema } from '../modelCatalog';
 import { browserControlSettingsPatchSchema, browserControlSettingsSchema } from './browser';
@@ -185,6 +186,8 @@ export const permissionRuleConfigSchema = z.object({
 export const dangerousBashGuardSchema = z.enum(['on', 'off', 'default']);
 
 export const permissionReviewerResponseSchema = z.object({
+  source: decisionSourceSchema.optional(),
+  source_status: decisionSourceStatusSchema.optional(),
   backend: z.enum(['model', 'jev']),
   model: z.string().optional(),
   timeoutMs: z.number().int().optional(),
@@ -206,6 +209,7 @@ export const permissionConfigPatchSchema = z.object({
   rules: z.array(permissionRuleConfigSchema).optional(),
   dangerous_bash: dangerousBashGuardSchema.optional(),
   reviewer: z.object({
+    source: decisionSourceSchema.nullable().optional(),
     backend: z.enum(['model', 'jev']).optional(),
     model: z.string().min(1).optional(),
     /** Omitted keeps the stored key; `null` removes it. */

@@ -50,7 +50,7 @@ import type {
   PersonaSnapshot,
   PersonaSummary,
 } from '@kiki/protocol';
-import { deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, MEDIA_PREVIEW_MAX_BYTES, memorySettingsResponseSchema, memorySettingsPatchSchema, memoryAdvisorProbeInputSchema, memoryAdvisorProbeResultSchema, memoryAdvisorStatusSchema } from '@kiki/protocol';
+import { decisionConnectionProbeInputSchema, decisionConnectionProbeResultSchema, moveReviewerKeyInputSchema, moveReviewerKeyResultSchema, deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, MEDIA_PREVIEW_MAX_BYTES, memorySettingsResponseSchema, memorySettingsPatchSchema, memoryAdvisorProbeInputSchema, memoryAdvisorProbeResultSchema, memoryAdvisorStatusSchema } from '@kiki/protocol';
 
 export interface HttpRestJsonOptions extends HttpRestRequestOptions {
   readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -77,6 +77,10 @@ export interface HttpRestTransport {
 
 export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFacade {
   return {
+    decision: {
+      probe: async (body, options) => decisionConnectionProbeResultSchema.parse(await transport.json('/decision/probe', { method: 'POST', body: decisionConnectionProbeInputSchema.parse(body), ...options })),
+      moveReviewerKey: async (body) => moveReviewerKeyResultSchema.parse(await transport.json('/decision/move-reviewer-key', { method: 'POST', body: moveReviewerKeyInputSchema.parse(body) })),
+    },
     memory: {
       settings: async (query) => memorySettingsResponseSchema.parse(await transport.json('/memory/settings', { query })),
       updateSettings: async (body, query) => memorySettingsResponseSchema.parse(await transport.json('/memory/settings', { method: 'PATCH', body: memorySettingsPatchSchema.parse(body), query })),

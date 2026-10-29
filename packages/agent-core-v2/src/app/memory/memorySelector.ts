@@ -11,6 +11,7 @@ import { Service } from '#/_base/di/service';
 import { abortable } from '#/_base/utils/abort';
 import { LifecycleScope } from '#/app/scopes';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import { DecisionRequestError, decisionSourceStatus, requestDecision, resolveDecisionSource, resolveLegacyDecisionModel, type DecisionIdentity, type ResolvedDecisionSource } from '#/kosong/model/decision';
 import { IRequestAdmission, type RequestAttribution } from '#/kosong/model/requestAdmission';
 import { emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { estimateTokens } from '#/kosong/contract/tokens';
@@ -36,7 +37,7 @@ export interface MemorySelectorCall {
   readonly signal: AbortSignal;
   readonly attribution: RequestAttribution;
   readonly stats: MemorySelectorStats;
-  readonly record?: (model: Model, usage: TokenUsage, known: boolean) => void;
+  readonly record?: (model: DecisionIdentity, usage: TokenUsage, known: boolean) => void;
 }
 export type MemorySelectorAnswer = {
   readonly handle: string;
@@ -120,12 +121,13 @@ export function selectorInputTokens(
   stage: MemorySelectorCall['stage'],
   query: string,
   units: readonly MemorySelectorUnit[],
+  wire?: Pick<MemoryAdvisorStatus, 'protocol' | 'model'>,
 ): number {
-  const protocol = config.selector?.protocol ?? 'chat_json';
+  const protocol = wire?.protocol ?? (config.source === undefined ? config.selector?.protocol ?? 'chat_json' : config.source.kind === 'model' ? 'chat_json' : 'system_one');
   return estimateTokens(
     protocol === 'chat_json'
       ? `${systemPolicy}\n${chatPayload(stage, query, units)}`
-      : JSON.stringify(httpPayload(protocol, config.selector!.model, stage, query, units)),
+      : JSON.stringify(httpPayload(protocol, wire?.model ?? config.source?.model ?? config.selector?.model ?? '', stage, query, units)),
   );
 }
 export function selectorStats(): MemorySelectorStats {
@@ -144,7 +146,7 @@ export function selectorThinkingEffort(model: Model): string | undefined {
   );
 }
 export function selectorFailure(error: unknown, signal?: AbortSignal): MemoryAdvisorFailure {
-  if (error instanceof MemorySelectorError) return error.reason;
+  if (error instanceof MemorySelectorError || error instanceof DecisionRequestError) return error.reason;
   if (signal?.aborted) return signal.reason === 'timeout' ? 'timeout' : 'aborted';
   const value = error as
     | { status?: number; statusCode?: number; code?: string; httpStatus?: number }
@@ -192,97 +194,48 @@ export class MemorySelector extends Service implements IMemorySelector {
   }
 
   describe(config: MemoryAdvisorConfig | undefined, workspaceId?: string): MemoryAdvisorStatus {
-    const selector = config?.selector;
-    if (selector === undefined)
-      return advisorStatus(config?.mode === 'off' ? 'off' : 'unconfigured', {
-        reason: config?.mode === 'off' ? undefined : 'unconfigured',
-      });
+    if (config === undefined || (config.source === undefined && config.selector === undefined))
+      return advisorStatus(config?.mode === 'off' ? 'off' : 'unconfigured', { reason: config?.mode === 'off' ? undefined : 'unconfigured' });
     try {
-      const model = this.catalog.get(selector.model);
-      const url = this.endpoint(config!, model);
-      const destination = `${model.providerName}@${url.origin}`;
-      const consent =
-        workspaceId === undefined ||
-        !config!.egress_ack.some(
-          (ack) => ack.workspace_id === workspaceId && ack.destination === destination,
-        );
-      return advisorStatus(
-        config!.mode === 'off'
-          ? 'off'
-          : config!.mode === 'select' && selector.protocol === 'pair_score'
-          ? 'failed'
-          : 'ready',
-        {
-          reason:
-            config!.mode === 'select' && selector.protocol === 'pair_score'
-              ? 'capability_mismatch'
-              : consent
-              ? 'consent_required'
-              : undefined,
-          destination,
-          provider: model.providerName,
-          origin: url.origin,
-          protocol: selector.protocol,
-          model: selector.model,
-          consent_required: consent,
-          applicability: selector.protocol === 'pair_score' ? 'rank_only' : 'full_units',
-        },
-      );
-    } catch (error) {
-      return advisorStatus('failed', {
-        reason: error instanceof MemorySelectorError ? error.reason : 'unconfigured',
-        model: selector.model,
-        protocol: selector.protocol,
+      const resolved = this.resolve(config);
+      const status = decisionSourceStatus(resolved);
+      const consent = workspaceId === undefined || !config.egress_ack.some((ack) => ack.workspace_id === workspaceId && ack.destination === status.destination);
+      const reason = config.mode === 'select' && resolved.protocol === 'pair_score' ? 'capability_mismatch' : status.state === 'auth' ? 'auth' : consent ? 'consent_required' : undefined;
+      return advisorStatus(config.mode === 'off' ? 'off' : reason !== undefined && reason !== 'consent_required' ? 'failed' : 'ready', {
+        reason, source_status: status, destination: status.destination, provider: resolved.providerName, origin: resolved.endpoint.origin,
+        protocol: resolved.protocol, model: resolved.alias ?? resolved.name, consent_required: consent,
+        applicability: resolved.protocol === 'pair_score' ? 'rank_only' : 'full_units',
       });
+    } catch (error) {
+      const reason = error instanceof DecisionRequestError ? error.reason : 'unconfigured';
+      const connection = config.source?.kind === 'connection' ? config.source.connection : undefined;
+      return advisorStatus(config.mode === 'off' ? 'off' : 'failed', { reason, provider: connection, model: config.source?.model ?? config.selector?.model,
+        source_status: { state: reason === 'protocol' ? 'protocol' : 'unconfigured', connection, model: config.source?.model ?? config.selector?.model } });
     }
   }
 
-  private endpoint(config: MemoryAdvisorConfig, model: Model): URL {
-    if (model.baseUrl === undefined) throw new MemorySelectorError('unconfigured');
-    const base = new URL(model.baseUrl);
-    const selector = config.selector!;
-    const url =
-      selector.endpoint === undefined
-        ? new URL(
-            selector.protocol === 'system_one'
-              ? `${base.pathname.replace(/\/$/, '')}/systemone`
-              : selector.protocol === 'pair_score'
-              ? `${base.pathname.replace(/\/$/, '')}/rerank`
-              : base.pathname,
-            base,
-          )
-        : new URL(selector.endpoint);
-    if (
-      !['http:', 'https:'].includes(url.protocol) ||
-      url.username ||
-      url.password ||
-      url.origin !== base.origin ||
-      (selector.protocol === 'chat_json' && selector.endpoint !== undefined)
-    )
-      throw new MemorySelectorError('protocol');
-    return url;
+  private resolve(config: MemoryAdvisorConfig): ResolvedDecisionSource {
+    if (config.source !== undefined) return resolveDecisionSource(this.catalog, config.source);
+    const selector = config.selector;
+    if (selector === undefined) throw new MemorySelectorError('unconfigured');
+    return resolveLegacyDecisionModel(this.catalog.get(selector.model), selector.protocol, selector.endpoint, selector.model);
   }
 
   async call(input: MemorySelectorCall): Promise<readonly MemorySelectorAnswer[]> {
     const { config, signal, units, stats } = input;
-    const selector = config.selector;
-    if (selector === undefined) throw new MemorySelectorError('unconfigured');
-    const model = this.catalog.get(selector.model);
-    const endpoint = this.endpoint(config, model);
-    if (config.mode === 'select' && selector.protocol === 'pair_score')
+    const resolved = this.resolve(config);
+    const model = resolved.chatModel ?? resolved;
+    if (config.mode === 'select' && resolved.protocol === 'pair_score')
       throw new MemorySelectorError('capability_mismatch');
     const query = redactMemorySecrets(input.query);
-    const safeUnits = units.map((unit) => ({
-      handle: unit.handle,
-      text: redactMemorySecrets(unit.text),
-    }));
-    const rankOnly = selector.protocol === 'pair_score';
+    const safeUnits = units.map((unit) => ({ handle: unit.handle, text: redactMemorySecrets(unit.text) }));
+    const rankOnly = resolved.protocol === 'pair_score';
     const payload = chatPayload(input.stage, query, safeUnits);
-    if (selectorInputTokens(config, input.stage, query, safeUnits) > config.judge_input_tokens)
+    if (selectorInputTokens(config, input.stage, query, safeUnits, { protocol: resolved.protocol, model: resolved.name }) > config.judge_input_tokens)
       throw new MemorySelectorError('input_budget');
     signal.throwIfAborted();
-    if (selector.protocol === 'chat_json') {
-      const requester = this.catalog.getRequester(selector.model);
+    if (resolved.protocol === 'chat_json') {
+      const requester = this.catalog.getRequester(resolved.alias!);
       let text = '';
       let known = false;
       let attempts = 0;
@@ -297,7 +250,7 @@ export class MemorySelector extends Service implements IMemorySelector {
           {
             attribution: input.attribution,
             maxCompletionTokens: Math.min(4_096, Math.max(256, units.length * 60)),
-            thinkingEffort: selectorThinkingEffort(model),
+            thinkingEffort: selectorThinkingEffort(resolved.chatModel!),
             onRequestAttempt: () => {
               stats.requests++;
               if (attempts++ > 0) stats.retries++;
@@ -343,55 +296,14 @@ export class MemorySelector extends Service implements IMemorySelector {
       return validateSelectorAnswers(response.data.answers, units, input.stage, false);
     }
     const choices = input.stage === 'discover' ? ['read', 'skip'] : ['apply', 'history', 'skip'];
-    const body = httpPayload(selector.protocol, model.name, input.stage, query, safeUnits);
+    const body = httpPayload(resolved.protocol, model.name, input.stage, query, safeUnits);
     if (estimateTokens(JSON.stringify(body)) > config.judge_input_tokens)
       throw new MemorySelectorError('input_budget');
-    const auth = await model.authProvider.getAuth();
-    signal.throwIfAborted();
-    const permit = await this.admission.acquire(
-      {
-        ...input.attribution,
-        attemptId: crypto.randomUUID(),
-        modelId: model.id,
-        providerId: model.providerName,
-      },
-      signal,
-    );
     let known = false;
     let started = false;
     try {
-      signal.throwIfAborted();
-      stats.requests++;
-      started = true;
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        redirect: 'error',
-        signal,
-        headers: {
-          ...model.headers,
-          ...auth?.headers,
-          Authorization:
-            auth?.apiKey === undefined
-              ? auth?.headers?.['Authorization'] ?? ''
-              : `Bearer ${auth.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-      });
-      if (!response.ok)
-        throw new MemorySelectorError(
-          response.status === 401 || response.status === 403
-            ? 'auth'
-            : response.status === 429
-            ? 'rate_limited'
-            : 'protocol',
-        );
-      let raw: Record<string, unknown>;
-      try {
-        raw = z.record(z.string(), z.unknown()).parse(await response.json());
-      } catch {
-        throw new MemorySelectorError('invalid_output');
-      }
+      const raw = await requestDecision({ source: resolved, body, signal, attribution: input.attribution, admission: this.admission,
+        onStart: () => { stats.requests++; started = true; } });
       const usage = z
         .object({
           input_tokens: z.number().int().nonnegative().optional(),
@@ -465,7 +377,6 @@ export class MemorySelector extends Service implements IMemorySelector {
       });
       return validateSelectorAnswers(mapped, units, input.stage, false);
     } finally {
-      permit.release();
       if (!known && started) {
         stats.usageKnown = false;
         input.record?.(model, emptyUsage(), false);
@@ -482,7 +393,7 @@ export class MemorySelector extends Service implements IMemorySelector {
     const status = this.describe(config);
     const stats = selectorStats();
     if (
-      config?.selector === undefined ||
+      (config === undefined || (config.source === undefined && config.selector === undefined)) ||
       status.destination !== destination ||
       status.state === 'failed'
     )

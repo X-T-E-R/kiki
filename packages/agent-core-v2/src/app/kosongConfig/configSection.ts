@@ -103,6 +103,7 @@ const ProviderConfigObjectSchema = z.object({
   modelSource: ModelSourceSchema.optional(),
 
   baseUrl: z.string().optional(),
+  decisionEndpoint: z.string().optional(),
   customHeaders: StringRecordSchema.optional(),
   defaultModel: z.string().optional(),
   defaults: GenerationParametersSchema.optional(),

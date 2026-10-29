@@ -125,6 +125,9 @@ function createModelCatalogStub(models: Readonly<Record<string, Model>> = {}): I
     getConnectionRequester: () => {
       throw new Error('not exercised');
     },
+    getConnectionEndpoint: () => {
+      throw new Error('not exercised');
+    },
     inspect: () => {
       throw new Error('not exercised');
     },

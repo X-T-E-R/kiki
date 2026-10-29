@@ -78,25 +78,43 @@ External execution passes the outbound request text explicitly and carries the s
 
 ## Memory Advisor
 
-Configure `memory.advisor.selector` with a model alias already present in the model catalog. With no selector, or with `mode = "off"`, native requests retain the existing lexical working set and make no Advisor requests. Advisor requires a Store with `snapshot`; the legacy Store reports `unsupported_store` and keeps its existing rendering. On an admitted, configured path, Advisor awaits the Store's optional `prepare()` before checking a lazy `snapshot` getter. Off and unconfigured Advisor paths add no Store preparation.
+Configure `memory.advisor.source` with a decision connection or a normal chat model alias. Decision connections use provider types `system_one` and `pair_score`; they own the address, credentials, optional same-origin `decision_endpoint` and arbitrary remote `default_model`. They contain no chat model records, need no context size and do not participate in chat discovery. `IModelCatalog.getConnectionEndpoint` resolves their effective address, headers and existing auth provider without constructing a chat requester.
+
+This example lets Advisor and Permission Reviewer share one environment-backed connection. `system_one` defaults to `https://api.typesafe.ai/v1` and reuses `TYPESAFE_API_KEY`; an explicit `base_url` may select any compatible service.
 
 ```toml
+[providers.judgment]
+type = "system_one"
+default_model = "YOUR_REMOTE_MODEL"
+
 [memory.advisor]
 mode = "rank"
 first_step_wait_ms = 1500
 timeout_ms = 6000
 max_calls_per_turn = 3
 
-[memory.advisor.selector]
-protocol = "chat_json"
-model = "YOUR_CONFIGURED_ALIAS"
+[memory.advisor.source]
+kind = "connection"
+connection = "judgment"
+
+[permission.reviewer.source]
+kind = "connection"
+connection = "judgment"
 ```
 
-Before sending memory, read `GET /api/memory/settings?workspace_id=...` and confirm its `advisor_status.destination`. Save an `advisor.egress_ack` item containing that exact destination and workspace ID. This authorizes sending the visible directory and selected complete bodies, including basis and validity, to the resolved provider and origin. Secret-pattern redaction runs before transmission; it cannot remove every sensitive fact. Changing the provider or origin requires a new confirmation.
+A connection source may override the remote name with `model`; `{ kind: "model", model: "YOUR_CONFIGURED_ALIAS" }` selects an existing chat alias instead. The two consumers save independent references. A new `source` takes precedence; without one, the old Advisor `selector` and Reviewer `backend`/`model`/key paths continue unchanged. Missing or invalid sources report their connection and failure rather than substituting another model. `source_status` exposes protocol, effective origin and credential source, never credential values. Reviewer accepts only System One or chat sources; it rejects `pair_score` because relevance is not approval probability.
 
-`PATCH /api/memory/settings` accepts sparse `advisor` updates. `{ "advisor": { "mode": "off" } }` preserves the selector, budgets and confirmations. `advisor: null` removes the configuration; `selector: null` removes only the model selection. Changes take effect without restarting. `POST /api/memory/advisor/probe` takes `{ "confirm_destination": "<destination>" }` and tests both phases with synthetic data, including when automatic advice is off. It returns request/retry counts, known token usage and the failure state without reading saved memory. `GET /api/memory/advisor/status?session_id=...&agent_id=main` reads a live agent's diagnostics; a cold or absent agent returns `null` without resuming it. The HTTP client exposes these as `rest.memory.settings`, `updateSettings`, `probe` and `status`.
+Before sending memory, read `GET /api/memory/settings?workspace_id=...` and confirm its `advisor_status.destination`. Save an `advisor.egress_ack` item containing that exact destination and workspace ID. This authorizes sending the visible directory and selected complete bodies, including basis and validity, to the resolved provider and origin. The destination remains `<provider>@<origin>`, preserving old confirmations. Secret-pattern redaction runs before transmission; it cannot remove every sensitive fact. Changing the provider or origin requires a new confirmation.
 
-The three selector protocols accept any configured model alias. `chat_json` uses the model requester and a strict JSON answer contract. `system_one` sends named choice questions with `criteria` and reads their probabilities. `pair_score` sends a standard rerank request with query/documents and consumes indexed relevance scores; it supports `rank` only and labels full units `recommended`, never `apply` or `history`. Non-chat protocols can set an absolute `selector.endpoint` on the model's configured origin; credentials never follow redirects or cross-origin endpoint overrides. Authentication and admission use the selected model and never substitute another model.
+`PATCH /api/memory/settings` accepts sparse `advisor` updates. `{ "advisor": { "mode": "off" } }` preserves sources, budgets and confirmations. `advisor: null` removes the configuration; `source: null` clears both new source and old selector so the old selection cannot reappear. `selector: null` clears only the legacy selection. `POST /api/config` accepts `permission.reviewer.source: null`, clearing the source and old model selection and selecting the unconfigured model backend. Changes take effect without restarting.
+
+`POST /api/memory/advisor/probe` takes `{ "confirm_destination": "<destination>" }` and tests both phases with synthetic data, including when automatic advice is off. `POST /api/decision/probe` takes `{ "source": ..., "confirm_destination": "<destination>" }` to test a selected source without saving consumer settings or reading memory. Both cancel on client disconnection; decision probes also cancel when connections or models change. The decision response returns `ok`, `status`, `duration_ms` and an optional failure `reason`. The HTTP client exposes it as `rest.decision.probe`; memory methods remain `rest.memory.settings`, `updateSettings`, `probe` and `status`. `GET /api/memory/advisor/status?session_id=...&agent_id=main` reads live diagnostics; a cold or absent agent returns `null` without resuming it.
+
+`POST /api/decision/move-reviewer-key` takes `{ "connection": "<new-id>" }` and moves a saved legacy Reviewer key entirely on the server. It first saves the connection, then switches the source, then clears only the key that connection accepted. Both permission changes compare the permission and provider snapshots inside ConfigService's protected write. Concurrent key, source, permission or connection changes are preserved and return `connection_saved` or `source_switched` with `retryable: true`. Refresh the settings before retrying; if a newer Reviewer key conflicts with the saved connection, choose a new connection name. `complete` is idempotent. The client method is `rest.decision.moveReviewerKey`. Existing saved keys and environment users are never automatically migrated.
+
+`chat_json` uses the model requester and a strict JSON answer contract. `system_one` sends named choice questions with `criteria` and reads their probabilities. `pair_score` sends a standard rerank request with query/documents and consumes indexed relevance scores; it supports `rank` only and labels full units `recommended`, never `apply` or `history`. Legacy selectors retain all three protocols and their same-origin `selector.endpoint`, including keyless HTTP services. Decision connections also accept their configured custom auth headers. A service with no configured credential may accept unauthenticated requests. An explicitly selected but missing API-key variable without another auth source, or an HTTP 401/403 response, reports `auth`. The shared decision request path reuses provider auth and request admission, rejects redirects and maps rate-limit failures for both consumers.
+
+With no source or legacy selector, or with `mode = "off"`, native requests retain the existing lexical working set and make no Advisor requests. Advisor requires a Store with `snapshot`; the legacy Store reports `unsupported_store` and keeps its existing rendering. On an admitted, configured path, Advisor awaits the Store's optional `prepare()` before checking a lazy `snapshot` getter. Off and unconfigured Advisor paths add no Store preparation.
 
 A new request, task-note change or distinct tool error wakes the Agent-scoped Advisor. It pages the visible directory, re-reads selected units at the discovered revision, and judges complete body/basis/validity payloads. `catalog_page_items`, `max_catalog_pages`, `max_full_units` and `judge_input_tokens` bound this work. `enumeration` reports directory coverage; `unjudged_count` reports units without full-unit conclusions. Logical rounds are limited by `max_calls_per_turn`; pagination, batches and authentication retries count as separate real requests. Native children use the same configuration only when their capability and effective model constraints permit it; `apply_to_children = false` disables their Advisor.
 

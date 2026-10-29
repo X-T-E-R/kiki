@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { decisionProtocolSchema, decisionProtocolForProviderType } from './decision';
 import { recipeModelBindingSchema } from './recipe';
 import { modelSteeringCadenceSchema, modelSteeringSourcesSchema } from './modelSteering';
 import { modelBehaviorWireSchema, modelBehaviorPatchSchema } from './questionGuard';
@@ -267,6 +268,10 @@ export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>;
 export const providerCatalogItemSchema = z.object({
   id: z.string().min(1),
   type: z.string().min(1),
+  service: z.enum(['chat', 'decision']).optional(),
+  decision_protocol: decisionProtocolSchema.optional(),
+  decision_endpoint: z.string().optional(),
+  effective_base_url: z.string().optional(),
   base_url: z.string().min(1).optional(),
   default_model: z.string().min(1).optional(),
   defaults: generationParametersSchema.optional(),
@@ -600,6 +605,7 @@ export const patchProviderRequestSchema = z
     api_key: z.string().optional(),
     api_key_env: z.string().trim().min(1).nullable().optional(),
     base_url: z.string().trim().nullable().optional(),
+    decision_endpoint: z.string().trim().min(1).nullable().optional(),
     default_model: z.string().min(1).nullable().optional(),
     defaults: generationParametersPatchSchema.nullable().optional(),
     request_identity: requestIdentityPolicySchema.nullable().optional(),
@@ -694,10 +700,10 @@ export const providerIdSchema = z
   );
 
 /**
- * Create a connection. A connection may be saved with zero models: the model
- * list is optional and `default_model` is only checked against the models
- * actually listed. `default_model` is the model half of the provider default
- * (the full alias is `provider_id/default_model`).
+ * Create a connection. Chat connections may omit models; when supplied,
+ * `default_model` must match a listed remote ID and becomes the local alias
+ * `provider_id/default_model`. Decision connections contain no chat models;
+ * their `default_model` is an arbitrary remote name.
  */
 export const createProviderRequestSchema = z
   .object({
@@ -706,6 +712,7 @@ export const createProviderRequestSchema = z
     api_key: z.string().optional(),
     api_key_env: z.string().trim().min(1).optional(),
     base_url: z.string().trim().optional(),
+    decision_endpoint: z.string().trim().min(1).optional(),
     default_model: z.string().min(1).optional(),
     defaults: generationParametersSchema.optional(),
     request_identity: requestIdentityPolicySchema.optional(),
@@ -717,8 +724,12 @@ export const createProviderRequestSchema = z
   .strict()
   .superRefine((value, ctx) => {
     refineProviderForm(value, ctx);
+    const decision = decisionProtocolForProviderType(value.type) !== undefined;
+    if (decision && (value.models?.length ?? 0) > 0) {
+      ctx.addIssue({ code: 'custom', path: ['models'], message: 'Decision connections do not contain chat models' });
+    }
     if (
-      value.default_model !== undefined &&
+      !decision && value.default_model !== undefined &&
       !(value.models ?? []).some((entry) => entry.remote_id === value.default_model)
     ) {
       ctx.addIssue({

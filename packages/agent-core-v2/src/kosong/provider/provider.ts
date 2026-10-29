@@ -30,6 +30,7 @@ export interface ProviderConfig {
   modelSource?: ModelSource;
 
   baseUrl?: string;
+  decisionEndpoint?: string;
   customHeaders?: Record<string, string>;
   defaultModel?: string;
   defaults?: GenerationParameters;

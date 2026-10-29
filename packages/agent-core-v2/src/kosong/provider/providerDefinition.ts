@@ -86,7 +86,7 @@ export interface ExplainedProviderEndpoint {
 export function resolveProviderApiKey(
   provider: Pick<ProviderConfig, 'type' | 'apiKey' | 'apiKeyEnv' | 'env'>,
 ): ResolvedProviderApiKey {
-  const fallback: ExplainedProviderEndpoint = provider.type === undefined ? {} : explainProviderEndpoint(provider.type, provider.env ?? {});
+  const fallback: ExplainedProviderEndpoint = provider.type === undefined ? {} : explainProviderEndpoint(provider.type, provider.type === 'system_one' ? { TYPESAFE_API_KEY: process.env['TYPESAFE_API_KEY'], ...provider.env } : provider.env ?? {});
   return resolveConfiguredProviderApiKey(provider, { apiKey: fallback.apiKey, envName: fallback.apiKeyEnvName });
 }
 
@@ -94,6 +94,11 @@ export function explainProviderEndpoint(
   providerType: string,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): ExplainedProviderEndpoint {
+  if (providerType === 'system_one') {
+    const apiKey = env['TYPESAFE_API_KEY'];
+    return { baseUrl: 'https://api.typesafe.ai/v1', baseUrlIsDefault: true,
+      apiKey, apiKeyEnvName: apiKey ? 'TYPESAFE_API_KEY' : undefined };
+  }
   const definition = getProviderDefinition(providerType);
   if (definition === undefined) return {};
   const endpoint =

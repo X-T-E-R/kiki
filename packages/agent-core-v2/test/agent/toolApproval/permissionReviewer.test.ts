@@ -160,6 +160,19 @@ describe('permission reviewer', () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
+  it('uses an explicit chat source ahead of old Jev fields and never treats pair scores as approval probabilities', async () => {
+    const chat = dependencies({ source: { kind: 'model', model: 'selected-chat' }, backend: 'jev', model: 'legacy', allowThreshold: 0.9, denyThreshold: 0.9 },
+      { output: '{"outcome":"allow","confidence":0.99}' });
+    const getRequester = vi.spyOn(chat.catalog, 'getRequester');
+    expect(await reviewPermission(chat, context, 'ask', {})).toMatchObject({ outcome: 'allow', backend: 'model' });
+    expect(getRequester).toHaveBeenCalledWith('selected-chat');
+    const fetcher = vi.fn();
+    const ranker = dependencies({ source: { kind: 'connection', connection: 'ranker' }, backend: 'jev' }, { fetcher });
+    ranker.catalog = { getConnectionEndpoint: () => ({ providerName: 'ranker', protocol: 'pair_score', defaultModel: 'arbitrary-ranker', baseUrl: 'https://example.test/v1', headers: {},
+      authProvider: { getAuth: async () => ({ apiKey: 'synthetic-key' }) }, credentialSource: 'provider' }) } as unknown as IModelCatalog;
+    expect(await reviewPermission(ranker, context, 'ask', {})).toBeUndefined();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
   it('falls back on an unavailable backend, missing exact target, or timeout', async () => {
     const reviewer = { backend: 'model', model: 'reviewer', timeoutMs: 100, allowThreshold: 0.9, denyThreshold: 0.9 };
     const missing = dependencies({ ...reviewer, model: undefined });
@@ -176,7 +189,7 @@ describe('permission reviewer', () => {
   it('calls Jev once selected with a key; validates every noul before approving or denying', async () => {
     const reviewer = { backend: 'jev', allowThreshold: 0.9, denyThreshold: 0.9, categories: ['policy_compliance', 'no_secret_egress'] };
     const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      expect(init?.headers).toMatchObject({ Authorization: 'Bearer test-key' });
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer test-key');
       const payload = JSON.parse(init?.body as string) as { questions: Record<string, unknown>; state: unknown };
       expect(Object.keys(payload.questions)).toEqual(reviewer.categories);
       expect(JSON.stringify(payload.state)).not.toContain('Secret output');

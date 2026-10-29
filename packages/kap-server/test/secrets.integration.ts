@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { IModelCatalog } from '@kiki/agent-core-v2';
 
 import { type RunningServer, startServer } from '../src/start';
 import { authHeaders } from './helpers/auth';
@@ -27,6 +28,10 @@ const CONFIG = [
   'base_url = "https://api.example.test/v1"',
   '',
   '[providers.kimi]',
+  'type = "kimi"',
+  'api_key_env = "KIMI_API_KEY"',
+  '',
+  '[providers.implicit]',
   'type = "kimi"',
   '',
   '[providers.bagged]',
@@ -75,7 +80,7 @@ describe('server-v2 /api/secrets:reveal', () => {
     base = `http://127.0.0.1:${server.port}`;
   }
 
-  async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown, auth = true): Promise<{ status: number; text: string; body: Envelope<T> }> {
+  async function call<T>(method: 'GET' | 'POST' | 'PATCH', path: string, body?: unknown, auth = true): Promise<{ status: number; text: string; body: Envelope<T> }> {
     const headers: Record<string, string> = body === undefined ? {} : { 'content-type': 'application/json' };
     const init: RequestInit = {
       method,
@@ -95,8 +100,9 @@ describe('server-v2 /api/secrets:reveal', () => {
     expect(config.body.code).toBe(0);
     expect(config.body.data.providers['inline']).toMatchObject({ has_api_key: true });
     expect(config.body.data.providers['inline']).not.toHaveProperty('api_key');
-    expect(config.body.data.providers['kimi']).toMatchObject({ has_api_key: false });
-    expect(config.body.data.providers['kimi']).not.toHaveProperty('api_key_env');
+    expect(config.body.data.providers['kimi']).toMatchObject({ has_api_key: true, api_key_env: 'KIMI_API_KEY' });
+    expect(config.body.data.providers['implicit']).toMatchObject({ has_api_key: false });
+    expect(config.body.data.providers['implicit']).not.toHaveProperty('api_key_env');
     const providers = await call<{ items: Record<string, unknown>[] }>('GET', '/providers');
     const single = await call<Record<string, unknown>>('GET', '/providers/inline');
     const mcp = await call<{ name: string; config: Record<string, unknown> }[]>('GET', '/mcp/servers');
@@ -115,12 +121,37 @@ describe('server-v2 /api/secrets:reveal', () => {
       .toEqual({ source: 'kiki', value: 'sk-fixture-inline' });
   });
 
-  it('reveals an environment-sourced provider key, provider env table first, then the process environment', async () => {
+  it('reveals the selected process variable or provider env table without inventing a default shell fallback', async () => {
     await boot();
     expect((await reveal({ kind: 'provider_api_key', provider_id: 'kimi' })).body.data)
       .toEqual({ source: 'environment', env_name: 'KIMI_API_KEY', value: 'sk-fixture-shell' });
     expect((await reveal({ kind: 'provider_api_key', provider_id: 'bagged' })).body.data)
       .toEqual({ source: 'environment', env_name: 'KIMI_API_KEY', value: 'sk-fixture-bag' });
+    expect((await reveal({ kind: 'provider_api_key', provider_id: 'implicit' })).body.data).toEqual({ source: 'none' });
+    expect(await server!.core.accessor.get(IModelCatalog).getConnectionEndpoint('implicit').authProvider.getAuth()).toBeUndefined();
+  });
+
+  it('reveals exactly the credential used by a decision connection across saved, explicit env, provider env and missing env selections', async () => {
+    vi.stubEnv('FIXTURE_SELECTED_KEY', 'synthetic-selected-key');
+    vi.stubEnv('FIXTURE_MISSING_KEY', '');
+    await boot();
+    expect((await call('POST', '/providers', { id: 'judgment', type: 'system_one', api_key_env: 'FIXTURE_SELECTED_KEY', default_model: 'synthetic-model' })).body.code).toBe(0);
+    const catalog = server!.core.accessor.get(IModelCatalog);
+    async function check(expected: Revealed) {
+      const endpoint = catalog.getConnectionEndpoint('judgment');
+      expect(endpoint.credentialEnv).toBe(expected.env_name);
+      expect(await endpoint.authProvider.getAuth()).toEqual(expected.value === undefined ? undefined : { apiKey: expected.value });
+      expect((await reveal({ kind: 'provider_api_key', provider_id: 'judgment' })).body.data).toEqual(expected);
+    }
+    await check({ source: 'environment', env_name: 'FIXTURE_SELECTED_KEY', value: 'synthetic-selected-key' });
+    expect((await call('PATCH', '/providers/judgment', { env: { FIXTURE_SELECTED_KEY: 'synthetic-bag-key' } })).body.code).toBe(0);
+    await check({ source: 'environment', env_name: 'FIXTURE_SELECTED_KEY', value: 'synthetic-bag-key' });
+    expect((await call('PATCH', '/providers/judgment', { api_key: 'synthetic-saved-key' })).body.code).toBe(0);
+    await check({ source: 'kiki', value: 'synthetic-saved-key' });
+    expect((await call('PATCH', '/providers/judgment', { api_key: '', api_key_env: 'FIXTURE_MISSING_KEY' })).body.code).toBe(0);
+    await check({ source: 'environment', env_name: 'FIXTURE_MISSING_KEY' });
+    expect((await call('PATCH', '/providers/judgment', { api_key_env: null, env: { TYPESAFE_API_KEY: 'synthetic-default-bag' } })).body.code).toBe(0);
+    await check({ source: 'environment', env_name: 'TYPESAFE_API_KEY', value: 'synthetic-default-bag' });
   });
 
   it('lets a key saved in Kiki override the environment and falls back to it once cleared', async () => {

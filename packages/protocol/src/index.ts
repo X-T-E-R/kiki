@@ -31,6 +31,7 @@ export * from './fs';
 export * from './file';
 export * from './media-preview';
 export * from './modelCatalog';
+export * from './decision';
 export * from './recipe';
 export * from './thread';
 

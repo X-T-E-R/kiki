@@ -13,6 +13,9 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { z } from 'zod';
+import { decisionConnectionProbeInputSchema, decisionConnectionProbeResultSchema, moveReviewerKeyInputSchema, moveReviewerKeyResultSchema, memoryAdvisorConfigSchema } from '@kiki/protocol';
+import { IMemorySelector } from '@kiki/agent-core-v2/app/memory/memorySelector';
+import { moveReviewerKeyToConnection } from '@kiki/agent-core-v2/app/kosongConfig/reviewerConnection';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
@@ -138,6 +141,39 @@ async function loadOAuth(core: Scope): Promise<IOAuthService> {
 }
 
 export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Scope): void {
+  const decisionProbeRoute = defineRoute({ method: 'POST', path: '/decision/probe', body: decisionConnectionProbeInputSchema,
+    success: { data: decisionConnectionProbeResultSchema }, tags: ['models'], operationId: 'probeDecisionConnection' }, async (req, reply) => {
+    await loadCatalog(core);
+    const controller = new AbortController();
+    const raw = (reply as unknown as { raw?: import('node:http').ServerResponse }).raw;
+    const onClose = () => { if (raw?.writableFinished !== true) controller.abort('aborted'); };
+    raw?.once('close', onClose);
+    const subscription = core.accessor.get(IConfigService).onDidChangeConfiguration((event) => {
+      if (['models', 'providers'].includes(event.domain)) controller.abort('aborted');
+    });
+    try {
+      const result = await core.accessor.get(IMemorySelector).probe(memoryAdvisorConfigSchema.parse({ mode: 'rank', source: req.body.source }), req.body.confirm_destination, controller.signal);
+      const status = result.status.source_status ?? { state: 'unconfigured' as const };
+      const reason = result.status.reason;
+      reply.send(okEnvelope({ ok: result.ok, status, duration_ms: result.duration_ms,
+        reason: reason === 'capability_mismatch' || reason === 'not_permitted' || reason === 'unsupported_store' || reason === 'input_budget' ? 'protocol' : reason }, req.id));
+    } finally {
+      subscription.dispose();
+      raw?.removeListener('close', onClose);
+    }
+  });
+  app.post(decisionProbeRoute.path, decisionProbeRoute.options, decisionProbeRoute.handler as Parameters<ModelCatalogRouteHost['post']>[2]);
+  const moveReviewerRoute = defineRoute({ method: 'POST', path: '/decision/move-reviewer-key', body: moveReviewerKeyInputSchema,
+    success: { data: moveReviewerKeyResultSchema }, errors: { [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.PROVIDER_ALREADY_EXISTS]: {} }, tags: ['models'], operationId: 'moveReviewerKey' }, async (req, reply) => {
+    await enqueueWrite(async () => {
+      try {
+        const mutation = await loadMutation(core);
+        const result = await moveReviewerKeyToConnection(core.accessor.get(IConfigService), mutation, req.body.connection);
+        reply.send(okEnvelope(result, req.id));
+      } catch (error) { if (!sendMappedError(reply, req.id, error)) throw error; }
+    });
+  });
+  app.post(moveReviewerRoute.path, moveReviewerRoute.options, moveReviewerRoute.handler as Parameters<ModelCatalogRouteHost['post']>[2]);
   const discoveredModelsRoute = defineRoute(
     {
       method: 'GET',

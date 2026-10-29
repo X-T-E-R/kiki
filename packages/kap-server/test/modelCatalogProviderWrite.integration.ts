@@ -296,6 +296,8 @@ describe('server-v2 /api provider write endpoints', () => {
       {
         id: 'my-openai',
         type: 'openai',
+        service: 'chat',
+        effective_base_url: 'https://api.openai.example/v1',
         base_url: 'https://api.openai.example/v1',
         default_model: 'my-openai/gpt-4.1',
         has_api_key: true,
@@ -909,6 +911,8 @@ describe('server-v2 /api provider write endpoints', () => {
     expect(body.data.provider).toEqual({
       id: 'openai',
       type: 'openai',
+      service: 'chat',
+      effective_base_url: 'https://api.openai.example/v2',
       base_url: 'https://api.openai.example/v2',
       default_model: 'gpt4o',
       has_api_key: true,

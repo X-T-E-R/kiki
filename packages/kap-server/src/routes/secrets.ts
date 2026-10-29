@@ -1,6 +1,6 @@
 import { IBrowserConnectionStore, IConfigService, IMcpRegistryService, INbSearchService, type Scope } from '@kiki/agent-core-v2';
 import { ENV_MODEL_PROVIDER_KEY, type ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
-import { explainProviderEndpoint } from '@kiki/agent-core-v2/kosong/provider/providerDefinition';
+import { resolveProviderApiKey } from '@kiki/agent-core-v2/kosong/provider/providerDefinition';
 import { revealSecretRequestSchema, revealedSecretSchema, type RevealedSecret, type SecretRef } from '@kiki/protocol';
 
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -77,12 +77,9 @@ async function revealProviderKey(core: Scope, providerId: string): Promise<Revea
   if (providerId === ENV_MODEL_PROVIDER_KEY) {
     return withValue({ source: 'environment', env_name: 'KIKI_MODEL_API_KEY' }, provider.apiKey);
   }
-  if (nonEmpty(provider.apiKey) !== undefined) return withValue({ source: 'kiki' }, provider.apiKey);
-  if (provider.type === undefined) return { source: 'none' };
-  const bag = explainProviderEndpoint(provider.type, provider.env ?? {});
-  if (bag.apiKeyEnvName !== undefined) return withValue({ source: 'environment', env_name: bag.apiKeyEnvName }, bag.apiKey);
-  const shell = explainProviderEndpoint(provider.type);
-  return shell.apiKeyEnvName === undefined ? { source: 'none' } : withValue({ source: 'environment', env_name: shell.apiKeyEnvName }, shell.apiKey);
+  const resolved = resolveProviderApiKey(provider);
+  if (resolved.envName !== undefined) return withValue({ source: 'environment', env_name: resolved.envName }, resolved.apiKey);
+  return withValue({ source: 'kiki' }, resolved.apiKey);
 }
 
 async function revealReviewerKey(core: Scope): Promise<RevealedSecret> {

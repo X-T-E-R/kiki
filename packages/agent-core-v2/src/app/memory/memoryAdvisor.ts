@@ -150,7 +150,7 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
     this.backoffUntil = 0;
     this.currentStatus = advisorStatus('unconfigured');
   }
-  private permitted(model: string): boolean {
+  private permitted(model: string, protocol: string): boolean {
     const data = this.profile.data();
     if (
       data.driver === 'external' ||
@@ -160,11 +160,7 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
     const constraints = [data.boundProfile, data.appliedLease, data.spawnPolicy];
     if (!constraints.every((constraint) => roleModelAllowed(model, constraint, this.models)))
       return false;
-    if (
-      this.memoryConfig.get<MemoryConfig>(MEMORY_SECTION).advisor?.selector?.protocol !==
-      'chat_json'
-    )
-      return true;
+    if (protocol !== 'chat_json') return true;
     try {
       const thinking = selectorThinkingEffort(this.catalog.get(model));
       for (const constraint of constraints)
@@ -195,7 +191,7 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
       this.currentStatus = advisorStatus('off');
       return;
     }
-    if (config?.selector === undefined) {
+    if (config === undefined || (config.source === undefined && config.selector === undefined)) {
       this.cancel();
       this.currentStatus = advisorStatus('unconfigured', { reason: 'unconfigured' });
       return;
@@ -219,7 +215,7 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
         workspaceId: this.session.workspaceId,
         agentId: this.agent.agentId,
       }).admitted ||
-      !this.permitted(config.selector.model)
+      !this.permitted(config.source?.kind === 'connection' ? `connection:${config.source.connection}/${described.model ?? ''}` : config.source?.model ?? config.selector!.model, described.protocol ?? config.selector?.protocol ?? 'chat_json')
     ) {
       this.cancel();
       this.currentStatus = { ...described, state: 'failed', reason: 'not_permitted' };
@@ -292,7 +288,7 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
             model.name,
             usage,
             { type: 'operation', requestKind: 'memory_advice' },
-            { provider: model.providerName, modelAlias: config.selector!.model, usageKnown },
+            { provider: model.providerName, modelAlias: model.id, usageKnown },
           ),
       });
       this.pending = abortable(operation, controller.signal)
@@ -353,7 +349,7 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
     const configured = this.memoryConfig.get<MemoryConfig>(MEMORY_SECTION);
     if (!memoryEnabled(configured, this.session.workspaceId)) return advisorStatus('disabled');
     if (configured.advisor?.mode === 'off') return advisorStatus('off');
-    if (configured.advisor?.selector === undefined)
+    if (configured.advisor === undefined || (configured.advisor.source === undefined && configured.advisor.selector === undefined))
       return advisorStatus('unconfigured', { reason: 'unconfigured' });
     if (this.completed === undefined)
       return this.currentStatus.state === 'unconfigured'

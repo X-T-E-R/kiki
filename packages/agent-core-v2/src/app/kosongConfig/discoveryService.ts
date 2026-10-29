@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { ProbeProviderRequest, ProbeProviderResponse } from '@kiki/protocol';
+import { decisionProtocolForProviderType, type ProbeProviderRequest, type ProbeProviderResponse } from '@kiki/protocol';
 import {
   probeProviderModels,
   refreshProviderModels,
@@ -99,6 +99,7 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
   }
 
   async probeProviderModels(draft: ProbeProviderRequest): Promise<ProbeProviderResponse> {
+    if (decisionProtocolForProviderType(draft.type) !== undefined) throw new Error2('config.invalid', 'Decision connections use the synthetic decision probe, not chat model discovery');
     await this.config.reload();
     return probeProviderModels({ type: draft.type, baseUrl: draft.base_url, apiKey: draft.api_key });
   }
@@ -228,6 +229,7 @@ export class ProviderDiscoveryService implements IProviderDiscoveryService {
   }
 
   private effectiveModelSource(provider: ProviderConfig): ModelSource | undefined {
+    if (decisionProtocolForProviderType(provider.type) !== undefined) return 'static';
     return (
       provider.modelSource ??
       (provider.type === undefined ? undefined : getProviderDefinition(provider.type)?.modelSource)

@@ -105,8 +105,10 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
   }));
   const settingsResponse = async (workspaceId?: string) => {
     const value = settings();
-    let status = value.advisor?.selector === undefined ? advisorStatus(value.advisor?.mode === 'off' ? 'off' : 'unconfigured', { reason: value.advisor?.mode === 'off' ? undefined : 'unconfigured' }) : core.accessor.get(IMemorySelector).describe(value.advisor, workspaceId);
-    if (memoryEnabled(value, workspaceId) && value.advisor?.selector !== undefined && value.advisor.mode !== 'off') {
+    let status = value.advisor === undefined || (value.advisor.source === undefined && value.advisor.selector === undefined)
+      ? advisorStatus(value.advisor?.mode === 'off' ? 'off' : 'unconfigured', { reason: value.advisor?.mode === 'off' ? undefined : 'unconfigured' })
+      : core.accessor.get(IMemorySelector).describe(value.advisor, workspaceId);
+    if (memoryEnabled(value, workspaceId) && value.advisor !== undefined && (value.advisor.source !== undefined || value.advisor.selector !== undefined) && value.advisor.mode !== 'off') {
       const memory = store();
       await memory.prepare?.();
       if (memory.snapshot === undefined) status = { ...status, state: 'unsupported_store', reason: 'unsupported_store' };
@@ -122,7 +124,9 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     await handle(req.id, reply, async () => {
       const patch = req.body;
       const current = settings();
-      const advisor = patch.advisor === null ? undefined : patch.advisor === undefined ? current.advisor : { ...current.advisor, ...patch.advisor, selector: patch.advisor.selector === null ? undefined : patch.advisor.selector ?? current.advisor?.selector };
+      const advisor = patch.advisor === null ? undefined : patch.advisor === undefined ? current.advisor : { ...current.advisor, ...patch.advisor,
+        source: patch.advisor.source === null ? undefined : patch.advisor.source ?? current.advisor?.source,
+        selector: patch.advisor.source === null || patch.advisor.selector === null ? undefined : patch.advisor.selector ?? current.advisor?.selector };
       const next = MemoryConfigSchema.parse({ ...current, ...patch, advisor });
       await config.replace(MEMORY_SECTION, next);
       return settingsResponse(req.query.workspace_id);

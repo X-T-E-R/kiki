@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { bindingOriginSchema, generationParametersSchema, modelBehaviorWireSchema, modelBehaviorToWire, modelProtocolSourceSchema } from '@kiki/protocol';
+import { bindingOriginSchema, generationParametersSchema, modelBehaviorWireSchema, modelBehaviorToWire, modelProtocolSourceSchema, decisionProtocolSchema, decisionProtocolForProviderType, type DecisionSourceStatus } from '@kiki/protocol';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ModelCapability } from '#/kosong/contract/capability';
@@ -84,6 +84,8 @@ export interface Model {
   readonly imagePolicy: ResolvedImagePolicy;
 
   readonly authProvider: AuthProvider;
+  readonly credentialSource?: DecisionSourceStatus['credential_source'];
+  readonly credentialEnv?: string;
   readonly providerOptions?: ProtocolProviderOptions;
 }
 
@@ -140,6 +142,10 @@ export type ProviderCatalogStatus = z.infer<typeof providerCatalogStatusSchema>;
 export const providerCatalogItemSchema = z.object({
   id: z.string().min(1),
   type: z.string().min(1),
+  service: z.enum(['chat', 'decision']).optional(),
+  decision_protocol: decisionProtocolSchema.optional(),
+  decision_endpoint: z.string().optional(),
+  effective_base_url: z.string().optional(),
   base_url: z.string().min(1).optional(),
   default_model: z.string().min(1).optional(),
   defaults: generationParametersSchema.optional(),
@@ -294,6 +300,10 @@ export function toProtocolProvider(
   return {
     id: providerId,
     type: provider.type ?? 'openai',
+    service: decisionProtocolForProviderType(provider.type) === undefined ? 'chat' : 'decision',
+    decision_protocol: decisionProtocolForProviderType(provider.type),
+    decision_endpoint: provider.decisionEndpoint,
+    effective_base_url: explainModelEndpointOrigin({}, provider).baseUrl,
     base_url: provider.baseUrl,
     default_model: defaultModel,
     defaults: parametersToWire(provider.defaults),
@@ -339,12 +349,25 @@ export function globalDefaultForProvider(
   return record?.provider === providerId ? globalDefaultModel : undefined;
 }
 
+export interface ConnectionEndpoint {
+  readonly providerName: string;
+  readonly baseUrl?: string;
+  readonly defaultModel?: string;
+  readonly decisionEndpoint?: string;
+  readonly protocol?: z.infer<typeof decisionProtocolSchema>;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly authProvider: AuthProvider;
+  readonly credentialSource: DecisionSourceStatus['credential_source'];
+  readonly credentialEnv?: string;
+}
+
 export interface IModelCatalog {
   readonly _serviceBrand: undefined;
 
   get(id: string, recipeSettings?: Record<string, unknown>): Model;
   getRequester(id: string, recipeSettings?: Record<string, unknown>): ModelRequester;
   getConnectionRequester(providerId: string, modelName: string, maxContextSize: number): ModelRequester;
+  getConnectionEndpoint(providerId: string): ConnectionEndpoint;
   inspect(id: string): ModelInspection;
   ping(id: string): Promise<ModelPingResult>;
   findByName(name: string): readonly string[];

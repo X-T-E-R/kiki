@@ -50,7 +50,7 @@ export async function runMemoryAdvice(input: {
   readonly attribution: RequestAttribution;
   readonly stats: MemorySelectorStats;
   readonly status: MemoryAdvisorStatus;
-  readonly record: (model: Model, usage: TokenUsage, known: boolean) => void;
+  readonly record: (model: Pick<Model, 'id' | 'name' | 'providerName'>, usage: TokenUsage, known: boolean) => void;
 }): Promise<MemoryAdvice> {
   const { config, view, query, signal, stats } = input;
   const entries = view.entries.filter(
@@ -79,7 +79,7 @@ export async function runMemoryAdvice(input: {
       query,
       maximum,
       config.judge_input_tokens,
-      (items) => selectorInputTokens(config, stage, query, items) + 128,
+      (items) => selectorInputTokens(config, stage, query, items, input.status) + 128,
     );
   const pages = batchesFor('discover', directory, config.catalog_page_items);
   const examined = pages.batches.slice(0, config.max_catalog_pages);

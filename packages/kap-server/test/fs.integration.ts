@@ -49,6 +49,7 @@ describe('server-v2 /api fs routes', () => {
         throw new Error('modelCatalog.getRequester not exercised in this test');
       },
       getConnectionRequester: () => { throw new Error('not exercised'); },
+      getConnectionEndpoint: () => { throw new Error('not exercised'); },
       inspect: () => {
         throw new Error('modelCatalog.inspect not exercised in this test');
       },

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { decisionSourceSchema, decisionSourceStatusSchema } from '../decision';
 
 export const memoryAdvisorSelectorSchema = z
   .object({
@@ -11,6 +12,7 @@ export const memoryAdvisorConfigSchema = z
   .object({
     mode: z.enum(['off', 'rank', 'select']).default('rank'),
     selector: memoryAdvisorSelectorSchema.optional(),
+    source: decisionSourceSchema.optional(),
     first_step_wait_ms: z.number().int().min(0).max(5_000).default(1_500),
     timeout_ms: z.number().int().min(100).max(60_000).default(6_000),
     max_calls_per_turn: z.number().int().min(1).max(10).default(3),
@@ -29,6 +31,7 @@ export const memoryAdvisorPatchSchema = z
   .object({
     mode: memoryAdvisorConfigSchema.shape.mode.unwrap().optional(),
     selector: memoryAdvisorSelectorSchema.nullable().optional(),
+    source: decisionSourceSchema.nullable().optional(),
     first_step_wait_ms: memoryAdvisorConfigSchema.shape.first_step_wait_ms.unwrap().optional(),
     timeout_ms: memoryAdvisorConfigSchema.shape.timeout_ms.unwrap().optional(),
     max_calls_per_turn: memoryAdvisorConfigSchema.shape.max_calls_per_turn.unwrap().optional(),
@@ -78,6 +81,7 @@ export const memoryAdvisorStatusSchema = z.object({
     'limited',
   ]),
   reason: memoryAdvisorFailureSchema.optional(),
+  source_status: decisionSourceStatusSchema.optional(),
   destination: z.string().optional(),
   provider: z.string().optional(),
   origin: z.string().optional(),

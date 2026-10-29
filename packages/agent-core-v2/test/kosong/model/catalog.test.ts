@@ -120,6 +120,20 @@ afterEach(() => {
 });
 
 describe('Model assembly (pure data)', () => {
+  it('resolves decision connections without chat records and blocks even hand-written chat aliases', async () => {
+    vi.stubEnv('TYPESAFE_API_KEY', 'synthetic-env-key');
+    const { host, catalog, providers } = createHost({ providers: { judgment: { type: 'system_one', defaultModel: 'arbitrary-remote-name' } },
+      models: { fake: { provider: 'judgment', model: 'fake-chat', maxContextSize: 4096, protocol: 'openai' } } });
+    try {
+      expect(catalog.getConnectionEndpoint('judgment')).toMatchObject({ providerName: 'judgment', protocol: 'system_one', baseUrl: 'https://api.typesafe.ai/v1', defaultModel: 'arbitrary-remote-name', credentialSource: 'env', credentialEnv: 'TYPESAFE_API_KEY' });
+      expect(await catalog.getConnectionEndpoint('judgment').authProvider.getAuth()).toMatchObject({ apiKey: 'synthetic-env-key' });
+      expect(await catalog.listModels()).toEqual([]);
+      expect(() => catalog.get('fake')).toThrow('cannot be used for chat');
+      expect(() => catalog.getConnectionRequester('judgment', 'fake-chat', 4096)).toThrow('cannot be used for chat');
+      await providers.delete('judgment');
+      expect(() => catalog.getConnectionEndpoint('judgment')).toThrow('does not exist');
+    } finally { await host.dispose(); vi.unstubAllEnvs(); }
+  });
   it('routes sibling model protocol overrides through real SDK payloads, streams and errors without changing the provider', async () => {
     const provider = { type: 'openai', baseUrl: 'https://example.test/v1', apiKey: 'fixture-key', requestIdentity: { preset: 'none' as const } };
     const common = { provider: 'edge', model: 'gpt-5', maxContextSize: 8192, capabilities: ['thinking', 'tool_use'], supportEfforts: ['high'], adaptiveThinking: true };
@@ -1627,6 +1641,8 @@ describe('wire projection (pure)', () => {
     ).toEqual({
       id: 'p1',
       type: 'openai',
+      service: 'chat',
+      effective_base_url: 'https://x.test/v1',
       base_url: 'https://x.test/v1',
       default_model: 'a',
       has_api_key: true,
@@ -2055,6 +2071,8 @@ describe('ModelCatalog enumeration', () => {
         {
           id: 'kimi',
           type: 'kimi',
+          service: 'chat',
+          effective_base_url: 'https://api.example.test/v1',
           base_url: 'https://api.example.test/v1',
           default_model: 'k2',
           has_api_key: true,
@@ -2064,6 +2082,7 @@ describe('ModelCatalog enumeration', () => {
         {
           id: 'openai',
           type: 'openai',
+          service: 'chat',
           has_api_key: false,
           status: 'unconfigured',
           models: ['gpt4o'],

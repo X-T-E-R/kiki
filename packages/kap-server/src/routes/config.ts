@@ -8,13 +8,16 @@ import {
   IConfigService,
   IEventService,
   IModelService,
+  IModelCatalog,
+  Error2,
   type Scope,
 } from '@kiki/agent-core-v2';
 import { splitConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
 import { agentExecutorOverridesFromToml, agentExecutorOverridesToToml } from '@kiki/agent-core-v2/app/agentExecutor/executorOverrides';
 import { agentExecutorsToToml } from '@kiki/agent-core-v2/app/agentExecutor/configSection';
 import { MODEL_SWITCH_SECTION, modelSwitchPreferencesToToml } from '@kiki/agent-core-v2/app/modelSwitchPreferences/configSection';
-import { modelGenerationMigrationApplyRequestSchema, modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, modelGenerationMigrationRestoreRequestSchema, modelGenerationMigrationRestoreResponseSchema } from '@kiki/protocol';
+import { describeDecisionSource } from '@kiki/agent-core-v2/kosong/model/decision';
+import { decisionSourceSchema, modelGenerationMigrationApplyRequestSchema, modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, modelGenerationMigrationRestoreRequestSchema, modelGenerationMigrationRestoreResponseSchema } from '@kiki/protocol';
 import { REQUEST_COMPRESSION_SECTION, REQUEST_IDENTITY_SECTION, RESPONSES_WEB_SOCKET_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { IRequestIdentityCatalog } from '@kiki/agent-core-v2/app/requestIdentity/requestIdentityCatalog';
 import { providerCredentialFields } from '@kiki/agent-core-v2/kosong/model/catalog';
@@ -103,7 +106,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
     async (req, reply) => {
       const config = core.accessor.get(IConfigService);
       await config.ready;
-      reply.send(okEnvelope(toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core), capabilityWire(core)), req.id));
+      reply.send(okEnvelope(toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core), capabilityWire(core), core.accessor.get(IModelCatalog)), req.id));
     },
   );
   app.get(getRoute.path, getRoute.options, getRoute.handler as Parameters<ConfigRouteHost['get']>[2]);
@@ -165,7 +168,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
           camelPatch['defaultPermissionMode'] = 'yolo';
         }
         delete camelPatch['yolo'];
-        await clearReviewerApiKey(config, camelPatch);
+        await patchReviewer(config, camelPatch, core.accessor.get(IModelCatalog));
         if (isPlainObject(camelPatch['browserControl'])) {
           const patch = camelPatch['browserControl'] as Record<string, unknown>;
           if ('allowedBrowsers' in patch) {
@@ -276,7 +279,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
             ConfigTarget.User,
           );
         }
-        const response = toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core), capabilityWire(core));
+        const response = toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core), capabilityWire(core), core.accessor.get(IModelCatalog));
         const changedFields = Object.keys(req.body as Record<string, unknown>).filter(
           (field) => field !== 'replace_domains',
         );
@@ -311,7 +314,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
       const config = core.accessor.get(IConfigService);
       const domain = snakeToCamel(req.body.domain);
       await config.removeOverride(domain, req.body.key_path);
-      const response = toConfigResponse(config.getAll(), config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core), capabilityWire(core));
+      const response = toConfigResponse(config.getAll(), config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core), capabilityWire(core), core.accessor.get(IModelCatalog));
       core.accessor.get(IEventService).publish(new ConfigChanged({ payload: { changedFields: [req.body.domain], config: response } }));
       reply.send(okEnvelope(response, req.id));
     } catch (error) {
@@ -397,19 +400,23 @@ function sendMigrationFailure(req: { id: string }, reply: { send(payload: unknow
     conflict ? 'Config changed; preview again before continuing.' : 'Migration failed; inspect the configuration and backup before retrying.', req.id));
 }
 
-async function clearReviewerApiKey(config: IConfigService, patch: Record<string, unknown>): Promise<void> {
+async function patchReviewer(config: IConfigService, patch: Record<string, unknown>, catalog: IModelCatalog): Promise<void> {
   const permission = patch['permission'];
-  if (!isPlainObject(permission) || !isPlainObject(permission['reviewer']) || permission['reviewer']['apiKey'] !== null) return;
-  const { reviewer: rawReviewer, ...permissionPatch } = permission;
-  const { apiKey: _cleared, ...reviewerPatch } = rawReviewer as Record<string, unknown>;
+  if (!isPlainObject(permission) || !isPlainObject(permission['reviewer'])) return;
+  const { reviewer: reviewerPatch, ...permissionPatch } = permission;
   const current = config.inspect<Record<string, unknown>>('permission').userValue;
   const currentReviewer = isPlainObject(current) && isPlainObject(current['reviewer']) ? current['reviewer'] : {};
-  const { apiKey: _stored, ...keptReviewer } = currentReviewer;
-  await config.replace('permission', {
-    ...(isPlainObject(current) ? current : {}),
-    ...permissionPatch,
-    reviewer: { ...keptReviewer, ...reviewerPatch },
-  }, ConfigTarget.User);
+  const next = { ...currentReviewer, ...reviewerPatch };
+  if (reviewerPatch['apiKey'] === null) delete next['apiKey'];
+  if (reviewerPatch['source'] === null) {
+    delete next['source'];
+    delete next['model'];
+    next['backend'] = 'model';
+  }
+  const source = decisionSourceSchema.optional().parse(next['source']);
+  if (source?.kind === 'connection' && describeDecisionSource(catalog, source, true).state === 'capability_mismatch')
+    throw new Error2('config.invalid', 'Permission Reviewer requires System One or a chat model; pair_score is for memory ranking');
+  await config.replace('permission', { ...(isPlainObject(current) ? current : {}), ...permissionPatch, reviewer: next }, ConfigTarget.User);
   delete patch['permission'];
 }
 
@@ -465,7 +472,7 @@ async function applyOptionalCapabilityPatch(config: IConfigService, patch: Recor
   }
 }
 
-function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService, computerPreferenceSource: ConfigOrigin = 'default', projection?: { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin }, capabilities?: Record<string, unknown>): ConfigResponse {
+function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService, computerPreferenceSource: ConfigOrigin = 'default', projection?: { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin }, capabilities?: Record<string, unknown>, catalog?: IModelCatalog): ConfigResponse {
   const wire: Record<string, unknown> = {};
   if (config !== undefined) {
     wire['origins'] = Object.fromEntries(Object.keys(resolved).filter((domain) => domain !== 'services' && domain !== 'telemetry')
@@ -496,6 +503,7 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
           ...publicValue,
           reviewer: {
             ...reviewerPublic,
+            source_status: catalog !== undefined && reviewerPublic['source'] !== undefined ? describeDecisionSource(catalog, decisionSourceSchema.parse(reviewerPublic['source']), true) : undefined,
             hasApiKey: saved || fromEnv,
             apiKeySource: saved ? 'kiki' : fromEnv ? 'environment' : 'none',
             ...(fromEnv ? { apiKeyEnv: REVIEWER_API_KEY_ENV } : {}),

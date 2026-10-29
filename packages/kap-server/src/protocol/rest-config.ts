@@ -9,7 +9,7 @@ import { ImageConfigSchema } from '@kiki/agent-core-v2/agent/media/configSection
 import { AgentTaskConfigSchema } from '@kiki/agent-core-v2/agent/task/configSection';
 import { PlanConfigSchema } from '@kiki/agent-core-v2/features/plan/configSection';
 import { HooksConfigSchema } from '@kiki/agent-core-v2/features/externalHooks/configSection';
-import { DangerousBashGuardSchema, PermissionRuleSchema } from '@kiki/agent-core-v2/agent/permissionRules/configSection';
+import { permissionConfigResponseSchema, permissionConfigPatchSchema } from '@kiki/protocol';
 import {
   TokenCountingConfigSchema,
   type TokenCountingConfig,
@@ -160,37 +160,7 @@ export const agentsConfigResponseSchema = z.object({
   delegation: agentsDelegationConfigSchema.optional(),
 });
 
-export const permissionReviewerResponseSchema = z.object({
-  backend: z.enum(['model', 'jev']),
-  model: z.string().optional(),
-  timeoutMs: z.number().int().optional(),
-  allowThreshold: z.number(),
-  denyThreshold: z.number(),
-  categories: z.array(z.string()),
-  hasApiKey: z.boolean(),
-  apiKeySource: z.enum(['kiki', 'environment', 'none']).optional(),
-  apiKeyEnv: z.string().optional(),
-});
-
-export const permissionConfigResponseSchema = z.object({
-  rules: z.array(PermissionRuleSchema).optional(),
-  dangerousBash: DangerousBashGuardSchema.optional(),
-  reviewer: permissionReviewerResponseSchema.optional(),
-}).passthrough();
-
-export const permissionConfigPatchSchema = z.object({
-  rules: z.array(PermissionRuleSchema).optional(),
-  dangerous_bash: DangerousBashGuardSchema.optional(),
-  reviewer: z.object({
-    backend: z.enum(['model', 'jev']).optional(),
-    model: z.string().min(1).optional(),
-    api_key: z.string().min(1).nullable().optional(),
-    timeout_ms: z.number().int().min(100).max(30_000).optional(),
-    allow_threshold: z.number().min(0.5).max(1).optional(),
-    deny_threshold: z.number().min(0.5).max(1).optional(),
-    categories: z.array(z.string()).min(1).optional(),
-  }).optional(),
-}).passthrough();
+export { permissionReviewerResponseSchema, permissionConfigResponseSchema, permissionConfigPatchSchema } from '@kiki/protocol';
 
 export const configResponseSchema = z.object({
   model_switch: modelSwitchConfigSchema.optional(),

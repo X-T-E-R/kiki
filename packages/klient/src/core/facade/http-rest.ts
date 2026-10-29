@@ -335,6 +335,10 @@ export type HttpRestConfigPatch = PatchConfigRequest & {
  * arbitrary URL or untyped request escape hatch.
  */
 export interface HttpRestFacade {
+  readonly decision: {
+    probe(input: import('@kiki/protocol').DecisionConnectionProbeInput, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').DecisionConnectionProbeResult>;
+    moveReviewerKey(input: import('@kiki/protocol').MoveReviewerKeyInput): Promise<import('@kiki/protocol').MoveReviewerKeyResult>;
+  };
   readonly memory: {
     settings(query?: { workspace_id?: string }): Promise<import('@kiki/protocol').MemorySettingsResponse>;
     updateSettings(patch: import('@kiki/protocol').MemorySettingsPatch, query?: { workspace_id?: string }): Promise<import('@kiki/protocol').MemorySettingsResponse>;
