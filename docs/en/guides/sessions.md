@@ -32,6 +32,8 @@ Do not manually edit files inside the `sessions/` directory — doing so may pre
 
 In the desktop and browser GUI, the model, effort, workspace, working directory and profile (the agent's configuration file) you pick for a new session can be remembered across navigation and refresh. Turn that on with **Composer → Persist composer drafts** in Settings; turning it off clears what was saved. Drafts in the page you currently have open survive the switch, but the next refresh starts with nothing restored. This is separate from the session files above, which is why the two behave differently.
 
+Before you choose an effort manually, changing the model or profile uses the profile's effort default for the selected model, including matching [`model_profiles` entries](../customization/agent-profiles.md), then the model's own default. A new persona draft uses the persona's own effort pin first. A manual effort choice stays with the draft through model, profile and persona changes and is remembered on refresh.
+
 An existing conversation reopens on its committed model and effort. Old composer display values do not undo a later model switch. A confirmed model choice and its direct, compact or fresh mode stay in the draft through binding refreshes and are applied by the next submitted message; they do not switch the conversation before that message is accepted. A completed model switch remains completed after recovery and needs no retry.
 
 ## Task board

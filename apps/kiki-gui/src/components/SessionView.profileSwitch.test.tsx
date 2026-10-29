@@ -20,7 +20,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Session } from '@kiki/protocol';
+import type { NamedAgentProfile, Session } from '@kiki/protocol';
 import { clearComposerState, clearStoredDrafts, resetComposerMemoryForTests, resetDraftMemoryForTests } from '@kiki/session-core/composer';
 import { settingsSnapshot } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
@@ -579,7 +579,7 @@ function catalogModel(id: string, displayName: string) {
     support_efforts: ['low', 'medium', 'high'], default_effort: 'medium' };
 }
 
-function workspaceProfile(name: string, extras: { readonly pinned_model_alias?: string } = {}) {
+function workspaceProfile(name: string, extras: Pick<NamedAgentProfile, 'pinned_model_alias' | 'thinking_effort' | 'model_profiles'> = {}) {
   return {
     name,
     source: 'workspace' as const,
@@ -787,6 +787,42 @@ describe('same-executor model selection across a profile switch', () => {
     await click(dialogButton(container, 'Switch engine'));
     await settle();
   }
+
+  it.each([false, true])('follows model-profile effort defaults while retaining manual effort across profile selection and restore (manual=%s)', async (manual) => {
+    listModels.mockResolvedValue({ items: [liveModel, 'fixture/pinned-model'].map((id) => ({
+      ...catalogModel(id, id === liveModel ? 'Live' : 'Pinned'),
+      support_efforts: ['low', 'medium', 'high'], default_effort: 'medium',
+    })) });
+    listNamedAgentProfiles.mockResolvedValue({ items: [workspaceProfile('agent'), workspaceProfile('pinned', {
+      pinned_model_alias: 'fixture/pinned-model', thinking_effort: 'high',
+      model_profiles: [{ alias: liveModel, thinking_effort: 'low' }],
+    })] });
+    let { container } = await mount();
+    if (manual) {
+      await click(await waitForElement(container, '#composer-execution-select'));
+      await click(await waitForElement(container, '[data-execution-effort="medium"]'));
+      await click(await waitForElement(container, '#composer-execution-select'));
+    }
+    await chooseProfile(container, 'pinned');
+    expect(container.querySelector('#composer-execution-select')?.textContent).toContain(manual ? 'medium' : 'high');
+    await chooseLiveModel(container);
+    expect(container.querySelector('#composer-execution-select')?.textContent).toContain(manual ? 'medium' : 'low');
+    for (const root of roots.splice(0)) await act(async () => { root.unmount(); });
+    ({ container } = await mount());
+    expect(container.querySelector('#composer-execution-select')?.textContent).toContain(manual ? 'medium' : 'low');
+    for (const root of roots.splice(0)) await act(async () => { root.unmount(); });
+    resetComposerMemoryForTests();
+    ({ container } = await mount());
+    await chooseProfile(container, 'pinned');
+    expect(container.querySelector('#composer-execution-select')?.textContent).toContain(manual ? 'medium' : 'high');
+    await chooseLiveModel(container);
+    expect(container.querySelector('#composer-execution-select')?.textContent).toContain(manual ? 'medium' : 'low');
+    await sendNextMessage(container);
+    const submission = submissionOf(sendPrompt.mock.calls[0]?.[0]);
+    expect(submission.model).toBe(liveModel);
+    expect(submission.thinking).toBe(manual ? 'medium' : undefined);
+    expect(submission.execution).toMatchObject({ executor: 'native', profile: 'pinned' });
+  });
 
   it('sends the model the user selected on this executor when the next profile has no pin', async () => {
     const { container } = await mount();

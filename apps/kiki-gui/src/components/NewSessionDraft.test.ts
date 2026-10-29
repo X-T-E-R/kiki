@@ -1972,19 +1972,77 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(state.modelOverride).toBe('fixture/persona-model');
   });
 
-  it('applies a newly selected persona default after an earlier explicit model and effort choice', async () => {
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), profile('assistant-profile', 'fixture/default-model', 'high')] });
-    client.listModels.mockResolvedValue({ items: [model('fixture/default-model', 'high'), model('fixture/selected-model', 'low')] });
-    client.getPersona.mockResolvedValue({ definition: { id: 'assistant-persona', name: 'Assistant', profile: 'assistant-profile' }, systemPrompt: 'Help the user.' });
+  it.each([false, true])('resolves per-model effort defaults and preserves manual effort across profile, persona and restore (manual=%s)', async (manual) => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), {
+      ...profile('assistant-profile', 'fixture/default-model', 'high'),
+      model_profiles: [{ alias: 'selected-model', thinking_effort: 'low' }],
+    }, { ...profile('next-profile', 'fixture/default-model', 'low'),
+      model_profiles: [{ alias: 'selected-model', thinking_effort: 'high' }],
+    }] });
+    client.listModels.mockResolvedValue({ items: ['fixture/default-model', 'fixture/selected-model'].map((id) => ({
+      ...model(id, 'high'), support_efforts: ['low', 'medium', 'high'],
+    })) });
+    client.getPersona.mockResolvedValue({ definition: { id: 'assistant-persona', name: 'Assistant', profile: 'assistant-profile' } });
     await renderDraft();
     let state = await settleDraft((value) => !value.agentProfileCatalogPending);
-    await act(async () => { state.setModelOverride('fixture/selected-model'); state.setEffortOverride('low'); });
+    await act(async () => { state.setAgentProfile('assistant-profile'); });
+    state = latestDraftState!;
+    await act(async () => { if (manual) state.setEffortOverride('medium'); state.setModelOverride('fixture/selected-model'); });
+    state = await settleDraft((value) => value.modelOverride === 'fixture/selected-model');
+    expect(state.effectiveEffort).toBe(manual ? 'medium' : 'low');
+    await act(async () => { state.setAgentProfile('next-profile'); });
+    state = latestDraftState!;
+    await act(async () => { state.setModelOverride('fixture/selected-model'); });
+    state = latestDraftState!;
+    expect(state.effectiveEffort).toBe(manual ? 'medium' : 'high');
+    await unmountDraft();
+    await renderDraft();
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(state.effectiveEffort).toBe(manual ? 'medium' : 'high');
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    await renderDraft({ initialProfile: 'assistant-profile', prefillNavigationKey: 'new-profile-entry' });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(state.effectiveEffort).toBe(manual ? 'medium' : 'high');
+    await act(async () => { state.selectPersona('assistant-persona'); });
+    state = await settleDraft((value) => !value.personaPending && value.persona !== undefined);
+    await act(async () => { state.setModelOverride('fixture/selected-model'); });
+    state = latestDraftState!;
+    expect(state.effectiveEffort).toBe(manual ? 'medium' : 'low');
+    const body = await sentBody(state);
+    expect(body.agent_config?.model).toBe('fixture/selected-model');
+    expect(body.agent_config?.thinking).toBe(manual ? 'medium' : undefined);
+  });
+
+  it.each([false, true])('applies persona effort pins below manual effort and above model-profile defaults after restore (manual=%s)', async (manual) => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), {
+      ...profile('assistant-profile', 'fixture/default-model', 'low'),
+      model_profiles: [{ alias: 'fixture/selected-model', thinking_effort: 'low' }],
+    }] });
+    client.listModels.mockResolvedValue({ items: ['fixture/default-model', 'fixture/selected-model'].map((id) => ({
+      ...model(id, 'medium'), support_efforts: ['low', 'medium', 'high'],
+    })) });
+    client.getPersona.mockResolvedValue({ definition: {
+      id: 'assistant-persona', name: 'Assistant', profile: 'assistant-profile', thinkingEffort: 'high',
+    } });
+    await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => { if (manual) state.setEffortOverride('medium'); state.setModelOverride('fixture/selected-model'); });
     state = latestDraftState!;
     await act(async () => { state.selectPersona('assistant-persona'); });
     state = await settleDraft((value) => !value.personaPending && value.persona !== undefined);
     expect(state.modelOverride).toBe('fixture/default-model');
-    expect(state.effectiveEffort).toBe('high');
-    expect((await sentBody(state)).agent_config?.model).toBeUndefined();
+    expect(state.effectiveEffort).toBe(manual ? 'medium' : 'high');
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    await renderDraft({ initialPersona: 'assistant-persona' });
+    state = await settleDraft((value) => !value.personaPending && value.persona !== undefined && !value.agentProfileCatalogPending);
+    await act(async () => { state.setModelOverride('fixture/selected-model'); });
+    state = latestDraftState!;
+    expect(state.effectiveEffort).toBe(manual ? 'medium' : 'high');
+    const body = await sentBody(state);
+    expect(body.agent_config?.model).toBe('fixture/selected-model');
+    expect(body.agent_config?.thinking).toBe(manual ? 'medium' : undefined);
   });
 
   it('keeps a real GUI model picker choice after selecting a profile with a model menu', async () => {
@@ -2145,7 +2203,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = latestDraftState!;
     expect(state.agentProfile).toBe('no-pin-profile');
     expect(state.modelOverride).toBe('fixture/pinned-model');
-    expect(state.effectiveEffort).toBe('high');
+    expect(state.effectiveEffort).toBe('low');
     await act(async () => {
       await state.send('Keep the model the previous pin left selected', []);
     });
@@ -2153,7 +2211,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(kept.agent_config).toMatchObject({
       profile: 'no-pin-profile',
       model: 'fixture/pinned-model',
-      thinking: 'high',
+      thinking: 'low',
     });
 
     await act(async () => {

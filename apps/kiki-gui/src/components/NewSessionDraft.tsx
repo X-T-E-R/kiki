@@ -82,6 +82,7 @@ import { useConnection } from '../state/connection';
 import { sshApi } from '../lib/ssh';
 import { ApiError } from '../lib/client';
 import { useProfileFilePreview } from '../lib/profileFilePreview';
+import { profileThinkingDefault } from '../lib/profileThinking';
 
 const DRAFT_KEY = 'new';
 const remoteDraftStorageKey = (scopeId: string) => `kiki.draft.new.${scopeId}`;
@@ -549,7 +550,7 @@ export function useNewSessionDraft({
   const profileCatalogTransitionRef = useRef(false);
   const hasNewProfilePrefill = applyPrefill && initialProfile !== undefined;
   const modelOverrideFromProfile = useRef(hasNewProfilePrefill || (initialRestoredDraft.modelFromProfile ?? initialRestoredDraft.profile === undefined));
-  const effortOverrideFromProfile = useRef(hasNewProfilePrefill || (initialRestoredDraft.effortFromProfile ?? initialRestoredDraft.profile === undefined));
+  const effortOverrideFromProfile = useRef(initialRestoredDraft.effortFromProfile ?? initialRestoredDraft.profile === undefined);
   const modelOverrideFromPersona = useRef(false);
   const effortOverrideFromPersona = useRef(false);
   // Which controls the *user* moved on this draft, as distinct from the values
@@ -659,11 +660,12 @@ export function useNewSessionDraft({
   const modelProjectionState = projectedProfileModelState(selectedProfile, modelsQuery.data?.items ?? [], effectiveModel, 'main');
   const catalogItem = effectiveModel === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], effectiveModel);
   const supportedEfforts = catalogItem?.support_efforts;
-  const effectiveEffort = effortOverride ?? resolveSelectedEffort(
-    supportedEfforts,
-    undefined,
-    catalogItem?.default_effort,
-  );
+  const profileEffort = selectedProfile !== undefined && profileExecutor(selectedProfile) === execution.executor
+    ? profileThinkingDefault(selectedProfile, effectiveModel, modelsQuery.data?.items ?? []) : undefined;
+  const inheritedEffort = persona?.definition.thinkingEffort ?? profileEffort
+    ?? (selectedProfile === undefined ? effortOverride : undefined)
+    ?? resolveSelectedEffort(supportedEfforts, undefined, catalogItem?.default_effort);
+  const effectiveEffort = effortTouched.current ? effortOverride ?? inheritedEffort : inheritedEffort;
 
   useEffect(() => {
     setDraft(readDraft(draftKey));
@@ -712,14 +714,9 @@ export function useNewSessionDraft({
     } else {
       modelOverrideFromProfile.current = false;
     }
-    if (isTargetExecutor && defaults.thinking !== undefined) {
+    if (!effortTouched.current) {
       effortOverrideFromProfile.current = true;
-      setEffortOverrideState(defaults.thinking);
-    } else if (!sameExecutor) {
-      effortOverrideFromProfile.current = false;
-      setEffortOverrideState(undefined);
-    } else {
-      effortOverrideFromProfile.current = false;
+      setEffortOverrideState(isTargetExecutor ? defaults.thinking : undefined);
     }
     setSelectionRevision((value) => value + 1);
   }, [execution.executor]);
@@ -758,9 +755,9 @@ export function useNewSessionDraft({
         cwd,
         profile: agentProfile,
         modelOverride: modelOverrideFromPersona.current ? undefined : modelOverride,
-        effortOverride: effortOverrideFromPersona.current ? undefined : effortOverride,
+        effortOverride: effortOverrideFromPersona.current ? undefined : effectiveEffort,
         modelFromProfile: modelOverrideFromProfile.current || modelOverrideFromPersona.current,
-        effortFromProfile: effortOverrideFromProfile.current || effortOverrideFromPersona.current,
+        effortFromProfile: !effortTouched.current,
         prefillSource,
         dismissedPersonaSource,
       });
@@ -772,13 +769,13 @@ export function useNewSessionDraft({
       cwd,
       profile: agentProfile,
       modelOverride: modelOverrideFromPersona.current ? undefined : modelOverride,
-      effortOverride: effortOverrideFromPersona.current ? undefined : effortOverride,
+      effortOverride: effortOverrideFromPersona.current ? undefined : effectiveEffort,
       modelFromProfile: modelOverrideFromProfile.current || modelOverrideFromPersona.current,
-      effortFromProfile: effortOverrideFromProfile.current || effortOverrideFromPersona.current,
+      effortFromProfile: !effortTouched.current,
       prefillSource,
       dismissedPersonaSource,
     });
-  }, [dailySettingsKey, draftScopeId, workspaceId, effectiveWorkspace?.id, cwd, agentProfile, execution, modelOverride, effortOverride, selectionRevision, prefillSource, dismissedPersonaSource]);
+  }, [dailySettingsKey, draftScopeId, workspaceId, effectiveWorkspace?.id, cwd, agentProfile, execution, modelOverride, effectiveEffort, selectionRevision, prefillSource, dismissedPersonaSource]);
 
   // A daily draft starts in the persona's own workspace when the persona names
   // one and the user has not already chosen for this draft. A directory the
@@ -827,7 +824,7 @@ export function useNewSessionDraft({
     || (nativeExecution && !(fromFile && execution.executor !== NATIVE_EXECUTOR) && (
       modelProjectionState === 'blocked'
       || (modelsQuery.isSuccess && effectiveModel !== undefined && catalogItem === undefined)
-      || (effortOverride !== undefined && catalogItem !== undefined && !supportedEfforts?.includes(effortOverride))
+      || (effectiveEffort !== undefined && catalogItem !== undefined && !supportedEfforts?.includes(effectiveEffort))
     ));
 
   const unresolvedPersona = selectedPersonaId !== undefined && persona?.definition.id !== selectedPersonaId;
@@ -1353,12 +1350,13 @@ export function useNewSessionDraft({
     if (next.profile === undefined) {
       if (next.executor !== execution.executor) {
         setModelOverrideState(undefined);
-        setEffortOverrideState(undefined);
+        if (next.profile_file === undefined || !effortTouched.current) setEffortOverrideState(undefined);
+        if (next.profile_file === undefined) effortTouched.current = false;
       }
       modelOverrideFromPersona.current = false;
       effortOverrideFromPersona.current = false;
       modelOverrideFromProfile.current = next.profile_file !== undefined;
-      effortOverrideFromProfile.current = next.profile_file !== undefined;
+      effortOverrideFromProfile.current = !effortTouched.current && next.profile_file !== undefined;
     } else if (profileChanged) {
       applyAgentProfile(agentProfilesQuery.data?.items ?? [], next.profile, next.executor);
     } else {
@@ -1405,7 +1403,7 @@ export function useNewSessionDraft({
       modelOverrideFromProfile.current = definition.modelAlias === undefined;
       setModelOverrideState(definition.modelAlias ?? defaults.model);
     }
-    if (choices === undefined || choices.effort === effortChoiceRevision.current) {
+    if (!effortTouched.current && (choices === undefined || choices.effort === effortChoiceRevision.current)) {
       effortOverrideFromPersona.current = definition.thinkingEffort !== undefined;
       effortOverrideFromProfile.current = definition.thinkingEffort === undefined;
       setEffortOverrideState(definition.thinkingEffort ?? defaults.thinking);

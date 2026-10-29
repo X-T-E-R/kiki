@@ -24,6 +24,8 @@ import { ContextBreakdownProvider } from './ContextMeter';
 import { useCompactionProgress } from './useCompactionProgress';
 import { useLastResponseAt } from './composerWorking';
 import { useRequestGovernance } from '../lib/useRequestGovernance';
+import { useProfileFilePreview } from '../lib/profileFilePreview';
+import { profileThinkingDefault } from '../lib/profileThinking';
 import { useContextMeterAutoCompact } from './useContextMeterAutoCompact';
 import {
   useConversationShell,
@@ -1201,8 +1203,7 @@ export function resolvePlanGate(
 /**
  * Send-time resolution for a confirmed profile switch. A switch rides the
  * next prompt as `profile`; model/thinking are withheld so the new profile's
- * own pins apply — unless the user explicitly re-picked them after
- * confirming, in which case those explicit choices win.
+ * own pins apply unless the corresponding control is explicitly selected.
  */
 export function sessionHasStartedConversation(blocks: readonly Block[]): boolean {
   return blocks.some((block) => block.kind === 'user');
@@ -1956,7 +1957,7 @@ export function SessionView({
   );
   // Mid-session main-profile switch: the pick waits as `pendingProfile` until
   // the next prompt carries it. Model and effort remember separately whether
-  // the user moved THAT control after confirming — one shared flag made an
+  // the user moved THAT control — one shared flag made an
   // effort pick promote the untouched model id along with it, and a model pick
   // promote the displayed effort (often `off`), which on the execution path is
   // a session override the engine would inherit (see resolveProfileSwitchSubmission).
@@ -2618,17 +2619,25 @@ export function SessionView({
   }, [composerSelection.modelOverride, composerSelection.effortOverride, composerSelection.modelChoice, composerSelection.effortChoice,
     modelOverride, effortOverride, modelChoice, effortChoice, sessionModel, state.thinkingEffort]);
   const effectiveModel = resolveEffectiveModel(composerSelection.modelOverride, sessionModel, inheritedDefault);
-  const catalogItem = harness === undefined
-    ? (modelsQuery.data?.items ?? []).find((item) => item.id === effectiveModel) : undefined;
+  const catalogItem = harness === undefined && effectiveModel !== undefined
+    ? resolveCatalogModel(modelsQuery.data?.items ?? [], effectiveModel) : undefined;
   const supportedEfforts = catalogItem?.support_efforts;
-  const effectiveEffort = composerSelection.effortOverride ?? (harness === undefined ? resolveSelectedEffort(
-    supportedEfforts,
-    effectiveModel === sessionModel ? state.thinkingEffort : undefined,
-    catalogItem?.default_effort,
-  ) : state.thinkingEffort);
   const selectedModelId = effectiveModel === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], effectiveModel)?.id ?? effectiveModel;
   const liveModel = sessionModel || inheritedDefault;
   const boundModelId = liveModel === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], liveModel)?.id ?? liveModel;
+  const fileProfilePreview = useProfileFilePreview(shownExecution.profile_file, agentProfileCatalogMode);
+  const selectedProfile = shownExecution.profile_file === undefined
+    ? agentProfilesQuery.data?.items.find((profile) => profile.name === shownExecution.profile)
+    : fileProfilePreview.data?.profile;
+  const profileEffort = selectedProfile !== undefined && profileExecutor(selectedProfile) === shownExecution.executor
+    ? profileThinkingDefault(selectedProfile, effectiveModel, modelsQuery.data?.items ?? []) : undefined;
+  const selectionChanging = executionPending || selectedModelId !== boundModelId;
+  const inheritedEffort = selectionChanging ? profileEffort : state.thinkingEffort;
+  const manualEffort = effortTouched && composerSelection.effortChoice === effortChoice
+    ? composerSelection.effortOverride : undefined;
+  const effectiveEffort = manualEffort ?? (initialBindingPending ? composerSelection.effortOverride : undefined)
+    ?? inheritedEffort ?? (harness === undefined
+      ? resolveSelectedEffort(supportedEfforts, undefined, catalogItem?.default_effort) : state.thinkingEffort);
   const modelControlPending = modelTouched && composerSelection.modelChoice === modelChoice && composerSelection.modelOverride !== undefined
     && (selectedModelId !== boundModelId || modelSwitchMode === 'fresh' || modelSwitchMode === 'compact');
   const effortControlPending = effortTouched && composerSelection.effortChoice === effortChoice && composerSelection.effortOverride !== undefined
@@ -2910,7 +2919,7 @@ export function SessionView({
       setModelChoice(undefined);
       setModelSwitchMode(undefined);
     }
-    if (defaults.thinking !== undefined || !effortTouched) {
+    if (!effortTouched) {
       setEffortOverride(defaults.thinking);
       setEffortTouched(false);
       setEffortChoice(undefined);
@@ -2941,8 +2950,8 @@ export function SessionView({
   // Engine pick. A live session that has already spoken asks once, because the
   // next message starts a fresh remote generation; an untouched session applies
   // immediately, as a profile pick does. Reverting to the live binding only
-  // drops the pending pick. A new profile brings that profile's own model and
-  // effort pins, but a user who re-picked them after confirming keeps theirs.
+  // drops the pending pick. A new profile brings its model pin and effort
+  // defaults; a manually selected effort keeps priority.
   const applyPendingExecution = useCallback((next: ExecutionChoice) => {
     const profile = next.profile;
     const selected = agentProfilesQuery.data?.items.find((item) => item.name === profile);
@@ -2959,7 +2968,7 @@ export function SessionView({
       setModelChoice(undefined);
       setModelSwitchMode(undefined);
     }
-    if (defaults.thinking !== undefined || !sameExecutor || !effortTouched) {
+    if (!effortTouched) {
       setEffortOverride(defaults.thinking);
       setEffortTouched(false);
       setEffortChoice(undefined);
