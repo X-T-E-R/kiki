@@ -78,7 +78,7 @@ For a home already using SQLite, the authenticated [Memory API](/en/server/rest-
 
 1. Export the current entry and edit the returned document. Keep its scope, ID, revision, origin and source coordinates intact; update the complete content, basis and check together when they change.
 2. Preview the document with its source-file locator and your reason. Compare the complete incoming and current entries. Only a preview with `canApply: true` can be confirmed; an unchanged document needs no write, and an already admitted source resolves to its current corrected entry.
-3. Confirm that preview with the returned token. It lasts ten minutes and expires on a server restart or authority change. If another edit or forget happened in the meantime, export the current state, reconcile your changes and preview again.
+3. Confirm that preview with the returned token. It lasts ten minutes and expires on a server restart or authority change. For a token failure, preview the same file again. After a revision conflict, re-export the entry if it still exists, reconcile your changes and preview again. If it was forgotten, stop importing this old source.
 
 A genuinely new document uses `id: new`, `revision: null` and `origin: null`. Renaming an old file or changing its ID does not restore a forgotten source. Import does not approve pending proposals, revive retired entries or move entries to another scope; use their review or restoration actions first. In read-only recovery mode you can export, but must [resume editing](#backend-migration-and-recovery) before previewing or applying an import.
 
