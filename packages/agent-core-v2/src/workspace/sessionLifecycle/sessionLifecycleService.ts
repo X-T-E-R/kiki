@@ -12,6 +12,7 @@ import { unwrapErrorCause } from '#/_base/errors/errors';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { AsyncEmitter, Emitter, type Event, type IWaitUntil } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
+import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
 import { drainLogCloses } from '#/_base/log/logService';
 import { DEFAULT_PLAN_MODE_SECTION } from '#/features/plan/configSection';
 import { IAgentPlanService } from '#/features/plan/plan';
@@ -339,7 +340,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
     await this.assertNewSession(sessionId);
     if (opts.ephemeral === true) this.ephemeralSessions.add(sessionId);
-    await this.workspaceSkillCatalog
+    void this.workspaceSkillCatalog
       .reloadSources(SESSION_CREATE_RELOAD_SKILL_SOURCES)
       .catch(() => undefined);
     let handle: ISessionScopeHandle;
@@ -359,7 +360,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           ? undefined
           : await handle.accessor.get(IAgentLifecycleService).create({
               agentId: MAIN_AGENT_ID,
-              binding: opts.mainAgentBinding,
+              binding: opts.mainAgentBinding === undefined ? undefined : { ...opts.mainAgentBinding, deferPromptContext: true },
             });
       if (main !== undefined || opts.delivery !== undefined) {
         const delivery = handle.accessor.get(ISessionDeliveryService);
@@ -598,19 +599,20 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (summary === undefined || summary.workspaceId !== this.workspaceId) return undefined;
     const workDir = summary.cwd ?? this.workspaceContext.cwd;
 
-    const handle = await this.materializeSession({
+    const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(this.log, { sessionId, workspaceId: this.workspaceId }, name, action);
+    const handle = await phase('session_materialize', () => this.materializeSession({
       sessionId,
       workDir,
       additionalDirs: opts?.additionalDirs,
       waitForSessionMs: opts?.waitForSessionMs,
       mcpServers: opts?.mcpServers,
-    });
+    }));
     try {
       const agents = handle.accessor.get(IAgentLifecycleService);
       if (agents.get(MAIN_AGENT_ID) === undefined) {
-        await agents.create({ agentId: MAIN_AGENT_ID });
+        await phase('main_agent_create', () => agents.create({ agentId: MAIN_AGENT_ID }));
       }
-      await this.announceCreated({ sessionId, handle, source: 'resume' });
+      await phase('session_announce', () => this.announceCreated({ sessionId, handle, source: 'resume' }));
     } catch (error) {
       this.sessions.delete(sessionId);
       await handle.dispose();

@@ -31,6 +31,8 @@ import { assertNativeToolOverride, effectiveToolBinding, mergeToolBindingOverrid
 import { Disposable } from '#/_base/di/lifecycle';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { ILogService } from '#/_base/log/log';
+import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
@@ -350,6 +352,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IAgentMemorySnapshot private readonly memorySnapshot: IAgentMemorySnapshot,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @ref(ISessionActivityView) private readonly sessionActivity: LiveRef<ISessionActivityView>,
+    @ref(ILogService) private readonly log: LiveRef<ILogService>,
     @IPersonaStore private readonly personas?: IPersonaStore,
     @IEventBus eventBus?: IEventBus,
     @IPluginUsageService private readonly pluginUsage?: IPluginUsageService,
@@ -719,7 +722,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
     await this.sessionToolPolicy.ready;
     const renderProfile = { ...profile, ...effectiveToolBinding(profile, toolOverride, profile as BoundProfile) };
-    const context = await this.buildSystemPromptContext(renderProfile, undefined, persona ?? null);
+    const context = input.deferPromptContext === true
+      ? stablePromptContext({
+          osKind: this.hostEnv.osKind,
+          shellName: this.hostEnv.shellName,
+          shellPath: this.hostEnv.shellPath,
+          timeZone: this.clock.timeZone(),
+          skillActive: this.isToolActiveForProfile(renderProfile, 'Skill'),
+          productName: (await this.identity.resolved()).displayName,
+          replyStyleGuide: this.bootstrap.args.replyStyleGuide,
+        })
+      : await this.buildSystemPromptContext(renderProfile, undefined, persona ?? null);
     this.assertRouteBindable(selection.route?.id);
     const requestedThinking = resolveMainThinkingCandidate({
       inputThinking: requestedInputThinking,
@@ -773,7 +786,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       models: this.models,
     });
 
-    await this.assertProfileToolPatterns(renderProfile, input.inheritedUserToolNames, input.unavailableTools);
+    if (input.deferPromptContext !== true) await this.assertProfileToolPatterns(renderProfile, input.inheritedUserToolNames, input.unavailableTools);
     const assembled = await this.assembleBoundSystemPrompt(renderProfile, context, alias, undefined, persona, input.roomPrompt ?? this.profileState.roomPrompt, recipe ?? null);
     const systemPrompt = assembled.text;
     this.cacheAgentsMdWarning(context);
@@ -827,7 +840,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       dispatchDecision: input.dispatchDecision,
       spawnPolicy,
       appliedLease: input.lease,
-      boundProfile: freezeBoundProfile(profile, assembled.promptBase),
+      boundProfile: { ...freezeBoundProfile(profile, assembled.promptBase), promptContextPending: input.deferPromptContext === true ? true : undefined },
     }));
     this.personaSnapshot = persona;
     this.memorySnapshot.configurePersona(this.profileState.memoryReadContext ?? memoryPersonaContext(persona));
@@ -2881,6 +2894,20 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private promptConfigurationSignature: string | undefined;
 
   async preparePromptConfiguration(): Promise<boolean> {
+    return timeRestorePhase(this.log.current, { sessionId: this.sessionContext.sessionId, agentId: this.agentScope.agentId }, 'profile_prepare', () => this.preparePromptConfigurationNow());
+  }
+
+  private async preparePromptConfigurationNow(): Promise<boolean> {
+    if (this.profileState.boundProfile?.promptContextPending === true) {
+      const profile = this.resolveActiveProfile();
+      if (profile === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved profile cannot be resolved for first-prompt preparation.');
+      await this.assertProfileToolPatterns(profile);
+      const context = await this.buildSystemPromptContext(profile, undefined, this.currentPersona ?? null);
+      const assembled = await this.assembleBoundSystemPrompt(profile, context, this.modelAlias ?? '', this.profileState.boundProfile.promptBase, this.currentPersona, this.profileState.roomPrompt);
+      await this.dispatcher.dispatch(new ConfigUpdate({ systemPrompt: assembled.text, environmentDisclosure: assembled.environment, promptBase: assembled.promptBase, agentsMdPaths: extractAgentsMdPathsFromSystemPrompt(assembled.text) }));
+      this.seedAgentsMdReminder(assembled.text, context);
+      return true;
+    }
     if (this.profileState.boundProfile !== undefined) {
       await this.restoreCommittedPromptProjections();
       return false;
@@ -3590,7 +3617,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       productName: (await this.identity.resolved()).displayName,
       replyStyleGuide: this.bootstrap.args.replyStyleGuide,
     };
-    const enabled = previous?.enabled === true || this.profileState.renderGeneration === 0 || this.promptLayoutMigrationPending || this.memorySnapshot.workingSet === true;
+    const enabled = previous?.enabled === true || this.profileState.renderGeneration === 0 || this.profileState.boundProfile?.promptContextPending === true || this.promptLayoutMigrationPending || this.memorySnapshot.workingSet === true;
     this.promptLayoutMigrationPending = false;
     const effective = enabled ? context : legacyEnvironmentContext(context, this.profileState.systemPrompt, previous?.context);
     const content = dynamicPromptContent(effective);

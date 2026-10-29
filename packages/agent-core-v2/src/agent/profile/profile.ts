@@ -270,6 +270,7 @@ export interface BindingConstraintInput {
 }
 
 export interface BindAgentInput {
+  readonly deferPromptContext?: boolean;
   readonly driver?: 'external' | 'local';
   readonly execution?: import('@kiki/protocol').ExecutionSelection;
   readonly toolOverride?: ToolBindingOverride;

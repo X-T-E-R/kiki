@@ -7107,6 +7107,7 @@ export interface AgentStateSnapshot {
           readonly revision: string;
         };
       };
+      readonly promptContextPending?: boolean;
     };
     readonly toolAllowPolicies?: readonly (readonly string[])[];
   };
