@@ -552,6 +552,8 @@ export function useNewSessionDraft({
   // only a touched control is sent — see `buildNewSessionCreate`.
   const modelTouched = useRef(!modelOverrideFromProfile.current && initialRestoredDraft.modelOverride !== undefined);
   const effortTouched = useRef(!effortOverrideFromProfile.current && initialRestoredDraft.effortOverride !== undefined);
+  const modelChoiceRevision = useRef(0);
+  const effortChoiceRevision = useRef(0);
   const permissionTouched = useRef(false);
 
   // Shares App's metadata catalog without waiting for session counts or Git.
@@ -667,6 +669,7 @@ export function useNewSessionDraft({
     modelOverrideFromPersona.current = false;
     modelOverrideFromProfile.current = false;
     modelTouched.current = true;
+    modelChoiceRevision.current += 1;
     setModelOverrideState(model);
     setSelectionRevision((value) => value + 1);
   }, []);
@@ -674,6 +677,7 @@ export function useNewSessionDraft({
     effortOverrideFromPersona.current = false;
     effortOverrideFromProfile.current = false;
     effortTouched.current = true;
+    effortChoiceRevision.current += 1;
     setEffortOverrideState(thinking);
     setSelectionRevision((value) => value + 1);
   }, []);
@@ -1365,7 +1369,7 @@ export function useNewSessionDraft({
    * and effort pins replace the composer's model and effort, exactly like
    * picking a pinned profile. Clearing drops back to the default profile.
    */
-  const applyPersona = useCallback((snapshot: PersonaSnapshot | undefined) => {
+  const applyPersona = useCallback((snapshot: PersonaSnapshot | undefined, choices?: { model: number; effort: number }) => {
     const items = agentProfilesQuery.data?.items ?? [];
     setPersonaState(snapshot);
     if (snapshot === undefined) {
@@ -1379,12 +1383,16 @@ export function useNewSessionDraft({
     setAgentProfileState(profile);
     // Persona pins preview the effective values without becoming explicit
     // request overrides. Unpinned values continue following the profile.
-    modelOverrideFromPersona.current = definition.modelAlias !== undefined;
-    effortOverrideFromPersona.current = definition.thinkingEffort !== undefined;
-    modelOverrideFromProfile.current = definition.modelAlias === undefined;
-    effortOverrideFromProfile.current = definition.thinkingEffort === undefined;
-    setModelOverrideState(definition.modelAlias ?? defaults.model);
-    setEffortOverrideState(definition.thinkingEffort ?? defaults.thinking);
+    if (choices === undefined || choices.model === modelChoiceRevision.current) {
+      modelOverrideFromPersona.current = definition.modelAlias !== undefined;
+      modelOverrideFromProfile.current = definition.modelAlias === undefined;
+      setModelOverrideState(definition.modelAlias ?? defaults.model);
+    }
+    if (choices === undefined || choices.effort === effortChoiceRevision.current) {
+      effortOverrideFromPersona.current = definition.thinkingEffort !== undefined;
+      effortOverrideFromProfile.current = definition.thinkingEffort === undefined;
+      setEffortOverrideState(definition.thinkingEffort ?? defaults.thinking);
+    }
     setSelectionRevision((value) => value + 1);
   }, [agentProfilesQuery.data, applyAgentProfile]);
 
@@ -1400,10 +1408,11 @@ export function useNewSessionDraft({
       setError(null);
       return;
     }
+    const choices = { model: modelChoiceRevision.current, effort: effortChoiceRevision.current };
     setPersonaPending(true);
     setError(null);
     void client.getPersona(id)
-      .then((snapshot) => { if (personaSelectionRef.current === token) applyPersona(snapshot); })
+      .then((snapshot) => { if (personaSelectionRef.current === token) applyPersona(snapshot, choices); })
       .catch((cause: unknown) => {
         if (personaSelectionRef.current !== token) return;
         setPersonaState(undefined);

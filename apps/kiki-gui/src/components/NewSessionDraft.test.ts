@@ -9,7 +9,7 @@ import { sessionCreateSchema, ErrorCode, type SessionCreate } from '@kiki/protoc
 
 import { I18nProvider } from '../i18n';
 import { ApiError, type NamedAgentProfile } from '../lib/client';
-import { buildAgentProfileOptions, resolveSelectedEffort } from './Composer';
+import { Composer, buildAgentProfileOptions, resolveSelectedEffort } from './Composer';
 import {
   AUTO_WORKSPACE_ID,
   buildNewSessionCreate,
@@ -31,6 +31,10 @@ const { client, navigate, scope } = vi.hoisted(() => ({
     klient: { rest: { agents: { previewFile: vi.fn() }, workspaces: { inspect: vi.fn() }, ssh: { addSessionHost: vi.fn() } } },
     getConfig: vi.fn(),
     listModels: vi.fn(),
+    listExecutors: vi.fn(async () => ({ items: [{ id: 'native', label: 'Kiki', protocol: 'native', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' }] })),
+    listDraftSkills: vi.fn(async () => ({ skills: [] })),
+    listPersonas: vi.fn(async () => []),
+    meta: vi.fn(async () => ({ experimental_flags: { native_ssh: false } })),
     listNamedAgentProfiles: vi.fn(),
     getAuth: vi.fn(),
     createSession: vi.fn(),
@@ -45,6 +49,7 @@ const { client, navigate, scope } = vi.hoisted(() => ({
 
 vi.mock('../state/connection', () => ({
   useConnection: () => ({ client, scopeId: scope.id, spaceKey: scope.spaceKey, connectionId: scope.connectionId, sshLabel: scope.label }),
+  useOptionalConnection: () => undefined,
 }));
 vi.mock('../host', () => ({
   useHost: () => ({ kind: 'browser' }),
@@ -105,13 +110,25 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-function DraftHarness(props: { initialWorkspaceId?: string; initialProfile?: string; initialPersona?: string; isDailyDraft?: boolean; prefillNavigationKey?: string }) {
-  latestDraftState = useNewSessionDraft(props);
-  return null;
+function DraftHarness(props: { initialWorkspaceId?: string; initialProfile?: string; initialPersona?: string; isDailyDraft?: boolean; prefillNavigationKey?: string; composer?: boolean }) {
+  const state = useNewSessionDraft(props);
+  latestDraftState = state;
+  if (!props.composer) return null;
+  return createElement(MemoryRouter, null, createElement(Composer, {
+    busy: state.busy, disabled: state.busy, value: state.draft, onChange: state.updateDraft,
+    model: state.modelOverride, defaultModel: undefined, serverDefaultModel: state.inheritedDefault,
+    modelSource: state.modelSource, agentProfile: state.agentProfile, onChangeAgentProfile: state.setAgentProfile,
+    execution: state.execution, onChangeExecution: state.setExecution,
+    permissionMode: state.permissionMode, planMode: state.planMode, goalObjective: state.goalObjective,
+    efforts: state.supportedEfforts, effort: state.effectiveEffort, agentProfileCatalogMode: state.agentProfileCatalogMode,
+    attachments: state.attachments, onChangeAttachments: state.setAttachments, onChangeModel: state.setModelOverride,
+    onChangePermissionMode: state.setPermissionMode, onChangePlanMode: state.setPlanMode,
+    onChangeGoalObjective: state.setGoalObjective, onChangeEffort: state.setEffortOverride, onSend: state.send,
+  }));
 }
 
 async function renderDraft(
-  props: { initialWorkspaceId?: string; initialProfile?: string; initialPersona?: string; isDailyDraft?: boolean; prefillNavigationKey?: string } = {},
+  props: { initialWorkspaceId?: string; initialProfile?: string; initialPersona?: string; isDailyDraft?: boolean; prefillNavigationKey?: string; composer?: boolean } = {},
 ): Promise<QueryClient> {
   const container = document.createElement('div');
   document.body.append(container);
@@ -1835,6 +1852,89 @@ describe('useNewSessionDraft agent profile scope', () => {
       void state.send('Must not send with failed persona or impersonate old persona', []);
     });
     expect(client.createSession).not.toHaveBeenCalled();
+  });
+
+  it.each(['none', 'model', 'effort', 'both'])('keeps controls picked while the selected persona profile is loading (%s)', async (picked) => {
+    const persona = deferred<Awaited<ReturnType<typeof client.getPersona>>>();
+    client.getPersona.mockReturnValue(persona.promise);
+    client.getConfig.mockResolvedValue({ default_model: 'fixture/default-model' });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), profile('assistant-profile', 'fixture/default-model', 'high')] });
+    client.listModels.mockResolvedValue({ items: ['fixture/default-model', 'fixture/selected-model'].map((id) => ({
+      ...model(id, 'high'), support_efforts: ['low', 'high'],
+    })) });
+    await renderDraft({ initialPersona: 'assistant-persona', composer: true });
+    await settleDraft((value) => value.personaPending && !value.agentProfileCatalogPending);
+    const container = containers.at(-1)!;
+    const click = async (selector: string) => {
+      const element = container.querySelector(selector);
+      expect(element, selector).not.toBeNull();
+      await act(async () => { element!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    };
+    const modelPicked = picked === 'model' || picked === 'both';
+    const effortPicked = picked === 'effort' || picked === 'both';
+    if (modelPicked) {
+      await click('#composer-execution-select');
+      await click('[data-execution-model="fixture/selected-model"]');
+    }
+    if (effortPicked) {
+      await click('#composer-execution-select');
+      await click('[data-execution-effort="low"]');
+    }
+    persona.resolve({ definition: { id: 'assistant-persona', name: 'Assistant', profile: 'assistant-profile' }, systemPrompt: 'Help the user.' });
+    const state = await settleDraft((value) => !value.personaPending && value.persona !== undefined);
+    expect(state.modelOverride).toBe(modelPicked ? 'fixture/selected-model' : 'fixture/default-model');
+    expect(state.effectiveEffort).toBe(effortPicked ? 'low' : 'high');
+    const body = await sentBody(state);
+    expect(body.agent_config?.model).toBe(modelPicked ? 'fixture/selected-model' : undefined);
+    expect(body.agent_config?.thinking).toBe(effortPicked ? 'low' : undefined);
+    expect(navigate.mock.calls[0]?.[1].state).toMatchObject({
+      model: modelPicked ? 'fixture/selected-model' : undefined, thinking: effortPicked ? 'low' : undefined,
+    });
+  });
+
+  it('applies a newly selected persona default after an earlier explicit model and effort choice', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), profile('assistant-profile', 'fixture/default-model', 'high')] });
+    client.listModels.mockResolvedValue({ items: [model('fixture/default-model', 'high'), model('fixture/selected-model', 'low')] });
+    client.getPersona.mockResolvedValue({ definition: { id: 'assistant-persona', name: 'Assistant', profile: 'assistant-profile' }, systemPrompt: 'Help the user.' });
+    await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => { state.setModelOverride('fixture/selected-model'); state.setEffortOverride('low'); });
+    state = latestDraftState!;
+    await act(async () => { state.selectPersona('assistant-persona'); });
+    state = await settleDraft((value) => !value.personaPending && value.persona !== undefined);
+    expect(state.modelOverride).toBe('fixture/default-model');
+    expect(state.effectiveEffort).toBe('high');
+    expect((await sentBody(state)).agent_config?.model).toBeUndefined();
+  });
+
+  it('keeps a real GUI model picker choice after selecting a profile with a model menu', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), {
+      ...profile('assistant-profile', 'fixture/default-model', 'high'),
+      preferred_models: ['fixture/default-model', 'fixture/selected-model'],
+      model_profiles: [{ alias: 'fixture/selected-model', thinking_effort: 'high', when: 'Use for an explicitly selected task.' }],
+    }] });
+    client.listModels.mockResolvedValue({ items: [model('fixture/default-model', 'high'), model('fixture/selected-model', 'high')] });
+    await renderDraft({ composer: true });
+    await settleDraft((value) => !value.agentProfileCatalogPending);
+    const container = containers.at(-1)!;
+    const click = async (selector: string) => {
+      const element = container.querySelector(selector);
+      expect(element, selector).not.toBeNull();
+      await act(async () => { element!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    };
+    await click('#composer-profile-select');
+    await click('[data-execution-profile="assistant-profile"]');
+    await settleDraft((value) => value.modelOverride === 'fixture/default-model');
+    await click('#composer-execution-select');
+    await click('[data-execution-model="fixture/selected-model"]');
+    const state = await settleDraft((value) => value.modelOverride === 'fixture/selected-model');
+    expect(state.agentProfile).toBe('assistant-profile');
+    await act(async () => { state.updateDraft('Keep the model I selected.'); });
+    await click('button[aria-label="Send message"]');
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({ agent_config: expect.objectContaining({
+      profile: 'assistant-profile', model: 'fixture/selected-model',
+    }) }));
+    expect(navigate.mock.calls[0]?.[1].state).toMatchObject({ model: 'fixture/selected-model' });
   });
 
   it('keeps an explicit Sol pick through the profile pin, the parked overrides, and both create hops', async () => {

@@ -174,6 +174,50 @@ describe('server-v2 /api prompts', () => {
     }
   });
 
+  it.each([false, true])('keeps the selected model over a profile default through creation and the first provider request (explicit=%s)', async (explicit) => {
+    const requests: string[] = [];
+    const provider = createHttpServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        requests.push((JSON.parse(body) as { model: string }).model);
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`data: ${JSON.stringify({ id: 'selected-model-response', choices: [{ index: 0, delta: { content: 'Ready.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+      });
+    });
+    await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    try {
+      const mutations = fixture.server!.core.accessor.get(IModelCatalogMutationService);
+      await mutations.updateProvider('stub', { base_url: `http://127.0.0.1:${address.port}/v1` });
+      for (const model of ['stub', 'stub-alt']) await mutations.updateModel(model, { max_context_size: 100000 });
+      fixture.server!.core.accessor.get(IAgentProfileRegistry).register({
+        sourceId: 'selected-model-fixture', priority: 50,
+        contribution: { profiles: [normalizeAgentProfile({
+          name: 'selected-model-profile', definitionId: 'fixture:selected-model-profile', main: true,
+          modelAlias: 'stub', thinkingEffort: 'high', systemPrompt: () => 'Help the user.',
+        })] },
+      });
+      const selectedModel = explicit ? 'stub-alt' : undefined;
+      const expectedModel = selectedModel ?? 'stub';
+      const client = new KikiClient({ baseUrl: fixture.base, token: bearerToken(fixture.server!) });
+      const created = await client.createSession(buildNewSessionCreate({ cwd: fixture.home!, profile: 'selected-model-profile',
+        execution: executionChoice({ executor: 'native', profile: 'selected-model-profile' }),
+        model: selectedModel, modelTouched: explicit, permissionMode: 'manual', planMode: false }));
+      expect(created.agent_config).toMatchObject({ model: expectedModel, profile: 'selected-model-profile' });
+      const main = await ensureMainAgent(getLiveSessionById(fixture.server!.core.accessor, created.id)!);
+      expect(main.accessor.get(IAgentProfileService).data().boundProfile?.promptContextPending).toBe(true);
+      await client.sessions.submitPrompt(created.id, { prompt_id: 'selected-model-first', content: [{ type: 'text', text: 'Use my selected model.' }], model: selectedModel });
+      await main.accessor.get(IAgentLoopService).settled();
+      expect(main.accessor.get(IAgentLoopService).status().lastTurnResult).toBe('completed');
+      expect(main.accessor.get(IAgentProfileService).getModel()).toBe(expectedModel);
+      expect(requests).toEqual([expectedModel]);
+    } finally {
+      await new Promise<void>((resolve, reject) => provider.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
   it('rejects a welcome first message without a model before enqueue and accepts the preserved prompt after model selection', async () => {
     await writeConfigToml(fixture.home!, PROMPT_TOML.replace('default_model = "stub"', ''));
     const created = await call<{ id: string }>('POST', '/api/sessions', {});
