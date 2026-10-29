@@ -142,6 +142,30 @@ describe('LocalizedError / errorText', () => {
     expect(errorText('zh', new Error('boom'))).toBe('boom');
     expect(errorText('zh', 'string failure')).toBe('string failure');
   });
+
+  it('maps known server codes to localized copy, keeping unknown codes raw', () => {
+    const workspaceGone = { code: 40410, message: 'workspace not found: wd_fixture_000000000001 (code 40410)' };
+    expect(errorText('zh', workspaceGone)).toBe('工作区已经不存在了');
+    expect(errorText('en', workspaceGone)).toBe('That workspace no longer exists');
+    const identitySeed = { code: 40426, message: 'no request identity seed (code 40426)' };
+    expect(errorText('zh', identitySeed)).toBe('找不到请求身份；请在「模型与提供商 › 身份」中重新设置');
+    const sessionGone = { code: 40401, message: 'session.not_found (code 40401)' };
+    expect(errorText('zh', sessionGone)).toBe('会话已经不存在了');
+    const unmapped = { code: 40917, message: 'goal objective is empty (code 40917)' };
+    expect(errorText('zh', unmapped)).toBe('goal objective is empty (code 40917)');
+    expect(errorText('zh', new Error('something else (code 42901)'))).toBe('请求太频繁了，请稍后再试');
+  });
+
+  it('never prints a zod issue array as JSON', () => {
+    const drift = { name: 'ZodError', issues: [{ code: 'invalid_type', path: ['advisor_status'], message: 'Invalid input' }] };
+    expect(errorText('zh', drift)).toBe('服务器返回的记忆顾问数据无法识别');
+    expect(errorText('en', drift)).toBe('The server returned memory advisor data Kiki could not read');
+    const generic = { name: 'ZodError', issues: [{ code: 'invalid_type', path: ['models'], message: 'Invalid input' }] };
+    expect(errorText('zh', generic)).toBe('服务器返回了无法识别的数据');
+    // The same drift stringified by an upstream producer is still caught.
+    const stringified = '[ { "expected": "object", "code": "invalid_type", "path": [ "advisor_status" ], "message": "Invalid input" } ]';
+    expect(errorText('zh', stringified)).toBe('服务器返回的记忆顾问数据无法识别');
+  });
 });
 
 describe('localized time', () => {

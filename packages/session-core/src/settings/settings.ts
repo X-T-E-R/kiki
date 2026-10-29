@@ -2216,7 +2216,7 @@ export function connectionTabLabelKey(tab: ConnectionSettingsTab): I18nKey {
  * `#st-card-search-*` anchor to its tab, so a search hit and a card hash stay
  * two spellings of the same target.
  */
-export const SEARCH_SETTINGS_TABS = ['overview', 'search', 'fetch', 'providers', 'advanced'] as const;
+export const SEARCH_SETTINGS_TABS = ['overview', 'search', 'fetch', 'advanced'] as const;
 export type SearchSettingsTab = (typeof SEARCH_SETTINGS_TABS)[number];
 
 /** Tab id inside a tabbed settings section; `ai`, `agents`, `extensions`, `browser-control`, `connection`, and `search` own tabs. */
@@ -2233,10 +2233,10 @@ export type SettingsTab =
 /** Card → sub-page for the search leaf, mirroring the page's tab mount table. */
 const SEARCH_TAB_BY_CARD: Readonly<Record<string, SearchSettingsTab>> = {
   'st-card-search-status': 'overview',
-  'st-card-search-source': 'overview',
   'st-card-search-defaults': 'search',
   'st-card-search-fetch': 'fetch',
-  'st-card-search-providers': 'providers',
+  'st-card-search-providers': 'search',
+  'st-card-search-source': 'advanced',
   'st-card-search-execution': 'advanced',
   'st-card-search-index': 'advanced',
   'st-card-search-diagnostics': 'advanced',
@@ -2329,10 +2329,12 @@ export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts', 'notifications'] },
   { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'agents'] },
   { kind: 'group', id: 'sessions-work', labelKey: 'st.group.sessionsWork', sections: ['sessions', 'workspaces', 'memory'] },
-  { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['extensions', 'search', 'browser-control'] },
-  { kind: 'group', id: 'rules', labelKey: 'st.group.permissionsRules', sections: ['permissions', 'hooks'] },
+  // Hooks are automation, so they sit with the other capabilities the agent
+  // gains rather than with permission rules.
+  { kind: 'group', id: 'capabilities', labelKey: 'st.group.capabilities', sections: ['extensions', 'search', 'browser-control', 'hooks'] },
+  { kind: 'group', id: 'rules', labelKey: 'st.group.permissionsRules', sections: ['permissions'] },
   { kind: 'group', id: 'connection', labelKey: 'st.group.connection', sections: ['connection', 'spaces', 'ssh', 'connection-services'] },
-  { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['developer', 'about'] },
+  { kind: 'group', id: 'advanced', labelKey: 'st.group.advanced', sections: ['about', 'developer'] },
 ];
 
 /** Legacy pages keep their URLs while navigation highlights their canonical leaf. */
@@ -2595,6 +2597,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'developer', cardId: 'st-card-session-residency', titleKey: 'st.residency.title', keywordKeys: ['st.residency.maxLive', 'st.residency.idleTtl', 'st.residency.concurrentRestores'], synonyms: ['session_residency', 'eviction', 'unload', '卸载', '常驻'] },
   { section: 'developer', cardId: 'st-card-resource-limits', titleKey: 'st.resourceLimits.title', keywordKeys: ['st.resourceLimits.workspaceIdle', 'st.resourceLimits.imageMaxEdge', 'st.resourceLimits.imageBudget'], synonyms: ['image budget', '图片限制', 'idle ttl', '资源限制'] },
   { section: 'agents', tab: 'profiles', cardId: 'st-card-agent-runtime', titleKey: 'st.agentIdentity.title', keywordKeys: ['st.agentIdentity.identityName', 'st.agentIdentity.extraAgentDirs', 'st.agentIdentity.disabledProfiles', 'st.agentIdentity.skipBuiltin'], synonyms: ['identity', '身份', 'agent dirs', 'disabled profiles', '禁用 profile'] },
+  { section: 'developer', cardId: 'st-card-memory-advisor-tuning', titleKey: 'memory.advisor.tuningTitle', keywordKeys: ['memory.advisor.field.timeout_ms', 'memory.advisor.field.judge_input_tokens', 'memory.advisor.children'], synonyms: ['memory advisor tuning', '记忆顾问调优', 'advisor budget', '顾问参数'] },
   { section: 'developer', cardId: 'st-card-labs', titleKey: 'st.labs.indexTitle', keywordKeys: ['st.exp.tag'], synonyms: ['experimental features', '实验特性', '实验功能', 'flags', 'beta', 'labs'] },
   ...EXPERIMENTAL_SEARCH_ENTRIES,
   { section: 'developer', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'], synonyms: ['json', 'config', '配置文件', 'loop_control', 'background'] },
@@ -2610,12 +2613,12 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'notifications', cardId: 'st-card-im-session', titleKey: 'st.im.title', keywordKeys: ['st.im.hint', 'st.im.check', 'st.im.busy', 'st.im.actions'], synonyms: ['phone', 'pairing', 'telegram', '手机', '配对', '双向'] },
   { section: 'notifications', cardId: 'st-card-notify-channels', titleKey: 'st.notify.channelsTitle', keywordKeys: ['st.notify.add', 'st.notify.test', 'st.notify.check', 'st.notify.deliveries'], synonyms: ['telegram', 'wecom', '企业微信', '企微', 'dingtalk', '钉钉', 'feishu', '飞书', 'discord', 'slack', 'webhook', 'IM', '推送'] },
   { section: 'notifications', cardId: 'st-card-notify-add', titleKey: 'st.notify.addTitle', keywordKeys: ['st.notify.choose', 'st.notify.provider', 'st.notify.newConnection'], synonyms: ['add channel', '添加通道', 'new channel', '新建通道', 'bot', '机器人'] },
-  { section: 'hooks', cardId: 'st-card-hooks', titleKey: 'st.hooks.title', keywordKeys: ['st.hooks.hint'], synonyms: ['hooks', '钩子'] },
+  { section: 'hooks', cardId: 'st-card-hooks', titleKey: 'st.hooks.title', keywordKeys: ['st.hooks.addRule'], synonyms: ['hooks', '钩子'] },
   { section: 'search', tab: 'overview', cardId: 'st-card-search-status', titleKey: 'st.nbSearch.statusTitle', keywordKeys: ['st.nbSearch.statusHint'], synonyms: ['web search', 'fetch', '联网搜索', '网页抓取', 'nb-search', 'nb_search'] },
-  { section: 'search', tab: 'overview', cardId: 'st-card-search-source', titleKey: 'st.nbSearch.source.title', keywordKeys: ['st.nbSearch.source.hint', 'st.nbSearch.source.reuseLocalLabel'], synonyms: ['配置来源', 'config source', 'nb-search config', '本地配置', 'local config'] },
-  { section: 'search', tab: 'search', cardId: 'st-card-search-defaults', titleKey: 'st.nbSearch.defaultsTitle', keywordKeys: ['st.nbSearch.defaultLaneLabel'], synonyms: ['搜索 lane', 'search lane', 'default lane'] },
-  { section: 'search', tab: 'fetch', cardId: 'st-card-search-fetch', titleKey: 'st.nbSearch.fetch.title', keywordKeys: ['st.nbSearch.fetchChainHint'], synonyms: ['fetch chain', '抓取链', 'pipeline chain', 'fallback'] },
-  { section: 'search', tab: 'providers', cardId: 'st-card-search-providers', titleKey: 'st.nbSearch.providersTitle', keywordKeys: ['st.nbSearch.credentialEnvLabel', 'st.nbSearch.baseUrlLabel'], synonyms: ['exa', 'tavily', 'brave', 'searxng', 'jina', '搜索提供商'] },
+  { section: 'search', tab: 'advanced', cardId: 'st-card-search-source', titleKey: 'st.nbSearch.source.title', keywordKeys: ['st.nbSearch.source.hint', 'st.nbSearch.source.reuseLocalLabel'], synonyms: ['配置来源', 'config source', 'nb-search config', '本地配置', 'local config'] },
+  { section: 'search', tab: 'search', cardId: 'st-card-search-defaults', titleKey: 'st.nbSearch.providersTitle', keywordKeys: ['st.nbSearch.services.makeDefault'], synonyms: ['默认搜索', 'default search', '搜索引擎', 'search engine'] },
+  { section: 'search', tab: 'fetch', cardId: 'st-card-search-fetch', titleKey: 'st.nbSearch.fetch.title', keywordKeys: ['st.nbSearch.fetch.pageHint'], synonyms: ['fetch chain', '抓取链', '网页抓取', 'fallback'] },
+  { section: 'search', tab: 'search', cardId: 'st-card-search-providers', titleKey: 'st.nbSearch.providersTitle', keywordKeys: ['st.nbSearch.credentialEnvLabel', 'st.nbSearch.baseUrlLabel'], synonyms: ['exa', 'tavily', 'brave', 'searxng', 'jina', '搜索提供商'] },
   { section: 'search', tab: 'advanced', cardId: 'st-card-search-execution', titleKey: 'st.nbSearch.executionTitle', keywordKeys: ['st.nbSearch.groupBudgets', 'st.nbSearch.groupTimeouts', 'st.nbSearch.groupFetchLimits'], synonyms: ['搜索超时', 'search timeout', 'concurrency', '并发'] },
   { section: 'search', tab: 'advanced', cardId: 'st-card-search-index', titleKey: 'st.searchIndex.title', keywordKeys: ['st.searchIndex.retry'], synonyms: ['full-text index', '全文索引', 'history search', '历史搜索', 'indexer', '索引'] },
   { section: 'search', tab: 'advanced', cardId: 'st-card-search-diagnostics', titleKey: 'st.nbSearch.diagnosticsTitle', keywordKeys: ['st.nbSearch.diagnosticsHint'], synonyms: ['搜索诊断', 'search diagnostics', 'test'] },

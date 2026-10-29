@@ -24,7 +24,7 @@
  *   instead of showing a field that would not save.
  */
 
-import { useContext, useEffect, useMemo, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -54,7 +54,7 @@ import {
 } from '../../capabilities/pluginUsage';
 import { FeedbackLine, InlineError, SavedTick, Toggle, type Feedback } from '../../controls';
 import { Icon, Spinner } from '../../icons';
-import { SECONDARY_BUTTON } from '../../ui';
+import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { SettingField } from '../fields';
 import { SectionCard } from '../SectionCard';
 import { SettingsSelect } from '../SettingsPrimitives';
@@ -136,6 +136,12 @@ export function WorkspaceSettingsPage({ workspaceId }: { readonly workspaceId: s
     return () => { reportDetailName(null); };
   }, [reportDetailName, workspace?.name]);
 
+  // The rename input only exists while renaming: focus it as it appears.
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (name !== null) nameInputRef.current?.select();
+  }, [name !== null]);
+
   if (workspaceQuery.isPending) {
     return <p className="py-3 text-[13px] text-ink-faint" role="status" data-workspace-detail-loading>{t('cap.loading')}</p>;
   }
@@ -188,29 +194,51 @@ export function WorkspaceSettingsPage({ workspaceId }: { readonly workspaceId: s
           )}
         </div>
         <div className="mt-4 space-y-3">
-          <SettingField label={t('st.workspaces.renameTitle')}>
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                data-autofocus
-                data-workspace-detail-name
-                aria-label={t('st.workspaces.renameTitle')}
-                className="min-w-0 max-w-[42ch] flex-1 rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-selected-ink"
-                value={draftName}
-                maxLength={100}
-                onChange={(event) => { setName(event.currentTarget.value); }}
-                onKeyDown={(event) => { if (event.key === 'Enter' && dirty && !rename.isPending) rename.mutate(draftName.trim()); }}
-              />
-              <button
-                type="button"
-                className={SECONDARY_BUTTON}
-                disabled={!dirty || rename.isPending}
-                data-workspace-detail-rename
-                onClick={() => { rename.mutate(draftName.trim()); }}
-              >
-                {rename.isPending ? t('common.saving') : t('common.save')}
-              </button>
-            </div>
-          </SettingField>
+          {/* Rename is one interaction everywhere: at rest the name is a fact
+              with a 重命名 verb; the input appears only when the verb is used. */}
+          {name === null ? (
+            <SettingField label={t('st.workspaces.renameTitle')}>
+              <div className="flex flex-wrap items-center gap-2">
+                <span data-workspace-detail-name className="text-[13px] text-ink">{workspace.name}</span>
+                <button type="button" className={SECONDARY_BUTTON} data-workspace-detail-rename
+                  onClick={() => { setName(workspace.name); }}>
+                  {t('st.workspaces.rename')}
+                </button>
+              </div>
+            </SettingField>
+          ) : (
+            <SettingField label={t('st.workspaces.renameTitle')}>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  ref={nameInputRef}
+                  data-workspace-detail-name-input
+                  aria-label={t('st.workspaces.renameTitle')}
+                  className="min-w-0 max-w-[42ch] flex-1 rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-selected-ink"
+                  value={draftName}
+                  maxLength={100}
+                  onChange={(event) => { setName(event.currentTarget.value); }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && dirty && !rename.isPending) rename.mutate(draftName.trim());
+                    if (event.key === 'Escape') setName(null);
+                  }}
+                />
+                <button
+                  type="button"
+                  className={PRIMARY_BUTTON}
+                  disabled={!dirty || rename.isPending}
+                  data-workspace-detail-rename-save
+                  onClick={() => { rename.mutate(draftName.trim()); }}
+                >
+                  {rename.isPending ? t('common.saving') : t('common.save')}
+                </button>
+                <button type="button" className={SECONDARY_BUTTON} data-workspace-detail-rename-cancel
+                  disabled={rename.isPending}
+                  onClick={() => { setName(null); }}>
+                  {t('common.cancel')}
+                </button>
+              </div>
+            </SettingField>
+          )}
           <SettingField label={t('st.workspaces.pin')} help={t('st.workspaces.detail.pinHelp')}>
             <Toggle
               // The label names what a click would DO, not what is currently

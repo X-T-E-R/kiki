@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ListWorkspaceCatalogResponse, WorkspaceCatalogEntry as Workspace } from '@kiki/protocol';
@@ -119,6 +119,10 @@ function WorkspacesList() {
             onOpenDetail={(workspace) => { void navigate(workspaceSettingsPath(workspace.id)); }}
           />
         ) : null}
+        {/* One page-level line stands in for any row whose trust read failed:
+            N missing trust reads are one server problem, not N row problems.
+            The failed rows themselves stay quiet, and a refetch resets this. */}
+        <TrustReadFailure items={items} />
         {!query.isLoading && !query.isError && items.length === 0 ? (
           <ListEmpty
             kind="none"
@@ -312,12 +316,12 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
   onOpenDetail: () => void;
 }) {
   const { client } = useConnection();
-  const queryClient = useQueryClient();
-  const { t, time, locale } = useI18n();
+  const { t, time } = useI18n();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  const [trustBusy, setTrustBusy] = useState(false);
-  const [trustFeedback, setTrustFeedback] = useState<Feedback>(null);
 
+  // Trust is read-only here: the tag answers "what kind of workspace is this",
+  // and the only place trust changes is the workspace's own page. A failed
+  // read shows nothing on the row — one page-level line covers every failure.
   const trustQuery = useQuery({
     queryKey: ['workspace-trust', workspace.id],
     queryFn: () => client.getWorkspaceTrust(workspace.id),
@@ -325,22 +329,6 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
   });
 
   const isTrusted = trustQuery.data?.trusted ?? false;
-
-  const toggleTrust = async () => {
-    if (trustBusy || trustQuery.data === undefined || trustQuery.isError) return;
-    setTrustBusy(true);
-    setTrustFeedback(null);
-    try {
-      const res = isTrusted
-        ? await client.untrustWorkspace(workspace.id)
-        : await client.trustWorkspace(workspace.id);
-      queryClient.setQueryData(['workspace-trust', workspace.id], res);
-    } catch (error) {
-      setTrustFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setTrustBusy(false);
-    }
-  };
 
   const compact = density === 'compact';
   const facts = t('st.workspaces.lastOpened', { time: time.relativeTime(workspace.last_opened_at) });
@@ -389,8 +377,6 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
             <span className="hidden shrink-0 sm:inline">{facts}</span>
           </p>
         )}
-        {trustQuery.isError ? <InlineError error={trustQuery.error} /> : null}
-        <FeedbackLine feedback={trustFeedback} />
       </div>
       {compact ? <span className="hidden shrink-0 text-[12px] text-ink-faint tabular-nums sm:inline">{time.relativeTime(workspace.last_opened_at)}</span> : null}
       <button
@@ -410,7 +396,6 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
         {t('st.workspaces.newSession')}
       </button>
       <button type="button" data-workspace-more={workspace.id} aria-haspopup="menu" aria-expanded={menu !== null}
-        disabled={trustBusy}
         aria-label={t('st.workspaces.more', { name: workspace.name })} title={t('st.workspaces.more', { name: workspace.name })}
         onClick={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
@@ -425,15 +410,46 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
           onClose={() => { setMenu(null); }}
           entries={[
             { key: 'rename', label: t('st.workspaces.rename'), run: onRename },
-            ...(trustQuery.data !== undefined && !trustQuery.isError && !trustBusy ? [{
-              key: 'trust',
-              label: isTrusted ? t('st.workspaces.untrust') : t('st.workspaces.trust'),
-              run: toggleTrust,
-            }] : []),
             { separator: true },
             { key: 'remove', label: `${t('st.workspaces.remove')}…`, danger: true, run: onRemove },
           ]} />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Some rows could not read their trust state. One quiet line for the whole
+ * page replaces what used to be the same raw server error under every row;
+ * retrying re-reads every failed trust query at once. No row settling
+ * re-renders this sibling, so it tracks the trust queries itself.
+ */
+function TrustReadFailure({ items }: { readonly items: readonly Workspace[] }) {
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  // The line appears only after a row's trust read has settled into a
+  // failure. No row settling re-renders this sibling, so it recounts on every
+  // cache event; the id list decides whether the state actually changed.
+  const [failingIds, setFailingIds] = useState('');
+  useEffect(() => {
+    const recount = () => {
+      const ids = items.filter((workspace) =>
+        queryClient.getQueryState(['workspace-trust', workspace.id])?.status === 'error'
+      ).map((workspace) => workspace.id).join('');
+      setFailingIds((current) => (current === ids ? current : ids));
+    };
+    recount();
+    return queryClient.getQueryCache().subscribe(recount);
+  }, [items, queryClient]);
+  if (failingIds === '') return null;
+  return (
+    <div data-workspace-trust-failure className="flex flex-wrap items-center gap-2">
+      <FeedbackLine feedback={{ tone: 'error', text: t('st.workspaces.trustReadFailed') }} />
+      <button type="button" className={SECONDARY_BUTTON} onClick={() => {
+        void queryClient.invalidateQueries({
+          predicate: (entry) => entry.queryKey[0] === 'workspace-trust' && entry.state.status === 'error',
+        });
+      }}>{t('common.retry')}</button>
     </div>
   );
 }

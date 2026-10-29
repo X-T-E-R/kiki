@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
+import { workspaceSettingsPath } from '@kiki/session-core/settings';
 import { DefaultOnSwitch, optionalCapabilityState } from '../capabilities/optionalCapabilityUi';
 import { useI18n } from '../../i18n';
 import type { KikiConfigResponse, MemoryApproval, MemorySettings } from '../../lib/client';
@@ -154,127 +155,49 @@ export function MemorySettingsCard() {
   );
 }
 
-type WorkspaceOverride = 'inherit' | 'true' | 'false';
-
+/**
+ * Workspaces whose memory does not follow the global default. The page only
+ * lists them: an override belongs to the workspace it governs, so it is
+ * written on that workspace's own page — never here. Every row is a link
+ * there, and no click on this page changes anything.
+ */
 export function MemoryWorkspaceSettingsCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
-  const queryClient = useQueryClient();
-  const [params, setParams] = useSearchParams();
-  const [saved, ping] = useSavedTick();
   const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
   const settingsQuery = useQuery({ queryKey: MEMORY_SETTINGS_KEY, queryFn: () => client.getMemorySettings(), staleTime: 15_000 });
-  const workspaces = workspacesQuery.data?.items ?? [];
-  const requestedWorkspace = params.get('workspace');
-  const selectedId = workspaces.find((workspace) => workspace.id === requestedWorkspace)?.id ?? workspaces[0]?.id;
-  const workspaceQuery = useQuery({
-    queryKey: ['memory-workspace-settings', selectedId],
-    queryFn: () => client.getWorkspaceMemorySettings(selectedId!),
-    enabled: selectedId !== undefined,
-  });
-  // A write carries its workspace with it: the selection can move while it is
-  // in flight, and the result, tick and error belong to the workspace written.
-  const [savedId, setSavedId] = useState<string | undefined>();
-  const update = useMutation({
-    mutationFn: ({ workspaceId, enabled }: { workspaceId: string; enabled: boolean | null }) =>
-      client.patchWorkspaceMemorySettings(workspaceId, enabled),
-    onSuccess: async (result, { workspaceId }) => {
-      const written = result.workspace_id || workspaceId;
-      setSavedId(written);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: MEMORY_SETTINGS_KEY }),
-        queryClient.invalidateQueries({ queryKey: [...MEMORY_WORKSPACE_SETTINGS_KEY, written] }),
-      ]);
-      ping();
-    },
-  });
-  const updateHere = update.variables?.workspaceId === selectedId;
-  const overrides = workspaces.filter((workspace) => workspace.id !== selectedId && settingsQuery.data?.workspaces[workspace.id] !== undefined);
-  const feedback: Feedback = workspacesQuery.isError || settingsQuery.isError || workspaceQuery.isError
-    ? { tone: 'error', text: t('st.memory.loadFailed', { detail: errorText(locale, workspacesQuery.error ?? settingsQuery.error ?? workspaceQuery.error) }) }
-    : update.isError && updateHere
-      ? { tone: 'error', text: t('st.memory.saveFailed', { detail: errorText(locale, update.error) }) }
-      : null;
-  const override: WorkspaceOverride = workspaceQuery.data?.enabled === null || workspaceQuery.data === undefined
-    ? 'inherit'
-    : String(workspaceQuery.data.enabled) as WorkspaceOverride;
-  const effective = workspaceQuery.data === undefined
-    ? undefined
-    : t(workspaceQuery.data.effective_enabled ? 'st.memory.enabled' : 'st.memory.disabled');
-  // A workspace uses memory only while the global switch is on and its own
-  // setting is not off. Global off is said once, here, and nothing is
-  // disabled: an override chosen now is saved as chosen and applies as soon
-  // as memory is allowed again.
-  const globalOff = settingsQuery.data?.enabled === false;
-  const select = (id: string) => { const next = new URLSearchParams(params); next.set('workspace', id); setParams(next, { replace: true }); };
+  const overrides = settingsQuery.data === undefined
+    ? []
+    : Object.entries(settingsQuery.data.workspaces)
+      .map(([id, enabled]) => ({ id, enabled, name: workspacesQuery.data?.items.find((workspace) => workspace.id === id)?.name ?? id }));
+  const feedback: Feedback = workspacesQuery.isError || settingsQuery.isError
+    ? { tone: 'error', text: t('st.memory.loadFailed', { detail: errorText(locale, workspacesQuery.error ?? settingsQuery.error) }) }
+    : null;
 
   return (
     <SectionCard id="st-card-memory-workspaces" title={t('st.memory.workspaces')} scope="workspace">
       <div className="space-y-2" data-memory-workspace-settings>
-        {workspaces.length === 0 && !workspacesQuery.isPending ? <Hint>{t('st.memory.workspaceNone')}</Hint> : null}
-        {globalOff && workspaces.length > 0 ? (
-          <p data-memory-global-off className="max-w-[62ch] text-[12px] leading-snug text-amber-ink">{t('st.memory.globalOffNotice')}</p>
-        ) : null}
-        {selectedId !== undefined ? (
-          <>
-            <SettingField label={t('st.memory.workspaceSelect')}>
-              <SettingsSelect
-                id="memory-workspace-select"
-                dataAttr="data-memory-workspace-select"
-                ariaLabel={t('st.memory.workspaceSelect')}
-                className="max-w-64"
-                value={selectedId}
-                onChange={select}
-                choices={workspaces.map((workspace) => ({ value: workspace.id, label: workspace.name, hint: workspace.root }))}
-              />
-            </SettingField>
-            <SettingField
-              label={t('memory.ws.label')}
-              help={<>
-                {t('st.memory.workspaceHelp')}
-                {effective !== undefined ? (
-                  <span data-memory-workspace-effective role="status" className="ml-1 text-ink-soft">
-                    {t('st.memory.workspaceEffectiveInline', { state: effective })}
+        <Hint>{t('st.memory.workspaceExceptionsHint')}</Hint>
+        {settingsQuery.isPending ? <Hint>{t('cap.loading')}</Hint> : overrides.length === 0 ? (
+          <p data-memory-exceptions-empty className="text-[13px] text-ink-faint">{t('st.memory.workspaceExceptionsEmpty')}</p>
+        ) : (
+          <ul data-memory-exceptions className="divide-y divide-hairline rounded-lg border border-hairline bg-paper">
+            {overrides.map((override) => (
+              <li key={override.id}>
+                <Link to={`${workspaceSettingsPath(override.id)}#st-card-workspace-memory`}
+                  data-memory-exception-open={override.id}
+                  aria-label={t('st.memory.workspaceExceptionOpen', { name: override.name })}
+                  className="flex min-h-9 w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] text-ink transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11">
+                  <span className="min-w-0 flex-1 truncate">{override.name}</span>
+                  <span className="shrink-0 text-[12px] text-ink-faint">
+                    {t(override.enabled ? 'memory.ws.on' : 'memory.ws.off')}
                   </span>
-                ) : null}
-              </>}
-            >
-              <SaveStatus saving={update.isPending && updateHere} saved={saved && !(update.isError && updateHere) && savedId === selectedId} />
-              <SettingsSelect<WorkspaceOverride>
-                dataAttr="data-memory-workspace-override"
-                ariaLabel={t('memory.ws.label')}
-                value={override}
-                disabled={workspaceQuery.isPending || (update.isPending && updateHere)}
-                onChange={(next) => { update.mutate({ workspaceId: selectedId, enabled: next === 'inherit' ? null : next === 'true' }); }}
-                choices={[
-                  { value: 'inherit', label: t('memory.ws.follow') },
-                  { value: 'true', label: t('memory.ws.on') },
-                  { value: 'false', label: t('memory.ws.off') },
-                ]}
-              />
-            </SettingField>
-          </>
-        ) : null}
-        {overrides.length > 0 ? (
-          <div data-memory-other-overrides className="space-y-1 border-t border-hairline pt-3">
-            <p className="text-[13px] text-ink">{t('st.memory.workspaceOverrides')}</p>
-            <ul className="divide-y divide-hairline rounded-lg border border-hairline bg-paper">
-              {overrides.map((workspace) => (
-                <li key={workspace.id}>
-                  <button type="button" data-memory-override-open={workspace.id}
-                    onClick={() => { select(workspace.id); }}
-                    className="flex min-h-9 w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] text-ink transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:min-h-11">
-                    <span className="min-w-0 flex-1 truncate">{t('st.memory.workspaceOverride', {
-                      name: workspace.name,
-                      state: t(settingsQuery.data?.workspaces[workspace.id] === true ? 'memory.ws.on' : 'memory.ws.off'),
-                    })}</span>
-                    <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
+                  <Icon name="chevron" size={12} className="shrink-0 text-ink-faint" />
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
         <FeedbackLine feedback={feedback} />
       </div>
     </SectionCard>

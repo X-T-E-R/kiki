@@ -5,13 +5,8 @@ import { useSearchParams } from 'react-router-dom';
 import type { MemoryAdvisorProbeResult, MemorySettingsPatch } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import {
-  MEMORY_ADVISOR_DEFAULTS,
-  MEMORY_ADVISOR_NUMBER_FIELDS,
-  MEMORY_ADVISOR_RANGES,
   memoryAdvisorModePatch,
   memoryAdvisorReasonKey,
-  parseMemoryAdvisorNumber,
-  type MemoryAdvisorNumberField,
 } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
@@ -22,25 +17,23 @@ import { FeedbackLine, Hint, SaveStatus, Toggle, type Feedback } from '../contro
 import { useMemoryAdvisor } from '../memory/useMemoryAdvisor';
 import { DANGER_GHOST_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { DecisionSourceSummary } from './DecisionSources';
-import { MemoryAdvisorRuntime } from './MemoryAdvisorRuntime';
 import { SectionCard } from './SectionCard';
-import { AdvancedDetails, SettingField, SettingsGroup } from './fields';
-import { CommitInput, SettingsSegmented } from './SettingsPrimitives';
+import { SettingsGroup } from './fields';
 import { useSavedTick } from './useSavedTick';
 
 /** Which write a save status belongs to, so only that row says "Saved". */
-type WriteSlot = 'switch' | 'mode' | 'children' | MemoryAdvisorNumberField | 'remove';
+type WriteSlot = 'switch' | 'remove';
 
 /**
- * Memory Advisor: the quick switch on the heading and which service picks
- * (shown here, chosen in Who decides). Choosing a source and switching the
- * advisor on is the decision to use that service; there is no second OK.
- * Tuning and diagnostics are behind Advanced.
+ * Memory Advisor: what it is for in one line, the on switch, and which
+ * service picks (shown here, chosen in Who decides). Choosing a source and
+ * switching the advisor on is the decision to use that service; there is no
+ * second OK. Engine tuning lives under Developer & labs.
  */
 export function MemoryAdvisorSettingsCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
-  // A link may name a workspace; status and live reads follow it.
+  // A link may name a workspace; status follows it.
   const [params] = useSearchParams();
   const workspaceId = params.get('workspace') ?? undefined;
   const advisor = useMemoryAdvisor(workspaceId);
@@ -75,7 +68,6 @@ export function MemoryAdvisorSettingsCard() {
       ? { tone: 'error', text: t('memory.advisor.saveFailed', { detail: errorText(locale, advisor.save.error) }) }
       : null;
   const headerModel = status?.source_status?.model ?? status?.model;
-  const pairScore = (status?.source_status?.protocol ?? config?.selector?.protocol) === 'pair_score';
   const dot = view.tone === 'ok' ? 'ok' : view.tone === 'danger' ? 'error' : view.tone === 'caution' ? 'waiting' : 'off';
 
   return (
@@ -105,56 +97,12 @@ export function MemoryAdvisorSettingsCard() {
               ? t('st.decision.row.memoryLegacy', { model: config.selector.model }) : undefined} />
           {destination !== undefined ? <ProbeRow result={probe.data} error={probe.error} pending={probe.isPending} onRun={() => { probe.mutate(destination); }} /> : null}
         </SettingsGroup>
-        <AdvancedDetails summary={t('memory.advisor.advanced')} data-memory-advisor-advanced>
-          <div className="space-y-1 text-[13px] text-ink">
-            <SettingField label={t('memory.advisor.mode')} labelId="memory-advisor-mode-label"
-              help={t(config?.mode === 'select' ? 'memory.advisor.modeHint.select' : 'memory.advisor.modeHint.rank')}>
-              {statusFor('mode')}
-              <SettingsSegmented<'rank' | 'select'> ariaLabelledBy="memory-advisor-mode-label" dataAttr="data-memory-advisor-mode"
-                value={config?.mode === 'select' ? 'select' : 'rank'} disabled={busy || !view.on}
-                onChange={(mode) => { void write('mode', { advisor: { mode } }); }}
-                choices={[
-                  { value: 'rank', label: t('memory.advisor.mode.rank') },
-                  { value: 'select', label: t('memory.advisor.mode.select'), disabled: pairScore },
-                ]} />
-            </SettingField>
-            <SettingField label={t('memory.advisor.children')} htmlFor="memory-advisor-children" help={t('memory.advisor.childrenHint')}>
-              {statusFor('children')}
-              <Toggle id="memory-advisor-children" layout="bare" label={t('memory.advisor.children')}
-                checked={config?.apply_to_children ?? MEMORY_ADVISOR_DEFAULTS.apply_to_children} disabled={busy}
-                onChange={(apply_to_children) => { void write('children', { advisor: { apply_to_children } }); }} />
-            </SettingField>
-            <div className="grid gap-x-6 gap-y-1 pt-1 sm:grid-cols-2" data-memory-advisor-numbers>
-              {MEMORY_ADVISOR_NUMBER_FIELDS.map((field) => {
-                const range = MEMORY_ADVISOR_RANGES[field];
-                return (
-                  <SettingField key={field} label={t(`memory.advisor.field.${field}` as I18nKey)} htmlFor={`memory-advisor-${field}`}
-                    detail={t('memory.advisor.fieldDefault', { value: range.fallback })}>
-                    {statusFor(field)}
-                    <CommitInput id={`memory-advisor-${field}`} dataAttr={`data-memory-advisor-${field.replaceAll('_', '-')}`}
-                      className="w-24 text-right" inputMode="numeric" disabled={busy}
-                      value={String(config?.[field] ?? range.fallback)}
-                      validate={(text) => (parseMemoryAdvisorNumber(field, text) === null ? t('memory.advisor.fieldInvalid', { min: range.min, max: range.max }) : null)}
-                      onCommit={(text) => { void write(field, { advisor: { [field]: Number(text) } }); }} />
-                  </SettingField>
-                );
-              })}
-            </div>
-            {destination !== undefined ? (
-              <dl data-memory-advisor-destination-row className="grid grid-cols-[auto_1fr] items-baseline gap-x-4 py-1 text-[13px]">
-                <dt className="text-ink-soft">{t('memory.advisor.destination')}</dt>
-                <dd data-memory-advisor-destination className="min-w-0 break-all font-mono text-[12px] text-ink">{destination}</dd>
-              </dl>
-            ) : null}
-            <MemoryAdvisorRuntime workspaceId={workspaceId} config={config} />
-            {config !== undefined ? (
-              <div className="pt-3">
-                <button type="button" data-memory-advisor-remove className={DANGER_GHOST_BUTTON} disabled={busy}
-                  onClick={() => { setConfirmRemove(true); }}>{t('memory.advisor.remove')}</button>
-              </div>
-            ) : null}
+        {config !== undefined ? (
+          <div>
+            <button type="button" data-memory-advisor-remove className={DANGER_GHOST_BUTTON} disabled={busy}
+              onClick={() => { setConfirmRemove(true); }}>{t('memory.advisor.remove')}</button>
           </div>
-        </AdvancedDetails>
+        ) : null}
         <ConfirmDialog open={confirmRemove} title={t('memory.advisor.removeTitle')} body={t('memory.advisor.removeBody')}
           confirmLabel={t('memory.advisor.removeConfirm')} busy={advisor.save.isPending}
           onCancel={() => { setConfirmRemove(false); advisor.save.reset(); }}

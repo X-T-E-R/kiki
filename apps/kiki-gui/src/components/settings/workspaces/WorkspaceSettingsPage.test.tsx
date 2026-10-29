@@ -202,15 +202,20 @@ async function renderPage(workspaceId = 'ws-a') {
 
 /** Type a draft name the way the input reports it, without the React test utils. */
 async function typeName(value: string): Promise<HTMLInputElement> {
-  const input = container.querySelector<HTMLInputElement>('[data-workspace-detail-name]')!;
+  const input = container.querySelector<HTMLInputElement>('[data-workspace-detail-name-input]')!;
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
   await act(async () => { setter.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); });
   return input;
 }
 
+/** Open the rename row: the input exists only once 重命名/Rename is used. */
+async function openRename(): Promise<void> {
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-workspace-detail-rename]')!.click(); });
+}
+
 /** Press save and let the mutation settle. */
 async function clickSave(): Promise<void> {
-  await act(async () => { container.querySelector<HTMLButtonElement>('[data-workspace-detail-rename]')!.click(); });
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-workspace-detail-rename-save]')!.click(); });
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
 }
 
@@ -220,7 +225,12 @@ describe('WorkspaceSettingsPage', () => {
     expect(container.querySelector('[data-workspace-detail="ws-a"]')).not.toBeNull();
     expect(container.querySelector('[data-workspace-detail-root]')!.textContent).toBe('C:/work/alpha');
     expect(container.querySelector('[data-workspace-detail-back]')).not.toBeNull();
-    expect(container.querySelector('[data-autofocus]')!.getAttribute('value')).toBe('Alpha');
+    // At rest the name is a fact, not a resident input: the editor appears
+    // only once Rename is used, the same interaction as the list's ⋯ menu.
+    expect(container.querySelector('[data-workspace-detail-name]')!.textContent).toBe('Alpha');
+    expect(container.querySelector('[data-workspace-detail-name-input]')).toBeNull();
+    await openRename();
+    expect(container.querySelector<HTMLInputElement>('[data-workspace-detail-name-input]')!.value).toBe('Alpha');
   });
 
   it('takes identity from the catalog and stats from this workspace alone, not the full list', async () => {
@@ -245,16 +255,17 @@ describe('WorkspaceSettingsPage', () => {
     // An unanswered count is not a count of zero.
     expect(stats.textContent).not.toMatch(/\b0\b/);
 
-    expect(container.querySelector<HTMLInputElement>('[data-workspace-detail-name]')!.value).toBe('Alpha');
+    await openRename();
+    expect(container.querySelector<HTMLInputElement>('[data-workspace-detail-name-input]')!.value).toBe('Alpha');
     await typeName('Alpha Prime');
-    expect(container.querySelector<HTMLButtonElement>('[data-workspace-detail-rename]')!.disabled).toBe(false);
+    expect(container.querySelector<HTMLButtonElement>('[data-workspace-detail-rename-save]')!.disabled).toBe(false);
     await clickSave();
 
     // Not merely sent: the scoped write answered, and the page shows it landed.
     expect(mocks.renameWorkspaceCatalog).toHaveBeenCalledExactlyOnceWith('ws-a', 'Alpha Prime');
     expect(mocks.renameWorkspace).not.toHaveBeenCalled();
     expect(container.querySelector('[data-feedback-tone="success"]')!.textContent).toContain('Renamed to Alpha Prime.');
-    expect(container.querySelector<HTMLInputElement>('[data-workspace-detail-name]')!.value).toBe('Alpha Prime');
+    expect(container.querySelector('[data-workspace-detail-name]')!.textContent).toBe('Alpha Prime');
     // The save neither waited for nor re-kicked the stats read.
     expect(mocks.getWorkspaceDetails).toHaveBeenCalledTimes(1);
     expect(stats.textContent).toContain('Loading');
@@ -272,12 +283,13 @@ describe('WorkspaceSettingsPage', () => {
 
     // The failure is scoped to the stats: the save still lands on this
     // workspace, through the scoped catalog write.
+    await openRename();
     await typeName('Alpha Prime');
     await clickSave();
     expect(mocks.renameWorkspaceCatalog).toHaveBeenCalledExactlyOnceWith('ws-a', 'Alpha Prime');
     expect(mocks.renameWorkspace).not.toHaveBeenCalled();
     expect(container.querySelector('[data-feedback-tone="success"]')!.textContent).toContain('Renamed to Alpha Prime.');
-    expect(container.querySelector<HTMLInputElement>('[data-workspace-detail-name]')!.value).toBe('Alpha Prime');
+    expect(container.querySelector('[data-workspace-detail-name]')!.textContent).toBe('Alpha Prime');
     expect(container.querySelector('[data-workspace-detail-stats]')!.textContent).toContain('Stats unavailable');
     expect(container.querySelector('[data-workspace-detail-back]')).not.toBeNull();
 
@@ -340,12 +352,13 @@ describe('WorkspaceSettingsPage', () => {
 
   it('renames and pins this workspace through the scoped catalog writes', async () => {
     await renderPage();
+    await openRename();
     await typeName('Alpha Prime');
     await clickSave();
     expect(mocks.renameWorkspaceCatalog).toHaveBeenCalledExactlyOnceWith('ws-a', 'Alpha Prime');
     expect(mocks.renameWorkspace).not.toHaveBeenCalled();
     // The write answered with the stripped entry, and the page reads it back.
-    expect(container.querySelector<HTMLInputElement>('[data-workspace-detail-name]')!.value).toBe('Alpha Prime');
+    expect(container.querySelector('[data-workspace-detail-name]')!.textContent).toBe('Alpha Prime');
 
     // The pin label names what a click would DO, not what is currently true.
     const pinRow = [...container.querySelectorAll('label')].find((node) => node.textContent === 'Pin to the top');

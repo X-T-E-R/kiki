@@ -2,6 +2,7 @@ import { AdvancedSection } from './AdvancedSection';
 import { TokenCountingCard } from './CommunicationSection';
 import { ResourceLimitsCard } from './EngineLimitSettings';
 import { LabsSection } from './LabsSection';
+import { MemoryAdvisorTuningCard } from './MemoryAdvisorTuning';
 import { RetryPolicyCard } from './RetryPolicyCard';
 import { SessionResidencyCard } from './SessionResidencyCard';
 
@@ -16,6 +17,7 @@ export function DeveloperSection() {
       <RetryPolicyCard />
       <SessionResidencyCard />
       <TokenCountingCard />
+      <MemoryAdvisorTuningCard />
       <AdvancedSection />
       <LabsSection />
     </>
