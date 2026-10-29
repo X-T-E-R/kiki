@@ -3264,7 +3264,7 @@ export const zh = {
   'st.decision.row.reviewerUnset': '未设置。审查会改为问你。',
   'st.decision.row.memoryUnset': '未设置。记忆按关键词匹配。',
   'st.decision.row.reviewerLegacy': '正在使用审查者卡上旧的 Jev 密钥。',
-  'st.decision.row.memoryLegacy': '正在使用旧设置：{model}。',
+  'st.decision.row.memoryLegacy': '沿用旧版配置里的来源：{model}。',
   'st.decision.row.modelOverride': '模型名',
   'st.decision.row.modelDefault': '默认：{model}',
   'st.decision.row.saveModel': '保存模型名',
@@ -7170,7 +7170,6 @@ export const zh = {
   'memory.advisor.coverage.complete': '完整',
   'memory.advisor.coverage.partial': '不完整',
   'memory.advisor.remove': '移除顾问配置',
-  'memory.advisor.removeTitle': '移除记忆顾问配置？',
   'memory.advisor.removeBody': '这会清除顾问的来源和调参。已存记忆不受影响。',
   'memory.advisor.removeConfirm': '移除配置',
   // ---- 侧边栏：线程关系 ----

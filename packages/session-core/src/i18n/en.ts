@@ -3291,7 +3291,7 @@ export const en = {
   'st.decision.row.reviewerUnset': 'Not set. Reviews ask you.',
   'st.decision.row.memoryUnset': 'Not set. Memory uses keyword matches.',
   'st.decision.row.reviewerLegacy': 'Using the older Jev key on the Reviewer card.',
-  'st.decision.row.memoryLegacy': 'Using an older setting: {model}.',
+  'st.decision.row.memoryLegacy': 'Still using the source saved in the older settings: {model}.',
   'st.decision.row.modelOverride': 'Model name',
   'st.decision.row.modelDefault': 'Default: {model}',
   'st.decision.row.saveModel': 'Save model name',
@@ -7248,7 +7248,6 @@ export const en = {
   'memory.advisor.coverage.complete': 'Full',
   'memory.advisor.coverage.partial': 'Partial',
   'memory.advisor.remove': 'Remove advisor settings',
-  'memory.advisor.removeTitle': 'Remove Memory Advisor settings?',
   'memory.advisor.removeBody': 'This clears the advisor\'s source and tuning. Saved memory is not affected.',
   'memory.advisor.removeConfirm': 'Remove settings',
   // ---- sidebar: thread relations ----
