@@ -225,8 +225,11 @@ export interface RuntimeConfigProjection {
   };
   readonly retry?: {
     readonly maxAttempts?: number;
+    readonly retryPartialResponses?: boolean;
     readonly policies?: ReadonlyArray<{
       readonly match: string;
+      readonly models?: ReadonlyArray<string>;
+      readonly providers?: ReadonlyArray<string>;
       readonly maxAttempts?: number;
       readonly backoff?: number;
       readonly retry?: boolean;
@@ -283,8 +286,11 @@ export interface RuntimeConfigPatch {
   };
   readonly retry?: {
     readonly max_attempts?: number;
+    readonly retry_partial_responses?: boolean;
     readonly policies?: ReadonlyArray<{
       readonly match: string;
+      readonly models?: ReadonlyArray<string>;
+      readonly providers?: ReadonlyArray<string>;
       readonly max_attempts?: number;
       readonly backoff?: number;
       readonly retry?: boolean;

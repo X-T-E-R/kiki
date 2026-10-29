@@ -272,9 +272,60 @@ describe('config gap cards', () => {
     await type(backoff!, '1000');
     await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
     expect(patchConfig).toHaveBeenCalledWith({
-      retry: { policies: [{ match: '^provider\\.rate_limit$', max_attempts: 6, backoff: 1000, retry: true }] },
+      retry: {
+        retry_partial_responses: true,
+        policies: [{ match: '^provider\\.rate_limit$', max_attempts: 6, backoff: 1000, retry: true }],
+      },
       replace_domains: ['retry'],
     });
+  });
+
+  it('reads partial-response retries as on by default and preserves the choice when saving the retry domain', async () => {
+    getConfig.mockResolvedValue({
+      ...CONFIG,
+      retry: {
+        maxAttempts: 7,
+        retryPartialResponses: false,
+        policies: [{
+          match: '^provider\\.rate_limit$',
+          models: ['example-model'],
+          providers: ['example-provider'],
+          maxAttempts: 6,
+          backoff: 1000,
+          retry: true,
+        }],
+      },
+    });
+    const container = await render(<RetryPolicyCard />);
+    const card = container.querySelector('#st-card-retry')!;
+    const partial = [...card.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+      .find((input) => input.closest('label')?.textContent?.includes('partial responses'))!;
+    expect(partial.checked).toBe(false);
+    await click(partial);
+    await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
+    expect(patchConfig).toHaveBeenLastCalledWith({
+      retry: {
+        max_attempts: 7,
+        retry_partial_responses: true,
+        policies: [{
+          match: '^provider\\.rate_limit$',
+          models: ['example-model'],
+          providers: ['example-provider'],
+          max_attempts: 6,
+          backoff: 1000,
+          retry: true,
+        }],
+      },
+      replace_domains: ['retry'],
+    });
+  });
+
+  it('uses the default partial-response retry behavior when the server omits the field', async () => {
+    const container = await render(<RetryPolicyCard />);
+    const card = container.querySelector('#st-card-retry')!;
+    const partial = [...card.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+      .find((input) => input.closest('label')?.textContent?.includes('partial responses'))!;
+    expect(partial.checked).toBe(true);
   });
 
   it('saves worktree policy fields one at a time and validates the branch prefix', async () => {

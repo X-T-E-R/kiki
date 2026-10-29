@@ -15,6 +15,8 @@ import { useSavedTick } from './useSavedTick';
 interface PolicyDraft {
   readonly id: number;
   match: string;
+  models?: string[];
+  providers?: string[];
   maxAttempts: string;
   backoff: string;
   retry: boolean;
@@ -22,6 +24,7 @@ interface PolicyDraft {
 
 interface RetryDraft {
   maxAttempts: string;
+  retryPartialResponses: boolean;
   policies: PolicyDraft[];
 }
 
@@ -31,15 +34,25 @@ function numberText(value: unknown): string {
   return typeof value === 'number' ? String(value) : '';
 }
 
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const entries = value.filter((entry): entry is string => typeof entry === 'string');
+  return entries.length === value.length ? entries : undefined;
+}
+
 /** The config echo keeps retry's inner keys camelCase or snake_case depending on the path. */
 function draftFromConfig(config: KikiConfigResponse): RetryDraft {
   const raw = (config.retry ?? {}) as Record<string, unknown>;
   const policies = Array.isArray(raw['policies']) ? raw['policies'] as Record<string, unknown>[] : [];
+  const partialResponses = raw['retryPartialResponses'] ?? raw['retry_partial_responses'];
   return {
     maxAttempts: numberText(raw['maxAttempts'] ?? raw['max_attempts']),
+    retryPartialResponses: typeof partialResponses === 'boolean' ? partialResponses : true,
     policies: policies.map((policy) => ({
       id: ++policySeq,
       match: typeof policy['match'] === 'string' ? policy['match'] : '',
+      models: stringList(policy['models']),
+      providers: stringList(policy['providers']),
       maxAttempts: numberText(policy['maxAttempts'] ?? policy['max_attempts']),
       backoff: numberText(policy['backoff']),
       retry: policy['retry'] !== false,
@@ -71,6 +84,8 @@ function retryPatch(draft: RetryDraft, t: ReturnType<typeof useI18n>['t']): { pa
     if (isIssue(backoff)) return { issue: backoff };
     policies.push({
       match,
+      models: policy.models,
+      providers: policy.providers,
       ...(attempts === undefined ? {} : { max_attempts: attempts }),
       ...(backoff === undefined ? {} : { backoff }),
       retry: policy.retry,
@@ -80,6 +95,7 @@ function retryPatch(draft: RetryDraft, t: ReturnType<typeof useI18n>['t']): { pa
     patch: {
       retry: {
         ...(top === undefined ? {} : { max_attempts: top }),
+        retry_partial_responses: draft.retryPartialResponses,
         ...(policies.length === 0 ? {} : { policies }),
       },
       replace_domains: ['retry'],
@@ -167,6 +183,11 @@ export function RetryPolicyCard() {
               onChange={(event) => { update({ ...draft, maxAttempts: event.target.value }); }} />
           </label>
           {issueFor('max') !== null ? <p role="alert" className="text-[12px] text-danger">{issueFor('max')}</p> : null}
+          <div data-retry-partial-responses className="space-y-1">
+            <Toggle layout="row" label={t('st.retry.partialResponses')} checked={draft.retryPartialResponses}
+              onChange={(retryPartialResponses) => { update({ ...draft, retryPartialResponses }); }} />
+            <Hint>{t('st.retry.partialResponsesHint')}</Hint>
+          </div>
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
               <span className={FORM_LABEL}>{t('st.retry.policies')}</span>

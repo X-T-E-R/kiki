@@ -93,6 +93,7 @@ export type RetryPolicy = z.infer<typeof retryPolicySchema>;
 
 export const retryConfigSchema = z.object({
   max_attempts: z.number().int().min(1).optional(),
+  retry_partial_responses: z.boolean().optional(),
   policies: z.array(retryPolicySchema).optional(),
 }).strict();
 export type RetryConfig = z.infer<typeof retryConfigSchema>;
@@ -107,6 +108,7 @@ export const retryPolicyResponseSchema = z.object({
 }).strict();
 export const retryConfigResponseSchema = z.object({
   maxAttempts: z.number().int().min(1).optional(),
+  retryPartialResponses: z.boolean().optional(),
   policies: z.array(retryPolicyResponseSchema).optional(),
 }).strict();
 export type RetryConfigResponse = z.infer<typeof retryConfigResponseSchema>;
