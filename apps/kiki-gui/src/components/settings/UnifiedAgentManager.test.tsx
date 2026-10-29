@@ -2,6 +2,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
 import { updateNamedAgentProfileRequestSchema, type NamedAgentProfile } from '@kiki/protocol';
 import { readDraft, resetDraftMemoryForTests, writeDraft } from '@kiki/session-core/composer';
@@ -24,8 +25,12 @@ vi.mock('../../state/connection', () => ({
 // No `runAction` here on purpose: this file models a page that is not dirty,
 // so the handoff creates and leaves without a prompt. The cancel-the-leave order
 // is covered against the real guard in askKiki.dirtyOrder.test.tsx.
+// The guarded navigator records every call and still moves the router, so
+// `?agent=` opens and closes the in-page detail as it does in the app.
+const routerNavigate: { current: ((...args: unknown[]) => void) | null } = { current: null };
 vi.mock('../dirtyGuard', () => ({
-  useDirtyGuard: () => ({ confirmDiscard }), useGuardedNavigate: () => navigate,
+  useDirtyGuard: () => ({ confirmDiscard }),
+  useGuardedNavigate: () => (...args: unknown[]) => { navigate(...args); routerNavigate.current?.(...args); },
   useDirtyReporter: (id: string, dirty: boolean) => reportDirty(id, dirty),
 }));
 
@@ -52,7 +57,19 @@ const settle = async () => {
 };
 const buttonIn = (scope: ParentNode, value: string) => [...scope.querySelectorAll<HTMLButtonElement>('button')]
   .find((button) => button.textContent?.trim() === value)!;
-const sheet = () => document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+/** The open editing surface: the in-page profile detail, or the create panel. */
+const sheet = () => document.body.querySelector<HTMLElement>('[data-agent-create-panel] [role="dialog"]')
+  ?? document.body.querySelector<HTMLElement>('[data-detail-pane]')!;
+let currentSearch = '';
+function RouterProbe() {
+  const go = useNavigate();
+  routerNavigate.current = (target: unknown, options?: unknown) => {
+    if (typeof target === 'number') void go(target);
+    else void go(target as string, options as object);
+  };
+  currentSearch = useLocation().search;
+  return null;
+}
 async function typeIn(input: HTMLTextAreaElement | HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(
     input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value',
@@ -105,9 +122,9 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); queries.clear(); container.remove(); });
 async function render() {
-  await act(async () => root.render(<QueryClientProvider client={queries}><I18nProvider>
-    <UnifiedAgentManager />
-  </I18nProvider></QueryClientProvider>));
+  await act(async () => root.render(<MemoryRouter initialEntries={['/settings/agents']}><QueryClientProvider client={queries}><I18nProvider>
+    <RouterProbe /><UnifiedAgentManager />
+  </I18nProvider></QueryClientProvider></MemoryRouter>));
   await settle();
 }
 
@@ -183,7 +200,41 @@ describe('agents team view', () => {
   });
 });
 
-describe('profile editor sheet', () => {
+describe('profile editor detail', () => {
+  it('opens a profile in the page with a rail of names, addressed by ?agent=', async () => {
+    await render();
+    await open('reviewer');
+    expect(currentSearch).toBe('?agent=reviewer');
+    // In-page, not modal: no scrim, no dialog, the team table hidden but mounted.
+    expect(document.body.querySelector('[aria-modal="true"]')).toBeNull();
+    expect(container.querySelector('[data-detail-split="open"]')).not.toBeNull();
+    expect(container.querySelector<HTMLElement>('[data-detail-list]')!.hidden).toBe(true);
+    const rail = container.querySelector<HTMLElement>('[data-agent-rail]')!;
+    expect([...rail.querySelectorAll('[data-detail-rail-item]')].map((item) => item.getAttribute('data-detail-rail-item')))
+      .toEqual(['agent', 'explore', 'reviewer']);
+    expect(rail.querySelector('[data-detail-rail-item="reviewer"]')?.getAttribute('aria-current')).toBe('page');
+    // The rail switches profiles in place.
+    await act(async () => rail.querySelector<HTMLButtonElement>('[data-detail-rail-item="agent"]')!.click());
+    await settle();
+    expect(currentSearch).toBe('?agent=agent');
+    expect(sheet().querySelector('[data-agent-detail="agent"]')).not.toBeNull();
+  });
+
+  it('creates in a side panel and lands in the new profile detail', async () => {
+    const created = { ...explore, name: 'explore-fast', source: 'user', source_file: '/fixture/home/agents/explore-fast.md', workspace_id: 'ws-one' };
+    client.createAgentProfile.mockResolvedValue(created);
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-profile-new]')!.click());
+    expect(document.body.querySelector('[data-agent-create-panel] [role="dialog"]')).not.toBeNull();
+    await typeIn(sheet().querySelector<HTMLInputElement>('#new-profile-name')!, 'explore-fast');
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [main, sub, explore, created], complete: true });
+    await act(async () => buttonIn(sheet(), 'Create agent').click());
+    await settle();
+    expect(document.body.querySelector('[data-agent-create-panel]')).toBeNull();
+    expect(currentSearch).toBe('?agent=explore-fast');
+    expect(sheet().querySelector('[data-agent-detail="explore-fast"]')).not.toBeNull();
+  });
+
   it('puts the instructions first and saves only what changed', async () => {
     client.updateNamedAgentProfile.mockResolvedValue({ ...main, prompt: 'New instructions' });
     await render();
@@ -293,6 +344,7 @@ describe('profile editor sheet', () => {
     expect(sheet().querySelector('[data-alias-missing="true"]')).toBeNull();
     expect(sheet().querySelector('#profile-effort')?.textContent).toContain('Max');
     await act(async () => sheet().querySelector<HTMLButtonElement>('[data-agent-back]')!.click());
+    await settle();
     await open('agent');
     expect(sheet().querySelector('#lease-model-reviewer [data-alias-missing]')).toBeNull();
   });
@@ -421,7 +473,7 @@ describe('profile editor sheet', () => {
     expect(sheet().querySelector<HTMLButtonElement>('[data-profile-tab="raw"]')!.disabled).toBe(true);
   });
 
-  it('guards a dirty draft when the sheet closes and discards on request', async () => {
+  it('reports a dirty draft, discards on request, and closes through the guarded navigator', async () => {
     await render();
     await open('agent');
     await typeIn(sheet().querySelector<HTMLTextAreaElement>('#profile-prompt')!, 'Unsaved');
@@ -429,8 +481,13 @@ describe('profile editor sheet', () => {
     await act(async () => buttonIn(sheet(), 'Discard changes').click());
     expect(sheet().querySelector<HTMLTextAreaElement>('#profile-prompt')!.value).toBe('Old instructions');
     await act(async () => sheet().querySelector<HTMLButtonElement>('[data-agent-back]')!.click());
-    expect(confirmDiscard).toHaveBeenCalledWith('agent-raw:/fixture/agent/SYSTEM.md', expect.any(Function));
-    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    await settle();
+    await settle();
+    // Closing is a guarded navigation, so the shared leave prompt owns any draft.
+    expect(navigate).toHaveBeenLastCalledWith(-1);
+    expect(currentSearch).toBe('');
+    expect(document.body.querySelector('[data-detail-pane]')).toBeNull();
+    expect(document.body.querySelector('[aria-modal="true"]')).toBeNull();
   });
 
   it('edits the raw file as a separate mode and reloads the form from the echo', async () => {
@@ -624,7 +681,8 @@ it('requires an explicit save after a restricted TeamView default change', async
   await choose(container.querySelector<HTMLElement>('[data-team-row="agent"] [data-team-model] button')!, 'fixture/lite');
   await settle();
   expect(client.updateNamedAgentProfile).not.toHaveBeenCalled();
-  const review = container.querySelector<HTMLElement>('[data-team-menu-review="agent"]')!;
+  // The menu review is a popover anchored to the model cell, portaled to <body>.
+  const review = document.body.querySelector<HTMLElement>('[data-team-menu-review="agent"]')!;
   expect(review.querySelector('[data-menu-removed]')?.textContent).toContain('fixture/opus');
   await act(async () => review.querySelector<HTMLButtonElement>('[data-team-menu-save]')!.click());
   await settle();

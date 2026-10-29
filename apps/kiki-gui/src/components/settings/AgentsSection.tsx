@@ -48,7 +48,7 @@ import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
 import { SubagentDefaultTargetCard, SubagentOpenModeCard } from './SubagentsSection';
-import { UnifiedAgentManager } from './UnifiedAgentManager';
+import { AGENT_QUERY_PARAM, UnifiedAgentManager } from './UnifiedAgentManager';
 import { SubagentToolSettingsCard } from './subagentTools/ToolSettingsCard';
 import { useSavedTick } from './useSavedTick';
 import { AliasChips } from './profileEditor/fields';
@@ -772,8 +772,12 @@ export function AgentsSection() {
       ) : (
         <div className="space-y-4">
           <UnifiedAgentManager />
-          <AgentRuntimeCard />
-          <PromptConfigCard />
+          {/* While one profile is open the page is about that profile; the
+              page-wide cards come back with the list. */}
+          {new URLSearchParams(search).has(AGENT_QUERY_PARAM) ? null : <>
+            <AgentRuntimeCard />
+            <PromptConfigCard />
+          </>}
         </div>
       )}
     </div>

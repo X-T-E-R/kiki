@@ -2485,7 +2485,7 @@ async function scenarioSettingsAgents() {
   await shot('settings-agents-instructions');
   const savedPrompt = await prompt.inputValue();
   await prompt.fill(`${savedPrompt}\nVisual proof unsaved draft`);
-  await page.locator('[role="dialog"] [data-agent-back]').click();
+  await page.locator('[data-agent-detail] [data-agent-back]').click();
   await page.waitForSelector(`text=${S.dirtyDiscard}`, { timeout: 5000 });
   await shot('settings-agents-dirty-guard');
   await page.click(`text=${S.dirtyDiscard}`);
@@ -2502,13 +2502,13 @@ async function scenarioSettingsAgents() {
   await page.locator('#new-profile-prompt').fill('Help the user.');
   await page.waitForTimeout(300); // let the Save button's colour transition settle
   await shot('settings-agents-new');
-  await page.locator('[role="dialog"] [data-agent-back]').click();
+  await page.locator('[data-agent-create-panel]').getByRole('button', { name: /^(Close|关闭)$/ }).first().click();
   await page.click(`text=${S.dirtyDiscard}`).catch(() => undefined);
   await page.waitForSelector('[data-agent-create]', { state: 'detached', timeout: 5000 });
   await list.locator('[data-team-open="reviewer"]').click();
-  await page.locator('[role="dialog"] [data-profile-tab="advanced"]').click();
+  await page.locator('[data-agent-detail] [data-profile-tab="advanced"]').click();
   await shot('settings-agents-advanced');
-  await page.locator('[role="dialog"] [data-agent-back]').click();
+  await page.locator('[data-agent-detail] [data-agent-back]').click();
   await resizeViewport(390);
   const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   if (overflows) throw new Error('unified agents settings overflow the mobile viewport');

@@ -97,14 +97,8 @@ export function NewProfile({ workspaceId, workspaceOptions: providedWorkspaceOpt
     <span className="text-[12px] leading-snug text-ink-faint">{t(`st.profiles.start.${value}Hint` as I18nKey)}</span>
   </button>;
 
-  return <div data-agent-create className="min-w-0 max-w-[44rem] space-y-5">
-    <header className="flex items-center gap-3">
-      <button type="button" onClick={onCancel} data-agent-back
-        className="-ml-1 inline-flex min-h-9 items-center gap-1 rounded-md px-1 text-[13px] text-ink-soft hover:text-ink">
-        <span className="flex rotate-180"><Icon name="chevron" size={12} /></span>{t('st.profiles.team')}
-      </button>
-      <h3 className="font-display text-[18px] leading-tight text-ink">{t('st.agentManager.new')}</h3>
-    </header>
+  // Lives in a SidePanel (create tier); the panel owns the title and close.
+  return <div data-agent-create className="min-w-0 space-y-5">
     <div className="flex flex-wrap gap-2" role="group" aria-label={t('st.agentManager.template')}>
       {startCard('copy', 'agent')}{startCard('template', 'notes')}{startCard('blank', 'edit')}
     </div>

@@ -8,10 +8,13 @@
 
 export function createProfileEditorWalker({ page, shot, resizeViewport, setProofTheme, view, webUrl, fixtureUrl, fixtureToken, control }) {
   const url = (path) => `${webUrl}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl())}&token=${fixtureToken}`;
-  const sheet = () => page.locator('[role="dialog"]');
+  // The agent editor is an in-page detail, not a dialog.
+  const sheet = () => page.locator('[data-agent-detail]');
+  // Creating an agent is a side panel over the list.
+  const createPanel = () => page.locator('[data-agent-create-panel]');
   const assertNoOverflow = async (label) => {
     const overflow = await page.evaluate(() => {
-      const panel = document.querySelector('[role="dialog"]');
+      const panel = document.querySelector('[data-agent-detail]');
       const doc = document.documentElement.scrollWidth > window.innerWidth + 1;
       return doc || (panel instanceof HTMLElement && panel.scrollWidth > panel.clientWidth + 1);
     });
@@ -29,7 +32,7 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
   };
   const closeSheet = async () => {
     await sheet().locator('[data-agent-back]').first().click();
-    await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 5000 });
+    await page.waitForSelector('[data-agent-detail]', { state: 'detached', timeout: 5000 });
   };
   // The editor is tabbed: open the tab that owns the target before scrolling to it.
   const scrollTo = async (selector) => {
@@ -191,12 +194,12 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
     await page.locator('[data-profile-new]').click();
     await page.waitForSelector('[data-agent-create]', { timeout: 5000 });
     await shot(`profile-new-copy-${theme}`);
-    await sheet().locator('[data-new-start="blank"]').click();
-    await sheet().locator('#new-profile-name').fill('reviewer');
+    await createPanel().locator('[data-new-start="blank"]').click();
+    await createPanel().locator('#new-profile-name').fill('reviewer');
     await page.waitForTimeout(200);
     await shot(`profile-new-blank-taken-${theme}`);
-    await sheet().locator('#new-profile-name').fill('');
-    await sheet().locator('[data-agent-back]').first().click();
+    await createPanel().locator('#new-profile-name').fill('');
+    await createPanel().getByRole('button', { name: /^(Close|关闭)$/ }).first().click();
     await page.locator('[role="alertdialog"] button').filter({ hasText: /Discard|丢弃/ }).first().click({ timeout: 2000 }).catch(() => undefined);
     await page.waitForSelector('[data-agent-create]', { state: 'detached', timeout: 5000 });
   }
@@ -233,7 +236,7 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
     await page.waitForSelector('[data-agent-create]', { timeout: 5000 });
     await assertNoOverflow('new profile at 390');
     await shot(`profile-new-390-${theme}`);
-    await sheet().locator('[data-agent-back]').first().click();
+    await createPanel().getByRole('button', { name: /^(Close|关闭)$/ }).first().click();
     // A copy start is a draft already; the leave guard asks before dropping it.
     await page.locator('[role="alertdialog"] button').filter({ hasText: /Discard|丢弃/ }).first().click({ timeout: 2000 }).catch(() => undefined);
     await page.waitForSelector('[data-agent-create]', { state: 'detached', timeout: 5000 });

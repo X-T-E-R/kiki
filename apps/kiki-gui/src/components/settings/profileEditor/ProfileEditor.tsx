@@ -9,6 +9,7 @@ import { formatCompactTokens } from '../../../lib/autoCompact';
 import { useConnection } from '../../../state/connection';
 import { FeedbackLine, Toggle, type Feedback } from '../../controls';
 import { Icon } from '../../icons';
+import { DetailBack } from '../../overlays/DetailSplit';
 import { SearchableSelect } from '../../SearchableSelect';
 import { useGuardedNavigate } from '../../dirtyGuard';
 import { sourceBadgeLabel } from '../../agent-panel/SourceBadge';
@@ -218,7 +219,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
     tabRefs.current.get(next)?.focus();
   };
 
-  const identityPanel = <div className="grid min-w-0 gap-8 lg:grid-cols-[minmax(0,1fr)_20rem]">
+  const identityPanel = <div className="grid min-w-0 gap-8 @3xl:grid-cols-[minmax(0,1fr)_20rem]">
     <div className="flex min-w-0 flex-col gap-1.5" data-profile-prompt>
       <div className="flex items-baseline justify-between gap-2">
         <label htmlFor="profile-prompt" className="text-[12px] font-medium text-ink-soft">{t('st.profiles.prompt')}</label>
@@ -367,7 +368,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
     </button> : null}
   </div>;
 
-  const advancedPanel = <div className="grid min-w-0 gap-10 lg:grid-cols-2" data-profile-section="advanced">
+  const advancedPanel = <div className="grid min-w-0 gap-10 @3xl:grid-cols-2" data-profile-section="advanced">
     <div className="min-w-0 space-y-6">
       <Field label={t('st.namedAgents.serviceTier')} applicability={fieldState('service_tier')} engine={engine} dataField="serviceTier">
         <SettingsSegmented<ProfileDraft['serviceTier']> ariaLabel={t('st.namedAgents.serviceTier')} value={draft.serviceTier} disabled={disabled}
@@ -405,12 +406,11 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
 
   return <div data-agent-detail={profile.name} data-profile-editor className="flex min-h-0 min-w-0 flex-col gap-5">
     <header className="flex flex-wrap items-start gap-x-4 gap-y-3">
-      <button type="button" onClick={onClose} data-agent-back aria-label={t('st.profiles.backToTeam')}
-        className="-ml-1 inline-flex min-h-9 items-center gap-1 rounded-md px-1 text-[13px] text-ink-soft hover:text-ink">
-        <Icon name="arrowLeft" size={14} /><span className="max-sm:sr-only">{t('st.profiles.team')}</span>
-      </button>
+      <div className="basis-full md:hidden">
+        <DetailBack label={t('st.profiles.team')} onClick={onClose} data={{ 'data-agent-back': '' }} />
+      </div>
       <div className="min-w-0 flex-1 basis-[16rem]">
-        <h3 className="flex flex-wrap items-center gap-x-2 gap-y-1 font-display text-[20px] leading-tight text-ink">
+        <h3 data-detail-heading tabIndex={-1} className="flex flex-wrap items-center gap-x-2 gap-y-1 font-display text-[20px] leading-tight text-ink outline-none">
           <span className="min-w-0 break-words">{profile.name}</span>
           <span className="rounded-[4px] bg-ink/[0.05] px-1.5 font-sans text-[11.5px] font-normal leading-[18px] text-ink-soft">
             {t(draft.main ? 'st.agentManager.main' : 'st.agentManager.subagent')}</span>
@@ -430,13 +430,17 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
           onChange={(enabled) => { void onToggleEnabled(enabled).catch((error: unknown) => setFeedback({ tone: 'error', text: errorText(locale, error) })); }} />
         <button type="button" className={SECONDARY_BUTTON} onClick={onDuplicate}>{t('st.profiles.duplicate')}</button>
         <button type="button" className={SECONDARY_BUTTON} disabled={newSessionBlocked} onClick={onNewSession}>{t('st.namedAgents.newSession')}</button>
+        <button type="button" onClick={onClose} aria-label={t('st.profiles.backToTeam')} title={t('st.profiles.backToTeam')} data-detail-close
+          className="hidden h-8 w-8 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink md:flex">
+          <Icon name="close" size={14} />
+        </button>
       </div>
     </header>
     {!writable ? <p data-profile-readonly className="text-[12.5px] text-ink-soft">{t('st.profiles.readOnlyExplain')} <button type="button" onClick={onDuplicate}
       className="underline decoration-ink-faint underline-offset-2 hover:text-ink">{t('st.profiles.duplicateToEdit')}</button></p> : null}
     <DiagnosticsList diagnostics={diagnostics} onOpenWinner={onOpenWinner} />
     <div role="tablist" aria-label={t('st.profiles.editMode')} data-profile-tabs
-      className="sticky -top-4 z-10 -mx-1 flex min-w-0 shrink-0 gap-1 overflow-x-auto border-b border-hairline bg-canvas px-1 sm:-top-6">
+      className="sticky top-0 z-10 -mx-1 flex min-w-0 shrink-0 gap-1 overflow-x-auto border-b border-hairline bg-canvas px-1">
       {tabs.map((item) => {
         const active = item === tab;
         const locked = item === 'raw' && rawLocked;
@@ -460,7 +464,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
     {tab === 'raw' ? <div role="tabpanel" id="profile-panel-raw" aria-labelledby="profile-tab-raw" data-profile-panel="raw">
       <RawPanel profile={profile} writable={writable} reloadToken={rawReload} onSaved={accept} />
     </div> : null}
-    {writable && tab !== 'raw' ? <div className="sticky bottom-0 -mx-1 mt-auto bg-canvas/95 px-1 backdrop-blur-sm">
+    {writable && tab !== 'raw' ? <div className="sticky bottom-0 z-10 -mx-1 mt-auto border-t border-transparent bg-canvas/95 px-1 backdrop-blur-sm has-[[data-settings-draft]:not([hidden])]:border-hairline has-[[data-settings-draft]:not([hidden])]:pb-3">
       <SettingsDraftFooter saved={justSaved} id={`agent-detail:${profile.source}:${profile.source_file ?? ''}:${profile.name}`} dirty={dirty} saving={saving}
         saveDisabled={problems.length > 0 || !menuPreview.ready} onSave={() => void save()} onDiscard={() => { setDraft(baseline); setFeedback(null); }}
         extra={problemText !== null && dirty ? <span role="alert" className="text-[12px] text-danger">{problemText}</span>

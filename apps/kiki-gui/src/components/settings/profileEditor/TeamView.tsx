@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useMemo, useRef, useState } from 'react';
 
 import type { ModelCatalogItem } from '@kiki/protocol';
 import { useI18n } from '../../../i18n';
@@ -13,6 +13,7 @@ import { dispatchFieldsOf, EFFORTS, effortLabel, isExternalExecutor } from './pr
 import { ModelMenuPreview } from './ModelMenuPreview';
 import { useModelMenuPreview } from './useModelMenuPreview';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
+import { AnchoredPopover } from '../../overlays';
 
 /** Names the "Dispatches" cell shows before collapsing the rest into +N. */
 const DISPATCH_SHOWN = 2;
@@ -72,6 +73,9 @@ export function TeamView({ rows, models, onOpen, onQuickSave, savingKey, onNew, 
 }) {
   const { t, tp, locale } = useI18n();
   const [pendingModel, setPendingModel] = useState<{ key: string; alias: string }>();
+  // The menu review for a pinned model opens anchored to that row's model cell.
+  const pendingAnchor = useRef<HTMLElement | null>(null);
+  const pendingRow = pendingModel === undefined ? undefined : rows.find((row) => row.key === pendingModel.key);
   const modelIds = useMemo(() => new Set(models.map((model) => model.id)), [models]);
   const sorts = useMemo<readonly ListSortSpec<TeamRow>[]>(() => [
     { id: 'order', label: t('st.list.sort.order'), compare: () => 0 },
@@ -141,6 +145,17 @@ export function TeamView({ rows, models, onOpen, onQuickSave, savingKey, onNew, 
         title={t(view.narrowed ? 'st.profiles.teamNoMatch' : 'st.profiles.teamEmpty')}
         action={view.narrowed ? undefined : newButton} onClear={view.narrowed ? view.clear : undefined} /> : null}
     </div>
+    {pendingModel !== undefined && pendingRow !== undefined ? (
+      <AnchoredPopover open id="team-menu-review" anchorRef={pendingAnchor} onClose={() => setPendingModel(undefined)}
+        label={t('st.profiles.modelFor', { name: pendingRow.profile.name })} widthClassName="w-[26rem]"
+        data={{ 'data-team-menu-review': pendingRow.profile.name }}>
+        <QuickModelMenuReview profile={pendingRow.profile} alias={pendingModel.alias} disabled={savingKey === pendingRow.key}
+          onCancel={() => setPendingModel(undefined)} onSave={() => {
+            onQuickSave(pendingRow, { pinned_model_alias: pendingModel.alias === '' ? null : pendingModel.alias });
+            setPendingModel(undefined);
+          }} />
+      </AnchoredPopover>
+    ) : null}
   </div>;
 
   function renderRow(row: TeamRow) {
@@ -161,7 +176,7 @@ export function TeamView({ rows, models, onOpen, onQuickSave, savingKey, onNew, 
     return <Fragment key={row.key}><tr data-team-row={profile.name} data-team-source={profile.source}
       className={`align-top max-sm:flex max-sm:flex-wrap max-sm:gap-x-3 max-sm:border-b max-sm:border-hairline max-sm:py-2.5 ${muted ? 'text-ink-faint' : ''}`}>
       <td className="border-b border-hairline py-2 pr-3 max-sm:w-full max-sm:border-0 max-sm:p-0">
-        <button type="button" onClick={() => onOpen(row)} data-team-open={profile.name}
+        <button type="button" onClick={() => onOpen(row)} data-team-open={profile.name} data-detail-trigger={profile.name}
           className="group -mx-1 flex min-h-10 w-full min-w-0 flex-col items-start justify-center rounded-md px-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/50">
           <span className="flex w-full min-w-0 items-center gap-1.5">
             <span className={`min-w-0 truncate font-medium group-hover:underline group-hover:decoration-ink-faint group-hover:underline-offset-2 ${shadowed ? 'line-through decoration-ink-faint/60' : muted ? '' : 'text-ink'}`}>{displayName(profile, locale)}</span>
@@ -179,7 +194,8 @@ export function TeamView({ rows, models, onOpen, onQuickSave, savingKey, onNew, 
             ? <span className="w-full truncate text-[12px] text-ink-faint">{profile.description}</span> : null}
         </button>
       </td>
-      <td className="border-b border-hairline py-2 pr-3 max-sm:border-0 max-sm:p-0" data-team-model>
+      <td className="border-b border-hairline py-2 pr-3 max-sm:border-0 max-sm:p-0" data-team-model
+        ref={(node) => { if (pendingModel?.key === row.key) pendingAnchor.current = node; }}>
         {quickEditable && !external ? <SearchableSelect id={`team-model-${row.key}`} value={alias} allowCustomValue
           options={modelChoices(alias)} ariaLabel={t('st.profiles.modelFor', { name: profile.name })} searchPlaceholder="provider/model"
           triggerSuffix={aliasMissing ? <Icon name="warning" size={12} className="shrink-0 text-amber-ink" /> : undefined}
@@ -220,15 +236,7 @@ export function TeamView({ rows, models, onOpen, onQuickSave, savingKey, onNew, 
         </span>
       </td>
     </tr>
-    {pendingModel?.key === row.key ? <tr data-team-menu-review={profile.name} className="max-sm:block">
-      <td colSpan={4} className="border-b border-hairline py-3 max-sm:block">
-        <QuickModelMenuReview profile={profile} alias={pendingModel.alias} disabled={saving}
-          onCancel={() => setPendingModel(undefined)} onSave={() => {
-            onQuickSave(row, { pinned_model_alias: pendingModel.alias === '' ? null : pendingModel.alias });
-            setPendingModel(undefined);
-          }} />
-      </td>
-    </tr> : null}</Fragment>;
+    </Fragment>;
   }
 }
 
