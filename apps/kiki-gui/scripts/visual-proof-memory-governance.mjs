@@ -79,6 +79,55 @@ const scenarios = [
     },
   },
   {
+    // Export a real file, edit it, import it back through the preview, and
+    // confirm; then import the now-outdated file again and get the conflict.
+    name: 'memory-markdown',
+    fixture: 'memory-governance',
+    matrix: ['width'],
+    run: async ({ page, view, link, shot }) => {
+      const phone = view.width <= 600;
+      await page.goto(link('/memory'), { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('[data-memory-store="governed"]', { timeout: 30_000 });
+      await openEntry(page, 'm_deploy_workers');
+      const [download] = await Promise.all([page.waitForEvent('download', { timeout: 15_000 }), page.locator('[data-memory-export]').click()]);
+      const name = download.suggestedFilename();
+      const stream = await download.createReadStream();
+      const chunks = [];
+      for await (const chunk of stream) chunks.push(chunk);
+      const exported = Buffer.concat(chunks).toString('utf8');
+      if (!exported.startsWith('---\n{') || !exported.includes('"format": "kiki-memory-v1"')) throw new Error(`export is not a memory file: ${exported.slice(0, 80)}`);
+      const edited = exported.replace('Use 5 workers', 'Use 4 workers');
+
+      const back = page.locator('[data-memory-detail-back]');
+      if (await back.isVisible().catch(() => false)) await back.click();
+      const importFile = async (text) => {
+        await page.locator('[data-memory-import-open]').click();
+        await page.locator('[data-memory-import] input[type="file"]').setInputFiles({ name, mimeType: 'text/markdown', buffer: Buffer.from(text) });
+        await page.waitForFunction((file) => document.querySelector('[data-memory-import-file]')?.getAttribute('data-memory-import-file') === file, name, { timeout: 10_000 });
+        await page.locator('[data-memory-import-reason]').fill(view.locale === 'zh' ? '复盘后改为 4 个' : 'Lowered after the review');
+        if (!phone) await shot(text === edited ? 'import-form' : 'import-conflict-form');
+        await page.locator('[data-memory-import-preview]').click();
+        await page.waitForSelector('[data-memory-import-preview-result]', { timeout: 15_000 });
+      };
+      await importFile(edited);
+      if (await page.locator('[data-memory-import-incoming]').innerText().then((text) => !text.includes('Use 4 workers'))) throw new Error('preview does not show the file');
+      await shot('import-preview');
+      await page.locator('[data-memory-import-confirm="update"]').click();
+      await page.waitForSelector('[data-memory-import-applied="m_deploy_workers"]', { timeout: 15_000 });
+      await shot('import-applied');
+      await page.locator('[data-memory-import-open="m_deploy_workers"]').click();
+      await page.waitForFunction(() => document.querySelector('[data-memory-read="m_deploy_workers"]')?.textContent?.includes('Use 4 workers'), null, { timeout: 15_000 });
+      if (!phone) await shot('import-readback');
+
+      // The original export still names the revision before this import.
+      if (await back.isVisible().catch(() => false)) await back.click();
+      await importFile(exported);
+      await page.waitForSelector('[data-memory-import-issue="revision_conflict"]', { timeout: 15_000 });
+      if (await page.locator('[data-memory-import-confirm]').count() !== 0) throw new Error('conflicting import offers confirm');
+      await shot('import-conflict');
+    },
+  },
+  {
     name: 'memory-governance-readonly',
     fixture: 'memory-governance-readonly',
     matrix: ['width'],
@@ -91,6 +140,7 @@ const scenarios = [
       for (const selector of ['[data-memory-edit]', '[data-memory-delete]', '[data-memory-forget-open]', '[data-memory-detail] [data-memory-undo]']) {
         if (await page.locator(selector).count() !== 0) throw new Error(`${selector} offered in read-only recovery`);
       }
+      if (await page.locator('[data-memory-export]').count() !== 1) throw new Error('Export missing in read-only recovery');
       await page.waitForSelector('[data-memory-decision-current="true"]', { timeout: 15_000 });
       await shot('readonly-detail');
       if (view.width > 600) {

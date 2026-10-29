@@ -165,6 +165,9 @@ export function MemoryWriteHold() {
 
 /** A source as a reader recognises it: where it came from, else its own words. */
 function sourceText(source: MemoryEvidenceSource): { readonly head: string; readonly body?: string } {
+  // An imported Markdown file is kept whole; its header is bookkeeping, the body is what was learned.
+  const file = /^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]*)$/u.exec(source.payload);
+  if (file !== null) return { head: source.locator !== undefined && source.locator !== '' ? source.locator : source.id, body: file[1]!.trim() };
   let payload: unknown;
   try { payload = JSON.parse(source.payload); } catch { payload = undefined; }
   const record = payload !== null && typeof payload === 'object' ? payload as Record<string, unknown> : undefined;

@@ -749,6 +749,55 @@ export interface MemoryForgetPreview {
   readonly targets: readonly { readonly id: string; readonly expectedRevision: string; readonly entry: MemoryEntry | null }[];
 }
 
+/** The owner a Markdown file names, in the store's own camelCase shape. */
+export type MemoryMarkdownScope =
+  | { readonly kind: 'global' }
+  | { readonly kind: 'workspace'; readonly workspaceId: string }
+  | { readonly kind: 'persona'; readonly personaId: string }
+  | { readonly kind: 'persona_workspace'; readonly workspaceId: string; readonly personaId: string };
+
+/**
+ * One parsed `kiki-memory-v1` file. `id: 'new'` with `revision: null` creates;
+ * an existing id carries the revision and origin it was exported at.
+ */
+export interface MemoryMarkdownDocument {
+  readonly format: 'kiki-memory-v1';
+  readonly scope: MemoryMarkdownScope;
+  readonly id: string;
+  readonly revision: string | null;
+  readonly origin: { readonly id: string; readonly revision: string } | null;
+  readonly source: MemoryEntry['source'];
+  readonly type: MemoryType;
+  readonly title: string;
+  readonly body: string;
+  readonly status: MemoryStatus;
+  readonly pinned: boolean;
+  readonly basis?: MemoryBasis;
+  readonly validity: MemoryValidity | null;
+}
+
+/**
+ * `POST /memory/{scope}/import-preview`. Only `canApply` with a
+ * `previewToken` can be confirmed; `retained` means this exact file was
+ * already imported, `unchanged` means it matches the current entry.
+ */
+export interface MemoryImportPreview {
+  readonly incoming: MemoryMarkdownDocument;
+  readonly current: MemoryEntry | null;
+  readonly action: 'create' | 'update' | 'unchanged' | 'retained';
+  readonly canApply: boolean;
+  readonly previewToken?: string;
+  readonly expiresAt?: string;
+  readonly issue?: { readonly code: string; readonly recovery: string };
+}
+
+export interface MemoryPutResult {
+  readonly entry: MemoryEntry;
+  readonly operationId: string | null;
+  readonly outcome?: MemoryWriteOutcome;
+  readonly warnings?: readonly string[];
+}
+
 export interface CapabilityStatus {
   readonly id: 'kimi-cu' | 'kimi-webbridge' | 'kiki-computer' | 'kiki-browser';
   readonly pluginId?: string;
@@ -3048,6 +3097,24 @@ export class KikiClient {
 
   resumeMemoryEditing(recoveryId: string, expectedEpoch: number): Promise<MemoryAuthorityState> {
     return this.memoryRequest('POST', '/memory/authority/resume-editing', { body: { recovery_id: recoveryId, expected_epoch: expectedEpoch } });
+  }
+
+  /** The entry's current revision as one complete `kiki-memory-v1` file. */
+  exportMemoryMarkdown(target: MemoryTarget, id: string, signal?: AbortSignal): Promise<{ readonly markdown: string; readonly entry: MemoryEntry }> {
+    return this.memoryRequest('GET', `/memory/${target.scope}/${encodeURIComponent(id)}/export`, { target, signal });
+  }
+
+  previewMemoryImport(target: MemoryTarget, input: { readonly markdown: string; readonly sourceLocator: string; readonly reason: string }, signal?: AbortSignal): Promise<MemoryImportPreview> {
+    return this.memoryRequest('POST', `/memory/${target.scope}/import-preview`, {
+      target, signal, body: { markdown: input.markdown, source_locator: input.sourceLocator, reason: input.reason },
+    });
+  }
+
+  /** Applies exactly the previewed file; `operationId` makes a retried confirmation the same write. */
+  applyMemoryImport(target: MemoryTarget, previewToken: string, operationId: string): Promise<MemoryPutResult> {
+    return this.memoryRequest('POST', `/memory/${target.scope}/import`, {
+      target, body: { preview_token: previewToken, operation_id: operationId, confirm_import: true },
+    });
   }
 
   private async memoryRequest<T>(

@@ -74,6 +74,7 @@ import { memoryTargetKey, personaMemoryTarget } from './persona/PersonaMemorySco
 import { usePersonaList } from './persona/usePersonas';
 import { MemoryAuthorityContext, useMemoryAuthority, useMemoryAuthorityQuery } from './memory/memoryAuthority';
 import { MemoryForgetDialog, MemoryGovernancePanel, MemoryStoreStatus, MemoryWriteHold } from './memory/MemoryGovernance';
+import { MemoryExportButton, MemoryImportButton } from './memory/MemoryMarkdown';
 
 export const MEMORY_SETTINGS_QUERY_KEY = ['memory-settings'] as const;
 /** One dirty seat for the memory editor; the guard keys everything by it. */
@@ -758,6 +759,14 @@ function MemoryScopeView({
                     >
                       {t('memory.new')}
                     </button>
+                    <MemoryImportButton
+                      target={target}
+                      onOpenEntry={(id) => {
+                        refresh();
+                        setSearch(''); setTypeFilter('all'); setCreating(false);
+                        setSelectedId(`${targetKey(target)}:${id}`);
+                      }}
+                    />
                   </div>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
                     <div role="group" aria-label={t('memory.filter.aria')} className="flex flex-wrap items-center gap-1">
@@ -1071,6 +1080,8 @@ function MemoryDetail({
             {t('memory.openSource')}
           </button>
         ) : null}
+        {/* Export only reads, so it stays offered while edits are held. */}
+        {governed && !editing ? <MemoryExportButton target={target} entry={entry} /> : null}
         {/* Delete is undoable and Forget is not, so they sit apart: Forget is
             only offered by the governed store, and only behind its own preview. */}
         {!editing && writable ? (

@@ -2176,3 +2176,192 @@ describe('MemoryPage governed store', () => {
     expect(panel).toContain('No decisions recorded yet.');
   });
 });
+
+describe('MemoryPage Markdown round trip', () => {
+  const sqlite = { version: 1, epoch: 3, backend: 'sqlite', mode: 'active', migrationId: '00000000-0000-4000-8000-000000000001' } as const;
+  const current = () => fixtureEntry({ id: 'm_deploy', title: 'Deployment procedure', body: 'Use 5 workers.', revision: 'mem2:rev-current' });
+  const exported = '---\n{"format":"kiki-memory-v1","scope":{"kind":"global"},"id":"m_deploy","revision":"mem2:rev-current"}\n---\nUse 4 workers.\n';
+  const incoming = { format: 'kiki-memory-v1', scope: { kind: 'global' }, id: 'm_deploy', revision: 'mem2:rev-current', origin: { id: 'm_deploy', revision: 'mem2:rev-current' }, source: { writer: 'user' }, type: 'feedback', title: 'Deployment procedure', body: 'Use 4 workers.', status: 'active', pinned: false, validity: null } as const;
+  const appliable = (token = 'token-1') => ({ incoming, current: current(), action: 'update', canApply: true, previewToken: token, expiresAt: new Date(Date.now() + 600_000).toISOString() } as const);
+
+  function governed() {
+    seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryProvenance').mockResolvedValue({ sources: [], adjudications: [], relatedObjectIds: ['m_deploy'] });
+    return vi.spyOn(client, 'memoryAuthority').mockResolvedValue(sqlite);
+  }
+  const dialog = () => document.querySelector<HTMLElement>('[data-memory-import]')!;
+  const button = (selector: string) => document.querySelector<HTMLButtonElement>(selector);
+  async function press(selector: string) {
+    await act(async () => { button(selector)!.click(); });
+    await flush();
+  }
+  async function type(selector: string, value: string) {
+    const input = document.querySelector<HTMLInputElement>(selector)!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+  async function chooseFile(text: string, name = 'deployment-procedure-m_deploy.md') {
+    const input = dialog().querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, 'files', { value: [new File([text], name, { type: 'text/markdown' })], configurable: true });
+    await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })); });
+    await flush();
+  }
+  async function openFilled(container: HTMLElement) {
+    await click(container, '[data-memory-import-open]');
+    await chooseFile(exported);
+    await type('[data-memory-import-reason]', 'Lowered after review');
+  }
+
+  it('exports the current revision as a Markdown download, also while edits are held', async () => {
+    const authority = governed();
+    authority.mockResolvedValue({ ...sqlite, mode: 'readonly', recoveryId: 'recovery-1' });
+    const exportMarkdown = vi.spyOn(client, 'exportMemoryMarkdown').mockResolvedValue({ markdown: exported, entry: current() });
+    const createUrl = vi.fn((_blob: Blob) => 'blob:example');
+    Object.assign(URL, { createObjectURL: createUrl, revokeObjectURL: vi.fn() });
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const container = await renderPage();
+    expect(container.querySelector<HTMLButtonElement>('[data-memory-import-open]')!.disabled).toBe(true);
+    await click(container, '[data-memory-row="m_deploy"]');
+    await click(container, '[data-memory-export]');
+    expect(exportMarkdown).toHaveBeenCalledWith({ scope: 'global' }, 'm_deploy');
+    expect(createUrl.mock.calls[0]![0].type).toBe('text/markdown;charset=utf-8');
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    expect(getToasts().some((toast) => toast.text === 'Exported deployment-procedure-m_deploy.md')).toBe(true);
+  });
+
+  it('previews the file against the stored entry, confirms only the token once, and reads the entry back', async () => {
+    governed();
+    const preview = vi.spyOn(client, 'previewMemoryImport').mockResolvedValue(appliable());
+    const apply = vi.spyOn(client, 'applyMemoryImport').mockResolvedValue({ entry: { ...current(), body: 'Use 4 workers.', revision: 'mem2:rev-next' }, operationId: 'op' });
+    const read = vi.spyOn(client, 'getMemory').mockResolvedValue({ ...current(), body: 'Use 4 workers.', revision: 'mem2:rev-next', reason: 'Lowered after review' });
+    const container = await renderPage();
+    await openFilled(container);
+    expect(document.querySelector<HTMLInputElement>('[data-memory-import-locator]')!.value).toBe('deployment-procedure-m_deploy.md');
+    expect(button('[data-memory-import-confirm]')).toBeNull();
+    await press('[data-memory-import-preview]');
+    expect(preview).toHaveBeenCalledWith({ scope: 'global' }, { markdown: exported, sourceLocator: 'deployment-procedure-m_deploy.md', reason: 'Lowered after review' });
+    expect(dialog().querySelector('[data-memory-import-current]')!.textContent).toContain('Use 5 workers.');
+    expect(dialog().querySelector('[data-memory-import-incoming]')!.textContent).toContain('Use 4 workers.');
+    await act(async () => { button('[data-memory-import-confirm="update"]')!.click(); button('[data-memory-import-confirm="update"]')!.click(); });
+    await flush();
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(apply.mock.calls[0]![1]).toBe('token-1');
+    expect(apply.mock.calls[0]![2]).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(read).toHaveBeenCalledWith({ scope: 'global' }, 'm_deploy');
+    expect(document.querySelector('[data-memory-import-applied="m_deploy"]')!.textContent).toContain('Lowered after review');
+  });
+
+  it('offers no confirm for a conflicting file, and previews again after a stale token without losing the file', async () => {
+    governed();
+    const preview = vi.spyOn(client, 'previewMemoryImport')
+      .mockResolvedValueOnce({ incoming, current: { ...current(), revision: 'mem2:rev-newer' }, action: 'update', canApply: false, issue: { code: 'revision_conflict', recovery: 'Export the current entry again.' } })
+      .mockResolvedValueOnce(appliable('token-a'))
+      .mockResolvedValueOnce(appliable('token-b'));
+    const apply = vi.spyOn(client, 'applyMemoryImport')
+      .mockRejectedValueOnce(new ApiError({ code: MEMORY_REVISION_CONFLICT, msg: 'revision conflict', data: null, details: { code: 'revision_conflict', recovery: 'x' } }))
+      .mockResolvedValue({ entry: current(), operationId: 'op' });
+    vi.spyOn(client, 'getMemory').mockResolvedValue(current());
+    const container = await renderPage();
+    await openFilled(container);
+    await press('[data-memory-import-preview]');
+    expect(dialog().querySelector('[data-memory-import-issue="revision_conflict"]')!.textContent).toContain('Export the current version');
+    expect(dialog().textContent).not.toContain('Export the current entry again.');
+    expect(button('[data-memory-import-confirm]')).toBeNull();
+    expect(button('[data-memory-import-export-current]')).not.toBeNull();
+    await type('[data-memory-import-reason]', 'Merged the newer revision');
+    expect(dialog().querySelector('[data-memory-import-issue]')).toBeNull();
+    await press('[data-memory-import-preview]');
+    await press('[data-memory-import-confirm="update"]');
+    expect(dialog().querySelector('[data-memory-import-stale="refused"]')).not.toBeNull();
+    expect(button('[data-memory-import-confirm]')).toBeNull();
+    const firstOperation = apply.mock.calls[0]![2];
+    await press('[data-memory-import-preview]');
+    expect(preview).toHaveBeenCalledTimes(3);
+    expect(preview.mock.calls[2]![1].markdown).toBe(exported);
+    await press('[data-memory-import-confirm="update"]');
+    expect(apply.mock.calls[1]![1]).toBe('token-b');
+    expect(apply.mock.calls[1]![2]).not.toBe(firstOperation);
+  });
+
+  it('lets an expired preview of a new entry be previewed again from the same file', async () => {
+    governed();
+    const fresh = { ...incoming, id: 'new', revision: null, origin: null, title: 'Release freeze' } as const;
+    const preview = vi.spyOn(client, 'previewMemoryImport')
+      .mockResolvedValueOnce({ incoming: fresh, current: null, action: 'create', canApply: true, previewToken: 'token-old', expiresAt: new Date(Date.now() - 1_000).toISOString() })
+      .mockRejectedValueOnce(new ApiError({ code: 40001, msg: 'Memory import preview is invalid, expired or from a different authority state', data: null, details: { code: 'invalid_input', recovery: 'Preview again.' } }));
+    const container = await renderPage();
+    await openFilled(container);
+    await press('[data-memory-import-preview]');
+    expect(dialog().querySelector('[data-memory-import-stale="expired"]')).not.toBeNull();
+    expect(dialog().querySelector('[data-memory-import-current]')!.textContent).toContain('Nothing stored yet.');
+    expect(button('[data-memory-import-confirm]')).toBeNull();
+    expect(button('[data-memory-import-export-current]')).toBeNull();
+    await press('[data-memory-import-preview]');
+    expect(preview).toHaveBeenCalledTimes(2);
+    expect(preview.mock.calls[1]![1].markdown).toBe(exported);
+  });
+
+  it('closes the confirmation for a forgotten source instead of asking to export it', async () => {
+    governed();
+    vi.spyOn(client, 'previewMemoryImport').mockResolvedValue(appliable());
+    const apply = vi.spyOn(client, 'applyMemoryImport').mockRejectedValue(new ApiError({ code: 40001, msg: 'This exact Markdown source has been forgotten', data: null, details: { code: 'inactive_target', recovery: 'Use a distinct new source.' } }));
+    const container = await renderPage();
+    await openFilled(container);
+    await press('[data-memory-import-preview]');
+    await press('[data-memory-import-confirm="update"]');
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(dialog().querySelector('[data-memory-import-closed]')).not.toBeNull();
+    expect(button('[data-memory-import-confirm]')).toBeNull();
+    expect(button('[data-memory-import-preview]')).toBeNull();
+    expect(button('[data-memory-import-export-current]')).toBeNull();
+  });
+
+  it('holds the confirmation when the store turns read-only, and drops the token when the epoch moves', async () => {
+    governed();
+    vi.spyOn(client, 'previewMemoryImport').mockResolvedValue(appliable());
+    const apply = vi.spyOn(client, 'applyMemoryImport');
+    const { container, queryClient } = await mountPage();
+    await openFilled(container);
+    await press('[data-memory-import-preview]');
+    expect(button('[data-memory-import-confirm="update"]')).not.toBeNull();
+    await act(async () => { queryClient.setQueryData(['memory-authority'], { ...sqlite, epoch: 4, mode: 'readonly', recoveryId: 'recovery-1' }); });
+    await flush();
+    expect(document.querySelector('[data-memory-import-held="readonly"]')).not.toBeNull();
+    expect(dialog().querySelector('[data-memory-import-stale="moved"]')).not.toBeNull();
+    expect(button('[data-memory-import-confirm]')).toBeNull();
+    expect(button('[data-memory-import-preview]')!.disabled).toBe(true);
+    await act(async () => { button('[data-memory-import-preview]')!.click(); });
+    expect(apply).not.toHaveBeenCalled();
+    await act(async () => { queryClient.setQueryData(['memory-authority'], { ...sqlite, epoch: 5 }); });
+    await flush();
+    expect(document.querySelector('[data-memory-import-held]')).toBeNull();
+    expect(button('[data-memory-import-confirm]')).toBeNull();
+    expect(button('[data-memory-import-preview]')!.disabled).toBe(false);
+  });
+
+  it('explains a file from another scope in its own words and keeps it for retry', async () => {
+    governed();
+    vi.spyOn(client, 'previewMemoryImport').mockRejectedValue(new ApiError({ code: 40001, msg: 'Markdown scope does not match the selected owner', data: null, details: { code: 'scope_mismatch', recovery: 'Select the exported workspace and persona.' } }));
+    const container = await renderPage();
+    await openFilled(container);
+    await press('[data-memory-import-preview]');
+    const refused = dialog().querySelector('[data-memory-import-refused="scope_mismatch"]')!;
+    expect(refused.textContent).toContain('different scope');
+    expect(refused.textContent).not.toContain('Select the exported workspace');
+    expect(dialog().querySelector('[data-memory-import-file]')!.getAttribute('data-memory-import-file')).toBe('deployment-procedure-m_deploy.md');
+  });
+
+  it('drops an open import with its token when the scope changes', async () => {
+    governed();
+    seedMemories({ 'global::': [current()], 'workspace:wd_current:': [] });
+    vi.spyOn(client, 'previewMemoryImport').mockResolvedValue(appliable());
+    const container = await renderPage('/memory', [workspace]);
+    await openFilled(container);
+    await press('[data-memory-import-preview]');
+    expect(button('[data-memory-import-confirm="update"]')).not.toBeNull();
+    await click(container, '[data-memory-kind="workspace"]');
+    expect(document.querySelector('[data-memory-import]')).toBeNull();
+  });
+});
