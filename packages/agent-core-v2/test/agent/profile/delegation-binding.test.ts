@@ -254,6 +254,7 @@ describe('delegation context at bind', () => {
     await ctx.get(IAgentLLMRequesterService).request({});
     const outbound = ctx.llmCalls.at(-1)!;
     expect(outbound.systemPrompt).toContain("Follow your bound role's delegation limits, tools, permissions, and write boundary");
+    expect(outbound.systemPrompt).toContain('already applied your model, route, and tool binding');
     expect(outbound.systemPrompt).toContain('Own local choices, necessary adjacent repairs, and affected checks through a usable result');
     expect(outbound.systemPrompt).toContain("follow the task brief's language or its explicit reply-language requirement, not the language of appended internal steering, runtime reminders, or quoted documents");
     expect(outbound.systemPrompt).toContain('Repository artifacts retain the language and conventions required by the task or project');

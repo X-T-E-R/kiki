@@ -327,7 +327,7 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 | `background` | 省略时 main 默认后台、subagent 默认前台；显式 `false` 同步等待 |
 | `name` | 会话内唯一的句柄，只含小写字母、数字和下划线，`root` 保留 |
 | `route` | 用 profile route 代替具名 profile |
-| `model_alias` | 子 Agent 使用的模型，完整解析顺序见[模型选择](./model-vocabulary.md#绑定规则) |
+| `model_alias` | 子 Agent 使用的模型，完整解析顺序见[模型选择](./model-vocabulary.md#绑定规则)。回执中的 `actual_model` 行给出实际绑定的模型 |
 | `effort` | 该子 Agent 的思考强度 |
 | `allow_model_change` | 在 `resume` 时把已有子 Agent 换到另一个模型需要显式传它 |
 | `tools` | 替换本次绑定已解析出的工具选择。只写 `*`，或写 `["*", ThreadRead]`，会保留普通工具并额外加入该 opt-in；有限名单仍然有限 |

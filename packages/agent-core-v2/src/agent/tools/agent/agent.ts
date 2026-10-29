@@ -23,7 +23,7 @@ export const SubagentToolInputSchema = z.preprocess(
     return normalized;
   },
   z.object({
-    prompt: z.string().describe('Self-contained assignment with the outcome, usable inputs, authority and write boundary, dependencies, and observable finish; the child owns local choices and affected checks. On resume, give the new input for that same assignment.'),
+    prompt: z.string().describe('Self-contained assignment with the outcome, usable inputs, authority and write boundary, dependencies, and observable finish; the child owns local choices and affected checks. Include constraints that change how the child works, not model, route or tool choices you apply through other parameters. On resume, give the new input for that same assignment.'),
     description: z.string().describe('Short task description (3-5 words) for UI display'),
     workDir: z.string().trim().min(1).optional().describe('Admitted absolute working directory for this child. Omit to inherit the parent workspace directory. New-agent only; resume preserves its original roots.'),
     additionalDirs: z.array(z.string().trim().min(1)).optional().describe('Admitted additional workspace directories for this child. Omit to inherit the parent workspace directories. New-agent only; resume preserves its original roots.'),
@@ -73,7 +73,7 @@ export const SubagentToolInputSchema = z.preprocess(
       .min(1)
       .optional()
       .describe(
-        'Omit to use the target default model, or specify a concrete configured model name. AgentRun does not accept "inherit"; no silent caller-model fallback.',
+        'Omit to use the target default model, or specify a concrete configured model name. AgentRun does not accept "inherit"; no silent caller-model fallback. A user model or provider requirement for this child is met here or by the profile choice; the receipt reports actual_model. The child does not need to be told its model unless the task concerns models.',
       ),
     effort: z
       .string()

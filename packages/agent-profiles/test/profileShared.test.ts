@@ -496,7 +496,13 @@ describe('renderSystemPromptResult', () => {
     expect(collaboration).toContain('give a ready interface or artifact to its actual consumer');
     expect(collaboration).toContain('independent thread as a colleague');
     expect(collaboration).toContain('let them reach their own judgment');
-    expect(collaboration).toContain('the child does not automatically share your memory');
+    expect(collaboration).toContain('The child does not automatically share your memory');
+    expect(collaboration).toContain('Apply constraints on your own dispatch yourself');
+    expect(collaboration).toContain('belong in `AgentRun` parameters and the role you choose');
+    expect(collaboration).toContain('do not tell a child which model it is unless the task itself concerns models');
+    expect(collaboration).toContain('becomes your `model_alias` or profile choice');
+    expect(collaboration).toContain('there is no required form');
+    expect(collaboration).not.toContain('Include task-relevant user constraints and saved guidance');
     expect(collaboration).toContain('changes only what its evidence supports');
     expect(collaboration).toContain('Do not poll to keep the turn open');
     for (const rule of [

@@ -339,7 +339,7 @@ Collaboration tools handle inter-Agent coordination, user interaction, and Skill
 | `background` | Omitted: background for a main-agent call, foreground for a subagent call. An explicit `false` waits synchronously |
 | `name` | A session-unique handle of lowercase letters, digits, and underscores; `root` is reserved |
 | `route` | A profile route to run instead of a named profile |
-| `model_alias` | The model the child uses. See [model selection](./model-vocabulary.md#binding-rules) for the full resolution order |
+| `model_alias` | The model the child uses. See [model selection](./model-vocabulary.md#binding-rules) for the full resolution order. The receipt's `actual_model` line reports the model actually bound |
 | `effort` | Thinking effort for this child |
 | `allow_model_change` | Required on `resume` to switch an existing child to a different model |
 | `tools` | Replaces the resolved tool selection for this binding only. A lone `*`, or `["*", ThreadRead]`, keeps the ordinary tools and adds that opt-in; a finite list stays finite |

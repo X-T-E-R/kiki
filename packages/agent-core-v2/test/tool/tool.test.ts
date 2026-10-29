@@ -1231,6 +1231,10 @@ describe('AgentRun tool description', () => {
     expect(description).toContain('otherwise omit model_alias to use the target default');
     expect(description).not.toContain('Set model_alias to inherit explicitly');
     expect(description).toContain('do not assume they copy your model or effort');
+    expect(description).toContain('not by repeating them in `prompt`');
+    const properties = agentParameters()['properties'] as Record<string, { description?: string }>;
+    expect(properties['model_alias']?.description).toContain('the receipt reports actual_model');
+    expect(properties['prompt']?.description).toContain('not model, route or tool choices');
   });
 
   function agentParameters(): Record<string, unknown> {
@@ -3103,12 +3107,13 @@ describe('AgentRun tool execution contract', () => {
     expect(taskId).toBeDefined();
     expect(result.output).toContain('agent_id: agent-child');
     expect(result.output).toContain('actual_profile: general');
+    expect(result.output).toMatch(/^actual_model: \S+$/m);
     expect(result.output).toContain('status: running');
     expect(result.output).toContain('automatic_notification: true');
     expect(result.output).toContain('parent_notify: enabled');
     expect(result.output).not.toContain('next_step:');
     expect(result.output).not.toContain('resume_hint:');
-    expect(result.output.split('\n')).toHaveLength(7);
+    expect(result.output.split('\n')).toHaveLength(8);
     completion.resolve({ summary: 'finished later' });
   });
 
