@@ -8,8 +8,7 @@
  * value is a read-only peek; editing it is an explicit step, so looking at the
  * keys never marks the page dirty.
  *
- * Rows stay flat: hairline separators and whitespace carry the grouping, no
- * rounded surface per key.
+ * Rows stay flat: whitespace carries the grouping, no rounded surface per key.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -252,14 +251,14 @@ export function NbSearchMultiKeyEditor({
         rows.length === 0 ? (
           <p className="text-[12px] leading-snug text-ink-faint">{t('st.nbSearch.keys.empty')}</p>
         ) : (
-          <ul className="min-w-0 border-t border-hairline" role="list">
+          <ul className="min-w-0 space-y-0" role="list">
             {rows.map((key, index) => (
               <li
                 // Position is the identity here: the same key may legitimately
                 // repeat while the user is editing, and order is the value.
                 key={index}
                 data-key-row={index}
-                className="flex min-w-0 items-center gap-2 border-b border-hairline py-1 pl-1 pr-1 last:border-b-0"
+                className="flex min-w-0 items-center gap-2 py-1 pl-1 pr-1"
               >
                 <span aria-hidden className="w-5 shrink-0 text-[11px] tabular-nums text-ink-faint">
                   {index + 1}

@@ -9,9 +9,7 @@ import {
   nbSearchDraftDirty,
   nbSearchDraftFromConfig,
   nbSearchReadinessFromCapabilities,
-  setNbSearchCredentialEnv,
   type NbSearchDraft,
-  type NbSearchProviderDraft,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
@@ -21,12 +19,12 @@ import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 
 import type { ExtendedNbSearchDraft, NbSearchEditorBaseline, NbSearchTab } from './nbSearch/types';
-import { CARD_ID_TO_TAB, NB_SEARCH_TABS, serviceState } from './nbSearch/types';
+import { CARD_ID_TO_TAB, resolveNbSearchTabParam, serviceState } from './nbSearch/types';
 import { NbSearchTabBar } from './nbSearch/NbSearchTabBar';
 import { NbSearchOverviewTab } from './nbSearch/NbSearchOverviewTab';
 import { NbSearchLanesTab } from './nbSearch/NbSearchLanesTab';
 import { NbSearchFetchTab } from './nbSearch/NbSearchFetchTab';
-import { NbSearchProvidersTab } from './nbSearch/NbSearchProvidersTab';
+import { NbSearchSourceCard } from './nbSearch/NbSearchSourceCard';
 import { NbSearchAdvancedTab, type TestRun } from './nbSearch/NbSearchAdvancedTab';
 import type { NbSearchAdvancedBinding } from './nbSearch/advancedSupport';
 import { keyDraftIssue, pendingKeyValue, type KeyDraft } from './nbSearch/NbSearchMultiKeyEditor';
@@ -44,8 +42,9 @@ function resolveTabFromLocation(
   }
   const params = new URLSearchParams(search);
   const tabParam = params.get('tab');
-  if (tabParam && (NB_SEARCH_TABS as readonly string[]).includes(tabParam)) {
-    return tabParam as NbSearchTab;
+  if (tabParam !== null) {
+    const resolved = resolveNbSearchTabParam(tabParam);
+    if (resolved !== undefined) return resolved;
   }
   return 'overview';
 }
@@ -143,12 +142,6 @@ export function NbSearchSection() {
 
   const capabilities = editorBaseline?.capabilities;
 
-  /** Instances the server has a saved override for: the user's own services. */
-  const configuredInstanceIds = useMemo(
-    () => new Set(Object.keys((editorBaseline?.config?.provider_instances ?? {}) as Record<string, unknown>)),
-    [editorBaseline],
-  );
-
   const pendingKeys = useMemo(
     () => Object.entries(keyDrafts).filter(([, entry]) => entry.mode !== 'keep'),
     [keyDrafts],
@@ -219,34 +212,6 @@ export function NbSearchSection() {
 
   const readiness = nbSearchReadinessFromCapabilities(capabilities);
 
-  const updateProviders = (id: string, patch: Partial<NbSearchProviderDraft>) => {
-    setDraft((current) =>
-      current === null
-        ? current
-        : {
-            ...current,
-            nbSearch: {
-              ...current.nbSearch,
-              providers: {
-                ...current.nbSearch.providers,
-                [id]: { ...current.nbSearch.providers[id]!, ...patch },
-              },
-            },
-          },
-    );
-  };
-
-  const updateCredentialEnv = (instanceId: string, providerId: string, credentialEnv: string) => {
-    setDraft((current) =>
-      current === null
-        ? current
-        : {
-            ...current,
-            nbSearch: setNbSearchCredentialEnv(current.nbSearch, instanceId, providerId, credentialEnv),
-          },
-    );
-  };
-
   const updateExecution = (patch: Partial<NbSearchDraft['execution']>) => {
     setDraft((current) =>
       current === null
@@ -258,24 +223,6 @@ export function NbSearchSection() {
               execution: { ...current.nbSearch.execution, ...patch },
             },
           },
-    );
-  };
-
-  const updateDefaultLane = (defaultSearchLane: string) => {
-    setDraft((current) =>
-      current === null ? current : { ...current, nbSearch: { ...current.nbSearch, defaultSearchLane } },
-    );
-  };
-
-  const updateFetchChain = (fetchChain: readonly string[]) => {
-    setDraft((current) =>
-      current === null ? current : { ...current, nbSearch: { ...current.nbSearch, fetchChain } },
-    );
-  };
-
-  const updateFetchChainInherited = (fetchChainInherited: boolean) => {
-    setDraft((current) =>
-      current === null ? current : { ...current, nbSearch: { ...current.nbSearch, fetchChainInherited } },
     );
   };
 
@@ -329,18 +276,6 @@ export function NbSearchSection() {
     });
   };
 
-  /** Adding a service saves an explicit override for an instance the server already reports. */
-  const addService = (instanceId: string) => {
-    updateProviders(instanceId, { isNew: true, enabled: true, isDeleted: false });
-  };
-
-  const removeService = (instanceId: string) => {
-    const name = capabilities.providers.instances.find((entry) => entry.id === instanceId)?.provider_id ?? instanceId;
-    updateProviders(instanceId, { isDeleted: true, isNew: false });
-    updateKeyDraft(instanceId, { mode: 'keep' });
-    setFeedback({ tone: 'info', text: t('st.nbSearch.service.removed', { name }) });
-  };
-
   /**
    * One save for the page. The config half and the key half commit in the order
    * the server requires — the patch first, because it can move a credential slot
@@ -359,7 +294,7 @@ export function NbSearchSection() {
       const issue = keyDraftIssue(t, entry);
       if (issue !== null) {
         setFeedback({ tone: 'error', text: issue });
-        selectTab('providers');
+        selectTab('search');
         return;
       }
     }
@@ -530,8 +465,8 @@ export function NbSearchSection() {
   // The engine ships seventeen instances, so counting every unavailable one
   // turns a normal page into a permanent alarm.
   const attentionCount = capabilities.providers.instances.filter((instance) => {
-    if (!configuredInstanceIds.has(instance.id)) return false;
     const instanceDraft = draft.nbSearch.providers[instance.id];
+    if (instanceDraft?.isDeleted === true) return false;
     const state = serviceState(instance, instanceDraft?.enabled ?? instance.enabled);
     return state === 'needsKey' || state === 'failed';
   }).length;
@@ -555,7 +490,7 @@ export function NbSearchSection() {
         dirty={dirty}
       />
 
-      {/* Overview & Configuration source sub-page */}
+      {/* Overview sub-page */}
       <div
         id="nb-search-panel-overview"
         role="tabpanel"
@@ -565,20 +500,16 @@ export function NbSearchSection() {
         <NbSearchOverviewTab
           capabilities={capabilities}
           readiness={readiness}
-          reuseLocalConfig={draft.reuseLocalConfig}
-          savedReuseLocalConfig={editorBaseline.draft.reuseLocalConfig}
-          onToggleReuseLocal={toggleReuseLocal}
           onNavigateToSearch={() => {
             selectTab('search');
           }}
-          onNavigateToProviders={() => {
-            selectTab('providers');
+          onNavigateToAdvanced={() => {
+            selectTab('advanced');
           }}
-          saving={saving}
         />
       </div>
 
-      {/* Search lanes sub-page */}
+      {/* Search services sub-page */}
       <div
         id="nb-search-panel-search"
         role="tabpanel"
@@ -587,14 +518,16 @@ export function NbSearchSection() {
       >
         <NbSearchLanesTab
           capabilities={capabilities}
-          defaultSearchLane={draft.nbSearch.defaultSearchLane}
-          onSelectLane={updateDefaultLane}
           saving={saving}
           advanced={advancedBinding}
+          keyDrafts={keyDrafts}
+          onKeyDraftChange={updateKeyDraft}
+          readCredential={readCredential}
+          readKeyUsage={readKeyUsage}
         />
       </div>
 
-      {/* Fetch chain sub-page */}
+      {/* Web fetching sub-page */}
       <div
         id="nb-search-panel-fetch"
         role="tabpanel"
@@ -603,39 +536,12 @@ export function NbSearchSection() {
       >
         <NbSearchFetchTab
           capabilities={capabilities}
-          fetchChain={draft.nbSearch.fetchChain}
-          fetchChainInherited={draft.nbSearch.fetchChainInherited}
-          onChangeChain={updateFetchChain}
-          onToggleInherited={updateFetchChainInherited}
           saving={saving}
           advanced={advancedBinding}
-        />
-      </div>
-
-      {/* Providers & credentials sub-page */}
-      <div
-        id="nb-search-panel-providers"
-        role="tabpanel"
-        aria-labelledby="nb-search-tab-providers"
-        className={activeTab === 'providers' ? 'space-y-4' : 'hidden'}
-      >
-        <NbSearchProvidersTab
-          key={scopeId}
-          capabilities={capabilities}
-          configuredInstanceIds={configuredInstanceIds}
-          draftProviders={draft.nbSearch.providers}
-          credentialSlots={draft.nbSearch.credentialSlots}
           keyDrafts={keyDrafts}
-          nbSearchDraft={draft.nbSearch}
-          onUpdateProvider={updateProviders}
-          onUpdateCredentialEnv={updateCredentialEnv}
           onKeyDraftChange={updateKeyDraft}
-          onAddService={addService}
-          onRemoveService={removeService}
-          onDraftChange={updateNbSearchDraft}
           readCredential={readCredential}
           readKeyUsage={readKeyUsage}
-          saving={saving}
         />
       </div>
 
@@ -646,18 +552,29 @@ export function NbSearchSection() {
         aria-labelledby="nb-search-tab-advanced"
         className={activeTab === 'advanced' ? 'space-y-4' : 'hidden'}
       >
-        {activeTab === 'advanced' ? <SearchIndexStatusCard /> : null}
-        <NbSearchAdvancedTab
-          execution={draft.nbSearch.execution}
-          testRun={testRun}
-          onUpdateExecution={updateExecution}
-          onRunCheck={() => {
-            void runCheck();
-          }}
-          onCancelCheck={cancelCheck}
-          saving={saving}
-          advanced={advancedBinding}
-        />
+        {activeTab === 'advanced' ? (
+          <>
+            <NbSearchSourceCard
+              capabilities={capabilities}
+              reuseLocalConfig={draft.reuseLocalConfig}
+              savedReuseLocalConfig={editorBaseline.draft.reuseLocalConfig}
+              onToggleReuseLocal={toggleReuseLocal}
+              saving={saving}
+            />
+            <SearchIndexStatusCard />
+            <NbSearchAdvancedTab
+              execution={draft.nbSearch.execution}
+              testRun={testRun}
+              onUpdateExecution={updateExecution}
+              onRunCheck={() => {
+                void runCheck();
+              }}
+              onCancelCheck={cancelCheck}
+              saving={saving}
+              advanced={advancedBinding}
+            />
+          </>
+        ) : null}
       </div>
 
       {/* Page-end save row with dirty state and the last result. */}

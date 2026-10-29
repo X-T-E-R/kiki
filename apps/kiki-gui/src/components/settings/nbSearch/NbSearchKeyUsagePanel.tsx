@@ -133,7 +133,7 @@ export function NbSearchKeyUsagePanel({
               ? t('st.nbSearch.keyUsage.balanceSupported')
               : t('st.nbSearch.keyUsage.balanceUnsupported')}
           </p>
-          <ul className="divide-y divide-hairline" data-nb-search-key-usage-keys>
+          <ul className="space-y-0" data-nb-search-key-usage-keys>
             {view.keys.map((key) => (
               <li key={key.key_index} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 py-1.5">
                 <span className="font-mono text-[11px] text-ink-faint">

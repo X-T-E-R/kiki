@@ -4,15 +4,30 @@ import type { NbSearchDraft } from '@kiki/session-core/settings';
 
 import { spaceStorage } from '../../../lib/spaceStorage';
 
-export type NbSearchTab = 'overview' | 'search' | 'fetch' | 'providers' | 'advanced';
+/** The provider a lane or pipeline resolves to, with its human operation word. */
+export interface NbSearchLaneProfile {
+  readonly provider_id: string;
+  readonly operation_id: string;
+}
+
+export type NbSearchTab = 'overview' | 'search' | 'fetch' | 'advanced';
 
 export const NB_SEARCH_TABS: readonly NbSearchTab[] = [
   'overview',
   'search',
   'fetch',
-  'providers',
   'advanced',
 ] as const;
+
+/**
+ * Old deep links named the services page `providers`; it is now the `search`
+ * tab, so the value maps instead of falling back to the overview.
+ */
+export function resolveNbSearchTabParam(param: string): NbSearchTab | undefined {
+  if ((NB_SEARCH_TABS as readonly string[]).includes(param)) return param as NbSearchTab;
+  if (param === 'providers') return 'search';
+  return undefined;
+}
 
 export interface ExtendedNbSearchDraft {
   readonly nbSearch: NbSearchDraft;
@@ -41,10 +56,9 @@ export function fetchUrlState(readiness: NbSearchTestStatus['search']): Readines
 
 export const CARD_ID_TO_TAB: Record<string, NbSearchTab> = {
   'st-card-search-status': 'overview',
-  'st-card-search-source': 'overview',
-  'st-card-search-defaults': 'search',
   'st-card-search-fetch': 'fetch',
-  'st-card-search-providers': 'providers',
+  'st-card-search-providers': 'search',
+  'st-card-search-source': 'advanced',
   'st-card-search-execution': 'advanced',
   'st-card-search-index': 'advanced',
   'st-card-search-diagnostics': 'advanced',
@@ -150,6 +164,89 @@ export function providerLabelKey(providerId: string): I18nKey | undefined {
 }
 
 /**
+ * What one service card leads with: the provider's name plus the lane or
+ * pipeline a person would recognise ("Exa 搜索"). The card's lane / pipeline
+ * id stays inside the service body, never on the row.
+ */
+export interface ServiceCard {
+  readonly id: string;
+  readonly title: string;
+  readonly subtitle: string;
+  /** The provider behind the card, when the caller already knows it. */
+  readonly providerId?: string;
+  /** The lane's operation, when the card is a search method. */
+  readonly operationId?: string;
+  readonly latency?: string;
+  readonly cost?: string;
+}
+
+function laneCard(
+  t: (key: I18nKey, params?: Record<string, string>) => string,
+  capabilities: NbSearchCapabilities,
+  lanes: Readonly<Record<string, NbSearchLaneProfile | undefined>>,
+  laneId: string,
+): ServiceCard | null {
+  const lane = capabilities.search.lanes.find((candidate) => candidate.id === laneId);
+  const profile = lanes[laneId];
+  if (profile === undefined) return null;
+  const providerLabel = t(providerLabelKey(profile.provider_id) ?? 'st.nbSearch.providerFallback');
+  const operationLabel = lane?.output.channel === 'results' ? t('st.nbSearch.operation.search') : profile.operation_id;
+  return {
+    id: laneId,
+    title: `${providerLabel} ${operationLabel}`.trim(),
+    subtitle: operationLabel,
+    latency: lane?.latency,
+    cost: lane?.cost,
+  };
+}
+
+function pipelineCard(
+  t: (key: I18nKey, params?: Record<string, string>) => string,
+  capabilities: NbSearchCapabilities,
+  lanes: Readonly<Record<string, NbSearchLaneProfile | undefined>>,
+  pipelineId: string,
+): ServiceCard | null {
+  const pipeline = capabilities.fetch.pipelines.find((candidate) => candidate.id === pipelineId);
+  const profile = lanes[pipelineId];
+  const providerId = profile?.provider_id ?? pipeline?.stages[0]?.id;
+  if (providerId === undefined) return null;
+  const providerLabel = t(providerLabelKey(providerId) ?? 'st.nbSearch.providerFallback');
+  return {
+    id: pipelineId,
+    title: providerLabel,
+    subtitle: t('st.nbSearch.role.fetchShort'),
+    latency: pipeline?.latency,
+    cost: pipeline?.cost,
+  };
+}
+
+/**
+ * The service cards of the search tab: one card per usable search lane and
+ * fetch pipeline, sorted by provider label. A lane whose provider is not
+ * declared anywhere (draft, configuration, inherited, providers.instances)
+ * cannot be tied to a service and is left to the advanced methods list.
+ */
+export function nbSearchServiceCards(
+  t: (key: I18nKey, params?: Record<string, string>) => string,
+  capabilities: NbSearchCapabilities,
+  lanes: Readonly<Record<string, NbSearchLaneProfile | undefined>>,
+): ServiceCard[] {
+  const cards = new Map<string, ServiceCard>();
+  for (const laneId of Object.keys(lanes)) {
+    if (capabilities.search.lanes.some((lane) => lane.id === laneId)) {
+      const card = laneCard(t, capabilities, lanes, laneId);
+      if (card !== null) cards.set(card.id, card);
+    }
+  }
+  for (const pipeline of capabilities.fetch.pipelines) {
+    if (cards.has(pipeline.id)) continue;
+    const card = pipelineCard(t, capabilities, lanes, pipeline.id);
+    if (card !== null) cards.set(card.id, card);
+  }
+  return [...cards.values()].toSorted((left, right) => left.title.localeCompare(right.title));
+}
+
+/**
  * What a service row says about itself. `off` and `needs-key` are states the
  * user chose or must act on; `configured` is the quiet everyday case;
  * `unsaved` is an instance that exists only in this draft, so the server has
@@ -170,10 +267,10 @@ export function serviceState(
 }
 
 const SERVICE_STATE_KEYS: Readonly<Record<ServiceState, I18nKey>> = {
-  configured: 'st.nbSearch.services.stateConfigured',
+  configured: 'st.nbSearch.services.stateReady',
   off: 'st.nbSearch.services.stateOff',
   needsKey: 'st.nbSearch.services.stateNeedsKey',
-  failed: 'st.nbSearch.services.stateFailed',
+  failed: 'st.nbSearch.services.stateUnavailable',
   unsaved: 'st.nbSearch.services.stateUnsaved',
 };
 

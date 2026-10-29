@@ -1,498 +1,415 @@
-import { useCallback, useMemo, useState } from 'react';
+/**
+ * 搜索引擎: the service list, not the protocol.
+ *
+ * One card per service the engine can search or fetch through. A card says
+ * whether the service works, holds its key and enable switch in the body, and
+ * offers an explicit 设为默认 — clicking a row only opens it. What a lane id
+ * or a schema id is never appears on a row; the advanced method and preset
+ * editors (the lane/preset model a power user composes) sit in their own
+ * disclosure at the bottom.
+ *
+ * Everything writes the page's single draft and commits with the page save.
+ */
+
+import { useMemo, useState } from 'react';
 import type { NbSearchCapabilities } from '@kiki/protocol';
 import {
-  formatNbSearchOutput,
-  nbSearchExecutionKind,
-  nbSearchIssueCodes,
   resolveEffectiveDefaultLane,
-  setNbSearchLane,
-  setNbSearchPreset,
   type NbSearchDraft,
 } from '@kiki/session-core/settings';
-import { SectionCard } from '../SectionCard';
-import { Hint } from '../../controls';
+
 import { useI18n } from '../../../i18n';
-import { costLabelKey, latencyLabelKey, loadPinnedLanes, savePinnedLanes } from './types';
-import { NbSearchIssues } from './NbSearchIssues';
-import { INPUT, SECONDARY_BUTTON } from '../../ui';
 import { Icon } from '../../icons';
-import { NbSearchLaneEditor } from './NbSearchLaneEditor';
-import { NbSearchPresetEditor } from './NbSearchPresetEditor';
-import {
-  nbSearchInstanceProviderId,
-  nbSearchLaneIdentity,
-  nbSearchPresetIdentity,
-  nbSearchProviderLabel,
-  nbSearchSourceBadgeKey,
-  nbSearchUsageWord,
-  type NbSearchAdvancedBinding,
-  type NbSearchLaneIdentity,
-} from './advancedSupport';
+import { Hint } from '../../controls';
+import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
+import { SectionCard } from '../SectionCard';
+import { AdvancedDetails } from '../fields';
+import { ListEmpty, ListToolbar, useListView } from '../list';
+import { nbSearchServiceCards, providerLabelKey, type ServiceCard } from './types';
+import type { KeyDraft } from './NbSearchMultiKeyEditor';
+import { NbSearchServiceCard } from './NbSearchServiceCard';
+import { NbSearchLaneComposer } from './NbSearchLaneComposer';
+import { addLaneService, addPipelineService, clearDefaultLane, engineLaneProfiles, makeDefaultLane, removeService } from './serviceCards';
+import type { NbSearchAdvancedBinding } from './advancedSupport';
 
-interface LaneRow {
-  readonly id: string;
-}
-
-/** One line of the default-method list: name in the reading font, id below it. */
-function laneTitle(
-  t: ReturnType<typeof useI18n>['t'],
-  capabilities: NbSearchCapabilities,
-  draft: NbSearchDraft | undefined,
-  row: LaneRow,
-): string {
-  if (draft === undefined) return row.id;
-  const identity = nbSearchLaneIdentity(capabilities, draft, row.id);
-  if (identity.profile === undefined) return row.id;
-  const providerId = nbSearchInstanceProviderId(capabilities, draft, identity.profile.provider_instance_id);
-  return `${nbSearchProviderLabel(t, providerId ?? identity.profile.provider_instance_id)} · ${identity.profile.operation_id}`;
-}
-
-function firstUnusedLane(capabilities: NbSearchCapabilities, draft: NbSearchDraft): string {
-  return capabilities.search.lanes.find((lane) => draft.advanced?.lanes[lane.id] === undefined)?.id
-    ?? capabilities.search.lanes[0]?.id
-    ?? '';
-}
+type ReadCredential = (instanceId: string, reveal: boolean) => Promise<import('@kiki/protocol').NbSearchManagedCredentialView>;
+type ReadKeyUsage = (instanceId: string, refresh: boolean) => Promise<import('@kiki/protocol').NbSearchKeyUsageView>;
 
 export function NbSearchLanesTab({
   capabilities,
-  defaultSearchLane,
-  onSelectLane,
   saving = false,
   advanced,
+  keyDrafts,
+  onKeyDraftChange,
+  readCredential,
+  readKeyUsage,
 }: {
   capabilities: NbSearchCapabilities;
-  defaultSearchLane: string;
-  onSelectLane: (laneId: string) => void;
   saving?: boolean;
-  /** Present once the page hands its draft over; enables in-row editing. */
-  advanced?: NbSearchAdvancedBinding;
+  advanced: NbSearchAdvancedBinding;
+  keyDrafts: Readonly<Record<string, KeyDraft>>;
+  onKeyDraftChange: (instanceId: string, draft: KeyDraft) => void;
+  readCredential: ReadCredential;
+  readKeyUsage: ReadKeyUsage;
 }) {
-  const { t, tp } = useI18n();
-  const [filterQuery, setFilterQuery] = useState('');
-  const [pinnedLanes, setPinnedLanes] = useState<string[]>(loadPinnedLanes);
-  const [openRow, setOpenRow] = useState<string | null>(null);
-
-  const draft = advanced?.draft;
-  const selectedLane = draft === undefined ? defaultSearchLane : draft.defaultSearchLane;
-
-  const togglePin = (laneId: string, event: React.MouseEvent) => {
-    event.stopPropagation();
-    event.preventDefault();
-    setPinnedLanes((prev) => {
-      const next = prev.includes(laneId) ? prev.filter((id) => id !== laneId) : [...prev, laneId];
-      savePinnedLanes(next);
-      return next;
-    });
+  const { t } = useI18n();
+  const draft = advanced.draft;
+  const bindingConfig = advanced.config;
+  const [directoryOpen, setDirectoryOpen] = useState(false);
+  const labelOf = (providerId: string) => {
+    const key = providerLabelKey(providerId);
+    return key === undefined ? providerId : t(key);
   };
-
-  const selectLane = (laneId: string) => {
-    if (advanced === undefined) {
-      onSelectLane(laneId);
-      return;
-    }
-    advanced.onChange({ ...advanced.draft, defaultSearchLane: laneId });
-  };
-
-  // Every method the effective catalog serves plus any this page has drafted: a
-  // method added a moment ago has no catalog entry yet, and hiding it would look
-  // like the click did nothing.
-  const rows = useMemo<LaneRow[]>(() => {
-    const byId = new Map<string, LaneRow>(
-      capabilities.search.lanes.map((lane) => [lane.id, { id: lane.id }]),
-    );
-    for (const [id, lane] of Object.entries(draft?.advanced?.lanes ?? {})) {
-      if (lane === null || byId.has(id)) continue;
-      byId.set(id, { id });
-    }
-    return [...byId.values()];
-  }, [capabilities.search.lanes, draft]);
-
-  /** Drafted here, not yet in the catalog the server reports. */
-  const isPending = useCallback(
-    (laneId: string) => !capabilities.search.lanes.some((lane) => lane.id === laneId),
-    [capabilities.search.lanes],
+  const [methodsOpen, setMethodsOpen] = useState(
+    () => draft.defaultSearchLane === '' || Object.keys(draft.advanced?.presets ?? {}).length > 0,
   );
 
-  const inherited = useMemo(
-    () => resolveEffectiveDefaultLane(capabilities, selectedLane),
-    [capabilities, selectedLane],
+  // Service cards come from the engine's own catalog view (every lane it
+  // reports), not from Kiki's draft — otherwise a lane the server already
+  // declares would hide until the user re-declares it.
+  const allCards = useMemo(() => {
+    const engineProfiles = engineLaneProfiles(capabilities);
+    const descriptorProvider = new Map(
+      capabilities.providers.descriptors.map((descriptor) => [descriptor.provider_id, descriptor.provider_id]),
+    );
+    const searchCards = capabilities.search.lanes.flatMap((lane) => {
+      const profile = engineProfiles[lane.id];
+      if (profile === undefined) return [];
+      // A profile that names no real provider (a projection pointing at an
+      // instance id as if it were a provider) is not a service card.
+      const providerId = descriptorProvider.get(profile.provider_id);
+      if (providerId === undefined) return [];
+      const operationWord = lane.output.channel === 'results' ? t('st.nbSearch.operation.search') : profile.operation_id;
+      return [{
+        id: lane.id,
+        title: `${labelOf(providerId)} ${operationWord}`.trim(),
+        subtitle: operationWord,
+        operationId: profile.operation_id,
+        providerId,
+        latency: lane.latency,
+        cost: lane.cost,
+      }];
+    });
+    return searchCards;
+  }, [capabilities, t]);
+
+  // The directory adds anything the engine reports that the list does not
+  // already hold — including fetch pipelines, which become fetch services.
+  const directoryCardsAll = useMemo(() => {
+    const engineProfiles = engineLaneProfiles(capabilities);
+    const descriptorProvider = new Map(
+      capabilities.providers.descriptors.map((descriptor) => [descriptor.provider_id, descriptor.provider_id]),
+    );
+    const pipelineCards = capabilities.fetch.pipelines.flatMap((pipeline) => {
+      if (allCards.some((card) => card.id === pipeline.id)) return [];
+      const profile = engineProfiles[pipeline.id];
+      const providerId = profile !== undefined
+        ? descriptorProvider.get(profile.provider_id)
+        : descriptorProvider.get(pipeline.stages[0]?.id ?? '');
+      if (providerId === undefined) return [];
+      return [{
+        id: pipeline.id,
+        title: labelOf(providerId),
+        subtitle: t('st.nbSearch.role.fetchShort'),
+        operationId: profile?.operation_id,
+        providerId,
+        latency: pipeline.latency,
+        cost: pipeline.cost,
+      }];
+    });
+    return [...allCards, ...pipelineCards];
+  }, [capabilities, allCards, t]);
+
+  const ownLanes = draft.advanced?.lanes ?? {};
+  // An override that already reached the server (`provider_instances` in the
+  // saved config) is a configuration even before the next read-back: the
+  // engine's projection only catches up after a save.
+  const configuredInstanceIds = new Set([
+    ...Object.keys((bindingConfig?.provider_instances ?? {}) as Record<string, unknown>),
+    ...Object.entries(draft.providers)
+      .filter(([, provider]) => provider.isDeleted !== true && provider.isNew === true)
+      .map(([id]) => id),
+  ]);
+  // The service is in the list when Kiki's draft registers it (adding a
+  // service is exactly that), when the layer below declares its method, or
+  // when the instance behind it carries a saved override — the saved key has
+  // to stay reachable without a lane declaration.
+  const activeCards = useMemo(() => {
+    const inherited = capabilities.inherited_configuration?.lanes;
+    const overriddenInstances = new Set([
+      ...Object.keys((bindingConfig?.provider_instances ?? {}) as Record<string, unknown>),
+      ...((capabilities.configuration as { provider_instance_ids?: readonly string[] } | undefined)?.provider_instance_ids ?? []),
+    ]);
+    return allCards.filter((card) =>
+      Object.prototype.hasOwnProperty.call(ownLanes, card.id)
+      || inherited?.[card.id] !== undefined
+      || (inherited === undefined && capabilities.configuration?.lanes[card.id] !== undefined)
+      || (card.providerId !== undefined
+        && capabilities.providers.instances.some((instance) =>
+          instance.provider_id === card.providerId
+          && (overriddenInstances.has(instance.id) || configuredInstanceIds.has(instance.id)))));
+  }, [allCards, ownLanes, capabilities, bindingConfig, configuredInstanceIds]);
+  const directoryCards = useMemo(
+    () => directoryCardsAll.filter((card) => !activeCards.some((active) => active.id === card.id)),
+    [directoryCardsAll, activeCards],
   );
 
-  const filtered = useMemo(() => {
-    const query = filterQuery.trim().toLowerCase();
-    if (query === '') return rows;
-    return rows.filter((row) => {
-      const lane = capabilities.search.lanes.find((candidate) => candidate.id === row.id);
-      const haystack = [
-        row.id,
-        lane?.output.schema_id ?? '',
-        lane?.latency ?? '',
-        lane?.cost ?? '',
-        draft === undefined ? '' : laneTitle(t, capabilities, draft, row),
-      ].join(' ').toLowerCase();
-      return haystack.includes(query);
-    });
-  }, [rows, filterQuery, capabilities, draft, t]);
-
-  const { pending, pinnedAndDefault, syncLanes, otherLanes } = useMemo(() => {
-    const pinnedSet = new Set(pinnedLanes);
-    const pendingRows: LaneRow[] = [];
-    const pinnedRows: LaneRow[] = [];
-    const sync: LaneRow[] = [];
-    const other: LaneRow[] = [];
-    for (const row of filtered) {
-      const lane = capabilities.search.lanes.find((candidate) => candidate.id === row.id);
-      if (isPending(row.id)) pendingRows.push(row);
-      else if (row.id === inherited.laneId || pinnedSet.has(row.id)) pinnedRows.push(row);
-      else if (lane?.availability === 'ready' && nbSearchExecutionKind(lane.execution_modes) === 'sync') sync.push(row);
-      else other.push(row);
-    }
-    return { pending: pendingRows, pinnedAndDefault: pinnedRows, syncLanes: sync, otherLanes: other };
-  }, [filtered, pinnedLanes, inherited.laneId, capabilities.search.lanes, isPending]);
-
-  const renderRow = (row: LaneRow) => {
-    const lane = capabilities.search.lanes.find((candidate) => candidate.id === row.id);
-    const isSelected = selectedLane === row.id;
-    const isEffective = inherited.laneId === row.id;
-    const isPinned = pinnedLanes.includes(row.id);
-    const expanded = openRow === `lane:${row.id}`;
-    const identity: NbSearchLaneIdentity = draft === undefined
-      ? { profile: undefined, source: 'source' }
-      : nbSearchLaneIdentity(capabilities, draft, row.id);
-    const execution = lane === undefined ? 'none' : nbSearchExecutionKind(lane.execution_modes);
-    const usable = lane !== undefined && lane.availability === 'ready' && execution === 'sync';
-    // A wall of red under every unconfigured method drowns the one that is
-    // failing here. The reason stays one click away: the selected row, a
-    // pinned row, an expanded row, or any active filter.
-    const showIssues = expanded || isEffective || isPinned || filterQuery.trim() !== '';
-
-    return (
-      <li key={row.id} data-nb-search-lane-row={row.id} data-nb-search-lane-origin={identity.source}>
-        <div className={`flex items-start gap-1 py-2 pl-3 pr-1 ${isSelected ? 'bg-panel' : ''}`}>
-          <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-2.5">
-            <input
-              type="radio"
-              name="nb-search-default-lane"
-              className="mt-1 shrink-0"
-              checked={isSelected}
-              disabled={saving}
-              onChange={() => {
-                selectLane(row.id);
-              }}
-            />
-            <span className="min-w-0 flex-1">
-              <span className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                <span className="min-w-0 break-words text-[13px] text-ink">
-                  {draft === undefined ? row.id : laneTitle(t, capabilities, draft, row)}
-                </span>
-                <span
-                  className={`shrink-0 text-[12px] ${usable ? 'text-ink-soft' : 'text-ink-faint'}`}
-                  data-nb-search-lane-execution={lane === undefined ? 'pending' : execution}
-                >
-                  {lane === undefined
-                    ? t('st.nbSearch.custom.lane.pending')
-                    : t(nbSearchUsageWord(lane.availability, execution))}
-                </span>
-                {isSelected ? (
-                  <span className="text-[11px] text-ink-soft">{t('st.nbSearch.lanes.currentDefaultBadge')}</span>
-                ) : isEffective ? (
-                  <span className="text-[11px] text-ink-soft" data-nb-search-lane-inherited-badge>
-                    {t('st.nbSearch.lanes.inheritedBadge')}
-                  </span>
-                ) : null}
-                {isPinned ? (
-                  <span className="text-[11px] text-ink-faint">{t('st.nbSearch.lanes.pinnedBadge')}</span>
-                ) : null}
-                {advanced === undefined ? null : (
-                  <span className="text-[11px] text-ink-faint" data-nb-search-lane-source-badge={identity.source}>
-                    {t(nbSearchSourceBadgeKey(identity.source))}
-                  </span>
-                )}
-                {identity.source === 'override' ? (
-                  <span className="text-[11px] text-ink-soft" data-nb-search-lane-overridden>
-                    {t('st.nbSearch.custom.lane.badgeOverridden')}
-                  </span>
-                ) : null}
-              </span>
-              {/* Diagnostics line: the stable id first, then the instance the
-                  method really runs on, then its output and cost tier. */}
-              <span className="mt-0.5 block break-all font-mono text-[11px] text-ink-faint">
-                {[row.id, identity.profile?.provider_instance_id].filter(Boolean).join(' · ')}
-                {lane === undefined ? '' : ` · ${formatNbSearchOutput(lane.output)}`}
-                {lane === undefined ? '' : ` · ${t(latencyLabelKey(lane.latency)!)} · ${t(costLabelKey(lane.cost)!)}`}
-              </span>
-              {showIssues && lane !== undefined ? <NbSearchIssues issues={nbSearchIssueCodes(lane.issues)} /> : null}
-            </span>
-          </label>
-          <div className="flex shrink-0 items-center gap-0.5 pt-0.5">
-            {advanced !== undefined ? (
-              <button
-                type="button"
-                aria-expanded={expanded}
-                data-nb-search-lane-edit={row.id}
-                aria-label={expanded ? t('st.nbSearch.custom.close') : t('st.nbSearch.custom.lane.edit')}
-                title={expanded ? t('st.nbSearch.custom.close') : t('st.nbSearch.custom.lane.edit')}
-                className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${expanded ? 'text-ink' : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'}`}
-                onClick={() => {
-                  setOpenRow(expanded ? null : `lane:${row.id}`);
-                }}
-              >
-                <Icon name={expanded ? 'collapse' : 'edit'} size={14} />
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={(event) => {
-                togglePin(row.id, event);
-              }}
-              aria-pressed={isPinned}
-              aria-label={isPinned ? t('st.nbSearch.lanes.unpinLane') : t('st.nbSearch.lanes.pinLane')}
-              className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${isPinned ? 'text-ink' : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'}`}
-              title={isPinned ? t('st.nbSearch.lanes.unpinLane') : t('st.nbSearch.lanes.pinLane')}
-            >
-              <Icon name="pin" size={14} />
-            </button>
-          </div>
-        </div>
-        {expanded && advanced !== undefined ? (
-          <div className="pb-3 pl-6 pr-2">
-            <NbSearchLaneEditor
-              binding={advanced}
-              laneId={row.id}
-              saving={saving}
-              onRename={(next) => {
-                setOpenRow(`lane:${next}`);
-              }}
-              onClose={() => {
-                setOpenRow(null);
-              }}
-            />
-          </div>
-        ) : null}
-      </li>
+  // A saved override for an instance whose method no projection describes
+  // (e.g. exa.default without a lane config) is still the user's service:
+  // the card is the provider, keyed by its instance.
+  const instanceCards = useMemo(() => {
+    const overridden = new Set([
+      ...configuredInstanceIds,
+      ...((capabilities.configuration as { provider_instance_ids?: readonly string[] } | undefined)?.provider_instance_ids ?? []),
+    ]);
+    const coveredProviders = new Set(
+      activeCards.map((card) => card.providerId).filter((id): id is string => id !== undefined),
     );
-  };
-
-  const groups: readonly { key: string; title: string; rows: readonly LaneRow[] }[] = [
-    { key: 'pending', title: t('st.nbSearch.custom.lane.groupPending'), rows: pending },
-    { key: 'current', title: t('st.nbSearch.lanes.pinnedOrCurrent'), rows: pinnedAndDefault },
-    { key: 'sync', title: t('st.nbSearch.lanes.syncLanes'), rows: syncLanes },
-    { key: 'other', title: t('st.nbSearch.lanes.otherLanes'), rows: otherLanes },
-  ].filter((group) => group.rows.length > 0);
-
-  const presetRows = useMemo(() => {
-    const byName = new Map<string, { id: string; lanes: readonly string[] }>();
-    for (const preset of capabilities.search.presets) {
-      byName.set(preset.name, { id: preset.name, lanes: preset.lanes });
+    // The lane card edits the provider's first instance; a second configured
+    // instance of that provider keeps its own card.
+    const laneCoveredInstances = new Set(
+      activeCards.flatMap((card) => {
+        const providerId = card.providerId;
+        if (providerId === undefined) return [];
+        const first = capabilities.providers.instances.find((instance) => instance.provider_id === providerId);
+        return first === undefined ? [] : [first.id];
+      }),
+    );
+    const cards: ServiceCard[] = [];
+    const cardFor = (instanceId: string, providerId: string) => {
+      const descriptor = capabilities.providers.descriptors.find((candidate) => candidate.provider_id === providerId);
+      const searches = (descriptor?.query_operations.length ?? 0) > 0;
+      cards.push({
+        id: `instance:${instanceId}`,
+        title: searches ? `${labelOf(providerId)} ${t('st.nbSearch.operation.search')}`.trim() : labelOf(providerId),
+        subtitle: searches ? t('st.nbSearch.operation.search') : t('st.nbSearch.role.service'),
+      });
+    };
+    for (const instance of capabilities.providers.instances) {
+      if (!overridden.has(instance.id)) continue;
+      if (coveredProviders.has(instance.provider_id) && laneCoveredInstances.has(instance.id)) continue;
+      cardFor(instance.id, instance.provider_id);
     }
-    for (const [name, preset] of Object.entries(draft?.advanced?.presets ?? {})) {
-      if (preset === null) continue;
-      byName.set(name, { id: name, lanes: preset.lanes });
+    // An instance this draft created exists nowhere on the server yet; it
+    // still joins the list so its key and address can be set before the save.
+    for (const [instanceId, provider] of Object.entries(draft.providers)) {
+      if (provider.isNew !== true || provider.isDeleted === true || provider.providerId === undefined) continue;
+      if (capabilities.providers.instances.some((instance) => instance.id === instanceId)) continue;
+      cardFor(instanceId, provider.providerId);
     }
-    return [...byName.values()];
-  }, [capabilities.search.presets, draft]);
+    return cards;
+  }, [bindingConfig, capabilities, allCards, activeCards, draft.providers, labelOf, t]);
 
-  const addPreset = () => {
-    if (draft === undefined || advanced === undefined) return;
-    const base = 'preset';
-    let id = base;
-    for (let suffix = 2; draft.advanced?.presets[id] !== undefined; suffix += 1) id = `${base}-${suffix}`;
-    const lane = capabilities.search.lanes.find((candidate) => candidate.output.channel === 'results')?.id;
-    if (lane === undefined) return;
-    advanced.onChange(setNbSearchPreset(draft, id, { lanes: [lane] }));
-    setOpenRow(`preset:${id}`);
-  };
+  const effective = useMemo(
+    () => resolveEffectiveDefaultLane(capabilities, draft.defaultSearchLane),
+    [capabilities, draft.defaultSearchLane],
+  );
+  const defaultLaneId = draft.defaultSearchLane === '' ? effective.laneId : draft.defaultSearchLane;
+  const inheritedDefault = draft.defaultSearchLane === '' && effective.laneId !== undefined;
 
-  const addLane = () => {
-    if (draft === undefined || advanced === undefined) return;
-    const base = 'custom.search';
-    let id = base;
-    for (let suffix = 2; draft.advanced?.lanes[id] !== undefined; suffix += 1) id = `${base}-${suffix}`;
-    const lane = firstUnusedLane(capabilities, draft);
-    const identity = nbSearchLaneIdentity(capabilities, draft, lane);
-    advanced.onChange(setNbSearchLane(draft, id, identity.profile ?? {
-      provider_instance_id: '',
-      operation_id: '',
-      latency: 'medium',
-      cost: 'cheap',
-    }));
-    setOpenRow(`lane:${id}`);
-  };
+  const directoryView = useListView({
+    listId: 'nb-search-service-directory',
+    items: directoryCards,
+    keyOf: (card) => card.id,
+    textOf: (card) => [card.title, card.subtitle, card.id],
+  });
 
   return (
-    <SectionCard id="st-card-search-defaults" title={t('st.nbSearch.defaultsTitle')}>
-      <div className="space-y-4">
-        <Hint>{t('st.nbSearch.defaultsHint')}</Hint>
+    <SectionCard id="st-card-search-providers" title={t('st.nbSearch.providersTitle')}>
+      <div className="space-y-4" data-nb-search-services-tab>
+        <Hint>{t('st.nbSearch.services.pageHint')}</Hint>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <input
-            type="search"
-            value={filterQuery}
-            onChange={(event) => {
-              setFilterQuery(event.target.value);
-            }}
-            placeholder={t('st.nbSearch.lanes.filterPlaceholder')}
-            aria-label={t('st.nbSearch.lanes.filterPlaceholder')}
-            className={`${INPUT} min-w-0 flex-1`}
-          />
-          {advanced === undefined ? null : (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-[12px] font-medium text-ink-soft">{t('st.nbSearch.services.listTitle')}</p>
+          {directoryOpen ? (
             <button
               type="button"
-              className={`${SECONDARY_BUTTON} shrink-0 inline-flex items-center gap-1`}
-              disabled={saving}
-              data-nb-search-lane-add
-              onClick={addLane}
+              className={`${SECONDARY_BUTTON} shrink-0`}
+              aria-expanded={directoryOpen}
+              data-nb-search-add-service
+              onClick={() => { setDirectoryOpen(false); }}
             >
-              <Icon name="plus" size={12} />
-              {t('st.nbSearch.custom.lane.add')}
+              <span className="inline-flex items-center gap-1">
+                <Icon name="close" size={12} />
+                {t('st.nbSearch.services.cancelAdd')}
+              </span>
             </button>
-          )}
+          ) : activeCards.length + instanceCards.length > 0 ? (
+            <button
+              type="button"
+              className={`${SECONDARY_BUTTON} shrink-0`}
+              aria-expanded={directoryOpen}
+              data-nb-search-add-service
+              onClick={() => { setDirectoryOpen(true); }}
+            >
+              <span className="inline-flex items-center gap-1">
+                <Icon name="plus" size={12} />
+                {t('st.nbSearch.services.add')}
+              </span>
+            </button>
+          ) : null}
         </div>
 
-        <fieldset disabled={saving} className="disabled:opacity-60">
-          {/* No Kiki override. This is "keep using whatever the engine
-              provides", not "search is off" — the old copy claimed fail-closed
-              while an inherited default was in fact serving every search. */}
-          <label
-            className={`flex items-start gap-2.5 py-2 pl-3 pr-2 cursor-pointer ${selectedLane === '' ? 'bg-panel' : ''}`}
-            data-nb-search-lane-inherit
-          >
-            <input
-              type="radio"
-              name="nb-search-default-lane"
-              className="mt-0.5 shrink-0"
-              checked={selectedLane === ''}
-              onChange={() => {
-                selectLane('');
-              }}
+        {directoryOpen ? (
+          <div className="space-y-2" data-nb-search-directory>
+            <Hint>{t('st.nbSearch.services.directoryHint')}</Hint>
+            <ListToolbar
+              view={directoryView}
+              total={directoryCards.length}
+              searchLabel={t('st.nbSearch.services.directoryTitle')}
+              searchPlaceholder={t('st.nbSearch.services.searchPlaceholder')}
+              showDensity={false}
             />
-            <span className="min-w-0 flex-1">
-              <span className="text-[13px] text-ink-soft">{t('st.nbSearch.lanes.inheritDefault')}</span>
-              <span className="mt-0.5 block text-[12px] text-ink-faint" data-nb-search-lane-inherited>
-                {inherited.laneId === undefined
-                  ? t('st.nbSearch.inheritDefaultNone')
-                  : inherited.inherited
-                    ? t('st.nbSearch.inheritDefault', { lane: inherited.laneId })
-                    : t('st.nbSearch.customDefault', { lane: inherited.laneId })}
-              </span>
-            </span>
-          </label>
-
-          {groups.map((group) => (
-            <div key={group.key} className="mt-3 space-y-1">
-              <p className="text-[12px] font-medium text-ink-soft">{group.title}</p>
-              <ul className="divide-y divide-hairline">{group.rows.map(renderRow)}</ul>
-            </div>
-          ))}
-
-          {filtered.length === 0 && filterQuery.trim() !== '' ? (
-            <p className="py-4 text-center text-[12px] text-ink-faint">
-              {t('st.nbSearch.lanes.noMatches', { query: filterQuery })}
-            </p>
-          ) : null}
-        </fieldset>
-
-        {presetRows.length > 0 || advanced !== undefined ? (
-          <div className="space-y-2 border-t border-hairline pt-5" data-nb-search-presets>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="min-w-0">
-                <p className="text-[13px] font-medium text-ink">{t('st.nbSearch.custom.preset.group')}</p>
-                <Hint>{t('st.nbSearch.custom.preset.groupHint')}</Hint>
-              </div>
-              {advanced === undefined ? null : (
-                <button
-                  type="button"
-                  className={`${SECONDARY_BUTTON} shrink-0 inline-flex items-center gap-1`}
-                  disabled={saving}
-                  data-nb-search-preset-add
-                  onClick={addPreset}
-                >
-                  <Icon name="plus" size={12} />
-                  {t('st.nbSearch.custom.preset.add')}
-                </button>
-              )}
-            </div>
-
-            {presetRows.length === 0 ? (
-              <p className="text-[12px] text-ink-faint">{t('st.nbSearch.custom.preset.empty')}</p>
+            {directoryCards.length === 0 ? (
+              <ListEmpty kind="none" title={t('st.nbSearch.services.directoryEmpty')} />
+            ) : directoryView.visible.length === 0 ? (
+              <ListEmpty
+                kind="no-match"
+                title={t('st.nbSearch.services.noMatch', { query: directoryView.query.trim() })}
+                onClear={directoryView.clear}
+              />
             ) : (
-              <ul className="divide-y divide-hairline" data-nb-search-preset-rows>
-                {presetRows.map((preset) => {
-                  const expanded = openRow === `preset:${preset.id}`;
-                  const source = draft === undefined
-                    ? 'source' as const
-                    : nbSearchPresetIdentity(capabilities, draft, preset.id).source;
-                  return (
-                    <li key={preset.id} data-nb-search-preset-row={preset.id} data-nb-search-preset-origin={source}>
-                      <div className={`flex items-start gap-1 py-2 pl-3 pr-1 ${expanded ? 'bg-panel' : ''}`}>
-                        <button
-                          type="button"
-                          className="flex min-w-0 flex-1 flex-col items-start gap-0.5 text-left"
-                          aria-expanded={expanded}
-                          data-nb-search-preset-open={preset.id}
-                          disabled={advanced === undefined}
-                          onClick={() => {
-                            setOpenRow(expanded ? null : `preset:${preset.id}`);
-                          }}
-                        >
-                          <span className="flex w-full min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
-                            <span className="min-w-0 break-words text-[13px] text-ink">{preset.id}</span>
-                            <span className="shrink-0 text-[12px] text-ink-faint" data-nb-search-preset-source-badge={source}>
-                              {t(nbSearchSourceBadgeKey(source))}
-                            </span>
-                            {source === 'override' ? (
-                              <span className="text-[11px] text-ink-soft" data-nb-search-preset-overridden>
-                                {t('st.nbSearch.custom.lane.badgeOverridden')}
-                              </span>
-                            ) : null}
-                          </span>
-                          <span className="block max-w-full truncate font-mono text-[11px] text-ink-faint">
-                            {preset.lanes.join(' → ')}
-                          </span>
-                        </button>
-                        <div className="flex shrink-0 items-center gap-0.5 pt-0.5">
-                          <span className="text-[12px] text-ink-faint">
-                            {tp('st.nbSearch.custom.preset.laneCount', preset.lanes.length)}
-                          </span>
-                          {advanced === undefined ? null : (
-                            <button
-                              type="button"
-                              aria-label={t('st.nbSearch.custom.preset.edit')}
-                              title={t('st.nbSearch.custom.preset.edit')}
-                              data-nb-search-preset-edit={preset.id}
-                              className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${expanded ? 'text-ink' : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'}`}
-                              onClick={() => {
-                                setOpenRow(expanded ? null : `preset:${preset.id}`);
-                              }}
-                            >
-                              <Icon name={expanded ? 'collapse' : 'edit'} size={14} />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      {expanded && advanced !== undefined ? (
-                        <div className="pb-3 pl-6 pr-2">
-                          <NbSearchPresetEditor
-                            binding={advanced}
-                            presetId={preset.id}
-                            saving={saving}
-                            onRename={(next) => {
-                              setOpenRow(`preset:${next}`);
-                            }}
-                            onClose={() => {
-                              setOpenRow(null);
-                            }}
-                          />
-                        </div>
-                      ) : null}
-                    </li>
-                  );
-                })}
+              <ul className="space-y-0.5">
+                {directoryView.visible.map((card) => (
+                  <li key={card.id}>
+                    <button
+                      type="button"
+                      data-nb-search-directory-row={card.id}
+                      disabled={saving}
+                      onClick={() => {
+                        const isPipeline = capabilities.fetch.pipelines.some((pipeline) => pipeline.id === card.id);
+                        advanced.onChange(isPipeline
+                          ? addPipelineService(draft, capabilities, card.id, [])
+                          : addLaneService(draft, card.id));
+                        setDirectoryOpen(false);
+                      }}
+                      className="row-interactive flex w-full min-w-0 items-center gap-2 py-1.5 pl-3 pr-2 text-left"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{card.title}</span>
+                      <span className="shrink-0 text-[12px] font-medium text-ink-soft">
+                        {t('st.nbSearch.services.addOne')}
+                      </span>
+                    </button>
+                  </li>
+                ))}
               </ul>
             )}
           </div>
         ) : null}
+
+        {activeCards.length + instanceCards.length === 0 ? (
+          <ListEmpty
+            kind="none"
+            title={t('st.nbSearch.services.emptyTitle')}
+            body={t('st.nbSearch.services.emptyBody')}
+            action={(
+              <button
+                type="button"
+                className={PRIMARY_BUTTON}
+                data-nb-search-add-service-empty
+                onClick={() => { setDirectoryOpen(true); }}
+              >
+                {t('st.nbSearch.services.emptyAction')}
+              </button>
+            )}
+          />
+        ) : (
+          <div className="space-y-2" data-nb-search-service-cards>
+            {activeCards.map((card) => (
+              <NbSearchServiceCard
+                key={card.id}
+                card={card}
+                kind="lane"
+                capabilities={capabilities}
+                draft={draft}
+                onChange={advanced.onChange}
+                keyDraft={cardKeyDraft(keyDrafts, capabilities, card.providerId)}
+                onKeyDraftChange={(next) => {
+                  const instanceId = cardInstanceId(capabilities, card.providerId);
+                  if (instanceId !== undefined) onKeyDraftChange(instanceId, next);
+                }}
+                readCredential={readCredential}
+                readKeyUsage={readKeyUsage}
+                saving={saving}
+                defaultState={defaultLaneId === card.id ? (inheritedDefault ? 'inherit' : 'default') : 'none'}
+                // 设为默认 stays available on every other card even while the
+                // current default is inherited: choosing one is exactly how the
+                // user overrides the source default. The inherited default's own
+                // card offers nothing — it already is the default.
+                onMakeDefault={defaultLaneId === card.id ? undefined : () => {
+                  advanced.onChange(makeDefaultLane(draft, card.id));
+                }}
+                onRemoveService={() => {
+                  advanced.onChange(removeService(draft, capabilities, 'lane', card.id, []));
+                }}
+                removeTitle={t('st.nbSearch.services.removeServiceTitle', { name: card.title })}
+              />
+            ))}
+            {instanceCards.map((card) => {
+              const instanceId = card.id.slice('instance:'.length);
+              return (
+                <NbSearchServiceCard
+                  key={card.id}
+                  card={card}
+                  kind="instance"
+                  instanceId={instanceId}
+                  capabilities={capabilities}
+                  draft={draft}
+                  onChange={advanced.onChange}
+                  keyDraft={keyDrafts[instanceId] ?? { mode: 'keep' }}
+                  onKeyDraftChange={(next) => { onKeyDraftChange(instanceId, next); }}
+                  readCredential={readCredential}
+                  readKeyUsage={readKeyUsage}
+                  saving={saving}
+                />
+              );
+            })}
+            {draft.defaultSearchLane !== '' ? (
+              <div className="flex flex-wrap items-center gap-2 px-1">
+                <button
+                  type="button"
+                  className={SECONDARY_BUTTON}
+                  disabled={saving}
+                  data-nb-search-clear-default
+                  onClick={() => {
+                    advanced.onChange(clearDefaultLane(draft));
+                  }}
+                >
+                  {t('st.nbSearch.services.followSourceDefault')}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        )}
+
+        <AdvancedDetails
+          summary={t('st.nbSearch.services.advancedMethods')}
+          data-nb-search-methods
+          open={methodsOpen}
+          onToggle={(event) => {
+            setMethodsOpen((event.target as HTMLDetailsElement).open);
+          }}
+        >
+          <NbSearchLaneComposer binding={advanced} saving={saving} />
+        </AdvancedDetails>
       </div>
     </SectionCard>
   );
+}
+
+function cardInstanceId(
+  capabilities: NbSearchCapabilities,
+  providerId: string | undefined,
+): string | undefined {
+  if (providerId === undefined) return undefined;
+  return capabilities.providers.instances.find((instance) => instance.provider_id === providerId)?.id;
+}
+
+function cardKeyDraft(
+  keyDrafts: Readonly<Record<string, KeyDraft>>,
+  capabilities: NbSearchCapabilities,
+  providerId: string | undefined,
+): KeyDraft {
+  const instanceId = cardInstanceId(capabilities, providerId);
+  return instanceId === undefined ? { mode: 'keep' } : keyDrafts[instanceId] ?? { mode: 'keep' };
 }

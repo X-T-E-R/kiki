@@ -241,7 +241,7 @@ export function NbSearchRoutingEditor({
         </div>
 
         {view.effective.builtin_rules.length === 0 ? null : (
-          <ul className="divide-y divide-hairline" data-nb-search-routing-builtin-rules>
+          <ul className="space-y-0" data-nb-search-routing-builtin-rules>
             {view.effective.builtin_rules.map((rule) => {
               const active = nbSearchBuiltinRuleActive(view, rule.id);
               return (
@@ -614,7 +614,7 @@ export function NbSearchRoutingEditor({
             ) : null}
           </fieldset>
         ) : (
-          <ol className="divide-y divide-hairline" data-nb-search-routing-rules-readonly>
+          <ol className="space-y-0" data-nb-search-routing-rules-readonly>
             {rules.map((rule, index) => (
               <li key={`${index}:${rule.id}`} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 py-2">
                 <StepNumber n={index + 1} />
