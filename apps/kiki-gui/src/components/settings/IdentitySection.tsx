@@ -155,6 +155,8 @@ export function IdentitySection() {
   const catalog = query.data;
   return (
     <div className="space-y-6">
+      {/* Orientation, one line: why this page exists at all. */}
+      <p className="max-w-[62ch] text-[12.5px] leading-snug text-ink-soft">{t('st.identity.purpose')}</p>
       {query.isError ? <InlineError error={query.error} /> : null}
       <GlobalRequestIdentityCard />
       <ProfilesCard catalog={catalog} />

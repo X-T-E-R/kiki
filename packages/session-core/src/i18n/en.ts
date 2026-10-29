@@ -3886,6 +3886,7 @@ export const en = {
     'Used when a provider or model has no identity of its own. Inherit here sends the built-in Kimi Code identity.',
   'st.section.identity': "Request identity",
   'st.purpose.identity': 'Which client a request presents itself as, and where that client version comes from.',
+  'st.identity.purpose': 'Choose the client identity requests present, where its version comes from, and the User-Agent, headers, and body fields they send.',
   'st.identity.listTitle': "Identities",
   'st.identity.builtinGroup': "Built in",
   'st.identity.customGroup': "Your identities",
@@ -5877,6 +5878,7 @@ export const en = {
   'st.about.build': 'Build',
   'st.about.serverId': 'Server ID',
   'st.about.backend': 'Backend',
+  'st.about.technical': 'Technical details',
   'st.about.browserHint':
     'The browser build has no auto-updater. Open this page in the Kiki desktop app to check for and install updates.',
   'st.about.channel': 'Update channel',

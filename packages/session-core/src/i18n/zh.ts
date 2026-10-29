@@ -3851,6 +3851,7 @@ export const zh = {
     '提供商或模型没有自己的身份时，用这里的设置。这里选继承，发出的是内置的 Kimi Code 身份。',
   'st.section.identity': "请求身份",
   'st.purpose.identity': '请求以哪个客户端的身份发出，以及客户端版本从哪里来。',
+  'st.identity.purpose': '选择请求呈现的客户端身份、版本来源，以及要发送的 User-Agent、请求头和请求体字段。',
   'st.identity.listTitle': "身份",
   'st.identity.builtinGroup': "内置",
   'st.identity.customGroup': "自定义",
@@ -5823,6 +5824,7 @@ export const zh = {
   'st.about.build': '构建',
   'st.about.serverId': '服务器 ID',
   'st.about.backend': '后端',
+  'st.about.technical': '技术信息',
   'st.about.browserHint':
     '浏览器版本没有自动更新。在 Kiki 桌面应用中打开本页，即可检查并安装更新。',
   'st.about.channel': '更新通道',

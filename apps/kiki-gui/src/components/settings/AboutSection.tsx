@@ -16,7 +16,7 @@ import { FeedbackLine, Hint, Toggle, type Feedback } from '../controls';
 import { requestOnboardingOpen } from '../OnboardingWizard';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
-import { DependentField, SettingField } from './fields';
+import { AdvancedDetails, DependentField, SettingField } from './fields';
 import { SettingsSelect } from './SettingsPrimitives';
 
 export function AboutSection() {
@@ -141,6 +141,8 @@ export function AboutSection() {
   const versionRows: { label: string; value: string }[] = [
     { label: t('st.about.desktopVersion'), value: guiVersion },
     { label: t('st.about.serverVersion'), value: meta.server_version },
+  ];
+  const technicalRows: { label: string; value: string }[] = [
     ...(buildSha !== undefined && buildSha !== ''
       ? [{ label: t('st.about.build'), value: buildSha.slice(0, 12) }]
       : []),
@@ -158,6 +160,19 @@ export function AboutSection() {
           </div>
         ))}
       </dl>
+      {/* Bug-report facts, out of the first read. */}
+      <div className="mt-3">
+        <AdvancedDetails summary={t('st.about.technical')} data-about-technical>
+          <dl className="space-y-1 text-[12px]">
+            {technicalRows.map((row) => (
+              <div key={row.label} className="flex items-baseline justify-between gap-4">
+                <dt className="shrink-0 text-ink-faint">{row.label}</dt>
+                <dd className="break-all text-right font-mono text-[11.5px] text-ink-soft">{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </AdvancedDetails>
+      </div>
 
       {isDesktop ? (
         <div className="mt-4 space-y-3 border-t border-hairline pt-4">
@@ -235,11 +250,7 @@ export function AboutSection() {
             <FeedbackLine feedback={{ tone: 'error', text: persistError }} />
           )}
         </div>
-      ) : (
-        <div className="mt-4 border-t border-hairline pt-3">
-          <Hint>{t('st.about.browserHint')}</Hint>
-        </div>
-      )}
+      ) : null}
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-hairline pt-4">
         <Hint>{t('onboarding.reenterHint')}</Hint>
