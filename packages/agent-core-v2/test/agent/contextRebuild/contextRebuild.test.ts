@@ -12,7 +12,9 @@ import type { FullCompactionTask } from '#/agent/fullCompaction/fullCompaction';
 import { ILogService } from '#/_base/log/log';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
-import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentLoopService, type AgentLoopStatus } from '#/agent/loop/loop';
+import { MessageStepRequest } from '#/agent/loop/stepRequest';
+import { TaskNotificationStepRequest } from '#/agent/task/taskService';
 import { IAgentModelSwitchService, type ModelSwitchReceipt } from '#/agent/modelSwitch/modelSwitch';
 import { IAgentMcpService } from '#/agent/mcp/mcp';
 import { IAgentPluginService } from '#/agent/plugin/agentPlugin';
@@ -28,6 +30,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { Event2 } from '#/app/event/event2';
 
 import type { McpSessionCapability } from '#/agent/mcp/mcp';
+import { createTestAgent } from '../../harness';
 
 const REBUILT = ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'] as const;
 
@@ -228,6 +231,117 @@ describe('AgentContextRebuildService', () => {
     });
   });
 
+  it('rebuilds an idle loop while preserving a task notification for the next turn', async () => {
+    const ctx = disposables.add(createTestAgent());
+    const loop = ctx.get(IAgentLoopService);
+    const notification = taskNotification('Task finished');
+    const materialize = vi.spyOn(notification, 'resolveContextMessages');
+    const start = vi.spyOn(ctx.get(IAgentLLMRequesterService), 'start');
+    const receipt = loop.enqueue(notification);
+    const host = createHost(disposables, { loop });
+
+    expect(loop.status()).toMatchObject({ state: 'idle', pendingTurnIds: [], pendingRequestKinds: ['task_notification'] });
+    try {
+      await expect(host.service.rebuild()).resolves.toMatchObject({ outcome: 'applied' });
+      expect(loop.status()).toMatchObject({ state: 'idle', pendingTurnIds: [], pendingRequestKinds: ['task_notification'] });
+      expect(notification.state).toBe('pending');
+      expect(host.reload).toHaveBeenCalledTimes(1);
+      expect(start).not.toHaveBeenCalled();
+      ctx.mockNextResponse({ type: 'text', text: 'Done' });
+      const prompt = loop.enqueue(new MessageStepRequest({
+        role: 'user', content: [{ type: 'text', text: 'Continue' }], toolCalls: [],
+      }, { admission: 'newTurn' }));
+      const { turn } = await prompt.assigned;
+      expect((await receipt.assigned).turn).toBe(turn);
+      expect((await turn.result).type).toBe('completed');
+      expect(materialize).toHaveBeenCalledTimes(1);
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(loop.status().hasPendingRequests).toBe(false);
+    } finally {
+      receipt.abort();
+    }
+  });
+
+  it.each([false, true])('releases held notifications and prompts exactly once after rebuild failure=%s', async (fails) => {
+    const ctx = disposables.add(createTestAgent());
+    const loop = ctx.get(IAgentLoopService);
+    const start = vi.spyOn(ctx.get(IAgentLLMRequesterService), 'start');
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const host = createHost(disposables, { loop, sources: async () => {
+      enter();
+      await gate;
+      if (fails) throw new Error('source reload failed');
+      return { instructionsChanged: false, pluginsChanged: false };
+    } });
+    const rebuilding = host.service.rebuild();
+    const rebuilt = fails
+      ? expect(rebuilding).rejects.toThrow('source reload failed')
+      : expect(rebuilding).resolves.toMatchObject({ outcome: 'applied' });
+    await entered;
+    const notification = taskNotification('Finished during rebuild');
+    const materialize = vi.spyOn(notification, 'resolveContextMessages');
+    const receipt = loop.enqueue(notification);
+    ctx.mockNextResponse({ type: 'text', text: 'Done' });
+    const prompt = loop.enqueue(new MessageStepRequest({
+      role: 'user', content: [{ type: 'text', text: 'Continue' }], toolCalls: [],
+    }, { admission: 'newTurn' }));
+    try {
+      expect(loop.status()).toMatchObject({ state: 'idle', pendingTurnIds: [], pendingRequestKinds: ['task_notification', 'message'] });
+      expect(start).not.toHaveBeenCalled();
+      expect(loop.tryAcquireQuiescence({ pendingSteps: 'preserve' })).toBeUndefined();
+    } finally {
+      release();
+      await rebuilt;
+    }
+    const { turn } = await prompt.assigned;
+    expect((await receipt.assigned).turn).toBe(turn);
+    expect((await turn.result).type).toBe('completed');
+    expect(materialize).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(loop.status().hasPendingRequests).toBe(false);
+    const admission = loop.tryAcquireQuiescence({ pendingSteps: 'preserve' });
+    expect(admission).toBeDefined();
+    await admission!.dispose();
+  });
+
+  it('rejects a manual rebuild while real active and queued turns exist', async () => {
+    const ctx = disposables.add(createTestAgent());
+    const loop = ctx.get(IAgentLoopService);
+    const host = createHost(disposables, { loop });
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    disposables.add(loop.hooks.onWillBeginStep.register('context-rebuild-test', async (_context, next) => {
+      enter();
+      await gate;
+      await next();
+    }));
+    ctx.mockNextResponse({ type: 'text', text: 'First done' });
+    ctx.mockNextResponse({ type: 'text', text: 'Second done' });
+    const prompt = () => loop.enqueue(new MessageStepRequest({
+      role: 'user', content: [{ type: 'text', text: 'Run' }], toolCalls: [],
+    }, { admission: 'newTurn' }));
+    const first = (await prompt().assigned).turn;
+    await entered;
+    let second: typeof first | undefined;
+    try {
+      expect(loop.status().state).toBe('running');
+      await expect(host.service.rebuild()).rejects.toThrow('The session is busy.');
+      second = (await prompt().assigned).turn;
+      expect(loop.status().pendingTurnIds).toEqual([second.id]);
+      await expect(host.service.rebuild()).rejects.toThrow('The session is busy.');
+      expect(host.reload).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await first.result;
+      await second?.result;
+    }
+  });
+
   it('does not record a busy rejection as a failed rebuild', async () => {
     const host = createHost(disposables, { busy: true });
     await expect(host.service.rebuild()).rejects.toThrow('The session is busy. Wait for the current turn to finish, then rebuild context again.');
@@ -342,7 +456,7 @@ describe('AgentContextRebuildService', () => {
     await host.cleared.run({ deleteCount: 2 });
     expect(host.reload).toHaveBeenCalledTimes(1);
     expect(host.service.control().trigger).toBe('context_clear');
-    const busy = createHost(disposables, { loopState: 'running' });
+    const busy = createHost(disposables, { loopStatus: { state: 'running' } });
     await busy.service.setEnabled(true);
     await busy.cleared.run({ deleteCount: 2 });
     expect(busy.reload).not.toHaveBeenCalled();
@@ -351,13 +465,40 @@ describe('AgentContextRebuildService', () => {
     await compacting.cleared.run({ deleteCount: 2 });
     expect(compacting.reload).not.toHaveBeenCalled();
   });
+
+  it('re-reads an idle context clear without consuming next-turn task notifications', async () => {
+    const ctx = disposables.add(createTestAgent());
+    const loop = ctx.get(IAgentLoopService);
+    const receipt = loop.enqueue(taskNotification('Still pending'));
+    const host = createHost(disposables, { loop });
+    await host.service.setEnabled(true);
+    try {
+      await host.cleared.run({ deleteCount: 2 });
+      expect(host.reload).toHaveBeenCalledTimes(1);
+      expect(host.service.control()).toMatchObject({ trigger: 'context_clear', outcome: 'applied' });
+      expect(loop.status()).toMatchObject({ state: 'idle', pendingRequestKinds: ['task_notification'] });
+    } finally {
+      receipt.abort();
+    }
+  });
+
+  it.each([
+    { pendingTurnIds: [1] },
+    { finalizing: true },
+  ])('skips a context clear with queued or finalizing work: %j', async (loopStatus) => {
+    const host = createHost(disposables, { loopStatus });
+    await host.service.setEnabled(true);
+    await host.cleared.run({ deleteCount: 2 });
+    expect(host.reload).not.toHaveBeenCalled();
+  });
 });
 
 interface HostOptions {
   readonly agentId?: string;
   readonly executorId?: string;
   readonly busy?: boolean;
-  readonly loopState?: 'idle' | 'running';
+  readonly loop?: IAgentLoopService;
+  readonly loopStatus?: Partial<AgentLoopStatus>;
   readonly compacting?: boolean;
   readonly sources?: () => Promise<{ instructionsChanged: boolean; pluginsChanged: boolean }>;
   readonly profilesReload?: () => Promise<void>;
@@ -410,12 +551,13 @@ function createHost(disposables: DisposableStore, options: HostOptions = {}) {
       });
       reg.definePartialInstance(ILogService, { error: logError });
       reg.definePartialInstance(IAgentScopeContext, { agentId: options.agentId ?? 'main' });
-      reg.definePartialInstance(IAgentLoopService, {
+      reg.definePartialInstance(IAgentLoopService, options.loop ?? {
         tryAcquireQuiescence: () => options.busy === true ? undefined : toDisposable(() => {}),
         status: () => ({
-          state: options.loopState ?? 'idle',
+          state: 'idle',
           pendingTurnIds: [],
           hasPendingRequests: false,
+          ...options.loopStatus,
         }),
       });
       reg.definePartialInstance(IAgentContextInjectorService, { reconcileAllAtSafeBoundary: injector });
@@ -475,6 +617,12 @@ function applyControl(states: AgentStateService, event: Event2<any>): void {
   const draft = structuredClone(states.get(contextRebuildControlKey));
   fold(draft as never, event, undefined as never);
   states.set(contextRebuildControlKey, draft);
+}
+
+function taskNotification(text: string): TaskNotificationStepRequest {
+  return new TaskNotificationStepRequest({
+    role: 'user', content: [{ type: 'text', text }], toolCalls: [],
+  }, undefined, undefined, 'activeOrNextTurn');
 }
 
 function compactionTask(): FullCompactionTask {
