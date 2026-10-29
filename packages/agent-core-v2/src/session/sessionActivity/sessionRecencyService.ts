@@ -32,6 +32,13 @@ export class SessionRecencyService extends Disposable implements ISessionRecency
     @ILogService private readonly log: ILogService,
   ) {
     super();
+    this._register(metadata.onDidChangeMetadata((event) => {
+      if (!event.changed.includes('activityUpdatedAt')) return;
+      const work = this.propagate().catch((error: unknown) => {
+        this.log.warn('session activity recency propagation failed', { sessionId: this.context.sessionId, error: String(error) });
+      });
+      trackSessionMetadataWork(work);
+    }));
     for (const handle of agents.list()) this.attach(handle);
     this._register(agents.onDidCreate((handle) => this.attach(handle)));
     this._register(agents.onDidDispose((id) => {
@@ -56,15 +63,19 @@ export class SessionRecencyService extends Disposable implements ISessionRecency
 
   private record(at: number): void {
     if (this.context.ephemeral === true) return;
-    const work = this.metadata.update({ activityUpdatedAt: at }, { touchUpdatedAt: false }).then(async () => {
-      this.events.publish(new SessionMetaUpdated({ payload: { sessionId: this.context.sessionId, agentId: 'main', patch: {} } }));
-      const meta = await this.metadata.read();
-      const parent = activityParentId(this.context.sessionId, meta.custom);
-      if (parent !== undefined) await this.recency.propagate(parent, at, new Set([this.context.sessionId]));
-    }).catch((error: unknown) => {
+    const work = this.metadata.update({ activityUpdatedAt: at }, { touchUpdatedAt: false, deferPersistence: true }).catch((error: unknown) => {
       this.log.warn('session activity recency write failed', { sessionId: this.context.sessionId, error: String(error) });
     });
     trackSessionMetadataWork(work);
+  }
+
+  private async propagate(): Promise<void> {
+    const meta = await this.metadata.read();
+    const at = meta.activityUpdatedAt;
+    if (at === undefined) return;
+    this.events.publish(new SessionMetaUpdated({ payload: { sessionId: this.context.sessionId, agentId: 'main', patch: {} } }));
+    const parent = activityParentId(this.context.sessionId, meta.custom);
+    if (parent !== undefined) await this.recency.propagate(parent, at, new Set([this.context.sessionId]));
   }
 }
 

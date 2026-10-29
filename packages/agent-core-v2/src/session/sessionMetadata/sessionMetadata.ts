@@ -112,7 +112,8 @@ export interface ISessionMetadata {
   getAgentExecutor(agentId: string): Promise<string | undefined>;
   usage(): SessionUsageSummary | undefined;
   recordUsage(model: string, usage: TokenUsage, usageKnown?: boolean): void;
-  update(patch: SessionMetaPatch, opts?: { readonly touchUpdatedAt?: boolean }): Promise<void>;
+  /** Deferred writes update live metadata immediately and share the usage flush window; drain and disposal persist them. */
+  update(patch: SessionMetaPatch, opts?: { readonly touchUpdatedAt?: boolean; readonly deferPersistence?: boolean }): Promise<void>;
   setTitle(title: string): Promise<void>;
   /**
    * Applies a generated title unless the user customized theirs; the title
