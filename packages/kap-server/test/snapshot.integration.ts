@@ -12,6 +12,7 @@ import {
   IAgentScopeContext,
   IAppendLogStore,
   IAtomicDocumentStore,
+  IAgentTaskService,
   IEventBus,
   IAgentLifecycleService,
   IAgentPermissionModeService,
@@ -2284,6 +2285,50 @@ describe('cold session snapshot', () => {
     expect(messageShape(cold)).toEqual(messageShape(warm));
     expect(cold.session.message_count).toBe(warm.session.message_count);
     expect(cold.messages.has_more).toBe(warm.messages.has_more);
+  });
+
+  it('reads a full task receipt from a cold session after metadata outcomes are split', async () => {
+    const sessionId = await createSession();
+    const { session, main } = await mainOf(sessionId);
+    const receipt = 'complete receipt '.repeat(512);
+    const tasks = main.accessor.get(IAgentTaskService);
+    const taskId = tasks.registerTask({
+      idPrefix: 'agent', kind: 'agent', description: 'saved result',
+      toInfo: (base) => ({ ...base, kind: 'agent', agentId: 'saved-child' }),
+      start: async (sink) => { sink.setFinalOutput?.(receipt); await sink.settle({ status: 'completed' }); },
+    });
+    await tasks.wait(taskId);
+    const otherId = tasks.registerTask({
+      idPrefix: 'agent', kind: 'agent', description: 'other saved result',
+      toInfo: (base) => ({ ...base, kind: 'agent', agentId: 'other-child' }),
+      start: async (sink) => { sink.setFinalOutput?.('other result'); await sink.settle({ status: 'completed' }); },
+    });
+    await tasks.wait(otherId);
+    await session.accessor.get(ISessionMetadata).registerAgent('saved-child', {
+      type: 'sub', taskId, status: 'completed', resultSummary: receipt,
+    });
+    await closeSessionById(server!.core.accessor, sessionId);
+    const spies = restorationSpies();
+    const docs = server!.core.accessor.get(IAtomicDocumentStore);
+    const reads = vi.spyOn(docs, 'get');
+    const lists = vi.spyOn(docs, 'list');
+    const response = await fetch(`${base}/api/sessions/${sessionId}/tasks/${taskId}?with_output=true&output_bytes=32768`, {
+      headers: authHeaders(server as RunningServer),
+    });
+    const body = await response.json() as { code: number; data: { output_preview: string } };
+    expect(body.code).toBe(0);
+    expect(body.data.output_preview).toBe(receipt);
+    expect(lists).not.toHaveBeenCalled();
+    expect(reads.mock.calls.every(([, key]) => key === `${taskId}.json` || key === 'state.json')).toBe(true);
+    reads.mockClear();
+    const pageResponse = await fetch(`${base}/api/sessions/${sessionId}/tasks?page_size=1`, { headers: authHeaders(server as RunningServer) });
+    const page = await pageResponse.json() as { code: number; data: { items: unknown[]; has_more: boolean; next_offset: number } };
+    expect(page.code).toBe(0);
+    expect(page.data).toMatchObject({ items: [expect.any(Object)], has_more: true, next_offset: 1 });
+    expect(reads.mock.calls.filter(([, key]) => key.endsWith('.json') && key !== 'state.json')).toHaveLength(1);
+    expect(spies.acquire).not.toHaveBeenCalled();
+    expect(spies.resume).not.toHaveBeenCalled();
+    expect(getLiveSessionById(server!.core.accessor, sessionId)).toBeUndefined();
   });
 
   it('reads saved permission, plan, and completed subagent roster without a live handle', async () => {
