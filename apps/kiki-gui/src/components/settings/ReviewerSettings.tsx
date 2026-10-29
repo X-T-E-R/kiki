@@ -1,130 +1,110 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { providerIdSchema, type DecisionSource, type MoveReviewerKeyResult } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
+import { DECISION_CONNECTION_ADD_ROUTE } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
-import { buildCatalogModelOptions } from '../modelSelectOptions';
-import { SearchableSelect } from '../SearchableSelect';
-import { INPUT } from '../ui';
-import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
+import { useGuardedNavigate } from '../dirtyGuard';
+import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { DecisionSourceSummary } from './DecisionSources';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails } from './fields';
-import { SETTINGS_SELECT_TRIGGER, SettingsDraftFooter, SettingsSegmented } from './SettingsPrimitives';
+import { FieldIssue, SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
 const CATEGORIES = ['policy_compliance', 'no_secret_egress', 'no_irreversible_damage', 'no_outward_effect', 'prompt_injection_absent'] as const;
 type Category = typeof CATEGORIES[number];
 interface ReviewerDraft {
-  backend: 'model' | 'jev';
-  model: string;
   timeoutMs: string;
   allowThreshold: string;
   denyThreshold: string;
   categories: Category[];
-  apiKey: SecretDraft;
 }
 const DEFAULT_DRAFT: ReviewerDraft = {
-  backend: 'model', model: '', timeoutMs: '8000',
-  allowThreshold: '0.9', denyThreshold: '0.9', categories: [...CATEGORIES], apiKey: KEEP_SECRET,
+  timeoutMs: '8000', allowThreshold: '0.9', denyThreshold: '0.9', categories: [...CATEGORIES],
 };
-function reviewerFromConfig(permission: Awaited<ReturnType<import('../../lib/client').KikiClient['getConfig']>>['permission']): ReviewerDraft {
-  const reviewer = permission?.reviewer;
+type ReviewerEcho = NonNullable<NonNullable<Awaited<ReturnType<import('../../lib/client').KikiClient['getConfig']>>['permission']>['reviewer']>;
+function reviewerFromConfig(reviewer: ReviewerEcho | undefined): ReviewerDraft {
   return {
-    backend: reviewer?.backend === 'jev' ? 'jev' : 'model',
-    model: reviewer?.model ?? '',
     timeoutMs: String(reviewer?.timeoutMs ?? DEFAULT_DRAFT.timeoutMs),
     allowThreshold: String(reviewer?.allowThreshold ?? DEFAULT_DRAFT.allowThreshold),
     denyThreshold: String(reviewer?.denyThreshold ?? DEFAULT_DRAFT.denyThreshold),
     categories: reviewer?.categories !== undefined
       ? CATEGORIES.filter((category) => reviewer.categories.includes(category))
       : [...CATEGORIES],
-    apiKey: KEEP_SECRET,
   };
 }
 function valid(draft: ReviewerDraft): boolean {
   const timeout = Number(draft.timeoutMs);
   const allow = Number(draft.allowThreshold);
   const deny = Number(draft.denyThreshold);
-  return (draft.backend !== 'model' || draft.model.trim() !== '')
-    && Number.isInteger(timeout) && timeout >= 100 && timeout <= 30_000
+  return Number.isInteger(timeout) && timeout >= 100 && timeout <= 30_000
     && allow >= 0.5 && allow <= 1 && deny >= 0.5 && deny <= 1
     && draft.categories.length > 0;
 }
 
 /**
- * Server-wide reviewer configuration. Choosing Jev is the consent to send the
- * reviewer input to TypeSafe. The API echoes only the key's source; the value
- * is fetched through the reveal route when the user asks to see it.
+ * How the approval reviewer behaves: how long to wait, how sure to be and
+ * which checks run. Which service reviews is chosen once, in Who decides,
+ * and shown here read-only. A key the reviewer still keeps for itself (older
+ * settings) is echoed as such and can be moved into a connection.
  */
 export function ReviewerSettings() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
-  const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
   const [baseline, setBaseline] = useState<ReviewerDraft>(DEFAULT_DRAFT);
   const [draft, setDraft] = useState<ReviewerDraft>(DEFAULT_DRAFT);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [justSaved, pingSaved] = useSavedTick();
   const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
-  const reviewerEcho = configQuery.data?.permission?.reviewer;
-  const keySource = reviewerEcho?.apiKeySource ?? (reviewerEcho?.hasApiKey === true ? 'kiki' : 'none');
+  const reviewer = configQuery.data?.permission?.reviewer;
   useEffect(() => {
     if (!configQuery.data || dirty) return;
-    const next = reviewerFromConfig(configQuery.data.permission);
+    const next = reviewerFromConfig(configQuery.data.permission?.reviewer);
     setBaseline(next); setDraft(next);
   }, [configQuery.data, dirty]);
-  const revealKey = useCallback(async () => (await client.revealSecret({ kind: 'reviewer_api_key' })).value, [client]);
-  const modelOptions = useMemo(() => buildCatalogModelOptions(modelsQuery.data?.items ?? [], t), [modelsQuery.data, t]);
   const update = (patch: Partial<ReviewerDraft>) => { setDraft((current) => ({ ...current, ...patch })); setFeedback(null); };
   const save = async () => {
     if (!valid(draft) || !dirty) return;
     setSaving(true); setFeedback(null);
     try {
+      // Tuning only: the source, backend and key are left as they are.
       const echoed = await client.patchConfig({
         permission: { reviewer: {
-          backend: draft.backend, model: draft.model.trim() || undefined,
-          api_key: draft.apiKey.mode === 'clear' ? null
-            : draft.apiKey.mode === 'set' && draft.apiKey.value.trim() !== '' ? draft.apiKey.value.trim() : undefined,
           timeout_ms: Number(draft.timeoutMs),
           allow_threshold: Number(draft.allowThreshold), deny_threshold: Number(draft.denyThreshold),
           categories: draft.categories,
         } },
       });
       queryClient.setQueryData(['config'], echoed);
-      const next = reviewerFromConfig(echoed.permission);
+      const next = reviewerFromConfig(echoed.permission?.reviewer);
       setBaseline(next); setDraft(next);
       pingSaved();
     } catch (error) { setFeedback({ tone: 'error', text: errorText(locale, error) }); }
     finally { setSaving(false); }
   };
+  // Older settings still in effect while no source is saved.
+  const legacyJev = reviewer?.source === undefined && reviewer?.backend === 'jev';
+  const keySource = reviewer?.apiKeySource ?? (reviewer?.hasApiKey === true ? 'kiki' : 'none');
+  const legacyText = reviewer?.source !== undefined ? undefined
+    : legacyJev ? t('st.decision.preset.jev')
+      : reviewer?.model !== undefined ? reviewer.model : undefined;
   return <SectionCard id="st-card-reviewer" title={t('st.reviewer.title')}>
     <div className="space-y-3" data-reviewer-settings>
       <Hint>{t('st.reviewer.hint')}</Hint>
+      <DecisionSourceSummary consumer="reviewer" source={reviewer?.source} status={reviewer?.source_status} legacy={legacyText} />
+      {/* While an older key is still saved for the reviewer, moving it stays
+          offered, whatever the source says by now: a move that stopped half
+          way, a reload or a later change must not strand that key. */}
+      {keySource === 'kiki' ? <LegacyJevKey source={reviewer?.source} onMoved={(id) => { setFeedback({ tone: 'success', text: t('st.reviewer.moveDone', { id }) }); }} />
+        : legacyJev ? <LegacyJevEnv keyEnv={reviewer?.apiKeyEnv} /> : null}
       <fieldset disabled={saving || configQuery.isLoading} className="space-y-4 disabled:opacity-60">
-        <div className="space-y-1.5" data-reviewer-backend>
-          <span id="reviewer-backend-label" className="block text-[13px] font-medium text-ink">{t('st.reviewer.backend')}</span>
-          <SettingsSegmented<ReviewerDraft['backend']> ariaLabelledBy="reviewer-backend-label" dataAttr="data-reviewer-backend-choice"
-            value={draft.backend} onChange={(backend) => update({ backend })}
-            choices={[{ value: 'model', label: t('st.reviewer.modelBackend') }, { value: 'jev', label: t('st.reviewer.jevBackend') }]} />
-        </div>
-        {draft.backend === 'model' ? <div className="space-y-1.5">
-          <label htmlFor="reviewer-model" className="block text-[13px] font-medium text-ink">{t('st.reviewer.model')}</label>
-          <SearchableSelect id="reviewer-model" value={draft.model} options={modelOptions}
-            allowCustomValue ariaLabel={t('st.reviewer.model')} emptyText={t('st.reviewer.modelEmpty')}
-            buttonClassName={`${SETTINGS_SELECT_TRIGGER} min-w-56`}
-            onChange={(model) => update({ model })} />
-        </div> : <div className="max-w-xl border-l-2 border-hairline pl-3" data-reviewer-jev>
-          <SecretField id="reviewer-api-key" label={t('st.reviewer.key')} source={keySource}
-            envName={reviewerEcho?.apiKeyEnv} draft={draft.apiKey} onChange={(apiKey) => update({ apiKey })}
-            reveal={keySource === 'none' ? undefined : revealKey} hint={t('st.reviewer.keyHint')} />
-        </div>}
-        {/* Tuning, not the decision: the source and its model are what a
-            reader chooses; how long to wait, how sure to be and which checks
-            run keep their defaults unless someone opens this. */}
         <AdvancedDetails summary={t('st.advanced.disclosure')} data-reviewer-advanced className="space-y-4 text-[13px] text-ink">
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
           {(['timeoutMs', 'allowThreshold', 'denyThreshold'] as const).map((key) => <label key={key} className="block space-y-1.5">
@@ -149,4 +129,103 @@ export function ReviewerSettings() {
       <FeedbackLine feedback={feedback} />
     </div>
   </SectionCard>;
+}
+
+/** A Jev key from the environment needs no move: a Jev connection reads the same variable. */
+function LegacyJevEnv({ keyEnv }: { readonly keyEnv?: string }) {
+  const { t } = useI18n();
+  const navigate = useGuardedNavigate();
+  return (
+    <div data-reviewer-legacy="env" className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-l-2 border-amber-rule pl-3">
+      <p className="max-w-[62ch] text-[12px] leading-snug text-ink-soft">{t('st.reviewer.legacyEnv', { name: keyEnv ?? 'TYPESAFE_API_KEY' })}</p>
+      <button type="button" data-reviewer-add-jev className={SECONDARY_BUTTON}
+        onClick={() => { void navigate(DECISION_CONNECTION_ADD_ROUTE); }}>{t('st.reviewer.addJev')}</button>
+    </div>
+  );
+}
+
+/**
+ * A TypeSafe key still saved in the reviewer's own settings. The server moves
+ * it (the browser never holds it) into a connection and points the reviewer
+ * there. Shown for as long as that key is saved, so a move that stopped part
+ * way can be finished after a refresh or a reload; nothing retries on its own.
+ * The connection the reviewer already points at may be named again (it may
+ * hold the moved key); otherwise a free ID is needed, and the server keeps a
+ * connection that holds a different key as it is.
+ */
+function LegacyJevKey({ source, onMoved }: {
+  readonly source: DecisionSource | undefined;
+  /** A finished move clears the key, and with it this block; the card keeps the word. */
+  readonly onMoved: (id: string) => void;
+}) {
+  const { client } = useConnection();
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const providersQuery = useQuery({ queryKey: ['providers'], queryFn: () => client.listProviders(), staleTime: 60_000 });
+  const taken = new Set((providersQuery.data?.items ?? []).map((item) => item.id));
+  const [partial, setPartial] = useState<MoveReviewerKeyResult | null>(null);
+  const pointed = source?.kind === 'connection' && taken.has(source.connection) ? source.connection : undefined;
+  const reusable = partial?.connection ?? pointed;
+  const [id, setId] = useState('');
+  const [touched, setTouched] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  // Until the person types, the field follows the facts: the connection the
+  // reviewer points at, or the first free `typesafe` ID.
+  useEffect(() => {
+    if (touched || !providersQuery.isSuccess) return;
+    if (reusable !== undefined) { setId(reusable); return; }
+    if (!taken.has('typesafe')) { setId('typesafe'); return; }
+    for (let n = 2; ; n++) if (!taken.has(`typesafe-${n}`)) { setId(`typesafe-${n}`); break; }
+  }, [providersQuery.isSuccess, providersQuery.data, reusable, touched]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const trimmed = id.trim();
+  const idIssue = trimmed === '' || trimmed === reusable ? null
+    : !providerIdSchema.safeParse(trimmed).success ? t('st.decision.idInvalid')
+      : taken.has(trimmed) ? t('st.decision.idTaken') : null;
+  const move = async () => {
+    if (moving || trimmed === '' || idIssue !== null) return;
+    setMoving(true); setFeedback(null);
+    try {
+      const result = await client.moveReviewerKey(trimmed);
+      // One request per click. The server keeps newer settings when it meets
+      // them, so the cards re-read and say what is true now.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['config'] }),
+        queryClient.invalidateQueries({ queryKey: ['providers'] }),
+      ]);
+      setTouched(false);
+      if (result.state === 'complete') {
+        setPartial(null);
+        onMoved(result.connection);
+      } else {
+        setPartial(result);
+        setFeedback({ tone: 'error', text: t('st.reviewer.movePartial') });
+      }
+    } catch (error) {
+      setFeedback({ tone: 'error', text: t('st.reviewer.moveFailed', { detail: errorText(locale, error) }) });
+    } finally { setMoving(false); }
+  };
+  return (
+    <div data-reviewer-legacy="key" data-reviewer-move={partial?.state ?? 'idle'} className="space-y-2 border-l-2 border-amber-rule pl-3">
+      <p className="max-w-[62ch] text-[12px] leading-snug text-ink-soft">
+        {source === undefined ? t('st.reviewer.legacyKey') : t('st.reviewer.legacyKeyLeft')}
+      </p>
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="block space-y-1">
+          <span className="block text-[12px] text-ink-soft">{t('st.reviewer.moveId')}</span>
+          <input data-reviewer-move-id className={`${INPUT} w-48 font-mono`} value={id}
+            disabled={moving} spellCheck={false} autoComplete="off" aria-invalid={idIssue !== null}
+            aria-describedby={idIssue === null ? undefined : 'reviewer-move-id-issue'}
+            onChange={(event) => { setId(event.target.value); setTouched(true); setFeedback(null); }} />
+        </label>
+        <button type="button" data-reviewer-move-key className={SECONDARY_BUTTON}
+          disabled={moving || trimmed === '' || idIssue !== null || !providersQuery.isSuccess} onClick={() => void move()}>
+          {moving ? t('st.reviewer.moving') : partial !== null ? t('common.retry') : t('st.reviewer.moveKey')}
+        </button>
+      </div>
+      <FieldIssue id="reviewer-move-id-issue" text={idIssue} />
+      <FeedbackLine feedback={feedback} />
+    </div>
+  );
 }

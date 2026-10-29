@@ -120,11 +120,22 @@ async function render(): Promise<HTMLDivElement> {
 }
 
 describe('ProvidersSection zone order and status', () => {
-  it('renders the three zones in order: API, OAuth, and Local harnesses', async () => {
+  it('renders the zones in order: API, OAuth, Local harnesses, then decision services', async () => {
     const container = await render();
     const zones = [...container.querySelectorAll('[data-providers-zone]')];
     expect(zones.map((zone) => zone.getAttribute('data-providers-zone')))
-      .toEqual(['apikey', 'oauth', 'harnesses']);
+      .toEqual(['apikey', 'oauth', 'harnesses', 'decision']);
+  });
+
+  it('lists a decision service in its own card and not among chat connections', async () => {
+    listProviders.mockResolvedValue({ items: [
+      { id: 'openai-api', type: 'openai', status: 'connected', base_url: 'https://api.openai.com/v1' },
+      { id: 'typesafe', type: 'system_one', service: 'decision', status: 'connected', base_url: 'https://api.typesafe.ai/v1', default_model: 'jev-latest', api_key_env: 'TYPESAFE_API_KEY', has_api_key: false },
+    ] });
+    const container = await render();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-providers-zone="apikey"] [data-connection-row="typesafe"]')).toBeNull();
+    expect(container.querySelector('[data-providers-zone="decision"] [data-decision-row="typesafe"]')).not.toBeNull();
   });
 
   it('renders cards for all three zones with correct ids and clean unnumbered titles in order', async () => {

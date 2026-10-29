@@ -5,11 +5,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n';
 import { ReviewerSettings } from './ReviewerSettings';
-import { openOptions } from './testControls';
 
-const { client } = vi.hoisted(() => ({ client: { getConfig: vi.fn(), listModels: vi.fn(), patchConfig: vi.fn(), revealSecret: vi.fn() } }));
+const { client } = vi.hoisted(() => ({ client: { getConfig: vi.fn(), listModels: vi.fn(), listProviders: vi.fn(), patchConfig: vi.fn(), revealSecret: vi.fn(), moveReviewerKey: vi.fn() } }));
 vi.mock('../../state/connection', () => ({ useConnection: () => ({ client }) }));
-vi.mock('../dirtyGuard', () => ({ useDirtyReporter: vi.fn() }));
+const navigate = vi.hoisted(() => vi.fn());
+vi.mock('../dirtyGuard', () => ({ useDirtyReporter: vi.fn(), useGuardedNavigate: () => navigate }));
 let root: Root;
 let container: HTMLDivElement;
 let queries: QueryClient;
@@ -30,6 +30,7 @@ beforeEach(() => {
   localStorage.setItem('kiki.locale', 'en');
   client.getConfig.mockResolvedValue({ permission: {} });
   client.listModels.mockResolvedValue({ items: [{ id: 'test-model', provider_id: 'test', display_name: 'Test model' }] });
+  client.listProviders.mockResolvedValue({ items: [] });
   client.patchConfig.mockImplementation(async (patch: { permission: { reviewer: Record<string, unknown> } }) => ({ permission: { reviewer: {
     backend: patch.permission.reviewer['backend'], model: patch.permission.reviewer['model'],
     timeoutMs: patch.permission.reviewer['timeout_ms'],
@@ -51,91 +52,147 @@ async function render() {
   await settle();
 }
 
+const TUNING = { timeoutMs: 8000, allowThreshold: 0.9, denyThreshold: 0.9, categories: ['policy_compliance'] };
+
 describe('permission reviewer settings', () => {
-  it('saves a configured model, thresholds and selected checks in one panel', async () => {
-    await render();
-    const model = container.querySelector('#reviewer-model')!;
-    await act(async () => (model as HTMLButtonElement).click());
-    await settle();
-    // The option rows live in the panel, which the picker portals to <body>.
-    await act(async () => openOptions()
-      .find((element) => element.textContent?.includes('Test model'))!.click());
-    const timeout = container.querySelector<HTMLInputElement>('input[type="number"]')!;
-    await change(timeout, '5000');
-    await act(async () => button('Save').click());
-    await settle();
-    expect(client.patchConfig).toHaveBeenCalledWith({ permission: { reviewer: expect.objectContaining({
-      backend: 'model', model: 'test-model', timeout_ms: 5000, allow_threshold: 0.9,
-      api_key: undefined, categories: expect.arrayContaining(['policy_compliance']),
-    }) } });
-  });
-
-  it('treats selecting Jev as consent: no checkbox, saves at once, and never sends a consent flag', async () => {
-    await render();
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-reviewer-backend-choice="jev"]')!.click());
-    expect(container.querySelector('[data-reviewer-jev] input[type="checkbox"]')).toBeNull();
-    expect(container.textContent).toContain('Selecting Jev sends up to 3 recent user messages');
-    expect(button('Save').disabled).toBe(false);
-    const key = container.querySelector<HTMLInputElement>('#reviewer-api-key')!;
-    await change(key, 'private-fixture-key');
-    await act(async () => button('Save').click());
-    await settle();
-    const sent = client.patchConfig.mock.calls[0]![0].permission.reviewer as Record<string, unknown>;
-    expect(sent).toMatchObject({ backend: 'jev', api_key: 'private-fixture-key' });
-    expect(sent).not.toHaveProperty('jev_consent');
-    expect(container.textContent).not.toContain('private-fixture-key');
-  });
-
-  it('shows an environment key as its source, reveals it on demand, and saves nothing for it', async () => {
+  it('saves only tuning: the source, backend and key are never written from this card', async () => {
     client.getConfig.mockResolvedValue({ permission: { reviewer: {
-      backend: 'jev', hasApiKey: true, apiKeySource: 'environment', apiKeyEnv: 'TYPESAFE_API_KEY',
-      timeoutMs: 8000, allowThreshold: 0.9, denyThreshold: 0.9, categories: ['policy_compliance'],
+      ...TUNING, backend: 'model', hasApiKey: false, source: { kind: 'connection', connection: 'typesafe' },
+      source_status: { state: 'ready', connection: 'typesafe', model: 'jev-latest', protocol: 'system_one' },
     } } });
-    client.revealSecret.mockResolvedValue({ source: 'environment', env_name: 'TYPESAFE_API_KEY', value: 'env-fixture-key' });
+    client.listProviders.mockResolvedValue({ items: [{ id: 'typesafe', type: 'system_one', service: 'decision', default_model: 'jev-latest', has_api_key: false, status: 'connected' }] });
     await render();
-    expect(container.textContent).toContain('From environment variable TYPESAFE_API_KEY');
+    expect(container.querySelector('#reviewer-model')).toBeNull();
+    expect(container.querySelector('#reviewer-api-key')).toBeNull();
+    expect(container.querySelector('[data-decision-summary-value]')?.textContent).toBe('typesafe · jev-latest');
+    await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '5000');
+    await act(async () => button('Save').click());
+    await settle();
+    expect(client.patchConfig).toHaveBeenCalledWith({ permission: { reviewer: {
+      timeout_ms: 5000, allow_threshold: 0.9, deny_threshold: 0.9, categories: ['policy_compliance'],
+    } } });
+  });
+
+  it('links the read-only source to Who decides', async () => {
+    await render();
+    expect(container.querySelector('[data-decision-summary-value]')?.textContent).toBe('Not chosen');
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-decision-change]')!.click());
+    expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=defaults#st-card-decision-judges');
+  });
+
+  it('echoes an older Jev key and moves it on the server into a free connection ID', async () => {
+    client.getConfig.mockResolvedValue({ permission: { reviewer: { ...TUNING, backend: 'jev', hasApiKey: true, apiKeySource: 'kiki' } } });
+    client.listProviders.mockResolvedValue({ items: [{ id: 'typesafe', type: 'openai', has_api_key: true, status: 'connected' }] });
+    client.moveReviewerKey.mockImplementation(async () => {
+      // The server has moved the key and pointed the reviewer at the new connection.
+      client.getConfig.mockResolvedValue({ permission: { reviewer: { ...TUNING, backend: 'jev', hasApiKey: false, apiKeySource: 'none',
+        source: { kind: 'connection', connection: 'typesafe-2' }, source_status: { state: 'ready', connection: 'typesafe-2', model: 'jev-latest', protocol: 'system_one' } } } });
+      return { connection: 'typesafe-2', state: 'complete', retryable: false };
+    });
+    await render();
+    expect(container.querySelector('[data-decision-summary-value]')?.textContent).toBe('Jev · TypeSafe');
+    expect(container.querySelector('[data-reviewer-legacy]')?.getAttribute('data-reviewer-legacy')).toBe('key');
+    // The id the suggestion would collide with is skipped.
+    expect(container.querySelector<HTMLInputElement>('[data-reviewer-move-id]')!.value).toBe('typesafe-2');
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-reviewer-move-key]')!.click());
+    await settle();
+    expect(client.moveReviewerKey).toHaveBeenCalledWith('typesafe-2');
     expect(client.revealSecret).not.toHaveBeenCalled();
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-secret-reveal]')!.click());
-    await settle();
-    expect(client.revealSecret).toHaveBeenCalledWith({ kind: 'reviewer_api_key' });
-    expect(container.querySelector<HTMLInputElement>('#reviewer-api-key')!.value).toBe('env-fixture-key');
-    // An env key cannot be cleared from Kiki; it can only be overridden.
-    expect(container.querySelector('[data-secret-clear]')).toBeNull();
-    expect(container.querySelector('[data-secret-edit]')?.textContent).toBe('Override in Kiki');
+    expect(container.textContent).toContain('Moved. The reviewer now uses typesafe-2.');
+    // The refreshed config is what the card shows: the new source, no key left to move.
+    expect(container.querySelector('[data-decision-summary-value]')?.textContent).toBe('typesafe-2');
+    expect(container.querySelector('[data-reviewer-legacy]')).toBeNull();
   });
 
-  it('clears a saved key with null', async () => {
+  it('refuses a taken ID before sending', async () => {
+    client.getConfig.mockResolvedValue({ permission: { reviewer: { ...TUNING, backend: 'jev', hasApiKey: true, apiKeySource: 'kiki' } } });
+    client.listProviders.mockResolvedValue({ items: [{ id: 'mine', type: 'openai', has_api_key: true, status: 'connected' }] });
+    await render();
+    await change(container.querySelector<HTMLInputElement>('[data-reviewer-move-id]')!, 'mine');
+    expect(container.textContent).toContain('A connection with this ID already exists.');
+    expect(container.querySelector<HTMLButtonElement>('[data-reviewer-move-key]')!.disabled).toBe(true);
+  });
+
+  it('after a partial move re-reads settings, offers the same ID or a new one, and never retries on its own', async () => {
+    client.getConfig.mockResolvedValue({ permission: { reviewer: { ...TUNING, backend: 'jev', hasApiKey: true, apiKeySource: 'kiki' } } });
+    client.moveReviewerKey.mockResolvedValueOnce({ connection: 'typesafe', state: 'connection_saved', retryable: true });
+    await render();
+    const reads = client.getConfig.mock.calls.length;
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-reviewer-move-key]')!.click());
+    await settle();
+    expect(client.moveReviewerKey).toHaveBeenCalledTimes(1);
+    expect(client.getConfig.mock.calls.length).toBeGreaterThan(reads);
+    expect(container.querySelector('[data-reviewer-move]')?.getAttribute('data-reviewer-move')).toBe('connection_saved');
+    expect(container.textContent).toContain('check it, then move again with the ID shown or a new one');
+    // The half-made connection now exists, yet its own ID stays allowed.
+    client.listProviders.mockResolvedValue({ items: [{ id: 'typesafe', type: 'system_one', has_api_key: true, status: 'connected' }] });
+    await settle();
+    expect(button('Retry').disabled).toBe(false);
+    await change(container.querySelector<HTMLInputElement>('[data-reviewer-move-id]')!, 'typesafe-new');
+    client.moveReviewerKey.mockResolvedValueOnce({ connection: 'typesafe-new', state: 'complete', retryable: false });
+    await act(async () => button('Retry').click());
+    await settle();
+    expect(client.moveReviewerKey).toHaveBeenLastCalledWith('typesafe-new');
+    expect(client.moveReviewerKey).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the move after source_switched re-reads a new source while the old key is still saved, and finishes it', async () => {
+    client.getConfig.mockResolvedValue({ permission: { reviewer: { ...TUNING, backend: 'jev', hasApiKey: true, apiKeySource: 'kiki' } } });
+    client.moveReviewerKey.mockImplementationOnce(async () => {
+      client.listProviders.mockResolvedValue({ items: [{ id: 'typesafe', type: 'system_one', service: 'decision', has_api_key: true, status: 'connected' }] });
+      client.getConfig.mockResolvedValue({ permission: { reviewer: { ...TUNING, backend: 'jev', hasApiKey: true, apiKeySource: 'kiki',
+        source: { kind: 'connection', connection: 'typesafe' }, source_status: { state: 'ready', connection: 'typesafe', model: 'jev-latest', protocol: 'system_one' } } } });
+      return { connection: 'typesafe', state: 'source_switched', retryable: true };
+    });
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-reviewer-move-key]')!.click());
+    await settle();
+    // The refreshed source is shown, and the leftover key keeps its way out.
+    expect(container.querySelector('[data-decision-summary-value]')?.textContent).toBe('typesafe');
+    expect(container.querySelector('[data-reviewer-legacy]')?.getAttribute('data-reviewer-legacy')).toBe('key');
+    expect(container.textContent).toContain('An older TypeSafe key is still saved in the reviewer settings.');
+    expect(container.textContent).not.toContain('still uses its own TypeSafe key');
+    expect(container.querySelector<HTMLInputElement>('[data-reviewer-move-id]')!.value).toBe('typesafe');
+    client.moveReviewerKey.mockImplementationOnce(async () => {
+      client.getConfig.mockResolvedValue({ permission: { reviewer: { ...TUNING, backend: 'jev', hasApiKey: false, apiKeySource: 'none',
+        source: { kind: 'connection', connection: 'typesafe' }, source_status: { state: 'ready', connection: 'typesafe', model: 'jev-latest', protocol: 'system_one' } } } });
+      return { connection: 'typesafe', state: 'complete', retryable: false };
+    });
+    await act(async () => button('Retry').click());
+    await settle();
+    expect(client.moveReviewerKey).toHaveBeenLastCalledWith('typesafe');
+    expect(container.querySelector('[data-reviewer-legacy]')).toBeNull();
+    expect(container.textContent).toContain('Moved. The reviewer now uses typesafe.');
+  });
+
+  it('after a reload still offers to move a key left behind, next to whatever source is saved now', async () => {
+    // A newer source was saved meanwhile (a chat model), yet the old key is still kept.
+    client.getConfig.mockResolvedValue({ permission: { reviewer: { ...TUNING, backend: 'jev', hasApiKey: true, apiKeySource: 'kiki',
+      source: { kind: 'model', model: 'test/test-model' }, source_status: { state: 'ready', model: 'test-model', protocol: 'chat_json' } } } });
+    client.listProviders.mockResolvedValue({ items: [{ id: 'typesafe', type: 'system_one', service: 'decision', has_api_key: true, status: 'connected' }] });
+    await render();
+    expect(container.querySelector('[data-reviewer-legacy]')?.getAttribute('data-reviewer-legacy')).toBe('key');
+    expect(container.textContent).toContain('An older TypeSafe key is still saved in the reviewer settings.');
+    // The card does not claim the old key, or the connection, is the one in use.
+    expect(container.textContent).not.toContain('still uses its own TypeSafe key');
+    expect(container.textContent).not.toContain('now uses');
+    // The source is not a connection, so a free ID is suggested, never the taken one.
+    expect(container.querySelector<HTMLInputElement>('[data-reviewer-move-id]')!.value).toBe('typesafe-2');
+    expect(client.moveReviewerKey).not.toHaveBeenCalled();
+  });
+
+  it('for an environment key offers a Jev connection instead of a key field', async () => {
     client.getConfig.mockResolvedValue({ permission: { reviewer: {
-      backend: 'jev', hasApiKey: true, apiKeySource: 'kiki',
-      timeoutMs: 8000, allowThreshold: 0.9, denyThreshold: 0.9, categories: ['policy_compliance'],
+      ...TUNING, backend: 'jev', hasApiKey: true, apiKeySource: 'environment', apiKeyEnv: 'TYPESAFE_API_KEY',
     } } });
     await render();
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-secret-clear]')!.click());
-    await act(async () => button('Save').click());
-    await settle();
-    expect(client.patchConfig.mock.calls[0]![0].permission.reviewer).toMatchObject({ api_key: null });
+    expect(container.textContent).toContain('Jev reads TYPESAFE_API_KEY from the server.');
+    expect(container.querySelector('[data-reviewer-move-key]')).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-reviewer-add-jev]')!.click());
+    expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=providers#decision-connection-add');
   });
 
-  it('preserves a stored Jev key when changing other reviewer fields', async () => {
-    client.getConfig.mockResolvedValue({ permission: { reviewer: {
-      backend: 'jev', hasApiKey: true, apiKeySource: 'kiki',
-      timeoutMs: 8000, allowThreshold: 0.9, denyThreshold: 0.9,
-      categories: ['policy_compliance'],
-    } } });
-    await render();
-    const key = container.querySelector<HTMLInputElement>('#reviewer-api-key')!;
-    expect(key.readOnly).toBe(true);
-    expect(key.value).not.toContain('fixture');
-    expect(container.textContent).toContain('Saved in Kiki');
-    await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '9000');
-    await act(async () => button('Save').click());
-    await settle();
-    expect(client.patchConfig).toHaveBeenCalledWith({ permission: { reviewer: expect.objectContaining({
-      backend: 'jev', api_key: undefined, timeout_ms: 9000,
-    }) } });
-  });
-
-  it('discards all reviewer changes without writing', async () => {
+  it('discards tuning changes without writing', async () => {
     await render();
     await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '6000');
     await act(async () => button('Discard changes').click());

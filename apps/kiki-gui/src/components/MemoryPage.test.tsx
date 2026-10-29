@@ -15,6 +15,7 @@ import { memorySourceTargets } from './useMemorySources';
 import { memorySnapshot } from './MemoryHistory';
 import type { ToolBlock } from '@kiki/session-core/session';
 import { MemoryToolRow } from './MemoryToolRow';
+import { MemoryAdvisorSwitch } from './memory/MemoryAdvisorSwitch';
 import { parseMemoryReadResult, parseMemorySearchSummary, parseMemoryWriteResult } from './memory/memoryReceipt';
 import { DirtyGuardContext, useDirtyGuardState } from './dirtyGuard';
 import { detectActiveAnchors, resolveAnchorElement } from './discovery/DiscoveryContext';
@@ -327,6 +328,26 @@ describe('MemoryPage advisor switch', () => {
     await flush();
     expect(advisorReads.mock.calls.length).toBeGreaterThan(1);
     expect(container.querySelector('[data-memory-advisor-header] [data-memory-advisor-state]')?.textContent).toBe('Ready');
+  });
+
+  it('sends an advisor still waiting for a source straight to Who decides', async () => {
+    const read = advisorRead('rank');
+    vi.spyOn(client, 'getMemoryAdvisorSettings').mockResolvedValue({ ...read, advisor: { ...read.advisor, selector: undefined } as never,
+      advisor_status: { ...read.advisor_status, state: 'unconfigured' as const, reason: 'unconfigured' as const } });
+    const onNavigate = vi.fn();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mounted.push({ root, container, queryClient });
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><I18nProvider><MemoryAdvisorSwitch onNavigate={onNavigate} /></I18nProvider></QueryClientProvider>);
+    });
+    await flush();
+    const setup = container.querySelector<HTMLButtonElement>('[data-memory-advisor-setup]')!;
+    expect(setup.textContent).toBe('Choose a source');
+    await act(async () => { setup.click(); });
+    expect(onNavigate).toHaveBeenCalledWith('/settings/ai?tab=defaults#st-card-decision-judges');
   });
 
   it('shows a failed switch as a retryable toast and keeps the saved state', async () => {

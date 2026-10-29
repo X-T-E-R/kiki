@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { ProviderCatalogItem } from '@kiki/protocol';
+import { isDecisionConnection } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
@@ -13,6 +14,7 @@ import { NewProviderWizard, PROVIDER_HEALTH_QUERY_KEY, ProviderEditor } from '..
 import { connectionKind, type ConnectionKind } from '../providerPresets';
 import { SidePanel } from '../SidePanel';
 import { SECONDARY_BUTTON } from '../ui';
+import { DecisionConnectionsCard } from './DecisionConnections';
 import { ExternalEnginesList, ExternalEnginesVisibilitySwitch } from './ExternalEnginesSection';
 import { ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec, type ListSortSpec } from './list';
 import { MODEL_QUERY_PARAM, ModelMaintenance, ProviderModelList } from './ModelsSection';
@@ -97,7 +99,12 @@ export function ProvidersSection() {
     ]);
   }, [queryClient]);
 
-  const providerItems = providersQuery.data?.items ?? [];
+  // Decision services are connections too, but they carry no chat models, so
+  // they get their own card below and stay out of the chat zones.
+  const allProviders = providersQuery.data?.items ?? [];
+  const providerItems = useMemo(() => allProviders.filter((provider) => !isDecisionConnection(provider)), [allProviders]);
+  const decisionProviders = useMemo(() => allProviders.filter(isDecisionConnection), [allProviders]);
+  const allProviderIds = useMemo(() => new Set(allProviders.map((provider) => provider.id)), [allProviders]);
   const methods = methodsQuery.data ?? [];
   const accountProviders = useMemo(() => new Set(methods.map((method) => method.provider)), [methods]);
 
@@ -238,7 +245,7 @@ export function ProvidersSection() {
           <NewProviderWizard
             key={hash === '#st-card-auth' ? 'account' : 'api'}
             initialMethod={hash === '#st-card-auth' ? 'account' : 'api'}
-            configuredIds={new Set(providerItems.map((provider) => provider.id))}
+            configuredIds={allProviderIds}
             onSaved={async () => { await refreshProviderData(); closeAdd(); }}
             onAccountChanged={refreshProviderData}
           />
@@ -274,6 +281,10 @@ export function ProvidersSection() {
         </SectionCard>
       </div>
 
+      <div data-providers-zone="decision">
+        <DecisionConnectionsCard providers={decisionProviders} configuredIds={allProviderIds} onChanged={refreshProviderData} />
+      </div>
+
       <ModelMaintenance />
 
       {addOpen && !empty ? (
@@ -288,7 +299,7 @@ export function ProvidersSection() {
             <NewProviderWizard
               key={hash === '#st-card-auth' ? 'account' : 'api'}
               initialMethod={hash === '#st-card-auth' ? 'account' : 'api'}
-              configuredIds={new Set(providerItems.map((provider) => provider.id))}
+              configuredIds={allProviderIds}
               onSaved={async () => { await refreshProviderData(); closeAdd(); }}
               onAccountChanged={refreshProviderData}
             />

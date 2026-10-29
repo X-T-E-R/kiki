@@ -47,17 +47,24 @@ function advisorResponse(workspaceId?: string) {
     catalog_page_items: 40, max_catalog_pages: 2, max_full_units: 8, judge_input_tokens: 12000, apply_to_children: true, egress_ack: [],
     ...advisorFake.advisor,
   };
-  const selector = advisor?.['selector'] as { protocol: string; model: string } | undefined;
-  const acks = (advisor?.['egress_ack'] ?? []) as { workspace_id: string; destination: string }[];
-  const destination = selector === undefined ? undefined : 'openai:https://api.example.test';
-  const consented = destination !== undefined && acks.some((ack) => ack.workspace_id === workspaceId && ack.destination === destination);
-  const configured = advisor?.['mode'] === 'off' ? 'off' : selector === undefined ? 'unconfigured' : consented ? 'ready' : 'failed';
+  const legacy = advisor?.['selector'] as { protocol: string; model: string } | undefined;
+  const source = advisor?.['source'] as { kind: string; connection?: string; model?: string } | undefined;
+  // A decision connection reports `<connection>@<origin>`; a chat model or an older selector its provider.
+  const selector = source?.kind === 'connection'
+    ? { protocol: 'system_one', model: source.model ?? 'jev-latest' }
+    : source?.kind === 'model' ? { protocol: 'chat_json', model: source.model! } : legacy;
+  const destination = selector === undefined ? undefined
+    : source?.kind === 'connection' ? `${source.connection}@https://api.typesafe.ai` : 'openai:https://api.example.test';
+  // Choosing a source and leaving the advisor on is the decision to use it: no separate OK.
+  const configured = advisor?.['mode'] === 'off' ? 'off' : selector === undefined ? 'unconfigured' : 'ready';
   const state = advisorFake.memoryEnabled ? configured : 'disabled';
   return {
     enabled: advisorFake.memoryEnabled, approval: 'auto' as const, budget: 2000, workspaces: {}, effective_enabled: advisorFake.memoryEnabled, advisor,
     advisor_status: {
-      state, consent_required: state === 'failed' && consented === false, reason: state === 'failed' ? 'consent_required' : state === 'unconfigured' ? 'unconfigured' : undefined,
-      destination, origin: destination === undefined ? undefined : 'https://api.example.test', protocol: selector?.protocol, model: selector?.model,
+      state, consent_required: false, reason: state === 'unconfigured' ? 'unconfigured' : undefined,
+      destination, origin: destination === undefined ? undefined : source?.kind === 'connection' ? 'https://api.typesafe.ai' : 'https://api.example.test',
+      protocol: selector?.protocol, model: selector?.model,
+      source_status: source === undefined ? undefined : { state: 'ready', connection: source.connection, model: selector?.model, protocol: selector?.protocol, destination },
       logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0, ...advisorFake.status,
     },
   };
@@ -165,7 +172,11 @@ const client = {
   listModels: vi.fn(async () => ({ items: [
     { id: 'cheap-judge', provider_id: 'openai', remote_id: 'cheap-judge-1', max_context_size: 128000 },
   ] })),
-  listProviders: vi.fn(async () => ({ items: [{ id: 'openai', type: 'openai', base_url: 'https://api.example.test/v1', has_api_key: true, status: 'ok' }] })),
+  listProviders: vi.fn(async () => ({ items: [
+    { id: 'openai', type: 'openai', base_url: 'https://api.example.test/v1', has_api_key: true, status: 'ok' },
+    // A decision service: Jev reading its key from the server environment.
+    { id: 'typesafe', type: 'system_one', service: 'decision', decision_protocol: 'system_one', base_url: 'https://api.typesafe.ai/v1', default_model: 'jev-latest', api_key_env: 'TYPESAFE_API_KEY', has_api_key: false, status: 'connected' },
+  ] })),
   getModel: vi.fn(async (id: string) => ({ id, provider_id: 'openai', provider_source: 'explicit', base_url: advisorFake.modelBaseUrl, effective_base_url: advisorFake.modelEffectiveBaseUrl, revision: 'r1', issues: [] })),
   getProviderEntity: vi.fn(async (id: string) => ({ id, type: 'openai', base_url: 'https://api.example.test/v1', has_api_key: true, status: 'ok', revision: 'rev-1', custom_header_keys: [], env_keys: [] })),
   getCatalogProvider: vi.fn(async (id: string) => ({ id, name: id, wire_type: null, guessed: false, needs_base_url: false, base_url: null, rejected: false, reject_reason: null, env_key: null, models: [] })),
@@ -674,37 +685,42 @@ describe('SettingsPage memory advisor', () => {
     expect(card(container)).not.toBeNull();
     expect(container.querySelector<HTMLInputElement>('#memory-advisor-enabled')!.checked).toBe(true);
     expect(card(container).querySelector('[data-memory-advisor-status]')?.getAttribute('data-memory-advisor-status')).toBe('unconfigured');
-    expect(card(container).textContent).toContain('Needs a model');
-    expect(card(container).querySelector('[data-memory-advisor-allow]')).toBeNull();
+    expect(card(container).textContent).toContain('Needs a source');
     expect(card(container).querySelector('[data-memory-advisor-test]')).toBeNull();
     // Tuning waits behind Advanced.
     expect(card(container).querySelector<HTMLDetailsElement>('[data-memory-advisor-advanced]')!.open).toBe(false);
     expect(client.getMemoryAdvisorSettings).toHaveBeenCalledWith('ws-beta');
   });
 
-  it('saves the chosen model, then asks for this workspace\'s OK and probes the confirmed destination', async () => {
+  it('shows the chosen source read-only, works without a separate OK and probes the reported destination', async () => {
+    advisorFake.advisor = { source: { kind: 'connection', connection: 'typesafe' } };
     const container = await renderSettings('/settings/memory?workspace=ws-beta');
-    await pickOption(card(container).querySelector('#memory-advisor-model')!.closest('[data-searchable-select]') ?? card(container).querySelector('#memory-advisor-model')!, 'cheap-judge');
-    const save = [...card(container).querySelectorAll('button')].find((button) => button.textContent === 'Save model')!;
-    await click(save);
-    await flush();
-    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { selector: { protocol: 'chat_json', model: 'cheap-judge' } } });
-    expect(card(container).querySelector('[data-memory-advisor-egress]')?.getAttribute('data-memory-advisor-egress')).toBe('required');
-    expect(card(container).querySelector('[data-memory-advisor-destination]')?.textContent).toBe('openai:https://api.example.test');
-    expect(card(container).textContent).toContain('In Beta, the advisor sends the current request, task notes and related tool errors, along with memory titles');
-
-    await click(card(container).querySelector('[data-memory-advisor-allow]')!);
-    await flush();
-    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { egress_ack: [{ workspace_id: 'ws-beta', destination: 'openai:https://api.example.test' }] } });
-    expect(card(container).querySelector('[data-memory-advisor-egress]')?.getAttribute('data-memory-advisor-egress')).toBe('allowed');
+    expect(card(container).querySelector('[data-decision-summary="memory"]')?.hasAttribute('data-decision-problem')).toBe(false);
+    // The card has no model, protocol or endpoint fields of its own any more.
+    expect(card(container).querySelector('#memory-advisor-model')).toBeNull();
+    expect(card(container).querySelector('[data-memory-advisor-endpoint]')).toBeNull();
+    expect(card(container).querySelector('[data-decision-summary="memory"] [data-decision-summary-value]')?.textContent).toBe('typesafe · jev-latest');
+    // No sending-out block, OK button or workspace picker; the destination is a diagnostic under Advanced.
+    expect(card(container).querySelector('[data-memory-advisor-egress]')).toBeNull();
+    expect(card(container).querySelector('[data-memory-advisor-allow]')).toBeNull();
+    expect(card(container).querySelector('[data-memory-advisor-workspace]')).toBeNull();
+    expect(card(container).querySelector('[data-memory-advisor-advanced] [data-memory-advisor-destination]')?.textContent).toBe('typesafe@https://api.typesafe.ai');
     expect(card(container).textContent).toContain('Ready');
+    expect(advisorFake.patches).toEqual([]);
 
     await click(card(container).querySelector('[data-memory-advisor-test]')!);
     await flush();
-    expect(client.probeMemoryAdvisor).toHaveBeenCalledWith('openai:https://api.example.test');
-    expect(card(container).querySelector('[data-memory-advisor-probe]')?.textContent).toContain('Answered in 412 ms. 180 tokens in, 12 out.');
+    expect(client.probeMemoryAdvisor).toHaveBeenCalledWith('typesafe@https://api.typesafe.ai');
   });
 
+  it('echoes an older model setting as the source in effect and links to Who decides', async () => {
+    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
+    const container = await renderSettings('/settings/memory', { guarded: true });
+    expect(card(container).querySelector('[data-decision-summary-value]')?.textContent).toBe('Using an older setting: cheap-judge.');
+    await click(card(container).querySelector('[data-decision-change]')!);
+    await flush();
+    expect(container.querySelector('[data-test-location]')?.textContent ?? '').toContain('/settings/ai?tab=defaults');
+  });
   it('turns only the advisor off: the mode alone is written, memory stays on, the model and consent stay', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' }, egress_ack: [{ workspace_id: 'ws-beta', destination: 'openai:https://api.example.test' }] };
     const container = await renderSettings('/settings/memory?workspace=ws-beta');
@@ -719,7 +735,7 @@ describe('SettingsPage memory advisor', () => {
     await click(container.querySelector('#memory-advisor-enabled')!);
     await flush();
     expect(advisorFake.patches.at(-1)).toEqual({ advisor: { mode: 'rank' } });
-    expect(card(container).querySelector('[data-memory-advisor-egress]')?.getAttribute('data-memory-advisor-egress')).toBe('allowed');
+    expect(card(container).textContent).toContain('Ready');
   });
 
   it('shows a failed switch as an error and leaves the saved state unchanged', async () => {
@@ -730,78 +746,6 @@ describe('SettingsPage memory advisor', () => {
     await flush();
     expect(card(container).querySelector('[role="alert"]')?.textContent).toContain('Could not save Memory Advisor settings: config is read-only');
     expect(container.querySelector<HTMLInputElement>('#memory-advisor-enabled')!.checked).toBe(true);
-  });
-
-  it('refuses an endpoint off the model provider\'s host and points to Connections', async () => {
-    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
-    const container = await renderSettings('/settings/memory');
-    await click([...card(container).querySelectorAll('[data-memory-advisor-protocol]')].find((button) => button.textContent === 'Pair score')!);
-    const endpoint = card(container).querySelector<HTMLInputElement>('[data-memory-advisor-endpoint]')!;
-    await setInput(endpoint, 'https://rerank.other.test/score');
-    expect(card(container).querySelector('[data-memory-advisor-endpoint-issue]')?.getAttribute('data-memory-advisor-endpoint-issue')).toBe('origin');
-    expect(card(container).textContent).toContain('This endpoint is not on https://api.example.test');
-    const save = [...card(container).querySelectorAll('button')].find((button) => button.textContent === 'Save model')!;
-    expect(save.disabled).toBe(true);
-    await setInput(endpoint, 'https://api.example.test/v1/rerank');
-    expect(card(container).querySelector('[data-memory-advisor-endpoint-issue]')).toBeNull();
-    await click(save);
-    await flush();
-    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { selector: { protocol: 'pair_score', model: 'cheap-judge', endpoint: 'https://api.example.test/v1/rerank' } } });
-  });
-
-  it('matches the endpoint to the address the model overrides its provider with', async () => {
-    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
-    advisorFake.modelBaseUrl = 'https://judge.example.test/v1';
-    const container = await renderSettings('/settings/memory');
-    await click([...card(container).querySelectorAll('[data-memory-advisor-protocol]')].find((button) => button.textContent === 'Pair score')!);
-    await flush();
-    const endpoint = card(container).querySelector<HTMLInputElement>('[data-memory-advisor-endpoint]')!;
-    const save = [...card(container).querySelectorAll('button')].find((button) => button.textContent === 'Save model')!;
-    await setInput(endpoint, 'https://api.example.test/v1/rerank');
-    expect(card(container).querySelector('[data-memory-advisor-endpoint-issue]')?.getAttribute('data-memory-advisor-endpoint-issue')).toBe('origin');
-    expect(card(container).textContent).toContain('This endpoint is not on https://judge.example.test');
-    expect(save.disabled).toBe(true);
-    await setInput(endpoint, 'https://judge.example.test/v1/rerank');
-    expect(card(container).querySelector('[data-memory-advisor-endpoint-issue]')).toBeNull();
-    expect(save.disabled).toBe(false);
-    await click(save);
-    await flush();
-    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { selector: { protocol: 'pair_score', model: 'cheap-judge', endpoint: 'https://judge.example.test/v1/rerank' } } });
-  });
-
-  it('saves a first endpoint on the address the server resolves when neither model nor provider stores one', async () => {
-    client.listProviders.mockResolvedValueOnce({ items: [{ id: 'openai', type: 'openai', has_api_key: true, status: 'ok' }] } as never);
-    advisorFake.modelEffectiveBaseUrl = 'https://vendor.example.test/v1';
-    const container = await renderSettings('/settings/memory');
-    expect(advisorFake.advisor).toBeUndefined();
-    await pickOption(card(container).querySelector('#memory-advisor-model')!.closest('[data-searchable-select]') ?? card(container).querySelector('#memory-advisor-model')!, 'cheap-judge');
-    await click([...card(container).querySelectorAll('[data-memory-advisor-protocol]')].find((button) => button.textContent === 'Pair score')!);
-    await flush();
-    const endpoint = card(container).querySelector<HTMLInputElement>('[data-memory-advisor-endpoint]')!;
-    expect(endpoint.placeholder).toBe('https://vendor.example.test/');
-    const save = [...card(container).querySelectorAll('button')].find((button) => button.textContent === 'Save model')!;
-    await setInput(endpoint, 'https://elsewhere.example.test/v1/rerank');
-    expect(card(container).textContent).toContain('This endpoint is not on https://vendor.example.test, the selected model\'s address.');
-    expect(save.disabled).toBe(true);
-    await setInput(endpoint, 'https://vendor.example.test/v1/rerank');
-    expect(card(container).querySelector('[data-memory-advisor-endpoint-issue]')).toBeNull();
-    await click(save);
-    await flush();
-    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { selector: { protocol: 'pair_score', model: 'cheap-judge', endpoint: 'https://vendor.example.test/v1/rerank' } } });
-  });
-
-  it('sends an endpoint off the model address to that model\'s own settings', async () => {
-    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
-    const container = await renderSettings('/settings/memory', { guarded: true });
-    await click([...card(container).querySelectorAll('[data-memory-advisor-protocol]')].find((button) => button.textContent === 'Pair score')!);
-    await setInput(card(container).querySelector<HTMLInputElement>('[data-memory-advisor-endpoint]')!, 'https://rerank.other.test/score');
-    await click([...card(container).querySelectorAll('button')].find((button) => button.textContent === 'Open model settings')!);
-    await flush();
-    // The unsaved endpoint arms the leave guard first.
-    await click(container.querySelector<HTMLButtonElement>('[data-test-confirm]')!);
-    await flush();
-    const location = container.querySelector('[data-test-location]')?.textContent ?? '';
-    expect(location).toContain('/settings/ai?tab=providers&model=cheap-judge');
   });
 
   it('keeps tuning inside the schema range and removes the whole block only after confirmation', async () => {

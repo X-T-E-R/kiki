@@ -3008,6 +3008,21 @@ export class KikiClient {
     return this.run(this.rest.memory.status({ session_id: sessionId, agent_id: agentId }));
   }
 
+  /** Synthetic check of one decision source against its confirmed destination; no user content is sent. */
+  probeDecisionSource(source: import('@kiki/protocol').DecisionSource, confirmDestination: string, signal?: AbortSignal): Promise<import('@kiki/protocol').DecisionConnectionProbeResult> {
+    return this.run(this.rest.decision.probe({ source, confirm_destination: confirmDestination }, { signal }));
+  }
+
+  /**
+   * Server-side move of the reviewer's legacy key into a new decision
+   * connection with this id, then pointing the reviewer at it. A partial result
+   * may mean newer settings were kept: re-read them before another move, which
+   * may need a new free id. The key itself never reaches the browser.
+   */
+  moveReviewerKey(connection: string): Promise<import('@kiki/protocol').MoveReviewerKeyResult> {
+    return this.run(this.rest.decision.moveReviewerKey({ connection }));
+  }
+
   getWorkspaceMemorySettings(workspaceId: string): Promise<MemoryWorkspaceSettings> {
     return this.memoryRequest('GET', `/memory/workspaces/${encodeURIComponent(workspaceId)}/settings`);
   }

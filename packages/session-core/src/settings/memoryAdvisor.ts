@@ -6,7 +6,7 @@
  * Two switches stay separate on purpose: `memory.enabled` decides whether
  * memory exists at all; `advisor.mode` only decides whether a chosen model
  * picks which saved entries ride into a turn. Turning the advisor off never
- * writes `enabled`, and a mode change never touches the selector or consent.
+ * writes `enabled`, and a mode change never touches the selector or source.
  */
 
 import {
@@ -72,7 +72,7 @@ export function parseMemoryAdvisorNumber(field: MemoryAdvisorNumberField, text: 
   return value >= range.min && value <= range.max ? value : null;
 }
 
-/** The quick switch's write: the mode alone, so the selector and consent stay as saved. */
+/** The quick switch's write: the mode alone, so the selector and source stay as saved. */
 export function memoryAdvisorModePatch(on: boolean, current?: MemoryAdvisorConfig): { advisor: MemoryAdvisorPatch } {
   if (!on) return { advisor: { mode: 'off' } };
   // Coming back on restores the last real choice only when it was `select`;
@@ -139,26 +139,11 @@ export function memoryAdvisorSelectorFromDraft(draft: {
   return { protocol: draft.protocol, model, endpoint };
 }
 
-export function memoryAdvisorConsented(config: MemoryAdvisorConfig | undefined, workspaceId: string, destination: string): boolean {
-  return (config?.egress_ack ?? []).some((ack) => ack.workspace_id === workspaceId && ack.destination === destination);
-}
-
-/** The whole consent list with one (workspace, destination) added or removed. */
-export function memoryAdvisorConsentPatch(
-  config: MemoryAdvisorConfig | undefined,
-  workspaceId: string,
-  destination: string,
-  allow: boolean,
-): { advisor: MemoryAdvisorPatch } {
-  const rest = (config?.egress_ack ?? []).filter((ack) => !(ack.workspace_id === workspaceId && ack.destination === destination));
-  return { advisor: { egress_ack: allow ? [...rest, { workspace_id: workspaceId, destination }] : rest } };
-}
-
 export type MemoryAdvisorTone = 'muted' | 'ok' | 'caution' | 'danger';
 
 export interface MemoryAdvisorView {
-  /** What the quick switch shows: off, needs a model, needs consent, problem, or running. */
-  readonly kind: 'off' | 'unconfigured' | 'consent' | 'problem' | 'on';
+  /** What the quick switch shows: off, needs a model, problem, or running. */
+  readonly kind: 'off' | 'unconfigured' | 'problem' | 'on';
   readonly on: boolean;
   readonly tone: MemoryAdvisorTone;
   readonly stateKey: I18nKey;
@@ -193,11 +178,8 @@ export function memoryAdvisorView(config: MemoryAdvisorConfig | undefined, statu
   const on = memoryAdvisorOn(config);
   const reasonKey = memoryAdvisorReasonKey(status?.reason);
   if (!on) return { kind: 'off', on, tone: 'muted', stateKey: 'memory.advisor.state.off' };
-  if (config?.selector === undefined || status?.state === 'unconfigured') {
+  if ((config?.source === undefined && config?.selector === undefined) || status?.state === 'unconfigured') {
     return { kind: 'unconfigured', on, tone: 'caution', stateKey: 'memory.advisor.state.unconfigured' };
-  }
-  if (status?.consent_required === true || status?.reason === 'consent_required') {
-    return { kind: 'consent', on, tone: 'caution', stateKey: 'memory.advisor.state.consent' };
   }
   switch (status?.state) {
     case 'failed':
@@ -216,7 +198,7 @@ export function memoryAdvisorView(config: MemoryAdvisorConfig | undefined, statu
   }
 }
 
-/** The card the quick entries open, with the workspace whose consent is in question. */
+/** The card the quick entries open, optionally naming the workspace to read live status for. */
 export function memoryAdvisorSettingsRoute(workspaceId?: string): string {
   return `/settings/memory${workspaceId === undefined ? '' : `?workspace=${encodeURIComponent(workspaceId)}`}#st-card-memory-advisor`;
 }

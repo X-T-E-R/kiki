@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computerControlPreference, computerControlPreferencePatch, computerControlConnection, computerControlConnectionPatch, computerControlVerdict, isComputerControlEnabled, computerControlEnabledPatch, isComputerToolPolicyDenied, isComputerToolPolicyPartiallyDenied } from './computerControl';
 import { isBrowserControlEnabled, browserControlEnabledPatch, browserControlVerdict, isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied, isBrowserConnectionEffectiveAllowed, effectiveAllowedBrowserCount, browserSourceOfConnectionType } from './browserControl';
 import { patchConfigRequestSchema } from '@kiki/protocol';
-import { MEMORY_ADVISOR_RANGES, memoryAdvisorConsentPatch, memoryAdvisorEndpointIssue, memoryAdvisorModelBaseUrl, memoryAdvisorModePatch, memoryAdvisorOn, memoryAdvisorSelectorFromDraft, memoryAdvisorView, parseMemoryAdvisorNumber } from './memoryAdvisor';
+import { MEMORY_ADVISOR_RANGES, memoryAdvisorEndpointIssue, memoryAdvisorModelBaseUrl, memoryAdvisorModePatch, memoryAdvisorOn, memoryAdvisorSelectorFromDraft, memoryAdvisorView, parseMemoryAdvisorNumber } from './memoryAdvisor';
 
 import {
   DEFAULT_DESKTOP_SETTINGS,
@@ -2448,10 +2448,10 @@ describe('memory advisor settings', () => {
     expect(memoryAdvisorView(undefined, status('unconfigured')).kind).toBe('unconfigured');
   });
 
-  it('separates off, missing model, missing consent, failure and running', () => {
+  it('separates off, missing model, failure and running', () => {
     const selector = { protocol: 'chat_json', model: 'judge' };
     expect(memoryAdvisorView(config({ mode: 'off', selector }), status('off')).kind).toBe('off');
-    expect(memoryAdvisorView(config({ selector }), status('failed', { reason: 'consent_required', consent_required: true })).kind).toBe('consent');
+    expect(memoryAdvisorView(config({ selector }), status('failed', { reason: 'consent_required', consent_required: true })).kind).toBe('problem');
     const failed = memoryAdvisorView(config({ selector }), status('failed', { reason: 'auth' }));
     expect(failed).toMatchObject({ kind: 'problem', tone: 'danger', reasonKey: 'memory.advisor.reason.auth' });
     expect(memoryAdvisorView(config({ selector }), status('selected')).stateKey).toBe('memory.advisor.state.selected');
@@ -2479,9 +2479,4 @@ describe('memory advisor settings', () => {
     expect(memoryAdvisorModelBaseUrl({ effective_base_url: 'https://vendor.example.test/v1', base_url: 'https://stale.example.test' }, provider, 'https://status.example.test')).toBe('https://vendor.example.test/v1');
   });
 
-  it('adds and revokes one workspace consent without touching the others', () => {
-    const current = config({ egress_ack: [{ workspace_id: 'ws-a', destination: 'd1' }] });
-    expect(memoryAdvisorConsentPatch(current, 'ws-b', 'd1', true)).toEqual({ advisor: { egress_ack: [{ workspace_id: 'ws-a', destination: 'd1' }, { workspace_id: 'ws-b', destination: 'd1' }] } });
-    expect(memoryAdvisorConsentPatch(current, 'ws-a', 'd1', false)).toEqual({ advisor: { egress_ack: [] } });
-  });
 });

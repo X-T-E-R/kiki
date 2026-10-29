@@ -1,5 +1,5 @@
 import { errorText } from '@kiki/session-core/i18n';
-import { memoryAdvisorSettingsRoute } from '@kiki/session-core/settings';
+import { DECISION_JUDGES_ROUTE } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
 import { pushToast } from '../../lib/toasts';
@@ -15,10 +15,10 @@ const TONE_TEXT = {
 
 /**
  * The advisor's one-tap switch, for page headers. It writes the mode alone,
- * so the model and every consent stay as saved, and it never touches the
- * memory switch itself. While the advisor still needs something (a model, an
- * OK to send) the state text becomes the way to the settings card that
- * provides it, rather than a switch that looks on and does nothing.
+ * so the chosen source stays as saved, and it never touches the memory
+ * switch itself. While the advisor still needs a source, the state text
+ * links to Who decides, where it is chosen, rather than a switch that looks
+ * on and does nothing.
  */
 export function MemoryAdvisorSwitch({
   workspaceId,
@@ -31,7 +31,7 @@ export function MemoryAdvisorSwitch({
   const advisor = useMemoryAdvisor(workspaceId);
   const { view } = advisor;
   const busy = advisor.query.isPending || advisor.save.isPending;
-  const needsSetup = view.on && (view.kind === 'unconfigured' || view.kind === 'consent');
+  const needsSetup = view.on && view.kind === 'unconfigured';
   const toggle = (on: boolean) => {
     void advisor.setOn(on).catch((error: unknown) => {
       pushToast({
@@ -56,10 +56,10 @@ export function MemoryAdvisorSwitch({
         <button
           type="button"
           data-memory-advisor-setup
-          onClick={() => { onNavigate(memoryAdvisorSettingsRoute(workspaceId)); }}
+          onClick={() => { onNavigate(DECISION_JUDGES_ROUTE); }}
           className="min-h-7 truncate rounded px-1 text-[12px] font-medium text-amber-ink underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
         >
-          {t(view.kind === 'unconfigured' ? 'memory.advisor.chooseModel' : 'memory.advisor.reviewSending')}
+          {t('memory.advisor.chooseModel')}
         </button>
       ) : (
         <span data-memory-advisor-state role="status" className={`truncate text-[12px] ${TONE_TEXT[view.tone]}`}>
