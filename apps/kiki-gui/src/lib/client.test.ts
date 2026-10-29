@@ -828,6 +828,29 @@ describe('KikiClient transport error mapping', () => {
     expect(failure.details).toEqual({ method: 'GET', path: '/api/meta', phase: 'body', timeoutMs: 5, elapsedMs: expect.any(Number), request_id: responseId });
   });
 
+  it('forwards the ordered bootstrap capability through the GUI session view wrapper', async () => {
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    const session = client.klient.session('s1');
+    const controls = { updateSessionCursor: vi.fn(), setTranscriptGrades: vi.fn(), updateTranscriptCursor: vi.fn(),
+      restart: vi.fn(), nudge: vi.fn(), close: vi.fn() };
+    const bootstrap = vi.spyOn(session.view, 'bootstrap').mockReturnValue(controls);
+    const snapshot = vi.spyOn(session.view, 'snapshot');
+    vi.spyOn(client.klient, 'session').mockReturnValue(session);
+    const onSignal = vi.fn();
+    const input = { transcriptGrades: { main: 'delta' as const } };
+    try {
+      const view = client.sessionView('s1');
+      expect(view.bootstrap).toBeTypeOf('function');
+      const subscription = view.bootstrap!(input, onSignal);
+      expect(bootstrap).toHaveBeenCalledExactlyOnceWith(input, onSignal);
+      expect(bootstrap.mock.contexts[0]).toBe(session.view);
+      expect(subscription).toBe(controls);
+      expect(snapshot).not.toHaveBeenCalled();
+      subscription.close();
+      expect(controls.close).toHaveBeenCalledOnce();
+    } finally { await client.klient.close(); }
+  });
+
   it('keeps the initial session snapshot loading beyond the generic request deadline', async () => {
     vi.useFakeTimers();
     let resolveFetch!: (response: Response) => void;

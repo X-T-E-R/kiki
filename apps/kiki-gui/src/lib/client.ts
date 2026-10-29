@@ -1362,6 +1362,7 @@ export class KikiClient {
     return {
       snapshot: (options) => this.run(() => view.snapshot(options)),
       transcript: view.transcript,
+      bootstrap: view.bootstrap?.bind(view),
       subscribe: (input, onSignal) => view.subscribe(input, onSignal),
     };
   }
