@@ -535,7 +535,7 @@ confirm = false
 
 `max_steps_per_turn` 可被环境变量 `KIKI_LOOP_MAX_STEPS_PER_TURN` 覆盖，`max_attempts_per_step` 可被 `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP` 覆盖，优先级均高于配置文件。
 
-重试仅针对瞬时故障——连接错误、超时、HTTP 429 限流，以及符合重试条件的 HTTP 500–599 服务端错误。已有部分输出、安全拒绝或额度耗尽时会停止，不重放请求。
+重试针对瞬时故障——连接错误、超时、HTTP 429 限流，以及符合重试条件的 HTTP 500–599 服务端错误。已有部分输出时通常会停止而不重放请求；对原生 Agent 轮次，产生输出后的连接中断可在 `[retry]` 的 `retry_partial_responses` 为 `true`（默认）时重试。已有输出后的 HTTP 429 或 500–599 失败、安全拒绝和额度耗尽仍会停止，不重放请求。
 
 当供应商确认模型正常结束，且只有非空思考、没有正文、工具调用或拒绝时，Kiki 会保留思考及原始签名，每轮最多显式发送一条 `Continue.` User 消息。网关的精确 `antigravity_thinking_only` 事件也可触发续接，但 Kiki 必须实际保留了思考，并确认没有其它输出、外部信息检索（grounding）或拒绝。取消、缺少终态事件、流中断、token 上限导致的停止均不符合条件。续接算一次真实模型请求，用量单独记录。第二次仍为空或请求失败时停止本轮；这次续接即使遇到 HTTP 429 或临时服务端错误，也不重试。
 
@@ -587,9 +587,12 @@ history = ["as I said", "earlier", "之前", "我说过"]
 
 `retry` 可为指定的单步错误、Output Layer 转换和会话标题请求定制总尝试次数与固定退避时间。默认情况下，每次可重试操作最多尝试 5 次，重试前依次等待 2、4、8、16 秒，并加入最多 25% 的随机抖动（总计 30–37.5 秒）。provider 返回的 `Retry-After` 值或命中策略的固定 `backoff` 会替代对应的默认等待时间。策略还可限定精确的模型和 provider 配置键，避免一个 provider 的临时故障改变其它渠道的重试行为。本节及每条策略都是严格配置：未知字段会被拒绝，不会静默忽略。
 
+`retry_partial_responses` 默认为 `true`。设为 `false` 时，只关闭原生 Agent 轮次在部分输出后的重试；首 token 前的失败仍按原有有界重试预算处理。符合条件的连接重试最多尝试 5 次（含首发）；`max_attempts` 或命中的策略可以进一步降低这个上限。重试会撤掉部分输出，工具只在完整响应后执行，且可能产生额外计费。
+
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `max_attempts` | `integer` | — | 最大总尝试次数（含首次尝试）；用于 Agent 单步时优先于 `loop_control.max_attempts_per_step` |
+| `retry_partial_responses` | `boolean` | `true` | 是否允许符合条件、已有部分输出的原生 Agent 轮次重试；已有输出后的连接重试最多 5 次（含首发），`false` 只关闭这类重试 |
 | `policies` | `array<table>` | — | 用 `[[retry.policies]]` 编写的有序逐错误策略；首个命中的策略生效 |
 
 每条 `[[retry.policies]]` 包含以下字段：
@@ -616,7 +619,7 @@ max_attempts = 20
 backoff = 15000
 ```
 
-请把 `gemini-4-argon` 和 `google-native` 替换成 `[models]` 与 `[providers]` 表中的精确配置键。仅当 provider 未返回 `Retry-After` 时才使用 `backoff`。模型流在协议完成事件到达前结束，属于连接失败，不会把部分回答当作成功；只有尚未观察到文本、思考或工具调用时才能重试，未完成响应中的原生工具不会执行。该策略不会让 HTTP 400、额度耗尽、部分输出或已经执行的失败变成可重试；`retry = true` 不会越过 Kiki 的不可重试判定。
+请把 `gemini-4-argon` 和 `google-native` 替换成 `[models]` 与 `[providers]` 表中的精确配置键。仅当 provider 未返回 `Retry-After` 时才使用 `backoff`。模型流在协议完成事件到达前结束，属于连接失败，不会把部分回答当作成功。已有部分输出时，只有符合条件的连接中断可以重试；已有输出后的 HTTP 429 或 500–599 失败及其他 provider 失败不会因本设置变得可重试。每次符合条件的重试都会撤掉失败尝试的输出，原生工具只在完整响应后执行，失败生成可能产生额外计费。该策略不会让 HTTP 400、额度耗尽或已经执行的失败变成可重试；`retry = true` 不会越过 Kiki 的不可重试判定。
 
 ## `transcript_memory`
 

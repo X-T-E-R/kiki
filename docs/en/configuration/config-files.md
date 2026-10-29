@@ -549,7 +549,7 @@ The compaction point resolves in this order: the session's per-model token overr
 
 `max_steps_per_turn` can be overridden by the `KIKI_LOOP_MAX_STEPS_PER_TURN` environment variable, and `max_attempts_per_step` by `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP`; both take higher priority than the config file.
 
-Retries only apply to transient failures — connection errors, timeouts, HTTP 429 rate limits, and eligible HTTP 500–599 server errors. Partial output, safety refusals, and exhausted quota stop rather than replaying the request.
+Retries apply to transient failures — connection errors, timeouts, HTTP 429 rate limits, and eligible HTTP 500–599 server errors. Partial output normally stops rather than replaying the request; for native agent turns, a connection interruption after output can be retried when `[retry].retry_partial_responses` is `true` (the default). HTTP 429 or 500–599 failures after output, safety refusals, and exhausted quota still stop without replaying the request.
 
 When a provider confirms a normal end with non-empty thinking but no answer, tool call, or refusal, Kiki keeps the thinking and its signature and sends a `Continue.` user message at most once per turn. A gateway's exact `antigravity_thinking_only` event can also qualify, but only when Kiki retained the actual thinking and confirmed that no other output, grounding, or refusal occurred. Cancellation, missing terminal events, interrupted streams, and token-limit stops do not qualify. The follow-up counts as a real model request with its own usage. A second empty response or failure stops the turn—even HTTP 429 or a temporary server error is not retried for this follow-up.
 
@@ -601,9 +601,12 @@ New sessions keep changing date, directory listings, workspace instructions and 
 
 `retry` customizes the total attempt budget and fixed backoff for selected step errors, Output Layer transformations, and session title requests. By default, each retryable operation gets five total attempts, with waits of 2, 4, 8, and 16 seconds plus up to 25% jitter (30–37.5 seconds in total). A provider `Retry-After` value or a matching policy's fixed `backoff` replaces the corresponding default wait. Policies can also target exact model and provider configuration keys, so one provider's temporary failures do not change retry behavior elsewhere. The section and each policy are strict: an unknown field is rejected rather than silently ignored.
 
+`retry_partial_responses` defaults to `true`. Set it to `false` to disable only native agent turn retries after partial output; failures before the first token keep the existing bounded retry budget. Eligible connection retries are capped at five total attempts, including the initial request; `max_attempts` or a matching policy can lower that cap. A retry discards partial output, runs tools only after a complete response, and may incur additional charges.
+
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `max_attempts` | `integer` | — | Maximum total attempts, including the initial attempt; for agent steps, overrides `loop_control.max_attempts_per_step` |
+| `retry_partial_responses` | `boolean` | `true` | Whether an eligible native agent turn with partial output may be retried; post-output connection retries are capped at five total attempts including the initial request, and `false` disables only those retries |
 | `policies` | `array<table>` | — | Ordered per-error policies written as `[[retry.policies]]`; the first matching policy applies |
 
 Each `[[retry.policies]]` entry has these fields:
@@ -630,7 +633,7 @@ max_attempts = 20
 backoff = 15000
 ```
 
-Replace `gemini-4-argon` and `google-native` with the exact keys used in your `[models]` and `[providers]` tables. The `backoff` applies only when the provider does not send `Retry-After`. A model stream that ends without its protocol's completion event is a connection failure, not a successful partial answer. It can be retried only before text, thinking, or a tool call has been observed; native tools from an incomplete response are not executed. The policy does not make HTTP 400, exhausted quota, partial output, or already-executed failures retryable; `retry = true` never overrides Kiki's non-retryable classification.
+Replace `gemini-4-argon` and `google-native` with the exact keys used in your `[models]` and `[providers]` tables. The `backoff` applies only when the provider does not send `Retry-After`. A model stream that ends without its protocol's completion event is a connection failure, not a successful partial answer. With partial output, only an eligible connection interruption can be retried; HTTP 429 or 500–599 failures after output and other provider failures are not made retryable by this setting. Each eligible retry discards the failed attempt's output, and native tools run only after a complete response; the failed generation may incur additional charges. The policy does not make HTTP 400, exhausted quota, or already-executed failures retryable; `retry = true` never overrides Kiki's non-retryable classification.
 
 ## `transcript_memory`
 
