@@ -585,7 +585,7 @@ describe('KikiClient.sendAgentMessage', () => {
     expect(calls[0]?.params).toEqual(['child']);
   });
 
-  it('retains the prompt route and attachments for a native child', async () => {
+  it('retains the prompt route, attachments and one-shot timing for a native child', async () => {
     const content = [{ type: 'text' as const, text: 'look' },
       { type: 'file' as const, file_id: 'file-1', name: 'file.txt', media_type: 'text/plain', size: 1 }];
     const urls: string[] = [];
@@ -595,7 +595,7 @@ describe('KikiClient.sendAgentMessage', () => {
         code: 0, msg: 'success', data: 'native',
       });
       const body = JSON.parse(init?.body as string);
-      expect(body).toMatchObject({ agent_id: 'child', content });
+      expect(body).toMatchObject({ agent_id: 'child', content, append_timing: 'subagents_done' });
       expect(body).not.toHaveProperty('prompt_id');
       return Response.json({ code: 0, msg: 'success', data: {
         prompt_id: 'p1', user_message_id: 'p1', status: 'running', content,
@@ -603,7 +603,7 @@ describe('KikiClient.sendAgentMessage', () => {
       } });
     }));
     const receipt = await new KikiClient({ baseUrl: 'http://127.0.0.1:8080' })
-      .sendAgentMessage('s1', 'child', 'look', content, 'native-submission');
+      .sendAgentMessage('s1', 'child', 'look', content, 'native-submission', undefined, 'subagents_done');
     // Attachments retain the ordinary prompt route and have no replay
     // guarantee; the prompt POST is the durable boundary and takes no view
     // resume with it.

@@ -18,7 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { PermissionMode, PromptDeliveryReason, PromptItem } from '@kiki/protocol';
+import type { DeferredAppendTiming, PermissionMode, PromptDeliveryReason, PromptItem } from '@kiki/protocol';
 import { buildPromptContent, buildSkillActivation, flushDrafts, isNativeExecutor, readComposerState, readDraft, recoverSubmittedDraft, subscribeDraftAppends, writeComposerState, writeDraft, type ComposerAttachment, type ExecutionChoice } from '@kiki/session-core/composer';
 import {
   agentPath,
@@ -40,6 +40,9 @@ import {
   rememberModelSwitchChoice,
   resolveCatalogModel,
   resolveModelSwitchPreferences,
+  settingsServerSnapshot,
+  settingsSnapshot,
+  subscribeSettings,
 } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
@@ -622,6 +625,7 @@ function ChildAgentWorkspace({
 }: WorkspaceCompositionProps) {
   const { t } = useI18n();
   const { client, klient, scopeId } = useConnection();
+  const liveSettings = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot);
   const queryClient = useQueryClient();
   // 派发处 is an explicit visit, not a plain scroll: the arrow returns to what
   // the reader was looking at before the jump.
@@ -661,6 +665,7 @@ function ChildAgentWorkspace({
   const [sendNotice, setSendNotice] = useState<{ scope: string; text: string } | null>(null);
   const pendingSendRef = useRef<{
     scope: string; payload: string; key: string; afterModelSwitch: string | undefined;
+    appendTiming?: DeferredAppendTiming;
   } | null>(null);
   // "Send now" receipts still open to a late durable read: prompt id → the
   // reason already reported (null = only the generic queued notice went out).
@@ -870,18 +875,25 @@ function ChildAgentWorkspace({
     if (!agentKnown) return;
     const content = buildPromptContent(text, composerAttachments, options?.presentation);
     if (content === null) return;
+    const appendTiming = externalExecutor ? undefined : (options?.appendTiming ?? liveSettings.defaultAppendTiming);
+    // Timing stays on the stored submission, outside this identity: a plain
+    // retry after an unknown result must replay the original one-shot choice.
     const payload = JSON.stringify([text, content, useSwitchDependency]);
     const previous = pendingSendRef.current;
     // A lost acceptance retries the original execution payload, even if the queue advances.
     const submission = previous?.scope === sendScope && previous.payload === payload
       ? previous
-      : { scope: sendScope, payload, key: crypto.randomUUID(),
+      : { scope: sendScope, payload, key: crypto.randomUUID(), appendTiming,
         afterModelSwitch: useSwitchDependency ? modelSwitches.dependency?.input.operationId : undefined };
     pendingSendRef.current = submission;
     const hasNonTextAttachment = content.some((part) => part.type !== 'text');
     let receipt: Awaited<ReturnType<typeof client.sendAgentMessage>>;
     try {
-      receipt = await client.sendAgentMessage(sessionId, agentId, text, content, submission.key, submission.afterModelSwitch);
+      // The server already defaults to agent_idle; keep the ordinary six-arg
+      // child send shape and add the seventh arg only for a real timing choice.
+      receipt = submission.appendTiming === undefined || submission.appendTiming === 'agent_idle'
+        ? await client.sendAgentMessage(sessionId, agentId, text, content, submission.key, submission.afterModelSwitch)
+        : await client.sendAgentMessage(sessionId, agentId, text, content, submission.key, submission.afterModelSwitch, submission.appendTiming);
     } catch (error) {
       if (isDefinitivePromptRejection(error)) {
         if (pendingSendRef.current === submission) setSendNotice(null);
@@ -1390,6 +1402,7 @@ function ChildAgentWorkspace({
           onSend={handleComposerSend}
           onActivateSkill={handleActivateSkill}
           onSendNow={controller === null ? undefined : handleComposerSendNow}
+          sendTimingDefault={externalExecutor ? undefined : liveSettings.defaultAppendTiming}
           working={composerWorkingInfo}
           onAbort={runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}
           abortPending={stoppingTaskId !== null}

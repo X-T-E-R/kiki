@@ -491,6 +491,69 @@ it('steers a busy native child through the shared send-now ledger, not its mailb
   expect(harness.pushToast).not.toHaveBeenCalled();
 });
 
+it('sends a busy native child timing pick once, then returns to the configured default', async () => {
+  harness.sendAgentMessage.mockResolvedValue(null);
+  await renderWorkspace({ forest: testForest('running', true) });
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, 'defer this child prompt');
+  await act(async () => {
+    dock.querySelector('[data-send-timing-root]')!
+      .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+  });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+  const pick = dock.querySelector<HTMLButtonElement>('[data-send-timing="subagents_done"]');
+  expect(pick).not.toBeNull();
+  await act(async () => { pick!.click(); });
+  await settle();
+  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(1);
+  expect(harness.sendAgentMessage).toHaveBeenLastCalledWith('session', 'child', 'defer this child prompt', [
+    { type: 'text', text: 'defer this child prompt' },
+  ], expect.any(String), undefined, 'subagents_done');
+
+  await typeText(textarea, 'plain child prompt');
+  await clickComposerSend();
+  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(2);
+  expect(harness.sendAgentMessage).toHaveBeenLastCalledWith('session', 'child', 'plain child prompt', [
+    { type: 'text', text: 'plain child prompt' },
+  ], expect.any(String), undefined);
+});
+
+it('keeps the original key and timing on an unconfirmed same-draft retry, then resets after acceptance', async () => {
+  harness.sendAgentMessage
+    .mockRejectedValueOnce(new NativeChildPromptSendError(new Error('response lost')))
+    .mockResolvedValue(null);
+  await renderWorkspace({ forest: testForest('running', true) });
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, 'defer this unconfirmed prompt');
+  await act(async () => {
+    dock.querySelector('[data-send-timing-root]')!
+      .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+  });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-send-timing="subagents_done"]')!.click(); });
+  await settle();
+  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(1);
+  const originalKey = harness.sendAgentMessage.mock.calls[0]?.[4];
+  expect(harness.sendAgentMessage.mock.calls[0]?.[6]).toBe('subagents_done');
+  expect(textarea.value).toBe('defer this unconfirmed prompt');
+
+  await clickComposerSend();
+  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(2);
+  expect(harness.sendAgentMessage.mock.calls[1]?.[4]).toBe(originalKey);
+  expect(harness.sendAgentMessage.mock.calls[1]?.[6]).toBe('subagents_done');
+  expect(textarea.value).toBe('');
+
+  await typeText(textarea, 'next plain prompt');
+  await clickComposerSend();
+  expect(harness.sendAgentMessage).toHaveBeenCalledTimes(3);
+  expect(harness.sendAgentMessage.mock.calls[2]?.[4]).not.toBe(originalKey);
+  expect(harness.sendAgentMessage).toHaveBeenLastCalledWith('session', 'child', 'next plain prompt', [
+    { type: 'text', text: 'next plain prompt' },
+  ], expect.any(String), undefined);
+});
+
 it('hands a refused child send-now back to the composer with the reason', async () => {
   const sendPromptNow = vi.fn().mockRejectedValue(new SendNowError('refused', new Error('model differs')));
   const textarea = await sendNowToBusyChild(sendPromptNow);

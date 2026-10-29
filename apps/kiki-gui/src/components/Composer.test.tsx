@@ -4737,6 +4737,24 @@ describe('Composer send-timing menu', () => {
     ]);
   });
 
+  it('stays open when the pointer re-enters during the leave grace, then sends from the menu', async () => {
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSend, onSendNow: vi.fn() });
+    const root = container.querySelector('[data-send-timing-root]')!;
+    await hoverOpen(container);
+    await act(async () => {
+      root.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 50)); });
+    await act(async () => {
+      root.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body }));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    expect(menu(container)).not.toBeNull();
+    await click(menuRow(container, 'tasks_done'));
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('hello', [], { appendTiming: 'tasks_done' });
+  });
+
   it('opens the same menu from the caret — the tap path where hover does not exist', async () => {
     const { container } = await renderComposer({ busy: true, value: 'hello', sendTimingDefault: 'agent_idle', onSendNow: vi.fn() });
     const caret = container.querySelector<HTMLButtonElement>('button[aria-label="Send timing"]')!;

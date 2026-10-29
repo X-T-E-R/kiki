@@ -2124,11 +2124,12 @@ export function Composer({
   // Hover intent: a short delay keeps a sweep across the button from flashing
   // the menu; a slightly longer leave grace bridges the gap into the panel.
   const openSendTimingOnHover = () => {
-    if (!sendTimingAvailable || sendTimingOpen) return;
+    if (!sendTimingAvailable) return;
     if (sendTimingCloseTimerRef.current !== null) {
       clearTimeout(sendTimingCloseTimerRef.current);
       sendTimingCloseTimerRef.current = null;
     }
+    if (sendTimingOpen) return;
     sendTimingOpenTimerRef.current ??= setTimeout(() => {
       sendTimingOpenTimerRef.current = null;
       setSendTimingOpen(true);
