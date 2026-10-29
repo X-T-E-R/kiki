@@ -154,9 +154,13 @@ export async function generate(
           }
         }
 
-        if (part.type === 'text') {
+        if (part.type === 'text' && deferredThink !== null && isVacuousContentPart(deferredThink)) {
           deferredThink = null;
         }
+        if (deferredThink !== null && part.type === 'think' && mergeInPlace(deferredThink, part)) {
+          continue;
+        }
+        if (deferredThink !== null) flushPending();
         if (pendingPart === null) {
           pendingPart = part;
         } else if (pendingPart.type === 'text' && part.type === 'think' && isVacuousContentPart(part)) {

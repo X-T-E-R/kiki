@@ -110,6 +110,16 @@ Explicit `source: "platform"` uses the adapter's optional history API and requir
 
 Quiet collection and automatic background follow the binding's [group policy](../server/rest-api.md#im-account-and-channel-bindings). Background consumption advances a separate watermark while retaining the received timeline. All results, sender names, mentions and quoted text remain untrusted external data, not instructions or permission grants.
 
+## Message delivery
+
+`SendMessage` delivers one complete user-visible message or an ordered `messages` batch to the thread's enabled bound outputs, a room, or another Bot. Use either the top-level `text` / `attachments` / `reply_to` fields or `messages`, never both; omit `channel` / `channels` for bound-output fan-out or name explicit output channel IDs. Attachments may be sent without text; set `kind` explicitly for image, audio, voice, or video delivery, and inspect channel receipts before deciding how to recover an uncertain send.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| Top-level `end_turn` | `boolean` | `false` | Set to `true` only for the final answer. Leave it unset for progress messages. The engine omits the tool continuation only when `end_turn: true`, every user-targeted delivery succeeds, and this step contains exactly one `SendMessage` tool call. Partial or failed delivery, an unapproved call, or any additional tool call keeps the continuation available. Existing `afterStep` handling for goals, queued input, steer input, and task notifications still applies. |
+
+An ordinary final reply is delivered in full as a fallback; do not resend it. Do not split one message into sentences or repeat it as ordinary text. A progress message leaves `end_turn` unset so required tools and pending work can continue.
+
 ## Web Tools
 
 Both web tools are backed by Kiki's built-in search and retrieval module, which ships with the product — there is nothing to install. General-web search and URL fetching work without configuration or an API key. See [`nb_search`](../configuration/config-files.md#nb-search) for configuration.

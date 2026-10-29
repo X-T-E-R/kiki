@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE, MESSAGE_DELIVERY_SENT_GUIDANCE } from '#/agent/delivery/deliveryReminder';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentGoalService } from '#/agent/goal/goal';
+import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { TaskNotificationStepRequest } from '#/agent/task/taskService';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -64,6 +66,45 @@ function sendCalls(): string[] {
 }
 
 describe('SendMessage completion guidance', () => {
+  it('requests completion only for fully delivered final message batches', async () => {
+    await messageAgent();
+    expect((await execute({ messages: [{ text: 'First' }, { text: 'Last' }], end_turn: true })).stopTurn).toBe(true);
+    const controller = new AbortController();
+    controller.abort();
+    expect((await execute({ messages: [{ text: 'Unsent' }], end_turn: true }, { turnId: 0, toolCallId: 'cancelled-batch', signal: controller.signal })).stopTurn).toBeUndefined();
+  });
+
+  it.each(['partial', 'failed', 'unknown'] as const)('continues after a final send with %s channel delivery', async (status) => {
+    const send = vi.fn(async (): Promise<SendMessageReceipt> => ({
+      messageId: 'send:final', deliveredTo: ['user'], delivery: 'delivered',
+      channels: [{ channelId: 'notify:fixture', status }],
+    }));
+    await messageAgent(appServices((reg) => reg.definePartialInstance(IUserMessageRouter, { sendMessage: send })));
+    expect((await execute({ messages: [{ text: 'First' }, { text: 'Last' }], end_turn: true })).stopTurn).toBeUndefined();
+    ctx.mockNextResponse({ type: 'function', id: 'send-final', name: 'SendMessage', arguments: '{"text":"Final answer","end_turn":true}' });
+    ctx.mockNextResponse({ type: 'text', text: 'Delivery requires attention.' });
+    expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Answer the question.' }] })).state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(2);
+  });
+
+  it('continues when approval rejects a final SendMessage before delivery', async () => {
+    const send = vi.fn(async (): Promise<SendMessageReceipt> => ({ messageId: 'unexpected', deliveredTo: ['user'] }));
+    await messageAgent(appServices((reg) => reg.definePartialInstance(IUserMessageRouter, { sendMessage: send })));
+    const approval = ctx.get(IAgentToolExecutorService).onBeforeExecuteTool((event) => {
+      if (event.toolCall.name === 'SendMessage') event.veto({ output: 'Message approval rejected.', isError: true });
+    });
+    try {
+      ctx.mockNextResponse({ type: 'function', id: 'send-final', name: 'SendMessage', arguments: '{"text":"Final answer","end_turn":true}' });
+      ctx.mockNextResponse({ type: 'text', text: 'Approval requires attention.' });
+      expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Answer the question.' }] })).state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(2);
+      expect(send).not.toHaveBeenCalled();
+      expect(historyText(1)).toContain('Message approval rejected.');
+    } finally {
+      await approval.dispose();
+    }
+  });
+
   it('sends a media-only message with an explicit kind through the in-app channel', async () => {
     await mediaAgent(['clip.mp4']);
     const result = await execute({ attachments: [{ path: 'clip.mp4', kind: 'video', mime_type: 'video/mp4' }] });
@@ -156,6 +197,8 @@ describe('SendMessage completion guidance', () => {
     expect(tool.description).toContain('A final ordinary reply is delivered in full as a fallback');
     expect(tool.description).toContain('if the request is complete and no work remains');
     expect(tool.description).toContain('Do not split one message into sentences');
+    expect(tool.description).toContain('set end_turn=true');
+    expect(tool.parameters).toMatchObject({ properties: { end_turn: { type: 'boolean' } } });
     const result = await execute({ text: 'The complete answer.' });
     expect(JSON.parse(result.output as string)).toMatchObject({ delivered_to: ['user'] });
     expect(result.note).toContain(MESSAGE_DELIVERY_SENT_GUIDANCE);
@@ -174,6 +217,37 @@ describe('SendMessage completion guidance', () => {
     expect(ctx.get(IAgentLoopService).status()).toMatchObject({ state: 'idle', hasPendingRequests: false });
     expect(historyText(1)).not.toContain(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE);
     await ctx.expectResumeMatches();
+  });
+
+  it('ends after one delivered final SendMessage without an empty model continuation', async () => {
+    await messageAgent();
+    ctx.mockNextResponse({ type: 'function', id: 'send-final', name: 'SendMessage', arguments: '{"text":"The complete answer.","end_turn":true}' });
+    ctx.mockNextResponse({ type: 'text', text: 'Unexpected continuation' });
+    expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Answer the question.' }] })).state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(sendCalls()).toEqual(['send-final']);
+    expect(ctx.get(IAgentLoopService).status()).toMatchObject({ state: 'idle', hasPendingRequests: false });
+    await ctx.expectResumeMatches();
+  });
+
+  it('keeps sibling tool results available to the model even when SendMessage requests completion', async () => {
+    await messageAgent();
+    const registration = ctx.get(IAgentToolRegistryService).register({
+      name: 'RequiredWork', description: 'Finish required work.', parameters: { type: 'object' },
+      resolveExecution: () => ({ approvalRule: 'RequiredWork', execute: async () => ({ output: 'Inspect this result.' }) }),
+    });
+    try {
+      ctx.mockNextResponse(
+        { type: 'function', id: 'send-final', name: 'SendMessage', arguments: '{"text":"The current answer.","end_turn":true}' },
+        { type: 'function', id: 'work-1', name: 'RequiredWork', arguments: '{}' },
+      );
+      ctx.mockNextResponse({ type: 'text', text: 'Result inspected.' });
+      expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Check the work.' }] })).state).toBe('completed');
+      expect(ctx.llmCalls).toHaveLength(2);
+      expect(historyText(1)).toContain('Inspect this result.');
+    } finally {
+      await registration.dispose();
+    }
   });
 
   it('continues same-step and later tool work after a progress message', async () => {
@@ -200,6 +274,71 @@ describe('SendMessage completion guidance', () => {
     }
   });
 
+  it.each(['queue', 'steer'] as const)('preserves %s input after final delivery', async (kind) => {
+    await messageAgent();
+    const loop = ctx.get(IAgentLoopService);
+    const prompts = ctx.get(IAgentPromptService);
+    let pendingCompletion: Promise<unknown> | undefined;
+    const pending = loop.hooks.onDidAppendToolResult.register('pending-user-input', async (event, next) => {
+      await next();
+      if (event.toolCallId !== 'send-final') return;
+      const handle = await prompts.enqueue({
+        message: { role: 'user', content: [{ type: 'text', text: 'Inspect the new input.' }], toolCalls: [], origin: { kind: 'user' } },
+        waitForLaunch: false,
+      });
+      pendingCompletion = kind === 'steer'
+        ? Promise.all([handle.completion, prompts.steer([handle.id])])
+        : handle.completion;
+    });
+    try {
+      ctx.mockNextResponse({ type: 'function', id: 'send-final', name: 'SendMessage', arguments: '{"text":"Current answer delivered.","end_turn":true}' });
+      ctx.mockNextResponse({ type: 'text', text: 'New input inspected.' });
+      expect((await prompts.submitAndWait({ input: [{ type: 'text', text: 'Give the current answer.' }] })).state).toBe('completed');
+      await pendingCompletion;
+      await loop.settled();
+      expect(ctx.llmCalls).toHaveLength(2);
+      expect(historyText(1)).toContain('Inspect the new input.');
+      expect(prompts.list().pending).toEqual([]);
+    } finally {
+      await pending.dispose();
+    }
+  });
+
+  it('preserves active goal follow-up after final delivery', async () => {
+    await messageAgent();
+    const loop = ctx.get(IAgentLoopService);
+    const goals = ctx.get(IAgentGoalService);
+    let afterSteps = 0;
+    const createGoal = loop.hooks.onDidAppendToolResult.register('start-goal-on-delivery', async (event, next) => {
+      await next();
+      if (event.toolCallId === 'send-final') await goals.createGoal({ objective: 'Inspect remaining goal work' });
+    });
+    const afterStep = loop.hooks.onDidFinishStep.register('observe-final-delivery-goal', async (_event, next) => {
+      afterSteps += 1;
+      await next();
+    });
+    const followup = loop.hooks.onWillBeginStep.register('finish-goal-followup', async (event, next) => {
+      if (event.turnId !== 0) {
+        expect(goals.getGoal().goal?.status).toBe('active');
+        await goals.markComplete();
+      }
+      await next();
+    });
+    try {
+      ctx.mockNextResponse({ type: 'function', id: 'send-final', name: 'SendMessage', arguments: '{"text":"Current answer delivered.","end_turn":true}' });
+      ctx.mockNextResponse({ type: 'text', text: 'Remaining goal work inspected.' });
+      expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Give the current answer.' }] })).state).toBe('completed');
+      await loop.settled();
+      expect(ctx.llmCalls).toHaveLength(2);
+      expect(afterSteps).toBe(2);
+      expect(goals.getGoal().goal).toBeNull();
+    } finally {
+      await followup.dispose();
+      await afterStep.dispose();
+      await createGoal.dispose();
+    }
+  });
+
   it('preserves a pending background notification after successful delivery', async () => {
     await messageAgent();
     const loop = ctx.get(IAgentLoopService);
@@ -212,7 +351,7 @@ describe('SendMessage completion guidance', () => {
       }));
     });
     try {
-      ctx.mockNextResponse({ type: 'function', id: 'send-1', name: 'SendMessage', arguments: '{"text":"Current answer delivered."}' });
+      ctx.mockNextResponse({ type: 'function', id: 'send-1', name: 'SendMessage', arguments: '{"text":"Current answer delivered.","end_turn":true}' });
       ctx.mockNextResponse({ type: 'text', text: 'Background result inspected.' });
       const result = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Give the current answer.' }] });
       expect(result).toMatchObject({ state: 'completed' });
@@ -226,7 +365,7 @@ describe('SendMessage completion guidance', () => {
 
   it('leaves a failed send recoverable instead of treating it as completion', async () => {
     await messageAgent();
-    ctx.mockNextResponse({ type: 'function', id: 'failed-send', name: 'SendMessage', arguments: '{"text":" ","to":"user"}' });
+    ctx.mockNextResponse({ type: 'function', id: 'failed-send', name: 'SendMessage', arguments: '{"text":" ","to":"user","end_turn":true}' });
     ctx.mockNextResponse({ type: 'function', id: 'retry-send', name: 'SendMessage', arguments: '{"text":"The complete answer."}' });
     ctx.mockNextResponse();
     expect((await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Answer the question.' }] })).state).toBe('completed');

@@ -203,6 +203,24 @@ describe('Agent loop', () => {
     expect(thinkingDeltas).toHaveLength(0);
   });
 
+  it('stores empty signed thinking without emitting an empty thinking delta', async () => {
+    const thinkingDeltas: ThinkingDelta[] = [];
+    const subscription = ctx.get(IEventBus).subscribe(ThinkingDelta, (event) => thinkingDeltas.push(event));
+    try {
+      ctx.mockNextResponse(
+        { type: 'text', text: 'Answer' },
+        { type: 'think', think: '' },
+        { type: 'think', think: '', encrypted: 'sig-example' },
+      );
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Hello' }] });
+      await ctx.untilTurnEnd();
+      expect(thinkingDeltas).toEqual([]);
+      expect(ctx.contextData().history.flatMap((message) => message.content)).toContainEqual({ type: 'think', think: '', encrypted: 'sig-example' });
+    } finally {
+      await subscription.dispose();
+    }
+  });
+
   it('persists a turn.ended wire record with the end reason and duration', async () => {
     profile.update({ activeToolNames: [] });
 

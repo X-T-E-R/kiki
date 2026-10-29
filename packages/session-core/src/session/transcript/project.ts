@@ -365,6 +365,15 @@ function assistantTextIsDisplay(frame: {
     || frame.resourceLink !== undefined;
 }
 
+function thinkingFrameIsDisplay(frame: {
+  readonly kind: string;
+  readonly text?: string;
+  readonly contentRefs?: readonly unknown[];
+}): boolean {
+  if (frame.kind !== 'thinking') return false;
+  return (frame.text?.trim() ?? '') !== '' || (frame.contentRefs?.length ?? 0) > 0;
+}
+
 function isLiveStreamingFrame(
   item: { readonly turnId: string; readonly state?: string },
   step: { readonly stepId: string; readonly state?: string },
@@ -2696,7 +2705,7 @@ export function agentTranscriptToBlocks(
         if (lastTextFrameId === undefined && candidate.kind === 'text') {
           lastTextFrameId = candidate.frameId;
         }
-        if (lastThinkingFrameId === undefined && candidate.kind === 'thinking') {
+        if (lastThinkingFrameId === undefined && thinkingFrameIsDisplay(candidate)) {
           lastThinkingFrameId = candidate.frameId;
         }
         if (lastTextFrameId !== undefined && lastThinkingFrameId !== undefined) break;
@@ -2772,6 +2781,7 @@ export function agentTranscriptToBlocks(
             }
             break;
           case 'thinking':
+            if (!thinkingFrameIsDisplay(frame)) break;
             blocks.push({
               kind: 'thinking',
               responseInstanceId: frame.responseInstanceId ?? (frame.recordedStepId !== step.stepId || step.providerResponseId === undefined ? undefined : `provider:${step.providerResponseId}`),

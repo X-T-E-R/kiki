@@ -134,6 +134,22 @@ describe('generate() stream normalization', () => {
     ]);
   });
 
+  it.each([false, true])('merges deferred thinking signatures without losing them before later text (%s)', async (laterText) => {
+    const stream = new FakeStreamedMessage([
+      { type: 'text', text: 'Answer' },
+      { type: 'think', think: '' },
+      { type: 'think', think: '', encrypted: 'sig-example' },
+      ...(laterText ? [{ type: 'text' as const, text: 'More' }] : []),
+    ]);
+    const { provider } = createFakeProvider(stream);
+    const result = await generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY);
+    expect(result.message.content).toEqual([
+      { type: 'text', text: 'Answer' },
+      { type: 'think', think: '', encrypted: 'sig-example' },
+      ...(laterText ? [{ type: 'text', text: 'More' }] : []),
+    ]);
+  });
+
   it('keeps a trailing vacuous reasoning part in its position', async () => {
     const stream = new FakeStreamedMessage([
       { type: 'text', text: 'Hello' },

@@ -2942,6 +2942,42 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(folded[0]).toMatchObject({ kind: 'history-fold', thoughts: 2 });
   });
 
+  it('does not project empty thinking frames but keeps their live append target', () => {
+    const snapshot = emptySnapshot({
+      items: [{
+        kind: 'turn', turnId: 't-thinking-display', ordinal: 1, state: 'completed', origin: { kind: 'user' },
+        steps: [{
+          kind: 'step', stepId: 's-thinking-display', turnId: 't-thinking-display', ordinal: 1, state: 'completed',
+          frames: [
+            { kind: 'thinking', frameId: 'think-empty', text: '' },
+            { kind: 'thinking', frameId: 'think-whitespace', text: '  \n  ' },
+            { kind: 'thinking', frameId: 'think-ref', text: '', contentRefs: [{ source: { kind: 'frame', id: 'think-ref' }, revision: 'r1', path: ['text'], kind: 'text', offset: 0, total: 4 }] },
+            { kind: 'thinking', frameId: 'think-text', text: ' useful thought ' },
+          ],
+        }],
+      }],
+    });
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    expect(projected.blocks.filter((block) => block.kind === 'thinking').map((block) => block.frameId)).toEqual(['think-ref', 'think-text']);
+
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't-live-thinking', ordinal: 1, state: 'running', origin: { kind: 'user' } } },
+      { op: 'step.upsert', turnId: 't-live-thinking', step: { kind: 'step', stepId: 's-live-thinking', turnId: 't-live-thinking', ordinal: 1, state: 'running' } },
+      { op: 'frame.upsert', turnId: 't-live-thinking', stepId: 's-live-thinking', frame: { kind: 'thinking', frameId: 'think-live', text: '' } },
+    ]);
+    const liveBlocks = () => agentTranscriptToBlocks({ ...tx.snapshot(), agent_id: 'main' });
+    const beforeProjection = structuredClone(tx.snapshot());
+    expect(liveBlocks().filter((block) => block.kind === 'thinking')).toEqual([]);
+    expect(tx.snapshot()).toEqual(beforeProjection);
+    tx.apply([{ op: 'append', target: { type: 'frame', turnId: 't-live-thinking', stepId: 's-live-thinking', frameId: 'think-live' }, offset: 0, text: 'Later thought' }]);
+    expect(liveBlocks()).toEqual([expect.objectContaining({ kind: 'thinking', frameId: 'think-live', text: 'Later thought', streaming: true })]);
+    const liveTurn = tx.snapshot().items.find((item) => item.kind === 'turn');
+    expect(liveTurn?.kind === 'turn' ? liveTurn.steps.flatMap((step) => step.frames) : []).toEqual([
+      expect.objectContaining({ kind: 'thinking', frameId: 'think-live', text: 'Later thought' }),
+    ]);
+  });
+
   it('does not project an empty assistant text frame between same-turn process rows', () => {
     const command = (ordinal: number, name: 'Read' | 'Bash') => ({
       kind: 'tool' as const,

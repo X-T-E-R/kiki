@@ -1590,12 +1590,12 @@ describe('reasoning completion chrome', () => {
   const reasoningRecords: Parameters<typeof replayAgentWire>[1] = [
     { type: 'turn.prompt', turnId: 1, promptId: 'example-notification', origin: { kind: 'peer_thread' }, input: [{ type: 'text', text: 'Recorded notification' }], time: 1000 },
     { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '1', step: 1, uuid: 'example-step-1' }, time: 1100 },
-    { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '1', step: 1, stepUuid: 'example-step-1', uuid: 'example-think-1', part: { type: 'think', think: '', encrypted: 'example-signature' } }, time: 1200 },
+    { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '1', step: 1, stepUuid: 'example-step-1', uuid: 'example-think-1', part: { type: 'think', think: 'Recorded reasoning before the tool.', encrypted: 'example-signature' } }, time: 1200 },
     { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: '1', step: 1, stepUuid: 'example-step-1', uuid: 'example-call', toolCallId: 'example-tool', name: 'ExampleTool', args: {} }, time: 1300 },
     { type: 'context.append_loop_event', event: { type: 'tool.result', parentUuid: 'example-step-1', toolCallId: 'example-tool', result: { output: 'Recorded tool result' } }, time: 1400 },
     { type: 'context.append_loop_event', event: { type: 'step.end', turnId: '1', step: 1, uuid: 'example-step-1', finishReason: 'tool_use', providerFinishReason: 'completed' }, time: 1500 },
     { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '1', step: 2, uuid: 'example-step-2' }, time: 1600 },
-    { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '1', step: 2, stepUuid: 'example-step-2', uuid: 'example-think-2', part: { type: 'think', think: '', encrypted: 'example-signature' } }, time: 1700 },
+    { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '1', step: 2, stepUuid: 'example-step-2', uuid: 'example-think-2', part: { type: 'think', think: 'Recorded reasoning before completion.', encrypted: 'example-signature' } }, time: 1700 },
   ];
   const thinkingEnd = { type: 'context.append_loop_event', event: { type: 'step.end', turnId: '1', step: 2, uuid: 'example-step-2', finishReason: 'end_turn', providerFinishReason: 'completed' }, time: 1800 };
   const emptyContinuation: Parameters<typeof replayAgentWire>[1] = [
@@ -1616,6 +1616,7 @@ describe('reasoning completion chrome', () => {
     const fold = container.querySelector('[data-history-fold] button');
     if (fold !== null) await act(async () => { click(fold); });
     expect(container.querySelector('.thinking-row')?.textContent).toContain('Thinking');
+    expect([...container.querySelectorAll('.thinking-row')].some((row) => row.textContent?.includes('Recorded reasoning before completion.'))).toBe(true);
     expect(container.querySelector('.thinking-row')?.textContent).not.toContain('Thinking…');
     expect(container.querySelector('[data-streaming]')).toBeNull();
     expect(container.querySelector('[data-turn-status]')).toBeNull();
@@ -1623,6 +1624,21 @@ describe('reasoning completion chrome', () => {
     // completion label.
     expect(container.querySelector('[data-turn-tail-state="completed"]')?.textContent).toContain('Ran for 1.0s');
     expect(container.querySelector('[data-turn-tail-state="completed"]')?.textContent).not.toContain('Turn finished');
+  });
+
+  it.each([false, true])('hides empty signed reasoning after the answer (cold=%s)', async (cold) => {
+    const snapshot = replayAgentWire('main', [
+      ...reasoningRecords.slice(0, 2),
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '1', step: 1, stepUuid: 'example-step-1', uuid: 'example-answer', part: { type: 'text', text: 'Recorded answer' } }, time: 1150 },
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '1', step: 1, stepUuid: 'example-step-1', uuid: 'example-signature-only', part: { type: 'think', think: '', encrypted: 'example-signature' } }, time: 1200 },
+      { type: 'context.append_loop_event', event: { type: 'step.end', turnId: '1', step: 1, uuid: 'example-step-1', finishReason: 'end_turn', providerFinishReason: 'completed' }, time: 1300 },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 1301 },
+    ], cold);
+    const state = projectAgentTranscriptView(createViewState('example-session'), 'main', snapshot);
+    expect(state.blocks.some((block) => block.kind === 'thinking')).toBe(false);
+    const container = await renderTranscript([...state.blocks], undefined, state);
+    expect(container.textContent).toContain('Recorded answer');
+    expect(container.querySelector('.thinking-row')).toBeNull();
   });
 
   it('keeps long reasoning live until its actual terminal event', async () => {
