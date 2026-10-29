@@ -57,6 +57,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import type { ConversationShellSlots } from './ConversationShell';
 import { Markdown } from './Markdown';
 import { Icon } from './icons';
+import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { ImageViewport } from './ImageViewport';
 import { DocumentTabView } from './preview/DocumentTabView';
 
@@ -841,181 +842,42 @@ function TabContextMenu({
   const host = useHost();
   const { t } = useI18n();
   const remoteScope = useOptionalConnection()?.scopeId.startsWith('ssh:') ?? false;
-  const menuRef = useRef<HTMLDivElement>(null);
-  // Whatever held focus when the menu opened; Escape and item activation hand
-  // it back (an outside pointerdown never does — the pointer's own target
-  // takes focus). Registered as an overlay so the global Escape-to-abort
-  // yields to this menu like every other transient layer.
-  const returnFocusRef = useRef<HTMLElement | null>(null);
-  useLayoutEffect(() => {
-    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    menuRef.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
-  }, []);
-
-  const restoreTriggerFocus = () => {
-    const trigger = returnFocusRef.current;
-    if (trigger === null || trigger === document.body || !trigger.isConnected) return;
-    trigger.focus();
-  };
-  const closeRef = useRef(onCloseMenu);
-  closeRef.current = onCloseMenu;
-  useEffect(() => {
-    const unregister = registerOverlay('preview-tab-menu');
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      const owned = menuRef.current?.contains(document.activeElement) === true;
-      closeRef.current();
-      if (owned) restoreTriggerFocus();
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      if (
-        !(event.target instanceof HTMLElement) ||
-        event.target.closest('[data-preview-tab-menu]') === null
-      ) {
-        closeRef.current();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('pointerdown', onPointerDown, true);
-    return () => {
-      unregister();
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('pointerdown', onPointerDown, true);
-    };
-  }, []);
-
-  const itemClass =
-    'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper';
-  const pick = (run: () => void) => {
-    onCloseMenu();
-    run();
-  };
-  const pickAction = (label: string, action: () => Promise<void>) => {
-    onCloseMenu();
-    runToastAction(label, action);
-  };
-
   const tab = menu.tab;
-
+  const fileOps = host.revealPath !== undefined && host.openPath !== undefined;
+  const entries: MiniMenuEntry[] = [
+    { key: 'close-tab', label: t('preview.closeTab'), run: onCloseTab },
+    { key: 'close-others', label: t('preview.closeOthers'), run: onCloseOthers },
+    { key: 'close-all', label: t('preview.closeAll'), run: onCloseAll },
+  ];
+  if (tab.kind === 'file') {
+    entries.push(
+      { separator: true },
+      { key: 'copy-relative', label: t('file.copyRelativePath'), run: () => copyTextToClipboard(relativeToCwd(tab.path, cwd)) },
+      { key: 'copy-absolute', label: t('file.copyAbsolutePath'), run: () => copyTextToClipboard(tab.path) },
+    );
+    if (!remoteScope && fileOps) {
+      entries.push(
+        { key: 'show-in-folder', label: t('file.showInFolder'), run: () => host.revealPath!(tab.path) },
+        { key: 'open-default-app', label: t('file.openDefaultApp'), run: () => host.openPath!(tab.path) },
+      );
+    }
+  } else if (tab.kind === 'panel') {
+    entries.push({ separator: true });
+    if (workspaceNavigation !== undefined) {
+      entries.push({ key: 'open-agent-route', label: t('preview.openAgentFullscreen', { name: tab.title ?? tab.agentId }), run: () => { workspaceNavigation.openAgentRoute(tab.agentId); } });
+    }
+    entries.push({ key: 'copy-agent-id', label: t('preview.copyAgentId'), run: () => copyTextToClipboard(tab.agentId) });
+  }
   return (
-    <div
-      ref={menuRef}
-      data-preview-tab-menu
-      role="menu"
-      aria-label={t('preview.tabMenuAria')}
-      onKeyDown={(event) => {
-        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
-        const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])];
-        if (items.length === 0) return;
-        event.preventDefault();
-        const index = items.indexOf(document.activeElement as HTMLButtonElement);
-        const next = event.key === 'Home' ? 0
-          : event.key === 'End' ? items.length - 1
-          : event.key === 'ArrowDown' ? (index + 1) % items.length
-          : (index - 1 + items.length) % items.length;
-        items[next]?.focus();
-      }}
-      onClick={(event) => {
-        // Focus returns to the opener only after the click's commit lands: a
-        // tab close can unmount the opener (nothing to restore), and checking
-        // post-commit never steals from a surface the action raised.
-        if (!(event.target instanceof HTMLElement) || event.target.closest('[role="menuitem"]') === null) return;
-        const menuNode = menuRef.current;
-        queueMicrotask(() => {
-          if (menuNode === null || menuNode.isConnected) return;
-          const active = document.activeElement;
-          if (active !== null && active !== document.body && active instanceof HTMLElement && active.isConnected) return;
-          restoreTriggerFocus();
-        });
-      }}
-      className="anim-enter fixed z-50 w-52 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
-      style={{ left: menu.x, top: menu.y }}
-    >
-      <button type="button" role="menuitem" className={itemClass} onClick={() => { pick(onCloseTab); }}>
-        {t('preview.closeTab')}
-      </button>
-      <button type="button" role="menuitem" className={itemClass} onClick={() => { pick(onCloseOthers); }}>
-        {t('preview.closeOthers')}
-      </button>
-      <button type="button" role="menuitem" className={itemClass} onClick={() => { pick(onCloseAll); }}>
-        {t('preview.closeAll')}
-      </button>
-      {tab.kind === 'file' ? (
-        <>
-          <div className="mx-1 my-1 border-t border-hairline" />
-          <button
-            type="button"
-            role="menuitem"
-            data-menu-item="copy-relative"
-            className={itemClass}
-            onClick={() => {
-              const rel = relativeToCwd(tab.path, cwd);
-              pickAction(t('file.copyRelativePath'), () => copyTextToClipboard(rel));
-            }}
-          >
-            {t('file.copyRelativePath')}
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            data-menu-item="copy-absolute"
-            className={itemClass}
-            onClick={() => { pickAction(t('file.copyAbsolutePath'), () => copyTextToClipboard(tab.path)); }}
-          >
-            {t('file.copyAbsolutePath')}
-          </button>
-          {!remoteScope && host.revealPath !== undefined && host.openPath !== undefined ? (
-            <>
-              <button
-                type="button"
-                role="menuitem"
-                data-menu-item="show-in-folder"
-                className={itemClass}
-                onClick={() => { pickAction(t('file.showInFolder'), () => host.revealPath!(tab.path)); }}
-              >
-                {t('file.showInFolder')}
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                data-menu-item="open-default-app"
-                className={itemClass}
-                onClick={() => { pickAction(t('file.openDefaultApp'), () => host.openPath!(tab.path)); }}
-              >
-                {t('file.openDefaultApp')}
-              </button>
-            </>
-          ) : null}
-        </>
-      ) : tab.kind === 'panel' ? (
-        <>
-          <div className="mx-1 my-1 border-t border-hairline" />
-          {workspaceNavigation !== undefined ? (
-            <button
-              type="button"
-              role="menuitem"
-              data-menu-item="open-agent-route"
-              className={itemClass}
-              onClick={() => { pick(() => { workspaceNavigation.openAgentRoute(tab.agentId); }); }}
-            >
-              {t('preview.openAgentFullscreen', { name: tab.title ?? tab.agentId })}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            role="menuitem"
-            data-menu-item="copy-agent-id"
-            className={itemClass}
-            onClick={() => {
-              pickAction(t('preview.copyAgentId'), () => copyTextToClipboard(tab.agentId));
-            }}
-          >
-            {t('preview.copyAgentId')}
-          </button>
-        </>
-      ) : null}
-    </div>
+    <MiniContextMenu
+      x={menu.x}
+      y={menu.y}
+      entries={entries}
+      onClose={onCloseMenu}
+      ariaLabel={t('preview.tabMenuAria')}
+      overlayId="preview-tab-menu"
+      dataAttribute="data-preview-tab-menu"
+    />
   );
 }
 

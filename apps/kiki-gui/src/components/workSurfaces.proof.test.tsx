@@ -333,8 +333,8 @@ describe('work surfaces — visual proof', () => {
     await mount(<Harness />);
     await act(async () => { container.querySelector('[data-work-mode-trigger]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
     await shoot('mode-menu', 780, 560);
-    expect(container.querySelectorAll('[data-work-mode-option]').length).toBe(2);
-    expect(container.textContent).toContain('Applies to this window');
+    expect(document.querySelectorAll('[data-work-mode-option]').length).toBe(2);
+    expect(document.querySelector('[data-work-mode-popover]')?.textContent).toContain('Applies to this window');
   });
 
   it('enable sheet: real gaps, one action, prerequisite in the same step', async () => {
@@ -421,12 +421,12 @@ describe('work surfaces — visual proof', () => {
       await act(async () => { container.querySelector('[data-work-mode-trigger]')!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
     };
     const choose = async (id: string) => {
-      await act(async () => { container.querySelector(`[data-work-mode-option="${id}"]`)!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+      await act(async () => { document.querySelector(`[data-work-mode-option="${id}"]`)!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
     };
     await openMenu();
     await choose('work');
     await shoot('work-mode-not-ready', 780, 900);
-    expect(container.querySelector('[data-work-mode-popover]')).toBeNull();
+    expect(document.querySelector('[data-work-mode-popover]')).toBeNull();
     expect(container.querySelector('[data-work-mode-trigger]')?.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('[data-work-mode-trigger]')?.textContent).toContain('Kiki');
     expect(opened).toEqual(['work']);
@@ -441,7 +441,7 @@ describe('work surfaces — visual proof', () => {
 
     await openMenu();
     await choose('reports');
-    expect(container.querySelector('[data-work-mode-popover]')).toBeNull();
+    expect(document.querySelector('[data-work-mode-popover]')).toBeNull();
     expect(opened).toEqual(['work']);
     expect(readWindowModeId()).toBe('reports');
 

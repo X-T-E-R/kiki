@@ -375,7 +375,7 @@ async function openViewMenu(container: HTMLDivElement): Promise<HTMLElement> {
   await act(async () => {
     toggle.click();
   });
-  const menu = container.querySelector<HTMLElement>('[data-view-menu]');
+  const menu = document.querySelector<HTMLElement>('[data-view-menu]');
   if (menu === null) throw new Error('view menu did not open');
   return menu;
 }
@@ -386,7 +386,7 @@ async function openFilterMenu(container: HTMLDivElement): Promise<HTMLElement> {
   await act(async () => {
     toggle.click();
   });
-  const menu = container.querySelector<HTMLElement>('[data-filter-menu]');
+  const menu = document.querySelector<HTMLElement>('[data-filter-menu]');
   if (menu === null) throw new Error('filter menu did not open');
   return menu;
 }
@@ -1383,7 +1383,7 @@ describe('Sidebar view menu', () => {
     expect(onGroupBy).toHaveBeenCalledWith('none');
     expect(onSortBy).toHaveBeenCalledWith('created-desc');
     // Preferences do not dismiss the panel; the list rearranges behind it.
-    expect(container.querySelector('[data-view-menu]')).not.toBeNull();
+    expect(document.querySelector('[data-view-menu]')).not.toBeNull();
   });
 
   it('collapses a workspace group and previews at most eight sessions before "Show N more"', async () => {
@@ -1570,18 +1570,19 @@ describe('Sidebar filters', () => {
     try {
       const { container } = await mount({ ...listed(), workspaceOptions: [wsA, wsB] });
       const menu = await openFilterMenu(container);
-      expect(container.querySelector('[data-filter-menu]')).not.toBeNull();
+      expect(document.querySelector('[data-filter-menu]')).not.toBeNull();
       expect(sidebarOpen).toBe(true);
 
-      // First Escape: consumed by useAnchoredMenu ('sidebar-filter-menu').
+      // First Escape: consumed by the AnchoredPopover surface ('sidebar-filter-menu').
       // It sets defaultPrevented, closes the menu, and appDrawerKeyDown yields because
-      // anyOverlayOpen(['app-sidebar']) is true.
+      // anyOverlayOpen(['app-sidebar']) is true. The popover owns Escape on its surface,
+      // so dispatch where focus sits (React flushes the synthetic handler inside act).
       await act(async () => {
-        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       });
 
       // Filter menu is closed, but drawer stays open!
-      expect(container.querySelector('[data-filter-menu]')).toBeNull();
+      expect(document.querySelector('[data-filter-menu]')).toBeNull();
       expect(sidebarOpen).toBe(true);
       expect(abortActive).not.toHaveBeenCalled();
 
@@ -3063,8 +3064,8 @@ describe('sidebar secondary navigation', () => {
       viewMenuBtn?.click();
     });
 
-    expect(container.querySelector('[data-nav-item-toggle="board"]')).toBeNull();
-    const cronToggle = container.querySelector<HTMLButtonElement>('[data-nav-item-toggle="cron"]');
+    expect(document.querySelector('[data-nav-item-toggle="board"]')).toBeNull();
+    const cronToggle = document.querySelector<HTMLButtonElement>('[data-nav-item-toggle="cron"]');
     expect(cronToggle).not.toBeNull();
     expect(cronToggle?.getAttribute('aria-checked')).toBe('false');
 
@@ -3078,7 +3079,7 @@ describe('sidebar secondary navigation', () => {
     expect(container.querySelector('[data-primary-nav] [data-nav-cron]')).not.toBeNull();
 
     // Negative: unpin 'memory'
-    const memoryToggle = container.querySelector<HTMLButtonElement>('[data-nav-item-toggle="memory"]');
+    const memoryToggle = document.querySelector<HTMLButtonElement>('[data-nav-item-toggle="memory"]');
     expect(memoryToggle).not.toBeNull();
     expect(memoryToggle?.getAttribute('aria-checked')).toBe('true');
 

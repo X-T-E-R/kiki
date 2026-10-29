@@ -40,6 +40,7 @@ import { ContextCompactSection, type ContextCompactSectionProps } from './Contex
 import { COMPOSER_PANEL_END, useComposerPanelAnchor, usePopoverDismiss } from './ComposerControls';
 import { ContextStrategySection, STRATEGY_LABEL_KEY } from './ContextStrategySection';
 import { Icon } from './icons';
+import { AnchoredPopover } from './overlays/AnchoredPopover';
 import type { ContextStrategyHandle, ManualCompactStrategy } from './useContextStrategy';
 
 /**
@@ -543,17 +544,7 @@ function CompactActions({
 }) {
   const { t } = useI18n();
   const [menuOpen, setMenuOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!menuOpen) return;
-    menuRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
-    const onPointer = (event: PointerEvent) => {
-      if (rootRef.current !== null && !rootRef.current.contains(event.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener('pointerdown', onPointer);
-    return () => { document.removeEventListener('pointerdown', onPointer); };
-  }, [menuOpen]);
+  const chevronRef = useRef<HTMLButtonElement | null>(null);
   const tone = 'bg-amber-card text-[12px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/25 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none';
   if (strategy === undefined || !strategy.writable || strategy.status?.source === 'executor') {
     return (
@@ -562,17 +553,13 @@ function CompactActions({
       </button>
     );
   }
-  const move = (delta: number) => {
-    const rows = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button') ?? [])];
-    const index = rows.indexOf(document.activeElement as HTMLButtonElement);
-    rows[(index + delta + rows.length) % rows.length]?.focus();
-  };
   return (
-    <div ref={rootRef} data-executor-action="manual_compact" className="relative mt-3 flex gap-px">
+    <div data-executor-action="manual_compact" className="relative mt-3 flex gap-px">
       <button type="button" data-context-compact disabled={pending} onClick={onCompact} className={`min-w-0 flex-1 rounded-l-md px-3 py-1.5 ${tone}`}>
         {t('context.compactAction')}
       </button>
       <button
+        ref={chevronRef}
         type="button"
         data-context-compact-with
         disabled={pending}
@@ -584,35 +571,43 @@ function CompactActions({
       >
         <Icon name="chevron" size={12} className={`transition-transform ${menuOpen ? '-rotate-90' : 'rotate-90'}`} />
       </button>
-      {menuOpen ? (
-        <div
-          ref={menuRef}
-          role="menu"
-          data-context-compact-menu
-          aria-label={t('context.strategy.compactWith')}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') { event.stopPropagation(); setMenuOpen(false); }
-            if (event.key === 'ArrowDown') { event.preventDefault(); move(1); }
-            if (event.key === 'ArrowUp') { event.preventDefault(); move(-1); }
-          }}
-          className="anim-enter absolute right-0 bottom-full z-40 mb-1 w-64 max-w-[calc(100vw-48px)] rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
-        >
-          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('context.strategy.compactWith')}</p>
-          {COMPACT_OPTIONS.map((option) => (
-            <button
-              key={option}
-              type="button"
-              role="menuitem"
-              data-context-compact-option={option}
-              onClick={() => { setMenuOpen(false); onCompactWith(option); }}
-              className="flex w-full flex-col items-start rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:py-2"
-            >
-              <span>{t(STRATEGY_LABEL_KEY[option])}</span>
-              <span className="text-[12px] leading-4 text-ink-faint">{t(`context.strategy.hint.${option}`)}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
+      <AnchoredPopover
+        open={menuOpen}
+        onClose={() => { setMenuOpen(false); }}
+        anchorRef={chevronRef}
+        id="context-compact-menu"
+        label={t('context.strategy.compactWith')}
+        role="menu"
+        side="above"
+        align="end"
+        widthClassName="w-64"
+        className="p-1"
+        data={{ 'data-context-compact-menu': '' }}
+        onSurfaceKeyDown={(event) => {
+          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return false;
+          const rows = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button')];
+          if (rows.length === 0) return false;
+          const index = rows.indexOf(document.activeElement as HTMLButtonElement);
+          event.preventDefault();
+          rows[(index + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length]?.focus();
+          return true;
+        }}
+      >
+        <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('context.strategy.compactWith')}</p>
+        {COMPACT_OPTIONS.map((option) => (
+          <button
+            key={option}
+            type="button"
+            role="menuitem"
+            data-context-compact-option={option}
+            onClick={() => { setMenuOpen(false); onCompactWith(option); }}
+            className="flex w-full flex-col items-start rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04] focus-visible:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:py-2"
+          >
+            <span>{t(STRATEGY_LABEL_KEY[option])}</span>
+            <span className="text-[12px] leading-4 text-ink-faint">{t(`context.strategy.hint.${option}`)}</span>
+          </button>
+        ))}
+      </AnchoredPopover>
     </div>
   );
 }

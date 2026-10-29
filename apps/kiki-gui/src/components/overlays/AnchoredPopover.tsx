@@ -52,12 +52,15 @@ export interface AnchoredPopoverProps {
   readonly onSurfaceKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => boolean;
   /** Focus this selector on open instead of `[data-autofocus]` / the first control. */
   readonly initialFocusSelector?: string;
+  /** Surface role. 'menu' switches focus restore to whatever opened the menu
+   * (menu key semantics) instead of the anchor button. */
+  readonly role?: 'dialog' | 'menu';
   readonly children: ReactNode;
 }
 
 export function AnchoredPopover({
   open, onClose, anchorRef, id, label, side = 'below', align = 'start',
-  widthClassName = 'w-[20rem]', className = '', data, onSurfaceKeyDown, initialFocusSelector, children,
+  widthClassName = 'w-[20rem]', className = '', data, onSurfaceKeyDown, initialFocusSelector, role = 'dialog', children,
 }: AnchoredPopoverProps) {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const [style, setStyle] = useState<CSSProperties>({ visibility: 'hidden', left: 0, top: 0 });
@@ -99,10 +102,19 @@ export function AnchoredPopover({
     closeRef.current();
     if (restoreFocus) anchorRef.current?.focus();
   }, [anchorRef]);
+  // A menu restores focus to whatever opened it (captured on open); a form
+  // popover restores to its anchor button.
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const restoreTriggerFocus = useCallback(() => {
+    const trigger = returnFocusRef.current;
+    if (trigger === null || trigger === document.body || !trigger.isConnected) return;
+    trigger.focus();
+  }, []);
 
   useEffect(() => {
     if (!open) return;
     const unregister = registerOverlay(`popover:${id}`);
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const surface = surfaceRef.current;
     const first = (initialFocusSelector === undefined ? null : surface?.querySelector<HTMLElement>(initialFocusSelector))
       ?? surface?.querySelector<HTMLElement>('[data-autofocus]:not([disabled])')
@@ -118,16 +130,19 @@ export function AnchoredPopover({
       unregister();
       document.removeEventListener('pointerdown', onPointerDown);
       const active = document.activeElement;
-      if (active === null || active === document.body || surface?.contains(active) === true) anchorRef.current?.focus();
+      if (active === null || active === document.body || surface?.contains(active) === true) {
+        if (role === 'menu') restoreTriggerFocus();
+        else anchorRef.current?.focus();
+      }
     };
-  }, [open, id, anchorRef, close, initialFocusSelector]);
+  }, [open, id, anchorRef, close, initialFocusSelector, role, restoreTriggerFocus]);
 
   if (!open) return null;
   return createPortal(
     <div
       ref={surfaceRef}
       id={id}
-      role="dialog"
+      role={role}
       aria-label={label}
       tabIndex={-1}
       data-anchored-popover=""
@@ -148,7 +163,10 @@ export function AnchoredPopover({
         if (event.key !== 'Escape' || event.defaultPrevented) return;
         event.preventDefault();
         event.stopPropagation();
-        close(true);
+        // A menu-role surface restores focus itself (roving menu keys): its
+        // opener is the recorded focus, not necessarily the anchor button.
+        if (role !== 'menu') close(true);
+        else { closeRef.current(); restoreTriggerFocus(); }
       }}
       className={`anim-enter fixed overflow-y-auto overscroll-contain p-3 outline-none ${POPOVER_SURFACE_CLASS} ${widthClassName} max-w-[calc(100vw-16px)] ${className}`}
       style={{ ...style, zIndex }}

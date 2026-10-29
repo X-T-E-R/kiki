@@ -14,13 +14,12 @@
  * the user removed.
  */
 
-import { useEffect, useRef, useState } from 'react';
-
 import type { WorkPresetItem } from '@kiki/protocol';
 
 import { useI18n } from '../i18n';
 import { useWindowModeId, type WorkModeCatalog } from '../lib/workModeCatalog';
 import { Icon } from './icons';
+import { AnchoredPopover, usePopover } from './overlays/AnchoredPopover';
 import { FOCUS_RING } from './rail-variants/shell';
 import { SECONDARY_BUTTON } from './ui';
 
@@ -43,39 +42,23 @@ function ModeStateTag({ mode, labels }: { mode: WorkPresetItem; labels: { ready:
 
 export function WorkModeMenu({ catalog, onSetup, onOpenInNewWindow, className }: WorkModeMenuProps) {
   const { t } = useI18n();
-  const [open, setOpen] = useState(false);
+  const pop = usePopover();
+  const open = pop.open;
+  const setOpen = pop.setOpen;
   const [modeId, chooseMode] = useWindowModeId();
-  const root = useRef<HTMLDivElement | null>(null);
   const labels = { ready: t('workMode.enabled'), setup: t('workMode.needsSetup') };
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent): void => {
-      if (root.current !== null && !root.current.contains(event.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open]);
 
   const modes = catalog.items.filter((item) => !item.removed);
   const current = modes.find((item) => item.id === modeId) ?? modes.find((item) => item.enabled) ?? modes[0];
 
   return (
-    <div ref={root} className={`relative ${className ?? ''}`} data-work-mode-menu>
+    <div className={`relative ${className ?? ''}`} data-work-mode-menu>
       <button
         type="button"
+        {...pop.triggerProps}
         aria-haspopup="menu"
-        aria-expanded={open}
         aria-label={t('workMode.menu')}
         data-work-mode-trigger
-        onClick={() => { setOpen((value) => !value); }}
         className={`flex h-8 items-center gap-1.5 rounded-lg border border-hairline bg-paper px-2.5 text-[12.5px] font-medium text-ink transition-colors hover:border-hairline-strong ${FOCUS_RING}`}
       >
         <span
@@ -86,56 +69,75 @@ export function WorkModeMenu({ catalog, onSetup, onOpenInNewWindow, className }:
         <Icon name="chevron" size={12} className={`rotate-90 text-ink-faint transition-transform ${open ? 'rotate-270' : ''}`} />
       </button>
 
-      {open ? (
-        <div role="menu" aria-label={t('workMode.aria')} className="absolute right-0 top-9 z-50 w-[19rem] rounded-xl bg-panel p-1.5 shadow-[var(--kiki-sheet-shadow)]" data-work-mode-popover>
-          <div className="border-b border-hairline px-2.5 pb-2 pt-1.5">
-            <p className="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-section-ink">{t('workMode.aria')}</p>
-            <p className="mt-1 text-[11.5px] leading-[1.45] text-ink-faint">{t('workMode.appliesToWindow')}</p>
-          </div>
+      <AnchoredPopover
+        {...pop.popoverProps}
+        label={t('workMode.aria')}
+        role="menu"
+        align="end"
+        widthClassName="w-[19rem]"
+        className="p-1.5"
+        data={{ 'data-work-mode-popover': '' }}
+        onSurfaceKeyDown={(event) => {
+          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return false;
+          const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not([disabled])')];
+          if (items.length === 0) return false;
+          event.preventDefault();
+          const index = items.indexOf(document.activeElement as HTMLButtonElement);
+          const next = event.key === 'Home' ? 0
+            : event.key === 'End' ? items.length - 1
+            : event.key === 'ArrowDown' ? (index + 1) % items.length
+            : (index - 1 + items.length) % items.length;
+          items[next]?.focus();
+          return true;
+        }}
+      >
+        <div className="border-b border-hairline px-2.5 pb-2 pt-1.5">
+          <p className="text-[10.5px] font-semibold uppercase tracking-[0.1em] text-section-ink">{t('workMode.aria')}</p>
+          <p className="mt-1 text-[11.5px] leading-[1.45] text-ink-faint">{t('workMode.appliesToWindow')}</p>
+        </div>
 
-          {modes.length === 0 ? (
-            <p className="px-2.5 py-3 text-[12px] text-ink-faint">{t('workMode.loadFailed')}</p>
-          ) : null}
+        {modes.length === 0 ? (
+          <p className="px-2.5 py-3 text-[12px] text-ink-faint">{t('workMode.loadFailed')}</p>
+        ) : null}
 
-          {modes.map((mode) => {
-            const active = mode.id === current?.id;
-            return (
-              <div key={mode.id} className="mt-1">
+        {modes.map((mode) => {
+          const active = mode.id === current?.id;
+          return (
+            <div key={mode.id} className="mt-1">
+              <button
+                type="button"
+                role="menuitemradio"
+                aria-checked={active}
+                data-work-mode-option={mode.id}
+                onClick={() => {
+                  setOpen(false);
+                  if (mode.enabled) chooseMode(mode.id);
+                  else onSetup(mode);
+                }}
+                className={`flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-ink/[0.04] ${active ? 'bg-selected' : ''}`}
+              >
+                <span aria-hidden className={`mt-1.5 h-2 w-2 shrink-0 rounded-[2px] ${active ? 'bg-selected-ink' : 'bg-hairline-strong'}`} />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[13px] font-medium text-ink">{mode.name}</span>
+                  <span className="mt-0.5 block text-[11.5px] leading-[1.45] text-ink-faint">{mode.description}</span>
+                  <ModeStateTag mode={mode} labels={labels} />
+                </span>
+              </button>
+              {onOpenInNewWindow !== undefined ? (
                 <button
                   type="button"
-                  role="menuitemradio"
-                  aria-checked={active}
-                  data-work-mode-option={mode.id}
-                  onClick={() => {
-                    setOpen(false);
-                    if (mode.enabled) chooseMode(mode.id);
-                    else onSetup(mode);
-                  }}
-                  className={`flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-ink/[0.04] ${active ? 'bg-selected' : ''}`}
+                  onClick={() => { onOpenInNewWindow(mode); setOpen(false); }}
+                  className={`ml-7 mt-0.5 mb-1 rounded-md px-2 py-1 text-[11.5px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink ${FOCUS_RING}`}
                 >
-                  <span aria-hidden className={`mt-1.5 h-2 w-2 shrink-0 rounded-[2px] ${active ? 'bg-selected-ink' : 'bg-hairline-strong'}`} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-[13px] font-medium text-ink">{mode.name}</span>
-                    <span className="mt-0.5 block text-[11.5px] leading-[1.45] text-ink-faint">{mode.description}</span>
-                    <ModeStateTag mode={mode} labels={labels} />
-                  </span>
+                  {t('workMode.open')}
                 </button>
-                {onOpenInNewWindow !== undefined ? (
-                  <button
-                    type="button"
-                    onClick={() => { onOpenInNewWindow(mode); setOpen(false); }}
-                    className={`ml-7 mt-0.5 mb-1 rounded-md px-2 py-1 text-[11.5px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink ${FOCUS_RING}`}
-                  >
-                    {t('workMode.open')}
-                  </button>
-                ) : null}
-              </div>
-            );
-          })}
+              ) : null}
+            </div>
+          );
+        })}
 
-          <p className="mt-1 border-t border-hairline px-2.5 pb-1 pt-2 text-[11px] leading-[1.5] text-ink-faint">{t('workMode.sameSpaceSecondWindow')}</p>
-        </div>
-      ) : null}
+        <p className="mt-1 border-t border-hairline px-2.5 pb-1 pt-2 text-[11px] leading-[1.5] text-ink-faint">{t('workMode.sameSpaceSecondWindow')}</p>
+      </AnchoredPopover>
     </div>
   );
 }
