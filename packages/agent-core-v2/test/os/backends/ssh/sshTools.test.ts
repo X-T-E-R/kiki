@@ -244,6 +244,7 @@ describe('SSH tools over a real ssh2 transport', () => {
     const initial = Buffer.from(schemas());
     for (const tool of tools) {
       expect((tool.parameters['properties'] as Record<string, unknown>)['host']).toBeDefined();
+      expect(tool.parameters).toBe(tool.parameters);
     }
     await f.remote.connect();
     expect(Buffer.from(schemas()).equals(initial)).toBe(true);

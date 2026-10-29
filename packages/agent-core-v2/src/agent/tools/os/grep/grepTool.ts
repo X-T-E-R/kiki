@@ -16,7 +16,7 @@ import type { IHostProcessService } from '#/os/interface/hostProcess';
 import { SshHostProcessService } from '#/os/backends/ssh/sshHostServices';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
-import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, hostToolParameters } from '#/agent/tools/os/sshToolTarget';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -29,7 +29,6 @@ import {
   SENSITIVE_DOT_VARIANT_SUFFIXES,
   type WorkspaceConfig,
 } from '#/tool/path-access';
-import { toInputJsonSchema } from '#/tool/input-schema';
 import { matchesStringRuleSubject } from '#/tool/rule-match';
 import {
   ensureRgPath,
@@ -74,7 +73,7 @@ export class GrepTool implements IGrepTool {
   readonly name = 'Grep' as const;
   readonly description = GREP_DESCRIPTION;
   get parameters(): Record<string, unknown> {
-    return toolParametersWithHost(toInputJsonSchema(GrepInputSchema), this.runtime.nativeSshEnabled?.() === true);
+    return hostToolParameters(GrepInputSchema, this.runtime.nativeSshEnabled?.() === true);
   }
   constructor(
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,

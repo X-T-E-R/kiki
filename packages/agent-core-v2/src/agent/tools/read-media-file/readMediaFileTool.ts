@@ -7,7 +7,7 @@ import type { ITelemetryService } from '#/app/telemetry/telemetry';
 
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
-import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, hostToolParameters } from '#/agent/tools/os/sshToolTarget';
 import type { HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
 import { inspectAgentWorkspaceRoots, type IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import {
@@ -37,7 +37,6 @@ import {
   buildImageConversionGuidance,
   isModelAcceptedImageMime,
 } from '#/agent/media/image-format-policy';
-import { toInputJsonSchema } from '#/tool/input-schema';
 import { matchesPathRuleSubject } from '#/tool/rule-match';
 import { renderPrompt } from '#/_base/utils/render-prompt';
 import {
@@ -185,7 +184,7 @@ export class ReadMediaFileTool implements AgentTool<ReadMediaFileInput> {
   readonly name = 'ReadMediaFile' as const;
   readonly description: string;
   get parameters(): Record<string, unknown> {
-    return toolParametersWithHost(toInputJsonSchema(ReadMediaFileInputSchema), this.runtime.nativeSshEnabled?.() === true);
+    return hostToolParameters(ReadMediaFileInputSchema, this.runtime.nativeSshEnabled?.() === true);
   }
   private readonly compressTelemetry: ImageCompressionTelemetry | undefined;
   private readonly inlineVideoSupported: boolean;

@@ -10,7 +10,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
-import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, hostToolParameters } from '#/agent/tools/os/sshToolTarget';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { getShellPathBridge } from '#/_base/execEnv/shellPathBridge';
 import {
@@ -24,7 +24,6 @@ import {
   ToolOutputAccumulator,
 } from '#/tool/output-accumulator';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
-import { toInputJsonSchema } from '#/tool/input-schema';
 import { matchesBashRuleSubject } from '#/tool/bash-rule-match';
 import { renderPrompt } from '#/_base/utils/render-prompt';
 import { userCancellationReason } from '#/_base/utils/abort';
@@ -84,7 +83,7 @@ export class BashTool implements IBashTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Bash' as const;
   get parameters(): Record<string, unknown> {
-    return toolParametersWithHost(toInputJsonSchema(BashInputSchema), this.runtime.nativeSshEnabled?.() === true);
+    return hostToolParameters(BashInputSchema, this.runtime.nativeSshEnabled?.() === true);
   }
 
   constructor(

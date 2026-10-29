@@ -14,7 +14,7 @@ import { SshHostProcessService } from '#/os/backends/ssh/sshHostServices';
 import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
-import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, hostToolParameters } from '#/agent/tools/os/sshToolTarget';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
@@ -37,7 +37,6 @@ import {
   SENSITIVE_DOT_VARIANT_SUFFIXES,
   type WorkspaceConfig,
 } from '#/tool/path-access';
-import { toInputJsonSchema } from '#/tool/input-schema';
 import { matchesGlobRuleSubject } from '#/tool/rule-match';
 import globDescription from './glob.md?raw';
 import {
@@ -68,7 +67,7 @@ export class GlobTool implements IGlobTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'Glob' as const;
   get parameters(): Record<string, unknown> {
-    return toolParametersWithHost(toInputJsonSchema(GlobInputSchema), this.runtime.nativeSshEnabled?.() === true);
+    return hostToolParameters(GlobInputSchema, this.runtime.nativeSshEnabled?.() === true);
   }
   constructor(
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
