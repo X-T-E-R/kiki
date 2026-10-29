@@ -123,6 +123,10 @@ export function Dialog({
       // A confirmation rendered inline inside this panel (not stacked) owns
       // Escape while it is open: it closes, this panel stays.
       if ((panelRef.current?.querySelector('[aria-modal="true"]') ?? null) !== null) return;
+      // So does a floating surface this panel owns (a picker, an anchored
+      // popover): Escape closes the surface first, the panel on the next press.
+      if (event.target instanceof Element
+        && event.target.closest(`[${MODAL_ESCAPE_ATTRIBUTE}]`)?.getAttribute(MODAL_ESCAPE_ATTRIBUTE) === overlayId) return;
       event.preventDefault();
       event.stopPropagation();
       event.stopImmediatePropagation();

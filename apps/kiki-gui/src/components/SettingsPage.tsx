@@ -583,7 +583,9 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
             </div>
           ) : (
             <div ref={scrollRef} data-settings-scroll className="relative min-h-0 flex-1 overflow-y-auto px-4 pb-16 pt-6 lg:px-10 lg:pt-8">
-              <div className="mx-auto max-w-[720px]">
+              {/* An open in-page detail (overlays/DetailSplit) takes a wider
+                  column: rail + editor need the room a reading column does not. */}
+              <div className="mx-auto max-w-[720px] transition-[max-width] duration-[var(--kiki-motion-base)] ease-[var(--kiki-ease-out)] has-[[data-detail-split=open]]:max-w-[1180px]">
                 {fromOnboarding ? (
                   <div
                     className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-card)] border border-accent/30 bg-accent/10 px-4 py-3 text-[13px] text-ink"

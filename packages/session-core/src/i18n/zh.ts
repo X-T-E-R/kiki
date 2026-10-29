@@ -973,6 +973,8 @@ export const zh = {
 
   // ---- toasts ----
   'toast.dismissAria': '关闭通知',
+  'toast.undo': '撤销',
+  'toast.undoFailed': '撤销失败',
 
   // ---- shortcuts overlay (Ctrl+/) ----
   'shortcuts.title': '键盘快捷键',
@@ -4377,8 +4379,8 @@ export const zh = {
     '用于 Kiki 之后写的标题。',
   'st.sessionTitlePrompt.save': '保存提示',
   'st.sessionTitlePrompt.restore': '恢复默认',
-  'st.sessionTitlePrompt.restoreConfirm': '恢复内置默认稿？你的自定义版本会被删除。',
   'st.sessionTitlePrompt.restored': '已恢复内置默认稿。',
+  'st.sessionTitlePrompt.restoredUndo': '已恢复内置提示词',
   'st.sessionTitlePrompt.saved': '提示已保存。',
   'st.sessionTitlePrompt.blank': '留空即回默认稿，保存即可切回。',
   'st.advanced.title': '原始引擎配置',
@@ -4972,6 +4974,7 @@ export const zh = {
   'st.agentManager.readOnly': '此智能体为只读状态。',
   'st.profiles.team': '智能体',
   'st.profiles.backToTeam': '返回智能体列表',
+  'st.profiles.notFound': '列表里没有这个智能体。',
   'st.profiles.rosterMainMemberHint':
     '按名称调用的主智能体。它在这里作为子智能体运行；较长的工作适合使用线程。',
   'st.profiles.search': '查找智能体',
@@ -9043,7 +9046,7 @@ export const zh = {
   'st.channels.title': '我的渠道',
   'st.channels.add': '添加渠道',
   'st.channels.addBrand': '添加 {brand}',
-  'st.channels.back': '换个平台',
+  'st.channels.backAria': '返回平台列表',
   'st.channels.emptyTitle': 'Kiki 还联系不到你',
   'st.channels.emptyBody': '连上微信、Telegram 或群机器人，在手机上收到 Kiki，也能直接回它。',
   'st.channels.cap.twoWay': '可对话',
@@ -9138,6 +9141,7 @@ export const zh = {
   'st.spaces.switchFailed': '无法打开 {name}，仍停留在当前空间。',
   'st.spaces.desktopOnly': '打开其他空间需要 Kiki 桌面应用。',
   'st.spaces.removed': '已不再列出 {name}，它的文件夹没有改动。',
+  'st.spaces.removedUndo': '已从列表移除 {name}',
   'st.spaces.removeTitle': '从列表移除 {name}？',
   'st.spaces.removeBody': 'Kiki 不再显示这个空间。文件夹和里面的内容都保留在磁盘上，之后可以用“添加已有空间”加回来。',
   'st.spaces.deleteTitle': '删除 {name}？',
@@ -10303,6 +10307,7 @@ export const zh = {
   'usage.governance.deleteRule': '删除规则',
   'usage.governance.deleteTitle': '删除规则',
   'usage.governance.deleteBody': '删除「{name}」后，受它限制的请求会立即恢复通行。',
+  'usage.governance.deleted': '已删除规则「{name}」',
   'usage.governance.invalidName': '名称不能为空，也不能和其他规则重复。',
   'usage.governance.invalidCap': '并发上限要填大于 0 的整数。',
   'usage.governance.invalidWait': '最长等待要填大于 0 的秒数。',
@@ -12401,6 +12406,7 @@ export const zh = {
   'st.modelScope.all': '全部智能体',
   'st.modelScope.customized': '已单独设置',
   'st.usagePolicy.perAgent': '按智能体',
+  'st.usagePolicy.perAgentTitle': '按智能体设置{field}',
   'st.usagePolicy.inheritValue': '同全部 · {value}',
   'st.usagePolicy.restoreShort': '恢复',
   'st.usagePolicy.effectiveShort': '实际生效',

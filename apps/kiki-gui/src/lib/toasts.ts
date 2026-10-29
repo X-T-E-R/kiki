@@ -31,6 +31,20 @@ export interface ToastInput {
   readonly requestId?: string;
   /** Errors only: an optional retry action rendered beside the close button. */
   readonly retry?: ToastRetry;
+  /**
+   * The one action of an undo toast (see `pushUndoToast`). It runs the inverse
+   * of a change that already happened; it never commits a deferred one.
+   */
+  readonly undo?: ToastUndo;
+  /** Overrides the auto-dismiss delay; undo toasts default to UNDO_TOAST_MS. */
+  readonly durationMs?: number;
+}
+
+export interface ToastUndo {
+  /** Performs the inverse operation. A rejection raises an error toast. */
+  readonly run: () => void | Promise<void>;
+  /** Overrides the default "Undo" label. */
+  readonly label?: string;
 }
 
 export interface ToastItem extends ToastInput {
@@ -40,6 +54,8 @@ export interface ToastItem extends ToastInput {
 /** Success/info toasts self-dismiss after this long; errors stay sticky. */
 export const TOAST_AUTO_DISMISS_MS = 3600;
 export const MAX_TOASTS = 5;
+/** How long an undo stays offered. Hovering or focusing the toast pauses it. */
+export const UNDO_TOAST_MS = 8000;
 
 type Listener = () => void;
 
@@ -67,6 +83,36 @@ export function pushToast(input: ToastInput): number {
   nextId += 1;
   toasts = [...toasts, { ...input, id }].slice(-MAX_TOASTS);
   emit();
+  return id;
+}
+
+/**
+ * The reversible-action tier of the surface ladder (components/overlays/README.md):
+ * the change has already been written; this toast offers its inverse.
+ *
+ *   await client.removeThing(id);
+ *   pushUndoToast({ text: t('x.removed', { name }), undo: () => client.addThing(saved) });
+ *
+ * `undo` must restore the same data the action removed (keep what you need
+ * before the action runs). Failures inside `undo` raise an error toast with
+ * the message, so callers do not wrap it themselves.
+ */
+export function pushUndoToast(input: { readonly text: string; readonly undo: () => void | Promise<void>; readonly label?: string; readonly durationMs?: number; readonly undoFailedText?: string }): number {
+  const id = pushToast({
+    tone: 'success',
+    text: input.text,
+    durationMs: input.durationMs ?? UNDO_TOAST_MS,
+    undo: {
+      label: input.label,
+      run: async () => {
+        try {
+          await input.undo();
+        } catch (error) {
+          pushToast({ tone: 'error', text: input.undoFailedText === undefined ? actionErrorMessage(error) : `${input.undoFailedText}: ${actionErrorMessage(error)}` });
+        }
+      },
+    },
+  });
   return id;
 }
 
