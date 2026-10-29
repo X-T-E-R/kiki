@@ -43,6 +43,7 @@ const writeSchema = z.object({
   }).optional().describe('For consolidation archive only: the retained same-scope active entry and its latest revision. The store checks this dependency again when applying the retirement.'),
 }).strict();
 const searchSchema = z.object({
+  raw: z.boolean().optional().describe('Return the original receipt with all metadata instead of the compact model view. May be combined with cursor.'),
   mode: z.enum(['search', 'list']).optional().describe('search for ranked lexical recall; list for a paged inventory. Defaults to search. Listing is not required before ordinary writes.'),
   query: z.string().min(1).max(200).optional().describe('Short subject, title, or alias: 1–200 characters and at most 10 whitespace-separated words. Required for search and not accepted for list.'),
   scope: scopeSchema.optional().describe('Limit to this visible scope; omit for all visible scopes. Does not grant access to other workspaces or personas.'),
@@ -53,6 +54,7 @@ const searchSchema = z.object({
   cursor: z.string().optional().describe('Continue a previous page with cursor alone, preserving its scopes, filters, order, and page size.'),
 }).strict();
 const readSchema = z.object({
+  raw: z.boolean().optional().describe('Return all original receipt metadata instead of the compact model view.'),
   id: z.string().optional().describe('One entry ID. Supply exactly one of id and ids.'),
   ids: z.array(z.string()).min(1).max(10).optional().describe('1–10 entry IDs. Read related entries together when their conditions must be compared.'),
   scope: scopeSchema.optional().describe('Optional visible owning scope. Omit to resolve across visible scopes; ambiguous matches are not selected silently.'),
@@ -215,7 +217,7 @@ Search returns complete stored units when they fit the response budget (24,000 U
     if (!parsed.success) return failure(parsed.error, 'invalid_query');
     const input = parsed.data;
     if (input.statuses !== undefined && input.include_superseded !== undefined) return failure(new MemoryDomainError('invalid_query', 'statuses cannot be combined with include_superseded', 'Use statuses alone for explicit state filters.'));
-    if (input.cursor !== undefined && Object.keys(input).some((key) => key !== 'cursor')) return failure(new MemoryDomainError('cursor_invalidated', 'Continue with cursor alone', 'Restart the query if its filters need changing.'));
+    if (input.cursor !== undefined && Object.keys(input).some((key) => key !== 'cursor' && key !== 'raw')) return failure(new MemoryDomainError('cursor_invalidated', 'Continue with cursor alone', 'Restart the query if its filters need changing.'));
     return { approvalRule: this.name, accesses: ToolAccesses.none(), execute: async ({ signal }) => {
       if (!available(this.capabilities, this.session, this.instantiation, this.name)) return failure(new MemoryDomainError('inactive_target', 'Memory is disabled.', 'Use current guidance already in view.'));
       try {

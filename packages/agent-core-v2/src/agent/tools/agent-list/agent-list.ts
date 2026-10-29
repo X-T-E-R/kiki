@@ -6,6 +6,7 @@ import { type AgentTool } from '#/tool/toolContract';
 export const MAX_AGENT_LIST_ENTRIES = 50;
 
 export const AgentListInputSchema = z.object({
+  raw: z.boolean().optional().describe('Return all original receipt metadata instead of the compact model view.'),
   include_finished: z
     .boolean()
     .optional()

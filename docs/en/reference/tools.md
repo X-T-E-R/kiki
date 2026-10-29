@@ -6,6 +6,10 @@ Compared to MCP tools, built-in tools are managed directly by the runtime, their
 
 When a result reports `Tool output formatting failed after execution`, use `Read` or `Grep` on its `output_path` before rerunning the tool. Execution has already happened; the saved text and attached media remain available. The result states whether it saved the complete text or only a retention-limited prefix.
 
+History, thread, room, child-agent, task, memory, and working-note receipts use a compact model view: source text appears before paging details, timestamps use the runtime's local timezone with an explicit UTC offset, and partial coverage and truncation include continuation guidance. Copy the supplied call to read another page or segment. `HistoryRead` character ranges count UTF-16 units; task-log offsets count UTF-8 bytes. In compacted handoffs, repeated sources share a single numbered `HistoryRead` call; `t42.3` means turn 42, step 3.
+
+For the full original receipt, add `raw: true` to `HistoryList`, `HistoryRead`, `HistorySearch`, `ThreadList`, `ThreadRead`, `ThreadWait`, `ThreadSend`, `RoomRead`, `AgentList`, `TaskList`, `TaskOutput`, `MemorySearch`, `MemoryRead`, or `TodoList`. It can accompany a continuation cursor without changing its query. Raw mode changes presentation only: it still performs the requested operation, so do not resend a message or rewrite notes just to inspect metadata. Structured results used by the GUI and SDK remain unchanged; field names below describe that original data.
+
 ## File Tools
 
 File tools handle reading, writing, and searching the local filesystem — the foundation for code analysis and modification tasks.

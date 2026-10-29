@@ -12,6 +12,7 @@ import { classifyHistorySession, historyTargetError } from './historyTools';
 const AgentIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).refine((id) => id !== '.' && id !== '..');
 
 export const HistoryListInputSchema = z.object({
+  raw: z.boolean().optional().describe('Return the original receipt with all metadata instead of the compact model view. May be combined with cursor.'),
   kind: z.enum(['turns', 'agents']).optional().describe('Directory to browse; defaults to transcript turns. Use agents to discover archived agents in one session.'),
   session_id: z.string().min(1).max(256).optional().describe('Session to browse; defaults to this session. Omit workspace_id to use its indexed workspace. A cursor supplies its original session.'),
   workspace_id: z.string().min(1).max(512).optional().describe('Workspace containing the session. Omit to use the indexed workspace. Another workspace requires access approval.'),

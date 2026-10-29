@@ -6,6 +6,10 @@
 
 结果提示 `Tool output formatting failed after execution` 时，先用 `Read` 或 `Grep` 查看其中的 `output_path`，再决定是否重新执行工具。工具已经执行过，保存的文本和附带的媒体仍可读取。结果会说明保存的是完整文本，还是保留上限以内的开头部分。
 
+历史、线程、房间、子 Agent、任务、记忆和工作笔记回执默认向模型展示紧凑视图：原文先于翻页信息，时间使用运行环境的本地时区并标明 UTC 偏移，部分覆盖和截断会附上续读指引。复制回执给出的调用即可读取下一页或下一段。`HistoryRead` 的字符范围按 UTF-16 代码单元计数，任务日志偏移按 UTF-8 字节计数。压缩交接中，重复来源共用一个带编号的 `HistoryRead` 调用；`t42.3` 表示第 42 轮、第 3 步。
+
+需要完整原始回执时，可在 `HistoryList`、`HistoryRead`、`HistorySearch`、`ThreadList`、`ThreadRead`、`ThreadWait`、`ThreadSend`、`RoomRead`、`AgentList`、`TaskList`、`TaskOutput`、`MemorySearch`、`MemoryRead` 或 `TodoList` 中加入 `raw: true`。续读时可与 cursor 同传，不改变查询条件。raw 模式只改变展示，仍会执行所请求的操作；不要仅为检查元数据而重发消息或重写笔记。GUI 和 SDK 消费的结构化结果保持不变，下文的字段名描述这份原始数据。
+
 ## 文件类
 
 文件类工具负责读取、写入、搜索本地文件系统，是代码分析和修改任务的基础工具。

@@ -2,7 +2,8 @@ import { ErrorCodes, Error2 } from '#/errors';
 import { renderToolResultForModel } from '#/agent/contextMemory/toolResultRender';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { isVacuousContentPart } from '#/agent/contextMemory/vacuousContent';
-import type { ContentPart, Message } from '#/kosong/contract/message';
+import type { ContentPart, Message, ToolCall } from '#/kosong/contract/message';
+import { renderModelReceipt } from './modelReceipt';
 
 export type ProjectionAnomaly =
   | { readonly kind: 'tool_result_reordered'; readonly toolCallId: string }
@@ -148,7 +149,8 @@ function pairBlocks(
         continue;
       }
       openCalls.delete(message.toolCallId);
-      open.pending.result = { source: message, content: projectedContent(message, onAnomaly) };
+      const call = open.exchange.source.toolCalls.find((candidate) => candidate.id === message.toolCallId);
+      open.pending.result = { source: message, content: projectedContent(message, onAnomaly, call) };
       if (open.pending.foreignBetween) {
         onAnomaly?.({ kind: 'tool_result_reordered', toolCallId: message.toolCallId });
       }
@@ -403,11 +405,12 @@ function skillPrefixCount(message: ContextMessage): number {
   return count(message.origin);
 }
 
-function projectedContent(source: ContextMessage, onAnomaly?: OnAnomaly): ContentPart[] {
+function projectedContent(source: ContextMessage, onAnomaly?: OnAnomaly, call?: ToolCall): ContentPart[] {
+  const output = source.role === 'tool' ? outputFromToolContent(source.content) : source.content;
   const content =
     source.role === 'tool'
       ? renderToolResultForModel({
-          output: outputFromToolContent(source.content),
+          output: typeof output === 'string' ? renderModelReceipt(call?.name, output, call?.arguments) : output,
           isError: source.isError,
           note: source.note,
         })

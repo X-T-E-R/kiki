@@ -4,6 +4,7 @@ import { createDecorator } from '#/_base/di/instantiation';
 import { type AgentTool } from '#/tool/toolContract';
 
 export const TaskListInputSchema = z.object({
+  raw: z.boolean().optional().describe('Return all original receipt metadata instead of the compact model view.'),
   active_only: z
     .boolean()
     .optional()
