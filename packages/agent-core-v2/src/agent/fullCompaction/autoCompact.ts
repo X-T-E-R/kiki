@@ -20,7 +20,7 @@ export function globalPercentFromTokens(tokens: number, usableTokens: number): s
 export function resolveAutoCompact(
   model: ProfileModelContext,
   sessionTokens?: number,
-  systemAndToolsTokens?: number,
+  systemAndToolsTokens?: number | (() => number),
 ): ResolvedAutoCompact {
   const usable = model.modelCapabilities.max_input_tokens ?? model.modelCapabilities.max_context_tokens;
   const reserved = model.reservedContextSize ?? 50_000;
@@ -39,7 +39,7 @@ export function resolveAutoCompact(
     tokens = typeof chosen[1] === 'string' ? Math.round(usable * Number(chosen[1].slice(0, -1)) / 100) : chosen[1]!;
     const reserveRoom = reserved > 0 && reserved < usable ? usable - reserved : usable;
     const ceil = Math.min(usable, Math.max(1, source === 'session' ? Math.max(reserveRoom, Math.floor(usable * 0.95)) : reserveRoom));
-    const preferredFloor = Math.max(64_000, Math.ceil(((systemAndToolsTokens ?? 0) + 32_000) / 8_000) * 8_000);
+    const preferredFloor = Math.max(64_000, Math.ceil(((typeof systemAndToolsTokens === 'function' ? systemAndToolsTokens() : systemAndToolsTokens ?? 0) + 32_000) / 8_000) * 8_000);
     const floor = Math.min(ceil, preferredFloor);
     tokens = Math.max(floor, Math.min(tokens, ceil));
   } else {
