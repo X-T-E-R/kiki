@@ -440,7 +440,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
       className="underline decoration-ink-faint underline-offset-2 hover:text-ink">{t('st.profiles.duplicateToEdit')}</button></p> : null}
     <DiagnosticsList diagnostics={diagnostics} onOpenWinner={onOpenWinner} />
     <div role="tablist" aria-label={t('st.profiles.editMode')} data-profile-tabs
-      className="sticky top-0 z-10 -mx-1 flex min-w-0 shrink-0 gap-1 overflow-x-auto border-b border-hairline bg-canvas px-1">
+      className="sticky top-[calc(-1*var(--settings-scroll-pt,0px))] z-10 -mx-1 flex min-w-0 shrink-0 gap-1 overflow-x-auto border-b border-hairline bg-canvas px-1">
       {tabs.map((item) => {
         const active = item === tab;
         const locked = item === 'raw' && rawLocked;
@@ -464,7 +464,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
     {tab === 'raw' ? <div role="tabpanel" id="profile-panel-raw" aria-labelledby="profile-tab-raw" data-profile-panel="raw">
       <RawPanel profile={profile} writable={writable} reloadToken={rawReload} onSaved={accept} />
     </div> : null}
-    {writable && tab !== 'raw' ? <div className="sticky bottom-0 z-10 -mx-1 mt-auto border-t border-transparent bg-canvas/95 px-1 backdrop-blur-sm has-[[data-settings-draft]:not([hidden])]:border-hairline has-[[data-settings-draft]:not([hidden])]:pb-3">
+    {writable && tab !== 'raw' ? <div className="sticky bottom-[calc(-1*var(--settings-scroll-pb,0px))] z-10 -mx-1 mt-auto border-t border-transparent bg-canvas/95 px-1 backdrop-blur-sm has-[[data-settings-draft]:not([hidden])]:border-hairline has-[[data-settings-draft]:not([hidden])]:pb-3">
       <SettingsDraftFooter saved={justSaved} id={`agent-detail:${profile.source}:${profile.source_file ?? ''}:${profile.name}`} dirty={dirty} saving={saving}
         saveDisabled={problems.length > 0 || !menuPreview.ready} onSave={() => void save()} onDiscard={() => { setDraft(baseline); setFeedback(null); }}
         extra={problemText !== null && dirty ? <span role="alert" className="text-[12px] text-danger">{problemText}</span>

@@ -1702,7 +1702,7 @@ function ModelCatalogRowEditor({
 
   return (
     <div className="flex min-w-0 flex-1 flex-col gap-6" data-model-editor-layout>
-      <div className="sticky top-0 z-10 border-b border-hairline bg-canvas pt-1">
+      <div className="sticky top-[calc(-1*var(--settings-scroll-pt,0px))] z-10 border-b border-hairline bg-canvas pt-1">
         <div role="tablist" aria-label={t('st.modelEditor.navAria')} className="-mb-px flex items-end gap-4 overflow-x-auto"
           onKeyDown={(event) => {
             const index = tabs.findIndex((tab) => tab.id === activeEditorTab);
@@ -2020,7 +2020,7 @@ function ModelCatalogRowEditor({
         right beside the button that produced it.
       */}
       <div
-        className="sticky bottom-0 z-10 mt-auto flex flex-wrap items-center gap-2 border-t border-hairline bg-canvas/95 py-3 backdrop-blur-sm"
+        className="sticky bottom-[calc(-1*var(--settings-scroll-pb,0px))] z-10 mt-auto flex flex-wrap items-center gap-2 border-t border-hairline bg-canvas/95 py-3 backdrop-blur-sm"
         data-model-editor-actions
       >
         <button type="button" className={PRIMARY_BUTTON} disabled={saving || !modelDirty} onClick={() => void save()}>

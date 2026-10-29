@@ -582,7 +582,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               <UnknownSettingsSection section={section ?? ''} onSearchHit={onSearchHit} />
             </div>
           ) : (
-            <div ref={scrollRef} data-settings-scroll className="relative min-h-0 flex-1 overflow-y-auto px-4 pb-16 pt-6 lg:px-10 lg:pt-8">
+            <div ref={scrollRef} data-settings-scroll className="relative min-h-0 flex-1 overflow-y-auto px-4 pb-[var(--settings-scroll-pb)] pt-[var(--settings-scroll-pt)] [--settings-scroll-pb:4rem] [--settings-scroll-pt:1.5rem] has-[[data-detail-split=open]]:[--settings-scroll-pb:0px] lg:px-10 lg:[--settings-scroll-pt:2rem]">
               {/* An open in-page detail (overlays/DetailSplit) takes a wider
                   column: rail + editor need the room a reading column does not. */}
               <div className="mx-auto max-w-[720px] transition-[max-width] duration-[var(--kiki-motion-base)] ease-[var(--kiki-ease-out)] has-[[data-detail-split=open]]:max-w-[1180px]">

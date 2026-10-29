@@ -41,7 +41,7 @@ const detail = useDetailParam('agent');              // ?agent=<key>
 - The full list stays mounted (hidden) while a detail is open. md+ shows the rail; below md the detail is one pane and needs a visible Back (`DetailBack`, `md:hidden`) in its header. md+ gets a close `×`.
 - The settings page widens its column while `[data-detail-split=open]` is inside it (720 → 1180px). Nothing to do per page.
 - The pane is a size container (`@container`). Lay the editor out with `@3xl:` / `@xl:` variants, not viewport `lg:`: the rail already takes ~15rem, so viewport breakpoints over-promise width.
-- Sticky tab strips and save bars inside a detail use `top-0` / `bottom-0` against the settings scroll column, with `bg-canvas`.
+- Sticky tab strips and save bars inside a detail stick to the settings scroll column's edge, not its padding: `top-[calc(-1*var(--settings-scroll-pt,0px))]` / `bottom-[calc(-1*var(--settings-scroll-pb,0px))]`, with `bg-canvas`. Plain `bottom-0` floats the bar 64px above the bottom over the fields.
 - A `?key=` naming nothing (deleted, typo) closes back to the list once the list has loaded.
 - View Transitions are progressive: `useDetailParam` passes `viewTransition` to the router, which skips it where `document.startViewTransition` is missing (older WebKit). Reduced motion turns it off.
 

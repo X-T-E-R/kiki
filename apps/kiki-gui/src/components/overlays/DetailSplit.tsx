@@ -55,7 +55,14 @@ export function DetailSplit({ selected, list, rail, detail, label, data }: {
     const frame = requestAnimationFrame(() => {
       if (selected !== null) {
         root.querySelector<HTMLElement>('[data-detail-pane] [data-detail-heading]')?.focus({ preventScroll: true });
-        root.querySelector('[data-detail-pane]')?.scrollIntoView?.({ block: 'start' });
+        // Bring the whole surface in from its card's title, so the rail and
+        // the detail header start together with nothing clipped above them.
+        const target = root.closest<HTMLElement>('[id^="st-card-"]') ?? root;
+        const scroller = target.closest<HTMLElement>('[data-settings-scroll]');
+        if (scroller === null) target.scrollIntoView?.({ block: 'start' });
+        else if (target.getBoundingClientRect().top < scroller.getBoundingClientRect().top) {
+          scroller.scrollTop += target.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 24;
+        }
         return;
       }
       if (before === null) return;
@@ -77,7 +84,7 @@ export function DetailSplit({ selected, list, rail, detail, label, data }: {
         {rail}
       </nav>
     ) : null}
-    {open ? <section data-detail-pane className="@container detail-pane-enter min-w-0 scroll-mt-6">{detail}</section> : null}
+    {open ? <section data-detail-pane className="@container detail-pane-enter min-w-0">{detail}</section> : null}
   </div>;
 }
 
