@@ -368,7 +368,7 @@ describe('LLMRequester service migration coverage', () => {
       expect(JSON.stringify(entries)).not.toContain('stack');
     });
 
-    it('fails a retryable provider error on the first attempt — retries are the loop\u2019s concern', async () => {
+    it('leaves connection retries to the caller without a turn source', async () => {
       let calls = 0;
       ctx = createTestAgent(
         llmGenerateServices(async () => {
@@ -416,11 +416,14 @@ describe('LLMRequester service migration coverage', () => {
 
     it('tags api_error with turn_id and request_kind from the request source', async () => {
       const records: TelemetryRecord[] = [];
+      let calls = 0;
       ctx = createTestAgent(
         llmGenerateServices(async () => {
+          calls += 1;
           throw new APIConnectionError('terminated');
         }),
         telemetryServices(recordingTelemetry(records)),
+        { initialConfig: { retry: { maxAttempts: 1 } } },
       );
       const llmRequester = ctx.get(IAgentLLMRequesterService);
 
@@ -433,22 +436,26 @@ describe('LLMRequester service migration coverage', () => {
         }),
       ).rejects.toMatchObject({ name: 'APIConnectionError' });
 
-      expect(records).toContainEqual({
-        event: 'api_error',
-        properties: expect.objectContaining({
-          error_type: 'network',
-          turn_id: 3,
-          request_kind: 'turn',
-        }),
-      });
-      expect(records).toContainEqual({
-        event: 'api_error',
-        properties: expect.objectContaining({
-          error_type: 'network',
-          turn_id: 7,
-          request_kind: 'full_compaction',
-        }),
-      });
+      expect(calls).toBe(2);
+      const failures = records.filter(record => record.event === 'api_error');
+      expect(failures).toEqual([
+        {
+          event: 'api_error',
+          properties: expect.objectContaining({
+            error_type: 'network',
+            turn_id: 3,
+            request_kind: 'turn',
+          }),
+        },
+        {
+          event: 'api_error',
+          properties: expect.objectContaining({
+            error_type: 'network',
+            turn_id: 7,
+            request_kind: 'full_compaction',
+          }),
+        },
+      ]);
     });
   });
 

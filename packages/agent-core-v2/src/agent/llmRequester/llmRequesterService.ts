@@ -566,11 +566,15 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       return { strip: snapshot };
     };
     let attemptObservedOutput = false;
+    let attemptStartedAt = Date.now();
+    let attemptTraceId: string | undefined;
     const run = async (
       policy: ProjectionPolicy | undefined,
       params: ModelRequestParams,
     ): Promise<AgentLLMRequestFinish> => {
       attemptObservedOutput = false;
+      attemptStartedAt = Date.now();
+      attemptTraceId = undefined;
       onRequestTrace(undefined);
       const projection = projectionNameOf(policy);
       const fields =
@@ -616,6 +620,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
 
       const setTraceId = (traceId: string | null | undefined): void => {
         const normalized = traceId ?? undefined;
+        attemptTraceId = normalized;
         onRequestTrace(normalized);
       };
 
@@ -771,6 +776,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
             });
             throw error;
           }
+          this.trackApiError(error, attemptStartedAt, signal, source, attemptTraceId);
           const delayMs = readRetryAfterMs(raw) ?? retryPolicy?.backoff ?? retryBackoffDelay(interruptionAttempt - 1, 2_000);
           const fields = retryErrorFields(raw);
           const errorMessage = `Upstream interrupted; retrying and discarding partial output. ${fields.errorMessage}`;

@@ -1805,7 +1805,7 @@ describe('AgentLLMRequesterService interrupted response retry', () => {
       noteExecutedRequestDelivery(error);
       throw error;
     };
-    const { service, events } = createService(requester, undefined, {
+    const { service, events, telemetryRecords } = createService(requester, undefined, {
       env: { [KIKI_INFINITE_RETRY_ENV]: '1' }, retryConfig: { maxAttempts },
     });
     const onAttemptRetry = vi.fn();
@@ -1818,6 +1818,10 @@ describe('AgentLLMRequesterService interrupted response retry', () => {
     expect(toErrorPayload(error).details).toMatchObject({ retry: false, retry_exhausted: true, retry_attempts: 5 });
     expect(events.filter(event => event.type === 'turn.step.retrying')).toHaveLength(4);
     expect(onAttemptRetry).toHaveBeenCalledTimes(5);
+    expect(telemetryRecords.filter(record => record.event === 'api_error')).toEqual(Array.from({ length: calls }, () => ({
+      event: 'api_error',
+      properties: expect.objectContaining({ error_type: 'network', turn_id: 1, request_kind: 'turn' }),
+    })));
   });
 
   it.each(['disabled', 'policy', 'never', 'no-retraction'] as const)('honors %s for a partial connection failure', async mode => {
