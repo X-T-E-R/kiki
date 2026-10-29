@@ -4278,6 +4278,8 @@ export const zh = {
   'st.retry.title': '重试',
   'st.retry.hint': '模型步骤失败后重试几次。只重试临时错误；策略从上往下匹配，第一条命中的生效。',
   'st.retry.maxAttempts': '每步尝试次数',
+  'st.retry.partialResponses': '收到部分输出后重试',
+  'st.retry.partialResponsesHint': '连接中断时，撤掉部分输出后重发原生 Agent 轮次。工具只在完整响应后执行；重发可能增加计费。',
   'st.retry.policies': '按错误设置的策略',
   'st.retry.addPolicy': '添加策略',
   'st.retry.empty': '没有策略。临时错误最多尝试 5 次，分别等待 2、4、8、16 秒。',

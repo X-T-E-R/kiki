@@ -4321,6 +4321,8 @@ export const en = {
   'st.retry.title': 'Retry',
   'st.retry.hint': 'How often a failing model step is retried. Only temporary errors are retried; policies are checked top to bottom and the first match applies.',
   'st.retry.maxAttempts': 'Attempts per step',
+  'st.retry.partialResponses': 'Retry after partial responses',
+  'st.retry.partialResponsesHint': 'On a connection interruption, discard partial output and retry the native agent turn. Tools run only after a complete response; retries may incur extra charges.',
   'st.retry.policies': 'Policies by error',
   'st.retry.addPolicy': 'Add policy',
   'st.retry.empty': 'No policies. Temporary errors get 5 attempts, waiting 2, 4, 8 and 16 seconds.',
