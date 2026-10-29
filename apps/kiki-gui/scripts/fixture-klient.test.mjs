@@ -381,3 +381,21 @@ test('fixture bootstrap exposes the tail before its shell and reconnects with or
     assert.equal(attaches.at(-1).data.input.bootstrap, undefined);
   } finally { subscription?.close(); await client.close(); await fixture.stop(); }
 });
+
+
+test('fixture serves child executor metadata through the production session facade', async () => {
+  const fixture = await startFixtureServer({ port: 0, scenario: 'subagents' });
+  const endpoint = `http://127.0.0.1:${fixture.http.address().port}`;
+  const client = createKlient({ endpoint, token: FIXTURE_TOKEN, WebSocket });
+  try {
+    const sessionId = 'session_fixture_subagents';
+    await fixture.runScript(sessionId, fixture.scenario.data.onPrompt);
+    assert.equal(await client.session(sessionId).getAgentExecutor('agent-research'), undefined);
+    fixture.sessions.get(sessionId).subagents.push({ id: 'spawn-research', agent_id: 'agent-research', session_id: sessionId,
+      kind: 'subagent', description: 'Fixture researcher', status: 'completed',
+      created_at: '2026-01-01T00:00:00.000Z', executor_id: 'example-executor' });
+    assert.equal(await client.session(sessionId).getAgentExecutor('agent-research'), 'example-executor');
+    assert.equal(await client.session(sessionId).getAgentExecutor('missing'), undefined);
+    await assert.rejects(client.session('missing-session').getAgentExecutor('agent-research'), { code: 40401 });
+  } finally { await client.close(); await fixture.stop(); }
+});

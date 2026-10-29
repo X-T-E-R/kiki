@@ -650,11 +650,10 @@ export class FixtureKlient {
           procedure.scope === 'agent' &&
           procedure.service === 'agentPromptService' &&
           MODEL_SWITCH_METHODS.has(procedure.method);
-        // `/btw`: the side-agent fork plus the metadata read its first send uses.
         const sessionSideQuestion =
           procedure.scope === 'session' &&
           ((procedure.service === 'sessionBtwService' && procedure.method === 'start') ||
-            (procedure.service === 'sessionMetadata' && procedure.method === 'read'));
+            (procedure.service === 'sessionMetadata' && (procedure.method === 'read' || procedure.method === 'getAgentExecutor')));
         // Media: the global surface is core-scoped like every other global
         // service, but a job's stop and resume belong to the session and agent
         // that own it, so the agent-scoped pair is admitted here.
@@ -954,6 +953,15 @@ export class FixtureKlient {
       case 'sessionManager.resume': {
         const [sessionId] = args;
         return server.sessions.has(sessionId) ? { id: sessionId, kind: 'session' } : null;
+      }
+      case 'sessionMetadata.getAgentExecutor': {
+        const session = server.sessions.get(procedure.sessionId);
+        if (session === undefined) throw invalid('session not found', 40401);
+        const agentId = args[0];
+        if (agentId === 'main') return session.record.executor_id ?? null;
+        if (session.sideAgents?.includes(agentId)) return 'native';
+        const row = session.subagents.find((agent) => (agent.agent_id ?? agent.id) === agentId);
+        return row?.executor_id ?? null;
       }
       case 'sessionMetadata.read': {
         const session = server.sessions.get(procedure.sessionId);

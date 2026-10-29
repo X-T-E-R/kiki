@@ -2141,3 +2141,23 @@ it('settles a loaded partial empty target as unavailable and never enables conti
   await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click(); });
   expect(harness.sendAgentMessage).not.toHaveBeenCalled();
 });
+
+
+it('keeps a known legacy child editable when its executor metadata is absent', async () => {
+  harness.getAgentExecutor.mockResolvedValue(undefined);
+  await renderWorkspace({ forest: testForest('completed', false) });
+  await settle();
+  expect(harness.getAgentExecutor).toHaveBeenCalledWith('child');
+  expect(queries.getQueryState(['agentExecutor', 'direct:one', 'session', 'child'])?.status).toBe('success');
+  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(false);
+  expect(dock.textContent).not.toContain('data is undefined');
+});
+
+it('keeps a failed legacy executor read retryable without choosing a native executor', async () => {
+  harness.getAgentExecutor.mockRejectedValue(new Error('executor metadata unavailable'));
+  await renderWorkspace({ forest: testForest('completed', false) });
+  await settle();
+  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(true);
+  expect(dock.textContent).toContain('executor metadata unavailable');
+  expect(dock.querySelector('button')?.textContent).toBe(translate('en', 'common.retry'));
+});

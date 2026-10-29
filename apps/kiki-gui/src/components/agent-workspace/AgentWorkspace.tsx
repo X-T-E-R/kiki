@@ -849,7 +849,7 @@ function ChildAgentWorkspace({
   const reportedExecutorId = selectedNode?.executorId ?? selectedSubagent?.executorId;
   const executorBindingQuery = useQuery({
     queryKey: ['agentExecutor', scopeId, sessionId, agentId],
-    queryFn: () => klient.session(sessionId).getAgentExecutor(agentId),
+    queryFn: async () => await klient.session(sessionId).getAgentExecutor(agentId) ?? null,
     enabled: agentKnown && reportedExecutorId === undefined,
     staleTime: 30_000,
     retry: false,
