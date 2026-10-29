@@ -11,6 +11,7 @@ import {
   IAgentContextMemoryService,
   IAgentScopeContext,
   IAppendLogStore,
+  IAtomicDocumentStore,
   IEventBus,
   IAgentLifecycleService,
   IAgentPermissionModeService,
@@ -44,7 +45,9 @@ import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { resolveSessionBindingFacts } from '../src/routes/sessions';
 import { usageRuntime } from '../src/usage/usageRuntime';
 import * as panelCapabilities from '../src/routes/agentPanelCapabilities';
-import { assembleBrowseSnapshot, assembleBrowseSnapshotSource, assembleSnapshot, registerSnapshotRoutes } from '../src/routes/snapshot';
+import { assembleBrowseSnapshot, assembleBrowseSnapshotSource, assembleSnapshot, readBrowseSnapshotContent, registerSnapshotRoutes } from '../src/routes/snapshot';
+import { sessionAgentRoster } from '../src/routes/sessionAgentRoster';
+import { contentRevision } from '../src/transport/klient/contentRevision';
 import { readColdMainWireProjection } from '../src/services/snapshot/coldSnapshotSource';
 import { applyContentSegment, jsonBytes, type ContentSegment } from '@kiki/transcript';
 import { readContentSegment } from '../src/transport/klient/boundedContent';
@@ -78,6 +81,43 @@ function deferred(): { readonly promise: Promise<void>; resolve(): void } {
 }
 
 describe('server-v2 snapshot route enrichment', () => {
+  it('reads only the selected cold receipt sidecar and keeps roster reads on previews', async () => {
+    const receipt = 'complete receipt '.repeat(512);
+    const sidecar = 'agent-outcomes/1234-abcd.json';
+    const meta = { id: 's1', createdAt: 1, updatedAt: 2, archived: false, agents: {
+      child: { type: 'sub' as const, taskId: 'task-1', status: 'completed' as const, completedAt: 2,
+        resultSummary: receipt.slice(0, 2048), outcomeRef: sidecar },
+      other: { type: 'sub' as const, resultSummary: 'other preview', outcomeRef: 'agent-outcomes/5678-abcd.json' },
+    } };
+    let missing = false;
+    const get = vi.fn(async (_scope: string, key: string) => key === 'state.json' ? meta
+      : missing ? undefined : { version: 1, resultSummary: receipt });
+    const core = { accessor: fakeAccessor([
+      [ISessionManager, { get: () => undefined }],
+      [ISessionIndex, { get: async () => ({ workspaceId: 'ws' }) }],
+      [IAtomicDocumentStore, { get }],
+    ]) };
+    const candidates = sessionAgentRoster('s1', meta);
+    const index = candidates.findIndex((agent) => agent.id === 'child');
+    const ref = { source: { kind: 'snapshot' as const, id: '' }, path: ['subagents', index, 'output_preview'],
+      kind: 'text' as const, offset: 0, total: receipt.length, revision: contentRevision(receipt) };
+    const segment = await readBrowseSnapshotContent(core as never, {} as never, 's1', 'main', ref);
+    expect(segment?.value).toBe(receipt);
+    expect(get.mock.calls.filter(([, key]) => key.startsWith('agent-outcomes/')).map(([, key]) => key)).toEqual([sidecar]);
+    get.mockClear();
+    const rosterRef = { source: ref.source, path: ['subagents'], kind: 'array' as const, offset: 0,
+      total: candidates.length, revision: contentRevision(candidates) };
+    await readBrowseSnapshotContent(core as never, {} as never, 's1', 'main', rosterRef);
+    expect(get.mock.calls.map(([, key]) => key)).toEqual(['state.json']);
+    missing = true;
+    get.mockClear();
+    const preview = receipt.slice(0, 2048);
+    const fallback = await readBrowseSnapshotContent(core as never, {} as never, 's1', 'main', {
+      ...ref, total: preview.length, revision: contentRevision(preview),
+    });
+    expect(fallback?.value).toBe(preview);
+  });
+
   it.each(['failed', 'cancelled'] as const)('session loading timing records live snapshot acquisition %s', async (outcome) => {
     const gate = deferred();
     const entered = deferred();
