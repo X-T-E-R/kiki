@@ -1,5 +1,5 @@
 import { APIEmptyResponseError, createAbortError, isAbortError, noteExecutedRequestDelivery, readProviderEventErrorCode } from './errors';
-import { attachErrorDetails } from '#/errors';
+import { attachErrorDetails } from '#/_base/errors/errors';
 import { attachStreamDiagnostics, type StreamDiagnostics } from './streamDiagnostics';
 import {
   isContentPart,
