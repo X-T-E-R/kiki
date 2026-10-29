@@ -8,8 +8,8 @@ Each session runs the real agent loop and real tools (Read, Grep, Glob, Edit,
 TodoList, Bash, foreground AgentRun with the `explore` profile) inside an
 isolated workspace. Simulated GUI clients open WebSocket views, read first
 screens and older pages, poll the session list, session point reads, agent
-panel metrics and the activity panel, and refresh a session on every
-`session.metaUpdated` event, as the GUI does.
+panel metrics and the activity panel, and refresh a session on
+`session.metaUpdated` events at most once per 250 ms per session, as the GUI does.
 
 Use the Node version from the repository `.nvmrc`. Run from the repository
 root. On Windows, build the process helper once first:

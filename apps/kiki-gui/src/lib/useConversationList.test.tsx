@@ -7,7 +7,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RoomChangeEvent, RoomListItem, Session } from '@kiki/protocol';
 import { markRoomSeen, resetSessionSeen, sessionSeenSnapshot } from '@kiki/session-core/settings';
-import { useConversationList } from './useConversationList';
+import { SESSION_EVENT_READ_INTERVAL_MS, useConversationList } from './useConversationList';
 import { RoomLinkRedirect } from './conversationRoutes';
 
 const mock = vi.hoisted(() => ({ listItems: vi.fn(), getSession: vi.fn(), on: vi.fn(), dispose: vi.fn() }));
@@ -88,10 +88,47 @@ describe('conversation source', () => {
       metaChanged?.({ sessionId: 'parent' });
       metaChanged?.({ sessionId: 'parent' });
       settle?.({ ...parent, updated_at: '2026-10-05T11:00:00Z' });
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, SESSION_EVENT_READ_INTERVAL_MS + 50));
     });
     expect(mock.getSession).toHaveBeenCalledTimes(2);
     expect(query.getQueryData<{ pages: { items: Session[] }[] }>(['sessions', false])?.pages[1]?.items[0]?.updated_at).toBe(fresh.updated_at);
+  });
+  it('coalesces a burst of session events into one immediate read and one trailing read with the latest row', async () => {
+    mock.listItems.mockResolvedValue([]);
+    const query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    query.setQueryData(['sessions', false], { pages: [{ items: sessions, has_more: false }], pageParams: [undefined] });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => { root.render(<QueryClientProvider client={query}><List /></QueryClientProvider>); });
+    let reads = 0;
+    mock.getSession.mockImplementation(async () => {
+      reads += 1;
+      return { ...sessions[0]!, updated_at: `2026-10-05T12:00:0${String(reads)}Z` };
+    });
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        for (let event = 0; event < 20; event += 1) {
+          metaChanged?.({ sessionId: 'session_example' });
+          await vi.advanceTimersByTimeAsync(10);
+        }
+      });
+      expect(mock.getSession).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_EVENT_READ_INTERVAL_MS); });
+      expect(mock.getSession).toHaveBeenCalledTimes(2);
+      await act(async () => { await vi.advanceTimersByTimeAsync(SESSION_EVENT_READ_INTERVAL_MS * 4); });
+      expect(mock.getSession).toHaveBeenCalledTimes(2);
+      expect(query.getQueryData<{ pages: { items: Session[] }[] }>(['sessions', false])?.pages[0]?.items[0]?.updated_at).toBe('2026-10-05T12:00:02Z');
+      await act(async () => {
+        metaChanged?.({ sessionId: 'session_example' });
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(mock.getSession).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it('exposes a failed room query rather than hiding it as a successful empty list', async () => {
     mock.listItems.mockRejectedValue(new Error('Rooms unavailable'));

@@ -48,6 +48,7 @@ function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, 
   return groups;
 }
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+const META_READ_INTERVAL_MS = 250;
 const now = () => performance.timeOrigin + performance.now();
 
 async function prepare(): Promise<void> {
@@ -170,10 +171,33 @@ async function guiClient(port: number, token: string, clientIndex: number, deadl
     ws.frames += 1; ws.bytes += bytes; ws.byType.set(type, (ws.byType.get(type) ?? 0) + 1);
   });
   const metaInFlight = new Set<string>();
+  const metaDirty = new Set<string>();
+  const metaLastStart = new Map<string, number>();
+  const metaTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const metaRead = (sessionId: string) => {
+    metaInFlight.add(sessionId);
+    metaDirty.delete(sessionId);
+    metaLastStart.set(sessionId, now());
+    void timed('GET session (meta event)', () => klient.session(sessionId).commands.read()).finally(() => {
+      metaInFlight.delete(sessionId);
+      if (!stopping && metaDirty.has(sessionId)) metaSchedule(sessionId);
+    });
+  };
+  const metaSchedule = (sessionId: string) => {
+    if (metaInFlight.has(sessionId) || metaTimers.has(sessionId)) return;
+    const wait = (metaLastStart.get(sessionId) ?? -Infinity) + META_READ_INTERVAL_MS - now();
+    if (wait <= 0) {
+      metaRead(sessionId);
+      return;
+    }
+    metaTimers.set(sessionId, setTimeout(() => {
+      metaTimers.delete(sessionId);
+      if (!stopping && metaDirty.has(sessionId)) metaRead(sessionId);
+    }, wait));
+  };
   klient.events.on('session.metaUpdated', (event: { sessionId: string }) => {
-    if (metaInFlight.has(event.sessionId)) return;
-    metaInFlight.add(event.sessionId);
-    void timed('GET session (meta event)', () => klient.session(event.sessionId).commands.read()).finally(() => metaInFlight.delete(event.sessionId));
+    metaDirty.add(event.sessionId);
+    metaSchedule(event.sessionId);
   });
   const focus = sessionIds.filter((_, i) => i % C === clientIndex).slice(0, 3);
   const subscriptions: { close(): void }[] = [];
