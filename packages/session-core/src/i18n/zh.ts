@@ -3634,7 +3634,6 @@ export const zh = {
   'st.compact.rowPoint': '{tokens} 时压缩',
   'st.compact.windowLabel': '上下文窗口',
   'st.compact.windowPresets': '常见上下文窗口',
-  'st.compact.windowHint': '模型每次请求实际能接收的量，按服务商文档填写。',
   'st.compact.windowInputHint': '可用上下文为 {tokens}，压缩按此计算。',
   'st.compact.pointLabel': '自动压缩点',
   'st.compact.pointHint': '上下文达到这个值后，在下一步开始前压缩。留空则使用全局默认。',
@@ -11871,8 +11870,6 @@ export const zh = {
   'st.recipeHook.eventUndeclared': '未声明事件',
   'st.modelPrompt.identityOff': '此身份不取用模型提示。',
   'st.modelPrompt.bodiesUnavailable': '此服务没有提供提示正文，改为显示已保存的引用。',
-  'st.modelPrompt.inlineBody': '保存在模型上',
-  'st.modelPrompt.savingConvertsHint': '保存后存到模型上，原文件不变。',
   'st.modelPrompt.showFiles': '显示 {count} 个来源文件',
   'st.modelPrompt.hideFiles': '收起 {count} 个来源文件',
 

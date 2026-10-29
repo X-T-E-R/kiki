@@ -139,19 +139,23 @@ function UsageRow({
   useEffect(() => { if (flagged) setOpen(true); }, [flagged]);
   const expanded = open || flagged;
   const panelId = `${fieldId}-identities`;
+  // Without an override the toggle stays out of sight until the row is
+  // hovered or anything in it has focus; it never leaves the tab order.
+  const quiet = overridden.length === 0 && !expanded;
 
   return (
-    <div data-usage-row={field} className="min-w-0 space-y-1.5">
+    <div data-usage-row={field} className="group min-w-0 space-y-1.5">
       <div className="flex min-h-6 items-center justify-between gap-2">
         <label htmlFor={sharedControl === undefined ? fieldId : undefined} className="text-[12px] font-medium text-ink-soft">{label}</label>
         <button type="button" data-usage-identity-toggle={field}
+          data-usage-toggle-quiet={quiet ? '' : undefined}
           aria-expanded={expanded} aria-controls={panelId}
           onClick={() => { setOpen(!expanded); }}
-          className={`inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11.5px] transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:h-9 ${
+          className={`inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11.5px] transition-[color,background-color,opacity] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:h-9 ${
             overridden.length > 0
               ? 'bg-selected-ink/10 font-medium text-selected-ink hover:bg-selected-ink/15'
               : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'
-          }`}>
+          } ${quiet ? 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100' : ''}`}>
           <span data-usage-override-marker={overridden.length > 0 ? overridden.join(' ') : undefined}>
             {overridden.length > 0
               ? overridden.map((position) => t(POSITION_LABEL[position])).join(' · ')

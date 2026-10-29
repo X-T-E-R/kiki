@@ -3668,7 +3668,6 @@ export const en = {
   'st.compact.rowPoint': 'compacts at {tokens}',
   'st.compact.windowLabel': 'Context window',
   'st.compact.windowPresets': 'Common context windows',
-  'st.compact.windowHint': 'How much the model actually accepts per request. Set it from the provider’s documentation.',
   'st.compact.windowInputHint': 'Usable context is {tokens}; compaction measures against that.',
   'st.compact.pointLabel': 'Automatic compaction point',
   'st.compact.pointHint': 'When context reaches this, it compacts before the next step. Leave empty to use the global default.',
@@ -11965,8 +11964,6 @@ export const en = {
   'st.recipeHook.eventUndeclared': 'Event not declared',
   'st.modelPrompt.identityOff': 'This identity takes no model prompt.',
   'st.modelPrompt.bodiesUnavailable': 'This server does not report prompt bodies; the saved references are shown instead.',
-  'st.modelPrompt.inlineBody': 'stored on this model',
-  'st.modelPrompt.savingConvertsHint': 'Saved on the model; the file is unchanged.',
   'st.modelPrompt.showFiles': 'Show the {count} source file(s)',
   'st.modelPrompt.hideFiles': 'Hide the {count} source file(s)',
 

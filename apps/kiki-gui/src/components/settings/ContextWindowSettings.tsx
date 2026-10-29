@@ -267,11 +267,11 @@ export function ModelContextFields({
             onPick={onWindowChange}
           />
         </div>
-        <p className="max-w-[62ch] text-[12px] leading-snug text-ink-faint">
-          {inputTokens !== undefined && preview.valid
-            ? t('st.compact.windowInputHint', { tokens: formatCompactTokens(usable) })
-            : t('st.compact.windowHint')}
-        </p>
+        {inputTokens !== undefined && preview.valid ? (
+          <p className="max-w-[62ch] text-[12px] leading-snug text-ink-faint">
+            {t('st.compact.windowInputHint', { tokens: formatCompactTokens(usable) })}
+          </p>
+        ) : null}
       </div>
       {hideCompaction === true ? null : (
       <div>

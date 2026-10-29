@@ -1490,6 +1490,26 @@ describe('ModelCatalogRowEditor usage policy', () => {
     expect(toggle('thinking_effort').textContent).toBe('Per agent');
   });
 
+  it('keeps the per-agent toggle quiet until a row is hovered or focused, and visible once a field differs', async () => {
+    await openRow(usageEntity({ main: { thinking_effort: 'high' } }));
+    // An overridden field always shows who differs.
+    expect(toggle('thinking_effort').hasAttribute('data-usage-toggle-quiet')).toBe(false);
+    expect(toggle('thinking_effort').className).not.toContain('opacity-0');
+    // A field without a difference hides the toggle visually but keeps it in the tab order.
+    const quiet = toggle('service_tier');
+    expect(quiet.hasAttribute('data-usage-toggle-quiet')).toBe(true);
+    expect(quiet.className).toContain('opacity-0');
+    expect(quiet.className).toContain('group-focus-within:opacity-100');
+    expect(quiet.className).toContain('focus-visible:opacity-100');
+    expect(quiet.tabIndex).toBe(0);
+    expect(quiet.disabled).toBe(false);
+    act(() => { quiet.focus(); });
+    expect(document.activeElement).toBe(quiet);
+    // Opening it keeps it visible while the identity rows are shown.
+    await expand('service_tier');
+    expect(toggle('service_tier').hasAttribute('data-usage-toggle-quiet')).toBe(false);
+  });
+
   it('picks the default effort from the efforts the model supports', async () => {
     await openRow(usageEntity(undefined));
     expect(await optionLabels(shared('thinking_effort'))).toEqual(['Not set', 'Low', 'Medium', 'High', 'Off']);
