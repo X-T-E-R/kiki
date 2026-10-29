@@ -267,6 +267,7 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | 方法与路径 | 说明 |
 | --- | --- |
 | `POST /api/sessions` | 创建会话；同时省略 `workspace_id` 与 `metadata.cwd` 时自动分配新工作区 |
+| `GET /api/sessions/creation/{creation_id}` | 查询创建回执，不创建或恢复会话 |
 | `GET /api/sessions` | 列出会话，游标分页，支持 `busy` / `archived_only` 和标题、工作区搜索 `q` |
 | `GET /api/sessions/{session_id}` | 读取单个会话 |
 | `GET /api/sessions/{session_id}/profile` | 读取会话档案 |
@@ -297,6 +298,8 @@ Agent 的持久元数据若未保存创建时间，就省略 `created_at`；客�
 要安全重试创建请求，先生成一个 UUID，放入可选的顶层字段 `creation_id`；超时或断连后重试时，保留该 ID 和原请求体。匹配的并发请求共享一次创建；已完成的请求返回保存的结果，服务重启后也不会重新创建。已保存的失败也会原样返回，不会重复执行创建副作用。会话 ID 固定为 `session_<creation_id>`，其中 UUID 统一为小写。
 
 创建身份归属于当前连接的 home，客户端须为不同 home 和连接分别保存待确认请求。不传 `creation_id` 时保留普通创建行为，不对重试去重。取消客户端等待不会删除服务端已经创建的会话。
+
+结果未确认时，调用 `GET /api/sessions/creation/{creation_id}`。响应为 `{ creation_id, session_id, status, session?, failure? }`；`status` 取 `missing`、`pending`、`completed`、`failed` 或 `unknown`。该查询既不等待正在进行的创建，也不发起创建。只有 `completed` 包含已保存的会话响应；`missing` 时可用原 ID 和原请求体重试。查询失败时继续保留未知状态。
 
 | 创建错误码 | 恢复方式 |
 | --- | --- |

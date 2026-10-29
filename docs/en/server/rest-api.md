@@ -267,6 +267,7 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 | Method and path | Description |
 | --- | --- |
 | `POST /api/sessions` | Create a session; omit both `workspace_id` and `metadata.cwd` to allocate a new workspace |
+| `GET /api/sessions/creation/{creation_id}` | Check a creation receipt without creating or resuming a session |
 | `GET /api/sessions` | List sessions; cursor pagination with `busy`, `archived_only` and title/workspace search `q` |
 | `GET /api/sessions/{session_id}` | Read one session |
 | `GET /api/sessions/{session_id}/profile` | Read the session profile |
@@ -297,6 +298,8 @@ For automatic allocation, send `{}` to `POST /api/sessions`. The server creates 
 For retry-safe creation, generate a UUID once and send it as the optional top-level `creation_id`. Keep that ID and the same request body when retrying after a timeout or disconnect. Concurrent matching requests share the creation; completed requests replay the saved result, including after a server restart. Saved failures are also replayed without repeating creation side effects. The resulting session ID is `session_<creation_id>`, with the UUID normalized to lowercase.
 
 Creation identities belong to the connected home: clients must keep separate pending requests for each home and connection. Omitting `creation_id` retains ordinary creation without retry deduplication. Cancelling a client wait does not delete a session the server has created.
+
+After an unconfirmed result, call `GET /api/sessions/creation/{creation_id}`. It returns `{ creation_id, session_id, status, session?, failure? }`; `status` is `missing`, `pending`, `completed`, `failed`, or `unknown`. This read neither joins a pending creation nor starts one. Only `completed` supplies the saved session response; `missing` permits retrying the original ID and body. Keep an unknown outcome when the read fails.
 
 | Creation error code | Recovery |
 | --- | --- |
