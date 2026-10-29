@@ -110,7 +110,11 @@ interface PickedFile { readonly name: string; readonly text: string }
 function readText(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => { resolve(String(reader.result ?? '')); };
+    reader.onload = () => {
+      // readAsText yields a string; anything else is a failed read, not text.
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('read failed'));
+    };
     reader.onerror = () => { reject(reader.error ?? new Error('read failed')); };
     reader.readAsText(file);
   });

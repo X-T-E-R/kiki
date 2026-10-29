@@ -193,7 +193,7 @@ async function search(container: HTMLElement, value: string) {
 }
 
 async function toggleInactive(container: HTMLElement) {
-  await act(async () => { container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click(); });
+  await act(async () => { container.querySelector<HTMLInputElement>('[data-memory-show-inactive] input[type="checkbox"]')!.click(); });
   await flush();
 }
 
@@ -243,7 +243,7 @@ describe('MemoryPage filters', () => {
     expect(container.querySelector('[data-memory-empty]')).toBeNull();
     expect(container.querySelector<HTMLInputElement>('[data-memory-search]')!.value).toBe('');
     expect(container.querySelector('[data-memory-type-filter="all"]')!.getAttribute('aria-pressed')).toBe('true');
-    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(false);
+    expect(container.querySelector<HTMLInputElement>('[data-memory-show-inactive] input[type="checkbox"]')!.checked).toBe(false);
     expect(rowIds(container)).toEqual(entries.filter((entry) => entry.status === 'active').map((entry) => entry.id).sort());
   });
 });
@@ -941,7 +941,7 @@ describe('MemoryPage scope switcher', () => {
     expect(container.querySelector('[data-memory-editor]')).toBeNull();
     expect(container.querySelector<HTMLInputElement>('[data-memory-search]')!.value).toBe('');
     expect(container.querySelector('[data-memory-type-filter="all"]')?.getAttribute('aria-pressed')).toBe('true');
-    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(false);
+    expect(container.querySelector<HTMLInputElement>('[data-memory-show-inactive] input[type="checkbox"]')!.checked).toBe(false);
     await click(container, '[data-route-back]');
     expect(scopeKind(container)).toBe('workspace');
     expect(routeParams(container).get('workspace')).toBe(workspace.id);
@@ -1622,7 +1622,7 @@ describe('memory S4 logic contracts', () => {
     seedMemories({ 'global::': [fixtureEntry({ id: 'm_located', body: 'Global copy.' })], 'workspace:wd_current:': [fixtureEntry({ id: 'm_located', status: 'archived', body: 'Workspace archive.' })] });
     const container = await renderPage('/memory?workspace=wd_current&entry=m_located&inactive=true', [workspace]);
     expect(container.querySelector('[data-memory-read-body]')?.textContent).toBe('Workspace archive.');
-    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked).toBe(true);
+    expect(container.querySelector<HTMLInputElement>('[data-memory-show-inactive] input[type="checkbox"]')?.checked).toBe(true);
   });
 
   it('opens persona-workspace detail with the ID from View', async () => {
