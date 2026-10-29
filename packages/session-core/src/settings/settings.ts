@@ -2231,7 +2231,6 @@ export type SettingsTab =
 /** Card → sub-page for the search leaf, mirroring the page's tab mount table. */
 const SEARCH_TAB_BY_CARD: Readonly<Record<string, SearchSettingsTab>> = {
   'st-card-search-status': 'overview',
-  'st-card-search-defaults': 'search',
   'st-card-search-fetch': 'fetch',
   'st-card-search-providers': 'search',
   'st-card-search-source': 'advanced',
@@ -2613,7 +2612,6 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'hooks', cardId: 'st-card-hooks', titleKey: 'st.hooks.title', keywordKeys: ['st.hooks.addRule'], synonyms: ['hooks', '钩子'] },
   { section: 'search', tab: 'overview', cardId: 'st-card-search-status', titleKey: 'st.nbSearch.statusTitle', keywordKeys: ['st.nbSearch.statusHint'], synonyms: ['web search', 'fetch', '联网搜索', '网页抓取', 'nb-search', 'nb_search'] },
   { section: 'search', tab: 'advanced', cardId: 'st-card-search-source', titleKey: 'st.nbSearch.source.title', keywordKeys: ['st.nbSearch.source.hint', 'st.nbSearch.source.reuseLocalLabel'], synonyms: ['配置来源', 'config source', 'nb-search config', '本地配置', 'local config'] },
-  { section: 'search', tab: 'search', cardId: 'st-card-search-defaults', titleKey: 'st.nbSearch.providersTitle', keywordKeys: ['st.nbSearch.services.makeDefault'], synonyms: ['默认搜索', 'default search', '搜索引擎', 'search engine'] },
   { section: 'search', tab: 'fetch', cardId: 'st-card-search-fetch', titleKey: 'st.nbSearch.fetch.title', keywordKeys: ['st.nbSearch.fetch.pageHint'], synonyms: ['fetch chain', '抓取链', '网页抓取', 'fallback'] },
   { section: 'search', tab: 'search', cardId: 'st-card-search-providers', titleKey: 'st.nbSearch.providersTitle', keywordKeys: ['st.nbSearch.credentialEnvLabel', 'st.nbSearch.baseUrlLabel'], synonyms: ['exa', 'tavily', 'brave', 'searxng', 'jina', '搜索提供商'] },
   { section: 'search', tab: 'advanced', cardId: 'st-card-search-execution', titleKey: 'st.nbSearch.executionTitle', keywordKeys: ['st.nbSearch.groupBudgets', 'st.nbSearch.groupTimeouts', 'st.nbSearch.groupFetchLimits'], synonyms: ['搜索超时', 'search timeout', 'concurrency', '并发'] },
@@ -2628,7 +2626,6 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'browser-control', tab: 'browser', cardId: 'st-card-webbridge', titleKey: 'st.plugins.runtimeTitle', keywordKeys: ['st.plugins.browserExtension'], synonyms: ['webbridge', '浏览器扩展', 'browser daemon'] },
   { section: 'browser-control', tab: 'browser', cardId: 'st-card-browser-enabled', titleKey: 'st.browser.title', keywordKeys: ['st.browser.enabledLabel', 'st.browser.enabledHint'], synonyms: ['browser switch', '浏览器开关', '允许浏览器'] },
   { section: 'browser-control', tab: 'computer', cardId: 'st-card-computer-enabled', titleKey: 'st.computer.title', keywordKeys: ['st.computer.enabledLabel', 'st.computer.enabledHint'], synonyms: ['computer switch', '电脑开关', '允许电脑控制'] },
-  { section: 'browser-control', tab: 'browser', cardId: 'st-card-browser-default', titleKey: 'st.browser.defaultTitle', keywordKeys: ['st.browser.defaultLabel', 'st.browser.defaultHint'], synonyms: ['默认浏览器', 'default browser', '浏览器', 'browser'] },
   { section: 'browser-control', tab: 'browser', cardId: 'st-card-browser-setup', titleKey: 'st.browser.setup.title', keywordKeys: ['st.browser.setup.host', 'st.browser.route.blurb.kimi-webbridge', 'st.browser.route.blurb.independent-browser', 'st.browser.route.blurb.ego-lite'], synonyms: ['浏览器组件', 'browser components', '安装浏览器', 'install browser', '驱动', 'driver', 'kimi', 'codex', '扩展', 'extension', 'ego', 'ego lite'] },
   { section: 'browser-control', tab: 'browser', cardId: 'st-card-browser-connections', titleKey: 'st.browser.connectionsTitle', keywordKeys: ['st.browser.add', 'st.browser.fieldType', 'st.browser.fieldEndpoint', 'st.browser.disconnect'], synonyms: ['browser control', '浏览器控制', 'cdp', 'profile', 'chromium', 'chrome', 'agent-browser', '浏览器连接', '调试端口'] },
   { section: 'browser-control', tab: 'computer', cardId: 'st-card-computer-machine', titleKey: 'st.computer.title', keywordKeys: ['st.computer.machineLabel', 'st.computer.statusLabel'], synonyms: ['computer control', '电脑控制', 'desktop control', '桌面控制', 'cua', 'cua-driver', 'mouse', 'keyboard', '屏幕'] },
