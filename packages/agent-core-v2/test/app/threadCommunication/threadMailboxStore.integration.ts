@@ -462,7 +462,7 @@ describe('runtime thread mailbox', () => {
       item.runtime.call = () => Promise.reject(new HomeRuntimeError('runtime.timeout', 'blocked warm call'));
       await expect(item.store.getWorkspaceOverride('example-workspace')).rejects.toMatchObject({
         code: 'runtime.timeout',
-        message: expect.stringContaining('after 100ms'),
+        message: expect.stringContaining('after 300ms'),
       });
     } finally {
       gate.restore();
@@ -1081,35 +1081,105 @@ describe('runtime thread mailbox', () => {
     expect(retry).toMatchObject({ deduplicated: true, message: { messageId: accepted.message.messageId } });
   });
 
-  it('waits for an in-flight same-id handler and reads its durable receipt once', async () => {
+  it.each(['timeout', 'duplicate'] as const)('waits for an in-flight owner after %s and recovers one durable claim receipt', async (failure) => {
     const item = harness(homeDir);
     open.push(item);
     const accepted = await item.store.acceptMessage(acceptInput('in-flight-receipt'));
     const gate = blockFirstTargetBatch();
-    const requestIds: string[] = [];
-    const originalCall = item.runtime.call.bind(item.runtime);
-    item.runtime.call = (method, payload, options) => {
-      if (method === THREAD_MAILBOX_RUNTIME_METHODS.claim) requestIds.push(options?.requestId ?? '');
-      return originalCall(method, payload, options);
-    };
+    const calls = vi.spyOn(item.runtime, 'call');
+    const input = { target, consumerId: 'consumer', leaseMs: 10_000 };
+    const options = { requestId: 'in-flight-claim' };
     const internal = item.store as unknown as RuntimeMailboxCaller;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     try {
-      const claimPromise = internal.call(
-        THREAD_MAILBOX_RUNTIME_METHODS.claim,
-        { target, consumerId: 'consumer', leaseMs: 10_000 },
-        { requestId: 'in-flight-claim' },
-        500,
-      ) as Promise<ThreadDeliveryClaim>;
+      if (failure === 'duplicate') {
+        const original = item.runtime.call(THREAD_MAILBOX_RUNTIME_METHODS.claim, input, { ...options, timeoutMs: 100 });
+        const rejected = expect(original).rejects.toMatchObject({ code: 'runtime.timeout' });
+        await gate.entered;
+        await vi.advanceTimersByTimeAsync(100);
+        await rejected;
+        calls.mockClear();
+      }
+      const claimPromise = internal.call(THREAD_MAILBOX_RUNTIME_METHODS.claim, input, options, 100) as Promise<ThreadDeliveryClaim>;
+      const settled = vi.fn();
+      void claimPromise.then(settled, settled);
       await gate.entered;
-      await waitUntil(() => requestIds.length >= 2);
+      await vi.advanceTimersByTimeAsync(350);
+      expect(settled).not.toHaveBeenCalled();
+      expect(calls).toHaveBeenCalledTimes(1);
       gate.release();
+      vi.useRealTimers();
       const claim = await claimPromise;
-      expect(claim.message.messageId).toBe(accepted.message.messageId);
-      expect(new Set(requestIds)).toEqual(new Set(['in-flight-claim']));
+      expect(claim).toMatchObject({ message: { messageId: accepted.message.messageId }, fence: 1 });
+      expect(calls.mock.calls.map(([, , callOptions]) => callOptions?.requestId)).toEqual(['in-flight-claim', 'in-flight-claim']);
       expect(gate.count()).toBe(1);
+      expect(await item.store.acknowledgeDelivery(claim)).toBe(true);
+      expect(await item.store.claimNext(input)).toBeUndefined();
     } finally {
+      vi.useRealTimers();
       gate.restore();
+      calls.mockRestore();
     }
+  });
+
+  it('backs off remote guarded retries and recovers the original committed claim receipt', async () => {
+    const first = harness(homeDir); const second = harness(homeDir); open.push(first, second);
+    await Promise.all([first.runtime.ready(), second.runtime.ready()]);
+    const client = first.runtime.status().role === 'client' ? first : second;
+    const accepted = await client.store.acceptMessage(acceptInput('remote-in-flight'));
+    const originalCall = client.runtime.call.bind(client.runtime);
+    const attempts: Array<{ at: number; requestId?: string }> = [];
+    const failures: string[] = [];
+    client.runtime.call = async (method, payload, options) => {
+      if (method === THREAD_MAILBOX_RUNTIME_METHODS.claim) attempts.push({ at: Date.now(), requestId: options?.requestId });
+      try { return await originalCall(method, payload, options); }
+      catch (error) {
+        if (error instanceof HomeRuntimeError) failures.push(error.code);
+        throw error;
+      }
+    };
+    const gate = blockFirstTargetBatch();
+    const input = { target, consumerId: 'consumer', leaseMs: 10_000 };
+    const internal = client.store as unknown as RuntimeMailboxCaller;
+    try {
+      const result = internal.call(THREAD_MAILBOX_RUNTIME_METHODS.claim, input, { requestId: 'remote-in-flight' }, 500) as Promise<ThreadDeliveryClaim>;
+      void result.catch(() => {});
+      await gate.entered;
+      await waitUntil(() => failures.includes('runtime.duplicate_request'));
+      gate.release();
+      const claim = await result;
+      expect(claim).toMatchObject({ message: { messageId: accepted.message.messageId }, fence: 1 });
+      expect(attempts).toHaveLength(3);
+      expect(attempts[2]!.at - attempts[1]!.at).toBeGreaterThanOrEqual(450);
+      expect(new Set(attempts.map((attempt) => attempt.requestId))).toEqual(new Set(['remote-in-flight']));
+      expect(gate.count()).toBe(1);
+      expect(await client.store.acknowledgeDelivery(claim)).toBe(true);
+      expect(await client.store.claimNext(input)).toBeUndefined();
+    } finally { gate.restore(); client.runtime.call = originalCall; }
+  });
+
+  it('cancels a wait for an in-flight owner without waiting for storage or replaying its commit', async () => {
+    const item = harness(homeDir); open.push(item);
+    await item.store.acceptMessage(acceptInput('cancel-in-flight'));
+    const gate = blockFirstTargetBatch();
+    const controller = new AbortController();
+    const cancellation = new Error('cancel owner wait');
+    const input = { target, consumerId: 'consumer', leaseMs: 10_000 };
+    const internal = item.store as unknown as RuntimeMailboxCaller;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const result = internal.call(THREAD_MAILBOX_RUNTIME_METHODS.claim, input,
+        { requestId: 'cancel-in-flight', signal: controller.signal }, 100);
+      const rejected = expect(result).rejects.toBe(cancellation);
+      await gate.entered;
+      await vi.advanceTimersByTimeAsync(150);
+      controller.abort(cancellation);
+      await rejected;
+      expect(gate.count()).toBe(1);
+    } finally { vi.useRealTimers(); gate.restore(); }
+    const claim = await item.store.claimNext(input, { requestId: 'cancel-in-flight' });
+    expect(claim?.fence).toBe(1);
+    expect(await item.store.acknowledgeDelivery(claim!)).toBe(true);
   });
 
   it('bounds retries while the original same-id handler stays in flight', async () => {
@@ -1136,8 +1206,7 @@ describe('runtime thread mailbox', () => {
         code: 'runtime.timeout',
         message: expect.stringMatching(/firstTimeout=.*ownerPhase=claim_commit.*lockWaits=0/),
       });
-      expect(requestIds.length).toBeGreaterThanOrEqual(2);
-      expect(new Set(requestIds)).toEqual(new Set(['stuck-claim']));
+      expect(requestIds).toEqual(['stuck-claim']);
       expect(gate.count()).toBe(1);
     } finally {
       gate.restore();

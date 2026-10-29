@@ -2425,7 +2425,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     } finally { gate.restore(); thread.claimNext = original; await service.dispose(); }
   });
 
-  it('bounds unavailable mailbox recovery and preserves a manual-resume diagnostic', async () => {
+  it.each([false, true])('waits through nearly two minutes of mailbox saturation and preserves a bounded diagnostic, recovered=%s', async (recovered) => {
     const adapter = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
     const timeout = new HomeRuntimeError('runtime.timeout', 'ownerPhase=claim_read');
@@ -2433,16 +2433,27 @@ describe('agent collaboration safe-boundary delivery', () => {
     vi.spyOn(adapter, 'listPendingAgents').mockResolvedValue([]);
     const service = messagingService(adapter, lifecycleHarness([target.handle]).service, sessionContext(), metadataHarness({ 'agent-target': {} }));
     const next = vi.fn(async () => {});
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
-      await expect(target.execution.hooks.onWillRun.run({ signal }, next)).rejects.toMatchObject({
-        code: 'runtime.timeout', cause: timeout, message: expect.stringContaining('resume the same agent'),
+      const run = target.execution.hooks.onWillRun.run({ signal }, next);
+      const settled = vi.fn();
+      void run.then(settled, settled);
+      const result = recovered ? expect(run).resolves.toBeUndefined() : expect(run).rejects.toMatchObject({
+        code: 'runtime.timeout', cause: timeout, message: expect.stringContaining('after 8 recovery attempts'),
       });
-      expect(claim).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(111_249);
+      expect(claim).toHaveBeenCalledTimes(7);
+      expect(settled).not.toHaveBeenCalled();
       expect(next).not.toHaveBeenCalled();
-    } finally { await service.dispose(); }
+      if (recovered) claim.mockResolvedValue(undefined);
+      await vi.advanceTimersByTimeAsync(1);
+      await result;
+      expect(claim).toHaveBeenCalledTimes(8);
+      expect(next).toHaveBeenCalledTimes(recovered ? 1 : 0);
+    } finally { vi.useRealTimers(); await service.dispose(); }
   });
 
-  it('cancels recovery backoff and does not retry permanent mailbox failures', async () => {
+  it.each([0, 81_250])('cancels recovery backoff at %sms and does not retry permanent mailbox failures', async (elapsed) => {
     const adapter = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
     const log = stubLog();
@@ -2453,18 +2464,22 @@ describe('agent collaboration safe-boundary delivery', () => {
       metadataHarness({ 'agent-target': {} }), dispatchHarness(), undefined, log);
     const controller = new AbortController();
     const cancellation = new Error('cancel recovery');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       const run = target.execution.hooks.onWillRun.run({ signal: controller.signal });
       const rejected = expect(run).rejects.toBe(cancellation);
-      await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+      await vi.advanceTimersByTimeAsync(elapsed);
+      const attempts = elapsed === 0 ? 1 : 7;
+      expect(warn).toHaveBeenCalledTimes(attempts);
       controller.abort(cancellation);
       await rejected;
-      expect(claim).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(claim).toHaveBeenCalledTimes(attempts);
       const invalid = new HomeRuntimeError('runtime.invalid_request', 'invalid payload');
       claim.mockRejectedValue(invalid);
       await expect(target.execution.hooks.onWillRun.run({ signal })).rejects.toBe(invalid);
-      expect(claim).toHaveBeenCalledTimes(2);
-    } finally { await service.dispose(); }
+      expect(claim).toHaveBeenCalledTimes(attempts + 1);
+    } finally { vi.useRealTimers(); await service.dispose(); }
   });
 
   it('keeps a cancelling child queued until cancellation settles, then continues it once', async () => {
@@ -3139,9 +3154,14 @@ describe('agent collaboration consumed mailbox recovery', () => {
     }
   });
 
-  it.each([false, true])('retries only the consumed acknowledgement after storage recovery and stops on disposal=%s', async (disposed) => {
+  it.each([
+    { disposed: false, failure: 'storage' },
+    { disposed: true, failure: 'storage' },
+    { disposed: false, failure: 'runtime' },
+    { disposed: true, failure: 'runtime' },
+  ])('retries only the consumed acknowledgement after $failure recovery and stops on disposal=$disposed', async ({ disposed, failure }) => {
     const adapter = mailboxStore(tempDir());
-    const accepted = await adapter.accept(messageInput('consumed', `ack-timer-${disposed}`));
+    const accepted = await adapter.accept(messageInput('consumed', `ack-timer-${failure}-${disposed}`));
     const queued = await adapter.nextQueued('session-1', 'agent-target');
     if (queued === undefined) throw new Error('missing test claim');
     const senderPersistence = new InMemoryWireRecordPersistence();
@@ -3150,10 +3170,12 @@ describe('agent collaboration consumed mailbox recovery', () => {
     const message = recoveredMailboxMessage(accepted.message.messageId);
     await target.get(IEventDispatcher).dispatch(new TurnPrompt({ turnId: 2, input: message.content, origin: message.origin! }));
     await target.wire.flush();
-    let diskFull = true;
+    let unavailable = true;
     let delivered = false;
     const markDelivered = vi.fn(async () => {
-      if (diskFull) throw new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'simulated ENOSPC');
+      if (unavailable) throw failure === 'runtime'
+        ? new HomeRuntimeError('runtime.timeout', 'ownerPhase=acknowledge')
+        : new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'simulated ENOSPC');
       delivered = true;
       return true;
     });
@@ -3166,7 +3188,7 @@ describe('agent collaboration consumed mailbox recovery', () => {
       expect(markDelivered).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(29_999);
       expect(markDelivered).toHaveBeenCalledTimes(1);
-      diskFull = false;
+      unavailable = false;
       if (disposed) await service.dispose();
       await vi.advanceTimersByTimeAsync(1);
       await drain(100);

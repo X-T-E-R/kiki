@@ -45,6 +45,14 @@ const DELIVERY_HOOK_ID = 'agent-collaboration-message-delivery';
 const MISSING_TARGET_REASON = 'target agent is not registered in the session';
 const AGENT_SEND_BLOCKED_TRIGGER = 'agent_send_blocked';
 const ACKNOWLEDGEMENT_RETRY_MS = 30_000;
+const MAILBOX_RECOVERY_DELAYS_MS = [250, 1_000, 4_000, 16_000, 30_000, 30_000, 30_000] as const;
+
+function isRecoverableMailboxRuntimeError(error: unknown): error is HomeRuntimeError {
+  return error instanceof HomeRuntimeError && [
+    'runtime.timeout', 'runtime.owner_gone', 'runtime.connection_failed', 'runtime.detached',
+    'runtime.epoch_stale', 'runtime.epoch_future', 'runtime.duplicate_request',
+  ].includes(error.code);
+}
 
 interface ClaimedAgentMessage {
   readonly queued: QueuedAgentMessage;
@@ -723,7 +731,8 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   }
 
   private retryAcknowledgement(handle: IAgentScopeHandle, error?: unknown): void {
-    if (error !== undefined && (!isError2(error) || !['storage.disk_full', 'storage.io_failed', 'storage.locked'].includes(error.code))) return;
+    if (error !== undefined && !isRecoverableMailboxRuntimeError(error) &&
+      (!isError2(error) || !['storage.disk_full', 'storage.io_failed', 'storage.locked'].includes(error.code))) return;
     if (this._store.isDisposed || !this.subscriptions.has(handle.id) || this.acknowledgementRetries.has(handle.id)) return;
     const timer = setTimeout(() => {
       const disposed = this.acknowledgementRetries.deleteAndDispose(handle.id);
@@ -865,21 +874,19 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         return await run();
       } catch (error) {
         signal?.throwIfAborted();
-        if (!(error instanceof HomeRuntimeError) || ![
-          'runtime.timeout', 'runtime.owner_gone', 'runtime.connection_failed', 'runtime.detached',
-          'runtime.epoch_stale', 'runtime.epoch_future', 'runtime.duplicate_request',
-        ].includes(error.code)) throw error;
+        if (!isRecoverableMailboxRuntimeError(error)) throw error;
         this.log.warn('Agent mailbox delivery interrupted; durable message retained for recovery', {
           agentId, attempt: attempt + 1, error,
         });
-        if (attempt >= 2) {
+        const delayMs = MAILBOX_RECOVERY_DELAYS_MS[attempt];
+        if (delayMs === undefined) {
           throw new HomeRuntimeError(error.code,
-            `Agent mailbox delivery is temporarily unavailable after 3 recovery attempts. Messages and delivery receipts are retained. Inspect preserved work, then resume the same agent; do not repeat unconfirmed external actions. Last failure: ${error.message}`,
+            `Agent mailbox delivery is temporarily unavailable after ${attempt + 1} recovery attempts. Messages and delivery receipts are retained. Inspect preserved work, then resume the same agent; do not repeat unconfirmed external actions. Last failure: ${error.message}`,
             { cause: error });
         }
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          const wait = new Promise<void>((resolve) => { timer = setTimeout(resolve, attempt === 0 ? 250 : 1_000); });
+          const wait = new Promise<void>((resolve) => { timer = setTimeout(resolve, delayMs); });
           await (signal === undefined ? wait : abortable(wait, signal));
         } finally {
           if (timer !== undefined) clearTimeout(timer);
