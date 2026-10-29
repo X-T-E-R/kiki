@@ -2,6 +2,7 @@ import { statSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { queryStoreWorkerEntry, type StoreOperation, type StoreRequest, type StoreResponse } from './protocol';
+import { QueryStoreBusyError } from '#/persistence/interface/queryStore';
 
 interface Pending {
   readonly resolve: (value: unknown) => void;
@@ -50,7 +51,7 @@ export class QueryStoreWorker {
   request<T>(operation: StoreOperation, signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted();
     if (this.stopped || this.closing !== undefined) return Promise.reject(new Error('Query store worker closed'));
-    if (this.waiting.length >= 128) return Promise.reject(new Error('Query store queue full'));
+    if (this.waiting.length >= 128) return Promise.reject(new QueryStoreBusyError());
     return this.enqueue<T>(operation, signal);
   }
 
