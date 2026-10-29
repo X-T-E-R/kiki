@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import {
+  DEFAULT_SUBAGENT_PROFILE_NAME,
   agentProfileSourceLabelKey,
   mergeNamedAgentProfiles,
   readSettings,
@@ -41,6 +42,10 @@ function dispatchSummaryKey(profile: NamedAgentProfile): I18nKey {
  * one loaded subagent profile. Only omitted targets resolve through it; the
  * engine default (`general`) applies while the key is unset. Saves on select,
  * like the other single-choice server settings.
+ *
+ * An unset value is the engine fallback, not a misconfiguration, so the row
+ * stays quiet until the saved name is one the catalog can never resolve: the
+ * built-in fallback's absence is a notice, a user-picked missing name a fix.
  */
 export function SubagentDefaultTargetCard() {
   const { client } = useConnection();
@@ -85,6 +90,7 @@ export function SubagentDefaultTargetCard() {
   const selectedProfile: NamedAgentProfile | undefined = current?.mode === 'profile'
     ? profiles.find((profile) => profile.name === current.name)
     : undefined;
+  const isEngineFallback = current?.mode === 'profile' && current.name === DEFAULT_SUBAGENT_PROFILE_NAME;
   const selectValue = current === undefined
     ? ''
     : current.mode === 'strict'
@@ -110,7 +116,9 @@ export function SubagentDefaultTargetCard() {
           ? t('st.subagentDefault.disabledTarget', { name: current.name })
           : profilesQuery.data === undefined
             ? undefined
-            : t('st.subagentDefault.unresolvable', { name: current.name }),
+            : isEngineFallback
+              ? t('st.subagentDefault.fallbackMissing', { name: current.name })
+              : t('st.subagentDefault.unresolvable', { name: current.name }),
         badges: selectedProfile === undefined ? undefined : [{ label: selectedProfile.source }],
       });
     }
@@ -171,7 +179,11 @@ export function SubagentDefaultTargetCard() {
         ) : null}
         {current?.mode === 'profile' && profilesQuery.data !== undefined && selectedProfile === undefined ? (
           <div data-subagent-default-status="unresolvable">
-            <FeedbackLine feedback={{ tone: 'error', text: t('st.subagentDefault.unresolvable', { name: current.name }) }} />
+            {isEngineFallback ? (
+              <p className="text-[12px] leading-snug text-ink-faint">{t('st.subagentDefault.fallbackMissing', { name: current.name })}</p>
+            ) : (
+              <FeedbackLine feedback={{ tone: 'error', text: t('st.subagentDefault.unresolvable', { name: current.name }) }} />
+            )}
           </div>
         ) : null}
         {selectedProfile !== undefined ? (

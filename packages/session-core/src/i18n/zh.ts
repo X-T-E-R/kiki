@@ -5324,6 +5324,8 @@ export const zh = {
   'st.subagentDefault.strictHint': '未指定子智能体的派发将报错，不再回退到默认值。',
   'st.subagentDefault.unresolvable':
     '默认值「{name}」不在已加载的智能体中；未显式指定子智能体的派发无法解析它。',
+  'st.subagentDefault.fallbackMissing':
+    '未指定智能体时会使用内置的「{name}」，但当前已加载的 profile 中没有它。',
   'st.subagentDefault.disabledTarget': '「{name}」已停用；停用期间不会作为子智能体被调用。',
   'st.subagentDefault.noModelPin': '该智能体未固定模型；未显式指定 model_alias 的派发将使用默认模型。',
   'st.subagentDefault.saved': '默认子智能体已保存。',

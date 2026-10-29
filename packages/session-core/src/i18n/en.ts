@@ -5376,6 +5376,8 @@ export const en = {
     'Dispatches that omit the agent fail with an error instead of falling back to a default.',
   'st.subagentDefault.unresolvable':
     'The default "{name}" is not among the loaded agents; dispatches without an explicit agent cannot resolve it.',
+  'st.subagentDefault.fallbackMissing':
+    'When no agent is specified, the built-in "{name}" is used, but it is not among the currently loaded profiles.',
   'st.subagentDefault.disabledTarget':
     '"{name}" is disabled; while disabled it is not invoked as a subagent.',
   'st.subagentDefault.noModelPin':
