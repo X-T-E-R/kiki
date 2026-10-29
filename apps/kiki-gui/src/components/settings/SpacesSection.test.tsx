@@ -7,6 +7,7 @@
  */
 
 import { act, useState } from 'react';
+import { getToasts } from '../../lib/toasts';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
@@ -628,8 +629,15 @@ describe('direct remote settings control operations', () => {
     homes.remove.mockResolvedValue(LIST);
     await click('[data-space-menu="h-paper"]');
     await click('[data-space-menu-item="remove"]');
-    await click('[data-confirm-action="confirm"]');
+    // Removing from the list keeps the folder, so it runs at once with an undo.
+    expect(document.querySelector('[data-confirm-action="confirm"]')).toBeNull();
     expect(homes.remove).toHaveBeenCalledWith('h-paper');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const undo = getToasts().at(-1)!;
+    expect(undo.undo).toBeDefined();
+    homes.attach.mockResolvedValue({ id: 'h-paper', name: 'Paper', path: 'D:\\paper' });
+    await act(async () => { await undo.undo!.run(); });
+    expect(homes.attach).toHaveBeenCalledWith({ path: 'D:\\paper' });
     homes.create.mockResolvedValue({ id: 'local-created', name: 'Local New', path: 'D:\\local-new' });
     await click('[data-space-new]');
     await type('[data-space-name]', 'Local New');

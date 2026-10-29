@@ -17,10 +17,9 @@ import {
   useLiveAgentGovernance,
   type LiveAgentDimensionKind,
 } from '../lib/liveAgentGovernance';
-import { pushToast } from '../lib/toasts';
+import { pushToast, pushUndoToast } from '../lib/toasts';
 import { useRequestGovernance } from '../lib/useRequestGovernance';
 import { useConnection } from '../state/connection';
-import { ConfirmDialog } from './ConfirmDialog';
 import { FeedbackLine, Toggle } from './controls';
 import { Icon } from './icons';
 import { InlineEditor } from './InlineEditor';
@@ -767,7 +766,6 @@ function LimitsPanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
   const rules = snapshot.rules;
   /** The row whose editor is open, or 'new' while the add form is. */
   const [editorFor, setEditorFor] = useState<string | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<GovernanceRule | null>(null);
   const [resourceFilter, setResourceFilter] = useState<'all' | 'model_request' | 'agent_execution'>('all');
 
   const modelOptions = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
@@ -803,12 +801,19 @@ function LimitsPanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
       );
       return client.setRequestGovernanceRules(next as any);
     },
-    onSuccess: async () => {
-      setPendingDelete(null);
+    // Deleting a rule is reversible: the full list before the delete is kept
+    // and written back by the toast's Undo, so there is no confirm step.
+    onMutate: () => rules,
+    onSuccess: async (_echo, rule, previous) => {
       setEditorFor(null);
       await refresh();
+      pushUndoToast({
+        text: t('usage.governance.deleted', { name: rule.id }),
+        undoFailedText: t('toast.undoFailed'),
+        undo: async () => { await client.setRequestGovernanceRules(previous); await refresh(); },
+      });
     },
-    onError: (error: unknown) => { setPendingDelete(null); writeError(error); void refresh(); },
+    onError: (error: unknown) => { writeError(error); void refresh(); },
   });
 
   const saveEdited = (originalId: string | null) => async (rule: GovernanceRule) => {
@@ -923,7 +928,7 @@ function LimitsPanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
                   providerOptions={providerIds}
                   onSubmit={saveEdited(rule.id)}
                   onCancel={() => { setEditorFor(null); }}
-                  onDelete={() => { setPendingDelete(rule); }}
+                  onDelete={() => { remove.mutate(rule); }}
                 />
               </InlineEditor>
             </li>
@@ -936,15 +941,6 @@ function LimitsPanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
   return (
     <div>
       {list}
-      <ConfirmDialog
-        open={pendingDelete !== null}
-        title={t('usage.governance.deleteTitle')}
-        body={pendingDelete === null ? undefined : t('usage.governance.deleteBody', { name: pendingDelete.id })}
-        confirmLabel={t('usage.governance.deleteRule')}
-        busy={remove.isPending}
-        onConfirm={() => { if (pendingDelete !== null) remove.mutate(pendingDelete); }}
-        onCancel={() => { setPendingDelete(null); }}
-      />
     </div>
   );
 }

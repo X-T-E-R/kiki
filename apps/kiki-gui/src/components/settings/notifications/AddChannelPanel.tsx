@@ -6,7 +6,6 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../../i18n';
 import { FeedbackLine } from '../../controls';
-import { Icon } from '../../icons';
 import { SidePanel } from '../../SidePanel';
 import { SECONDARY_BUTTON } from '../../ui';
 import { AddChannelForm } from './AddChannelForm';
@@ -69,6 +68,10 @@ export function AddChannelPanel({ settings, providers, setupCatalog, setupFailed
       width="lg"
       onClose={onClose}
       data={{ 'data-channel-add': brand === undefined ? 'pick' : brand.id }}
+      // Push navigation inside one panel: picking a platform is a step, and
+      // Back in the header returns to the grid. No second panel opens.
+      back={brand === undefined ? undefined : { label: t('st.channels.backAria'), onClick: back, data: { 'data-channel-back': '' } }}
+      stepKey={brand === undefined ? 'pick' : brand.id}
     >
       <div id="st-card-notify-add" className="space-y-5" data-im-connect-drawer>
         {brand === undefined ? (
@@ -76,11 +79,6 @@ export function AddChannelPanel({ settings, providers, setupCatalog, setupFailed
             onPick={(id) => { qr.reset(); setBrandId(id); setRouteId(null); }} />
         ) : (
           <>
-            <button type="button" onClick={back} data-channel-back
-              className="-ml-1 inline-flex h-8 items-center gap-1 rounded-md px-1.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink">
-              <Icon name="arrowLeft" size={12} />
-              {t('st.channels.back')}
-            </button>
             {hasBothKinds(brand) ? (
               <RoutePicker brand={brand} value={chosen === undefined ? null : routeKey(chosen.route)}
                 onChange={(next) => { qr.reset(); setRouteId(next); }} />

@@ -5,7 +5,7 @@ import { errorText } from '@kiki/session-core/i18n';
 import { sessionTitlePromptPatch } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { ConfirmDialog } from '../ConfirmDialog';
+import { pushUndoToast } from '../../lib/toasts';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
 import { Icon } from '../icons';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
@@ -37,7 +37,6 @@ export function SessionTitlePromptField({ disabled = false }: { disabled?: boole
   const [draft, setDraft] = useState<string | null>(null);
   const [showDefault, setShowDefault] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [confirmRestore, setConfirmRestore] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const errorId = useId();
 
@@ -59,7 +58,7 @@ export function SessionTitlePromptField({ disabled = false }: { disabled?: boole
     if (configQuery.data !== undefined && !dirty) setDraft(saved);
   }, [configQuery.data, saved, dirty]);
 
-  const write = async (prompt: string | null, ok: string) => {
+  const write = async (prompt: string | null, ok: string | null): Promise<boolean> => {
     setSaving(true);
     setFeedback(null);
     try {
@@ -69,14 +68,30 @@ export function SessionTitlePromptField({ disabled = false }: { disabled?: boole
       // Back to what the box now shows, so a save that landed is not offered
       // again on the next render.
       setDraft(prompt ?? '');
-      setFeedback({ tone: 'success', text: ok });
+      setFeedback(ok === null ? null : { tone: 'success', text: ok });
+      return true;
     } catch (error) {
       // The draft stays exactly as typed: the box is the reader's work, and a
       // write that did not land is the one moment it must not be taken away.
       setFeedback({ tone: 'error', text: errorText(locale, error) });
+      return false;
     } finally {
       setSaving(false);
     }
+  };
+
+  /**
+   * Restoring the built-in body is reversible: the custom body is kept here
+   * and written back by the toast's Undo, so it runs at once instead of asking.
+   */
+  const restore = async () => {
+    const custom = state.customPrompt;
+    if (!(await write(null, null)) || custom === undefined) return;
+    pushUndoToast({
+      text: t('st.sessionTitlePrompt.restoredUndo'),
+      undoFailedText: t('toast.undoFailed'),
+      undo: async () => { await write(custom, null); },
+    });
   };
 
   const ready = configQuery.data !== undefined;
@@ -166,7 +181,7 @@ export function SessionTitlePromptField({ disabled = false }: { disabled?: boole
               data-session-title-prompt-restore
               className={`${SECONDARY_BUTTON} inline-flex h-8 items-center gap-1.5`}
               disabled={!ready || saving || disabled}
-              onClick={() => { setConfirmRestore(true); }}
+              onClick={() => { void restore(); }}
             >
               <Icon name="arrowLeft" size={12} />
               {t('st.sessionTitlePrompt.restore')}
@@ -177,19 +192,6 @@ export function SessionTitlePromptField({ disabled = false }: { disabled?: boole
 
       {feedback?.tone === 'success' ? <FeedbackLine feedback={feedback} /> : null}
 
-      <ConfirmDialog
-        open={confirmRestore}
-        title={t('st.sessionTitlePrompt.restore')}
-        body={t('st.sessionTitlePrompt.restoreConfirm')}
-        confirmLabel={t('st.sessionTitlePrompt.restore')}
-        overlayId="session-title-prompt-restore"
-        busy={saving}
-        onConfirm={() => {
-          setConfirmRestore(false);
-          void write(null, t('st.sessionTitlePrompt.restored'));
-        }}
-        onCancel={() => { setConfirmRestore(false); }}
-      />
     </div>
   );
 }

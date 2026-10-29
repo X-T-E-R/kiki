@@ -30,11 +30,10 @@ import {
   type SpaceListItem,
 } from '../../lib/spaces';
 import { detectShortcutPlatform } from '../../lib/shortcuts';
-import { pushToast } from '../../lib/toasts';
+import { pushToast, pushUndoToast } from '../../lib/toasts';
 import { readHomeViewRoute } from '../../lib/spaceViewState';
 import type { PreparedScope } from '../../lib/navScope';
 import { useConnection } from '../../state/connection';
-import { ConfirmDialog } from '../ConfirmDialog';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { Icon } from '../icons';
@@ -205,7 +204,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
   const statuses = useSpaceStatuses(host);
   const [dialog, setDialog] = useState<
     | { kind: 'create' } | { kind: 'attach' }
-    | { kind: 'remove'; space: SpaceListItem } | { kind: 'delete'; space: SpaceListItem }
+    | { kind: 'delete'; space: SpaceListItem }
     | { kind: 'credentials'; space: SpaceListItem } | { kind: 'settings'; space: SpaceListItem } | null
   >(null);
   const [menu, setMenu] = useState<{ space: SpaceListItem; anchor: DOMRect; anchorElement: HTMLElement } | null>(null);
@@ -309,6 +308,25 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
     return undefined;
   };
 
+  /**
+   * Taking a space off the list leaves its folder untouched, so it is
+   * reversible: it runs at once and the toast's Undo attaches the same folder
+   * again. Deleting a space's files stays behind its own confirmation.
+   */
+  const removeFromList = (space: SpaceListItem) => {
+    setFeedback(null);
+    void homesApi(client).remove(space.id)
+      .then(() => {
+        refresh();
+        pushUndoToast({
+          text: t('st.spaces.removedUndo', { name: space.name }),
+          undoFailedText: t('toast.undoFailed'),
+          undo: async () => { await homesApi(client).attach({ path: space.path }); refresh(); },
+        });
+      })
+      .catch((error: unknown) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); });
+  };
+
   const menuItems = (space: SpaceListItem): SpaceMenuItem[] => {
     const isMain = space.id === MAIN_SPACE_ID;
     return [
@@ -330,7 +348,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
           .catch((error: unknown) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); });
       } }] : []),
       ...(!isMain ? [
-        { key: 'remove', label: t('st.spaces.removeFromList'), separatorBefore: true, run: () => { setDialog({ kind: 'remove', space }); } },
+        { key: 'remove', label: t('st.spaces.removeFromList'), separatorBefore: true, run: () => { removeFromList(space); } },
         { key: 'delete', label: t('st.spaces.delete'), danger: true, blockedReason: deleteBlock(space), run: () => { setDialog({ kind: 'delete', space }); } },
       ] : []),
     ];
@@ -477,20 +495,6 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
       {dialog?.kind === 'attach' ? (
         <AttachSpaceDialog client={client} onClose={() => { setDialog(null); }}
           onAttached={(record) => { setDialog(null); refresh(); setFeedback({ tone: 'success', text: t('st.spaces.attached', { name: record.name }) }); }} />
-      ) : null}
-      {dialog?.kind === 'remove' ? (
-        <ConfirmDialog open overlayId="space-remove-confirm" tone="default"
-          title={t('st.spaces.removeTitle', { name: dialog.space.name })}
-          body={t('st.spaces.removeBody')}
-          confirmLabel={t('st.spaces.removeFromList')}
-          onCancel={() => { setDialog(null); }}
-          onConfirm={() => {
-            const target = dialog.space;
-            setDialog(null);
-            void homesApi(client).remove(target.id)
-              .then(() => { refresh(); setFeedback({ tone: 'success', text: t('st.spaces.removed', { name: target.name }) }); })
-              .catch((error: unknown) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); });
-          }} />
       ) : null}
       {dialog?.kind === 'delete' ? (
         <DeleteSpaceDialog client={client} space={dialog.space} onClose={() => { setDialog(null); }}
