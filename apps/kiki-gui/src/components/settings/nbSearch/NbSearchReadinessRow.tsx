@@ -62,8 +62,8 @@ export function NbSearchReadinessRow({
         <p className="mt-1 text-[11px] text-ink-soft">
           {t('st.nbSearch.currentSelection', {
             selection: readiness.selection
-              .split('→')
-              .map((part) => selectionLabel?.(part.trim()) ?? part.trim())
+              .split(/\s*(?:→|->)\s*/)
+              .map((part) => selectionLabel?.(part) ?? part)
               .join(' → '),
           })}
         </p>
