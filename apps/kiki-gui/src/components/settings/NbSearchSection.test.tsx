@@ -298,9 +298,11 @@ async function openServiceDetail(container: HTMLDivElement, instanceId: string):
   const cardId = serviceCardIdFor(container, instanceId);
   const card = cardId === null ? undefined : container.querySelector(`[data-nb-search-service-card="${cardId}"]`) ?? undefined;
   expect(card, `${instanceId} is not in the service list (${all.map((n) => n.getAttribute('data-nb-search-service-card')).join(',')})`).not.toBeNull();
-  const openButton = card!.querySelector('[data-nb-search-service-open]');
-  expect(openButton, `${instanceId} has no open button`).not.toBeNull();
-  if (openButton!.getAttribute('aria-expanded') !== 'true') await click(openButton!);
+  if (card!.getAttribute('data-open') !== 'true') {
+    const openButton = card!.querySelector('button[aria-expanded]');
+    expect(openButton, `${instanceId} has no open button`).not.toBeNull();
+    await click(openButton!);
+  }
   const detail = card!.querySelector<HTMLDivElement>('[data-nb-search-service-body]');
   expect(detail, `${instanceId} body did not open`).not.toBeNull();
   // Every collapsed disclosure inside the body opens too, so tests reach the
@@ -319,10 +321,16 @@ async function openDirectory(container: HTMLDivElement): Promise<Element> {
   return providers.querySelector('[data-nb-search-directory]')!;
 }
 
-/** The page-level commit button, shared by every tab. */
-function saveButtonOf(container: HTMLDivElement): HTMLButtonElement {
+/** The page-level commit button, shared by every tab. Null on a clean draft:
+ * the save bar only exists while there is something to save. */
+function saveButtonOf(container: HTMLDivElement): HTMLButtonElement | null {
   return [...container.querySelectorAll<HTMLButtonElement>('button')]
-    .find((button) => button.textContent === 'Save search & retrieval')!;
+    .find((button) => button.textContent === 'Save search & retrieval') ?? null;
+}
+
+/** The save bar shows only for a dirty draft; a clean page has none. */
+function expectClean(container: HTMLDivElement): void {
+  expect(saveButtonOf(container), 'a clean draft shows no save bar').toBeNull();
 }
 
 const MANAGED_KEYS = {
@@ -342,9 +350,13 @@ describe('NbSearchSection status', () => {
     expect(status.textContent).toContain('WebSearch');
     expect(status.textContent).toContain('Not configured');
     expect(status.textContent).toContain('refuses to run');
-    // jina.reader is unavailable but the chain still runs: degraded, with the issue code surfaced.
+    // jina.reader is unavailable but the chain still runs: degraded, in the
+    // fetch row's own words. The raw code never prints as user text — it stays
+    // on the sentence's title, traceable to server logs.
     expect(status.textContent).toContain('Degraded');
-    expect(status.textContent).toContain('LANE_NOT_CONFIGURED');
+    expect(status.textContent).toContain('This fetch service has no usable service or credential.');
+    expect(status.textContent).not.toContain('LANE_NOT_CONFIGURED');
+    expect(status.querySelector('[title="LANE_NOT_CONFIGURED"]')).not.toBeNull();
     // The status card never triggers the backend check on its own.
     expect(testNbSearch).not.toHaveBeenCalled();
   });
@@ -429,7 +441,7 @@ describe('NbSearchSection status', () => {
     await click(directory.querySelector('[data-nb-search-directory-row="jina.reader"]')!);
     await click(container.querySelector('#nb-search-tab-fetch')!);
     expect(container.querySelector('[data-nb-search-service-card="jina.reader"]')).not.toBeNull();
-    expect(saveButtonOf(container).disabled).toBe(false);
+    expect(saveButtonOf(container)!.disabled).toBe(false);
   });
 
   it('reveals saved keys only on demand, then replaces and clears them', async () => {
@@ -454,7 +466,7 @@ describe('NbSearchSection status', () => {
     expect(keys.querySelectorAll('[data-key-row]')).toHaveLength(2);
     expect(keys.querySelector('[data-keys-count]')!.textContent).toContain('2 of 32');
     expect(keys.textContent).not.toContain('key-one');
-    expect(saveButtonOf(container).disabled).toBe(true);
+    expectClean(container);
 
     // Revealing one row shows that key only.
     await click(keys.querySelector('[data-key-reveal="0"]')!);
@@ -463,18 +475,18 @@ describe('NbSearchSection status', () => {
 
     // Replacing starts an edit; the page is now dirty.
     await click(keys.querySelector('[data-key-replace]')!);
-    expect(saveButtonOf(container).disabled).toBe(false);
+    expect(saveButtonOf(container)!.disabled).toBe(false);
     await click(keys.querySelector('[data-key-remove="1"]')!);
     expect(keys.querySelectorAll('[data-key-row]')).toHaveLength(1);
 
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     expect(writeNbSearchCredential).toHaveBeenCalledWith('exa.default', 'key-one', 'fixture-old', 'fixture-binding');
 
     // Clearing commits a null value through the same version-checked path.
     const cleared = detail.querySelector('[data-nb-search-keys="exa.default"]')!;
     await click(cleared.querySelector('[data-key-clear]')!);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     expect(writeNbSearchCredential).toHaveBeenCalledWith('exa.default', null, 'fixture-old', 'fixture-binding');
   });
@@ -499,9 +511,9 @@ describe('NbSearchSection status', () => {
     await click(keys.querySelector('[data-key-reveal="0"]')!);
     expect(keys.querySelector('[data-key-row="0"]')!.textContent).toContain('fixture-env-value');
     await click(keys.querySelector('[data-key-replace]')!);
-    expect(saveButtonOf(container).disabled).toBe(false);
+    expect(saveButtonOf(container)!.disabled).toBe(false);
 
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     expect(writeNbSearchCredential).toHaveBeenCalledWith('exa.default', 'fixture-env-value', 'none', 'fixture-binding');
   });
@@ -517,7 +529,7 @@ describe('NbSearchSection status', () => {
     const keys = detail.querySelector('[data-nb-search-keys="exa.default"]')!;
     await setInputValue(keys.querySelector<HTMLInputElement>('[data-key-input]')!, 'fixture-typed-key');
     await click(keys.querySelector('[data-key-add]')!);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
 
     // The key write failed and says so; the typed key is still there to retry.
@@ -525,7 +537,7 @@ describe('NbSearchSection status', () => {
     expect(container.textContent).toContain('credential store unreachable');
     const after = container.querySelector('[data-nb-search-keys="exa.default"]')!;
     expect(after.textContent).toContain('fixture-typed-key');
-    expect(saveButtonOf(container).disabled).toBe(false);
+    expect(saveButtonOf(container)!.disabled).toBe(false);
   });
 
   it('refuses to save a key list the server cannot hold, without dropping any key', async () => {
@@ -541,7 +553,7 @@ describe('NbSearchSection status', () => {
 
     // 33 keys are all kept: the user's credential is never silently truncated.
     expect(keys.querySelectorAll('[data-key-row]')).toHaveLength(33);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     expect(writeNbSearchCredential).not.toHaveBeenCalled();
     expect(container.textContent).toContain('more than the 32 this server accepts');
@@ -553,7 +565,7 @@ describe('NbSearchSection status', () => {
     await click(keys.querySelector('[data-key-remove="31"]')!);
     await setInputValue(keys.querySelector<HTMLInputElement>('[data-key-input]')!, 'key-0');
     await click(keys.querySelector('[data-key-add]')!);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     expect(writeNbSearchCredential).not.toHaveBeenCalled();
     expect(container.textContent).toContain('The same key appears twice');
@@ -572,7 +584,7 @@ describe('NbSearchSection status', () => {
     const option = [...document.querySelectorAll<HTMLButtonElement>('button')]
       .find((button) => button.textContent === 'Try them in order')!;
     await click(option);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
 
     const patch = patchConfig.mock.calls[0]![0] as {
@@ -602,7 +614,7 @@ describe('NbSearchSection status', () => {
     const container = await renderSection('/settings/search?tab=search');
     const detail = await openServiceDetail(container, 'exa.default');
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-nb-search-base-url]')!, '');
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
 
     const patch = patchConfig.mock.calls[0]![0] as {
@@ -652,7 +664,7 @@ describe('NbSearchSection status', () => {
     const confirm = document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!;
     expect(confirm.textContent).toBe('Remove this service');
     await click(confirm);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
 
     const patch = patchConfig.mock.calls[0]![0] as {
@@ -678,12 +690,11 @@ describe('NbSearchSection save', () => {
     await click(container.querySelector('[data-nb-search-lane-make-default="github.repositories"]')!);
 
     const detail = await openServiceDetail(container, 'exa.default');
-    await click(detail.querySelector('[data-nb-search-credential-env-section] > summary')!);
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-nb-search-credential-env]')!, 'TEAM_EXA_API_KEY');
 
-    const saveButton = saveButtonOf(container);
+    const saveButton = saveButtonOf(container)!;
     expect(saveButton.disabled).toBe(false);
-    await click(saveButton);
+    await click(saveButton!);
     await flush();
 
     // The saved provider override rides along untouched; only the edited fields move.
@@ -704,7 +715,7 @@ describe('NbSearchSection save', () => {
     const detail = await openServiceDetail(container, 'exa.default');
     const envInput = detail.querySelector<HTMLInputElement>('[data-nb-search-credential-env]')!;
     await setInputValue(envInput, 'UNSAVED_EXA_API_KEY');
-    const saveButton = saveButtonOf(container);
+    const saveButton = saveButtonOf(container)!;
     expect(saveButton.disabled).toBe(false);
 
     await act(async () => {
@@ -727,7 +738,7 @@ describe('NbSearchSection save', () => {
 
     // Editing the address must not lock the key field: they are one decision.
     expect(keys.querySelector('[data-key-input]')!.hasAttribute('disabled')).toBe(false);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
 
     expect(patchConfig).toHaveBeenCalledWith({
@@ -767,9 +778,9 @@ describe('NbSearchSection save', () => {
     // The url → markdown group is the one on screen; its action takes the
     // source order for that group only.
     await click(fetchCard.querySelector('[data-nb-search-fetch-restore]')!);
-    const saveButton = saveButtonOf(container);
+    const saveButton = saveButtonOf(container)!;
     expect(saveButton.disabled, 'save must be enabled after a fetch-group change').toBe(false);
-    await click(saveButton);
+    await click(saveButton!);
     await flush();
     expect(container.querySelector('[data-feedback-tone="error"]')?.textContent ?? null).toBeNull();
 
@@ -808,7 +819,7 @@ describe('NbSearchSection save', () => {
     await click(fetchCard.querySelector('[data-nb-search-fetch-other-pairs] > summary')!);
     await choose(container, 'data-nb-search-fetch-input', 'file');
     await click(fetchCard.querySelector('[data-nb-search-fetch-restore-pair]')!);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
 
     // Only restoring every group drops the Kiki snapshot, which is the one
@@ -839,8 +850,8 @@ describe('NbSearchSection save', () => {
     const envInput = detail.querySelector<HTMLInputElement>('[data-nb-search-credential-env]')!;
     expect(envInput.value).toBe('TEAM_EXA_API_KEY');
     await setInputValue(envInput, 'ROTATED_EXA_API_KEY');
-    const saveButton = saveButtonOf(container);
-    await click(saveButton);
+    const saveButton = saveButtonOf(container)!;
+    await click(saveButton!);
     await flush();
 
     const patch = patchConfig.mock.calls[0]![0] as {
@@ -866,7 +877,7 @@ describe('NbSearchSection save', () => {
     await setInputValue(concurrencyInput, 'two');
     const saveButton = [...container.querySelectorAll('button')]
       .find((button) => button.textContent === 'Save search & retrieval')!;
-    await click(saveButton);
+    await click(saveButton!);
     await flush();
     expect(patchConfig).not.toHaveBeenCalled();
     expect(container.textContent).toContain('not a non-negative whole number');
@@ -888,7 +899,7 @@ describe('NbSearchSection save', () => {
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-key-input]')!, 'example-pending-key');
     await click(detail.querySelector('[data-key-add]')!);
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-nb-search-base-url]')!, 'https://example.test/search');
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
 
     expect(patchConfig).toHaveBeenCalledTimes(1);
@@ -901,8 +912,8 @@ describe('NbSearchSection save', () => {
     const recovered = await openServiceDetail(container, 'exa.default');
     await click(recovered.querySelector('[data-key-reveal="0"]')!);
     expect(recovered.textContent).toContain('example-pending-key');
-    expect(saveButtonOf(container).disabled).toBe(false);
-    await click(saveButtonOf(container));
+    expect(saveButtonOf(container)!.disabled).toBe(false);
+    await click(saveButtonOf(container)!);
     await flush();
     expect(patchConfig).toHaveBeenCalledTimes(1);
     expect(writeNbSearchCredential).toHaveBeenCalledWith('exa.default', 'example-pending-key', 'none', 'fixture-binding');
@@ -919,7 +930,7 @@ describe('NbSearchSection save', () => {
     const detail = await openServiceDetail(container, 'exa.default');
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-key-input]')!, 'example-saved-key');
     await click(detail.querySelector('[data-key-add]')!);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
 
     expect(writeNbSearchCredential).toHaveBeenCalledTimes(1);
@@ -930,7 +941,7 @@ describe('NbSearchSection save', () => {
     expect(stale!.closest('[role="tabpanel"]')).toBeNull();
     await click(container.querySelector('#nb-search-tab-overview')!);
     expect(container.querySelector('[data-nb-search-status-stale]')).not.toBeNull();
-    expect(saveButtonOf(container).disabled).toBe(true);
+    expectClean(container);
     getNbSearchCapabilities.mockResolvedValueOnce({
       ...CAPABILITIES,
       revision: 'after-key-refresh-retry',
@@ -965,7 +976,7 @@ describe('NbSearchSection save', () => {
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-key-input]')!, 'example-user-input');
     await click(detail.querySelector('[data-key-add]')!);
     stored = { value: 'example-other-client-key', version: 'b'.repeat(64) };
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
 
     expect(stored.value).toBe('example-other-client-key');
@@ -975,10 +986,10 @@ describe('NbSearchSection save', () => {
     const pendingRow = detail.querySelector('[data-key-row="1"]')!;
     if (pendingRow.querySelector('[data-key-value="masked"]')) await click(pendingRow.querySelector('[data-key-reveal]')!);
     expect(pendingRow.textContent).toContain('example-user-input');
-    expect(saveButtonOf(container).disabled).toBe(false);
+    expect(saveButtonOf(container)!.disabled).toBe(false);
     // Reading again explicitly accepts the new base without dropping the user's list.
     await click(detail.querySelector('[data-key-show]')!);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     expect(stored.value).toBe('example-original-key,example-user-input');
     expect(writeNbSearchCredential).toHaveBeenCalledTimes(2);
@@ -1014,14 +1025,14 @@ describe('NbSearchSection save', () => {
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-key-input]')!, 'example-user-input');
     await click(detail.querySelector('[data-key-add]')!);
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-nb-search-base-url]')!, 'https://example.test/migrated');
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     if (refreshFails) {
       expect(writeNbSearchCredential).not.toHaveBeenCalled();
       await click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Retry')!);
       await flush();
-      expect(saveButtonOf(container).disabled).toBe(false);
-      await click(saveButtonOf(container));
+      expect(saveButtonOf(container)!.disabled).toBe(false);
+      await click(saveButtonOf(container)!);
       await flush();
     }
     expect(patchConfig).toHaveBeenCalledTimes(1);
@@ -1048,7 +1059,7 @@ describe('NbSearchSection save', () => {
     await click(detail.querySelector('[data-key-replace]')!);
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-nb-search-balance-ttl]')!, '60000');
     stored = { value: 'example-other-client-key', version: 'c'.repeat(64) };
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     expect(patchConfig).toHaveBeenCalledTimes(1);
     expect(writeNbSearchCredential).toHaveBeenCalledWith('exa.default', 'example-original-key', 'b'.repeat(64), binding);
@@ -1072,7 +1083,7 @@ describe('NbSearchSection save', () => {
     await click(detail.querySelector('[data-key-add]')!);
     await click(detail.querySelector('[data-key-up="1"]')!);
     version = 'c'.repeat(64);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     expect(writeNbSearchCredential).toHaveBeenCalledWith('exa.default', 'example-second-key,example-first-key', 'b'.repeat(64), binding);
     expect(container.textContent).toContain('This key changed on the server while you were editing');
@@ -1116,7 +1127,7 @@ describe('NbSearchSection save', () => {
       await click(detail.querySelector('[data-key-add]')!);
     }
     stored.set('exa.backup', { value: 'example-other-client-key', version: 'e'.repeat(64) });
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     expect(stored.get('exa.default')!.value).toBe('example-primary-key,example-input-exa.default');
     expect(stored.get('exa.backup')!.value).toBe('example-other-client-key');
@@ -1124,7 +1135,7 @@ describe('NbSearchSection save', () => {
     const unresolved = await openServiceDetail(container, 'exa.backup');
     expect(unresolved.querySelector('[data-keys-mode="set"]')).not.toBeNull();
     await click(unresolved.querySelector('[data-key-show]')!);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     expect(writeNbSearchCredential.mock.calls.filter(([id]) => id === 'exa.default')).toHaveLength(1);
     expect(writeNbSearchCredential.mock.calls.filter(([id]) => id === 'exa.backup')).toHaveLength(2);
@@ -1142,7 +1153,7 @@ describe('NbSearchSection save', () => {
     const detail = await openServiceDetail(container, 'exa.default');
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-key-input]')!, 'example-saved-key');
     await click(detail.querySelector('[data-key-add]')!);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     expect(container.querySelector('[data-nb-search-status-stale]')).not.toBeNull();
     const ttl = detail.querySelector<HTMLInputElement>('[data-nb-search-balance-ttl]')!;
@@ -1150,7 +1161,7 @@ describe('NbSearchSection save', () => {
     getNbSearchCapabilities.mockResolvedValue({
       ...CAPABILITIES, revision: 'fresh-after-stale', search: { ...CAPABILITIES.search, default_lane: 'github.repositories' },
     });
-    if (recovery === 'save') await click(saveButtonOf(container));
+    if (recovery === 'save') await click(saveButtonOf(container)!);
     else await act(async () => { await renderedQueryClient.invalidateQueries({ queryKey: ['nb-search-capabilities'] }); });
     await flush();
     expect(container.querySelector('[data-nb-search-status-stale]')).toBeNull();
@@ -1158,7 +1169,7 @@ describe('NbSearchSection save', () => {
     expect(writeNbSearchCredential).toHaveBeenCalledTimes(1);
     if (recovery === 'background refresh') {
       expect(ttl.value).toBe('60000');
-      expect(saveButtonOf(container).disabled).toBe(false);
+      expect(saveButtonOf(container)!.disabled).toBe(false);
     }
   });
 
@@ -1180,7 +1191,7 @@ describe('NbSearchSection save', () => {
     binding = 'c'.repeat(64);
     version = 'd'.repeat(64);
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-nb-search-balance-ttl]')!, '60000');
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     expect(patchConfig).toHaveBeenCalledTimes(1);
     expect(writeNbSearchCredential).toHaveBeenCalledWith('exa.default', 'example-original-key', 'b'.repeat(64), 'a'.repeat(64));
@@ -1210,12 +1221,12 @@ describe('NbSearchSection save', () => {
     const detail = await openServiceDetail(container, 'exa.default');
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-key-input]')!, 'example-direct-paste');
     await click(detail.querySelector('[data-key-add]')!);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     expect(serverValue).toBe('example-other-client-key');
     expect(writeNbSearchCredential).toHaveBeenLastCalledWith('exa.default', 'example-direct-paste', 'none', binding);
     expect(container.textContent).toContain('This key changed on the server while you were editing');
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     expect(writeNbSearchCredential).toHaveBeenLastCalledWith('exa.default', 'example-direct-paste', 'none', binding);
     expect(serverValue).toBe('example-other-client-key');
@@ -1232,7 +1243,7 @@ describe('NbSearchSection save', () => {
     const detail = await openServiceDetail(container, 'exa.default');
     await setInputValue(detail.querySelector<HTMLInputElement>('[data-key-input]')!, 'example-saved-key');
     await click(detail.querySelector('[data-key-add]')!);
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
     const ttl = detail.querySelector<HTMLInputElement>('[data-nb-search-balance-ttl]')!;
     await setInputValue(ttl, '60000');
@@ -1241,7 +1252,7 @@ describe('NbSearchSection save', () => {
     expect(container.querySelector('[data-nb-search-status-stale]')).not.toBeNull();
     expect(container.querySelector('#st-card-search-providers')).not.toBeNull();
     expect(ttl.value).toBe('60000');
-    expect(saveButtonOf(container).disabled).toBe(false);
+    expect(saveButtonOf(container)!.disabled).toBe(false);
     expect(writeNbSearchCredential).toHaveBeenCalledTimes(1);
     await click(container.querySelector('[data-nb-search-status-stale] button')!);
     await flush();
@@ -1278,14 +1289,13 @@ describe('NbSearchSection configuration source', () => {
     expect(toggle.checked).toBe(false);
     // The credentials hint only describes the reuse path; hidden while off.
     expect(sourceCard.textContent).not.toContain('does not read another shell');
-    const saveButton = [...container.querySelectorAll('button')]
-      .find((button) => button.textContent === 'Save search & retrieval')!;
-    expect(saveButton.disabled).toBe(true);
+    // Saved reuse=false is not an unsaved change: no save bar at all.
+    expectClean(container);
 
     // Toggling flags the draft against the saved baseline.
     await click(toggle);
     expect(sourceCard.textContent).toContain('takes effect after saving');
-    expect(saveButton.disabled).toBe(false);
+    expect(saveButtonOf(container)).not.toBeNull();
   });
 
   it('localizes known config_source issue codes and keeps unknown codes verbatim', async () => {
@@ -1529,15 +1539,15 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
 
     // Clicking a card's row opens it; the default never changes as a side effect.
     const githubCard = searchPanel.querySelector('[data-nb-search-service-card="github.repositories"]')!;
-    expect(githubCard.querySelector('[data-nb-search-service-open]')!.getAttribute('aria-expanded')).toBe('true');
+    expect(githubCard.getAttribute('data-open')).toBe('true');
     expect(searchPanel.querySelector('[data-nb-search-service-default]')).not.toBeNull();
     expect(githubCard.querySelector('[data-nb-search-service-body]')).not.toBeNull();
     // A card that already is the default offers no default action — 设为默认
     // belongs to the other cards, and clicking this row changed nothing.
     expect(githubCard.querySelector('[data-nb-search-service-make-default]')).toBeNull();
     const exaCard = searchPanel.querySelector('[data-nb-search-service-card="exa.search"]')!;
-    if (exaCard.querySelector('[data-nb-search-service-open]')!.getAttribute('aria-expanded') !== 'true') {
-      await click(exaCard.querySelector('[data-nb-search-service-open]')!);
+    if (exaCard.getAttribute('data-open') !== 'true') {
+      await click(exaCard.querySelector('button[aria-expanded]')!);
     }
     expect(exaCard.querySelector('[data-nb-search-service-make-default]')).not.toBeNull();
 
@@ -1570,7 +1580,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     const saveButton = [...container.querySelectorAll('button')]
       .find((button) => button.textContent === 'Save search & retrieval')!;
     expect(saveButton.disabled).toBe(false);
-    await click(saveButton);
+    await click(saveButton!);
     await flush();
 
     // Source-only save: no nb_search replace, no canonical form payload.
@@ -1602,7 +1612,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     await click(toggle);
     const saveButton = [...container.querySelectorAll('button')]
       .find((button) => button.textContent === 'Save search & retrieval')!;
-    await click(saveButton);
+    await click(saveButton!);
     await flush();
 
     const patch = patchConfig.mock.calls[0]![0] as Record<string, unknown>;
@@ -1612,7 +1622,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     await click(searchTab);
     await click(container.querySelector('[data-nb-search-methods] > summary')!);
     await click(container.querySelector('[data-nb-search-lane-make-default="example.documents"]')!);
-    await click(saveButton);
+    await click(saveButtonOf(container)!);
     await flush();
     const secondPatch = patchConfig.mock.calls[1]![0] as {
       nb_search: Record<string, unknown>;
@@ -1640,8 +1650,8 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     await click(container.querySelector('[data-nb-search-methods] > summary')!);
     await click(container.querySelector('[data-nb-search-lane-make-default="github.repositories"]')!);
 
-    const saveButton = saveButtonOf(container);
-    await click(saveButton);
+    const saveButton = saveButtonOf(container)!;
+    await click(saveButton!);
     await flush();
 
     expect(patchConfig).toHaveBeenCalledWith({
@@ -1665,7 +1675,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     await click(toggle);
     const saveButton = [...container.querySelectorAll('button')]
       .find((button) => button.textContent === 'Save search & retrieval')!;
-    await click(saveButton);
+    await click(saveButton!);
     await flush();
 
     expect(container.textContent).toContain('config write rejected');
@@ -1701,7 +1711,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     await click(toggle);
     const saveButton = [...container.querySelectorAll('button')]
       .find((button) => button.textContent === 'Save search & retrieval')!;
-    await click(saveButton);
+    await click(saveButton!);
     await flush();
 
     expect(patchConfig).toHaveBeenCalledWith({
@@ -1733,7 +1743,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     await click(toggle);
     const saveButton = [...container.querySelectorAll('button')]
       .find((button) => button.textContent === 'Save search & retrieval')!;
-    await click(saveButton);
+    await click(saveButton!);
     await flush();
 
     expect(patchConfig).toHaveBeenCalledWith({
@@ -1809,7 +1819,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     await click(discardButton);
 
     // After discard the draft is back to "no override", so nothing is dirty.
-    expect(saveButtonOf(container).disabled).toBe(true);
+    expectClean(container);
   });
 
   it('resolves tab-hash conflict by prioritizing the specific card hash anchor', async () => {
@@ -1847,7 +1857,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     expect(container.querySelector('[data-nb-search-lane-make-default="github.repositories"]')).toBeNull();
 
     // Save button remains enabled with unsaved indicator
-    expect(saveButtonOf(container).disabled).toBe(false);
+    expect(saveButtonOf(container)!.disabled).toBe(false);
   });
 
   it('keeps a key draft across tab switches and registers it with the leave guard', async () => {
@@ -1863,7 +1873,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
     await click(container.querySelector('#nb-search-tab-search')!);
     const after = container.querySelector('[data-nb-search-keys="exa.default"]')!;
     expect(after.textContent).toContain('fixture-unsaved-key');
-    expect(saveButtonOf(container).disabled).toBe(false);
+    expect(saveButtonOf(container)!.disabled).toBe(false);
     expect(container.querySelector('[data-dirty-indicator]')).not.toBeNull();
   });
 });
@@ -1945,7 +1955,7 @@ describe('NbSearchSection S2 mounted surfaces', () => {
     // The old instance is still there, edited through its search method's card.
     expect(container.querySelector('[data-nb-search-service-card="exa.search"]')).not.toBeNull();
 
-    await click(saveButtonOf(container));
+    await click(saveButtonOf(container)!);
     await flush();
 
     const patch = patchConfig.mock.calls.at(-1)![0] as {
