@@ -369,3 +369,74 @@ describe('Add menu file search', () => {
     expect(document.querySelector('[data-add-menu-skills]')).toBeNull();
   });
 });
+
+describe('Add menu SSH view availability', () => {
+  function sshProp() {
+    return {
+      count: 1,
+      renderPanel: () => <div data-ssh-panel-content>hosts</div>,
+      hosts: [{ id: 'h1', name: 'Host One', joined: true }],
+      onToggleHost: () => {},
+    };
+  }
+
+  // Flip the SSH source off inside the SAME mounted tree: the view stays 'ssh'
+  // (the parent keeps it), only the `ssh` prop collapses to undefined — the
+  // exact shape the flag/meta read produces when it briefly resolves undefined.
+  let flipOff: (() => void) | null = null;
+
+  function SshHarness() {
+    const [view, setView] = useState<AddMenuView>('ssh');
+    const [available, setAvailable] = useState(true);
+    flipOff = () => { setAvailable(false); };
+    return (
+      <AddMenu
+        view={view}
+        onViewChange={setView}
+        attachDisabled={false}
+        onAttach={() => {}}
+        // A second always-present source keeps the menu a menu (attachOnly stays
+        // false), so the ssh collapse exercises the view fallback, not the
+        // whole-menu collapse into a bare attach button.
+        skills={{ items: [], status: 'ready', onInsert: () => {} }}
+        ssh={available ? sshProp() : undefined}
+      />
+    );
+  }
+
+  it('does not render an empty popover when the SSH source becomes unavailable', async () => {
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <SshHarness />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+
+    // SSH view open with content.
+    const panel = document.querySelector('[data-add-panel]');
+    expect(panel?.getAttribute('data-add-panel')).toBe('ssh');
+    expect(panel?.querySelector('[data-ssh-panel-content]')).not.toBeNull();
+
+    // The flag/meta read briefly resolves undefined: the source goes away
+    // while the view is still 'ssh'. The popover must not go blank.
+    await act(async () => { flipOff!(); });
+    await flush();
+
+    const after = document.querySelector('[data-add-panel]');
+    // The bug is precisely: popover still open on the ssh view with no content.
+    if (after !== null) {
+      expect(
+        (after.textContent ?? '').trim(),
+        'ssh popover rendered an empty card after the source went away',
+      ).not.toBe('');
+    }
+  });
+});
