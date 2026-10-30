@@ -3,6 +3,7 @@ import { deferred } from '../../deferred';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { Emitter } from '#/_base/event';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { TestInstantiationService } from '#/_base/di/test';
 import { ILogService } from '#/_base/log/log';
@@ -104,6 +105,7 @@ describe('SessionSubagentService idle release', () => {
   let agents: Map<string, FakeAgent>;
   let remove: ReturnType<typeof vi.fn>;
   let flagEnabled: boolean;
+  let created: Emitter<IAgentScopeHandle>;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -114,9 +116,11 @@ describe('SessionSubagentService idle release', () => {
     remove = vi.fn(async (agentId: string) => {
       agents.delete(agentId);
     });
+    created = disposables.add(new Emitter<IAgentScopeHandle>());
     ix.stub(IAgentLifecycleService, {
       _serviceBrand: undefined,
       get: (agentId: string) => agents.get(agentId)?.handle,
+      onDidCreate: created.event,
       remove,
     } as unknown as IAgentLifecycleService);
     ix.stub(ISessionAgentProfileCatalog, {
@@ -303,5 +307,32 @@ describe('SessionSubagentService idle release', () => {
     await childRun.completion;
     await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS);
     expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('releases a scope materialized without a run after it stays idle for two grace periods', async () => {
+    ix.get(ISessionSubagentService);
+    const child = fakeAgent('agent-3');
+    agents.set('agent-3', child);
+    created.fire(child.handle);
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS * 2 - 1);
+    expect(remove).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(remove).toHaveBeenCalledExactlyOnceWith('agent-3');
+  });
+
+  it('never releases a materialized scope while it is running or for the main agent', async () => {
+    ix.get(ISessionSubagentService);
+    const child = fakeAgent('agent-4');
+    child.executionState = 'running';
+    agents.set('agent-4', child);
+    const main = fakeAgent('main');
+    agents.set('main', main);
+    created.fire(child.handle);
+    created.fire(main.handle);
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS * 10);
+    expect(remove).not.toHaveBeenCalled();
+    child.executionState = 'idle';
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS * 2);
+    expect(remove).toHaveBeenCalledExactlyOnceWith('agent-4');
   });
 });

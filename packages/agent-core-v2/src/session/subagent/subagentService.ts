@@ -67,6 +67,9 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
   ) {
     super();
     this.releaseGraceMs = resolveReleaseGraceMs((name) => bootstrap.getEnv(name));
+    this._register(agentLifecycle.onDidCreate((handle) => {
+      if (!this.pendingReleases.has(handle.id)) this.scheduleRelease(handle.id, false);
+    }));
     this._register(
       toDisposable(() => {
         this.stopped = true;

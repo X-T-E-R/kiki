@@ -14,6 +14,7 @@ import {
   IModelCatalogMutationService,
   ISessionMetadata,
   ISessionDispatchService,
+  ISessionManager,
   closeSessionById,
   getLiveSessionById,
   resumeSessionById,
@@ -577,6 +578,82 @@ describe('server-v2 /api prompts', () => {
       createSubscription.dispose();
       await eventSubscription.dispose();
     } finally {
+      await new Promise<void>((resolve, reject) => provider.close((error) => {
+        if (error === undefined) resolve();
+        else reject(error);
+      }));
+    }
+  });
+
+  it('releases a finished subagent and cold-loads the same transcript after subagent and session eviction', async () => {
+    vi.stubEnv('KIKI_SUBAGENT_RELEASE_GRACE_MS', '1000');
+    vi.stubEnv('KIKI_EXPERIMENTAL_SESSION_IDLE_EVICTION', 'true');
+    const provider = createHttpServer((request, response) => {
+      request.resume();
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(`data: ${JSON.stringify({
+        id: 'chatcmpl-evicted-child',
+        choices: [{ index: 0, delta: { content: 'answer kept on disk' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      })}
+
+data: [DONE]
+
+`);
+    });
+    await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    try {
+      const mutations = fixture.server!.core.accessor.get(IModelCatalogMutationService);
+      await mutations.updateProvider('stub', { base_url: `http://127.0.0.1:${String(address.port)}/v1` });
+      await mutations.updateModel('stub', { max_context_size: 100000 });
+      const id = await createSession(fixture.home as string);
+      await createMainAgent(id);
+      const lifecycle = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(IAgentLifecycleService);
+      const child = await lifecycle.fork('main');
+      const released = new Promise<void>((resolve) => {
+        const subscription = lifecycle.onDidDispose((agentId) => {
+          if (agentId !== child.id) return;
+          subscription.dispose();
+          resolve();
+        });
+      });
+      const prompt = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
+        content: [{ type: 'text', text: 'question for the child' }],
+        agent_id: child.id,
+        profile: 'agent',
+        model: 'stub',
+        thinking: 'high',
+      });
+      expect(prompt.body.code).toBe(0);
+      await child.accessor.get(IAgentExecutionService).settled();
+      const page = async (agentId: string) => {
+        const { body } = await call<{ items: unknown[]; has_more: boolean }>(
+          'GET', `/api/sessions/${id}/transcript?agent_id=${agentId}&transcript_coverage_version=2`);
+        expect(body.code).toBe(0);
+        return { items: body.data.items, has_more: body.data.has_more };
+      };
+      const childBefore = await page(child.id);
+      const mainBefore = await page('main');
+      expect(JSON.stringify(childBefore.items)).toContain('answer kept on disk');
+
+      await released;
+      expect(lifecycle.get(child.id)).toBeUndefined();
+      expect(await page(child.id)).toEqual(childBefore);
+
+      const manager = fixture.server!.core.accessor.get(ISessionManager);
+      expect(await manager.evictIfIdle!(id, { ignoreIdleTtl: true })).toBe(true);
+      expect(getLiveSessionById(fixture.server!.core.accessor, id)).toBeUndefined();
+      const lease = await manager.acquire!(id, 'test-reopen');
+      try {
+        expect(await page('main')).toEqual(mainBefore);
+        expect(await page(child.id)).toEqual(childBefore);
+      } finally {
+        await lease!.dispose();
+      }
+    } finally {
+      vi.unstubAllEnvs();
       await new Promise<void>((resolve, reject) => provider.close((error) => {
         if (error === undefined) resolve();
         else reject(error);
