@@ -97,7 +97,8 @@ export function OriginalSourcePanel({
     : null;
 
   return (
-    <div data-original-source={method.id} className="space-y-3 rounded-lg border border-hairline bg-panel/50 p-3">
+    // A continuation of the account row it sits in, not a second card inside it (#14).
+    <div data-original-source={method.id} className="space-y-3 pt-1">
       <div className="space-y-1">
         <p className="text-[12.5px] font-medium text-ink">
           {t('st.source.localOriginal', { app })}

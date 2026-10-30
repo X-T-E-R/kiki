@@ -252,7 +252,8 @@ export function ExternalEnginesList() {
   // engine is an existing object from this list, not a panel over it.
   const engineDetail = useDetailParam('engine');
   const detailItem = engineDetail.selected === null ? undefined : engines.find((item) => item.id === engineDetail.selected);
-  const list = <div data-engine-list className="overflow-hidden rounded-lg border border-hairline bg-panel">
+  // No rows, no box: an empty bordered list reads as a stray rule under the heading.
+  const list = engines.length === 0 && removalNote === undefined ? null : <div data-engine-list className="overflow-hidden rounded-lg border border-hairline bg-panel">
     {removalNote !== undefined ? <p role="status" data-engine-removal-result className="border-b border-hairline px-3 py-2 text-[12px] leading-4 text-ink-soft">{removalNote}</p> : null}
     {engines.map((item) => <EngineRow key={item.id} item={item} overrides={overrides} display={display} fault={faults[item.id]}
       onOpen={() => { engineDetail.open(item.id); }} />)}
