@@ -49,7 +49,7 @@ import {
 } from './SettingsPrimitives';
 import { useInstantSave } from './useInstantSave';
 import { CapabilityHeader } from './CapabilityHeader';
-import { ComputerConnectionCard } from './computerControl/ComputerConnectionCard';
+import { AddComputerAction, ComputerConnectionCard } from './computerControl/ComputerConnectionCard';
 import { useComputerPreference } from './computerControl/useComputerPreference';
 import {
   commandSummary,
@@ -484,7 +484,7 @@ export function ComputerControlSection() {
         </CapabilityHeader>
       </SectionCard>
 
-      <SectionCard id="st-card-computer-mcp" title={t('st.computer.connectionsTitle')}>
+      <SectionCard id="st-card-computer-mcp" title={t('st.computer.connectionsTitle')} actions={<AddComputerAction />}>
         <ComputerConnectionCard
           platform={platform}
           planBinary={capability?.plan?.destination}

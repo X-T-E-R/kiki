@@ -28,6 +28,25 @@ export default {
     cacheDir: 'C:\\Users\\fixture\\.kimi\\cache',
     logsDir: 'C:\\Users\\fixture\\.kimi\\logs',
   },
+  // The Kimi route reads the same bridge capability on this page; seeding it
+  // here keeps the route's fold a status line rather than a 404.
+  browserCapabilities: [
+    {
+      id: 'kimi-webbridge',
+      displayName: 'Kimi WebBridge',
+      description: 'The local bridge the Kimi browser route drives through.',
+      supported: true,
+      state: 'partial',
+      steps: [
+        { id: 'daemon-binary', state: 'ok', detail: 'Bundled with the app' },
+        { id: 'daemon', state: 'ok', detail: 'Running on 127.0.0.1:10086' },
+        { id: 'skill', state: 'ok', detail: 'kimi-webbridge installed' },
+        { id: 'extension', state: 'missing', detail: 'Browser extension is not connected' },
+        { id: 'detect', state: 'missing', detail: 'Not checked until the extension is connected' },
+      ],
+      install: { running: false },
+    },
+  ],
   computerCapability: {
     id: 'kiki-computer',
     displayName: 'Kiki Computer Control',

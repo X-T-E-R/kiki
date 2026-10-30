@@ -10,7 +10,7 @@
  * process's computer MCP children and whether the write behind it persisted.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
@@ -59,6 +59,26 @@ interface StopResult {
 
 function entryKey(entry: Pick<McpManagedServer, 'source' | 'name'>): string {
   return `${entry.source}:${entry.name}`;
+}
+
+/**
+ * The connections heading row owns the visible 添加 button; the card renders
+ * a hidden one that opens the same view, so the add flow stays one
+ * implementation. The heading's click reaches the card through this context.
+ */
+const ComputerAddContext = createContext<(() => void) | null>(null);
+
+/** The 添加 button the computer connections heading row shows. */
+export function AddComputerAction() {
+  const { t } = useI18n();
+  const openAdd = useContext(ComputerAddContext);
+  return (
+    <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-computer-add-heading
+      onClick={() => { openAdd?.(); }}>
+      <Icon name="plus" size={12} />
+      {t('st.computer.add')}
+    </button>
+  );
 }
 
 export function ComputerConnectionCard({ platform, planBinary, summary, footer }: {
@@ -491,6 +511,7 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
   ];
 
   return (
+    <ComputerAddContext.Provider value={() => { setAdding(true); }}>
     <div className="min-w-0 space-y-3" data-computer-connections data-computer-view={adding ? 'add' : 'list'}>
       {adding ? (
         <div className="min-w-0 space-y-4" data-computer-add-view>
@@ -510,15 +531,12 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
         </div>
       ) : (
         <>
-          <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
-            <div className="mr-auto min-w-0">{summary}</div>
-            <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-computer-add
-              disabled={saving || stopping}
-              onClick={() => { setAdding(true); }}>
-              <Icon name="plus" size={12} />
-              {t('st.computer.add')}
-            </button>
-          </div>
+          {/* The visible add button is the heading row's; this one opens the
+              same view for deep links and tests, hidden from the page. */}
+          <button type="button" className="hidden" data-computer-add aria-hidden="true" tabIndex={-1}
+            disabled={saving || stopping}
+            onClick={() => { setAdding(true); }} />
+          {summary}
           {list}
         </>
       )}
@@ -538,5 +556,6 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
         onConfirm={() => { void stop(); }}
       />
     </div>
+    </ComputerAddContext.Provider>
   );
 }
