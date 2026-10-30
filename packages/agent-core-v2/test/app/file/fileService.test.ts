@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -88,7 +88,9 @@ describe('FileServiceImpl', () => {
     await expect(store().get(meta.id)).rejects.toMatchObject({
       code: FileErrors.codes.FILE_NOT_FOUND,
     });
-    expect(await backend.list('files')).not.toContain(meta.id);
+    await vi.waitFor(async () => {
+      expect(await backend.list('files')).not.toContain(meta.id);
+    });
   });
 
   it('prunes expired uploads while loading a persisted index', async () => {
@@ -114,7 +116,94 @@ describe('FileServiceImpl', () => {
       code: FileErrors.codes.FILE_NOT_FOUND,
     });
     await expect(reloaded.get(fresh.id)).resolves.toMatchObject({ meta: { id: fresh.id } });
-    expect(await backend.list('files')).not.toContain(expired.id);
+    await vi.waitFor(async () => {
+      expect(await backend.list('files')).not.toContain(expired.id);
+    });
+  });
+
+  it('does not await unrelated expired blob deletes during a valid get', async () => {
+    const valid = await store().save(readable('valid'), 'valid.txt');
+    const rawIndex = await backend.read('file', 'index.json');
+    const index = JSON.parse(new TextDecoder().decode(rawIndex)) as { files: Array<Record<string, unknown>> };
+    const expiredAt = new Date(0).toISOString();
+    const blockedId = 'f_blocked';
+    const unrelated = Array.from({ length: 1_000 }, (_, index) => `f_expired_${index}`);
+    const expired = [blockedId, ...unrelated].map((id) => ({
+      id,
+      name: `${id}.txt`,
+      media_type: 'text/plain',
+      size: 1,
+      created_at: expiredAt,
+      expires_at: expiredAt,
+    }));
+    await Promise.all(expired.map((meta) => backend.write('files', meta.id, Buffer.from('x'))));
+    index.files.push(...expired);
+    await backend.write('file', 'index.json', textEncoder.encode(JSON.stringify(index)));
+
+    const ix2 = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.defineInstance(IFileSystemStorageService, backend);
+        reg.define(IBlobStore, BlobStoreService);
+        reg.define(IFileService, FileServiceImpl);
+      },
+    });
+    const reloaded = ix2.get(IFileService);
+    let release = (): void => {};
+    let startedResolve = (): void => {};
+    const started = new Promise<void>((resolve) => { startedResolve = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const originalDelete = BlobStoreService.prototype.delete;
+    const deleteSpy = vi.spyOn(BlobStoreService.prototype, 'delete').mockImplementation(async function (this: BlobStoreService, scope, key) {
+      if (scope === 'files' && key === blockedId) {
+        startedResolve();
+        await gate;
+      }
+      return originalDelete.call(this, scope, key);
+    });
+    try {
+      await expect(reloaded.get(blockedId)).rejects.toMatchObject({ code: FileErrors.codes.FILE_NOT_FOUND });
+      await started;
+      await expect(reloaded.get(valid.id)).resolves.toMatchObject({ meta: { id: valid.id } });
+      release();
+      await vi.waitFor(async () => {
+        expect(await backend.list('files')).not.toContain(unrelated.at(-1));
+      }, { timeout: 5_000 });
+    } finally {
+      release();
+      deleteSpy.mockRestore();
+    }
+  });
+
+  it('retains expired metadata after a failed delete and retries it', async () => {
+    const meta = await store().save(readable('temporary'), 'temporary.bin', { expiresInSec: -1 });
+    const originalDelete = BlobStoreService.prototype.delete;
+    let attempts = 0;
+    let fail = true;
+    const deleteSpy = vi.spyOn(BlobStoreService.prototype, 'delete').mockImplementation(async function (this: BlobStoreService, scope, key) {
+      if (scope === 'files' && key === meta.id) {
+        attempts += 1;
+        if (fail) throw new Error('delete gated');
+      }
+      return originalDelete.call(this, scope, key);
+    });
+    try {
+      await expect(store().get(meta.id)).rejects.toMatchObject({ code: FileErrors.codes.FILE_NOT_FOUND });
+      await vi.waitFor(() => {
+        expect(attempts).toBeGreaterThan(0);
+      });
+      expect(await backend.list('files')).toContain(meta.id);
+      const persisted = JSON.parse(new TextDecoder().decode(await backend.read('file', 'index.json'))) as { files: Array<{ id: string }> };
+      expect(persisted.files.some((file) => file.id === meta.id)).toBe(true);
+      fail = false;
+      await vi.waitFor(() => {
+        expect(attempts).toBeGreaterThan(1);
+      }, { timeout: 5_000 });
+      await vi.waitFor(async () => {
+        expect(await backend.list('files')).not.toContain(meta.id);
+      }, { timeout: 5_000 });
+    } finally {
+      deleteSpy.mockRestore();
+    }
   });
 
   it('throws file.not_found for an unknown id on get', async () => {
@@ -175,6 +264,25 @@ describe('FileServiceImpl', () => {
     }
   });
 
+  it('keeps concurrent save and delete changes in the persisted index', async () => {
+    const first = await store().save(readable('first'), 'first.txt');
+    const [, second] = await Promise.all([
+      store().delete(first.id),
+      store().save(readable('second'), 'second.txt'),
+    ]);
+
+    const ix2 = createServices(disposables, {
+      additionalServices: (reg) => {
+        reg.defineInstance(IFileSystemStorageService, backend);
+        reg.define(IBlobStore, BlobStoreService);
+        reg.define(IFileService, FileServiceImpl);
+      },
+    });
+    const reloaded = ix2.get(IFileService);
+    await expect(reloaded.get(first.id)).rejects.toMatchObject({ code: FileErrors.codes.FILE_NOT_FOUND });
+    await expect(reloaded.get(second.id)).resolves.toMatchObject({ meta: { id: second.id } });
+  });
+
   it('cleans up the blob when the source stream fails mid-upload', async () => {
     const failing = Readable.from((async function* () {
       yield Buffer.from('partial');
@@ -211,6 +319,16 @@ describe('FileServiceImpl', () => {
     const { meta: got, stream } = await reloaded.get(meta.id);
     expect(got.id).toBe(meta.id);
     expect((await readAll(stream())).toString()).toBe('durable');
+  });
+
+  it('checks blob presence by point size, including empty files', async () => {
+    await backend.write('files', 'empty', new Uint8Array());
+    const listSpy = vi.spyOn(backend, 'list');
+    const blobs = new BlobStoreService(backend);
+
+    await expect(blobs.has('files', 'empty')).resolves.toBe(true);
+    await expect(blobs.has('files', 'missing')).resolves.toBe(false);
+    expect(listSpy).not.toHaveBeenCalled();
   });
 
   it('opens ranged streams when the storage backend is file-backed', async () => {
