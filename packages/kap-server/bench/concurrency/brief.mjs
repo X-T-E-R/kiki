@@ -20,6 +20,10 @@ for (const runDir of process.argv.slice(2)) {
     `ws ${String(s.ws.frames)} frames (${r(s.ws.framesPerSec)}/s), ${r(s.ws.bytes / 2 ** 20)} MiB`,
     'http p50/p99/max:',
     ...Object.entries(s.http).map(([k, v]) => `  ${k}: ${r(v.p50)}/${r(v.p99)}/${r(v.max)} n=${String(v.n)} err=${String(v.errors)}${v.firstError ? ` ${v.firstError.slice(0, 120)}` : ''}`),
+    ...(s.newSession ? [`new session create ${d(s.newSession.createMs)}; first ack ${d(s.newSession.firstAckMs)} failures=${String(s.newSession.failures)}`] : []),
+    ...(s.longSessionOpen ? [`long session (${String(s.longSessionOpen.agents)} agents, ${String(s.longSessionOpen.wireMb)} MiB wire) first screen ${d(s.longSessionOpen.firstScreenMs)}; snapshot ${d(s.longSessionOpen.snapshotMs)} failures=${String(s.longSessionOpen.failures)}`] : []),
+    ...(s.bigFileRead ? [`big file Read tail (${String(s.bigFileRead.mb)} MiB) ${d(s.bigFileRead.ms)}`] : []),
+    ...(s.server.residency ? [`residency ${JSON.stringify(s.server.residency)}`] : []),
     `errors ${String(s.errorCount)} ${s.errors.slice(0, 2).map((e) => e.error.slice(0, 160)).join(' | ')}`,
   ];
   console.log(lines.join('\n'));

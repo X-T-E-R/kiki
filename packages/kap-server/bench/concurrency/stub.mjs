@@ -66,7 +66,11 @@ function plan(info) {
     const long = longOutputEvery > 0 && info.turn % longOutputEvery === 0;
     return { tools: [], output: text(long ? longOutputTokens : 120, info.turn), thinking: thinkingTokens };
   }
+  const bigRead = config.bigFile !== undefined && config.bigReadEvery > 0 && info.step === 0 && Number(info.session.slice(1)) % config.bigReadEvery === 0
+    ? [call('BigRead', { path: config.bigFile, line_offset: Math.max(1, config.bigFileLines - 300 - ((info.turn * 7919 + Number(info.session.slice(1)) * 104729) % 2000)), n_lines: 20 })]
+    : [];
   if (cycle === 0) return { tools: [
+    ...bigRead.map((tool) => ({ ...tool, name: 'Read' })),
     call('Read', { path: join(root, 'src', `module${(info.turn + info.step) % 20}.ts`), n_lines: 60 }),
     call('Grep', { pattern: 'value', path: join(root, 'src'), output_mode: 'content', head_limit: 20 }),
     call('Glob', { pattern: '**/*.ts', path: root, head_limit: 30 }),

@@ -1,6 +1,6 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -8,6 +8,8 @@ import { performance } from 'node:perf_hooks';
 
 import type { Klient } from '@kiki/klient';
 import { createKlient } from '@kiki/klient/http';
+
+import { seedLongSession, writeBigFile } from './seed.mts';
 
 const { values: args } = parseArgs({
   options: {
@@ -23,6 +25,12 @@ const { values: args } = parseArgs({
     label: { type: 'string', default: 'run' },
     'no-profile': { type: 'boolean', default: false },
     search: { type: 'boolean', default: false },
+    'long-agents': { type: 'string', default: '900' },
+    'long-wire-mb': { type: 'string', default: '256' },
+    'big-file-mb': { type: 'string', default: '75' },
+    'big-read-every': { type: 'string', default: '10' },
+    'new-session-every': { type: 'string', default: '5' },
+    'long-open-every': { type: 'string', default: '15' },
   },
 });
 
@@ -64,6 +72,79 @@ async function prepare(): Promise<void> {
     }
   }
   for (let s = 0; s < N; s += 1) await writeFile(join(workspaces[s % workspaceCount]!, 'notes', `S${s}.md`), 'state value-0\n');
+  await mkdir(join(runDir, 'ws', 'long'), { recursive: true });
+  if (Number(args['big-file-mb']) > 0) bigFileLines = await writeBigFile(bigFile, Number(args['big-file-mb']) * 1024 * 1024);
+}
+
+const bigFile = join(runDir, 'ws', 'big.jsonl');
+let bigFileLines = 0;
+const newSessions: { createMs: number; ackMs: number; firstRequestMs?: number; ok: boolean; error?: string; at: number }[] = [];
+const longOpens: { readyMs: number; snapshotMs?: number; ok: boolean; error?: string; at: number }[] = [];
+
+async function findSessionDir(sessionId: string): Promise<string> {
+  for (const workspace of await readdir(join(home, 'sessions'))) {
+    const candidate = join(home, 'sessions', workspace, sessionId);
+    if (existsSync(join(candidate, 'state.json'))) return candidate;
+  }
+  throw new Error(`session directory for ${sessionId} not found`);
+}
+
+async function prepareLongSession(admin: Klient): Promise<string> {
+  const session = await admin.rest!.sessions.create({ title: 'perf long session', metadata: { cwd: join(runDir, 'ws', 'long') } as never });
+  await admin.session(session.id).close();
+  const dir = await findSessionDir(session.id);
+  await rm(join(dir, 'agents'), { recursive: true, force: true });
+  await seedLongSession(dir, session.id, join(runDir, 'ws', 'long'), Number(args['long-agents']), Number(args['long-wire-mb']) * 1024 * 1024);
+  return session.id;
+}
+
+async function openLong(klient: Klient, sessionId: string): Promise<void> {
+  const opened = now();
+  let readyMs: number | undefined;
+  let error: string | undefined;
+  await new Promise<void>((done) => {
+    const timer = setTimeout(() => { error = 'timeout'; done(); }, 60_000);
+    const handle = klient.session(sessionId).view.bootstrap!({ transcriptGrades: { '*': 'off', main: 'delta' } }, (signal) => {
+      if (signal.type === 'ready' && readyMs === undefined) { readyMs = now() - opened; clearTimeout(timer); done(); }
+    });
+    void handle;
+    handles.push(handle);
+  });
+  let snapshotMs: number | undefined;
+  if (readyMs !== undefined) {
+    const started = now();
+    try { await klient.session(sessionId).view.snapshot(); snapshotMs = now() - started; } catch (cause) { error = String(cause).slice(0, 200); }
+  }
+  for (const handle of handles.splice(0)) handle.close();
+  longOpens.push({ readyMs: readyMs ?? now() - opened, snapshotMs, ok: readyMs !== undefined && error === undefined, error, at: opened });
+}
+const handles: { close(): void }[] = [];
+
+async function longOpenLoop(klient: Klient, sessionId: string, deadline: number): Promise<void> {
+  const every = Number(args['long-open-every']) * 1000;
+  while (!stopping && now() < deadline) {
+    try { await klient.session(sessionId).close(); } catch (cause) { errors.push({ where: 'long close', error: String(cause).slice(0, 300), at: now() }); }
+    await openLong(klient, sessionId);
+    await delay(every);
+  }
+}
+
+async function newSessionLoop(klient: Klient, deadline: number): Promise<void> {
+  const every = Number(args['new-session-every']) * 1000;
+  let index = 0;
+  while (!stopping && now() < deadline) {
+    index += 1;
+    const started = now();
+    try {
+      const session = await klient.rest!.sessions.create({ title: `perf new ${String(index)}`, metadata: { cwd: workspaces[index % workspaceCount]! } as never });
+      const createMs = now() - started;
+      await klient.session(session.id).agent('main').prompt({ input: [{ type: 'text', text: `[perf N${String(index)}] Say hello.` }] });
+      newSessions.push({ createMs, ackMs: now() - started, ok: true, at: started });
+    } catch (cause) {
+      newSessions.push({ createMs: now() - started, ackMs: now() - started, ok: false, error: String(cause).slice(0, 300), at: started });
+    }
+    await delay(every);
+  }
 }
 
 function waitMessage<T>(child: ChildProcess, type: string): Promise<T> {
@@ -264,7 +345,7 @@ type StubRecord = { session?: string; sub?: string; turn?: number; step?: number
 async function main(): Promise<void> {
   await prepare();
   const stub = fork(join(here, 'stub.mjs'), [], {
-    env: { ...process.env, PERF_STUB_CONFIG: JSON.stringify({ workspaces, ttftMs: Number(args.ttft), tokensPerSec: Number(args.tps), stepsPerTurn: Number(args.steps), subagentEvery: Number(args['subagent-every']) }) },
+    env: { ...process.env, PERF_STUB_CONFIG: JSON.stringify({ workspaces, ttftMs: Number(args.ttft), tokensPerSec: Number(args.tps), stepsPerTurn: Number(args.steps), subagentEvery: Number(args['subagent-every']), bigFile: bigFileLines > 0 ? bigFile : undefined, bigFileLines, bigReadEvery: Number(args['big-read-every']) }) },
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
   const stubReady = await waitMessage<{ port: number }>(stub, 'ready');
@@ -284,13 +365,16 @@ async function main(): Promise<void> {
     const session = await admin.rest!.sessions.create({ title: `perf S${String(s)}`, metadata: { cwd: workspaces[s % workspaceCount]! } as never });
     sessionIds.push(session.id);
   }
+  const longSessionId = await prepareLongSession(admin);
+  console.log(`long session ${longSessionId} seeded with ${args['long-agents']} agents`);
   const runStart = now();
   const deadline = runStart + warmupMs + durationMs;
   const workers = sessionIds.map((_, index) => runSession(makeClient(ready.port, ready.token), index, deadline));
   const guis = Array.from({ length: C }, (_, index) => guiClient(ready.port, ready.token, index, deadline));
+  const probes = [newSessionLoop(makeClient(ready.port, ready.token), deadline), longOpenLoop(makeClient(ready.port, ready.token), longSessionId, deadline)];
   await delay(warmupMs);
   const measureStart = now();
-  samples.length = 0; turns.length = 0; ws.frames = 0; ws.bytes = 0; ws.byType.clear(); ws.lagMs.length = 0;
+  samples.length = 0; turns.length = 0; newSessions.length = 0; longOpens.length = 0; ws.frames = 0; ws.bytes = 0; ws.byType.clear(); ws.lagMs.length = 0;
   const errorBase = errors.length;
   const rssStart = (await (async () => { server.send({ type: 'memory' }); return (await waitMessage<{ memory: NodeJS.MemoryUsage }>(server, 'memory')).memory; })());
   server.send({ type: 'begin' });
@@ -302,7 +386,7 @@ async function main(): Promise<void> {
   const measureEnd = now();
   stopping = true;
   stub.send({ type: 'stop-tools' });
-  await Promise.race([Promise.all([...workers, ...guis, lag]), delay(90_000)]);
+  await Promise.race([Promise.all([...workers, ...guis, ...probes, lag]), delay(90_000)]);
   stub.send({ type: 'collect' });
   const collected = await waitMessage<{ records: StubRecord[]; maxActive: number; clock: number }>(stub, 'records');
   const abs = (t: number) => collected.clock + t;
@@ -355,6 +439,9 @@ async function main(): Promise<void> {
     http: Object.fromEntries([...routes].map(([route, values]) => [route, { ...dist(values.map((v) => v.ms)), errors: values.filter((v) => !v.ok).length, firstError: values.find((v) => !v.ok)?.error }])),
     ws: { frames: ws.frames, bytes: ws.bytes, framesPerSec: ws.frames / ((measureEnd - measureStart) / 1000), byType: Object.fromEntries(ws.byType) },
     driverLagMs: dist(ws.lagMs),
+    newSession: { n: newSessions.length, failures: newSessions.filter((s) => !s.ok).length, createMs: dist(newSessions.map((s) => s.createMs)), firstAckMs: dist(newSessions.map((s) => s.ackMs)), firstError: newSessions.find((s) => !s.ok)?.error },
+    longSessionOpen: { agents: Number(args['long-agents']), wireMb: Number(args['long-wire-mb']), n: longOpens.length, failures: longOpens.filter((o) => !o.ok).length, firstScreenMs: dist(longOpens.map((o) => o.readyMs)), snapshotMs: dist(longOpens.flatMap((o) => o.snapshotMs === undefined ? [] : [o.snapshotMs])), firstError: longOpens.find((o) => !o.ok)?.error },
+    bigFileRead: { mb: Number(args['big-file-mb']), lines: bigFileLines, ms: dist((stats['toolCalls'] as { id: string; ms: number }[]).filter((call) => call.id.includes('_BigRead')).map((call) => call.ms)) },
     errors: errors.slice(errorBase).slice(0, 50), errorCount: errors.length - errorBase,
     windows: stats['windows'],
   };
