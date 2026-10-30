@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -38,6 +38,12 @@ function makeContext(): ISessionContext {
   });
 }
 
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
 describe('resolveCreateDeliveryMode', () => {
   it('uses message only when a persona omitted delivery', () => {
     expect(resolveCreateDeliveryMode({ hasPersona: true })).toBe('message');
@@ -69,6 +75,7 @@ describe('SessionDeliveryService', () => {
 
   afterEach(async () => {
     await disposables.dispose();
+    vi.restoreAllMocks();
   });
 
   it('keeps a stored reply ahead of metadata and does not infer a persona on load', async () => {
@@ -99,6 +106,70 @@ describe('SessionDeliveryService', () => {
     reopened.endTurn();
     expect(reopened.effectiveMode()).toBe('reply');
     await reopened.dispose();
+  });
+
+  it('serializes reverse mode changes and keeps the turn snapshot stable', async () => {
+    const delivery = ix.get(ISessionDeliveryService);
+    await delivery.ready;
+    const documents = ix.get(IAtomicDocumentStore);
+    const originalSet = documents.set.bind(documents);
+    const entered = deferred();
+    const gate = deferred();
+    let blockFirstMessage = true;
+    vi.spyOn(documents, 'set').mockImplementation(async (...args) => {
+      const value = args[2] as { readonly mode?: unknown };
+      if (blockFirstMessage && args[1] === 'delivery.json' && value.mode === 'message') {
+        blockFirstMessage = false;
+        entered.resolve();
+        await gate.promise;
+      }
+      return originalSet(...args);
+    });
+    const changes: Array<'reply' | 'message'> = [];
+    delivery.onDidChange((mode) => changes.push(mode));
+    delivery.beginTurn();
+    const first = delivery.set('message');
+    await entered.promise;
+    const second = delivery.set('reply');
+    let secondDone = false;
+    void second.then(() => { secondDone = true; });
+    await Promise.resolve();
+    expect(secondDone).toBe(false);
+    expect(delivery.mode()).toBe('reply');
+    expect(delivery.effectiveMode()).toBe('reply');
+    gate.resolve();
+    await Promise.all([first, second]);
+    expect(changes).toEqual(['message', 'reply']);
+    expect(delivery.mode()).toBe('reply');
+    expect(delivery.effectiveMode()).toBe('reply');
+    expect(await documents.get(META_SCOPE, 'delivery.json')).toEqual({ mode: 'reply' });
+    expect((await ix.get(ISessionMetadata).read()).delivery).toBe('reply');
+    delivery.endTurn();
+  });
+
+  it('rolls back metadata after a failed second document write and can retry', async () => {
+    const delivery = ix.get(ISessionDeliveryService);
+    await delivery.ready;
+    await delivery.set('message');
+    const documents = ix.get(IAtomicDocumentStore);
+    const metadata = ix.get(ISessionMetadata);
+    const originalSet = documents.set.bind(documents);
+    let failMetadataWrite = true;
+    vi.spyOn(documents, 'set').mockImplementation(async (...args) => {
+      if (failMetadataWrite && args[1] === 'state.json') {
+        failMetadataWrite = false;
+        throw new Error('metadata unavailable');
+      }
+      return originalSet(...args);
+    });
+    await expect(delivery.set('reply')).rejects.toThrow('metadata unavailable');
+    expect(delivery.mode()).toBe('message');
+    expect(await documents.get(META_SCOPE, 'delivery.json')).toEqual({ mode: 'message' });
+    expect((await metadata.read()).delivery).toBe('message');
+    await delivery.set('reply');
+    expect(delivery.mode()).toBe('reply');
+    expect(await documents.get(META_SCOPE, 'delivery.json')).toEqual({ mode: 'reply' });
+    expect((await metadata.read()).delivery).toBe('reply');
   });
 
   it('uses custom delivery only when metadata has no delivery field', async () => {

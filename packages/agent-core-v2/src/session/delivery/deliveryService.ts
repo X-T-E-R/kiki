@@ -28,6 +28,7 @@ export class SessionDeliveryService extends Service implements ISessionDeliveryS
   readonly ready: Promise<void>;
   private current: SessionDeliveryMode = DEFAULT_MODE;
   private activeMode?: SessionDeliveryMode;
+  private mutationQueue: Promise<void> = Promise.resolve();
 
   constructor(
     @ISessionContext private readonly context: ISessionContext,
@@ -56,21 +57,34 @@ export class SessionDeliveryService extends Service implements ISessionDeliveryS
     if (previous !== undefined && previous !== this.current) this.effectiveChanged.fire(this.current);
   }
 
-  async set(mode: SessionDeliveryMode): Promise<void> {
-    await this.ready;
-    if (mode !== 'reply' && mode !== 'message') throw new TypeError(`Invalid session delivery mode: ${String(mode)}`);
-    if (mode === this.current) return;
-    const previous = this.current;
-    try {
-      await this.documents.set(this.context.metaScope, DELIVERY_KEY, { mode });
-      await this.metadata.update({ delivery: mode }, { touchUpdatedAt: false });
-    } catch (error) {
-      await this.documents.set(this.context.metaScope, DELIVERY_KEY, { mode: previous }).catch(() => undefined);
-      throw error;
-    }
-    this.current = mode;
-    this.changed.fire(mode);
-    if (this.activeMode === undefined) this.effectiveChanged.fire(mode);
+  set(mode: SessionDeliveryMode): Promise<void> {
+    return this.enqueueMutation(async () => {
+      await this.ready;
+      if (mode !== 'reply' && mode !== 'message') throw new TypeError(`Invalid session delivery mode: ${String(mode)}`);
+      if (mode === this.current) return;
+      const previous = this.current;
+      let metadataWriteAttempted = false;
+      try {
+        await this.documents.set(this.context.metaScope, DELIVERY_KEY, { mode });
+        metadataWriteAttempted = true;
+        await this.metadata.update({ delivery: mode }, { touchUpdatedAt: false });
+      } catch (error) {
+        await this.documents.set(this.context.metaScope, DELIVERY_KEY, { mode: previous }).catch(() => undefined);
+        if (metadataWriteAttempted) {
+          await this.metadata.update({ delivery: previous }, { touchUpdatedAt: false }).catch(() => undefined);
+        }
+        throw error;
+      }
+      this.current = mode;
+      this.changed.fire(mode);
+      if (this.activeMode === undefined) this.effectiveChanged.fire(mode);
+    });
+  }
+
+  private enqueueMutation(work: () => Promise<void>): Promise<void> {
+    const run = this.mutationQueue.then(work, work);
+    this.mutationQueue = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   private async load(): Promise<void> {
