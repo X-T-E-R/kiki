@@ -60,6 +60,7 @@ describe('mailbox receipt recovery with real lifecycle', () => {
       const senderRun = await sender.accessor.get(IAgentPromptService).enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'Finish work' }], toolCalls: [], origin: { kind: 'user' } } });
       await expect(senderRun.completion).resolves.toMatchObject({ state: 'completed', result: { type: 'completed' } });
       await sender.accessor.get(IWireService).flush();
+      await vi.waitFor(async () => { expect((await host.get(ISessionMetadata).read()).agents?.['sender']).toMatchObject({ status: 'completed', resultSummary: 'Sender finished' }); });
       await host.get(ISessionMetadata).updateAgent('sender', (meta) => ({ ...meta, status: 'completed', resultSummary: 'Finished work', completedAt: 1 }));
       await lifecycle.remove('sender');
       expect(lifecycle.get('sender')).toBeUndefined();
