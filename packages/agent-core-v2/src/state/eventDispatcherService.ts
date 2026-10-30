@@ -604,7 +604,9 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       const sameGeneration = envelope.wire.storeGeneration !== undefined &&
         envelope.wire.storeGeneration === wire.storeGeneration;
       const generationChanged = envelope.wire.storeGeneration !== undefined && !sameGeneration;
-      const exact = headMatches && !generationChanged && wire.size === envelope.wire.size &&
+      const unboundBoundaryOnly = envelope.wire.storeGeneration === undefined &&
+        envelope.wire.boundarySha256 !== undefined && !isSha256(envelope.wire.prefixSha256);
+      const exact = headMatches && !generationChanged && !unboundBoundaryOnly && wire.size === envelope.wire.size &&
         wire.mtimeMs === envelope.wire.mtimeMs;
       let tailByte: number | undefined;
       if (!exact) {

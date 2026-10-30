@@ -56,6 +56,12 @@ class CountingStorage extends InMemoryStorageService {
   }
 }
 
+class PinnedMtimeStorage extends InMemoryStorageService {
+  override async mtime(): Promise<number | undefined> {
+    return 1_700_000_000_000;
+  }
+}
+
 let disposables = new DisposableStore();
 beforeEach(() => {
   disposables = new DisposableStore();
@@ -196,8 +202,7 @@ async function checkpointed(): Promise<Harness> {
   return first;
 }
 
-async function largeCheckpoint(): Promise<{ readonly storage: InMemoryStorageService; readonly size: number }> {
-  const storage = new InMemoryStorageService();
+async function largeCheckpoint(storage = new InMemoryStorageService()): Promise<{ readonly storage: InMemoryStorageService; readonly size: number }> {
   const first = harness(storage);
   await seed(first.wire);
   for (let index = 0; index < 32; index += 1) {
@@ -566,6 +571,36 @@ describe('replay checkpoint tail', () => {
     expect(reads.tails).toEqual([]);
     expect(size).toBeGreaterThan(64 * 1024);
     expect(texts(restored.state).at(-1)).toBe('legacy-append');
+  });
+
+  it.each([false, true])('replays an unbound boundary-only checkpoint on the exact stat path, then rewrite=%s', async (rewrite) => {
+    const { storage } = await largeCheckpoint(new PinnedMtimeStorage());
+    const docs = harness(storage).docs;
+    const saved = await docs.get<{ wire: Record<string, unknown> }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    expect(saved?.wire['boundarySha256']).toMatch(/^[a-f0-9]{64}$/);
+    expect(saved?.wire['prefixSha256']).toBeUndefined();
+    const { storeGeneration: _dropped, ...legacyWire } = saved!.wire;
+    await docs.set(CHECKPOINT_SCOPE, CHECKPOINT_KEY, { ...saved, wire: legacyWire });
+    const store = new AppendLogStore(storage);
+    if (rewrite) {
+      const records: unknown[] = [];
+      for await (const record of store.read(SCOPE, AGENT_WIRE_RECORD_KEY)) records.push(record);
+      await store.rewrite(SCOPE, AGENT_WIRE_RECORD_KEY, JSON.parse(JSON.stringify(records).replace('bulk-16-', 'EDIT-16-')) as unknown[]);
+    }
+
+    const restored = harness(storage);
+    const reads = watchReads(restored.wire);
+    await restored.dispatcher.restore();
+    expect(reads.full).toBe(1);
+    expect(texts(restored.state)).toContain(`${rewrite ? 'EDIT' : 'bulk'}-16-${'x'.repeat(8192)}`);
+    expect(texts(restored.state)).not.toContain(`${rewrite ? 'bulk' : 'EDIT'}-16-${'x'.repeat(8192)}`);
+    await expect(restored.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+    const upgraded = await docs.get<{ wire: { storeGeneration?: string } }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    expect(upgraded?.wire.storeGeneration).toBe(await store.generation(SCOPE, AGENT_WIRE_RECORD_KEY));
+    const again = harness(storage);
+    const againReads = watchReads(again.wire);
+    await again.dispatcher.restore();
+    expect(againReads.full).toBe(0);
   });
 
   it('hashes only the bytes appended since the previous prefix digest', async () => {
