@@ -426,7 +426,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
         {shippedEntry !== undefined ? <ShippedProfileControls entry={shippedEntry} profile={profile}
           onRestored={() => { onSaved(profile); pingSaved(); }}
           onError={(error) => setFeedback({ tone: 'error', text: errorText(locale, error) })} /> : null}
-        <Toggle label={t('st.namedAgents.enabled')} checked={!profile.disabled} disabled={toggleSaving}
+        <Toggle layout="bare" label={t('st.namedAgents.enabled')} checked={!profile.disabled} disabled={toggleSaving}
           onChange={(enabled) => { void onToggleEnabled(enabled).catch((error: unknown) => setFeedback({ tone: 'error', text: errorText(locale, error) })); }} />
         <button type="button" className={SECONDARY_BUTTON} onClick={onDuplicate}>{t('st.profiles.duplicate')}</button>
         <button type="button" className={SECONDARY_BUTTON} disabled={newSessionBlocked} onClick={onNewSession}>{t('st.namedAgents.newSession')}</button>

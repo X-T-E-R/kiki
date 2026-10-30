@@ -665,7 +665,7 @@ describe('direct remote settings control operations', () => {
     await click('[data-space-settings-failed] button');
     expect(localMeta).toHaveBeenCalledTimes(2);
     expect(homes.detail).toHaveBeenCalledWith('h-paper');
-    expect(document.querySelector('[data-space-settings-name]')?.textContent).toBe('Paper');
+    expect(document.querySelector('[data-detail-heading]')?.textContent).toContain('Paper');
     for (const spy of Object.values(remote.homes)) expect(spy).not.toHaveBeenCalled();
   });
 

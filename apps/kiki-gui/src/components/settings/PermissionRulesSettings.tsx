@@ -105,18 +105,16 @@ export function PermissionRulesSettings() {
     setFeedback(null);
   };
 
-  return <SectionCard id="st-card-permission-rules" title={t('st.perm.rulesTitle')}>
+  return <SectionCard id="st-card-permission-rules" title={t('st.perm.rulesTitle')}
+    actions={<button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data || editing !== null}
+      onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>{t('st.perm.add')}</button>}>
     <div className="space-y-3" data-permission-rules>
       <Hint>{t('st.perm.rulesHint')}</Hint>
       {configQuery.isLoading ? <Hint>{t('st.perm.loading')}</Hint> : rules.length === 0
-        ? <ListEmpty kind="none" title={t('st.perm.rulesEmpty')} />
+        ? (editing === null ? <ListEmpty kind="none" title={t('st.perm.rulesEmpty')} /> : null)
         : <>
           <ListToolbar view={view} total={ruleItems.length} filters={filters}
-            searchLabel={t('st.perm.search')} searchPlaceholder={t('st.perm.searchPlaceholder')}
-            actions={
-              <button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data}
-                onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>{t('st.perm.add')}</button>
-            } />
+            searchLabel={t('st.perm.search')} searchPlaceholder={t('st.perm.searchPlaceholder')} />
           {view.visible.length === 0 ? (
             <ListEmpty kind="no-match" title={t('st.perm.noMatchTitle')}
               body={view.query.trim() !== '' ? t('st.perm.noMatches', { query: view.query.trim() }) : undefined}
@@ -156,15 +154,7 @@ export function PermissionRulesSettings() {
               }} />
           )}
         </>}
-      {rules.length === 0 ? (
-        <div className="flex items-center gap-3">
-          <button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data}
-            onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>{t('st.perm.add')}</button>
-          <SaveStatus saving={saving} saved={saved} />
-        </div>
-      ) : (
-        <SaveStatus saving={saving} saved={saved} />
-      )}
+      <SaveStatus saving={saving} saved={saved} />
       {/* A rule is four fields: it edits in place under its row, not in a
           dialog. Adding sits under the list; editing sits under the row itself. */}
       {editing !== null && editing.index === null ? <RuleEditor
@@ -189,10 +179,10 @@ function RuleEditor({ editing, dirty, saving, patternIssue, feedback, onUpdate, 
   onCancel: () => void;
 }) {
   const { t } = useI18n();
+  const emptyPattern = editing.draft.pattern.trim() === '';
   return (
-    <InlineEditor open lazy className="mt-1">
-      <div className="space-y-3" data-permission-rule-editor>
-        <h2 className="text-[13px] font-semibold text-ink">{editing.index === null ? t('st.perm.addTitle') : t('st.perm.editTitle')}</h2>
+    <InlineEditor open lazy className="mt-1 bg-transparent p-0 pl-3">
+      <div className="space-y-3 py-1" data-permission-rule-editor>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.pattern')}</span>
             <input data-autofocus className={INPUT} value={editing.draft.pattern} onChange={(event) => onUpdate({ pattern: event.target.value })}
@@ -212,7 +202,7 @@ function RuleEditor({ editing, dirty, saving, patternIssue, feedback, onUpdate, 
         </div>
         {editing.draft.scope === 'session-runtime' ? <Hint>{t('st.perm.sessionScopeHint')}</Hint> : null}
         <div className="flex flex-wrap items-center gap-2 pt-1" data-settings-draft="permission-rule" data-dirty={dirty ? 'true' : undefined}>
-          <button type="button" className={PRIMARY_BUTTON} disabled={!dirty || saving || patternIssue} onClick={onSave}>
+          <button type="button" className={PRIMARY_BUTTON} disabled={!dirty || saving || patternIssue || emptyPattern} onClick={onSave}>
             {saving ? t('common.saving') : editing.index === null ? t('st.perm.add') : t('common.save')}
           </button>
           <button type="button" data-settings-discard="permission-rule" className={SECONDARY_BUTTON} disabled={saving} onClick={onCancel}>{t('common.cancel')}</button>

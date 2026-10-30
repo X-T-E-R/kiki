@@ -466,28 +466,9 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
           <>
             {/* A short list needs no filter or sort: the create entries sit on
                 the card head then, the toolbar only when the list earns it. */}
-            {ordered.length < 8 ? (
-              <div className="flex items-center justify-end gap-2">
-                {!sub ? (
-                  <>
-                    <button type="button" data-space-new className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`} onClick={() => { setPanel({ kind: 'create' }); }}>
-                      <Icon name="plus" size={12} />{t('st.spaces.new')}
-                    </button>
-                    <button type="button" data-space-attach-open className={SECONDARY_BUTTON} onClick={() => { setPanel({ kind: 'attach' }); }}>{t('st.spaces.attach')}</button>
-                  </>
-                ) : null}
-              </div>
-            ) : (
+            {ordered.length < 8 ? null : (
               <ListToolbar view={view} total={ordered.length} filters={filters} sorts={sorts}
-                searchLabel={t('st.spaces.search')} searchPlaceholder={t('st.spaces.searchPlaceholder')}
-                actions={!sub ? (
-                  <>
-                    <button type="button" data-space-new className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`} onClick={() => { setPanel({ kind: 'create' }); }}>
-                      <Icon name="plus" size={12} />{t('st.spaces.new')}
-                    </button>
-                    <button type="button" data-space-attach-open className={SECONDARY_BUTTON} onClick={() => { setPanel({ kind: 'attach' }); }}>{t('st.spaces.attach')}</button>
-                  </>
-                ) : undefined} />
+                searchLabel={t('st.spaces.search')} searchPlaceholder={t('st.spaces.searchPlaceholder')} />
             )}
             {view.visible.length === 0 ? (
               <ListEmpty kind="no-match" title={t('st.spaces.noMatchTitle')}
@@ -520,23 +501,33 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
       <DetailBack label={t('st.spaces.listTitle')} onClick={detail.close} data={{ 'data-space-detail-back': '' }} />
     </div>
     <div className="flex min-w-0 items-start justify-between gap-3">
-      <h3 data-detail-heading tabIndex={-1} className="flex min-w-0 items-center gap-2 font-display text-[18px] font-semibold text-ink outline-none">
-        <SpaceDot color={detailSpace.id === MAIN_SPACE_ID ? 'var(--color-ink-faint)' : detailSpace.color} />
-        <span className="min-w-0 break-words">{spaceLabel(detailSpace)}</span>
-      </h3>
+      <div className="min-w-0">
+        <h3 data-detail-heading tabIndex={-1} className="flex min-w-0 items-center gap-2 font-display text-[18px] font-semibold text-ink outline-none">
+          <SpaceDot color={detailSpace.id === MAIN_SPACE_ID ? 'var(--color-ink-faint)' : detailSpace.color} />
+          <span className="min-w-0 break-words">{spaceLabel(detailSpace)}</span>
+        </h3>
+        <p className="mt-0.5 truncate text-[12px] text-ink-faint" title={detailSpace.path}>{detailSpace.path}</p>
+      </div>
       <button type="button" onClick={detail.close} aria-label={t('common.close')} title={t('common.close')} data-detail-close
         className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink md:flex">
         <Icon name="close" size={14} />
       </button>
     </div>
-    <p className="break-all font-mono text-[11.5px] text-ink-faint">{detailSpace.path}</p>
     <SpaceSettingsDetail
       target={target === null ? null : { ...target, identity: { ...target.identity, homeId: detailSpace.id } }}
       name={spaceLabel(detailSpace)} />
   </div>;
 
   return (
-    <SectionCard id="st-card-spaces" title={t('st.spaces.listTitle')} scope="server">
+    <SectionCard id="st-card-spaces" title={t('st.spaces.listTitle')} scope="server"
+      actions={!sub ? (
+        <div className="flex items-center gap-2">
+          <button type="button" data-space-new className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`} onClick={() => { setPanel({ kind: 'create' }); }}>
+            <Icon name="plus" size={12} />{t('st.spaces.new')}
+          </button>
+          <button type="button" data-space-attach-open className={SECONDARY_BUTTON} onClick={() => { setPanel({ kind: 'attach' }); }}>{t('st.spaces.attach')}</button>
+        </div>
+      ) : undefined}>
       <DetailSplit selected={detailSpace?.id ?? null} label={t('st.spaces.listTitle')}
         data={{ 'data-spaces-split': '' }} list={listContent} rail={rail} detail={spaceDetail} />
 

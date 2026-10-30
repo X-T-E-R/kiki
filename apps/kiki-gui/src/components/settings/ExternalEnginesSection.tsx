@@ -260,7 +260,7 @@ export function ExternalEnginesList() {
         themselves when a check lands elsewhere (the detail's recheck). */}
   </div>;
   const rail = <DetailRailGroup label={t('st.engines.title')} count={engines.length}>
-    {engines.map((item) => <DetailRailItem key={item.id} itemKey={item.id} label={item.label} hint={item.id}
+    {engines.map((item) => <DetailRailItem key={item.id} itemKey={item.id} label={item.label}
       current={item.id === detailItem?.id} onSelect={() => { engineDetail.open(item.id); }} />)}
   </DetailRailGroup>;
   const detail = detailItem === undefined ? null : <EngineDetailPane item={detailItem} overrides={overrides} display={display}
@@ -633,7 +633,7 @@ function EngineRunMode({ item, savedDefaults, onSaved, variant }: {
   );
 }
 
-function EngineOverrides({ item, program, onCheck }: { item: ExecutorCatalogItem; program?: string; onCheck: () => Promise<ExecutorCheckResult | undefined> }) {
+function EngineOverrides({ item, program, onCheck, children }: { item: ExecutorCatalogItem; program?: string; onCheck: () => Promise<ExecutorCheckResult | undefined>; children?: React.ReactNode }) {
   const { client, scopeId, meta } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
@@ -755,6 +755,7 @@ function EngineOverrides({ item, program, onCheck }: { item: ExecutorCatalogItem
         </button>
         <span className="text-[12px] text-ink-faint">{t('st.engines.override.recheck')}</span>
       </div>
+      {children}
       <FeedbackLine feedback={feedback} />
     </details>
   );
@@ -863,7 +864,6 @@ function EngineRow({ item, overrides, display, fault, onOpen }: {
         <span className="min-w-0 flex-1">
           <span className="flex min-w-0 items-baseline gap-2">
             <span className="truncate text-[13px] font-medium text-ink">{item.label}</span>
-            <span className="hidden truncate font-mono text-[11px] text-ink-faint sm:inline">{item.id}</span>
           </span>
           <span data-engine-summary className="block truncate text-[12px] text-ink-faint">{summaryFacts.join(' · ')}</span>
         </span>
@@ -1123,11 +1123,8 @@ function EngineDetailPane({ item, overrides, display, onClose, onFault, onRegist
                   </ul>
                 </div>
               ) : null}
-              <details data-engine-capabilities className="group/caps [&[open]]:space-y-2">
-                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-ink-soft [&::-webkit-details-marker]:hidden">
-                  <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/caps:rotate-90" />
-                  {t('st.engines.capabilities')}
-                </summary>
+              <EngineOverrides item={item} program={program} onCheck={runCheck}>
+                <div className="space-y-1.5 pt-3">
                 <dl className="space-y-1.5">
                   <Fact label={t('st.engines.cap.prompt')} dataFact="cap-prompt">
                     {caps === undefined ? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>
@@ -1163,8 +1160,8 @@ function EngineDetailPane({ item, overrides, display, onClose, onFault, onRegist
                   ) : null}
                 </dl>
                 <p className="text-[12px] leading-4 text-ink-faint">{t(caps?.negotiated !== undefined ? 'st.engines.capsNegotiated' : 'st.engines.capsDeclared')}</p>
-              </details>
-              <EngineOverrides item={item} program={program} onCheck={runCheck} />
+              </div>
+              </EngineOverrides>
               <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.configHint')}</p>
             </section>
 

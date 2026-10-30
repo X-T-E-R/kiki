@@ -179,9 +179,9 @@ describe('external engine enable proof', () => {
           + `<body class="bg-canvas text-ink"><div style="width:${width}px;padding:16px">${container.innerHTML}</div></body></html>`,
         );
         await page.addStyleTag({ path: join(assets, cssName) });
-        const idBox = await page.locator('[data-engine-row="codex-app-server"] [data-engine-open] .font-mono').boundingBox();
-        if (width === 1280) expect(idBox).not.toBeNull();
-        else expect(idBox).toBeNull();
+        // The raw id no longer rides beside the name (#14); the label box is the row's anchor.
+        const labelBox = await page.locator('[data-engine-row="codex-app-server"] [data-engine-open] .font-medium').boundingBox();
+        expect(labelBox).not.toBeNull();
         expect(await page.locator('[data-engine-row="missing-acp"] [data-engine-status]').getAttribute('data-engine-status')).toBe('missing');
         const overflow = await page.evaluate(() => ({
           doc: document.documentElement.scrollWidth,
