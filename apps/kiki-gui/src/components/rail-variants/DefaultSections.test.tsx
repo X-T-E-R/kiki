@@ -231,7 +231,7 @@ describe('CapabilitiesBlock', () => {
     expect(readCapabilities).not.toHaveBeenCalled();
     expect(getUsage).not.toHaveBeenCalled();
     expect(head.getAttribute('aria-expanded')).toBe('false');
-    expect(head.textContent).toContain('能力');
+    expect(head.textContent).toContain('它能用什么');
     expect(container.querySelector('[data-agent-capabilities-section]')).toBeNull();
     expect(container.querySelector('[data-rail-plugin="demo"]')).toBeNull();
 

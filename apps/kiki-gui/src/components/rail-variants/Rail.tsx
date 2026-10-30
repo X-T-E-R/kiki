@@ -265,27 +265,25 @@ function RosterSummaryChapter({
   const open = openFilter !== null;
   return (
     <section data-inspector-agents="">
-      <div className="flex min-h-7 items-center gap-1">
+      <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
         <button
           type="button"
           aria-expanded={open}
           onClick={() => { setOpenFilter(open ? null : 'all'); }}
-          className="group -mx-1.5 flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+          className="group -mx-1.5 flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
         >
           <span className={INSPECTOR_HEAD}>{t('rail.group.agents')}</span>
           <span className="shrink-0 text-[12px] text-ink-faint tabular-nums">{rosterCount}</span>
           <DisclosureChevron open={open} />
-          {!open ? (
-            <span className="ml-auto min-w-0 overflow-hidden pl-2">
-              <RosterSummary
-                counts={model.counts}
-                filter="all"
-                onFilter={(bucket) => { setOpenFilter(bucket); }}
-              />
-            </span>
-          ) : <span className="flex-1" />}
         </button>
-        {actions}
+        {!open ? (
+          <RosterSummary
+            counts={model.counts}
+            filter="all"
+            onFilter={(bucket) => { setOpenFilter(bucket); }}
+          />
+        ) : null}
+        {actions !== undefined ? <span className="ml-auto">{actions}</span> : null}
       </div>
       {open ? (
         <div className="pt-1">
@@ -592,18 +590,20 @@ export function Rail({
       id="rail-todos"
       className={`space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [&_[data-agent-notes-state=empty]]:hidden [&_[data-agent-panel-part=work]:has([data-agent-notes-state=empty]):not(:has([data-agent-hooks-section],[data-agent-plan],[data-agent-plan-error]))]:hidden [&:has([data-agent-notes-state=empty]):not(:has([data-rail-todos],[data-agent-hooks-section],[data-agent-plan],[data-agent-plan-error]))]:hidden [&_[data-agent-todo-section]]:hidden [&_[data-agent-todos-status]]:hidden`}
     >
-      <RailTodos sessionId={state.sessionId} agentId={focusedAgentId} state={state} />
-      <AgentPanelContainer key={`work:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} part="work" />
-      {backgroundTasksSection}
-      <div className="empty:hidden">
-        <SessionCronSection sessionId={state.sessionId} />
-      </div>
-      <ActivityFeed blocks={state.blocks} forest={forest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
-      {memory !== undefined ? (
-        <RailSection title={memory.title} count={memory.count} data-inspector-memory="">
-          {memory.content}
-        </RailSection>
-      ) : null}
+      <RailSection title={t('rail.group.record')} data-rail-group="record">
+        <RailTodos sessionId={state.sessionId} agentId={focusedAgentId} state={state} />
+        <AgentPanelContainer key={`work:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} part="work" />
+        {backgroundTasksSection}
+        <div className="empty:hidden">
+          <SessionCronSection sessionId={state.sessionId} />
+        </div>
+        <ActivityFeed blocks={state.blocks} forest={forest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
+        {memory !== undefined ? (
+          <RailSection title={memory.title} count={memory.count} data-inspector-memory="">
+            {memory.content}
+          </RailSection>
+        ) : null}
+      </RailSection>
     </div>
   );
   // What the focused agent may use: observation tabs beside the session's own
@@ -665,31 +665,35 @@ export function Rail({
   ) : null;
   const sessionSection = session !== undefined ? (
     <div className="space-y-3">
-      <RailSection
-        title={t('inspector.sessionInfo')}
-        summary={residentDirName(session.metadata.cwd) ?? t('rail.sessionNoName')}
-        defaultOpen={false}
-        data-inspector-session=""
-      >
-        <dl>
-          <InspectorRow label={t('rail.directory')} title={session.metadata.cwd} mono>{session.metadata.cwd}</InspectorRow>
-          {session.message_count > 0 ? <InspectorRow label={t('rail.messages')}>{String(session.message_count)}</InspectorRow> : null}
-          <InspectorRow label={t('rail.updatedRow')}><RelativeTime at={session.updated_at} /></InspectorRow>
-        </dl>
+      <RailSection title={t('rail.group.session')} data-rail-group="session">
+        <div className="space-y-3">
+          <RailSection
+            title={t('inspector.sessionInfo')}
+            summary={residentDirName(session.metadata.cwd) ?? t('rail.sessionNoName')}
+            defaultOpen={false}
+            data-inspector-session=""
+          >
+            <dl>
+              <InspectorRow label={t('rail.directory')} title={session.metadata.cwd} mono>{session.metadata.cwd}</InspectorRow>
+              {session.message_count > 0 ? <InspectorRow label={t('rail.messages')}>{String(session.message_count)}</InspectorRow> : null}
+              <InspectorRow label={t('rail.updatedRow')}><RelativeTime at={session.updated_at} /></InspectorRow>
+            </dl>
+          </RailSection>
+          <div className="empty:hidden">
+            <PersonaSettingsUpdate sessionId={state.sessionId} />
+          </div>
+          {show.comms ? <InspectorComms sessionId={session.id} /> : null}
+          <div className="empty:hidden">
+            <SessionChannelsRail
+              sessionId={state.sessionId}
+              sessionTitle={session?.title}
+              personaId={session.agent_config?.persona?.name ? session.agent_config.profile : undefined}
+              personaName={session.agent_config?.persona?.name}
+              onOpenSettings={() => { void navigate('/settings/notifications'); }}
+            />
+          </div>
+        </div>
       </RailSection>
-      <div className="empty:hidden">
-        <PersonaSettingsUpdate sessionId={state.sessionId} />
-      </div>
-      {show.comms ? <InspectorComms sessionId={session.id} /> : null}
-      <div className="empty:hidden">
-        <SessionChannelsRail
-          sessionId={state.sessionId}
-          sessionTitle={session?.title}
-          personaId={session.agent_config?.persona?.name ? session.agent_config.profile : undefined}
-          personaName={session.agent_config?.persona?.name}
-          onOpenSettings={() => { void navigate('/settings/notifications'); }}
-        />
-      </div>
     </div>
   ) : null;
   const needsYouSection = sessionPending !== undefined && sessionPending.length > 0 ? (

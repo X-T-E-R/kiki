@@ -439,7 +439,7 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
   return (
     <section data-rail-capabilities="">
       <FoldHead
-        title={t('rail.capabilities.title')}
+        title={t('rail.group.capabilities')}
         summary={summary}
         open={open}
         onToggle={() => { setOpen((value) => !value); }}
