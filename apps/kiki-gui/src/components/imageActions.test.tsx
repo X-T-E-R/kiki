@@ -6,7 +6,7 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import { HostProvider, browserHost } from '../host';
 import { I18nProvider } from '../i18n';
 import { MediaLightbox, mediaSourceLabel } from './MediaLightbox';
-import { copyImageBitmap, hostActionPath, imageMenuEntries, isRemoteConnection, localImagePath, resolveImageMime, sniffImageMime } from './imageActions';
+import { copyImageBitmap, hostActionPath, imageMenuEntries, isRemoteConnection, localImagePath, resolveImageMime, saveMediaToDisk, sniffImageMime, type MediaDownloadClient } from './imageActions';
 import type { MiniMenuEntry as MenuEntry } from './MiniContextMenu';
 
 function keys(entries: readonly MenuEntry[]): string[] {
@@ -77,6 +77,61 @@ describe('image action targets', () => {
       canCopyImage: true, canSave: true, annotated: false, onCopyImage: async () => {}, onSave() {},
     });
     expect(keys(canonical)).toEqual(['copy-image', '|', 'save-image']);
+  });
+});
+
+describe('saveMediaToDisk', () => {
+  const sinkWrites: number[][] = [];
+  beforeEach(() => { sinkWrites.length = 0; });
+  function fakeSink() {
+    return {
+      streaming: true,
+      async write(chunk: Uint8Array) { sinkWrites.push([...chunk]); },
+      async close() { return true; },
+      async abort() {},
+    };
+  }
+  function clientWith(chunks: readonly number[][]): MediaDownloadClient {
+    return {
+      readingOptions: () => ({ timeoutMs: 0 }),
+      async downloadSessionMedia(_s, _f, sink) { for (const c of chunks) await sink(new Uint8Array(c), { bytes: 0 }); },
+      async downloadHostFile(_p, sink) { for (const c of chunks) await sink(new Uint8Array(c), { bytes: 0 }); },
+    };
+  }
+
+  it('streams a session-media id into the host save sink', async () => {
+    const openSaveSink = vi.fn(async () => fakeSink());
+    await saveMediaToDisk({ fileId: 'file-1' }, 'shot.png', { openSaveSink }, clientWith([[1, 2], [3]]), 'session-1');
+    expect(openSaveSink).toHaveBeenCalledWith('shot.png');
+    expect(sinkWrites).toEqual([[1, 2], [3]]);
+  });
+
+  it('streams a host path into the host save sink', async () => {
+    const host = { openSaveSink: vi.fn(async () => fakeSink()) };
+    await saveMediaToDisk({ path: 'C:/shot.png' }, 'shot.png', host, clientWith([[9]]), 'session-1');
+    expect(host.openSaveSink).toHaveBeenCalledWith('shot.png');
+    expect(sinkWrites).toEqual([[9]]);
+  });
+
+  it('saves a ready url through the desktop saveBlob when present', async () => {
+    const saveBlob = vi.fn(async () => true);
+    const bytes = bytesOfPng();
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob([bytes as BlobPart], { type: 'image/png' }) })));
+    const saved = await saveMediaToDisk({ url: 'data:image/png;base64,x' }, 'shot.png', { saveBlob }, undefined, 'session-1');
+    expect(saved).toBe(true);
+    expect(saveBlob).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
+
+  it('returns false when the user cancels the save picker', async () => {
+    const openSaveSink = vi.fn(async () => null);
+    const saved = await saveMediaToDisk({ fileId: 'file-1' }, 'shot.png', { openSaveSink }, clientWith([[1]]), 'session-1');
+    expect(saved).toBe(false);
+    expect(sinkWrites).toEqual([]);
+  });
+
+  it('throws when the reference has no readable source', async () => {
+    await expect(saveMediaToDisk({}, 'shot.png', {}, undefined, 'session-1')).rejects.toThrow('no readable source');
   });
 });
 

@@ -367,7 +367,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
       {saveFailed ? <div role="alert" className="text-sm text-shell-ink">{t('media.annotationSaveFailed')}</div> : null}
       <div ref={scroller} tabIndex={0} data-lightbox-viewport={mode} aria-label={label}
         {...pan.handlers}
-        onContextMenu={(event) => { if (src === undefined) return; event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setMenu({ x: event.clientX || rect.left, y: event.clientY || rect.top }); }}
+        onContextMenu={(event) => { if (src === undefined) return; event.preventDefault(); event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setMenu({ x: event.clientX || rect.left, y: event.clientY || rect.top }); }}
         onKeyDown={(event) => {
           if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
             event.preventDefault();

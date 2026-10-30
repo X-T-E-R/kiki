@@ -2,6 +2,8 @@ import { useEffect, useRef, useSyncExternalStore } from 'react';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { copyImageToClipboard, copyTextToClipboard, isPngBlob, readBlobBytes } from '../lib/clipboard';
+import { browserSaveSink, bufferedSaveSink } from '../host/saveSink';
+import type { HostSaveSink } from '../host/host';
 import type { MiniMenuEntry } from './MiniContextMenu';
 
 const COPY_IMAGE = 'media.copyImage' as I18nKey;
@@ -80,6 +82,73 @@ export function useMediaReady(key: string | undefined, onReady: () => void): voi
     seen.current = { key, generation };
     onReadyRef.current();
   }, [key, generation]);
+}
+
+/**
+ * The subset of the GUI client a media save reads from: the same canonical and
+ * host download entry points the lightbox and attachment dialog already use.
+ */
+export interface MediaDownloadClient {
+  readingOptions(): { timeoutMs: number };
+  downloadSessionMedia(sessionId: string, fileId: string, sink: (chunk: Uint8Array, progress: { bytes: number; totalBytes?: number }) => Promise<void>, options?: { signal?: AbortSignal }): Promise<unknown>;
+  downloadHostFile(path: string, sink: (chunk: Uint8Array, progress: { bytes: number; totalBytes?: number }) => Promise<void>, options?: { signal?: AbortSignal }): Promise<unknown>;
+}
+
+export interface MediaSaveHost {
+  openSaveSink?: (filename: string) => Promise<HostSaveSink | null>;
+  saveBlob?: (blob: Blob, filename: string) => Promise<boolean>;
+}
+
+/**
+ * Save one media reference to a host save sink, streaming the original bytes.
+ * A session-media id or host path streams through the client; a ready URL
+ * (data:, blob:, http) is fetched once and written. Returns false when the
+ * user cancelled the picker, true when the bytes landed.
+ */
+export async function saveMediaToDisk(
+  item: { url?: string; path?: string; fileId?: string },
+  downloadName: string,
+  host: MediaSaveHost,
+  client: MediaDownloadClient | undefined,
+  sessionId: string | undefined,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  // A canonical or host path streams its original bytes through the client into
+  // the host save sink (the desktop's native save dialog, or the browser's
+  // picker/anchor). A bare URL has no canonical source to stream, so it falls
+  // through to the same URL fetch the lightbox uses.
+  if ((item.path !== undefined || (item.fileId !== undefined && sessionId !== undefined)) && client !== undefined) {
+    const sink = host.openSaveSink !== undefined ? await host.openSaveSink(downloadName)
+      : host.saveBlob !== undefined ? bufferedSaveSink((blob) => host.saveBlob!(blob, downloadName))
+        : await browserSaveSink(downloadName);
+    if (sink === null) return false;
+    try {
+      if (item.path !== undefined) {
+        await client.downloadHostFile(item.path, async (chunk) => { await sink.write(chunk); }, { signal });
+      } else {
+        await client.downloadSessionMedia(sessionId!, item.fileId!, async (chunk) => { await sink.write(chunk); }, { signal });
+      }
+      return await sink.close();
+    } catch (error) {
+      await sink.abort().catch(() => {});
+      throw error;
+    }
+  }
+  if (item.url === undefined) throw new Error('This image has no readable source');
+  // On the desktop the shell owns the save dialog; in a plain browser the URL
+  // downloads directly through an anchor, matching the lightbox's URL path.
+  if (host.saveBlob !== undefined) {
+    const response = await fetch(item.url, { signal });
+    if (!response.ok) throw new Error(`Image could not be read (${response.status})`);
+    return host.saveBlob(await response.blob(), downloadName);
+  }
+  const anchor = document.createElement('a');
+  anchor.href = item.url;
+  anchor.download = downloadName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  return true;
 }
 
 const IMAGE_MIME = /^image\/[a-z0-9.+-]+$/i;

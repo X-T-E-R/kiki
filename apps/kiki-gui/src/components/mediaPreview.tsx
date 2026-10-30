@@ -746,6 +746,7 @@ function AttachmentPreviewDialog({
         onContextMenu={(event) => {
           if (!imageSurface || transfer.status === 'downloading' || transfer.status === 'saving') return;
           event.preventDefault();
+          event.stopPropagation();
           const rect = event.currentTarget.getBoundingClientRect();
           setImageMenu({ x: event.clientX || rect.left, y: event.clientY || rect.top });
         }}

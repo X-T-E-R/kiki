@@ -9,7 +9,10 @@ import { Icon } from './icons';
 import { imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { useMediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
-import { isRemoteConnection, mediaOutcomeKey, useMediaReady } from './imageActions';
+import { copyImageBitmap, httpImageLink, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, saveMediaToDisk, useMediaReady } from './imageActions';
+import { imagePreviewDownloadName } from './imagePreviewName';
+import { pushToast } from '../lib/toasts';
+import { errorToText } from '@kiki/session-core/util';
 import { canonicalGalleryItem, galleryImageId, galleryOccurrenceId } from './mediaGallery';
 
 export function useGalleryImage(item: MediaRef, attachmentIndex = 0, agentId?: string, markdownOffset?: number) {
@@ -120,6 +123,77 @@ export function attachmentName(item: MediaRef, loadedName?: string, fallback = '
   return imagePreviewLabel({ name: item.name, metadataName: loadedName, path: item.path }, fallback);
 }
 
+/**
+ * The right-click menu a message image offers in place: copy image, download,
+ * and the same host path/link entries the lightbox shows. `src` is the
+ * currently displayed image URL (the decoded preview the thumbnail already
+ * holds), so copy and the menu's enablement track the load state; download
+ * always saves the original bytes through the canonical/host path when one
+ * exists, falling back to the URL.
+ */
+export function useMessageImageMenu(item: MediaRef, src: string | undefined, label: string) {
+  const { t } = useI18n();
+  const host = useHost();
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const preview = useMediaPreview();
+  const remote = isRemoteConnection(connection);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const openMenu = useCallback((event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setMenu({ x: event.clientX, y: event.clientY });
+  }, []);
+  const downloadName = imagePreviewDownloadName({ name: item.name, path: item.path });
+  const onSave = useCallback(async () => {
+    try {
+      await saveMediaToDisk(
+        { url: item.url ?? src, path: item.path, fileId: item.fileId },
+        downloadName,
+        host,
+        client as Parameters<typeof saveMediaToDisk>[3],
+        preview?.sessionId,
+      );
+    } catch (error) {
+      pushToast({ tone: 'error', text: t('media.copyFailed'), detail: errorToText(error) });
+    }
+  }, [item.url, item.path, item.fileId, src, downloadName, host, client, preview?.sessionId, t]);
+  const onCopyImage = useCallback(async () => {
+    if (src === undefined) return;
+    try {
+      await copyImageBitmap(src);
+    } catch (error) {
+      pushToast({ tone: 'error', text: t('media.copyFailed'), detail: errorToText(error) });
+    }
+  }, [src, t]);
+  const entries = imageMenuEntries({
+    t,
+    src,
+    path: item.path,
+    link: httpImageLink(item.url),
+    remote,
+    revealPath: host.revealPath,
+    openPath: host.openPath,
+    canCopyImage: src !== undefined,
+    canSave: true,
+    annotated: false,
+    onCopyImage,
+    onSave,
+  });
+  const menuElement = menu === null ? null : (
+    <MiniContextMenu
+      x={menu.x}
+      y={menu.y}
+      entries={entries}
+      onClose={() => { setMenu(null); }}
+      ariaLabel={label}
+      overlayId="message-image-menu"
+      dataAttribute="data-message-image-menu"
+    />
+  );
+  return { openMenu, menuElement };
+}
+
 function SessionMediaThumb({ item, size = 'default', onOpen }: { item: MediaRef; size?: MediaThumbSize; onOpen?: () => void }) {
   const { t } = useI18n();
   const preview = useMediaPreview();
@@ -136,6 +210,8 @@ function SessionMediaThumb({ item, size = 'default', onOpen }: { item: MediaRef;
   });
   const fallback = item.kind === 'image' ? t('media.image') : t('media.attachment');
   const name = attachmentName(item, load.status === 'ready' ? load.name : undefined, fallback);
+  const readyUrl = load.status === 'ready' && failedUrl !== load.url ? load.url : undefined;
+  const imageMenu = useMessageImageMenu(item, readyUrl, name);
   let body: ReactNode;
   if (load.status === 'failed' || load.status === 'ready' && failedUrl === load.url) {
     body = <MediaLoadFailure name={name} decode={load.status === 'ready'} size={size} onRetry={() => { if (onOpen !== undefined) onOpen(); else preview?.openAttachment(item); }} />;
@@ -151,13 +227,14 @@ function SessionMediaThumb({ item, size = 'default', onOpen }: { item: MediaRef;
         type="button"
         title={name}
         onClick={() => { if (onOpen !== undefined) onOpen(); else preview?.openAttachment(item); }}
+        onContextMenu={imageMenu.openMenu}
         className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-selected-ink`}
       >
         <img src={load.url} alt={name} decoding="async" onError={() => { setFailedUrl(load.url); }} className={`${THUMB_SIZE[size].img} object-cover`} />
       </button>
     );
   }
-  return <span ref={hostRef} className="inline-flex">{body}</span>;
+  return <span ref={hostRef} className="inline-flex">{body}{imageMenu.menuElement}</span>;
 }
 
 export function MediaLoadFailure({ name, decode, size = 'default', onRetry }: { name: string; decode: boolean; size?: MediaThumbSize; onRetry: () => void }) {
@@ -249,12 +326,14 @@ function UrlMediaPart({ item, size, onOpen }: { item: MediaRef & { url: string }
   const fallback = item.kind === 'image' ? t('media.image') : t('media.attachment');
   const name = attachmentName(item, undefined, fallback);
   const downloadName = safeImagePreviewName({ name: item.name, path: item.path });
+  const imageFailed = failed === source;
+  const imageMenu = useMessageImageMenu(item, item.kind === 'image' && !imageFailed ? item.url : undefined, name);
   if (!LOADABLE_MEDIA_URL.test(item.url)) return <FileChip item={item} />;
-  const body = failed === source ? <MediaLoadFailure name={name} decode size={size} onRetry={() => { setFailed(null); setAttempt((value) => value + 1); }} />
+  const body = imageFailed ? <MediaLoadFailure name={name} decode size={size} onRetry={() => { setFailed(null); setAttempt((value) => value + 1); }} />
     : !visible ? <span aria-busy="true" className={`${THUMB_SIZE[size].slot} ${THUMB_SIZE[size].frame}`} />
     : item.kind === 'video' ? <video key={attempt} src={item.url} controls onError={() => { setFailed(source); }} className="max-h-52 rounded-lg border border-hairline" />
-    : <button type="button" onClick={() => { if (onOpen !== undefined) onOpen(); else preview?.openImage(item.url, downloadName); }} title={name} className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-selected-ink`}><img key={attempt} src={item.url} alt={name} decoding="async" onError={() => { setFailed(source); }} className={`${THUMB_SIZE[size].img} object-cover`} /></button>;
-  return <span ref={hostRef} className="inline-flex">{body}</span>;
+    : <button type="button" onClick={() => { if (onOpen !== undefined) onOpen(); else preview?.openImage(item.url, downloadName); }} onContextMenu={imageMenu.openMenu} title={name} className={`block overflow-hidden ${THUMB_SIZE[size].frame} transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-selected-ink`}><img key={attempt} src={item.url} alt={name} decoding="async" onError={() => { setFailed(source); }} className={`${THUMB_SIZE[size].img} object-cover`} /></button>;
+  return <span ref={hostRef} className="inline-flex">{body}{imageMenu.menuElement}</span>;
 }
 
 function DeferredMediaPart({ item, size }: { item: MediaRef & { detail: NonNullable<MediaRef['detail']> }; size: MediaThumbSize }) {
