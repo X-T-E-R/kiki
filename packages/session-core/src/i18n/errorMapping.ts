@@ -32,7 +32,9 @@ const NOT_FOUND_NOUNS: Readonly<Record<string, I18nKey>> = {
 
 /** Codes whose localized copy does not follow the not-found pattern. */
 const SPECIFIC_CODE_KEYS: Readonly<Record<number, I18nKey>> = {
-  40001: 'err.serverData',
+  // 40001 is the server's bad-request answer: its message already names the
+  // problem in user terms (a profile file it could not load, a form field it
+  // rejected), so it passes through raw like every unmapped code.
   40002: 'err.serverData',
   40111: 'err.authMissing',
   40112: 'err.authRevoked',
