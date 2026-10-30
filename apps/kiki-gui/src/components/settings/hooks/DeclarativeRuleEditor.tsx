@@ -9,7 +9,7 @@ import { useI18n } from '../../../i18n';
 import { Hint, Toggle } from '../../controls';
 import { SearchableSelect } from '../../SearchableSelect';
 import { DANGER_GHOST_BUTTON, INPUT } from '../../ui';
-import { DependentField, SettingField, SettingsBox } from '../fields';
+import { SettingField, SettingsBox } from '../fields';
 import { FORM_LABEL, FORM_SELECT_TRIGGER, SettingsSegmented } from '../SettingsPrimitives';
 import { formatSelectorLines, parseSelectorLines, type DraftIssue } from './hooksDraft';
 
@@ -158,7 +158,7 @@ export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove, onConv
           <Toggle layout="inline" label={t('st.hooks.ruleEnabled')} checked={rule.enabled} onChange={(enabled) => onChange({ enabled })} />
           <input
             id={`${idPrefix}-id`}
-            className={`${INPUT} w-56 font-mono`}
+            className="w-56 rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
             value={rule.id}
             autoComplete="off"
             spellCheck={false}
@@ -256,7 +256,7 @@ export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove, onConv
             id={`${idPrefix}-priority`}
             type="number"
             step={1}
-            className={`${INPUT} w-24`}
+            className="w-24 rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
             value={rule.priority}
             aria-invalid={fieldIssue(issues, 'priority') !== null}
             onChange={(event) => onChange({ priority: Number(event.target.value) })}
@@ -264,31 +264,32 @@ export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove, onConv
         </SettingField>
         <IssueLine field="priority" issues={issues} />
 
-        <DependentField when={cadenceAllowed}>
-          <div className="grid gap-2" data-hook-field="cadence">
-            <Toggle
-              layout="inline"
-              label={t('st.hooks.cadenceEnable')}
-              checked={rule.cadence !== undefined}
-              onChange={(on) => setCadence(on)}
-            />
+        {cadenceAllowed ? (
+          <>
+            <SettingField label={t('st.hooks.cadenceEnable')}>
+              <Toggle
+                layout="bare"
+                label={t('st.hooks.cadenceEnable')}
+                checked={rule.cadence !== undefined}
+                onChange={(on) => setCadence(on)}
+              />
+            </SettingField>
             {rule.cadence !== undefined ? (
-              <div className="flex flex-wrap items-end gap-3">
-                <div className="grid w-36 gap-1">
-                  <label htmlFor={`${idPrefix}-cadence`} className={FORM_LABEL}>{t('st.hooks.cadenceEvery')}</label>
+              <>
+                <SettingField label={t('st.hooks.cadenceEvery')} htmlFor={`${idPrefix}-cadence`}>
                   <input
                     id={`${idPrefix}-cadence`}
                     type="number"
                     min={1}
                     step={1}
-                    className={INPUT}
+                    className="w-24 rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
                     value={rule.cadence.everyCompletedSteps}
                     aria-invalid={fieldIssue(issues, 'everyCompletedSteps') !== null}
                     onChange={(event) => onChange({ cadence: { ...rule.cadence!, everyCompletedSteps: Number(event.target.value) } })}
                   />
-                </div>
-                <div className="grid gap-1">
-                  <span className={FORM_LABEL}>{t('st.hooks.cadenceScope')}</span>
+                </SettingField>
+                <IssueLine field="everyCompletedSteps" issues={issues} />
+                <SettingField label={t('st.hooks.cadenceScope')}>
                   <SettingsSegmented<'agent' | 'turn'>
                     ariaLabel={t('st.hooks.cadenceScope')}
                     dataAttr="data-hook-cadence-scope"
@@ -299,13 +300,12 @@ export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove, onConv
                       { value: 'turn', label: t('st.hooks.cadenceScope.turn') },
                     ]}
                   />
-                </div>
-              </div>
+                </SettingField>
+                <IssueLine field="cadence" issues={issues} />
+              </>
             ) : null}
-            <IssueLine field="everyCompletedSteps" issues={issues} />
-            <IssueLine field="cadence" issues={issues} />
-          </div>
-        </DependentField>
+          </>
+        ) : null}
       </SettingsBox>
 
       <div data-hook-field="match">

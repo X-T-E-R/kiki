@@ -6,7 +6,7 @@ import { FeedbackLine, Hint } from '../../controls';
 import { useI18n } from '../../../i18n';
 import { fetchUrlState, webSearchState } from './types';
 import { NbSearchReadinessRow } from './NbSearchReadinessRow';
-import { INPUT, SECONDARY_BUTTON } from '../../ui';
+import { SECONDARY_BUTTON } from '../../ui';
 import { NbSearchFileScopeEditor } from './NbSearchFileScopeEditor';
 import { NbSearchQualityEditor } from './NbSearchQualityEditor';
 import type { NbSearchAdvancedBinding } from './advancedSupport';
@@ -31,8 +31,10 @@ function NumberField({
   const invalid = trimmed !== '' && (!Number.isInteger(numeric) || numeric < 0);
   return (
     <SettingField label={label} help={invalid ? undefined : hint}>
+      {/* INPUT's w-full would override w-24 in the cascade, so the width
+          comes first and the shared input shape follows. */}
       <input
-        className={`${INPUT} w-24 font-mono`}
+        className="w-24 rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
         inputMode="numeric"
         value={value}
         onChange={(event) => {

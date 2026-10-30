@@ -92,7 +92,7 @@ export function LegacyRuleEditor({ rule, ruleLabel, issues, onChange, onRemove, 
             max={600}
             step={1}
             placeholder="30"
-            className={`${INPUT} w-24`}
+            className="w-24 rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
             value={rule.timeout ?? ''}
             aria-invalid={timeoutIssue !== null}
             onChange={(event) => onChange({ timeout: event.target.value === '' ? undefined : Number(event.target.value) })}
