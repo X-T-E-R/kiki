@@ -156,6 +156,7 @@ describe('AgentToolExecutorService', () => {
     const admission = executor.onBeforeExecuteTool(() => { clock += 1200; });
     const beforeExecute = executor.onWillExecuteTool(() => { clock += 1300; });
     truncateForModel = async (input) => { clock += 1500; return input.result; };
+    executor.hooks.onDidExecuteTool.register('phase-hook', async (_ctx, next) => { clock += 1700; await next(); });
     try {
       const results = await execute([toolCall('phase-call', 'phase-fixture', { text: 'private argument' })]);
       expect(results[0]?.output).toBe('private result');
@@ -165,7 +166,9 @@ describe('AgentToolExecutorService', () => {
         { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'admission', duration_ms: 1200 },
         { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'before_execute', duration_ms: 1300 },
         { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'execute', duration_ms: 1400 },
-        { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'finalize', duration_ms: 1500 },
+        { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'finalize_hook', duration_ms: 1700, hook_id: 'phase-hook' },
+        { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'finalize_truncate', duration_ms: 1500 },
+        { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'finalize', duration_ms: 3200 },
       ]);
     } finally {
       admission.dispose();

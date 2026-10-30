@@ -1,8 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { OrderedHookSlot, createHooks } from '#/hooks';
 
 describe('OrderedHookSlot', () => {
+  it('measures each handler without including downstream work and observes failures', async () => {
+    let clock = 0;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const durations: [string, number][] = [];
+    const slot = new OrderedHookSlot<Record<string, never>>();
+    slot.register('outer', async (_context, next) => { clock += 10; await next(); clock += 30; });
+    slot.register('inner', async (_context, next) => { clock += 20; await next(); });
+    try {
+      await slot.run({}, async () => { clock += 50; }, (id, ms) => { durations.push([id, ms]); });
+      expect(durations).toEqual([['inner', 20], ['outer', 40]]);
+      slot.register('failure', async () => { clock += 70; throw new Error('fixture failure'); });
+      await expect(slot.run({}, undefined, (id, ms) => { durations.push([id, ms]); })).rejects.toThrow('fixture failure');
+      expect(durations).toContainEqual(['failure', 70]);
+    } finally { now.mockRestore(); }
+  });
+
   it('runs the terminal when no handlers are registered', async () => {
     const slot = new OrderedHookSlot<{ value: number }>();
     let terminalRan = false;

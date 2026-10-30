@@ -372,7 +372,7 @@ async function snapshot(h: Harness, paths: readonly string[], revision = 1, prev
   h.history.push({ role: 'user', content: [{ type: 'text', text: await Promise.all(paths.map((path) => h.ix.get(IHostFileSystem).readText(path))).then((items) => items.join('\n')) }], toolCalls: [], origin: { kind: 'injection', variant: 'runtime_snapshot', disclosure: { revision, previousRevision, instructions: { mode: 'replace', files } } } });
 }
 
-function watchHarness(): {
+function watchHarness(ready: Promise<void> = Promise.resolve()): {
   readonly service: IHostFsWatchService;
   readonly paths: string[];
   activePaths(): readonly string[];
@@ -392,7 +392,7 @@ function watchHarness(): {
         const emitter = new Emitter<HostFsChange>();
         emitters.set(key, emitter);
         return {
-          ready: Promise.resolve(),
+          ready,
           onDidChange: emitter.event,
           dispose: () => {
             if (emitters.get(key) === emitter) emitters.delete(key);
@@ -1099,6 +1099,30 @@ describe('agentsMdReminder probing boundaries', () => {
 });
 
 describe('agentsMdReminder discovery cache', () => {
+  it('discloses directory instructions without waiting for watcher readiness', async () => {
+    const watch = watchHarness(new Promise<void>(() => {}));
+    const h = createHarness({ hostWatch: watch.service });
+    await writeAgentsMd(workDir, 'instructions before write');
+    h.reminder.seedInjected([], workDir);
+    const result = await Promise.race([
+      fire(h, didCtx('Read', { path: join(workDir, 'file.ts') })).then(() => 'disclosed'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('watch blocked'), 100)),
+    ]);
+    expect(result).toBe('disclosed');
+    expect(reminderText(h)).toContain('instructions before write');
+  });
+
+  it('reads instruction content once rather than loading it during discovery too', async () => {
+    const hostFs = new HostFileSystem();
+    const h = createHarness({ hostFs });
+    const path = await writeAgentsMd(workDir);
+    h.reminder.seedInjected([], workDir);
+    const read = vi.spyOn(hostFs, 'readText');
+    await fire(h, didCtx('Read', { path: join(workDir, 'file.ts') }));
+    expect(read.mock.calls.filter(([candidate]) => candidate === path)).toHaveLength(1);
+    expect(h.reminders).toHaveLength(1);
+  });
+
   it('shares positive discovery facts while keeping reminder history agent-local', async () => {
     const hostFs = new HostFileSystem();
     const environment = {

@@ -362,7 +362,10 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
   }
 
   private logSlowToolPhase(call: PreflightedToolCall, phase: string, startedAt: number, details: Record<string, unknown> = {}): void {
-    const durationMs = Date.now() - startedAt;
+    this.logToolPhaseDuration(call, phase, Date.now() - startedAt, details);
+  }
+
+  private logToolPhaseDuration(call: PreflightedToolCall, phase: string, durationMs: number, details: Record<string, unknown> = {}): void {
     const data = { tool_name: call.toolName, tool_call_id: call.toolCall.id, phase, duration_ms: durationMs, ...details };
     if (durationMs >= 1000) this.log?.warn('slow tool phase', data);
     else this.log?.debug('tool phase', data);
@@ -738,7 +741,9 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     };
 
     try {
-      await this.hooks.onDidExecuteTool.run(didCtx);
+      await this.hooks.onDidExecuteTool.run(didCtx, undefined, (hookId, durationMs) => {
+        this.logToolPhaseDuration(call, 'finalize_hook', durationMs, { hook_id: hookId });
+      });
     } catch (error) {
       this.log?.error('onDidExecuteTool hook failed after tool execution', {
         toolName: call.toolName,
@@ -762,11 +767,17 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       stopBatchAfterThis: result.stopBatchAfterThis,
       delivery: coercedResult.delivery,
     };
-    const truncatedResult = await this.resultTruncation.truncateForModel({
-      toolName: call.toolName,
-      toolCallId: call.toolCall.id,
-      result: finalResult,
-    });
+    const truncateStartedAt = Date.now();
+    let truncatedResult: ToolResult;
+    try {
+      truncatedResult = await this.resultTruncation.truncateForModel({
+        toolName: call.toolName,
+        toolCallId: call.toolCall.id,
+        result: finalResult,
+      });
+    } finally {
+      this.logSlowToolPhase(call, 'finalize_truncate', truncateStartedAt);
+    }
     if (truncatedResult.truncated !== true) return truncatedResult;
     return {
       ...truncatedResult,

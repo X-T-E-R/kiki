@@ -14,7 +14,7 @@ export interface HookSlot<TContext> {
 
   delete(id: string): boolean;
 
-  run(context: TContext, terminal?: (context: TContext) => Promise<void>): Promise<void>;
+  run(context: TContext, terminal?: (context: TContext) => Promise<void>, onDidRun?: (id: string, durationMs: number) => void): Promise<void>;
 }
 
 export type HookHandler<TContext> = (
@@ -86,6 +86,7 @@ export class OrderedHookSlot<TContext> implements HookSlot<TContext> {
   async run(
     context: TContext,
     terminal: (context: TContext) => Promise<void> = async () => {},
+    onDidRun?: (id: string, durationMs: number) => void,
   ): Promise<void> {
     const entries = [...this.entries];
     const dispatch = (index: number, ctx: TContext): ((override?: TContext) => Promise<void>) => {
@@ -96,7 +97,21 @@ export class OrderedHookSlot<TContext> implements HookSlot<TContext> {
           await terminal(current);
           return;
         }
-        await entry.handler(current, dispatch(index + 1, current));
+        if (onDidRun === undefined) {
+          await entry.handler(current, dispatch(index + 1, current));
+          return;
+        }
+        const startedAt = Date.now();
+        let downstreamMs = 0;
+        const next = dispatch(index + 1, current);
+        try {
+          await entry.handler(current, async (override) => {
+            const downstreamAt = Date.now();
+            try { await next(override); } finally { downstreamMs += Date.now() - downstreamAt; }
+          });
+        } finally {
+          onDidRun(entry.id, Math.max(0, Date.now() - startedAt - downstreamMs));
+        }
       };
     };
     await dispatch(0, context)();

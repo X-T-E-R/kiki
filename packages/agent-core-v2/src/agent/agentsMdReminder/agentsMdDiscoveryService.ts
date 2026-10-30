@@ -171,9 +171,8 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
       const entry = namedEntry(entries, name, pathClass);
       if (entry === undefined) continue;
       const candidate = join(directory, entry.name);
-      if (await isNonEmptyFile(fs, candidate, entry)) {
+      if (!paths.includes(normalize(candidate)) && await isNonEmptyFile(fs, candidate, entry)) {
         paths.push(normalize(candidate));
-        break;
       }
     }
     return paths;
@@ -195,7 +194,6 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
       current.owners.add(ownerKey);
       cache.watchers.delete(watchKey);
       cache.watchers.set(watchKey, current);
-      await current.ready;
       return;
     }
     const owners = new Set([ownerKey]);
@@ -215,7 +213,12 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
       );
       lease.track(resources);
       const ready = handle.ready.then(
-        () => true,
+        () => {
+          for (const owner of owners) {
+            if (cache.directories.has(owner)) this.invalidateKey(cache, owner);
+          }
+          return true;
+        },
         () => {
           if (cache.watchers.get(watchKey) === entry) cache.watchers.delete(watchKey);
           const cleanup = resources.dispose();
@@ -226,7 +229,6 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
       entry = { owners, ready, resources };
       cache.watchers.set(watchKey, entry);
       this.trimWatchers(cache);
-      await ready;
     } catch {
       await resources.dispose();
     }
@@ -311,8 +313,7 @@ async function isNonEmptyFile(
   if (!entry.isFile && !entry.isSymbolicLink) return false;
   try {
     const stat = await fs.stat(path);
-    if (!stat.isFile) return false;
-    return (await fs.readText(path, { errors: 'ignore' })).trim().length > 0;
+    return stat.isFile && stat.size > 0;
   } catch {
     return false;
   }

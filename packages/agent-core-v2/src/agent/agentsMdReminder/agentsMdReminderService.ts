@@ -165,7 +165,7 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
       const dirs = [...new Set(accesses.flatMap((access) => access.kind === 'file' ? [access.operation === 'search' || access.recursive ? access.path : dirname(access.path)] : []))];
       const paths = [...new Set((await Promise.all(dirs.map((dir) => this.discoverDir(lease, dir)))).flat())];
       const loaded = await Promise.all(paths.map((path) => this.load(lease, path)));
-      return loaded.filter((item): item is PendingInstruction => item !== undefined && !this.covered(item));
+      return preferredInstructions(loaded).filter((item) => !this.covered(item));
     } finally { lease.dispose(); }
   }
 
@@ -202,7 +202,7 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
         if (stringArg(ctx.args, 'cwd') !== undefined && !dirs.includes(cwd)) dirs.unshift(cwd);
         const paths = [...new Set((await Promise.all(dirs.map((dir) => this.discoverDir(lease, shellPath(dir))))).flat())];
         const loaded = await Promise.all(paths.map((path) => this.load(lease, path)));
-        missing = [...missing, ...loaded.filter((item): item is PendingInstruction => item !== undefined && !this.covered(item))];
+        missing = [...missing, ...preferredInstructions(loaded).filter((item) => !this.covered(item))];
       } finally { lease.dispose(); }
     }
     this.queue(missing);
@@ -213,6 +213,17 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
       for (const item of untracked) this.telemetryFired.add(instructionKey(item.file, item.pathClass));
     }
   }
+}
+
+function preferredInstructions(items: readonly (PendingInstruction | undefined)[]): PendingInstruction[] {
+  const selected = new Map<string, PendingInstruction>();
+  for (const item of items) {
+    if (item === undefined) continue;
+    const directory = normalize(dirname(item.sourcePath));
+    const key = `${item.file.runtimeId}:${item.pathClass === 'win32' ? directory.toLowerCase() : directory}`;
+    if (!selected.has(key)) selected.set(key, item);
+  }
+  return [...selected.values()];
 }
 
 function stringArg(args: unknown, key: string): string | undefined {
