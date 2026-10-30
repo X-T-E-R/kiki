@@ -17,16 +17,21 @@ import { IM_KEY } from './imModel';
 import { PlatformSetupForm, WechatScan } from './ImSetup';
 import { reasonKey } from './model';
 import { PasteSetupForm } from './PasteSetupForm';
+import { QqPluginSetup } from './QqPluginSetup';
 import { CapabilityTag, PlatformMark } from './rowParts';
 import { useImAction, useStartListening, type WechatQr } from './useImSessions';
 
 /** What a two-way route is called when a brand offers both kinds. */
 function routeTitleKey(route: ChannelRoute): I18nKey {
+  if (route.kind === 'im' && route.mode === 'plugin') return 'st.channels.qq.official';
+  if (route.kind === 'im' && route.mode === 'paste' && route.paste === 'qq') return 'st.channels.qq.onebot';
   return route.kind === 'im' ? 'st.channels.route.twoWay' : 'st.channels.route.alerts';
 }
 
 function routeHintKey(route: ChannelRoute): I18nKey {
   if (route.kind === 'push') return route.providerId === 'telegram' ? 'st.channels.route.alertsBotHint' : 'st.channels.route.alertsHint';
+  if (route.mode === 'plugin') return 'st.channels.qq.officialHint';
+  if (route.mode === 'paste' && route.paste === 'qq') return 'st.channels.qq.onebotHint';
   return 'st.channels.route.twoWayHint';
 }
 
@@ -205,6 +210,7 @@ function RouteSetup({ option, settings, providers, setupCatalog, qr, onAdded, on
       </div>
     );
   }
+  if (route.mode === 'plugin') return <QqPluginSetup />;
   if (route.mode === 'paste') {
     return <PasteSetupForm kind={route.paste} onConnected={(id) => { onAdded(`im:${id}`); }} />;
   }

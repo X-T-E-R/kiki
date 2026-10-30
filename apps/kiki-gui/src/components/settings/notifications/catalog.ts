@@ -22,7 +22,9 @@ export type PasteKind = 'telegram' | 'feishu' | 'qq' | 'raw';
 export type ImRoute =
   | { readonly kind: 'im'; readonly mode: 'wechat' }
   | { readonly kind: 'im'; readonly mode: 'setup'; readonly provider: ImSetupProvider }
-  | { readonly kind: 'im'; readonly mode: 'paste'; readonly paste: PasteKind };
+  | { readonly kind: 'im'; readonly mode: 'paste'; readonly paste: PasteKind }
+  /** A channel a plugin sets up in its own panel (the official QQ bot through kiki-qq). */
+  | { readonly kind: 'im'; readonly mode: 'plugin'; readonly pluginId: string };
 
 export interface PushRoute {
   readonly kind: 'push';
@@ -118,6 +120,7 @@ export function addCatalog(
   const routes = new Map<BrandId, RouteOption[]>();
   const add = (brand: BrandId, option: RouteOption) => { routes.set(brand, [...(routes.get(brand) ?? []), option]); };
   add('wechat', { route: { kind: 'im', mode: 'wechat' } });
+  add('qq', { route: { kind: 'im', mode: 'plugin', pluginId: 'kiki-qq' } });
   for (const brand of BRAND_ORDER) {
     const paste = PASTE_BRAND[brand];
     if (paste !== undefined) add(brand, { route: { kind: 'im', mode: 'paste', paste } });
@@ -147,6 +150,7 @@ function rank(route: ChannelRoute): number {
 
 export function routeKey(route: ChannelRoute): string {
   if (route.kind === 'push') return `push:${route.providerId}`;
+  if (route.mode === 'plugin') return `im:plugin:${route.pluginId}`;
   return route.mode === 'wechat' ? 'im:wechat' : route.mode === 'setup' ? `im:${route.provider}` : `im:paste:${route.paste}`;
 }
 
@@ -154,9 +158,12 @@ export function brandAvailable(brand: BrandEntry): boolean {
   return brand.routes.some((option) => option.unavailable === undefined);
 }
 
-/** Brands offering both a two-way bot and a one-way webhook ask which one. */
+/**
+ * A brand with more than one usable route asks which one: a two-way bot or a
+ * one-way webhook, or two two-way routes (QQ: the official bot or OneBot).
+ */
 export function hasBothKinds(brand: BrandEntry): boolean {
-  return brand.routes.some((option) => option.route.kind === 'im') && brand.routes.some((option) => option.route.kind === 'push');
+  return brand.routes.filter((option) => option.unavailable === undefined).length > 1;
 }
 
 /** Paste text in the format the server's paste parser reads (see imSession/paste.ts). */

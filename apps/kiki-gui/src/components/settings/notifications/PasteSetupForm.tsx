@@ -8,6 +8,7 @@ import { useConnection } from '../../../state/connection';
 import { FeedbackLine } from '../../controls';
 import { INPUT, PRIMARY_BUTTON } from '../../ui';
 import { FORM_LABEL } from '../SettingsPrimitives';
+import { SetupSteps } from '../SetupSteps';
 import { PASTE_FIELDS, pasteText, type PasteKind } from './catalog';
 import { IM_KEY } from './imModel';
 import { useImAction, useStartListening } from './useImSessions';
@@ -19,6 +20,23 @@ const LABEL: Readonly<Record<string, I18nKey>> = {
   endpoint: 'st.channels.field.onebotEndpoint',
   accessToken: 'st.channels.field.accessToken',
   text: 'st.im.paste',
+};
+
+/** Where each pasted credential comes from: the steps a first-time reader follows. */
+const PASTE_GUIDE: Readonly<Record<PasteKind, { readonly steps: readonly I18nKey[]; readonly link?: { readonly href: string; readonly label: I18nKey } }>> = {
+  telegram: {
+    steps: ['st.channels.steps.telegram.1', 'st.channels.steps.telegram.2', 'st.channels.steps.telegram.3'],
+    link: { href: 'https://t.me/BotFather', label: 'st.channels.steps.telegram.link' },
+  },
+  feishu: {
+    steps: ['st.channels.steps.feishu.1', 'st.channels.steps.feishu.2', 'st.channels.steps.feishu.3'],
+    link: { href: 'https://open.feishu.cn/app', label: 'st.channels.steps.feishu.link' },
+  },
+  qq: {
+    steps: ['st.channels.steps.onebot.1', 'st.channels.steps.onebot.2'],
+    link: { href: 'https://napneko.github.io/', label: 'st.channels.steps.onebot.link' },
+  },
+  raw: { steps: ['st.channels.steps.raw.1'] },
 };
 
 const PLACEHOLDER: Readonly<Record<string, string>> = {
@@ -60,8 +78,13 @@ export function PasteSetupForm({ kind, instanceId, onConnected }: {
     });
   };
 
+  const guide = PASTE_GUIDE[kind];
   return (
     <div className="space-y-4" data-im-paste-panel={kind}>
+      {instanceId === undefined ? (
+        <SetupSteps data={{ 'data-im-paste-guide': kind }} steps={guide.steps.map((key) => t(key))}
+          link={guide.link === undefined ? undefined : { href: guide.link.href, label: t(guide.link.label) }} />
+      ) : null}
       {fields.map((field) => {
         const id = `${scope}-${field.key}`;
         return (

@@ -85,6 +85,12 @@ describe('add catalog', () => {
     expect(tg.routes.map((option) => routeKey(option.route))).toEqual(['im:paste:telegram', 'push:telegram']);
     expect(brands.find((brand) => brand.id === 'wechat')!.routes.map((option) => routeKey(option.route))).toEqual(['im:wechat']);
     expect(brands.map((brand) => brand.id)).not.toContain('script');
+    // QQ: the official bot through the QQ plugin first, OneBot second, and the
+    // panel asks which one.
+    const qq = brands.find((brand) => brand.id === 'qq')!;
+    expect(qq.routes.map((option) => routeKey(option.route))).toEqual(['im:plugin:kiki-qq', 'im:paste:qq']);
+    expect(hasBothKinds(qq)).toBe(true);
+    expect(hasBothKinds(brands.find((brand) => brand.id === 'wechat')!)).toBe(false);
   });
 
   it('keeps unavailable types listed but not addable', () => {

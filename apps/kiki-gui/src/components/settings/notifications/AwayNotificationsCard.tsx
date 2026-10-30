@@ -13,7 +13,7 @@ import {
 import { useHost } from '../../../host';
 import { useI18n } from '../../../i18n';
 import { Toggle } from '../../controls';
-import { DependentField, SettingField } from '../fields';
+import { SettingField, SettingsBox } from '../fields';
 import { SectionCard } from '../SectionCard';
 
 const KINDS: readonly { kind: AttentionKind; labelKey: 'st.away.completed' | 'st.away.failed' | 'st.away.question' | 'st.away.approval' }[] = [
@@ -69,28 +69,33 @@ export function AwayNotificationsCard() {
       aside={!supported ? t('st.away.browserHint') : host.kind === 'browser' && permission === 'denied' ? t('st.away.permissionDenied') : undefined}
     >
       {supported ? (
-        <div className="min-w-0 space-y-2" data-notify-away>
-          <SettingField label={t('st.away.enabled')} htmlFor="notify-away-enabled" help={t('st.away.hint')}>
-            <Toggle id="notify-away-enabled" layout="bare" label={t('st.away.enabled')} checked={enabled} onChange={setMaster} />
-          </SettingField>
-          <DependentField when={enabled}>
-            <fieldset data-notify-away-kinds className="space-y-0.5">
-              <legend className="pb-1 text-[12px] text-ink-soft">{t('st.away.kindsLabel')}</legend>
-              {KINDS.map(({ kind, labelKey }) => (
-                <div key={kind} data-notify-away-kind={kind}>
-                  <Toggle
-                    layout="row"
-                    label={t(labelKey)}
-                    checked={settings.awayNotifications[kind]}
-                    onChange={(checked) => {
-                      writeSettings({ awayNotifications: { ...settings.awayNotifications, [kind]: checked } });
-                    }}
-                  />
-                  {kind === 'completed' ? <p className="pb-2 text-[12px] leading-relaxed text-ink-faint">{t('st.away.completedHint')}</p> : null}
-                </div>
-              ))}
+        <div className="min-w-0 space-y-4" data-notify-away>
+          <SettingsBox>
+            <SettingField label={t('st.away.enabled')} htmlFor="notify-away-enabled" help={t('st.away.hint')}>
+              <Toggle id="notify-away-enabled" layout="bare" label={t('st.away.enabled')} checked={enabled} onChange={setMaster} />
+            </SettingField>
+          </SettingsBox>
+          {enabled ? (
+            <fieldset data-notify-away-kinds className="min-w-0 space-y-1">
+              <legend className="px-0 pb-1 text-[13px] font-medium text-ink">{t('st.away.kindsLabel')}</legend>
+              <SettingsBox>
+                {KINDS.map(({ kind, labelKey }) => (
+                  <div key={kind} data-notify-away-kind={kind}>
+                    <SettingField label={t(labelKey)} help={kind === 'completed' ? t('st.away.completedHint') : undefined}>
+                      <Toggle
+                        layout="bare"
+                        label={t(labelKey)}
+                        checked={settings.awayNotifications[kind]}
+                        onChange={(checked) => {
+                          writeSettings({ awayNotifications: { ...settings.awayNotifications, [kind]: checked } });
+                        }}
+                      />
+                    </SettingField>
+                  </div>
+                ))}
+              </SettingsBox>
             </fieldset>
-          </DependentField>
+          ) : null}
         </div>
       ) : null}
     </SectionCard>
