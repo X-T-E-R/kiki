@@ -37,6 +37,7 @@ import {
   type SessionActionContext,
 } from '@kiki/session-core/commands';
 import { appendToDraft, requestComposerInsert, threadRefLink } from '@kiki/session-core/composer';
+import { errorText } from '@kiki/session-core/i18n';
 import {
   formatElapsedClock,
   hasActiveSessionFilters,
@@ -519,12 +520,14 @@ export function Sidebar({
     isLoading: boolean;
     isError: boolean;
     error: Error | null;
+    /** Absent (undefined) while the first page has not landed. */
+    data?: unknown;
     hasNextPage?: boolean;
     isFetchingNextPage?: boolean;
     fetchNextPage?: () => Promise<unknown>;
   };
   /** The room summaries fetch; a failure is shown, never read as "no rooms". */
-  roomsQuery?: { readonly isError: boolean };
+  roomsQuery?: { readonly isError: boolean; readonly data?: unknown };
   workspaceOptions: readonly WorkspaceCatalogEntry[];
   filters: SessionListFilters;
   onFiltersChange: (filters: SessionListFilters) => void;
@@ -1458,31 +1461,31 @@ export function Sidebar({
           </div>
         ) : null}
         {sessionsQuery.isError ? (
-          <div className="mx-1 mt-2 border-l-2 border-danger py-1 pl-3">
-            <p className="text-[12.5px] font-medium text-danger">{t('sidebar.loadFailed')}</p>
-            <p className="mt-0.5 text-[12px] text-ink-soft">
-              {sessionsQuery.error?.message ?? t('common.unknownError')}
-            </p>
+          <p className="mx-2 mt-2 text-[12px] leading-5 text-ink-soft" data-sessions-error>
+            {`${t('sidebar.loadFailed')} · `}
+            {errorText(locale, sessionsQuery.error)}
+            {' · '}
             <button
               type="button"
               onClick={() => void queryClient.invalidateQueries({ queryKey: ['sessions'] })}
-              className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
+              className="font-medium text-ink underline underline-offset-2"
             >
               {t('common.retry')}
             </button>
-          </div>
+          </p>
         ) : null}
         {roomsQuery?.isError === true ? (
-          <div className="mx-1 mt-2 border-l-2 border-danger py-1 pl-3" data-rooms-error>
-            <p className="text-[12.5px] font-medium text-danger">{t('sidebar.roomsLoadFailed')}</p>
+          <p className="mx-2 mt-2 text-[12px] leading-5 text-ink-soft" data-rooms-error>
+            {t('sidebar.roomsLoadFailed')}
+            {' · '}
             <button
               type="button"
               onClick={() => void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY })}
-              className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
+              className="font-medium text-ink underline underline-offset-2"
             >
               {t('common.retry')}
             </button>
-          </div>
+          </p>
         ) : null}
         {sessionGroups.length === 0 && !sessionsQuery.isLoading && !sessionsQuery.isError ? (
           <div className="px-2 pt-4" data-sidebar-empty>
