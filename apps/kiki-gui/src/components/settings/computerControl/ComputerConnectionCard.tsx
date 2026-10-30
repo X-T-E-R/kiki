@@ -272,6 +272,15 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
           </p>
         ) : null}
 
+        {/* Where the command comes from, before the form asks for it: the one
+            click path first (the header's install writes this entry), then what
+            a hand entry actually is. */}
+        {draft.original !== undefined || planBinary !== undefined ? null : (
+          <ol className="max-w-[62ch] list-decimal space-y-0.5 pl-4 text-[12px] leading-[18px] text-ink-soft marker:text-ink-faint" data-computer-mcp-steps>
+            <li>{t('st.computer.mcpSteps.1')}</li>
+            <li>{t('st.computer.mcpSteps.2')}</li>
+          </ol>
+        )}
         <fieldset disabled={saving || stopping || readOnly} className="min-w-0 space-y-4">
         <div className="space-y-1.5">
           <label className={FORM_LABEL} htmlFor="computer-name">{t('st.computer.fieldName')}</label>
@@ -460,7 +469,16 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
       {query.isLoading ? <p className="text-[13px] text-ink-faint" role="status">{t('st.computer.loading')}</p> : null}
       {query.isError ? <InlineError error={query.error} /> : null}
       {query.isSuccess && entries.length === 0 ? (
-        <p className="py-1 text-[13px] text-ink-soft" data-computer-empty>{t('st.computer.empty')}</p>
+        <div className="space-y-2 py-1" data-computer-empty>
+          <p className="text-[13px] text-ink-soft">{t('st.computer.empty')}</p>
+          <div>
+            <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-computer-empty-add
+              onClick={() => { setAdding(true); }}>
+              <Icon name="plus" size={12} />
+              {t('st.computer.add')}
+            </button>
+          </div>
+        </div>
       ) : null}
       {entries.length > 0 ? (
         <div className="divide-y divide-hairline/70" data-computer-list>

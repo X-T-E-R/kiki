@@ -492,6 +492,33 @@ function BrowserRoute({ preset, open, onOpenChange, children }: {
               {t(`st.browser.route.blurb.${preset.preset}`)}
             </p>
           )}
+          {/* What this route costs, before its state: 1–3 short steps plus the
+              official link where there is one (rule 16). Ego Lite's own lines
+              already sequence it; a connected route teaches nothing. */}
+          {preset.preset !== 'ego-lite' && readiness !== 'connected' ? (
+            <ol className="mt-2 max-w-[62ch] list-decimal space-y-0.5 pl-4 text-[12px] leading-[18px] text-ink-soft marker:text-ink-faint" data-browser-route-steps={preset.preset}>
+              {preset.preset === 'kimi-webbridge' ? (
+                <>
+                  <li>{t('st.browser.route.steps.webbridge.1')}</li>
+                  <li>{t('st.browser.route.steps.webbridge.2')}</li>
+                </>
+              ) : preset.preset === 'codex-browser' ? (
+                <>
+                  <li>{t('st.browser.route.steps.codex.1')}</li>
+                  <li>{t('st.browser.route.steps.codex.2')}</li>
+                </>
+              ) : (
+                <li>{t('st.browser.route.steps.independent.1')}</li>
+              )}
+              {offeredInstructions === undefined ? null : (
+                <li>
+                  <ExternalLink className="text-selected-ink hover:underline" href={offeredInstructions} data-browser-route-steps-link>
+                    {t('st.browser.route.steps.link')}
+                  </ExternalLink>
+                </li>
+              )}
+            </ol>
+          ) : null}
           {found.length > 0 ? (
             <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-2" data-browser-source-items={preset.preset}>
               {/* A find is one fact and one action: how many, and allow them.
@@ -826,6 +853,8 @@ export function BrowserSetupWizard() {
   return (
     <div className="space-y-3" data-browser-setup>
       <Hint>
+        {t('st.browser.setup.hostGuide')}
+        {' · '}
         {sshLabel === null
           ? t('st.browser.setup.host')
           : t('st.browser.setup.hostSsh', { label: sshLabel })}

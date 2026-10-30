@@ -15,7 +15,6 @@
 
 import { useContext, useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useLocation } from 'react-router-dom';
 import {
   windowsMcpEnvironmentResponseSchema,
   windowsMcpRegisterResponseSchema,
@@ -40,7 +39,7 @@ import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../c
 import { Icon } from '../icons';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard, SettingsCardMountContext } from './SectionCard';
-import { AdvancedDetails, SettingField } from './fields';
+import { AdvancedDetails, SettingField, SettingsBox } from './fields';
 import {
   FORM_LABEL,
   SettingsSegmented,
@@ -115,24 +114,12 @@ const VERDICT_KEYS: Readonly<Record<Exclude<ComputerControlVerdictKind, 'ready'>
 export function ComputerControlSection() {
   const { client, klient, scopeId, sshLabel } = useConnection();
   const { t, locale } = useI18n();
-  const { hash, search } = useLocation();
-  const rawTab = new URLSearchParams(search).get('tab');
   const queryClient = useQueryClient();
   const onCardMount = useContext(SettingsCardMountContext);
   useEffect(() => {
     onCardMount?.('st-card-computer-machine');
     onCardMount?.('st-card-computer-setup');
   }, [onCardMount]);
-
-  // `?tab=computer` (and a `#st-card-computer-*` hash) addresses this section,
-  // not a view to swap: both sections render, and the tab only says where the
-  // scroll lands. The browser tab is handled the same way inside
-  // BrowserControlSection.
-  useEffect(() => {
-    if (rawTab !== 'computer') return;
-    const target = hash !== '' ? document.querySelector(hash) : document.querySelector('[data-settings-computer-control]');
-    target?.scrollIntoView({ block: 'start' });
-  }, [rawTab, hash]);
 
   const envQuery = useQuery({
     queryKey: ['computer-control-env', scopeId],
@@ -496,6 +483,7 @@ export function ComputerControlSection() {
           <div className="space-y-6 pt-1">
             {/* The machine facts and the executor's own checks, off the standing
                 page: they matter when something fails, not every visit. */}
+
             <div className="space-y-2" id="st-card-computer-machine" data-settings-card="st-card-computer-machine">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[12px]" id="st-card-computer-setup" data-settings-card="st-card-computer-setup">
                 <span className="text-ink-soft" id="computer-machine-label">{sshLabel ?? t('st.computer.machineLabel')}</span>
@@ -556,8 +544,9 @@ export function ComputerControlSection() {
             </div>
 
             {/* The model's own pull toward the computer tools: a policy, not a
-                connection, so it lives in the fold with the other policy. */}
-            <div className="space-y-3" id="st-card-computer-preference" data-settings-card="st-card-computer-preference">
+                connection, so it lives in the fold with the other policy. One
+                row in the fold's box; the state notices sit under it. */}
+            <div id="st-card-computer-preference" data-settings-card="st-card-computer-preference">
               {configQuery.isPending && configQuery.data === undefined ? (
                 <p className="flex items-center gap-2 text-[12px] leading-4 text-ink-faint" role="status" data-computer-preference-state="loading">
                   <span className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
@@ -574,6 +563,7 @@ export function ComputerControlSection() {
                 </div>
               ) : (
                 <>
+                  <SettingsBox>
                   <SettingField
                     label={t('st.computer.preferenceLabel')}
                     labelId="computer-preference-label"
@@ -615,6 +605,7 @@ export function ComputerControlSection() {
                       <SaveStatus saving={preference.preferenceSaving} saved={preference.isPreferenceSaved} />
                     </div>
                   </SettingField>
+                  </SettingsBox>
 
                   {preference.isOverriddenByHigherSource ? (
                     <p className="text-[12px] text-ink-soft" data-computer-preference-override-notice>

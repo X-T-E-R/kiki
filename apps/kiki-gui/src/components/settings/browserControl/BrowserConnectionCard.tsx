@@ -33,7 +33,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
 import type { I18nKey } from '@kiki/session-core/i18n';
-import { experimentalCardId, experimentalSectionForFlag, type BrowserSourceId } from '@kiki/session-core/settings';
+import { experimentalCardId, experimentalSectionForFlag, experimentalTabForSection, type BrowserSourceId } from '@kiki/session-core/settings';
 import type { BrowserStatus } from '@kiki/protocol';
 
 import { useI18n } from '../../../i18n';
@@ -88,18 +88,19 @@ export function AddBrowserAction() {
 
 /**
  * The development-candidate flag that gates a run
- * (`agent-core-v2/src/app/browser/flag.ts`; the flag row carries its own label
- * and lives on the Developer settings page).
+ * (`agent-core-v2/src/app/browser/flag.ts`; the flag row carries its own label).
  */
 const NATIVE_BROWSER_FLAG = 'native_browser';
 
 /**
- * Where that flag's row lives. Developer hosts the flags no other page claims,
- * so the trip this page offers is the same shape as the SSH page's own switch
- * trip: the Settings section, plus the anchor of its Experimental rows.
+ * Where that flag's row lives: the Experimental rows at the bottom of this
+ * page's 浏览器 tab once it is re-homed here, read from the same registry so
+ * the trip follows the registry rather than hardcoding a page. A tabbed home
+ * carries its `?tab=`, the way the SSH page's own switch trip does.
  */
 const NATIVE_BROWSER_FLAG_HOME = experimentalSectionForFlag(NATIVE_BROWSER_FLAG);
-const NATIVE_BROWSER_FLAG_TRIP = `/settings/${NATIVE_BROWSER_FLAG_HOME}#${experimentalCardId(NATIVE_BROWSER_FLAG_HOME)}`;
+const NATIVE_BROWSER_FLAG_TAB = experimentalTabForSection(NATIVE_BROWSER_FLAG_HOME);
+const NATIVE_BROWSER_FLAG_TRIP = `/settings/${NATIVE_BROWSER_FLAG_HOME}${NATIVE_BROWSER_FLAG_TAB === undefined ? '' : `?tab=${NATIVE_BROWSER_FLAG_TAB}`}#${experimentalCardId(NATIVE_BROWSER_FLAG_HOME)}`;
 
 function typeLabel(t: ReturnType<typeof useI18n>['t'], type: BrowserConnectionType): string {
   if (type === 'ego-lite') return t('st.browser.type.ego-lite');
@@ -734,6 +735,11 @@ export function BrowserConnectionCard() {
             </div>
           ) : (
             <div className="space-y-4">
+              {/* Where the address comes from, above the field that asks for it. */}
+              <ol className="max-w-[62ch] list-decimal space-y-0.5 pl-4 text-[12px] leading-[18px] text-ink-soft marker:text-ink-faint" data-browser-cdp-steps>
+                <li>{t('st.browser.cdpSteps.1')}</li>
+                <li>{t('st.browser.cdpSteps.2')}</li>
+              </ol>
               <div className="space-y-1.5">
                 <SecretField label={t('st.browser.fieldEndpoint')} source={draft.original?.endpointConfigured === true ? 'kiki' : 'none'}
                   draft={draft.endpoint} clearable={false}
@@ -839,9 +845,16 @@ export function BrowserConnectionCard() {
         {query.isLoading ? <p className="text-[13px] text-ink-faint" role="status">{t('st.browser.loading')}</p> : null}
         {query.isError ? <InlineError error={query.error} /> : null}
         {empty ? (
-          <div data-browser-empty className="space-y-1.5 py-2">
+          <div data-browser-empty className="space-y-2 py-2">
             <p className="text-[13px] text-ink">{t('st.browser.emptyTitle')}</p>
             <Hint>{t('st.browser.emptyBody')}</Hint>
+            <div>
+              <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-browser-empty-add
+                onClick={() => { setAdding(true); }}>
+                <Icon name="plus" size={12} />
+                {t('st.browser.add')}
+              </button>
+            </div>
           </div>
         ) : null}
         {rows.length > 0 ? (

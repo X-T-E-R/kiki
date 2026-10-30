@@ -1,23 +1,28 @@
 /**
- * Settings → 浏览器. One page, two stacked sections (this one, then 电脑
- * below it); the tab strip that used to split them is gone — `?tab=browser`
- * now only scrolls this section into view, so old links keep landing here.
- *
- * The section leads with the capability header: the name, one sentence about
- * what the Agent can reach right now, the master 启用 switch, and the
- * new-session default under it. Under the header: the browser list — one row
- * per connection whose body opens its editor inline without leaving the list,
- * with an explicit 允许 switch and a ⋯ menu (设为默认 / 检查 / 连接或断开 /
- * 删除) — then the single 添加浏览器 entry, and one 高级 fold for the session
- * tool policy and the source management the old list header carried.
+ * Settings → 浏览器与电脑. Two switchable tabs, 浏览器 | 电脑: the tab is the
+ * `?tab=` query, so search hits and `#st-card-*` deep links land on the tab
+ * that mounts their card (a hash with no tab selects the card's owning tab via
+ * `browserControlTabForCard`). Each tab leads with its capability header: the
+ * name, one sentence about what the Agent can reach right now, the master 启用
+ * switch, and the new-session default under it. The browser tab then lists one
+ * row per connection whose body opens its editor inline without leaving the
+ * list, with an explicit 允许 switch and a ⋯ menu (设为默认 / 检查 / 连接或断开 /
+ * 删除), then the single 添加浏览器 entry, and one 高级 fold for the session
+ * tool policy.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
+  BROWSER_CONTROL_SETTINGS_DEFAULT_TAB,
+  BROWSER_CONTROL_SETTINGS_TABS,
+  browserControlTabForCard,
+  browserControlTabLabelKey,
   browserControlVerdict,
   isBrowserControlEnabled,
+  normalizeBrowserControlTab,
+  type BrowserControlSettingsTab,
   type BrowserControlVerdict,
 } from '@kiki/session-core/settings';
 
@@ -35,24 +40,86 @@ import { BrowserToolPolicy } from './browserControl/BrowserToolPolicy';
 import { useBrowserAllowance } from './browserControl/browserAllowance';
 import { AdvancedDetails } from './fields';
 
-export function BrowserControlSection() {
-  const { hash } = useLocation();
-  const rawTab = new URLSearchParams(useLocation().search).get('tab');
+export function BrowserControlSection({ initialTab }: { readonly initialTab?: BrowserControlSettingsTab } = {}) {
+  const { t } = useI18n();
+  const navigate = useNavigate();
+  const { search, hash } = useLocation();
+  const params = new URLSearchParams(search);
+  const urlTab = normalizeBrowserControlTab(params.get('tab'));
+  // Mounted state, not the bare URL: a deep link resolves to its tab once,
+  // and tab clicks keep moving even under a router that swallows a navigate
+  // while something else guards it.
+  const [mounted, setMounted] = useState<BrowserControlSettingsTab>(initialTab ?? urlTab ?? BROWSER_CONTROL_SETTINGS_DEFAULT_TAB);
+  const requested = urlTab ?? mounted;
+  const tab: BrowserControlSettingsTab = mounted === requested ? mounted : requested;
+  const tabsRef = useRef<HTMLDivElement>(null);
 
-  // `?tab=browser` (and a `#st-card-browser-*` hash) is an address for this
-  // section, not a view to swap: the page renders both sections, and the tab
-  // only says where the scroll lands. The computer tab is handled the same
-  // way inside ComputerControlSection.
+  const selectTab = (next: BrowserControlSettingsTab, focus = false) => {
+    if (focus) tabsRef.current?.querySelector<HTMLButtonElement>(`[data-browser-control-tab="${next}"]`)?.focus();
+    if (next === tab) return;
+    setMounted(next);
+    params.set('tab', next);
+    void navigate(`/settings/browser-control?${params.toString()}${hash}`);
+  };
+
+  // A `#st-card-*` hash without a tab names a card, and the card names its
+  // tab: select the owning tab first, so the page's card handshake finds the
+  // card mounted when it scrolls. An explicit tab never gets corrected.
   useEffect(() => {
-    if (rawTab !== 'browser') return;
-    const target = hash !== '' ? document.querySelector(hash) : document.querySelector('[data-settings-browser-control]');
-    target?.scrollIntoView({ block: 'start' });
-  }, [rawTab, hash]);
+    if (urlTab !== undefined && urlTab !== mounted) setMounted(urlTab);
+  }, [urlTab, mounted]);
+  useEffect(() => {
+    const cardId = hash.replace(/^#/, '');
+    if (cardId === '' || urlTab !== undefined) return;
+    const owner = browserControlTabForCard(cardId);
+    if (owner === undefined || owner === tab) return;
+    selectTab(owner);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hash, search]);
+
+  const onTabKey = (event: React.KeyboardEvent, index: number) => {
+    const last = BROWSER_CONTROL_SETTINGS_TABS.length - 1;
+    const target = event.key === 'ArrowRight' ? (index === last ? 0 : index + 1)
+      : event.key === 'ArrowLeft' ? (index === 0 ? last : index - 1)
+      : event.key === 'Home' ? 0
+      : event.key === 'End' ? last
+      : null;
+    if (target === null) return;
+    event.preventDefault();
+    selectTab(BROWSER_CONTROL_SETTINGS_TABS[target]!, true);
+  };
 
   return (
     <div className="space-y-6" data-settings-browser-control>
-      <BrowserSection />
-      <ComputerControlSection />
+      <div ref={tabsRef} role="tablist" aria-label={t('st.section.browserControl')} className="flex flex-wrap gap-1 border-b border-hairline">
+        {BROWSER_CONTROL_SETTINGS_TABS.map((candidate, index) => {
+          const active = candidate === tab;
+          return (
+            <button
+              key={candidate}
+              id={`browser-control-tab-${candidate}`}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              aria-controls="browser-control-tab-panel"
+              tabIndex={active ? 0 : -1}
+              data-browser-control-tab={candidate}
+              onClick={() => { selectTab(candidate); }}
+              onKeyDown={(event) => { onTabKey(event, index); }}
+              className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+                active
+                  ? 'border-ink font-medium text-ink'
+                  : 'border-transparent text-ink-soft hover:text-ink'
+              }`}
+            >
+              {t(browserControlTabLabelKey(candidate))}
+            </button>
+          );
+        })}
+      </div>
+      <div id="browser-control-tab-panel" role="tabpanel" aria-labelledby={`browser-control-tab-${tab}`} data-browser-control-panel={tab} className="space-y-6">
+        {tab === 'computer' ? <ComputerControlSection /> : <BrowserSection />}
+      </div>
     </div>
   );
 }

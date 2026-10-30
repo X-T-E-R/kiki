@@ -1670,6 +1670,8 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'search', cardId: 'st-card-exp-search', tab: 'advanced' });
     expect(resolveSettingsRoute('ai', '#st-card-exp-ai'))
       .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-exp-ai', tab: 'defaults' });
+    expect(resolveSettingsRoute('browser-control', '#st-card-exp-browser-control'))
+      .toEqual({ status: 'ok', section: 'browser-control', cardId: 'st-card-exp-browser-control', tab: 'browser' });
     expect(resolveSettingsRoute('general', '#st-card-defaults'))
       .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-defaults', tab: 'behavior' });
   });
@@ -1683,7 +1685,14 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'hooks', cardId: 'st-card-hooks', tab: undefined });
     expect(resolveSettingsRoute('communication', '')).toEqual({ status: 'ok', section: 'sessions', cardId: undefined, tab: 'behavior' });
     expect(resolveSettingsRoute('communication', '#st-card-token-counting'))
-      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-token-counting', tab: undefined });
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-token-counting', tab: 'defaults' });
+    // Cards the Developer page used to hold land on their owning pages.
+    expect(resolveSettingsRoute('advanced', '#st-card-retry'))
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-retry', tab: 'defaults' });
+    expect(resolveSettingsRoute('advanced', '#st-card-resource-limits'))
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-resource-limits', tab: 'runtime' });
+    expect(resolveSettingsRoute('advanced', '#st-card-session-residency'))
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-session-residency', tab: 'runtime' });
     for (const card of ['st-card-thread-communication', 'st-card-notify-parent', 'st-card-communication']) {
       expect(resolveSettingsRoute('communication', `#${card}`), card)
         .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: 'behavior' });
@@ -1744,7 +1753,7 @@ describe('settings route resolver', () => {
     expect(resolveSettingsRoute('runtime', '#st-card-communication'))
       .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: 'behavior' });
     expect(resolveSettingsRoute('runtime', '#st-card-resource-limits'))
-      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-resource-limits', tab: undefined });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-resource-limits', tab: 'runtime' });
     expect(resolveSettingsRoute('runtime', '#st-card-agent-runtime'))
       .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-runtime', tab: 'profiles' });
   });

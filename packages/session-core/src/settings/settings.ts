@@ -2006,6 +2006,8 @@ const AI_TAB_BY_CARD: Readonly<Record<string, AiSettingsTab>> = {
   'st-card-thinking': 'defaults',
   'st-card-auto-compact': 'defaults',
   'st-card-loop-limits': 'defaults',
+  'st-card-retry': 'defaults',
+  'st-card-token-counting': 'defaults',
   'st-card-exp-ai': 'defaults',
   'st-card-request-identity': 'identity',
   'st-card-identity-profiles': 'identity',
@@ -2089,6 +2091,9 @@ const BROWSER_CONTROL_TAB_BY_CARD: Readonly<Record<string, BrowserControlSetting
   'st-card-browser-default': 'browser',
   'st-card-browser-setup': 'browser',
   'st-card-browser-connections': 'browser',
+  // The page's Experimental rows render at the bottom of the 浏览器 tab
+  // (SettingsPage appends them there), so the rows' own anchor lands there too.
+  'st-card-exp-browser-control': 'browser',
   'st-card-computer-enabled': 'computer',
   'st-card-computer-machine': 'computer',
   'st-card-computer-setup': 'computer',
@@ -2128,6 +2133,8 @@ const SESSIONS_TAB_BY_CARD: Readonly<Record<string, SessionsSettingsTab>> = {
   'st-card-questions': 'behavior',
   'st-card-agent-messaging': 'behavior',
   'st-card-task-policy': 'runtime',
+  'st-card-session-residency': 'runtime',
+  'st-card-resource-limits': 'runtime',
   'st-card-exp-sessions': 'runtime',
 };
 
@@ -2472,11 +2479,9 @@ export const EXPERIMENTAL_FLAG_HOMES: readonly ExperimentalFlagHome[] = [
   { id: 'desktop_search', section: 'search', labelKey: 'st.exp.desktopSearch.name', descriptionKey: 'st.exp.desktopSearch.desc', effect: 'restart' },
   { id: 'image_format_conversion', section: 'ai', labelKey: 'st.exp.imageConversion.name', descriptionKey: 'st.exp.imageConversion.desc', effect: 'now' },
   { id: 'native_ssh', section: 'ssh', labelKey: 'st.exp.nativeSsh.name', descriptionKey: 'st.exp.nativeSsh.desc', effect: 'restart' },
-  // Stays on Developer: the browser page states this flag's outcome and points
-  // here, but does not host a browser-local switch for it. The gate is read per
-  // call, so the page's own connect works as soon as it is on; the agent's
-  // browser tools are registered per scope, so a running session keeps its set.
-  { id: 'native_browser', section: 'developer', labelKey: 'st.exp.nativeBrowser.name', descriptionKey: 'st.exp.nativeBrowser.desc', effect: 'newSessions' },
+  // Home is the 浏览器 tab: the flag gates the browser tools a session gets,
+  // so its switch sits with the rest of the browser controls.
+  { id: 'native_browser', section: 'browser-control', labelKey: 'st.exp.nativeBrowser.name', descriptionKey: 'st.exp.nativeBrowser.desc', effect: 'newSessions' },
   { id: 'persistence_minidb_readmodel', section: 'developer', labelKey: 'st.exp.readModel.name', descriptionKey: 'st.exp.readModel.desc', effect: 'now' },
   { id: 'local_session_resume', section: 'sessions', labelKey: 'st.exp.localSessionResume.name', descriptionKey: 'st.exp.localSessionResume.desc', effect: 'now' },
   { id: 'recipes', section: 'ai', labelKey: 'st.exp.recipes.name', descriptionKey: 'st.exp.recipes.desc', effect: 'now' },
@@ -2504,7 +2509,7 @@ export function experimentalCardId(section: string): string {
 }
 
 /** Tab a tabbed page mounts its Experimental rows on (Models → Defaults, Search → Advanced). */
-const EXPERIMENTAL_TAB: Readonly<Record<string, SettingsTab>> = { ai: 'defaults', search: 'advanced', sessions: 'runtime', 'connection-services': 'clients' };
+const EXPERIMENTAL_TAB: Readonly<Record<string, SettingsTab>> = { ai: 'defaults', search: 'advanced', sessions: 'runtime', 'connection-services': 'clients', 'browser-control': 'browser' };
 
 export function experimentalTabForSection(section: string): SettingsTab | undefined {
   return EXPERIMENTAL_TAB[section];
@@ -2586,14 +2591,16 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'sessions', cardId: 'st-card-task-policy', tab: 'runtime', titleKey: 'st.taskPolicy.title', keywordKeys: ['st.taskPolicy.hint', 'st.taskPolicy.maxRunningTasks', 'st.taskPolicy.bashTimeout', 'st.taskPolicy.keepAlive', 'st.taskPolicy.fileToolHints'], synonyms: ['runtime', '运行时', 'background tasks', '后台任务'] },
   { section: 'developer', cardId: 'st-card-cron', titleKey: 'st.cron.title', keywordKeys: ['st.cron.hint', 'st.cron.poll'], synonyms: ['cron', '定时任务', 'environment diagnostics', '环境诊断'] },
   { section: 'sessions', cardId: 'st-card-agent-messaging', tab: 'behavior', titleKey: 'st.sessions.messagingTitle', keywordKeys: ['st.communication.threadCommunication', 'st.communication.notifyParent', 'st.sessions.delegationSub', 'st.sessions.delegationIndependent'], synonyms: ['thread communication', '线程通信', 'notify parent', '通知父代理', 'AgentNotify', 'agent communication', '智能体通信'] },
-  { section: 'developer', cardId: 'st-card-token-counting', titleKey: 'st.communication.tokenCountingTitle', keywordKeys: ['st.communication.tokenCounting', 'st.communication.tokenCountingHint'], synonyms: ['token counting', 'token 计数'] },
+  { section: 'ai', tab: 'defaults', cardId: 'st-card-token-counting', titleKey: 'st.communication.tokenCountingTitle', keywordKeys: ['st.communication.tokenCounting', 'st.dev.tokenHint'], synonyms: ['token counting', 'token 计数'] },
   { section: 'general', cardId: 'st-card-append-timing', titleKey: 'st.communication.appendTimingTitle', keywordKeys: ['st.communication.appendTimingHint', 'st.communication.appendTiming'], synonyms: ['append timing', 'queue timing', '排队时机', '追加时机'] },
   { section: 'general', cardId: 'st-card-sidebar-nav', titleKey: 'st.sidebarNav.title', keywordKeys: ['st.sidebarNav.hint'], synonyms: ['sidebar tools', 'sidebar nav', 'pinned nav', '侧栏', '导航', '常用工具'] },
-  { section: 'developer', cardId: 'st-card-retry', titleKey: 'st.retry.title', keywordKeys: ['st.retry.maxAttempts', 'st.retry.policies', 'st.retry.backoff'], synonyms: ['retry', 'backoff', 'rate limit', '限流', '重试策略'] },
-  { section: 'developer', cardId: 'st-card-session-residency', titleKey: 'st.residency.title', keywordKeys: ['st.residency.maxLive', 'st.residency.idleTtl', 'st.residency.concurrentRestores'], synonyms: ['session_residency', 'eviction', 'unload', '卸载', '常驻'] },
-  { section: 'developer', cardId: 'st-card-resource-limits', titleKey: 'st.resourceLimits.title', keywordKeys: ['st.resourceLimits.workspaceIdle', 'st.resourceLimits.imageMaxEdge', 'st.resourceLimits.imageBudget'], synonyms: ['image budget', '图片限制', 'idle ttl', '资源限制'] },
+  { section: 'ai', tab: 'defaults', cardId: 'st-card-retry', titleKey: 'st.retry.title', keywordKeys: ['st.retry.maxAttempts', 'st.retry.policies', 'st.retry.backoff'], synonyms: ['retry', 'backoff', 'rate limit', '限流', '重试策略'] },
+  { section: 'sessions', tab: 'runtime', cardId: 'st-card-session-residency', titleKey: 'st.residency.title', keywordKeys: ['st.residency.maxLive', 'st.residency.idleTtl', 'st.residency.concurrentRestores'], synonyms: ['session_residency', 'eviction', 'unload', '卸载', '常驻'] },
+  { section: 'sessions', tab: 'runtime', cardId: 'st-card-resource-limits', titleKey: 'st.resourceLimits.title', keywordKeys: ['st.resourceLimits.workspaceIdle', 'st.resourceLimits.imageMaxEdge', 'st.resourceLimits.imageBudget'], synonyms: ['image budget', '图片限制', 'idle ttl', '资源限制'] },
   { section: 'agents', tab: 'profiles', cardId: 'st-card-agent-runtime', titleKey: 'st.agentIdentity.title', keywordKeys: ['st.agentIdentity.identityName', 'st.agentIdentity.extraAgentDirs', 'st.agentIdentity.disabledProfiles', 'st.agentIdentity.skipBuiltin'], synonyms: ['identity', '身份', 'agent dirs', 'disabled profiles', '禁用 profile'] },
-  { section: 'developer', cardId: 'st-card-memory-advisor-tuning', titleKey: 'memory.advisor.tuningTitle', keywordKeys: ['memory.advisor.field.timeout_ms', 'memory.advisor.field.judge_input_tokens', 'memory.advisor.children'], synonyms: ['memory advisor tuning', '记忆顾问调优', 'advisor budget', '顾问参数'] },
+  // Alias for the retired developer tuning card: its numbers are the advisor
+  // card's 高级 fold now, and the id stays mounted on the advisor card.
+  { section: 'memory', cardId: 'st-card-memory-advisor-tuning', titleKey: 'memory.advisor.title', keywordKeys: ['memory.advisor.field.timeout_ms', 'memory.advisor.field.judge_input_tokens', 'memory.advisor.children'], synonyms: ['memory advisor tuning', '记忆顾问调优', 'advisor budget', '顾问参数'] },
   { section: 'developer', cardId: 'st-card-labs', titleKey: 'st.labs.indexTitle', keywordKeys: ['st.exp.tag'], synonyms: ['experimental features', '实验特性', '实验功能', 'flags', 'beta', 'labs'] },
   ...EXPERIMENTAL_SEARCH_ENTRIES,
   { section: 'developer', cardId: 'st-card-advanced', titleKey: 'st.advanced.title', keywordKeys: ['st.advanced.hint'], synonyms: ['json', 'config', '配置文件', 'loop_control', 'background'] },
@@ -2602,7 +2609,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'agents', tab: 'profiles', cardId: 'st-card-main-agents', titleKey: 'st.agentManager.title', keywordKeys: ['st.agentManager.subagent', 'st.agentManager.new', 'st.agentManager.instructions', 'st.namedAgents.modelPin'], synonyms: ['主 agent', '子 agent', '子智能体', 'profiles', 'profile'] },
   { section: 'agents', tab: 'profiles', cardId: 'st-card-prompt-config', titleKey: 'st.prompt.title', keywordKeys: ['st.prompt.hint', 'st.prompt.variables', 'st.prompt.fields'], synonyms: ['prompt fields', '提示词字段', 'prompt variables', '提示变量'] },
   { section: 'memory', cardId: 'st-card-memory', titleKey: 'st.memory.title', keywordKeys: ['st.memory.hint', 'memory.toggle', 'st.memory.approval', 'st.memory.budget', 'st.memory.open'], synonyms: ['memory', '记忆', 'remember', '长期记忆', 'memory approval', '记忆审批'] },
-  { section: 'memory', cardId: 'st-card-memory-advisor', titleKey: 'memory.advisor.title', keywordKeys: ['memory.advisor.switchHint', 'memory.advisor.model', 'memory.advisor.protocol', 'memory.advisor.test'], synonyms: ['memory advisor', '记忆顾问', 'advisor', '顾问', 'selector', '记忆推荐', 'proactive memory', '主动记忆'] },
+  { section: 'memory', cardId: 'st-card-memory-advisor', titleKey: 'memory.advisor.title', keywordKeys: ['memory.advisor.switchHint', 'memory.advisor.model', 'memory.advisor.protocol', 'memory.advisor.test', 'memory.advisor.field.timeout_ms', 'memory.advisor.field.judge_input_tokens', 'memory.advisor.children'], synonyms: ['memory advisor', '记忆顾问', 'advisor', '顾问', 'selector', '记忆推荐', 'proactive memory', '主动记忆', '记忆顾问调优', 'advisor budget', '顾问参数'] },
   { section: 'memory', cardId: 'st-card-memory-workspaces', titleKey: 'st.memory.workspaces', keywordKeys: ['memory.ws.label', 'memory.ws.follow', 'memory.ws.off'], synonyms: ['memory workspace', '工作区记忆', '记忆覆盖'] },
   { section: 'notifications', cardId: 'st-card-notify-rules', titleKey: 'st.notify.rulesTitle', keywordKeys: ['st.notify.enabled', 'st.notify.quiet', 'st.notify.viewing', 'st.notify.minWork'], synonyms: ['notification', '通知', 'do not disturb', '免打扰', 'quiet hours', 'nb-im', 'nb_im'] },
   { section: 'notifications', cardId: 'st-card-notify-scenes', titleKey: 'st.notify.matrixTitle', keywordKeys: ['st.notify.scene.work_complete', 'st.notify.scene.question_pending', 'st.notify.scenes'], synonyms: ['scene', '场景', '何时提醒', 'when to notify', 'question pending', '等待回答', 'work complete', '工作完成'] },

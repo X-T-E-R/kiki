@@ -297,6 +297,21 @@ async function render(guard?: DirtyGuardValue) {
   await settle();
 }
 
+async function renderAt(initialEntries: string[]) {
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queries}>
+        <I18nProvider>
+          <MemoryRouter initialEntries={initialEntries}>
+            <BrowserControlSection />
+          </MemoryRouter>
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+  });
+  await settle();
+}
+
 async function click(selector: string) {
   const button = query<HTMLButtonElement>(selector);
   if (button === null) throw new Error(`No element for ${selector}`);
@@ -378,6 +393,35 @@ afterEach(async () => {
 });
 
 describe('BrowserControlSection', () => {
+  describe('the tab strip', () => {
+    it('shows 浏览器 | 电脑 tabs and mounts the browser tab by default', async () => {
+      await render();
+      expect(query('[role="tablist"]')).not.toBeNull();
+      expect(query('[data-browser-control-panel]')?.getAttribute('data-browser-control-panel')).toBe('browser');
+      expect(query('[data-browser-control-tab="browser"]')?.getAttribute('aria-selected')).toBe('true');
+      expect(query('[data-browser-control-tab="computer"]')?.getAttribute('aria-selected')).toBe('false');
+      expect(query('[data-browser-verdict]')).not.toBeNull();
+      expect(query('[data-computer-verdict]')).toBeNull();
+    });
+
+    it('selects the computer tab on ?tab=computer and switches back on click', async () => {
+      await renderAt(['/settings/browser-control?tab=computer']);
+      await settleUntil('[data-computer-verdict]');
+      expect(query('[data-browser-control-panel]')?.getAttribute('data-browser-control-panel')).toBe('computer');
+      expect(query('[data-browser-verdict]')).toBeNull();
+      await click('[data-browser-control-tab="browser"]');
+      await settleUntil('[data-browser-verdict]');
+      expect(query('[data-browser-control-panel]')?.getAttribute('data-browser-control-panel')).toBe('browser');
+    });
+
+    it('selects the card-owning tab for a #st-card-* hash without a tab', async () => {
+      await renderAt(['/settings/browser-control#st-card-computer-mcp']);
+      await settleUntil('[data-computer-verdict]');
+      expect(query('[data-browser-control-panel]')?.getAttribute('data-browser-control-panel')).toBe('computer');
+      expect(query('[data-browser-control-tab="computer"]')?.getAttribute('aria-selected')).toBe('true');
+    });
+  });
+
   // The wizard, the sources and the WebBridge check all live under the 高级
   // fold the list carries; opening it once per render is the fold doing its
   // job, not a second navigation.
@@ -1419,8 +1463,9 @@ describe('BrowserControlSection', () => {
     expect(connect).toHaveBeenCalledWith('research');
     expect(query('[data-browser-state="idle"]')).not.toBeNull();
     expect(container.textContent).not.toContain('Connected.');
-    // And the refused run offers the trip to the existing switch.
-    expect(query('[data-browser-open-flag]')?.textContent).toBe('Open the switch');
+    // And the refused run offers the trip to the switch, which now lives on
+    // this tab's own Experimental rows.
+    expect(query('[data-browser-open-flag]')?.textContent).toBe('Open the switch below');
   });
 
   it('says what a disconnect does to the resource, by the ownership the server reports', async () => {

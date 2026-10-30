@@ -479,9 +479,9 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'mcp' ? <McpSection />
     : active === 'external-clients' ? <ConnectionServicesSection />
     : active === 'plugins' ? <PluginsSection pluginId={activePluginId} />
-    // The two leaves merged into one page: browser-control carries both
-    // sections stacked; `?tab=computer` scrolls the computer section into
-    // view, so the old split keeps its addresses without a tab strip.
+    // The two leaves merged into one page: browser-control hosts both tabs,
+    // and `?tab=computer` selects the computer tab, so the old split keeps its
+    // addresses.
     : active === 'browser-control' || active === 'computer-control' ? <BrowserControlSection />
     : active === 'search' ? <NbSearchSection />
     : active === 'hooks' ? <HooksSection />
