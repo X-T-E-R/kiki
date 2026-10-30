@@ -48,6 +48,7 @@ import {
   type WebAccessAddressDraft,
 } from '../../lib/webAccess';
 import { useConnection } from '../../state/connection';
+import { pushUndoToast } from '../../lib/toasts';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
@@ -254,15 +255,28 @@ export function WebAccessSection() {
       ) : null}
 
       {confirm?.kind === 'off' && control !== null ? (
-        <ConfirmDialog open overlayId="web-access-off-confirm" tone="danger"
-          title={t('st.web.turnOffTitle')} body={t('st.web.turnOffBody')}
-          confirmLabel={t('st.web.turnOff')}
-          onCancel={() => { setConfirm(null); }}
-          onConfirm={() => {
-            setConfirm(null);
-            void run('off', () => webAccessApi(control).disable(),
-              () => ({ tone: 'success', text: t('st.web.turnedOff') }));
-          }} />
+        // Turning the entry off is reversible with the same data (re-enable
+        // with the mode and address it had), so it runs at once and offers
+        // Undo instead of asking first.
+        (() => {
+          const stateBefore = state;
+          setConfirm(null);
+          void run('off', () => webAccessApi(control).disable(),
+            () => ({ tone: 'success', text: t('st.web.turnedOff') })).then(() => {
+            if (stateBefore === undefined) return;
+            const mode = stateBefore.mode ?? 'persistent';
+            const address = addressDraftFromStatus(stateBefore);
+            pushUndoToast({
+              text: t('st.web.turnedOff'),
+              undoFailedText: t('toast.undoFailed'),
+              undo: async () => {
+                await webAccessApi(control).enable(enableInputFor(mode, address));
+                refresh();
+              },
+            });
+          });
+          return null;
+        })()
       ) : null}
 
       {confirm?.kind === 'revoke' && control !== null ? (

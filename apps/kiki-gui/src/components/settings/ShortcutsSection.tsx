@@ -42,7 +42,7 @@ import {
 } from '../../lib/shortcuts';
 import { SHORTCUTS_QUERY_KEY } from '../../lib/useShortcutPreferences';
 import { useConnection } from '../../state/connection';
-import { ConfirmDialog } from '../ConfirmDialog';
+import { pushUndoToast } from '../../lib/toasts';
 import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
@@ -173,7 +173,6 @@ export function ShortcutsSection() {
   const [saving, setSaving] = useState(false);
   const [saved, ping] = useSavedTick();
   const [error, setError] = useState<Feedback>(null);
-  const [confirmReset, setConfirmReset] = useState(false);
   // Clashes the server reported on the last rejected write, so the rows they
   // name stay marked until the next accepted write.
   const [rejected, setRejected] = useState<readonly ShortcutConflict[]>([]);
@@ -260,9 +259,22 @@ export function ShortcutsSection() {
   };
 
   const resetPlatform = () => {
-    setConfirmReset(false);
     setIssue(null);
-    void commit(() => client.resetShortcuts(platform, { platform }));
+    // Resetting rewrites only this platform's overrides, and the full
+    // preferences are in hand, so the inverse is writing them back: run the
+    // reset and offer Undo rather than asking first.
+    if (preferences === undefined) return;
+    const before = preferences;
+    void commit(() => client.resetShortcuts(platform, { platform })).then((done) => {
+      if (!done) return;
+      pushUndoToast({
+        text: t('st.shortcuts.resetDone', { name: PLATFORM_LABEL[platform] }),
+        undoFailedText: t('toast.undoFailed'),
+        undo: async () => {
+          await commit(() => client.writeShortcuts(platform, before));
+        },
+      });
+    });
   };
 
   const overridden = (action: ShortcutAction) => preferences?.overrides[platform]?.[action] !== undefined;
@@ -334,23 +346,13 @@ export function ShortcutsSection() {
           {bindings !== undefined ? (
             <div className="flex flex-wrap items-center gap-3 pt-1">
               <button type="button" data-shortcut-reset-all className={SECONDARY_BUTTON}
-                disabled={saving || !anyOverride} onClick={() => { setConfirmReset(true); }}>
+                disabled={saving || !anyOverride} onClick={resetPlatform}>
                 {t('st.shortcuts.resetAll', { name: PLATFORM_LABEL[platform] })}
               </button>
               {!anyOverride ? <span className="text-[12px] text-ink-faint">{t('st.shortcuts.allDefault')}</span> : null}
             </div>
           ) : null}
         </div>
-        <ConfirmDialog
-          open={confirmReset}
-          overlayId="confirm-shortcuts-reset"
-          title={t('st.shortcuts.resetAllTitle', { name: PLATFORM_LABEL[platform] })}
-          body={t('st.shortcuts.resetAllBody', { name: PLATFORM_LABEL[platform] })}
-          confirmLabel={t('st.shortcuts.resetAll', { name: PLATFORM_LABEL[platform] })}
-          busy={saving}
-          onConfirm={resetPlatform}
-          onCancel={() => { setConfirmReset(false); }}
-        />
       </SectionCard>
       <FixedKeysCard platform={platform} desktop={desktop} />
     </>
