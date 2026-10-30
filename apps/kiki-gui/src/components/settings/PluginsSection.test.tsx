@@ -516,7 +516,7 @@ describe('PluginsSection', () => {
     const sheet = document.querySelector('[data-install-flow]')!;
     expect(sheet.textContent).toContain('It will be able to');
     expect(sheet.textContent).toContain('officecli');
-    expect(sheet.querySelector('[data-install-permissions] [data-permission-boundary]')?.textContent).toContain('still asks under your approval settings');
+    expect(sheet.querySelector('[data-install-permissions] [data-permission-boundary]')?.textContent).toContain('the system does not enforce them');
     const confirm = document.querySelector<HTMLButtonElement>('[data-install-confirm]')!;
     expect(confirm.textContent).toBe('Allow and install');
     await click(confirm);
@@ -669,7 +669,7 @@ describe('PluginsSection', () => {
     const container = await renderView({ view: 'detail', id: 'notes' });
     await flush();
     const boundary = container.querySelector('[data-plugin-needs] [data-permission-boundary]');
-    expect(boundary?.textContent).toContain('still asks under your approval settings');
+    expect(boundary?.textContent).toContain('does not run in a sandbox');
   });
 
   it('never shows an empty market for a server that has not configured a catalog address', async () => {

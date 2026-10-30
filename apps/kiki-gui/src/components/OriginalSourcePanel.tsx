@@ -209,7 +209,7 @@ function ProbeBlock({
             htmlFor="original-source-home-dir"
             className="block text-[12px] font-medium text-ink"
           >
-            {t('st.source.homeDirLabel')}
+            {t('st.source.homeDirLabel', { app })}
           </label>
           <input
             id="original-source-home-dir"
