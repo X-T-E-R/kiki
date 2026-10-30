@@ -5,46 +5,15 @@ import {
   AGENT_WIRE_RECORD_KEY,
   IAppendLogStore,
   IBootstrapService,
-  createContextTranscriptReducer,
-  type ContextTranscript,
+  ICpuWorkerService,
+  IFileSystemStorageService,
   type Scope,
-  type WireRecord,
 } from '@kiki/agent-core-v2';
-import { event2FromRecord, type Event2, type Event2Class } from '@kiki/agent-core-v2/app/event/event2';
-import {
-  PermissionSetMode,
-  permissionModeKey,
-} from '@kiki/agent-core-v2/agent/permissionMode/permissionModeOps';
-import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/types';
-import {
-  PlanModeCancel,
-  PlanModeEnter,
-  PlanModeExit,
-  planKey,
-  type PlanState,
-} from '@kiki/agent-core-v2/features/plan/planOps';
-import type { FoldContext, ReplayableStateKey } from '@kiki/agent-core-v2/state/state';
+import type { WireContextProjection } from '@kiki/agent-core-v2/agent/contextMemory/wireContextProjection';
+import { readWireContextProjection } from '@kiki/agent-core-v2/persistence/wireContextRead';
 import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 
-const SILENT_FOLD: FoldContext = {
-  silent: true,
-  checkpoint() {},
-  clearCheckpoints() {},
-  undoToCheckpoint() {},
-  emit() {},
-};
-
-const PLAN_EVENTS: ReadonlyMap<string, Event2Class> = new Map<string, Event2Class>([
-  [PlanModeEnter.type, PlanModeEnter],
-  [PlanModeCancel.type, PlanModeCancel],
-  [PlanModeExit.type, PlanModeExit],
-]);
-
-export interface ColdMainWireProjection {
-  readonly transcript: ContextTranscript;
-  readonly permissionMode: PermissionMode;
-  readonly planActive: boolean;
-}
+export type ColdMainWireProjection = WireContextProjection;
 
 const COLD_MAIN_WIRE_CACHE_BYTES = 4 << 20;
 const COLD_MAIN_WIRE_CACHE_ENTRIES = 32;
@@ -69,19 +38,9 @@ export async function readColdMainWireProjection(
   signal?.throwIfAborted();
   const cached = coldWireCaches.get(core)?.entries.get(scope);
   if (before !== undefined && cached?.fingerprint === before) return cached.projection;
-  const reducer = createContextTranscriptReducer();
-  let permissionMode = permissionModeKey.initial() as PermissionMode;
-  let plan: PlanState = { ...planKey.initial() };
-  for await (const record of core.accessor.get(IAppendLogStore).read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, { signal })) {
-    reducer.add(record);
-    permissionMode = foldPermission(permissionMode, record);
-    plan = foldPlan(plan, record);
-  }
-  const projection = {
-    transcript: reducer.result(),
-    permissionMode,
-    planActive: plan.active === true,
-  };
+  const workers = core.accessor.get(ICpuWorkerService);
+  const projection = await readWireContextProjection(workers.request.bind(workers), core.accessor.get(IAppendLogStore),
+    core.accessor.get(IFileSystemStorageService), scope, AGENT_WIRE_RECORD_KEY, signal);
   const after = await wireFingerprint(path);
   if (before !== undefined && before === after) rememberColdWire(core, scope, before, projection);
   return projection;
@@ -140,41 +99,4 @@ function projectionBytes(value: unknown, cap: number): number {
     if (bytes > cap) return bytes;
   }
   return bytes;
-}
-
-function foldPermission(permissionMode: PermissionMode, record: WireRecord): PermissionMode {
-  if (record.type !== PermissionSetMode.type) return permissionMode;
-  const event = event2FromRecord(PermissionSetMode, eventRecord(record));
-  if (event === undefined) return permissionMode;
-  const next = applyFold(permissionModeKey, permissionMode, PermissionSetMode, event);
-  return typeof next === 'string' ? next : permissionMode;
-}
-
-function foldPlan(plan: PlanState, record: WireRecord): PlanState {
-  const cls = PLAN_EVENTS.get(record.type);
-  if (cls === undefined) return plan;
-  const event = event2FromRecord(cls, eventRecord(record));
-  if (event === undefined) return plan;
-  const draft: PlanState = {
-    ...plan,
-    ...(plan.revisionCount === undefined ? {} : { revisionCount: { ...plan.revisionCount } }),
-  };
-  const next = applyFold(planKey, draft, cls, event);
-  return next ?? draft;
-}
-
-function applyFold<S>(
-  key: ReplayableStateKey<S>,
-  state: S,
-  cls: Event2Class,
-  event: Event2,
-): S | undefined {
-  const fold = key.replayable.folds.get(cls);
-  if (fold === undefined) return undefined;
-  const next = fold(state as never, event, SILENT_FOLD);
-  return next === undefined ? undefined : next as S;
-}
-
-function eventRecord(record: WireRecord): { readonly type: string; readonly time?: number } & Record<string, unknown> {
-  return record as { readonly type: string; readonly time?: number } & Record<string, unknown>;
 }

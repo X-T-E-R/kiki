@@ -16,7 +16,9 @@ Agent profile registration remains App-visible through `IAgentProfileRegistry`; 
 
 `src/app/cpuWorker/` owns the App-scoped CPU worker pool. `[cpu_workers]` is read when the App service is created; the pool starts worker threads lazily on the first request and closes during App teardown. Keep the effective size as `max(1, min(os.availableParallelism() - 1, max_workers))`, and bound waiting work by both `max_queue` and `max_queued_bytes`. `timeout_ms` covers queue wait and execution.
 
-Pool operations must be pure functions over their inputs and outputs: do not capture or mutate shared business state. Use `transferList` for large owned buffers when moving them to a worker. Active cancellation or timeout terminates the worker; do not replay that work, and let later work open a replacement. The first landed consumer is image decode.
+Register built-in operations in `src/app/cpuWorker/tasks.ts` (`CpuOperation` and `executeCpuOperation`) and call `ICpuWorkerService.request<T>(operation, { signal, timeoutMs, transferList, bytes })`. Operations must not capture or mutate shared business state. Use `transferList` for large owned buffers; returned `ArrayBuffer` values are transferred automatically. Active cancellation or timeout terminates the worker; do not replay that work, and let later work open a replacement.
+
+Image decode and cold main-wire context projection use the pool. `persistence/wireContextRead.ts` flushes the journal and owns its logical-byte reader, including sealed segments; `runCpuStream` sends at most one 1 MiB chunk per worker pull. UTF-8 decoding, JSON parsing and transcript/permission/plan folding stay in the worker. Keep caller cancellation linked to both the worker request and the byte source.
 
 ## Units and contribution points (L3)
 

@@ -12,6 +12,9 @@ import {
 } from 'node:fs';
 
 import { tmpdir } from 'node:os';
+import { once } from 'node:events';
+import { deserialize } from 'node:v8';
+import { MessageChannel, Worker } from 'node:worker_threads';
 import { join, resolve } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -426,6 +429,26 @@ describe('native assets', () => {
       const options = { cacheBase: join(dir, 'cache'), manifest, source, version: 'test' };
       expect(installCpuWorker(options)).toMatchObject({ status: 'installed', basename: 'cpu-worker.mjs' });
       expect(getCpuWorkerFile(options)).toBe(join(dir, 'cache', 'native', 'test', 'test-target', sha256(JSON.stringify(manifest)), 'runtime', 'cpu', 'cpu-worker.mjs'));
+      const worker = new Worker(getCpuWorkerFile(options)!, { execArgv: [] });
+      const input = new MessageChannel();
+      try {
+        const decoded = once(worker, 'message');
+        worker.postMessage({ id: 1, operation: { type: 'image.decode', bytes: new ArrayBuffer(0), mimeType: 'image/png' } });
+        expect((await decoded)[0]).toEqual({ id: 1, result: false });
+        const projected = once(worker, 'message');
+        const bytes = Uint8Array.from(Buffer.from(JSON.stringify({ type: 'context.append_message', message: {
+          role: 'user', content: [{ type: 'text', text: 'bundled projection' }], toolCalls: [],
+        } }))).buffer;
+        let sent = false;
+        input.port1.on('message', () => {
+          if (sent) input.port1.postMessage({ end: true });
+          else { sent = true; input.port1.postMessage({ bytes }, [bytes]); }
+        });
+        worker.postMessage({ id: 2, operation: { type: 'wire.context', scope: 'test', key: 'wire.jsonl', input: input.port2 } }, [input.port2]);
+        const [response] = await projected as [{ result: ArrayBuffer }];
+        expect(deserialize(Buffer.from(response.result))).toMatchObject({ permissionMode: 'auto', planActive: false,
+          transcript: { entries: [{ role: 'user', content: [{ type: 'text', text: 'bundled projection' }] }] } });
+      } finally { input.port1.close(); input.port2.close(); await worker.terminate(); }
     } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   }, 60_000);
 

@@ -11,6 +11,7 @@ import {
   IAgentContextMemoryService,
   IAgentScopeContext,
   IAppendLogStore,
+  ICpuWorkerService,
   IAtomicDocumentStore,
   IFileSystemStorageService,
   IAgentTaskService,
@@ -1293,9 +1294,10 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
 
     expect(getLiveSessionById(server!.core.accessor, sid)).toBeUndefined();
 
-    const appendLog = server!.core.accessor.get(IAppendLogStore);
-    const readSpy = vi.spyOn(appendLog, 'read');
+    const workers = server!.core.accessor.get(ICpuWorkerService);
+    const readSpy = vi.spyOn(workers, 'request');
     const compact = await snapshot(sid, 'transcript');
+    expect(readSpy).toHaveBeenCalledWith(expect.objectContaining({ type: 'wire.context' }), expect.any(Object));
     readSpy.mockClear();
     const compactWarm = await snapshot(sid, 'transcript');
     expect(readSpy).not.toHaveBeenCalled();
