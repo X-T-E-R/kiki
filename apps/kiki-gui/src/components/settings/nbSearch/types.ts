@@ -164,6 +164,23 @@ export function providerLabelKey(providerId: string): I18nKey | undefined {
 }
 
 /**
+ * Where a person signs up for the provider's API key. The descriptor contract
+ * carries no URL, so this map is the client-side companion to the provider
+ * list above. A provider the map does not know simply skips the guidance.
+ */
+const PROVIDER_KEY_URLS: Readonly<Record<string, string>> = {
+  brave: 'https://brave.com/search/api/',
+  exa: 'https://dashboard.exa.ai/api-keys',
+  firecrawl: 'https://www.firecrawl.dev/app/api-keys',
+  'jina-reader': 'https://jina.ai/api-dashboard',
+  tavily: 'https://app.tavily.com/home',
+};
+
+export function providerKeyUrl(providerId: string): string | undefined {
+  return PROVIDER_KEY_URLS[providerId];
+}
+
+/**
  * The human word for a lane's operation: results channels are 搜索, a typed
  * channel the dictionary knows gets its own word (documents → 文档), and an
  * unknown operation id stays raw — a future engine operation still renders.

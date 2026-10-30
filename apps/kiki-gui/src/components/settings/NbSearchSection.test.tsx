@@ -916,8 +916,8 @@ describe('NbSearchSection save', () => {
     const container = await renderSection();
     await click(container.querySelector('#nb-search-tab-advanced')!);
     const execution = container.querySelector('#st-card-search-execution')!;
-    const concurrencyInput = [...execution.querySelectorAll('label')]
-      .find((label) => label.textContent!.includes('Max concurrent provider calls'))!
+    const concurrencyInput = [...execution.querySelectorAll('[data-settings-field]')]
+      .find((field) => field.textContent!.includes('Max concurrent provider calls'))!
       .querySelector('input')!;
     await setInputValue(concurrencyInput, 'two');
     const saveButton = [...container.querySelectorAll('button')]

@@ -435,6 +435,7 @@ export function McpConfigManager({
                   { value: 'sse', label: 'sse' },
                 ]}
               />
+              <Hint>{t('st.mcp.transportHint')}</Hint>
             </div>
           </div>
           {draft.transport === 'stdio' ? (
@@ -442,6 +443,7 @@ export function McpConfigManager({
               <label className="block space-y-1 text-[11px] font-medium text-ink-soft">
                 {t('st.mcp.command')}
                 <input className={`${INPUT} font-mono`} value={draft.command} onChange={(event) => { setDraft({ ...draft, command: event.target.value }); }} />
+                <Hint>{t('st.mcp.commandExample')}</Hint>
               </label>
               <label className="block space-y-1 text-[11px] font-medium text-ink-soft">
                 {t('st.mcp.args')}
@@ -459,6 +461,7 @@ export function McpConfigManager({
                     setDraft({ ...draft, url: event.target.value, headerRows: [], bearerTokenEnvVar: '', auth: undefined });
                   }
                 }} placeholder="https://mcp.example.com" spellCheck={false} />
+                <Hint>{t('st.mcp.urlExample')}</Hint>
               </label>
               <div className="space-y-2">
                 <label className="block space-y-1 text-[11px] font-medium text-ink-soft">

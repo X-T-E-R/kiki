@@ -9,7 +9,7 @@ import { useI18n } from '../../../i18n';
 import { Hint, Toggle } from '../../controls';
 import { SearchableSelect } from '../../SearchableSelect';
 import { DANGER_GHOST_BUTTON, INPUT } from '../../ui';
-import { DependentField } from '../fields';
+import { DependentField, SettingField, SettingsBox } from '../fields';
 import { FORM_LABEL, FORM_SELECT_TRIGGER, SettingsSegmented } from '../SettingsPrimitives';
 import { formatSelectorLines, parseSelectorLines, type DraftIssue } from './hooksDraft';
 
@@ -153,170 +153,162 @@ export function DeclarativeRuleEditor({ rule, issues, onChange, onRemove, onConv
 
   return (
     <div className="space-y-4" data-hook-editor="declarative">
-      <div className="flex flex-wrap items-start gap-3">
-        <div className="grid min-w-0 flex-1 gap-1">
-          <label htmlFor={`${idPrefix}-id`} className={FORM_LABEL}>{t('st.hooks.ruleId')}</label>
+      <SettingsBox>
+        <SettingField label={t('st.hooks.ruleId')} htmlFor={`${idPrefix}-id`}>
+          <Toggle layout="inline" label={t('st.hooks.ruleEnabled')} checked={rule.enabled} onChange={(enabled) => onChange({ enabled })} />
           <input
             id={`${idPrefix}-id`}
-            className={`${INPUT} font-mono`}
+            className={`${INPUT} w-56 font-mono`}
             value={rule.id}
             autoComplete="off"
             spellCheck={false}
             aria-invalid={fieldIssue(issues, 'id') !== null}
             onChange={(event) => onChange({ id: event.target.value })}
           />
-          <IssueLine field="id" issues={issues} />
-        </div>
-        <div className="pt-5">
-          <Toggle layout="inline" label={t('st.hooks.ruleEnabled')} checked={rule.enabled} onChange={(enabled) => onChange({ enabled })} />
-        </div>
-      </div>
+        </SettingField>
+        <IssueLine field="id" issues={issues} />
 
-      {onConvertToCommand !== undefined ? (
-        <div className="grid gap-1" data-hook-field="kind">
-          <span className={FORM_LABEL}>{t('st.hooks.kind')}</span>
-          <SettingsSegmented<'declarative' | 'command'>
-            ariaLabel={t('st.hooks.kind')}
-            dataAttr="data-hook-kind"
-            value="declarative"
-            onChange={(next) => { if (next === 'command') onConvertToCommand(); }}
-            choices={[
-              { value: 'declarative', label: t('st.hooks.kind.declarative') },
-              { value: 'command', label: t('st.hooks.kind.command') },
-            ]}
-          />
-          <Hint>{t('st.hooks.kind.declarativeHint')}</Hint>
-        </div>
-      ) : null}
-
-      <div className="grid gap-1">
-        <span className={FORM_LABEL}>{t('st.hooks.event')}</span>
-        <SearchableSelect
-          options={eventOptions}
-          value={rule.event}
-          ariaLabel={t('st.hooks.event')}
-          onChange={(next) => onChange({ event: next as DeclarativeHookEvent })}
-          hideFilter
-          placement="auto"
-          buttonClassName={FORM_SELECT_TRIGGER}
-        />
-        <IssueLine field="event" issues={issues} />
-      </div>
-
-      <div className="grid gap-1.5" data-hook-field="action">
-        <span className={FORM_LABEL}>{t('st.hooks.action')}</span>
-        <SettingsSegmented<'inject' | 'observe'>
-          ariaLabel={t('st.hooks.action')}
-          dataAttr="data-hook-action"
-          value={rule.action.type}
-          onChange={(next) => setAction(next)}
-          choices={[
-            { value: 'inject', label: t('st.hooks.action.inject') },
-            { value: 'observe', label: t('st.hooks.action.observe') },
-          ]}
-        />
-        <IssueLine field="action" issues={issues} />
-        {rule.action.type === 'observe' ? <Hint>{t('st.hooks.observeHint')}</Hint> : (
-          <div className="space-y-2 pt-1">
-            <SettingsSegmented<'text' | 'file'>
-              ariaLabel={t('st.hooks.injectText')}
-              dataAttr="data-hook-inject-source"
-              value={inject?.textFile !== undefined ? 'file' : 'text'}
-              onChange={(next) => setInjectSource(next)}
+        {onConvertToCommand !== undefined ? (
+          <SettingField label={t('st.hooks.kind')} help={t('st.hooks.kind.declarativeHint')}>
+            <SettingsSegmented<'declarative' | 'command'>
+              ariaLabel={t('st.hooks.kind')}
+              dataAttr="data-hook-kind"
+              value="declarative"
+              onChange={(next) => { if (next === 'command') onConvertToCommand(); }}
               choices={[
-                { value: 'text', label: t('st.hooks.injectSource.text') },
-                { value: 'file', label: t('st.hooks.injectSource.file') },
+                { value: 'declarative', label: t('st.hooks.kind.declarative') },
+                { value: 'command', label: t('st.hooks.kind.command') },
               ]}
             />
-            {inject?.textFile !== undefined ? (
-              <div className="grid gap-1">
-                <input
-                  className={`${INPUT} font-mono`}
-                  value={inject.textFile}
-                  aria-label={t('st.hooks.injectFile')}
-                  autoComplete="off"
-                  spellCheck={false}
-                  aria-invalid={fieldIssue(issues, 'textFile') !== null}
-                  onChange={(event) => { setLastFile(event.target.value); onChange({ action: { type: 'inject', textFile: event.target.value } }); }}
+          </SettingField>
+        ) : null}
+
+        <SettingField label={t('st.hooks.event')}>
+          <SearchableSelect
+            options={eventOptions}
+            value={rule.event}
+            ariaLabel={t('st.hooks.event')}
+            onChange={(next) => onChange({ event: next as DeclarativeHookEvent })}
+            hideFilter
+            placement="auto"
+            buttonClassName={FORM_SELECT_TRIGGER}
+          />
+        </SettingField>
+        <IssueLine field="event" issues={issues} />
+
+        <SettingField label={t('st.hooks.action')} layout="stack">
+          <div className="space-y-2">
+            <SettingsSegmented<'inject' | 'observe'>
+              ariaLabel={t('st.hooks.action')}
+              dataAttr="data-hook-action"
+              value={rule.action.type}
+              onChange={(next) => setAction(next)}
+              choices={[
+                { value: 'inject', label: t('st.hooks.action.inject') },
+                { value: 'observe', label: t('st.hooks.action.observe') },
+              ]}
+            />
+            {rule.action.type === 'observe' ? <Hint>{t('st.hooks.observeHint')}</Hint> : (
+              <div className="space-y-2 pt-1">
+                <SettingsSegmented<'text' | 'file'>
+                  ariaLabel={t('st.hooks.injectText')}
+                  dataAttr="data-hook-inject-source"
+                  value={inject?.textFile !== undefined ? 'file' : 'text'}
+                  onChange={(next) => setInjectSource(next)}
+                  choices={[
+                    { value: 'text', label: t('st.hooks.injectSource.text') },
+                    { value: 'file', label: t('st.hooks.injectSource.file') },
+                  ]}
                 />
-                <IssueLine field="textFile" issues={issues} />
-                <Hint>{t('st.hooks.injectFileHint')}</Hint>
-              </div>
-            ) : (
-              <div className="grid gap-1">
-                <textarea
-                  className={`${INPUT} min-h-24`}
-                  value={inject?.text ?? ''}
-                  aria-label={t('st.hooks.injectText')}
-                  aria-invalid={fieldIssue(issues, 'text') !== null}
-                  onChange={(event) => { setLastText(event.target.value); onChange({ action: { type: 'inject', text: event.target.value } }); }}
-                />
-                <IssueLine field="text" issues={issues} />
+                {inject?.textFile !== undefined ? (
+                  <div className="grid gap-1">
+                    <input
+                      className={`${INPUT} font-mono`}
+                      value={inject.textFile}
+                      aria-label={t('st.hooks.injectFile')}
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-invalid={fieldIssue(issues, 'textFile') !== null}
+                      onChange={(event) => { setLastFile(event.target.value); onChange({ action: { type: 'inject', textFile: event.target.value } }); }}
+                    />
+                    <IssueLine field="textFile" issues={issues} />
+                    <Hint>{t('st.hooks.injectFileHint')}</Hint>
+                  </div>
+                ) : (
+                  <div className="grid gap-1">
+                    <textarea
+                      className={`${INPUT} min-h-24`}
+                      value={inject?.text ?? ''}
+                      aria-label={t('st.hooks.injectText')}
+                      aria-invalid={fieldIssue(issues, 'text') !== null}
+                      onChange={(event) => { setLastText(event.target.value); onChange({ action: { type: 'inject', text: event.target.value } }); }}
+                    />
+                    <IssueLine field="text" issues={issues} />
+                  </div>
+                )}
               </div>
             )}
           </div>
-        )}
-      </div>
+        </SettingField>
 
-      <div className="grid max-w-40 gap-1">
-        <label htmlFor={`${idPrefix}-priority`} className={FORM_LABEL}>{t('st.hooks.priority')}</label>
-        <input
-          id={`${idPrefix}-priority`}
-          type="number"
-          step={1}
-          className={INPUT}
-          value={rule.priority}
-          aria-invalid={fieldIssue(issues, 'priority') !== null}
-          onChange={(event) => onChange({ priority: Number(event.target.value) })}
-        />
-        <IssueLine field="priority" issues={issues} />
-        <Hint>{t('st.hooks.priorityHint')}</Hint>
-      </div>
-
-      <DependentField when={cadenceAllowed}>
-        <div className="grid gap-2" data-hook-field="cadence">
-          <Toggle
-            layout="inline"
-            label={t('st.hooks.cadenceEnable')}
-            checked={rule.cadence !== undefined}
-            onChange={(on) => setCadence(on)}
+        <SettingField label={t('st.hooks.priority')} htmlFor={`${idPrefix}-priority`} help={t('st.hooks.priorityHint')}>
+          <input
+            id={`${idPrefix}-priority`}
+            type="number"
+            step={1}
+            className={`${INPUT} w-24`}
+            value={rule.priority}
+            aria-invalid={fieldIssue(issues, 'priority') !== null}
+            onChange={(event) => onChange({ priority: Number(event.target.value) })}
           />
-          {rule.cadence !== undefined ? (
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="grid w-36 gap-1">
-                <label htmlFor={`${idPrefix}-cadence`} className={FORM_LABEL}>{t('st.hooks.cadenceEvery')}</label>
-                <input
-                  id={`${idPrefix}-cadence`}
-                  type="number"
-                  min={1}
-                  step={1}
-                  className={INPUT}
-                  value={rule.cadence.everyCompletedSteps}
-                  aria-invalid={fieldIssue(issues, 'everyCompletedSteps') !== null}
-                  onChange={(event) => onChange({ cadence: { ...rule.cadence!, everyCompletedSteps: Number(event.target.value) } })}
-                />
-              </div>
-              <div className="grid gap-1">
-                <span className={FORM_LABEL}>{t('st.hooks.cadenceScope')}</span>
-                <SettingsSegmented<'agent' | 'turn'>
-                  ariaLabel={t('st.hooks.cadenceScope')}
-                  dataAttr="data-hook-cadence-scope"
-                  value={rule.cadence.counterScope}
-                  onChange={(next) => onChange({ cadence: { ...rule.cadence!, counterScope: next } })}
-                  choices={[
-                    { value: 'agent', label: t('st.hooks.cadenceScope.agent') },
-                    { value: 'turn', label: t('st.hooks.cadenceScope.turn') },
-                  ]}
-                />
-              </div>
-            </div>
-          ) : null}
-          <IssueLine field="everyCompletedSteps" issues={issues} />
-          <IssueLine field="cadence" issues={issues} />
-        </div>
-      </DependentField>
+        </SettingField>
+        <IssueLine field="priority" issues={issues} />
 
-      <div className="pt-3" data-hook-field="match">
+        <DependentField when={cadenceAllowed}>
+          <div className="grid gap-2" data-hook-field="cadence">
+            <Toggle
+              layout="inline"
+              label={t('st.hooks.cadenceEnable')}
+              checked={rule.cadence !== undefined}
+              onChange={(on) => setCadence(on)}
+            />
+            {rule.cadence !== undefined ? (
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="grid w-36 gap-1">
+                  <label htmlFor={`${idPrefix}-cadence`} className={FORM_LABEL}>{t('st.hooks.cadenceEvery')}</label>
+                  <input
+                    id={`${idPrefix}-cadence`}
+                    type="number"
+                    min={1}
+                    step={1}
+                    className={INPUT}
+                    value={rule.cadence.everyCompletedSteps}
+                    aria-invalid={fieldIssue(issues, 'everyCompletedSteps') !== null}
+                    onChange={(event) => onChange({ cadence: { ...rule.cadence!, everyCompletedSteps: Number(event.target.value) } })}
+                  />
+                </div>
+                <div className="grid gap-1">
+                  <span className={FORM_LABEL}>{t('st.hooks.cadenceScope')}</span>
+                  <SettingsSegmented<'agent' | 'turn'>
+                    ariaLabel={t('st.hooks.cadenceScope')}
+                    dataAttr="data-hook-cadence-scope"
+                    value={rule.cadence.counterScope}
+                    onChange={(next) => onChange({ cadence: { ...rule.cadence!, counterScope: next } })}
+                    choices={[
+                      { value: 'agent', label: t('st.hooks.cadenceScope.agent') },
+                      { value: 'turn', label: t('st.hooks.cadenceScope.turn') },
+                    ]}
+                  />
+                </div>
+              </div>
+            ) : null}
+            <IssueLine field="everyCompletedSteps" issues={issues} />
+            <IssueLine field="cadence" issues={issues} />
+          </div>
+        </DependentField>
+      </SettingsBox>
+
+      <div data-hook-field="match">
         <button
           type="button"
           aria-expanded={matchOpen}

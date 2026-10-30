@@ -3,8 +3,8 @@ import { useId } from 'react';
 import { LEGACY_HOOK_EVENTS, type LegacyHookConfig } from '@kiki/protocol';
 
 import { useI18n } from '../../../i18n';
-import { Hint } from '../../controls';
 import { DANGER_GHOST_BUTTON, INPUT } from '../../ui';
+import { SettingField, SettingsBox } from '../fields';
 import { FORM_LABEL, SettingsSegmented, SettingsSelect } from '../SettingsPrimitives';
 import type { DraftIssue } from './hooksDraft';
 
@@ -38,50 +38,43 @@ export function LegacyRuleEditor({ rule, ruleLabel, issues, onChange, onRemove, 
   const timeoutIssue = fieldIssue(issues, 'timeout');
   return (
     <div className="space-y-3" data-hook-editor="legacy">
-      {onConvertToDeclarative !== undefined ? (
-        <div className="grid gap-1" data-hook-field="kind">
-          <span className={FORM_LABEL}>{t('st.hooks.kind')}</span>
-          <SettingsSegmented<'declarative' | 'command'>
-            ariaLabel={t('st.hooks.kind')}
-            dataAttr="data-hook-kind"
-            value="command"
-            onChange={(next) => { if (next === 'declarative') onConvertToDeclarative(); }}
-            choices={[
-              { value: 'declarative', label: t('st.hooks.kind.declarative') },
-              { value: 'command', label: t('st.hooks.kind.command') },
-            ]}
+      <SettingsBox>
+        {onConvertToDeclarative !== undefined ? (
+          <SettingField label={t('st.hooks.kind')} help={t('st.hooks.kind.commandHint')}>
+            <SettingsSegmented<'declarative' | 'command'>
+              ariaLabel={t('st.hooks.kind')}
+              dataAttr="data-hook-kind"
+              value="command"
+              onChange={(next) => { if (next === 'declarative') onConvertToDeclarative(); }}
+              choices={[
+                { value: 'declarative', label: t('st.hooks.kind.declarative') },
+                { value: 'command', label: t('st.hooks.kind.command') },
+              ]}
+            />
+          </SettingField>
+        ) : null}
+        <SettingField label={t('st.hooks.event')}>
+          <SettingsSelect<LegacyHookConfig['event']>
+            variant="form"
+            dataAttr="data-hook-event"
+            ariaLabel={t('st.hooks.event')}
+            value={rule.event}
+            onChange={(next) => onChange({ event: next })}
+            choices={LEGACY_HOOK_EVENTS.map((event) => ({ value: event, label: t(`st.hooks.event.${event}`) }))}
           />
-          <Hint>{t('st.hooks.kind.commandHint')}</Hint>
-        </div>
-      ) : null}
-      <div className="grid gap-1">
-        <span className={FORM_LABEL}>{t('st.hooks.event')}</span>
-        <SettingsSelect<LegacyHookConfig['event']>
-          variant="form"
-          dataAttr="data-hook-event"
-          ariaLabel={t('st.hooks.event')}
-          value={rule.event}
-          onChange={(next) => onChange({ event: next })}
-          choices={LEGACY_HOOK_EVENTS.map((event) => ({ value: event, label: t(`st.hooks.event.${event}`) }))}
-        />
-        {eventIssue !== null ? <p role="alert" data-hook-issue="event" className="text-[12px] leading-4 text-danger">{eventIssue}</p> : null}
-      </div>
-      <div className="grid gap-1">
-        <label htmlFor={`${idPrefix}-command`} className={FORM_LABEL}>{t('st.hooks.command')}</label>
-        <textarea
-          id={`${idPrefix}-command`}
-          className={`${INPUT} min-h-16 font-mono`}
-          value={rule.command}
-          aria-invalid={commandIssue !== null}
-          onChange={(event) => onChange({ command: event.target.value })}
-        />
-        {commandIssue !== null
-          ? <p role="alert" data-hook-issue="command" className="text-[12px] leading-4 text-danger">{commandIssue}</p>
-          : <Hint>{t('st.hooks.commandHint')}</Hint>}
-      </div>
-      <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_10rem]">
-        <div className="grid gap-1">
-          <label htmlFor={`${idPrefix}-matcher`} className={FORM_LABEL}>{t('st.hooks.matcher')}</label>
+          {eventIssue !== null ? <p role="alert" data-hook-issue="event" className="mt-1 text-[12px] leading-4 text-danger">{eventIssue}</p> : null}
+        </SettingField>
+        <SettingField label={t('st.hooks.command')} layout="stack" help={commandIssue !== null ? undefined : t('st.hooks.commandHint')}>
+          <textarea
+            id={`${idPrefix}-command`}
+            className={`${INPUT} min-h-16 font-mono`}
+            value={rule.command}
+            aria-invalid={commandIssue !== null}
+            onChange={(event) => onChange({ command: event.target.value })}
+          />
+          {commandIssue !== null ? <p role="alert" data-hook-issue="command" className="mt-1 text-[12px] leading-4 text-danger">{commandIssue}</p> : null}
+        </SettingField>
+        <SettingField label={t('st.hooks.matcher')} htmlFor={`${idPrefix}-matcher`} help={t('st.hooks.matchHint')}>
           <input
             id={`${idPrefix}-matcher`}
             className={INPUT}
@@ -89,10 +82,9 @@ export function LegacyRuleEditor({ rule, ruleLabel, issues, onChange, onRemove, 
             aria-invalid={matcherIssue !== null}
             onChange={(event) => onChange({ matcher: event.target.value === '' ? undefined : event.target.value })}
           />
-          {matcherIssue !== null ? <p role="alert" data-hook-issue="matcher" className="text-[12px] leading-4 text-danger">{matcherIssue}</p> : null}
-        </div>
-        <div className="grid gap-1">
-          <label htmlFor={`${idPrefix}-timeout`} className={FORM_LABEL}>{t('st.hooks.timeout')}</label>
+          {matcherIssue !== null ? <p role="alert" data-hook-issue="matcher" className="mt-1 text-[12px] leading-4 text-danger">{matcherIssue}</p> : null}
+        </SettingField>
+        <SettingField label={t('st.hooks.timeout')} htmlFor={`${idPrefix}-timeout`}>
           <input
             id={`${idPrefix}-timeout`}
             type="number"
@@ -100,15 +92,14 @@ export function LegacyRuleEditor({ rule, ruleLabel, issues, onChange, onRemove, 
             max={600}
             step={1}
             placeholder="30"
-            className={INPUT}
+            className={`${INPUT} w-24`}
             value={rule.timeout ?? ''}
             aria-invalid={timeoutIssue !== null}
             onChange={(event) => onChange({ timeout: event.target.value === '' ? undefined : Number(event.target.value) })}
           />
-          {timeoutIssue !== null ? <p role="alert" data-hook-issue="timeout" className="text-[12px] leading-4 text-danger">{timeoutIssue}</p> : null}
-        </div>
-      </div>
-      <Hint>{t('st.hooks.matchHint')}</Hint>
+          {timeoutIssue !== null ? <p role="alert" data-hook-issue="timeout" className="mt-1 text-[12px] leading-4 text-danger">{timeoutIssue}</p> : null}
+        </SettingField>
+      </SettingsBox>
       <div>
         <button type="button" className={DANGER_GHOST_BUTTON} aria-label={t('st.hooks.removeRule', { rule: ruleLabel })} onClick={onRemove}>
           {t('st.hooks.remove')}

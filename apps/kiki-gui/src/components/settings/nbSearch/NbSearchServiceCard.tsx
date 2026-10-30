@@ -20,13 +20,14 @@ import { useI18n } from '../../../i18n';
 import { Hint, Toggle } from '../../controls';
 import { SECONDARY_BUTTON } from '../../ui';
 import { ConfirmDialog } from '../../ConfirmDialog';
+import { ExternalLink } from '../../../host/ExternalLink';
 import { AdvancedDetails, SettingField } from '../fields';
 import { FieldIssue, SettingsSelect } from '../SettingsPrimitives';
 import { RowFrame } from '../RowFrame';
 import { Tag } from '../../capabilities/primitives';
 import { NbSearchMultiKeyEditor, type KeyDraft } from './NbSearchMultiKeyEditor';
 import { NbSearchKeyUsagePanel } from './NbSearchKeyUsagePanel';
-import { costLabelKey, latencyLabelKey, type ServiceCard } from './types';
+import { costLabelKey, latencyLabelKey, providerKeyUrl, type ServiceCard } from './types';
 import {
   balanceTtlIssue,
   baseUrlIssue,
@@ -326,8 +327,20 @@ export function NbSearchServiceCard({
     </div>
   ) : null;
 
+  const keyUrl = info !== null && info.credentialRequirement !== 'none'
+    ? providerKeyUrl(info.providerId)
+    : undefined;
+
   const body = open ? (
     <div className="space-y-3" data-nb-search-service-body={card.id}>
+      {keyUrl !== undefined ? (
+        <p className="text-[12px] leading-snug text-ink-soft" data-nb-search-key-guide>
+          {t('st.nbSearch.service.keyGuide')}{' '}
+          <ExternalLink href={keyUrl} className="font-medium text-selected-ink hover:underline">
+            {t('st.nbSearch.service.keyGuideLink')}
+          </ExternalLink>
+        </p>
+      ) : null}
       {info !== null && editableInstanceId !== undefined && info.credentialRequirement !== 'none' ? (
         <div className="space-y-2">
           <NbSearchMultiKeyEditor

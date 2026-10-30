@@ -80,9 +80,9 @@ describe('ExperimentalRows', () => {
     expect(wait.textContent).toContain('Wait for background tasks');
     expect(wait.querySelector('[data-experimental-effect]')?.textContent).toBe('Applies right away.');
     expect(wait.querySelector('[data-flag-effective]')?.textContent).toBe('Currently on');
-    // The saved override is the selected choice; the flag id stays visible but quiet.
+    // The saved override is the selected choice; the raw flag id is a title, not visible text.
     expect(wait.querySelector('[data-experimental-choice="on"]')?.getAttribute('aria-pressed')).toBe('true');
-    expect(wait.textContent).toContain('task_wait');
+    expect(wait.querySelector('[title]')?.getAttribute('title')).toContain('task_wait');
   });
 
   it('renders nothing on a page that owns no reported flag', async () => {

@@ -13,6 +13,7 @@ import { mergeConfigEcho } from './configEcho';
 import { PermissionRulesSettings } from './PermissionRulesSettings';
 import { ReviewerSettings } from './ReviewerSettings';
 import { SectionCard } from './SectionCard';
+import { SettingField, SettingsBox } from './fields';
 import { SettingsSegmented } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
@@ -86,27 +87,36 @@ function PermissionDefaultCard() {
 
   return (
     <SectionCard id="st-card-permission-defaults" title={t('st.perm.defaultTitle')} effect="newSessions">
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
+      <SettingsBox>
+        <SettingField
+          label={t('st.defaults.permissionMode')}
+          labelId="permission-default-mode-label"
+          help={
+            <span data-permission-mode-hint className={mode === 'yolo' ? 'text-amber-ink' : undefined}>
+              {t(`st.defaults.permission.${mode}Hint`)}
+            </span>
+          }
+        >
+          <SavedTick show={saved} />
           <SettingsSegmented<PermissionMode>
-            ariaLabel={t('st.defaults.permissionMode')}
+            ariaLabelledBy="permission-default-mode-label"
             value={mode}
             disabled={saving || configQuery.data === undefined}
             onChange={(next) => void apply(next)}
             choices={MODES.map((value) => ({ value, label: t(`st.defaults.permission.${value}`), caution: value === 'yolo' }))}
           />
-          <SavedTick show={saved} />
-        </div>
-        <p data-permission-mode-hint className={`max-w-[62ch] text-[12px] leading-snug ${mode === 'yolo' ? 'text-amber-ink' : 'text-ink-soft'}`}>
-          {t(`st.defaults.permission.${mode}Hint`)}
-        </p>
-        <div className="space-y-1 pt-3">
-          <span className="block text-[13px] font-medium text-ink">{t('st.perm.dangerousBash')}</span>
-          <SettingsSegmented ariaLabel={t('st.perm.dangerousBash')} value={dangerousBash}
+        </SettingField>
+        <SettingField
+          label={t('st.perm.dangerousBash')}
+          labelId="permission-dangerous-bash-label"
+          help={t('st.perm.dangerousBashHint')}
+        >
+          <SettingsSegmented ariaLabelledBy="permission-dangerous-bash-label" value={dangerousBash}
             disabled={saving || configQuery.data === undefined} onChange={(next) => void applyDangerousBash(next)}
             choices={(['default', 'on', 'off'] as const).map((value) => ({ value, label: t(`st.perm.dangerousBash.${value}`) }))} />
-          <p className="max-w-[62ch] text-[12px] leading-snug text-ink-soft">{t('st.perm.dangerousBashHint')}</p>
-        </div>
+        </SettingField>
+      </SettingsBox>
+      <div className="pt-2">
         <FeedbackLine feedback={feedback} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
       </div>

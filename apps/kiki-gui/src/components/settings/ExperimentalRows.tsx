@@ -14,9 +14,10 @@ import {
 import type { KikiConfigResponse } from '@kiki/session-core/transport';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { Hint, InlineError, SavedTick } from '../controls';
+import { InlineError, SavedTick } from '../controls';
 import { mergeConfigEcho } from './configEcho';
 import { SectionCard } from './SectionCard';
+import { SettingField, SettingsBox } from './fields';
 import { SettingsSegmented } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
@@ -83,31 +84,28 @@ function ExperimentalRow({ id, override, effective }: { id: string; override: bo
     }
   };
 
-  const labelId = `experimental-flag-${id}-label`;
+  // One box row per flag: name + tag on the left, the three-way choice on the
+  // right. The raw flag id is for logs, so it rides the row's `title`, not the
+  // visible line.
   return (
-    <div data-experimental-row={id} className="grid gap-x-6 gap-y-2 py-3 first:pt-0 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
-      <div className="min-w-0 space-y-0.5">
-        <p className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-          <span id={labelId} className="text-[13px] text-ink">{name}</span>
-          <span data-experimental-tag className="rounded-[4px] bg-ink/[0.05] px-1.5 py-px text-[11px] font-medium leading-4 text-ink-soft">
-            {t('st.exp.tag')}
-          </span>
-        </p>
-        <Hint>
+    <SettingField
+      label={name}
+      labelId={`experimental-flag-${id}-label`}
+      help={
+        <>
           {t(home?.descriptionKey ?? 'st.exp.unknown.desc')}{' '}
           <span data-experimental-effect={home?.effect ?? 'now'}>{t(EFFECT_KEY[home?.effect ?? 'now'])}</span>
-        </Hint>
-        <p className="text-[12px] leading-snug text-ink-faint">
+          <span aria-hidden className="px-1.5">·</span>
           <span data-flag-effective={String(effective)}>
             {t(effective === undefined ? 'st.exp.state.unknown' : effective ? 'st.exp.state.on' : 'st.exp.state.off')}
           </span>
-          <span aria-hidden className="px-1.5">·</span>
-          <span className="font-mono text-[11px]">{t('st.exp.flagId', { id })}</span>
-        </p>
-        {envOverride ? <p className="text-[12px] leading-snug text-amber-ink" data-experimental-env>{t('st.exp.envOverride')}</p> : null}
-        {error !== null ? <p role="alert" className="text-[12px] leading-snug text-danger">{error}</p> : null}
-      </div>
-      <div className="flex items-center gap-2 sm:justify-end" id={`experimental-flag-${id}`}>
+        </>
+      }
+    >
+      <span className="flex shrink-0 flex-wrap items-center gap-2" title={t('st.exp.flagId', { id })}>
+        <span data-experimental-tag className="rounded-[4px] bg-ink/[0.05] px-1.5 py-px text-[11px] font-medium leading-4 text-ink-soft">
+          {t('st.exp.tag')}
+        </span>
         <SavedTick show={saved} />
         <SettingsSegmented<Choice>
           ariaLabel={t('st.exp.choiceLabel', { feature: name })}
@@ -125,8 +123,10 @@ function ExperimentalRow({ id, override, effective }: { id: string; override: bo
             { value: 'off', label: t('st.exp.choice.off') },
           ]}
         />
-      </div>
-    </div>
+        {envOverride ? <span className="basis-full text-right text-[12px] leading-snug text-amber-ink" data-experimental-env>{t('st.exp.envOverride')}</span> : null}
+        {error !== null ? <span role="alert" className="basis-full text-right text-[12px] leading-snug text-danger">{error}</span> : null}
+      </span>
+    </SettingField>
   );
 }
 
@@ -153,11 +153,13 @@ export function ExperimentalRows({ section }: { section: string }) {
   const sorted = mine.toSorted((a, b) => order(a.id) - order(b.id) || a.id.localeCompare(b.id));
   return (
     <SectionCard id={experimentalCardId(section)} title={t('st.exp.rowsTitle')}>
-      <div data-experimental-rows={section}>
+      <SettingsBox data-experimental-rows={section}>
         {sorted.map((row) => (
-          <ExperimentalRow key={row.id} id={row.id} override={row.override} effective={effective[row.id]} />
+          <div key={row.id} data-experimental-row={row.id}>
+            <ExperimentalRow id={row.id} override={row.override} effective={effective[row.id]} />
+          </div>
         ))}
-      </div>
+      </SettingsBox>
     </SectionCard>
   );
 }
