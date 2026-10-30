@@ -17,7 +17,7 @@
 import { useEffect, useId, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { pushToast } from '../../lib/toasts';
+import { pushToast, pushUndoToast } from '../../lib/toasts';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
@@ -36,6 +36,7 @@ import {
   useSshHosts,
   visibleState,
   type SshHost,
+  type SshHostInput,
   type SshHostStatus,
 } from '../../lib/ssh';
 import { MAIN_SPACE_ID, useSpaces } from '../../lib/spaces';
@@ -107,7 +108,7 @@ function SshHostsSettings() {
   // The main space's own path is the default home on the other machine, the
   // same one the space directory shows.
   const mainSpacePath = useSpaces(client).data?.find((space) => space.id === MAIN_SPACE_ID)?.path ?? '';
-  const [confirm, setConfirm] = useState<{ kind: 'delete' | 'write-back'; host: SshHost } | null>(null);
+  const [confirm, setConfirm] = useState<{ kind: 'delete'; host: SshHost } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [rowFeedback, setRowFeedback] = useState<{ id: string; feedback: Feedback } | null>(null);
 
@@ -131,6 +132,41 @@ function SshHostsSettings() {
       await action();
       setRowFeedback({ id: host.id, feedback: { tone: 'success', text: success } });
       await refresh();
+    } catch (error) {
+      setRowFeedback({ id: host.id, feedback: { tone: 'error', text: errorText(locale, error) } });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Writing a host back to ~/.ssh/config is reversible with the store the
+  // server keeps: the row holds the pre-write record, so run it at once and
+  // let the toast put that record back instead of asking first. Deleting the
+  // stored host stays a confirm — the record itself is gone there.
+  const writeBack = async (host: SshHost) => {
+    const prior: SshHostInput = {
+      name: host.name,
+      hostname: host.hostname,
+      user: host.user,
+      port: host.port,
+      identityFile: host.identityFile,
+      roots: host.roots,
+      description: host.description,
+      agentAccess: host.agentAccess,
+    };
+    setBusy(host.id);
+    setRowFeedback(null);
+    try {
+      await sshApi(client).writeBack(host.id);
+      await refresh();
+      pushUndoToast({
+        text: t('st.ssh.writtenBack', { alias: host.id }),
+        undoFailedText: t('toast.undoFailed'),
+        undo: async () => {
+          await sshApi(client).upsert(host.id, prior);
+          await refresh();
+        },
+      });
     } catch (error) {
       setRowFeedback({ id: host.id, feedback: { tone: 'error', text: errorText(locale, error) } });
     } finally {
@@ -173,7 +209,7 @@ function SshHostsSettings() {
               onEdit={(host) => { setForm({ kind: 'edit', host }); }}
               onRemoteSpace={(host) => { setRemoteSpace({ profileId: host.id }); }}
               onDelete={(host) => { setConfirm({ kind: 'delete', host }); }}
-              onWriteBack={(host) => { setConfirm({ kind: 'write-back', host }); }}
+              onWriteBack={(host) => { void writeBack(host); }}
               onOverride={(host) => { setForm({ kind: 'override', host }); }}
               onDisconnect={(host) => void run(host, () => sshApi(client).disconnect(host.id), t('st.ssh.disconnected'))}
             />
@@ -218,21 +254,6 @@ function SshHostsSettings() {
           const host = confirm!.host;
           setConfirm(null);
           void run(host, () => sshApi(client).remove(host.id), t('st.ssh.deleted', { name: host.name }));
-        }}
-      />
-      <ConfirmDialog
-        open={confirm?.kind === 'write-back'}
-        tone="default"
-        title={t('st.ssh.writeBackTitle', { alias: confirm?.host.id ?? '' })}
-        body={t('st.ssh.writeBackBody')}
-        confirmLabel={t('st.ssh.writeBack')}
-        overlayId="ssh-write-back"
-        busy={busy !== null}
-        onCancel={() => { setConfirm(null); }}
-        onConfirm={() => {
-          const host = confirm!.host;
-          setConfirm(null);
-          void run(host, () => sshApi(client).writeBack(host.id), t('st.ssh.writtenBack', { alias: host.id }));
         }}
       />
     </>

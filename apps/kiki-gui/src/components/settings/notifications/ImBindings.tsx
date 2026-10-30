@@ -18,10 +18,10 @@ import {
 
 import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
+import { pushUndoToast } from '../../../lib/toasts';
 import { FeedbackLine, type Feedback } from '../../controls';
 import { DisclosureChevron } from '../../icons';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
-import { ConfirmDialog } from '../../ConfirmDialog';
 import { FORM_LABEL, SettingsSegmented, SettingsSelect, type SettingsChoice } from '../SettingsPrimitives';
 import {
   bindingTargetChoices, bindingTargetValue, defaultTarget, IM_KEY as KEY, identityLabel, liveText, MEDIA_KIND_KEYS, parseTarget,
@@ -161,7 +161,6 @@ export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = 
   const [search, setSearch] = useState('');
   const [testing, setTesting] = useState(false);
   const [testFeedback, setTestFeedback] = useState<Feedback>(null);
-  const [pendingScopeExpand, setPendingScopeExpand] = useState<ImBindingScope | null>(null);
 
   const isGroup = binding.identity.chat_kind === 'group' && binding.provider_kind !== 'wechat_bridge';
   const topicDisabled = binding.identity.topic_id === '0' || setupPlatform?.capabilities.threads === false;
@@ -182,7 +181,6 @@ export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = 
   const identity = identityLabel(binding.identity, t);
   const on = binding.enabled && !binding.pending_reanchor && imSessionAdmitted({ allowed: policy.allowed, defaultEnabled: policy.default_enabled, sessionEnabled: binding.session_enabled });
   const blocked = !policy.allowed || !binding.enabled || binding.pending_reanchor;
-  const [rebindTargetValue, setRebindTargetValue] = useState<string | null>(null);
 
   const update = (patch: ImBindingPatch) => {
     setTestFeedback(null);
@@ -191,36 +189,55 @@ export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = 
   const targetValue = bindingTargetValue(binding);
   const boundChannelView = targetChannelsQuery.data?.channels.find((ch) => ch.id === `im:${binding.id}`);
 
+  // A rebind is reversible with the same call, so it runs at once and the
+  // toast offers the inverse: rebind back to the target captured before the
+  // change. Only a landed write gets an undo — a failed one never announces
+  // itself as done.
   const onSelectTarget = (value: string) => {
-    if (value === targetValue) return;
-    setRebindTargetValue(value);
-  };
-
-  const handleConfirmRebind = () => {
-    if (!rebindTargetValue) return;
-    const nextTarget = parseTarget(rebindTargetValue);
-    setRebindTargetValue(null);
-    update({ target: nextTarget, rebind: true });
-  };
-
-  const handleCancelRebind = () => {
-    setRebindTargetValue(null);
+    if (value === targetValue || action.saving) return;
+    const priorTarget = targetValue;
+    void (async () => {
+      const done = await action.run(() => client.imSessions.updateBinding(binding.id, { target: parseTarget(value), rebind: true }));
+      if (!done) return;
+      pushUndoToast({
+        text: t('st.im.rebind.transferred'),
+        undoFailedText: t('toast.undoFailed'),
+        undo: async () => {
+          await client.imSessions.updateBinding(binding.id, { target: parseTarget(priorTarget), rebind: true });
+        },
+      });
+    })();
   };
 
   const selectScope = (scope: ImBindingScope) => {
     if (scope === currentScope) return;
-    if (SCOPE_RANK[scope] > SCOPE_RANK[currentScope]) {
-      setPendingScopeExpand(scope);
+    // Sender is the narrowest answer; returning to it never re-anchors the
+    // binding, so it stays a plain write like any reduction.
+    if (SCOPE_RANK[scope] > SCOPE_RANK[currentScope] && scope !== 'sender') {
+      // Widening who lands here is reversible too: run it, then offer to put
+      // the captured scope (and its group policy) back.
+      const priorScope = currentScope;
+      const priorPolicy = binding.group_policy;
+      void (async () => {
+        const done = await action.run(() => client.imSessions.updateBinding(binding.id, {
+          binding_scope: scope,
+          group_policy: priorPolicy ?? { wake: 'mention_or_reply' },
+          rebind: true,
+        }));
+        if (!done) return;
+        pushUndoToast({
+          text: t('st.im.scopeExpand.expanded'),
+          undoFailedText: t('toast.undoFailed'),
+          undo: async () => {
+            await client.imSessions.updateBinding(binding.id, priorPolicy === undefined
+              ? { binding_scope: priorScope, group_policy: { wake: 'mention_or_reply' } }
+              : { binding_scope: priorScope, group_policy: priorPolicy });
+          },
+        });
+      })();
       return;
     }
     update({ binding_scope: scope });
-  };
-
-  const confirmScopeExpand = () => {
-    if (pendingScopeExpand === null) return;
-    const scope = pendingScopeExpand;
-    setPendingScopeExpand(null);
-    update({ binding_scope: scope, group_policy: binding.group_policy ?? { wake: 'mention_or_reply' }, rebind: true });
   };
 
   const runTestBinding = async () => {
@@ -349,60 +366,6 @@ export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = 
       </div>
     </div> : null}
     <FeedbackLine feedback={action.error === undefined ? null : { tone: 'error', text: action.error }} />
-    <ConfirmDialog
-      open={rebindTargetValue !== null}
-      title={t('st.im.rebind.title')}
-      confirmLabel={t('st.im.rebind.confirm')}
-      cancelLabel={t('st.im.rebind.cancel')}
-      busy={action.saving}
-      tone="danger"
-      onConfirm={handleConfirmRebind}
-      onCancel={handleCancelRebind}
-    >
-      <div className="space-y-3 py-1 text-[13px] text-ink-soft">
-        <p className="leading-relaxed">
-          {t('st.im.rebind.description')}
-        </p>
-        <div className="rounded-lg border border-hairline bg-panel p-2.5 space-y-1.5 text-[12px]">
-          <div className="flex items-start justify-between gap-2">
-            <span className="text-ink-faint shrink-0">{t('st.im.rebind.variant')}</span>
-            <span className="font-medium text-ink truncate text-right">{identity}</span>
-          </div>
-          <div className="flex items-start justify-between gap-2">
-            <span className="text-ink-faint shrink-0">{t('st.im.rebind.currentOwner')}</span>
-            <span className="text-ink-soft truncate text-right">
-              {binding.pending_reanchor
-                ? t('st.im.pendingReanchor')
-                : binding.persona_id !== undefined
-                  ? `${t('st.im.kindPersona')} · ${targetCatalog?.personas.find((p) => p.id === binding.persona_id)?.name ?? binding.persona_id}`
-                  : binding.session_id !== undefined
-                    ? `${t('st.im.kindSession')} · ${targetCatalog?.sessions.find((s) => s.id === binding.session_id)?.title ?? binding.session_id}`
-                    : t('st.im.pendingReanchor')}
-            </span>
-          </div>
-          <div className="flex items-start justify-between gap-2">
-            <span className="text-ink-faint shrink-0">{t('st.im.rebind.targetOwner')}</span>
-            <span className="font-medium text-selected-ink truncate text-right">
-              {rebindTargetValue
-                ? rebindTargetValue.startsWith('persona:')
-                  ? `${t('st.im.kindPersona')} · ${targetCatalog?.personas.find((p) => p.id === rebindTargetValue.slice(8))?.name ?? rebindTargetValue.slice(8)}`
-                  : `${t('st.im.kindSession')} · ${targetCatalog?.sessions.find((s) => s.id === rebindTargetValue.slice(8))?.title ?? rebindTargetValue.slice(8)}`
-                : ''}
-            </span>
-          </div>
-        </div>
-      </div>
-    </ConfirmDialog>
-    <ConfirmDialog
-      open={pendingScopeExpand !== null}
-      title={t('st.im.scopeExpand.title')}
-      body={t('st.im.scopeExpand.description')}
-      confirmLabel={t('st.im.scopeExpand.confirm')}
-      busy={action.saving}
-      tone="default"
-      onConfirm={confirmScopeExpand}
-      onCancel={() => { setPendingScopeExpand(null); }}
-    />
   </div>;
 }
 

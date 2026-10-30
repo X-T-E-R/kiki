@@ -39,7 +39,7 @@ import { errorText, type I18nKey, type Locale } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { isCapabilityUnsupportedError } from '../agent-panel/mapCapabilities';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
+import { SidePanel } from '../SidePanel';
 import { FOCUS_RING } from '../rail-variants/shell';
 import { Spinner } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
@@ -432,7 +432,9 @@ const SOURCE_KEY: Readonly<Record<OverrideSource, I18nKey>> = {
 /**
  * The catalog, for adding a plugin that is not installed here yet. It reads the
  * same catalog query the plugins page reads — the rail does not become a second
- * marketplace, it just asks the existing one.
+ * marketplace, it just asks the existing one. Picking an entry hands off to the
+ * install flow, so the list rides the create-tier surface (SidePanel) rather
+ * than a bare dialog.
  *
  * Exported because one workspace's own page opens the same catalog for itself:
  * arriving there from the rail's Link would have dropped the workspace, and an
@@ -459,24 +461,25 @@ export function PluginCatalogDialog({
     [catalog.data, query],
   );
   return (
-    <Dialog onClose={onClose} ariaLabel={title ?? t('rail.plugins.browse')} overlayId="rail-plugin-catalog" panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm} max-h-[min(80vh,560px)] overflow-y-auto`}>
-      <h2 className="font-display text-[18px] leading-6 text-ink">{title ?? t('rail.plugins.browseTitle')}</h2>
-      <p className="mt-1 text-[13px] leading-5 text-ink-soft">{body ?? t('rail.plugins.browseBody')}</p>
-      <div className="mt-4 space-y-1">
+    <SidePanel
+      title={title ?? t('rail.plugins.browseTitle')}
+      description={body ?? t('rail.plugins.browseBody')}
+      overlayId="rail-plugin-catalog"
+      onClose={onClose}
+      width="md"
+    >
+      <div className="space-y-1">
         {entries.length === 0 ? (
           <p className="text-[12px] text-ink-faint">{t('cap.plugins.noMatch', { query })}</p>
         ) : entries.map((entry) => (
-          <button key={entry.id} type="button" onClick={() => { onPick(entry); }} className={`flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-ink/[0.04] ${FOCUS_RING}`} data-rail-plugin-catalog-entry={entry.id}>
+          <button key={entry.id} type="button" onClick={() => { onPick(entry); }} className={`flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-ink/[0.04] ${FOCUS_RING}`} data-rail-plugin-catalog-entry={entry.id}>
             <CapabilityIcon icon={entry.icon} kind="plugin" size="sm" />
             <span className="min-w-0 flex-1 truncate text-[13px] text-ink">{entry.displayName}</span>
             <span className="shrink-0 text-[12px] text-ink-faint">{t('rail.plugins.addHere')}</span>
           </button>
         ))}
       </div>
-      <div className="mt-4 flex justify-end gap-2">
-        <button type="button" className={SECONDARY_BUTTON} onClick={onClose}>{t('common.close')}</button>
-      </div>
-    </Dialog>
+    </SidePanel>
   );
 }
 

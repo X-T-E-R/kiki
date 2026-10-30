@@ -21,6 +21,7 @@ import {
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../../i18n';
+import { clearToasts, getToasts } from '../../../lib/toasts';
 import { NbSearchLanesTab } from './NbSearchLanesTab';
 import { NbSearchFetchTab } from './NbSearchFetchTab';
 import { NbSearchAdvancedTab } from './NbSearchAdvancedTab';
@@ -308,6 +309,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   hosts.patch = null;
+  clearToasts();
 });
 
 afterEach(async () => {
@@ -433,11 +435,40 @@ describe('S2 search methods', () => {
 
     await click(container.querySelector('[data-nb-search-lane-edit="exa.local"]')!);
     await click(container.querySelector('[data-nb-search-lane-edit="exa.local"]')!);
-    await click(container.querySelector('[data-nb-search-lane-remove]')!);
+    // The references are named inline above the action, not in a confirm.
     const references = container.querySelector('[data-nb-search-lane-references]');
     expect(references).not.toBeNull();
     expect(references!.textContent).toContain('the default search method');
     expect(references!.textContent).toContain('defaults.search_lane');
+  });
+
+  it('removes a method at once and the toast restores it into the draft', async () => {
+    const container = await render('lanes');
+    await click(container.querySelector('[data-nb-search-lane-add]'));
+    const idInput = container.querySelector<HTMLInputElement>('[data-nb-search-lane-id]')!;
+    await setInputValue(idInput, 'exa.local');
+    await pressEnter(idInput);
+    expect(hosts.draft.advanced?.lanes['exa.local']).not.toBeUndefined();
+
+    await click(container.querySelector('[data-nb-search-lane-edit="exa.local"]')!);
+    await click(container.querySelector('[data-nb-search-lane-edit="exa.local"]')!);
+    await click(container.querySelector('[data-nb-search-lane-remove]')!);
+    // No confirm: the draft loses the method and the row is gone at once.
+    expect(hosts.draft.advanced?.lanes['exa.local']).toBeUndefined();
+    expect(container.querySelector('[data-nb-search-lane-row="exa.local"]')).toBeNull();
+
+    // The toast store holds the inverse: run it and the method is back in the draft.
+    const toast = getToasts().at(-1);
+    expect(toast?.undo).not.toBeUndefined();
+    expect(toast!.text).toContain('exa.local');
+    await act(async () => { await toast!.undo!.run(); });
+    expect(hosts.draft.advanced?.lanes['exa.local']).toEqual({
+      provider_instance_id: 'exa.default',
+      operation_id: 'search',
+      latency: 'fast',
+      cost: 'cheap',
+    });
+    expect(container.querySelector('[data-nb-search-lane-row="exa.local"]')).not.toBeNull();
   });
 
   it('overrides a source-provided method and restores the source version', async () => {

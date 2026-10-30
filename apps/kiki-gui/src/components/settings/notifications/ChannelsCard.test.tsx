@@ -8,6 +8,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type { ImProviderKind, ImSessionSnapshot } from '@kiki/protocol';
 
 import { I18nProvider } from '../../../i18n';
+import { clearToasts, getToasts } from '../../../lib/toasts';
 import { createImSettingsFixture, imChannelSnapshot, imSettingsSnapshot } from '../../../../fixtures/im-channels.fixture';
 import { ChannelsCard } from './ChannelsCard';
 
@@ -29,6 +30,7 @@ beforeEach(() => {
   fixture = createImSettingsFixture(imChannelSnapshot());
   localStorage.setItem('kiki.locale', 'en');
   window.history.replaceState({}, '', '/');
+  clearToasts();
 });
 afterEach(async () => {
   await act(async () => { for (const root of roots.splice(0)) root.unmount(); });
@@ -154,7 +156,6 @@ describe('ChannelsCard two-way accounts', () => {
     expect(group.querySelector('[data-im-session-switch]')?.getAttribute('aria-checked')).toBe('false');
     expect(group.querySelector('[data-im-binding-target="session:release-notes"]')).not.toBeNull();
     await choose(group, '#im-binding-target-binding-group', 'persona:mei');
-    await click(document.body, '[data-confirm-action="confirm"]');
     expect(fixture.calls.at(-1)).toEqual({ operation: 'updateBinding', id: 'binding-group', body: { target: { kind: 'persona', persona_id: 'mei' }, rebind: true } });
     expect(fixture.read().bindings[1]?.session_enabled).toBe(false);
     await click(group, '[data-im-binding-options-toggle]');
@@ -268,7 +269,6 @@ describe('ChannelsCard two-way accounts', () => {
     expect(binding(container, 'binding-topic').textContent).toContain('42');
     expect(binding(container, 'binding-contact').querySelector('[data-im-binding-target="session:lin-daily"]')).not.toBeNull();
     await choose(binding(container, 'binding-contact'), '#im-binding-target-binding-contact', 'persona:lin');
-    await click(document.body, '[data-confirm-action="confirm"]');
     expect(fixture.read().bindings[0]?.persona_id).toBe('lin');
   });
 
@@ -458,7 +458,6 @@ describe('ChannelsCard two-way accounts', () => {
     await input(group, '[data-im-binding-target-search]', 'Older');
     await act(settle);
     await choose(group, '#im-binding-target-binding-group', 'session:older-thread');
-    await click(document.body, '[data-confirm-action="confirm"]');
     expect(fixture.read().bindings[1]).toMatchObject({ session_id: 'older-thread', session_enabled: false });
     expect(fixture.read().bindings[0]?.session_id).toBe('lin-daily');
   });
@@ -873,36 +872,34 @@ describe('ChannelsCard two-way accounts', () => {
     expect(fixture.calls.filter((item) => item.operation === 'listen')).toEqual([{ operation: 'listen', id: 'wx-bg', body: true }]);
   });
 
-  it('requires confirmation modal when changing target in settings, cancels with zero mutation, confirms with rebind: true, and handles 40949 conflict details', async () => {
+  it('rebinds the target at once with rebind: true, offers undo to the prior target, and handles 40949 conflict details', async () => {
     fixture = createImSettingsFixture(imChannelSnapshot('telegram'));
     const container = await render();
     const group = binding(container, 'binding-group');
     const updateSpy = vi.spyOn(fixture.client.imSessions, 'updateBinding');
 
-    // 1. Select new target -> opens confirmation modal, 0 mutation fired
+    // 1. Select a new target -> single immediate mutation, no confirmation modal
     await choose(group, '#im-binding-target-binding-group', 'persona:mei');
-    expect(updateSpy).not.toHaveBeenCalled();
-    expect(document.body.querySelector('[data-confirm-action="confirm"]')).not.toBeNull();
-    expect(document.body.textContent).toContain('Transfer this channel?');
-    expect(document.body.textContent).toContain('Release team · Mei');
-
-    // 2. Click Cancel -> closes modal, 0 mutation fired
-    const cancelBtn = Array.from(document.body.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Cancel');
-    expect(cancelBtn).not.toBeUndefined();
-    await act(async () => { cancelBtn!.click(); await settle(); });
-    expect(updateSpy).not.toHaveBeenCalled();
-    expect(document.body.querySelector('[data-confirm-action="confirm"]')).toBeNull();
-
-    // 3. Select target again and Confirm -> single updateBinding with rebind: true
-    await choose(group, '#im-binding-target-binding-group', 'persona:mei');
-    await click(document.body, '[data-confirm-action="confirm"]');
     expect(updateSpy).toHaveBeenCalledTimes(1);
     expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
       target: { kind: 'persona', persona_id: 'mei' },
       rebind: true,
     });
+    expect(document.body.querySelector('[data-confirm-action="confirm"]')).toBeNull();
 
-    // 4. Handles 40949 conflict details gracefully
+    // 2. The landed write leaves an undo toast whose inverse rebinds back to the
+    //    session the binding had before the change.
+    const toast = getToasts().at(-1);
+    expect(toast?.undo).not.toBeUndefined();
+    expect(toast!.text).toBe('Channel transferred');
+    await act(async () => { await toast!.undo!.run(); await settle(); });
+    expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
+      target: { kind: 'session', session_id: 'release-notes' },
+      rebind: true,
+    });
+
+    // 3. Handles 40949 conflict details gracefully, and a failed rebind pushes no undo
+    const toastCount = getToasts().length;
     const conflictError = Object.assign(new Error('im_identity_already_bound'), {
       code: 40949,
       msg: 'im_identity_already_bound',
@@ -913,9 +910,9 @@ describe('ChannelsCard two-way accounts', () => {
     });
     updateSpy.mockRejectedValueOnce(conflictError);
     await choose(group, '#im-binding-target-binding-group', 'session:release-notes');
-    await click(document.body, '[data-confirm-action="confirm"]');
-    expect(updateSpy).toHaveBeenCalledTimes(2);
+    expect(updateSpy).toHaveBeenCalledTimes(3);
     expect(group.textContent).toContain('Previous Workspace Incident');
+    expect(getToasts().length).toBe(toastCount);
   });
 
   it('renders pending_reanchor correctly in settings without false active or persona display, keeps switch disabled with 0 mutation, and resolves pending via target confirmation', async () => {
@@ -954,29 +951,14 @@ describe('ChannelsCard two-way accounts', () => {
     expect(contact.querySelector('[data-im-binding-target="unassigned"]')).not.toBeNull();
     expect(contact.textContent).toContain('Confirm ownership');
 
-    // Selecting target and confirming fires single updateBinding with rebind: true
+    // Selecting a target resolves the pending ownership at once, without a confirm
     await choose(contact, '#im-binding-target-binding-contact', 'session:reading-list');
-    await click(document.body, '[data-confirm-action="confirm"]');
     expect(updateSpy).toHaveBeenCalledTimes(1);
     expect(updateSpy).toHaveBeenLastCalledWith('binding-contact', {
       target: { kind: 'session', session_id: 'reading-list' },
       rebind: true,
     });
-  });
-
-  it('displays searched session title in rebind confirmation modal instead of raw ID', async () => {
-    vi.spyOn(fixture.client, 'listSessions').mockResolvedValue({ items: [{ id: 'sess-remote-search', title: 'Remote Incident Thread' }] });
-    const container = await render();
-    const group = binding(container, 'binding-group');
-
-    await click(group, '[data-im-binding-options-toggle]');
-    await input(group, '[data-im-binding-target-search]', 'Remote');
-    await act(settle);
-    await choose(group, '#im-binding-target-binding-group', 'session:sess-remote-search');
-
-    expect(document.body.querySelector('[data-confirm-action="confirm"]')).not.toBeNull();
-    expect(document.body.textContent).toContain('Remote Incident Thread');
-    expect(document.body.textContent).not.toContain('Move to · sess-remote-search');
+    expect(document.body.querySelector('[data-confirm-action="confirm"]')).toBeNull();
   });
 
   it('renders group scope and wake options in DiscoveryRow for group channels and submits them on confirm', async () => {
@@ -1015,7 +997,7 @@ describe('ChannelsCard two-way accounts', () => {
     });
   });
 
-  it('handles group scope changes in BindingRow: confirms scope expansion with rebind: true and allows scope reduction immediately', async () => {
+  it('handles group scope changes in BindingRow: expands at once with rebind: true and undo restores the prior scope', async () => {
     const state = imChannelSnapshot('telegram');
     // binding-group starts with binding_scope: 'sender'
     fixture = createImSettingsFixture(state);
@@ -1027,30 +1009,28 @@ describe('ChannelsCard two-way accounts', () => {
     expect(group.querySelector('[data-im-binding-scope="sender"]')?.getAttribute('aria-pressed')).toBe('true');
     expect(group.querySelector<HTMLButtonElement>('[data-im-binding-scope="topic"]')?.disabled).toBe(true);
 
-    // 1. Expand scope: sender -> chat (SCOPE_RANK 1 -> 3). Opens scopeExpand confirmation modal!
+    // 1. Expand scope: sender -> chat (SCOPE_RANK 1 -> 3). Runs at once, no modal.
     await click(group, '[data-im-binding-scope="chat"]');
-    expect(updateSpy).not.toHaveBeenCalled();
-    expect(document.body.querySelector('[data-confirm-action="confirm"]')).not.toBeNull();
-    expect(document.body.textContent).toContain('Expand group scope?');
-
-    // Cancel expansion -> 0 mutation
-    const cancelBtn = Array.from(document.body.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Cancel');
-    expect(cancelBtn).not.toBeUndefined();
-    await act(async () => { cancelBtn!.click(); await settle(); });
-    expect(updateSpy).not.toHaveBeenCalled();
-    expect(document.body.querySelector('[data-confirm-action="confirm"]')).toBeNull();
-
-    // Expand scope again and confirm -> updateBinding with rebind: true
-    await click(group, '[data-im-binding-scope="chat"]');
-    await click(document.body, '[data-confirm-action="confirm"]');
     expect(updateSpy).toHaveBeenCalledTimes(1);
     expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
       binding_scope: 'chat',
       group_policy: { wake: 'mention_or_reply' },
       rebind: true,
     });
+    expect(document.body.querySelector('[data-confirm-action="confirm"]')).toBeNull();
 
-    // Simulate binding now being chat scoped
+    // The undo toast puts the captured prior scope back.
+    const toast = getToasts().at(-1);
+    expect(toast?.undo).not.toBeUndefined();
+    await act(async () => { await toast!.undo!.run(); await settle(); });
+    expect(updateSpy).toHaveBeenCalledTimes(2);
+    expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
+      binding_scope: 'sender',
+      group_policy: { wake: 'mention_or_reply' },
+    });
+
+    // The expanded state is what the echo reports, so land that echo before
+    // exercising the plain reduction path.
     fixture.replace({
       ...fixture.read(),
       bindings: fixture.read().bindings.map((b) => b.id === 'binding-group' ? { ...b, binding_scope: 'chat', group_policy: { wake: 'mention_or_reply' } } : b),
@@ -1059,7 +1039,7 @@ describe('ChannelsCard two-way accounts', () => {
 
     // 2. Reduce scope: chat -> sender (SCOPE_RANK 3 -> 1). Direct mutation without confirmation dialog
     await click(group, '[data-im-binding-scope="sender"]');
-    expect(updateSpy).toHaveBeenCalledTimes(2);
+    expect(updateSpy).toHaveBeenCalledTimes(3);
     expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
       binding_scope: 'sender',
     });
@@ -1071,7 +1051,7 @@ describe('ChannelsCard two-way accounts', () => {
     });
     await act(settle);
     await click(group, '[data-im-binding-wake="manual"]');
-    expect(updateSpy).toHaveBeenCalledTimes(3);
+    expect(updateSpy).toHaveBeenCalledTimes(4);
     expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
       group_policy: { wake: 'manual' },
     });
@@ -1184,16 +1164,14 @@ describe('ChannelsCard two-way accounts', () => {
 
     await click(group, '[data-im-binding-options-toggle]');
 
-    // Mock 40001 topic_scope_unavailable
+    // Mock 40001 topic_scope_unavailable: the write runs at once and fails inline
     updateSpy.mockRejectedValueOnce(new Error('topic_scope_unavailable'));
     await click(group, '[data-im-binding-scope="topic"]');
-    await click(document.body, '[data-confirm-action="confirm"]');
     expect(group.textContent).toContain('This group has no topics. Select the whole group.');
 
     // Mock 40001 group_binding_scope_required
     updateSpy.mockRejectedValueOnce(new Error('group_binding_scope_required'));
     await click(group, '[data-im-binding-scope="chat"]');
-    await click(document.body, '[data-confirm-action="confirm"]');
     expect(group.textContent).toContain('Only groups support topic or whole-group scope.');
   });
 });
