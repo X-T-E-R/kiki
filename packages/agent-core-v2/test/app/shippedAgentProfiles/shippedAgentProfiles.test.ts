@@ -157,6 +157,16 @@ describe('ShippedAgentProfileManagerService', () => {
     }
   });
 
+  it('allows plugin tools for the shipped main profile without widening subagent profiles', () => {
+    const parsed = new Map(SHIPPED_AGENT_PROFILE_TEMPLATES.map(({ id, fileName, text }) => [
+      id,
+      parseAgentFileText({ path: `builtin/${fileName}`, source: 'user', text }),
+    ]));
+    expect(parsed.get('agent')?.tools).toContain('plugin__*');
+    expect(parsed.get('explore')?.tools ?? []).not.toContain('plugin__*');
+    expect(parsed.get('general')?.tools ?? []).not.toContain('plugin__*');
+  });
+
   it('skips materializing the main profile when SYSTEM.md provides it', async () => {
     await writeFile(join(home, 'SYSTEM.md'), 'You are a custom main agent.\n');
     const service = manager();
