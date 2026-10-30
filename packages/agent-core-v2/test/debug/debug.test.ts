@@ -254,10 +254,40 @@ describe('debug domain — IDebugCascadeService', () => {
     await app.dispose();
   });
 
+  it('publishes event.di.unit_changed only while an observation is held', async () => {
+    const { app, ws } = makeTree();
+    const events = new FakeEventService();
+    const service = new DebugCascadeService(app, events);
+
+    app.provide(IRoot, new SyncDescriptor(Root));
+    expect(events.published).toEqual([]);
+
+    const first = service.observeUnitChanges();
+    const second = service.observeUnitChanges();
+    first.dispose();
+    first.dispose();
+    ws.provide(IMid, new SyncDescriptor(Mid));
+    expect(events.published.length).toBeGreaterThan(0);
+
+    second.dispose();
+    const publishedAfterRelease = events.published.length;
+    ws.unprovide(IMid);
+    app.provide(IBoom, new SyncDescriptor(Boom));
+    expect(events.published.length).toBe(publishedAfterRelease);
+
+    const again = service.observeUnitChanges();
+    ws.provide(IMid, new SyncDescriptor(Mid));
+    expect(events.published.length).toBeGreaterThan(publishedAfterRelease);
+    again.dispose();
+    await service.dispose();
+    await app.dispose();
+  });
+
   it('publishes event.di.unit_changed for live and late-joined engines until teardown', async () => {
     const { app } = makeTree();
     const events = new FakeEventService();
     const service = new DebugCascadeService(app, events);
+    service.observeUnitChanges();
 
     app.provide(IRoot, new SyncDescriptor(Root));
     const rootEvents = events.published.filter(

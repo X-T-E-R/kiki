@@ -1,4 +1,4 @@
-import { ISessionManager, IWorkspaceInstanceManager, type Scope } from '@kiki/agent-core-v2';
+import { IDebugCascadeService, ISessionManager, IWorkspaceInstanceManager, type Scope } from '@kiki/agent-core-v2';
 
 import { okEnvelope } from '../protocol/envelope';
 import { messageHistoryCacheReport } from '../services/messages/messageHistory';
@@ -12,6 +12,7 @@ export function registerDebugRoutes(
   core: Scope,
   transcriptService: TranscriptService,
 ): void {
+  core.accessor.get(IDebugCascadeService).observeUnitChanges();
   registerServiceDispatcherRoutes(app, core, '/debug', {
     lookup: (name) => resolveAnyScopedServiceId(core, name),
     describe: describeAllChannels,

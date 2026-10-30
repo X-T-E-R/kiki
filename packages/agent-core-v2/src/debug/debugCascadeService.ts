@@ -31,7 +31,8 @@ export class DebugCascadeService implements IDebugCascadeService {
 
   private readonly root: InstantiationService;
   private readonly events: IEventService;
-  private readonly store = new DisposableStore();
+  private treeSubscriptions = new DisposableStore();
+  private observers = 0;
   private readonly engineSubscriptions = new Map<CascadeEngine, IDisposable>();
   private tornDown = false;
 
@@ -41,20 +42,21 @@ export class DebugCascadeService implements IDebugCascadeService {
   ) {
     this.root = instantiation as InstantiationService;
     this.events = events;
-    const tree = this.root.cascadeTree;
-    for (const engine of tree.engines) {
-      this._watchEngine(engine);
-    }
-    this.store.add(
-      tree.onDidAddEngine((engine) => {
-        this._watchEngine(engine);
-      }),
-    );
-    this.store.add(
-      tree.onDidRemoveEngine((engine) => {
-        this._unwatchEngine(engine);
-      }),
-    );
+  }
+
+  observeUnitChanges(): IDisposable {
+    if (this.tornDown) return { dispose: () => undefined };
+    this.observers += 1;
+    if (this.observers === 1) this._startWatching();
+    let released = false;
+    return {
+      dispose: () => {
+        if (released) return;
+        released = true;
+        this.observers -= 1;
+        if (this.observers === 0 && !this.tornDown) this._stopWatching();
+      },
+    };
   }
 
   history(): DebugCascadeEntry[] {
@@ -108,7 +110,7 @@ export class DebugCascadeService implements IDebugCascadeService {
     if (scopePath === undefined && token === undefined) {
       if (!this.tornDown) {
         this.tornDown = true;
-        await this.store.dispose();
+        await this.treeSubscriptions.dispose();
         for (const subscription of this.engineSubscriptions.values()) {
           await subscription.dispose();
         }
@@ -149,6 +151,32 @@ export class DebugCascadeService implements IDebugCascadeService {
       );
     }
     return { container, id };
+  }
+
+  private _startWatching(): void {
+    const tree = this.root.cascadeTree;
+    this.treeSubscriptions = new DisposableStore();
+    for (const engine of tree.engines) {
+      this._watchEngine(engine);
+    }
+    this.treeSubscriptions.add(
+      tree.onDidAddEngine((engine) => {
+        this._watchEngine(engine);
+      }),
+    );
+    this.treeSubscriptions.add(
+      tree.onDidRemoveEngine((engine) => {
+        this._unwatchEngine(engine);
+      }),
+    );
+  }
+
+  private _stopWatching(): void {
+    const result = this.treeSubscriptions.dispose();
+    if (result instanceof Promise) result.catch(onUnexpectedError);
+    for (const engine of [...this.engineSubscriptions.keys()]) {
+      this._unwatchEngine(engine);
+    }
   }
 
   private _watchEngine(engine: CascadeEngine): void {
