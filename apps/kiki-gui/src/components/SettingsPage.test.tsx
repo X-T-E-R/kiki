@@ -379,10 +379,12 @@ describe('SettingsPage panel scopes', () => {
     expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe('Beta');
     expect(container.querySelector('[data-workspace-detail-stats]')?.textContent).toContain('Loading');
   });
-  it('keeps MCP management on the Capabilities page and only timeouts in settings', async () => {
+  it('manages MCP in place on the settings leaf, next to its timeouts', async () => {
     const container = await renderSettings('/settings/mcp');
-    expect(container.querySelector('#st-card-mcp [data-capability-link-open="mcp"]')?.getAttribute('href')).toBe('/capabilities?tab=mcp');
-    expect(container.querySelector('#st-card-mcp [data-mcp-manager]')).toBeNull();
+    // Batch X: the link card is gone — the manager itself lives on the leaf,
+    // reading the same runtime join the Capabilities page does.
+    expect(container.querySelector('[data-mcp-global]')).not.toBeNull();
+    expect(container.querySelector('#st-card-mcp [data-capability-link-open="mcp"]')).toBeNull();
     expect(container.querySelector('#workspace-mcp-select')).toBeNull();
   });
 
@@ -792,12 +794,15 @@ describe('SettingsPage memory advisor', () => {
 });
 
 describe('SettingsPage batch-3 leaves', () => {
-  it('mounts the skills leaf with discovery defaults and a link to the catalog', async () => {
+  it('mounts the skills leaf with discovery defaults and the catalog managed in place', async () => {
     const container = await renderSettings('/settings/skills');
     expect(container.querySelector('#st-card-caps')).not.toBeNull();
     expect(container.querySelector('#st-card-caps [data-settings-panel-scope]')?.textContent).toContain('connected server');
-    expect(container.querySelector('#st-card-skill-catalog [data-capability-link-open="skills"]')?.getAttribute('href')).toBe('/capabilities?tab=skills');
-    expect(container.querySelector('[data-skills-view]')).toBeNull();
+    // Batch X: the catalog is managed on the leaf itself; the Capabilities
+    // page stays one click away as a plain secondary link.
+    expect(container.querySelector('#st-card-skill-catalog [data-skills-view]')).not.toBeNull();
+    expect(container.querySelector('#st-card-skill-catalog [data-skills-browse-link]')?.getAttribute('href')).toBe('/capabilities?tab=skills');
+    expect(container.querySelector('#st-card-skill-catalog [data-capability-link-open="skills"]')).toBeNull();
   });
 
   it('renders and saves the GUI request timeout in seconds', async () => {
@@ -876,10 +881,10 @@ describe('SettingsPage batch-3 leaves', () => {
     });
   });
 
-  it('mounts the mcp leaf with a status line and timeouts', async () => {
+  it('mounts the mcp leaf with its manager and timeouts', async () => {
     const container = await renderSettings('/settings/mcp');
-    expect(container.querySelector('#st-card-mcp [data-capability-link="mcp"]')).not.toBeNull();
-    expect(container.querySelector('#st-card-mcp-status')).toBeNull();
+    expect(container.querySelector('[data-mcp-global]')).not.toBeNull();
+    expect(container.querySelector('#st-card-mcp [data-capability-link="mcp"]')).toBeNull();
     expect(container.querySelector('#st-card-mcp-timeouts')).not.toBeNull();
   });
 
