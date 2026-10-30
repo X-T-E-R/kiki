@@ -302,3 +302,36 @@ describe('profile draft model menu and advice', () => {
     expect(patch).not.toHaveProperty('discouraged_models');
   });
 });
+
+describe('profile draft recipe options', () => {
+  const profile: NamedAgentProfile = {
+    ...base,
+    description: 'Keep this description',
+    when_to_use: 'Keep this guidance',
+    recipe: './recipes/profile.toml',
+    recipe_options: { safe: true, legacy: false },
+    pinned_model_alias: 'fixture/sol',
+    thinking_effort: 'high',
+    tools: ['Bash'],
+  };
+
+  it('reads stored options and omits recipe_options when the draft is untouched', () => {
+    const baseline = draftFromProfile(profile);
+    expect(baseline.recipeOptions).toEqual({ safe: true, legacy: false });
+    expect(patchBody(profile, baseline, baseline)).toEqual({
+      scope: 'user', workspace_id: 'ws-one', source_file: '/fixture/helper.md',
+    });
+  });
+
+  it('writes only changed recipe_options while leaving other frontmatter sparse', () => {
+    const baseline = draftFromProfile(profile);
+    const patch = patchBody(profile, baseline, {
+      ...baseline,
+      recipeOptions: { safe: false, legacy: false, experimental: true },
+    });
+    expect(patch).toEqual({
+      scope: 'user', workspace_id: 'ws-one', source_file: '/fixture/helper.md',
+      recipe_options: { safe: false, legacy: false, experimental: true },
+    });
+  });
+});

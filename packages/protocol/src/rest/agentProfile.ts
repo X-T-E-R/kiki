@@ -2,7 +2,7 @@ import { AGENT_NAME_PATTERN } from '../agentName';
 import { z } from 'zod';
 import { executorPromptSchema } from '../executorPrompt';
 import { modelPromptOverridesSchema } from '../modelCatalog';
-import { recipeModelBindingSchema } from '../recipe';
+import { recipeModelBindingSchema, recipeOptionValuesSchema } from '../recipe';
 import { executorAuthObservationSchema } from '../executor-auth';
 
 const modelAliasSchema = z.string().min(1).regex(/^\S+$/, 'model alias must not contain whitespace');
@@ -165,6 +165,8 @@ export const namedAgentProfileSchema = z.object({
   allow_kiki_subagents: z.boolean().optional(),
   kiki_context: z.array(z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks'])).optional(),
   pinned_model_alias: z.string().optional(),
+  recipe: z.string().min(1).optional(),
+  recipe_options: recipeOptionValuesSchema.optional(),
   restrict_models_to_menu: z.boolean().optional(),
   declared_model_menu: declaredAgentModelMenuSchema.optional(),
   effective_model_aliases: z.array(z.string()).optional(),
@@ -605,6 +607,8 @@ export const createNamedAgentProfileRequestSchema = z.object({
   description: z.string().trim().min(1).optional(),
   when_to_use: z.string().trim().min(1).optional(),
   pinned_model_alias: modelAliasSchema.optional(),
+  recipe: z.string().min(1).optional(),
+  recipe_options: recipeOptionValuesSchema.optional(),
   restrict_models_to_menu: z.boolean().optional(),
   thinking_effort: z.string().trim().min(1).optional(),
   tools: z.array(z.string().trim().min(1)).optional(),
@@ -692,6 +696,8 @@ export const updateNamedAgentProfileRequestSchema = z.object({
   allow_kiki_subagents: z.boolean().nullable().optional(),
   kiki_context: z.array(z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks'])).nullable().optional(),
   pinned_model_alias: modelAliasSchema.nullable().optional(),
+  recipe: z.string().min(1).nullable().optional(),
+  recipe_options: recipeOptionValuesSchema.nullable().optional(),
   restrict_models_to_menu: z.boolean().optional(),
   thinking_effort: optionalProfileStringSchema,
   allowed_models: profileStringListSchema,
@@ -729,6 +735,8 @@ export const updateNamedAgentProfileRequestSchema = z.object({
     value.allow_kiki_subagents !== undefined ||
     value.kiki_context !== undefined ||
     value.pinned_model_alias !== undefined ||
+    value.recipe !== undefined ||
+    value.recipe_options !== undefined ||
     value.restrict_models_to_menu !== undefined ||
     value.thinking_effort !== undefined ||
     value.allowed_models !== undefined ||

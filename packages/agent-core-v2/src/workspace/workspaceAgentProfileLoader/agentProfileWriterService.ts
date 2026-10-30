@@ -4,7 +4,7 @@ import { executorPromptSchema } from '@kiki/agent-profiles/executorPrompt';
 import { KikiContextSchema } from '@kiki/agent-profiles/agentProfile';
 import { modelProfilePatchToWire, subagentLeasePatchToWire } from '@kiki/agent-profiles/modelPromptProjection';
 import { PromptOverridesSchema } from '@kiki/agent-profiles/promptOverrides';
-import { updateNamedAgentModelProfileEntrySchema, updateNamedAgentSubagentEntrySchema } from '@kiki/protocol';
+import { recipeOptionValuesSchema, updateNamedAgentModelProfileEntrySchema, updateNamedAgentSubagentEntrySchema } from '@kiki/protocol';
 import { join } from 'pathe';
 
 import { atomicCreate, atomicWrite } from '#/_base/utils/fs';
@@ -77,6 +77,8 @@ const TOP_LEVEL_KEYS = new Set([
   'allowKikiSubagents',
   'kikiContext',
   'modelAlias',
+  'recipe',
+  'recipeOptions',
   'restrictModelsToMenu',
   'thinkingEffort',
   'allowedModels',
@@ -178,6 +180,8 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
     if (request.description !== undefined) text = updateFrontmatterScalar(text, 'description', request.description);
     if (request.whenToUse !== undefined) text = updateFrontmatterScalar(text, 'whenToUse', request.whenToUse);
     if (request.modelAlias !== undefined) text = updateFrontmatterScalar(text, 'model_alias', request.modelAlias);
+    if (request.recipe !== undefined) text = updateFrontmatterScalar(text, 'recipe', request.recipe);
+    if (request.recipeOptions !== undefined) text = updateFrontmatterScalar(text, 'recipe_options', request.recipeOptions);
     if (request.restrictModelsToMenu !== undefined) text = updateFrontmatterScalar(text, 'restrict_models_to_menu', request.restrictModelsToMenu);
     if (request.thinkingEffort !== undefined) text = updateFrontmatterScalar(text, 'thinking_effort', request.thinkingEffort);
     if (request.tools !== undefined) text = updateFrontmatterScalar(text, 'tools', request.tools);
@@ -247,6 +251,12 @@ export class AgentProfileWriterService implements IAgentProfileWriter {
       if (request.modelAlias !== null) {
         nextProfileText = updateFrontmatterScalar(nextProfileText, 'model_preference', null);
       }
+    }
+    if (request.recipe !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'recipe', request.recipe);
+    }
+    if (request.recipeOptions !== undefined) {
+      nextProfileText = updateFrontmatterScalar(nextProfileText, 'recipe_options', request.recipeOptions);
     }
     if (request.thinkingEffort !== undefined) {
       nextProfileText = updateFrontmatterScalar(nextProfileText, 'thinking_effort', request.thinkingEffort);
@@ -483,6 +493,8 @@ function validateCreateRequest(request: AgentProfileCreateRequest): void {
   validateRequiredString(request.description, 'description', issues);
   validateRequiredString(request.whenToUse, 'whenToUse', issues);
   validateModelAlias(request.modelAlias, 'modelAlias', issues);
+  validateRequiredString(request.recipe, 'recipe', issues);
+  validateRecipeOptions(request.recipeOptions, 'recipeOptions', issues);
   if (request.restrictModelsToMenu !== undefined && typeof request.restrictModelsToMenu !== 'boolean') {
     issues.push({ path: 'restrictModelsToMenu', message: 'restrictModelsToMenu must be boolean' });
   }
@@ -518,6 +530,8 @@ function validateRequest(request: AgentProfileWriteRequest): void {
   validateRequiredString(request.description, 'description', issues);
   validateOptionalString(request.whenToUse, 'whenToUse', issues);
   validateModelAlias(request.modelAlias, 'modelAlias', issues);
+  validateOptionalString(request.recipe, 'recipe', issues);
+  validateRecipeOptions(request.recipeOptions, 'recipeOptions', issues);
   if (request.restrictModelsToMenu !== undefined && typeof request.restrictModelsToMenu !== 'boolean') {
     issues.push({ path: 'restrictModelsToMenu', message: 'restrictModelsToMenu must be boolean' });
   }
@@ -616,6 +630,8 @@ function validateRequest(request: AgentProfileWriteRequest): void {
     request.allowKikiSubagents,
     request.kikiContext,
     request.modelAlias,
+    request.recipe,
+    request.recipeOptions,
     request.restrictModelsToMenu,
     request.thinkingEffort,
     request.allowedModels,
@@ -678,6 +694,17 @@ function validateModelAlias(
   if (value === undefined || value === null) return;
   if (typeof value !== 'string' || !MODEL_ALIAS_PATTERN.test(value)) {
     issues.push({ path, message: 'model alias must be a non-empty string without whitespace' });
+  }
+}
+
+function validateRecipeOptions(
+  value: unknown,
+  path: string,
+  issues: ValidationIssue[],
+): void {
+  if (value === undefined || value === null) return;
+  if (!recipeOptionValuesSchema.safeParse(value).success) {
+    issues.push({ path, message: `${path} must be a mapping of recipe ids to booleans` });
   }
 }
 

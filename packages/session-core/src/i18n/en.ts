@@ -11846,6 +11846,7 @@ export const en = {
   'st.modelProtocol.anthropic': 'Messages',
   'st.modelProtocol.google-genai': 'Google GenAI',
   'st.recipe.title': 'Recipe',
+  'st.recipe.options': 'Recipe options',
   'st.recipe.loading': 'Loading Recipes…',
   'st.recipe.loadFailedShort': 'Recipes could not be read.',
   'st.recipe.search': 'Installed Recipes',

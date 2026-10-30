@@ -32,6 +32,8 @@ export interface AgentProfileCreateRequest {
   readonly description?: string;
   readonly whenToUse?: string;
   readonly modelAlias?: string;
+  readonly recipe?: string;
+  readonly recipeOptions?: Readonly<Record<string, boolean>>;
   readonly restrictModelsToMenu?: boolean;
   readonly thinkingEffort?: string;
   readonly tools?: readonly string[];
@@ -51,6 +53,8 @@ export interface AgentProfileWriteRequest {
   readonly kikiContext?: import('@kiki/agent-profiles/agentProfile').AgentProfile['kikiContext'] | null;
   readonly restrictModelsToMenu?: boolean;
   readonly modelAlias?: string | null;
+  readonly recipe?: string | null;
+  readonly recipeOptions?: Readonly<Record<string, boolean>> | null;
   readonly thinkingEffort?: string | null;
   readonly allowedModels?: readonly string[] | null;
   readonly denyModels?: readonly string[] | null;

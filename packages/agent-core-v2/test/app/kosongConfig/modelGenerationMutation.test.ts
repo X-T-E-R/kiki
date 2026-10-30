@@ -16,6 +16,9 @@ import { MODELS_SECTION, PROVIDERS_SECTION } from '#/app/kosongConfig/configSect
 import { IModelCatalogMutationService } from '#/app/kosongConfig/modelCatalogMutation';
 import { ModelCatalogMutationService } from '#/app/kosongConfig/modelCatalogMutationService';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
+import { IRecipeService } from '#/app/recipes/recipes';
+import type { ResolvedRecipe } from '@kiki/protocol';
+import { Event } from '#/_base/event';
 
 import { StubConfigService, stubModelOAuthTokens } from '../../kosong/stubs';
 
@@ -170,6 +173,7 @@ provider="edge"
 model="remote-fast"
 max_context_size=8192
 recipe="recipe-example"
+recipe_options={research=false}
 [models.fast.parameters]
 service_tier={kind="api_default"}
 [models.fast.usage.main]
@@ -199,9 +203,13 @@ max_context_size=8192
       const sibling = await catalog.readModel('sibling');
       expect(original.protocol).toBeUndefined();
       expect(original.effective_protocol).toBe('openai');
+      expect(original.recipe_options).toEqual({ research: false });
       const changed = await catalog.updateModel('fast', { base_revision: original.revision, protocol: 'openai_responses' });
-      expect(changed).toMatchObject({ protocol: 'openai_responses', effective_protocol: 'openai_responses', provider_id: 'edge', remote_id: 'remote-fast', recipe: 'recipe-example' });
+      expect(changed).toMatchObject({ protocol: 'openai_responses', effective_protocol: 'openai_responses', provider_id: 'edge', remote_id: 'remote-fast', recipe: 'recipe-example', recipe_options: { research: false } });
       expect(changed.parameters).toEqual(original.parameters);
+      const selected = await catalog.updateModel('fast', { base_revision: changed.revision, recipe_options: { research: true } });
+      expect(selected.recipe_options).toEqual({ research: true });
+      expect(await store.getText('', 'config.toml')).toContain('recipe_options');
       expect(changed.usage).toEqual(original.usage);
       expect(changed.request_identity).toEqual(original.request_identity);
       expect(config.get(PROVIDERS_SECTION)).toEqual(providers);
@@ -214,6 +222,8 @@ max_context_size=8192
       for (const protocol of ['', 'messages', 'kimi', 'codex_compatible']) {
         await expect(catalog.updateModel('fast', JSON.parse(JSON.stringify({ protocol })))).rejects.toMatchObject({ code: 'config.invalid' });
       }
+      await expect(catalog.updateModel('fast', { recipe_options: { 'Bad ID': true } })).rejects.toMatchObject({ code: 'config.invalid' });
+      await expect(catalog.updateModel('fast', { recipe_options: { research: 'true' } as unknown as Record<string, boolean> })).rejects.toMatchObject({ code: 'config.invalid' });
       expect(await store.getText('', 'config.toml')).toBe(before);
     } finally { await first.dispose(); }
     const cold = host();
@@ -223,6 +233,9 @@ max_context_size=8192
       const cleared = await catalog.updateModel('fast', { protocol: null });
       expect(cleared.protocol).toBeUndefined();
       expect(cleared.effective_protocol).toBe('openai');
+      const clearedOptions = await catalog.updateModel('fast', { recipe_options: null });
+      expect(clearedOptions.recipe_options).toBeUndefined();
+      expect(await store.getText('', 'config.toml')).not.toContain('recipe_options');
       await cold.get(IConfigService).reload();
       expect((await catalog.readModel('fast')).protocol).toBeUndefined();
       expect((await store.getText('', 'config.toml'))).not.toContain('protocol =');
@@ -390,6 +403,36 @@ max_context_size=8192
       expect(updated.defaults).toMatchObject({ temperature: 0.3, max_completion_tokens: 16384 });
       expect((await catalog.readModel('fast')).effective_parameters?.max_completion_tokens).toBe(16384);
       expect((await catalog.readModel('sibling')).effective_parameters?.max_completion_tokens).toBe(16384);
+    } finally { await ix.dispose(); }
+  });
+  it('passes model recipe options to resolution and exposes recipe option diagnostics in the model entity', async () => {
+    const config = new StubConfigService({
+      [PROVIDERS_SECTION]: { edge: { type: 'openai' } },
+      [MODELS_SECTION]: { fast: { provider: 'edge', model: 'remote-fast', maxContextSize: 200000, recipe: 'example', recipeOptions: { research: false } } },
+    });
+    const resolved: ResolvedRecipe = {
+      revision: 'recipe-revision',
+      branches: { main: { fields: {} }, sub: { fields: {} }, independent: { fields: {} } },
+      dependencies: [], origins: [], model: {}, model_origins: {},
+      options: [{ id: 'research', name: 'Research', default: true }],
+      option_values: { research: false },
+      diagnostics: [{ code: 'recipe-option-unknown', message: 'unknown option', path: 'recipe_options.removed' }],
+    };
+    const resolve = vi.fn(async (_id: string, _baseDir: string | undefined, selection: Record<string, boolean> | undefined) => ({
+      ...resolved,
+      option_values: selection,
+    }));
+    const ix = new TestInstantiationService();
+    ix.stub(IConfigService, config);
+    ix.stub(IModelOAuthTokens, stubModelOAuthTokens());
+    ix.stub(IRecipeService, { onDidChange: Event.None, resolve } as unknown as IRecipeService);
+    ix.set(IModelCatalogMutationService, new SyncDescriptor(ModelCatalogMutationService));
+    try {
+      const entity = await ix.get(IModelCatalogMutationService).readModel('fast');
+      expect(resolve).toHaveBeenCalledWith('example', undefined, { research: false });
+      expect(entity.recipe_options).toEqual({ research: false });
+      expect(entity.recipe_model_binding).toMatchObject({ options: resolved.options, option_values: { research: false }, diagnostics: resolved.diagnostics });
+      expect(entity.issues).toContainEqual({ code: 'recipe-option-unknown', severity: 'warning', path: 'recipe_options.removed', message: 'unknown option' });
     } finally { await ix.dispose(); }
   });
 });

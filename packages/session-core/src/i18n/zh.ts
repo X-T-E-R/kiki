@@ -11751,6 +11751,7 @@ export const zh = {
   'st.modelProtocol.anthropic': 'Messages',
   'st.modelProtocol.google-genai': 'Google GenAI',
   'st.recipe.title': 'Recipe',
+  'st.recipe.options': 'Recipe 选项',
   'st.recipe.loading': '正在读取 Recipe…',
   'st.recipe.loadFailedShort': 'Recipe 读取失败。',
   'st.recipe.search': '已安装的 Recipe',

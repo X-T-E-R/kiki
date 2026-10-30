@@ -2458,8 +2458,8 @@ export class KikiClient {
     return this.run(this.klient.global.recipes.list());
   }
 
-  getRecipe(installationId: string): Promise<RecipeDetail | undefined> {
-    return this.run(this.klient.global.recipes.get(installationId));
+  getRecipe(installationId: string, selection?: import('@kiki/protocol').RecipeOptionValues): Promise<RecipeDetail | undefined> {
+    return this.run(this.klient.global.recipes.get(installationId, selection));
   }
 
   previewRecipe(input: RecipePreviewInput): Promise<RecipePreview> {

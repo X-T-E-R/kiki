@@ -43,6 +43,28 @@ describe('parseAgentFileText', () => {
       expect(() => parse(`---\nname: helper\ndescription: d\n${nested}\n---\nbody`)).toThrow(/restrict_models_to_menu/);
     }
   });
+  it('parses recipe_options with strict ids and booleans and projects them onto profiles', () => {
+    const definition = parse(`---
+name: helper
+description: d
+recipe: example
+recipe_options:
+  research: true
+  citations.v2: false
+---
+body`);
+    expect(definition.recipeOptions).toEqual({ research: true, 'citations.v2': false });
+    expect(agentProfileFromFile(definition, () => ({ text: 'base', environment: { cwd: '', date: { disclosed: false } } })).recipeOptions).toEqual({ research: true, 'citations.v2': false });
+    for (const value of ['research: "true"', 'research: 1', 'Research: true', '- research']) {
+      expect(() => parse(`---
+name: helper
+description: d
+recipe_options:
+  ${value}
+---
+body`)).toThrow(/recipe_options.*mapping of recipe ids to booleans/);
+    }
+  });
   it('parses literal hard rules and named soft recommendations in every model scope', () => {
     const rules = 'allowed_models: [fast, premium]\ndeny_models: [blocked]\nallowed_efforts: []\npreferred_models: [fast]\ndiscouraged_models: [premium]\npreferred_efforts: [max]';
     const text = `---\nname: helper\ndescription: d\n${rules}\nspawn_constraints:\n${rules.split('\n').map((line) => `  ${line}`).join('\n')}\nallowed_subagents:\n  - name: explore\n${rules.split('\n').map((line) => `    ${line}`).join('\n')}\nmodel_profiles:\n  - alias: fast\n${rules.split('\n').map((line) => `    ${line}`).join('\n')}\n---\nbody`;

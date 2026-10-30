@@ -2334,7 +2334,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private async selectedRecipe(alias: string, external = this.isExternalExecutor, profile = this.profileState.boundProfile ?? this.resolveActiveProfile()): Promise<import('@kiki/protocol').ResolvedRecipe | undefined> {
     if (external) return undefined;
     const model = this.models.get(alias);
-    const references = [{ surface: 'model' as const, id: model?.recipe }, { surface: 'profile' as const, id: profile?.recipe }].filter((entry) => entry.id !== undefined && entry.id !== 'off');
+    const references = [{ surface: 'model' as const, id: model?.recipe, options: model?.recipeOptions }, { surface: 'profile' as const, id: profile?.recipe, options: profile?.recipeOptions }].filter((entry) => entry.id !== undefined && entry.id !== 'off');
     if (references.length === 0) return undefined;
     if (this.recipes === undefined) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'Recipe service is unavailable');
     const profileBase = profile?.sourcePath === undefined ? undefined : dirname(profile.sourcePath);
@@ -2345,7 +2345,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       const installation_id = file ? reference.surface === 'profile'
         ? resolveRecipeFileLocator(raw, profileBase) : resolveModelRecipeReference(raw, alias, this.config, this.bootstrap)
         : raw.replace(/^installation:/u, '');
-      layers.push({ surface: reference.surface, installation_id, resolved: await this.recipes.resolve(installation_id) });
+      layers.push({ surface: reference.surface, installation_id, resolved: await this.recipes.resolve(installation_id, undefined, reference.options) });
     }
     return composeRecipeLayers(layers, model?.overrides);
   }
@@ -2534,6 +2534,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         installation_id: this.cognitionBinding.recipe.installation_id, revision: this.cognitionBinding.recipe.resolved.revision,
         model: this.cognitionBinding.recipe.resolved.model, model_origins: this.cognitionBinding.recipe.resolved.model_origins,
         references: recipeReferences(this.cognitionBinding.recipe.resolved),
+        diagnostics: this.cognitionBinding.recipe.resolved.diagnostics,
       },
       channels: promptConfigurationChannels({
         profile, alias, position: this.delegationPosition, cognition: model?.cognition, recipe: this.cognitionBinding?.recipe, fields, resolveId, leaseMode,

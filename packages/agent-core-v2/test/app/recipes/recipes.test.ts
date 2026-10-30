@@ -106,6 +106,158 @@ describe('Recipe accepted revisions', () => {
     expect(recipe.origins.find((origin) => origin.position === 'main' && origin.slot === 'system')).toMatchObject({ source: parent, file: 'same.md' });
     expect((await service.get(installed.installation_id))?.summary.health).toBe('ready');
   });
+  it('resolves gated sources in order, keeps declared empty slots and freezes effective option values', async () => {
+    sources.set(parent, { 'recipe.toml': stringify({ schema_version: 1, id: 'parent', name: 'Parent', version: '1.0.0', options: { research: { name: 'Research', description: 'Include research guidance', default: true } }, prompts: {
+      system: [{ text: 'FIRST' }, { file: 'research.md', when: 'research' }, { text: 'LAST', unless: 'research' }],
+      steering: { text: 'RESEARCH STEERING', when: 'research' }, anchor: { content: { text: 'PLAIN ANCHOR', unless: 'research' } },
+      steering_sources: { task: { mode: 'custom', custom: { steering: [{ text: 'TASK', when: 'research' }] } } },
+    } }), 'research.md': 'RESEARCH' });
+    const installed = await install(parent);
+    const defaults = await service.resolve(installed.installation_id);
+    expect(defaults.options).toEqual([{ id: 'research', name: 'Research', description: 'Include research guidance', default: true }]);
+    expect(defaults.option_values).toEqual({ research: true });
+    expect(defaults.branches.main).toMatchObject({ system: 'FIRST\n\nRESEARCH', steering: 'RESEARCH STEERING', anchor: { content: '' } });
+    const selected = await service.resolve(installed.installation_id, undefined, { research: false });
+    expect(selected.option_values).toEqual({ research: false });
+    expect(selected.branches.main).toMatchObject({ system: 'FIRST\n\nLAST', steering: '', anchor: { content: 'PLAIN ANCHOR' }, steering_sources: { task: { custom: { steering: '' } } } });
+    expect(selected.revision).not.toBe(defaults.revision);
+    expect((await service.resolve(installed.installation_id, undefined, { research: true })).revision).toBe(defaults.revision);
+    expect((await service.get(installed.installation_id, { research: false }))?.resolved).toEqual(selected);
+    sources.clear(); expect(await service.resolve(installed.installation_id, undefined, { research: false })).toEqual(selected);
+    expect(defaults.option_values).toEqual({ research: true });
+  });
+  it('merges option definitions before evaluating inherited gates and never inherits a filtered child slot', async () => {
+    sources.set(parent, { 'recipe.toml': stringify({ schema_version: 1, id: 'parent', name: 'Parent', version: '1.0.0', options: { research: { name: 'Parent research', description: 'Parent description', default: true } }, prompts: { system: { text: 'PARENT', when: 'research' }, steering: { text: 'PARENT STEERING' } } }) });
+    sources.set(child, { 'recipe.toml': stringify({ schema_version: 1, id: 'child', name: 'Child', version: '1.0.0', extends: { source: parent }, options: { research: { name: 'Child research', default: false }, details: { name: 'Details', default: false } }, prompts: { steering: { text: 'CHILD', when: 'details' } } }) });
+    const installed = await install(child);
+    const defaults = await service.resolve(installed.installation_id);
+    expect(defaults.options).toEqual([{ id: 'research', name: 'Child research', default: false }, { id: 'details', name: 'Details', default: false }]);
+    expect(defaults.branches.main.system).toBe(''); expect(defaults.branches.main.steering).toBe('');
+    const selected = await service.resolve(installed.installation_id, undefined, { research: true, details: true });
+    expect(selected.branches.main.system).toBe('PARENT'); expect(selected.branches.main.steering).toBe('CHILD');
+    expect(selected.origins.find((origin) => origin.slot === 'system')?.source).toBe(parent);
+  });
+  it('ignores removed selection ids with one diagnostic and includes values in revision even without gated text', async () => {
+    sources.set(parent, { 'recipe.toml': stringify({ schema_version: 1, id: 'parent', name: 'Parent', version: '1.0.0', options: { research: { name: 'Research', default: false } }, prompts: { system: { text: 'SAME' } } }) });
+    const installed = await install(parent);
+    const defaults = await service.resolve(installed.installation_id);
+    const selected = await service.resolve(installed.installation_id, undefined, { research: true, removed: true });
+    expect(selected.branches).toEqual(defaults.branches); expect(selected.revision).not.toBe(defaults.revision);
+    expect(selected.diagnostics).toEqual([expect.objectContaining({ code: 'recipe-option-unknown', path: 'recipe_options.removed' })]);
+    expect(selected.option_values).toEqual({ research: true });
+    expect((await service.resolve(installed.installation_id, undefined, { removed: false })).revision).toBe(defaults.revision);
+  });
+  it('prepends and appends option content after inheritance to the selected declared slots', async () => {
+    sources.set(parent, { 'recipe.toml': manifest('parent', { system: { text: 'BASE' }, main: { steering: { text: 'CUE' }, anchor: { content: { text: 'ANCHOR' } }, steering_sources: { task: { mode: 'custom', custom: { steering: { text: 'TASK' } } } } } }) });
+    sources.set(child, { 'recipe.toml': stringify({ schema_version: 1, id: 'child', name: 'Child', version: '1.0.0', extends: { source: parent }, options: {
+      cite: { name: 'Citations', default: false, prepend: { common: { system: { file: 'preface.md' } } }, append: { main: { steering: [{ text: 'CITE' }, { text: 'SOURCES' }], anchor: { text: 'CITE ANCHOR' }, steering_sources: { task: { text: 'CITE TASK' } } } } },
+    } }), 'preface.md': 'PREFACE' });
+    const installed = await install(child);
+    const defaults = await service.resolve(installed.installation_id);
+    expect(defaults.branches.sub.system).toBe('BASE'); expect(defaults.branches.main.steering).toBe('CUE');
+    const selected = await service.resolve(installed.installation_id, undefined, { cite: true });
+    expect(selected.branches.sub.system).toBe('PREFACE\n\nBASE');
+    expect(selected.branches.main).toMatchObject({ steering: 'CUE\n\nCITE\n\nSOURCES', anchor: { content: 'ANCHOR\n\nCITE ANCHOR' }, steering_sources: { task: { custom: { steering: 'TASK\n\nCITE TASK' } } } });
+    expect(selected.origins.find((origin) => origin.file === 'preface.md')?.source).toBe(child);
+  });
+  it.each([
+    ['prepend', '# Target\n\nINSERT\n\nBODY\n\n## Nested\n\nCHILD\n\n# Next\n\nEND'],
+    ['append', '# Target\n\nBODY\n\n## Nested\n\nCHILD\n\nINSERT\n\n# Next\n\nEND'],
+    ['before', 'INSERT\n\n# Target\n\nBODY\n\n## Nested\n\nCHILD\n\n# Next\n\nEND'],
+    ['after', '# Target\n\nBODY\n\n## Nested\n\nCHILD\n\nINSERT\n\n# Next\n\nEND'],
+    ['replace', '# Replacement\n\nINSERT\n\n# Next\n\nEND'],
+    ['remove', '# Next\n\nEND'],
+  ] as const)('applies section %s only when enabled and preserves adjacent headings', async (action, expected) => {
+    sources.set(parent, { 'recipe.toml': stringify({ schema_version: 1, id: 'parent', name: 'Parent', version: '1.0.0', options: { cite: { name: 'Cite', default: false, patch: [{ slot: 'common.system', section: 'Target', action, content: action === 'remove' ? undefined : { text: action === 'replace' ? '# Replacement\n\nINSERT' : 'INSERT' } }] } }, prompts: { system: { text: '# Target\n\nBODY\n\n## Nested\n\nCHILD\n\n# Next\n\nEND' } } }) });
+    const installed = await install(parent);
+    expect((await service.resolve(installed.installation_id)).branches.main.system).not.toBe(expected);
+    const selected = await service.resolve(installed.installation_id, undefined, { cite: true });
+    expect(selected.branches.main.system).toBe(expected);
+    const copy = await service.fork({ installation_id: installed.installation_id, mode: 'copy', id: 'copy', name: 'Copy' });
+    expect((await service.resolve(copy.summary.installation_id, undefined, { cite: true })).branches.main.system).toBe(expected);
+    sources.set(child, (await service.export(installed.installation_id)).files);
+    const imported = await install(child);
+    expect((await service.resolve(imported.installation_id, undefined, { cite: true })).branches.main.system).toBe(expected);
+  });
+  it.each(['# Other\n\nBODY', '# Target\n\nONE\n\n## Target\n\nTWO'])('reports missing or duplicate section with its option id', async (body) => {
+    sources.set(parent, { 'recipe.toml': stringify({ schema_version: 1, id: 'parent', name: 'Parent', version: '1.0.0', options: { cite: { name: 'Cite', default: false, patch: [{ slot: 'common.system', section: 'Target', action: 'remove' }] } }, prompts: { system: { text: body } } }) });
+    const installed = await install(parent);
+    await expect(service.resolve(installed.installation_id, undefined, { cite: true })).rejects.toMatchObject({ code: 'validation.failed', message: expect.stringContaining("option 'cite' section 'Target'") });
+  });
+  it('preserves untouched section boundaries and the final newline byte-for-byte', async () => {
+    const prefix = '# Before\nUNCHANGED\n'; const tail = '# Final\n\nPlain and direct.\n';
+    sources.set(parent, { 'recipe.toml': stringify({ schema_version: 1, id: 'parent', name: 'Parent', version: '1.0.0', prompts: { system: { text: `${prefix}# Target\n\nBODY\n\n${tail}` } }, options: { cite: { name: 'Cite', default: true, patch: [{ slot: 'common.system', section: 'Target', action: 'append', content: { text: 'INSERT' } }] } } }) });
+    const installed = await install(parent);
+    expect((await service.resolve(installed.installation_id)).branches.main.system).toBe(`${prefix}# Target\n\nBODY\n\nINSERT\n\n${tail}`);
+  });
+  it('applies inherited option patches in stable declaration order after gates and skips fenced headings', async () => {
+    sources.set(parent, { 'recipe.toml': stringify({ schema_version: 1, id: 'parent', name: 'Parent', version: '1.0.0', options: {
+      first: { name: 'First', default: false, patch: [{ slot: 'common.system', section: 'Target', action: 'append', content: { text: 'OLD FIRST' } }] },
+      second: { name: 'Second', default: true, patch: [{ slot: 'common.system', section: 'Target', action: 'append', content: { text: 'SECOND' } }] },
+    }, prompts: { system: [{ text: '# Target\n\nBODY\n\n```md\n# Target\n```\n\n~~~\n# Target\n~~~' }, { text: 'GATED', when: 'first' }] } }) });
+    sources.set(child, { 'recipe.toml': stringify({ schema_version: 1, id: 'child', name: 'Child', version: '1.0.0', extends: { source: parent }, options: {
+      first: { name: 'First overridden', default: true, patch: [{ slot: 'common.system', section: 'Target', action: 'append', content: { text: 'FIRST' } }] },
+      third: { name: 'Third', default: true, patch: [{ slot: 'common.system', section: 'Target', action: 'append', content: [{ text: 'THIRD' }, { text: 'LAST' }] }] },
+    } }) });
+    const installed = await install(child); const selected = await service.resolve(installed.installation_id);
+    expect(selected.options?.map((option) => option.id)).toEqual(['first', 'second', 'third']);
+    expect(selected.branches.main.system).toBe('# Target\n\nBODY\n\n```md\n# Target\n```\n\n~~~\n# Target\n~~~\n\nGATED\n\nFIRST\n\nSECOND\n\nTHIRD\n\nLAST');
+  });
+  it.each(['tables', 'dotted', 'inline'] as const)('applies numeric option ids in source declaration order with %s syntax', async (syntax) => {
+    const ids = ['20', 'a', '3'];
+    const option = (id: string) => `{ name = "${id}", default = true, patch = [{ slot = "common.system", section = "Target", action = "append", content = { text = "${id}" } }] }`;
+    const declarations = syntax === 'tables' ? ids.map((id) => `[options.${id}]\nname = "${id}"\ndefault = true\npatch = [{ slot = "common.system", section = "Target", action = "append", content = { text = "${id}" } }]`).join('\n')
+      : syntax === 'dotted' ? ids.map((id) => `options.${id} = ${option(id)}`).join('\n') : `options = { ${ids.map((id) => `${id} = ${option(id)}`).join(', ')} }`;
+    sources.set(parent, { 'recipe.toml': `schema_version = 1\nid = "parent"\nname = "Parent"\nversion = "1.0.0"\ndescription = '''\n[options.3]\noptions.a = { fake = true }\n'''\n${declarations}\n[prompts]\nsystem = { text = "# Target\\n\\nBASE" }\n` });
+    const installed = await install(parent); const resolved = await service.resolve(installed.installation_id);
+    expect(resolved.options?.map((entry) => entry.id)).toEqual(ids);
+    expect(resolved.branches.main.system).toBe('# Target\n\nBASE\n\n20\n\na\n\n3');
+  });
+  it('retains numeric option declaration order through inheritance, copies and exports', async () => {
+    const option = (id: string, body: string) => stringify({ options: { [id]: { name: id, default: true, patch: [{ slot: 'common.system', section: 'Target', action: 'append', content: { text: body } }] } } });
+    sources.set(parent, { 'recipe.toml': manifest('parent', { system: { text: '# Target\n\nBASE' } }) + option('20', 'OLD') + option('a', 'A') });
+    sources.set(child, { 'recipe.toml': manifest('child', {}, parent) + option('3', 'THREE') + option('20', 'TWENTY') });
+    const installed = await install(child);
+    const assertOrder = async (id: string) => {
+      const resolved = await service.resolve(id);
+      expect(resolved.options?.map((entry) => entry.id)).toEqual(['20', 'a', '3']);
+      expect(resolved.branches.main.system).toBe('# Target\n\nBASE\n\nTWENTY\n\nA\n\nTHREE');
+    };
+    await assertOrder(installed.installation_id);
+    const copy = await service.fork({ installation_id: installed.installation_id, mode: 'copy', id: 'copy', name: 'Copy' });
+    await assertOrder(copy.summary.installation_id);
+    sources.set(grandchild, (await service.export(installed.installation_id)).files);
+    await assertOrder((await install(grandchild)).installation_id);
+  });
+  it.each([
+    { options: { 'Invalid ID': { name: 'Bad', default: true } } },
+    { options: { research: { name: 'Research' } } },
+    { options: { research: { default: true } } },
+    { options: { research: { name: 'Research', default: 'true' } } },
+    { prompts: { system: { text: 'BAD', when: 'missing' } } },
+    { options: { research: { name: 'Research', default: true } }, prompts: { system: { text: 'BAD', when: 'research', unless: 'research' } } },
+    { prompts: { system: { text: 'off', when: 'missing' } } },
+    { prompts: { system: { off: true, when: 'research' } } },
+    { prompts: { steering_sources: { task: { mode: 'custom', custom: { steering: { text: 'BAD', unless: 'missing' } } } } } },
+    { options: { research: { name: 'Research', default: true, append: { main: { typo: { text: 'BAD' } } } } } },
+    { options: { research: { name: 'Research', default: false, append: { main: { system: { text: 'MISSING' } } } } } },
+    { prompts: { system: 'off' }, options: { research: { name: 'Research', default: false, prepend: { common: { system: { text: 'OFF' } } } } } },
+    { prompts: { system: { text: 'BASE' } }, options: { research: { name: 'Research', default: true, append: { common: { system: { text: 'BAD', when: 'research' } } } } } },
+    { prompts: { system: { text: 'BASE' } }, options: { research: { name: 'Research', default: true, prepend: { common: { system: { text: 'BAD', unless: 'research' } } } } } },
+    ...[
+      { slot: 'common.typo', section: 'Target', action: 'append', content: { text: 'BAD' } },
+      { slot: 'main.system', section: 'Target', action: 'remove' },
+      { slot: 'common.steering', section: 'Target', action: 'remove' },
+      { slot: 'common.system', section: 'Target', action: 'remove', content: { text: 'BAD' } },
+      { slot: 'common.system', section: 'Target', action: 'replace' },
+      { slot: 'common.system', action: 'before', content: { text: 'BAD' } },
+      { slot: 'common.system', section: 'Target', action: 'append', content: { text: 'BAD', when: 'research' } },
+      { slot: 'common.system', section: 'Target', action: 'append', content: [{ text: 'BAD', unless: 'research' }] },
+    ].map((patch) => ({ prompts: { system: { text: '# Target\n\nBASE' }, steering: 'off' }, options: { research: { name: 'Research', default: false, patch: [patch] } } })),
+  ])('rejects invalid option declarations and gate references %#', async (invalid) => {
+    sources.set(parent, { 'recipe.toml': stringify({ schema_version: 1, id: 'parent', name: 'Parent', version: '1.0.0', ...invalid }) });
+    await expect(service.preview({ source: { locator: parent } })).rejects.toMatchObject({ code: 'validation.failed' });
+  });
   it('keeps the entire old revision on bad upstream, cycles and pointer-commit failure, and serves locked content offline', async () => {
     const installed = await install(); const before = await service.resolve(installed.installation_id);
     sources.set(parent, { 'recipe.toml': manifest('parent', { system: { file: 'missing.md' } }) });
@@ -164,7 +316,7 @@ describe('Recipe accepted revisions', () => {
     sources.set(child, { 'recipe.toml': stringify({ schema_version: 1, id: 'child', name: 'Child', version: '1.0.0', extends: { source: parent }, model: 'off' }) });
     const reset = await service.preview({ source: { locator: child } });
     expect(reset.resolved.model).toEqual({}); expect(reset.resolved.model_origins).toEqual({});
-    for (const model of [{ api_key: 'EXAMPLE_TEST_KEY' }, { parameters: { main: { service_tier: 'priority' } } }, { auto_compact: 0 }]) {
+    for (const model of [{ api_key: 'EXAMPLE_TEST_KEY' }, { recipe_options: { cite: true } }, { parameters: { main: { service_tier: 'priority' } } }, { auto_compact: 0 }]) {
       sources.set(child, { 'recipe.toml': stringify({ schema_version: 1, id: 'child', name: 'Child', version: '1.0.0', model }) });
       await expect(service.preview({ source: { locator: child } })).rejects.toThrow('Invalid Recipe model settings');
     }
@@ -264,6 +416,52 @@ describe('Recipe accepted revisions', () => {
     const key = `recipes/revisions/${installed.revision.slice(7)}`;
     await documents.update<{ files: Record<string, string> }>('store', key, (snapshot) => ({ ...snapshot!, files: { ...snapshot!.files, 'recipe.toml': 'corrupt' } }));
     await expect(service.resolve(installed.installation_id)).rejects.toThrow('corrupt');
+  });
+  it.each<{ name: 'defaults' | 'all-on' | 'all-off' | 'review-only'; options: Record<string, boolean> }>([
+    { name: 'defaults', options: {} },
+    { name: 'all-on', options: { brief: true, review: true, quiet: true } },
+    { name: 'all-off', options: { brief: false, review: false, quiet: false } },
+    { name: 'review-only', options: { brief: false, review: true } },
+  ])('matches the options-sample contract for $name', async ({ name, options }) => {
+    type Slot = 'prompts.system' | 'prompts.steering' | 'prompts.main.system' | 'prompts.main.steering' | 'prompts.independent.system' | 'prompts.independent.steering';
+    type Expected = { recipe_options: Record<string, boolean>; values: Record<string, boolean>; slots: Record<Slot, string | null> };
+    const root = path.join(import.meta.dirname, 'fixtures', 'options-sample');
+    const loadFiles = async (directory: string) => {
+      const files: Record<string, string> = {};
+      for (const file of ['recipe.toml', 'main.md', 'sub.md', 'independent.md', 'review.md']) {
+        try { files[file] = await readFile(path.join(directory, file), 'utf8'); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      }
+      return files;
+    };
+    const expected = JSON.parse(await readFile(path.join(root, 'expected.json'), 'utf8')) as Record<string, Expected>;
+    const contract = expected[name]!;
+    const source = 'https://example.test/options-sample/recipe.toml';
+    sources.set(source, await loadFiles(root));
+    const installed = await install(source);
+    const resolved = await service.resolve(installed.installation_id, undefined, options);
+    expect(resolved.option_values, `${name} option values`).toEqual(contract.values);
+    const slotsFor = (recipe: typeof resolved): readonly (readonly [Slot, string | null])[] => [
+      ['prompts.system', recipe.branches.sub.system === undefined ? null : recipe.branches.sub.system],
+      ['prompts.steering', recipe.branches.sub.steering === undefined ? null : recipe.branches.sub.steering],
+      ['prompts.main.system', recipe.branches.main.system === undefined ? null : recipe.branches.main.system],
+      ['prompts.main.steering', recipe.branches.main.steering === undefined ? null : recipe.branches.main.steering],
+      ['prompts.independent.system', recipe.branches.independent.system === undefined ? null : recipe.branches.independent.system],
+      ['prompts.independent.steering', recipe.branches.independent.steering === undefined ? null : recipe.branches.independent.steering],
+    ];
+    const nativeSlots = slotsFor(resolved);
+    const materialized = `https://example.test/options-sample/materialized/${name}/recipe.toml`;
+    sources.set(materialized, await loadFiles(path.join(root, 'materialized', name)));
+    const materializedInstalled = await install(materialized);
+    const materializedSlots = slotsFor(await service.resolve(materializedInstalled.installation_id));
+    for (let index = 0; index < nativeSlots.length; index += 1) {
+      const [slot, value] = nativeSlots[index]!;
+      const [materializedSlot, materializedValue] = materializedSlots[index]!;
+      expect(value, `${name} ${slot}`).toBe(contract.slots[slot]);
+      expect(materializedSlot).toBe(slot);
+      expect(materializedValue, `${name} materialized ${slot}`).toBe(contract.slots[slot]);
+      expect(materializedValue, `${name} materialized ${slot} parity`).toBe(value);
+    }
   });
 });
 

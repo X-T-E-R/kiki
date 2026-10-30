@@ -32,6 +32,7 @@ import {
 } from './profileDraft';
 import { RawPanel } from './RawPanel';
 import { SubagentsField } from './SubagentsField';
+import { RecipeOptionsField } from '../RecipeOptionsField';
 import { useSavedTick } from '../useSavedTick';
 import { PromptIdentityEditor, PromptOverridesContentEditor } from '../PromptIdentityEditor';
 import { promptIdentityProblem, promptOverridesBody, promptOverridesProblem } from '../promptIdentityDraft';
@@ -237,6 +238,8 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
       <Toggle layout="row" label={t('st.profiles.mainToggle')} checked={draft.main} disabled={disabled} onChange={(value) => set('main', value)} />
       <p className="text-[11.5px] leading-snug text-ink-faint">{t(draft.main ? 'st.profiles.mainOnHint' : 'st.profiles.mainOffHint')}</p>
     </div>
+    <RecipeOptionsField recipe={profile.recipe} sourceFile={profile.source_file} values={draft.recipeOptions}
+      disabled={disabled || external} onChange={(values) => set('recipeOptions', values)} />
     <div>
       {kikiSubagentsApplicable(draft) ? <Section title={t('st.kikiContext.title')} dataSection="kiki-context" defaultOpen
         count={Number(draft.allowKikiSubagents) + (draft.kikiContext?.length ?? 0)}

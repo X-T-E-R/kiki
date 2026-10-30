@@ -241,6 +241,7 @@ export interface ProfileDraft {
    */
   readonly kikiContext: readonly KikiContextGroup[] | undefined;
   readonly modelAlias: string;
+  readonly recipeOptions: Record<string, boolean> | undefined;
   readonly effort: string;
   readonly restrictModelsToMenu: boolean;
   readonly preferredModels: readonly string[];
@@ -344,6 +345,7 @@ export function draftFromProfile(profile: NamedAgentProfile): ProfileDraft {
     allowKikiSubagents: profile.allow_kiki_subagents === true,
     kikiContext: normalizeKikiContext(profile.kiki_context),
     modelAlias: profile.pinned_model_alias ?? '',
+    recipeOptions: profile.recipe_options,
     effort: profile.thinking_effort ?? '',
     restrictModelsToMenu: profile.restrict_models_to_menu === true,
     preferredModels: profile.preferred_models ?? [],
@@ -420,6 +422,7 @@ export function patchBody(
     body.kiki_context = null;
   }
   if (changed.has('modelAlias')) body.pinned_model_alias = textOrNull(draft.modelAlias);
+  if (changed.has('recipeOptions')) body.recipe_options = draft.recipeOptions ?? null;
   if (changed.has('effort')) body.thinking_effort = textOrNull(draft.effort);
   if (changed.has('restrictModelsToMenu')) body.restrict_models_to_menu = draft.restrictModelsToMenu;
   if (changed.has('preferredModels')) body.preferred_models = listOrNull(draft.preferredModels);

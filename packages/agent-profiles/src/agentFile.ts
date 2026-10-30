@@ -1,4 +1,5 @@
 import { dirname } from 'pathe';
+import { recipeOptionValuesSchema } from '@kiki/protocol';
 import { AGENT_NAME_PATTERN } from '@kiki/protocol/agentName';
 
 import { AgentSystemPromptModeSchema, KikiContextSchema } from './agentProfile';
@@ -63,6 +64,7 @@ const AGENT_FILE_KEYS = new Set([
   'inject_kiki_mcp',
   'model_alias',
   'recipe',
+  'recipe_options',
   'restrict_models_to_menu',
   'thinking_effort',
   'preferred_models',
@@ -239,6 +241,7 @@ function parseAgentFileTextUnchecked(options: ParseAgentFileOptions): AgentFileD
     'model_alias',
     options.path,
   );
+  const recipeOptions = parseRecipeOptions(frontmatter['recipe_options'], options.path);
   const thinkingEffort = optionalNonEmptyStringField(
     frontmatter['thinking_effort'],
     'thinking_effort',
@@ -338,6 +341,7 @@ function parseAgentFileTextUnchecked(options: ParseAgentFileOptions): AgentFileD
     injectKikiMcp: parseOptionalBoolean(frontmatter['inject_kiki_mcp'], 'inject_kiki_mcp', options.path),
     modelAlias,
     recipe: optionalNonEmptyStringField(frontmatter['recipe'], 'recipe', options.path),
+    recipeOptions,
     restrictModelsToMenu: parseOptionalBoolean(frontmatter['restrict_models_to_menu'], 'restrict_models_to_menu', options.path) ?? false,
     thinkingEffort,
     ...parseModelConstraintFields(frontmatter, options.path),
@@ -579,6 +583,20 @@ function parseExecutorOptions(
     out[key] = item;
   }
   return out;
+}
+
+function parseRecipeOptions(
+  value: unknown,
+  filePath: string,
+): AgentFileDefinition['recipeOptions'] {
+  if (value === undefined) return undefined;
+  const parsed = recipeOptionValuesSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new AgentFileParseError(
+      `Frontmatter field "recipe_options" in ${filePath} must be a mapping of recipe ids to booleans`,
+    );
+  }
+  return parsed.data;
 }
 
 function parseRequestParams(

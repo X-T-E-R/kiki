@@ -581,6 +581,7 @@ merge_all_available_skills = true
       # max_per_window: integer
       # window_ms: integer
   # recipe: string
+  # recipe_options: record<string, boolean>
   # cognition: object
     # overlay: object | string | string[]
     # steering: object | string | string[]

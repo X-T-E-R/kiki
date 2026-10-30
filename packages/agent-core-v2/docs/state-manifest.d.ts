@@ -2975,6 +2975,21 @@ export interface AgentStateSnapshot {
             timeout?: number;
           }[];
           hooks_fingerprint?: string;
+          options?: readonly {
+            id: string;
+            name: string;
+            default: boolean;
+            description?: string;
+          }[];
+          option_values?: {
+            [key: string]: boolean;
+          };
+          diagnostics?: readonly {
+            code: string;
+            message: string;
+            source?: string;
+            path?: string;
+          }[];
           layers?: readonly {
             surface: 'profile' | 'model';
             installation_id: string;
@@ -3316,6 +3331,21 @@ export interface AgentStateSnapshot {
                 timeout?: number;
               }[];
               hooks_fingerprint?: string;
+              options?: readonly {
+                id: string;
+                name: string;
+                default: boolean;
+                description?: string;
+              }[];
+              option_values?: {
+                [key: string]: boolean;
+              };
+              diagnostics?: readonly {
+                code: string;
+                message: string;
+                source?: string;
+                path?: string;
+              }[];
             };
           }[];
         };
@@ -4175,6 +4205,7 @@ export interface AgentStateSnapshot {
         };
       }) => Promise<string>;
       readonly recipe?: string;
+      readonly recipeOptions?: Readonly<Record<string, boolean>>;
       readonly restrictModelsToMenu?: boolean;
       readonly modelMenuConstraint?: /* ProfileModelMenuConstraint — packages/agent-profiles/src/agentProfile.ts */ {
         readonly source: string;
@@ -4227,6 +4258,7 @@ export interface AgentStateSnapshot {
       readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
       readonly fileDefinition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
         readonly recipe?: string;
+        readonly recipeOptions?: Readonly<Record<string, boolean>>;
         readonly autoCompact?: number;
         readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly contextBudget?: number;
@@ -4935,6 +4967,7 @@ export interface AgentStateSnapshot {
       readonly fileSources?: /* FrozenProfileFileSources — packages/agent-core-v2/src/session/dispatch/profileFile.ts */ {
         readonly root: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly recipe?: string;
+          readonly recipeOptions?: Readonly<Record<string, boolean>>;
           readonly autoCompact?: number;
           readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly contextBudget?: number;
@@ -5732,6 +5765,7 @@ export interface AgentStateSnapshot {
           readonly sourceDefinitionId?: string;
           readonly definition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
             readonly recipe?: string;
+            readonly recipeOptions?: Readonly<Record<string, boolean>>;
             readonly autoCompact?: number;
             readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
             readonly contextBudget?: number;
@@ -6000,6 +6034,7 @@ export interface AgentStateSnapshot {
         }>>>>;
         readonly sourceDefinitions: Readonly<Record<string, /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly recipe?: string;
+          readonly recipeOptions?: Readonly<Record<string, boolean>>;
           readonly autoCompact?: number;
           readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly contextBudget?: number;
@@ -6334,6 +6369,19 @@ export interface AgentStateSnapshot {
               file?: string;
             }>;
             installation_id: string;
+            option_values?: Record<string, boolean>;
+            options?: readonly {
+              id: string;
+              name: string;
+              default: boolean;
+              description?: string;
+            }[];
+            diagnostics?: readonly {
+              code: string;
+              message: string;
+              source?: string;
+              path?: string;
+            }[];
             references?: readonly {
               surface: 'profile' | 'model';
               installation_id: string;
@@ -6762,6 +6810,21 @@ export interface AgentStateSnapshot {
                   timeout?: number;
                 }[];
                 hooks_fingerprint?: string;
+                options?: readonly {
+                  id: string;
+                  name: string;
+                  default: boolean;
+                  description?: string;
+                }[];
+                option_values?: {
+                  [key: string]: boolean;
+                };
+                diagnostics?: readonly {
+                  code: string;
+                  message: string;
+                  source?: string;
+                  path?: string;
+                }[];
                 layers?: readonly {
                   surface: 'profile' | 'model';
                   installation_id: string;
@@ -7103,6 +7166,21 @@ export interface AgentStateSnapshot {
                       timeout?: number;
                     }[];
                     hooks_fingerprint?: string;
+                    options?: readonly {
+                      id: string;
+                      name: string;
+                      default: boolean;
+                      description?: string;
+                    }[];
+                    option_values?: {
+                      [key: string]: boolean;
+                    };
+                    diagnostics?: readonly {
+                      code: string;
+                      message: string;
+                      source?: string;
+                      path?: string;
+                    }[];
                   };
                 }[];
               };

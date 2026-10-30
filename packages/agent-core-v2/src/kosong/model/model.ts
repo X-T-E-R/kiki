@@ -100,6 +100,7 @@ export interface ModelRecord extends ModelParameterDefaults {
   usage?: ModelUsagePolicy;
   behavior?: ModelBehaviorConfig;
   recipe?: string;
+  recipeOptions?: Record<string, boolean>;
   cognition?: CognitionConfig;
   promptOverrides?: PromptOverrides;
   requestIdentity?: RequestIdentityPolicy;

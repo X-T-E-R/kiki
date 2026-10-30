@@ -764,6 +764,38 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
+  it('saves recipe and recipe_options sparsely, preserves unrelated frontmatter, and validates option ids and booleans', async () => {
+    await withFixture(async (fixture) => {
+      const profilePath = await writeAgent(join(fixture.homeDir, 'agents'), 'reviewer.md', agentMd('reviewer', 'original'));
+      await withStack(fixture, undefined, async (stack) => {
+        await stack.ready();
+        const selected = await stack.writer.update({
+          name: 'reviewer', scope: 'user', recipe: 'installation:example-installed-id',
+          recipeOptions: { research: true, 'citations.v2': false },
+        });
+        expect(selected.profile).toMatchObject({ recipe: 'installation:example-installed-id', recipeOptions: { research: true, 'citations.v2': false } });
+        let text = await readFile(profilePath, 'utf8');
+        expect(text).toContain('recipe: "installation:example-installed-id"');
+        expect(text).toContain('recipe_options: {"research":true,"citations.v2":false}');
+        expect((await stack.writer.update({ name: 'reviewer', scope: 'user', description: 'Edited' })).profile.recipeOptions).toEqual({ research: true, 'citations.v2': false });
+        const beforeInvalid = await readFile(profilePath, 'utf8');
+        await expect(stack.writer.update({ name: 'reviewer', scope: 'user', recipeOptions: { 'Bad ID': true } })).rejects.toMatchObject({ code: 'validation.failed' });
+        await expect(stack.writer.update({ name: 'reviewer', scope: 'user', recipeOptions: { research: 'true' } as unknown as Record<string, boolean> })).rejects.toMatchObject({ code: 'validation.failed' });
+        expect(await readFile(profilePath, 'utf8')).toBe(beforeInvalid);
+        const clearedOptions = await stack.writer.update({ name: 'reviewer', scope: 'user', recipeOptions: null });
+        expect(clearedOptions.profile.recipeOptions).toBeUndefined();
+        expect(await readFile(profilePath, 'utf8')).not.toContain('recipe_options:');
+        const clearedRecipe = await stack.writer.update({ name: 'reviewer', scope: 'user', recipe: null });
+        expect(clearedRecipe.profile.recipe).toBeUndefined();
+        text = await readFile(profilePath, 'utf8');
+        expect(text).not.toContain('recipe:');
+        const created = await stack.writer.create({ name: 'created-recipe', scope: 'user', description: 'Created', prompt: 'body', recipe: 'example', recipeOptions: { research: false } });
+        expect(created.profile).toMatchObject({ recipe: 'example', recipeOptions: { research: false } });
+        expect(await readFile(join(fixture.homeDir, 'agents', 'created-recipe.md'), 'utf8')).toContain('recipe_options: {"research":false}');
+      });
+    });
+  });
+
   it('patches common profile fields using parser-compatible frontmatter values', async () => {
     await withFixture(async (fixture) => {
       const profilePath = await writeAgent(

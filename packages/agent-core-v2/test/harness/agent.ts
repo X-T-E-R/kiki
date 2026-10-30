@@ -278,6 +278,7 @@ interface ModelConfigForConfig {
   readonly usage?: ModelUsagePolicy;
   readonly cognition?: CognitionConfig;
   readonly recipe?: string;
+  readonly recipeOptions?: Record<string, boolean>;
   readonly promptOverrides?: PromptOverrides;
 }
 

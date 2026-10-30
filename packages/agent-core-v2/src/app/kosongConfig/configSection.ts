@@ -1,5 +1,5 @@
 import { PromptOverridesSchema } from '@kiki/agent-profiles/promptOverrides';
-import { modelBehaviorConfigSchema, modelSteeringCadenceSchema, modelSteeringSourcesSchema } from '@kiki/protocol';
+import { modelBehaviorConfigSchema, modelSteeringCadenceSchema, modelSteeringSourcesSchema, recipeOptionValuesSchema } from '@kiki/protocol';
 import { OAuthRefSchema } from '#/kosong/provider/oauthRef';
 import { z } from 'zod';
 
@@ -382,6 +382,7 @@ export const ModelRecordSchema = ModelBaseSchema.extend({
   usage: ModelUsagePolicySchema.optional(),
   behavior: modelBehaviorConfigSchema.optional(),
   recipe: z.string().min(1).optional(),
+  recipeOptions: recipeOptionValuesSchema.optional(),
   cognition: CognitionConfigSchema.optional(),
   promptOverrides: PromptOverridesSchema.optional(),
   requestIdentity: RequestIdentityPolicySchema.optional(),

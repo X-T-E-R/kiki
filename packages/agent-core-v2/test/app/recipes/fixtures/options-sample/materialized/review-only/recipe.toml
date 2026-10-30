@@ -1,0 +1,30 @@
+schema_version = 1
+id = "options-sample"
+name = "Options sample"
+version = "0.1.0"
+description = "when/unless gating, whole-slot prepend/append, section patches, and a slot that filters to empty."
+
+[[prompts.system]]
+file = "sub.md"
+
+[[prompts.system]]
+text = "Report blockers early."
+
+[prompts.steering]
+text = "Stay inside the slice."
+
+[prompts.main.system]
+text = "# Sample Main\n\nOwn the user's goal.\n\n## Workflow\n\nRead first, then change.\n\n```md\n# Not a heading: inside a fenced block\n```\n\nFinish with a self-review.\n\n## Review\n\nCheck every change against the request before reporting.\n\n## Tone\n\nPlain and direct.\n"
+
+[[prompts.main.steering]]
+text = "Keep the goal in view."
+
+[[prompts.main.steering]]
+text = "Cite file:line for findings."
+
+[prompts.independent]
+steering = "off"
+
+[prompts.independent.system]
+file = "independent.md"
+

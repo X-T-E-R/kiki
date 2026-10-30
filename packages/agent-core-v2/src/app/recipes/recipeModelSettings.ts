@@ -8,7 +8,7 @@ export { mergeModelSettings as mergeRecipeModelSettings } from '#/kosong/model/m
 export const RecipeModelSettingsSchema = ModelRecordSchema.omit({
   providerId: true, baseUrl: true, apiKey: true, oauth: true, protocol: true,
   name: true, aliases: true, provider: true, model: true, pricingModel: true,
-  betaApi: true, recipe: true, cognition: true, promptOverrides: true,
+  betaApi: true, recipe: true, recipeOptions: true, cognition: true, promptOverrides: true,
   requestIdentity: true, overrides: true,
 }).extend({
   parameters: ModelRecordSchema.shape.parameters.unwrap().strict().optional(),
