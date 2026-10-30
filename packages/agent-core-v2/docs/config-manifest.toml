@@ -943,7 +943,7 @@ idle_ttl_ms = 600000
 max_live_sessions = 8
 min_idle_ms = 60000
 sweep_interval_ms = 30000
-max_concurrent_restores = 1
+max_concurrent_restores = 4
 max_queued_restores = 8
 max_resident_heap_bytes = 1610612736
 

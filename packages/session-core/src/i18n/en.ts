@@ -2322,6 +2322,13 @@ export const en = {
   'sv.submissionRecovery.failed': 'Server could not admit this message. Review it before retrying.',
   'sv.submissionRecovery.cancelled': 'Cancelled; the content is back in the composer for editing or resending.',
 
+  'sv.restore.waiting': 'Waiting for other sessions to restore (position {position})',
+  'sv.restore.active': 'Restoring session — message saved',
+  'sv.restore.failed': 'Message held for recovery',
+  'sv.restore.duplicate': 'Identical message already waiting; this copy will not run automatically',
+  'sv.restore.retry': 'Retry saved message',
+  'sv.restore.sendSeparately': 'Send separately',
+  'sv.restore.cancel': 'Cancel message',
   'sv.resyncFailed': 'Session recovery failed — retry manually',
   'sv.resyncing': 'Resyncing…',
   'sv.sendPaused': 'Sending is paused until the session is in sync.',

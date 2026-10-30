@@ -529,6 +529,21 @@ describe('SessionController prompt runtime projection', () => {
     controller.close();
   });
 
+  it('publishes point-read restore phase, elapsed and queue-position changes without a transcript refresh', async () => {
+    const { controller, client } = await openController();
+    const receipt = { prompt_id: 'restoring-prompt', user_message_id: 'restoring-prompt', status: 'queued' as const,
+      content: [{ type: 'text' as const, text: 'saved message' }], created_at: '2026-01-01T00:00:02.000Z', admission: 'restoring' as const,
+      restore_progress: { phase: 'restore_queue', started_at: '2026-01-01T00:00:02.000Z', elapsed_ms: 1000, queue_position: 2 } };
+    client.getDurableIngress = vi.fn().mockResolvedValueOnce(receipt).mockResolvedValueOnce({ ...receipt,
+      restore_progress: { ...receipt.restore_progress, elapsed_ms: 2000, queue_position: 1 } });
+    await controller.refreshDurablePrompt(receipt.prompt_id);
+    expect(controller.getDurableIngress()[0]?.restore_progress).toMatchObject({ queue_position: 2 });
+    await controller.refreshDurablePrompt(receipt.prompt_id);
+    expect(controller.getState().durableIngress?.[0]?.restore_progress).toMatchObject({ queue_position: 1, elapsed_ms: 2000 });
+    expect(client.getDurableIngress).toHaveBeenCalledTimes(2);
+    controller.close();
+  });
+
   it('stops durable ingress pagination after suspension and ignores the late first page', async () => {
     const { controller, client, mainPublishes } = await openController({ persistenceHint: 'saved' });
     const firstPage = deferred<Awaited<ReturnType<NonNullable<KikiClient['listDurableIngress']>>>>();

@@ -10,6 +10,8 @@ import { sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/w
 import type { PromptItem, PromptSubmission, PromptSubmitResult, PromptSubmitReceipt } from '../protocol/rest-prompt';
 import { assertPromptFileRefs } from '../lib/promptMedia';
 import { mapError } from '../transport/errors';
+import type { RestoreProgress } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
+import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 
 export type PromptIngressResult = PromptSubmitResult & Pick<PromptSubmitReceipt, 'resolved_parts'>;
 
@@ -33,6 +35,9 @@ interface Entry {
   readonly cancelRequested?: boolean;
   readonly error?: PromptItem['admission_error'];
   readonly result?: PromptIngressResult;
+  readonly restoreProgress?: PromptItem['restore_progress'];
+  readonly duplicateOf?: string;
+  readonly contentIdentity?: string;
 }
 interface Index { readonly next: number }
 interface IndexPage { readonly keys: readonly (string | null)[] }
@@ -42,6 +47,7 @@ export interface PromptIngressExecution {
   readonly files: IFileService;
   readonly signal: AbortSignal;
   readonly steerTarget?: { readonly turnId?: number; readonly promptId?: string };
+  onRestoreProgress(progress: RestoreProgress): void;
   beforeSubmit(): Promise<void>;
 }
 interface Consumer {
@@ -53,6 +59,8 @@ export class PromptIngress {
   private readonly owner = randomUUID();
   private readonly workers = new Map<string, { controller: AbortController; promise: Promise<void> }>();
   private readonly targetTails = new Map<string, Promise<void>>();
+  private readonly progress = new Map<string, NonNullable<PromptItem['restore_progress']>>();
+  private readonly pendingContent = new Map<string, { readonly key: string; readonly promptId: string }>();
   private closed = false;
 
   constructor(private readonly core: Scope, private readonly consumer: Consumer) {}
@@ -110,11 +118,18 @@ export class PromptIngress {
     }
     return [{ type: 'text', text: text || '[Attachment]' }];
   }
+  private progressSnapshot(key: string): PromptItem['restore_progress'] {
+    const progress = this.progress.get(key);
+    return progress === undefined ? undefined : { ...progress, elapsed_ms: Math.max(progress.elapsed_ms, Date.now() - Date.parse(progress.started_at)) };
+  }
+
   private async item(target: Target, entry: Entry, full = true): Promise<PromptItem> {
     const result = entry.result === undefined ? undefined : full
       ? await this.documents().get<PromptSubmitResult>(`${target.scope}/prompt-ingress/results`, `${entry.key}.json`) : entry.result;
     const body = full && result === undefined ? await this.payload(target, entry.key) : entry.body;
-    return { ...result, prompt_id: entry.body.prompt_id!, user_message_id: result?.user_message_id ?? entry.body.prompt_id!,
+    const progress = entry.admission === 'restoring' ? this.progress.get(`${target.scope}/${entry.key}`) ?? entry.restoreProgress : entry.restoreProgress;
+    return { ...result, restore_progress: progress === undefined ? undefined : { ...progress, elapsed_ms: entry.admission === 'restoring' ? Math.max(progress.elapsed_ms, Date.now() - Date.parse(progress.started_at)) : progress.elapsed_ms },
+      admission_duplicate_of: entry.duplicateOf, prompt_id: entry.body.prompt_id!, user_message_id: result?.user_message_id ?? entry.body.prompt_id!,
       status: result?.status ?? 'queued', content: result?.content ?? body.content,
       created_at: result?.created_at ?? entry.createdAt, append_timing: result?.append_timing ?? entry.body.append_timing ?? 'agent_idle',
       revision: result?.revision ?? 0, admission: entry.admission, admission_error: entry.error,
@@ -151,10 +166,15 @@ export class PromptIngress {
       const index = await this.documents().get<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY);
       const ordinal = index?.next ?? 0;
       await this.documents().set<Index>(`${target.scope}/prompt-ingress`, INDEX_KEY, { next: ordinal + 1 });
+      const contentIdentity = `${target.scope}/${agentId}/${createHash('sha256').update(JSON.stringify({ ...body, prompt_id: undefined, admission: undefined })).digest('hex')}`;
+      const duplicate = this.pendingContent.get(contentIdentity);
       const created: Entry = { version: 1, key, ordinal, agentId, body: { prompt_id: body.prompt_id, append_timing: body.append_timing, content: this.preview(content) }, fingerprint,
-        createdAt: new Date().toISOString(), owner: this.owner, admission: 'restoring', stage: 'restoring',
+        createdAt: new Date().toISOString(), owner: this.owner, admission: duplicate === undefined ? 'restoring' : 'held', stage: 'restoring',
+        contentIdentity, duplicateOf: duplicate?.promptId,
+        error: duplicate === undefined ? undefined : { code: 40903, message: 'An identical message is already waiting for restoration. This copy is held. Cancel it or explicitly resume it to send it separately.' },
         steerTarget: body.delivery_mode === 'steer' ? steerTarget : undefined };
       await this.publish(target, created);
+      if (duplicate === undefined) this.pendingContent.set(contentIdentity, { key, promptId: body.prompt_id! });
       return created;
     });
     if (entry.owner === this.owner && entry.admission === 'restoring') this.schedule(target, entry);
@@ -194,7 +214,7 @@ export class PromptIngress {
     const resumed = await this.locked(target, async () => {
       const current = (await this.read(target, key))!;
       if (current.admission !== 'held' && current.admission !== 'failed') return current;
-      const next: Entry = { ...current, owner: this.owner, admission: 'restoring', error: undefined };
+      const next: Entry = { ...current, owner: this.owner, admission: 'restoring', error: undefined, duplicateOf: undefined };
       await this.publish(target, next);
       return next;
     });
@@ -239,41 +259,64 @@ export class PromptIngress {
   private schedule(target: Target, entry: Entry): void {
     const key = `${target.scope}/${entry.key}`;
     if (this.closed || this.workers.has(key)) return;
+    if (entry.contentIdentity !== undefined && !this.pendingContent.has(entry.contentIdentity)) {
+      this.pendingContent.set(entry.contentIdentity, { key: entry.key, promptId: entry.body.prompt_id! });
+    }
     const controller = new AbortController();
     const lane = `${target.scope}/${entry.agentId}`;
     const previous = this.targetTails.get(lane) ?? Promise.resolve();
-    const promise = previous.catch(() => {}).then(() => this.run(target, entry.key, controller)).catch(error => {
+    this.progress.set(key, { phase: this.targetTails.has(lane) ? 'prompt_queue' : 'prompt_acquire', started_at: new Date().toISOString(), elapsed_ms: 0 });
+    const timeout = setTimeout(() => {
+      const phase = this.progress.get(key)?.phase ?? 'prompt_acquire';
+      controller.abort(new Error2(ErrorCodes.SESSION_BUSY, `Message restoration timed out after 120s during ${phase}. Retry this saved message or cancel it.`));
+    }, 120_000);
+    timeout.unref?.();
+    const promise = this.run(target, entry.key, controller, timeout, previous).catch(error => {
       this.core.accessor.get(ILogService).warn('durable prompt admission stopped', { error: error instanceof Error ? error.message : String(error) });
     }).finally(() => {
+      clearTimeout(timeout);
       this.workers.delete(key);
+      this.progress.delete(key);
+      if (entry.contentIdentity !== undefined && this.pendingContent.get(entry.contentIdentity)?.key === entry.key) this.pendingContent.delete(entry.contentIdentity);
       if (this.targetTails.get(lane) === promise) this.targetTails.delete(lane);
     });
     this.workers.set(key, { controller, promise });
     this.targetTails.set(lane, promise);
   }
 
-  private async run(target: Target, key: string, controller: AbortController): Promise<void> {
+  private async run(target: Target, key: string, controller: AbortController, timeout: ReturnType<typeof setTimeout>, previous: Promise<void>): Promise<void> {
     if (this.closed) return;
     const lease = await this.core.accessor.get(IFileSystemStorageService).acquireLock(`${target.scope}/prompt-ingress`, `${key}.worker.lock`, { waitForMs: 0 });
     try {
       let entry = (await this.read(target, key))!;
       if (entry.owner !== this.owner || (entry.admission !== 'restoring' && !entry.cancelRequested) || entry.admission === 'cancelled') return;
       try {
+        await abortable(previous.catch(() => {}), controller.signal);
         if (entry.cancelRequested) {
           await this.consumer.cancel(target.sessionId, entry.agentId, entry.body.prompt_id!, controller.signal);
           await this.locked(target, () => this.publish(target, { ...entry, admission: 'cancelled', error: undefined }));
           return;
         }
-        const result = await this.consumer.submit(target.sessionId, { body: await this.payload(target, key), fingerprint: entry.fingerprint, files: this.files(target), signal: controller.signal,
+        controller.signal.throwIfAborted();
+        const progressKey = `${target.scope}/${key}`;
+        const result = await abortable(this.consumer.submit(target.sessionId, { body: await this.payload(target, key), fingerprint: entry.fingerprint, files: this.files(target), signal: controller.signal,
           steerTarget: entry.steerTarget,
+          onRestoreProgress: progress => {
+            if (controller.signal.aborted) return;
+            const previous = this.progress.get(progressKey);
+            this.progress.set(progressKey, { phase: progress.phase, started_at: previous?.started_at ?? progress.startedAt,
+              elapsed_ms: previous === undefined ? progress.elapsedMs : Date.now() - Date.parse(previous.started_at), queue_position: progress.queuePosition });
+          },
           beforeSubmit: async () => {
             await this.locked(target, async () => {
               entry = (await this.read(target, key))!;
               if (entry.cancelRequested || controller.signal.aborted || this.closed) throw new Error('Prompt admission cancelled');
-              entry = { ...entry, stage: 'submitting' };
+              entry = { ...entry, stage: 'submitting', restoreProgress: this.progressSnapshot(progressKey) };
               await this.save(target, entry);
+              clearTimeout(timeout);
+              if (entry.contentIdentity !== undefined && this.pendingContent.get(entry.contentIdentity)?.key === entry.key) this.pendingContent.delete(entry.contentIdentity);
             });
-          } });
+          } }), controller.signal);
         await this.documents().set(`${target.scope}/prompt-ingress/results`, `${key}.json`, result);
         await this.locked(target, async () => {
           const current = (await this.read(target, key))!;
@@ -290,7 +333,7 @@ export class PromptIngress {
           const current = (await this.read(target, key))!;
           if (current.admission === 'cancelled') return;
           await this.publish(target, { ...current, admission: this.closed || current.cancelRequested || current.stage === 'submitting' ? 'held' : 'failed',
-            error: { code: mapped.code, message: mapped.msg } });
+            restoreProgress: this.progressSnapshot(`${target.scope}/${key}`), error: { code: mapped.code, message: mapped.msg } });
         });
       }
     } finally { await lease.release(); }

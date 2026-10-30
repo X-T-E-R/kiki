@@ -95,7 +95,7 @@ import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { publishedInlineMediaReader } from '../services/publishedMedia';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { acquireSessionOperation, withSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
-import { timeRestorePhase } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
+import { observeRestore, timeRestorePhase, withRestoreDeadline } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
 import { defineRoute } from '../middleware/defineRoute';
 import { ensureMainAgent, MAIN_AGENT_ID } from '../transport/mainAgent';
 import { readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
@@ -566,7 +566,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       let lease: SessionOperationLease | undefined;
       let enqueued = false;
       let retryContentRanges: readonly import('@kiki/agent-core-v2').PromptContentRange[] | undefined;
-      const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(core.accessor.get(ILogService), { sessionId: session_id, agentId: req.body.agent_id ?? 'main', promptId: req.body.prompt_id, requestId: req.id }, name, action);
+      const phase = <T>(name: string, action: () => Promise<T>) => observeRestore(progress => ingressExecution?.onRestoreProgress(progress), () => withRestoreDeadline(() => timeRestorePhase(core.accessor.get(ILogService), { sessionId: session_id, agentId: req.body.agent_id ?? 'main', promptId: req.body.prompt_id, requestId: req.id }, name, action)));
       const sendResult = (result: z.input<typeof promptSubmitResultSchema> & Pick<PromptIngressResult, 'resolved_parts'>) => {
         const resolved_parts = result.resolved_parts ?? (retryContentRanges ?? preparedMedia?.sourceRanges)?.map(({ index, start, end }) => ({ index, content: result.content.slice(start, end) }));
         const data = req.query.receipt === 'true' ? promptSubmitReceiptSchema.parse({ ...result, resolved_parts })

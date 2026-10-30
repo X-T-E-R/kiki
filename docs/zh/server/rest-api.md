@@ -415,6 +415,10 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 | `external_retry` | 已知的外部提交回执被重放，没有重复执行立即投递动作。 |
 | `prompt_no_longer_pending` | 该提示词已不在可选的待发送队列中；仅凭这一原因既不能确认已投递，也不能认定仍在排队，应读取 canonical 状态。 |
 
+消息等待恢复时，可选的 `restore_progress` 返回 `phase`、`started_at`、`elapsed_ms`；在进程级恢复队列中还返回从 1 开始的 `queue_position`。单次恢复有 60 秒截止时间，包含排队等待；超时后释放恢复槽位，消息保留为 `failed`，并带有 `admission_error`。持久消息在进入核心提交前的准备过程另有 120 秒截止时间。GUI 显示阶段和耗时，并提供 **重试已保存消息**、**取消消息** 操作。
+
+第一份消息仍在恢复时，用另一个 ID 提交相同内容，新副本会被保留为 `held` 并带有 `admission_duplicate_of`，不会自动执行。可以取消副本，或显式恢复以单独发送；使用原 ID 的匹配重试仍指向原请求。
+
 `failed` 带有 `admission_error`，原文与附件仍保留。重启后或投递结果不确定的请求转为 `held`，等待显式 `:resume`；服务端会先核对原回执，回执查询失败不会触发再次启动。使用 `:abort` 取消；`aborted: false` 且 admission 为 `held` 表示取消仍待核对，`cancelled` 才确认取消。要修改已保存请求，应先取消，再使用新 ID 提交。
 
 外部执行器的立即投递结果未知时，待发送队列会保持恢复确认状态，活跃轮次结束也不会自动启动。`:resume` 会保留请求的 `held` 状态并返回说明错误，不会重复该外部动作。先核对执行器的实际结果，再显式发送或取消保留的提示词。

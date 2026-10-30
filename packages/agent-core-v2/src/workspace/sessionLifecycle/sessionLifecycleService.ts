@@ -12,7 +12,7 @@ import { unwrapErrorCause } from '#/_base/errors/errors';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { AsyncEmitter, Emitter, type Event, type IWaitUntil } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
-import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
+import { restoreSignal, timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
 import { drainLogCloses } from '#/_base/log/logService';
 import { DEFAULT_PLAN_MODE_SECTION } from '#/features/plan/configSection';
 import { IAgentPlanService } from '#/features/plan/plan';
@@ -303,6 +303,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         scope: this.sessionScope(sessionId),
       },
     });
+    if (restoreSignal()?.aborted) {
+      await lock.release();
+      restoreSignal()!.throwIfAborted();
+    }
     this.sessionLocks.set(sessionId, lock);
   }
 
@@ -401,9 +405,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const sessionScope = this.sessionScope(opts.sessionId);
     const sessionDir = join(this.bootstrap.homeDir, sessionScope);
     const metaScope = sessionScope;
-    await Promise.all([this.config.ready, this.models.ready, this.providers.ready]);
-    await this.workspaceDirs.ready;
-    await this.workspaceDirs.mergeAdditionalDirs(opts.workDir, opts.additionalDirs ?? []);
+    const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(this.log, { sessionId: opts.sessionId, workspaceId }, name, action);
+    await phase('materialize_config', () => Promise.all([this.config.ready, this.models.ready, this.providers.ready]));
+    await phase('materialize_directories', () => this.workspaceDirs.ready);
+    await phase('materialize_additional_directories', () => this.workspaceDirs.mergeAdditionalDirs(opts.workDir, opts.additionalDirs ?? []));
     const ctx: ISessionContext = {
       _serviceBrand: undefined,
       sessionId: opts.sessionId,
@@ -415,10 +420,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       scope: (subKey?: string): string =>
         subKey === undefined || subKey === '' ? sessionScope : `${sessionScope}/${subKey}`,
     };
-    const [allPluginMcpServers, sessionPluginMcpServers] = await Promise.all([
+    const [allPluginMcpServers, sessionPluginMcpServers] = await phase('materialize_plugins', () => Promise.all([
       this.plugins.enabledMcpServers('*'),
       this.plugins.enabledMcpServers(workspaceId, opts.sessionId),
-    ]);
+    ]));
     let workspaceReference: IDisposable | undefined;
     const releaseWorkspaceReference = (): void | Promise<void> => {
       const reference = workspaceReference;
@@ -428,7 +433,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     let sessionContainer: IInstantiationService | undefined;
     let handle: ISessionScopeHandle;
     try {
-      await this.acquireSessionLock(opts.sessionId, opts.waitForSessionMs);
+      await phase('materialize_lock', () => this.acquireSessionLock(opts.sessionId, opts.waitForSessionMs));
       if (opts.rollbackOnMaterializationFailure === true) await this.assertNewSession(opts.sessionId);
       workspaceReference = this.acquireWorkspaceReference();
       handle = createScopedChildHandle(
@@ -515,14 +520,14 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       throw error;
     }
     try {
-      await handle.accessor.get(ISessionMetadata).ready;
-      await handle.accessor.get(ISessionToolPolicy).ready;
+      await phase('materialize_metadata', () => handle.accessor.get(ISessionMetadata).ready);
+      await phase('materialize_tool_policy', () => handle.accessor.get(ISessionToolPolicy).ready);
       await Promise.all([
-        this.workspaceAgentProfileLoader.ready,
-        this.extraAgentProfileLoader.ready,
-        this.explicitAgentProfileLoader.ready,
-        this.userAgentProfileLoader.ready,
-        this.pluginAgentProfileLoader.ready,
+        phase('materialize_workspace_profiles', () => this.workspaceAgentProfileLoader.ready),
+        phase('materialize_extra_profiles', () => this.extraAgentProfileLoader.ready),
+        phase('materialize_explicit_profiles', () => this.explicitAgentProfileLoader.ready),
+        phase('materialize_user_profiles', () => this.userAgentProfileLoader.ready),
+        phase('materialize_plugin_profiles', () => this.pluginAgentProfileLoader.ready),
       ]);
     } catch (error) {
       void this.explicitAgentProfileLoader.reload().catch(() => undefined);

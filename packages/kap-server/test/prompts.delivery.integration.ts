@@ -35,9 +35,11 @@ import { createKlient as createHttpKlient } from '@kiki/klient/http';
 import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
 import { SessionController } from '../../session-core/src/session/sessionController';
 import { IAgentToolExecutorService } from '@kiki/agent-core-v2/agent/toolExecutor/toolExecutor';
+import { timeRestorePhase } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
 import { agentTranscriptToBlocks } from '../../session-core/src/session/transcript';
 import { describe, expect, it, vi } from 'vitest';
 import { startServer } from '../src/start';
+import { PromptIngress } from '../src/services/promptIngress';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders, bearerToken } from './helpers/auth';
 import { promiseGate, holdExternalSession, usePromptFixture } from './helpers/promptFixture';
@@ -541,6 +543,62 @@ describe('server-v2 /api prompts', () => {
       await hook.dispose();
       await new Promise<void>((resolve, reject) => provider.close(error => error ? reject(error) : resolve()));
     }
+  });
+
+  it('expires a prompt waiting behind a stalled submission without starting it or losing its saved body', async () => {
+    const id = await createSession(fixture.home!);
+    const gate = promiseGate<import('../src/services/promptIngress').PromptIngressResult>();
+    const submit = vi.fn(async (_id: string, execution: import('../src/services/promptIngress').PromptIngressExecution) => { await execution.beforeSubmit(); return gate.promise; });
+    const ingress = new PromptIngress(fixture.server!.core, { submit, cancel: async () => {} });
+    const originalTimeout = globalThis.setTimeout;
+    const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: Parameters<typeof setTimeout>[0], delay: number | undefined, ...args: unknown[]) =>
+      originalTimeout(handler, delay === 120_000 ? 500 : delay, ...args)) as typeof setTimeout);
+    try {
+      await ingress.submit(id, { prompt_id: 'submitting-first', content: [{ type: 'text', text: 'First message' }] }, 'first');
+      await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+      await ingress.submit(id, { prompt_id: 'queued-later', content: [{ type: 'text', text: 'Second message' }] }, 'second');
+      await vi.waitFor(async () => expect(await ingress.lookup(id, 'main', 'queued-later')).toMatchObject({
+        admission: 'failed', restore_progress: { phase: 'prompt_queue', elapsed_ms: expect.any(Number) },
+        admission_error: { code: 40901, message: expect.stringContaining('120s during prompt_queue') }, content: [{ type: 'text', text: 'Second message' }],
+      }), { timeout: 2500 });
+      expect(submit).toHaveBeenCalledTimes(1);
+      const failed = await ingress.lookup(id, 'main', 'queued-later');
+      expect(failed!.restore_progress!.elapsed_ms).toBeGreaterThanOrEqual(500);
+    } finally {
+      gate.resolve({ prompt_id: 'submitting-first', user_message_id: 'submitting-first', status: 'queued', content: [{ type: 'text', text: 'First message' }], created_at: new Date().toISOString() });
+      await ingress.close();
+      timers.mockRestore();
+    }
+  });
+
+  it('bounds stalled admission, reports its leaf phase, and holds repeated content without running another request', async () => {
+    const id = await createSession(fixture.home!);
+    await closeSessionById(fixture.server!.core.accessor, id);
+    const manager = fixture.server!.core.accessor.get(ISessionManager);
+    const gate = promiseGate<undefined>();
+    const resume = vi.spyOn(manager, 'resume').mockImplementation(() => timeRestorePhase(undefined, {}, 'materialize_workspace_profiles', () => gate.promise));
+    const originalTimeout = globalThis.setTimeout;
+    const timers = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((handler: Parameters<typeof setTimeout>[0], delay: number | undefined, ...args: unknown[]) =>
+      originalTimeout(handler, delay === 60_000 ? 1000 : delay, ...args)) as typeof setTimeout);
+    const root = `/api/sessions/${id}/prompts`;
+    const body = { admission: 'durable', prompt_id: 'bounded-original', content: [{ type: 'text', text: 'Retain this message once' }] };
+    try {
+      expect((await call('POST', root, body)).body).toMatchObject({ code: 0, data: { admission: 'restoring' } });
+      await vi.waitFor(() => expect(resume).toHaveBeenCalledTimes(1));
+      expect((await call('GET', `${root}/${body.prompt_id}?admission=durable`)).body).toMatchObject({ data: {
+        admission: 'restoring', restore_progress: { phase: 'materialize_workspace_profiles', elapsed_ms: expect.any(Number) } } });
+      expect((await call('POST', root, { ...body, prompt_id: 'bounded-copy' })).body).toMatchObject({ code: 0, data: {
+        admission: 'held', admission_duplicate_of: body.prompt_id } });
+      expect((await call('POST', root, body)).body).toMatchObject({ code: 0, data: { prompt_id: body.prompt_id } });
+      await vi.waitFor(async () => expect((await call('GET', `${root}/${body.prompt_id}?admission=durable`)).body).toMatchObject({ data: {
+        admission: 'failed', admission_error: { code: 40901, message: expect.stringContaining('materialize_workspace_profiles') },
+        restore_progress: { phase: 'materialize_workspace_profiles' } } }), { timeout: 3000 });
+      expect(resume).toHaveBeenCalledTimes(1);
+      expect((await call('POST', `${root}/bounded-copy:abort`)).body).toMatchObject({ code: 0, data: { aborted: true } });
+      gate.resolve(undefined);
+      expect((await call('GET', `${root}/${body.prompt_id}?admission=durable`)).body).toMatchObject({ data: { admission: 'failed' } });
+      expect(manager.get(id)).toBeUndefined();
+    } finally { gate.resolve(undefined); timers.mockRestore(); resume.mockRestore(); }
   });
 
   it('durable ingress saves and cancels while cold restore is stalled, then holds across restart', async () => {

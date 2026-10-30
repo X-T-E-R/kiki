@@ -1372,7 +1372,11 @@ export class SessionController {
         item.admission === next.admission && item.delivery_state === next.delivery_state && item.delivery_reason === next.delivery_reason && item.revision === next.revision &&
         item.admission_content_truncated === next.admission_content_truncated &&
         item.admission_error?.code === next.admission_error?.code &&
-        item.admission_error?.message === next.admission_error?.message;
+        item.admission_error?.message === next.admission_error?.message &&
+        item.admission_duplicate_of === next.admission_duplicate_of &&
+        item.restore_progress?.phase === next.restore_progress?.phase &&
+        item.restore_progress?.elapsed_ms === next.restore_progress?.elapsed_ms &&
+        item.restore_progress?.queue_position === next.restore_progress?.queue_position;
     })) return;
     this.setState({ ...this.state, version: this.state.version + 1, durableIngress: [...records] });
   }
@@ -1453,6 +1457,14 @@ export class SessionController {
     })();
     this.durableIngressReadInFlight = request;
     return request;
+  }
+
+  async refreshDurablePrompt(promptId: string): Promise<void> {
+    const read = this.client.getDurableIngress?.bind(this.client);
+    if (read === undefined || this.closed || this.isSuspended) return;
+    const result = await read(this.sessionId, promptId);
+    if (this.closed || this.isSuspended) return;
+    this.setDurableIngress([...this.getDurableIngress().filter(item => item.prompt_id !== promptId), result]);
   }
 
   getDurableIngress(): readonly PromptItem[] {

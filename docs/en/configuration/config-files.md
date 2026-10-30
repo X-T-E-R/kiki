@@ -635,6 +635,17 @@ backoff = 15000
 
 Replace `gemini-4-argon` and `google-native` with the exact keys used in your `[models]` and `[providers]` tables. The `backoff` applies only when the provider does not send `Retry-After`. A model stream that ends without its protocol's completion event is a connection failure, not a successful partial answer. With partial output, only an eligible connection interruption can be retried; HTTP 429 or 500–599 failures after output and other provider failures are not made retryable by this setting. Each eligible retry discards the failed attempt's output, and native tools run only after a complete response; the failed generation may incur additional charges. The policy does not make HTTP 400, exhausted quota, or already-executed failures retryable; `retry = true` never overrides Kiki's non-retryable classification.
 
+## `session_residency`
+
+Session restoration uses a process-wide queue, shared across workspaces. Empty sessions without an agent or main wire bypass this queue.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `max_concurrent_restores` | integer, 1–4 | `4` | Concurrent cold-session restores. Raising it takes effect without restarting and immediately wakes queued restores. Lowering it leaves current restores running. |
+| `max_queued_restores` | integer, 0–64 | `8` | Maximum waiting restores; additional requests fail with a queue-full error. |
+
+Each restore has a 60-second deadline, including its queue wait. A timed-out restore releases its slot; a saved message remains available for retry or cancellation. See [durable prompt recovery](../server/rest-api.md#prompts) for message state and GUI recovery actions.
+
 ## `transcript_memory`
 
 `transcript_memory` controls how much transcript history the server keeps in memory. All three fields are optional: an omitted field uses its default.

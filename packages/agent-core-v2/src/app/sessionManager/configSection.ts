@@ -23,7 +23,7 @@ export const DEFAULT_SESSION_RESIDENCY_CONFIG: Required<SessionResidencyConfig> 
   maxLiveSessions: 8,
   minIdleMs: 60_000,
   sweepIntervalMs: 30_000,
-  maxConcurrentRestores: 1,
+  maxConcurrentRestores: 4,
   maxQueuedRestores: 8,
   maxResidentHeapBytes: 1536 << 20,
 };

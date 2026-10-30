@@ -4,6 +4,10 @@ import { Emitter, Event } from '#/_base/event';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { observeRestore, type RestoreProgress } from '#/session/agentLifecycle/restoreTiming';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
 import type { ISessionScopeHandle } from '#/_base/di/scope';
@@ -69,6 +73,71 @@ async function drainMicrotasks(ticks = 50): Promise<void> {
 }
 
 describe('SessionManager', () => {
+  it.each(['deadline', 'hot-config', 'default-four', 'fresh-bypass'] as const)('does not let one stalled cold restore starve later sessions: %s', async (mode) => {
+    vi.useFakeTimers();
+    const changed = new Emitter<import('#/app/config/config').ConfigSectionChangedEvent>();
+    const didCreate = new Emitter<SessionCreatedEvent>();
+    let limit = mode === 'default-four' ? undefined : 1;
+    const entered: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const fake = controller();
+    const service = Object.assign(fake.service, { onDidCreateSession: didCreate.event, resume: async (id: string) => {
+      entered.push(id);
+      if (id === 'stalled') await gate;
+      const handle = { id } as ISessionScopeHandle;
+      didCreate.fire({ sessionId: id, handle, source: 'resume' });
+      return handle;
+    } });
+    const workspace = { id: 'workspace-1', program: { sessionControllerGeneration: 'generation-1', createSessionController: () => service } } as unknown as WorkspaceInstance;
+    const disposables = new DisposableStore();
+    const services = createServices(disposables, { additionalServices: reg => {
+      reg.definePartialInstance(IWorkspaceInstanceManager, { acquire: async () => ({ instance: workspace, dispose: () => {} }), get: () => workspace });
+      reg.definePartialInstance(ISessionIndex, { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) as Awaited<ReturnType<ISessionIndex['get']>> });
+      reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), get: (() => limit === undefined ? {} : { maxConcurrentRestores: limit }) as IConfigService['get'], onDidSectionChange: changed.event });
+      reg.definePartialInstance(IFlagService, { enabled: () => false });
+      reg.definePartialInstance(IBootstrapService, { scope: name => name });
+      reg.definePartialInstance(IAtomicDocumentStore, { get: (async (scope: string) => ({ agents: mode === 'fresh-bypass' && scope.endsWith('/empty-later') ? {} : { main: {} } })) as IAtomicDocumentStore['get'] });
+      reg.definePartialInstance(IFileSystemStorageService, { size: async () => undefined });
+      reg.define(ISessionManager, SessionManager);
+    } });
+    const manager = services.get(ISessionManager);
+    let firstResult: unknown;
+    const first = manager.resume('stalled').then(() => { firstResult = 'completed'; }, error => { firstResult = error; });
+    try {
+      await drainMicrotasks();
+      expect(entered).toEqual(['stalled']);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const progress: RestoreProgress[] = [];
+      const second = observeRestore(value => progress.push(value), () => manager.resume('empty-later'));
+      await drainMicrotasks();
+      if (mode === 'default-four' || mode === 'fresh-bypass') {
+        expect(entered).toEqual(['stalled', 'empty-later']);
+        expect(progress.some(value => value.queuePosition !== undefined)).toBe(false);
+      } else {
+        expect(entered).toEqual(['stalled']);
+        if (mode === 'hot-config') {
+          limit = 4;
+          changed.fire({ domain: 'sessionResidency', source: 'reload', value: { maxConcurrentRestores: 4 }, previousValue: { maxConcurrentRestores: 1 } });
+          await drainMicrotasks();
+        } else {
+          await vi.advanceTimersByTimeAsync(50_000);
+          expect(firstResult).toMatchObject({ code: ErrorCodes.SESSION_BUSY, details: { phase: 'session_resume' } });
+        }
+        expect(entered).toEqual(['stalled', 'empty-later']);
+        expect(progress).toContainEqual(expect.objectContaining({ phase: 'restore_queue', queuePosition: 1 }));
+      }
+      await expect(second).resolves.toMatchObject({ id: 'empty-later' });
+    } finally {
+      release();
+      await first;
+      await disposables.dispose();
+      changed.dispose();
+      didCreate.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it('serializes resume, close, and lifecycle critical sections per session', async () => {
     const didCreate = new Emitter<SessionCreatedEvent>();
     const didClose = new Emitter<SessionClosedEvent>();

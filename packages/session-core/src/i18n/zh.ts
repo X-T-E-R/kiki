@@ -2299,6 +2299,13 @@ export const zh = {
   'sv.submissionRecovery.failed': '服务器未能接收这条消息，请检查后再重试。',
   'sv.submissionRecovery.cancelled': '已取消，内容已放回输入框，可修改后重新发送。',
 
+  'sv.restore.waiting': '等待其他会话恢复（第 {position} 位）',
+  'sv.restore.active': '正在恢复会话，消息已保存',
+  'sv.restore.failed': '消息已保留，等待恢复',
+  'sv.restore.duplicate': '相同消息已在等待恢复，这份副本不会自动执行',
+  'sv.restore.retry': '重试已保存消息',
+  'sv.restore.sendSeparately': '单独发送',
+  'sv.restore.cancel': '取消消息',
   'sv.resyncFailed': '会话恢复失败 — 请手动重试',
   'sv.resyncing': '正在重新同步…',
   'sv.sendPaused': '会话同步完成前暂停发送。',

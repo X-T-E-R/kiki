@@ -415,6 +415,10 @@ Optional `delivery_reason` explains the immediate-delivery decision on submit re
 | `external_retry` | A known external submission was replayed without repeating its immediate-delivery action. |
 | `prompt_no_longer_pending` | The prompt was no longer selectable in the pending queue. This alone proves neither delivery nor that it is still queued; read its canonical state. |
 
+While a saved message waits for restoration, optional `restore_progress` reports `phase`, `started_at`, `elapsed_ms` and, in the process-wide restore queue, one-based `queue_position`. A restore attempt has a 60-second deadline including its queue wait; expiration releases its restore slot and preserves the message as `failed` with `admission_error`. Durable message preparation also has a 120-second deadline before core submission begins. The GUI shows the phase and elapsed time, with **Retry saved message** and **Cancel message** actions.
+
+Submitting identical content under another ID while its first copy is restoring holds the new copy with `admission_duplicate_of`; it does not run automatically. Cancel the copy, or explicitly resume it to send it separately. Matching retries under the original ID keep the original request.
+
 `failed` includes `admission_error` and keeps the original content and attachments. Restarted or uncertain submissions become `held` until an explicit `:resume`; the server checks the original receipt before retrying, and a failed receipt lookup does not authorize another launch. Use `:abort` to cancel. `aborted: false` with admission `held` means cancellation still needs reconciliation; `cancelled` confirms it. To edit a saved request, cancel it and submit a new ID.
 
 If an external executor's immediate-delivery result is unknown, its pending queue stays under recovery hold even after the active turn ends. `:resume` keeps the request `held` with an explanatory error instead of repeating that external action. Check the executor's result before explicitly sending or cancelling the retained prompt.

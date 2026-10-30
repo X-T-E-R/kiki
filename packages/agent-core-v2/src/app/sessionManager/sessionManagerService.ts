@@ -3,6 +3,11 @@ import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IInstantiationService } from '#/_base/di/instantiation';
+import { restoreQueueReporter, restoreSignal, throwIfRestoreAborted, timeRestorePhase, withRestoreDeadline } from '#/session/agentLifecycle/restoreTiming';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { sessionScopeOf, workspacePersistenceScope } from '#/workspace/sessionLifecycle/internal/addressing';
 import { setColdSessionArchived } from '#/workspace/sessionLifecycle/coldSessionArchive';
 import { Emitter, type Event, type IWaitUntil } from '#/_base/event';
 import { ScopeActivation, registerScopedService, type ISessionScopeHandle } from '#/_base/di/scope';
@@ -75,7 +80,8 @@ export class SessionManager implements ISessionManager {
   private evictionTimer: ReturnType<typeof setInterval> | undefined;
   private disposed = false;
   private activeRestores = 0;
-  private readonly restoreQueue: Array<() => void> = [];
+  private readonly restoreQueue: Array<{ wake: () => void; report: (position: number) => void }> = [];
+  private readonly configSubscription: IDisposable | undefined;
   private evictionAttempts = 0;
   private evictionSuccesses = 0;
   private evictionFailures = 0;
@@ -101,6 +107,9 @@ export class SessionManager implements ISessionManager {
     @IFlagService private readonly flags?: IFlagService,
     @IInstantiationService private readonly instantiation?: IInstantiationService,
   ) {
+    this.configSubscription = this.config?.onDidSectionChange?.((event) => {
+      if (event.domain === SESSION_RESIDENCY_SECTION) this.wakeRestoreQueue();
+    });
     void this.startEvictionScheduler();
   }
 
@@ -134,21 +143,22 @@ export class SessionManager implements ISessionManager {
     const inflight = this.pendingResumes.get(sessionId);
     if (inflight !== undefined) return inflight;
     this.resumeFailures.delete(sessionId);
-    const promise = this.serializeLifecycle(sessionId, async () => {
-      const releaseRestore = await this.reserveRestoreSlot(sessionId);
+    const promise = this.serializeLifecycle(sessionId, () => withRestoreDeadline(async () => {
+      const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(undefined, { sessionId }, name, action);
+      const releaseRestore = await phase('restore_queue', () => this.reserveRestoreSlot(sessionId));
       try {
-        if (!this.sessions.has(sessionId)) await this.reclaimIdleResidency(sessionId);
-        const target = await this.controllerForSession(sessionId);
+        if (!this.sessions.has(sessionId)) await phase('restore_residency', () => this.reclaimIdleResidency(sessionId));
+        const target = await phase('restore_workspace', () => this.controllerForSession(sessionId));
         if (target === undefined) return undefined;
-        return await this.runWorkspaceOperation(
+        return await phase('session_resume', () => this.runWorkspaceOperation(
           target.workspaceId,
           () => target.controller.resume(sessionId, options),
           target.release,
-        );
+        ));
       } finally {
         releaseRestore();
       }
-    }).finally(() => this.pendingResumes.delete(sessionId));
+    })).finally(() => this.pendingResumes.delete(sessionId));
     this.pendingResumes.set(sessionId, promise);
     void promise.then(
       (handle) => {
@@ -500,6 +510,7 @@ export class SessionManager implements ISessionManager {
 
   async dispose(): Promise<void> {
     this.disposed = true;
+    await this.configSubscription?.dispose();
     if (this.evictionTimer !== undefined) clearInterval(this.evictionTimer);
     for (const state of this.residency.values()) await state.activitySubscription?.dispose();
     this.residency.clear();
@@ -527,23 +538,63 @@ export class SessionManager implements ISessionManager {
     this.didForkEmitter.dispose();
   }
 
+  private async isUnstartedSession(sessionId: string): Promise<boolean> {
+    if (this.instantiation === undefined) return false;
+    const stores = this.instantiation.invokeFunction(accessor => ({
+      docs: accessor.get(IAtomicDocumentStore), storage: accessor.get(IFileSystemStorageService), bootstrap: accessor.get(IBootstrapService),
+    }));
+    const summary = await this.index.get(sessionId);
+    if (summary === undefined) return false;
+    const scope = sessionScopeOf(workspacePersistenceScope(stores.bootstrap.scope('sessions'), summary.workspaceId), sessionId);
+    const metadata = await stores.docs.get<{ agents?: Record<string, unknown> }>(scope, 'state.json');
+    if (metadata === undefined || Object.keys(metadata.agents ?? {}).length > 0) return false;
+    const size = await stores.storage.size(`${scope}/agents/main`, 'wire.jsonl');
+    return size === undefined || size === 0;
+  }
+
   private async reserveRestoreSlot(sessionId: string): Promise<() => void> {
-    if (this.sessions.has(sessionId)) return () => {};
+    if (this.sessions.has(sessionId) || await this.isUnstartedSession(sessionId)) return () => {};
     const config = this.residencyConfig();
     if (this.activeRestores >= config.maxConcurrentRestores) {
       if (this.restoreQueue.length >= config.maxQueuedRestores) {
-        throw new Error('session restore queue is full');
+        throw new Error2(ErrorCodes.SESSION_BUSY, 'Session restore queue is full. Retry the saved message after another session finishes restoring.');
       }
-      await new Promise<void>((resolve) => this.restoreQueue.push(resolve));
+      const signal = restoreSignal();
+      await new Promise<void>((resolve, reject) => {
+        const entry = { wake: () => { signal?.removeEventListener('abort', aborted); this.activeRestores += 1; resolve(); }, report: restoreQueueReporter() };
+        const aborted = () => {
+          const index = this.restoreQueue.indexOf(entry);
+          if (index >= 0) this.restoreQueue.splice(index, 1);
+          signal?.removeEventListener('abort', aborted);
+          this.wakeRestoreQueue();
+          reject(signal?.reason);
+        };
+        this.restoreQueue.push(entry);
+        entry.report(this.restoreQueue.length);
+        signal?.addEventListener('abort', aborted, { once: true });
+        if (signal?.aborted) aborted();
+      });
+    } else {
+      this.activeRestores += 1;
     }
-    this.activeRestores += 1;
     let released = false;
-    return () => {
+    const signal = restoreSignal();
+    const release = () => {
       if (released) return;
       released = true;
+      signal?.removeEventListener('abort', release);
       this.activeRestores = Math.max(0, this.activeRestores - 1);
-      this.restoreQueue.shift()?.();
+      this.wakeRestoreQueue();
     };
+    signal?.addEventListener('abort', release, { once: true });
+    if (signal?.aborted) release();
+    return release;
+  }
+
+  private wakeRestoreQueue(): void {
+    const limit = this.residencyConfig().maxConcurrentRestores;
+    while (this.activeRestores < limit && this.restoreQueue.length > 0) this.restoreQueue.shift()!.wake();
+    this.restoreQueue.forEach((entry, index) => entry.report(index + 1));
   }
 
   private ensureResidency(sessionId: string): SessionResidencyEntry {
@@ -739,6 +790,7 @@ export class SessionManager implements ISessionManager {
       root: summary.cwd,
     });
     try {
+      throwIfRestoreAborted();
       return {
         workspaceId: lease.instance.id,
         controller: this.controllerForWorkspace(lease.instance.id),

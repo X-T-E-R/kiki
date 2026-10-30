@@ -8,6 +8,7 @@ import { I18nProvider } from '../i18n';
 import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 import { SubmissionRecovery } from './SubmissionRecovery';
+import { RestoreAdmissionStatus } from './RestoreAdmissionStatus';
 import { preserveSubmission, readUnconfirmedSubmissions, readDraft, writeDraft, resetDraftMemoryForTests, resetComposerMemoryForTests, readComposerState, writeComposerState, createQuote, selectionCarryoverPresentation } from '@kiki/session-core/composer';
 import { createViewState, type UserBlock } from '@kiki/session-core/session';
 import { emptySessionUsage, type PromptItem, type SessionPendingInteraction } from '@kiki/protocol';
@@ -1074,4 +1075,35 @@ describe('live composer mode controls', () => {
     expect(container.querySelector('[data-mode-switch="normal"]')?.getAttribute('aria-checked')).toBe('true');
     expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error', text: expect.stringContaining('plan write failed') }));
   });
+});
+
+it('shows restore queue position and elapsed time, then retries or cancels the saved ID only on user action', async () => {
+  vi.useFakeTimers();
+  const refreshDurablePrompt = vi.fn(async () => {});
+  const refreshDurableIngress = vi.fn(async () => {});
+  const resumeDurableIngress = vi.fn(async () => ({}));
+  const abortPrompt = vi.fn(async () => {});
+  const controller = { refreshDurablePrompt, refreshDurableIngress, resumeDurableIngress, abortPrompt } as unknown as import('@kiki/session-core/session').SessionController;
+  const item: PromptItem = { prompt_id: 'saved-request', user_message_id: 'saved-request', status: 'queued', admission: 'restoring',
+    content: [{ type: 'text', text: 'A retained message' }], created_at: '2026-01-01T00:00:00Z',
+    restore_progress: { phase: 'restore_queue', started_at: '2026-01-01T00:00:00Z', elapsed_ms: 3200, queue_position: 2 } };
+  root = createRoot(container);
+  const render = async (receipt: PromptItem) => act(async () => root!.render(<I18nProvider><RestoreAdmissionStatus state={{ ...createViewState('session-example'), durableIngress: [receipt] }} controller={controller} /></I18nProvider>));
+  try {
+    await render(item);
+    expect(container.textContent).toContain('Waiting for other sessions to restore (position 2)');
+    expect(container.textContent).toContain('3s');
+    expect(resumeDurableIngress).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(refreshDurablePrompt).toHaveBeenCalledExactlyOnceWith('saved-request');
+    await render({ ...item, admission: 'failed', admission_error: { code: 40903, message: 'Timed out during materialize_workspace_profiles' } });
+    expect(container.textContent).toContain('materialize_workspace_profiles');
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === 'Retry saved message')!.click());
+    expect(resumeDurableIngress).toHaveBeenCalledExactlyOnceWith('saved-request', { content: item.content });
+    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === 'Cancel message')!.click());
+    expect(abortPrompt).toHaveBeenCalledExactlyOnceWith('saved-request');
+    await render({ ...item, admission: 'held', admission_duplicate_of: 'original-request' });
+    expect(container.textContent).toContain('this copy will not run automatically');
+    expect(container.textContent).toContain('Send separately');
+  } finally { vi.useRealTimers(); }
 });

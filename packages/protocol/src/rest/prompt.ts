@@ -134,6 +134,8 @@ export const promptItemSchema = z.object({
   delivery_reason: promptDeliveryReasonSchema.optional(),
   admission_error: z.object({ code: z.number().int(), message: z.string() }).optional(),
   admission_content_truncated: z.boolean().optional(),
+  admission_duplicate_of: z.string().optional(),
+  restore_progress: z.object({ phase: z.string(), started_at: isoDateTimeSchema, elapsed_ms: z.number().int().nonnegative(), queue_position: z.number().int().positive().optional() }).optional(),
   runtime_controls: transcriptPromptRuntimeControlsSchema.optional(),
   prompt_id: z.string().min(1),
   user_message_id: z.string().min(1),

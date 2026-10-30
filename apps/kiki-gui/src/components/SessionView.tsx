@@ -38,6 +38,7 @@ import { GoalCard, GoalHeaderSummary, GoalPauseButton, goalShowsInHeader, Recove
 import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
 import { SubmissionRecovery } from './SubmissionRecovery';
+import { RestoreAdmissionStatus } from './RestoreAdmissionStatus';
 import { ContinuationRow } from './ContentContinuation';
 import { RightRail } from './RightRail';
 import { ModelSwitchDialog } from './model-switch/ModelSwitchDialog';
@@ -5251,6 +5252,7 @@ boundExecution,
             onQuote={handleQuoteSelection} onAnnotate={handleAnnotateSelection}
           />,
           dock: <>
+            <RestoreAdmissionStatus state={state} controller={controller} />
             <SubmissionRecovery sessionId={sessionId} state={state} />
             <ResyncStatusBanner
               resyncing={state.resyncing} resyncFailed={state.resyncFailed}
