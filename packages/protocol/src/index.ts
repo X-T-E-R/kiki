@@ -1,6 +1,7 @@
 export * from './settingsTransfer';
 export * from './outputLayer';
 export * from './agentName';
+export * from './agentReference';
 export * from './envelope';
 export * from './error-codes';
 export * from './pagination';

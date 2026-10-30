@@ -22,6 +22,7 @@ export interface DispatchLaunchInput {
   readonly requesterProfileData?: ProfileData;
   readonly resolvedProfile?: AgentProfile;
   readonly profileName?: string;
+  readonly sourceRef?: string;
   readonly routeId?: string;
   readonly selectionKind?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentSelectionKind;
   readonly selectionOrigin?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentSelectionOrigin;
@@ -61,6 +62,7 @@ export type DispatchIdlePolicy = 'execution' | 'quiescent';
 
 export interface DispatchRunOptions {
   readonly operationId?: string;
+  readonly sourceRef?: string;
   readonly capturedLaunchPolicy?: import('./launchPolicy').DispatchLaunchPolicy;
   readonly signal: AbortSignal;
   readonly requesterAgentId?: string;
@@ -91,6 +93,7 @@ export interface DispatchChild {
   readonly bindingAdvisories?: ProfileData['bindingAdvisories'];
   readonly dispatchDecision?: ProfileData['dispatchDecision'];
   readonly effectiveProfile?: AgentProfile;
+  readonly sourceRef?: import('@kiki/protocol').AgentRunSource;
   readonly meta?: AgentMeta;
 }
 
@@ -135,7 +138,7 @@ export interface ISessionDispatchService {
     request: string | AgentRunRequest,
     options: DispatchRunOptions,
   ): Promise<DispatchRun>;
-  recordRun(agentId: string, runId: string): Promise<void>;
+  recordRun(agentId: string, runId: string, sourceRef?: import('@kiki/protocol').AgentRunSource, operationId?: string): Promise<void>;
   recordDelegatedRun(requesterAgentId: string, agentId: string): void;
   wait<T>(
     source: DispatchWaitSource<T>,

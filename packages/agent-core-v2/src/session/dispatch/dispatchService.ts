@@ -7,6 +7,8 @@ import { resolveNativeTargetBinding } from '#/session/subagent/nativeTargetBindi
 import { randomUUID } from 'node:crypto';
 
 import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { resolveAgentRunSource } from '#/agent/prompt/agentReferences';
 import { assertResumeFingerprint, bindResumeTask, readResumeRecord, resumeFingerprint, writeResumeRecord } from './resume';
 
 import { Emitter } from '#/_base/event';
@@ -177,6 +179,12 @@ export class SessionDispatchService implements ISessionDispatchService {
     );
     const selection = target.selection;
     const profile = target.effectiveProfile;
+    const referencesNamedTarget = input.selectionKind !== 'profile_file' && selection.route === undefined;
+    const sourceRef = !referencesNamedTarget ? undefined : resolveAgentRunSource(
+      requester.accessor.get(IAgentContextMemoryService).get(), target.decision.requestedProfile,
+      profile.executor ?? 'native', isNativeTarget(profile) ? 'native' : 'profile', input.sourceRef);
+    if (input.sourceRef !== undefined && !referencesNamedTarget) throw new Error2(ErrorCodes.REQUEST_INVALID,
+      'source_ref must identify the referenced registered profile, not a profile_file or a different route.');
     assertNativeToolOverride(profile.executor, input.toolOverride);
     checkLaunchPolicy(profile.executor);
     if (input.executorPolicy === 'native' && (profile.executor ?? 'native') !== 'native') {
@@ -280,12 +288,12 @@ export class SessionDispatchService implements ISessionDispatchService {
       if (!researchReadonly) {
         child.accessor.get(IAgentUserToolService).inheritUserTools(requesterUserTools);
       }
-      const dispatchChild = this.childView(
+      const dispatchChild = { ...this.childView(
         child,
         name,
         selection.route?.id ?? profile.name,
         profile,
-      );
+      ), sourceRef };
       const prompt = researchReadonly
         ? input.message
         : await applyProfilePromptPrefix(profile, input.message, {
@@ -401,6 +409,12 @@ export class SessionDispatchService implements ISessionDispatchService {
     options: DispatchRunOptions,
   ): Promise<DispatchRun> {
     options.signal.throwIfAborted();
+    if (options.requesterAgentId !== undefined) {
+      const caller = this.requireHandle(options.requesterAgentId, 'Requester agent');
+      const binding = child.agent.accessor.get(IAgentProfileService).data();
+      child = { ...child, sourceRef: resolveAgentRunSource(caller.accessor.get(IAgentContextMemoryService).get(),
+        child.profileName, binding.executorId ?? 'native', binding.execution !== undefined && binding.execution.selection.profile === undefined ? 'native' : 'profile', options.sourceRef) };
+    } else if (options.sourceRef !== undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'source_ref requires a caller agent.');
     const operationId = options.operationId ?? randomUUID();
     const request: AgentRunRequest = typeof requestInput === 'string' ? { kind: 'prompt', prompt: requestInput } : requestInput;
     const fingerprint = resumeFingerprint(request, options);
@@ -547,7 +561,7 @@ export class SessionDispatchService implements ISessionDispatchService {
           await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'started', turnId: handle.turn.id });
           return handle;
         });
-      return { child: this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta), request, lineage: options.lineage, started };
+      return { child: { ...this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta), sourceRef: child.sourceRef }, request, lineage: options.lineage, started };
     }
     if (saved !== undefined && saved.switchInput.model === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID,
       'The original resume used native defaults, but the binding changed. Inspect that operation before starting another run.');
@@ -625,7 +639,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       throw error;
     });
     return {
-      child: this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta),
+      child: { ...this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta), sourceRef: child.sourceRef },
       request,
       lineage: options.lineage,
       started,
@@ -674,7 +688,7 @@ export class SessionDispatchService implements ISessionDispatchService {
             ),
             { timeoutMs: resolveSubagentTimeoutMs(this.config) },
           );
-          await this.recordRun(run.child.agentId, taskId, operationId);
+          await this.recordRun(run.child.agentId, taskId, run.child.sourceRef, operationId);
           await requester.accessor.get(IEventDispatcher).dispatch(
             new SubagentStarted({ subagentId: run.child.agentId, taskId }),
           );
@@ -693,9 +707,10 @@ export class SessionDispatchService implements ISessionDispatchService {
     };
   }
 
-  async recordRun(agentId: string, runId: string, operationId?: string): Promise<void> {
+  async recordRun(agentId: string, runId: string, sourceRef?: import('@kiki/protocol').AgentRunSource, operationId?: string): Promise<void> {
     await this.metadata.updateAgent(agentId, (meta) => bindResumeTask({
       ...meta,
+      runSources: sourceRef === undefined ? meta.runSources : { ...meta.runSources, [runId]: sourceRef },
       labels: {
         ...meta.labels,
         [COLLABORATION_LATEST_TASK_LABEL]: runId,

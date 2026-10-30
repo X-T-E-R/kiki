@@ -41,6 +41,7 @@ The main `agent` profile gets three child-agent tools with no experiment flag: `
 | `profile_file` | A subagent role Markdown file, absolute or workspace-relative. It is a role definition rather than a shared prompt template, and cannot be combined with `profile`, `route` or `resume`. |
 | `route` | A named route of the base profile. |
 | `name` | A handle for addressing this child again: `^[a-z0-9_]+$`, not `root`, unique within the session. |
+| `source_ref` | A server-generated agent-reference ID from a visible user message. Links the run to that message when its profile and engine match; it does not select a target or change permissions. |
 | `background` | Omitted, main runs it in the background and a subagent waits in the foreground. `true` and `false` force background and synchronous waiting respectively. |
 | `model_alias`, `effort` | Omitted, the saved or default values are kept. |
 

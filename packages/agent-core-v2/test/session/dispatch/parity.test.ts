@@ -2799,6 +2799,25 @@ describe('AgentRun and dispatch parity golden', () => {
     ).toBe(view.dispatchId);
   });
 
+  it.each([true, false])('persists exact message-to-run provenance with explicit source_ref=%s', async explicit => {
+    const profile = nativeTargets([{ id: 'claude-acp', protocol: 'external' }])[0]!;
+    const ref = { refId: 'ar:message-1:native', profile: profile.name, executor: 'claude-acp', configuration: 'native' as const, label: 'Claude Code' };
+    const lane = createLane(disposables, 'internal', { profile, callerMessages: [{ id: 'message-1', role: 'user',
+      content: [{ type: 'text', text: 'Review this change' }], toolCalls: [], origin: { kind: 'user', agentRefs: [ref] } }] });
+    const result = await lane.runInternal({ prompt: 'Independent review', description: 'Native review', profile: profile.name,
+      source_ref: explicit ? ref.refId : undefined, background: true });
+    expect(result.isError).not.toBe(true);
+    expect(result.output).toContain(`source_ref: ${ref.refId}`);
+    const [taskId, task] = [...lane.taskRecords.entries()][0]!;
+    expect(task.task.toInfo({ taskId, description: '', status: 'running', startedAt: 1, endedAt: null }))
+      .toMatchObject({ sourceRef: { ...ref, messageId: 'message-1' } });
+    expect(Object.values(lane.metadataAgents['agent_child_1']?.runSources ?? {})).toEqual([{ ...ref, messageId: 'message-1' }]);
+    const rejected = await lane.runInternal({ prompt: 'Do not run', description: 'Forged reference', profile: profile.name,
+      source_ref: 'forged', background: true });
+    expect(rejected.isError).toBe(true);
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['codex-app-server', 'claude-acp', 'agy-cli', 'grok-acp'])('dispatches %s native targets through AgentRun and the external seat with vendor defaults', async (executor) => {
     const profile = nativeTargets([{ id: executor, protocol: 'external' }])[0]!;
     const internal = createLane(disposables, 'internal', { profile });

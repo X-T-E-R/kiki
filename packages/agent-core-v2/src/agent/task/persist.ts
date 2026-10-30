@@ -380,6 +380,7 @@ function normalizePersistedTask(task: DiskPersistedTask): PersistedTask {
     agentId: record.agentId,
     profile,
     parentToolCallId: record.parentToolCallId,
+    sourceRef: record.sourceRef,
     model: record.model,
     thinkingEffort: record.thinkingEffort,
     thinkingEffortExplicit: record.thinkingEffortExplicit,

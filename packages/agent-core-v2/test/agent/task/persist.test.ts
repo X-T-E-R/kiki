@@ -83,6 +83,16 @@ describe('AgentTaskPersistence', () => {
     expect(loaded).toEqual(sample());
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('retains message-to-run provenance when reopening and listing an agent task', async () => {
+    const sourceRef = { messageId: 'message-1', refId: 'ar:message-1:reviewer', profile: 'reviewer',
+      executor: 'native', configuration: 'profile' as const, label: 'Reviewer' };
+    const task = { taskId: 'agent-66666666', kind: 'agent' as const, description: 'Review', status: 'completed' as const,
+      startedAt: 1, endedAt: 2, agentId: 'child-1', profile: 'reviewer', sourceRef };
+    await persistence.writeTask(task);
+    expect(await persistence.readTask(task.taskId)).toMatchObject({ sourceRef });
+    expect(await persistence.listTasks()).toContainEqual(expect.objectContaining({ sourceRef }));
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('commits and verifies an atomic UTF-8 agent receipt, rejecting a shortened log on recovery', async () => {
     const task = {
       taskId: 'agent-11111111', kind: 'agent' as const, description: 'large report',

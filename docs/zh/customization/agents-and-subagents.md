@@ -41,6 +41,7 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 | `profile_file` | subagent role 的 Markdown 文件，绝对路径或工作区相对路径。它是角色定义而非共享提示词模板，且与 `profile`、`route`、`resume` 互斥。 |
 | `route` | 基础 profile 的具名 route。 |
 | `name` | 之后再次寻址该子 Agent 用的名字：匹配 `^[a-z0-9_]+$`，不能是 `root`，会话内唯一。 |
+| `source_ref` | 可见 User 消息中由服务端生成的 Agent 引用 ID。profile 和引擎匹配时，将本次运行关联到该消息；不选择目标，也不改变权限。 |
 | `background` | 省略时，调用方是 main 则后台运行，是 subagent 则前台等待；`true` / `false` 分别强制后台与同步等待。 |
 | `model_alias`、`effort` | 省略则沿用已保存值或默认值。 |
 

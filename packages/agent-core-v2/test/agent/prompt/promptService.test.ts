@@ -53,6 +53,9 @@ import { IAgentTaskService, type AgentTaskInfo } from '#/agent/task/task';
 import { AgentSystemReminderService } from '#/agent/systemReminder/systemReminderService';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+import { IModelService } from '#/kosong/model/model';
 import { IEventBus } from '#/app/event/eventBus';
 import { IEventService } from '#/app/event/event';
 import { EventBusService } from '#/app/event/eventBusService';
@@ -341,6 +344,49 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
 }
 
 describe('AgentPromptService', () => {
+  it('revalidates queued agent references at launch and keeps their logical identity on edit', async () => {
+    const { prompt, target, profile, toolPolicy, setExecutor, externalTurns, externalRun } = harness();
+    setExecutor('codex-app-server');
+    const caller = profile.data();
+    profile.data.mockReturnValue({ ...caller, subagents: ['reviewer'], spawnPolicy: undefined });
+    const reviewer = normalizeAgentProfile({ name: 'reviewer', systemPrompt: () => 'Review' });
+    let available = true;
+    target.accessor.stub(ISessionAgentProfileCatalog, { ready: Promise.resolve(), get: () => available ? reviewer : undefined,
+      list: () => available ? [reviewer] : [], getDefault: () => reviewer });
+    target.accessor.stub(IModelService, { resolveId: value => value });
+    target.accessor.stub(IAgentToolPolicyService, { ...toolPolicy, isToolActive: () => true });
+    const active = await prompt.enqueue({ id: 'active', message: message('Work') });
+    await active.launched;
+    const queued = await prompt.enqueue({ id: 'request-1', userMessageId: 'logical-1', message: message('Review kiki://agents/reviewer') });
+    const ref = queued.message.origin?.kind === 'user' ? queued.message.origin.agentRefs?.[0] : undefined;
+    expect(ref?.refId).toBe('ar:logical-1:reviewer');
+    prompt.replace(queued.id, [{ type: 'text', text: 'Updated kiki://agents/reviewer' }]);
+    expect(queued.message.id).toBe('logical-1');
+    expect(queued.message.origin?.kind === 'user' ? queued.message.origin.agentRefs?.[0]?.refId : undefined).toBe(ref?.refId);
+    expect(queued.message.content.flatMap(part => part.type === 'text' ? part.text.match(/<agent_refs>/g) ?? [] : [])).toHaveLength(1);
+    available = false;
+    await expect(prompt.steer([queued.id])).rejects.toThrow('Unknown agent profile');
+    expect(queued.state).toBe('pending');
+    externalTurns[0]!.finish();
+    await active.completion;
+    expect((await queued.completion).state).toBe('failed');
+    expect(externalRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('prepares agent references against a newly selected caller profile instead of its previous allowlist', async () => {
+    const { prompt, target, toolPolicy, loop } = harness({ pendingTurnResult: false });
+    const child = normalizeAgentProfile({ name: 'next-subagent', systemPrompt: () => 'Work' });
+    target.accessor.stub(ISessionAgentProfileCatalog, { ready: Promise.resolve(), get: () => child,
+      list: () => [child], getDefault: () => child });
+    target.accessor.stub(IModelService, { resolveId: value => value });
+    target.accessor.stub(IAgentToolPolicyService, { ...toolPolicy, isToolActive: () => true });
+    const handle = await prompt.enqueue({ id: 'switch-with-reference', message: message('kiki://agents/next-subagent'), execution: { profile: 'next' } });
+    await handle.completion;
+    expect(handle.state).toBe('completed');
+    expect(loop.launches).toHaveLength(1);
+    expect(handle.message.origin?.kind === 'user' ? handle.message.origin.agentRefs?.[0]?.profile : undefined).toBe('next-subagent');
+  });
+
   it('runs three queued messages in separate turns only after the preceding reply ends', async () => {
     const local = createTestAgent(permissionModeServices('manual'));
     const gates = Array.from({ length: 4 }, () => deferred<void>());

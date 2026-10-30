@@ -47,6 +47,7 @@ export interface TranscriptTask extends ContentWindow {
   readonly thinkingEffortExplicit?: boolean;
   readonly executorId?: string;
   readonly executorProtocol?: string;
+  readonly sourceRef?: import('../contract/agentReference').AgentRunSource;
   /** Human-readable one-liner (command line, agent description, …). */
   readonly description?: string;
   readonly command?: string;

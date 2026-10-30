@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { isoDateTimeSchema } from './time';
+import { agentRunSourceSchema } from './agentReference';
 
 export const taskKindSchema = z.enum(['subagent', 'bash', 'tool']);
 export type TaskKind = z.infer<typeof taskKindSchema>;
@@ -50,6 +51,7 @@ export const taskSchema = z.object({
   executor_protocol: z.string().optional(),
   agent_id: z.string().optional(),
   parent_tool_call_id: z.string().optional(),
+  source_ref: agentRunSourceSchema.optional(),
   profile: z.string().optional(),
   run_in_background: z.boolean().optional(),
   /** Shell tasks only: process exit code once the run settled (null = killed/unknown). */

@@ -24,6 +24,7 @@ export function resumeFingerprint(request: AgentRunRequest, options: DispatchRun
   return createHash('sha256').update(JSON.stringify({
     request,
     requesterAgentId: options.requesterAgentId,
+    sourceRef: options.sourceRef,
     bindingOverride: {
       modelAlias: options.bindingOverride?.modelAlias,
       thinkingEffort: options.bindingOverride?.thinkingEffort,

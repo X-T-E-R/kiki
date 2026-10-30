@@ -880,6 +880,7 @@ export class TranscriptWireAdapter {
         thinkingEffortExplicit: booleanOf(info?.['thinkingEffortExplicit']) ?? previous?.thinkingEffortExplicit,
         executorId: stringOf(info?.['executorId']) ?? previous?.executorId,
         executorProtocol: stringOf(info?.['executorProtocol']) ?? previous?.executorProtocol,
+        sourceRef: transcriptTaskSchema.shape.sourceRef.safeParse(info?.['sourceRef']).data ?? previous?.sourceRef,
         description: stringOf(info?.['description']) ?? previous?.description,
         command: stringOf(info?.['command']) ?? previous?.command,
         agentId,
