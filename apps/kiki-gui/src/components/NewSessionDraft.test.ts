@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sessionCreateSchema, ErrorCode, type SessionCreate } from '@kiki/protocol';
 
+import { translate } from '@kiki/session-core/i18n';
 import { I18nProvider } from '../i18n';
 import { ApiError, type NamedAgentProfile } from '../lib/client';
 import { buildAgentProfileOptions, resolveSelectedEffort } from './Composer';
@@ -727,7 +728,10 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(state.autoWorkspace).toBe(false);
     expect(state.targetReady).toBe(false);
     expect(state.selectionReady).toBe(false);
-    expect(state.workspacesError).toContain(`code ${code}`);
+    // A definitive 40001 maps to the localized server-data copy; other codes
+    // keep the raw wire wording with the code beside it.
+    if (code === 40001) expect(state.workspacesError).toBe(translate('en', 'err.serverData'));
+    else expect(state.workspacesError).toContain(`code ${code}`);
     await act(async () => { await state.send(state.draft, state.attachments); });
     expect(client.createSession).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
@@ -786,7 +790,8 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = latestDraftState!;
     await act(async () => { await state.send(state.draft, state.attachments); });
     state = latestDraftState!;
-    expect(state.error).toContain(`code ${code}`);
+    if (code === 40001) expect(state.error).toBe(translate('en', 'err.serverData'));
+    else expect(state.error).toContain(`code ${code}`);
     expect(state.creationNotice).toBe(code < 0 ? 'Creation could not be confirmed. Your draft is kept. Check the session list before trying again to avoid creating a second session.' : null);
     expect(state.busy).toBe(false);
     expect(state.creationPending).toBe(false);
