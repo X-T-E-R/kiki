@@ -2439,6 +2439,7 @@ export const en = {
   'new.recoverCreation': 'Check and continue',
   'new.startAnotherCreation': 'Start another conversation',
   'new.restorePreviousCreation': 'Restore previous attempt',
+  'new.dismissCreation': 'Dismiss',
   'new.startersAria': 'Starter prompts',
   'new.starter.explain': 'Explain this folder',
   'new.starter.explainDraft': 'Give me a quick tour of this folder: what it is, how it is organised, and where to start reading.',

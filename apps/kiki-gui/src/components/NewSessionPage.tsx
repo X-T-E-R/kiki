@@ -553,6 +553,7 @@ function NewSessionPageContent({
                   <button type="button" disabled={state.checkingCreation} onClick={() => { void state.retryCreation(); }} className="rounded py-1 font-medium text-ink underline underline-offset-2 disabled:opacity-50">{t('new.recoverCreation')}</button>
                   {state.createdSessionId !== undefined ? <button type="button" disabled={state.checkingCreation} onClick={() => { void state.openCreatedSession(); }} className="rounded py-1 font-medium text-ink underline underline-offset-2">{t('new.openCreatedSession')}</button> : null}
                   <button type="button" disabled={state.checkingCreation} onClick={state.startNewCreation} className="rounded py-1 text-ink-soft underline underline-offset-2">{t('new.startAnotherCreation')}</button>
+                  <button type="button" disabled={state.checkingCreation} onClick={state.dismissCreationIntent} className="rounded py-1 text-ink-soft underline underline-offset-2">{t('new.dismissCreation')}</button>
                 </div>
               ) : null}
             </div>

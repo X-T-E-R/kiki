@@ -2413,6 +2413,7 @@ export const zh = {
   'new.recoverCreation': '查询并继续',
   'new.startAnotherCreation': '另开一个对话',
   'new.restorePreviousCreation': '恢复上一次创建',
+  'new.dismissCreation': '不再提示',
   'new.startersAria': '入门提示',
   'new.starter.explain': '讲解这个文件夹',
   'new.starter.explainDraft': '带我快速了解这个文件夹：它是什么、怎么组织的、应该从哪里开始看。',

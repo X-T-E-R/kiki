@@ -3327,6 +3327,88 @@ describe('new-session creation recovery at the component boundary', () => {
     expect(state.draft).toBe('Correct the request');
   });
 
+  it('dismisses an accepted intent on reload once the conversation has been opened', async () => {
+    // The user created a session, sent the first message, and came back to
+    // /new: the accepted intent is done, not a notice to keep showing.
+    const creationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const sessionId = `session_${creationId}`;
+    localStorage.setItem('kiki.draft.new.intent.local', JSON.stringify({
+      creationId, sessionId, bodyKey: '["local",{}]', status: 'accepted',
+    }));
+    client.getSessionCreation.mockReset().mockResolvedValue({
+      creation_id: creationId, session_id: sessionId, status: 'completed',
+      session: { id: sessionId, message_count: 2 },
+    });
+    await renderDraft();
+    let state = await ready();
+    expect(state.creationNotice).toBeNull();
+    expect(state.hasCreationIntent).toBe(false);
+    expect(state.createdSessionId).toBeUndefined();
+    expect(storedIntent()).toBeNull();
+    // An accepted session with no messages yet was never opened: the recovery
+    // entry stays, now backed by the server receipt.
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    localStorage.setItem('kiki.draft.new.intent.local', JSON.stringify({
+      creationId, sessionId, bodyKey: '["local",{}]', status: 'accepted',
+    }));
+    client.getSessionCreation.mockReset().mockResolvedValue({
+      creation_id: creationId, session_id: sessionId, status: 'completed',
+      session: { id: sessionId, message_count: 0 },
+    });
+    await renderDraft();
+    state = await ready();
+    expect(state.creationNotice).toContain('The session was created');
+    expect(state.hasCreationIntent).toBe(true);
+    expect(storedIntent()?.status).toBe('accepted');
+  });
+
+  it('dismisses a recovery entry on demand and keeps it dismissed', async () => {
+    const creationId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    localStorage.setItem('kiki.draft.new.intent.local', JSON.stringify({
+      creationId, sessionId: `session_${creationId}`, bodyKey: '["local",{}]', status: 'unknown',
+    }));
+    await renderDraft();
+    let state = await ready();
+    expect(state.creationNotice).toContain('Creation is not confirmed yet');
+    expect(state.hasCreationIntent).toBe(true);
+    await act(async () => { state.dismissCreationIntent(); });
+    state = latestDraftState!;
+    expect(state.creationNotice).toBeNull();
+    expect(state.hasCreationIntent).toBe(false);
+    expect(state.createdSessionId).toBeUndefined();
+    expect(storedIntent()).toBeNull();
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    await renderDraft();
+    state = await ready();
+    expect(state.creationNotice).toBeNull();
+    expect(state.hasCreationIntent).toBe(false);
+  });
+
+  it('does not keep an accepted attempt as a restorable previous creation', async () => {
+    const creationId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const sessionId = `session_${creationId}`;
+    localStorage.setItem('kiki.draft.new.intent.local', JSON.stringify({
+      creationId, sessionId, bodyKey: '["local",{}]', status: 'accepted',
+    }));
+    client.getSessionCreation.mockReset().mockResolvedValue({
+      creation_id: creationId, session_id: sessionId, status: 'completed',
+      session: { id: sessionId, message_count: 0 },
+    });
+    await renderDraft();
+    let state = await ready();
+    expect(state.creationNotice).toContain('The session was created');
+    expect(state.hasPreviousCreation).toBe(false);
+    await act(async () => { state.startNewCreation(); });
+    state = latestDraftState!;
+    expect(state.creationNotice).toBeNull();
+    expect(state.hasCreationIntent).toBe(false);
+    expect(state.hasPreviousCreation).toBe(false);
+    expect(localStorage.getItem('kiki.draft.new.intent.local:previous')).toBeNull();
+    expect(storedIntent()).toBeNull();
+  });
+
   it('isolates connection identities in one home without importing the legacy local draft', async () => {
     writeDraft('new', 'Legacy local draft');
     flushDrafts();

@@ -907,7 +907,6 @@ export function useNewSessionDraft({
     setError(saved?.error ?? null);
     setHasPreviousCreation(readPersistedCreationIntent(`${scopeIntentKey}:previous`, intentScope.storage) !== undefined);
   }, [scopeIntentKey, intentScope, noticeForIntent]);
-
   const cancelCreation = useCallback(() => {
     if (creationIntent.current === undefined) return;
     creationIntent.current.cancelled = true;
@@ -917,6 +916,14 @@ export function useNewSessionDraft({
     setCreationPending(false);
     setCreationNotice(t('new.creationWaiting'));
   }, [t]);
+  const dismissCreationIntent = useCallback(() => {
+    if (creationIntent.current !== undefined) return;
+    clearPersistedCreationIntent(scopeIntentKey, intentScope.storage);
+    createdForRetry.current = undefined;
+    setCreatedSessionId(undefined);
+    setCreationNotice(null);
+    setError(null);
+  }, [intentScope, scopeIntentKey]);
   const [checkingCreation, setCheckingCreation] = useState(false);
   const checkCreation = useCallback(async () => {
     const pending = createdForRetry.current;
@@ -925,11 +932,21 @@ export function useNewSessionDraft({
     try {
       const receipt = await client.getSessionCreation(pending.creationId);
       if (!intentScope.active || createdForRetry.current?.creationId !== pending.creationId) return;
+      // An accepted session whose conversation already holds messages has been
+      // opened; the recovery entry is done, not a notice to keep showing.
+      if (receipt.status === 'completed' && (receipt.session?.message_count ?? 0) > 0) {
+        dismissCreationIntent();
+        return undefined;
+      }
       const next: PersistedCreationIntent = {
         ...pending,
-        status: receipt.status === 'completed' ? 'accepted' : pending.status === 'conflict' ? 'conflict' : 'unknown',
+        // A completed receipt confirms acceptance; anything else cannot undo a
+        // session the server already created, so an accepted intent never
+        // downgrades back to unknown.
+        status: receipt.status === 'completed' ? 'accepted'
+          : pending.status === 'accepted' || pending.status === 'conflict' ? pending.status : 'unknown',
         evidence: receipt.status,
-        sessionId: receipt.session?.id ?? receipt.session_id,
+        sessionId: pending.status === 'accepted' ? pending.sessionId : receipt.session?.id ?? receipt.session_id,
         error: receipt.failure?.message,
       };
       createdForRetry.current = next;
@@ -941,12 +958,25 @@ export function useNewSessionDraft({
     } catch (cause) {
       if (intentScope.active) setError(errorText(locale, cause));
     } finally { if (intentScope.active) setCheckingCreation(false); }
-  }, [checkingCreation, client, intentScope, locale, noticeForIntent, scopeIntentKey]);
+  }, [checkingCreation, client, dismissCreationIntent, intentScope, locale, noticeForIntent, scopeIntentKey]);
   const creationActions = useRef<{ resume(openOnly?: boolean): void | Promise<void> }>({ resume: () => {} });
   const openCreatedSession = useCallback(async () => {
     if (createdForRetry.current?.status !== 'accepted') await checkCreation();
     if (intentScope.active && createdForRetry.current?.status === 'accepted') return creationActions.current.resume(true);
   }, [checkCreation, intentScope]);
+  // A persisted "accepted" intent may belong to a conversation that has since
+  // been opened (its first message sent). Check once per mount and dismiss it
+  // instead of greeting the user with a stale notice. Unknown intents keep
+  // their explicit recovery path; accepted ones whose session holds no
+  // messages yet were never opened and stay. This runs only against the
+  // intent restored from storage, not one this mount just created.
+  const initialIntentIdRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (initialIntent?.status !== 'accepted') return;
+    if (initialIntentIdRef.current === initialIntent.creationId) return;
+    initialIntentIdRef.current = initialIntent.creationId;
+    void checkCreation();
+  }, [initialIntent, checkCreation]);
   const createThenNavigate = useCallback((handoff: {
     initialPrompt?: string;
     initialPresentation?: import('@kiki/transcript').TextPresentation;
@@ -1227,17 +1257,16 @@ export function useNewSessionDraft({
   const startNewCreation = useCallback(() => {
     if (creationIntent.current !== undefined) return;
     const previous = createdForRetry.current;
-    if (previous !== undefined) {
+    // Only an unconfirmed attempt is worth restoring later. An accepted one
+    // already exists as a session; keeping it as "previous" left a permanent
+    // restore entry after the conversation had been opened.
+    if (previous !== undefined && previous.status !== 'accepted') {
       writePersistedCreationIntent(`${scopeIntentKey}:previous:${previous.creationId}`, previous, intentScope.storage);
       writePersistedCreationIntent(`${scopeIntentKey}:previous`, previous, intentScope.storage);
       setHasPreviousCreation(true);
     }
-    clearPersistedCreationIntent(scopeIntentKey, intentScope.storage);
-    createdForRetry.current = undefined;
-    setCreatedSessionId(undefined);
-    setCreationNotice(null);
-    setError(null);
-  }, [intentScope, scopeIntentKey]);
+    dismissCreationIntent();
+  }, [dismissCreationIntent, intentScope, scopeIntentKey]);
   const restorePreviousCreation = useCallback(() => {
     if (creationIntent.current !== undefined) return;
     const archived = readPersistedCreationIntent(`${scopeIntentKey}:previous`, intentScope.storage);
@@ -1467,6 +1496,7 @@ export function useNewSessionDraft({
     startNewCreation,
     hasPreviousCreation,
     restorePreviousCreation,
+    dismissCreationIntent,
     hasCreationIntent: createdForRetry.current !== undefined,
     cancelCreation,
     selectionReady,

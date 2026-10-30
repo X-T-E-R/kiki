@@ -36,6 +36,7 @@ const firstRun = vi.hoisted(() => ({
   retryCreation: vi.fn(async () => {}),
   openCreatedSession: vi.fn(async () => {}),
   startNewCreation: vi.fn(),
+  dismissCreationIntent: vi.fn(),
   hasCreationIntent: false,
   seat: undefined as import('./ConversationShell').ConversationSeat | undefined,
   workspacesFailed: false,
@@ -92,6 +93,7 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
       checkingCreation: firstRun.checkingCreation,
       retryCreation: firstRun.retryCreation,
       startNewCreation: firstRun.startNewCreation,
+      dismissCreationIntent: firstRun.dismissCreationIntent,
       hasCreationIntent: firstRun.hasCreationIntent,
       selectionReady: firstRun.selectionReady,
       targetReady: true,
@@ -401,7 +403,7 @@ describe('the /new page', () => {
     expect(provider.props.children.props.disabled).toBe(false);
   });
 
-  it('exposes recovery, open, and new-attempt actions for an unresolved creation', async () => {
+  it('exposes recovery, open, new-attempt, and dismiss actions for an unresolved creation', async () => {
     firstRun.hasCreationIntent = true;
     firstRun.creationNotice = 'Creation is not confirmed yet. Check the result to continue with the same session. Starting another conversation keeps this attempt for later.';
     firstRun.createdSessionId = 'session-example';
@@ -413,13 +415,16 @@ describe('the /new page', () => {
       'Check and continue',
       'Open created session',
       'Start another conversation',
+      'Dismiss',
     ]);
     await act(async () => { buttons[0]?.click(); });
     await act(async () => { buttons[1]?.click(); });
     await act(async () => { buttons[2]?.click(); });
+    await act(async () => { buttons[3]?.click(); });
     expect(firstRun.retryCreation).toHaveBeenCalledTimes(1);
     expect(firstRun.openCreatedSession).toHaveBeenCalledTimes(1);
     expect(firstRun.startNewCreation).toHaveBeenCalledTimes(1);
+    expect(firstRun.dismissCreationIntent).toHaveBeenCalledTimes(1);
   });
 
   it('shows automatic workspace creation without a workspace-required warning', async () => {
