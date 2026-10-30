@@ -73,6 +73,64 @@ async function drainMicrotasks(ticks = 50): Promise<void> {
 }
 
 describe('SessionManager', () => {
+  it.each([false, true].flatMap(strict => ['bootstrap', 'documents', 'storage'].map(dependency => ({ strict, dependency }))))('uses restore slots when $dependency is unavailable (strict: $strict)', async ({ strict, dependency }) => {
+    const didCreate = new Emitter<SessionCreatedEvent>();
+    const entered: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const failure = new Error('Example restore failed');
+    const fake = controller();
+    const service = Object.assign(fake.service, {
+      onDidCreateSession: didCreate.event,
+      resume: async (id: string) => {
+        entered.push(id);
+        if (id === 'first') { await gate; throw failure; }
+        const handle = { id } as ISessionScopeHandle;
+        didCreate.fire({ sessionId: id, handle, source: 'resume' });
+        return handle;
+      },
+    });
+    const workspace = { id: 'workspace-1', program: { sessionControllerGeneration: 'generation-1', createSessionController: () => service } } as unknown as WorkspaceInstance;
+    const disposables = new DisposableStore();
+    const readMetadata = vi.fn(async () => ({ agents: {} }));
+    const wireSize = vi.fn(async () => undefined);
+    const services = createServices(disposables, { strict, additionalServices: reg => {
+      reg.definePartialInstance(IWorkspaceInstanceManager, { acquire: async () => ({ instance: workspace, dispose: () => {} }), get: () => workspace });
+      reg.definePartialInstance(ISessionIndex, { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) as Awaited<ReturnType<ISessionIndex['get']>> });
+      reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), get: (() => ({ maxConcurrentRestores: 1 })) as IConfigService['get'] });
+      reg.definePartialInstance(IFlagService, { enabled: () => false });
+      if (dependency !== 'bootstrap') reg.definePartialInstance(IBootstrapService, { scope: name => name });
+      if (dependency !== 'documents') reg.definePartialInstance(IAtomicDocumentStore, { get: readMetadata as IAtomicDocumentStore['get'] });
+      if (dependency !== 'storage') reg.definePartialInstance(IFileSystemStorageService, { size: wireSize });
+      reg.define(ISessionManager, SessionManager);
+    } });
+    const manager = services.get(ISessionManager);
+    const attempts: Promise<unknown>[] = [];
+    const progress: RestoreProgress[] = [];
+    try {
+      const first = manager.resume('first').catch(error => error);
+      attempts.push(first);
+      await drainMicrotasks();
+      expect(entered).toEqual(['first']);
+      const second = observeRestore(value => progress.push(value), () => manager.resume('second'));
+      attempts.push(second);
+      await drainMicrotasks();
+      expect(entered).toEqual(['first']);
+      expect(progress).toContainEqual(expect.objectContaining({ phase: 'restore_queue', queuePosition: 1 }));
+      expect(readMetadata).not.toHaveBeenCalled();
+      expect(wireSize).not.toHaveBeenCalled();
+      release();
+      await expect(first).resolves.toBe(failure);
+      await expect(second).resolves.toMatchObject({ id: 'second' });
+      expect(entered).toEqual(['first', 'second']);
+    } finally {
+      release();
+      await Promise.allSettled(attempts);
+      await disposables.dispose();
+      didCreate.dispose();
+    }
+  });
+
   it.each(['deadline', 'hot-config', 'default-four', 'fresh-bypass'] as const)('does not let one stalled cold restore starve later sessions: %s', async (mode) => {
     vi.useFakeTimers();
     const changed = new Emitter<import('#/app/config/config').ConfigSectionChangedEvent>();

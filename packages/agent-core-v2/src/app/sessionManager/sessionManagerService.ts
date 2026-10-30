@@ -540,9 +540,21 @@ export class SessionManager implements ISessionManager {
 
   private async isUnstartedSession(sessionId: string): Promise<boolean> {
     if (this.instantiation === undefined) return false;
-    const stores = this.instantiation.invokeFunction(accessor => ({
-      docs: accessor.get(IAtomicDocumentStore), storage: accessor.get(IFileSystemStorageService), bootstrap: accessor.get(IBootstrapService),
-    }));
+    let stores: {
+      docs?: IAtomicDocumentStore;
+      storage?: IFileSystemStorageService;
+      bootstrap?: IBootstrapService;
+    };
+    try {
+      stores = this.instantiation.invokeFunction(accessor => ({
+        docs: accessor.get(IAtomicDocumentStore),
+        storage: accessor.get(IFileSystemStorageService),
+        bootstrap: accessor.get(IBootstrapService),
+      }));
+    } catch {
+      return false;
+    }
+    if (stores.docs === undefined || stores.storage === undefined || stores.bootstrap === undefined) return false;
     const summary = await this.index.get(sessionId);
     if (summary === undefined) return false;
     const scope = sessionScopeOf(workspacePersistenceScope(stores.bootstrap.scope('sessions'), summary.workspaceId), sessionId);
