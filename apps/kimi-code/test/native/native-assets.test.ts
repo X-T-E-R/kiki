@@ -28,6 +28,7 @@ import {
   getUsageReadModelWorkerFile,
   getPluginHostRunnerFile,
   getWindowsProcessHelperFile,
+  resetNativeAssetVerification,
   NATIVE_ASSET_MANIFEST_VERSION,
   type NativeAssetManifest,
   type NativeAssetSource,
@@ -168,6 +169,7 @@ function writeDocsTree(root: string, english: string, chinese: string): void {
 }
 
 afterEach(() => {
+  resetNativeAssetVerification();
   resetTextBuildWorkerRuntime();
   resetUsageWorkerRuntime();
   configureUsageReadModelWorkerRuntime(undefined);
@@ -203,6 +205,7 @@ describe('native assets', () => {
       expect(readFileSync(join(packageRoot ?? '', 'index.js'), 'utf-8')).toContain("value: 'ok'");
 
       writeFileSync(join(packageRoot ?? '', 'index.js'), 'broken');
+      resetNativeAssetVerification();
       const repairedRoot = getNativePackageRoot('fake-native', {
         cacheBase: dir,
         manifest,
@@ -212,6 +215,41 @@ describe('native assets', () => {
       expect(repairedRoot).toBe(packageRoot);
       expect(readFileSync(join(repairedRoot ?? '', 'index.js'), 'utf-8')).toContain("value: 'ok'");
       expect(existsSync(join(dir, 'native', 'test', 'test-target'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('verifies asset checksums once per process and trusts the size+mtime stamp afterwards', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kimi-native-stamp-'));
+    try {
+      const { manifest, source } = fakeManifest({
+        'node_modules/fake-native/package.json': '{"main":"index.js"}',
+        'node_modules/fake-native/index.js': "module.exports = { value: 'ok' };\n",
+      });
+      let reads = 0;
+      const counting: NativeAssetSource = {
+        getAssetKeys: () => source.getAssetKeys(),
+        getRawAsset: (key) => {
+          reads += 1;
+          return source.getRawAsset(key);
+        },
+      };
+      const options = { cacheBase: dir, manifest, source: counting, version: 'test' };
+      const root = getNativePackageRoot('fake-native', options)!;
+      expect(reads).toBe(2);
+      for (let i = 0; i < 5; i += 1) getNativePackageRoot('fake-native', options);
+      expect(reads).toBe(2);
+
+      resetNativeAssetVerification();
+      expect(getNativePackageRoot('fake-native', options)).toBe(root);
+      expect(reads).toBe(2);
+
+      resetNativeAssetVerification();
+      writeFileSync(join(root, 'index.js'), 'short');
+      expect(getNativePackageRoot('fake-native', options)).toBe(root);
+      expect(reads).toBe(4);
+      expect(readFileSync(join(root, 'index.js'), 'utf-8')).toContain("value: 'ok'");
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
@@ -235,6 +273,7 @@ describe('native assets', () => {
       const helper = join(root, 'spawn-helper');
       expect(statSync(helper).mode & 0o777).toBe(0o755);
       chmodSync(helper, 0o644);
+      resetNativeAssetVerification();
       expect(getNativePackageRoot('fake-native', options)).toBe(root);
       expect(statSync(helper).mode & 0o777).toBe(0o755);
     } finally {
@@ -291,6 +330,7 @@ describe('native assets', () => {
       expect(getMinidbTextBuildWorkerFile(options)).toBe(first);
 
       writeFileSync(first!, 'corrupt');
+      resetNativeAssetVerification();
       expect(getMinidbTextBuildWorkerFile(options)).toBe(first);
       expect(readFileSync(first!, 'utf-8')).toBe(worker);
 
@@ -386,6 +426,7 @@ describe('native assets', () => {
       expect(file).toBe(join(dir, 'native', 'test', 'test-target', sha256(JSON.stringify(manifest)), 'runtime', 'plugin', 'hostRunner.mjs'));
       expect(readFileSync(file!, 'utf8')).toBe(runner);
       writeFileSync(file!, 'corrupt');
+      resetNativeAssetVerification();
       expect(getPluginHostRunnerFile(options)).toBe(file);
       expect(readFileSync(file!, 'utf8')).toBe(runner);
     } finally {
@@ -915,6 +956,7 @@ describe('Windows process helper native assets', () => {
       expect(file).toBe(join(dir, 'native', 'test', 'test-target', sha256(JSON.stringify(manifest)), 'runtime', 'process', 'windows-process-helper.exe'));
       expect(readFileSync(file!)).toEqual(bytes);
       writeFileSync(file!, 'corrupt');
+      resetNativeAssetVerification();
       expect(getWindowsProcessHelperFile(options)).toBe(file);
       expect(readFileSync(file!)).toEqual(bytes);
       expect(getWindowsProcessHelperFile({ ...options, manifest: base.manifest })).toBeNull();
