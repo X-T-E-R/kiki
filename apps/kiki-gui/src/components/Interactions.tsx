@@ -599,7 +599,6 @@ export function ApprovalCard({
             : answered === 'cancelled'
               ? t('ia.resolution.cancelled')
               : t('ia.resolution.rejected')}
-          {t('ia.sentToKikiSuffix')}
         </p>
       )}
       {answered !== null && savedRule !== null ? <SavedRuleNote rule={savedRule} /> : null}

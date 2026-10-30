@@ -77,7 +77,6 @@ export function SshApprovalCard({ block, ssh, originAgentName }: {
       ) : (
         <p role="status" data-ssh-answered={answered} className={`mt-2 text-[13px] font-medium ${answered === 'approved' ? 'text-ink-soft' : 'text-danger'}`}>
           {answered === 'approved' ? t('ia.ssh.sent') : t('ia.resolution.rejected')}
-          {t('ia.sentToKikiSuffix')}
         </p>
       )}
     </div>
