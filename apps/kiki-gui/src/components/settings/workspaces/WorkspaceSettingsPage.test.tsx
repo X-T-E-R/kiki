@@ -276,7 +276,8 @@ describe('WorkspaceSettingsPage', () => {
     mocks.getWorkspaceDetails.mockRejectedValue(new Error('Stats unavailable'));
     await renderPage();
     const stats = container.querySelector('[data-workspace-detail-stats]')!;
-    expect(stats.textContent).toContain('Stats unavailable');
+    // One quiet line names what is missing; the raw error text stays off screen.
+    expect(stats.textContent).toContain('Session count unavailable right now');
     expect(stats.textContent).not.toMatch(/\b0\b/);
     const retry = stats.querySelector<HTMLButtonElement>('button')!;
     expect(retry.textContent?.trim()).toBe('Retry');
@@ -290,7 +291,7 @@ describe('WorkspaceSettingsPage', () => {
     expect(mocks.renameWorkspace).not.toHaveBeenCalled();
     expect(container.querySelector('[data-feedback-tone="success"]')!.textContent).toContain('Renamed to Alpha Prime.');
     expect(container.querySelector('[data-workspace-detail-name]')!.textContent).toBe('Alpha Prime');
-    expect(container.querySelector('[data-workspace-detail-stats]')!.textContent).toContain('Stats unavailable');
+    expect(container.querySelector('[data-workspace-detail-stats]')!.textContent).toContain('Session count unavailable right now');
     expect(container.querySelector('[data-workspace-detail-back]')).not.toBeNull();
 
     mocks.getWorkspaceDetails.mockResolvedValue(WORKSPACE);

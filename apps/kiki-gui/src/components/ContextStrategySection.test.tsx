@@ -78,7 +78,7 @@ describe('ContextStrategySection', () => {
     expect(block.getAttribute('data-strategy-source')).toBe('default');
     expect(container.querySelector('[data-strategy-option="auto"]')?.getAttribute('aria-checked')).toBe('true');
     expect(container.querySelector('[data-strategy-option="summarize"]')?.getAttribute('aria-checked')).toBe('false');
-    expect(container.querySelector('[data-strategy-hint]')?.textContent).toBe('Built-in main-agent default. Starts fresh when the work notes cover the work, otherwise summarizes.');
+    expect(container.querySelector('[data-strategy-hint]')?.textContent).toBe('Recommended. Continues from your work notes when it can, summarises and restarts when it can’t.');
     expect(container.querySelector('[data-strategy-source-trigger]')?.textContent).toContain('Built-in default');
     expect(container.querySelector('[data-strategy-option="auto"]')?.textContent).toBe('Auto');
     expect(strategy.write).not.toHaveBeenCalled();

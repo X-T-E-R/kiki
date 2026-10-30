@@ -209,8 +209,8 @@ describe('MCP managed header editor', () => {
     expect(revealSecret).toHaveBeenCalledWith({ kind: 'mcp_bearer_env', server: 'remote', cwd: '/tmp/fixture' });
     expect(bearerValue.querySelector('input')!.value).toBe('env-fixture-token');
     expect(fieldset.querySelector<HTMLButtonElement>('[aria-label="Remove header 1"]')!.disabled).toBe(true);
-    expect(fieldset.textContent).toContain('Authorization: server environment');
-    expect(fieldset.textContent).toContain('prevents OAuth from attaching');
+    expect(fieldset.textContent).toContain('Authorization comes from a server environment variable.');
+    expect(fieldset.textContent).toContain('This header is ignored while the env reference is set');
     await change(bearer, 'NEW_TOKEN');
     await click([...fieldset.querySelectorAll('button')].find((button) => button.textContent === 'Test connection')!);
     expect(mcp.test.mock.calls[0]![0].server).toMatchObject({ bearerTokenEnvVar: 'NEW_TOKEN', auth: 'oauth' });
@@ -353,8 +353,8 @@ describe('MCP OAuth credential reset', () => {
     expect(mcp.resetAuth).not.toHaveBeenCalled();
     await click(buttons(container)[0]!);
     const dialog = document.querySelector('[role="alertdialog"]')!;
-    expect(dialog.textContent).toContain('If saved OAuth credentials exist');
-    expect(dialog.textContent).toContain('https://old.example.test/…');
+    expect(dialog.textContent).toContain('Removes the saved OAuth credentials for https://old.example.test/…');
+    expect(dialog.textContent).toContain('may be interrupted');
     expect(dialog.textContent).not.toContain('/mcp');
     expect(mcp.resetAuth).not.toHaveBeenCalled();
     await click([...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Cancel')!);
@@ -515,17 +515,17 @@ describe('MCP OAuth credential reset', () => {
   it('warns about the original name and URL when editing the identity, URL or transport', async () => {
     const container = await render([remote]);
     const fieldset = await openRemote(container);
-    expect(fieldset.textContent).not.toContain('Changing the name, URL, or transport does not remove');
+    expect(fieldset.textContent).not.toContain('Saved OAuth credentials for');
     await change(fieldset.querySelector<HTMLInputElement>('input[placeholder="https://mcp.example.com"]')!, 'https://new.example.test/mcp');
-    expect(fieldset.textContent).toContain('saved OAuth credentials for remote at https://old.example.test/mcp');
+    expect(fieldset.textContent).toContain('Saved OAuth credentials for remote at https://old.example.test/mcp are kept; clear them below.');
     await change(fieldset.querySelector<HTMLInputElement>('input[placeholder="https://mcp.example.com"]')!, 'https://old.example.test/mcp');
-    expect(fieldset.textContent).not.toContain('Changing the name, URL, or transport does not remove');
+    expect(fieldset.textContent).not.toContain('Saved OAuth credentials for');
     await pickOption(fieldset.querySelector('[data-mcp-transport]')!, 'stdio');
-    expect(fieldset.textContent).toContain('saved OAuth credentials for remote at https://old.example.test/mcp');
+    expect(fieldset.textContent).toContain('Saved OAuth credentials for remote at https://old.example.test/mcp are kept; clear them below.');
     await pickOption(fieldset.querySelector('[data-mcp-transport]')!, 'http');
     await change(fieldset.querySelector<HTMLInputElement>('input[placeholder="https://mcp.example.com"]')!, 'https://old.example.test/mcp');
     await change(fieldset.querySelector<HTMLInputElement>('input')!, 'renamed');
-    expect(fieldset.textContent).toContain('saved OAuth credentials for remote at https://old.example.test/mcp');
+    expect(fieldset.textContent).toContain('Saved OAuth credentials for remote at https://old.example.test/mcp are kept; clear them below.');
   });
 });
 
