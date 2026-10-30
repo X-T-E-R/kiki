@@ -4,7 +4,6 @@
  */
 
 import { memo, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
 
 import {
   agentChildren,
@@ -14,8 +13,8 @@ import {
 } from '@kiki/session-core/session';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
-import { registerOverlay } from '../lib/uiBusy';
 import { Icon } from './icons';
+import { AnchoredPopover, usePopover } from './overlays';
 
 function uniqueAgentNodes(nodes: readonly AgentTreeNode[]): readonly AgentTreeNode[] {
   const seen = new Set<string>();
@@ -317,37 +316,8 @@ function AgentListChip({
   onOpen: (agentId: string) => void;
 }) {
   const { t } = useI18n();
-  const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const [query, setQuery] = useState('');
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-  const open = anchor !== null;
-  const closeRef = useRef((restoreFocus: boolean) => {
-    setAnchor(null);
-    setQuery('');
-    if (restoreFocus) buttonRef.current?.focus();
-  });
-  useEffect(() => {
-    if (!open) return;
-    const close = closeRef.current;
-    const unregister = registerOverlay(`relations-${kind}`);
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); close(true); }
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (target !== null && (listRef.current?.contains(target) === true || buttonRef.current?.contains(target) === true)) return;
-      close(false);
-    };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('pointerdown', onPointerDown, true);
-    listRef.current?.querySelector<HTMLElement>('input, button')?.focus();
-    return () => {
-      unregister();
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('pointerdown', onPointerDown, true);
-    };
-  }, [open, kind]);
+  const pop = usePopover();
   const needle = query.trim().toLowerCase();
   const shown = needle === ''
     ? nodes
@@ -355,64 +325,54 @@ function AgentListChip({
   return (
     <>
       <button
-        ref={buttonRef}
+        {...pop.triggerProps}
         type="button"
         data-relation-chip=""
         data-relations-toggle={kind}
-        aria-expanded={open}
-        aria-haspopup="dialog"
         title={title}
-        onClick={() => {
-          if (open) closeRef.current(false);
-          else setAnchor(buttonRef.current?.getBoundingClientRect() ?? null);
-        }}
         className={`${CHIP} ${kind === 'children' ? 'border-dashed tabular-nums' : 'text-ink-faint'}`}
       >
         {icon !== undefined ? <Icon name={icon} size={12} className="-ml-0.5 shrink-0" /> : null}
         {label}
       </button>
-      {anchor !== null ? createPortal(
-        <div
-          ref={listRef}
-          role="dialog"
-          aria-label={listLabel}
-          data-relations-popover={kind}
-          className="anim-enter fixed z-50 flex max-h-[min(22rem,60vh)] w-72 max-w-[calc(100vw-16px)] flex-col rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
-          style={{ left: Math.max(8, Math.min(anchor.left, window.innerWidth - 296)), top: anchor.bottom + 4 }}
-        >
-          {nodes.length >= LIST_FILTER_AT ? (
-            <input
-              type="search"
-              value={query}
-              onChange={(event) => { setQuery(event.target.value); }}
-              aria-label={t('inspector.searchAgentsAria')}
-              placeholder={t('inspector.searchAgents')}
-              className="m-1 h-8 shrink-0 rounded-md border border-hairline bg-transparent px-2 text-[12.5px] text-ink placeholder:text-ink-faint focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink"
-            />
+      <AnchoredPopover
+        {...pop.popoverProps}
+        label={listLabel}
+        widthClassName="w-72"
+        data={{ 'data-relations-popover': kind }}
+        className="flex max-h-[min(22rem,60vh)] flex-col p-1"
+      >
+        {nodes.length >= LIST_FILTER_AT ? (
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => { setQuery(event.target.value); }}
+            aria-label={t('inspector.searchAgentsAria')}
+            placeholder={t('inspector.searchAgents')}
+            className="m-1 h-8 shrink-0 rounded-md border border-hairline bg-transparent px-2 text-[12.5px] text-ink placeholder:text-ink-faint focus:border-hairline-strong focus-visible:outline-2 focus-visible:outline-offset-[-1px] focus-visible:outline-selected-ink"
+          />
+        ) : null}
+        <div role="list" className="min-h-0 overflow-y-auto">
+          {shown.map((node) => (
+            <div key={node.agentId} role="listitem">
+              <button
+                type="button"
+                data-agent-id={node.agentId}
+                title={titleOf(node)}
+                onClick={() => { pop.setOpen(false); onOpen(node.agentId); }}
+                className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-ink transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2"
+              >
+                <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${chipDot(node.status)}`} />
+                <span className="min-w-0 flex-1 truncate">{node.label}</span>
+                <span className="shrink-0 text-[11.5px] text-ink-faint">{t(`subagent.status.${node.status}` as I18nKey)}</span>
+              </button>
+            </div>
+          ))}
+          {shown.length === 0 ? (
+            <p className="px-2 py-1.5 text-[12px] text-ink-faint">{t('sv.noRelatedAgents')}</p>
           ) : null}
-          <div role="list" className="min-h-0 overflow-y-auto">
-            {shown.map((node) => (
-              <div key={node.agentId} role="listitem">
-                <button
-                  type="button"
-                  data-agent-id={node.agentId}
-                  title={titleOf(node)}
-                  onClick={() => { closeRef.current(false); onOpen(node.agentId); }}
-                  className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12.5px] text-ink transition-colors hover:bg-paper focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:py-2"
-                >
-                  <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${chipDot(node.status)}`} />
-                  <span className="min-w-0 flex-1 truncate">{node.label}</span>
-                  <span className="shrink-0 text-[11.5px] text-ink-faint">{t(`subagent.status.${node.status}` as I18nKey)}</span>
-                </button>
-              </div>
-            ))}
-            {shown.length === 0 ? (
-              <p className="px-2 py-1.5 text-[12px] text-ink-faint">{t('sv.noRelatedAgents')}</p>
-            ) : null}
-          </div>
-        </div>,
-        document.body,
-      ) : null}
+        </div>
+      </AnchoredPopover>
     </>
   );
 }
