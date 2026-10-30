@@ -27,6 +27,8 @@ File tools handle reading, writing, and searching files — the foundation for c
 
 The result shows line numbers and reports the original line endings. A pure CRLF file appears as LF in `Read`, and `Edit` preserves CRLF when you edit that view; a file with mixed line endings needs the visible `\r` characters matched exactly.
 
+UTF-8 line-window reads over SSH stream the requested lines. Tail reads may scan the file to count lines when remote counting is unavailable. Decoding errors are checked in the decoded window, including lookahead when needed. If a tail read reports that the file changed, retry it to obtain consistent line numbers.
+
 An explicit absolute path can read outside the workspace, subject to sensitive-file approval. Registered user Skill and agent definition roots (including linked installations) are readable by default, while an ordinary workspace link to an external file requires approval. In the current Space's `<home>` (default `~/.kiki`), only `agents`, `skills`, `commands`, and `docs` count as definition or documentation roots. Inherited agent and registered Skill roots are also readable; generic `~/.agents` roots remain under the OS home. Other paths still need an explicit path and remain subject to the sensitive-file rules. Local home paths are not applied to SSH runtimes.
 
 **`Write`** accepts `path`, `content`, and an optional `mode` (`overwrite` or `append`; defaults to overwrite). Missing parent directories are created automatically; `append` mode appends content to the end of the file without automatically adding a newline.

@@ -21,6 +21,7 @@ import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import type { Runtime, RuntimeLease } from '#/runtime/runtime';
 import { SshRuntime } from '#/runtime/sshRuntime';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { SshHostFileSystem } from '#/os/backends/ssh/sshHostServices';
 import { spawnWindowsSearch } from '#/os/backends/ssh/windowsSearch';
 import type { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import type { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
@@ -38,7 +39,8 @@ const tempHomes: string[] = [];
 const attrs = (mode: number, size = 0) => ({ mode, size, uid: 1000, gid: 1000, atime: 0, mtime: 1 });
 
 async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'powershell') {
-  const response = { stdout: Buffer.from('hello from SSH\n'), stderr: Buffer.alloc(0), exitCode: 0, executePowerShell: false };
+  const response = { stdout: Buffer.from('hello from SSH\n'), stderr: Buffer.alloc(0), exitCode: 0, executePowerShell: false, suspendReads: false, lineCount: undefined as number | undefined, afterLineCount: undefined as (() => void) | undefined, onRead: undefined as (() => void) | undefined };
+  const io = { bytes: 0, handles: 0, closes: 0, maxReadSize: Number.POSITIVE_INFINITY };
   const failures = new Set<string>();
   const remoteHome = platform === 'win32' ? 'C:/Users/tester' : '/home/tester';
   const commands: string[] = [];
@@ -101,6 +103,11 @@ async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'powershel
           channel.write(response.stdout); channel.stderr.write(response.stderr);
           channel.exit(response.exitCode); channel.end(); return;
         }
+        if (response.lineCount !== undefined && (command.includes('kiki-line-count') || command.includes('$count=[long]0'))) {
+          channel.write(`${response.lineCount}\n`);
+          response.afterLineCount?.();
+          channel.exit(0); channel.end(); return;
+        }
         if (command.includes('KIKI_SSH_WINDOWS')) channel.write(`KIKI_SSH_WINDOWS\nAMD64\n10.0.26100\npowershell.exe\n${shell || 'cmd'}\n936\nC:/Users/tester/Temp/\n`);
         else if (info.command.includes('KIKI_SSH_ENV')) channel.write('KIKI_SSH_ENV\nLinux\nx86_64\n6.8.0\n/bin/sh\n');
         else if (response.exitCode !== 0 || platform === 'win32') {
@@ -120,6 +127,7 @@ async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'powershel
         const handle = (request: number, path: string) => {
           const id = nextId++;
           handles.set(id, path);
+          io.handles++;
           const buf = Buffer.alloc(4);
           buf.writeUInt32BE(id);
           channel.handle(request, buf);
@@ -173,12 +181,15 @@ async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'powershel
         channel.on('READ', (request, buffer, offset, length) => {
           const path = handles.get(buffer.readUInt32BE(0));
           if (!path || !files.has(path)) return channel.status(request, utils.sftp.STATUS_CODE.NO_SUCH_FILE);
-          const chunk = files.get(path)!.subarray(offset, offset + length);
-          if (!chunk.length) return channel.status(request, utils.sftp.STATUS_CODE.EOF);
+          response.onRead?.();
+          if (response.suspendReads) return;
+          const chunk = files.get(path)!.subarray(offset, offset + Math.min(length, io.maxReadSize));
+          if (chunk.length === 0) return channel.status(request, utils.sftp.STATUS_CODE.EOF);
+          io.bytes += chunk.length;
           channel.data(request, chunk);
         });
         channel.on('CLOSE', (request, buffer) => {
-          handles.delete(buffer.readUInt32BE(0));
+          if (handles.delete(buffer.readUInt32BE(0))) { io.handles--; io.closes++; }
           channel.status(request, utils.sftp.STATUS_CODE.OK);
         });
         channel.on('MKDIR', (request, path) => {
@@ -232,7 +243,7 @@ async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'powershel
   const telemetry = { track2: () => undefined } as unknown as ITelemetryService;
   const tools = sshTestTools({ runtime, workspace, localFs, catalog, truncation, telemetry });
   openTools.push(tools);
-  return { home, files, directories, failures, response, commands, manager, remote, localFs, runtime, workspace, catalog, truncation, telemetry, tools };
+  return { home, files, directories, failures, response, io, commands, manager, remote, localFs, runtime, workspace, catalog, truncation, telemetry, tools };
 }
 
 async function execute(execution: ToolExecution) {
@@ -250,6 +261,153 @@ afterEach(async () => {
 });
 
 describe('SSH tools over a real ssh2 transport', () => {
+  it('streams a small forward window without downloading a large file and closes on break', async () => {
+    const f = await fixture();
+    const path = '/home/tester/large.txt';
+    f.files.set(path, Buffer.from('数据记录\r\n'.repeat(200000)));
+    await f.remote.connect();
+    const lines: string[] = [];
+    for await (const line of f.remote.fs.readLineRange(path, { startLine: 2, maxLines: 35 })) lines.push(line);
+    expect(lines).toEqual(Array.from({ length: 35 }, () => '数据记录\r\n'));
+    expect(f.io.bytes).toBeLessThan(256 * 1024);
+    await vi.waitFor(() => { expect(f.io.handles).toBe(0); });
+    const before = f.io.closes;
+    for await (const line of f.remote.fs.readLines(path)) { expect(line).toBe('数据记录\r\n'); break; }
+    await vi.waitFor(() => { expect(f.io.handles).toBe(0); });
+    expect(f.io.closes).toBeGreaterThan(before);
+  });
+
+  it.each(['a\r\n数据😀\r\n尾部', 'a\n数据😀\n', '\uFEFFfirst\n\uFEFFsecond\n', ''])('keeps UTF-8, BOM, CRLF and EOF semantics across byte fragments: %j', async (content) => {
+    const f = await fixture();
+    const path = '/home/tester/fragments.txt';
+    f.files.set(path, Buffer.from(content));
+    f.io.maxReadSize = 2;
+    await f.remote.connect();
+    const lines: string[] = [];
+    for await (const line of f.remote.fs.readLineRange(path, { startLine: 2, maxLines: 2 })) lines.push(line);
+    const expected = content.replace(/^\uFEFF/, '').match(/[^\n]*\n|[^\n]+$/g) ?? [];
+    expect(lines).toEqual(expected.slice(1, 3));
+  });
+
+  it('validates only the selected UTF-8 window rather than skipped or unread bytes', async () => {
+    const f = await fixture();
+    const path = '/home/tester/window.txt';
+    f.files.set(path, Buffer.from([0xff, 10, 111, 107, 10, 0xff]));
+    await f.remote.connect();
+    const lines: string[] = [];
+    for await (const line of f.remote.fs.readLineRange(path, { startLine: 2, maxLines: 1 })) lines.push(line);
+    expect(lines).toEqual(['ok\n']);
+  });
+
+  it.each(['strict', 'replace', 'ignore'] as const)('incrementally decodes UTF-16 and UTF-8 replacement characters with errors=%s', async (errors) => {
+    const f = await fixture();
+    await f.remote.connect();
+    f.io.maxReadSize = 2;
+    const path = '/home/tester/encoding.txt';
+    f.files.set(path, Buffer.from('\uFEFFfirst\n数据😀\r\n尾', 'utf16le'));
+    const utf16: string[] = [];
+    for await (const line of f.remote.fs.readLineRange(path, { startLine: 2, maxLines: 1, encoding: 'utf16le', errors })) utf16.push(line);
+    expect(utf16).toEqual(['数据😀\r\n']);
+    f.files.set(path, Buffer.from([97, 10, 0xe4, 0xb8, 0xad, 0xff, 0xef, 0xbf, 0xbd, 10]));
+    const collect = async () => { const lines: string[] = []; for await (const line of f.remote.fs.readLineRange(path, { startLine: 2, maxLines: 1, errors })) lines.push(line); return lines; };
+    if (errors === 'strict') await expect(collect()).rejects.toThrow();
+    else expect(await collect()).toEqual([errors === 'ignore' ? '中�\n' : '中��\n']);
+  });
+
+  it.each(['a\nb\n', 'a\nb', '', '\n', '\n\n', 'a', '\uFEFF'])('preserves the last-line and total-line tail semantics: %j', async (content) => {
+    const f = await fixture();
+    const path = '/home/tester/tail-ending.txt';
+    f.files.set(path, Buffer.from(content));
+    f.response.lineCount = content.split('\n').length - 1;
+    await f.remote.connect();
+    const range = await f.remote.fs.readTailRange(path, { tailLines: 1 });
+    const lines: string[] = [];
+    for await (const line of range.lines) lines.push(line);
+    const expected = content.replace(/^\uFEFF/, '').match(/[^\n]*\n|[^\n]+$/g) ?? [];
+    expect(range.totalLines).toBe(expected.length);
+    expect(range.startLine).toBe(Math.max(1, expected.length));
+    expect(lines).toEqual(expected.slice(-1));
+  });
+
+  it('aborts a stalled SFTP read and releases its handle without closing the shared connection', async () => {
+    const f = await fixture();
+    const path = '/home/tester/stalled.txt';
+    f.files.set(path, Buffer.from('first\nsecond\n'));
+    await f.remote.connect();
+    f.response.suspendReads = true;
+    let resolveObserved!: () => void;
+    const observed = new Promise<void>((resolve) => { resolveObserved = resolve; });
+    f.response.onRead = () => { resolveObserved(); };
+    const controller = new AbortController();
+    const lines = f.remote.fs.readLines(path, { signal: controller.signal });
+    const next = lines.next();
+    await observed;
+    controller.abort(new Error('fixture abort'));
+    await expect(next).rejects.toThrow('fixture abort');
+    await vi.waitFor(() => { expect(f.io.handles).toBe(0); });
+    f.response.suspendReads = false;
+    expect(await f.remote.fs.readText(path)).toBe('first\nsecond\n');
+  });
+
+  it.each([true, false])('reads a negative-offset tail with absolute lines, using remote count=%s', async (remoteCount) => {
+    const f = await fixture();
+    const path = '/home/tester/tail.txt';
+    f.files.set(path, Buffer.from('line\r\n'.repeat(200000) + 'last'));
+    f.response.lineCount = remoteCount ? 200000 : undefined;
+    const result = await execute(await f.tools.read.resolveExecution({ host: 'dev', path, line_offset: -3, n_lines: 2 }));
+    expect(result.isError).not.toBe(true);
+    expect(result.output).toContain('199999\tline');
+    expect(result.output).toContain('200000\tline');
+    expect(result.note).toContain('Total lines in file: 200001.');
+    if (remoteCount) expect(f.io.bytes).toBeLessThan(256 * 1024);
+    await vi.waitFor(() => { expect(f.io.handles).toBe(0); });
+  });
+
+  it.skipIf(process.platform !== 'win32')('honors bounded traversal depth in the actual Windows search script', async () => {
+    const f = await fixture('win32');
+    await f.remote.connect();
+    await mkdir(join(f.home, 'nested'));
+    await writeFile(join(f.home, 'root.txt'), 'root');
+    await writeFile(join(f.home, 'nested', 'child.txt'), 'child');
+    f.response.executePowerShell = true;
+    const ssh = (await f.manager.get('dev')).withCwd(f.home);
+    const process = spawnWindowsSearch(ssh, ['--files', '--max-depth', '1', '--glob', '*.txt', f.home]);
+    const output = await text(process.stdout);
+    expect(await process.wait()).toBe(0);
+    expect(output).toContain('root.txt');
+    expect(output).not.toContain('child.txt');
+  });
+
+  it.skipIf(process.platform !== 'win32')('counts a Windows tail with the actual streaming PowerShell script and a quoted path', async () => {
+    const f = await fixture('win32');
+    await f.remote.connect();
+    const path = join(f.home, "tail 'example'.txt").replaceAll('\\', '/');
+    const data = Buffer.from('line\r\n'.repeat(200000) + 'last');
+    await writeFile(path, data);
+    f.files.set(path, data);
+    f.response.executePowerShell = true;
+    const fs = new SshHostFileSystem(async () => (await f.manager.get('dev')).withCwd(f.home));
+    const range = await fs.readTailRange(path, { tailLines: 2 });
+    const lines: string[] = [];
+    for await (const line of range.lines) lines.push(line);
+    expect(range.startLine).toBe(200000);
+    expect(range.totalLines).toBe(200001);
+    expect(lines).toEqual(['line\r\n', 'last']);
+    expect(f.io.bytes).toBeLessThan(128 * 1024);
+    expect(f.commands.at(-1)).toContain('$count=[long]0');
+  });
+
+  it('rejects a file changed between remote counting and the tail window', async () => {
+    const f = await fixture();
+    const path = '/home/tester/change.txt';
+    f.files.set(path, Buffer.from('one\ntwo\n'));
+    f.response.lineCount = 2;
+    f.response.afterLineCount = () => { f.files.set(path, Buffer.from('one\ntwo\nthree\n')); };
+    const result = await execute(await f.tools.read.resolveExecution({ host: 'dev', path, line_offset: -1 }));
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain('changed while locating');
+  });
+
   it.each(['E:/scratch', 'E:\\scratch'])('runs Bash as PowerShell with cwd %s and marks the result platform and shell', async (cwd) => {
     const f = await fixture('win32');
     const command = "Get-ChildItem -LiteralPath 'E:\\scratch' | ForEach-Object { $_.FullName }; '中文' > $null";

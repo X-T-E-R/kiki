@@ -2,23 +2,28 @@ import type { SSHKaos } from '@kiki/kaos/ssh';
 import { KaosFileNotFoundError, KaosPermissionError } from '@kiki/kaos/ssh';
 
 import { decodeTextWithErrors } from '#/_base/execEnv/decodeText';
-import { splitLinesKeepingTerminator } from '#/_base/text/line-endings';
+import { abortable } from '#/_base/utils/abort';
+import { locateSshTail, readSshLineRange, type SshLineOptions } from './sshFileLines';
 import type { HostFileStat, IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { HostProcessOptions, IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
 import { spawnWindowsSearch } from '#/os/backends/ssh/windowsSearch';
 
 type Connect = () => Promise<SSHKaos>;
 
+function hostFsError(error: unknown): unknown {
+  if (error instanceof KaosFileNotFoundError || error instanceof KaosPermissionError) {
+    return Object.assign(new Error(error.message, { cause: error }), {
+      code: error instanceof KaosFileNotFoundError ? 'ENOENT' : 'EACCES',
+    });
+  }
+  return error;
+}
+
 async function withConnection<T>(connect: Connect, work: (ssh: SSHKaos) => Promise<T>): Promise<T> {
   try {
     return await work(await connect());
   } catch (error) {
-    if (error instanceof KaosFileNotFoundError || error instanceof KaosPermissionError) {
-      throw Object.assign(new Error(error.message, { cause: error }), {
-        code: error instanceof KaosFileNotFoundError ? 'ENOENT' : 'EACCES',
-      });
-    }
-    throw error;
+    throw hostFsError(error);
   }
 }
 
@@ -63,13 +68,33 @@ export class SshHostFileSystem implements IHostFileSystem {
     return withConnection(this.connect, async (ssh) => { await ssh.writeBytes(path, Buffer.from(data)); });
   }
 
-  async *readLines(path: string, options?: { encoding?: BufferEncoding; errors?: 'strict' | 'replace' | 'ignore' }): AsyncGenerator<string> {
-    yield* splitLinesKeepingTerminator(await this.readText(path, options));
+  async *readLines(path: string, options: SshLineOptions = {}): AsyncGenerator<string> {
+    yield* this.readLineRange(path, { ...options, startLine: 1, maxLines: Number.POSITIVE_INFINITY });
   }
 
-  async *readLineRange(path: string, options: { startLine: number; maxLines: number; encoding?: BufferEncoding; errors?: 'strict' | 'replace' | 'ignore' }): AsyncGenerator<string> {
-    const lines = splitLinesKeepingTerminator(await this.readText(path, options));
-    yield* lines.slice(Math.max(0, options.startLine - 1), Math.max(0, options.startLine - 1) + options.maxLines);
+  async *readLineRange(path: string, options: SshLineOptions & { startLine: number; maxLines: number }): AsyncGenerator<string> {
+    options.signal?.throwIfAborted();
+    if (options.maxLines <= 0) return;
+    const connection = withConnection(this.connect, async (ssh) => ssh);
+    const ssh = await (options.signal === undefined ? connection : abortable(connection, options.signal));
+    try { yield* readSshLineRange(ssh, path, options); } catch (error) { throw hostFsError(error); }
+  }
+
+  async readTailRange(path: string, options: { tailLines: number; encoding?: 'utf-8' | 'utf8'; errors?: SshLineOptions['errors']; signal?: AbortSignal }): Promise<{ startLine: number; totalLines: number; lines: AsyncGenerator<string> }> {
+    options.signal?.throwIfAborted();
+    const connection = withConnection(this.connect, async (ssh) => ssh);
+    const ssh = await (options.signal === undefined ? connection : abortable(connection, options.signal));
+    const located = await withConnection(async () => ssh, (connection) => locateSshTail(connection, path, options));
+    const lines = async function* (): AsyncGenerator<string> {
+      try {
+        const before = await ssh.stat(path);
+        if (before.stSize !== located.size || before.stMtime !== located.mtime) throw new Error('SSH file changed before reading the requested line window. Retry the read.');
+        if (located.size > 0) yield* readSshLineRange(ssh, path, { ...options, startByte: located.startByte, endByte: located.size - 1 });
+        const after = await ssh.stat(path);
+        if (after.stSize !== located.size || after.stMtime !== located.mtime) throw new Error('SSH file changed while reading the requested line window. Retry the read.');
+      } catch (error) { throw hostFsError(error); }
+    };
+    return { startLine: located.startLine, totalLines: located.totalLines, lines: lines() };
   }
 
   createExclusive(path: string, data: Uint8Array): Promise<boolean> {

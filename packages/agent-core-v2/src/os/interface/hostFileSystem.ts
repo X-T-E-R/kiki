@@ -34,6 +34,7 @@ export interface IHostFileSystem {
     path: string,
     options?: { encoding?: BufferEncoding; errors?: TextDecodeErrors; signal?: AbortSignal },
   ): AsyncGenerator<string>;
+  /** Read a one-based line window, retaining LF/CRLF terminators and omitting a trailing empty line. SSH UTF-8 decoding covers the selected window, not skipped or unread bytes. */
   readLineRange?(
     path: string,
     options: {
@@ -44,6 +45,11 @@ export interface IHostFileSystem {
       signal?: AbortSignal;
     },
   ): AsyncGenerator<string>;
+  /** Locate the last tailLines UTF-8 lines, with a one-based startLine (1 for an empty file) and no extra line after a final LF. The lazy iterator rejects if the source size or mtime changes after locating. */
+  readTailRange?(
+    path: string,
+    options: { tailLines: number; encoding?: 'utf-8' | 'utf8'; errors?: TextDecodeErrors; signal?: AbortSignal },
+  ): Promise<{ startLine: number; totalLines: number; lines: AsyncGenerator<string> }>;
   createExclusive(path: string, data: Uint8Array): Promise<boolean>;
   stat(path: string): Promise<HostFileStat>;
   lstat(path: string): Promise<HostFileStat>;

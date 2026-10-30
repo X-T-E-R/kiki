@@ -844,6 +844,32 @@ export class SSHKaos implements Kaos {
 
   // ── File operations (async) ────────────────────────────────────────
 
+  /** Stream an inclusive byte range in bounded chunks and close its SFTP handle on completion, return or cancellation. */
+  async *readByteStream(path: string, options: { start?: number; end?: number; signal?: AbortSignal } = {}): AsyncGenerator<Buffer> {
+    options.signal?.throwIfAborted();
+    const stream = this._sftp.createReadStream(this._resolvePath(path), {
+      start: options.start ?? 0,
+      end: options.end,
+      highWaterMark: 64 * 1024,
+      autoClose: true,
+    });
+    stream.on('error', () => {});
+    const onAbort = () => { stream.destroy(options.signal?.reason instanceof Error ? options.signal.reason : new Error('SSH file read aborted')); };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      for await (const chunk of stream) {
+        options.signal?.throwIfAborted();
+        yield Buffer.from(chunk as Buffer);
+      }
+    } catch (error) {
+      options.signal?.throwIfAborted();
+      throw mapSftpError('read', error);
+    } finally {
+      options.signal?.removeEventListener('abort', onAbort);
+      stream.destroy();
+    }
+  }
+
   async readBytes(path: string, n?: number, offset = 0): Promise<Buffer> {
     const resolved = this._resolvePath(path);
     if (n === undefined && offset === 0) return sftpReadFile(this._sftp, resolved);

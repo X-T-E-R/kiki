@@ -290,8 +290,9 @@ export class ReadTool implements IReadTool {
     };
   }
 
-  private async execution(fs: IHostFileSystem, args: ReadInput, safePath: string, runtimeId: string, signal?: AbortSignal): Promise<ExecutableToolResult> {
+  private async execution(fs: IHostFileSystem, args: ReadInput, safePath: string, runtimeId: string, signal: AbortSignal): Promise<ExecutableToolResult> {
     try {
+      signal.throwIfAborted();
       let stat: Awaited<ReturnType<IHostFileSystem['stat']>>;
       try {
         stat = await fs.stat(safePath);
@@ -354,13 +355,17 @@ export class ReadTool implements IReadTool {
             signal,
           });
           sourceStartLine = lineOffset;
+        } else if (lineOffset < 0 && fs.readTailRange !== undefined) {
+          const range = await fs.readTailRange(safePath, { tailLines: Math.abs(lineOffset), errors: 'strict', signal });
+          lines = range.lines;
+          sourceStartLine = range.startLine;
         } else {
           lines = fs.readLines(safePath, { errors: 'strict', signal });
         }
       }
 
       const result = lineOffset < 0
-        ? await this.readTail(args.path, lines, lineOffset, effectiveLimit, requestedLines, detectedEncoding)
+        ? await this.readTail(args.path, lines, lineOffset, effectiveLimit, requestedLines, detectedEncoding, sourceStartLine)
         : await this.readForward(args.path, lines, lineOffset, effectiveLimit, requestedLines, sourceStartLine, detectedEncoding);
       if (instructionContent === undefined || result.readRange === undefined) return result;
       return { ...result, fileRead: { ...result.readRange, file: { path: safePath, runtimeId,
@@ -442,11 +447,12 @@ export class ReadTool implements IReadTool {
     effectiveLimit: number,
     requestedLines: number,
     detectedEncoding?: UtfTextEncoding,
+    sourceStartLine = 1,
   ): Promise<ExecutableToolResult> {
     const tailCount = Math.abs(lineOffset);
     const entries: ReadLineEntry[] = [];
     const flags: LineEndingFlags = { hasCrLf: false, hasLf: false, hasLoneCr: false };
-    let currentLineNo = 0;
+    let currentLineNo = sourceStartLine - 1;
 
     for await (const rawLine of lines) {
       if (containsNulByte(rawLine)) {
