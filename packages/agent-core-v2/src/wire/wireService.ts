@@ -17,7 +17,7 @@ import {
 import { coldManifestKey, logicalByteSize, readLogicalBytes } from '#/persistence/coldSegmentLog';
 import { IFileSystemStorageService, StorageError, StorageErrors, type StorageReadRange } from '#/persistence/interface/storage';
 
-import { IWireService, JOURNAL_HEAD_HASH_BYTES, JournalTailUnreadableError, type WireJournalIdentity, type WireJournalReadOptions } from './wire';
+import { IWireService, JOURNAL_BOUNDARY_HASH_BYTES, JOURNAL_HEAD_HASH_BYTES, JournalTailUnreadableError, type WireJournalIdentity, type WireJournalReadOptions } from './wire';
 import { WireError, WireErrors } from './errors';
 import { repairWireJournal } from './repair';
 import {
@@ -422,6 +422,25 @@ export class WireService extends Service implements IWireService {
   onDidAppendBytes(listener: (appendedBytes: number) => void): { dispose(): void } {
     this.appendListeners.add(listener);
     return { dispose: () => { this.appendListeners.delete(listener); } };
+  }
+
+  async journalBoundarySha256(byteLength: number): Promise<string | undefined> {
+    if (!Number.isSafeInteger(byteLength) || byteLength < 0) return undefined;
+    await this.flush();
+    const generation = this.journalGeneration;
+    const size = await this.journalSize() ?? 0;
+    if (byteLength > size) return undefined;
+    const start = Math.max(0, byteLength - JOURNAL_BOUNDARY_HASH_BYTES);
+    const hash = createHash('sha256');
+    let read = 0;
+    if (start < byteLength) {
+      for await (const chunk of this.journalBytes({ start, end: byteLength - 1 })) {
+        hash.update(chunk);
+        read += chunk.byteLength;
+      }
+    }
+    if (read !== byteLength - start || generation !== this.journalGeneration) return undefined;
+    return hash.digest('hex');
   }
 
   async journalSha256(byteLength: number): Promise<string | undefined> {
