@@ -158,14 +158,12 @@ export function routeIsActionable(preset: BrowserSetupStatus): boolean {
 }
 
 /** One route. The name is the server's `displayName`; the rest is its own answer. */
-function BrowserRoute({ preset, autoOpen, flashOpen, children }: {
+function BrowserRoute({ preset, open, onOpenChange, children }: {
   readonly preset: BrowserSetupStatus;
-  /** This is the first route that still has something to do, so it opens on
-   *  its own; every other actionable route stays a row with its status word
-   *  until the reader clicks. */
-  readonly autoOpen: boolean;
-  /** A search hit on a card this route owns asks the row to open. */
-  readonly flashOpen?: boolean;
+  /** The list's one open slot: the first actionable route is its initial
+   *  value, a click moves it. Opening one closes the previous (#13). */
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
   /** Extra blocks this route owns, folded with its detail (the local bridge check). */
   readonly children?: ReactNode;
 }) {
@@ -284,15 +282,6 @@ function BrowserRoute({ preset, autoOpen, flashOpen, children }: {
 
   /** Set by the forced-off line so its fold opens; the fold owns its state. */
   const [openDiagnostics, setDiagnosticsOpen] = useState(false);
-
-  // A working route with nothing to do stays a row until the reader clicks;
-  // anything the route still offers or is doing — an action, a move, a
-  // blocker, a warning, a failure, an unsaved find — opens by itself so the
-  // next step is already on screen.
-  const [openDetail, setOpenDetail] = useState(false);
-  useEffect(() => {
-    if (flashOpen === true) setOpenDetail(true);
-  }, [flashOpen]);
   const readiness = presetReadiness(preset);
   const tone = READINESS_TONE[readiness];
   const prepare = presetAction(preset, 'prepare');
@@ -442,13 +431,6 @@ function BrowserRoute({ preset, autoOpen, flashOpen, children }: {
     }
   };
 
-  // A working route with nothing to do stays a row until the reader clicks;
-  // anything the route still offers or is doing — an action, a move, a
-  // blocker, a warning, a failure, an unsaved find — opens by itself so the
-  // next step is already on screen.
-  const [userOpened, setUserOpened] = useState(false);
-  const expanded = userOpened || openDetail || (autoOpen && (sourceEnabled || preset.state === 'preparing'));
-
   return (
     <li>
       <RowFrame
@@ -457,8 +439,8 @@ function BrowserRoute({ preset, autoOpen, flashOpen, children }: {
           'data-browser-route-state': sourceEnabled ? readiness : 'disabled',
           'data-browser-source-enabled': sourceEnabled ? 'true' : 'false',
         }}
-        open={expanded}
-        onToggle={() => { setUserOpened((current) => !current); }}
+        open={open}
+        onToggle={() => { onOpenChange(!open); }}
         bodyId={`browser-route-body-${preset.preset}`}
         expandLabel={t('st.browser.menu.openRow', { name })}
         name={name}
@@ -822,9 +804,20 @@ export function BrowserSetupWizard() {
   });
 
   const presets = query.data?.presets ?? [];
-  // At most one open body on first view: the first route that still has
-  // something to do. The rest read as rows with their status word.
-  const firstActionable = presets.findIndex((preset) => routeIsActionable(preset));
+  // The list's one open slot (#13): its initial value is the first actionable
+  // route, a click moves it, and a search flash moves it too. Opening one
+  // closes the previous; these routes hold no unsaved edits, so nothing is
+  // exempt.
+  const firstActionable = presets.find((preset) => routeIsActionable(preset))?.preset ?? null;
+  const [openId, setOpenId] = useState<string | null>(firstActionable);
+  useEffect(() => {
+    setOpenId((current) => current ?? firstActionable);
+  }, [firstActionable]);
+  useEffect(() => {
+    if (flashId === 'st-card-webbridge' && presets.some((preset) => preset.preset === 'kimi-webbridge')) {
+      setOpenId('kimi-webbridge');
+    }
+  }, [flashId, presets]);
 
   // The local bridge check belongs to the Kimi route; with no such route on
   // this server it still has a place, so its bookmark keeps working.
@@ -851,8 +844,8 @@ export function BrowserSetupWizard() {
         <ul className="divide-y divide-hairline" data-browser-routes>
           {presets.map((preset, index) => (
             <BrowserRoute key={`${preset.preset}-${index}`} preset={preset}
-              autoOpen={index === firstActionable}
-              flashOpen={preset.preset === 'kimi-webbridge' && flashId === 'st-card-webbridge'}>
+              open={openId === preset.preset}
+              onOpenChange={(next) => { setOpenId(next ? preset.preset : null); }}>
               {preset.preset === 'kimi-webbridge' ? <WebBridgeReadiness /> : null}
             </BrowserRoute>
           ))}
