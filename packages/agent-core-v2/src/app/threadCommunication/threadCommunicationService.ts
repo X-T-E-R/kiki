@@ -86,6 +86,7 @@ const WAIT_POLL_MS = 200;
 const WAIT_ACTIVITY_LIMIT = 64;
 const DELIVERY_LEASE_MS = 30_000;
 const FAST_DELIVERY_TIMEOUT_MS = 5_000;
+const MAX_BACKGROUND_TARGET_DRAINS = 4;
 const ROOM_DELIVERY_RECEIPT_TTL_MS = 5 * 60_000;
 const ROOM_DELIVERY_RECEIPT_SCOPE = 'thread-communication';
 
@@ -196,6 +197,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   private recovery: Promise<void> | undefined;
   private readonly detached = new Set<Promise<void>>();
   private readonly targetDrains = new Map<string, TargetDrainState>();
+  private readonly backgroundTargets = new Map<string, ThreadRef>();
+  private backgroundDrains = 0;
   private readonly claimRequestIds = new Map<string, string>();
   private readonly roomDeliveryTargets = new Map<string, RoomDeliveryTarget>();
   private readonly roomDeliveryReceipts = new Map<string, RoomDeliveryReceipt>();
@@ -340,6 +343,11 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   async listThreads(input: ListThreadsInput = {}): Promise<ListThreadsResult> {
+    input.signal?.throwIfAborted();
+    return waitWithSignal(this.doListThreads(input), input.signal);
+  }
+
+  private async doListThreads(input: ListThreadsInput): Promise<ListThreadsResult> {
     await this.ensureRecovery();
     if (!(await this.globalEnabled(input.caller))) return { threads: [] };
     if (input.bridgeId !== undefined || input.connectionId !== undefined) {
@@ -396,6 +404,10 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
   async readThread(input: ReadThreadInput): Promise<ReadThreadResult> {
     input.signal?.throwIfAborted();
+    return waitWithSignal(this.doReadThread(input), input.signal);
+  }
+
+  private async doReadThread(input: ReadThreadInput): Promise<ReadThreadResult> {
     await this.ensureRecovery();
     if (this.needsBridge(input.thread)) {
       const connector = this.requireConnector();
@@ -440,7 +452,6 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   async sendRoomMessage(input: SendRoomMessageInput): Promise<SendThreadMessageResult> {
-    await this.ensureRecovery();
     validateSendInput(input);
     return this.sendProducedMessage({
       producer: { kind: 'room', roomId: input.roomId, targeted: input.targeted, generation: input.generation, queueWhenBusy: input.queueWhenBusy, requireCommunication: input.requireCommunication },
@@ -468,6 +479,11 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   async waitRoomDelivery(input: WaitRoomDeliveryInput): Promise<void> {
+    input.signal?.throwIfAborted();
+    return waitWithSignal(this.doWaitRoomDelivery(input), input.signal);
+  }
+
+  private async doWaitRoomDelivery(input: WaitRoomDeliveryInput): Promise<void> {
     await this.ensureRecovery();
     this.requireLocalHost(input.target);
     requireNonEmpty(input.messageId, 'messageId');
@@ -494,7 +510,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   async [SEND_PEER_THREAD_MESSAGE](input: SendPeerThreadMessageInput): Promise<SendThreadMessageResult> {
-    await this.ensureRecovery();
+    const deadline = Date.now() + (input.deliveryTimeoutMs ?? FAST_DELIVERY_TIMEOUT_MS);
+    input.signal?.throwIfAborted();
+    await waitWithSignal(this.ensureRecovery(), input.signal);
     validateSendInput(input);
     const source = this.requireLocalHost(input.source);
     const caller: ThreadCaller = {
@@ -513,8 +531,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       sender: input.sender,
       allowWhenDisabled: input.allowWhenDisabled,
     };
-    await this.requireThread(peer.source, caller, this.needsBridge(peer.target) || peer.allowWhenDisabled !== true);
-    if (this.needsBridge(peer.target)) return this.requireConnector().send(peer);
+    await waitWithSignal(this.requireThread(peer.source, caller, this.needsBridge(peer.target) || peer.allowWhenDisabled !== true), input.signal);
+    input.signal?.throwIfAborted();
+    if (this.needsBridge(peer.target)) return this.requireConnector().send({ ...peer, deliveryTimeoutMs: Math.max(0, deadline - Date.now()) });
     const target = this.requireLocalHost(peer.target);
     if (sameThread(peer.source, target)) {
       throw new Error2(ErrorCodes.THREAD_SELF_SEND, 'A thread cannot send a message to itself.');
@@ -531,7 +550,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       content: peer.content,
       idempotencyKey: peer.idempotencyKey,
       signal: peer.signal,
-      deliveryTimeoutMs: peer.deliveryTimeoutMs,
+      deliveryTimeoutMs: Math.max(0, deadline - Date.now()),
     }, peer.allowWhenDisabled !== true);
   }
 
@@ -544,10 +563,13 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     readonly signal?: AbortSignal;
     readonly deliveryTimeoutMs?: number;
   }, requireCommunication = true): Promise<SendThreadMessageResult> {
-    await this.ensureRecovery();
+    const deadline = Date.now() + (input.deliveryTimeoutMs ?? FAST_DELIVERY_TIMEOUT_MS);
+    input.signal?.throwIfAborted();
+    await waitWithSignal(this.ensureRecovery(), input.signal);
     validateSendInput(input);
     input = { ...input, target: this.requireLocalHost(input.target) };
-    await this.requireThread(input.target, input.caller, requireCommunication);
+    await waitWithSignal(this.requireThread(input.target, input.caller, requireCommunication), input.signal);
+    input.signal?.throwIfAborted();
     const storedInput = {
       producer: input.producer,
       target: input.target,
@@ -594,7 +616,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       delivery = await waitBoundedDelivery(
         this.deliverMessage(accepted.message),
         input.signal,
-        input.deliveryTimeoutMs,
+        Math.max(0, deadline - Date.now()),
       );
     }
     return {
@@ -607,6 +629,12 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   }
 
   async waitThreads(input: WaitThreadsInput): Promise<WaitThreadsResult> {
+    input.signal?.throwIfAborted();
+    const deadline = Date.now() + boundedTimeout(input.timeoutMs);
+    return waitWithSignal(this.doWaitThreads(input, deadline), input.signal);
+  }
+
+  private async doWaitThreads(input: WaitThreadsInput, deadline: number): Promise<WaitThreadsResult> {
     await this.ensureRecovery();
     if (input.threads.length === 0 || input.threads.length > MAX_WAIT_THREADS) {
       throw new Error2(
@@ -653,7 +681,6 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       }),
     );
 
-    const deadline = Date.now() + timeoutMs;
     for (;;) {
       await this.recordTerminalLifecycleChanges(input.threads.map((item) => item.thread));
       const results = await Promise.all(
@@ -784,12 +811,30 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     return title === undefined || title === '' ? ref.sessionId : `"${title}" (${ref.sessionId})`;
   }
 
+  private scheduleTargetDrain(target: ThreadRef): void {
+    this.backgroundTargets.set(threadIdentity(target), target);
+    this.pumpBackgroundTargets();
+  }
+
+  private pumpBackgroundTargets(): void {
+    while (!this.closing && this.backgroundDrains < MAX_BACKGROUND_TARGET_DRAINS) {
+      const target = this.backgroundTargets.values().next().value;
+      if (target === undefined) return;
+      this.backgroundDrains += 1;
+      this.detach(this.requestTargetDrain(target).finally(() => {
+        this.backgroundDrains -= 1;
+        this.pumpBackgroundTargets();
+      }));
+    }
+  }
+
   private requestTargetDrain(
     target: ThreadRef,
     observedMessageId?: string,
   ): Promise<SendThreadMessageResult['delivery']> {
     if (this.closing) return Promise.resolve('pending');
     const key = threadIdentity(target);
+    this.backgroundTargets.delete(key);
     let state = this.targetDrains.get(key);
     if (state === undefined) {
       state = { target, requested: false };
@@ -951,11 +996,13 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       const requireCommunication = message.producer.kind === 'room' ? message.producer.requireCommunication === true : !allowWhenDisabled;
       if (requireCommunication && !(await this.globalEnabled(message.target))) return 'pending';
       await this.requireThread(message.target, message.target, requireCommunication);
-      const session = await this.sessionManager.resume(message.target.sessionId);
+      const session = await waitWithSignal(this.sessionManager.resume(message.target.sessionId), this.mailboxController.signal);
       if (session === undefined) {
         throw new Error2(ErrorCodes.THREAD_NOT_FOUND, `Thread "${message.target.sessionId}" does not exist.`);
       }
-      const main = await ensureMainAgent(session);
+      this.mailboxController.signal.throwIfAborted();
+      const main = await waitWithSignal(ensureMainAgent(session), this.mailboxController.signal);
+      this.mailboxController.signal.throwIfAborted();
       prompt = main.accessor.get(IAgentPromptService);
       const origin: PromptOrigin = message.producer.kind === 'bridged_peer'
         ? { ...message.producer, messageId: message.messageId, acceptedAt: message.acceptedAt }
@@ -1108,9 +1155,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       signal: this.mailboxController.signal,
     });
     for (const target of targets) {
-      if (this.closing || (!(await this.globalEnabled()) && !this.capabilities.anySessionThreadEnabled())) return false;
+      if (this.closing) return false;
       if (target.hostId !== this.hostId) continue;
-      await this.requestTargetDrain(target);
+      this.scheduleTargetDrain(target);
     }
     return true;
   }
@@ -1423,7 +1470,10 @@ function sleep(ms: number): Promise<void> {
 
 function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (signal === undefined) return promise;
-  if (signal.aborted) return Promise.reject(signal.reason);
+  if (signal.aborted) {
+    void promise.catch(() => {});
+    return Promise.reject(signal.reason);
+  }
   return new Promise<T>((resolve, reject) => {
     const onAbort = (): void => reject(signal.reason);
     signal.addEventListener('abort', onAbort, { once: true });
@@ -1445,8 +1495,8 @@ function waitBoundedDelivery(
   signal?: AbortSignal,
   timeoutMs = FAST_DELIVERY_TIMEOUT_MS,
 ): Promise<SendThreadMessageResult['delivery']> {
-  if (signal?.aborted || timeoutMs <= 0) return Promise.resolve('pending');
   void deliveryPromise.catch(() => {});
+  if (signal?.aborted || timeoutMs <= 0) return Promise.resolve('pending');
   let timer: NodeJS.Timeout | undefined;
   let onAbort: (() => void) | undefined;
   return new Promise<SendThreadMessageResult['delivery']>((resolve, reject) => {

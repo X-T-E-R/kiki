@@ -151,7 +151,11 @@ export interface WaitThreadsResult {
 /** `threadCommunication` domain — local peer-thread coordination contract (App scope). Defines
  *  host-qualified Thread references, bounded list/read/wait views, durable send receipts, and
  *  workspace override management. A Thread is an existing Session, and agent identities never
- *  enter the addressing contract. */
+ *  enter the addressing contract. Readiness registers historical delivery work without waiting
+ *  for target restoration. Recovery drains at most four targets in the background; a foreground
+ *  send can start its target independently and retains the same per-target claim lane.
+ *  Delivery wait budgets start at send entry. Cancelling a waiter leaves shared recovery and
+ *  durably accepted messages intact. */
 export interface IThreadCommunicationService {
   readonly _serviceBrand: undefined;
   readonly hostId: string;

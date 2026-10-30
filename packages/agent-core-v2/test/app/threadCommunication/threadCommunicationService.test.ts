@@ -721,6 +721,93 @@ describe('ThreadCommunicationService', () => {
     await service.shutdown();
   });
 
+  it('isolates a permanently cold historical target from list, read and new sends', async () => {
+    const service = ix.get(IThreadCommunicationService);
+    const cold = ref(service.hostId, 'workspace-a', 'source');
+    const target = ref(service.hostId, 'workspace-b', 'target');
+    listPendingTargets.mockResolvedValue([cold]);
+    const originalClaim = ix.get(IThreadMailboxStore).claimNext;
+    ix.stub(IThreadMailboxStore, 'claimNext', async (input: Parameters<IThreadMailboxStore['claimNext']>[0], options: Parameters<IThreadMailboxStore['claimNext']>[1]) => input.target.sessionId === 'source' ? {
+      message: { messageId: 'historical-cold', producer: { kind: 'external_client' }, target: cold,
+        content: 'old', idempotencyKey: 'old', acceptedAt: 1, targetSeq: 1 },
+      consumerId: input.consumerId, fence: 1, leaseUntil: Date.now() + input.leaseMs, hostEpoch: 1,
+    } : originalClaim(input, options));
+    const normalResume = resume.getMockImplementation()!;
+    resume.mockImplementation((id, ...rest) => id === 'source' ? new Promise(() => {}) : normalResume(id, ...rest));
+    await expect(service.listThreads()).resolves.toMatchObject({ threads: expect.any(Array) });
+    await vi.waitFor(() => { expect(resume).toHaveBeenCalledWith('source'); });
+    await expect(service.readThread({ thread: target })).resolves.toMatchObject({ turns: [] });
+    await expect(service.sendMessage({ target, content: 'new', idempotencyKey: 'new', deliveryTimeoutMs: 30 }))
+      .resolves.toMatchObject({ delivery: 'delivered' });
+    const controller = new AbortController();
+    const cancelled = service.sendMessage({ target: cold, content: 'cancel waiter', idempotencyKey: 'cancel', signal: controller.signal });
+    await vi.waitFor(() => { expect(events.filter(event => event === 'persist')).toHaveLength(2); });
+    controller.abort();
+    await expect(cancelled).resolves.toMatchObject({ delivery: 'pending' });
+    expect(resume.mock.calls.filter(([id]) => id === 'source')).toHaveLength(1);
+    await service.shutdown();
+    expect(promptEnqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels one readiness waiter without cancelling shared mailbox recovery', async () => {
+    let release!: () => void;
+    listPendingTargets.mockImplementation(() => new Promise(resolve => { release = () => resolve([]); }));
+    const service = ix.get(IThreadCommunicationService);
+    const controller = new AbortController();
+    const cancelled = service.listThreads({ signal: controller.signal });
+    const shared = service.listThreads();
+    await vi.waitFor(() => { expect(listPendingTargets).toHaveBeenCalledOnce(); });
+    controller.abort(new Error('caller cancelled'));
+    await expect(cancelled).rejects.toThrow('caller cancelled');
+    release();
+    await expect(shared).resolves.toMatchObject({ threads: expect.any(Array) });
+    expect(listPendingTargets).toHaveBeenCalledOnce();
+  });
+
+  it('counts acceptance and readiness time against the delivery wait budget', async () => {
+    const accept = ix.get(IThreadMailboxStore).acceptMessage;
+    ix.stub(IThreadMailboxStore, 'acceptMessage', async (input: Parameters<IThreadMailboxStore['acceptMessage']>[0], options: Parameters<IThreadMailboxStore['acceptMessage']>[1]) => {
+      await new Promise(resolve => setTimeout(resolve, 30));
+      return accept(input, options);
+    });
+    resume.mockImplementation(() => new Promise(() => {}));
+    const service = ix.get(IThreadCommunicationService);
+    await service.listThreads();
+    vi.useFakeTimers();
+    try {
+      let result: Awaited<ReturnType<IThreadCommunicationService['sendMessage']>> | undefined;
+      const sending = service.sendMessage({ target: ref(service.hostId, 'workspace-b', 'target'),
+        content: 'deadline', idempotencyKey: 'deadline', deliveryTimeoutMs: 20 }).then(value => { result = value; });
+      await vi.advanceTimersByTimeAsync(30);
+      expect(result).toMatchObject({ delivery: 'pending' });
+      await sending;
+      await service.shutdown();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('lets a foreground target bypass a full historical recovery lane', async () => {
+    const service = ix.get(IThreadCommunicationService);
+    const target = ref(service.hostId, 'workspace-b', 'target');
+    const cold = Array.from({ length: 4 }, (_, index) => ref(service.hostId, 'workspace-a', `cold-${index}`));
+    listPendingTargets.mockResolvedValue([...cold, target]);
+    ix.stub(ISessionIndex, 'get', async (id: string) => id.startsWith('cold-') ? { ...summaries['source']!, id } : summaries[id]);
+    const normalClaim = ix.get(IThreadMailboxStore).claimNext;
+    ix.stub(IThreadMailboxStore, 'claimNext', async (input: Parameters<IThreadMailboxStore['claimNext']>[0], options: Parameters<IThreadMailboxStore['claimNext']>[1]) => input.target.sessionId.startsWith('cold-') ? {
+      message: { messageId: `old-${input.target.sessionId}`, producer: { kind: 'external_client' }, target: input.target,
+        content: 'old', idempotencyKey: 'old', acceptedAt: 1, targetSeq: 1 },
+      consumerId: input.consumerId, fence: 1, leaseUntil: Date.now() + input.leaseMs, hostEpoch: 1,
+    } : normalClaim(input, options));
+    const normalResume = resume.getMockImplementation()!;
+    resume.mockImplementation((id, ...rest) => id.startsWith('cold-') ? new Promise(() => {}) : normalResume(id, ...rest));
+    await service.listThreads();
+    await vi.waitFor(() => { expect(resume).toHaveBeenCalledTimes(4); });
+    expect(resume.mock.calls.map(([id]) => id)).toEqual(cold.map(item => item.sessionId));
+    await expect(service.sendMessage({ target, content: 'foreground', idempotencyKey: 'foreground' }))
+      .resolves.toMatchObject({ delivery: 'delivered' });
+    expect(promptEnqueue).toHaveBeenCalledTimes(1);
+    await service.shutdown();
+  });
+
   it('retries disabled recovery once after enabling and shares concurrent recovery', async () => {
     globalEnabled = false;
     const service = ix.get(IThreadCommunicationService);
@@ -968,7 +1055,7 @@ describe('ThreadCommunicationService', () => {
       { type: 'turn.prompt', input: prompt.content, origin: prompt.origin },
       { type: 'turn.ended', turnId: 0, reason: 'completed' },
     ];
-    const read = await service.readThread({
+    const read = await readPrepared(service, {
       thread: ref(service.hostId, 'workspace-b', 'target'),
       limit: 10,
     });
@@ -1117,7 +1204,7 @@ describe('ThreadCommunicationService', () => {
       { type: 'turn.ended', time: 60, turnId: 2, reason: 'failed' },
     ];
 
-    const result = await service.readThread({
+    const result = await readPrepared(service, {
       thread: ref(service.hostId, 'workspace-b', 'target'),
       limit: 10,
     });
@@ -1143,7 +1230,7 @@ describe('ThreadCommunicationService', () => {
       { type: 'context.append_loop_event', event: { type: 'content.part', stepUuid: `step-${turnId}`, turnId: String(turnId), part: { type: 'text', text: `Answer ${turnId}` } } },
       { type: 'turn.ended', time: turnId * 10 + 2, turnId, reason: 'completed' },
     ]);
-    const read = await service.readThread({ thread: ref(service.hostId, 'workspace-b', 'target'), limit: 10 });
+    const read = await readPrepared(service, { thread: ref(service.hostId, 'workspace-b', 'target'), limit: 10 });
     expect(read.turns.map((turn) => [turn.origin, turn.input, turn.output])).toEqual([
       ['thread_created', 'Input 0', 'Answer 0'], ['unknown', 'Input 1', 'Answer 1'], ['mixed', 'Input 2', 'Answer 2'],
     ]);
@@ -1170,7 +1257,7 @@ describe('ThreadCommunicationService', () => {
       { type: 'turn.ended', turnId: 6, reason: 'completed' },
     ];
 
-    const result = await service.readThread({
+    const result = await readPrepared(service, {
       thread: ref(service.hostId, 'workspace-b', 'target'),
       limit: 10,
     });
@@ -1195,17 +1282,17 @@ describe('ThreadCommunicationService', () => {
     const legacy = Buffer.from(JSON.stringify({ v: 1, kind: 'read', beforeTurnId: 2, thread: [service.hostId, 'workspace-b', 'target'].join('\u0000') })).toString('base64url');
     const preparing = await service.readThread({ thread, limit: 1, cursor: legacy });
     expect(preparing).toMatchObject({ turns: [], incomplete: 'history_preparing', nextCursor: expect.any(String) });
-    const first = await service.readThread({ thread, limit: 1, cursor: preparing.nextCursor });
+    const first = await readPrepared(service, { thread, limit: 1, cursor: preparing.nextCursor });
     expect(first.incomplete).toBeUndefined();
     expect(first.turns.map((turn) => turn.turnId)).toEqual([1]);
     wireRecords.push(
       { type: 'turn.prompt', input: [{ type: 'text', text: 'new input' }], origin: { kind: 'user' } },
       { type: 'turn.ended', turnId: 3, reason: 'completed' },
     );
-    const next = await service.readThread({ thread, limit: 1, cursor: first.nextCursor });
+    const next = await readPrepared(service, { thread, limit: 1, cursor: first.nextCursor });
     expect(next.turns.map((turn) => turn.turnId)).toEqual([0]);
     expect(next.nextCursor).toBeUndefined();
-    expect((await service.readThread({ thread, limit: 1 })).turns.map((turn) => turn.turnId)).toEqual([3]);
+    expect((await readPrepared(service, { thread, limit: 1 })).turns.map((turn) => turn.turnId)).toEqual([3]);
   });
 
   it('serves local content refs without resuming the thread or dropping the bounded continuation', async () => {
@@ -1217,12 +1304,12 @@ describe('ThreadCommunicationService', () => {
       { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '0', part: { type: 'text', text: output } } },
       { type: 'turn.ended', turnId: 0, reason: 'completed' },
     ];
-    const page = await service.readThread({ thread, limit: 1 });
+    const page = await readPrepared(service, { thread, limit: 1 });
     const turn = page.turns[0]!;
-    const first = await service.readThread({ thread, contentRef: turn.contentRefs![0] });
+    const first = await readPrepared(service, { thread, contentRef: turn.contentRefs![0] });
     expect(first.turns).toEqual([]);
     expect(first.view?.segment?.value).toBe(output.slice(512, 512 + 16_384));
-    const last = await service.readThread({ thread, contentRef: first.view!.segment!.next });
+    const last = await readPrepared(service, { thread, contentRef: first.view!.segment!.next });
     expect(last.view?.segment?.next).toBeUndefined();
     expect([turn.output, first.view!.segment!.value, last.view!.segment!.value].join('')).toBe(output);
     expect(resume).not.toHaveBeenCalled();
@@ -1480,6 +1567,16 @@ function inMemoryMailbox(options: { readonly activityRetainedLimit?: number } = 
     },
     close: async () => {},
   };
+}
+
+async function readPrepared(service: IThreadCommunicationService, input: Parameters<IThreadCommunicationService['readThread']>[0]) {
+  let page = await service.readThread(input);
+  for (let attempt = 0; page.incomplete === 'history_preparing'; attempt++) {
+    expect(attempt).toBeLessThan(10);
+    expect(page.nextCursor).toEqual(expect.any(String));
+    page = await service.readThread({ ...input, cursor: page.nextCursor });
+  }
+  return page;
 }
 
 function threadIdentity(thread: ThreadRef): string {
