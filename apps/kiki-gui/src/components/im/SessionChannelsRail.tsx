@@ -354,6 +354,11 @@ function SessionChannelsRailBody({
   };
 
   if (connection === null || snapshotQuery.data === undefined || policy === undefined) return null;
+  // A session with no channels keeps the whole chapter out of the rail (the
+  // other empty chapters already follow that rule) — unless something still
+  // needs this surface: the SendMessage tool row, a failed row read, or a
+  // candidate waiting to bind.
+  if (bindings.length === 0 && boundNotifyChannels.length === 0 && candidates.length === 0 && sessionCapQuery.isSuccess && smRow === undefined) return null;
 
   // R2: Authoritative status copy based on effective/allowed/reason (never guess)
   let smStatusText: string;
@@ -645,7 +650,7 @@ function SessionChannelsRailBody({
           </div>
 
           {/* Footer note: internal visible & borrowing status */}
-          <div className="flex items-center justify-between text-[11.5px] text-ink-faint pt-1 border-t border-hairline/60">
+          <div className="flex items-center justify-between text-[11.5px] text-ink-faint pt-2">
             <span className="truncate">
               {t('st.im.internalAlwaysOn')} · {t('st.im.borrowing')}:{' '}
               {isBorrowingEnabled ? t('st.im.on') : t('st.im.off')}

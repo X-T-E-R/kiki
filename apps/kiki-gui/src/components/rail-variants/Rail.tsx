@@ -257,7 +257,7 @@ function RosterSummaryChapter({
   // static read (SSR markup, a printed page) is never summary-only. The
   // summary line takes over after hydration, when the fold is a real toggle.
   const [openFilter, setOpenFilter] = useState<Parameters<typeof buildRoster>[0]['filter'] | 'all' | null>('all');
-  useEffect(() => { setOpenFilter(null); }, []);
+  useEffect(() => { setOpenFilter(null); }, [rootId]);
   const model = useMemo(
     () => buildRoster({ forest, rootId, waiting: waitingAgentIds, expanded, filter: 'all', query: '', doneOpen: false }),
     [forest, rootId, waitingAgentIds, expanded],

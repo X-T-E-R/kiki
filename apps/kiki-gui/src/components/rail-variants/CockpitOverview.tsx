@@ -927,7 +927,7 @@ function ExecutionGraph({ rows, agentCount, sessionCounts, branchTotal, composit
   const main = rows.find((row): row is Extract<GraphRow, { kind: 'main' }> => row.kind === 'main');
   const hiddenAgents = agentCount - 1 - rows.filter((row) => row.kind === 'agent').length;
   return (
-    <section data-cockpit-graph role="group" aria-label={t('rail.cockpit.graph.aria')} className="space-y-1.5">
+    <section data-cockpit-graph data-cockpit-lanes role="group" aria-label={t('rail.cockpit.graph.aria')} className="space-y-1.5">
       <header className="flex items-baseline gap-2">
         <h4 className="text-[11.5px] font-medium tracking-[0.02em] text-ink-soft">{t('rail.cockpit.graph.title')}</h4>
         <span className="ml-auto font-mono text-[10.5px] text-ink-faint tabular-nums">
