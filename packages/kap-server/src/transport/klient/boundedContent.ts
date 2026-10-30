@@ -53,9 +53,18 @@ function fieldRevision(entity: object, path: Path, through?: number): string {
       const header = child as Record<string, unknown>;
       return [header['kind'], header['stepId'] ?? header['frameId'], header['ordinal']];
     }))
-    : contentRevision(selected);
+    : isRosterPath(path) && Array.isArray(selected)
+      ? contentRevision(selected.map((row) => {
+        const header = row as Record<string, unknown>;
+        return header['agent_id'] ?? header['id'];
+      }))
+      : contentRevision(selected);
   fields.set(key, revision);
   return revision;
+}
+
+function isRosterPath(path: Path): boolean {
+  return path.length === 1 && path[0] === 'subagents';
 }
 
 function bindCuts(entity: object, source: ContentSource, cuts: readonly Cut[]): ContentRef[] {

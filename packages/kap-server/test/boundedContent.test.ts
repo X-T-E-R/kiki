@@ -217,6 +217,20 @@ describe('bounded canonical content', () => {
     expect(jsonBytes(snapshot)).toBeLessThan(64 * 1024);
   });
 
+  it('binds a snapshot roster continuation to row identities rather than every row body', () => {
+    const rows = (status: string, order: (index: number) => number = (index) => index, length = 900) => Array.from({ length }, (_, index) => {
+      const id = `agent-${order(index)}`;
+      return { id, agent_id: id, status, description: `task ${index}`, output_preview: 'receipt '.repeat(256) };
+    });
+    const preview = boundedEntity({ subagents: rows('running') }, { kind: 'snapshot', id: '' });
+    const ref = preview.contentRefs!.find((candidate) => candidate.path.length === 1 && candidate.path[0] === 'subagents')!;
+    expect(ref).toMatchObject({ kind: 'array', total: 900 });
+    const segment = readContentSegment({ subagents: rows('completed') }, ref);
+    expect((segment.value as { status: string }[])[0]).toMatchObject({ id: `agent-${ref.offset}`, status: 'completed' });
+    expect(() => readContentSegment({ subagents: rows('running', (index) => 899 - index) }, ref)).toThrow('Content changed');
+    expect(() => readContentSegment({ subagents: rows('running', undefined, 901) }, ref)).toThrow('Content changed');
+  });
+
   it('rejects changed revisions and does not concatenate a duplicate segment', () => {
     const original = { outputTail: 'a'.repeat(100_000) };
     const preview = boundedEntity(original, { kind: 'task', id: 'task0' });
