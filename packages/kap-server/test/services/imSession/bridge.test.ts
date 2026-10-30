@@ -1,6 +1,6 @@
 import { createTelegramSessionAdapter } from '@nb-im/core';
 import type { UserMessageChannel } from '@kiki/agent-core-v2/app/bot/messageRouting';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ImInboundIdentity } from '../../../src/services/imSession/adapter';
 import { ImSessionBridge } from '../../../src/services/imSession/bridge';
@@ -395,9 +395,43 @@ describe('im session bridge', () => {
     await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'persona', persona_id: 'ada' }, reply: 'edit' });
     adapter.failEdit = true;
     await adapter.emit({ eventId: '2', cursor: 2, identity, kind: 'text', text: 'go' });
+    await vi.waitFor(() => expect(adapter.sent.some((item) => item.code === 'reply' && item.text === 'Hello')).toBe(true));
     await harness.bridge.close();
     expect(adapter.edits.some((item) => item.text === 'Hel' || item.text === 'Hello')).toBe(true);
     expect(adapter.sent.filter((item) => item.code === 'reply').length).toBeGreaterThan(0);
+  });
+
+  it('stops a multi-part reply before admitting any more text or media after close', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    adapter.textLimit = 4;
+    const harness = bridgeFor(adapter, ports({ readVisible: async () => ({
+      text: 'abcdefghijkl', done: true, media: [{ kind: 'file', name: 'result.txt', mediaType: 'text/plain', bytes: new Uint8Array([1]) }],
+    }) }));
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    await adapter.emit({ eventId: 'discover', identity, kind: 'text', text: 'hello' });
+    await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' }, reply: 'final' });
+    const original = adapter.sendText.bind(adapter);
+    let release = () => {};
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    let signal: AbortSignal | undefined;
+    const send = vi.fn(async (message: Parameters<FakeImAdapter['sendText']>[0]) => {
+      signal = message.signal;
+      await hold;
+      return original(message);
+    });
+    adapter.sendText = send;
+    await adapter.emit({ eventId: 'go', identity, kind: 'text', text: 'go' });
+    await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    await harness.bridge.close();
+    expect(signal?.aborted).toBe(true);
+    release();
+    await hold;
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(adapter.files).toHaveLength(0);
+    const persisted = JSON.parse(await harness.ports.load() ?? '{}') as { replies: { open: boolean }[] };
+    expect(persisted.replies.map((reply) => reply.open)).toEqual([false]);
   });
 
   it('sends a full-text file after four segments and falls back to segments', async () => {
@@ -410,6 +444,7 @@ describe('im session bridge', () => {
     await adapter.emit({ eventId: '1', cursor: 1, identity, kind: 'text', text: 'hello' });
     await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'persona', persona_id: 'ada' }, reply: 'final' });
     await adapter.emit({ eventId: '2', cursor: 2, identity, kind: 'text', text: 'go' });
+    await vi.waitFor(() => expect(adapter.files).toHaveLength(1));
     await harness.bridge.close();
     expect(new TextDecoder().decode(adapter.files[0]?.bytes)).toBe(text);
     adapter.failFile = true;
@@ -423,6 +458,7 @@ describe('im session bridge', () => {
     await second.emit({ eventId: '1', cursor: 1, identity, kind: 'text', text: 'hello' });
     await again.bridge.confirm((await again.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'persona', persona_id: 'ada' } });
     await second.emit({ eventId: '2', cursor: 2, identity, kind: 'text', text: 'go' });
+    await vi.waitFor(() => expect(second.sent.filter((item) => item.code === 'reply').map((item) => item.text).join('')).toBe(text));
     await again.bridge.close();
     const joined = second.sent.filter((item) => item.code === 'reply').map((item) => item.text).join('');
     expect(joined).toBe(text);
@@ -705,6 +741,7 @@ describe('im session bridge', () => {
     expect(adapter.sent.some((item) => item.buttons !== undefined && item.buttons.length > 0)).toBe(false);
     await adapter.emit({ eventId: '2', cursor: 2, identity, kind: 'text', text: 'go' });
     releaseDone();
+    await vi.waitFor(() => expect(adapter.sent.some((item) => item.code === 'file_unsupported')).toBe(true));
     await harness.bridge.close();
     expect(adapter.edits).toEqual([]);
     expect(adapter.sent.filter((item) => item.code === 'reply').map((item) => item.text)).toEqual(['Hi', 'Hello']);

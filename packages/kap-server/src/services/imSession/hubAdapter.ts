@@ -283,19 +283,19 @@ export class HubSessionAdapter implements ImSessionAdapter {
       target: this.target(message.identity),
       text: message.text,
       ...(buttons !== undefined && buttons.length > 0 ? { buttons } : {}),
-    }, message.identity);
+    }, message.identity, message.signal);
     return acceptedDelivery(sent);
   }
 
-  async sendTextParts(message: { identity: ImInboundIdentity; parts: readonly string[]; code: string }): Promise<{ messageId: string; messageIds: readonly string[] }> {
+  async sendTextParts(message: { identity: ImInboundIdentity; parts: readonly string[]; code: string; signal?: AbortSignal }): Promise<{ messageId: string; messageIds: readonly string[] }> {
     await this.useReplies();
-    const sent = await this.dispatch({ type: 'text_parts', target: this.target(message.identity), parts: message.parts }, message.identity);
+    const sent = await this.dispatch({ type: 'text_parts', target: this.target(message.identity), parts: message.parts }, message.identity, message.signal);
     return acceptedDelivery(sent);
   }
 
   async editText(message: ImOutboundText & { readonly messageId: string }): Promise<{ messageId: string; edited: boolean }> {
     await this.useReplies();
-    const sent = await this.dispatch({ type: 'edit_text', target: this.target(message.identity), message_id: message.messageId, text: message.text }, message.identity);
+    const sent = await this.dispatch({ type: 'edit_text', target: this.target(message.identity), message_id: message.messageId, text: message.text }, message.identity, message.signal);
     if (sent.error_kind === 'unsupported') return { messageId: message.messageId, edited: false };
     const accepted = acceptedDelivery(sent);
     return { messageId: accepted.messageId.length > 0 ? accepted.messageId : message.messageId, edited: true };
@@ -308,7 +308,7 @@ export class HubSessionAdapter implements ImSessionAdapter {
       type: 'media',
       target: this.target(message.identity),
       media: { kind, filename: message.name, mime: message.mediaType, bytes: message.bytes },
-    }, message.identity);
+    }, message.identity, message.signal);
     if (message.asVoice && sent.error_kind === 'bad_format') throw new Error('bad_format');
     if (sent.error_kind === 'unsupported') throw new Error('unsupported_file');
     const accepted = acceptedDelivery(sent);
@@ -332,7 +332,7 @@ export class HubSessionAdapter implements ImSessionAdapter {
       const sent = await this.dispatch({
         type: 'media', target: this.target(message.identity),
         media: { kind: message.kind, filename: message.name, mime: message.mediaType, bytes: message.bytes },
-      }, message.identity);
+      }, message.identity, message.signal);
       return {
         status: sent.status === 'accepted' ? 'delivered' : sent.error_kind === 'unsupported' ? 'unsupported' : sent.status === 'unknown' ? 'unknown' : 'failed',
         messageIds: sent.message_ids,
@@ -407,13 +407,15 @@ export class HubSessionAdapter implements ImSessionAdapter {
     };
   }
 
-  private async dispatch(message: SessionOutbound, identity: ImInboundIdentity): Promise<SessionReceipt> {
+  private async dispatch(message: SessionOutbound, identity: ImInboundIdentity, signal?: AbortSignal): Promise<SessionReceipt> {
+    signal?.throwIfAborted();
     const had = 'target' in message && typeof message.target.reply_context === 'string' && message.target.reply_context.length > 0;
-    const sent = await this.session.send(message);
+    const sent = await this.session.send(message, signal);
     if (sent.diagnostic_code === 'wechat_auth') throw new Error('wechat_auth');
     if (sent.status === 'failed' && sent.diagnostic_code === 'wechat_rejected' && had) {
       await this.forgetReply(identity);
-      const retried = await this.session.send(withoutReply(message));
+      signal?.throwIfAborted();
+      const retried = await this.session.send(withoutReply(message), signal);
       if (retried.diagnostic_code === 'wechat_auth') throw new Error('wechat_auth');
       return retried;
     }

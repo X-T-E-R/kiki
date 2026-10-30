@@ -1,5 +1,5 @@
 import { createFeishuSessionAdapter, createWechatSessionAdapter, type SessionSpec } from '@nb-im/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { HubSessionAdapter } from '../../../src/services/imSession/hubAdapter';
 import { ImSessionBridge } from '../../../src/services/imSession/bridge';
@@ -64,8 +64,8 @@ async function pair(bridge: ImSessionBridge, adapter: FakeImAdapter, who: ImInbo
   await bridge.confirm(discovery.id, { target: { kind: 'session', session_id: 'sess' } });
 }
 
-function saved(raw: string): { tickets: { id: string; action: string; consumed: boolean; interactionId: string }[]; outbox: { key: string; delivery: 'pending' | 'sent'; buttons: { id: string; label: string }[]; code: string }[] } {
-  return JSON.parse(raw) as { tickets: { id: string; action: string; consumed: boolean; interactionId: string }[]; outbox: { key: string; delivery: 'pending' | 'sent'; buttons: { id: string; label: string }[]; code: string }[] };
+function saved(raw: string): { tickets: { id: string; action: string; consumed: boolean; interactionId: string }[]; outbox: { key: string; delivery: 'pending' | 'sending' | 'sent' | 'unknown'; buttons: { id: string; label: string }[]; code: string }[] } {
+  return JSON.parse(raw) as { tickets: { id: string; action: string; consumed: boolean; interactionId: string }[]; outbox: { key: string; delivery: 'pending' | 'sending' | 'sent' | 'unknown'; buttons: { id: string; label: string }[]; code: string }[] };
 }
 
 function failOnce(adapter: FakeImAdapter, codes: readonly string[]) {
@@ -231,6 +231,8 @@ describe('phone interaction outbox', () => {
     await harness.bridge.setListening('inst', true);
     await pair(harness.bridge, adapter, identity, 'e1');
     await pair(harness.bridge, adapter, other, 'e2');
+    const reads = vi.fn(async () => pending);
+    harness.ports.sessions.listInteractions = reads;
     const original = adapter.sendText.bind(adapter);
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -246,6 +248,7 @@ describe('phone interaction outbox', () => {
     expect(calls).toBe(1);
     release();
     await Promise.all([first, second]);
+    expect(reads).toHaveBeenCalledTimes(1);
     expect(adapter.sent.filter((item) => item.code === 'approval')).toHaveLength(1);
     const allow = saved(harness.stored()).tickets.find((ticket) => ticket.action === 'approve');
     await adapter.emit({ eventId: 'other', identity: other, kind: 'callback', callbackData: allow!.id, callbackQueryId: 'cb-other' });
@@ -254,6 +257,188 @@ describe('phone interaction outbox', () => {
     expect(saved(harness.stored()).tickets.find((ticket) => ticket.id === allow!.id)?.consumed).toBe(false);
     await adapter.emit({ eventId: 'owner', identity, kind: 'callback', callbackData: allow!.id, callbackQueryId: 'cb-owner' });
     expect(harness.decisions).toEqual(['a1:approved']);
+    await harness.bridge.close();
+  });
+
+  it('coalesces 100 overlapping polls, isolates a blocked binding and retains unknown across restart', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const pending = { approvals: [{ id: 'a1', expiresAt: NOW + 10_000, toolName: 'Bash', action: 'run' }] as ImPendingApproval[], questions: [] as ImPendingQuestion[] };
+    const harness = bridgeFor(adapter, pending);
+    harness.ports.sessions.owns = async () => true;
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    await pair(harness.bridge, adapter, identity, 'first');
+    await pair(harness.bridge, adapter, other, 'second');
+    const binding = (await harness.bridge.snapshot()).bindings.find((item) => item.identity.sender_id === other.senderId)!;
+    await harness.bridge.updateBinding(binding.id, { sessionId: 'other-session', rebind: true });
+    const reads = vi.fn(async () => pending);
+    harness.ports.sessions.listInteractions = reads;
+    let release = () => {};
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const original = adapter.sendText.bind(adapter);
+    adapter.sendText = async (message) => {
+      if (message.identity.chatId === identity.chatId && message.code === 'approval') await hold;
+      return original(message);
+    };
+    const first = harness.bridge.syncInteractions();
+    const joined = Array.from({ length: 100 }, () => harness.bridge.syncInteractions());
+    expect(joined.every((flight) => flight === first)).toBe(true);
+    await vi.waitFor(() => expect(adapter.sent.filter((item) => item.code === 'approval')).toHaveLength(1));
+    expect(adapter.sent.find((item) => item.code === 'approval')?.identity.chatId).toBe(other.chatId);
+    expect(reads).toHaveBeenCalledTimes(2);
+    const started = performance.now();
+    await harness.bridge.close();
+    expect(performance.now() - started).toBeLessThan(1500);
+    await Promise.all([first, ...joined]);
+    expect(saved(harness.stored()).outbox.map((item) => item.delivery).sort()).toEqual(['sent', 'unknown']);
+    const nextAdapter = new FakeImAdapter('telegram', '42');
+    const next = new ImSessionBridge({ ports: harness.ports, factories: [fakeAdapterFactory(nextAdapter)], now: () => NOW });
+    await next.setListening('inst', true);
+    await next.syncInteractions();
+    expect(nextAdapter.sent.filter((item) => item.code === 'approval')).toHaveLength(0);
+    await next.close();
+    const interrupted = saved(harness.stored());
+    for (const job of interrupted.outbox) if (job.delivery === 'unknown') job.delivery = 'sending';
+    harness.ports.load = async () => JSON.stringify(interrupted);
+    const restoredAdapter = new FakeImAdapter('telegram', '42');
+    const restored = new ImSessionBridge({ ports: harness.ports, factories: [fakeAdapterFactory(restoredAdapter)], now: () => NOW });
+    await restored.setListening('inst', true);
+    await restored.syncInteractions();
+    expect(saved(harness.stored()).outbox.map((item) => item.delivery).sort()).toEqual(['sent', 'unknown']);
+    expect(restoredAdapter.sent.filter((item) => item.code === 'approval')).toHaveLength(0);
+    release();
+    await restored.close();
+  });
+
+  it('runs one dirty follow-up after overlapping reads rather than one poll per call', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const pending = { approvals: [] as ImPendingApproval[], questions: [] as ImPendingQuestion[] };
+    const harness = bridgeFor(adapter, pending);
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    await pair(harness.bridge, adapter, identity, 'pair');
+    let release = () => {};
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    let reads = 0;
+    harness.ports.sessions.listInteractions = async () => { reads += 1; if (reads === 1) await hold; return pending; };
+    const first = harness.bridge.syncInteractions();
+    await vi.waitFor(() => expect(reads).toBe(1));
+    const joined = Array.from({ length: 100 }, () => harness.bridge.syncInteractions());
+    release();
+    await Promise.all([first, ...joined]);
+    expect(reads).toBe(2);
+    await harness.bridge.close();
+  });
+
+  it('aborts a blocked interaction read on close and admits no dirty follow-up', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const pending = { approvals: [] as ImPendingApproval[], questions: [] as ImPendingQuestion[] };
+    const harness = bridgeFor(adapter, pending);
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    await pair(harness.bridge, adapter, identity, 'pair');
+    let received: AbortSignal | undefined;
+    const read = vi.fn((_session: string, signal?: AbortSignal) => { received = signal; return new Promise<typeof pending>(() => {}); });
+    harness.ports.sessions.listInteractions = read;
+    const first = harness.bridge.syncInteractions();
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    const joined = harness.bridge.syncInteractions();
+    await harness.bridge.close();
+    await Promise.all([first, joined]);
+    expect(received?.aborted).toBe(true);
+    await harness.bridge.syncInteractions();
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it('expires a stalled session read after ten seconds and permits a later poll', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const pending = { approvals: [] as ImPendingApproval[], questions: [] as ImPendingQuestion[] };
+    const harness = bridgeFor(adapter, pending);
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    await pair(harness.bridge, adapter, identity, 'pair');
+    let received: AbortSignal | undefined;
+    harness.ports.sessions.listInteractions = (_session, signal) => { received = signal; return new Promise<typeof pending>(() => {}); };
+    vi.useFakeTimers();
+    try {
+      const flight = harness.bridge.syncInteractions();
+      const result = expect(flight).rejects.toThrow('Aborted');
+      await vi.advanceTimersByTimeAsync(10_000);
+      await result;
+      expect(received?.aborted).toBe(true);
+      harness.ports.sessions.listInteractions = async () => pending;
+      await expect(harness.bridge.syncInteractions()).resolves.toBeUndefined();
+    } finally { vi.useRealTimers(); await harness.bridge.close(); }
+  });
+
+  it('marks a timed-out send unknown and does not retry it on the next poll', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const pending = { approvals: [{ id: 'a1', expiresAt: NOW + 10_000, toolName: 'Bash', action: 'run' }] as ImPendingApproval[], questions: [] as ImPendingQuestion[] };
+    const harness = bridgeFor(adapter, pending);
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    await pair(harness.bridge, adapter, identity, 'pair');
+    const send = vi.fn((_message: Parameters<FakeImAdapter['sendText']>[0]) => new Promise<{ messageId: string; messageIds: readonly string[] }>(() => {}));
+    adapter.sendText = send;
+    vi.useFakeTimers();
+    try {
+      const flight = harness.bridge.syncInteractions();
+      const result = expect(flight).rejects.toThrow('im_send_outcome_unknown');
+      await vi.advanceTimersByTimeAsync(60_000);
+      await result;
+      expect(saved(harness.stored()).outbox[0]?.delivery).toBe('unknown');
+      await harness.bridge.syncInteractions();
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send.mock.calls[0]?.length).toBe(1);
+    } finally { vi.useRealTimers(); await harness.bridge.close(); }
+  });
+
+  it('rechecks a binding replaced while the staged delivery is being saved', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const pending = { approvals: [{ id: 'a1', expiresAt: NOW + 10_000, toolName: 'Bash', action: 'run' }] as ImPendingApproval[], questions: [] as ImPendingQuestion[] };
+    const harness = bridgeFor(adapter, pending);
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    await pair(harness.bridge, adapter, identity, 'pair');
+    const binding = (await harness.bridge.snapshot()).bindings[0]!;
+    let release = () => {};
+    let saving = false;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const save = harness.ports.save;
+    harness.ports.save = async (raw) => { if (!saving) { saving = true; await hold; } await save(raw); };
+    const flight = harness.bridge.syncInteractions();
+    await vi.waitFor(() => expect(saving).toBe(true));
+    const changed = harness.bridge.updateBinding(binding.id, { outputEnabled: false });
+    await vi.waitFor(async () => expect((await harness.bridge.snapshot()).bindings[0]?.output_enabled).toBe(false));
+    release();
+    await Promise.all([flight, changed]);
+    expect(adapter.sent.filter((item) => item.code === 'approval')).toHaveLength(0);
+    await harness.bridge.close();
+  });
+
+  it('rejects a queued delivery when its binding is disabled before dispatch', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const pending = { approvals: [{ id: 'a1', expiresAt: NOW + 10_000, toolName: 'Bash', action: 'run' }] as ImPendingApproval[], questions: [] as ImPendingQuestion[] };
+    const harness = bridgeFor(adapter, pending);
+    await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+    await harness.bridge.setListening('inst', true);
+    await pair(harness.bridge, adapter, identity, 'pair');
+    const binding = (await harness.bridge.snapshot()).bindings[0]!;
+    let release = () => {};
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const original = adapter.sendText.bind(adapter);
+    let helping = false;
+    adapter.sendText = async (message) => { if (message.code === 'help') { helping = true; await hold; } return original(message); };
+    const command = adapter.emit({ eventId: 'help', identity, kind: 'text', text: '/help' });
+    await vi.waitFor(() => expect(helping).toBe(true));
+    const flight = harness.bridge.syncInteractions();
+    const result = expect(flight).rejects.toThrow('im_send_cancelled');
+    await vi.waitFor(() => expect(saved(harness.stored()).outbox[0]?.delivery).toBe('sending'));
+    await harness.bridge.updateBinding(binding.id, { outputEnabled: false });
+    release();
+    await Promise.all([command, result]);
+    expect(adapter.sent.filter((item) => item.code === 'approval')).toHaveLength(0);
+    expect(saved(harness.stored()).outbox[0]?.delivery).toBe('pending');
     await harness.bridge.close();
   });
 

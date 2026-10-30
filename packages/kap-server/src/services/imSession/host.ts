@@ -271,7 +271,7 @@ class NotificationSessionPorts implements ImSessionPorts {
       return bytes === undefined ? undefined : { bytes, name: ref.hash.slice(0, 12) };
     },
     readVisible: (sessionId, promptId, turnId) => this.readVisible(sessionId, promptId, turnId),
-    listInteractions: (sessionId) => this.listInteractions(sessionId),
+    listInteractions: (sessionId, signal) => this.listInteractions(sessionId, signal),
     decideApproval: (input) => this.decide(input, false),
     decideHostKey: (input) => this.decide(input, true),
     answerQuestion: (input) => this.answerQuestion(input),
@@ -328,11 +328,12 @@ class NotificationSessionPorts implements ImSessionPorts {
     return { ok: true, accountId: String(id) };
   }
 
-  private inSession<T>(sessionId: string, work: (session: NonNullable<Parameters<Parameters<typeof withSessionOperation>[2]>[0]>) => Promise<T>): Promise<T> {
+  private inSession<T>(sessionId: string, work: (session: NonNullable<Parameters<Parameters<typeof withSessionOperation>[2]>[0]>) => Promise<T>, signal?: AbortSignal): Promise<T> {
     return withSessionOperation(this.core, sessionId, async (session) => {
+      signal?.throwIfAborted();
       if (session === undefined) throw new Error('unknown_session');
       return work(session);
-    });
+    }, signal);
   }
 
   private async submit(input: Parameters<ImSessionPorts['sessions']['submit']>[0]): Promise<ImSubmitResult> {
@@ -396,7 +397,7 @@ class NotificationSessionPorts implements ImSessionPorts {
     });
   }
 
-  private listInteractions(sessionId: string) {
+  private listInteractions(sessionId: string, signal?: AbortSignal) {
     return this.inSession(sessionId, async (session) => {
       const approvals: { id: string; expiresAt: number; toolName: string; action: string; ssh?: 'login' | 'host_key' }[] = [];
       const questions: { id: string; questionIndex: number; expiresAt: number; questionKey: string; options: { id: string; label: string }[]; multi: boolean; allowOther: boolean }[] = [];
@@ -418,7 +419,7 @@ class NotificationSessionPorts implements ImSessionPorts {
         }
       }
       return { approvals, questions };
-    });
+    }, signal);
   }
 
   private decide(input: { sessionId: string; interactionId: string; decision: 'approved' | 'rejected' }, hostKey: boolean) {

@@ -847,6 +847,8 @@ Channel identity uses `chat_id`, `sender_id`, and `topic_id` (`"0"` for no topic
 
 If an older Feishu thread binding has no reply context, send a new message from the same sender in that thread to restore delivery of still-pending approvals and questions. Unsupported WeChat group bindings remain unsent; disable or remove them rather than retrying them as private chats. A blocked binding does not prevent delivery to other channels.
 
+IM sends wait at most 60 seconds, including time queued for that destination. If an approval or question send times out or is interrupted after dispatch, Kiki does not resend it automatically, including after restart. Open the session in Kiki to handle the pending interaction.
+
 ### Global search and misc
 
 | Method and path | Description |

@@ -16,7 +16,8 @@ import {
   webhookProvider, type Config, type CredentialScope, type DeliveryView,
 } from '@nb-im/core';
 import { ensurePluginDigestReceipts, PluginDigestDelivery } from './pluginDigestDelivery';
-import { joinDeliveries, sendProvider } from './providerDelivery';
+import { sendProvider } from './providerDelivery';
+import { joinDeliveries } from '../../lib/joinDeliveries';
 
 type Settings = NotificationsConfig;
 type RuntimeState = { runtime: Runtime; controller: AbortController; sends: Set<Promise<unknown>>; retirement?: Promise<void> };

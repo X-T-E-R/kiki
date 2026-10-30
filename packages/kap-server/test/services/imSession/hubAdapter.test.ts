@@ -27,6 +27,20 @@ function session(): SessionAdapter & { sink?: SessionSink; sent: SessionOutbound
 }
 
 describe('hub session adapter', () => {
+  it('passes the delivery signal through to the session and rejects late sends after cancellation', async () => {
+    const raw = session();
+    const signals: (AbortSignal | undefined)[] = [];
+    raw.send = async (_message, signal) => { signals.push(signal); return { status: 'accepted', message_ids: ['sent'] }; };
+    const hub = new HubSessionAdapter(raw);
+    const controller = new AbortController();
+    const message = { identity: { chatId: 'c', senderId: 'u', topicId: '0' }, text: 'Reply', code: 'approval', signal: controller.signal };
+    await hub.sendText(message);
+    expect(signals).toEqual([controller.signal]);
+    controller.abort();
+    await expect(hub.sendText(message)).rejects.toThrow();
+    expect(signals).toHaveLength(1);
+  });
+
   it('learns the real OneBot listener account through the existing authenticated transport without rewriting binding identity', async () => {
     const frames: ((frame: unknown) => void)[] = [];
     let sent: unknown;

@@ -95,7 +95,7 @@ export interface ImSessionPorts {
     historyMedia?(sessionId: string, content: readonly MessageContent[]): Promise<readonly MessageContent[]>;
     readAttachment?(input: { sessionId: string; blobId: string }): Promise<{ bytes: Uint8Array; name: string; mediaType?: string } | undefined>;
     readVisible(sessionId: string, promptId: string, turnId?: number): Promise<ImVisibleReply>;
-    listInteractions(sessionId: string): Promise<{ approvals: readonly ImPendingApproval[]; questions: readonly ImPendingQuestion[] }>;
+    listInteractions(sessionId: string, signal?: AbortSignal): Promise<{ approvals: readonly ImPendingApproval[]; questions: readonly ImPendingQuestion[] }>;
     decideApproval(input: { sessionId: string; interactionId: string; decision: 'approved' | 'rejected' }): Promise<'decided' | 'expired' | 'resolved'>;
     decideHostKey(input: { sessionId: string; interactionId: string; decision: 'approved' | 'rejected' }): Promise<'decided' | 'expired' | 'resolved'>;
     answerQuestion(input: { sessionId: string; interactionId: string; response: ImQuestionAnswer; previous?: Record<string, string | true> }): Promise<ImAnswerResult>;

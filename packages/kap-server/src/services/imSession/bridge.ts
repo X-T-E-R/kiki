@@ -19,6 +19,8 @@ import { parseImPaste } from './paste';
 import type { ImAnswerResult, ImPendingQuestion, ImQuestionAnswer, ImSessionBridgeOptions, ImSessionPorts } from './ports';
 import { segmentText } from './segment';
 import { ImHistoryJournal } from './history';
+import { withImDeadline } from './deadline';
+import { joinDeliveries } from '../../lib/joinDeliveries';
 import type { ImHistoryQuery } from '@kiki/agent-core-v2/app/bot/imMessageHistory';
 import type { ImGroupPolicy, ImMessageMetadata } from '@kiki/protocol';
 
@@ -130,7 +132,7 @@ interface OutboxRecord {
   text: string;
   code: string;
   buttons: OutboxButton[];
-  delivery: 'pending' | 'sent';
+  delivery: 'pending' | 'sending' | 'sent' | 'unknown';
 }
 
 interface Stored {
@@ -263,7 +265,10 @@ export class ImSessionBridge {
   private readonly jobs = new Set<Promise<void>>();
   private readonly wechatLogin: ImSessionBridgeOptions['wechatLogin'];
   private readonly liveReplies = new Set<string>();
-  private projection: Promise<void> = Promise.resolve();
+  private readonly projections = new Map<string, Promise<void>>();
+  private readonly deliveryController = new AbortController();
+  private syncFlight?: Promise<void>;
+  private syncDirty = false;
   private ready: Promise<void>;
   private readonly history?: ImHistoryJournal;
 
@@ -461,7 +466,7 @@ export class ImSessionBridge {
       owned = { controller: new AbortController(), targets: new Map() };
       this.sends.set(adapter, owned);
     }
-    const combined = signal === undefined ? owned.controller.signal : AbortSignal.any([signal, owned.controller.signal]);
+    const combined = AbortSignal.any([this.deliveryController.signal, owned.controller.signal, ...(signal === undefined ? [] : [signal])]);
     const key = JSON.stringify([identity.chatId, identity.topicId]);
     let target = owned.targets.get(key);
     if (target === undefined) {
@@ -470,20 +475,28 @@ export class ImSessionBridge {
     }
     const current = target;
     const interval = this.factories.find((factory) => factory.providerKind === adapter.providerKind)?.minSendIntervalMs ?? 0;
-    const run = current.tail.catch(() => undefined).then(async () => {
-      combined.throwIfAborted();
+    const previous = current.tail;
+    const bindings = this.state.bindings.filter((binding) => sameIdentity(binding.identity, identity) && this.adapterFor(binding.providerInstanceId) === adapter);
+    let dispatched = false;
+    const run = withImDeadline(combined, 60_000, (deadline) => previous.catch(() => undefined).then(async () => {
+      deadline.throwIfAborted();
       const remaining = current.at === undefined ? 0 : Math.max(0, current.at + interval - this.now());
       if (remaining > 0) {
         await new Promise<void>((resolve, reject) => {
-          const aborted = () => reject(combined.reason);
-          combined.addEventListener('abort', aborted, { once: true });
-          void this.wait(remaining, combined).then(resolve, reject).finally(() => combined.removeEventListener('abort', aborted));
-          if (combined.aborted) aborted();
+          const aborted = () => reject(deadline.reason);
+          deadline.addEventListener('abort', aborted, { once: true });
+          void this.wait(remaining, deadline).then(resolve, reject).finally(() => deadline.removeEventListener('abort', aborted));
+          if (deadline.aborted) aborted();
         });
       }
-      combined.throwIfAborted();
+      deadline.throwIfAborted();
+      if (bindings.length > 0 && !bindings.some((binding) => this.state.bindings.includes(binding) && this.admittedOutbound(binding) && this.adapterFor(binding.providerInstanceId) === adapter)) throw new ImSendError('im_send_cancelled');
       current.at = this.now();
-      return work(combined);
+      dispatched = true;
+      return work(deadline);
+    })).catch((error: unknown) => {
+      if (error instanceof Error && error.name === 'AbortError') throw new ImSendError(dispatched ? 'im_send_outcome_unknown' : 'im_send_cancelled', [], undefined, dispatched ? 'unknown' : 'failed');
+      throw error;
     });
     current.tail = run;
     return run;
@@ -812,19 +825,40 @@ export class ImSessionBridge {
     return this.state.bindings.some((binding) => binding.providerInstanceId === input.providerInstanceId && binding.identity.chatId === String(chat) && this.admittedOutbound(binding) && (input.scene === 'work_complete' || binding.mobileInteractions));
   }
 
-  async syncInteractions(): Promise<void> {
-    await this.ready;
-    const errors: unknown[] = [];
-    for (const binding of this.state.bindings) {
-      if (!this.admittedOutbound(binding) || !binding.mobileInteractions) continue;
-      try {
-        const pending = await this.ports.sessions.listInteractions(binding.sessionId);
-        await this.projectInteractions(binding, pending.approvals, pending.questions);
-      } catch (error) {
-        errors.push(error);
-      }
+  syncInteractions(): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    if (this.syncFlight !== undefined) {
+      this.syncDirty = true;
+      return this.syncFlight;
     }
-    if (errors.length > 0) throw errors[0];
+    const run = (async () => {
+      await this.ready;
+      const errors: unknown[] = [];
+      do {
+        this.syncDirty = false;
+        if (this.closed) break;
+        const reads = new Map<string, ReturnType<ImSessionPorts['sessions']['listInteractions']>>();
+        const bindings = this.state.bindings.filter((binding) => this.admittedOutbound(binding) && binding.mobileInteractions);
+        await Promise.all(bindings.map(async (binding) => {
+          try {
+            let read = reads.get(binding.sessionId);
+            if (read === undefined) {
+              read = withImDeadline(this.deliveryController.signal, 10_000,
+                (signal) => this.ports.sessions.listInteractions(binding.sessionId, signal));
+              reads.set(binding.sessionId, read);
+            }
+            const pending = await read;
+            if (!this.closed) await this.projectInteractions(binding, pending.approvals, pending.questions);
+          } catch (error) {
+            if (!this.closed) errors.push(error);
+          }
+        }));
+      } while (this.syncDirty && !this.closed);
+      if (errors.length > 0) throw errors[0];
+    })();
+    this.syncFlight = run;
+    void run.then(() => { this.syncFlight = undefined; }, () => { this.syncFlight = undefined; });
+    return run;
   }
 
   async startWechatQr(): Promise<{ login_id: string; image: string }> {
@@ -847,9 +881,12 @@ export class ImSessionBridge {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.syncDirty = false;
+    this.deliveryController.abort();
     await this.ready;
     await this.stopAll();
-    await Promise.all(this.jobs);
+    await joinDeliveries([...this.jobs, ...this.projections.values(), ...(this.syncFlight === undefined ? [] : [this.syncFlight])]);
+    await this.persistenceQueue;
   }
 
   private async restore(): Promise<void> {
@@ -859,6 +896,9 @@ export class ImSessionBridge {
     if (typeof parsed === 'object' && parsed !== null) this.state = { ...emptyState(), ...(parsed as Stored) };
     if (!Array.isArray(this.state.replies)) this.state.replies = [];
     if (!Array.isArray(this.state.outbox)) this.state.outbox = [];
+    let recovered = false;
+    for (const job of this.state.outbox) if (job.delivery === 'sending') { job.delivery = 'unknown'; recovered = true; }
+    if (recovered) await this.persist();
     if (typeof this.state.questionAnswers !== 'object' || this.state.questionAnswers === null) this.state.questionAnswers = {};
     if (typeof this.state.answeredQuestions !== 'object' || this.state.answeredQuestions === null) this.state.answeredQuestions = {};
     await this.markOrphans();
@@ -1580,13 +1620,13 @@ export class ImSessionBridge {
     };
     const job = (async () => {
       try {
-        while (this.state.policy.allowed) {
+        while (!this.closed && this.state.policy.allowed) {
           await this.wait(this.editIntervalMs);
           const active = this.only(this.state.bindings, binding.id);
           if (active === undefined || active.sessionId !== sessionId || !this.admittedOutbound(active)) return;
           const current = { ...active, identity: replyIdentity ?? stored?.identity ?? active.identity };
           const visible = await this.ports.sessions.readVisible(sessionId, promptId, turnId);
-          if (this.only(this.state.bindings, binding.id)?.sessionId !== sessionId) return;
+          if (this.closed || this.only(this.state.bindings, binding.id)?.sessionId !== sessionId) return;
           const before = `${ledger.lastText}\n${ledger.deliveredText ?? ''}\n${ledger.messageIds.join('\n')}`;
           if (current.reply === 'edit' && this.pendingReply(visible.text, ledger, visible.done)) await this.publishText(adapter, current.identity, visible.text, ledger, true, visible.done);
           if (`${ledger.lastText}\n${ledger.deliveredText ?? ''}\n${ledger.messageIds.join('\n')}` !== before) {
@@ -1603,6 +1643,10 @@ export class ImSessionBridge {
           return;
         }
       } catch (error) {
+        if (error instanceof ImSendError && error.outcome !== 'failed') {
+          this.rememberReply(binding, promptId, turnId, ledger, false);
+          await this.persist();
+        }
         if (error instanceof Error && error.message === 'wechat_auth') {
           await this.send(adapter, binding.identity, this.copy('wechatAuth'), 'wechat_auth').catch(() => undefined);
         }
@@ -1610,7 +1654,8 @@ export class ImSessionBridge {
       }
     })();
     this.jobs.add(job);
-    void job.finally(() => { this.jobs.delete(job); this.liveReplies.delete(live); });
+    const clear = (): void => { this.jobs.delete(job); this.liveReplies.delete(live); };
+    void job.then(clear, clear);
   }
 
   private rememberReply(binding: BindingRecord, promptId: string, turnId: number | undefined, ledger: ReplyLedger, open: boolean): void {
@@ -1668,9 +1713,10 @@ export class ImSessionBridge {
     } else if (edit) await this.editOrSend(adapter, identity, ledger, 0, head);
     if (parts.length > 4 && final && !ledger.fileSent) {
       try {
-        await adapter.sendFile({ identity, name: 'reply.txt', mediaType: 'text/plain', bytes: new TextEncoder().encode(text), asVoice: false, asImage: false });
+        await this.pacedSend(adapter, identity, (signal) => adapter.sendFile({ identity, name: 'reply.txt', mediaType: 'text/plain', bytes: new TextEncoder().encode(text), asVoice: false, asImage: false, signal }));
         ledger.fileSent = true;
-      } catch {
+      } catch (error) {
+        if (error instanceof ImSendError && error.outcome !== 'failed') throw error;
         for (let index = 1; index < parts.length; index += 1) {
           if (ledger.messageIds.length <= index) {
             const sent = await this.sendReply(adapter, identity, parts[index]!, ledger, text);
@@ -1705,9 +1751,9 @@ export class ImSessionBridge {
             next.push(existing);
             continue;
           }
-          const edited = await adapter.editText({ identity, messageId: existing, text: part, code: 'reply' });
+          const edited = await this.pacedSend(adapter, identity, (signal) => adapter.editText({ identity, messageId: existing, text: part, code: 'reply', signal }));
           if (!edited.edited) {
-            const sent = await adapter.sendText({ identity, text: part, code: 'reply' });
+            const sent = await this.pacedSend(adapter, identity, (signal) => adapter.sendText({ identity, text: part, code: 'reply', signal }));
             const accepted = deliveryIds(sent);
             if (accepted.length === 0) {
               ledger.messageIds = next;
@@ -1717,7 +1763,7 @@ export class ImSessionBridge {
           } else next.push(edited.messageId.length > 0 ? edited.messageId : existing);
           continue;
         }
-        const sent = await adapter.sendText({ identity, text: part, code: 'reply' });
+        const sent = await this.pacedSend(adapter, identity, (signal) => adapter.sendText({ identity, text: part, code: 'reply', signal }));
         const accepted = deliveryIds(sent);
         if (accepted.length === 0) {
           ledger.messageIds = next;
@@ -1728,6 +1774,7 @@ export class ImSessionBridge {
         const extra = error instanceof ImSendError ? error.acceptedIds.filter((id) => id.length > 0) : [];
         const failedPart = error instanceof ImSendError && error.failedPart !== undefined ? error.failedPart : extra.length;
         ledger.messageIds = [...next, ...extra.slice(0, failedPart)];
+        if (error instanceof ImSendError && error.outcome !== 'failed') throw error;
         return;
       }
     }
@@ -1736,9 +1783,10 @@ export class ImSessionBridge {
         const existing = ledger.messageIds[index];
         if (existing === undefined || existing.length === 0) continue;
         try {
-          const edited = await adapter.editText({ identity, messageId: existing, text: ' ', code: 'reply' });
+          const edited = await this.pacedSend(adapter, identity, (signal) => adapter.editText({ identity, messageId: existing, text: ' ', code: 'reply', signal }));
           if (!edited.edited) return;
-        } catch {
+        } catch (error) {
+          if (error instanceof ImSendError && error.outcome !== 'failed') throw error;
           return;
         }
       }
@@ -1749,7 +1797,7 @@ export class ImSessionBridge {
 
   private async sendReply(adapter: ImSessionAdapter, identity: ImInboundIdentity, part: string, ledger: ReplyLedger, full: string): Promise<{ messageId: string } | undefined> {
     try {
-      return await adapter.sendText({ identity, text: part, code: 'reply' });
+      return await this.pacedSend(adapter, identity, (signal) => adapter.sendText({ identity, text: part, code: 'reply', signal }));
     } catch (error) {
       if (await this.noteTooLong(adapter, identity, full, ledger, error)) return undefined;
       throw error;
@@ -1760,12 +1808,13 @@ export class ImSessionBridge {
     if (!(error instanceof Error) || error.message !== 'too_long') return false;
     if (adapter.providerKind === 'wechat_bridge' && adapter.supportsFile) {
       try {
-        await adapter.sendFile({ identity, name: 'reply.txt', mediaType: 'text/plain', bytes: new TextEncoder().encode(text), asVoice: false, asImage: false });
+        await this.pacedSend(adapter, identity, (signal) => adapter.sendFile({ identity, name: 'reply.txt', mediaType: 'text/plain', bytes: new TextEncoder().encode(text), asVoice: false, asImage: false, signal }));
         ledger.fileSent = true;
         ledger.undelivered = false;
         ledger.failedText = undefined;
         ledger.lastText = text;
-      } catch {
+      } catch (error) {
+        if (error instanceof ImSendError && error.outcome !== 'failed') throw error;
         ledger.fileSent = false;
         ledger.undelivered = true;
         ledger.failedText = text;
@@ -1799,7 +1848,7 @@ export class ImSessionBridge {
     let knownTooLong = base.length === 0 && ledger.failedText === text;
     if (base.length === 0 && !knownTooLong) {
       try {
-        const sent = await adapter.sendText({ identity, text, code: 'reply' });
+        const sent = await this.pacedSend(adapter, identity, (signal) => adapter.sendText({ identity, text, code: 'reply', signal }));
         this.keepIds(ledger, deliveryIds(sent));
         ledger.deliveredText = text;
         ledger.undelivered = false;
@@ -1844,12 +1893,12 @@ export class ImSessionBridge {
       if (rest.length === 0) break;
       const parts = chunksOf(rest, codePoints(probe.text).length);
       try {
-        const sent = await adapter.sendTextParts({ identity, parts, code: 'reply' });
+        const sent = await this.pacedSend(adapter, identity, (signal) => adapter.sendTextParts({ identity, parts, code: 'reply', signal }));
         ids.push(...deliveryIds(sent));
         delivered += parts.join('');
         rest = '';
       } catch (error) {
-        if (!(error instanceof ImSendError)) throw error;
+        if (!(error instanceof ImSendError) || error.outcome !== 'failed') throw error;
         const failedPart = error.failedPart ?? 0;
         const acceptedText = parts.slice(0, failedPart).join('');
         delivered += acceptedText;
@@ -1868,9 +1917,11 @@ export class ImSessionBridge {
     if (candidate === undefined) return { kind: 'unsplittable' };
     while (true) {
       try {
-        const sent = await adapter.sendTextParts({ identity, parts: [candidate], code: 'reply' });
+        const part = candidate;
+        const sent = await this.pacedSend(adapter, identity, (signal) => adapter.sendTextParts({ identity, parts: [part], code: 'reply', signal }));
         return { kind: 'accepted', text: candidate, ids: deliveryIds(sent) };
       } catch (error) {
+        if (error instanceof ImSendError && error.outcome !== 'failed') throw error;
         if (error instanceof ImSendError && error.message !== 'too_long') return { kind: 'failed' };
         if (!isTooLong(error)) throw error;
         const next = halfPrefix(candidate);
@@ -1893,8 +1944,8 @@ export class ImSessionBridge {
       ledger.messageIds[index] = sent.messageId;
       return;
     }
-    const edited = await adapter.editText({ identity, messageId, text, code: 'reply' });
-    if (!edited.edited) ledger.messageIds[index] = (await adapter.sendText({ identity, text, code: 'reply' })).messageId;
+    const edited = await this.pacedSend(adapter, identity, (signal) => adapter.editText({ identity, messageId, text, code: 'reply', signal }));
+    if (!edited.edited) ledger.messageIds[index] = (await this.pacedSend(adapter, identity, (signal) => adapter.sendText({ identity, text, code: 'reply', signal }))).messageId;
   }
 
   private async publishMedia(adapter: ImSessionAdapter, identity: ImInboundIdentity, media: readonly { kind: 'image' | 'file' | 'audio'; name: string; mediaType: string; bytes: Uint8Array }[]): Promise<void> {
@@ -1909,7 +1960,7 @@ export class ImSessionBridge {
       let counted = false;
       let sent: { deliveredAs: 'file' | 'image' | 'voice' };
       try {
-        sent = await adapter.sendFile({ identity, name: item.name, mediaType: item.mediaType, bytes: item.bytes, asVoice, asImage });
+        sent = await this.pacedSend(adapter, identity, (signal) => adapter.sendFile({ identity, name: item.name, mediaType: item.mediaType, bytes: item.bytes, asVoice, asImage, signal }));
       } catch (error) {
         if (asVoice && error instanceof Error && error.message === 'bad_format') {
           counted = true;
@@ -1918,7 +1969,7 @@ export class ImSessionBridge {
             await this.send(adapter, identity, this.copy('fileUnsupported'), 'file_unsupported');
             continue;
           }
-          sent = await adapter.sendFile({ identity, name: item.name, mediaType: item.mediaType, bytes: item.bytes, asVoice: false, asImage: false });
+          sent = await this.pacedSend(adapter, identity, (signal) => adapter.sendFile({ identity, name: item.name, mediaType: item.mediaType, bytes: item.bytes, asVoice: false, asImage: false, signal }));
         } else if (error instanceof Error && error.message === 'unsupported_file') {
           await this.send(adapter, identity, this.copy('fileUnsupported'), 'file_unsupported');
           continue;
@@ -1929,28 +1980,32 @@ export class ImSessionBridge {
   }
 
   private async send(adapter: ImSessionAdapter, identity: ImInboundIdentity, text: string, code: string, buttons?: readonly { id: string; label: string }[]): Promise<void> {
+    if (this.closed) return;
     const bindings = this.state.bindings.filter((binding) => sameIdentity(binding.identity, identity) && this.adapterFor(binding.providerInstanceId) === adapter);
     if (bindings.length > 0 && !bindings.some((binding) => this.admittedOutbound(binding))) return;
-    if (buttons !== undefined && buttons.length > 0 && !adapter.supportsButtons) {
-      await adapter.sendText({ identity, text: [text, ...buttons.map((button) => button.label), this.copy('numbers')].join('\n'), code });
-      return;
-    }
-    await adapter.sendText({ identity, text, code, ...(buttons === undefined ? {} : { buttons }) });
+    await this.pacedSend(adapter, identity, (signal) => adapter.sendText({ identity,
+      text: buttons !== undefined && buttons.length > 0 && !adapter.supportsButtons ? [text, ...buttons.map((button) => button.label), this.copy('numbers')].join('\n') : text,
+      code, buttons: adapter.supportsButtons ? buttons : undefined, signal,
+    }));
   }
 
-  private enqueueProjection(work: () => Promise<void>): Promise<void> {
-    const run = this.projection.then(work, work);
-    this.projection = run.then(() => undefined, () => undefined);
+  private enqueueProjection(bindingId: string, work: () => Promise<void>): Promise<void> {
+    const run = (this.projections.get(bindingId) ?? Promise.resolve()).then(work, work);
+    this.projections.set(bindingId, run);
+    const clear = (): void => { if (this.projections.get(bindingId) === run) this.projections.delete(bindingId); };
+    void run.then(clear, clear);
     return run;
   }
 
   private async projectInteractions(binding: BindingRecord, approvals: readonly { id: string; expiresAt: number; toolName: string; action: string; ssh?: 'login' | 'host_key' }[], questions: readonly ImPendingQuestion[]): Promise<void> {
-    await this.enqueueProjection(() => this.deliverInteractions(binding, approvals, questions));
+    if (this.closed) return;
+    await this.enqueueProjection(binding.id, () => this.deliverInteractions(binding, approvals, questions));
   }
 
   private async deliverInteractions(binding: BindingRecord, approvals: readonly { id: string; expiresAt: number; toolName: string; action: string; ssh?: 'login' | 'host_key' }[], questions: readonly ImPendingQuestion[]): Promise<void> {
     const adapter = this.adapterFor(binding.providerInstanceId);
-    if (adapter === undefined || !this.admittedOutbound(binding) || !binding.mobileInteractions) return;
+    const current = (): boolean => !this.closed && this.state.bindings.includes(binding) && this.admittedOutbound(binding) && binding.mobileInteractions && this.adapterFor(binding.providerInstanceId) === adapter;
+    if (adapter === undefined || !current()) return;
     const jobs: OutboxRecord[] = [];
     let changed = this.retireOutbox(binding, approvals, questions);
     if (binding.interactionFailure !== undefined) {
@@ -1961,9 +2016,19 @@ export class ImSessionBridge {
     for (const question of questions) changed = this.stageQuestion(binding, question, jobs) || changed;
     if (changed) await this.persist();
     for (const job of jobs) {
+      if (!current()) return;
+      job.delivery = 'sending';
+      try { await this.persist(); } catch (error) { job.delivery = 'pending'; throw error; }
+      if (!current()) {
+        job.delivery = 'pending';
+        await this.persist();
+        return;
+      }
       try {
         await this.send(adapter, binding.identity, job.text, job.code, job.buttons.length > 0 ? job.buttons : undefined);
       } catch (error) {
+        job.delivery = error instanceof ImSendError && (error.outcome === 'unknown' || error.outcome === 'partial') ? 'unknown' : 'pending';
+        await this.persist();
         if (!(error instanceof ImSendError)) throw error;
         const code = error.message;
         if (!((binding.providerKind === 'feishu_app' && code === 'feishu_thread_context_missing') || (binding.providerKind === 'wechat_bridge' && code === 'wechat_group_unsupported'))) throw error;
@@ -1973,7 +2038,7 @@ export class ImSessionBridge {
         return;
       }
       job.delivery = 'sent';
-      if (job.kind === 'desktop_ssh' && !this.state.notices.includes(job.interactionId)) this.state.notices.push(job.interactionId);
+      if (job.kind === 'desktop_ssh' && !this.state.notices.includes(job.key)) this.state.notices.push(job.key);
       await this.persist();
     }
   }
@@ -1992,13 +2057,13 @@ export class ImSessionBridge {
   }
 
   private stageApproval(binding: BindingRecord, approval: { id: string; expiresAt: number; toolName: string; action: string; ssh?: 'login' | 'host_key' }, jobs: OutboxRecord[]): boolean {
-    const key = `interaction:${approval.id}`;
-    const existing = this.state.outbox.find((item) => item.key === key);
+    const key = JSON.stringify(['interaction', binding.sessionId, approval.id]);
+    const existing = this.state.outbox.find((item) => item.sessionId === binding.sessionId && item.interactionId === approval.id && item.kind !== 'question');
     if (existing !== undefined) {
       if (existing.delivery === 'pending' && existing.bindingId === binding.id && existing.senderKey === senderKey(binding.providerInstanceId, binding.identity)) jobs.push(existing);
       return false;
     }
-    if (approval.ssh === 'login' ? this.state.notices.includes(approval.id) : this.state.tickets.some((ticket) => ticket.interactionId === approval.id)) return false;
+    if (approval.ssh === 'login' ? this.state.notices.includes(key) || this.state.notices.includes(approval.id) : this.state.tickets.some((ticket) => ticket.sessionId === binding.sessionId && ticket.interactionId === approval.id)) return false;
     const who = senderKey(binding.providerInstanceId, binding.identity);
     if (approval.ssh === 'login') {
       this.state.outbox.push({ key, bindingId: binding.id, senderKey: who, sessionId: binding.sessionId, interactionId: approval.id, kind: 'desktop_ssh', expiresAt: approval.expiresAt, text: this.copy('desktopSsh'), code: 'desktop_ssh', buttons: [], delivery: 'pending' });
@@ -2018,13 +2083,13 @@ export class ImSessionBridge {
 
   private stageQuestion(binding: BindingRecord, question: ImPendingQuestion, jobs: OutboxRecord[]): boolean {
     if (this.questionAnswered(binding, question)) return false;
-    const key = `question:${question.id}:${question.questionIndex}`;
-    const existing = this.state.outbox.find((item) => item.key === key);
+    const key = JSON.stringify(['question', binding.sessionId, question.id, question.questionIndex]);
+    const existing = this.state.outbox.find((item) => item.sessionId === binding.sessionId && item.kind === 'question' && item.interactionId === question.id && (item.questionIndex ?? 0) === question.questionIndex);
     if (existing !== undefined) {
       if (existing.delivery === 'pending' && existing.bindingId === binding.id && existing.senderKey === senderKey(binding.providerInstanceId, binding.identity)) jobs.push(existing);
       return false;
     }
-    if (this.state.tickets.some((ticket) => this.sameQuestion(ticket, question))) return false;
+    if (this.state.tickets.some((ticket) => ticket.sessionId === binding.sessionId && this.sameQuestion(ticket, question))) return false;
     const group = `${question.id}:${question.questionIndex}`;
     const buttons = question.options.map((option, index) => ({ id: this.ticket(binding, question.id, question.expiresAt, question.multi ? 'toggle' : 'single', question.questionKey, option.id, group, question.questionIndex), label: `${index + 1}. ${option.label}` }));
     if (question.multi) buttons.push({ id: this.ticket(binding, question.id, question.expiresAt, 'multi_done', question.questionKey, undefined, group, question.questionIndex), label: this.copy('done') });

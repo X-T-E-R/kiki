@@ -83,8 +83,9 @@ export async function withSessionOperation<T>(
   core: Scope,
   sessionId: string,
   work: (handle: ISessionScopeHandle | undefined) => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
-  const lease = await acquireSessionOperation(core, sessionId, 'operation');
+  const lease = await acquireSessionOperation(core, sessionId, 'operation', signal);
   try {
     return await work(lease.handle);
   } finally {
