@@ -39,6 +39,12 @@ export interface SessionResidencyReport {
   readonly evictionAttempts: number;
   readonly evictionSuccesses: number;
   readonly evictionFailures: number;
+  /** Eviction candidates skipped before `unload`, by reason. */
+  readonly evictionSkips?: Readonly<Record<string, number>>;
+  /** `unload` refusals that kept a session resident, by reason. */
+  readonly unloadRefusals?: Readonly<Record<string, number>>;
+  /** Currently held session leases, by acquisition reason. */
+  readonly pinsByReason?: Readonly<Record<string, number>>;
 }
 
 export interface ISessionManager {

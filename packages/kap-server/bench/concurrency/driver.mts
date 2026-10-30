@@ -429,7 +429,7 @@ async function main(): Promise<void> {
   const summary = {
     label: args.label, sessions: N, clients: C, durationMs: measureEnd - measureStart, warmupMs,
     stub: { ttftMs: Number(args.ttft), tokensPerSec: Number(args.tps), stepsPerTurn: Number(args.steps), requestsInWindow: inWindow.length, maxConcurrentRequests: collected.maxActive, errors: collected.records.filter((r) => r.error !== undefined).length },
-    server: { eventLoop: stats['eventLoop'], mainThreadCpuMs: stats['mainThreadCpuMs'], eventLoopUtilization: stats['eventLoopUtilization'], cpuMs: stats['cpuMs'], memoryEnd: stats['memory'], rssStart: rssStart.rss, heapStart: rssStart.heapUsed, gcPauseMs: dist(stats['gcPauses'] as number[]), gcTotalMs: (stats['gcPauses'] as number[]).reduce((a, b) => a + b, 0) },
+    server: { eventLoop: stats['eventLoop'], mainThreadCpuMs: stats['mainThreadCpuMs'], eventLoopUtilization: stats['eventLoopUtilization'], cpuMs: stats['cpuMs'], memoryEnd: stats['memory'], rssStart: rssStart.rss, heapStart: rssStart.heapUsed, gcPauseMs: dist(stats['gcPauses'] as number[]), gcTotalMs: (stats['gcPauses'] as number[]).reduce((a, b) => a + b, 0), residency: stats['residency'] },
     stepGapMs: dist(gaps), stepOverheadMs: dist(overheads), stepOverheadByBatch: Object.fromEntries([...overheadByKind].map(([kind, values]) => [kind, dist(values)])), subagentStepGapMs: dist(subagentGaps),
     turns: { completed: turns.filter((t) => t.state === 'completed').length, total: turns.length, durationMs: dist(turns.map((t) => t.ms)) },
     toolCallMs: Object.fromEntries([...byTool].map(([tool, values]) => [tool, dist(values)])),

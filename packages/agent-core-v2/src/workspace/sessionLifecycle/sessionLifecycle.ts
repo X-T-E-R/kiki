@@ -134,6 +134,20 @@ export interface SessionWillCreateEvent {
   onSessionDispose(dispose: () => void | Promise<void>): void;
 }
 
+/** Why `unload` kept a session resident. */
+export type SessionUnloadRefusal =
+  | 'not_live'
+  | 'busy'
+  | 'pending_interaction'
+  | 'agent_prompt'
+  | 'agent_loop'
+  | 'agent_execution'
+  | 'background_tasks'
+  | 'live_terminals'
+  | 'external_delegation'
+  | 'checkpoint_incomplete'
+  | 'superseded';
+
 export interface ISessionLifecycleService {
   readonly _serviceBrand: undefined;
 
@@ -149,7 +163,7 @@ export interface ISessionLifecycleService {
   list(): readonly ISessionScopeHandle[];
   resume(sessionId: string, opts?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined>;
   close(sessionId: string): Promise<void>;
-  unload?(sessionId: string, canCommit?: () => boolean): Promise<boolean>;
+  unload?(sessionId: string, canCommit?: () => boolean, onRefused?: (reason: SessionUnloadRefusal) => void): Promise<boolean>;
   archive(sessionId: string): Promise<void>;
   restore(sessionId: string, opts?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined>;
   /**

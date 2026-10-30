@@ -765,6 +765,7 @@ describe('SessionManager', () => {
     for (const controller of controllers) controller.abort();
     await Promise.all(cancelled);
     expect(manager.residencyReport().pinnedSessions).toBe(1);
+    expect(manager.residencyReport().pinsByReason).toEqual({ 'active-view': 1 });
     release();
     await expect(first).resolves.toBe(fake.handle);
     const lease = await retained;
@@ -772,6 +773,45 @@ describe('SessionManager', () => {
     expect(resume).toHaveBeenCalledTimes(1);
     await lease?.dispose();
     expect(manager.residencyReport().pinnedSessions).toBe(0);
+    expect(manager.residencyReport().pinsByReason).toEqual({});
+    await manager.dispose();
+  });
+
+  it('counts eviction skips and unload refusals by reason', async () => {
+    const fake = controller();
+    let resident = true;
+    vi.spyOn(fake.service, 'unload').mockImplementation(async (_id, _commit, refused) => {
+      if (!resident) return true;
+      refused?.('checkpoint_incomplete');
+      return false;
+    });
+    const workspace = {
+      id: 'workspace-1',
+      program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
+    } as unknown as WorkspaceInstance;
+    const manager = new SessionManager(
+      { acquire: async () => ({ instance: workspace, dispose: () => {} }), get: () => workspace } as unknown as IWorkspaceInstanceManager,
+      { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) } as unknown as ISessionIndex,
+      { ready: Promise.resolve(), get: () => ({ idleTtlMs: 0, minIdleMs: 0, maxLiveSessions: 8, sweepIntervalMs: 300_000 }) } as never,
+      { enabled: () => true } as never,
+    );
+
+    await manager.create({ workDir: '/workspace' });
+    const lease = await manager.acquire('session-1', 'ws-subscription');
+    await expect(manager.evictIfIdle('session-1')).resolves.toBe(false);
+    await lease?.dispose();
+    await expect(manager.evictIfIdle('session-1')).resolves.toBe(false);
+    await expect(manager.evictIfIdle('unknown')).resolves.toBe(false);
+    resident = false;
+    await expect(manager.evictIfIdle('session-1')).resolves.toBe(true);
+
+    expect(manager.residencyReport()).toMatchObject({
+      evictionAttempts: 2,
+      evictionSuccesses: 1,
+      evictionSkips: { pinned: 1, not_live: 1 },
+      unloadRefusals: { checkpoint_incomplete: 1 },
+      pinsByReason: {},
+    });
     await manager.dispose();
   });
 

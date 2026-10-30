@@ -49,6 +49,7 @@ import {
 
 interface SessionResidencyEntry {
   pins: number;
+  readonly pinReasons: Map<string, number>;
   idleSince: number | undefined;
   lastAccess: number;
   generation: number;
@@ -85,6 +86,8 @@ export class SessionManager implements ISessionManager {
   private evictionAttempts = 0;
   private evictionSuccesses = 0;
   private evictionFailures = 0;
+  private readonly evictionSkips = new Map<string, number>();
+  private readonly unloadRefusals = new Map<string, number>();
   private readonly willCreateEmitter = new Emitter<SessionWillCreateEvent>();
   readonly onWillCreateSession: Event<SessionWillCreateEvent> = this.willCreateEmitter.event;
   private readonly didCreateEmitter = new Emitter<SessionCreatedEvent & IWaitUntil>();
@@ -177,20 +180,18 @@ export class SessionManager implements ISessionManager {
 
   async acquire(
     sessionId: string,
-    _reason: string,
+    reason: string,
     options?: ResumeSessionOptions,
     signal?: AbortSignal,
   ): Promise<SessionLease | undefined> {
     signal?.throwIfAborted();
     const entry = this.ensureResidency(sessionId);
-    entry.pins += 1;
-    entry.generation += 1;
-    entry.idleSince = undefined;
+    this.addPin(entry, reason);
     let released = false;
     const release = (): void => {
       if (released) return;
       released = true;
-      this.releasePin(sessionId, entry);
+      this.releasePin(sessionId, entry, reason);
     };
     let detach: (() => void) | undefined;
     try {
@@ -213,21 +214,19 @@ export class SessionManager implements ISessionManager {
     }
   }
 
-  acquireLive(sessionId: string, _reason: string): Promise<SessionLease | undefined> {
+  acquireLive(sessionId: string, reason: string): Promise<SessionLease | undefined> {
     return this.serializeLifecycle(sessionId, async () => {
       const handle = this.sessions.get(sessionId);
       if (handle === undefined) return undefined;
       const entry = this.ensureResidency(sessionId);
-      entry.pins += 1;
-      entry.generation += 1;
-      entry.idleSince = undefined;
+      this.addPin(entry, reason);
       let released = false;
       return {
         handle,
         dispose: () => {
           if (released) return;
           released = true;
-          this.releasePin(sessionId, entry);
+          this.releasePin(sessionId, entry, reason);
         },
       };
     });
@@ -245,9 +244,11 @@ export class SessionManager implements ISessionManager {
   residencyReport(): SessionResidencyReport {
     let pinnedSessions = 0;
     let idleSessions = 0;
+    const pinsByReason: Record<string, number> = {};
     for (const entry of this.residency.values()) {
       if (entry.pins > 0) pinnedSessions += 1;
       else if (entry.idleSince !== undefined) idleSessions += 1;
+      for (const [reason, count] of entry.pinReasons) pinsByReason[reason] = (pinsByReason[reason] ?? 0) + count;
     }
     return {
       liveSessions: this.sessions.size,
@@ -258,33 +259,38 @@ export class SessionManager implements ISessionManager {
       evictionAttempts: this.evictionAttempts,
       evictionSuccesses: this.evictionSuccesses,
       evictionFailures: this.evictionFailures,
+      evictionSkips: Object.fromEntries(this.evictionSkips),
+      unloadRefusals: Object.fromEntries(this.unloadRefusals),
+      pinsByReason,
     };
   }
 
   async evictIfIdle(sessionId: string, options?: { readonly ignoreIdleTtl?: boolean }): Promise<boolean> {
-    if (!this.evictionEnabled() || this.isEphemeral(sessionId)) return false;
+    if (!this.evictionEnabled()) return this.skipEviction('disabled');
+    if (this.isEphemeral(sessionId)) return this.skipEviction('ephemeral');
     return this.serializeLifecycle(sessionId, async () => {
       const entry = this.residency.get(sessionId);
       const controller = this.owners.get(sessionId);
-      if (entry === undefined || controller === undefined || entry.pins > 0) return false;
+      if (entry === undefined || controller === undefined) return this.skipEviction('not_live');
+      if (entry.pins > 0) return this.skipEviction('pinned');
       const idleSince = entry.idleSince;
-      if (idleSince === undefined) return false;
+      if (idleSince === undefined) return this.skipEviction('active');
       const config = this.residencyConfig();
       const capacityPressure = this.sessions.size > config.maxLiveSessions;
       const minimum = capacityPressure ? config.minIdleMs : config.idleTtlMs;
-      if (options?.ignoreIdleTtl !== true && Date.now() - idleSince < minimum) return false;
+      if (options?.ignoreIdleTtl !== true && Date.now() - idleSince < minimum) return this.skipEviction('idle_ttl');
       const generation = entry.generation;
       this.evictionAttempts += 1;
       try {
-        if (entry.generation !== generation || entry.pins > 0) return false;
+        if (entry.generation !== generation || entry.pins > 0) return this.skipEviction('pinned');
         const workspaceId = this.controllerWorkspaces.get(controller);
-        if (workspaceId === undefined) return false;
-        if (controller.unload === undefined) return false;
+        if (workspaceId === undefined || controller.unload === undefined) return this.skipEviction('no_controller');
         const unloaded = await this.runWorkspaceOperation(
           workspaceId,
           () => controller.unload!(
             sessionId,
             () => entry.generation === generation && entry.pins === 0,
+            (reason) => { this.unloadRefusals.set(reason, (this.unloadRefusals.get(reason) ?? 0) + 1); },
           ),
         );
         if (unloaded) this.evictionSuccesses += 1;
@@ -614,6 +620,7 @@ export class SessionManager implements ISessionManager {
     if (entry === undefined) {
       entry = {
         pins: 0,
+        pinReasons: new Map(),
         idleSince: Date.now(),
         lastAccess: Date.now(),
         generation: 0,
@@ -653,7 +660,22 @@ export class SessionManager implements ISessionManager {
     update();
   }
 
-  private releasePin(sessionId: string, expected: SessionResidencyEntry): void {
+  private addPin(entry: SessionResidencyEntry, reason: string): void {
+    entry.pins += 1;
+    entry.pinReasons.set(reason, (entry.pinReasons.get(reason) ?? 0) + 1);
+    entry.generation += 1;
+    entry.idleSince = undefined;
+  }
+
+  private skipEviction(reason: string): false {
+    this.evictionSkips.set(reason, (this.evictionSkips.get(reason) ?? 0) + 1);
+    return false;
+  }
+
+  private releasePin(sessionId: string, expected: SessionResidencyEntry, reason: string): void {
+    const remaining = (expected.pinReasons.get(reason) ?? 0) - 1;
+    if (remaining > 0) expected.pinReasons.set(reason, remaining);
+    else expected.pinReasons.delete(reason);
     const entry = this.residency.get(sessionId);
     if (entry !== expected) return;
     entry.pins = Math.max(0, entry.pins - 1);

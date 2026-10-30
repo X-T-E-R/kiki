@@ -123,6 +123,7 @@ import {
   type SessionClosedEvent,
   type SessionCreatedEvent,
   type SessionForkedEvent,
+  type SessionUnloadRefusal,
   type SessionWillCloseEvent,
   type SessionWillCreateEvent,
   ISessionLifecycleService,
@@ -824,32 +825,44 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
   }
 
-  async unload(sessionId: string, canCommit: () => boolean = () => true): Promise<boolean> {
+  async unload(
+    sessionId: string,
+    canCommit: () => boolean = () => true,
+    onRefused?: (reason: SessionUnloadRefusal) => void,
+  ): Promise<boolean> {
+    const refuse = (reason: SessionUnloadRefusal): false => {
+      onRefused?.(reason);
+      return false;
+    };
     const handle = this.sessions.get(sessionId);
-    if (handle === undefined) return false;
-    const activity = handle.accessor.get(ISessionActivityView).state();
-    if (activity.busy || activity.pendingInteraction !== 'none') return false;
+    if (handle === undefined) return refuse('not_live');
     const agents = handle.accessor.get(IAgentLifecycleService);
-    if (this.hasUnloadBlockers(handle)) return false;
-    if (agents.countPendingBackgroundTasks() > 0) return false;
-    if (handle.accessor.get(ISessionTerminalService).countLiveTerminals() > 0) return false;
+    const residentReason = (): SessionUnloadRefusal | undefined => {
+      const activity = handle.accessor.get(ISessionActivityView).state();
+      if (activity.busy) return 'busy';
+      if (activity.pendingInteraction !== 'none') return 'pending_interaction';
+      const blocker = this.unloadBlocker(handle);
+      if (blocker !== undefined) return blocker;
+      if (agents.countPendingBackgroundTasks() > 0) return 'background_tasks';
+      if (handle.accessor.get(ISessionTerminalService).countLiveTerminals() > 0) return 'live_terminals';
+      return undefined;
+    };
+    const initial = residentReason();
+    if (initial !== undefined) return refuse(initial);
     const externalRoot = await this.docs.get(
       join(sessionScopeOf(this.handlerScope, sessionId), 'external-delegation'),
       'root',
     );
-    if (externalRoot !== undefined) return false;
-    if (!(await this.saveReplayCheckpoints(sessionId, handle))) return false;
+    if (externalRoot !== undefined) return refuse('external_delegation');
+    if (!(await this.saveReplayCheckpoints(sessionId, handle))) return refuse('checkpoint_incomplete');
     this.disposeCheckpointScheduling(sessionId);
     const usageFallback = aggregateSessionUsage(handle);
     await this.persistUsage(handle, usageFallback);
     await this.appendLogStore.drainRetirements();
     await handle.accessor.get(ISessionMetadata).drain();
-    if (!canCommit()) return false;
-    const finalActivity = handle.accessor.get(ISessionActivityView).state();
-    if (finalActivity.busy || finalActivity.pendingInteraction !== 'none') return false;
-    if (agents.countPendingBackgroundTasks() > 0) return false;
-    if (handle.accessor.get(ISessionTerminalService).countLiveTerminals() > 0) return false;
-    if (this.hasUnloadBlockers(handle)) return false;
+    if (!canCommit()) return refuse('superseded');
+    const final = residentReason();
+    if (final !== undefined) return refuse(final);
     this.sessions.delete(sessionId);
     await handle.dispose();
     await drainLogCloses();
@@ -890,16 +903,16 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     ).map(([id]) => metadata.updateAgent(id, (meta) => pruneResumeRecords(meta, quiescent(id)))));
   }
 
-  private hasUnloadBlockers(handle: ISessionScopeHandle): boolean {
+  private unloadBlocker(handle: ISessionScopeHandle): SessionUnloadRefusal | undefined {
     for (const agent of handle.accessor.get(IAgentLifecycleService).list()) {
       const prompts = agent.accessor.get(IAgentPromptService).list();
-      if (prompts.active !== undefined || prompts.launching !== undefined || prompts.pending.length > 0 || prompts.hold !== undefined) return true;
+      if (prompts.active !== undefined || prompts.launching !== undefined || prompts.pending.length > 0 || prompts.hold !== undefined) return 'agent_prompt';
       const loop = agent.accessor.get(IAgentLoopService).status();
-      if (loop.state !== 'idle' || loop.pendingTurnIds.length > 0 || loop.hasPendingRequests) return true;
+      if (loop.state !== 'idle' || loop.pendingTurnIds.length > 0 || loop.hasPendingRequests) return 'agent_loop';
       const executionState = agent.accessor.get(IAgentExecutionService).status().state;
-      if (executionState !== 'idle' && executionState !== 'closed') return true;
+      if (executionState !== 'idle' && executionState !== 'closed') return 'agent_execution';
     }
-    return false;
+    return undefined;
   }
 
   async archive(sessionId: string): Promise<void> {

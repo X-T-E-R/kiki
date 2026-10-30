@@ -3,7 +3,7 @@ import { Session } from 'node:inspector';
 import { monitorEventLoopDelay, performance, PerformanceObserver } from 'node:perf_hooks';
 import { join } from 'node:path';
 
-import { ILogService, ITelemetryService } from '@kiki/agent-core-v2';
+import { ILogService, ISessionManager, ITelemetryService } from '@kiki/agent-core-v2';
 
 import { startServer } from '../../src/start';
 
@@ -107,6 +107,7 @@ async function end(): Promise<unknown> {
     eventLoopUtilization: elu.utilization,
     eventLoop: { count: histogram.count, p50: histogram.percentile(50) / 1e6, p90: histogram.percentile(90) / 1e6, p99: histogram.percentile(99) / 1e6, max: histogram.max / 1e6 },
     memory: { rss: memory.rss, heapUsed: memory.heapUsed, heapTotal: memory.heapTotal, external: memory.external },
+    residency: server.core.accessor.get(ISessionManager).residencyReport?.(),
     windows, toolPhases, slowPhases, toolCalls, gcPauses,
   };
 }

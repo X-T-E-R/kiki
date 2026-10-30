@@ -495,8 +495,12 @@ describe('SessionLifecycleService unload', () => {
   it('refuses to evict a session that owns a live terminal', async () => {
     const fx = fixture();
     fx.terminals.live = 1;
+    const refused = vi.fn();
 
-    await expect(fx.service.unload('session-1')).resolves.toBe(false);
+    await expect(fx.service.unload('session-1', undefined, refused)).resolves.toBe(false);
+    expect(refused.mock.calls).toEqual([['live_terminals']]);
+    await expect(fx.service.unload('missing-session', undefined, refused)).resolves.toBe(false);
+    expect(refused).toHaveBeenLastCalledWith('not_live');
 
     expect(fx.dispose).not.toHaveBeenCalled();
     expect(fx.closed).toEqual([]);
