@@ -484,7 +484,7 @@ describe('model switch engine', () => {
     expect(result).toMatchObject({ state: 'completed' });
     expect(ctx.get(IAgentStateService).get(tokenCountingKey).tokens).toBeLessThanOrEqual(maxContextTokens);
     expect(body(ctx.get(IAgentContextMemoryService).get())).toContain('Preview only');
-    expect(body(ctx.get(IAgentContextMemoryService).get())).toContain('source-human-ref');
+    expect(body(ctx.get(IAgentContextMemoryService).get())).toContain('step_id:"t7.0"');
     expect(ctx.get(ISessionTodoService).getNotes()).toEqual(notes);
   });
 
