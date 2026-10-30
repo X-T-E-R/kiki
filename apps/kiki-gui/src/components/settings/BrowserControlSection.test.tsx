@@ -389,6 +389,28 @@ describe('BrowserControlSection', () => {
   };
 
   describe('the wizard', () => {
+    it('opens at most the first actionable route and keeps the rest as rows', async () => {
+      setupPresets.mockResolvedValue({ presets: [KIMI_NEEDS_EXTENSION, MANAGED_READY, CODEX_EXTERNAL] });
+      await render();
+      await settleUntil('[data-browser-route="kimi-webbridge"]');
+
+      const bodyOf = (id: string) => query(`[data-browser-route="${id}"] [data-row-body]`);
+      // Kimi needs the extension, so its body opens; the independent browser
+      // (only the flag left) and Codex (an external surface with its own
+      // first-authorization) stay rows with their status word until clicked.
+      expect(bodyOf('kimi-webbridge')?.hasAttribute('hidden')).toBe(false);
+      expect(bodyOf('independent-browser')?.hasAttribute('hidden')).toBe(true);
+      expect(bodyOf('codex-browser')?.hasAttribute('hidden')).toBe(true);
+
+      // The independent browser is the second actionable route: a click opens
+      // it, and it is the only one to change.
+      const independent = query<HTMLButtonElement>('[data-browser-route="independent-browser"] > div > button[aria-controls]');
+      expect(independent).not.toBeNull();
+      await act(async () => { independent?.click(); });
+      await settle();
+      expect(bodyOf('independent-browser')?.hasAttribute('hidden')).toBe(false);
+      expect(bodyOf('codex-browser')?.hasAttribute('hidden')).toBe(true);
+    });
     it('names each route, says what it still needs, and offers nothing the server did not', async () => {
       setupPresets.mockResolvedValue({ presets: [KIMI_NEEDS_EXTENSION, MANAGED_READY, CODEX_EXTERNAL] });
       await render();

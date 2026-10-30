@@ -143,9 +143,27 @@ interface FoundItem {
   readonly label: string;
 }
 
+/**
+ * Does this route still have something a person or Kiki is in the middle of?
+ * The wizard auto-opens at most the first of these; a settled route with
+ * nothing to offer is never one, and a route that is merely disabled is not
+ * either (its row already says so).
+ */
+export function routeIsActionable(preset: BrowserSetupStatus): boolean {
+  if (preset.state === 'preparing') return true;
+  if (preset.state === 'failed' || preset.error !== undefined) return true;
+  if (runningStep(preset) !== undefined) return true;
+  if (presetReadiness(preset) === 'connected') return false;
+  return blockingStep(preset) !== undefined || (preset.candidates ?? []).length > 0;
+}
+
 /** One route. The name is the server's `displayName`; the rest is its own answer. */
-function BrowserRoute({ preset, flashOpen, children }: {
+function BrowserRoute({ preset, autoOpen, flashOpen, children }: {
   readonly preset: BrowserSetupStatus;
+  /** This is the first route that still has something to do, so it opens on
+   *  its own; every other actionable route stays a row with its status word
+   *  until the reader clicks. */
+  readonly autoOpen: boolean;
   /** A search hit on a card this route owns asks the row to open. */
   readonly flashOpen?: boolean;
   /** Extra blocks this route owns, folded with its detail (the local bridge check). */
@@ -428,14 +446,7 @@ function BrowserRoute({ preset, flashOpen, children }: {
   // anything the route still offers or is doing — an action, a move, a
   // blocker, a warning, a failure, an unsaved find — opens by itself so the
   // next step is already on screen.
-  const hasActions = routeActions && (
-    (prepare !== undefined && canPrepare)
-    || (connect !== undefined && preset.candidates === undefined)
-    || openAction !== undefined
-  );
-  const expanded = openDetail || !settled || hasActions || moving || forcedOff
-    || warned !== undefined || preset.error !== undefined || found.length > 0
-    || (sourceEnabled && needsLine);
+  const expanded = openDetail || (autoOpen && (sourceEnabled || preset.state === 'preparing'));
 
   return (
     <li>
@@ -810,6 +821,9 @@ export function BrowserSetupWizard() {
   });
 
   const presets = query.data?.presets ?? [];
+  // At most one open body on first view: the first route that still has
+  // something to do. The rest read as rows with their status word.
+  const firstActionable = presets.findIndex((preset) => routeIsActionable(preset));
 
   // The local bridge check belongs to the Kimi route; with no such route on
   // this server it still has a place, so its bookmark keeps working.
@@ -836,6 +850,7 @@ export function BrowserSetupWizard() {
         <ul className="divide-y divide-hairline" data-browser-routes>
           {presets.map((preset, index) => (
             <BrowserRoute key={`${preset.preset}-${index}`} preset={preset}
+              autoOpen={index === firstActionable}
               flashOpen={preset.preset === 'kimi-webbridge' && flashId === 'st-card-webbridge'}>
               {preset.preset === 'kimi-webbridge' ? <WebBridgeReadiness /> : null}
             </BrowserRoute>
