@@ -75,6 +75,9 @@ describe('LocalSessionsDialog', () => {
     expect(body().querySelector('[data-local-warning="transcript_sampled"]')?.textContent).toContain('only the beginning and the end');
     expect(body().querySelector('[data-local-warning="mystery_code"]')?.textContent).toBe('mystery_code');
     expect(body().querySelector('[data-local-message="user"]')?.textContent).toContain('Fix the parser');
+    // Back returns to the list inside the same panel (SidePanel push navigation).
+    await act(async () => { (body().querySelector('[data-local-back]') as HTMLButtonElement).click(); });
+    await settle();
     const blocked = body().querySelector('[data-local-session="external:claude:b"]')!;
     expect(blocked.querySelector('[data-local-unsupported="working_directory_missing"]')?.textContent).toBe('Its working folder is not recorded.');
     await act(async () => { (blocked as HTMLButtonElement).click(); });
