@@ -3808,8 +3808,7 @@ export const en = {
   'st.conn.disconnectBody':
     'Clear the saved URL and token on this device and return to the connect screen; sessions stay on the server.',
   'st.conn.disconnectConfirmTitle': 'Disconnect from this server?',
-  'st.conn.disconnectConfirmBody':
-    'Kiki forgets the saved URL and token and goes back to the connect screen. Running turns keep going on the server.',
+  'st.conn.disconnectedUndo': 'Disconnected from the server',
   'st.conn.tab.current': 'Current connection',
   'st.conn.tab.external': 'External connections',
   'st.conn.ext.title': 'Cloudflare tunnel',

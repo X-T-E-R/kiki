@@ -16,6 +16,7 @@ import { useBusySessionCount } from '../../lib/busySessionsHook';
 import { useConnection } from '../../state/connection';
 import { connectionLog, formatConnectionLog, subscribeConnectionLog } from '../../state/connectionDiagnostics';
 import { copyTextToClipboard } from '../../lib/clipboard';
+import { pushUndoToast } from '../../lib/toasts';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, SavedTick, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
@@ -296,7 +297,19 @@ function CurrentConnectionContent() {
               type="button"
               data-conn-disconnect
               className={DANGER_GHOST_BUTTON}
-              onClick={() => { setConfirmDisconnect(true); }}
+              onClick={() => {
+                // Disconnecting only drops the browser's stored link, so the
+                // inverse is reconnecting with the endpoint it had: run at
+                // once and offer Undo rather than asking first.
+                if (isSsh) { setConfirmDisconnect(true); return; }
+                const prior = { url: config.url, token: config.token };
+                disconnect();
+                pushUndoToast({
+                  text: t('st.conn.disconnectedUndo'),
+                  undoFailedText: t('toast.undoFailed'),
+                  undo: () => { applyConnection(prior); },
+                });
+              }}
             >
               {t('sidebar.disconnect')}
             </button>
@@ -333,8 +346,8 @@ function CurrentConnectionContent() {
         open={confirmDisconnect}
         overlayId="confirm-conn-disconnect"
         title={t('st.conn.disconnectConfirmTitle')}
-        body={isSsh ? t('connect.sshDisconnectBody') : t('st.conn.disconnectConfirmBody')}
-        confirmLabel={isSsh ? t('connect.switchLocal') : t('sidebar.disconnect')}
+        body={t('connect.sshDisconnectBody')}
+        confirmLabel={t('connect.switchLocal')}
         tone="danger"
         onConfirm={() => { setConfirmDisconnect(false); disconnect(); }}
         onCancel={() => { setConfirmDisconnect(false); }}

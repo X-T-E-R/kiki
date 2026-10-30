@@ -3774,8 +3774,7 @@ export const zh = {
   'st.conn.disconnectBody':
     '清除本地保存的地址与令牌，回到连接页；会话仍留在服务器上。',
   'st.conn.disconnectConfirmTitle': '断开与这台服务器的连接？',
-  'st.conn.disconnectConfirmBody':
-    'Kiki 会清除保存的地址与令牌并回到连接页。服务器上正在进行的轮次不会中断。',
+  'st.conn.disconnectedUndo': '已断开与服务器的连接',
   'st.conn.tab.current': '当前连接',
   'st.conn.tab.external': '外部连接',
   'st.conn.ext.title': 'Cloudflare 隧道',
