@@ -739,7 +739,7 @@ describe('OnboardingWizard', () => {
       expect(hosts.map((host) => host.dataset['onboardingHost'])).toEqual(
         HOST_SKILL_HOSTS.map((host) => host.id),
       );
-      expect(dialog().querySelector('[data-onboarding-depart-agent]')?.textContent).toContain('does not detect');
+      expect(dialog().querySelector('[data-onboarding-depart-agent]')?.textContent).toContain('Pick the one you use');
 
       await click(dialog().querySelector('[data-onboarding-host="codex"]')!);
       await flush();

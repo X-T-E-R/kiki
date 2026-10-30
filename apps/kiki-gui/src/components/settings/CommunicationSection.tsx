@@ -206,7 +206,8 @@ export function AppendTimingField() {
       <SettingField
         label={t('st.communication.appendTimingTitle')}
         labelId="default-append-timing-label"
-        help={<>{t('st.communication.appendTimingHint')} {t(APPEND_TIMING_HINT_KEY[current])}</>}
+        help={t(APPEND_TIMING_HINT_KEY[current])}
+        detail={t('st.communication.appendTimingHint')}
       >
         <SettingsSegmented<DefaultAppendTiming>
           ariaLabelledBy="default-append-timing-label"
