@@ -441,7 +441,7 @@ describe('CronPage', () => {
     await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-create]')!.click(); });
     await flush();
     const editor = document.querySelector<HTMLElement>('[data-cron-editor-title]')!;
-    expect(editor.closest('[role="dialog"]')).not.toBeNull();
+    expect(editor.querySelector('.kiki-side-panel')).not.toBeNull();
 
     const prompt = document.querySelector<HTMLTextAreaElement>('[data-cron-prompt]')!;
     await typeInto(prompt, 'Summarize the overnight logs.');

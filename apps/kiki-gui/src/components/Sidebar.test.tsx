@@ -1657,7 +1657,7 @@ describe('Sidebar session menu location & link group', () => {
     const menu = await openSessionMenu(container);
     await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="join-room"]')!.click(); });
     await settle();
-    expect(document.querySelector('[data-join-room-dialog]')?.textContent).toContain('Add 2 threads');
+    expect(document.querySelector('[data-join-room-dialog]')?.closest('[role="dialog"]')?.textContent).toContain('Add 2 threads');
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-join-room-new]')!.click(); });
     expect(document.querySelectorAll('[data-new-thread-room-member]')).toHaveLength(2);
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-new-thread-room-submit]')!.click(); });

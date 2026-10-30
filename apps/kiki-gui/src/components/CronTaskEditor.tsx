@@ -40,8 +40,8 @@ import {
 import { useI18n } from '../i18n';
 import { useConnection } from '../state/connection';
 import { ConfirmDialog } from './ConfirmDialog';
-import { DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES, Dialog } from './Dialog';
 import { Icon } from './icons';
+import { SidePanel } from './SidePanel';
 import { SearchableSelect } from './SearchableSelect';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
@@ -420,17 +420,33 @@ export function CronTaskEditor({
 
   return (
     <>
-      <Dialog
-        onClose={close}
-        ariaLabel={t(mode === 'create' ? 'cron.form.createTitle' : 'cron.form.editTitle')}
+      <SidePanel
+        title={t(mode === 'create' ? 'cron.form.createTitle' : 'cron.form.editTitle')}
         overlayId="cron-task-editor"
-        panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[min(88vh,900px)] overflow-y-auto`}
+        onClose={close}
+        width="md"
+        data={{ 'data-cron-editor-title': mode }}
+        footer={
+          <>
+            <span className="flex-1" />
+            <button type="button" data-cron-cancel onClick={close} disabled={busy} className={SECONDARY_BUTTON}>
+              {t('common.cancel')}
+            </button>
+            <button
+              type="button"
+              data-cron-save
+              onClick={submit}
+              disabled={!canSubmit}
+              className={PRIMARY_BUTTON}
+            >
+              {busy
+                ? t('common.saving')
+                : t(mode === 'create' ? 'cron.panel.create' : 'common.save')}
+            </button>
+          </>
+        }
       >
-        <h3 data-cron-editor-title className="font-display text-[18px] font-semibold text-ink">
-          {t(mode === 'create' ? 'cron.form.createTitle' : 'cron.form.editTitle')}
-        </h3>
-
-        <div className="mt-5 space-y-5">
+        <div className="space-y-5">
           {/* When */}
           <fieldset className={SECTION}>
             <legend className={LABEL}>{t('cron.form.kind')}</legend>
@@ -754,24 +770,7 @@ export function CronTaskEditor({
             {error ?? submitError}
           </p>
         ) : null}
-
-        <div className="mt-6 flex items-center justify-end gap-2">
-          <button type="button" data-cron-cancel onClick={close} disabled={busy} className={SECONDARY_BUTTON}>
-            {t('common.cancel')}
-          </button>
-          <button
-            type="button"
-            data-cron-save
-            onClick={submit}
-            disabled={!canSubmit}
-            className={PRIMARY_BUTTON}
-          >
-            {busy
-              ? t('common.saving')
-              : t(mode === 'create' ? 'cron.panel.create' : 'common.save')}
-          </button>
-        </div>
-      </Dialog>
+      </SidePanel>
       <ConfirmDialog
         open={confirmDiscard}
         title={t('common.cancel')}
