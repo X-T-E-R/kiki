@@ -19,6 +19,8 @@ import { IAgentPlanService } from '#/features/plan/plan';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentTaskService } from '#/agent/task/task';
+import { pruneResumeRecords } from '#/session/dispatch/resume';
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
@@ -661,7 +663,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       const retry = () => {
         if (attempt < 3) this.scheduleCheckpoint(sessionId, handle, [100, 500, 2_000][attempt]!, attempt + 1);
       };
-      void this.saveReplayCheckpoints(sessionId, handle).then((saved) => {
+      void this.pruneResumeHistory(handle).then(() => this.saveReplayCheckpoints(sessionId, handle)).then((saved) => {
         if (saved || this.sessions.get(sessionId) !== handle) return;
         const reasons = handle.accessor.get(IAgentLifecycleService).list().map((agent) => ({
           agentId: agent.id,
@@ -855,6 +857,37 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     this._onDidCloseSession.fire({ sessionId, reason: 'evict' });
     this.emitCleanupReceipt(sessionId, 'evict', 'resolved', 'closed');
     return true;
+  }
+
+  private async pruneResumeHistory(handle: ISessionScopeHandle): Promise<void> {
+    const metadata = handle.accessor.get(ISessionMetadata);
+    const lifecycle = handle.accessor.get(IAgentLifecycleService);
+    const saved = await metadata.read();
+    let referenced: Set<string> | undefined;
+    const quiescent = (id: string): boolean => {
+      const activity = handle.accessor.get(ISessionActivityView).state();
+      if (activity.busy || activity.pendingInteraction !== 'none') return false;
+      const target = lifecycle.get(id);
+      if (target === undefined) return false;
+      if (referenced === undefined) {
+        referenced = new Set();
+        for (const agent of lifecycle.list()) {
+          for (const task of agent.accessor.get(IAgentTaskService).list(true)) {
+            if (task.kind === 'agent' && task.agentId !== undefined) referenced.add(task.agentId);
+          }
+        }
+      }
+      if (referenced.has(id)) return false;
+      const prompts = target.accessor.get(IAgentPromptService).list();
+      if (prompts.active !== undefined || prompts.launching !== undefined || prompts.pending.length > 0 || prompts.hold !== undefined) return false;
+      const loop = target.accessor.get(IAgentLoopService).status();
+      if (loop.state !== 'idle' || loop.pendingTurnIds.length > 0 || loop.hasPendingRequests) return false;
+      const execution = target.accessor.get(IAgentExecutionService).status().state;
+      return (execution === 'idle' || execution === 'closed') && !target.accessor.get(IAgentTaskService).hasUnfinishedWork();
+    };
+    await Promise.all(Object.entries(saved.agents ?? {}).filter(([, meta]) =>
+      Object.keys(meta.labels ?? {}).filter((key) => key.startsWith('dispatchResume:')).length > 32,
+    ).map(([id]) => metadata.updateAgent(id, (meta) => pruneResumeRecords(meta, quiescent(id)))));
   }
 
   private hasUnloadBlockers(handle: ISessionScopeHandle): boolean {

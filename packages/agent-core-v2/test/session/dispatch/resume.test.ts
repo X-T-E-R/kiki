@@ -32,7 +32,7 @@ import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { SessionSubagentService } from '#/session/subagent/subagentService';
 import { ISessionDispatchService, type DispatchChild, type DispatchRunOptions } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
-import { readResumeRecord, writeResumeRecord } from '#/session/dispatch/resume';
+import { acknowledgeResumeOutcome, bindResumeTask, pruneResumeRecords, readResumeRecord, writeResumeRecord, type DispatchResumeRecord } from '#/session/dispatch/resume';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentExecutorRegistry, type ResolvedAgentExecutor } from '#/app/agentExecutor/agentExecutor';
@@ -97,7 +97,7 @@ function dispatchFor(ctx: TestAgentContext) {
   containers.push(ix);
   const childHandle: IAgentScopeHandle = { kind: 'agent', id: CHILD, accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
   const callerHandle: IAgentScopeHandle = { kind: 'agent', id: 'main', accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
-  ix.stub(IAgentLifecycleService, { get: (id) => id === CHILD ? childHandle : id === 'main' ? callerHandle : undefined });
+  ix.stub(IAgentLifecycleService, { onDidCreate: Event.None as Event<IAgentScopeHandle>, get: (id) => id === CHILD ? childHandle : id === 'main' ? callerHandle : undefined });
   ix.stub(IAgentCollaborationRegistry, {});
   ix.set(IConfigService, ctx.get(IConfigService));
   ix.set(IModelService, ctx.get(IModelService));
@@ -881,6 +881,7 @@ describe('dispatch resume after cancellation with deferred task notifications', 
     const { ctx, child, dispatch, loop, action } = fixture;
     try {
       fixture.unblock();
+      vi.useRealTimers();
       ctx.mockNextResponse({ type: 'text', text: 'Continued result.' });
       const opts = options('after-persistence-outage');
       const [first, second] = await Promise.all([
@@ -916,6 +917,7 @@ describe('dispatch resume after cancellation with deferred task notifications', 
       expect(action).toHaveBeenCalledTimes(1);
       expect(ctx.llmCalls).toHaveLength(2);
       fixture.unblock();
+      vi.useRealTimers();
       ctx.mockNextResponse({ type: 'text', text: 'Mailbox recovered.' });
       const run = await dispatch.runOnExisting(child, '', options('recover-queued-message'));
       await (await run.started).completion;
@@ -932,6 +934,7 @@ describe('dispatch resume after cancellation with deferred task notifications', 
     const mail = mailboxFor(ctx, child, dispatch);
     try {
       fixture.unblock();
+      vi.useRealTimers();
       ctx.mockNextResponse({ type: 'text', text: 'Message continuation.' });
       expect(await mail.messaging.send({ sourceAgentId: CHILD, sourceTaskName: 'sender', targetAgentId: CHILD, targetTaskName: 'saved_child',
         content: 'Continue from saved mail.', idempotencyKey: 'wake-after-save-failure', waitForRunningDelivery: true, idleWake: 'owned-child' })).toMatchObject({ delivery: 'delivered', resumed: true });
@@ -1031,5 +1034,60 @@ describe('dispatch resume after cancellation with deferred task notifications', 
       compaction.cancel();
       await task.promise.catch(() => {});
     }
+  });
+});
+
+describe('dispatch resume retention', () => {
+  const now = Date.UTC(2026, 9, 31);
+  const day = 24 * 60 * 60_000;
+  const record = (i: number, overrides: Partial<DispatchResumeRecord> = {}): DispatchResumeRecord => ({
+    operationId: `operation-${i}`, fingerprint: 'fingerprint', request: { kind: 'prompt', prompt: 'continue' },
+    switchInput: { operationId: `operation-${i}`, model: 'example-model', mode: 'direct' },
+    state: 'started', ...overrides,
+  });
+  const registry = (records: DispatchResumeRecord[]) => ({ labels: Object.fromEntries(records.map((r) => [`dispatchResume:${r.operationId}`, JSON.stringify(r)])) });
+
+  it('keeps every legacy record until quiescence and retains the latest 32 plus recent timestamps', () => {
+    const meta = registry(Array.from({ length: 80 }, (_, i) => record(i, i < 40 ? {} : { createdAt: now - day })));
+    expect(pruneResumeRecords(meta, false, now)).toBe(meta);
+    const compacted = pruneResumeRecords(meta, true, now);
+    expect(Object.keys(compacted.labels ?? {})).toHaveLength(40);
+    expect(readResumeRecord(compacted, 'operation-0')).toBeUndefined();
+    expect(readResumeRecord(compacted, 'operation-40')).toBeDefined();
+  });
+
+  it('retains at least 32 old records even when all operations are beyond seven days', () => {
+    const meta = registry(Array.from({ length: 80 }, (_, i) => record(i, { createdAt: now - (100 - i) * day })));
+    const compacted = pruneResumeRecords(meta, true, now);
+    expect(Object.keys(compacted.labels ?? {})).toHaveLength(32);
+    expect(readResumeRecord(compacted, 'operation-47')).toBeUndefined();
+    expect(readResumeRecord(compacted, 'operation-48')).toBeDefined();
+  });
+
+  it('preserves accepted, ready, malformed and unproven new records outside the window', () => {
+    const records = Array.from({ length: 40 }, (_, i) => record(i, {
+      state: i === 0 ? 'accepted' : i === 1 ? 'ready' : 'started',
+      retentionVersion: i === 2 ? 1 : undefined,
+      createdAt: now - 10 * day,
+    }));
+    const meta = registry(records);
+    meta.labels['dispatchResume:broken'] = '{';
+    const compacted = pruneResumeRecords(meta, true, now);
+    for (const i of [0, 1, 2]) expect(readResumeRecord(compacted, `operation-${i}`)).toBeDefined();
+    expect(compacted.labels?.['dispatchResume:broken']).toBe('{');
+    expect(readResumeRecord(compacted, 'operation-3')).toBeUndefined();
+  });
+
+  it('requires matching canonical outcome proof before pruning a new-format operation', () => {
+    const meta = registry(Array.from({ length: 40 }, (_, i) => record(i, {
+      createdAt: now - 10 * day, retentionVersion: 1,
+    })));
+    const bound = bindResumeTask(meta, 'operation-0', 'task-0');
+    const wrong = acknowledgeResumeOutcome(bound, 'task-other', now - 9 * day);
+    expect(pruneResumeRecords(wrong, true, now).labels?.['dispatchResume:operation-0']).toBeDefined();
+    const completed = acknowledgeResumeOutcome(bound, 'task-0', now - 9 * day);
+    expect(readResumeRecord(completed, 'operation-0')?.outcome).toEqual({ taskId: 'task-0', completedAt: now - 9 * day });
+    expect(pruneResumeRecords(completed, false, now).labels?.['dispatchResume:operation-0']).toBeUndefined();
+    expect(pruneResumeRecords(completed, false, now).labels?.['dispatchResume:operation-1']).toBeDefined();
   });
 });

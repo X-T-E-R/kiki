@@ -43,6 +43,8 @@ import { SessionLifecycleService } from '#/workspace/sessionLifecycle/sessionLif
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentTaskService } from '#/agent/task/task';
+import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { createTestAgent, permissionModeServices } from '../../harness';
 import { PromptEnqueued } from '#/agent/prompt/promptService';
@@ -183,6 +185,40 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
   sessions.set(handle.id, handle);
   return { service, handle, dispose, closed, terminals, metadata, mirror, activity, drainRetirements, cleanupStages };
 }
+
+describe('SessionLifecycleService resume history quiescence', () => {
+  it.each(['idle', 'active-turn', 'queued-prompt', 'pending-task', 'referenced', 'cold', 'busy'] as const)(
+    'prunes legacy records only after a current idle proof: %s', async (state) => {
+      const fx = fixture();
+      let meta: AgentMeta = { status: 'completed', labels: Object.fromEntries(Array.from({ length: 40 }, (_, i) => {
+        const operationId = `operation-${i}`;
+        return [`dispatchResume:${operationId}`, JSON.stringify({ operationId, fingerprint: 'example',
+          request: { kind: 'prompt', prompt: 'continue' }, switchInput: { operationId }, state: 'started' })];
+      })) };
+      const target = { kind: 'agent', id: 'child', dispose: () => {}, accessor: accessor([
+        [IAgentPromptService, { list: () => ({ pending: state === 'queued-prompt' ? [{}] : [] }) }],
+        [IAgentLoopService, { status: () => ({ state: state === 'active-turn' ? 'running' : 'idle', pendingTurnIds: [], hasPendingRequests: false }) }],
+        [IAgentExecutionService, { status: () => ({ state: 'idle' }) }],
+        [IAgentTaskService, { list: () => [], hasUnfinishedWork: () => state === 'pending-task' }],
+      ]) } as IAgentScopeHandle;
+      const parent = { ...target, id: 'parent', accessor: accessor([
+        [IAgentTaskService, { list: () => state === 'referenced' ? [{ kind: 'agent', agentId: 'child' }] : [] }],
+      ]) };
+      const handle = { ...fx.handle, accessor: accessor([
+        [ISessionMetadata, {
+          read: async () => ({ agents: { child: meta } }),
+          updateAgent: async (_id: string, updater: (current: AgentMeta) => AgentMeta) => { meta = updater(meta); },
+        }],
+        [ISessionActivityView, { state: () => ({ busy: state === 'busy', pendingInteraction: 'none' }) }],
+        [IAgentLifecycleService, { get: () => state === 'cold' ? undefined : target, list: () => [target, parent] }],
+      ]) };
+      try {
+        await (fx.service as unknown as { pruneResumeHistory(handle: ISessionScopeHandle): Promise<void> }).pruneResumeHistory(handle);
+        expect(Object.keys(meta.labels ?? {})).toHaveLength(state === 'idle' ? 32 : 40);
+      } finally { await fx.service.dispose(); }
+    },
+  );
+});
 
 describe('SessionLifecycleService create persistence ownership', () => {
   it.each(['blocked', 'failed'] as const)('does not couple a new session to an unrelated %s append', async (unrelated) => {

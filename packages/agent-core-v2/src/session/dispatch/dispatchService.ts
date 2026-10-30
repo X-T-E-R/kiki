@@ -2,7 +2,7 @@ import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
 import { randomUUID } from 'node:crypto';
 
 import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
-import { assertResumeFingerprint, readResumeRecord, resumeFingerprint, writeResumeRecord } from './resume';
+import { assertResumeFingerprint, bindResumeTask, readResumeRecord, resumeFingerprint, writeResumeRecord } from './resume';
 
 import { Emitter } from '#/_base/event';
 import { DispatchCapacity } from './capacity';
@@ -450,7 +450,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       const tracked = this.trackCapacity(run, release);
       return requester === undefined || controller === undefined
         ? tracked
-        : this.registerOwnedContinuation(tracked, requester, controller, cleanup);
+        : this.registerOwnedContinuation(tracked, requester, controller, cleanup, options.operationId);
     } catch (error) {
       cleanup();
       release();
@@ -605,6 +605,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     requester: IAgentScopeHandle,
     controller: AbortController,
     cleanup: () => void,
+    operationId?: string,
   ): DispatchRun {
     return {
       ...run,
@@ -641,7 +642,7 @@ export class SessionDispatchService implements ISessionDispatchService {
             ),
             { timeoutMs: resolveSubagentTimeoutMs(this.config) },
           );
-          await this.recordRun(run.child.agentId, taskId);
+          await this.recordRun(run.child.agentId, taskId, operationId);
           await requester.accessor.get(IEventDispatcher).dispatch(
             new SubagentStarted({ subagentId: run.child.agentId, taskId }),
           );
@@ -660,14 +661,14 @@ export class SessionDispatchService implements ISessionDispatchService {
     };
   }
 
-  async recordRun(agentId: string, runId: string): Promise<void> {
-    await this.metadata.updateAgent(agentId, (meta) => ({
+  async recordRun(agentId: string, runId: string, operationId?: string): Promise<void> {
+    await this.metadata.updateAgent(agentId, (meta) => bindResumeTask({
       ...meta,
       labels: {
         ...meta.labels,
         [COLLABORATION_LATEST_TASK_LABEL]: runId,
       },
-    }));
+    }, operationId, runId));
   }
 
   recordDelegatedRun(requesterAgentId: string, agentId: string): void {

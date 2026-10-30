@@ -5,6 +5,7 @@ import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 import { isAbortError, userCancellationReason } from '#/_base/utils/abort';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { acknowledgeResumeOutcome } from '#/session/dispatch/resume';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { isProviderRateLimitError } from '#/kosong/contract/errors';
@@ -295,7 +296,9 @@ async function recordAgentOutcome(
 ): Promise<void> {
   try {
     const metadata = requester.accessor.get(ISessionMetadata);
-    await metadata.updateAgent(agentId, (current) => ({ ...current, ...outcome, taskId }));
+    await metadata.updateAgent(agentId, (current) => acknowledgeResumeOutcome(
+      { ...current, ...outcome, taskId }, taskId, outcome.completedAt ?? Date.now(),
+    ));
   } catch (error) {
     requester.accessor.get(ILogService)?.warn('subagent outcome metadata write failed', {
       agentId,
