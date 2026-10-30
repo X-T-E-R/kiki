@@ -32,7 +32,7 @@ import { ErrorCode } from '@kiki/protocol';
 import { useSearchParams } from 'react-router-dom';
 import type { To } from 'react-router-dom';
 
-import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
+import { errorText, type I18nKey, type I18nParams, type Locale } from '@kiki/session-core/i18n';
 import { cronScheduleLabel, localizedCronSchedule } from '@kiki/session-core/util';
 
 import { useI18n } from '../i18n';
@@ -73,11 +73,12 @@ export function filterCronTasks<T extends { readonly workspace_id: string }>(
 type Translate = (key: I18nKey, params?: I18nParams) => string;
 
 /** Friendly text for the cron route's actionable error codes. */
-function cronErrorText(error: unknown, t: Translate): string {
+function cronErrorText(error: unknown, t: Translate, locale?: Locale): string {
   if (error instanceof ApiError) {
     if (error.code === ErrorCode.TASK_NOT_FOUND) return t('cron.error.notFound');
     if (error.code === ErrorCode.VALIDATION_FAILED) return t('cron.error.ambiguous');
   }
+  if (locale !== undefined) return errorText(locale, error);
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -748,19 +749,19 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
             {t('cron.panel.loading')}
           </div>
         ) : tasksQuery.isError ? (
-          <div className="rounded-2xl border border-danger/30 bg-danger/5 p-5" data-cron-error>
-            <p className="text-[12.5px] font-medium text-danger">{t('cron.panel.error.title')}</p>
-            <p className="mt-1 font-mono text-[10.5px] text-danger/80">
-              {cronErrorText(tasksQuery.error, t)}
-            </p>
+          <p className={`mx-auto ${PAGE_WIDTH.split} py-10 text-[12.5px] leading-5 text-ink-soft`} data-cron-error>
+            {t('cron.panel.error.title')}
+            {' · '}
+            {cronErrorText(tasksQuery.error, t, locale)}
+            {' · '}
             <button
               type="button"
               onClick={() => { void tasksQuery.refetch(); }}
-              className="mt-2 text-[11.5px] font-medium text-danger underline"
+              className="font-medium text-ink underline underline-offset-2"
             >
               {t('common.retry')}
             </button>
-          </div>
+          </p>
         ) : tasks.length === 0 && sessionScope !== undefined ? (
           <div data-cron-session-empty className={`mx-auto ${PAGE_WIDTH.split} py-10`}>
             <p className="text-[13px] text-ink-soft">{t('cron.scope.sessionEmpty')}</p>

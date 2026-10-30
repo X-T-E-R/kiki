@@ -219,10 +219,15 @@ function basenameOf(path: string): string {
  */
 function workspaceDisplayName(workspace: Workspace): string {
   const name = workspace.name.trim();
-  const opaque = /^[0-9a-f]{7,}$/i.test(name) || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(name);
-  if (!opaque) return name;
-  const base = basenameOf(workspace.root);
-  return base === '' || base === name ? name : base;
+  const opaque = (value: string): boolean => /^[0-9a-f]{7,}$/i.test(value) || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+  if (!opaque(name)) return name;
+  // A hash-named folder (an install or release directory) reads by the
+  // nearest readable ancestor, e.g. `Kiki · d300ab1…`.
+  const parts = workspace.root.replaceAll('\\', '/').split('/').filter((part) => part !== '');
+  const leaf = parts.at(-1) ?? name;
+  const parent = [...parts.slice(0, -1)].reverse().find((part) => !opaque(part) && !/^releases?$/i.test(part));
+  const short = `${leaf.slice(0, 7)}…`;
+  return parent === undefined ? short : `${parent} · ${short}`;
 }
 
 /**
