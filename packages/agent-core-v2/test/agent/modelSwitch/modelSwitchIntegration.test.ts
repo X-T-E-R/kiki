@@ -79,6 +79,25 @@ afterEach(async () => {
 
 describe('model switch integration with current prompt projections', () => {
   it.each([
+    { persona: 'low', modelProfile: 'medium', requested: undefined, expected: 'low' },
+    { persona: undefined, modelProfile: 'medium', requested: undefined, expected: 'medium' },
+    { persona: undefined, modelProfile: undefined, requested: undefined, expected: 'high' },
+    { persona: 'low', modelProfile: 'medium', requested: 'high', expected: 'high' },
+  ])('resolves target-model effort with explicit $requested and default $expected', async ({ persona, modelProfile, requested, expected }) => {
+    const { ctx, profile } = await createHost();
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models,
+      [NEW]: { ...ctx.kimiConfig.models![NEW]!, capabilities: ['thinking'], supportEfforts: ['low', 'medium', 'high'], defaultEffort: 'high' },
+    } };
+    await profile.bind({ model: OLD, thinking: 'off',
+      resolvedProfile: normalizeAgentProfile({ name: 'target-effort-defaults', systemPrompt: () => 'Target effort test',
+        modelProfiles: [{ alias: NEW, thinkingEffort: modelProfile }] }),
+      personaSnapshot: { revision: 'target-persona', definition: { id: 'target-persona', name: 'Target persona', description: 'Checks target effort priority.', thinkingEffort: persona } },
+    });
+    expect(await ctx.get(IAgentModelSwitchService).execute({ operationId: 'target-effort', model: NEW, thinking: requested, mode: 'direct' }))
+      .toMatchObject({ state: 'completed', binding: { model: NEW, thinking: expected } });
+  });
+
+  it.each([
     { persona: 'low', modelProfile: 'medium', expected: 'low' },
     { persona: undefined, modelProfile: 'medium', expected: 'medium' },
     { persona: undefined, modelProfile: undefined, expected: 'high' },

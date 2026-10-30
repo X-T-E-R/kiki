@@ -1547,29 +1547,30 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const recipe = await this.selectedRecipe(model);
     const record = this.resolveUsageModel(model, recipe ?? null);
     if (this.delegationPosition !== 'main') assertSubagentModelNotDenied(this.config, model, this.models);
-    const defaultThinking = requestedThinking === null ? resolveMainThinkingCandidate({
+    const resetThinking = requestedThinking === null || requestedThinking === undefined && model !== previous.modelAlias;
+    const defaultThinking = resetThinking ? resolveMainThinkingCandidate({
       personaThinking: this.currentPersona?.definition.thinkingEffort,
       routeLockedThinking: previous.lockedThinkingEffort,
       profileThinking: resolveProfileThinkingDefault(previous.boundProfile ?? this.resolveActiveProfile(), model, (id) => this.models.resolveId(id)),
     }) : undefined;
-    const thinkingLevel = requestedThinking === null
+    const thinkingLevel = resetThinking
       ? this.resolveThinkingEffort(defaultThinking, record, true)
-      : requestedThinking ?? this.getEffectiveThinkingLevel();
+      : requestedThinking ?? undefined;
     const config = this.resolveConfigPayload({ modelAlias: model, thinkingLevel,
-      thinkingEffortExplicit: requestedThinking === null ? defaultThinking !== undefined : undefined,
-      thinkingEffortAdjusted: requestedThinking === null ? false : undefined,
+      thinkingEffortExplicit: requestedThinking === null ? defaultThinking !== undefined : typeof requestedThinking === 'string' ? true : undefined,
+      thinkingEffortAdjusted: resetThinking ? false : undefined,
       personaOverrides: previous.personaId === undefined ? undefined : {
         ...previous.personaOverrides, model: alias,
         thinking: requestedThinking === null ? undefined : requestedThinking ?? previous.personaOverrides?.thinking,
       },
     }, record);
-    if (requestedThinking === null && config.execution !== undefined) {
+    if (resetThinking && config.execution !== undefined) {
       config.execution = { ...config.execution,
-        selection: { ...config.execution.selection, overrides: { ...config.execution.selection.overrides, thinking: null } },
+        selection: { ...config.execution.selection, overrides: { ...config.execution.selection.overrides, thinking: requestedThinking === null ? null : undefined } },
         sources: { ...config.execution.sources, thinking: defaultThinking === undefined ? 'harness-default' : 'profile' },
       };
     }
-    const thinking = config.thinkingEffort ?? thinkingLevel;
+    const thinking = config.thinkingEffort ?? this.getEffectiveThinkingLevel();
     if (typeof requestedThinking === 'string') this.assertThinkingEffortSupported(requestedThinking, record, model);
     this.assertCurrentBindingConstraints(model, thinking);
     const base = previous.boundProfile?.promptBase;

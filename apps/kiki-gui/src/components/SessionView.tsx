@@ -2668,6 +2668,11 @@ export function SessionView({
     [modelsQuery.data],
   );
   const currentBoundModel = boundModelId;
+  const effortSourceSwitch = modelSwitches.dependency ?? modelSwitches.switches.findLast(entry =>
+    entry.receipt.state === 'completed' && canonicalModel(entry.receipt.toModel) === currentBoundModel);
+  const switchEffortChoice = manualEffort ?? (effortSourceSwitch !== undefined ? effortSourceSwitch.input.thinking
+    : executionBinding?.sources['thinking'] === 'session' ? boundExecution.overrides?.thinking : undefined);
+  const modelSwitchThinking = typeof switchEffortChoice === 'string' && switchEffortChoice !== '' ? switchEffortChoice : undefined;
   const submitModelSwitch = useCallback(async (choice: {
     readonly fromModel: string;
     readonly toModel: string;
@@ -2683,13 +2688,14 @@ export function SessionView({
           operationId: choice.editingOperationId,
           model: choice.toModel,
           mode: choice.mode,
+          thinking: modelSwitches.switches.find(entry => entry.input.operationId === choice.editingOperationId)?.input.thinking,
           selectedFromModel: choice.fromModel,
         }, choice.editingRevision);
         modelSwitches.refresh();
       } else {
         const receipt = await client.switchAgentModel(sessionId, MAIN_AGENT_ID, {
           operationId: crypto.randomUUID(), model: choice.toModel, mode: choice.mode,
-          selectedFromModel: choice.fromModel,
+          thinking: modelSwitchThinking, selectedFromModel: choice.fromModel,
         });
         if (receipt.state === 'failed') throw new Error(receipt.error?.message ?? t('modelSwitch.listFailed'));
         modelSwitches.refresh();
@@ -2726,7 +2732,7 @@ export function SessionView({
         }),
       });
     }
-  }, [client, modelSwitchPrefs, modelSwitches, queryClient, sessionId, sessionModel, state.thinkingEffort, t]);
+  }, [client, modelSwitchPrefs, modelSwitches, modelSwitchThinking, queryClient, sessionId, t]);
   // Opens the confirm panel per the effective preference, or accepts straight
   // away when the rule/default says not to ask. `explicitMode` is the user's
   // own choice (the same-model fresh entry), which outranks rule matching.

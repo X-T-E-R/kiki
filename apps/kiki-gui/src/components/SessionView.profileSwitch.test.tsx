@@ -803,6 +803,74 @@ describe('standalone model switches and dependent messages', () => {
   });
 });
 
+describe('live manual effort provenance across model switches', () => {
+  async function pickModel(container: HTMLElement) {
+    await click(await waitForElement(container, '#composer-execution-select'));
+    await click(await waitForElement(container, '[data-execution-model="fixture/other-model"]'));
+  }
+
+  beforeEach(() => {
+    fixture.model = 'fixture/live-model';
+    listModels.mockResolvedValue({ items: [catalogModel('fixture/live-model', 'Live'), catalogModel('fixture/other-model', 'Other')] });
+  });
+
+  it.each([false, true])('carries a hand-picked effort explicitly into a model switch; Ctrl-Send=%s', async now => {
+    const { container } = await mount();
+    await click(await waitForElement(container, '#composer-execution-select'));
+    await click(await waitForElement(container, '[data-execution-effort="high"]'));
+    await click(await waitForElement(container, '#composer-execution-select'));
+    await pickModel(container);
+    await click(dialogButton(container, 'Switch at next step'));
+    expect(switchAgentModel).toHaveBeenLastCalledWith('session-a', 'main', expect.objectContaining({ model: 'fixture/other-model', thinking: 'high' }));
+    const selected = fixture.switches.at(-1)!;
+    if (now) {
+      await type('Use the selected model and effort.', container);
+      await act(async () => { composerInput(container)?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true })); });
+      await settle();
+    } else await sendNextMessage(container);
+    expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({ afterModelSwitch: selected.input.operationId });
+    expect(submitPrompt.mock.calls[0]?.[1]).toMatchObject({ after_model_switch: selected.input.operationId });
+    expect(submitPrompt.mock.calls[0]?.[1].thinking).toBeUndefined();
+    expect(sendPromptNow).not.toHaveBeenCalled();
+  });
+
+  it('carries a completed legacy manual switch before the binding echo arrives', async () => {
+    fixture.switches = [{
+      input: { operationId: 'completed-manual', model: fixture.model!, thinking: 'high', mode: 'direct' },
+      receipt: { operationId: 'completed-manual', agentId: 'main', fromModel: fixture.model!, toModel: fixture.model!, mode: 'direct', state: 'completed', binding: { model: fixture.model!, thinking: 'high' } },
+      originalBinding: { model: fixture.model!, thinking: 'medium' }, queueIndex: -1, revision: 0,
+    }];
+    const { container } = await mount();
+    await pickModel(container);
+    await click(dialogButton(container, 'Switch at next step'));
+    expect(switchAgentModel.mock.calls.at(-1)?.[2].thinking).toBe('high');
+  });
+
+  it.each(['session', 'profile'] as const)('carries only manual effort from the persisted %s binding source', async source => {
+    fixture.session = { ...fixture.session!, agent_config: { ...fixture.session!.agent_config, execution: {
+      version: 1, selection: { executor: 'native', profile: 'agent', overrides: { model: fixture.model, thinking: 'high' } },
+      effective: { model: fixture.model, thinking: 'high', kiki_context: [], allow_kiki_subagents: false }, sources: { thinking: source }, generation: 1,
+    } } } as Session;
+    const { container } = await mount();
+    await pickModel(container);
+    await click(dialogButton(container, 'Switch at next step'));
+    expect(switchAgentModel.mock.calls.at(-1)?.[2].thinking).toBe(source === 'session' ? 'high' : undefined);
+  });
+
+  it.each([undefined, ''])('omits automatic or cleared effort from a model switch; selection=%s', async effort => {
+    const { container } = await mount();
+    if (effort !== undefined) {
+      await click(await waitForElement(container, '#composer-execution-select'));
+      await click(await waitForElement(container, '[data-execution-effort="high"]'));
+      await click(await waitForElement(container, '[data-execution-effort=""]'));
+      await click(await waitForElement(container, '#composer-execution-select'));
+    }
+    await pickModel(container);
+    await click(dialogButton(container, 'Switch at next step'));
+    expect(switchAgentModel.mock.calls.at(-1)?.[2].thinking).toBeUndefined();
+  });
+});
+
 describe('same-executor model selection across a profile switch', () => {
   const liveModel = 'fixture/live-model';
 
