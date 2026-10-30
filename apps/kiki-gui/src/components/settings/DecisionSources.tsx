@@ -30,7 +30,7 @@ import {
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
+import { FeedbackLine, Hint, SaveStatus, type Feedback } from '../controls';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import { useMemoryAdvisor } from '../memory/useMemoryAdvisor';
@@ -132,6 +132,8 @@ interface JudgeRowModel {
   readonly legacy?: string;
   readonly loading: boolean;
   readonly error: unknown;
+  /** Re-runs the failed read; absent when the row cannot refetch on its own. */
+  readonly retry?: () => void;
   readonly write: (source: DecisionSource | null) => Promise<void>;
   /** Older-settings cleanup that belongs to this job (the reviewer's own Jev key). */
   readonly extra?: React.ReactNode;
@@ -190,6 +192,7 @@ export function DecisionJudgeRows() {
         ? t('st.decision.row.memoryLegacy', { model: advisorConfig.selector.model }) : undefined,
       loading: advisor.query.isPending,
       error: advisor.query.error,
+      retry: () => { void advisor.query.refetch(); },
       // Clearing also drops an older model setting, so nothing stays in effect.
       write: async (source) => {
         await advisor.save.mutateAsync({ advisor: source === null && advisorConfig?.selector !== undefined ? { source, selector: null } : { source } });
@@ -203,7 +206,7 @@ export function DecisionJudgeRows() {
   );
 }
 
-function JudgeRow({ consumer, label, help, unset, source, status, legacy, loading, error, write, extra }: JudgeRowModel & {
+function JudgeRow({ consumer, label, help, unset, source, status, legacy, loading, error, retry, write, extra }: JudgeRowModel & {
   readonly label: string;
   readonly help: string;
   readonly unset: string;
@@ -271,7 +274,14 @@ function JudgeRow({ consumer, label, help, unset, source, status, legacy, loadin
             ) : null}
           </div>
         ) : null}
-        {error !== null && error !== undefined ? <InlineError error={error} /> : null}
+        {error !== null && error !== undefined ? (
+          <p className="flex flex-wrap items-center gap-x-2 text-[12px] text-ink-faint" data-decision-read-error>
+            <span>{errorText(locale, error)}</span>
+            {retry !== undefined ? (
+              <button type="button" className={LINK} onClick={retry}>{t('common.retry')}</button>
+            ) : null}
+          </p>
+        ) : null}
         <FeedbackLine feedback={feedback} />
         {extra !== undefined && extra !== null ? <div className="mt-2">{extra}</div> : null}
       </div>

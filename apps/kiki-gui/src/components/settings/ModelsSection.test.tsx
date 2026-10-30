@@ -844,7 +844,7 @@ describe('ThinkingCard display order', () => {
     });
     for (let index = 0; index < 3; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const choices = [...container.querySelectorAll<HTMLButtonElement>('[role="group"] button')];
-    expect(choices.map((node) => node.textContent)).toEqual(['Low', 'Medium', 'High', 'Xhigh', 'Max', 'Vendor-ULTRA']);
+    expect(choices.map((node) => node.textContent)).toEqual(['Low', 'Medium', 'High', 'Very high', 'Max', 'Vendor-ULTRA']);
     expect(choices.filter((node) => node.getAttribute('aria-pressed') === 'true').map((node) => node.textContent)).toEqual(['High']);
     expect(support_efforts).toEqual(['high', 'max', 'low', 'medium', 'xhigh', 'Vendor-ULTRA']);
     expect(patchConfig).not.toHaveBeenCalled();
@@ -874,7 +874,7 @@ describe('GlobalDefaultsCard', () => {
     expect([...container.querySelectorAll<HTMLElement>('[data-default-row]')].map((row) => row.dataset['defaultRow']))
       .toEqual(['session-title', 'fast', 'subagent']);
     const subagentRow = container.querySelector('[data-default-row="subagent"]')!;
-    expect(subagentRow.textContent).toContain('only when a subagent has no other pin');
+    expect(subagentRow.textContent).toContain('Used when neither the subagent nor the dispatch names a model.');
     expect(container.querySelector('[data-default-row="fast"]')!.textContent).toContain('small background jobs');
     // No title model, so the title row says the honest thing: nothing writes
     // a title on its own. A fast model is not a title source any more.

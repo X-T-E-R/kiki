@@ -627,7 +627,7 @@ export function ThinkingCard() {
               value={effort}
               disabled={!thinkingEnabled || busy}
               onChange={(value) => void saveThinking(thinkingEnabled, value)}
-              choices={sortThinkingEffortsForDisplay(defaultItem.support_efforts).map((level) => ({ value: level, label: effortLabel(level) }))}
+              choices={sortThinkingEffortsForDisplay(defaultItem.support_efforts).map((level) => ({ value: level, label: effortLabel(level, t) }))}
             />
           ) : (
             <input

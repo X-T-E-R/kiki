@@ -514,8 +514,8 @@ type RunChoice = 'plain' | 'kiki';
  * A following engine highlights what that default currently is and says
  * nothing more on the row; a pinned one offers "follow default", which writes
  * `null`. An engine that cannot carry the bridge only states that it runs as
- * is. The row and the detail panel render the same control (`variant`), both
- * reading the shared config query, so they cannot disagree.
+ * is. The control lives in the engine's detail pane: the list row keeps one
+ * status word and a click opens the detail (rule 14).
  */
 const RUN_MODE_COPY = {
   en: {
@@ -540,11 +540,10 @@ function runModeCopy(locale: string) {
   return locale === 'zh' ? RUN_MODE_COPY.zh : RUN_MODE_COPY.en;
 }
 
-function EngineRunMode({ item, savedDefaults, onSaved, variant }: {
+function EngineRunMode({ item, savedDefaults, onSaved }: {
   item: ExecutorCatalogItem;
   savedDefaults: Record<string, unknown> | null | undefined;
   onSaved: () => Promise<void>;
-  variant: 'row' | 'panel';
 }) {
   const { client, scopeId, meta } = useConnection();
   const { t, locale } = useI18n();
@@ -612,15 +611,6 @@ function EngineRunMode({ item, savedDefaults, onSaved, variant }: {
     'data-mcp-supported': isUnsupported ? 'false' : 'true',
   };
 
-  if (variant === 'row') {
-    return (
-      <div {...data} className="flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
-        {error !== undefined ? <span role="alert" className="max-w-[14rem] truncate text-[12px] text-danger" title={error}>{error}</span> : null}
-        {restore}
-        {control}
-      </div>
-    );
-  }
   return (
     <div {...data} className="space-y-1.5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
@@ -876,26 +866,9 @@ function EngineRow({ item, overrides, display, fault, onOpen }: {
           <span className="sr-only md:hidden">{healthText}</span>
         </span>
       </button>
-      <div data-engine-row-run className="order-last w-full pl-10 sm:order-none sm:w-auto sm:pl-0"
-        onClick={(event) => { event.stopPropagation(); }}>
-        <EngineRowRunMode item={item} />
-      </div>
       <Icon name="chevron" size={12} className="shrink-0 text-ink-faint transition-colors group-hover/engine:text-ink-soft" />
     </div>
   );
-}
-
-function EngineRowRunMode({ item }: { item: ExecutorCatalogItem }) {
-  const { client } = useConnection();
-  const queryClient = useQueryClient();
-  const configQuery = useQuery({
-    queryKey: ['config'],
-    queryFn: () => client.getConfig(),
-    staleTime: 60_000,
-    retry: false,
-  });
-  return <EngineRunMode item={item} savedDefaults={engineDefaultsOf(configQuery.data?.raw, item.id)}
-    onSaved={async () => { await configQuery.refetch(); }} variant="row" />;
 }
 
 /**
@@ -1093,7 +1066,7 @@ function EngineDetailPane({ item, overrides, display, onClose, onFault, onRegist
 
             <section data-engine-section="run" className="space-y-3 pt-5">
               <h3 className="text-[13px] font-medium text-ink">{runModeCopy(locale).title}</h3>
-              <EngineRunMode item={item} savedDefaults={savedDefaults} onSaved={refetchConfig} variant="panel" />
+              <EngineRunMode item={item} savedDefaults={savedDefaults} onSaved={refetchConfig} />
               <EngineDefaults item={item} saved={savedDefaults} onSaved={refetchConfig} />
             </section>
 

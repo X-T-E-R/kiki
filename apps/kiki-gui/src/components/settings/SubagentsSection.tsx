@@ -20,7 +20,7 @@ import type { NamedAgentProfile } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SaveStatus } from '../controls';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
-import { SettingField } from './fields';
+import { SettingField, SettingsBox } from './fields';
 import { SectionCard } from './SectionCard';
 import { SETTINGS_SELECT_TRIGGER, SettingsSegmented } from './SettingsPrimitives';
 import { useInstantSave } from './useInstantSave';
@@ -43,9 +43,9 @@ function dispatchSummaryKey(profile: NamedAgentProfile): I18nKey {
  * engine default (`general`) applies while the key is unset. Saves on select,
  * like the other single-choice server settings.
  *
- * An unset value is the engine fallback, not a misconfiguration, so the row
- * stays quiet until the saved name is one the catalog can never resolve: the
- * built-in fallback's absence is a notice, a user-picked missing name a fix.
+ * An unset value is the engine fallback, not a misconfiguration, so an
+ * absent built-in fallback says nothing at all; only a user-picked name the
+ * catalog can never resolve gets a fix line.
  */
 export function SubagentDefaultTargetCard() {
   const { client } = useConnection();
@@ -114,11 +114,9 @@ export function SubagentDefaultTargetCard() {
         label: current.name,
         description: selectedProfile?.disabled
           ? t('st.subagentDefault.disabledTarget', { name: current.name })
-          : profilesQuery.data === undefined
+          : profilesQuery.data === undefined || isEngineFallback
             ? undefined
-            : isEngineFallback
-              ? t('st.subagentDefault.fallbackMissing', { name: current.name })
-              : t('st.subagentDefault.unresolvable', { name: current.name }),
+            : t('st.subagentDefault.unresolvable', { name: current.name }),
         badges: selectedProfile === undefined ? undefined : [{ label: selectedProfile.source }],
       });
     }
@@ -156,7 +154,7 @@ export function SubagentDefaultTargetCard() {
 
   return (
     <SectionCard id="st-card-subagent-default-target" title={t('st.subagentDefault.title')}>
-      <div className="space-y-3">
+      <SettingsBox>
         <Hint>{t('st.subagentDefault.hint')}</Hint>
         <fieldset disabled={saving || configQuery.isPending} className="disabled:opacity-60">
           <div data-subagent-default-target data-value={selectValue}>
@@ -177,13 +175,9 @@ export function SubagentDefaultTargetCard() {
         {current?.mode === 'strict' ? (
           <Hint>{t('st.subagentDefault.strictHint')}</Hint>
         ) : null}
-        {current?.mode === 'profile' && profilesQuery.data !== undefined && selectedProfile === undefined ? (
+        {current?.mode === 'profile' && !isEngineFallback && profilesQuery.data !== undefined && selectedProfile === undefined ? (
           <div data-subagent-default-status="unresolvable">
-            {isEngineFallback ? (
-              <p className="text-[12px] leading-snug text-ink-faint">{t('st.subagentDefault.fallbackMissing', { name: current.name })}</p>
-            ) : (
-              <FeedbackLine feedback={{ tone: 'error', text: t('st.subagentDefault.unresolvable', { name: current.name }) }} />
-            )}
+            <FeedbackLine feedback={{ tone: 'error', text: t('st.subagentDefault.unresolvable', { name: current.name }) }} />
           </div>
         ) : null}
         {selectedProfile !== undefined ? (
@@ -202,7 +196,7 @@ export function SubagentDefaultTargetCard() {
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         {profilesQuery.isError ? <InlineError error={profilesQuery.error} /> : null}
         <FeedbackLine feedback={save.error} />
-      </div>
+      </SettingsBox>
     </SectionCard>
   );
 }
@@ -220,7 +214,7 @@ export function SubagentOpenModeCard() {
 
   return (
     <SectionCard id="st-card-subagent-open-mode" title={t('st.subagentOpenMode.title')}>
-      <div className="space-y-2">
+      <SettingsBox>
         <SettingField label={t('st.subagentOpenMode.label')} labelId="subagent-open-mode-label">
           <SettingsSegmented<SubagentPanelOpenMode>
             ariaLabelledBy="subagent-open-mode-label"
@@ -234,7 +228,7 @@ export function SubagentOpenModeCard() {
           />
         </SettingField>
         <Hint>{t('st.subagentOpenMode.hint')}</Hint>
-      </div>
+      </SettingsBox>
     </SectionCard>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
 import {
@@ -37,6 +38,8 @@ const profileKey = (profile: NamedAgentProfile) => `${profile.source}:${profile.
 
 /** The `?agent=` query: the profile whose detail is open. */
 export const AGENT_QUERY_PARAM = 'agent';
+/** The `?workspace=` query: the workspace this page is filtered to. */
+const WORKSPACE_QUERY_PARAM = 'workspace';
 
 /** The create flow, in a side panel; `source` prefills a duplicate. */
 type Creating = { source?: string } | null;
@@ -70,7 +73,16 @@ export function UnifiedAgentManager() {
   // Only consulted when this page has no workspace of its own to address.
   const kikiFallbackWorkspace = useAskKikiWorkspace();
   const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
-  const selectedWorkspaceId = workspaceId ?? sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id;
+  // The address is the truth for the scope: an explicit pick is written to
+  // `?workspace=` (replace, so Back lands on the previous page state) and a
+  // link carrying it wins; only without a param does the page fall back to
+  // the most recently used workspace.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const workspaceParam = searchParams.get(WORKSPACE_QUERY_PARAM) ?? undefined;
+  const selectedWorkspaceId = workspaceParam
+    ?? (workspaceId !== undefined && (workspacesQuery.data?.items ?? []).some((workspace) => workspace.id === workspaceId)
+      ? workspaceId : undefined)
+    ?? sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id;
   const profilesQuery = useQuery({
     queryKey: ['named-agent-profiles', selectedWorkspaceId ?? 'global'],
     queryFn: () => loadAgentProfileCatalog(client, selectedWorkspaceId
@@ -122,6 +134,42 @@ export function UnifiedAgentManager() {
   const paramOf = (row: TeamRow) => rows.filter((other) => other.profile.name === row.profile.name).length === 1 ? row.profile.name : row.key;
   const editing = detail.selected === null ? undefined
     : rows.find((row) => paramOf(row) === detail.selected) ?? rows.find((row) => row.key === detail.selected);
+  // `?agent=` resolves across every workspace, not only the one in view: a
+  // deep link taken while another workspace is filtered names where the
+  // profile lives instead of reading as "not found". Only asked while the
+  // current catalog cannot answer.
+  const workspaces = workspacesQuery.data?.items ?? [];
+  const elsewhereQueries = useQueries({
+    queries: workspaces
+      .filter((workspace) => workspace.id !== selectedWorkspaceId)
+      .map((workspace) => ({
+        queryKey: ['named-agent-profiles', workspace.id],
+        queryFn: () => loadAgentProfileCatalog(client, { mode: 'workspace', workspaceId: workspace.id }),
+        enabled: detail.selected !== null && editing === undefined && profilesQuery.isSuccess && !profilesQuery.data.items.some((item) => item.name === detail.selected),
+        staleTime: 15_000,
+      })),
+  });
+  const elsewhere = useMemo(() => {
+    if (detail.selected === null || editing !== undefined) return undefined;
+    for (let i = 0; i < elsewhereQueries.length; i++) {
+      const items = elsewhereQueries[i]?.data?.items;
+      if (items !== undefined && items.some((item) => item.name === detail.selected)) return workspaces.filter((workspace) => workspace.id !== selectedWorkspaceId)[i];
+    }
+    return undefined;
+  }, [elsewhereQueries, workspaces, selectedWorkspaceId, editing, detail.selected]);
+  // A deliberate workspace switch keeps the open detail when the same name
+  // resolves there too.
+  const openName = editing !== undefined && detail.selected === editing.profile.name ? detail.selected : null;
+  const switchWorkspace = (next: string, keepOpen: boolean) => {
+    if (next === selectedWorkspaceId) return;
+    setWorkspaceId(next);
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      params.set(WORKSPACE_QUERY_PARAM, next);
+      if (!keepOpen) params.delete(AGENT_QUERY_PARAM);
+      return params;
+    }, { replace: true });
+  };
   const openRow = (row: TeamRow) => { detail.open(paramOf(row)); };
   const closeCreate = () => {
     if (guard?.confirmDiscard === undefined) { setCreating(null); return; }
@@ -178,9 +226,13 @@ export function UnifiedAgentManager() {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally { setQuickSaving(undefined); }
   };
-  const workspaceOptions = useMemo(() => (workspacesQuery.data?.items ?? []).map((workspace) => ({
-    value: workspace.id, label: workspace.name ?? workspace.root, hint: workspace.root, title: workspace.root,
-  })), [workspacesQuery.data]);
+  const workspaceOptions = useMemo(() => (workspacesQuery.data?.items ?? []).map((workspace) => {
+    // A workspace's own name, else the folder it points at — never the raw
+    // registration id, which reads as a hash.
+    const base = workspace.root.replace(/[\/]+$/, '').split(/[\/]/).pop();
+    const label = workspace.name !== undefined && workspace.name !== '' ? workspace.name : base !== '' && base !== undefined ? base : workspace.id;
+    return { value: workspace.id, label, hint: workspace.root, title: workspace.root };
+  }), [workspacesQuery.data]);
   // Names disabled server-wide that no visible row exposes, so the by-name entry
   // can re-enable a profile the workspace filter does not show.
   const disabledNames = useMemo(
@@ -203,8 +255,8 @@ export function UnifiedAgentManager() {
 
   const workspacePicker = workspaceOptions.length > 0 ? <SearchableSelect id="agents-workspace-select" options={workspaceOptions}
     value={selectedWorkspaceId ?? ''} ariaLabel={t('new.workspace')} buttonClassName={SETTINGS_SELECT_TRIGGER}
-    triggerLabel={<span className="text-ink-soft">{t('st.profiles.project')} <span className="text-ink">{workspaceOptions.find((option) => option.value === selectedWorkspaceId)?.label}</span></span>}
-    onChange={(next) => { if (next !== selectedWorkspaceId) { setWorkspaceId(next); detail.close(); } }} /> : null;
+    triggerLabel={<span className="min-w-0 text-ink-soft">{t('st.profiles.project')} <span className="inline-block max-w-56 truncate align-bottom text-ink">{workspaceOptions.find((option) => option.value === selectedWorkspaceId)?.label}</span></span>}
+    onChange={(next) => { switchWorkspace(next, openName !== null); }} /> : null;
 
   const list = <div className="space-y-4">
       <div className="flex min-h-8 flex-wrap items-center justify-between gap-2" data-agents-scope>
@@ -242,7 +294,7 @@ export function UnifiedAgentManager() {
             }}
           />
         }
-        onOpen={openRow} onNew={() => setCreating({})}
+        onOpen={openRow} onNew={() => setCreating({})} loading={profilesQuery.isPending}
         onQuickSave={(row, patch) => void quickSave(row, patch)} />
       {removed.length > 0 ? <div className="space-y-1" data-shipped-removed-list>
         {removed.map((entry) => <div key={entry.template_id} data-shipped-removed={entry.template_id}
@@ -336,7 +388,17 @@ export function UnifiedAgentManager() {
     <DetailSplit selected={editing === undefined ? null : editing.profile.name} label={t('st.profiles.team')}
       data={{ 'data-agents-split': '' }} list={list} rail={rail} detail={editor} />
     {detail.selected !== null && editing === undefined && !profilesQuery.isLoading
-      ? <p data-agent-missing className="text-[13px] text-ink-soft">{t('st.profiles.notFound')}</p> : null}
+      ? (elsewhere !== undefined ? (
+        <p data-agent-elsewhere className="flex flex-wrap items-center gap-x-1.5 text-[13px] text-ink-faint">
+          {t('st.profiles.inOtherWorkspace', { name: detail.selected, workspace: elsewhere.name ?? elsewhere.root })}
+          <button type="button" data-agent-elsewhere-open className="font-medium text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+            onClick={() => { switchWorkspace(elsewhere.id, true); }}>
+            {t('st.profiles.openThere')}
+          </button>
+        </p>
+      ) : (
+        <p data-agent-missing className="text-[13px] text-ink-soft">{t('st.profiles.notFound')}</p>
+      )) : null}
     {creating !== null ? <SidePanel title={t('st.agentManager.new')} overlayId="agent-create-panel" width="lg"
       onClose={closeCreate} data={{ 'data-agent-create-panel': '' }}>
       <NewProfile workspaceId={selectedWorkspaceId} workspaceOptions={workspaceOptions} profiles={profiles} shipped={shippedEntries}

@@ -61,7 +61,7 @@ const TAG_OUTLINE = 'shrink-0 rounded-[4px] border border-hairline px-1.5 text-[
  * and effort edit in place (each change saves on its own); a warning mark
  * flags a pin that does not resolve or a file that does not run.
  */
-export function TeamView({ rows, models, onOpen, onQuickSave, savingKey, onNew, newActions }: {
+export function TeamView({ rows, models, onOpen, onQuickSave, savingKey, onNew, newActions, loading = false }: {
   rows: readonly TeamRow[];
   models: readonly ModelCatalogItem[];
   onOpen: (row: TeamRow) => void;
@@ -70,6 +70,8 @@ export function TeamView({ rows, models, onOpen, onQuickSave, savingKey, onNew, 
   onNew: () => void;
   /** Verbs that stand in for creating an agent by hand sit beside "New agent". */
   newActions?: React.ReactNode;
+  /** While the catalog is still answering, an empty list is not the empty state. */
+  loading?: boolean;
 }) {
   const { t, tp, locale } = useI18n();
   const [pendingModel, setPendingModel] = useState<{ key: string; alias: string }>();
@@ -141,7 +143,7 @@ export function TeamView({ rows, models, onOpen, onQuickSave, savingKey, onNew, 
           </tbody>;
         })}
       </table>
-      {view.visible.length === 0 ? <ListEmpty kind={view.narrowed ? 'no-match' : 'none'}
+      {view.visible.length === 0 && !loading ? <ListEmpty kind={view.narrowed ? 'no-match' : 'none'}
         title={t(view.narrowed ? 'st.profiles.teamNoMatch' : 'st.profiles.teamEmpty')}
         action={view.narrowed ? undefined : newButton} onClear={view.narrowed ? view.clear : undefined} /> : null}
     </div>
@@ -215,12 +217,12 @@ export function TeamView({ rows, models, onOpen, onQuickSave, savingKey, onNew, 
       </td>
       <td className="border-b border-hairline py-2 pr-3 max-sm:border-0 max-sm:p-0" data-team-effort>
         {quickEditable ? <SearchableSelect id={`team-effort-${row.key}`} value={effort} hideFilter
-          options={[{ value: '', label: t('st.profiles.effortUnset') }, ...EFFORTS.map((level) => ({ value: level, label: effortLabel(level) })),
-            ...(effort !== '' && !(EFFORTS as readonly string[]).includes(effort) ? [{ value: effort, label: effortLabel(effort) }] : [])]}
-          triggerLabel={effort === '' ? <span className="text-ink-faint">{t('st.profiles.effortUnset')}</span> : effortLabel(effort)}
+          options={[{ value: '', label: t('st.profiles.effortUnset') }, ...EFFORTS.map((level) => ({ value: level, label: effortLabel(level, t) })),
+            ...(effort !== '' && !(EFFORTS as readonly string[]).includes(effort) ? [{ value: effort, label: effortLabel(effort, t) }] : [])]}
+          triggerLabel={effort === '' ? <span className="text-ink-faint">{t('st.profiles.effortUnset')}</span> : effortLabel(effort, t)}
           ariaLabel={t('st.profiles.effortFor', { name: profile.name })} buttonClassName={`${SETTINGS_SELECT_TRIGGER} text-[12px]`}
           onChange={(next) => { if (next !== effort) onQuickSave(row, { thinking_effort: next === '' ? null : next }); }} />
-          : <span className="inline-flex h-8 items-center gap-1 text-[12px]"><span className="text-ink-faint sm:hidden">{t('st.profiles.effort')}</span>{effort === '' ? <span className="text-ink-faint">{t('st.profiles.effortUnset')}</span> : effortLabel(effort)}</span>}
+          : <span className="inline-flex h-8 items-center gap-1 text-[12px]"><span className="text-ink-faint sm:hidden">{t('st.profiles.effort')}</span>{effort === '' ? <span className="text-ink-faint">{t('st.profiles.effortUnset')}</span> : effortLabel(effort, t)}</span>}
       </td>
       <td className="min-w-0 border-b border-hairline py-2 text-[12px] max-sm:w-full max-sm:border-0 max-sm:p-0" data-team-dispatch
         title={dispatch.names.length > DISPATCH_SHOWN ? dispatch.text : undefined}>

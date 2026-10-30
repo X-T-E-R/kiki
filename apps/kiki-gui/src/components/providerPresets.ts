@@ -25,20 +25,25 @@ export interface ProviderPreset {
   readonly group: ProviderPresetGroup;
   /** A local server usually needs no key. */
   readonly keyOptional?: boolean;
+  /**
+   * Where the vendor issues API keys, shown beside the key field when the
+   * preset names a console Kiki can be sure of.
+   */
+  readonly consoleUrl?: string;
 }
 
 /** Alphabetical inside each group, so no vendor reads as the default. */
 export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
-  { id: 'anthropic', label: 'Anthropic', type: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', defaultContextSize: 200_000, group: 'vendor' },
-  { id: 'deepseek', label: 'DeepSeek', type: 'openai', baseUrl: 'https://api.deepseek.com/v1', defaultContextSize: 128_000, group: 'vendor' },
-  { id: 'gemini', label: 'Google Gemini', type: 'google-genai', baseUrl: 'https://generativelanguage.googleapis.com', defaultContextSize: 1_000_000, group: 'vendor' },
+  { id: 'anthropic', label: 'Anthropic', type: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', defaultContextSize: 200_000, group: 'vendor', consoleUrl: 'https://console.anthropic.com/settings/keys' },
+  { id: 'deepseek', label: 'DeepSeek', type: 'openai', baseUrl: 'https://api.deepseek.com/v1', defaultContextSize: 128_000, group: 'vendor', consoleUrl: 'https://platform.deepseek.com/api_keys' },
+  { id: 'gemini', label: 'Google Gemini', type: 'google-genai', baseUrl: 'https://generativelanguage.googleapis.com', defaultContextSize: 1_000_000, group: 'vendor', consoleUrl: 'https://aistudio.google.com/apikey' },
   { id: 'mistral', label: 'Mistral', type: 'openai', baseUrl: 'https://api.mistral.ai/v1', defaultContextSize: 128_000, group: 'vendor' },
-  { id: 'moonshot', label: 'Moonshot (Kimi)', type: 'kimi', baseUrl: 'https://api.moonshot.ai/v1', defaultContextSize: 131_072, group: 'vendor' },
-  { id: 'openai', label: 'OpenAI', type: 'openai', baseUrl: 'https://api.openai.com/v1', defaultContextSize: 128_000, group: 'vendor' },
+  { id: 'moonshot', label: 'Moonshot (Kimi)', type: 'kimi', baseUrl: 'https://api.moonshot.ai/v1', defaultContextSize: 131_072, group: 'vendor', consoleUrl: 'https://platform.moonshot.ai/console/api-keys' },
+  { id: 'openai', label: 'OpenAI', type: 'openai', baseUrl: 'https://api.openai.com/v1', defaultContextSize: 128_000, group: 'vendor', consoleUrl: 'https://platform.openai.com/api-keys' },
   { id: 'qwen', label: 'Qwen (DashScope)', type: 'openai', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', defaultContextSize: 131_072, group: 'vendor' },
   { id: 'xai', label: 'xAI', type: 'openai', baseUrl: 'https://api.x.ai/v1', defaultContextSize: 131_072, group: 'vendor' },
   { id: 'zhipu', label: 'Zhipu GLM', type: 'openai', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', defaultContextSize: 128_000, group: 'vendor' },
-  { id: 'openrouter', label: 'OpenRouter', type: 'openai', baseUrl: 'https://openrouter.ai/api/v1', defaultContextSize: 128_000, group: 'gateway' },
+  { id: 'openrouter', label: 'OpenRouter', type: 'openai', baseUrl: 'https://openrouter.ai/api/v1', defaultContextSize: 128_000, group: 'gateway', consoleUrl: 'https://openrouter.ai/settings/keys' },
   { id: 'siliconflow', label: 'SiliconFlow', type: 'openai', baseUrl: 'https://api.siliconflow.cn/v1', defaultContextSize: 128_000, group: 'gateway' },
   { id: 'lmstudio', label: 'LM Studio', type: 'openai', baseUrl: 'http://localhost:1234/v1', defaultContextSize: 32_768, group: 'local', keyOptional: true },
   { id: 'ollama', label: 'Ollama', type: 'openai', baseUrl: 'http://localhost:11434/v1', defaultContextSize: 32_768, group: 'local', keyOptional: true },

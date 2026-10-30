@@ -73,8 +73,8 @@ export function EffortPicker({ id, value, onChange, supported, disabled, allowUn
   const { t } = useI18n();
   const levels = sortThinkingEffortsForDisplay(supported !== undefined && supported.length > 0 ? supported : EFFORTS);
   const choices = [...(allowUnset ? [{ value: '', label: unsetLabel ?? t('st.profiles.effortUnset') }] : []),
-    ...levels.map((level) => ({ value: level, label: effortLabel(level) })),
-    ...(value !== '' && !levels.includes(value) ? [{ value, label: effortLabel(value), hint: t('st.profiles.effortUnsupported') }] : [])];
+    ...levels.map((level) => ({ value: level, label: effortLabel(level, t) })),
+    ...(value !== '' && !levels.includes(value) ? [{ value, label: effortLabel(value, t), hint: t('st.profiles.effortUnsupported') }] : [])];
   return <SearchableSelect id={id} value={value} disabled={disabled} options={choices} hideFilter
     triggerLabel={value === '' ? unsetTrigger : undefined}
     ariaLabel={ariaLabel ?? t('st.profiles.effort')} buttonClassName={FORM_SELECT_TRIGGER} onChange={onChange} />;

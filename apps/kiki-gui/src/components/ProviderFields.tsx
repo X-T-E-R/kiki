@@ -1936,6 +1936,17 @@ export function NewProviderWizard({
         </span>
       </div>
       {preset?.keyOptional === true ? <Hint>{t('st.presets.localHint')}</Hint> : null}
+      {/* Rule 16: where a key comes from, said next to the fields that hold it.
+          Only presets with a console Kiki is sure of name it. */}
+      {preset?.consoleUrl !== undefined ? (
+        <p data-preset-key-console className="max-w-[62ch] text-[12px] leading-snug text-ink-faint">
+          {t('st.presets.keyConsole', { url: preset.consoleUrl.replace(/^https?:\/\//, '') })}{' '}
+          <a href={preset.consoleUrl} target="_blank" rel="noreferrer"
+            className="inline-flex items-center gap-0.5 text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink">
+            <Icon name="external" size={12} />{preset.label}
+          </a>
+        </p>
+      ) : null}
       <ProviderFields
         draft={draft}
         onChange={editDraft}

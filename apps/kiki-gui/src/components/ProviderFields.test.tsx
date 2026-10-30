@@ -1642,8 +1642,8 @@ describe('Connections list', () => {
       expect(panel().textContent).not.toContain('This connection now uses the sign-in already on this machine');
       // The description of what reuse is is also a claim about this credential,
       // so it is written as a capability rather than a statement of fact.
-      expect(panel().textContent).toContain('Kiki can use the sign-in Codex has on this machine');
-      expect(panel().textContent).not.toContain('Kiki uses the sign-in Codex already has on this machine');
+      expect(panel().textContent).toContain('Kiki can reuse the Codex sign-in already on this machine');
+      expect(panel().textContent).not.toContain('Kiki can use the sign-in Codex has on this machine');
       // Replacing a spent credential is done by checking the machine, so the
       // check stays available beside the way to let go of it.
       expect(panel().querySelector('[data-original-source-probe]')).not.toBeNull();

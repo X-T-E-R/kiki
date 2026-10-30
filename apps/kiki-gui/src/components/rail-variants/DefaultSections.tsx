@@ -172,7 +172,9 @@ export function profileEffortDisplay(profile: {
       }
     }
   }
-  return t('subagent.effort', { effort: String(profile.thinking_effort) });
+  const level = String(profile.thinking_effort);
+  const key = `composer.effort.${level}` as I18nKey;
+  return t('subagent.effort', { effort: t(key) === key ? level : t(key) });
 }
 
 export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspaceId, cwd, externalDriver }: {

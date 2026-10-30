@@ -3191,7 +3191,7 @@ class FixtureServer {
         ? this.effectiveAgentProfiles(workspaceId)
         : query.get('expand') === '1'
           ? this.agentProfilesWithDisabled()
-          : this.mergedAgentProfiles();
+          : this.mergedAgentProfiles(workspaceId);
       // `complete` is required by the wire schema and by callers that treat a
       // partial catalog as "do not trust this list" (e.g. the subagent tool
       // save re-reads the file it just wrote).

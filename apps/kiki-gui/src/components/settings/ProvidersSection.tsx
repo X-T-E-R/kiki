@@ -22,10 +22,6 @@ import { SectionCard, SettingsCardMountContext } from './SectionCard';
 
 const KIND_ORDER: readonly ConnectionKind[] = ['api', 'account', 'local'];
 
-function stripZoneNumeral(title: string): string {
-  return title.replace(/^[①②③]\s*/, '');
-}
-
 /**
  * Connections tab: one list, and one way to add to it.
  *
@@ -54,7 +50,7 @@ export function OAuthAccountCard({
 }) {
   const { t } = useI18n();
   return (
-    <SectionCard id="st-card-auth" title={stripZoneNumeral(t('st.providers.zone1.title'))}>
+    <SectionCard id="st-card-auth" title={t('st.providers.zone1.title')}>
       <div className="space-y-3">
         {showHint ? (
           <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">
@@ -215,7 +211,7 @@ export function ProvidersSection() {
           onClear={view.clear} />
       ) : null}
       <div data-providers-zone="apikey">
-        <SectionCard id="st-card-providers" title={stripZoneNumeral(t('st.providers.zone3.title'))}>
+        <SectionCard id="st-card-providers" title={t('st.providers.zone3.title')}>
           <div className="space-y-3">
             {/* A local HTTP server (Ollama, LM Studio) is an API the user points
                 at an address, so it lists with the API services; the card

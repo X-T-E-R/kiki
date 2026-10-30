@@ -177,8 +177,8 @@ function PresetListField({ policy, onChange, profiles, models, disabled, self }:
                 onChange={(value) => update(index, { modelAlias: value })} />
             </div>
             <EffortPicker id={`lease-effort-${entry.name}`} value={entry.effort} disabled={disabled}
-              unsetLabel={t('st.profiles.leaseInherits', { value: ownEffort !== undefined ? effortLabel(ownEffort) : t('st.profiles.effortUnset') })}
-              unsetTrigger={<span className="truncate text-ink-soft">{ownEffort !== undefined ? effortLabel(ownEffort) : t('st.profiles.effortUnset')}</span>}
+              unsetLabel={t('st.profiles.leaseInherits', { value: ownEffort !== undefined ? effortLabel(ownEffort, t) : t('st.profiles.effortUnset') })}
+              unsetTrigger={<span className="truncate text-ink-soft">{ownEffort !== undefined ? effortLabel(ownEffort, t) : t('st.profiles.effortUnset')}</span>}
               ariaLabel={`${entry.name} · ${t('st.profiles.leaseEffort')}`}
               onChange={(value) => update(index, { effort: value })} />
           </div>

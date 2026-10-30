@@ -258,7 +258,7 @@ function IdentityLine({ field, position, modelId, label, view, efforts, disabled
   const origin = view.dirty ? undefined : resolved?.source;
   const clamped = overridden && effective !== '' && effective !== own;
   const invalid = view.issue !== null && view.issue.field === field && view.issue.position === position;
-  const sharedText = shared === '' ? t('st.usagePolicy.unset') : formatUsageValue(field, field === 'thinking_effort' ? effortLabel(shared) : shared);
+  const sharedText = shared === '' ? t('st.usagePolicy.unset') : formatUsageValue(field, field === 'thinking_effort' ? effortLabel(shared, t) : shared);
   const inheritLabel = t('st.usagePolicy.inheritValue', { value: sharedText });
 
   let control: React.ReactNode;
@@ -319,7 +319,7 @@ function IdentityLine({ field, position, modelId, label, view, efforts, disabled
 function effortChoices(efforts: readonly string[], current: string, t: (key: I18nKey) => string) {
   const list = efforts.filter((level) => level !== 'off');
   if (current !== '' && current !== 'off' && !list.includes(current)) list.push(current);
-  return list.map((level) => ({ value: level, label: level === 'off' ? t('st.usagePolicy.off') : effortLabel(level) }));
+  return list.map((level) => ({ value: level, label: level === 'off' ? t('st.usagePolicy.off') : effortLabel(level, t) }));
 }
 
 /**

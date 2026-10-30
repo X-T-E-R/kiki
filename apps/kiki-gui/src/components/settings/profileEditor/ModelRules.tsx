@@ -90,7 +90,7 @@ export function EffortCell({ values, onChange, disabled, dataAttr, any = false, 
         onClick={() => onChange(on ? values.filter((value) => value !== level) : add(level))}
         className={`h-7 rounded-md border px-1.5 text-[12px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink disabled:opacity-50 ${on
           ? 'border-hairline-strong bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
-          : 'border-transparent text-ink-soft hover:bg-ink/[0.04] hover:text-ink'}`}>{effortLabel(level)}</button>;
+          : 'border-transparent text-ink-soft hover:bg-ink/[0.04] hover:text-ink'}`}>{effortLabel(level, t)}</button>;
     })}
     {any && values.length === 0 ? <span className="pl-1 text-[11.5px] text-ink-faint">{t('st.profiles.ruleAny')}</span> : null}
   </div>;

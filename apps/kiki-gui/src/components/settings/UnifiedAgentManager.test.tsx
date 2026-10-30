@@ -182,6 +182,64 @@ describe('agents team view', () => {
     expect(container.querySelector('[data-team-group="main"]')).toBeNull();
   });
 
+  it('offers the workspace an agent lives in when a deep link misses the current one', async () => {
+    // `frontend` only exists in ws-two; the page is aimed at ws-one. The link
+    // must name the workspace instead of reading as "not in this list".
+    const other: NamedAgentProfile = { ...sub, name: 'frontend', workspace_id: 'ws-two', source_file: '/other/frontend/SYSTEM.md' };
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [
+      { id: 'ws-one', root: '/fixture', name: 'Fixture', pinned: false, last_opened_at: '2026-01-02T00:00:00Z' },
+      { id: 'ws-two', root: '/other', name: 'Other', pinned: false, last_opened_at: '2026-01-01T00:00:00Z' },
+    ] });
+    client.listNamedAgentProfiles.mockImplementation(async (query?: unknown) =>
+      typeof query === 'string' && query === 'ws-two'
+        ? { items: [other], complete: true }
+        : { items: [main, sub, explore], complete: true });
+    await render();
+    await act(async () => { routerNavigate.current?.({ pathname: '/settings/agents', search: '?workspace=ws-one&agent=frontend' }); });
+    await settle();
+    const line = container.querySelector('[data-agent-elsewhere]')!;
+    expect(line.textContent).toContain('Other');
+    await act(async () => line.querySelector<HTMLButtonElement>('[data-agent-elsewhere-open]')!.click());
+    await settle();
+    // The switch keeps the detail addressed; the list reload shows the agent.
+    expect(currentSearch).toContain('workspace=ws-two');
+    expect(currentSearch).toContain('agent=frontend');
+  });
+
+  it('keeps the open detail on a deliberate workspace switch when the name resolves there too', async () => {
+    const twin: NamedAgentProfile = { ...sub, workspace_id: 'ws-two' };
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [
+      { id: 'ws-one', root: '/fixture', name: 'Fixture', pinned: false, last_opened_at: '2026-01-02T00:00:00Z' },
+      { id: 'ws-two', root: '/other', name: 'Other', pinned: false, last_opened_at: '2026-01-01T00:00:00Z' },
+    ] });
+    client.listNamedAgentProfiles.mockImplementation(async (query?: unknown) =>
+      typeof query === 'string' && query === 'ws-two'
+        ? { items: [twin], complete: true }
+        : { items: [main, sub, explore], complete: true });
+    await render();
+    await open('reviewer');
+    expect(currentSearch).toBe('?agent=reviewer');
+    await act(async () => { routerNavigate.current?.({ pathname: '/settings/agents', search: '?workspace=ws-two&agent=reviewer' }); });
+    await settle();
+    expect(container.querySelector('[data-agent-missing]')).toBeNull();
+    expect(sheet().querySelector('[data-agent-detail="reviewer"]')).not.toBeNull();
+  });
+
+  it('writes a deliberate workspace pick to the address (replace), dropping the detail', async () => {
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [
+      { id: 'ws-one', root: '/fixture', name: 'Fixture', pinned: false, last_opened_at: '2026-01-02T00:00:00Z' },
+      { id: 'ws-two', root: '/other', name: 'Other', pinned: false, last_opened_at: '2026-01-01T00:00:00Z' },
+    ] });
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('#agents-workspace-select')!.click());
+    await settle();
+    const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find((item) => item.textContent?.includes('Other'))!;
+    await act(async () => option.click());
+    await settle();
+    expect(currentSearch).toContain('workspace=ws-two');
+  });
+
   it('greys a shadowed file and says which file wins', async () => {
     const shadow: NamedAgentProfile = { ...sub, source: 'extra', source_file: '/extra/reviewer.md', pinned_model_alias: 'fixture/opus' };
     client.listNamedAgentProfiles.mockImplementation(async (query?: unknown) =>

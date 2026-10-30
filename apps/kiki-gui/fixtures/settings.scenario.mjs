@@ -705,6 +705,17 @@ export default {
       routes: [],
     },
     {
+      // Only in the `other` workspace: a deep link to it from another
+      // workspace offers the switch instead of a bare "not in this list".
+      name: 'docs-writer',
+      source: 'workspace',
+      workspace_id: 'wd_fixture_000000000001',
+      source_file: 'C:/fixture/other/.kiki/agents/docs-writer.md',
+      description: 'Write the docs site.',
+      main: false,
+      routes: [],
+    },
+    {
       name: 'frontend',
       source: 'user',
       workspace_id: WSID,
