@@ -1,10 +1,11 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import { randomUUID } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { castDraft } from 'immer';
 
 import { IInstantiationService } from '#/_base/di/instantiation';
+import { ILogService } from '#/_base/log/log';
+import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
 import { RefCountedDisposable, toDisposable } from '#/_base/di/lifecycle';
 import { renderCronFireXml } from '#/app/cron/format';
 import { LifecycleScope } from '#/app/scopes';
@@ -810,6 +811,7 @@ export class AgentPromptService implements IAgentPromptService {
     private readonly historyMutation: ISessionHistoryMutationService,
     @IWireService private readonly wire: IWireService,
     @IBlobStore private readonly blobs: IBlobStore,
+    @ILogService private readonly log: ILogService,
   ) {
     this.states.contributeState(promptLaunchingKey);
     this.states.contributeState(promptAdmissionKey);
@@ -1657,7 +1659,11 @@ export class AgentPromptService implements IAgentPromptService {
     const terminal: PromptTerminalResult = { promptId: record.id, turnId: turn?.id, state: completion.state,
       result: result?.type === 'failed' ? { ...result, error: toErrorPayload(result.error) }
         : result?.type === 'cancelled' ? { ...result, reason: toErrorPayload(result.reason) } : result };
-    void this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal }));
+    void this.timePhase(record.id, 'prompt_outcome_commit', () => this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal })));
+  }
+
+  private timePhase<T>(promptId: string, phase: string, action: () => Promise<T>): Promise<T> {
+    return timeRestorePhase(this.log, { sessionId: this.sessionContext.sessionId, agentId: this.scopeContext.agentId, promptId }, phase, action);
   }
 
   private restorePendingQueue(): Promise<void> {
@@ -2397,19 +2403,6 @@ export class AgentPromptService implements IAgentPromptService {
     await this.context.clear();
   }
 
-  private compatiblePendingBatch(first: Record): Record[] {
-    if ((this.profile.data().executorId ?? 'native') !== 'native' || first.message.origin?.kind !== 'user' || first.alreadyMaterialized) return [];
-    const selected: Record[] = [];
-    for (const id of this.queueOrder.slice(this.queueOrder.indexOf(first.id) + 1)) {
-      const item = this.pending.find(candidate => candidate.id === id);
-      if (item === undefined || !this.isReadyPending(item, this.pending.indexOf(item)) ||
-          item.message.origin?.kind !== 'user' || item.alreadyMaterialized || item.goalId !== first.goalId ||
-          !isDeepStrictEqual(item.execution, first.execution) || !isDeepStrictEqual(item.deferredDisabledTools, first.deferredDisabledTools)) break;
-      selected.push(item);
-    }
-    return selected;
-  }
-
   private async startNext(): Promise<void> {
     if (this.closing || this.active !== undefined || this.launching || this.switchFlight !== undefined || this.waitingForLoop || this.steering > 0) return;
     if (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running') return;
@@ -2454,25 +2447,23 @@ export class AgentPromptService implements IAgentPromptService {
     const launching: NonNullable<AgentPromptService['launchingPrompt']> = { record: item, controller, settled: launchSettled.promise };
     this.launchingPrompt = launching;
     this.launching = true;
-    let selected = [item];
+    const selected = [item];
     this.launchingBatch = selected;
     try {
       this.instantiation.invokeFunction((accessor) => validatePromptRuntimeControls(accessor, item.execution));
       let bindingCommitted = false;
-      await this.applyPromptExecutionBinding(item, this.resolveExecutionBinding(item.execution), sharedAdmission, () => {
+      await this.timePhase(item.id, 'prompt_launch_binding', () => this.applyPromptExecutionBinding(item, this.resolveExecutionBinding(item.execution), sharedAdmission, () => {
         if (bindingCommitted) return;
         controller.signal.throwIfAborted();
         bindingCommitted = true;
-      }, controller.signal);
+      }, controller.signal));
       controller.signal.throwIfAborted();
       if (item.deferredDisabledTools !== undefined) {
         await this.toolPolicy.setSessionDisabledTools(item.deferredDisabledTools);
         controller.signal.throwIfAborted();
       }
-      await this.historyMutation.runAdmission(item.historyMutationLease, async () => {});
+      await this.timePhase(item.id, 'prompt_launch_admission', () => this.historyMutation.runAdmission(item.historyMutationLease, async () => {}));
       controller.signal.throwIfAborted();
-      selected = [item, ...this.compatiblePendingBatch(item)];
-      this.launchingBatch = selected;
       for (const candidate of selected) {
         this.steeringPromptIds.add(candidate.id);
         candidate.message = { ...candidate.message, content: this.repairKnownTruncatedImages(candidate.id, candidate.message.content) };
@@ -2487,7 +2478,8 @@ export class AgentPromptService implements IAgentPromptService {
       await this.materializeDaemonRefs(message);
       controller.signal.throwIfAborted();
       const hookMessages: ContextMessage[] = [];
-      const blocked = await this.blockedByHook(message, false, message => hookMessages.push(message), batch.map(item => item.message));
+      const blocked = await this.timePhase(item.id, 'prompt_launch_hooks', () =>
+        this.blockedByHook(message, false, message => hookMessages.push(message), batch.map(item => item.message)));
       controller.signal.throwIfAborted();
       if (selected.slice(1).some(candidate => !this.pending.includes(candidate))) {
         this.pending.splice(Math.min(candidateIndex, this.pending.length), 0, item);
@@ -2515,16 +2507,18 @@ export class AgentPromptService implements IAgentPromptService {
       }
       for (const candidate of selected.slice(1)) this.pending.splice(this.pending.indexOf(candidate), 1);
       this.launchingCommitStarted = true;
-      for (const candidate of selected) {
-        if (candidate.state === 'cancelled') continue;
-        await this.dispatcher.dispatch(new PromptLaunchCommitted({
-          launchId: randomUUID(),
-          promptId: candidate.id,
-          revision: candidate.revision,
-          committedAt: new Date().toISOString(),
-        }));
-      }
-      await this.wire.flush();
+      await this.timePhase(item.id, 'prompt_launch', async () => {
+        for (const candidate of selected) {
+          if (candidate.state === 'cancelled') continue;
+          await this.dispatcher.dispatch(new PromptLaunchCommitted({
+            launchId: randomUUID(),
+            promptId: candidate.id,
+            revision: candidate.revision,
+            committedAt: new Date().toISOString(),
+          }));
+        }
+        await this.wire.flush();
+      });
       controller.signal.throwIfAborted();
       const deliverable = selected.filter((candidate) => candidate.state !== 'cancelled');
       const deliverableBatch = deliverable.map((candidate) => batch[selected.indexOf(candidate)]!);
@@ -2532,7 +2526,7 @@ export class AgentPromptService implements IAgentPromptService {
         ? deliverableBatch[0]!.message : mergeSteerMessages(deliverableBatch);
       const applyControls = this.instantiation.invokeFunction((accessor) =>
         preparePromptRuntimeControls(accessor, item.execution, item.goalId));
-      await applyControls();
+      await this.timePhase(item.id, 'prompt_runtime_controls', applyControls);
       controller.signal.throwIfAborted();
       if (item.execution?.permissionMode !== undefined) this.permissionMode.setMode(item.execution.permissionMode);
       if (item.execution?.planGate !== undefined) this.plan.setGate(item.execution.planGate);

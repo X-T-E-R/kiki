@@ -42,7 +42,7 @@ describe('UsageFactStore', () => {
     ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
     model = ix.get(IUsageReadModel); facts = ix.get(IUsageFactStore); logs = ix.get(IAppendLogStore);
   }
-  async function close(): Promise<void> { await model.close(); await ix.dispose(); await drainQueryStoreDisposals(); }
+  async function close(): Promise<void> { await ix.dispose(); await model.close(); await drainQueryStoreDisposals(); }
   async function journal(count: number): Promise<void> {
     await storage.write(DIRECTORY, 'facts.jsonl', Buffer.from(`${JSON.stringify({ version: 1, start: 0, checkpoint: checkpoint(count), records: Array.from({ length: count }, (_, index) => normalizeUsageFact(fact(index), 'main')!) })}\n`));
   }
@@ -63,6 +63,7 @@ describe('UsageFactStore', () => {
 
   it('propagates checkpoint IO failures and cancels a stalled same-source read', async () => {
     logs.append(SCOPE, KEY, fact()); await logs.flush();
+    await facts.checkpoint(SCOPE);
     vi.spyOn(logs, 'flush').mockRejectedValueOnce(new Error('checkpoint flush failed'));
     await expect(facts.checkpoint(SCOPE)).rejects.toThrow('checkpoint flush failed');
     vi.spyOn(storage, 'size').mockRejectedValueOnce(new Error('checkpoint stat failed'));
@@ -75,6 +76,66 @@ describe('UsageFactStore', () => {
     const controller = new AbortController();
     const reading = expect(facts.checkpoint(SCOPE, controller.signal)).rejects.toThrow('checkpoint cancelled');
     await entered; controller.abort(new Error('checkpoint cancelled')); await reading; release();
+  });
+
+  it('keeps canonical appends moving while an earlier usage publication is blocked', async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const apply = model.apply.bind(model);
+    vi.spyOn(model, 'apply').mockImplementationOnce(async (page) => {
+      entered();
+      await blocked;
+      return apply(page);
+    });
+    const owner = logs.acquire(SCOPE, KEY);
+    let flushed = false;
+    logs.append(SCOPE, KEY, fact(1));
+    const first = logs.flush(SCOPE, KEY).then(() => { flushed = true; });
+    await started;
+    try {
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(flushed).toBe(true);
+      logs.append(SCOPE, KEY, fact(2));
+      await logs.flush(SCOPE, KEY);
+      const controller = new AbortController();
+      const reading = facts.read(SCOPE, undefined, controller.signal);
+      controller.abort(new Error('usage is still publishing'));
+      await expect(reading).rejects.toThrow('usage is still publishing');
+    } finally {
+      release();
+      await first;
+      await owner.dispose();
+    }
+    expect((await facts.read(SCOPE)).records.map((row) => row.time)).toEqual([1, 2]);
+  });
+
+  it('drains accepted usage publication before disposing its reader dependency', async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const apply = model.apply.bind(model);
+    vi.spyOn(model, 'apply').mockImplementationOnce(async (page) => {
+      entered();
+      await blocked;
+      return apply(page);
+    });
+    logs.append(SCOPE, KEY, fact(1));
+    await logs.flush(SCOPE, KEY);
+    await started;
+    let disposed = false;
+    const disposal = Promise.resolve(ix.dispose()).then(() => { disposed = true; });
+    try {
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(disposed).toBe(false);
+    } finally {
+      release();
+      await disposal;
+    }
+    open();
+    expect((await facts.read(SCOPE)).records.map((row) => row.time)).toEqual([1]);
   });
 
   it('writes known, missing and genuine zero occurrences and advances non-usage coverage without wire reads', async () => {
@@ -108,8 +169,11 @@ describe('UsageFactStore', () => {
     logs.append(SCOPE, KEY, fact(1)); await logs.flush();
     const first = await facts.read(SCOPE);
     const append = storage.append.bind(storage);
+    const warnings = vi.spyOn(ix.get(ILogService), 'warn');
     storage.append = async (scope, key, bytes, options) => { if (key === 'facts.jsonl') throw new Error('derived disk unavailable'); await append(scope, key, bytes, options); };
-    logs.append(SCOPE, KEY, fact(2)); await expect(logs.flush()).resolves.toBeUndefined(); await logs.drainRetirements();
+    logs.append(SCOPE, KEY, fact(2)); await expect(logs.flush()).resolves.toBeUndefined();
+    await vi.waitFor(() => expect(warnings).toHaveBeenCalledWith('Usage projection pending; canonical source remains recoverable', expect.any(Error)));
+    await logs.drainRetirements();
     expect(await storage.size(SCOPE, KEY)).toBeGreaterThan(first.checkpoint!.offset);
     storage.append = append;
     logs.append(SCOPE, KEY, fact(3)); await logs.flush();

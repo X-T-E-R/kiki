@@ -123,7 +123,7 @@ describe('model switch control queue with real engine', () => {
     } finally { release.resolve(); releaseBatch.resolve(); }
   });
 
-  it('recovers compatible queued messages into one batch and keeps a post-boundary prompt separate', async () => {
+  it('recovers queued messages into separate turns and preserves their individual receipts', async () => {
     const source = await host();
     vi.spyOn(source.get(IAgentTaskService), 'list').mockReturnValue([{ kind: 'agent', taskId: 'child', status: 'running' } as never]);
     const makeInput = (id: string) => ({ id: `queued-${id}`, userMessageId: `logical-${id}`, appendTiming: 'subagents_done' as const,
@@ -137,22 +137,24 @@ describe('model switch control queue with real engine', () => {
     const one = await svc.enqueue(inputs[0]!);
     const two = await svc.enqueue(inputs[2]!);
     expect(svc.list().hold).toEqual({ reason: 'recovery', count: 2 });
-    cold.mockNextResponse({ type: 'text', text: 'Recovered batch.' });
+    cold.mockNextResponse({ type: 'text', text: 'Recovered first reply.' });
+    cold.mockNextResponse({ type: 'text', text: 'Recovered second reply.' });
     const hooks: string[] = [];
-    svc.hooks.onBeforeSubmitPrompt.register('batch-count', async (event, next) => { hooks.push(event.promptMessage.id!); await next(); });
+    svc.hooks.onBeforeSubmitPrompt.register('queue-count', async (event, next) => { hooks.push(event.promptMessage.id!); await next(); });
     svc.resumeRecoveredQueue();
     await Promise.all([one.completion, two.completion]);
-    expect(await one.launched).toBe(await two.launched);
-    expect(hooks).toHaveLength(1);
-    expect(cold.llmCalls).toHaveLength(1);
+    expect(await one.launched).not.toBe(await two.launched);
+    expect(hooks).toEqual(inputs.filter((_, index) => index !== 1).map((input) => input.userMessageId));
+    expect(cold.llmCalls).toHaveLength(2);
     const projected = cold.llmCalls[0]!.history.filter(message => message.role === 'user' && JSON.stringify(message.content).includes('queued one'));
     expect(projected).toHaveLength(1);
-    expect(JSON.stringify(projected[0]!.content)).toContain('queued two');
+    expect(JSON.stringify(cold.llmCalls[0]!.history)).not.toContain('queued two');
+    expect(JSON.stringify(cold.llmCalls[1]!.history)).toContain('Recovered first reply.');
     expect(JSON.stringify(cold.llmCalls)).not.toContain('queued cancelled');
-    cold.mockNextResponse({ type: 'text', text: 'Later batch.' });
+    cold.mockNextResponse({ type: 'text', text: 'Later reply.' });
     const later = await svc.enqueue(makeInput('later'));
     await later.completion;
-    expect(hooks).toHaveLength(2);
+    expect(hooks).toHaveLength(3);
     expect((await later.launched)?.id).not.toBe((await one.launched)?.id);
     const restored = await host();
     await restored.restore(await records(cold));

@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { IInstantiationService } from '#/_base/di/instantiation';
+import { ILogService } from '#/_base/log/log';
+import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
 import { acquireAgentActivityPermit } from '#/agent/execution/agentActivityPermit';
 import type { RequestPermit } from '#/kosong/model/requestAdmission';
 import { EventEmitter } from 'node:events';
@@ -163,6 +165,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     @ISessionDispatchService private readonly dispatch: ISessionDispatchService,
     @IInstantiationService private readonly instantiation: IInstantiationService,
     @IAppendLogStore appendLog: IAppendLogStore,
+    @ILogService private readonly log: ILogService,
   ) {
     super();
     this._register(appendLog.onDidWrite(() => {
@@ -705,7 +708,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     const finalization = this.finalization;
     if (finalization === undefined) return true;
     try {
-      await this.dispatcher.dispatchDurably(finalization.event);
+      await timeRestorePhase(this.log, { agentId: this.scope.agentId, turnId: finalization.turn.id },
+        'turn_end_commit', () => this.dispatcher.dispatchDurably(finalization.event));
     } catch (error) {
       finalization.error = error;
       this.persistenceChanged.fire();
@@ -1075,7 +1079,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     thinkingOnlyFollowup: boolean,
   ): Promise<StepExecutionResult> {
     this.activeRequestTrace = undefined;
-    await this.hooks.onWillBeginStep.run({ turnId, step: currentStep, firstStepOfTurn, signal, ...stepIdentity });
+    await timeRestorePhase(this.log, { agentId: this.scope.agentId, turnId, step: currentStep, firstStepOfTurn },
+      'turn_context_ready', () => this.hooks.onWillBeginStep.run({ turnId, step: currentStep, firstStepOfTurn, signal, ...stepIdentity }));
     const markStepStarted = this.beginStep(turnId, signal, currentStep, stepUuid, onStarted);
     let stepEndAppended = false;
     try {

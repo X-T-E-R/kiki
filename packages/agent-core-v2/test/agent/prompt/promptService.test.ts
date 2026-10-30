@@ -74,6 +74,8 @@ import { IBlobStore } from '#/persistence/interface/blobStore';
 import { stubContextMemory } from '../contextMemory/stubs';
 import { stubLoopWithHooks, stubToolExecutor, stubWire, type StubLoopOptions } from '../loop/stubs';
 import { registerStateServices } from '../../state/stubs';
+import { registerLogServices } from '../../_base/log/stubs';
+import { createTestAgent, permissionModeServices } from '../../harness';
 import { PromptStepRequest, SteerStepRequest } from '#/agent/prompt/promptStepRequests';
 
 function message(text: string): ContextMessage {
@@ -264,6 +266,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
   const ix = createServices(disposables, {
     strict: true, additionalServices: (reg) => {
       registerStateServices(reg);
+      registerLogServices(reg);
       reg.defineInstance(IAgentContextMemoryService, context);
       reg.defineInstance(IAgentLoopService, loop);
       reg.definePartialInstance(IAgentLLMRequesterService, { invalidatePromptSnapshots: vi.fn() });
@@ -338,6 +341,46 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
 }
 
 describe('AgentPromptService', () => {
+  it('runs three queued messages in separate turns only after the preceding reply ends', async () => {
+    const local = createTestAgent(permissionModeServices('manual'));
+    const gates = Array.from({ length: 4 }, () => deferred<void>());
+    local.get(IAgentProfileService).update({ activeToolNames: [] });
+    local.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-each-reply', async (ctx, next) => {
+      await gates[ctx.turnId]?.promise;
+      await next();
+    });
+    for (let index = 0; index < 4; index++) local.mockNextResponse({ type: 'text', text: `reply ${index}` });
+    try {
+      const prompts = local.get(IAgentPromptService);
+      const active = await prompts.enqueue({ id: 'active', message: message('active') });
+      const queued = [];
+      for (const id of ['first', 'second', 'third']) queued.push(await prompts.enqueue({ id, message: message(id) }));
+      gates[0]!.resolve();
+      await active.completion;
+      for (let index = 0; index < queued.length; index++) {
+        const current = queued[index]!;
+        const turn = await current.launched;
+        expect(turn?.id).toBe(index + 1);
+        expect(queued.slice(index + 1).map((handle) => handle.state)).toEqual(Array(queued.length - index - 1).fill('pending'));
+        gates[index + 1]!.resolve();
+        await current.completion;
+      }
+      const records = await local.persistedWireRecords();
+      const turns = records.filter((record) => record.type === 'turn.prompt');
+      expect(turns.map((record) => record['promptId'])).toEqual(['active', 'first', 'second', 'third']);
+      for (let turnId = 1; turnId < 4; turnId++) {
+        const previousEnd = records.findIndex((record) => record.type === 'turn.ended' && record['turnId'] === turnId - 1);
+        const nextStart = records.findIndex((record) => record.type === 'turn.prompt' && record['turnId'] === turnId);
+        expect(previousEnd).toBeGreaterThanOrEqual(0);
+        expect(nextStart).toBeGreaterThan(previousEnd);
+      }
+      expect(local.llmCalls).toHaveLength(4);
+    } finally {
+      for (const gate of gates) gate.resolve();
+      await local.dispose();
+    }
+  });
+
   it('runs an external direct prompt and steers a queued prompt through the active executor', async () => {
     const { prompt, loop, setExecutor, externalRun, externalSteer, externalTurns, eventBus } = harness();
     const deliveries: ExecutorHintDelivery[] = [];
@@ -1258,8 +1301,8 @@ describe('AgentPromptService', () => {
     prompt.resumeRecoveredQueue();
     await vi.waitFor(() => expect(loop.launches).toEqual([0, 1]));
     expect(prompt.list().active?.id).toBe('recovered-a');
-    expect(prompt.list().pending).toEqual([]);
-    expect(prompt.lookup('recovered-b')?.phase).toBe('launched');
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['recovered-b']);
+    expect(prompt.lookup('recovered-b')?.phase).toBe('pending');
     expect(prompt.abort('recovered-b')).toBe(true);
     loop.settleActive();
   });
@@ -1484,9 +1527,9 @@ describe('AgentPromptService', () => {
     prompt.replace('edited', [{ type: 'text', text: 'edited, better' }]);
     prompt.setEditHold('edited', false);
     await edited.launched;
-    expect(prompt.list().pending).toEqual([]);
-    expect(prompt.lookup('after')?.phase).toBe('launched');
-    expect(prompt.lookup('late')?.phase).toBe('launched');
+    expect(prompt.list().pending.map((item) => item.id)).toEqual(['after', 'late']);
+    expect(prompt.lookup('after')?.phase).toBe('pending');
+    expect(prompt.lookup('late')?.phase).toBe('pending');
   });
 
   it('releases an edit hold when the held prompt leaves the queue, and on its own after the lapse', async () => {
@@ -1859,10 +1902,9 @@ describe('AgentPromptService', () => {
     const error = await settledSend;
     if (concurrentDrain) {
       expect(error).toMatchObject({ code: ErrorCodes.PROMPT_NOT_FOUND });
-      expect(prompt.list().pending.map(item => item.id)).toEqual([immediate.id]);
-      expect(second.state).toBe('running');
-      expect(await second.launched).toBe(await original.launched);
-      expect(steered).toEqual([second.id]);
+      expect(prompt.list().pending.map(item => item.id)).toEqual([second.id, immediate.id]);
+      expect(second.state).toBe('pending');
+      expect(steered).toEqual([]);
     } else {
       expect(error).toBeUndefined();
       expect(prompt.list().pending.map(item => item.id)).toEqual([original.id, second.id]);
@@ -2458,17 +2500,24 @@ describe('AgentPromptService', () => {
     expect(toolPolicy.setSessionDisabledTools).toHaveBeenCalledExactlyOnceWith(['Write']);
   });
 
-  it('groups concurrent idle admissions without holding admission behind model launch', async () => {
+  it('serializes concurrent idle admissions without holding admission behind model launch', async () => {
     const { prompt, context, loop } = harness({ manualTurnResult: true });
     const hooks: ContextMessage[] = [];
-    prompt.hooks.onBeforeSubmitPrompt.register('batch-count', async (ctx, next) => { hooks.push(ctx.promptMessage); await next(); });
+    prompt.hooks.onBeforeSubmitPrompt.register('queue-count', async (ctx, next) => { hooks.push(ctx.promptMessage); await next(); });
     const [one, two] = await Promise.all([
       prompt.enqueue({ id: 'idle-one', message: message('one') }),
       prompt.enqueue({ id: 'idle-two', message: message('two') }),
     ]);
-    await Promise.all([one.launched, two.launched]);
+    await one.launched;
+    expect(two.state).toBe('pending');
     expect(loop.launches).toEqual([0]);
     expect(hooks).toHaveLength(1);
+    loop.drainNextBatch(context);
+    expect(context.get()).toEqual([one.message]);
+    loop.settleActive();
+    await two.launched;
+    expect(loop.launches).toEqual([0, 1]);
+    expect(hooks).toHaveLength(2);
     loop.drainNextBatch(context);
     expect(context.get()).toEqual([one.message, two.message]);
     loop.settleActive();
@@ -2548,7 +2597,7 @@ describe('AgentPromptService', () => {
     expect((await one.completion).state).toBe('cancelled');
   });
 
-  it('launches ready queued user prompts as one batch without swallowing cancelled or differently bound prompts', async () => {
+  it('launches ready queued user prompts separately without swallowing cancelled or differently bound prompts', async () => {
     const { prompt, context, loop } = harness({ manualTurnResult: true });
     await prompt.enqueue({ id: 'active', message: message('active') });
     loop.drainNextBatch(context);
@@ -2558,22 +2607,27 @@ describe('AgentPromptService', () => {
     const bound = await prompt.enqueue({ id: 'bound', message: message('bound'), execution: { model: 'other-model' } });
     prompt.abort(cancelled.id);
     const hooks: ContextMessage[] = [];
-    prompt.hooks.onBeforeSubmitPrompt.register('batch-count', async (ctx, next) => { hooks.push(ctx.promptMessage); await next(); });
+    prompt.hooks.onBeforeSubmitPrompt.register('queue-count', async (ctx, next) => { hooks.push(ctx.promptMessage); await next(); });
     loop.settleActive();
-    await one.launched;
-    expect(two.state).toBe('running');
-    expect(await two.launched).toBe(await one.launched);
+    const firstTurn = await one.launched;
+    expect(two.state).toBe('pending');
     expect(bound.state).toBe('pending');
     expect(hooks).toHaveLength(1);
     loop.drainNextBatch(context);
-    expect(context.get().slice(-2)).toEqual([one.message, two.message]);
+    expect(context.get().at(-1)).toEqual(one.message);
+    expect(context.get()).not.toContainEqual(two.message);
+    loop.settleActive();
+    expect(await two.launched).not.toBe(firstTurn);
+    loop.drainNextBatch(context);
+    expect(context.get().at(-1)).toEqual(two.message);
+    expect(bound.state).toBe('pending');
     loop.settleActive();
     await bound.launched;
-    expect(hooks).toHaveLength(2);
+    expect(hooks).toHaveLength(3);
     expect((await cancelled.completion).state).toBe('cancelled');
   });
 
-  it('removes an uncommitted merged batch head while preserving the next queued prompt', async () => {
+  it('removes an uncommitted queue head while preserving subsequent separate turns', async () => {
     const { prompt, context, loop, dispatcher } = harness({ manualTurnResult: true });
     await prompt.enqueue({ id: 'before-batch', message: message('active') });
     loop.drainNextBatch(context);
@@ -2599,20 +2653,25 @@ describe('AgentPromptService', () => {
     expect(removed).toBe(true);
     expect((await first.completion).state).toBe('cancelled');
     const secondTurn = await second.launched;
-    expect(await third.launched).toBe(secondTurn);
+    expect(third.state).toBe('pending');
     await dispatcher.flush();
     expect(prompt.lookup(first.id)?.terminal?.state).toBe('cancelled');
     expect(prompt.list().active?.id).toBe(second.id);
-    expect(prompt.list().pending).toEqual([]);
+    expect(prompt.list().pending.map((item) => item.id)).toEqual([third.id]);
     loop.drainNextBatch(context);
-    expect(context.get().slice(-2)).toEqual([second.message, third.message]);
+    expect(context.get().at(-1)).toEqual(second.message);
     expect(context.get()).not.toContainEqual(first.message);
+    expect(context.get()).not.toContainEqual(third.message);
     loop.settleActive();
     await second.completion;
+    expect(await third.launched).not.toBe(secondTurn);
+    loop.drainNextBatch(context);
+    expect(context.get().at(-1)).toEqual(third.message);
+    loop.settleActive();
     await third.completion;
   });
 
-  it('removing a merged secondary after the first launch commit cannot abort the first request', async () => {
+  it('removing the next queued message after the first launch commit cannot abort the first request', async () => {
     const { prompt, context, loop, dispatcher } = harness({ manualTurnResult: true });
     await prompt.enqueue({ id: 'active-before-batch', message: message('active') });
     loop.drainNextBatch(context);
@@ -2632,7 +2691,7 @@ describe('AgentPromptService', () => {
     await firstCommitted.promise;
     expect(prompt.lookup(first.id)?.phase).toBe('launched');
     expect(prompt.lookup(second.id)?.phase).toBe('pending');
-    expect(prompt.list().pending.some((item) => item.id === second.id)).toBe(false);
+    expect(prompt.list().pending.some((item) => item.id === second.id)).toBe(true);
     expect(await prompt.abortQueued(first.id)).toBe(false);
     expect(await prompt.abortQueued(second.id)).toBe(true);
     continueBatch.resolve();
@@ -3111,8 +3170,9 @@ describe('AgentPromptService', () => {
     await expect(steerPromise).rejects.toMatchObject({ code: 'prompt.not_found' });
     await expect(a.launched).resolves.toBeDefined();
     expect(prompt.list().active?.id).toBe('a');
-    expect(prompt.list().pending).toEqual([]);
-    expect(await b.launched).toBe(await a.launched);
+    expect(prompt.list().pending.map((item) => item.id)).toEqual([b.id]);
+    loop.settleActive();
+    expect(await b.launched).not.toBe(await a.launched);
   });
 
   it('cancels a restored pending prompt by its durable id and releases the recovery hold', async () => {

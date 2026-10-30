@@ -70,29 +70,39 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
         }
         return { facts, valid };
       },
-      commit: async (position, value) => { await this.commitWritten(position, value.facts, value.valid); },
+      commit: (position, value) => {
+        void this.exclusive(position.scope, () => this.commitWritten(position, value.facts, value.valid)).catch((error: unknown) => {
+          this.log.warn('Usage projection pending; canonical source remains recoverable', error);
+        });
+        return Promise.resolve();
+      },
       onError: (error) => { this.log.warn('Usage projection pending; canonical source remains recoverable', error); },
     }));
   }
+  override async dispose(): Promise<void> {
+    await super.dispose();
+    while (this.operations.size > 0) await Promise.allSettled(this.operations.values());
+  }
   private async commitWritten(position: AppendLogCommit, records: readonly UsageFact[], valid: boolean): Promise<void> {
     const mtimeMs = await this.storage.mtime(position.scope, position.key) ?? 0;
-    await this.commit(position.scope, position.start, { generation: position.generation, offset: position.end, size: position.end, mtimeMs, boundaryHash: position.boundaryHash, valid }, records);
+    await this.commitBatch(position.scope, position.start, { generation: position.generation, offset: position.end, size: position.end, mtimeMs, boundaryHash: position.boundaryHash, valid }, records);
   }
   commit(scope: string, start: number, checkpoint: UsageFactCheckpoint, records: readonly UsageFact[]): Promise<void> {
-    return this.exclusive(scope, async () => {
-      const directory = factDirectory(scope);
-      const owner = this.logs.acquire(directory, LOG);
-      try {
-        const batch: FactBatch = { version: 1, start, checkpoint, records };
-        if (this.damaged.has(scope)) {
-          if (start !== 0) return;
-          await this.logs.rewrite(directory, LOG, [batch]);
-          await this.model.abandon(scope);
-          this.damaged.delete(scope);
-        } else { this.logs.append(directory, LOG, batch); await this.logs.flush(directory, LOG); }
-        await this.prepare(scope);
-      } finally { await owner.dispose(); }
-    });
+    return this.exclusive(scope, () => this.commitBatch(scope, start, checkpoint, records));
+  }
+  private async commitBatch(scope: string, start: number, checkpoint: UsageFactCheckpoint, records: readonly UsageFact[]): Promise<void> {
+    const directory = factDirectory(scope);
+    const owner = this.logs.acquire(directory, LOG);
+    try {
+      const batch: FactBatch = { version: 1, start, checkpoint, records };
+      if (this.damaged.has(scope)) {
+        if (start !== 0) return;
+        await this.logs.rewrite(directory, LOG, [batch]);
+        await this.model.abandon(scope);
+        this.damaged.delete(scope);
+      } else { this.logs.append(directory, LOG, batch); await this.logs.flush(directory, LOG); }
+      await this.prepare(scope);
+    } finally { await owner.dispose(); }
   }
   checkpoint(scope: string, signal?: AbortSignal): Promise<UsageFactCheckpoint | undefined> {
     return abortable(this.exclusive(scope, async () => {
