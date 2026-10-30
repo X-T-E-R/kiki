@@ -946,6 +946,7 @@ export const en = {
   'composer.execution.fact.hooks': 'hooks',
   'profile.switchTitle': 'Switch to {profile}?',
   'profile.switchBody': 'The new agent profile takes effect from your next message in this session.',
+  'profile.switched': 'Switched to {profile}',
   'profile.switchModelReset':
     'The profile’s model and thinking defaults apply where configured; without a model default, the current model stays. You can change these before sending.',
   'profile.switchSubagents': 'Subagent dispatch policy switches with the new profile.',
@@ -9003,6 +9004,7 @@ export const en = {
   'st.im.rebind.identity': 'Identity',
   'st.im.rebind.currentOwner': 'Current conversation',
   'st.im.rebind.targetOwner': 'Move to',
+  'st.im.rebind.transferred': 'Channel transferred',
   'st.im.allowBorrowing': 'Allow sending to unbound channels',
   'st.im.allowBorrowingHint': 'SendMessage may explicitly select an available channel that is not bound to this conversation.',
   'st.im.defaultSendMessage': 'Enable active messaging by default for ordinary conversations',

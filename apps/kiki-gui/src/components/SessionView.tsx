@@ -2981,8 +2981,30 @@ export function SessionView({
       applyPendingExecution(next);
       return;
     }
+    // Same native engine, only the profile (and its own pins) moves: this is
+    // the reversible composer-control branch, applied at once with an undo
+    // toast instead of the fresh-context confirm a real engine switch keeps.
+    if (isNativeExecutor(next.executor)
+      && isNativeExecutor(current.executor)
+      && next.profile !== current.profile) {
+      const before = { profile: pendingProfile, execution: pendingExecution, model: modelOverride, effort: effortOverride, modelTouched, effortTouched };
+      applyPendingExecution(next);
+      pushUndoToast({
+        text: t('profile.switched', { profile: next.profile ?? DEFAULT_AGENT_PROFILE }),
+        undoFailedText: t('toast.undoFailed'),
+        undo: () => {
+          setPendingProfile(before.profile);
+          setPendingExecution(before.execution);
+          setModelOverride(before.model);
+          setEffortOverride(before.effort);
+          setModelTouched(before.modelTouched);
+          setEffortTouched(before.effortTouched);
+        },
+      });
+      return;
+    }
     setExecutionSwitchConfirm(next);
-  }, [applyPendingExecution, boundExecution, cancelPendingExecution, canonicalModel, currentBoundModel, handleEffortChange, pendingExecution, state.blocks, state.loaded]);
+  }, [applyPendingExecution, boundExecution, cancelPendingExecution, canonicalModel, currentBoundModel, handleEffortChange, pendingExecution, modelOverride, effortOverride, modelTouched, effortTouched, state.blocks, state.loaded, t]);
   const confirmExecutionSwitchRun = useCallback(() => {
     if (executionSwitchConfirm === undefined) return;
     applyPendingExecution(executionSwitchConfirm);
