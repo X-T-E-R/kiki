@@ -1330,6 +1330,15 @@ export class KikiClient {
   private serverLeaseId: string | undefined;
   private readonly previewBytes = new Map<string, { bytes: Uint8Array; mime: string; name?: string; etag: string }>();
   private previewCacheBytes = 0;
+
+  /**
+   * A session with a page of returned images scrolls past the old 8-entry cap
+   * in one screenful and then re-fetches every thumbnail on the way back. The
+   * previews are small (a 768px jpeg is tens of KB), so a generous entry count
+   * costs little and the byte budget remains the real ceiling.
+   */
+  private static readonly PREVIEW_CACHE_MAX_ENTRIES = 64;
+  private static readonly PREVIEW_CACHE_MAX_BYTES = 32 * 1024 * 1024;
   private readonly previewFlights = new Map<string, { controller: AbortController; users: number; promise: Promise<{ bytes: Uint8Array; mime: string; name?: string }> }>();
   private readonly onSessionMutation: KikiClientOptions['onSessionMutation'];
 
@@ -2226,7 +2235,7 @@ export class KikiClient {
     if (result.etag !== undefined && result.bytes.byteLength <= 32 * 1024 * 1024) {
       this.previewBytes.set(key, { ...result, etag: result.etag });
       this.previewCacheBytes += result.bytes.byteLength;
-      while (this.previewBytes.size > 8 || this.previewCacheBytes > 32 * 1024 * 1024) {
+      while (this.previewBytes.size > KikiClient.PREVIEW_CACHE_MAX_ENTRIES || this.previewCacheBytes > KikiClient.PREVIEW_CACHE_MAX_BYTES) {
         const oldest = this.previewBytes.keys().next().value!;
         this.previewCacheBytes -= this.previewBytes.get(oldest)!.bytes.byteLength;
         this.previewBytes.delete(oldest);
