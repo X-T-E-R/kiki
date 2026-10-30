@@ -225,7 +225,10 @@ export class SessionManager implements ISessionManager {
 
   get(sessionId: string): ISessionScopeHandle | undefined {
     const handle = this.sessions.get(sessionId);
-    if (handle !== undefined) this.touchResidency(sessionId);
+    if (handle !== undefined) {
+      const entry = this.residency.get(sessionId);
+      if (entry !== undefined) entry.lastAccess = Date.now();
+    }
     return handle;
   }
 

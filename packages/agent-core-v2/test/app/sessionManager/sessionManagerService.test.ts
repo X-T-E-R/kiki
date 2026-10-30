@@ -733,6 +733,39 @@ describe('SessionManager', () => {
     await manager.dispose();
   });
 
+  it('ages an idle session out even while read-only lookups keep reaching it', async () => {
+    vi.useFakeTimers({ now: 1_000_000, toFake: ['Date'] });
+    try {
+      const fake = controller();
+      const workspace = {
+        id: 'workspace-1',
+        program: { sessionControllerGeneration: 'generation-1', createSessionController: () => fake.service },
+      } as unknown as WorkspaceInstance;
+      const manager = new SessionManager(
+        {
+          acquire: async () => ({ instance: workspace, dispose: () => {} }),
+          get: () => workspace,
+        } as unknown as IWorkspaceInstanceManager,
+        { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) } as unknown as ISessionIndex,
+        {
+          ready: Promise.resolve(),
+          get: () => ({ idleTtlMs: 60_000, minIdleMs: 10_000, maxLiveSessions: 8, sweepIntervalMs: 300_000 }),
+        } as never,
+        { enabled: () => true } as never,
+      );
+      await manager.create({ workDir: '/workspace' });
+      for (let second = 0; second < 70; second += 1) {
+        vi.setSystemTime(1_000_000 + second * 1000);
+        expect(manager.get('session-1')).toBeDefined();
+      }
+      await expect(manager.evictIfIdle('session-1')).resolves.toBe(true);
+      expect(manager.get('session-1')).toBeUndefined();
+      await manager.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each(['acquire', 'acquireLive'] as const)('keeps a session pinned by %s until its lease is released', async (acquire) => {
     const fake = controller();
     const unload = vi.spyOn(fake.service, 'unload');
