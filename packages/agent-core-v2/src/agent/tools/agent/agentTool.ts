@@ -61,7 +61,6 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import {
   ISessionDispatchService,
   type DispatchChild,
-  type DispatchRun,
 } from '#/session/dispatch/dispatch';
 import { emitAgentRunSpawned, mirrorAgentRun, SubagentStarted } from '#/session/subagent/mirrorAgentRun';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -105,6 +104,10 @@ const SUBAGENT_TOOL_PARAMETERS = toInputJsonSchema(SubagentToolInputSchema, (sch
 });
 const PARENT_NOTIFY_DESCRIPTION =
   'Subagents may use AgentNotify only when the parent must change course before their final result; routine progress belongs in the final receipt.';
+const AGENT_RUN_SLOW_PHASE_MS = 1000;
+
+type AgentRunPhase = 'launch_prepare' | 'dispatch' | 'started' | 'task_register';
+
 export { buildProfileDescriptions } from './subagentDescription';
 
 export class SubagentTool implements ISubagentTool {
@@ -401,6 +404,36 @@ export class SubagentTool implements ISubagentTool {
     return notice === undefined ? output : `${output}\n${notice}`;
   }
 
+  private async withAgentRunPhase<T>(
+    toolCallId: string,
+    phase: AgentRunPhase,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    const startedAt = Date.now();
+    try {
+      return await action();
+    } finally {
+      this.logAgentRunPhase(toolCallId, phase, startedAt);
+    }
+  }
+
+  private startAgentRunPhase(toolCallId: string, phase: AgentRunPhase): () => void {
+    const startedAt = Date.now();
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      this.logAgentRunPhase(toolCallId, phase, startedAt);
+    };
+  }
+
+  private logAgentRunPhase(toolCallId: string, phase: AgentRunPhase, startedAt: number): void {
+    const durationMs = Math.max(0, Date.now() - startedAt);
+    const data = { tool_name: this.name, tool_call_id: toolCallId, phase, duration_ms: durationMs };
+    if (durationMs >= AGENT_RUN_SLOW_PHASE_MS) this.log.warn('slow agent run phase', data);
+    else this.log.debug('agent run phase', data);
+  }
+
   private async launch(
     args: SubagentToolInput,
     toolCallId: string,
@@ -412,45 +445,75 @@ export class SubagentTool implements ISubagentTool {
     runTask: Promise<string | undefined>,
     workspaceRoots: RuntimeWorkspaceRoots | undefined,
   ): Promise<SubagentHandle> {
-    const policy = tightenDispatchLaunchPolicy(this.dispatch.readLaunchPolicy(this.callerAgentId), capturedLaunchPolicy);
-    const admission = evaluateDispatchAdmission(policy, args.resume?.trim() ? 'resume' : 'spawn');
-    if (!admission.allowed) throw new Error2(ErrorCodes.REQUEST_INVALID, admission.reason!);
-    const requester = this.lifecycle.get(this.callerAgentId);
-    if (requester === undefined) {
-      throw new Error2(
-        ErrorCodes.AGENT_NOT_FOUND,
-        `Caller agent "${this.callerAgentId}" does not exist`,
-        { details: { agentId: this.callerAgentId } },
-      );
-    }
     const resumeRef = args.resume?.trim();
-    const caller = this.profile.data();
-    const effectiveRoots = workspaceRoots ?? new RuntimeWorkspaceView(
-      runtime,
-      inspectAgentWorkspaceRoots(this.runtime, this.workspace),
-    );
-    const fileTarget = args.profile_file === undefined ? undefined
-      : await loadDispatchProfileFile(args.profile_file, runtime, effectiveRoots, this.catalog,
-          caller, snapshot);
-    const fileProfile = fileTarget === undefined
-      ? undefined
-      : fileTarget.snapshot.publicProfiles.get(fileTarget.profileName);
-    const defaultTarget = resumeRef !== undefined && resumeRef.length > 0
-      || fileTarget !== undefined
-      || (args.profile?.length ?? 0) > 0
-      || args.route !== undefined
-      ? undefined
-      : this.defaultDispatchSelection();
-    const run: DispatchRun =
-      resumeRef !== undefined && resumeRef.length > 0
-        ? await this.dispatch.runOnExisting(
-            await this.dispatch.resolveOwnedChild(
-              { kind: 'agent', agentId: this.callerAgentId },
-              resumeRef,
-            ),
+    const prepared = await this.withAgentRunPhase(toolCallId, 'launch_prepare', async () => {
+      const policy = tightenDispatchLaunchPolicy(this.dispatch.readLaunchPolicy(this.callerAgentId), capturedLaunchPolicy);
+      const admission = evaluateDispatchAdmission(policy, resumeRef ? 'resume' : 'spawn');
+      if (!admission.allowed) throw new Error2(ErrorCodes.REQUEST_INVALID, admission.reason!);
+      const requester = this.lifecycle.get(this.callerAgentId);
+      if (requester === undefined) {
+        throw new Error2(
+          ErrorCodes.AGENT_NOT_FOUND,
+          `Caller agent "${this.callerAgentId}" does not exist`,
+          { details: { agentId: this.callerAgentId } },
+        );
+      }
+      const caller = this.profile.data();
+      const effectiveRoots = workspaceRoots ?? new RuntimeWorkspaceView(
+        runtime,
+        inspectAgentWorkspaceRoots(this.runtime, this.workspace),
+      );
+      const fileTarget = args.profile_file === undefined ? undefined
+        : await loadDispatchProfileFile(args.profile_file, runtime, effectiveRoots, this.catalog,
+            caller, snapshot);
+      const fileProfile = fileTarget === undefined
+        ? undefined
+        : fileTarget.snapshot.publicProfiles.get(fileTarget.profileName);
+      const defaultTarget = resumeRef !== undefined && resumeRef.length > 0
+        || fileTarget !== undefined
+        || (args.profile?.length ?? 0) > 0
+        || args.route !== undefined
+        ? undefined
+        : this.defaultDispatchSelection();
+      const existingChild = resumeRef === undefined || resumeRef.length === 0
+        ? undefined
+        : await this.dispatch.resolveOwnedChild(
+            { kind: 'agent', agentId: this.callerAgentId },
+            resumeRef,
+          );
+      return { defaultTarget, effectiveRoots, existingChild, fileProfile, fileTarget, policy, requester };
+    });
+    const run = await this.withAgentRunPhase(toolCallId, 'dispatch', async () =>
+      prepared.existingChild === undefined
+        ? this.dispatch.launch({
+            capturedLaunchPolicy: prepared.policy,
+            delegator: { kind: 'agent', agentId: this.callerAgentId },
+            requesterAgentId: this.callerAgentId,
+            requesterProfileData: this.profile.data(),
+            resolvedProfile: prepared.defaultTarget?.resolvedProfile,
+            profileName: prepared.fileTarget?.profileName ?? (args.profile?.length ? args.profile : prepared.defaultTarget?.profileName),
+            routeId: args.route,
+            selectionKind: prepared.fileTarget === undefined ? undefined : 'profile_file',
+            selectionOrigin: prepared.defaultTarget?.selectionOrigin,
+            snapshot: prepared.fileTarget?.snapshot ?? snapshot,
+            message: args.prompt,
+            name: args.name?.trim(),
+            modelAlias: normalizeSubagentBindingValue(args.model_alias, 'model_alias'),
+            thinkingEffort: normalizeSubagentBindingValue(args.effort, 'effort'),
+            allowParentNotify: args.allow_parent_notify,
+            toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
+            runtime,
+            workDir: prepared.effectiveRoots.workDir,
+            workspaceRoots,
+            signal: controller.signal,
+            userLabel: args.description,
+            parentTurnId,
+          })
+        : this.dispatch.runOnExisting(
+            prepared.existingChild,
             args.prompt,
             {
-              signal: controller.signal, requesterAgentId: this.callerAgentId, capturedLaunchPolicy: policy,
+              signal: controller.signal, requesterAgentId: this.callerAgentId, capturedLaunchPolicy: prepared.policy,
               allowParentNotify: args.allow_parent_notify,
               toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
               operationId: `resume:${this.callerAgentId}:${parentTurnId}:${toolCallId}`,
@@ -459,34 +522,10 @@ export class SubagentTool implements ISubagentTool {
                 newWindow: args.new_window,
               },
             },
-          )
-        : await this.dispatch.launch({
-            capturedLaunchPolicy: policy,
-            delegator: { kind: 'agent', agentId: this.callerAgentId },
-            requesterAgentId: this.callerAgentId,
-            requesterProfileData: this.profile.data(),
-            resolvedProfile: defaultTarget?.resolvedProfile,
-            profileName: fileTarget?.profileName ?? (args.profile?.length ? args.profile : defaultTarget?.profileName),
-            routeId: args.route,
-            selectionKind: fileTarget === undefined ? undefined : 'profile_file',
-            selectionOrigin: defaultTarget?.selectionOrigin,
-            snapshot: fileTarget?.snapshot ?? snapshot,
-            message: args.prompt,
-            name: args.name?.trim(),
-            modelAlias: normalizeSubagentBindingValue(args.model_alias, 'model_alias'),
-            thinkingEffort: normalizeSubagentBindingValue(args.effort, 'effort'),
-            allowParentNotify: args.allow_parent_notify,
-            toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
-            runtime,
-            workDir: effectiveRoots.workDir,
-            workspaceRoots,
-            signal: controller.signal,
-            userLabel: args.description,
-            parentTurnId,
-          });
-    const started = await run.started;
+          ));
+    const started = await this.withAgentRunPhase(toolCallId, 'started', () => run.started);
     const prompt = run.request.kind === 'prompt' ? run.request.prompt : undefined;
-    const mirrored = mirrorAgentRun(requester, started, {
+    const mirrored = mirrorAgentRun(prepared.requester, started, {
       profileName: run.child.profileName,
       prompt,
       signal: controller.signal,
@@ -512,7 +551,7 @@ export class SubagentTool implements ISubagentTool {
       profileName: run.child.profileName,
       name: run.child.name,
       parentToolCallId: toolCallId,
-      mainProfile: this.dispatchedMainProfile(run.child, fileProfile),
+      mainProfile: this.dispatchedMainProfile(run.child, prepared.fileProfile),
       model: run.child.modelAlias,
       thinkingEffort: run.child.thinkingEffort,
       thinkingEffortExplicit: childProfile.thinkingEffortExplicit,
@@ -626,6 +665,7 @@ export class SubagentTool implements ISubagentTool {
       } finally {
         runtimeLease.dispose();
       }
+      const finishTaskRegisterPhase = this.startAgentRunPhase(toolCallId, 'task_register');
 
       let taskId: string | undefined;
       try {
@@ -695,6 +735,8 @@ export class SubagentTool implements ISubagentTool {
               : message,
           isError: true,
         };
+      } finally {
+        finishTaskRegisterPhase();
       }
 
       if (runInBackground) {

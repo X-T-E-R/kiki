@@ -2692,6 +2692,85 @@ describe('AgentRun and dispatch parity golden', () => {
     ].join('\n'));
   });
 
+  it('logs clock-gated AgentRun phases without request content', async () => {
+    const internal = createLane(disposables, 'internal');
+    const log = internal.ix.get(ILogService);
+    const records: Array<{ readonly level: 'debug' | 'warn'; readonly message: string; readonly payload: unknown }> = [];
+    vi.spyOn(log, 'debug').mockImplementation((message, payload) => {
+      records.push({ level: 'debug', message, payload });
+    });
+    vi.spyOn(log, 'warn').mockImplementation((message, payload) => {
+      records.push({ level: 'warn', message, payload });
+    });
+    let now = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const dispatch = internal.ix.get(ISessionDispatchService);
+    const originalLaunch = dispatch.launch.bind(dispatch);
+    vi.spyOn(dispatch, 'launch').mockImplementation(async (input) => {
+      const run = await originalLaunch(input);
+      now += 1000;
+      return run;
+    });
+    const originalRecordRun = dispatch.recordRun.bind(dispatch);
+    vi.spyOn(dispatch, 'recordRun').mockImplementation(async (agentId, taskId) => {
+      await originalRecordRun(agentId, taskId);
+      now += 1000;
+    });
+    const originalSubagentRun = internal.subagentRun.getMockImplementation() as unknown as (
+      agentId: string,
+      request: AgentRunRequest,
+      options: RunAgentOptions,
+    ) => Promise<AgentRunHandle>;
+    const started = deferred<AgentRunHandle>();
+    let startedHandle: AgentRunHandle | undefined;
+    internal.subagentRun.mockImplementationOnce(async (agentId, request, options) => {
+      const handle = await originalSubagentRun(agentId, request, options);
+      startedHandle = handle;
+      return started.promise;
+    });
+
+    try {
+      const resultPromise = internal.runInternal({
+        prompt: 'private prompt',
+        description: 'private description',
+        profile: 'coder',
+        background: true,
+      });
+      await vi.waitFor(() => expect(startedHandle).toBeDefined());
+      now += 1000;
+      started.resolve(startedHandle!);
+      const result = await resultPromise;
+
+      expect(result.isError).not.toBe(true);
+      expect(records).toEqual([
+        {
+          level: 'debug',
+          message: 'agent run phase',
+          payload: { tool_name: 'AgentRun', tool_call_id: 'call_1', phase: 'launch_prepare', duration_ms: 0 },
+        },
+        {
+          level: 'warn',
+          message: 'slow agent run phase',
+          payload: { tool_name: 'AgentRun', tool_call_id: 'call_1', phase: 'dispatch', duration_ms: 1000 },
+        },
+        {
+          level: 'warn',
+          message: 'slow agent run phase',
+          payload: { tool_name: 'AgentRun', tool_call_id: 'call_1', phase: 'started', duration_ms: 1000 },
+        },
+        {
+          level: 'warn',
+          message: 'slow agent run phase',
+          payload: { tool_name: 'AgentRun', tool_call_id: 'call_1', phase: 'task_register', duration_ms: 1000 },
+        },
+      ]);
+      expect(JSON.stringify(records)).not.toContain('private prompt');
+      expect(JSON.stringify(records)).not.toContain('private description');
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it.each([true, false])('delivers a bounded large foreground receipt with honest complete-file availability=%s', async (available) => {
     const internal = createLane(disposables, 'internal');
     const text = 'HEAD-MUST-SURVIVE\n' + 'x'.repeat(2 * 1024 * 1024) + '\nTAIL-MUST-SURVIVE';
