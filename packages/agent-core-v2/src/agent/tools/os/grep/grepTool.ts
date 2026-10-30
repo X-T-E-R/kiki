@@ -7,6 +7,7 @@ import {
   type ToolExecution,
 } from '#/tool/toolContract';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { kikiDefinitionReadRoots } from '#/app/bootstrap/definitionReadRoots';
 import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
@@ -50,6 +51,9 @@ import { type GrepInput, GrepInputSchema, IGrepTool } from './grep';
 const RG_MAX_COLUMNS = 500;
 const DEFAULT_HEAD_LIMIT = 250;
 const MTIME_STAT_CONCURRENCY = 32;
+const GREP_SLOW_PHASE_MS = 1000;
+
+type GrepPhase = 'rg_resolve' | 'rg_execute' | 'postprocess';
 
 const VCS_DIRECTORIES_TO_EXCLUDE = ['.git', '.svn', '.hg', '.bzr', '.jj', '.sl'] as const;
 const SENSITIVE_KEY_BASENAMES = ['id_rsa', 'id_ed25519', 'id_ecdsa'] as const;
@@ -82,6 +86,7 @@ export class GrepTool implements IGrepTool {
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @ISessionSkillCatalog private readonly skillCatalog?: ISessionSkillCatalog,
     @IBootstrapService private readonly bootstrap?: IBootstrapService,
+    @ILogService private readonly log?: ILogService,
   ) {}
 
   private rgShareOptions(): Pick<EnsureRgPathOptions, 'shareDir' | 'fallbackShareDirs'> {
@@ -132,7 +137,7 @@ export class GrepTool implements IGrepTool {
       display: { kind: 'file_io', operation: 'grep', path: searchPaths[0]! },
       approvalRule: toolApprovalRule(this.name, args.pattern, inspected, target.host),
       matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, args.pattern),
-      execute: async ({ signal }) => {
+      execute: async ({ signal, toolCallId }) => {
         const lease = target.host === undefined
           ? this.runtime.acquire(['fs', 'process']) : acquireToolRuntime(this.runtime, target.host, ['fs', 'process']);
         try {
@@ -150,7 +155,7 @@ export class GrepTool implements IGrepTool {
               return { isError: true, output: error instanceof Error ? error.message : String(error) };
             }
           }
-          return tagSshResult(await this.execution(lease.runtime.process!, lease.runtime.fs!, env, workspace, args, signal, searchPaths), inspected);
+          return tagSshResult(await this.execution(lease.runtime.process!, lease.runtime.fs!, env, workspace, args, signal, searchPaths, toolCallId), inspected);
         } finally {
           lease.dispose();
         }
@@ -166,6 +171,7 @@ export class GrepTool implements IGrepTool {
     args: GrepInput,
     signal: AbortSignal,
     searchPaths: string[],
+    toolCallId: string,
   ): Promise<ExecutableToolResult> {
     if (signal.aborted) {
       return { isError: true, output: 'Aborted before search started' };
@@ -174,22 +180,23 @@ export class GrepTool implements IGrepTool {
     const pathClass = env.pathClass;
     let rgPath: string;
     try {
-      if (processService instanceof SshHostProcessService) {
-        rgPath = 'rg';
-      } else {
+      rgPath = await this.withGrepPhase(toolCallId, 'rg_resolve', async () => {
+        if (processService instanceof SshHostProcessService) {
+          return 'rg';
+        }
         const resolution = await ensureRgPath(this.createRgProbe(processService), {
           signal,
           allowCachedFallback: true,
           ...this.rgShareOptions(),
         });
-        rgPath = resolution.path;
         if (resolution.source !== 'system-path') {
           this.telemetry.track2('grep_tool_rg_fallback', {
             source: resolution.source,
             outcome: 'resolved',
           });
         }
-      }
+        return resolution.path;
+      });
     } catch (error) {
       if (signal.aborted) {
         return { isError: true, output: 'Grep aborted' };
@@ -199,135 +206,174 @@ export class GrepTool implements IGrepTool {
     }
 
     let runResult: RunRgResult;
+    let retryCount = 0;
     try {
-      const firstRun = await runRgOnce(
-        processService,
-        buildRgArgs(rgPath, args, searchPaths),
-        signal,
+      const runOutcome = await this.withGrepPhase(
+        toolCallId,
+        'rg_execute',
+        async () => {
+          const firstRun = await runRgOnce(
+            processService,
+            buildRgArgs(rgPath, args, searchPaths),
+            signal,
+          );
+          if (firstRun.kind === 'aborted') return firstRun;
+          if (!shouldRetryRipgrepEagain(firstRun)) return firstRun;
+          retryCount += 1;
+          return runRgOnce(
+            processService,
+            buildRgArgs(rgPath, args, searchPaths, true),
+            signal,
+          );
+        },
+        () => ({ retry_count: retryCount }),
       );
-      if (firstRun.kind === 'aborted') {
+      if (runOutcome.kind === 'aborted') {
         return { isError: true, output: 'Grep aborted' };
       }
-      runResult = firstRun;
-
-      if (shouldRetryRipgrepEagain(runResult)) {
-        const retryRun = await runRgOnce(
-          processService,
-          buildRgArgs(rgPath, args, searchPaths, true),
-          signal,
-        );
-        if (retryRun.kind === 'aborted') {
-          return { isError: true, output: 'Grep aborted' };
-        }
-        runResult = retryRun;
-      }
+      runResult = runOutcome;
     } catch (error) {
       return { isError: true, output: formatSpawnError(error) };
     }
 
-    const { exitCode, stderrText, bufferTruncated, stderrTruncated, timedOut } = runResult;
-    let { stdoutText } = runResult;
+    let postprocessResultCount = 0;
+    return this.withGrepPhase(
+      toolCallId,
+      'postprocess',
+      async () => {
+        const { exitCode, stderrText, bufferTruncated, stderrTruncated, timedOut } = runResult;
+        let { stdoutText } = runResult;
 
-    if (!timedOut && (exitCode !== 0 && exitCode !== 1 || exitCode === 1 && stderrText.trim() !== '')) {
-      return {
-        isError: true,
-        output: formatRipgrepError(exitCode, stderrText, stderrTruncated),
-      };
-    }
+        if (!timedOut && (exitCode !== 0 && exitCode !== 1 || exitCode === 1 && stderrText.trim() !== '')) {
+          return {
+            isError: true,
+            output: formatRipgrepError(exitCode, stderrText, stderrTruncated),
+          };
+        }
 
-    const mode = args.output_mode ?? 'files_with_matches';
-    if (bufferTruncated || timedOut) {
-      stdoutText = omitIncompleteTrailingRecord(stdoutText, mode);
-    }
-    if (timedOut && stdoutText.trim() === '') {
-      return {
-        isError: true,
-        output: `Grep timed out after ${String(DEFAULT_TIMEOUT_MS / 1000)}s. Try a more specific path or pattern.`,
-      };
-    }
-    if (signal.aborted) {
-      return { isError: true, output: 'Grep aborted' };
-    }
+        const mode = args.output_mode ?? 'files_with_matches';
+        if (bufferTruncated || timedOut) {
+          stdoutText = omitIncompleteTrailingRecord(stdoutText, mode);
+        }
+        if (timedOut && stdoutText.trim() === '') {
+          return {
+            isError: true,
+            output: `Grep timed out after ${String(DEFAULT_TIMEOUT_MS / 1000)}s. Try a more specific path or pattern.`,
+          };
+        }
+        if (signal.aborted) {
+          return { isError: true, output: 'Grep aborted' };
+        }
 
-    const rawLines = parseRipgrepOutput(stdoutText, mode);
+        const rawLines = parseRipgrepOutput(stdoutText, mode);
 
-    const filteredSensitive = new Set<string>();
-    const keptLines = filterSensitiveLines(rawLines, mode, filteredSensitive, pathClass);
-    let orderedLines: ParsedGrepLine[];
-    try {
-      orderedLines =
-        mode === 'files_with_matches' && !timedOut
-          ? await this.sortFilesWithMatchesByMtime(fs, keptLines, signal)
-          : keptLines;
-    } catch (error) {
-      if (error instanceof GrepAbortedError) {
-        return { isError: true, output: 'Grep aborted' };
-      }
-      throw error;
-    }
+        const filteredSensitive = new Set<string>();
+        const keptLines = filterSensitiveLines(rawLines, mode, filteredSensitive, pathClass);
+        let orderedLines: ParsedGrepLine[];
+        try {
+          orderedLines =
+            mode === 'files_with_matches' && !timedOut
+              ? await this.sortFilesWithMatchesByMtime(fs, keptLines, signal)
+              : keptLines;
+        } catch (error) {
+          if (error instanceof GrepAbortedError) {
+            return { isError: true, output: 'Grep aborted' };
+          }
+          throw error;
+        }
 
-    const offset = args.offset ?? 0;
-    const headLimit = args.head_limit ?? DEFAULT_HEAD_LIMIT;
-    const afterOffset = offset > 0 ? orderedLines.slice(offset) : orderedLines;
-    const limitActive = headLimit > 0;
-    const limited = limitActive ? afterOffset.slice(0, headLimit) : afterOffset;
-    const paginationTruncated = limitActive && afterOffset.length > headLimit;
+        const offset = args.offset ?? 0;
+        const headLimit = args.head_limit ?? DEFAULT_HEAD_LIMIT;
+        const afterOffset = offset > 0 ? orderedLines.slice(offset) : orderedLines;
+        const limitActive = headLimit > 0;
+        const limited = limitActive ? afterOffset.slice(0, headLimit) : afterOffset;
+        const paginationTruncated = limitActive && afterOffset.length > headLimit;
 
-    const headerLines: string[] = [];
-    const messages: string[] = [];
-    if (filteredSensitive.size > 0) {
-      const displayedFilteredPaths = [...filteredSensitive].map((path) =>
-        relativizeIfUnder(path, workspace.workspaceDir, pathClass),
-      );
-      messages.push(
-        `Filtered ${String(filteredSensitive.size)} sensitive file(s): ${displayedFilteredPaths.join(', ')}`,
-      );
-    }
-    if (mode === 'count_matches' && orderedLines.length > 0) {
-      headerLines.push(formatCountSummary(orderedLines, filteredSensitive.size > 0));
-    }
-    if (paginationTruncated) {
-      const total = afterOffset.length + offset;
-      const nextOffset = offset + headLimit;
-      const partialResult = bufferTruncated || timedOut ? ' of a partial result set' : '';
-      const paginationNotice =
-        `Results truncated to ${String(headLimit)} lines (total: ${String(total)}${partialResult}). ` +
-        `Use offset=${String(nextOffset)} to see more.`;
-      if (mode === 'count_matches') {
-        headerLines.push(paginationNotice);
-      } else {
-        messages.push(paginationNotice);
-      }
-    }
-    if (bufferTruncated) {
-      messages.push(
-        `[Output truncated at ${String(MAX_OUTPUT_BYTES)} bytes of rg output; the result set is incomplete.]`,
-      );
-    }
-    if (timedOut) {
-      messages.push(
-        `Grep timed out after ${String(DEFAULT_TIMEOUT_MS / 1000)}s; partial results returned.`,
-      );
-    }
+        const headerLines: string[] = [];
+        const messages: string[] = [];
+        if (filteredSensitive.size > 0) {
+          const displayedFilteredPaths = [...filteredSensitive].map((path) =>
+            relativizeIfUnder(path, workspace.workspaceDir, pathClass),
+          );
+          messages.push(
+            `Filtered ${String(filteredSensitive.size)} sensitive file(s): ${displayedFilteredPaths.join(', ')}`,
+          );
+        }
+        if (mode === 'count_matches' && orderedLines.length > 0) {
+          headerLines.push(formatCountSummary(orderedLines, filteredSensitive.size > 0));
+        }
+        if (paginationTruncated) {
+          const total = afterOffset.length + offset;
+          const nextOffset = offset + headLimit;
+          const partialResult = bufferTruncated || timedOut ? ' of a partial result set' : '';
+          const paginationNotice =
+            `Results truncated to ${String(headLimit)} lines (total: ${String(total)}${partialResult}). ` +
+            `Use offset=${String(nextOffset)} to see more.`;
+          if (mode === 'count_matches') {
+            headerLines.push(paginationNotice);
+          } else {
+            messages.push(paginationNotice);
+          }
+        }
+        if (bufferTruncated) {
+          messages.push(
+            `[Output truncated at ${String(MAX_OUTPUT_BYTES)} bytes of rg output; the result set is incomplete.]`,
+          );
+        }
+        if (timedOut) {
+          messages.push(
+            `Grep timed out after ${String(DEFAULT_TIMEOUT_MS / 1000)}s; partial results returned.`,
+          );
+        }
 
-    const contentIncludesLineNumbers = mode === 'content' && args['-n'] !== false;
-    const displayBase = processService instanceof SshHostProcessService ? '/__ssh_display_absolute__' : workspace.workspaceDir;
-    const displayedLines = limited.map((line) =>
-      formatDisplayLine(
-        line,
-        mode,
-        displayBase,
-        pathClass,
-        contentIncludesLineNumbers,
-      ),
+        const contentIncludesLineNumbers = mode === 'content' && args['-n'] !== false;
+        const displayBase = processService instanceof SshHostProcessService ? '/__ssh_display_absolute__' : workspace.workspaceDir;
+        const displayedLines = limited.map((line) =>
+          formatDisplayLine(
+            line,
+            mode,
+            displayBase,
+            pathClass,
+            contentIncludesLineNumbers,
+          ),
+        );
+        postprocessResultCount = displayedLines.length;
+        const contentBody = displayedLines.join('\n');
+        const body = contentBody === '' ? 'No matches found' : contentBody;
+        const combined = [...headerLines, body, ...messages].filter((part) => part !== '').join('\n');
+
+        const builder = new ToolOutputAccumulator();
+        builder.write(combined);
+        return builder.ok();
+      },
+      () => ({ result_count: postprocessResultCount }),
     );
-    const contentBody = displayedLines.join('\n');
-    const body = contentBody === '' ? 'No matches found' : contentBody;
-    const combined = [...headerLines, body, ...messages].filter((part) => part !== '').join('\n');
+  }
 
-    const builder = new ToolOutputAccumulator();
-    builder.write(combined);
-    return builder.ok();
+  private async withGrepPhase<T>(
+    toolCallId: string,
+    phase: GrepPhase,
+    action: () => Promise<T>,
+    details: () => Record<string, unknown> = () => ({}),
+  ): Promise<T> {
+    const startedAt = Date.now();
+    try {
+      return await action();
+    } finally {
+      this.logGrepPhase(toolCallId, phase, startedAt, details());
+    }
+  }
+
+  private logGrepPhase(
+    toolCallId: string,
+    phase: GrepPhase,
+    startedAt: number,
+    details: Record<string, unknown> = {},
+  ): void {
+    const durationMs = Math.max(0, Date.now() - startedAt);
+    const data = { tool_name: this.name, tool_call_id: toolCallId, phase, duration_ms: durationMs, ...details };
+    if (durationMs >= GREP_SLOW_PHASE_MS) this.log?.warn('slow grep phase', data);
+    else this.log?.debug('grep phase', data);
   }
 
   private createRgProbe(processService: IHostProcessService): RgProbe {

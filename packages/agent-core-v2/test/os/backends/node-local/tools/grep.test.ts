@@ -35,6 +35,7 @@ import {
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem, type HostFileStat } from '#/os/interface/hostFileSystem';
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
+import type { ILogService } from '#/_base/log/log';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
@@ -63,7 +64,7 @@ import { ToolResultTruncationService } from '#/agent/toolResultTruncation/toolRe
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
-import { registerLogServices } from '../../../../_base/log/stubs';
+import { registerLogServices, stubLog } from '../../../../_base/log/stubs';
 import { registerTestAgentWireServices } from '../../../../wire/stubs';
 
 vi.mock('#/os/backends/node-local/tools/rgLocator', () => ({
@@ -192,6 +193,7 @@ class GrepTool extends ProductionGrepTool {
     kaos: FakeKaos,
     workspaceConfig: WorkspaceConfig,
     telemetry: ITelemetryService = noopTelemetryService,
+    log?: ILogService,
   ) {
     const environment = createTestEnv(kaos);
     const backend = Object.assign(
@@ -216,8 +218,29 @@ class GrepTool extends ProductionGrepTool {
       runtime,
       stubWorkspaceContext(workspaceConfig.workspaceDir, workspaceConfig.additionalDirs),
       telemetry,
+      undefined,
+      undefined,
+      log,
     );
   }
+}
+
+type LogRecord = {
+  readonly level: 'debug' | 'warn';
+  readonly message: string;
+  readonly payload: unknown;
+};
+
+function recordingLog(): { readonly log: ILogService; readonly records: LogRecord[] } {
+  const log = stubLog();
+  const records: LogRecord[] = [];
+  vi.spyOn(log, 'debug').mockImplementation((message, payload) => {
+    records.push({ level: 'debug', message, payload });
+  });
+  vi.spyOn(log, 'warn').mockImplementation((message, payload) => {
+    records.push({ level: 'warn', message, payload });
+  });
+  return { log, records };
 }
 
 function processWithOutput(stdout: string, stderr = '', exitCode = 0): IHostProcess {
@@ -347,6 +370,7 @@ describe('GrepTool', () => {
         additionalServices: (reg) => {
           const kaos = createFakeKaos();
           registerStateServices(reg);
+          registerLogServices(reg);
           reg.defineInstance(IHostProcessService, createTestProcessService(kaos));
           reg.defineInstance(IHostFileSystem, createTestFs(kaos));
           const environment = createTestEnv(kaos);
@@ -507,6 +531,77 @@ describe('GrepTool', () => {
       '/workspace',
     );
     expect(result.output).toBe('src/a.ts');
+  });
+
+  it('logs each grep phase with the tool call id and no user content', async () => {
+    const { log, records } = recordingLog();
+    const exec = vi.fn().mockResolvedValue(processWithOutput('/workspace/src/a.ts\n'));
+    const tool = new GrepTool(createFakeKaos({ exec }), workspace, noopTelemetryService, log);
+
+    const result = await executeTool(tool, context({ pattern: 'private-secret' }));
+
+    expect(result.output).toBe('src/a.ts');
+    expect(records).toHaveLength(3);
+    expect(records.map(({ level, message, payload }) => ({
+      level,
+      message,
+      payload,
+    }))).toEqual([
+      {
+        level: 'debug',
+        message: 'grep phase',
+        payload: expect.objectContaining({ tool_call_id: 'call_grep', phase: 'rg_resolve' }),
+      },
+      {
+        level: 'debug',
+        message: 'grep phase',
+        payload: expect.objectContaining({ tool_call_id: 'call_grep', phase: 'rg_execute', retry_count: 0 }),
+      },
+      {
+        level: 'debug',
+        message: 'grep phase',
+        payload: expect.objectContaining({ tool_call_id: 'call_grep', phase: 'postprocess', result_count: 1 }),
+      },
+    ]);
+    expect(JSON.stringify(records)).not.toContain('private-secret');
+    expect(JSON.stringify(records)).not.toContain('/workspace');
+  });
+
+  it('warns for a slow phase and logs postprocess when rg fails', async () => {
+    let clock = 0;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    vi.mocked(ensureRgPath).mockImplementationOnce(async () => {
+      clock += 1000;
+      return { path: '/mock/rg', source: 'system-path' };
+    });
+    const { log, records } = recordingLog();
+    const exec = vi.fn().mockResolvedValue(processWithOutput('', '', 2));
+    const tool = new GrepTool(createFakeKaos({ exec }), workspace, noopTelemetryService, log);
+
+    try {
+      const result = await executeTool(tool, context({ pattern: 'private-secret' }));
+
+      expect(result).toEqual({ isError: true, output: 'Failed to grep: ripgrep exited with code 2' });
+      expect(records.map(({ level, message, payload }) => ({ level, message, payload }))).toEqual([
+        {
+          level: 'warn',
+          message: 'slow grep phase',
+          payload: { tool_name: 'Grep', tool_call_id: 'call_grep', phase: 'rg_resolve', duration_ms: 1000 },
+        },
+        {
+          level: 'debug',
+          message: 'grep phase',
+          payload: { tool_name: 'Grep', tool_call_id: 'call_grep', phase: 'rg_execute', duration_ms: 0, retry_count: 0 },
+        },
+        {
+          level: 'debug',
+          message: 'grep phase',
+          payload: { tool_name: 'Grep', tool_call_id: 'call_grep', phase: 'postprocess', duration_ms: 0, result_count: 0 },
+        },
+      ]);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('can search an additional directory when path is explicit', async () => {
