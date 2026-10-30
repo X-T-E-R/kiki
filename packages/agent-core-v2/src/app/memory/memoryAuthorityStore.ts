@@ -60,6 +60,11 @@ export interface IMemoryAuthorityService {
 }
 export const IMemoryAuthorityService = createDecorator<IMemoryAuthorityService>('memoryAuthorityService');
 function invalid(message: string): never { throw new MemoryDomainError('invalid_input', message, 'Inspect Memory authority status and reconcile the reported operation before retrying.'); }
+type MigrationIssue = NonNullable<MemoryAuthorityState['migration']>['issues'][number];
+function blocksMigration(issue: MigrationIssue): boolean { return !['current_revision_preserved', 'forgotten_source_rejected'].includes(issue.issue); }
+function uniqueIssues(issues: readonly MigrationIssue[]): MigrationIssue[] {
+  return [...new Map(issues.map((issue) => [JSON.stringify(issue), issue])).values()].toSorted((a, b) => Number(blocksMigration(b)) - Number(blocksMigration(a))).slice(0, 1000);
+}
 function parseNamespace(base: string): MemoryScope {
   if (base === 'memory/global') return { kind: 'global' };
   const persona = /^memory\/global\/personas\/([^/]+)$/.exec(base);
@@ -218,8 +223,23 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
       if (operationId !== undefined && state.mode === 'migrating' && state.migration!.id !== operationId) invalid('A different Memory migration is in progress');
       const id = state.migration?.id ?? operationId ?? randomUUID();
       try {
-        if (state.mode === 'active' || restart && (state.migration?.phase === 'failed' || state.migration!.issues.length > 0)) {
+        if (state.mode === 'active') {
           state = { ...state, mode: 'migrating', migration: { id, namespaces: [], index: 0, issues: [], phase: 'importing' } };
+          await lease.publish(state);
+        }
+        if (state.migration!.phase === 'failed' || restart && state.migration!.issues.length > 0) {
+          const issues: MigrationIssue[] = [];
+          for (const base of new Set(state.migration!.issues.map((issue) => issue.scope))) {
+            let after: string | undefined;
+            for (;;) {
+              signal?.throwIfAborted();
+              const result = await this.shadow.run(parseNamespace(base), after, signal);
+              issues.push(...result.issues);
+              if (result.complete) break;
+              after = result.nextKey;
+            }
+          }
+          state = { ...state, migration: { ...state.migration!, issues: uniqueIssues(issues), phase: 'importing', failure: undefined } };
           await lease.publish(state);
         }
         if (state.migration!.namespaces.length === 0) {
@@ -231,27 +251,28 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
           const progress = state.migration!;
           const base = progress.namespaces[progress.index]!;
           const result = await this.shadow.run(parseNamespace(base), progress.after, signal);
-          const issues = [...progress.issues, ...result.issues].slice(0, 1000);
+          const issues = uniqueIssues([...progress.issues, ...result.issues]);
           state = { ...state, migration: { ...progress, phase: 'importing', failure: undefined, issues, index: result.complete ? progress.index + 1 : progress.index, after: result.complete ? undefined : result.nextKey } };
           await lease.publish(state);
         }
         let progress = state.migration!;
-        if (progress.index !== progress.namespaces.length && progress.issues.length === 0) return state;
-        if (progress.issues.length === 0) {
+        if (progress.index !== progress.namespaces.length) return state;
+        if (!progress.issues.some(blocksMigration)) {
           progress = { ...progress, phase: 'validating' };
           state = { ...state, migration: progress };
           await lease.publish(state);
-          const issues = await this.validateAndReconcile(progress.namespaces, progress.id);
-          progress = { ...progress, issues: issues.slice(0, 1000) };
+          const issues = await this.validateAndReconcile(progress.namespaces, progress.id, progress.issues);
+          progress = { ...progress, issues: uniqueIssues([...progress.issues, ...issues]) };
         }
-        if (progress.issues.length > 0) {
-          state = { ...state, migration: { ...progress, phase: 'failed', failure: { code: 'memory.source_invalid', message: `Memory source validation found ${progress.issues.length} issue(s); repair the listed sources and retry this operation` } } };
+        const blocking = progress.issues.filter(blocksMigration);
+        if (blocking.length > 0) {
+          state = { ...state, migration: { ...progress, phase: 'failed', failure: { code: 'memory.source_invalid', message: `Memory source validation found ${blocking.length} issue(s); repair the listed sources and retry this operation` } } };
           await lease.publish(state);
           return state;
         }
         await this.sqlite.checkpoint();
         signal?.throwIfAborted();
-        const active: MemoryAuthorityState = { version: 1, epoch: state.epoch + 1, backend: 'sqlite', mode: 'active', migrationId: progress.id };
+        const active: MemoryAuthorityState = { version: 1, epoch: state.epoch + 1, backend: 'sqlite', mode: 'active', migrationId: progress.id, migrationIssues: progress.issues.length === 0 ? undefined : progress.issues };
         await lease.publish(active);
         return active;
       } catch (error) {
@@ -265,8 +286,8 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
       }
     }, signal);
   }
-  private async validateAndReconcile(bases: readonly string[], operationId: string): Promise<Array<{ scope: string; key: string; issue: string }>> {
-    const issues: Array<{ scope: string; key: string; issue: string }> = [];
+  private async validateAndReconcile(bases: readonly string[], operationId: string, importedIssues: readonly MigrationIssue[]): Promise<MigrationIssue[]> {
+    const issues: MigrationIssue[] = [];
     for (const base of bases) {
       const inventory = await this.legacy.inventory(parseNamespace(base));
       if (!inventory.complete) { issues.push({ scope: base, key: '', issue: 'legacy_inventory_incomplete' }); continue; }
@@ -287,11 +308,14 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
         }
       }
       for (const entry of expected.values()) {
+        const rejected = importedIssues.some((issue) => issue.scope === base && issue.issue === 'forgotten_source_rejected' && (issue.key === `entries/${entry.id}.md` || issue.key === `inbox/${entry.id}.md`));
+        if (rejected) continue;
         if (!view.objects.some((object) => object.id === entry.id)) issues.push({ scope: base, key: entry.id, issue: 'legacy_head_missing' });
+        const preserved = view.objects.some((object) => object.id === entry.id && object.revision !== entry.revision);
         const event = latest.get(entry.id);
-        if (event !== undefined && event.afterRevision !== entry.revision) issues.push({ scope: base, key: entry.id, issue: 'legacy_journal_head_mismatch' });
+        if (!preserved && event !== undefined && event.afterRevision !== entry.revision) issues.push({ scope: base, key: entry.id, issue: 'legacy_journal_head_mismatch' });
       }
-      if (issues.length > 0) continue;
+      if (issues.some(blocksMigration)) continue;
       for (let offset = 0; offset < edits.length; offset += 1000) {
         const batch = edits.slice(offset, offset + 1000);
         await this.persistence.commit({ operationId: `${operationId}:delete:${base}:${offset}`, request: JSON.stringify(batch), expectedGeneration: view.generation, edits: batch, result: { reconciled: batch.length } });
@@ -328,10 +352,10 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
     const base = await this.scopes.resolve(scope);
     const content = JSON.stringify([incoming.source, incoming.origin?.revision ?? null, incoming.type, incoming.title, incoming.body, incoming.pinned, incoming.basis ?? null, incoming.validity]);
     const unitId = memorySourceUnitId(base, incoming.source, content, [input.sourceLocator], 'markdown-revision')!;
-    const canonical = memorySourceUnitId(base, incoming.source, incoming.body, incoming.basis?.refs);
-    const aliases = [memorySourceUnitId(base, incoming.source, incoming.body, [input.sourceLocator], 'markdown')!, ...(canonical === undefined ? [] : [canonical]), ...(incoming.origin === null ? [] : [memoryObjectSourceUnitId(base, incoming.origin.id, incoming.body)])];
+    const aliases = [memorySourceUnitId(base, incoming.source, incoming.body, [input.sourceLocator], 'markdown')!, ...(incoming.origin === null ? [] : [memoryObjectSourceUnitId(base, incoming.origin.id, incoming.body)])];
     const mutation = { scope, type: incoming.type, title: incoming.title, body: incoming.body, pinned: incoming.pinned, basis: incoming.basis, validity: incoming.validity, reason: input.reason, source: { writer: 'user' as const } };
-    const candidate: MemoryIngestCandidate = { mutation: incoming.id === 'new' ? mutation : { ...mutation, action: 'update', id: incoming.id, expectedRevision: incoming.revision! }, unit: { id: unitId, payload: input.markdown, locator: input.sourceLocator, origin: 'owner', sessionKind: 'interactive', aliases } };
+    const signature = memorySourceUnitId(base, incoming.source, incoming.body, incoming.basis?.refs);
+    const candidate: MemoryIngestCandidate = { mutation: incoming.id === 'new' ? mutation : { ...mutation, action: 'update', id: incoming.id, expectedRevision: incoming.revision! }, unit: { id: unitId, payload: input.markdown, locator: input.sourceLocator, origin: 'owner', sessionKind: 'interactive', aliases, signatures: signature === undefined ? [] : [signature] } };
     return { incoming, candidate, base };
   }
   async previewImport(scope: MemoryScope, original: MemoryImportInput): Promise<MemoryImportPreview> {
@@ -340,7 +364,8 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
     assertMemoryAuthorityWritable(state, 'sqlite');
     const { incoming, candidate, base } = await this.importCandidate(scope, input);
     const states = await Promise.all(memoryIngestSourceIds(base, candidate.unit).map((id) => this.persistence.source(base, id)));
-    if (states.some((state) => state.state === 'forgotten')) throw new MemoryDomainError('inactive_target', 'This exact Markdown source has been forgotten', 'Use a distinct new source; an old source cannot recreate forgotten Memory.');
+    const signatures = await Promise.all((candidate.unit.signatures ?? []).map((id) => this.persistence.source(base, id)));
+    if ([...states, ...signatures].some((state) => state.state === 'forgotten')) throw new MemoryDomainError('inactive_target', 'This exact Markdown source has been forgotten', 'Use a distinct new source; an old source cannot recreate forgotten Memory.');
     const related = new Set(states.flatMap((state) => state.state === 'registered' ? state.objectIds : []));
     if (related.size > 0) {
       const view = await this.sqlite.snapshot([scope]);
@@ -416,7 +441,7 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
     return this.authority.exclusive(async (lease) => {
       const state = await lease.read();
       if (state.backend !== 'sqlite' || state.mode !== 'readonly' || state.recoveryId !== recoveryId || state.epoch !== expectedEpoch) invalid('Memory recovery state changed; reload its exact recovery ID and epoch');
-      const active: MemoryAuthorityState = { version: 1, epoch: state.epoch + 1, backend: 'sqlite', mode: 'active', migrationId: state.migrationId };
+      const active: MemoryAuthorityState = { version: 1, epoch: state.epoch + 1, backend: 'sqlite', mode: 'active', migrationId: state.migrationId, migrationIssues: state.migrationIssues };
       await lease.publish(active);
       return active;
     });

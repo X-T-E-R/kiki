@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 import type { MemoryEntry, MemoryJournalRecord } from '../../../app/memory/memoryStore.ts';
 // oxlint-disable-next-line import/extensions
-import { memoryEntrySourceUnitIds, memorySourceUnitId } from '../../../app/memory/memorySourceIdentity.ts';
+import { memoryObjectSourceUnitId, memorySourceUnitId } from '../../../app/memory/memorySourceIdentity.ts';
 import type { MemoryCommit, MemoryCommitReceipt, MemoryImportResult, MemoryLegacyPayload, MemoryReadView, MemorySourceState, MemoryProvenance, MemoryAdjudication } from '../../interface/memoryPersistence.ts';
 
 function conflict(message: string): never { throw Object.assign(new Error(message), { code: 'revision_conflict', committed: false }); }
@@ -17,7 +17,7 @@ export class MemoryDatabase {
     this.db = new DatabaseSync(path);
     this.db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;`);
     const version = Number(this.db.prepare('PRAGMA user_version').get()?.['user_version']);
-    if (version !== 0 && version !== 1 && version !== 2) { this.db.close(); throw new Error('Unsupported Memory database schema'); }
+    if (![0, 1, 2, 3].includes(version)) { this.db.close(); throw new Error('Unsupported Memory database schema'); }
     this.transaction(() => {
       this.db.exec(`
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value INTEGER NOT NULL);
@@ -37,17 +37,32 @@ export class MemoryDatabase {
       CREATE TABLE IF NOT EXISTS source_barriers(scope TEXT NOT NULL,id TEXT NOT NULL,at TEXT NOT NULL,generation INTEGER NOT NULL,PRIMARY KEY(scope,id));
       CREATE TABLE IF NOT EXISTS source_links(scope TEXT NOT NULL,source_id TEXT NOT NULL,object_id TEXT NOT NULL,PRIMARY KEY(scope,source_id,object_id));
       CREATE INDEX IF NOT EXISTS source_link_objects ON source_links(scope,object_id);
-      INSERT OR IGNORE INTO source_links SELECT scope,id,object_id FROM sources;
+      CREATE TABLE IF NOT EXISTS source_signatures(scope TEXT NOT NULL,source_id TEXT NOT NULL,object_id TEXT NOT NULL,PRIMARY KEY(scope,source_id,object_id));
+      CREATE INDEX IF NOT EXISTS source_signature_objects ON source_signatures(scope,object_id);
       `);
-      if (version === 1) for (const row of this.db.prepare('SELECT l.scope,l.payload,r.entry FROM legacy l JOIN revisions r ON r.scope=l.scope AND r.id=l.object_id AND r.revision=l.revision WHERE r.entry IS NOT NULL').all()) {
-        const entry = JSON.parse(String(row['entry'])) as MemoryEntry;
-        const scope = String(row['scope']);
-        const sourceId = memorySourceUnitId(scope, entry.source, entry.body, entry.basis?.refs);
-        if (sourceId === undefined || this.blocked(scope, entry.id)) continue;
-        this.db.prepare('INSERT OR IGNORE INTO sources VALUES(?,?,?,?,?,?)').run(sourceId, scope, entry.id, String(row['payload']), entry.basis?.refs?.[0] ?? null, entry.created);
-        this.db.prepare('INSERT OR IGNORE INTO source_links VALUES(?,?,?)').run(scope, sourceId, entry.id);
+      if (version < 3) {
+        for (const row of this.db.prepare('SELECT scope,entry FROM revisions WHERE entry IS NOT NULL').all()) {
+          const scope = String(row['scope']);
+          const entry = JSON.parse(String(row['entry'])) as MemoryEntry;
+          const signature = memorySourceUnitId(scope, entry.source, entry.body, entry.basis?.refs);
+          if (signature !== undefined) {
+            this.db.prepare('INSERT OR IGNORE INTO source_signatures VALUES(?,?,?)').run(scope, signature, entry.id);
+            this.db.prepare('DELETE FROM source_links WHERE scope=? AND source_id=?').run(scope, signature);
+            const identity = memoryObjectSourceUnitId(scope, entry.id, entry.body);
+            this.db.prepare('UPDATE OR IGNORE sources SET id=? WHERE scope=? AND id=? AND object_id=?').run(identity, scope, signature, entry.id);
+          }
+          this.linkEntrySource(scope, entry);
+        }
+        for (const row of this.db.prepare('SELECT l.scope,l.payload,r.entry FROM legacy l JOIN revisions r ON r.scope=l.scope AND r.id=l.object_id AND r.revision=l.revision WHERE r.entry IS NOT NULL').all()) {
+          const entry = JSON.parse(String(row['entry'])) as MemoryEntry;
+          const scope = String(row['scope']);
+          if (this.blocked(scope, entry.id)) continue;
+          this.db.prepare('INSERT OR IGNORE INTO sources VALUES(?,?,?,?,?,?)').run(memoryObjectSourceUnitId(scope, entry.id, entry.body), scope, entry.id, String(row['payload']), entry.basis?.refs?.[0] ?? null, entry.created);
+        }
       }
-      this.db.exec('PRAGMA user_version=2');
+      this.db.exec('INSERT OR IGNORE INTO source_links SELECT scope,id,object_id FROM sources');
+      if (version < 3) this.linkLegacyLineages();
+      this.db.exec('PRAGMA user_version=3');
     });
   }
   private generation(): number { return Number(this.db.prepare("SELECT value FROM metadata WHERE key='generation'").get()!['value']); }
@@ -91,11 +106,17 @@ export class MemoryDatabase {
       const aliases = input.edits.flatMap((edit) => {
         this.linkHistoricalSources(edit.scope, edit.id);
         if (edit.entry === null) return [];
-        return memoryEntrySourceUnitIds(edit.scope, edit.entry).map((id) => ({ scope: edit.scope, id, objectId: edit.id }));
+        const signature = memorySourceUnitId(edit.scope, edit.entry.source, edit.entry.body, edit.entry.basis?.refs);
+        if (signature !== undefined && this.signatureBlocked(edit.scope, signature, edit.id)) conflict('Memory source has a forget barrier');
+        return [{ scope: edit.scope, id: memoryObjectSourceUnitId(edit.scope, edit.id, edit.entry.body), objectId: edit.id }];
       });
       for (const source of input.sources ?? []) for (const id of source.aliases ?? []) {
         if (!/^source-unit:[a-f0-9]{64}$/.test(id)) throw new Error('Invalid Memory source alias');
         aliases.push({ scope: source.scope, id, objectId: source.objectId });
+      }
+      for (const source of input.sources ?? []) for (const signature of source.signatures ?? []) {
+        if (!/^source-unit:[a-f0-9]{64}$/.test(signature)) throw new Error('Invalid Memory source signature');
+        if (this.signatureBlocked(source.scope, signature, source.objectId)) conflict('Memory source has a forget barrier');
       }
       for (const alias of aliases) {
         if (this.db.prepare('SELECT 1 FROM source_barriers WHERE scope=? AND id=?').get(alias.scope, alias.id) !== undefined) conflict('Memory source has a forget barrier');
@@ -115,12 +136,14 @@ export class MemoryDatabase {
         this.db.prepare('INSERT INTO commit_views VALUES(?,?,?,?)').run(edit.scope, edit.id, generation, edit.revision);
         this.db.prepare('INSERT INTO heads VALUES(?,?,?) ON CONFLICT(scope,id) DO UPDATE SET revision=excluded.revision').run(edit.scope, edit.id, edit.revision);
         this.db.prepare('INSERT INTO operation_objects VALUES(?,?,?)').run(input.operationId, edit.scope, edit.id);
+        if (edit.entry !== null) this.linkEntrySource(edit.scope, edit.entry);
       }
       for (const source of input.sources ?? []) {
         if (this.blocked(source.scope, source.objectId) || this.db.prepare('SELECT 1 FROM source_barriers WHERE scope=? AND id=?').get(source.scope, source.id) !== undefined) conflict('Memory source has a forget barrier');
         if (this.db.prepare('SELECT 1 FROM sources WHERE id=?').get(source.id) !== undefined) conflict('Memory source was concurrently registered; reread its current lineage');
         this.db.prepare('INSERT INTO sources VALUES(?,?,?,?,?,?)').run(source.id, source.scope, source.objectId, source.payload, source.locator ?? null, source.learnedAt);
         this.db.prepare('INSERT INTO source_links VALUES(?,?,?)').run(source.scope, source.id, source.objectId);
+        for (const signature of source.signatures ?? []) this.db.prepare('INSERT OR IGNORE INTO source_signatures VALUES(?,?,?)').run(source.scope, signature, source.objectId);
       }
       for (const alias of aliases) this.db.prepare('INSERT OR IGNORE INTO source_links VALUES(?,?,?)').run(alias.scope, alias.id, alias.objectId);
       for (const transfer of input.sourceTransfers ?? []) {
@@ -152,7 +175,7 @@ export class MemoryDatabase {
       }
       for (const barrier of barriers) {
         this.db.prepare('INSERT OR IGNORE INTO barriers VALUES(?,?,?,?)').run(barrier.scope, barrier.objectId, barrier.at, generation);
-        this.db.prepare('INSERT OR IGNORE INTO source_barriers SELECT scope,source_id,?,? FROM source_links WHERE scope=? AND object_id=?').run(barrier.at, generation, barrier.scope, barrier.objectId);
+        for (const table of ['source_links', 'source_signatures']) this.db.prepare(`INSERT OR IGNORE INTO source_barriers SELECT scope,source_id,?,? FROM ${table} WHERE scope=? AND object_id=?`).run(barrier.at, generation, barrier.scope, barrier.objectId);
         this.db.prepare('UPDATE operations SET result=? WHERE id IN(SELECT operation_id FROM operation_objects WHERE scope=? AND id=?)').run(JSON.stringify({ forgotten: true }), barrier.scope, barrier.objectId);
         for (const table of ['heads', 'revisions', 'commit_views', 'sources', 'adjudications', 'journal']) {
           const column = table === 'sources' || table === 'adjudications' ? 'object_id' : 'id';
@@ -173,11 +196,21 @@ export class MemoryDatabase {
     const row = this.db.prepare('SELECT * FROM sources WHERE scope=? AND id=?').get(scope, id) ?? this.db.prepare('SELECT s.* FROM source_links a JOIN source_links l ON l.scope=a.scope AND l.object_id=a.object_id JOIN sources s ON s.scope=l.scope AND s.id=l.source_id WHERE a.scope=? AND a.source_id=? ORDER BY s.learned_at,s.id LIMIT 1').get(scope, id);
     return row === undefined ? { state: 'missing' } : { state: 'registered', source: { id: String(row['id']), scope, objectId: String(row['object_id']), payload: String(row['payload']), locator: row['locator'] === null ? undefined : String(row['locator']), learnedAt: String(row['learned_at']) }, objectIds: this.relatedObjects(scope, String(row['object_id'])) };
   }
+  private signatureBlocked(scope: string, signature: string, objectId: string): boolean {
+    return this.db.prepare('SELECT 1 FROM source_barriers WHERE scope=? AND id=?').get(scope, signature) !== undefined
+      && this.db.prepare('SELECT 1 FROM source_signatures WHERE scope=? AND source_id=? AND object_id=?').get(scope, signature, objectId) === undefined;
+  }
+  private linkEntrySource(scope: string, entry: MemoryEntry): void {
+    this.db.prepare('INSERT OR IGNORE INTO source_links VALUES(?,?,?)').run(scope, memoryObjectSourceUnitId(scope, entry.id, entry.body), entry.id);
+    const signature = memorySourceUnitId(scope, entry.source, entry.body, entry.basis?.refs);
+    if (signature !== undefined) this.db.prepare('INSERT OR IGNORE INTO source_signatures VALUES(?,?,?)').run(scope, signature, entry.id);
+  }
   private linkHistoricalSources(scope: string, id: string): void {
-    for (const row of this.db.prepare('SELECT entry FROM revisions WHERE scope=? AND id=? AND entry IS NOT NULL').all(scope, id)) {
-      const entry = JSON.parse(String(row['entry'])) as MemoryEntry;
-      for (const alias of memoryEntrySourceUnitIds(scope, entry)) this.db.prepare('INSERT OR IGNORE INTO source_links VALUES(?,?,?)').run(scope, alias, id);
-    }
+    for (const row of this.db.prepare('SELECT entry FROM revisions WHERE scope=? AND id=? AND entry IS NOT NULL').all(scope, id)) this.linkEntrySource(scope, JSON.parse(String(row['entry'])) as MemoryEntry);
+  }
+  private linkLegacyLineages(): void {
+    this.db.exec(`INSERT OR IGNORE INTO source_links SELECT r.scope,l.source_id,r.id FROM revisions r JOIN source_links l ON l.scope=r.scope AND l.object_id=json_extract(r.entry,'$.supersedes') WHERE r.entry IS NOT NULL;
+      INSERT OR IGNORE INTO source_links SELECT r.scope,l.source_id,target.id FROM revisions r JOIN source_links l ON l.scope=r.scope AND l.object_id=r.id JOIN heads target ON target.scope=r.scope AND target.id=json_extract(r.entry,'$.superseded_by') WHERE r.entry IS NOT NULL;`);
   }
   provenance(scope: string, id: string): MemoryProvenance {
     this.linkHistoricalSources(scope, id);
@@ -206,15 +239,12 @@ export class MemoryDatabase {
           continue;
         }
         const entry = record.entry;
-        const sourceId = entry === undefined ? undefined : memorySourceUnitId(record.scope, entry.source, entry.body, entry.basis?.refs);
+        const sourceId = entry === undefined ? undefined : memoryObjectSourceUnitId(record.scope, entry.id, entry.body);
+        const signature = entry === undefined ? undefined : memorySourceUnitId(record.scope, entry.source, entry.body, entry.basis?.refs);
         const source = sourceId === undefined ? undefined : this.source(record.scope, sourceId);
         let issue = record.issue;
-        if (source?.state === 'forgotten' || entry !== undefined && this.blocked(record.scope, entry.id) || entry === undefined && this.db.prepare('SELECT 1 FROM barriers WHERE scope=? LIMIT 1').get(record.scope) !== undefined) {
+        if (source?.state === 'forgotten' || signature !== undefined && this.signatureBlocked(record.scope, signature, entry!.id) || entry !== undefined && this.blocked(record.scope, entry.id) || entry === undefined && this.db.prepare('SELECT 1 FROM barriers WHERE scope=? LIMIT 1').get(record.scope) !== undefined) {
           issues.push({ scope: record.scope, key: record.key, issue: 'forgotten_source_rejected' }); continue;
-        }
-        if (source?.state === 'registered' && !source.objectIds.includes(entry!.id)) {
-          issues.push({ scope: record.scope, key: record.key, issue: 'source_lineage_preserved' });
-          continue;
         }
         for (const previous of record.history ?? []) if (!this.blocked(record.scope, previous.id)) this.db.prepare('INSERT OR IGNORE INTO revisions VALUES(?,?,?,?,?)').run(record.scope, previous.id, previous.revision, 0, JSON.stringify(previous));
         for (const event of record.journal ?? []) {
@@ -241,16 +271,13 @@ export class MemoryDatabase {
             this.db.prepare('INSERT INTO heads VALUES(?,?,?) ON CONFLICT(scope,id) DO UPDATE SET revision=excluded.revision').run(record.scope, entry.id, entry.revision);
             imported++;
           }
-          if (sourceId !== undefined && source?.state !== 'registered') {
-            this.db.prepare('INSERT INTO sources VALUES(?,?,?,?,?,?)').run(sourceId, record.scope, entry.id, record.payload, entry.basis?.refs?.[0] ?? null, entry.created);
-            this.db.prepare('INSERT INTO source_links VALUES(?,?,?)').run(record.scope, sourceId, entry.id);
-          }
+          if (sourceId !== undefined && this.db.prepare('SELECT 1 FROM sources WHERE id=?').get(sourceId) === undefined) this.db.prepare('INSERT INTO sources VALUES(?,?,?,?,?,?)').run(sourceId, record.scope, entry.id, record.payload, entry.basis?.refs?.[0] ?? null, entry.created);
+          this.linkEntrySource(record.scope, entry);
         }
         this.db.prepare('INSERT INTO legacy VALUES(?,?,?,?,?,?) ON CONFLICT(scope,key) DO UPDATE SET payload=excluded.payload,object_id=excluded.object_id,revision=excluded.revision,issue=excluded.issue').run(record.scope, record.key, record.payload, entry?.id ?? null, entry?.revision ?? null, issue ?? null);
         if (issue !== undefined) issues.push({ scope: record.scope, key: record.key, issue });
       }
-      this.db.exec(`INSERT OR IGNORE INTO source_links SELECT r.scope,l.source_id,r.id FROM heads h JOIN revisions r ON r.scope=h.scope AND r.id=h.id AND r.revision=h.revision JOIN source_links l ON l.scope=r.scope AND l.object_id=json_extract(r.entry,'$.supersedes') WHERE r.entry IS NOT NULL;
-        INSERT OR IGNORE INTO source_links SELECT r.scope,l.source_id,target.id FROM heads h JOIN revisions r ON r.scope=h.scope AND r.id=h.id AND r.revision=h.revision JOIN source_links l ON l.scope=r.scope AND l.object_id=r.id JOIN heads target ON target.scope=r.scope AND target.id=json_extract(r.entry,'$.superseded_by') WHERE r.entry IS NOT NULL;`);
+      this.linkLegacyLineages();
       this.db.prepare("UPDATE metadata SET value=? WHERE key='generation'").run(generation);
       return { imported, retained, issues };
     });

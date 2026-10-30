@@ -19,7 +19,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
-import type { MemoryAuthorityState } from '../../lib/client';
+import type { MemoryAuthorityState, MemoryMigrationIssue } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { SECONDARY_BUTTON } from '../ui';
 import { MEMORY_AUTHORITY_QUERY_KEY, useMemoryAuthority } from './memoryAuthority';
@@ -30,6 +30,8 @@ const ISSUE_TEXT: Partial<Record<string, I18nKey>> = {
   legacy_inventory_incomplete: 'memory.upgrade.issue.inventoryIncomplete',
   duplicate_legacy_identity: 'memory.upgrade.issue.duplicateIdentity',
   current_revision_preserved: 'memory.upgrade.issue.revisionMismatch',
+  source_lineage_preserved: 'memory.upgrade.issue.sourceLineagePreserved',
+  forgotten_source_rejected: 'memory.upgrade.issue.forgottenSourceRejected',
   unmatched_shadow_head: 'memory.upgrade.issue.unmatchedCopy',
   legacy_head_missing: 'memory.upgrade.issue.missingEntry',
   legacy_journal_head_mismatch: 'memory.upgrade.issue.historyMismatch',
@@ -158,6 +160,37 @@ export function MemoryUpgradeStatus() {
         </button>
       </div>
     </div>
+  );
+}
+
+export function MemoryMigrationIssues({ issues }: { readonly issues: readonly MemoryMigrationIssue[] }) {
+  const { t, tp } = useI18n();
+  const [showAll, setShowAll] = useState(false);
+  if (issues.length === 0) return null;
+  const shown = showAll ? issues : issues.slice(0, VISIBLE_ISSUES);
+  return (
+    <section data-memory-migration-issues={issues.length} role="status" aria-label={t('memory.migrationIssues.title')} className="mb-4 space-y-2 border-l-2 border-amber-rule pl-3">
+      <div className="space-y-1">
+        <h2 className="text-[13px] font-medium text-ink">{t('memory.migrationIssues.title')}</h2>
+        <p className="text-[12px] leading-relaxed text-ink-soft">{t('memory.migrationIssues.lead')}</p>
+      </div>
+      <ul className="divide-y divide-hairline border-y border-hairline">
+        {shown.map((issue, index) => (
+          <li key={`${issue.scope}:${issue.key}:${issue.issue}:${index}`} data-memory-migration-issue={issue.issue} className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5 text-[12px]">
+            <span className="min-w-0 text-ink">{ISSUE_TEXT[issue.issue] === undefined ? t('memory.upgrade.issue.other') : t(ISSUE_TEXT[issue.issue]!)}</span>
+            <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint" title={`${issue.scope} ${issue.key}`}>
+              {issue.scope}{issue.key === '' ? '' : ` · ${issue.key}`}
+            </span>
+            {ISSUE_TEXT[issue.issue] === undefined ? <span className="font-mono text-[11px] text-ink-faint">{issue.issue}</span> : null}
+          </li>
+        ))}
+      </ul>
+      {issues.length > VISIBLE_ISSUES ? (
+        <button type="button" data-memory-migration-issues-toggle onClick={() => { setShowAll((value) => !value); }} className="text-[12px] text-ink-soft underline underline-offset-2 hover:text-ink">
+          {showAll ? t('memory.upgrade.issuesFewer') : tp('memory.upgrade.issuesAll', issues.length)}
+        </button>
+      ) : null}
+    </section>
   );
 }
 

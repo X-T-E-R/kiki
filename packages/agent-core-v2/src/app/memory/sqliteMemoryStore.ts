@@ -20,6 +20,7 @@ export interface MemorySourceUnit {
   readonly origin: 'owner' | 'agent' | 'untrusted' | 'system';
   readonly sessionKind?: 'interactive' | 'background';
   readonly aliases?: readonly string[];
+  readonly signatures?: readonly string[];
 }
 export function memoryIngestSourceIds(base: string, unit: MemorySourceUnit): readonly string[] {
   return [...new Set([JSON.stringify([base, unit.id]), ...(unit.aliases ?? []), ...(unit.id.startsWith('source-unit:') ? [unit.id] : [])])];
@@ -111,6 +112,7 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     if (unit !== undefined) {
       if (admitted?.state === 'registered') {
         if (admitted.source.payload !== unit.payload) fail('invalid_input', 'A changed source requires a new source revision identity');
+        if (original.action !== 'create' && !admitted.objectIds.includes(original.id!)) fail('invalid_input', 'This source unit belongs to another Memory lineage');
         return this.retainSource(admitted.objectIds, view);
       }
     }
@@ -156,7 +158,11 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
       superseded_by: archive ? old?.superseded_by : undefined, pending_action: proposal ? input.action as 'update' | 'archive' : input.pending ? old?.pending_action : undefined,
       covered_by: dependency === undefined ? archive ? old?.covered_by : undefined : { id: dependency.id, revision: dependency.expected_revision } };
     const canonicalSource = memorySourceUnitId(base, entry.source, entry.body, entry.basis?.refs);
-    const aliases = [...new Set([...(unit === undefined ? [] : memoryIngestSourceIds(base, unit).filter((value) => value !== sourceId)), ...(canonicalSource === undefined ? [] : [canonicalSource])])];
+    const signatures = [...new Set([...(unit?.signatures ?? []), ...(canonicalSource === undefined ? [] : [canonicalSource])])];
+    for (const signature of signatures) if ((await this.persistence.source(base, signature)).state === 'forgotten') {
+      if (old === undefined || memorySourceUnitId(base, old.source, old.body, old.basis?.refs) !== signature) fail('inactive_target', 'This exact source unit has been forgotten');
+    }
+    const aliases = unit === undefined ? [] : memoryIngestSourceIds(base, unit).filter((value) => value !== sourceId);
     for (const alias of aliases) {
       const known = await this.persistence.source(base, alias);
       if (known.state === 'forgotten') fail('inactive_target', 'This exact source unit has been forgotten');
@@ -183,7 +189,7 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     const result: MemoryPutResult = { entry, operationId, outcome: entry.status === 'pending' ? 'pending' : 'applied', warnings: changed && basis?.kind === 'unknown' ? ['content changed without refreshed attribution'] : undefined };
     original.signal?.throwIfAborted();
     await this.save(original.scope, view, { operationId, request, expectedGeneration: view.generation, edits,
-      sources: [{ id: sourceId, scope: base, objectId: id, payload: unit?.payload ?? JSON.stringify({ writer: input.source, basis }), locator: unit?.locator ?? basis?.refs?.[0], learnedAt: now, aliases }],
+      sources: [{ id: sourceId, scope: base, objectId: id, payload: unit?.payload ?? JSON.stringify({ writer: input.source, basis }), locator: unit?.locator ?? basis?.refs?.[0], learnedAt: now, aliases, signatures }],
       sourceTransfers: [predecessor, accepted, input.pending && (proposal || input.action === 'supersede') ? old : undefined].flatMap((prior) => prior === undefined ? [] : [{ scope: base, from: prior.id, to: id }]),
       adjudications: input.source.writer === 'user' && !input.pending ? edits.filter((edit) => edit.entry !== null).map((edit) => ({ id: `decision:${operationId}:${edit.id}`, scope: base, objectId: edit.id, kind: archive ? 'retirement' as const : 'correction' as const, revision: edit.revision, reason: entry.reason, sourceIds: [sourceId] })) : undefined,
       journal: edits.map((edit) => ({ scope: base, operationId, action: edit.id === predecessor?.id ? 'supersede_previous' : edit.id === accepted?.id ? 'accept_proposal' : input.action, id: edit.id, at: now, writer: input.source.writer, before: objects.get(edit.id)?.entry ? JSON.stringify(objects.get(edit.id)!.entry) : null, beforeRevision: objects.get(edit.id)?.revision ?? null, afterRevision: edit.entry === null ? null : edit.revision })), result });

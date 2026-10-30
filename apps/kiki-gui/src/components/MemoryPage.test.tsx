@@ -2022,6 +2022,55 @@ describe('MemoryPage governed store', () => {
     expect(container.querySelector('[data-memory-governance]')).toBeNull();
   });
 
+  it('shows nonfatal migration warnings while active memory remains readable and editable', async () => {
+    const list = seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue({
+      ...sqlite,
+      migrationIssues: [
+        { scope: 'memory/global', key: 'entries/retained_revision_01.md', issue: 'current_revision_preserved' },
+        { scope: 'memory/global', key: 'entries/forgotten_source_02.md', issue: 'forgotten_source_rejected' },
+        { scope: 'memory/global', key: 'entries/retained_revision_03.md', issue: 'current_revision_preserved' },
+        { scope: 'memory/global', key: 'entries/forgotten_source_04.md', issue: 'forgotten_source_rejected' },
+        { scope: 'memory/global', key: 'entries/retained_revision_05.md', issue: 'current_revision_preserved' },
+        { scope: 'memory/global', key: 'entries/forgotten_source_06.md', issue: 'forgotten_source_rejected' },
+        { scope: 'memory/global', key: 'entries/retained_revision_07.md', issue: 'current_revision_preserved' },
+      ],
+    });
+    const put = vi.spyOn(client, 'putMemory').mockResolvedValue({ entry: current(), operationId: 'op_warning', outcome: 'applied' });
+    const container = await renderPage();
+    const warnings = container.querySelector('[data-memory-migration-issues]')!;
+    expect(warnings.textContent).toContain('Memory source notes');
+    expect(warnings.textContent).toContain('The upgrade finished. Kiki kept stored revisions or skipped forgotten sources; review the details below.');
+    expect(warnings.querySelectorAll('[data-memory-migration-issue]')).toHaveLength(5);
+    expect(warnings.querySelector('[data-memory-migration-issue="current_revision_preserved"]')!.textContent).toContain('memory/global · entries/retained_revision_01.md');
+    expect(warnings.querySelector('[data-memory-migration-issue="forgotten_source_rejected"]')!.textContent).toContain('memory/global · entries/forgotten_source_02.md');
+    expect(warnings.querySelector('[data-memory-migration-issues-toggle]')?.textContent).toBe('Show all 7 issues');
+    await click(container, '[data-memory-migration-issues-toggle]');
+    expect(warnings.querySelectorAll('[data-memory-migration-issue]')).toHaveLength(7);
+    expect(warnings.querySelector('[data-memory-migration-issues-toggle]')?.textContent).toBe('Show fewer');
+    expect(container.querySelector('[data-memory-write-hold]')).toBeNull();
+    expect(list).toHaveBeenCalled();
+    expect(container.querySelector<HTMLButtonElement>('[data-memory-new]')!.disabled).toBe(false);
+    await click(container, '[data-memory-row="m_deploy"]');
+    await click(container, '[data-memory-edit]');
+    await fillDraft(container);
+    await click(container, '[data-memory-save]');
+    expect(put).toHaveBeenCalledWith({ scope: 'global' }, 'm_deploy', expect.objectContaining({ title: 'Keep this draft', body: 'Write only to the selected range.' }));
+  });
+
+  it('shows migration warning heading and lead in Chinese', async () => {
+    localStorage.setItem('kiki.locale', 'zh');
+    seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue({
+      ...sqlite,
+      migrationIssues: [{ scope: 'memory/global', key: 'entries/retained_revision_01.md', issue: 'current_revision_preserved' }],
+    });
+    const container = await renderPage();
+    const warnings = container.querySelector('[data-memory-migration-issues]')!;
+    expect(warnings.textContent).toContain('记忆来源提示');
+    expect(warnings.textContent).toContain('升级已完成。Kiki 保留了已存版本，或跳过了已遗忘的来源；请查看下方详情。');
+  });
+
   it('lists decisions and sources, marks the ruling in force, and opens an earlier revision', async () => {
     seedMemories({ 'global::': [current()] });
     vi.spyOn(client, 'memoryAuthority').mockResolvedValue(sqlite);
@@ -2101,13 +2150,20 @@ describe('MemoryPage governed store', () => {
   it('reads everything but withholds every edit in read-only recovery, and resumes with the exact recovery id and epoch', async () => {
     seedMemories({ 'global::': [current()] }, { ...enabledSettings, approval: 'review' });
     vi.spyOn(client, 'memoryInbox').mockResolvedValue({ items: [fixtureEntry({ id: 'm_pending', status: 'pending', title: 'Proposal', revision: 'mem2:p' })] });
-    const readonly = { ...sqlite, epoch: 4, mode: 'readonly', recoveryId: '2b9a3c3e-0b7c-4d1e-9a51-7f0c1d2e3f40' } as const;
+    const readonly = {
+      ...sqlite,
+      epoch: 4,
+      mode: 'readonly',
+      recoveryId: '2b9a3c3e-0b7c-4d1e-9a51-7f0c1d2e3f40',
+      migrationIssues: [{ scope: 'memory/global', key: 'entries/retained_revision_01.md', issue: 'current_revision_preserved' }],
+    } as const;
     const authority = vi.spyOn(client, 'memoryAuthority').mockResolvedValue(readonly);
     vi.spyOn(client, 'memoryProvenance').mockResolvedValue({ sources: [], adjudications: [], relatedObjectIds: ['m_deploy'] });
     const resume = vi.spyOn(client, 'resumeMemoryEditing').mockResolvedValue({ ...sqlite, epoch: 5 });
     const container = await renderPage();
     expect(container.querySelector('[data-memory-store="readonly"]')).not.toBeNull();
     expect(container.querySelector('[data-memory-write-hold="readonly"]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-migration-issues]')?.textContent).toContain('The imported copy differs from the current file');
     expect(container.querySelector<HTMLButtonElement>('[data-memory-new]')!.disabled).toBe(true);
     await click(container, '[data-memory-row="m_deploy"]');
     expect(container.querySelector('[data-memory-read-body]')?.textContent).toBe('Use 5 workers.');
@@ -2574,9 +2630,11 @@ describe('MemoryPage automatic upgrade', () => {
     { scope: 'memory/personas/lin-lan', key: '', issue: 'legacy_inventory_incomplete' },
     { scope: 'memory/global', key: 'm_a', issue: 'legacy_head_missing' },
     { scope: 'memory/global', key: 'm_b', issue: 'duplicate_legacy_identity' },
+    { scope: 'memory/global', key: 'entries/m_reextracted.md', issue: 'source_lineage_preserved' },
+    { scope: 'memory/global', key: 'entries/m_forgotten.md', issue: 'forgotten_source_rejected' },
     { scope: 'memory/global', key: 'notes.md', issue: 'unreadable_source' },
   ];
-  const failed = { version: 1, epoch: 2, backend: 'legacy', mode: 'migrating', migration: { id: operation, namespaces, index: 2, issues, phase: 'failed', failure: { code: 'memory.source_invalid', message: 'Memory source validation found 6 issue(s); repair the listed sources and retry this operation' } } } as const;
+  const failed = { version: 1, epoch: 2, backend: 'legacy', mode: 'migrating', migration: { id: operation, namespaces, index: 2, issues, phase: 'failed', failure: { code: 'memory.source_invalid', message: 'Memory source validation found 8 issue(s); repair the listed sources and retry this operation' } } } as const;
   const running = { ...failed, migration: { id: operation, namespaces, index: 0, issues: [], phase: 'importing' } } as const;
   const current = () => fixtureEntry({ id: 'm_deploy', title: 'Deployment procedure', revision: 'mem2:rev-current' });
 
@@ -2585,16 +2643,30 @@ describe('MemoryPage automatic upgrade', () => {
     vi.spyOn(client, 'memoryAuthority').mockResolvedValue(failed);
     const container = await renderPage();
     const status = container.querySelector('[data-memory-upgrade="failed"]')!;
-    expect(status.querySelector('[data-memory-upgrade-failure="memory.source_invalid"]')!.textContent).toBe('6 sources need repair. Fix them, then retry the upgrade.');
+    expect(status.querySelector('[data-memory-upgrade-failure="memory.source_invalid"]')!.textContent).toBe('8 sources need repair. Fix them, then retry the upgrade.');
     expect(container.querySelector('[data-memory-store]')!.textContent).toBe('Upgrade stopped');
     expect(status.textContent).not.toContain('Memory source validation found');
     expect(status.querySelectorAll('[data-memory-upgrade-issue]')).toHaveLength(5);
     expect(status.querySelector('[data-memory-upgrade-issue="legacy_journal_head_mismatch"]')!.textContent).toContain('memory/global · m_deploy');
     await click(container, '[data-memory-upgrade-issues-toggle]');
+    const sourceLineage = container.querySelector('[data-memory-upgrade-issue="source_lineage_preserved"]')!;
+    expect(sourceLineage.textContent).toContain('The previous migration skipped this entry. Retry migration to preserve it as a separate entry.');
+    const forgotten = container.querySelector('[data-memory-upgrade-issue="forgotten_source_rejected"]')!;
+    expect(forgotten.textContent).toContain('A forgotten source was not imported again. The original file was retained.');
     const unknown = container.querySelector('[data-memory-upgrade-issue="unreadable_source"]')!;
     expect(unknown.textContent).toContain('This source could not be imported');
     expect(unknown.textContent).toContain('unreadable_source');
     expect(container.querySelector('[data-memory-upgrade-progress="2/2"]')).not.toBeNull();
+  });
+
+  it('shows the compatibility issue copy in Chinese', async () => {
+    localStorage.setItem('kiki.locale', 'zh');
+    seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue(failed);
+    const container = await renderPage();
+    await click(container, '[data-memory-upgrade-issues-toggle]');
+    expect(container.querySelector('[data-memory-upgrade-issue="source_lineage_preserved"]')!.textContent).toContain('旧迁移未导入此条目。重试迁移以保留独立条目。');
+    expect(container.querySelector('[data-memory-upgrade-issue="forgotten_source_rejected"]')!.textContent).toContain('已遗忘的来源未重新导入。原始文件已保留。');
   });
 
   it('retries the same operation, and after a lost answer reads the status instead of retrying blindly', async () => {

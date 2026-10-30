@@ -77,6 +77,7 @@ import { memoryTargetKey, personaMemoryTarget } from './persona/PersonaMemorySco
 import { usePersonaList } from './persona/usePersonas';
 import { MemoryAuthorityContext, useMemoryAuthority, useMemoryAuthorityQuery } from './memory/memoryAuthority';
 import { MemoryForgetDialog, MemoryGovernancePanel, MemoryStoreStatus, MemoryWriteHold } from './memory/MemoryGovernance';
+import { MemoryMigrationIssues } from './memory/MemoryUpgrade';
 import { MemoryExportButton, MemoryImportButton } from './memory/MemoryMarkdown';
 
 export const MEMORY_SETTINGS_QUERY_KEY = ['memory-settings'] as const;
@@ -499,7 +500,7 @@ function MemoryScopeView({
   const { t, tp, locale } = useI18n();
   const { client } = useConnection();
   const queryClient = useQueryClient();
-  const { writable, kind } = useMemoryAuthority();
+  const { state: authorityState, writable, kind } = useMemoryAuthority();
   // The store answers no ordinary read until its automatic upgrade is done.
   const upgrading = kind === 'migrating';
   const [params] = useSearchParams();
@@ -713,6 +714,7 @@ function MemoryScopeView({
           </p>
         ) : null}
         <MemoryWriteHold />
+        <MemoryMigrationIssues issues={authorityState?.mode === 'active' || authorityState?.mode === 'readonly' ? authorityState.migrationIssues ?? [] : []} />
 
         {!upgrading && (readError !== null && readError !== undefined || coverageIncomplete) ? (
           <div

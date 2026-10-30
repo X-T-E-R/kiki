@@ -54,7 +54,7 @@ export interface MemoryCommit {
   readonly request: string;
   readonly expectedGeneration: number;
   readonly edits: readonly MemoryObjectEdit[];
-  readonly sources?: readonly (MemoryEvidenceSource & { readonly aliases?: readonly string[] })[];
+  readonly sources?: readonly (MemoryEvidenceSource & { readonly aliases?: readonly string[]; readonly signatures?: readonly string[] })[];
   readonly sourceTransfers?: readonly { readonly scope: string; readonly from: string; readonly to: string }[];
   readonly adjudications?: readonly MemoryAdjudication[];
   readonly barriers?: readonly MemoryForgetBarrier[];
