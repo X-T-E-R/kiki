@@ -38,7 +38,7 @@ import { useI18n } from '../../i18n';
 import type { PluginMarketplaceEntry } from '../../lib/client';
 import { hasAnyPermission, planContributionGroups, pluginPrerequisites, type PluginPermissionsView, type PluginPrerequisiteView } from '../../lib/pluginCatalog';
 import { useConnection } from '../../state/connection';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
+import { SidePanel } from '../SidePanel';
 import { Icon, Spinner } from '../icons';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { CapabilityIcon } from './CapabilityIcon';
@@ -244,23 +244,51 @@ export function InstallFlow({
   ], [t, request.scope, workspaceName]);
 
   return (
-    <Dialog
+    <SidePanel
       onClose={() => { if (!busy) onClose(); }}
-      ariaLabel={title}
+      dismissible={!busy}
+      title={title}
+      description={request.update?.branch !== undefined
+        ? `${t('cap.update.branch', { branch: request.update.branch.name, version: request.update.branch.commit })}${request.entry !== undefined ? ' · ' : ''}`
+        : updating && request.update?.fromVersion !== undefined && plan?.version !== undefined && request.update.fromVersion !== plan.version
+          ? `v${request.update.fromVersion} → v${plan.version} · `
+          : plan?.version !== undefined ? `v${plan.version} · ` : ''}
       overlayId="capability-install"
-      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm} max-h-[min(92vh,760px)] overflow-y-auto`}
-      overlayData={{ 'data-install-flow': phase.kind }}
+      width="md"
+      stepKey={phase.kind}
+      data={{ 'data-install-flow': phase.kind }}
+      footer={<>
+        {phase.kind === 'done' ? (
+          <button type="button" className={PRIMARY_BUTTON} onClick={onClose}>{t('cap.install.finish')}</button>
+        ) : phase.kind === 'enableFailed' ? (
+          // Nothing is left to install: the only honest footer is the way out.
+          <button type="button" className={PRIMARY_BUTTON} onClick={onClose}>{t('cap.install.finish')}</button>
+        ) : (
+          <>
+            <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
+            {phase.kind === 'failed' && phase.plan === undefined ? (
+              <button type="button" className={PRIMARY_BUTTON} onClick={() => { void runPreview(); }}>{t('common.retry')}</button>
+            ) : (
+              <button
+                type="button"
+                className={PRIMARY_BUTTON}
+                data-install-confirm
+                disabled={plan === undefined || busy}
+                onClick={() => { if (plan !== undefined) void install(plan, choice); }}
+              >
+                {updating
+                  ? busy ? t('cap.update.installing') : needsConsent ? t('cap.update.allow') : t('cap.update.confirm')
+                  : busy ? t('cap.install.installing') : needsConsent ? t('cap.install.allow') : t('cap.install.confirm')}
+              </button>
+            )}
+          </>
+        )}
+      </>}
     >
       <div className="flex items-start gap-3">
         <CapabilityIcon icon={request.icon} size="md" />
         <div className="min-w-0 flex-1">
-          <h2 className="font-display text-[18px] leading-6 text-ink">{title}</h2>
-          <p className="mt-0.5 truncate text-[12px] text-ink-faint">
-            {request.update?.branch !== undefined
-              ? `${t('cap.update.branch', { branch: request.update.branch.name, version: request.update.branch.commit })}${request.entry !== undefined ? ' · ' : ''}`
-              : updating && request.update?.fromVersion !== undefined && plan?.version !== undefined && request.update.fromVersion !== plan.version
-                ? `v${request.update.fromVersion} → v${plan.version} · `
-                : plan?.version !== undefined ? `v${plan.version} · ` : ''}
+          <p className="truncate text-[12px] text-ink-faint">
             {request.entry?.tier === 'official' ? t('cap.tier.official')
               : request.entry?.tier === 'curated' ? t('cap.tier.curated')
                 // An update of something the catalog does not list: its origin is already on the row.
@@ -453,35 +481,7 @@ export function InstallFlow({
         ) : null}
       </div>
 
-      <div className="mt-6 flex flex-wrap items-center justify-end gap-2">
-        {phase.kind === 'done' ? (
-          <button type="button" className={PRIMARY_BUTTON} data-autofocus onClick={onClose}>{t('cap.install.finish')}</button>
-        ) : phase.kind === 'enableFailed' ? (
-          // Nothing is left to install: the only honest footer is the way out.
-          <button type="button" className={PRIMARY_BUTTON} data-autofocus onClick={onClose}>{t('cap.install.finish')}</button>
-        ) : (
-          <>
-            <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
-            {phase.kind === 'failed' && phase.plan === undefined ? (
-              <button type="button" className={PRIMARY_BUTTON} onClick={() => { void runPreview(); }}>{t('common.retry')}</button>
-            ) : (
-              <button
-                type="button"
-                className={PRIMARY_BUTTON}
-                data-autofocus
-                data-install-confirm
-                disabled={plan === undefined || busy}
-                onClick={() => { if (plan !== undefined) void install(plan, choice); }}
-              >
-                {updating
-                  ? busy ? t('cap.update.installing') : needsConsent ? t('cap.update.allow') : t('cap.update.confirm')
-                  : busy ? t('cap.install.installing') : needsConsent ? t('cap.install.allow') : t('cap.install.confirm')}
-              </button>
-            )}
-          </>
-        )}
-      </div>
-    </Dialog>
+    </SidePanel>
   );
 }
 

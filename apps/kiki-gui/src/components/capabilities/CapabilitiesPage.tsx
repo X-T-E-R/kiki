@@ -24,7 +24,7 @@ import type { PluginUsageTarget } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
 import { pickWorkspace } from '../../lib/capabilities';
 import { useConnection } from '../../state/connection';
-import { Dialog } from '../Dialog';
+import { SidePanel } from '../SidePanel';
 import { Icon } from '../icons';
 import { MediaPreviewProvider } from '../mediaPreview';
 import { PAGE_WIDTH, PageHeader } from '../PageChrome';
@@ -426,22 +426,17 @@ function PanelSheet({ pluginId, panelId, sessionId, target, onClose }: {
     : notice === 'session-required' ? 'cap.panel.noSession'
     : undefined;
   return (
-    <Dialog
+    <SidePanel
       onClose={onClose}
-      ariaLabel={label}
+      title={label}
+      description={noticeKey !== undefined ? <span data-plugin-panel-context={notice}>{t(noticeKey)}</span> : undefined}
       overlayId="plugin-panel"
-      overlayClassName="fixed inset-0 z-50 flex items-stretch justify-end bg-shell/20"
-      panelClassName="anim-enter flex h-full w-full max-w-[720px] flex-col border-l border-hairline bg-paper shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)]"
-      overlayData={{ 'data-plugin-panel-sheet': `${pluginId}:${panelId}` }}
+      width="lg"
+      data={{ 'data-plugin-panel-sheet': `${pluginId}:${panelId}` }}
     >
-      <div className="flex min-h-12 items-center gap-2 border-b border-hairline px-4">
-        <p className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">{label}</p>
-        {noticeKey !== undefined ? <span className="text-[12px] text-ink-faint" data-plugin-panel-context={notice}>{t(noticeKey)}</span> : null}
-        <IconButton icon="close" label={t('common.close')} onClick={onClose} />
-      </div>
-      <div className="min-h-0 flex-1">
+      <div className="-mx-5 -my-4 flex min-h-full min-w-0 flex-col">
         <PluginPanelHost pluginId={pluginId} panelId={panelId} label={label} sessionId={sessionId} target={target} />
       </div>
-    </Dialog>
+    </SidePanel>
   );
 }

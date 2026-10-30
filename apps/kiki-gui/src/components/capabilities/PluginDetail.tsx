@@ -370,40 +370,28 @@ export function PluginDetail({
       </div>
 
       {confirmRemove && installed !== undefined ? (
-        <Dialog
-          role="alertdialog"
-          ariaLabel={t('cap.remove.title', { name })}
+        <ConfirmDialog
+          open
           overlayId="confirm-plugin-remove"
-          onClose={() => { setConfirmRemove(false); setDeleteData(false); }}
+          title={t('cap.remove.title', { name })}
+          body={t('cap.remove.body')}
+          consequences={removalConsequences(t, contributions)}
+          confirmLabel={deleteData ? t('cap.remove.confirmWithData') : t('cap.action.remove')}
+          tone="danger"
+          confirmData={{ 'data-plugin-remove-confirm': '' }}
+          onCancel={() => { setConfirmRemove(false); setDeleteData(false); }}
+          onConfirm={() => {
+            const wipe = deleteData;
+            setConfirmRemove(false);
+            setDeleteData(false);
+            void run('remove', () => client.removePlugin(installed.id, { deleteData: wipe })).then(onBack);
+          }}
         >
-          <h3 className="font-display text-[18px] leading-6 text-ink">{t('cap.remove.title', { name })}</h3>
-          <p className="mt-3 text-[13px] leading-5 text-ink-soft">{t('cap.remove.body')}</p>
-          {removalConsequences(t, contributions).length > 0 ? (
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-[13px] leading-5 text-ink-soft">
-              {removalConsequences(t, contributions).map((line) => <li key={line}>{line}</li>)}
-            </ul>
-          ) : null}
           <label className="mt-4 flex min-h-8 items-center gap-2 text-[13px] text-ink-soft">
             <input type="checkbox" checked={deleteData} onChange={(event) => { setDeleteData(event.target.checked); }} className="h-4 w-4 accent-[var(--color-danger)]" data-plugin-remove-data />
             {t('cap.remove.deleteData')}
           </label>
-          <div className="mt-6 flex justify-end gap-2">
-            <button type="button" className={SECONDARY_BUTTON} data-autofocus onClick={() => { setConfirmRemove(false); setDeleteData(false); }}>{t('common.cancel')}</button>
-            <button
-              type="button"
-              className={DANGER_BUTTON}
-              data-plugin-remove-confirm
-              onClick={() => {
-                const wipe = deleteData;
-                setConfirmRemove(false);
-                setDeleteData(false);
-                void run('remove', () => client.removePlugin(installed.id, { deleteData: wipe })).then(onBack);
-              }}
-            >
-              {deleteData ? t('cap.remove.confirmWithData') : t('cap.action.remove')}
-            </button>
-          </div>
-        </Dialog>
+        </ConfirmDialog>
       ) : null}
       {confirmRollback && installed?.rollback !== undefined ? (
         <ConfirmDialog
