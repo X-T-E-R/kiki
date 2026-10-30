@@ -730,12 +730,14 @@ async function readColdTranscriptPage(
   if (anchored && !located.missing && located.page.items.length > 0 && !located.page.hasMore && snapshot.hasMoreOlder === true &&
       typeof transcriptService.coldWindowReachedStart === 'function') {
     if (await transcriptService.coldWindowReachedStart(sessionId, input.agentId)) snapshot = { ...snapshot, hasMoreOlder: false };
-    else if (source === 'cold' && query.refreshTurn === undefined && anchorPending === undefined) {
+    else if (source === 'cold' && query.refreshTurn === undefined && anchorPending === undefined &&
+        boundedTranscriptSnapshot({ ...snapshot, items: located.page.items }, input.agentId, 'tail', 64 * 1024).items.length === located.page.items.length) {
       const next = await extendColdPage(transcriptService, sessionId, input.agentId, project, input.signal, snapshot, false);
       if (next?.progressed) {
         const extended = next.snapshot;
         const page = locateColdPage(extended.items, query);
-        if (!page.missing && page.page.items.length > 0) {
+        if (!page.missing && page.page.items.length > 0 &&
+            located.page.items.every(item => page.page.items.some(candidate => itemKey(candidate) === itemKey(item)))) {
           snapshot = extended;
           located = page;
         } else if (await transcriptService.coldWindowReachedStart(sessionId, input.agentId)) snapshot = { ...snapshot, hasMoreOlder: false };

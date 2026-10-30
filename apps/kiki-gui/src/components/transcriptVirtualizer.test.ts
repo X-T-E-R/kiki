@@ -326,6 +326,18 @@ describe('a shrinking viewport', () => {
     test.cleanup();
   });
 
+  it('does not pull an explicit history jump back to the end before its scroll event arrives', () => {
+    const test = setup(3200);
+    test.scroll.scrollTop = 1200;
+    test.shrink(700);
+    expect(test.toEnd).not.toHaveBeenCalled();
+    expect(test.scroll.scrollTop).toBe(1200);
+    test.shrink(450);
+    expect(test.toEnd).not.toHaveBeenCalled();
+    expect(test.scroll.scrollTop).toBe(1200);
+    test.cleanup();
+  });
+
   it('leaves a reader scrolled into history where they were', () => {
     const test = setup(1200);
     test.shrink(450);

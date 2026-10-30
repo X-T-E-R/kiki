@@ -2097,6 +2097,15 @@ export class TranscriptService {
       };
     };
     const allOld = window.records.length;
+    if (window.snapshot.items.every(item => item.kind === 'turn')) {
+      let oldCount = Math.floor(allOld / 2);
+      for (;;) {
+        const fitted = projectFrom(0, oldCount);
+        if (fitted.bytes <= COLD_WIRE_WINDOW_MAX_BYTES) return fitted;
+        if (oldCount === 0) break;
+        oldCount = Math.floor(oldCount / 2);
+      }
+    }
     let low = 0;
     let high = allOld;
     let fitted = projectFrom(0, 0);

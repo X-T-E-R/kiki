@@ -183,17 +183,25 @@ export function installTranscriptAnchoring(instance: TranscriptVirtualizer): () 
   // which silently moves a reader who was following the end off it.
   const distanceFromEnd = (element: HTMLElement) => element.scrollHeight - element.clientHeight - element.scrollTop;
   let viewportHeight = scroll?.clientHeight ?? 0;
+  let viewportOffset = scroll?.scrollTop ?? 0;
   let pinnedToEnd = scroll !== null && distanceFromEnd(scroll) <= TRANSCRIPT_END_THRESHOLD;
   const viewportObserver = scroll === null || typeof ResizeObserver === 'undefined'
     ? undefined
     : new ResizeObserver(() => {
       if (!scroll.isConnected || scroll.clientHeight === 0 || scroll.clientHeight === viewportHeight) return;
+      if (Math.abs(scroll.scrollTop - viewportOffset) > 0.5) {
+        pinnedToEnd = scroll.scrollHeight - viewportHeight - scroll.scrollTop <= TRANSCRIPT_END_THRESHOLD;
+      }
       viewportHeight = scroll.clientHeight;
       if (pinnedToEnd && distanceFromEnd(scroll) > TRANSCRIPT_END_THRESHOLD) landAtEnd(instance);
+      viewportOffset = scroll.scrollTop;
     });
   if (scroll !== null) viewportObserver?.observe(scroll);
   const onScroll = () => {
-    if (scroll !== null && scroll.clientHeight === viewportHeight) pinnedToEnd = distanceFromEnd(scroll) <= TRANSCRIPT_END_THRESHOLD;
+    if (scroll !== null && scroll.clientHeight === viewportHeight) {
+      pinnedToEnd = distanceFromEnd(scroll) <= TRANSCRIPT_END_THRESHOLD;
+      viewportOffset = scroll.scrollTop;
+    }
     capture();
     // Newly mounted rows settle after the scroll delivery.
     if (frame !== undefined) cancelAnimationFrame(frame);

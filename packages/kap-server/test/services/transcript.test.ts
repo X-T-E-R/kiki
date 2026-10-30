@@ -5430,13 +5430,12 @@ it('does not retain an oversized sole cold window and still advances to older re
 }, 30_000);
 
 
-it('pages a synthetic long wire to its first record exactly once across bounded cold windows', async () => {
+it.each([{ count: 1200, chars: 8192 }, { count: 384, chars: 65536 }])('pages a synthetic long wire of $count turns with $chars characters to its first record exactly once across bounded cold windows', async ({ count, chars }) => {
   const home = await mkdtemp(join(tmpdir(), 'transcript-page-complete-'));
   const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
   await mkdir(dirname(wirePath), { recursive: true });
-  const count = 1200;
   const records = Array.from({ length: count }, (_, turnId) => JSON.stringify({ type: 'turn.prompt', turnId,
-    promptId: `history-${turnId}`, input: [{ type: 'text', text: `Record ${turnId} ${'x'.repeat(8192)}` }], origin: { kind: 'user' }, time: 1000 + turnId }));
+    promptId: `history-${turnId}`, input: [{ type: 'text', text: `Record ${turnId} ${'x'.repeat(chars)}` }], origin: { kind: 'user' }, time: 1000 + turnId }));
   await writeFixtureFile(wirePath, `${records.join('\n')}\n`);
   const service = new TranscriptService({ homeDir: home, core: coldCore() });
   const pages: string[][] = [];
