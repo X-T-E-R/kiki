@@ -209,6 +209,7 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
   const toolSelect = agent.accessor.get(IAgentToolSelectService);
   const requestTools = safeShapeTools(toolSelect, registry);
   const requestToolNames = new Set(requestTools?.map((tool) => tool.name) ?? []);
+  const loadableNames = safeLoadableNames(toolSelect);
   const contributions = agent.accessor.get(IAgentToolActivationService).capabilities();
   const contributionByName = new Map(contributions.map((contribution) => [contribution.name, contribution]));
   const mcp = agent.accessor.get(IAgentMcpService);
@@ -257,7 +258,7 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
         policyAllowed,
         registered,
         currentRequest: requestToolNames.has(contribution.name),
-        loadable: safeIsLoadable(toolSelect, contribution.name),
+        loadable: loadableNames.has(contribution.name),
         usable: availability.state === 'enabled' || availability.state === 'approval-required',
         requestShapeReady: requestTools !== undefined,
       }),
@@ -290,7 +291,7 @@ export async function livePanelCapabilities(agent: IAgentScopeHandle): Promise<P
         policyAllowed,
         registered: true,
         currentRequest: requestToolNames.has(tool.name),
-        loadable: safeIsLoadable(toolSelect, tool.name),
+        loadable: loadableNames.has(tool.name),
         usable: availability.state === 'enabled' || availability.state === 'approval-required',
         requestShapeReady: requestTools !== undefined,
       }),
@@ -365,9 +366,9 @@ function safeShapeTools(
   try { return toolSelect.shapeTools(entries); } catch { return undefined; }
 }
 
-function safeIsLoadable(toolSelect: IAgentToolSelectService | undefined, name: string): boolean {
-  if (toolSelect === undefined) return false;
-  try { return toolSelect.isLoadable(name); } catch { return false; }
+function safeLoadableNames(toolSelect: IAgentToolSelectService | undefined): ReadonlySet<string> {
+  if (toolSelect === undefined) return new Set();
+  try { return toolSelect.loadableNames(); } catch { return new Set(); }
 }
 
 export function panelRequestState(input: {
