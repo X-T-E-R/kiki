@@ -79,7 +79,11 @@ async function threadDisplayWalk(page, link, control, locale = 'en') {
   await nested.waitFor({ timeout: 20_000 });
   const after = (await control({ action: 'session', session_id: parentId })).data.record.updated_at;
   const child = (await control({ action: 'session', session_id: childId })).data.record;
-  if (before !== after || child.updated_at <= before || JSON.stringify(await topLevel()) !== JSON.stringify([recentId, parentId])) {
+  // The child's own activity advances its own clock and lifts the whole
+  // family to the front (the family follows the newest activity); the parent's
+  // own clock is untouched and the child stays nested under it.
+  const familyFirst = JSON.stringify(await topLevel()) === JSON.stringify([parentId, recentId]);
+  if (before !== after || child.updated_at <= before || !familyFirst || await nested.count() !== 1) {
     throw new Error('child activity moved the parent or did not advance its own time');
   }
   shots.push(await shot(page, `${prefix}-after-activity`));
@@ -213,11 +217,14 @@ const SCENARIOS = [
       await page.waitForSelector('[data-settings-page-title]', { timeout: 20_000 });
       const shots = [await shot(page, 'settings-general')];
       await page.goto(link('/settings/ai'), { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('[data-model-row]', { timeout: 20_000 });
-      shots.push(await shot(page, 'settings-models'));
-      await page.locator('[data-ai-tab="providers"]').click();
-      await page.waitForSelector('[data-connection-list] [data-connection-row]', { timeout: 15_000 });
+      await page.waitForSelector('[data-connection-list] [data-connection-row]', { timeout: 20_000 });
       shots.push(await shot(page, 'settings-providers'));
+      // Models are edited inside their connection: a stored model row only
+      // exists once its connection's editor is open.
+      await page.locator('[data-connection-row="fixture"] summary').click();
+      await page.waitForSelector('[data-model-row]', { state: 'attached', timeout: 15_000 });
+      await page.locator('[data-model-row]').first().scrollIntoViewIfNeeded();
+      shots.push(await shot(page, 'settings-models'));
       return shots;
     },
   },
@@ -298,7 +305,7 @@ const SCENARIOS = [
       }
       shots.push(await shot(page, 'model-switch-queue'));
 
-      await page.locator('#composer-model-select').click();
+      await page.locator('#composer-execution-select').click();
       await page.locator('[role="option"][data-option-value="fixture/kiki-lite"]').click();
       const dialog = page.locator('[data-model-switch-mode="direct"]');
       await dialog.waitFor({ timeout: 15_000 });
@@ -330,7 +337,7 @@ const SCENARIOS = [
       });
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.locator('[data-model-switch-notice]').first().waitFor({ timeout: 20_000 });
-      await page.locator('#composer-model-select').click();
+      await page.locator('#composer-execution-select').click();
       await page.locator('[role="option"][data-option-value="fixture/kiki-lite"]').click();
       await page.locator('[data-model-switch-mode="direct"]').waitFor({ timeout: 15_000 });
       shots.push(await shot(page, 'model-switch-dialog-dark'));
@@ -401,6 +408,9 @@ const SCENARIOS = [
       await openSession(page, link, 'session_fixture_subagents');
       await page.fill('textarea', 'Delegate the fixture work.');
       await page.press('textarea', 'Control+Enter');
+      // Simultaneous subagents read as one "Worked · 2 subagents" group; the
+      // per-agent cards exist once the reader opens it.
+      await page.locator('[data-activity-toggle]').first().click();
       await page.locator('[data-subagent-id="agent-research"]').first().waitFor({ timeout: 20_000 });
       await page.locator('[data-subagent-id="agent-review"]').first().waitFor({ timeout: 20_000 });
       return [await shot(page, 'subagents')];
@@ -572,7 +582,13 @@ const SCENARIOS = [
         const clickedTurnId = await button.getAttribute('data-usage-trace-turn');
         const before = page.url();
         await button.click();
-        await page.waitForTimeout(1500);
+        // The locate drives the timeline's own older-history paging and
+        // scroll; the wait only observes the exact turn row landing.
+        await page.waitForFunction(
+          (wanted) => [...document.querySelectorAll('[data-turn-id]')].some((row) => row.getAttribute('data-turn-id') === `t${wanted}`),
+          clickedTurnId,
+          { timeout: 20_000 },
+        );
         const url = new URL(page.url());
         located = await page.evaluate((wanted) => {
           const rows = [...document.querySelectorAll('[data-turn-id]')];
@@ -639,7 +655,7 @@ const SCENARIOS = [
     locale: 'zh',
     tags: ['smoke', 'capabilities', 'i18n'],
     async run(page, link) {
-      await page.route('**/api/workspaces', (route) => route.fulfill({
+      await page.route('**/api/workspaces**', (route) => route.fulfill({
         json: { code: 0, msg: 'ok', data: { items: [] }, request_id: 'fixture-cap-empty' },
       }));
       await page.goto(link('/capabilities?tab=skills'), { waitUntil: 'domcontentloaded' });
@@ -664,7 +680,7 @@ const SCENARIOS = [
         id: `ws_${name.toLowerCase()}`, name, root: `C:/projects/${name}`,
         created_at: '2026-01-01T00:00:00Z', last_opened_at: '2026-01-01T00:00:00Z', session_count: 1, pinned: false, isGit: false,
       }));
-      await page.route('**/api/workspaces', (route) => route.fulfill({
+      await page.route('**/api/workspaces**', (route) => route.fulfill({
         json: { code: 0, msg: 'ok', data: { items }, request_id: 'fixture-cap-workspaces' },
       }));
       await page.route('**/api/workspaces/*/skills', (route) => {
@@ -749,7 +765,6 @@ async function walkRowActions(page, link, control, localeSuffix) {
   await openSession(page, link, 'session_fixture_subagents');
   await page.fill('textarea', 'Delegate the fixture work.');
   await page.press('textarea', 'Control+Enter');
-  await page.locator('[data-subagent-id="agent-research"]').first().waitFor({ timeout: 20_000 });
   await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 20_000 });
   // The fixture flow waits for its agents, so no late receipt ever lands:
   // inject one — a subagent whose completion arrives after its dispatching
