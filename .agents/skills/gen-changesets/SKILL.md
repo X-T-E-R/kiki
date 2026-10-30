@@ -56,7 +56,7 @@ Wording:
 1. Run `git status` / `git diff --name-only` to see which packages actually changed.
 2. Apply section 1; if no changeset is needed, stop.
 3. Pick the package and the bump, and write the one sentence.
-4. **Show the changeset text to whoever requested the work and get their confirmation before committing.**
+4. Write the sentence yourself and commit it with the change; the requester reviews it when integrating the work. Only a `major` bump needs explicit confirmation before committing (section 3).
 5. Do not guess at changes you do not understand: finish the parts that are clear, then list what is unclear and ask whether you may dig into the code.
 
 Before a release, review the accumulated `.changeset/` entries and delete the non-user-facing ones — the release PR regenerates from `.changeset/` on main, so deleting a file removes its changelog entry without touching shipped code.
