@@ -55,7 +55,7 @@ import { SettingsSelect } from '../SettingsPrimitives';
 import { SOURCE_NAME_KEYS, useBrowserAllowance } from './browserAllowance';
 import { WebBridgeReadiness } from './WebBridgeReadiness';
 
-const READINESS_TONE: Readonly<Record<PresetReadiness, { text: I18nKey; dot: string }>> = {
+export const READINESS_TONE: Readonly<Record<PresetReadiness, { text: I18nKey; dot: string }>> = {
   preparing: { text: 'st.browser.route.preparing', dot: 'status-dot-busy bg-ink-soft' },
   'needs-action': { text: 'st.browser.route.needsAction', dot: 'bg-hairline-strong' },
   ready: { text: 'st.browser.route.ready', dot: 'bg-selected-ink' },
@@ -158,8 +158,10 @@ export function routeIsActionable(preset: BrowserSetupStatus): boolean {
 }
 
 /** One route. The name is the server's `displayName`; the rest is its own answer. */
-function BrowserRoute({ preset, open, onOpenChange, children }: {
+export function BrowserRoute({ preset, open, onOpenChange, bare = false, children }: {
   readonly preset: BrowserSetupStatus;
+  /** The add panel's step: the route's body alone, no row, no source switch. */
+  readonly bare?: boolean;
   /** The list's one open slot: the first actionable route is its initial
    *  value, a click moves it. Opening one closes the previous (#13). */
   readonly open: boolean;
@@ -431,47 +433,27 @@ function BrowserRoute({ preset, open, onOpenChange, children }: {
     }
   };
 
-  return (
-    <li>
-      <RowFrame
-        data={{
-          'data-browser-route': preset.preset,
-          'data-browser-route-state': sourceEnabled ? readiness : 'disabled',
-          'data-browser-source-enabled': sourceEnabled ? 'true' : 'false',
-        }}
-        open={open}
-        onToggle={() => { onOpenChange(!open); }}
-        bodyId={`browser-route-body-${preset.preset}`}
-        expandLabel={t('st.browser.menu.openRow', { name })}
-        name={name}
-        marks={(
-          <span className="flex shrink-0 items-center gap-1.5">
-            {owned.length === 0 ? null : (
-              <span className="text-[12px] tabular-nums text-ink-faint" data-browser-allowed-count={preset.preset}>
-                {t('st.browser.source.allowedOf', { allowed: sourceEnabled ? ownedAllowed : 0, total: owned.length })}
-              </span>
-            )}
-            <span className="inline-flex items-center gap-1.5 text-[12px] text-ink-soft" data-browser-route-readiness={readiness}>
-              <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${sourceEnabled ? tone.dot : 'bg-hairline-strong'}`} />
-              {sourceEnabled ? t(tone.text) : t('st.browser.source.disabled')}
-            </span>
-          </span>
-        )}
-        subtitle={sourceEnabled ? undefined : t('st.browser.source.disabledHint')}
-        control={(
-          <Toggle
-            layout="bare"
-            label={t('st.browser.source.enable', { name })}
-            checked={sourceEnabled}
-            disabled={busy !== null}
-            dataAttr="data-browser-source-switch"
-            dataAttrValue={preset.preset}
-            onChange={(next) => { void handleToggleSource(next); }}
-          />
-        )}
-      >
-        <span data-browser-route-select className="sr-only">{name}</span>
-
+  const confirmDialog = (
+      <ConfirmDialog open={confirming} overlayId={`confirm-browser-prepare-${preset.preset}`}
+        title={t('st.browser.route.confirmTitle', { name })}
+        body={t('st.browser.route.confirmBody')}
+        consequences={[
+          t('st.browser.route.consequenceHost', { host: preset.executionHost }),
+          ...(preset.skill === undefined ? [] : [t('st.browser.route.consequencePlugin', { name: preset.skill })]),
+          // The consent covers switching browser control on, so it is listed as
+          // a consequence rather than left to a sentence the reader has to
+          // notice. The server only reports a `feature` step while the flag is
+          // still off, so its absence is the signal that there is nothing to
+          // enable — and the dialog never opens with no button behind it.
+          ...(preset.steps.some((item) => item.id === 'feature') ? [t('st.browser.route.consequenceFeature')] : []),
+          ...(preset.connectionId === undefined ? [] : [t('st.browser.route.consequenceConnection', { name: preset.connectionId })]),
+        ]}
+        confirmLabel={t('st.browser.route.prepare')}
+        onCancel={() => { setConfirming(false); }}
+        onConfirm={() => { void act('prepare'); }} />
+  );
+  const body = (
+    <>
       {!sourceEnabled ? (
         <>
           <p className="mt-1 text-[12px] text-ink-faint" data-browser-source-disabled-hint={preset.preset}>
@@ -782,24 +764,74 @@ function BrowserRoute({ preset, open, onOpenChange, children }: {
           ) : null}
         </>
       )}
+    </>
+  );
 
-      <ConfirmDialog open={confirming} overlayId={`confirm-browser-prepare-${preset.preset}`}
-        title={t('st.browser.route.confirmTitle', { name })}
-        body={t('st.browser.route.confirmBody')}
-        consequences={[
-          t('st.browser.route.consequenceHost', { host: preset.executionHost }),
-          ...(preset.skill === undefined ? [] : [t('st.browser.route.consequencePlugin', { name: preset.skill })]),
-          // The consent covers switching browser control on, so it is listed as
-          // a consequence rather than left to a sentence the reader has to
-          // notice. The server only reports a `feature` step while the flag is
-          // still off, so its absence is the signal that there is nothing to
-          // enable — and the dialog never opens with no button behind it.
-          ...(preset.steps.some((item) => item.id === 'feature') ? [t('st.browser.route.consequenceFeature')] : []),
-          ...(preset.connectionId === undefined ? [] : [t('st.browser.route.consequenceConnection', { name: preset.connectionId })]),
-        ]}
-        confirmLabel={t('st.browser.route.prepare')}
-        onCancel={() => { setConfirming(false); }}
-        onConfirm={() => { void act('prepare'); }} />
+  if (bare) {
+    return (
+      <div
+        data-browser-route={preset.preset}
+        data-browser-route-state={sourceEnabled ? readiness : 'disabled'}
+        data-browser-source-enabled={sourceEnabled ? 'true' : 'false'}
+        className="min-w-0"
+      >
+        {sourceEnabled ? body : (
+          <div className="space-y-2.5">
+            <p className="text-[12.5px] text-ink-soft" data-browser-source-disabled-hint={preset.preset}>{t('st.browser.source.disabledHint')}</p>
+            <button type="button" className={SECONDARY_BUTTON} data-browser-source-enable={preset.preset}
+              disabled={busy !== null} onClick={() => { void handleToggleSource(true); }}>
+              {t('st.browser.source.enable', { name })}
+            </button>
+            <FeedbackLine feedback={feedback} />
+          </div>
+        )}
+        {confirmDialog}
+      </div>
+    );
+  }
+
+  return (
+    <li>
+      <RowFrame
+        data={{
+          'data-browser-route': preset.preset,
+          'data-browser-route-state': sourceEnabled ? readiness : 'disabled',
+          'data-browser-source-enabled': sourceEnabled ? 'true' : 'false',
+        }}
+        open={open}
+        onToggle={() => { onOpenChange(!open); }}
+        bodyId={`browser-route-body-${preset.preset}`}
+        expandLabel={t('st.browser.menu.openRow', { name })}
+        name={name}
+        marks={(
+          <span className="flex shrink-0 items-center gap-1.5">
+            {owned.length === 0 ? null : (
+              <span className="text-[12px] tabular-nums text-ink-faint" data-browser-allowed-count={preset.preset}>
+                {t('st.browser.source.allowedOf', { allowed: sourceEnabled ? ownedAllowed : 0, total: owned.length })}
+              </span>
+            )}
+            <span className="inline-flex items-center gap-1.5 text-[12px] text-ink-soft" data-browser-route-readiness={readiness}>
+              <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${sourceEnabled ? tone.dot : 'bg-hairline-strong'}`} />
+              {sourceEnabled ? t(tone.text) : t('st.browser.source.disabled')}
+            </span>
+          </span>
+        )}
+        subtitle={sourceEnabled ? undefined : t('st.browser.source.disabledHint')}
+        control={(
+          <Toggle
+            layout="bare"
+            label={t('st.browser.source.enable', { name })}
+            checked={sourceEnabled}
+            disabled={busy !== null}
+            dataAttr="data-browser-source-switch"
+            dataAttrValue={preset.preset}
+            onChange={(next) => { void handleToggleSource(next); }}
+          />
+        )}
+      >
+        <span data-browser-route-select className="sr-only">{name}</span>
+        {body}
+        {confirmDialog}
       </RowFrame>
     </li>
   );
@@ -852,13 +884,7 @@ export function BrowserSetupWizard() {
 
   return (
     <div className="space-y-3" data-browser-setup>
-      <Hint>
-        {t('st.browser.setup.hostGuide')}
-        {' · '}
-        {sshLabel === null
-          ? t('st.browser.setup.host')
-          : t('st.browser.setup.hostSsh', { label: sshLabel })}
-      </Hint>
+      {sshLabel === null ? null : <Hint>{t('st.browser.setup.hostSsh', { label: sshLabel })}</Hint>}
 
       {query.isPending ? (
         <p role="status" className="text-[12px] text-ink-faint">{t('st.browser.setup.detecting')}</p>

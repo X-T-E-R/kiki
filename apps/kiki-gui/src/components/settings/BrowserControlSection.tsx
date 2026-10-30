@@ -148,6 +148,7 @@ function BrowserSection() {
   const save = useInstantSave();
   const defaultSave = useInstantSave();
   const allowance = useBrowserAllowance();
+  const [adding, setAdding] = useState(false);
 
   const configQuery = useQuery({
     queryKey: ['config', scopeId],
@@ -225,8 +226,8 @@ function BrowserSection() {
         </CapabilityHeader>
       </SectionCard>
 
-      <SectionCard id="st-card-browser-connections" title={t('st.browser.connectionsTitle')} actions={<AddBrowserAction />}>
-        <BrowserConnectionCard />
+      <SectionCard id="st-card-browser-connections" title={t('st.browser.connectionsTitle')} actions={<AddBrowserAction onOpen={() => { setAdding(true); }} />}>
+        <BrowserConnectionCard adding={adding} onAddingChange={setAdding} />
         <AdvancedDetails summary={t('st.browser.advanced')} data-browser-advanced-fold>
           <div className="space-y-4 pt-1">
             <BrowserToolPolicy enabled={isEnabled} />

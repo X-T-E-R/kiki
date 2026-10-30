@@ -27,7 +27,7 @@
  * pressing check / connect does that.
  */
 
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -48,7 +48,7 @@ import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../../co
 import { useDirtyGuard } from '../../dirtyGuard';
 import { Icon } from '../../icons';
 import { Tag } from '../../capabilities/primitives';
-import { INPUT, SECONDARY_BUTTON } from '../../ui';
+import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { AdvancedDetails } from '../fields';
 import { RowFrame } from '../RowFrame';
 import { SpaceRowMenu, type SpaceMenuItem } from '../spaces/SpaceRowMenu';
@@ -56,8 +56,9 @@ import { SecretField } from '../SecretField';
 import { SettingsCardMountContext, SettingsFlashContext } from '../SectionCard';
 import { FieldIssue, FORM_LABEL, SettingsDraftFooter, SettingsSelect } from '../SettingsPrimitives';
 import { useSavedTick } from '../useSavedTick';
-import { BrowserRuntimeDetails, BrowserStateMark, OtherBrowserEcosystems } from './BrowserBits';
+import { BrowserRuntimeDetails, BrowserStateMark } from './BrowserBits';
 import { BrowserSetupWizard } from './BrowserSetupWizard';
+import { AddBrowserPanel } from './AddBrowserPanel';
 import { SOURCE_NAME_KEYS, useBrowserAllowance } from './browserAllowance';
 import {
   browserConnectionInput, draftIssues, draftOf, hasIssues, isDirtyDraft, isNewDraft, newBrowserDraft, parseBrowserInput,
@@ -67,19 +68,14 @@ import {
 type RuntimeAction = 'check' | 'connect' | 'disconnect';
 
 /**
- * The section heading row owns the visible 添加浏览器 button; the card renders
- * a hidden one that opens the same view, so the add flow stays one
- * implementation. The heading's click reaches the card through this context.
+ * The section heading's 添加浏览器 button. The heading renders outside the
+ * card, so the page holds the panel's open state and hands it to both.
  */
-const BrowserAddContext = createContext<(() => void) | null>(null);
-
-/** The 添加浏览器 button the connections heading row shows. */
-export function AddBrowserAction() {
+export function AddBrowserAction({ onOpen }: { readonly onOpen: () => void }) {
   const { t } = useI18n();
-  const openAdd = useContext(BrowserAddContext);
   return (
-    <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-browser-add-heading
-      onClick={() => { openAdd?.(); }}>
+    <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-browser-add data-browser-add-heading
+      onClick={onOpen}>
       <Icon name="plus" size={12} />
       {t('st.browser.add')}
     </button>
@@ -359,7 +355,11 @@ export interface BrowserCardHandle {
   readonly renderDetail: () => React.ReactNode;
 }
 
-export function BrowserConnectionCard() {
+export function BrowserConnectionCard({ adding, onAddingChange }: {
+  /** The add panel is open; the page's heading button sets this. */
+  readonly adding: boolean;
+  readonly onAddingChange: (open: boolean) => void;
+}) {
   const { client, scopeId } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
@@ -401,8 +401,6 @@ export function BrowserConnectionCard() {
     rowWrite(() => allowance.writeAllowed(row.id, next, { fallbackBrowserId: row.browserId }));
 
   const [draft, setDraft] = useState<BrowserDraft | null>(null);
-  /** The add view: the sources Kiki can prepare, then the manual form. */
-  const [adding, setAdding] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<RuntimeAction | null>(null);
@@ -436,7 +434,6 @@ export function BrowserConnectionCard() {
   /** Replace the open draft without asking: the caller already has an answer. */
   const apply = (next: BrowserDraft | null) => {
     setDraft(next);
-    setAdding(false);
     setFeedback(null);
     setFeedbackAt('form');
     setFlagOff(false);
@@ -496,6 +493,9 @@ export function BrowserConnectionCard() {
       setDraft(draftOf(saved.connection));
       setOutcome(null);
       pingSaved();
+      // A new connection now has its own row: the panel that made it closes
+      // and the row stays open where the person can see it.
+      if (isNewDraft(draft)) onAddingChange(false);
     } catch (error) {
       reportFailure(error);
     } finally {
@@ -570,13 +570,6 @@ export function BrowserConnectionCard() {
     if (draft === null) return null;
     return (
       <div className="min-w-0 space-y-4" data-browser-detail={draft.original?.id ?? 'new'}>
-        {isNewDraft(draft) ? (
-          <>
-            <h3 className="text-[15px] font-medium text-ink" data-browser-detail-name>{t('st.browser.newTitle')}</h3>
-            <Hint>{t('st.browser.createHint')}</Hint>
-          </>
-        ) : null}
-
         {isNewDraft(draft) || selectedStatus === undefined ? null : (
           <div className="space-y-2" data-browser-runtime>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -809,73 +802,47 @@ export function BrowserConnectionCard() {
 
   const empty = query.isSuccess && rows.length === 0;
 
-  const addView = (
-    <div className="min-w-0 space-y-4" data-browser-add-view>
-      <button type="button" data-browser-back
-        className="inline-flex items-center gap-1 rounded text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:underline"
-        onClick={() => { setAdding(false); }}>
-        <Icon name="arrowLeft" size={12} />{t('st.browser.connectionsTitle')}
-      </button>
-      <h3 className="text-[15px] font-medium text-ink">{t('st.browser.add')}</h3>
-      <BrowserSetupWizard />
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pt-3.5" data-browser-add-manual-row>
-        <div className="min-w-0">
-          <p className="text-[14px] font-medium text-ink">{t('st.browser.addManual')}</p>
-          <p className="mt-0.5 text-[12.5px] text-ink-soft">{t('st.browser.addManualHint')}</p>
-        </div>
-        <button type="button" className={SECONDARY_BUTTON} data-browser-add-manual
-          onClick={() => { open(newBrowserDraft()); }}>
-          {t('st.browser.addManual')}
-        </button>
-      </div>
-      <div className="space-y-1.5">
-        <OtherBrowserEcosystems />
-        <Hint>{t('st.browser.modelNotice')}</Hint>
-      </div>
-    </div>
-  );
-
-  const listView = (
-    <div className="min-w-0 space-y-3">
-      {/* The visible add button is the heading row's; this one opens the same
-          view for deep links and tests, hidden from the page. */}
-      <button type="button" className="hidden" data-browser-add aria-hidden="true" tabIndex={-1}
-        onClick={() => { setAdding(true); }} />
-      <div aria-label={t('st.browser.connectionsTitle')} className="min-w-0">
-        {query.isLoading ? <p className="text-[13px] text-ink-faint" role="status">{t('st.browser.loading')}</p> : null}
-        {query.isError ? <InlineError error={query.error} /> : null}
-        {empty ? (
-          <div data-browser-empty className="space-y-1.5 py-2">
-            <p className="text-[13px] text-ink">{t('st.browser.emptyTitle')}</p>
-            <Hint>{t('st.browser.emptyBody')}</Hint>
-          </div>
-        ) : null}
-        {rows.length > 0 ? (
-          <div className="divide-y divide-hairline/70" data-browser-list>
-            {rows.map((row) => (
-              <BrowserRow key={row.id} row={row} card={card} />
-            ))}
-          </div>
-        ) : null}
-        <FeedbackLine feedback={rowFeedback} />
-      </div>
-      <FeedbackLine feedback={feedback} />
-      <SourcesFold defaultOpen={empty} />
-    </div>
-  );
+  const newDraft = draft !== null && isNewDraft(draft);
+  const closeAdd = () => {
+    const finish = () => { if (newDraft) apply(null); onAddingChange(false); };
+    if (newDraft && dirty && guard?.confirmDiscard !== undefined) { guard.confirmDiscard(editorId, finish); return; }
+    finish();
+  };
 
   return (
-    <BrowserAddContext.Provider value={() => { setAdding(true); }}>
     <div className="min-w-0" data-browser-connections data-browser-view={adding ? 'add' : 'list'}>
-      {adding ? addView : (
-        <>
-          {/* A connection being created has no row yet: its editor renders in
-              place under the list header, the way an existing one renders
-              under its own row. */}
-          {draft !== null && selectedId === undefined ? renderDetail() : null}
-          {listView}
-        </>
-      )}
+      <div className="min-w-0 space-y-3">
+        <div aria-label={t('st.browser.connectionsTitle')} className="min-w-0">
+          {query.isLoading ? <p className="text-[13px] text-ink-faint" role="status">{t('st.browser.loading')}</p> : null}
+          {query.isError ? <InlineError error={query.error} /> : null}
+          {empty ? (
+            <div data-browser-empty className="space-y-2.5 py-2">
+              <p className="text-[13px] text-ink">{t('st.browser.emptyTitle')}</p>
+              <Hint>{t('st.browser.emptyBody')}</Hint>
+              <button type="button" className={PRIMARY_BUTTON} data-browser-empty-add onClick={() => { onAddingChange(true); }}>
+                {t('st.browser.add')}
+              </button>
+            </div>
+          ) : null}
+          {rows.length > 0 ? (
+            <div className="divide-y divide-hairline/70" data-browser-list>
+              {rows.map((row) => (
+                <BrowserRow key={row.id} row={row} card={card} />
+              ))}
+            </div>
+          ) : null}
+          <FeedbackLine feedback={rowFeedback} />
+        </div>
+        {newDraft ? null : <FeedbackLine feedback={feedback} />}
+        <SourcesFold />
+      </div>
+      {adding ? (
+        <AddBrowserPanel
+          onClose={closeAdd}
+          onManual={() => { if (!newDraft) apply(newBrowserDraft()); }}
+          manualForm={newDraft ? renderDetail() : null}
+        />
+      ) : null}
       {deleteTarget !== null ? (
         <ConfirmDialog open overlayId="confirm-browser-delete" busy={deleting}
           title={t('st.browser.deleteTitle', { name: deleteTarget.name })}
@@ -890,7 +857,6 @@ export function BrowserConnectionCard() {
           onConfirm={() => { void remove(); }} />
       ) : null}
     </div>
-    </BrowserAddContext.Provider>
   );
 }
 
@@ -900,16 +866,15 @@ export function BrowserConnectionCard() {
  * that opens its setup inline. A search hit on the old setup card opens the
  * fold; a hit on the bridge opens the Kimi row.
  */
-function SourcesFold({ defaultOpen }: { readonly defaultOpen: boolean }) {
+function SourcesFold() {
   const { t } = useI18n();
   const flashId = useContext(SettingsFlashContext);
   const onCardMount = useContext(SettingsCardMountContext);
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, setOpen] = useState(false);
   useEffect(() => {
     onCardMount?.('st-card-browser-setup');
     onCardMount?.('st-card-webbridge');
   }, [onCardMount]);
-  useEffect(() => { if (defaultOpen) setOpen(true); }, [defaultOpen]);
   useEffect(() => {
     if (flashId === 'st-card-browser-setup' || flashId === 'st-card-webbridge') setOpen(true);
   }, [flashId]);
