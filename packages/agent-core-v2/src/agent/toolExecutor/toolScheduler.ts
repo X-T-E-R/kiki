@@ -2,6 +2,9 @@ import { ToolAccesses } from '#/tool/toolContract';
 
 export interface ToolCallTask<Result> {
   readonly accesses: ToolAccesses;
+  readonly toolCallId?: string;
+  readonly toolName?: string;
+  readonly onBlocked?: (blockers: readonly ToolCallTask<Result>[]) => void;
   readonly start: () => Promise<{ readonly result: Promise<Result> }>;
 }
 
@@ -23,7 +26,9 @@ export class ToolScheduler<Result> {
     void result.catch(() => undefined);
 
     const scheduledTask: ScheduledToolCallTask<Result> = { ...task, result };
-    if (this.isBlocked(task, this.queuedTasks)) {
+    const blockers = this.blockers(task, this.queuedTasks);
+    if (blockers.length > 0) {
+      task.onBlocked?.(blockers);
       this.queuedTasks.push(scheduledTask);
     } else {
       this.start(scheduledTask);
@@ -32,20 +37,11 @@ export class ToolScheduler<Result> {
     return result;
   }
 
-  private isBlocked(
+  private blockers(
     task: ToolCallTask<Result>,
     queuedBefore: readonly ToolCallTask<Result>[],
-  ): boolean {
-    return (
-      this.conflictsWithAny(task, this.activeTasks) || this.conflictsWithAny(task, queuedBefore)
-    );
-  }
-
-  private conflictsWithAny(
-    task: ToolCallTask<Result>,
-    candidates: readonly ToolCallTask<Result>[],
-  ): boolean {
-    return candidates.some((candidate) =>
+  ): readonly ToolCallTask<Result>[] {
+    return [...this.activeTasks, ...queuedBefore].filter((candidate) =>
       ToolAccesses.conflict(task.accesses, candidate.accesses),
     );
   }
@@ -78,7 +74,9 @@ export class ToolScheduler<Result> {
   private startQueuedTasks(): void {
     const stillQueued: Array<ScheduledToolCallTask<Result>> = [];
     for (const task of this.queuedTasks) {
-      if (this.isBlocked(task, stillQueued)) {
+      const blockers = this.blockers(task, stillQueued);
+      if (blockers.length > 0) {
+        task.onBlocked?.(blockers);
         stillQueued.push(task);
       } else {
         this.start(task);

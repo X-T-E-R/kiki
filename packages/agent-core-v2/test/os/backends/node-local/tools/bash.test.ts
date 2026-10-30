@@ -787,6 +787,20 @@ function bashTool(
 }
 
 describe('BashTool', () => {
+  it.each(['sleep 2; cat file.txt', 'ls -al | head -20', 'printf "%s" "literal"', "echo '$(literal)'", 'pwd && whoami'])('allows a proven read-only shell command to share readers: %s', async (command) => {
+    const { runner } = createTestRunner(processWithOutput());
+    const execution = await bashTool(runner).resolveExecution({ command });
+    if (execution.isError) throw new Error('Expected runnable Bash');
+    expect(execution.accesses).toEqual([{ kind: 'all', operation: 'read' }]);
+  });
+
+  it.each(['node tool.mjs status', 'cat file > output', 'echo $(touch output)', 'echo "$(touch output)"', 'ls; rm file', 'find . -delete', 'sed -i s/a/b/ file', 'git status', 'ls <(touch output)', 'echo ${x:=changed}', 'alias cat=touch; cat file'])('keeps uncertain or mutating commands exclusive: %s', async (command) => {
+    const { runner } = createTestRunner(processWithOutput());
+    const execution = await bashTool(runner).resolveExecution({ command });
+    if (execution.isError) throw new Error('Expected runnable Bash');
+    expect(execution.accesses).toEqual([{ kind: 'all' }]);
+  });
+
   it('resolves effective cwd and caches the complete shell action independently of persistent rules', async () => {
     const { runner } = createTestRunner(processWithOutput());
     const tool = bashTool(runner, posixEnv, createTestCtx('/workspace'));

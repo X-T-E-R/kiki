@@ -118,6 +118,32 @@ afterEach(async () => {
 });
 
 describe('AgentToolExecutorService', () => {
+  it('names the unknown shell call that blocks a later reader', async () => {
+    let clock = 0;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const warn = vi.spyOn(ix.get(ILogService), 'warn');
+    const entered = deferred();
+    const release = deferred();
+    registry.register(new TestTool('Bash', { execute: async () => { entered.resolve(); await release.promise; return { output: 'done' }; } }));
+    registry.register(new TestTool('Read', { accesses: ToolAccesses.readFile('/repo/file.txt') }));
+    try {
+      const pending = execute([toolCall('shell-call', 'Bash', {}), toolCall('read-call', 'Read', {})]);
+      await entered.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      clock = 33000;
+      release.resolve();
+      await pending;
+      expect(warn).toHaveBeenCalledWith('slow tool phase', {
+        tool_name: 'Read', tool_call_id: 'read-call', phase: 'schedule', duration_ms: 33000,
+        blocked_by: [{ tool_call_id: 'shell-call', tool_name: 'Bash' }],
+      });
+    } finally {
+      release.resolve();
+      now.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it('separates slow resolve, admission, execution and finalization without logging arguments or outputs', async () => {
     let clock = 0;
     const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);

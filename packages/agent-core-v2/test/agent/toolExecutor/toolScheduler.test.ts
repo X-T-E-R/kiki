@@ -4,6 +4,26 @@ import { ToolAccesses } from '#/tool/toolContract';
 import { ToolScheduler, type ToolCallTask } from '#/agent/toolExecutor/toolScheduler';
 
 describe('ToolScheduler', () => {
+  it('shares a global read with file readers but preserves the intervening write barrier', async () => {
+    const started: string[] = [];
+    const scheduler = new ToolScheduler<string>();
+    const globalRead = makeControlledTask('bash-read', [{ kind: 'all', operation: 'read' }], started);
+    const reader = makeControlledTask('read', readPath('/repo/a.ts'), started);
+    const writer = makeControlledTask('write', writePath('/repo/a.ts'), started);
+    const later = makeControlledTask('later-read', readPath('/repo/a.ts'), started);
+    const results = [globalRead, reader, writer, later].map(({ task }) => scheduler.add(task));
+    expect(started).toEqual(['bash-read', 'read']);
+    reader.resolve();
+    globalRead.resolve();
+    await waitOneMacrotask();
+    expect(started).toEqual(['bash-read', 'read', 'write']);
+    writer.resolve();
+    await waitOneMacrotask();
+    expect(started).toEqual(['bash-read', 'read', 'write', 'later-read']);
+    later.resolve();
+    await Promise.all(results);
+  });
+
   it('starts read accesses on the same path concurrently', async () => {
     const started: string[] = [];
     const drained: string[] = [];

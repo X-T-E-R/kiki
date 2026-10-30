@@ -15,6 +15,7 @@ import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { getShellPathBridge } from '#/_base/execEnv/shellPathBridge';
 import {
   DEFAULT_TOOL_RESULT_MAX_CHARS,
+  ToolAccesses,
   type ExecutableToolResult,
   type ToolExecution,
   type ToolUpdate,
@@ -30,6 +31,7 @@ import { userCancellationReason } from '#/_base/utils/abort';
 import bashDescriptionTemplate from './bash.md?raw';
 import { ProcessTask } from './process-task';
 import { bashFileToolHint } from './bashFileToolHints';
+import { isConcurrencySafeBash } from './bashConcurrency';
 import {
   type BashInput,
   BashInputSchema,
@@ -143,6 +145,8 @@ export class BashTool implements IBashTool {
     const shellContext = { runtimeId: runtime.identity.runtimeId, cwd, pathClass: runtime.environment.pathClass };
     const preview = args.command.length > 50 ? `${args.command.slice(0, 50)}…` : args.command;
     return {
+      accesses: runtime.environment.shellName === 'bash' && isConcurrencySafeBash(args.command)
+        ? ToolAccesses.readAll() : ToolAccesses.all(),
       description: args.run_in_background
         ? `Starting background: ${preview}`
         : `Running: ${preview}`,

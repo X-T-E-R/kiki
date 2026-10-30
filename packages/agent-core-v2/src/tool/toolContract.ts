@@ -173,6 +173,7 @@ export interface ToolFileAccess {
 
 export interface ToolResourceAccessAll {
   readonly kind: 'all';
+  readonly operation?: 'read';
 }
 
 export type ToolResourceAccess = ToolFileAccess | ToolResourceAccessAll;
@@ -185,6 +186,10 @@ export const ToolAccesses = {
 
   all(): ToolAccesses {
     return [{ kind: 'all' }];
+  },
+
+  readAll(): ToolAccesses {
+    return [{ kind: 'all', operation: 'read' }];
   },
 
   file(
@@ -231,7 +236,10 @@ export const ToolAccesses = {
 };
 
 function resourceAccessesConflict(left: ToolResourceAccess, right: ToolResourceAccess): boolean {
-  if (left.kind === 'all' || right.kind === 'all') return true;
+  if (left.kind === 'all') {
+    return left.operation !== 'read' || (right.kind === 'all' ? right.operation !== 'read' : fileOperationWrites(right.operation));
+  }
+  if (right.kind === 'all') return right.operation !== 'read' || fileOperationWrites(left.operation);
   if (!fileOperationsConflict(left.operation, right.operation)) return false;
   return fileAccessesOverlap(left, right);
 }

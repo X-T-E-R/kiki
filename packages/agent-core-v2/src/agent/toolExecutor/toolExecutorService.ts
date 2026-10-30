@@ -361,12 +361,11 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     this.telemetry.track2('tool_call', properties);
   }
 
-  private logSlowToolPhase(call: PreflightedToolCall, phase: string, startedAt: number): void {
+  private logSlowToolPhase(call: PreflightedToolCall, phase: string, startedAt: number, details: Record<string, unknown> = {}): void {
     const durationMs = Date.now() - startedAt;
-    if (durationMs < 1000) return;
-    this.log?.warn('slow tool phase', {
-      tool_name: call.toolName, tool_call_id: call.toolCall.id, phase, duration_ms: durationMs,
-    });
+    const data = { tool_name: call.toolName, tool_call_id: call.toolCall.id, phase, duration_ms: durationMs, ...details };
+    if (durationMs >= 1000) this.log?.warn('slow tool phase', data);
+    else this.log?.debug('tool phase', data);
   }
 
   private async prepareToolCall(
@@ -553,10 +552,20 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
           const prepared = event.result.value;
           const { task, call, readyAt } = prepared;
           const index = nextIndex++;
+          const blockedBy = new Map<string, string | undefined>();
           const pendingResult = scheduler.add({
             accesses: task.accesses,
+            toolCallId: call.toolCall.id,
+            toolName: call.toolName,
+            onBlocked: (blockers) => {
+              for (const blocker of blockers) {
+                if (blocker.toolCallId !== undefined) blockedBy.set(blocker.toolCallId, blocker.toolName);
+              }
+            },
             start: async () => {
-              this.logSlowToolPhase(call, 'schedule', readyAt);
+              this.logSlowToolPhase(call, 'schedule', readyAt, {
+                blocked_by: [...blockedBy].map(([tool_call_id, tool_name]) => ({ tool_call_id, tool_name })),
+              });
               const startedAt = Date.now();
               return {
                 result: task.execute(signal).then(({ result, outcome }) => {
