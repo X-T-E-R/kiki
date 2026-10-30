@@ -379,7 +379,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     return this.status();
   }
 
+  private projectionRetryAt = 0;
+
   private ensureProjection(fresh = false): Promise<boolean> {
+    if (this.projectFlight === undefined && Date.now() < this.projectionRetryAt) return Promise.resolve(false);
     this.projectFlight ??= this.runProjection(fresh).finally(() => {
       this.projectFlight = undefined;
     });
@@ -392,6 +395,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       let scanFresh = fresh;
       let conflicts = 0;
       while (!projected) {
+        this.checkReconcileActive(conflicts);
         const baseline = await this.mirror.runExclusive(async () => ({
           epoch: this.mirror.epoch(),
           generation: (await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST))?.seq,
@@ -406,7 +410,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           return this.projector.project(next, scan);
         });
         if (result === undefined) {
-          if (this.recoveryRequired && ++conflicts >= RECONCILE_MAX_ATTEMPTS) {
+          if (++conflicts >= RECONCILE_MAX_ATTEMPTS) {
+            this.projectionRetryAt = Date.now() + DEGRADED_RETRY_MS;
             throw new SessionIndexReconcilePendingError('concurrent_changes', conflicts, DEGRADED_RETRY_MS);
           }
           scanFresh = true;
@@ -526,6 +531,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   /** Explicitly retry an exhausted recovery or project a fresh generation (single-flight). */
   async reprojectNow(): Promise<void> {
     if (this._store.isDisposed || !this.readModelEnabled()) return;
+    this.projectionRetryAt = 0;
     if (this.recoveryRequired) {
       this.recoveryAttempts = 0;
       this.nextPrepareRetryAt = 0;

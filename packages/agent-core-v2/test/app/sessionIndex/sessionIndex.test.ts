@@ -815,6 +815,18 @@ describe('FileSessionIndex (read model)', () => {
     return ids;
   }
 
+  async function withinDeadline<T>(operation: Promise<T>, timeoutMs = 5_000): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('session index operation exceeded test deadline')), timeoutMs);
+    });
+    try {
+      return await Promise.race([operation, deadline]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
   class CountingStorage extends FileStorageService {
     listCalls = 0;
     override async list(scope: string, prefix?: string): Promise<readonly string[]> {
@@ -2888,6 +2900,70 @@ describe('FileSessionIndex (read model)', () => {
       schedule.mockRestore();
     }
   }, 30_000);
+
+  it.each(['initial', 'ordinary reproject', 'dirty catchup'] as const)('D7 bounds %s invalidated projections and preserves authoritative changes', async (mode) => {
+    await seedSession('keep', { title: 'keep', createdAt: 1, updatedAt: 1 });
+    await seedSession('changed', { title: 'before', createdAt: 2, updatedAt: 2 });
+    await seedSession('deleted', { title: 'remove', createdAt: 3, updatedAt: 3 });
+    await seedSession('churn', { title: 'from disk', createdAt: 4, updatedAt: 4 });
+
+    let enabled = true;
+    const store = build(new FileStorageService(homeDir), () => enabled);
+    if (mode !== 'initial') await store.prepare();
+
+    await seedSession('changed', { title: 'after', createdAt: 2, updatedAt: 10 });
+    await fsp.rm(join(sessionsDir, workspaceId, 'deleted'), { recursive: true, force: true });
+    await seedSession('late', { title: 'authoritative', createdAt: 5, updatedAt: 11 });
+    if (mode === 'dirty catchup') {
+      enabled = false;
+      mirror.record(summary('dirty-marker', { title: 'dirty', createdAt: 6, updatedAt: 6 }));
+      enabled = true;
+    }
+
+    let scans = 0;
+    let injecting = true;
+    const originalScan = SessionIndexProjector.prototype.scan;
+    const scan = vi.spyOn(SessionIndexProjector.prototype, 'scan').mockImplementation(function (this: SessionIndexProjector, options) {
+      const result = originalScan.call(this, options);
+      scans += 1;
+      if (injecting) mirror.record(summary('churn', { title: `mirror-${scans}`, updatedAt: 100 + scans }));
+      return result;
+    });
+    try {
+      const invalidated = mode === 'initial' || mode === 'dirty catchup'
+        ? store.prepare()
+        : store.reprojectNow();
+      await withinDeadline(invalidated.then(() => undefined));
+      expect(scans).toBe(2);
+      if (mode === 'initial') {
+        expect(store.status()).toMatchObject({ state: 'degraded', generation: undefined });
+      } else {
+        expect(store.status()).toMatchObject({ state: 'ready', generation: 1 });
+      }
+      if (mode === 'dirty catchup') expect(mirror.dirtyEpoch()).toBeTypeOf('number');
+      expect(await store.get('late', workspaceId)).toMatchObject({ title: 'authoritative' });
+
+      injecting = false;
+      const beforeRetry = scans;
+      await withinDeadline(store.reprojectNow());
+      expect(scans - beforeRetry).toBeLessThanOrEqual(2);
+      if (mode === 'dirty catchup') {
+        const beforeCatchup = scans;
+        await withinDeadline(store.prepare());
+        expect(scans - beforeCatchup).toBeLessThanOrEqual(2);
+      }
+      const page = await store.listRecent({ workspaceIds: [workspaceId], includeArchived: true, limit: 20 });
+      expect(page.items.map((item) => item.id).toSorted()).toEqual(['changed', 'churn', 'keep', 'late']);
+      expect(page.items.find((item) => item.id === 'changed')).toMatchObject({ title: 'after' });
+      expect(await store.get('deleted', workspaceId)).toBeUndefined();
+      expect(await store.count({ workspaceIds: [workspaceId] })).toBe(4);
+      await withinDeadline(mirror.drain());
+      expect(mirror.pending()).toEqual([]);
+    } finally {
+      injecting = false;
+      scan.mockRestore();
+    }
+  }, 10_000);
 
   it.each(['local', 'peer'] as const)('coalesces reconciliation and discards a plan superseded by a %s mirror write', async (writer) => {
     await seedSession('existing', { title: 'initial', createdAt: 1, updatedAt: 2 });
