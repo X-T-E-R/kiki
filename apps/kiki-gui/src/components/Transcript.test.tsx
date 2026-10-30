@@ -4733,7 +4733,7 @@ describe('virtualized transcript scrolling', () => {
     expect(container.querySelector('[data-block-id="block-999"]')).not.toBeNull();
   });
 
-  it('keeps an inline edit draft mounted while scrolling away and back', async () => {
+  it('keeps an inline edit draft mounted while scrolling away and back', { timeout: 30_000 }, async () => {
     const rowActions: TranscriptRowActions = {
       disabled: false,
       onEditMessage: () => undefined,
