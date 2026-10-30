@@ -33,6 +33,7 @@ import {
 } from './agentExecutor';
 import {
   discoverExecutorSources,
+  discoverExecutorMetadata,
   probeExecutorModelCatalog,
   resolveExecutorSource,
 } from './binaryDiscovery';

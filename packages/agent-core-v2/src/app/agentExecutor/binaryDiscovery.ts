@@ -38,6 +38,34 @@ export async function discoverExecutorSources(
   return results;
 }
 
+export async function discoverExecutorMetadata(
+  descriptor: AgentExecutorDescriptor,
+  fs: IHostFileSystem,
+  bootstrap: IBootstrapService,
+): Promise<readonly AgentExecutorSourceProbe[]> {
+  const sources = descriptor.sources ?? (descriptor.command === undefined ? []
+    : [{ id: 'command', kind: 'path-lookup' as const, command: descriptor.command }]);
+  return Promise.all(sources.map(async (source): Promise<AgentExecutorSourceProbe> => {
+    if (source.kind === 'node-script') {
+      const script = expandPath(source.path, bootstrap);
+      const command = await isFile(fs, script) ? await nodeRuntime(fs, bootstrap) : undefined;
+      return { id: source.id, kind: source.kind, available: command !== undefined,
+        command, launchArgs: [script], diagnostic: command === undefined ? 'Adapter script or Node runtime is missing' : undefined };
+    }
+    const commands = (await sourceCommands(source, fs, bootstrap)).toSorted(compareExecutorBinaryPaths);
+    for (const command of commands.toReversed()) {
+      if (!await isFile(fs, command)) continue;
+      if (descriptor.id === 'antigravity-acp') {
+        const ide = stripExecutableExtension(basename(command)).toLowerCase() === 'antigravity';
+        const sibling = join(dirname(command), command.endsWith('.exe') ? 'localharness_external.exe' : 'localharness_external');
+        if (ide || !await isFile(fs, sibling)) continue;
+      }
+      return { id: source.id, kind: source.kind, available: true, command };
+    }
+    return { id: source.id, kind: source.kind, available: false, diagnostic: unavailableDiagnostic(source, bootstrap) };
+  }));
+}
+
 export async function resolveExecutorSource(
   descriptor: AgentExecutorDescriptor,
   processService: IHostProcessService,
