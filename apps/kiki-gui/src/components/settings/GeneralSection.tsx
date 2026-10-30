@@ -160,7 +160,7 @@ export function GeneralSection() {
       </SectionCard>
 
       <SectionCard id="st-card-sidebar-nav" title={t('st.sidebarNav.title')} scope="app" aside={t('st.sidebarNav.hint')}>
-        <div data-sidebar-nav-toggles className="grid sm:grid-cols-2 sm:gap-x-8">
+        <SettingsBox data-sidebar-nav-toggles>
           {ALL_SIDEBAR_NAV_KEYS.map((key) => {
             const isPinned = layoutPrefs.pinnedNavItems.includes(key);
             const label = key === 'personas'
@@ -169,59 +169,47 @@ export function GeneralSection() {
                 ? t('discovery.title')
                 : t(`nav.${key}`);
             return (
-              <div key={key} data-nav-item-toggle={key} className="py-1.5">
-                <Toggle
-                  layout="row"
-                  label={label}
-                  checked={isPinned}
-                  onChange={(checked) => {
-                    const next = checked
-                      ? Array.from(new Set([...layoutPrefs.pinnedNavItems, key]))
-                      : layoutPrefs.pinnedNavItems.filter((k) => k !== key);
-                    writeLayoutPreferences({ pinnedNavItems: next });
-                  }}
-                />
-              </div>
+              <SettingField key={key} label={label}>
+                <span data-nav-item-toggle={key} className="contents">
+                  <Toggle
+                    layout="bare"
+                    label={label}
+                    checked={isPinned}
+                    onChange={(checked) => {
+                      const next = checked
+                        ? Array.from(new Set([...layoutPrefs.pinnedNavItems, key]))
+                        : layoutPrefs.pinnedNavItems.filter((k) => k !== key);
+                      writeLayoutPreferences({ pinnedNavItems: next });
+                    }}
+                  />
+                </span>
+              </SettingField>
             );
           })}
-        </div>
+        </SettingsBox>
       </SectionCard>
 
       {isDesktop ? (
         <SectionCard id="st-card-desktop" title={t('st.desktop.title')} effect="desktop" scope="app">
-          <fieldset className="space-y-4">
-            {/* System notifications live on Notifications & messages. */}
-            <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label={t('st.desktop.title')}>
-              {([
-                { closeToTray: true, titleKey: 'st.desktop.tray', descriptionKey: 'st.desktop.trayDesc' },
-                { closeToTray: false, titleKey: 'st.desktop.quit', descriptionKey: 'st.desktop.quitDesc' },
-              ] as const).map((option) => {
-                const selected = desktopPrefs.closeToTray === option.closeToTray;
-                return (
-                  <div
-                    key={option.titleKey}
-                    className={`rounded-lg p-3 transition-colors ${
-                      selected ? 'bg-panel shadow-[var(--kiki-sheet-shadow)]' : 'bg-ink/[0.03]'
-                    }`}
-                  >
-                    <label className="flex cursor-pointer items-start gap-2">
-                      <input
-                        type="radio"
-                        name="close-behavior"
-                        checked={selected}
-                        onChange={() => { updateDesktop({ closeToTray: option.closeToTray }); }}
-                        className="mt-0.5 accent-[var(--color-selected-ink)]"
-                      />
-                      <span>
-                        <span className="block text-[13px] font-medium text-ink">{t(option.titleKey)}</span>
-                        <span className="mt-0.5 block text-[12px] text-ink-faint">{t(option.descriptionKey)}</span>
-                      </span>
-                    </label>
-                  </div>
-                );
-              })}
-            </div>
-          </fieldset>
+          {/* System notifications live on Notifications & messages. */}
+          <SettingsBox>
+            <SettingField
+              label={t('st.desktop.closeQuestion')}
+              labelId="desktop-close-label"
+              help={t(desktopPrefs.closeToTray ? 'st.desktop.trayDesc' : 'st.desktop.quitDesc')}
+            >
+              <SettingsSegmented<'tray' | 'quit'>
+                ariaLabelledBy="desktop-close-label"
+                dataAttr="data-desktop-close-choice"
+                value={desktopPrefs.closeToTray ? 'tray' : 'quit'}
+                onChange={(choice) => { updateDesktop({ closeToTray: choice === 'tray' }); }}
+                choices={[
+                  { value: 'tray', label: t('st.desktop.tray') },
+                  { value: 'quit', label: t('st.desktop.quit') },
+                ]}
+              />
+            </SettingField>
+          </SettingsBox>
         </SectionCard>
       ) : null}
 

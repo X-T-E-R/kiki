@@ -9,7 +9,7 @@ import { FeedbackLine, SaveStatus, type Feedback } from '../controls';
 import { Icon } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
-import { SettingField } from './fields';
+import { SettingField, SettingsBox } from './fields';
 import { SettingsSelect } from './SettingsPrimitives';
 import { useInstantSave } from './useInstantSave';
 
@@ -87,11 +87,14 @@ export function DesktopLogCard() {
 
   return (
     <SectionCard id="st-card-desktop-log" title={t('st.desktopLog.title')} scope="app">
-      <div className="space-y-3">
+      <SettingsBox>
         {info !== null ? (
-          <div data-desktop-log-path className="space-y-1.5">
-            <p className="text-[13px] text-ink">{t('st.desktopLog.fileLabel')}</p>
-            <div className="flex flex-wrap items-center gap-2">
+          <SettingField
+            label={t('st.desktopLog.fileLabel')}
+            help={t('st.desktopLog.rotation', { size: formatBytes(info.maxBytes), count: info.backups })}
+            layout="stack"
+          >
+            <div data-desktop-log-path className="flex flex-wrap items-center gap-2">
               <code className="min-w-0 max-w-full flex-1 break-all rounded-md bg-ink/[0.04] px-3 py-1.5 font-mono text-[11.5px] text-ink-soft">
                 {info.backendLogPath}
               </code>
@@ -106,12 +109,8 @@ export function DesktopLogCard() {
                 {opening ? t('st.desktopLog.opening') : t('st.desktopLog.openFolder')}
               </button>
             </div>
-            <p className="text-[12px] text-ink-faint">
-              {t('st.desktopLog.rotation', { size: formatBytes(info.maxBytes), count: info.backups })}
-            </p>
-          </div>
+          </SettingField>
         ) : null}
-        <FeedbackLine feedback={actionFeedback} />
         {level !== null ? (
           <SettingField label={t('st.desktopLog.levelLabel')} help={t('st.desktopLog.levelHint')}>
             <SaveStatus saving={save.saving} saved={save.saved} />
@@ -135,6 +134,9 @@ export function DesktopLogCard() {
             {t('st.desktopLog.pending', { current: info.logLevel, next: level })}
           </p>
         ) : null}
+      </SettingsBox>
+      <div className="mt-2 space-y-1">
+        <FeedbackLine feedback={actionFeedback} />
         <FeedbackLine feedback={save.error ?? loadError} />
       </div>
     </SectionCard>

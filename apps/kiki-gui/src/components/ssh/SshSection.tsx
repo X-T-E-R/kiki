@@ -46,6 +46,7 @@ import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } fro
 import { DisclosureChevron, Icon } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from '../settings/SectionCard';
+import { SettingField, SettingsBox } from '../settings/fields';
 import { useSavedTick } from '../settings/useSavedTick';
 import { SshStateMark } from './SshBits';
 import { SshHostFormDialog, type SshHostFormMode } from './SshHostFormDialog';
@@ -190,9 +191,14 @@ function SshHostsSettings() {
           {hostsQuery.isError ? <InlineError error={hostsQuery.error} /> : null}
 
           {empty ? (
-            <div data-ssh-empty className="rounded-lg border border-dashed border-hairline-strong px-4 py-5">
+            <div data-ssh-empty className="space-y-2">
               <p className="text-[13px] font-medium text-ink">{t('st.ssh.emptyTitle')}</p>
-              <p className="mt-1 max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.ssh.emptyBody')}</p>
+              <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.ssh.emptyBody')}</p>
+              <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+                onClick={() => { setForm({ kind: 'create' }); }}>
+                <Icon name="plus" size={12} />
+                {t('st.ssh.addHost')}
+              </button>
             </div>
           ) : null}
 
@@ -712,61 +718,55 @@ function ConnectionCard() {
 
   return (
     <SectionCard id="st-card-ssh-connection" title={t('st.ssh.connectionTitle')}>
-      <div className="space-y-4">
-        <div data-settings-field data-ssh-sync data-ssh-sync-source={syncSource ?? 'unknown'} className="space-y-0.5 py-1">
+      <SettingsBox>
+        <div data-ssh-sync data-ssh-sync-source={syncSource ?? 'unknown'}>
           {sync !== undefined ? (
-            <>
-              <div className="flex items-center gap-2">
-                <div className="min-w-0 flex-1">
-                  <Toggle layout="row" label={t('st.ssh.syncToggle')} checked={sync} disabled={saving === 'sync'}
-                    onChange={(checked) => void setSync(checked)} />
-                </div>
-                <SavedTick show={syncSaved} />
-              </div>
-              <Hint>{t('st.ssh.syncHint')}</Hint>
-              {/* Where the stored value comes from, said only when it is not this device's own setting. */}
-              {syncSource === 'base' ? <Hint>{t('st.ssh.syncSourceBase')}</Hint> : null}
-              {syncSource === 'default' ? <Hint>{t('st.ssh.syncSourceDefault')}</Hint> : null}
-            </>
+            <SettingField
+              label={t('st.ssh.syncToggle')}
+              help={syncSource === 'base' ? t('st.ssh.syncSourceBase')
+                : syncSource === 'default' ? t('st.ssh.syncSourceDefault')
+                : t('st.ssh.syncHint')}
+            >
+              <SavedTick show={syncSaved} />
+              <Toggle layout="bare" label={t('st.ssh.syncToggle')} checked={sync} disabled={saving === 'sync'}
+                onChange={(checked) => void setSync(checked)} />
+            </SettingField>
           ) : (
             // The label holds the row's place while the value is unknown — same
             // line height as the switch row, so nothing jumps when it arrives.
-            <p className="flex min-h-7 items-center text-[13px] text-ink">{t('st.ssh.syncToggle')}</p>
-          )}
-          {sync === undefined && syncQuery.isError ? (
-            <div className="space-y-1 py-0.5">
-              <p role="alert" className="max-w-[62ch] text-[12px] leading-snug text-danger">
-                {t('st.ssh.syncReadFailed')}
-              </p>
-              <button type="button" data-ssh-sync-retry className={ROW_ACTION} disabled={syncQuery.isFetching}
-                onClick={() => { void syncQuery.refetch(); }}>
-                {t('common.retry')}
-              </button>
+            <div data-settings-field className="space-y-1">
+              <p className="flex min-h-7 items-center text-[13px] text-ink">{t('st.ssh.syncToggle')}</p>
+              {syncQuery.isError ? (
+                <div className="space-y-1 py-0.5">
+                  <p role="alert" className="max-w-[62ch] text-[12px] leading-snug text-danger">
+                    {t('st.ssh.syncReadFailed')}
+                  </p>
+                  <button type="button" data-ssh-sync-retry className={ROW_ACTION} disabled={syncQuery.isFetching}
+                    onClick={() => { void syncQuery.refetch(); }}>
+                    {t('common.retry')}
+                  </button>
+                </div>
+              ) : (
+                <p className="text-[12px] leading-4 text-ink-faint">{t('st.ssh.syncReading')}</p>
+              )}
             </div>
-          ) : sync === undefined ? (
-            <p className="text-[12px] leading-4 text-ink-faint">{t('st.ssh.syncReading')}</p>
-          ) : null}
+          )}
           <FeedbackLine feedback={syncFeedback} />
         </div>
 
-        <div data-settings-field data-ssh-approval className="space-y-0.5 py-1">
+        <div data-ssh-approval>
           {approvalQuery.isError ? <InlineError error={approvalQuery.error} /> : (
-            <>
-              <div className="flex items-center gap-2">
-                <div className="min-w-0 flex-1">
-                  <Toggle layout="row" label={t('st.ssh.approvalToggle')} checked={skipApproval}
-                    disabled={approvalQuery.data === undefined || saving === 'approval'}
-                    onChange={(checked) => void setSkip(checked)} />
-                </div>
-                <SavedTick show={approvalSaved} />
-              </div>
-              {/* Stated next to the switch on purpose: it decides whether turning it on is safe. */}
-              <Hint>{t('st.ssh.approvalHint')}</Hint>
-            </>
+            // Stated next to the switch on purpose: it decides whether turning it on is safe.
+            <SettingField label={t('st.ssh.approvalToggle')} help={t('st.ssh.approvalHint')}>
+              <SavedTick show={approvalSaved} />
+              <Toggle layout="bare" label={t('st.ssh.approvalToggle')} checked={skipApproval}
+                disabled={approvalQuery.data === undefined || saving === 'approval'}
+                onChange={(checked) => void setSkip(checked)} />
+            </SettingField>
           )}
           <FeedbackLine feedback={approvalFeedback} />
         </div>
-      </div>
+      </SettingsBox>
     </SectionCard>
   );
 }

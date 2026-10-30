@@ -16,7 +16,7 @@ import { FeedbackLine, Hint, Toggle, type Feedback } from '../controls';
 import { requestOnboardingOpen } from '../OnboardingWizard';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
-import { AdvancedDetails, DependentField, SettingField } from './fields';
+import { AdvancedDetails, DependentField, SettingField, SettingsBox } from './fields';
 import { SettingsSelect } from './SettingsPrimitives';
 
 export function AboutSection() {
@@ -152,115 +152,121 @@ export function AboutSection() {
 
   return (
     <SectionCard id="st-card-about" title={t('st.about.title')}>
-      <dl className="space-y-1.5 text-[12.5px]">
+      <SettingsBox>
         {versionRows.map((row) => (
-          <div key={row.label} className="flex items-baseline justify-between gap-4">
-            <dt className="shrink-0 text-ink-faint">{row.label}</dt>
-            <dd className="break-all text-right font-mono text-[12px] text-ink">{row.value}</dd>
+          <div key={row.label} className="flex items-baseline justify-between gap-4" data-settings-field>
+            <span className="text-[13px] text-ink">{row.label}</span>
+            <span className="break-all text-right font-mono text-[12px] text-ink">{row.value}</span>
           </div>
         ))}
-      </dl>
-      {/* Bug-report facts, out of the first read. */}
-      <div className="mt-3">
-        <AdvancedDetails summary={t('st.about.technical')} data-about-technical>
-          <dl className="space-y-1 text-[12px]">
-            {technicalRows.map((row) => (
-              <div key={row.label} className="flex items-baseline justify-between gap-4">
-                <dt className="shrink-0 text-ink-faint">{row.label}</dt>
-                <dd className="break-all text-right font-mono text-[11.5px] text-ink-soft">{row.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </AdvancedDetails>
-      </div>
+        {/* Bug-report facts, out of the first read. */}
+        <div data-settings-field>
+          <AdvancedDetails summary={t('st.about.technical')} data-about-technical>
+            <dl className="space-y-1 text-[12px]">
+              {technicalRows.map((row) => (
+                <div key={row.label} className="flex items-baseline justify-between gap-4">
+                  <dt className="shrink-0 text-ink-faint">{row.label}</dt>
+                  <dd className="break-all text-right font-mono text-[11.5px] text-ink-soft">{row.value}</dd>
+                </div>
+              ))}
+            </dl>
+          </AdvancedDetails>
+        </div>
 
-      {isDesktop ? (
-        <div className="mt-4 space-y-3">
-          <SettingField label={t('st.about.channel')}
-            help={channel === 'beta' ? <span className="text-amber-ink">{t('st.about.betaHint')}</span> : undefined}>
-            <SettingsSelect<'stable' | 'beta'>
-              ariaLabel={t('st.about.channel')}
-              value={channel}
-              disabled={updatesSupported !== true}
-              onChange={(next) => {
-                checkGeneration.current += 1;
-                setChannel(next);
-                setUpdate(null);
-                setConfirmInstall(false);
-                if (!installRunning.current) setUpdateStatus('idle');
-                setUpdateMessage(null);
-                writeDesktopPrefs({ updateChannel: next });
-                writeNative('updateChannel', next);
-              }}
-              choices={[
-                { value: 'stable', label: t('st.about.stable') },
-                { value: 'beta', label: t('st.about.beta') },
-              ]}
-            />
-          </SettingField>
-          {/* One switch, then the one question it opens. With checking off there
-              is nothing left to choose, so the second row is not rendered. */}
-          <div data-settings-field className="space-y-0.5 py-1">
-            <Toggle
-              layout="row"
-              label={t('st.about.autoCheck')}
-              checked={autoUpdate !== 'off'}
-              disabled={updatesSupported !== true}
-              onChange={(checked) => { writeMode(checked ? 'notify' : 'off'); }}
-            />
-            <Hint>
-              {autoUpdate === 'off'
-                ? t('st.about.autoCheckOffHint')
-                : autoUpdate === 'install'
-                  // What happens next differs by mode. This line sits directly
-                  // above the select that chooses the mode, so the clause reads
-                  // as describing that choice rather than as a safety promise
-                  // that only one of its two values keeps.
-                  ? t('st.about.autoCheckInstallHint')
-                  : t('st.about.autoCheckHint')}
-            </Hint>
-          </div>
-          <DependentField when={autoUpdate !== 'off' && updatesSupported === true}>
-            <SettingField label={t('st.about.whenFound')}>
-              <SettingsSelect<Exclude<AutoUpdateMode, 'off'>>
-                ariaLabel={t('st.about.whenFound')}
-                value={autoUpdate === 'off' ? 'notify' : autoUpdate}
-                onChange={(next) => { writeMode(next); }}
+        {isDesktop ? (
+          <>
+            <SettingField label={t('st.about.channel')}
+              help={channel === 'beta' ? <span className="text-amber-ink">{t('st.about.betaHint')}</span> : undefined}>
+              <SettingsSelect<'stable' | 'beta'>
+                ariaLabel={t('st.about.channel')}
+                value={channel}
+                disabled={updatesSupported !== true}
+                onChange={(next) => {
+                  checkGeneration.current += 1;
+                  setChannel(next);
+                  setUpdate(null);
+                  setConfirmInstall(false);
+                  if (!installRunning.current) setUpdateStatus('idle');
+                  setUpdateMessage(null);
+                  writeDesktopPrefs({ updateChannel: next });
+                  writeNative('updateChannel', next);
+                }}
                 choices={[
-                  { value: 'notify', label: t('st.about.autoUpdateNotify') },
-                  { value: 'install', label: t('st.about.autoUpdateInstall') },
+                  { value: 'stable', label: t('st.about.stable') },
+                  { value: 'beta', label: t('st.about.beta') },
                 ]}
               />
             </SettingField>
-          </DependentField>
-          {updatesSupported === false ? <Hint>{t('st.about.updatesUnavailable')}</Hint> : null}
-          <div className="flex flex-wrap items-center gap-2">
-            <button type="button" onClick={checkForUpdate} disabled={updatesSupported !== true || updateStatus !== 'idle'} className={SECONDARY_BUTTON}>
-              {updateStatus === 'checking' ? t('st.about.checking') : t('st.about.checkUpdate')}
-            </button>
-            {update !== null ? (
-              <button type="button" onClick={() => { setConfirmInstall(true); }} disabled={updatesSupported !== true || updateStatus !== 'idle'} className={PRIMARY_BUTTON}>
-                {updateStatus === 'installing' ? t('st.about.installing') : t('st.about.install', { version: update.version })}
+            {/* One switch, then the one question it opens. With checking off there
+                is nothing left to choose, so the second row is not rendered. */}
+            <SettingField
+              label={t('st.about.autoCheck')}
+              help={
+                autoUpdate === 'off'
+                  ? t('st.about.autoCheckOffHint')
+                  : autoUpdate === 'install'
+                    // What happens next differs by mode. This line sits directly
+                    // above the select that chooses the mode, so the clause reads
+                    // as describing that choice rather than as a safety promise
+                    // that only one of its two values keeps.
+                    ? t('st.about.autoCheckInstallHint')
+                    : t('st.about.autoCheckHint')
+              }
+            >
+              <Toggle
+                layout="bare"
+                label={t('st.about.autoCheck')}
+                checked={autoUpdate !== 'off'}
+                disabled={updatesSupported !== true}
+                onChange={(checked) => { writeMode(checked ? 'notify' : 'off'); }}
+              />
+            </SettingField>
+            <DependentField when={autoUpdate !== 'off' && updatesSupported === true}>
+              <SettingField label={t('st.about.whenFound')}>
+                <SettingsSelect<Exclude<AutoUpdateMode, 'off'>>
+                  ariaLabel={t('st.about.whenFound')}
+                  value={autoUpdate === 'off' ? 'notify' : autoUpdate}
+                  onChange={(next) => { writeMode(next); }}
+                  choices={[
+                    { value: 'notify', label: t('st.about.autoUpdateNotify') },
+                    { value: 'install', label: t('st.about.autoUpdateInstall') },
+                  ]}
+                />
+              </SettingField>
+            </DependentField>
+            {updatesSupported === false ? <div data-settings-field><Hint>{t('st.about.updatesUnavailable')}</Hint></div> : null}
+            <div data-settings-field className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={checkForUpdate} disabled={updatesSupported !== true || updateStatus !== 'idle'} className={SECONDARY_BUTTON}>
+                {updateStatus === 'checking' ? t('st.about.checking') : t('st.about.checkUpdate')}
               </button>
+              {update !== null ? (
+                <button type="button" onClick={() => { setConfirmInstall(true); }} disabled={updatesSupported !== true || updateStatus !== 'idle'} className={PRIMARY_BUTTON}>
+                  {updateStatus === 'installing' ? t('st.about.installing') : t('st.about.install', { version: update.version })}
+                </button>
+              ) : null}
+            </div>
+            {update?.notes !== undefined && update.notes !== '' ? (
+              <div data-settings-field><p className="whitespace-pre-wrap text-[11.5px] text-ink-soft">{update.notes}</p></div>
             ) : null}
-          </div>
-          {update?.notes !== undefined && update.notes !== '' ? <p className="whitespace-pre-wrap text-[11.5px] text-ink-soft">{update.notes}</p> : null}
-          <FeedbackLine feedback={updateMessage} />
-          {persistError === null ? null : (
-            <FeedbackLine feedback={{ tone: 'error', text: persistError }} />
-          )}
-        </div>
-      ) : null}
+          </>
+        ) : null}
 
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <Hint>{t('onboarding.reenterHint')}</Hint>
-        <button
-          type="button"
-          onClick={() => { requestOnboardingOpen(); }}
-          className={SECONDARY_BUTTON}
-        >
-          {t('onboarding.reenter')}
-        </button>
+        <SettingField label={t('onboarding.reenter')} help={t('onboarding.reenterHint')}>
+          <button
+            type="button"
+            onClick={() => { requestOnboardingOpen(); }}
+            className={SECONDARY_BUTTON}
+          >
+            {t('onboarding.reenter')}
+          </button>
+        </SettingField>
+      </SettingsBox>
+
+      <div className="mt-3">
+        <FeedbackLine feedback={updateMessage} />
+        {persistError === null ? null : (
+          <FeedbackLine feedback={{ tone: 'error', text: persistError }} />
+        )}
       </div>
 
       <ConfirmDialog

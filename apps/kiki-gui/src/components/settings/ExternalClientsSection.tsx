@@ -314,21 +314,22 @@ function LocalAccess({ connectionId, api }: { connectionId: string; api: Facade 
       <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.xc.localHint')}</p>
       {command !== undefined ? (
         <div className="space-y-1.5" data-xc-local-config>
+          {/* Rule 16: the snippet, the copy button, and the apps it fits. */}
           <p className="text-[12px] text-ink-faint">{t('st.xc.localConfig')}</p>
           <CopyBlock value={command} label={t('st.xc.localCopy')} wrap />
+          <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">
+            {t('st.xc.localConfigHint')}
+            {' '}
+            {t('st.xc.localFits')}
+            {' '}
+            <span className="text-ink-soft">{t('st.xc.localToolNote')}</span>
+          </p>
         </div>
       ) : null}
       {query.isLoading ? <Hint>{t('st.xc.loading')}</Hint> : null}
       {query.isError ? (
         <p data-xc-local-error className="text-[12px] leading-4 text-danger">
           {t('st.xc.error.stdio', { reason: errorText(locale, query.error) })}
-        </p>
-      ) : null}
-      {command !== undefined ? (
-        <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">
-          {t('st.xc.localConfigHint')}
-          {' '}
-          <span className="text-ink-soft">{t('st.xc.localToolNote')}</span>
         </p>
       ) : null}
     </div>
@@ -346,6 +347,7 @@ function RemoteAccess({ listener }: { listener: ExternalClientListener | undefin
         <div className="space-y-1.5" data-xc-remote-url>
           <p className="text-[12px] text-ink-faint">{t('st.xc.remoteUrl')}</p>
           <CopyBlock value={mcpUrl} label={t('st.xc.remoteCopy')} wrap />
+          <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.xc.localFits')}</p>
         </div>
       ) : (
         <p data-xc-remote-missing className="text-[12px] leading-4 text-ink-faint">{t('st.xc.remoteUrlMissing')}</p>

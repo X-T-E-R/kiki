@@ -19,6 +19,7 @@ import { FeedbackLine, type Feedback } from '../../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { SettingField } from '../fields';
 import { SettingsSelect } from '../SettingsPrimitives';
+import { SetupSteps } from '../SetupSteps';
 import { connectionFailureText } from './parts';
 
 const EXPIRY_CHOICES = [
@@ -72,6 +73,9 @@ export function InviteSourceDialog({ client, onClose, onInvited }: {
             <h2 className="text-[14px] font-medium text-ink">{t('st.inbound.inviteTitle')}</h2>
             <p className="mt-1 max-w-[62ch] text-[12.5px] leading-snug text-ink-soft">{t('st.inbound.inviteBody')}</p>
           </div>
+          {/* Rule 16: where the identity block comes from, before the paste box. */}
+          <SetupSteps data={{ 'data-inbound-invite-steps': '' }}
+            steps={[t('st.inbound.guide.step1'), t('st.inbound.guide.step2')]} />
           <SettingField label={t('st.inbound.sourceField')} htmlFor="inbound-source-identity" layout="stack"
             help={t('st.inbound.sourceHint')}>
             <textarea id="inbound-source-identity" data-inbound-source rows={3} spellCheck={false}

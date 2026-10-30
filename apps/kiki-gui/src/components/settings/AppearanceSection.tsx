@@ -26,7 +26,7 @@ import { SECONDARY_BUTTON } from '../ui';
 import { AppearancePacks } from './AppearancePacks';
 import { BackgroundSettings, useBackgroundPrefs } from './BackgroundSettings';
 import { SectionCard } from './SectionCard';
-import { SettingField } from './fields';
+import { SettingField, SettingsBox } from './fields';
 import { FontRoleField } from './FontRoleField';
 import { firstFamily } from '../../lib/fontDetect';
 import { SettingsSegmented } from './SettingsPrimitives';
@@ -184,7 +184,7 @@ export function AppearanceSection() {
           </div>
         )}
       >
-        <div className="space-y-2">
+        <SettingsBox>
           <SettingField label={t('st.appearance.theme')} labelId="theme-label">
             <SpacePrefOrigin item="theme" label={t('st.appearance.theme')} />
             <SettingsSegmented<ThemePreference>
@@ -202,11 +202,11 @@ export function AppearanceSection() {
             <SpacePrefOrigin item="skin" label={t('st.skin.title')} />
             <SkinPicker theme={theme} labelledBy="skin-label" />
           </div>
-        </div>
+        </SettingsBox>
       </SectionCard>
 
       <SectionCard id="st-card-appearance-layout" title={t('st.appearance.layoutTitle')} scope={appearanceScope}>
-        <div className="space-y-2">
+        <SettingsBox>
           <SettingField label={t('st.skin.accent')} htmlFor="skin-accent" help={t('st.skin.accentHint')}>
             <SpacePrefOrigin item="tweaks" label={t('st.skin.accent')} />
             <input
@@ -264,7 +264,7 @@ export function AppearanceSection() {
             />
             {inSpace ? <span className="text-[12px] text-ink-faint">{t('st.scope.device')}</span> : null}
           </SettingField>
-        </div>
+        </SettingsBox>
       </SectionCard>
 
       <SectionCard id="st-card-appearance-background" title={t('st.bg.title')} scope={appearanceScope}>
@@ -276,7 +276,7 @@ export function AppearanceSection() {
       </SectionCard>
 
       <SectionCard id="st-card-appearance-type" title={t('st.appearance.typeTitle')} scope={appearanceScope}>
-        <div className="space-y-2">
+        <SettingsBox>
           <FontRoleField
             role="sans"
             label={t('st.skin.font')}
@@ -313,7 +313,7 @@ export function AppearanceSection() {
             onPreset={(value) => { setTweak('fontMono', value === '' ? undefined : value); }}
             onCustom={(stack) => { setTweak('fontMono', stack); }}
           />
-        </div>
+        </SettingsBox>
       </SectionCard>
 
       <SectionCard id="st-card-skin-files" title={t('st.skin.filesTitle')} scope={appearanceScope}>

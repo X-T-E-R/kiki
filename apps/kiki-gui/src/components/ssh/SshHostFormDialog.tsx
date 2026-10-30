@@ -15,6 +15,7 @@ import { useI18n } from '../../i18n';
 import { SSH_HOSTNAME_PATTERN, SSH_HOST_ID_PATTERN, sshHostInput, type SshHost, type SshHostInput } from '../../lib/ssh';
 import { Toggle } from '../controls';
 import { FieldIssue, FORM_LABEL } from '../settings/SettingsPrimitives';
+import { SetupSteps } from '../settings/SetupSteps';
 import { SidePanel } from '../SidePanel';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { ComingSoonTag } from './SshBits';
@@ -144,6 +145,12 @@ export function SshHostFormDialog({
         noValidate
         onSubmit={(event) => { event.preventDefault(); void submit(); }}
       >
+        {mode.kind === 'create' ? (
+          // Rule 16: the form asks for a host and a key, so it first says what a
+          // working setup actually needs, in the form's own words.
+          <SetupSteps data={{ 'data-ssh-guidance': '' }}
+            steps={[t('st.ssh.guide.step1'), t('st.ssh.guide.step2'), t('st.ssh.guide.step3')]} />
+        ) : null}
         <fieldset disabled={saving} className="grid min-w-0 gap-x-4 gap-y-4 sm:grid-cols-2">
           <div>
             <label htmlFor={field('id')} className={FORM_LABEL}>{t('st.ssh.form.alias')}</label>

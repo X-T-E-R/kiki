@@ -22,6 +22,7 @@ import { Icon } from '../../icons';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { SettingField } from '../fields';
 import { SecretField } from '../SecretField';
+import { SetupSteps } from '../SetupSteps';
 import { connectionFailureText } from './parts';
 import { AddConnectionBySshDialog } from './AddConnectionBySshDialog';
 
@@ -145,6 +146,10 @@ export function AddConnectionDialog({ client, sshProfiles, defaultHome, initial,
             </button>
           </p>
         ) : null}
+
+        {/* Rule 16: what to fetch from the other Kiki before filling this in. */}
+        <SetupSteps data={{ 'data-remote-add-steps': '' }}
+          steps={[t('st.remote.guide.step1'), t('st.remote.guide.step2'), t('st.remote.guide.step3')]} />
 
         <SettingField label={t('st.remote.invitation')} htmlFor="remote-connection-invitation" layout="stack"
           help={invitation === null ? t('st.remote.invitationHint') : undefined}>

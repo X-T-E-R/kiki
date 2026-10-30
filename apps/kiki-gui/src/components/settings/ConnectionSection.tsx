@@ -22,6 +22,7 @@ import { FeedbackLine, Hint, SavedTick, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingField, SettingsBox } from './fields';
 import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
 import { CommitInput, SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
@@ -145,68 +146,68 @@ function CurrentConnectionContent() {
           </button>
         }
       >
-        <div className="space-y-3">
-          <div role="group" aria-label={t('st.conn.statusTitle')} className="space-y-1.5">
-            <div className="flex items-center gap-2" data-conn-ws-status={wsStatus}>
-              <span aria-hidden className={`inline-block h-2 w-2 shrink-0 rounded-full ${statusDotClass}`} />
-              <span className={`text-[14px] font-medium ${statusTextClass}`}>{t(`st.conn.ws.${wsStatus}`)}</span>
-            </div>
-
-            {isSsh ? (
-              <div className="space-y-1.5 pt-1 text-[12.5px] text-ink">
-                <p className="font-medium">{t('connect.remoteScope')} · {sshLabel}</p>
-                <p className="text-ink-soft">{t('connect.sshRemoteSettings')}</p>
-                <button type="button" onClick={activateLocal} className={`${SECONDARY_BUTTON} mt-1`}>
-                  {t('connect.switchLocal')}
-                </button>
-              </div>
-            ) : !editingEndpoint ? (
-              <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                <span className="break-all font-mono text-[15px] text-ink" data-conn-url>
-                  {config.url.trim() || (typeof window !== 'undefined' ? window.location.origin : '')}
-                </span>
-                <button
-                  type="button"
-                  data-conn-edit
-                  onClick={() => { setEditingEndpoint(true); }}
-                  className="shrink-0 rounded px-1.5 py-0.5 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-                >
-                  {t('st.secret.edit')}
-                </button>
-              </div>
-            ) : null}
-
-            <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11.5px] text-ink-faint">
-              <span>{t('st.conn.version')} <span className="font-mono text-ink-soft">{meta.server_version}</span></span>
-              <span aria-hidden>·</span>
-              <span>{t('st.conn.backend')} <span className="font-mono text-ink-soft">{meta.backend ?? 'v1'}</span></span>
-              <span aria-hidden>·</span>
-              {closes > 0 ? (
-                <a
-                  href="#st-card-conn-log"
-                  data-conn-drops-link
-                  onClick={(event) => {
-                    event.preventDefault();
-                    document.getElementById('st-card-conn-log')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                  }}
-                  className="text-ink-soft underline decoration-hairline underline-offset-2 hover:text-ink"
-                >
-                  {t('st.conn.dropsSinceStart', { closes })}
-                </a>
-              ) : (
-                <span>{t('st.conn.dropsSinceStart', { closes: 0 })}</span>
-              )}
-              {!isSsh && config.token.trim() === '' ? (
-                <>
-                  <span aria-hidden>·</span>
-                  <span data-conn-no-token>{t('st.conn.noToken')}</span>
-                </>
-              ) : null}
-            </p>
+        <div role="group" aria-label={t('st.conn.statusTitle')} className="space-y-1.5">
+          <div className="flex items-center gap-2" data-conn-ws-status={wsStatus}>
+            <span aria-hidden className={`inline-block h-2 w-2 shrink-0 rounded-full ${statusDotClass}`} />
+            <span className={`text-[14px] font-medium ${statusTextClass}`}>{t(`st.conn.ws.${wsStatus}`)}</span>
           </div>
 
+          {isSsh ? (
+            <div className="space-y-1.5 pt-1 text-[12.5px] text-ink">
+              <p className="font-medium">{t('connect.remoteScope')} · {sshLabel}</p>
+              <p className="text-ink-soft">{t('connect.sshRemoteSettings')}</p>
+              <button type="button" onClick={activateLocal} className={`${SECONDARY_BUTTON} mt-1`}>
+                {t('connect.switchLocal')}
+              </button>
+            </div>
+          ) : !editingEndpoint ? (
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+              <span className="break-all font-mono text-[15px] text-ink" data-conn-url>
+                {config.url.trim() || (typeof window !== 'undefined' ? window.location.origin : '')}
+              </span>
+              <button
+                type="button"
+                data-conn-edit
+                onClick={() => { setEditingEndpoint(true); }}
+                className="shrink-0 rounded px-1.5 py-0.5 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+              >
+                {t('st.secret.edit')}
+              </button>
+            </div>
+          ) : null}
+
+          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11.5px] text-ink-faint">
+            <span>{t('st.conn.version')} <span className="font-mono text-ink-soft">{meta.server_version}</span></span>
+            <span aria-hidden>·</span>
+            <span>{t('st.conn.backend')} <span className="font-mono text-ink-soft">{meta.backend ?? 'v1'}</span></span>
+            <span aria-hidden>·</span>
+            {closes > 0 ? (
+              <a
+                href="#st-card-conn-log"
+                data-conn-drops-link
+                onClick={(event) => {
+                  event.preventDefault();
+                  document.getElementById('st-card-conn-log')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }}
+                className="text-ink-soft underline decoration-hairline underline-offset-2 hover:text-ink"
+              >
+                {t('st.conn.dropsSinceStart', { closes })}
+              </a>
+            ) : (
+              <span>{t('st.conn.dropsSinceStart', { closes: 0 })}</span>
+            )}
+            {!isSsh && config.token.trim() === '' ? (
+              <>
+                <span aria-hidden>·</span>
+                <span data-conn-no-token>{t('st.conn.noToken')}</span>
+              </>
+            ) : null}
+          </p>
+        </div>
+
+        <SettingsBox>
           {!isSsh && editingEndpoint ? <form
-            className="space-y-4 pt-3"
+            className="space-y-4"
             onSubmit={(event) => { event.preventDefault(); applyDrafts(); }}
           >
             <div className="space-y-1.5">
@@ -254,67 +255,65 @@ function CurrentConnectionContent() {
 
           {/* Same connection, so the waits live with the address rather than a
               second card: the two numbers this device applies to requests on it. */}
-          <div id="st-card-conn-timeout" className="grid gap-x-8 gap-y-3 pt-3 sm:grid-cols-2">
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-              <label htmlFor="st-conn-request-timeout" className="text-[13px] text-ink">{t('st.conn.timeoutLabel')}</label>
-              <span className="flex items-center gap-1.5">
-                <SavedTick show={timeoutSaved} />
-                <CommitInput
-                  id="st-conn-request-timeout"
-                  className="w-20 text-right"
-                  inputMode="numeric"
-                  value={String(savedRequestTimeout)}
-                  validate={timeoutIssue}
-                  onCommit={(text) => { saveRequestTimeout(Number(text)); }}
-                />
-              </span>
-            </div>
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-              <label htmlFor="st-conn-reading-timeout" className="text-[13px] text-ink">{t('st.conn.readingTimeoutLabel')}</label>
-              <span className="flex items-center gap-1.5">
-                <SavedTick show={readingTimeoutSaved} />
-                <CommitInput id="st-conn-reading-timeout" className="w-20 text-right" inputMode="numeric"
-                  value={String(savedReadingTimeout)}
-                  validate={(text) => {
-                    const issue = validateReadingTimeoutSeconds(text === '' ? Number.NaN : Number(text));
-                    return issue === null ? null : issueText(locale, issue);
-                  }}
-                  onCommit={(text) => {
-                    const seconds = Number(text);
-                    writeSettings({ readingTimeoutSeconds: seconds });
-                    setSavedReadingTimeout(seconds);
-                    pingReadingTimeoutSaved();
-                  }} />
-              </span>
-            </div>
+          <div id="st-card-conn-timeout" className="contents">
+            <SettingField label={t('st.conn.timeoutLabel')} htmlFor="st-conn-request-timeout">
+              <SavedTick show={timeoutSaved} />
+              <CommitInput
+                id="st-conn-request-timeout"
+                className="w-24 text-right"
+                inputMode="numeric"
+                value={String(savedRequestTimeout)}
+                validate={timeoutIssue}
+                onCommit={(text) => { saveRequestTimeout(Number(text)); }}
+              />
+              <span className="text-[12px] text-ink-faint">{t('st.conn.timeoutUnit')}</span>
+            </SettingField>
+            <SettingField label={t('st.conn.readingTimeoutLabel')} htmlFor="st-conn-reading-timeout">
+              <SavedTick show={readingTimeoutSaved} />
+              <CommitInput id="st-conn-reading-timeout" className="w-24 text-right" inputMode="numeric"
+                value={String(savedReadingTimeout)}
+                validate={(text) => {
+                  const issue = validateReadingTimeoutSeconds(text === '' ? Number.NaN : Number(text));
+                  return issue === null ? null : issueText(locale, issue);
+                }}
+                onCommit={(text) => {
+                  const seconds = Number(text);
+                  writeSettings({ readingTimeoutSeconds: seconds });
+                  setSavedReadingTimeout(seconds);
+                  pingReadingTimeoutSaved();
+                }} />
+              <span className="text-[12px] text-ink-faint">{t('st.conn.timeoutUnit')}</span>
+            </SettingField>
           </div>
 
-          <div id="st-card-conn-disconnect" className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 pt-3">
-            <p className="text-[12.5px] text-ink-soft">
-              {isSsh ? t('connect.sshDisconnectBody') : t('st.conn.disconnectBody')}
-            </p>
-            <button
-              type="button"
-              data-conn-disconnect
-              className={DANGER_GHOST_BUTTON}
-              onClick={() => {
-                // Disconnecting only drops the browser's stored link, so the
-                // inverse is reconnecting with the endpoint it had: run at
-                // once and offer Undo rather than asking first.
-                if (isSsh) { setConfirmDisconnect(true); return; }
-                const prior = { url: config.url, token: config.token };
-                disconnect();
-                pushUndoToast({
-                  text: t('st.conn.disconnectedUndo'),
-                  undoFailedText: t('toast.undoFailed'),
-                  undo: () => { applyConnection(prior); },
-                });
-              }}
+          <div id="st-card-conn-disconnect" className="contents">
+            <SettingField
+              label={t('sidebar.disconnect')}
+              help={isSsh ? t('connect.sshDisconnectBody') : t('st.conn.disconnectBody')}
             >
-              {t('sidebar.disconnect')}
-            </button>
+              <button
+                type="button"
+                data-conn-disconnect
+                className={DANGER_GHOST_BUTTON}
+                onClick={() => {
+                  // Disconnecting only drops the browser's stored link, so the
+                  // inverse is reconnecting with the endpoint it had: run at
+                  // once and offer Undo rather than asking first.
+                  if (isSsh) { setConfirmDisconnect(true); return; }
+                  const prior = { url: config.url, token: config.token };
+                  disconnect();
+                  pushUndoToast({
+                    text: t('st.conn.disconnectedUndo'),
+                    undoFailedText: t('toast.undoFailed'),
+                    undo: () => { applyConnection(prior); },
+                  });
+                }}
+              >
+                {t('sidebar.disconnect')}
+              </button>
+            </SettingField>
           </div>
-        </div>
+        </SettingsBox>
       </SectionCard>
 
       <ConnectionLogCard />
@@ -323,22 +322,17 @@ function CurrentConnectionContent() {
           simply absent there rather than a "desktop only" shell. */}
       {!isSsh && isDesktop ? (
         <SectionCard id="st-card-conn-owned" title={t('st.conn.ownedTitle')}>
-          <div className="space-y-2">
-            <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-              <p className="text-[12.5px] text-ink-soft">
-                {t('st.conn.ownedBody')}
-                {busySessions !== undefined && busySessions > 0 ? (
-                  <span className="ml-2 text-ink" data-conn-busy-sessions>
-                    {t('st.conn.busySessions', { count: busySessions })}
-                  </span>
-                ) : null}
-              </p>
+          <SettingsBox>
+            <SettingField
+              label={t('st.conn.restart')}
+              help={busySessions !== undefined && busySessions > 0 ? t('st.conn.busySessions', { count: busySessions }) : t('st.conn.ownedBody')}
+            >
               <button type="button" className={SECONDARY_BUTTON} disabled={restarting} onClick={() => { setConfirmRestart(true); }}>
                 {restarting ? t('st.conn.restarting') : t('st.conn.restart')}
               </button>
-            </div>
-            <FeedbackLine feedback={feedback} />
-          </div>
+            </SettingField>
+          </SettingsBox>
+          <FeedbackLine feedback={feedback} />
         </SectionCard>
       ) : null}
 
@@ -388,15 +382,16 @@ function ConnectionLogCard() {
   };
   return (
     <SectionCard id="st-card-conn-log" title={t('st.conn.logTitle')} scope="app" aside={t('st.conn.logBody')}>
-      <div className="space-y-2" data-conn-log>
-        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
-          <p className="text-[12.5px] tabular-nums text-ink" data-conn-log-summary>
-            {closes === 0 ? t('st.conn.logEmpty') : t('st.conn.logSummary', { closes, gaps, total: log.length })}
-          </p>
-          <button type="button" className={SECONDARY_BUTTON} data-conn-log-copy disabled={log.length === 0} onClick={() => { void copy(); }}>
-            {t('st.conn.logCopy')}
-          </button>
-        </div>
+      <div data-conn-log>
+        <SettingsBox>
+          <SettingField
+            label={closes === 0 ? t('st.conn.logEmpty') : t('st.conn.logSummary', { closes, gaps, total: log.length })}
+          >
+            <button type="button" className={SECONDARY_BUTTON} data-conn-log-copy disabled={log.length === 0} onClick={() => { void copy(); }}>
+              {t('st.conn.logCopy')}
+            </button>
+          </SettingField>
+        </SettingsBox>
         <FeedbackLine feedback={feedback} />
       </div>
     </SectionCard>

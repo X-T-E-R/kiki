@@ -362,11 +362,11 @@ describe('SpacesSection in the main space', () => {
 
   it('records the window mode for the next launch', async () => {
     // The choice starts on switch mode so picking the other one is a change:
-    // clicking the already-checked radio fires nothing.
+    // clicking the already-selected segment fires nothing.
     writeDesktopPrefs({ windowMode: 'switch' });
     resetLaunchWindowMode();
     await render(<SpacesSection />);
-    await click('[data-space-window-choice="windows"] input');
+    await click('[data-space-window-choice="windows"]');
     expect(host.writeDesktopPrefs).toHaveBeenCalledWith({ windowMode: 'windows' });
     expect(document.querySelector('[data-space-window-note]')?.textContent).toBe('Restart Kiki to use this.');
   });

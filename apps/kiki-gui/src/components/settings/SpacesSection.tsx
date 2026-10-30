@@ -39,6 +39,8 @@ import { Icon } from '../icons';
 import { DetailBack, DetailSplit, DetailRailGroup, DetailRailItem, useDetailParam } from '../overlays';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingField, SettingsBox } from './fields';
+import { SettingsSegmented } from './SettingsPrimitives';
 import { LIST_ROW_HEIGHT, ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec, type ListSortSpec } from './list';
 import { SpaceFormPanel } from './spaces/SpaceFormPanel';
 import { DeleteSpaceDialog, SpaceCredentialsDialog } from './spaces/SpaceDialogs';
@@ -156,35 +158,29 @@ function WindowModeCard({ sub }: { sub: boolean }) {
   return (
     <SectionCard id="st-card-space-window" title={t('st.spaces.windowTitle')} scope="app" aside={aside}>
       {!sub ? (
-        <fieldset className="space-y-2" data-space-window-mode={prefs.windowMode}>
-          <legend className="sr-only">{t('st.spaces.windowTitle')}</legend>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {([
-              { value: 'switch', titleKey: 'st.spaces.windowSwitch', descKey: 'st.spaces.windowSwitchDesc' },
-              { value: 'windows', titleKey: 'st.spaces.windowWindows', descKey: 'st.spaces.windowWindowsDesc' },
-            ] as const).map((option) => {
-              const selected = prefs.windowMode === option.value;
-              return (
-                <label key={option.value} data-space-window-choice={option.value}
-                  className={`cursor-pointer rounded-lg p-3 transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-selected-ink/50 ${selected ? 'bg-panel shadow-[var(--kiki-sheet-shadow)]' : 'bg-ink/[0.03] hover:bg-ink/[0.05]'}`}>
-                  <span className="flex items-start gap-2">
-                    <input type="radio" name="space-window-mode" checked={selected} onChange={() => { choose(option.value); }}
-                      className="mt-0.5 accent-[var(--color-selected-ink)]" />
-                    <span>
-                      <span className="block text-[13px] font-medium text-ink">{t(option.titleKey)}</span>
-                      <span className="mt-0.5 block text-[12px] text-ink-faint">{t(option.descKey)}</span>
-                    </span>
-                  </span>
-                </label>
-              );
-            })}
-          </div>
+        <SettingsBox data-space-window-mode={prefs.windowMode} data-testid="space-window-box">
+          <SettingField
+            label={t('st.spaces.windowTitle')}
+            labelId="space-window-label"
+            help={t(prefs.windowMode === 'switch' ? 'st.spaces.windowSwitchDesc' : 'st.spaces.windowWindowsDesc')}
+          >
+            <SettingsSegmented<SpaceWindowMode>
+              ariaLabelledBy="space-window-label"
+              dataAttr="data-space-window-choice"
+              value={prefs.windowMode}
+              onChange={choose}
+              choices={[
+                { value: 'switch', label: t('st.spaces.windowSwitch') },
+                { value: 'windows', label: t('st.spaces.windowWindows') },
+              ]}
+            />
+          </SettingField>
           <p className="text-[12px] text-ink-faint" data-space-window-note>
             {prefs.windowMode !== launched
               ? <span className="font-medium text-amber-ink">{t('st.spaces.windowPending')}</span>
               : t('st.spaces.windowNextLaunch')}
           </p>
-        </fieldset>
+        </SettingsBox>
       ) : null}
     </SectionCard>
   );
