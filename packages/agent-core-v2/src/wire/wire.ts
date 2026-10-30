@@ -18,6 +18,8 @@ export interface WireJournalIdentity {
   readonly size: number;
   readonly mtimeMs: number;
   readonly headHash: string;
+  /** Append-log generation; a store rewrite or repair replaces it even when the length is unchanged. */
+  readonly storeGeneration?: string;
 }
 
 /** `startByte` reads the appended tail without migrating or rewriting the prefix. */

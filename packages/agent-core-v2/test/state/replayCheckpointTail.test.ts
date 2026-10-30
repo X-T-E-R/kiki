@@ -196,6 +196,20 @@ async function checkpointed(): Promise<Harness> {
   return first;
 }
 
+async function largeCheckpoint(): Promise<{ readonly storage: InMemoryStorageService; readonly size: number }> {
+  const storage = new InMemoryStorageService();
+  const first = harness(storage);
+  await seed(first.wire);
+  for (let index = 0; index < 32; index += 1) {
+    first.wire.appendRecord({ type: 'context.append_message', message: message('user', `bulk-${index}-${'x'.repeat(8192)}`), time: 10 + index });
+  }
+  await first.wire.flush();
+  await first.dispatcher.restore();
+  const size = (await bytesOf(storage)).byteLength;
+  await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+  return { storage, size };
+}
+
 async function bytesOf(storage: InMemoryStorageService): Promise<Uint8Array> {
   const bytes = await storage.read(SCOPE, AGENT_WIRE_RECORD_KEY);
   if (bytes === undefined) throw new Error('journal missing');
@@ -490,6 +504,68 @@ describe('replay checkpoint tail', () => {
     const rewrittenReads = watchReads(rewritten.wire);
     await rewritten.dispatcher.restore();
     expect(rewrittenReads.full).toBe(1);
+  });
+
+  it.each([false, true])('replays a large journal after a same-length store rewrite between its head and boundary, then append=%s', async (appendAfter) => {
+    const { storage, size } = await largeCheckpoint();
+    const saved = await harness(storage).docs.get<{ wire: { storeGeneration?: string } }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    expect(saved?.wire.storeGeneration).toBe(await new AppendLogStore(storage).generation(SCOPE, AGENT_WIRE_RECORD_KEY));
+
+    const store = new AppendLogStore(storage);
+    const records: unknown[] = [];
+    for await (const record of store.read(SCOPE, AGENT_WIRE_RECORD_KEY)) records.push(record);
+    const edited = JSON.parse(JSON.stringify(records).replace('bulk-16-', 'EDIT-16-')) as unknown[];
+    await store.rewrite(SCOPE, AGENT_WIRE_RECORD_KEY, edited);
+    const after = await bytesOf(storage);
+    expect(after.byteLength).toBe(size);
+    const at = Buffer.from(after).indexOf(Buffer.from('EDIT-16-'));
+    expect(at).toBeGreaterThan(64 * 1024);
+    expect(at).toBeLessThan(size - 4096);
+    if (appendAfter) {
+      const writer = harness(storage);
+      writer.wire.appendRecord({ type: 'context.append_message', message: message('user', 'after-rewrite'), time: 99 });
+      await writer.wire.flush();
+    }
+
+    const restored = harness(storage);
+    const reads = watchReads(restored.wire);
+    await restored.dispatcher.restore();
+    expect(reads.full).toBe(1);
+    expect(reads.tails).toEqual([]);
+    expect(texts(restored.state)).toContain(`EDIT-16-${'x'.repeat(8192)}`);
+    expect(texts(restored.state)).not.toContain(`bulk-16-${'x'.repeat(8192)}`);
+    if (appendAfter) expect(texts(restored.state).at(-1)).toBe('after-rewrite');
+  });
+
+  it('keeps reusing a large checkpoint across plain appends in the same store generation', async () => {
+    const { storage, size } = await largeCheckpoint();
+    const writer = harness(storage);
+    writer.wire.appendRecord({ type: 'context.append_message', message: message('user', 'plain-append'), time: 99 });
+    await writer.wire.flush();
+    const restored = harness(storage);
+    const reads = watchReads(restored.wire);
+    await restored.dispatcher.restore();
+    expect(reads.full).toBe(0);
+    expect(reads.tails).toEqual([size]);
+    expect(texts(restored.state).at(-1)).toBe('plain-append');
+  });
+
+  it('does not trust a boundary-only checkpoint that has no store generation', async () => {
+    const { storage, size } = await largeCheckpoint();
+    const docs = harness(storage).docs;
+    const saved = await docs.get<{ wire: Record<string, unknown> }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    const { storeGeneration: _dropped, ...legacyWire } = saved!.wire;
+    await docs.set(CHECKPOINT_SCOPE, CHECKPOINT_KEY, { ...saved, wire: legacyWire });
+    const writer = harness(storage);
+    writer.wire.appendRecord({ type: 'context.append_message', message: message('user', 'legacy-append'), time: 99 });
+    await writer.wire.flush();
+    const restored = harness(storage);
+    const reads = watchReads(restored.wire);
+    await restored.dispatcher.restore();
+    expect(reads.full).toBe(1);
+    expect(reads.tails).toEqual([]);
+    expect(size).toBeGreaterThan(64 * 1024);
+    expect(texts(restored.state).at(-1)).toBe('legacy-append');
   });
 
   it('hashes only the bytes appended since the previous prefix digest', async () => {

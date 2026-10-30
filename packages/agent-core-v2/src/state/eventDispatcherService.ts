@@ -58,6 +58,7 @@ interface ReplayCheckpointEnvelope {
     readonly headHash?: string;
     readonly prefixSha256?: string;
     readonly boundarySha256?: string;
+    readonly storeGeneration?: string;
   };
   readonly stateNames: readonly string[];
   readonly graph: ReplayCheckpointGraph;
@@ -536,7 +537,8 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       if (!this.checkpointStable(generation, revision)) return false;
       const saved = this.savedCheckpoint;
       if (saved?.revision === revision && saved.wire.size === wire.size &&
-        saved.wire.mtimeMs === wire.mtimeMs && saved.wire.headHash === wire.headHash) return true;
+        saved.wire.mtimeMs === wire.mtimeMs && saved.wire.headHash === wire.headHash &&
+        saved.wire.storeGeneration === wire.storeGeneration) return true;
       phase = 'journal_digest';
       const small = wire.size < JOURNAL_HEAD_HASH_BYTES || this.wire.journalBoundarySha256 === undefined;
       const digest = small
@@ -599,12 +601,17 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       ) {
         return undefined;
       }
-      const exact = headMatches && wire.size === envelope.wire.size && wire.mtimeMs === envelope.wire.mtimeMs;
+      const sameGeneration = envelope.wire.storeGeneration !== undefined &&
+        envelope.wire.storeGeneration === wire.storeGeneration;
+      const generationChanged = envelope.wire.storeGeneration !== undefined && !sameGeneration;
+      const exact = headMatches && !generationChanged && wire.size === envelope.wire.size &&
+        wire.mtimeMs === envelope.wire.mtimeMs;
       let tailByte: number | undefined;
       if (!exact) {
         if (wire.size < envelope.wire.size) return undefined;
         if (!headMatches && envelope.wire.size >= JOURNAL_HEAD_HASH_BYTES) return undefined;
-        const boundary = isSha256(envelope.wire.boundarySha256) && headMatches && this.wire.journalBoundarySha256 !== undefined
+        const boundary = isSha256(envelope.wire.boundarySha256) && headMatches && sameGeneration &&
+          this.wire.journalBoundarySha256 !== undefined
           ? await this.wire.journalBoundarySha256(envelope.wire.size)
           : undefined;
         if (boundary !== undefined && boundary !== envelope.wire.boundarySha256) return undefined;

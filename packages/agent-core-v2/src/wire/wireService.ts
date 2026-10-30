@@ -631,6 +631,7 @@ export class WireService extends Service implements IWireService {
       size: await this.journalSize() ?? 0,
       mtimeMs: await this.storage.mtime(this.wireScope, AGENT_WIRE_RECORD_KEY) ?? 0,
       headHash: await this.journalHeadHash(),
+      storeGeneration: await this.log.generation(this.wireScope, AGENT_WIRE_RECORD_KEY),
     };
   }
 
