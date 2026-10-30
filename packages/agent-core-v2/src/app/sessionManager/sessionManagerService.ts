@@ -145,9 +145,9 @@ export class SessionManager implements ISessionManager {
     this.resumeFailures.delete(sessionId);
     const promise = this.serializeLifecycle(sessionId, () => withRestoreDeadline(async () => {
       const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(undefined, { sessionId }, name, action);
+      if (!this.sessions.has(sessionId)) await phase('restore_residency', () => this.reclaimIdleResidency(sessionId));
       const releaseRestore = await phase('restore_queue', () => this.reserveRestoreSlot(sessionId));
       try {
-        if (!this.sessions.has(sessionId)) await phase('restore_residency', () => this.reclaimIdleResidency(sessionId));
         const target = await phase('restore_workspace', () => this.controllerForSession(sessionId));
         if (target === undefined) return undefined;
         return await phase('session_resume', () => this.runWorkspaceOperation(

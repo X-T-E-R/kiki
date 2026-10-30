@@ -138,6 +138,69 @@ describe('SessionManager', () => {
     }
   });
 
+  it('does not occupy a restore slot while idle-session unload is stalled', async () => {
+    const didCreate = new Emitter<SessionCreatedEvent>();
+    const didClose = new Emitter<SessionClosedEvent>();
+    let heapPressure = true;
+    let unloading = false;
+    let releaseUnload!: () => void;
+    const unloadGate = new Promise<void>(resolve => { releaseUnload = resolve; });
+    const entered: string[] = [];
+    const fake = controller('warm');
+    const service = Object.assign(fake.service, {
+      onDidCreateSession: didCreate.event,
+      onDidCloseSession: didClose.event,
+      create: async () => { didCreate.fire({ sessionId: 'warm', handle: fake.handle, source: 'startup' }); return fake.handle; },
+      resume: async (sessionId: string) => {
+        entered.push(sessionId);
+        const handle = { id: sessionId } as ISessionScopeHandle;
+        didCreate.fire({ sessionId, handle, source: 'resume' });
+        return handle;
+      },
+      unload: async (sessionId: string) => {
+        unloading = true;
+        await unloadGate;
+        didClose.fire({ sessionId, reason: 'evict' });
+        return true;
+      },
+    });
+    const workspace = { id: 'workspace-1', program: { sessionControllerGeneration: 'generation-1', createSessionController: () => service } } as unknown as WorkspaceInstance;
+    const disposables = new DisposableStore();
+    const services = createServices(disposables, { additionalServices: reg => {
+      reg.definePartialInstance(IWorkspaceInstanceManager, { acquire: async () => ({ instance: workspace, dispose: () => {} }), get: () => workspace });
+      reg.definePartialInstance(ISessionIndex, { get: async () => ({ workspaceId: workspace.id, cwd: '/workspace' }) as Awaited<ReturnType<ISessionIndex['get']>> });
+      reg.definePartialInstance(IConfigService, { ready: Promise.resolve(), get: (() => ({ maxConcurrentRestores: 1, maxResidentHeapBytes: heapPressure ? 1 : 0 })) as IConfigService['get'] });
+      reg.definePartialInstance(IFlagService, { enabled: () => true });
+      reg.definePartialInstance(IBootstrapService, { scope: name => name });
+      reg.definePartialInstance(IAtomicDocumentStore, { get: (async () => ({ agents: { main: {} } })) as IAtomicDocumentStore['get'] });
+      reg.definePartialInstance(IFileSystemStorageService, { size: async () => undefined });
+      reg.define(ISessionManager, SessionManager);
+    } });
+    const manager = services.get(ISessionManager);
+    const progress: RestoreProgress[] = [];
+    const attempts: Promise<unknown>[] = [];
+    try {
+      await manager.create({ workDir: '/workspace' });
+      attempts.push(observeRestore(value => progress.push(value), () => manager.resume('cold-a')));
+      await drainMicrotasks();
+      expect(unloading).toBe(true);
+      heapPressure = false;
+      attempts.push(manager.resume('cold-b'));
+      await drainMicrotasks();
+      expect(entered).toEqual(['cold-b']);
+      expect(progress.some(value => value.phase === 'restore_queue')).toBe(false);
+      releaseUnload();
+      await Promise.all(attempts);
+      expect(entered).toEqual(['cold-b', 'cold-a']);
+    } finally {
+      releaseUnload();
+      await Promise.allSettled(attempts);
+      await disposables.dispose();
+      didCreate.dispose();
+      didClose.dispose();
+    }
+  });
+
   it('serializes resume, close, and lifecycle critical sections per session', async () => {
     const didCreate = new Emitter<SessionCreatedEvent>();
     const didClose = new Emitter<SessionClosedEvent>();

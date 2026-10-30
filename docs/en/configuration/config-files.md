@@ -637,7 +637,7 @@ Replace `gemini-4-argon` and `google-native` with the exact keys used in your `[
 
 ## `session_residency`
 
-Session restoration uses a process-wide queue, shared across workspaces. Empty sessions without an agent or main wire bypass this queue.
+Session restoration uses a process-wide queue, shared across workspaces. Empty sessions without an agent or main wire bypass this queue. Idle-session reclamation runs before acquiring a restore slot, so unloading a slow session does not occupy one.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
