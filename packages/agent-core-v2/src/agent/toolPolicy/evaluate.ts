@@ -1,4 +1,4 @@
-import { egoHostScriptDenied, egoHostScriptExplicitlyGranted, isEgoHostScriptToolName, isToolActive as isProfileToolActive } from '@kiki/agent-profiles/toolPolicy';
+import { egoHostScriptDenied, egoHostScriptExplicitlyGranted, isEgoHostScriptToolName, isPluginToolName, isToolActive as isProfileToolActive } from '@kiki/agent-profiles/toolPolicy';
 import { isSubagentToolAllowed, type SubagentToolPolicy } from '@kiki/agent-profiles/subagentToolPolicy';
 
 import { isMcpToolName, type ToolSource } from '#/tool/toolContract';
@@ -105,7 +105,7 @@ export function resolveActiveToolNames(
   const source = policy.tools ?? policy.toolAllowPolicies?.[0];
   if (source === undefined) return undefined;
   return source.filter((name) =>
-    isToolActive(policy, name, isMcpToolName(name) ? 'mcp' : 'builtin'),
+    isToolActive(policy, name, isMcpToolName(name) ? 'mcp' : isPluginToolName(name) ? 'plugin' : 'builtin'),
   );
 }
 
@@ -134,7 +134,7 @@ export function findInactiveToolPatterns(
       }
       continue;
     }
-    if (pattern === 'browser__*') continue;
+    if ((isPluginToolName(pattern) && GLOB_MAGIC.test(pattern)) || pattern === 'browser__*') continue;
     if (GLOB_MAGIC.test(pattern)) {
       issues.push({ pattern, kind: 'wildcard-not-mcp' });
       continue;

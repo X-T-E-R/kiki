@@ -119,7 +119,9 @@ A thread created by another thread nests under its creator by default. **Show at
 
 The same menu also offers **Copy thread link** and **Add to conversation**, which inserts a reference into the conversation you have open.
 
-Archiving a thread also archives its attached conversations, including deeper descendants and conversations not loaded in the sidebar. A thread explicitly shown at top level, together with its descendants, stays independent when its ancestor is archived; archiving that top-level thread itself still includes its attached conversations. A filter or workspace group that merely displays a child as a top-level row does not make it independent. Archive preserves history and does not remove worktrees. If only some conversations are archived, retry to finish the remaining ones. Restoring a thread restores only that thread, not every previously archived descendant.
+Archiving a thread also archives its attached conversations, including deeper descendants and conversations not loaded in the sidebar. A thread explicitly shown at top level, together with its descendants, stays independent when its ancestor is archived; archiving that top-level thread itself still includes its attached conversations. A filter or workspace group that merely displays a child as a top-level row does not make it independent. If only some conversations are archived, retry to finish the remaining ones. Restoring a thread restores only that thread, not every previously archived descendant.
+
+Archive preserves history and keeps the worktree unless you select **Also remove its worktree** in the confirmation. If archiving is refused, the dialog shows the reason and keeps your choice for retry; the worktree is not removed. Resolve the reported issue before retrying. After a successful archive, worktree removal still keeps checkouts with uncommitted changes or unpushed commits.
 
 Open **Settings → Sessions → Manage archived conversations** to browse saved archives by title, workspace and time. Search matches titles and workspaces across pages; opening a conversation reads its history without restoring it. Return to the archive manager to continue browsing.
 

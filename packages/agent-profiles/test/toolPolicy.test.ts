@@ -38,10 +38,15 @@ describe('shared profile tool matching', () => {
     expect(isToolActive(policy, name)).toBe(expected);
   });
 
-  it('keeps MCP globs and exact builtin/plugin names unchanged', () => {
+  it('keeps MCP and plugin globs alongside exact builtin/plugin names', () => {
     const inputs: [ToolActivationPolicy, string, ToolSource, boolean][] = [
       [{ tools: ['mcp__fixture__*'] }, 'mcp__fixture__read', 'mcp', true],
       [{ tools: ['mcp__fixture__*'], disallowedTools: ['mcp__*__read'] }, 'mcp__fixture__read', 'mcp', false],
+      [{ tools: ['plugin__*'] }, 'plugin__fixture__read', 'plugin', true],
+      [{ tools: ['plugin__fixture__*'] }, 'plugin__fixture__read', 'plugin', true],
+      [{ tools: ['plugin__fixture__*'] }, 'plugin__other__read', 'plugin', false],
+      [{ tools: ['plugin__fixture__*'], disallowedTools: ['plugin__fixture__*'] }, 'plugin__fixture__read', 'plugin', false],
+      [{ tools: ['plugin__fixture__*'], disallowedTools: ['plugin__other__*'] }, 'plugin__fixture__read', 'plugin', true],
       [{ tools: ['Bash*'] }, 'Bash', 'builtin', false],
       [{ disallowedTools: ['*'] }, 'Bash', 'builtin', true],
       [{ tools: ['PluginTool'], disallowedTools: ['Plugin*'] }, 'PluginTool', 'plugin', true],

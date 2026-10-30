@@ -10,6 +10,7 @@ import { useState } from 'react';
 
 import type { Session } from '@kiki/protocol';
 
+import { sessionActionErrorText } from '@kiki/session-core/commands';
 import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
 import { useThreadTitle } from '../lib/threadTitles';
@@ -82,7 +83,7 @@ export function WorktreeArchiveDialog({
         // Refresh any partial success behind the dialog, retaining its choice
         // and retry path. Checkout removal only runs after a full archive.
         setBusy(false);
-        setError(errorText(locale, cause));
+        setError(sessionActionErrorText(locale, cause));
         onArchiveFailed?.();
       });
   };

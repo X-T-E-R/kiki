@@ -3,6 +3,7 @@ import { subagentToolDefault } from './subagentToolPolicy';
 import {
   isToolActive as evaluateToolActive,
   isMcpToolName,
+  isPluginToolName,
   resolveActiveToolNames,
   type ToolReference,
 } from './toolPolicy';
@@ -174,7 +175,7 @@ function projectedTools(
   const candidates = new Map<string, ToolReference>();
   for (const name of activeTools ?? []) {
     const known = tools.find((tool) => tool.name === name);
-    candidates.set(name, known ?? { name, source: isMcpToolName(name) ? 'mcp' : 'builtin' });
+    candidates.set(name, known ?? { name, source: isMcpToolName(name) ? 'mcp' : isPluginToolName(name) ? 'plugin' : 'builtin' });
   }
   for (const tool of tools) candidates.set(tool.name, tool);
   const effectiveTools = [...candidates.values()]

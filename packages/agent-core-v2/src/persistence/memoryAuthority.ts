@@ -13,7 +13,7 @@ const migrationSchema = z.object({
 const authoritySchema = z.object({
   version: z.literal(1), epoch: z.number().int().nonnegative(), backend: z.enum(['legacy', 'sqlite']),
   mode: z.enum(['active', 'migrating', 'readonly']), migration: migrationSchema.optional(),
-  migrationId: z.string().uuid().optional(), recoveryId: z.string().uuid().optional(),
+  migrationId: z.string().uuid().optional(), recoveryId: z.string().uuid().optional(), migrationIssues: z.array(issueSchema).max(1000).optional(),
 }).strict().superRefine((value, context) => {
   if (value.mode === 'migrating' ? value.backend !== 'legacy' || value.migration === undefined : value.migration !== undefined) context.addIssue({ code: 'custom', message: 'Invalid Memory migration marker' });
   if (value.backend === 'legacy' && value.mode === 'readonly' || value.backend === 'sqlite' && value.migrationId === undefined || value.mode === 'readonly' && value.recoveryId === undefined) context.addIssue({ code: 'custom', message: 'Invalid Memory authority marker' });

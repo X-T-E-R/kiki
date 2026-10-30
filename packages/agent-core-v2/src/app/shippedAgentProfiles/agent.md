@@ -44,6 +44,7 @@ tools:
   - ExitPlanMode
   - Goal
   - mcp__*
+  - plugin__*
 can_spawn_subagents: true
 ---
 

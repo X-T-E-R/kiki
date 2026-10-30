@@ -3831,6 +3831,12 @@ describe('AgentToolPolicyService global [tools] config', () => {
     expect(svc.isToolActive('Read')).toBe(true);
   });
 
+  it('admits enabled plugin tools from the shipped default main profile and honors plugin denies', async () => {
+    const svc = await bindWithToolsConfig({ disabled: ['plugin__kiki_mail__*'] });
+    expect(svc.isToolActive('plugin__kiki_everything__search', 'plugin')).toBe(true);
+    expect(svc.isToolActive('plugin__kiki_mail__Mailbox', 'plugin')).toBe(false);
+  });
+
   it('intersects the global config with the profile policy instead of overriding it', async () => {
     const svc = await bindWithToolsConfig({ enabled: ['Read', 'Bash'] }, 'config-intersect');
     expect(svc.isToolActive('Read')).toBe(true);

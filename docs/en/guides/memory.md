@@ -86,9 +86,13 @@ A genuinely new document uses `id: new`, `revision: null` and `origin: null`. Re
 
 ## Backend migration and recovery
 
-Starting the upgraded Kiki automatically migrates existing memory through the SQLite import and validation pipeline. New homes use SQLite too. No migration button, old-writer confirmation or experimental switch is required. The same tools and editor wait for the upgrade, then use SQLite; original files remain unchanged, and subsequent starts reuse the completed database. Storage migration preserves **Allow memory**: if it is off, agents still receive no saved memory and the advisor sends none out.
+Starting the upgraded Kiki automatically migrates existing memory through the SQLite import and validation pipeline. New homes use SQLite too. No migration button, old-writer confirmation or experimental switch is required. The same tools and editor wait for the upgrade, then use SQLite; original files remain unchanged, and subsequent starts reuse the completed database. Entries with different IDs stay separate even when their source and body match, preserving their archive status and replacement links.
 
-If the upgrade stops, the [Memory API](/en/server/rest-api#backend-migration-and-recovery) reports its saved operation ID, last committed page and source issues. Normal memory access stays blocked instead of reading an older copy. Repair the reported source and retry that operation, or restart to resume it. Upgrade other installations sharing the home as well; the backend marker governs compatible writers, not binaries released before that protocol.
+Storage migration preserves **Allow memory**: if it is off, agents still receive no saved memory and the advisor sends none out.
+
+If the upgrade stops, the [Memory API](/en/server/rest-api#backend-migration-and-recovery) reports its saved operation ID, last committed page and source issues. Normal memory access stays blocked instead of reading an older copy. Repair the reported source and retry that operation, or restart to continue from its saved progress; scopes with earlier issues are checked again. Forgotten sources are skipped, and stored corrections are kept instead of applying the source files. These two kinds of source notes do not block the upgrade; review their details on **/memory** after it finishes.
+
+Upgrade other installations sharing the home as well; the backend marker governs compatible writers, not binaries released before that protocol.
 
 The API can also save a governed recovery package and switch SQLite to read-only mode. Current entries stay readable, including corrections made after migration; editing resumes only with the current recovery ID and epoch returned by the API. Keep the full database backup: Markdown exports current entries and pending proposals, while the database also retains immutable revisions, correction records and forget barriers. Do not restore an old file directory over newer governed memory.
 

@@ -18,6 +18,10 @@ export function isMcpToolName(name: string): boolean {
   return name.startsWith('mcp__');
 }
 
+export function isPluginToolName(name: string): boolean {
+  return name.startsWith('plugin__');
+}
+
 export function isBrowserOperationToolName(name: string): boolean {
   return /^browser__(?:agent_browser_[a-z0-9_]+|codex_[a-z0-9_]+)$/.test(name);
 }
@@ -48,9 +52,12 @@ function allowListsPass(policy: ToolActivationPolicy, name: string, source: Tool
     (candidate): candidate is readonly string[] => candidate !== undefined,
   );
   for (const allowPolicy of allowPolicies) {
-    const allowed = allowPolicy.includes('*') || (source !== 'mcp'
-      ? isToolExplicitlyNamed(allowPolicy, name, source)
-      : allowPolicy.filter((pattern) => isMcpToolName(pattern)).some((pattern) => picomatch.isMatch(name, pattern)));
+    const allowed = allowPolicy.includes('*') || (source === 'mcp'
+      ? allowPolicy.filter((pattern) => isMcpToolName(pattern)).some((pattern) => picomatch.isMatch(name, pattern))
+      : source === 'plugin'
+        ? allowPolicy.filter((pattern) => isPluginToolName(pattern)).some((pattern) => picomatch.isMatch(name, pattern)) ||
+          isToolExplicitlyNamed(allowPolicy, name, source)
+        : isToolExplicitlyNamed(allowPolicy, name, source));
     if (!allowed) return false;
   }
   return true;
@@ -80,10 +87,12 @@ export function isToolActive(
   }
   if (!allowListsPass(policy, name, source)) return false;
   if (policy.disallowedTools === undefined) return true;
-  if (source !== 'mcp') return !nonMcpDenied(policy.disallowedTools, name);
-  return !policy.disallowedTools
-    .filter((pattern) => isMcpToolName(pattern))
-    .some((pattern) => picomatch.isMatch(name, pattern));
+  if (source !== 'mcp' && source !== 'plugin') return !nonMcpDenied(policy.disallowedTools, name);
+  const patterns = source === 'mcp'
+    ? policy.disallowedTools.filter((pattern) => isMcpToolName(pattern))
+    : policy.disallowedTools.filter((pattern) => isPluginToolName(pattern));
+  return !patterns.some((pattern) => picomatch.isMatch(name, pattern)) &&
+    (source !== 'plugin' || !nonMcpDenied(policy.disallowedTools, name));
 }
 
 export function resolveActiveToolNames(
@@ -92,7 +101,7 @@ export function resolveActiveToolNames(
   const source = policy.tools ?? policy.toolAllowPolicies?.[0];
   if (source === undefined) return undefined;
   return source.filter((name) =>
-    isToolActive(policy, name, isMcpToolName(name) ? 'mcp' : 'builtin'),
+    isToolActive(policy, name, isMcpToolName(name) ? 'mcp' : isPluginToolName(name) ? 'plugin' : 'builtin'),
   );
 }
 

@@ -7678,6 +7678,48 @@ describe('settled history folds and the unified locate entry', () => {
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
   });
 
+  it('lands a deep-link turn locate on its exact row through paged history', async () => {
+    resetTimelineLocatorsForTests();
+    const { root, container } = makeRoot();
+    // The initial window holds only the newest turns; each older page prepends
+    // the next batch behind it, as the usage trace's turn drilldown drives.
+    const windowTurns = 8;
+    const pageTurns = 4;
+    const totalTurns = 40;
+    const targetTurn = 9;
+    let loaded = totalTurns - windowTurns;
+    let state = transcriptState(
+      Array.from({ length: windowTurns }, (_, i) => turnBlocks(totalTurns - windowTurns + 1 + i, `turn ${totalTurns - windowTurns + 1 + i}`)).flat(),
+      { sessionId: 'session_deep_locate', hasMoreHistory: true },
+    );
+    const onLoadOlder = vi.fn(async () => {
+      const next = Math.max(0, loaded - pageTurns);
+      const page = Array.from({ length: loaded - next }, (_, i) => turnBlocks(next + 1 + i, `turn ${next + 1 + i}`)).flat();
+      loaded = next;
+      state = { ...state, blocks: [...page, ...state.blocks], hasMoreHistory: loaded > 0 };
+      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      return true;
+    });
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await settleVirtualizer();
+
+    let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+    await act(async () => {
+      void locateInTimeline(
+        { kind: 'turn', turnId: normalizeTurnId(targetTurn) },
+        { sessionId: 'session_deep_locate', notify: false },
+      ).then((value) => { outcome = value; });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    for (let frame = 0; frame < 450 && outcome === undefined; frame += 1) {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 16)); });
+    }
+
+    expect(outcome).toEqual({ status: 'found' });
+    expect(container.querySelector(`[data-turn-id="t${targetTurn}"]`)).not.toBeNull();
+    expect(onLoadOlder).toHaveBeenCalled();
+  });
+
   it('re-lands a shown agent tab on its latest message unless the reader scrolled up', async () => {
     resetTimelineLocatorsForTests();
     const { root, container } = makeRoot();

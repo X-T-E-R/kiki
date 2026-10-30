@@ -79,7 +79,11 @@ async function threadDisplayWalk(page, link, control, locale = 'en') {
   await nested.waitFor({ timeout: 20_000 });
   const after = (await control({ action: 'session', session_id: parentId })).data.record.updated_at;
   const child = (await control({ action: 'session', session_id: childId })).data.record;
-  if (before !== after || child.updated_at <= before || JSON.stringify(await topLevel()) !== JSON.stringify([recentId, parentId])) {
+  // The child's own activity advances its own clock and lifts the whole
+  // family to the front (the family follows the newest activity); the parent's
+  // own clock is untouched and the child stays nested under it.
+  const familyFirst = JSON.stringify(await topLevel()) === JSON.stringify([parentId, recentId]);
+  if (before !== after || child.updated_at <= before || !familyFirst || await nested.count() !== 1) {
     throw new Error('child activity moved the parent or did not advance its own time');
   }
   shots.push(await shot(page, `${prefix}-after-activity`));
@@ -213,11 +217,15 @@ const SCENARIOS = [
       await page.waitForSelector('[data-settings-page-title]', { timeout: 20_000 });
       const shots = [await shot(page, 'settings-general')];
       await page.goto(link('/settings/ai'), { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('[data-model-row]', { timeout: 20_000 });
-      shots.push(await shot(page, 'settings-models'));
-      await page.locator('[data-ai-tab="providers"]').click();
-      await page.waitForSelector('[data-connection-list] [data-connection-row]', { timeout: 15_000 });
+      await page.waitForSelector('[data-connection-list] [data-connection-row]', { timeout: 20_000 });
       shots.push(await shot(page, 'settings-providers'));
+      // Read a visible model in the opened connection, not an attached row
+      // inside another connection's collapsed editor.
+      await page.locator('[data-connection-row="fixture"] summary').click();
+      const modelRow = page.locator('[data-connection-row="fixture"] [data-model-row]').first();
+      await modelRow.waitFor({ timeout: 15_000 });
+      await modelRow.scrollIntoViewIfNeeded();
+      shots.push(await shot(page, 'settings-models'));
       return shots;
     },
   },
@@ -298,7 +306,7 @@ const SCENARIOS = [
       }
       shots.push(await shot(page, 'model-switch-queue'));
 
-      await page.locator('#composer-model-select').click();
+      await page.locator('#composer-execution-select').click();
       await page.locator('[role="option"][data-option-value="fixture/kiki-lite"]').click();
       const dialog = page.locator('[data-model-switch-mode="direct"]');
       await dialog.waitFor({ timeout: 15_000 });
@@ -330,7 +338,7 @@ const SCENARIOS = [
       });
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.locator('[data-model-switch-notice]').first().waitFor({ timeout: 20_000 });
-      await page.locator('#composer-model-select').click();
+      await page.locator('#composer-execution-select').click();
       await page.locator('[role="option"][data-option-value="fixture/kiki-lite"]').click();
       await page.locator('[data-model-switch-mode="direct"]').waitFor({ timeout: 15_000 });
       shots.push(await shot(page, 'model-switch-dialog-dark'));
@@ -401,6 +409,9 @@ const SCENARIOS = [
       await openSession(page, link, 'session_fixture_subagents');
       await page.fill('textarea', 'Delegate the fixture work.');
       await page.press('textarea', 'Control+Enter');
+      // Simultaneous subagents read as one "Worked · 2 subagents" group; the
+      // per-agent cards exist once the reader opens it.
+      await page.locator('[data-activity-toggle]').first().click();
       await page.locator('[data-subagent-id="agent-research"]').first().waitFor({ timeout: 20_000 });
       await page.locator('[data-subagent-id="agent-review"]').first().waitFor({ timeout: 20_000 });
       return [await shot(page, 'subagents')];
@@ -440,12 +451,20 @@ const SCENARIOS = [
       await page.waitForSelector('[data-governance-active]', { timeout: 20_000 });
       await page.waitForSelector('[data-governance-dimensions]', { timeout: 20_000 });
       const shots = [await shot(page, 'usage-realtime')];
-      const detailsToggle = page.locator('[data-governance-details-toggle]');
-      await detailsToggle.click();
-      await page.waitForSelector('[data-governance-dimensions]', { state: 'hidden', timeout: 20_000 });
-      shots.push(await shot(page, 'usage-live-folded'));
-      await detailsToggle.click();
-      await page.waitForSelector('[data-governance-dimensions]', { timeout: 20_000 });
+      // Details stay open in the page; the axis switches one dimension at a time.
+      if (await page.locator('[data-governance-active]').textContent() !== '3'
+        || await page.locator('[data-governance-queued]').textContent() !== '1') {
+        throw new Error('live request totals do not match the fixture');
+      }
+      await page.locator('[data-axis="governance-dimension"] [data-axis-value="provider"]').click();
+      await page.waitForSelector('[data-governance-dimensions][data-governance-dimension="provider"] [data-governance-row="kimi"]', { timeout: 10_000 });
+      shots.push(await shot(page, 'usage-live-provider'));
+      await page.locator('[data-axis="governance-dimension"] [data-axis-value="role"]').click();
+      await page.waitForSelector('[data-governance-dimensions][data-governance-dimension="role"] [data-governance-row="subagent"]', { timeout: 10_000 });
+      await page.waitForSelector('[data-governance-waiting] >> text=kimi-cap', { timeout: 10_000 });
+      shots.push(await shot(page, 'usage-live-role'));
+      await page.locator('[data-axis="governance-dimension"] [data-axis-value="model"]').click();
+      await page.waitForSelector('[data-governance-dimensions][data-governance-dimension="model"] [data-governance-row]', { timeout: 10_000 });
       shots.push(await shot(page, 'usage-live-details'));
       await page.goto(link('/usage?panel=limits'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-governance-rule="kimi-cap"]', { timeout: 20_000 });
@@ -454,12 +473,11 @@ const SCENARIOS = [
       await page.waitForSelector('[data-governance-editor]', { timeout: 10_000 });
       shots.push(await shot(page, 'usage-limits-editor'));
       await page.locator('[data-governance-editor] button[type="button"]', { hasText: 'Cancel' }).click();
-      // Delete both rules through their editors: the list empties into the
-      // guided empty state, whose action opens a fresh rule form.
+      // Deleting a rule is immediate and undoable. Removing both rules exposes
+      // the guided empty state, and Add rule still opens a fresh form.
       for (const id of ['kimi-cap', 'session-focus']) {
         await page.locator(`[data-governance-rule="${id}"] button`).first().click();
         await page.locator('[data-governance-editor-delete]').click();
-        await page.locator('[data-confirm-action="confirm"]').click();
         await page.waitForSelector(`[data-governance-rule="${id}"]`, { state: 'detached', timeout: 10_000 });
       }
       await page.waitForSelector('[data-governance-empty]', { timeout: 10_000 });
@@ -572,7 +590,13 @@ const SCENARIOS = [
         const clickedTurnId = await button.getAttribute('data-usage-trace-turn');
         const before = page.url();
         await button.click();
-        await page.waitForTimeout(1500);
+        // The locate drives the timeline's own older-history paging and
+        // scroll; the wait only observes the exact turn row landing.
+        await page.waitForFunction(
+          (wanted) => [...document.querySelectorAll('[data-turn-id]')].some((row) => row.getAttribute('data-turn-id') === `t${wanted}`),
+          clickedTurnId,
+          { timeout: 20_000 },
+        );
         const url = new URL(page.url());
         located = await page.evaluate((wanted) => {
           const rows = [...document.querySelectorAll('[data-turn-id]')];
@@ -639,7 +663,7 @@ const SCENARIOS = [
     locale: 'zh',
     tags: ['smoke', 'capabilities', 'i18n'],
     async run(page, link) {
-      await page.route('**/api/workspaces', (route) => route.fulfill({
+      await page.route('**/api/workspaces**', (route) => route.fulfill({
         json: { code: 0, msg: 'ok', data: { items: [] }, request_id: 'fixture-cap-empty' },
       }));
       await page.goto(link('/capabilities?tab=skills'), { waitUntil: 'domcontentloaded' });
@@ -664,7 +688,7 @@ const SCENARIOS = [
         id: `ws_${name.toLowerCase()}`, name, root: `C:/projects/${name}`,
         created_at: '2026-01-01T00:00:00Z', last_opened_at: '2026-01-01T00:00:00Z', session_count: 1, pinned: false, isGit: false,
       }));
-      await page.route('**/api/workspaces', (route) => route.fulfill({
+      await page.route('**/api/workspaces**', (route) => route.fulfill({
         json: { code: 0, msg: 'ok', data: { items }, request_id: 'fixture-cap-workspaces' },
       }));
       await page.route('**/api/workspaces/*/skills', (route) => {
@@ -749,7 +773,6 @@ async function walkRowActions(page, link, control, localeSuffix) {
   await openSession(page, link, 'session_fixture_subagents');
   await page.fill('textarea', 'Delegate the fixture work.');
   await page.press('textarea', 'Control+Enter');
-  await page.locator('[data-subagent-id="agent-research"]').first().waitFor({ timeout: 20_000 });
   await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 20_000 });
   // The fixture flow waits for its agents, so no late receipt ever lands:
   // inject one — a subagent whose completion arrives after its dispatching

@@ -33,7 +33,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { assistantMsg, sessionRecord, userMsg } from './helpers.mjs';
+import { sessionRecord, ts } from './helpers.mjs';
 
 const CAPTURE_DIR = join(dirname(fileURLToPath(import.meta.url)), 'real-usage');
 
@@ -175,6 +175,39 @@ export const usageV2 = {
   matchCapture,
 };
 
+/**
+ * One transcript row per turn id the capture attributes to this session. The
+ * ids are the capture's own (sparse — the real session ran more turns than the
+ * window recorded), so a trace locator carries the same id the transcript row
+ * answers to. The message text is illustrative: the usage capture carries no
+ * chat, so it makes the rows addressable and says nothing about what this
+ * session contained.
+ */
+function usageTranscriptTurn(turnId, index) {
+  const id = `t${turnId}`;
+  return {
+    kind: 'turn',
+    turnId: id,
+    ordinal: turnId,
+    state: 'completed',
+    origin: { kind: 'user' },
+    prompt: `Recorded-usage question ${index + 1}.`,
+    startedAt: ts(240 - index * 15),
+    endedAt: ts(239 - index * 15),
+    steps: [{
+      kind: 'step',
+      stepId: `${id}.1`,
+      turnId: id,
+      ordinal: 1,
+      state: 'completed',
+      startedAt: ts(240 - index * 15),
+      endedAt: ts(239 - index * 15),
+      frames: [{ kind: 'text', frameId: `${id}-answer`, role: 'assistant', text: `Recorded-usage answer ${index + 1}.` }],
+    }],
+    contentRefs: [],
+  };
+}
+
 export default {
   models: [
     { id: 'axon/gpt-6.1-sol', provider_id: 'axon', remote_id: 'axon/gpt-6.1-sol', display_name: 'GPT-6.1 Sol', max_context_size: 262144 },
@@ -193,17 +226,24 @@ export default {
   ],
   sessions: capturedSessions,
   // A bounded transcript for the first captured session, so the turn locator
-  // has real rows to land on. One row per turn id the capture attributes to
-  // this session, so the id a trace button carries is the id a transcript row
-  // answers to. The message text is illustrative: the usage capture carries no
-  // chat, so it makes the rows addressable and says nothing about what this
-  // session contained.
+  // has real rows to land on: one turn entry per captured turn id (sparse, as
+  // recorded), which the fixture's projector serves and pages like any other
+  // transcript. Its turns carry the backward content refs that mark the page
+  // as the tail of a longer history, so the locator pages back into the
+  // captured turns instead of reading the window as the whole conversation.
   snapshots: {
     [capturedSessions[0].id]: {
-      messages: CAPTURED_TURN_IDS.flatMap((turn, index) => [
-        { ...userMsg(capturedSessions[0].id, `Recorded-usage question ${index + 1}.`, 240 - index * 15), turn_id: turn },
-        { ...assistantMsg(capturedSessions[0].id, [`Recorded-usage answer ${index + 1}.`], 239 - index * 15), turn_id: turn },
-      ]),
+      agent_transcripts: {
+        main: {
+          agent_id: 'main',
+          // The capture is a seven-day window of a longer conversation: the
+          // rows before it exist but are not in this replay, so the page reads
+          // as the tail of a longer history and pages back into the captured
+          // turns the way the trace's turn locator walks.
+          has_more: true,
+          items: CAPTURED_TURN_IDS.map((turnId, index) => usageTranscriptTurn(turnId, index)),
+        },
+      },
     },
   },
   usageV2,

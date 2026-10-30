@@ -693,6 +693,12 @@ export interface MemoryListPage {
 export const MEMORY_NOT_FOUND = 40423;
 export const MEMORY_REVISION_CONFLICT = 40944;
 
+export interface MemoryMigrationIssue {
+  readonly scope: string;
+  readonly key: string;
+  readonly issue: string;
+}
+
 /**
  * Which store currently owns memory (`GET /memory/authority`). Starting Kiki
  * upgrades a `legacy` file store to `sqlite` automatically; until that
@@ -713,10 +719,11 @@ export interface MemoryAuthorityState {
     readonly index: number;
     /** Last committed source key inside the current namespace. */
     readonly after?: string;
-    readonly issues: readonly { readonly scope: string; readonly key: string; readonly issue: string }[];
+    readonly issues: readonly MemoryMigrationIssue[];
     readonly phase?: 'importing' | 'validating' | 'failed';
     readonly failure?: { readonly code: string; readonly message: string };
   };
+  readonly migrationIssues?: readonly MemoryMigrationIssue[];
   readonly migrationId?: string;
   readonly recoveryId?: string;
 }

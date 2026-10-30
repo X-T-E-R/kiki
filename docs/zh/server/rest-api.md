@@ -669,7 +669,9 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 
 App 启动自动执行已有 SQLite 迁移流程，新家目录和 `memory.enabled=false` 的家目录也一样。普通 Memory store 的准备、读取和写入共享这次启动操作。已完成的家目录复用 SQLite，不重复导入；只读恢复状态保持只读。存储升级不会开启 Agent 记忆访问，也不会授权顾问外发。
 
-`GET authority` 返回 `backend`、`mode`、`epoch` 和持久化的 `migration`。迁移期间，`migration.id` 是操作 ID，`namespaces` 列出发现的范围，`index` 是已完成的命名空间数，可选 `after` 是当前命名空间最后提交的来源 key。可选 `phase` 取 `importing`、`validating` 或 `failed`；`issues` 含 `{ scope, key, issue }`，`failure` 提供 `{ code, message }`。来源无效时保留原文件、阻止普通记忆访问，不会退回过时副本。修复报告的来源后，向 `authority/retry` 发送 `{ operation_id: migration.id }`，或重启后继续同一操作。回执不确定时先读状态，再决定是否重试。完成时返回 `backend: "sqlite", mode: "active", migrationId`；同 ID 重试也能对账已经完成的操作。
+`GET authority` 返回 `backend`、`mode`、`epoch` 和持久化的 `migration`。迁移期间，`migration.id` 是操作 ID，`namespaces` 列出发现的范围，`index` 是已完成的命名空间数，可选 `after` 是当前命名空间最后提交的来源 key。可选 `phase` 取 `importing`、`validating` 或 `failed`；`issues` 含 `{ scope, key, issue }`，`failure` 提供 `{ code, message }`。
+
+来源格式错误或无法读取时保留原文件、阻止普通记忆访问，不会退回过时副本。修复报告的来源后，向 `authority/retry` 发送 `{ operation_id: migration.id }`，或重启后从已保存的进度继续同一操作；先前有问题的范围会先重新导入。回执不确定时先读状态，再决定是否重试。完成时返回 `backend: "sqlite", mode: "active", migrationId`；同 ID 重试也能对账已经完成的操作。可选顶层 `migrationIssues` 保留非阻塞的 `{ scope, key, issue }` 提示：`current_revision_preserved` 表示保留已存版本，`forgotten_source_rejected` 表示跳过已遗忘来源。这些提示在正常与只读模式下均可查询。
 
 兼容入口 `authority/migrate` 仍接受 `{ operation_id: UUID, max_pages?: 1..64 }` 执行有界维护批次，默认八页。旧字段 `older_writers_stopped: true` 已可省略，启动流程不会发送它。`authority/cancel` 接受 `{ operation_id }` 取消暂停的批次，不取消正在运行的自动操作；之后正常准备存储时会再次自动升级。共用家目录的其他安装也应升级：标记和写屏障约束支持协议的写入进程，无法约束协议发布前的旧二进制。
 

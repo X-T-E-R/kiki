@@ -318,6 +318,42 @@ describe('Memory shadow import and replay barriers', () => {
     expect(independent.entry.status).toBe('active');
   });
 
+  it('imports equal archived sources as independent objects across pages and reopen', async () => {
+    const seed = (await save('Archive fixture')).entry;
+    const entries = ['m_archive_first', 'm_archive_second', 'm_archive_third'].map((id): MemoryEntry => ({ ...seed, id, title: id, status: 'archived', source: { writer: 'agent', session: 'archive-fixture', turn: 17 }, body: 'Replaced by m_retained.', superseded_by: undefined }));
+    const records = entries.map((entry) => ({ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }));
+    expect(await persistence.importLegacy(records.slice(0, 1))).toMatchObject({ imported: 1, issues: [] });
+    await close(); bind();
+    expect(await persistence.importLegacy(records.slice(1))).toMatchObject({ imported: 2, issues: [] });
+    expect(await persistence.importLegacy(records)).toMatchObject({ imported: 0, retained: 3, issues: [] });
+    for (const entry of entries) {
+      expect(await store.get(global, entry.id)).toEqual(entry);
+      expect((await store.provenance(global, entry.id)).relatedObjectIds).toEqual([entry.id]);
+      expect((await store.provenance(global, entry.id)).sources.map((source) => source.payload)).toEqual([JSON.stringify(entry)]);
+      expect((await store.previewForget(global, [entry.id])).targets.map((target) => target.id)).toEqual([entry.id]);
+    }
+  });
+
+  it('keeps equal native fingerprints independent while enforcing explicit stable sources and forget barriers', async () => {
+    const origin = { writer: 'agent' as const, session: 'independent-source-fixture', turn: 17 };
+    const mutation = { scope: global, type: 'feedback' as const, title: 'First independent rule', body: 'Identical retained condition.', source: origin, reason: 'Independent instruction' };
+    const unit = { id: 'explicit-first', payload: mutation.body, origin: 'owner' as const };
+    const first = await store.ingest({ mutation, unit });
+    const second = await store.ingest({ mutation: { ...mutation, title: 'Second independent rule' }, unit: { ...unit, id: 'explicit-second' } });
+    expect(second.entry.id).not.toBe(first.entry.id);
+    const updated = await store.ingest({ mutation: { ...mutation, action: 'update', id: second.entry.id, expectedRevision: second.entry.revision, title: 'Second renamed rule' }, unit: { ...unit, id: 'explicit-update' } });
+    expect(updated.entry.id).toBe(second.entry.id);
+    await expect(store.ingest({ mutation, unit: { ...unit, payload: 'Changed stable payload.' } })).rejects.toThrow('new source revision identity');
+    await expect(store.ingest({ mutation: { ...mutation, action: 'update', id: updated.entry.id, expectedRevision: updated.entry.revision }, unit })).rejects.toThrow('another Memory lineage');
+    expect((await store.previewForget(global, [first.entry.id])).targets.map((target) => target.id)).toEqual([first.entry.id]);
+    await store.forget(global, [{ id: first.entry.id, expectedRevision: first.entry.revision }], 'forget-independent-first');
+    expect(await store.get(global, updated.entry.id)).toEqual(updated.entry);
+    const archived = await store.put({ action: 'archive', scope: global, id: updated.entry.id, expectedRevision: updated.entry.revision, reason: 'Retire independent rule', source: origin });
+    expect(archived.entry.status).toBe('archived');
+    await expect(store.put({ ...mutation, action: 'create', title: 'New replay after forgetting' })).rejects.toThrow('source unit has been forgotten');
+    await expect(store.ingest({ mutation, unit })).rejects.toThrow('source unit has been forgotten');
+  });
+
   it('forgets recoverably deleted preimages and rejects an obsolete preview after a new successor', async () => {
     const saved = await save('Deleted private preimage');
     await store.delete(global, saved.entry.id, saved.entry.revision);
@@ -359,7 +395,7 @@ describe('Memory shadow import and replay barriers', () => {
     expect((await persistence.read(['memory/global'])).generation).toBe(1);
   });
 
-  it('backfills stable imported identities on schema-1 upgrade before re-extraction', async () => {
+  it('upgrades schema-1 sources without merging independent IDs or overwriting corrections', async () => {
     const seed = await save('Schema seed');
     const entry: MemoryEntry = { ...seed.entry, id: 'm_schema_import', title: 'Schema source', source: { writer: 'import', session: 'example-schema', turn: 1 } };
     await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }]);
@@ -371,8 +407,9 @@ describe('Memory shadow import and replay barriers', () => {
     const corrected = await update(entry, 'Current corrected schema source.');
     const duplicate = { ...entry, id: 'm_schema_reextracted' };
     const replay = await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${duplicate.id}.md`, payload: JSON.stringify(duplicate), entry: duplicate }]);
-    expect(replay.issues[0]?.issue).toBe('source_lineage_preserved');
-    expect(await store.get(global, duplicate.id)).toBeUndefined();
+    expect(replay).toMatchObject({ imported: 1, issues: [] });
+    expect(await store.get(global, duplicate.id)).toEqual(duplicate);
+    expect((await store.provenance(global, duplicate.id)).relatedObjectIds).toEqual([duplicate.id]);
     expect((await store.get(global, entry.id))?.body).toBe(corrected.entry.body);
   });
 
@@ -381,8 +418,9 @@ describe('Memory shadow import and replay barriers', () => {
     const importEntry = (entry: MemoryEntry) => persistence.importLegacy([{ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }]);
     await importEntry(original);
     const corrected = await update(original, 'A was mistaken; always Address B.');
-    expect((await importEntry({ ...original, id: 'm_source_reextracted', title: 'Stale extraction' })).issues[0]?.issue).toBe('source_lineage_preserved');
-    expect(await store.get(global, 'm_source_reextracted')).toBeUndefined();
+    const independent = { ...original, id: 'm_source_independent', title: 'Independent source object' };
+    expect(await importEntry(independent)).toMatchObject({ imported: 1, issues: [] });
+    expect(await store.get(global, independent.id)).toEqual(independent);
     expect((await store.get(global, original.id))?.body).toBe(corrected.entry.body);
     await store.forget(global, (await store.previewForget(global, [original.id])).targets, 'forget-imported-source');
     await close(); bind();
@@ -847,6 +885,77 @@ describe('single Memory authority and isolated recovery', () => {
     expect(await memory.get(persona, second.entry.id)).toEqual(second.entry);
   }, 30_000);
 
+  it.each(['retry', 'startup', 'batch'] as const)('repairs old source collisions and continues index 7 under the same operation through %s', async (resume) => {
+    const namespaces = ['memory/global', ...Array.from({ length: 13 }, (_,index) => `memory/workspaces/wd_recovery_${index.toString(16).padStart(12, '0')}`)];
+    for (const base of namespaces) await mkdir(join(home, base), { recursive: true });
+    const base = namespaces[5]!;
+    const entries = ['m_archived_first', 'm_archived_second'].map((id) => {
+      const raw = `---\n${JSON.stringify({ id, type: 'feedback', title: id, status: 'archived', pinned: false, created: '2026-01-01', updated: '2026-01-02', source: { writer: 'agent', session: 'archive-recovery-fixture', turn: 17 }, reason: 'Batch archive' })}\n---\nReplaced by m_retained.\n`;
+      return { raw, entry: decodeMemoryEntry(raw) };
+    });
+    for (const { raw, entry } of entries) await storage.write(base, `entries/${entry.id}.md`, new TextEncoder().encode(raw));
+    const first = entries[0]!;
+    await persistence.importLegacy([{ scope: base, key: `entries/${first.entry.id}.md`, payload: first.raw, entry: first.entry }]);
+    const operationId = randomUUID();
+    await storage.write(MEMORY_AUTHORITY_SCOPE, 'backend.json', new TextEncoder().encode(JSON.stringify({ version: 1, epoch: 0, backend: 'legacy', mode: 'migrating', migration: { id: operationId, namespaces, index: 7, phase: 'failed', issues: [{ scope: base, key: `entries/${entries[1]!.entry.id}.md`, issue: 'source_lineage_preserved' }], failure: { code: 'memory.source_invalid', message: 'Previous source collision' } } })));
+    await close(); bind();
+    const { memory, authority } = managedMemory();
+    const shadow = vi.spyOn(ix.get(IMemoryShadowImport), 'run');
+    const indexes: number[] = [];
+    const write = storage.write.bind(storage);
+    vi.spyOn(storage, 'write').mockImplementation(async (...args) => {
+      if (args[0] === MEMORY_AUTHORITY_SCOPE) { const state = JSON.parse(new TextDecoder().decode(args[2])); if (state.migration !== undefined) indexes.push(state.migration.index); }
+      return write(...args);
+    });
+    if (resume === 'retry') await authority.retryMigration(operationId);
+    else if (resume === 'batch') {
+      expect(await authority.migrate({ operationId, maxPages: 1 })).toMatchObject({ migration: { id: operationId, index: 8 } });
+      await memory.prepare!();
+    } else await memory.prepare!();
+    expect(await authority.status()).toMatchObject({ backend: 'sqlite', mode: 'active', migrationId: operationId });
+    expect(indexes[0]).toBe(7);
+    expect(Math.min(...indexes)).toBe(7);
+    expect(shadow.mock.calls.map(([scope]) => pathFor(scope))).toEqual([base, ...namespaces.slice(7)]);
+    const target = { kind: 'workspace', workspaceId: base.split('/').at(-1)! } as const;
+    for (const { entry, raw } of entries) {
+      expect(await memory.get(target, entry.id)).toEqual(entry);
+      expect((await authority.provenance(target, entry.id)).relatedObjectIds).toEqual([entry.id]);
+      expect(new TextDecoder().decode(await storage.read(base, `entries/${entry.id}.md`))).toBe(raw);
+    }
+    const checkpoint = await memory.checkpoint!();
+    expect((await authority.retryMigration(operationId)).migrationId).toBe(operationId);
+    expect(await memory.checkpoint!()).toBe(checkpoint);
+  });
+
+  it('completes migration with visible retained-revision and forgotten-source issues', async () => {
+    const { memory, authority, legacy } = managedMemory();
+    const original = await createManaged(legacy, 'Curated before cutover');
+    const forgotten = await createManaged(legacy, 'Forgotten before cutover');
+    const raw = await storage.read('memory/global', `entries/${forgotten.entry.id}.md`);
+    await ix.get(IMemoryShadowImport).run(global);
+    const corrected = await update(original.entry, 'Only this corrected instruction applies.');
+    await store.forget(global, [{ id: forgotten.entry.id, expectedRevision: forgotten.entry.revision }], 'forget-before-cutover');
+    const state = await authority.prepare();
+    expect(state).toMatchObject({ backend: 'sqlite', mode: 'active', migrationIssues: expect.arrayContaining([expect.objectContaining({ issue: 'current_revision_preserved' }), expect.objectContaining({ issue: 'forgotten_source_rejected', key: `entries/${forgotten.entry.id}.md` })]) });
+    expect(await memory.get(global, original.entry.id)).toEqual(corrected.entry);
+    expect(await memory.get(global, forgotten.entry.id)).toBeUndefined();
+    expect(await storage.read('memory/global', `entries/${forgotten.entry.id}.md`)).toEqual(raw);
+    expect((await createManaged(memory, 'Write after retained issues')).outcome).toBe('applied');
+    await close(); bind();
+    expect(await managedMemory().authority.status()).toEqual(state);
+  });
+
+  it('keeps blocking source failures visible when nonfatal migration notes fill the issue limit', async () => {
+    const { authority } = managedMemory();
+    const blocking = { scope: 'memory/global', key: 'entries/m_broken.md', issue: 'invalid_legacy_entry' };
+    const notes = Array.from({ length: 1000 }, (_, index) => ({ scope: 'memory/global', key: `entries/m_forgotten_${index}.md`, issue: 'forgotten_source_rejected' }));
+    vi.spyOn(ix.get(IMemoryShadowImport), 'run').mockResolvedValue({ complete: true, imported: 0, retained: 0, issues: [...notes, blocking] });
+    const state = await authority.migrate(migration());
+    expect(state).toMatchObject({ backend: 'legacy', mode: 'migrating', migration: { phase: 'failed', failure: { code: 'memory.source_invalid' } } });
+    expect(state.migration?.issues).toHaveLength(1000);
+    expect(state.migration?.issues).toContainEqual(blocking);
+  });
+
   it('preserves malformed source payloads, reports failure and retries the same operation after repair', async () => {
     const { memory, authority } = managedMemory();
     const raw = new TextEncoder().encode('Malformed source payload');
@@ -946,10 +1055,12 @@ describe('single Memory authority and isolated recovery', () => {
     const changed = await store.ingest(correction);
     const renamed = { ...saved.entry, id: 'm_renamed_source_replay' };
     const payload = [{ scope: 'memory/global', key: `entries/${renamed.id}.md`, payload: JSON.stringify(renamed), entry: renamed }];
-    expect((await persistence.importLegacy(payload)).issues).toContainEqual(expect.objectContaining({ issue: 'source_lineage_preserved' }));
+    expect(await persistence.importLegacy(payload)).toMatchObject({ imported: 1, issues: [] });
     const candidate = { mutation: { ...input, title: 'Changed extraction ID' }, unit: { id: 'different-extraction-id', payload: input.body, origin: 'owner' as const } };
-    expect((await store.ingest(candidate)).entry).toEqual(changed.entry);
-    await authority.forget(global, (await authority.previewForget(global, [saved.entry.id])).targets, randomUUID());
+    const independent = await store.ingest(candidate);
+    expect(independent.entry.id).not.toBe(changed.entry.id);
+    expect((await authority.previewForget(global, [saved.entry.id])).targets.map((target) => target.id)).toEqual([saved.entry.id]);
+    await authority.forget(global, (await authority.previewForget(global, [saved.entry.id, renamed.id, independent.entry.id])).targets, randomUUID());
     await expect(store.ingest(candidate)).rejects.toThrow('source unit has been forgotten');
     const recovery = await authority.recoverReadOnly();
     const restoredPath = join(home, 'restored-source.sqlite');

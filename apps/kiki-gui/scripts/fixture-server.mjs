@@ -3780,6 +3780,11 @@ class FixtureServer {
           : this.scenario?.data.workspaces ?? [
               { id: 'wd_fixture_000000000000', root: 'C:/fixture', name: 'fixture', created_at: now(), last_opened_at: now(), session_count: sessions.length, pinned: false },
             ];
+      // `?view=catalog` is the registration-metadata read: the same rows
+      // without the measured details (session counting, Git inspection).
+      if (query.get('view') === 'catalog') {
+        return this.envelope(res, { items: items.map(({ session_count: _sessionCount, ...workspace }) => workspace) });
+      }
       return this.envelope(res, { items: items.map((workspace) => ({
         ...workspace,
         isGit: this.gitRoots.has(String(workspace.root).replaceAll('\\', '/').replace(/\/+$/, '')),

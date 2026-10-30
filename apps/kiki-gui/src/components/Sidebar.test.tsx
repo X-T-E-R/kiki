@@ -20,6 +20,7 @@ import {
   type SessionSortOrder,
 } from '@kiki/session-core/sessions';
 import { subscribeComposerInserts } from '@kiki/session-core/composer';
+import { ApiError } from '@kiki/session-core/transport';
 import {
   DEFAULT_PINNED_NAV_ITEMS,
   DEFAULT_SESSION_LIST_FILTERS,
@@ -1042,10 +1043,13 @@ describe('Sidebar archive feedback', () => {
     expect(container.querySelector('[data-session-row="s-child"]')).not.toBeNull();
   });
 
-  it('refreshes the list behind an unfinished worktree archive and keeps the dialog', async () => {
+  it.each([
+    [new Error('Some conversations could not be archived. Retry to finish archiving: s-child: busy'), 'could not be archived'],
+    [new ApiError({ code: 40001, msg: 'Archive refused: this conversation has uncommitted drafts', data: null }), 'Archive refused'],
+  ])('refreshes the list behind an unfinished worktree archive and keeps the dialog: %s', async (failure, detail) => {
     const worktree = { worktree_id: 'wt_1', branch: 'feat/notes', source_root: 'C:/repo', base_ref: 'refs/heads/main' } as NonNullable<Session['worktree']>;
     const target = { ...session('s-wt'), title: 'Worktree thread', worktree } as Session & { worktree: NonNullable<Session['worktree']> };
-    archiveSession.mockRejectedValue(new Error('Some conversations could not be archived. Retry to finish archiving: s-child: busy'));
+    archiveSession.mockRejectedValue(failure);
     const { container, queryClient } = await mount({
       sessions: [target],
       sessionGroups: [{ key: 'today', label: 'Today', items: [target] }],
@@ -1065,7 +1069,7 @@ describe('Sidebar archive feedback', () => {
     expect(archiveSession).toHaveBeenCalledWith('s-wt', { include_attached: true, exclude_session_ids: [] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions'] });
     expect(document.body.querySelector('[data-archive-confirm]')).not.toBeNull();
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('could not be archived');
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain(detail);
     expect(checkbox.checked).toBe(true);
     expect(confirm!.disabled).toBe(false);
   });

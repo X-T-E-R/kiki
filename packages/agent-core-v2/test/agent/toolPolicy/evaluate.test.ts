@@ -27,9 +27,9 @@ describe('findInactiveToolPatterns', () => {
   const known = new Set(['Read', 'Bash', 'Skill']);
   const isKnown = (name: string): boolean => known.has(name);
 
-  it('passes literal known tool names and MCP globs', () => {
+  it('passes literal known tool names and MCP and plugin globs', () => {
     expect(
-      findInactiveToolPatterns(['Read', 'Bash', 'mcp__github__*', 'mcp__*'], isKnown),
+      findInactiveToolPatterns(['Read', 'Bash', 'mcp__github__*', 'mcp__*', 'plugin__*', 'plugin__kiki_media__*'], isKnown),
     ).toEqual([]);
   });
 
@@ -38,6 +38,14 @@ describe('findInactiveToolPatterns', () => {
       { pattern: 'Bashh', kind: 'unknown-tool' },
       { pattern: 'read', kind: 'unknown-tool' },
     ]);
+  });
+
+  it('matches a plugin namespace glob only within the selected plugin', () => {
+    expect(isToolActive({ tools: ['plugin__kiki_media__*'] }, 'plugin__kiki_media__generate', 'plugin')).toBe(true);
+    expect(isToolActive({ tools: ['plugin__kiki_media__*'] }, 'plugin__kiki_mail__Mailbox', 'plugin')).toBe(false);
+    expect(isToolActive({ tools: ['plugin__*'] }, 'plugin__kiki_mail__Mailbox', 'plugin')).toBe(true);
+    expect(isToolActive({ tools: ['plugin__*'], disallowedTools: ['plugin__kiki_mail__*'] }, 'plugin__kiki_mail__Mailbox', 'plugin')).toBe(false);
+    expect(isToolActive({ tools: ['plugin__*'], disallowedTools: ['plugin__kiki_mail__*'] }, 'plugin__kiki_media__generate', 'plugin')).toBe(true);
   });
 
   it('accepts the universal allow pattern while preserving narrower policies and explicit denials', () => {
@@ -76,7 +84,7 @@ describe('findInactiveToolPatterns', () => {
 describe('literalToolNames', () => {
   it('keeps only literal non-MCP names', () => {
     expect(
-      literalToolNames(['Read', 'mcp__*', 'Bash*', 'mcp__github__create_issue']),
+      literalToolNames(['Read', 'mcp__*', 'plugin__*', 'Bash*', 'mcp__github__create_issue']),
     ).toEqual(['Read']);
   });
 });
@@ -111,6 +119,30 @@ describe('isToolActiveComposed workspace veto', () => {
         { workspaceDisabledTools: ['mcp__blocked__*'], profile: {} },
         'mcp__blocked__write',
         'mcp',
+      ),
+    ).toBe(false);
+  });
+
+  it('applies profile and global plugin globs without crossing plugin boundaries', () => {
+    expect(
+      isToolActiveComposed(
+        { profile: { tools: ['plugin__kiki_everything__*'] }, global: { enabled: ['plugin__*'] } },
+        'plugin__kiki_everything__search',
+        'plugin',
+      ),
+    ).toBe(true);
+    expect(
+      isToolActiveComposed(
+        { profile: { tools: ['plugin__kiki_everything__*'] }, global: { enabled: ['plugin__*'] } },
+        'plugin__kiki_mail__Mailbox',
+        'plugin',
+      ),
+    ).toBe(false);
+    expect(
+      isToolActiveComposed(
+        { profile: { tools: ['plugin__*'] }, global: { disabled: ['plugin__kiki_mail__*'] } },
+        'plugin__kiki_mail__Mailbox',
+        'plugin',
       ),
     ).toBe(false);
   });

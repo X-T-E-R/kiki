@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server as NetServer } from 'node:net';
@@ -36,7 +37,7 @@ const tempHomes: string[] = [];
 const attrs = (mode: number, size = 0) => ({ mode, size, uid: 1000, gid: 1000, atime: 0, mtime: 1 });
 
 async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'powershell') {
-  const response = { stdout: Buffer.from('hello from SSH\n'), stderr: Buffer.alloc(0), exitCode: 0 };
+  const response = { stdout: Buffer.from('hello from SSH\n'), stderr: Buffer.alloc(0), exitCode: 0, executePowerShell: false };
   const failures = new Set<string>();
   const remoteHome = platform === 'win32' ? 'C:/Users/tester' : '/home/tester';
   const commands: string[] = [];
@@ -62,6 +63,14 @@ async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'powershel
         const scriptFile = /-File '([^']+)'/.exec(command);
         if (scriptFile) command = files.get(scriptFile[1]!)!.toString('utf8').replace(/^\uFEFF/, '');
         commands.push(command);
+        if (response.executePowerShell && !command.includes('KIKI_SSH_WINDOWS')) {
+          const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')]);
+          child.stdout.pipe(channel, { end: false });
+          child.stderr.pipe(channel.stderr, { end: false });
+          child.once('close', (code) => { channel.exit(code ?? 1); channel.end(); });
+          child.stdin.end();
+          return;
+        }
         if (command.includes('function EmitFile')) {
           const encodedConfig = /FromBase64String\('([A-Za-z0-9+/=]+)'\)/.exec(command)!;
           const config = JSON.parse(Buffer.from(encodedConfig[1]!, 'base64').toString('utf8')) as { paths: string[]; noIgnore: boolean; filters: { source: string; basename: boolean; exclude: boolean }[] };
@@ -240,10 +249,10 @@ afterEach(async () => {
 });
 
 describe('SSH tools over a real ssh2 transport', () => {
-  it('runs Bash as PowerShell with native cwd and marks the result platform and shell', async () => {
+  it.each(['E:/scratch', 'E:\\scratch'])('runs Bash as PowerShell with cwd %s and marks the result platform and shell', async (cwd) => {
     const f = await fixture('win32');
     const command = "Get-ChildItem -LiteralPath 'E:\\scratch' | ForEach-Object { $_.FullName }; '中文' > $null";
-    const result = await execute(await f.tools.bash.resolveExecution({ host: 'dev', cwd: 'E:/scratch', command }));
+    const result = await execute(await f.tools.bash.resolveExecution({ host: 'dev', cwd, command }));
     expect(result.isError).not.toBe(true);
     expect(result.output).toContain('platform: Windows\nshell: powershell');
     expect(f.commands.at(-1)).toContain("Set-Location -LiteralPath 'E:/scratch'");
@@ -251,6 +260,31 @@ describe('SSH tools over a real ssh2 transport', () => {
     expect(f.commands.at(-1)).not.toContain('/e/');
     expect(f.commands.at(-1)).not.toContain('bash');
     expect(f.tools.bash.description).toContain('PowerShell syntax');
+    f.remote.dispose();
+  });
+
+  it.skipIf(process.platform !== 'win32')('preserves formatted objects, pipeline text and stderr through Bash with either cwd separator', async () => {
+    const f = await fixture('win32');
+    await f.remote.connect();
+    f.response.executePowerShell = true;
+    await writeFile(join(f.home, 'example.txt'), 'example');
+    const command = 'Get-Location; Get-ChildItem -Name | Select-Object -First 5; Write-Warning "example-warning"';
+    for (const cwd of [f.home, f.home.replaceAll('\\', '/')]) {
+      const result = await execute(await f.tools.bash.resolveExecution({ host: 'dev', cwd, command }));
+      expect(result.isError).not.toBe(true);
+      expect(result.output).toContain(f.home);
+      expect(result.output).toContain('example.txt');
+      expect(result.output).toContain('example-warning');
+      expect(result.output).not.toContain('CLIXML');
+      expect(result.output).not.toContain('<Objs');
+    }
+    const failed = await execute(await f.tools.bash.resolveExecution({ host: 'dev', cwd: f.home,
+      command: 'Get-Location; "tail"; [Console]::Error.WriteLine("example-stderr"); exit 7' }));
+    expect(failed.isError).toBe(true);
+    expect(failed.output).toContain(f.home);
+    expect(failed.output).toContain('tail');
+    expect(failed.output).toContain('example-stderr');
+    expect(failed.output).toContain('7');
     f.remote.dispose();
   });
 
