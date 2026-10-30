@@ -32,7 +32,7 @@ const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 export interface IpcChannelOptions {
   readonly socketPath: string;
   readonly token?: string;
-  /** Per-call deadline (ms). Default `30000`; `0` disables. */
+  /** Per-call deadline from invocation, including connection setup (ms). Default `30000`; `0` disables. Cancelling one caller leaves the shared connection alive. */
   readonly callTimeoutMs?: number;
 }
 
@@ -65,6 +65,7 @@ export class IpcChannel implements KlientChannel {
     { handler: (data: unknown) => void; onError?: (error: Error) => void; onReady?: () => void }
   >();
   private readonly ready: Promise<void>;
+  private rejectReady: (error: Error) => void = () => {};
   private closed = false;
   private seq = 0;
   private readonly idPrefix = `i${Date.now().toString(36)}`;
@@ -73,16 +74,29 @@ export class IpcChannel implements KlientChannel {
     this.callTimeoutMs = options.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
     this.socket = createConnection(normalizeIpcSocketPath(options.socketPath));
     this.ready = new Promise<void>((resolve, reject) => {
+      const cleanup = (): void => {
+        this.socket.off('error', onError);
+        this.socket.off('connect', onConnect);
+        this.socket.off('close', onClose);
+      };
       const onError = (error: Error): void => {
+        cleanup();
         reject(error);
       };
-      this.socket.once('error', onError);
-      this.socket.once('connect', () => {
-        // The host sends `ready` immediately; answer with the handshake.
+      const onClose = (): void => onError(new Error('ipc closed'));
+      const onConnect = (): void => {
+        cleanup();
+        if (this.closed) {
+          reject(new Error('ipc closed'));
+          return;
+        }
         this.send({ type: 'hello', token: options.token });
-        this.socket.off('error', onError);
         resolve();
-      });
+      };
+      this.rejectReady = onError;
+      this.socket.once('error', onError);
+      this.socket.once('connect', onConnect);
+      this.socket.once('close', onClose);
     });
     // The promise is consumed lazily by call/listen; never let it reject unhandled.
     this.ready.catch(() => {});
@@ -111,44 +125,43 @@ export class IpcChannel implements KlientChannel {
   ): Promise<unknown> {
     const signal = options?.signal;
     signal?.throwIfAborted();
-    await this.ready;
-    signal?.throwIfAborted();
     if (this.closed) throw new Error('ipc closed');
     const id = this.nextId();
     const deadlineMs = options?.timeoutMs ?? this.callTimeoutMs;
+    let sent = false;
+    const fail = (error: Error): void => {
+      const pending = this.take(id);
+      if (pending === undefined) return;
+      if (sent) this.send({ type: 'call_cancel', id });
+      pending.reject(error);
+    };
     const promise = new Promise<unknown>((resolve, reject) => {
-      const timer =
-        deadlineMs > 0
-          ? setTimeout(() => {
-              this.pending.delete(id);
-              this.send({ type: 'call_cancel', id });
-              reject(new RPCError(50001, `call timed out after ${deadlineMs}ms`));
-            }, deadlineMs)
-          : undefined;
+      const timer = deadlineMs > 0
+        ? setTimeout(() => fail(new RPCError(50001, `call timed out after ${deadlineMs}ms`)), deadlineMs)
+        : undefined;
       this.pending.set(id, { resolve, reject, timer });
     });
-    const abort = (): void => {
-      const pending = this.pending.get(id);
-      if (pending === undefined) return;
-      this.pending.delete(id);
-      if (pending.timer !== undefined) clearTimeout(pending.timer);
-      this.send({ type: 'call_cancel', id });
-      pending.reject(signal?.reason ?? new Error('call aborted'));
-    };
-    this.send({
-      type: 'call',
-      id,
-      scope: scopeKindOf(scope),
-      service,
-      method,
-      // NDJSON is JSON: trailing optional args would cross as `null` and
-      // defeat the host's default parameters — trim them.
-      arg: trimTrailingUndefined(args),
-      workspaceId: scope.workspaceId,
-      sessionId: scope.sessionId,
-      agentId: scope.agentId,
-    });
+    const abort = (): void => fail(signal?.reason ?? new Error('call aborted'));
     signal?.addEventListener('abort', abort, { once: true });
+    void this.ready.then(() => {
+      if (!this.pending.has(id)) return;
+      if (this.closed) {
+        fail(new Error('ipc closed'));
+        return;
+      }
+      sent = true;
+      this.send({
+        type: 'call',
+        id,
+        scope: scopeKindOf(scope),
+        service,
+        method,
+        arg: trimTrailingUndefined(args),
+        workspaceId: scope.workspaceId,
+        sessionId: scope.sessionId,
+        agentId: scope.agentId,
+      });
+    }).catch((error: unknown) => fail(error instanceof Error ? error : new Error(String(error))));
     try {
       return await promise;
     } finally {
@@ -219,9 +232,10 @@ export class IpcChannel implements KlientChannel {
         // Start the stream after the handshake is done.
         let started = false;
         const ensureStarted = (): void => {
-          if (started) return;
+          if (started || done) return;
           started = true;
           void this.ready.then(() => {
+            if (done) return;
             if (this.closed) {
               pending.error(new Error('ipc closed'));
               return;
@@ -239,7 +253,7 @@ export class IpcChannel implements KlientChannel {
               sessionId: scope.sessionId,
               agentId: scope.agentId,
             });
-          });
+          }).catch((error: unknown) => pending.error(error instanceof Error ? error : new Error(String(error))));
         };
 
         return {
@@ -320,6 +334,7 @@ export class IpcChannel implements KlientChannel {
   close(): Promise<void> {
     if (this.closed) return Promise.resolve();
     this.closed = true;
+    this.rejectReady(new Error('ipc closed'));
     this.failAll(new Error('ipc closed'));
     this.listens.clear();
     this.socket.end();

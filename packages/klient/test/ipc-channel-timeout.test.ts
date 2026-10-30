@@ -114,4 +114,81 @@ describe('IpcChannel call deadline', () => {
 
     await channel.close();
   });
+
+  it('counts connection setup against the call budget and never sends an expired call', async () => {
+    const channel = new IpcChannel({ socketPath: '/tmp/klient-timeout', callTimeoutMs: 50 });
+    const socket = netMock.current!;
+    const call = channel.call({}, 'service', 'write', []);
+    const rejected = expect(call).rejects.toThrow('call timed out after 50ms');
+    await vi.advanceTimersByTimeAsync(50);
+    await rejected;
+    socket.emit('connect');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socket.writes.map(frame => JSON.parse(frame).type)).toEqual(['hello']);
+    await channel.close();
+  });
+
+  it('does not restart the budget after connecting', async () => {
+    const channel = new IpcChannel({ socketPath: '/tmp/klient-timeout' });
+    const socket = netMock.current!;
+    const call = channel.call({}, 'service', 'method', [], { timeoutMs: 70_000 });
+    const rejected = expect(call).rejects.toThrow('call timed out after 70000ms');
+    await vi.advanceTimersByTimeAsync(40_000);
+    socket.emit('connect');
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(socket.writes.map(frame => JSON.parse(frame).type)).toEqual(['hello', 'call']);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(socket.writes.map(frame => JSON.parse(frame).type)).toEqual(['hello', 'call', 'call_cancel']);
+    await channel.close();
+  });
+
+  it('aborts a pre-connect caller without closing the shared connection or cancelling its peer', async () => {
+    const channel = new IpcChannel({ socketPath: '/tmp/klient-timeout' });
+    const socket = netMock.current!;
+    const controller = new AbortController();
+    const first = channel.call({}, 'service', 'first', [], { signal: controller.signal });
+    const second = channel.call({}, 'service', 'second', []);
+    const rejected = expect(first).rejects.toThrow('caller stopped');
+    controller.abort(new Error('caller stopped'));
+    await rejected;
+    expect(socket.writes).toEqual([]);
+    socket.emit('connect');
+    await vi.advanceTimersByTimeAsync(0);
+    const calls = socket.writes.map(frame => JSON.parse(frame)).filter(frame => frame.type === 'call');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe('second');
+    socket.emit('data', Buffer.from(`${JSON.stringify({ type: 'result', id: calls[0].id, data: 'ok' })}\n`));
+    await expect(second).resolves.toBe('ok');
+    await channel.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['error', 'close', 'client-close'] as const)('settles all stream next waiters on pre-connect %s', async failure => {
+    const channel = new IpcChannel({ socketPath: '/tmp/klient-timeout' });
+    const socket = netMock.current!;
+    const stream = channel.stream({}, 'service', 'stream', [])[Symbol.asyncIterator]();
+    const first = expect(stream.next()).rejects.toThrow(failure === 'error' ? 'connect failed' : 'ipc closed');
+    const second = expect(stream.next()).rejects.toThrow(failure === 'error' ? 'connect failed' : 'ipc closed');
+    if (failure === 'client-close') await channel.close();
+    else socket.emit(failure, ...(failure === 'error' ? [new Error('connect failed')] : []));
+    await Promise.all([first, second]);
+    await expect(stream.next()).resolves.toMatchObject({ done: true });
+    expect(socket.writes).toEqual([]);
+    await channel.close();
+  });
+
+  it('does not start a stream returned before connect', async () => {
+    const channel = new IpcChannel({ socketPath: '/tmp/klient-timeout' });
+    const socket = netMock.current!;
+    const stream = channel.stream({}, 'service', 'stream', [])[Symbol.asyncIterator]();
+    const next = stream.next();
+    await stream.return!();
+    await expect(next).resolves.toMatchObject({ done: true });
+    socket.emit('connect');
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(stream.next()).resolves.toMatchObject({ done: true });
+    expect(socket.writes.map(frame => JSON.parse(frame).type)).toEqual(['hello']);
+    await channel.close();
+  });
 });

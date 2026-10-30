@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { createConnection } from 'node:net';
 import { once } from 'node:events';
 
-import { ConfigTarget, IConfigService, IMcpManagementService, ISessionIndex, ISessionManager } from '@kiki/agent-core-v2';
+import { ConfigTarget, IConfigService, IHomeRuntimeService, IMcpManagementService, ISessionIndex, ISessionManager, IThreadCommunicationService, IThreadMailboxStore } from '@kiki/agent-core-v2';
+import { drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/queryStoreDisposals';
 import { IModelService } from '@kiki/agent-core-v2/kosong/model/model';
 import type { ProtocolAdapterConfig } from '@kiki/agent-core-v2/kosong/protocol/protocol';
 import { ProtocolAdapterRegistry } from '@kiki/agent-core-v2/kosong/provider/protocolAdapterRegistry';
@@ -26,6 +27,14 @@ async function makeThreadEnabledEngine(): Promise<TestEngine> {
   return engine;
 }
 
+async function closeEngine(app: TestEngine['app']): Promise<void> {
+  await app.accessor.get(IThreadCommunicationService).shutdown();
+  await app.accessor.get(IThreadMailboxStore).close();
+  await app.accessor.get(IHomeRuntimeService).close();
+  await app.dispose();
+  await drainQueryStoreDisposals();
+}
+
 defineKlientConformance('ipc', async () => {
   const { homeDir, app } = await makeThreadEnabledEngine();
   const socketPath = join(homeDir, 'klient.sock');
@@ -37,7 +46,7 @@ defineKlientConformance('ipc', async () => {
     cleanup: async () => {
       await klient.close();
       await host.close();
-      await app.dispose();
+      await closeEngine(app);
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     },
   };
@@ -58,7 +67,7 @@ describe('ipc transport specifics', () => {
   async function teardown(): Promise<void> {
     await host?.close();
     host = undefined;
-    await app.dispose();
+    await closeEngine(app);
     await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   }
 
