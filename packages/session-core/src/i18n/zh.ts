@@ -11307,7 +11307,6 @@ export const zh = {
   'st.browser.route.steps.webbridge.2': '在你的浏览器里添加扩展',
   'st.browser.route.steps.codex.1': '安装 Codex 桌面版与浏览器扩展',
   'st.browser.route.steps.codex.2': '按官方说明授权后在这里连接',
-  'st.browser.route.steps.independent.1': '点「设置」装好组件，再点「连接」',
   'st.browser.route.blurb.codex-browser': '配合 Codex / ChatGPT 桌面端与浏览器扩展协议使用。准备组件后选择对应连接并保存。',
   'st.browser.route.blurb.ego-lite': '请自行下载 Ego Lite，完成它自己的设置窗口，再在这里检查。Kiki 不会安装它，也不会导入 Chrome 的数据。',
   'st.browser.route.preparing': '正在准备…',

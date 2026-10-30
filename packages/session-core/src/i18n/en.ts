@@ -11398,7 +11398,6 @@ export const en = {
   'st.browser.route.steps.webbridge.2': 'Add the extension to your browser',
   'st.browser.route.steps.codex.1': 'Install the Codex desktop app and browser extension',
   'st.browser.route.steps.codex.2': 'Approve per the official guide, then connect here',
-  'st.browser.route.steps.independent.1': 'Press Set up to install, then press Connect',
   'st.browser.route.blurb.codex-browser': 'Use with the Codex / ChatGPT desktop app and browser extension protocol. Prepare components, select a connection and save.',
   'st.browser.route.blurb.ego-lite': 'Download Ego Lite yourself, finish its own setup window, then check it here. Kiki does not install it and does not import Chrome data.',
   'st.browser.route.preparing': 'Preparing…',
