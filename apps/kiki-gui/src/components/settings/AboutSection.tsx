@@ -159,19 +159,6 @@ export function AboutSection() {
             <span className="break-all text-right font-mono text-[12px] text-ink">{row.value}</span>
           </div>
         ))}
-        {/* Bug-report facts, out of the first read. */}
-        <div data-settings-field>
-          <AdvancedDetails summary={t('st.about.technical')} data-about-technical>
-            <dl className="space-y-1 text-[12px]">
-              {technicalRows.map((row) => (
-                <div key={row.label} className="flex items-baseline justify-between gap-4">
-                  <dt className="shrink-0 text-ink-faint">{row.label}</dt>
-                  <dd className="break-all text-right font-mono text-[11.5px] text-ink-soft">{row.value}</dd>
-                </div>
-              ))}
-            </dl>
-          </AdvancedDetails>
-        </div>
 
         {isDesktop ? (
           <>
@@ -261,6 +248,21 @@ export function AboutSection() {
           </button>
         </SettingField>
       </SettingsBox>
+
+      {/* Bug-report facts, out of the first read — below the box, so the box
+          holds only real rows. */}
+      <div className="mt-3">
+        <AdvancedDetails summary={t('st.about.technical')} data-about-technical>
+          <dl className="space-y-1 text-[12px]">
+            {technicalRows.map((row) => (
+              <div key={row.label} className="flex items-baseline justify-between gap-4">
+                <dt className="shrink-0 text-ink-faint">{row.label}</dt>
+                <dd className="break-all text-right font-mono text-[11.5px] text-ink-soft">{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </AdvancedDetails>
+      </div>
 
       <div className="mt-3">
         <FeedbackLine feedback={updateMessage} />

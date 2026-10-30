@@ -89,6 +89,7 @@ export function RemoteConnectionsSection() {
 
   return (
     <SectionCard id="st-card-remote-connections" title={t('st.remote.outboundTitle')} scope="server"
+      aside={<span data-remote-source>{sourceLine}</span>}
       actions={control === null ? undefined : (
         // One primary per screen: the invite on the card above is it; adding
         // an outbound connection stays secondary.
@@ -98,8 +99,6 @@ export function RemoteConnectionsSection() {
         </button>
       )}>
       <div className="space-y-4" data-remote-connections>
-        <p className="min-w-0 text-[12.5px] text-ink-soft" data-remote-source>{sourceLine}</p>
-
         {connections.isLoading ? <Hint>{t('st.remote.loading')}</Hint> : null}
         {connections.isError ? <InlineError error={connections.error} /> : null}
 

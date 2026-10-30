@@ -80,6 +80,7 @@ const MCP_ENTRY = {
 
 const klient = {
   global: {
+    env: vi.fn(async () => ({ os: 'linux', arch: 'x64', home: '/tmp' })),
     board: { read: vi.fn() },
     mcp: {
       list: vi.fn(async (): Promise<readonly typeof MCP_ENTRY[]> => []),
@@ -94,6 +95,7 @@ const klient = {
 
 const client = {
   getConfig: vi.fn(async () => ({})),
+  getCapability: vi.fn(async () => ({ id: 'kiki-computer', state: 'ready', install: { running: false }, steps: [] })),
   meta: vi.fn(async (): Promise<{ experimental_flags?: Record<string, boolean> }> => ({
     experimental_flags: {
       'tool-select': true,
@@ -615,8 +617,8 @@ describe('SettingsPage memory advisor', () => {
     expect(card(container).querySelector('[data-memory-advisor-status]')?.getAttribute('data-memory-advisor-status')).toBe('unconfigured');
     expect(card(container).textContent).toContain('Needs a source');
     expect(card(container).querySelector('[data-memory-advisor-test]')).toBeNull();
-    // Engine tuning lives under Developer & labs, not on the memory page.
-    expect(card(container).querySelector('[data-memory-advisor-advanced]')).toBeNull();
+    // Engine tuning sits in the card's own 高级 fold.
+    expect(card(container).querySelector('[data-memory-advisor-advanced]')).not.toBeNull();
     expect(client.getMemoryAdvisorSettings).toHaveBeenCalledWith('ws-beta');
   });
 
@@ -628,14 +630,16 @@ describe('SettingsPage memory advisor', () => {
     expect(card(container).querySelector('#memory-advisor-model')).toBeNull();
     expect(card(container).querySelector('[data-memory-advisor-endpoint]')).toBeNull();
     expect(card(container).querySelector('[data-decision-summary="memory"] [data-decision-summary-value]')?.textContent).toBe('typesafe · jev-latest');
-    // No sending-out block, OK button or workspace picker, and no Advanced
-    // tuning wall on the memory page: the destination diagnostic lives with
-    // the tuning numbers under Developer & labs.
+    // No sending-out block, OK button or workspace picker; the destination
+    // diagnostic and the tuning numbers sit in the card's 高级 fold.
     expect(card(container).querySelector('[data-memory-advisor-egress]')).toBeNull();
     expect(card(container).querySelector('[data-memory-advisor-allow]')).toBeNull();
     expect(card(container).querySelector('[data-memory-advisor-workspace]')).toBeNull();
-    expect(card(container).querySelector('[data-memory-advisor-destination]')).toBeNull();
-    expect(card(container).querySelector('[data-memory-advisor-timeout-ms]')).toBeNull();
+    const fold = card(container).querySelector<HTMLDetailsElement>('[data-memory-advisor-advanced]')!;
+    expect(fold).not.toBeNull();
+    fold.open = true;
+    expect(fold.querySelector('[data-memory-advisor-destination]')).not.toBeNull();
+    expect(fold.querySelector('[data-memory-advisor-timeout-ms]')).not.toBeNull();
     expect(card(container).textContent).toContain('Ready');
     expect(advisorFake.patches).toEqual([]);
 
@@ -693,10 +697,13 @@ describe('SettingsPage memory advisor', () => {
     expect(advisorFake.patches.at(-1)).toEqual({ advisor: advisorFake.advisor });
   });
 
-  it('tunes the advisor numbers on the developer page, inside the schema range', async () => {
+  it('tunes the advisor numbers in the advisor card’s advanced fold, inside the schema range', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
-    const container = await renderSettings('/settings/developer');
-    const tuning = container.querySelector<HTMLElement>('[data-memory-advisor-tuning]')!;
+    const container = await renderSettings('/settings/memory');
+    const fold = container.querySelector<HTMLDetailsElement>('[data-memory-advisor-advanced]')!;
+    expect(fold).not.toBeNull();
+    fold.open = true;
+    const tuning = fold.querySelector<HTMLElement>('[data-memory-advisor-tuning]')!;
     expect(tuning).not.toBeNull();
     const timeout = tuning.querySelector<HTMLInputElement>('[data-memory-advisor-timeout-ms]')!;
     expect(timeout.value).toBe('6000');
@@ -763,8 +770,10 @@ describe('SettingsPage memory advisor', () => {
 
   it('reads a running agent\'s status on request and keeps a cold session distinct', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
-    const container = await renderSettings('/settings/developer?workspace=ws-beta');
-    const runtime = () => container.querySelector<HTMLElement>('[data-memory-advisor-runtime]')!;
+    const container = await renderSettings('/settings/memory?workspace=ws-beta');
+    const fold = container.querySelector<HTMLDetailsElement>('[data-memory-advisor-advanced]')!;
+    fold.open = true;
+    const runtime = () => fold.querySelector<HTMLElement>('[data-memory-advisor-runtime]')!;
     expect(client.getMemoryAdvisorStatus).not.toHaveBeenCalled();
     expect(client.listSessions).toHaveBeenCalledWith(expect.objectContaining({ workspace_id: 'ws-beta' }));
     client.getMemoryAdvisorStatus.mockResolvedValueOnce({
@@ -811,7 +820,7 @@ describe('SettingsPage batch-3 leaves', () => {
     const card = container.querySelector('#st-card-conn-timeout')!;
     const input = card.querySelector<HTMLInputElement>('#st-conn-request-timeout')!;
     expect(input.value).toBe('30');
-    expect(card.textContent).toContain('Request timeout (seconds)');
+    expect(card.textContent).toContain('Request timeout');
 
     // The field saves itself on Enter; there is no separate Save button.
     expect(card.querySelector('button:not([data-setting-help])')).toBeNull();
@@ -985,7 +994,7 @@ describe('SettingsPage batch-3 leaves', () => {
     ['/settings/extensions', '#st-card-plugins'],
     ['/settings/environment-tools', '[data-settings-page-title]'],
     ['/settings/remote', '#st-card-conn-server'],
-    ['/settings/system', '#st-card-resource-limits'],
+    ['/settings/system', '#st-card-cron'],
   ] as const)('keeps the retired combined page %s resolving', async (path, cardSelector) => {
     localStorage.setItem('kiki.locale', 'en');
     const container = await renderSettings(path);
@@ -1082,10 +1091,21 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(messaging.textContent).toContain('Subagents can notify their parent');
     expect(sessions.querySelector('#st-card-token-counting')).toBeNull();
 
+    const runtimeTab = await renderSettings('/settings/sessions?tab=runtime');
+    expect(runtimeTab.querySelector('#st-card-resource-limits')).not.toBeNull();
+    expect(runtimeTab.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle reclamation (s)');
+    expect(runtimeTab.querySelector('#st-card-session-residency')).not.toBeNull();
+
+    const defaultsTab = await renderSettings('/settings/ai?tab=defaults');
+    expect(defaultsTab.querySelector('#st-card-token-counting')).not.toBeNull();
+    expect(defaultsTab.querySelector('#st-card-retry')).not.toBeNull();
+
     const developer = await renderSettings('/settings/advanced');
-    expect(developer.querySelector('#st-card-token-counting')).not.toBeNull();
-    expect(developer.querySelector('#st-card-resource-limits')).not.toBeNull();
-    expect(developer.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle reclamation (s)');
+    expect(developer.querySelector('#st-card-token-counting')).toBeNull();
+    expect(developer.querySelector('#st-card-resource-limits')).toBeNull();
+    expect(developer.querySelector('#st-card-retry')).toBeNull();
+    expect(developer.querySelector('#st-card-session-residency')).toBeNull();
+    expect(developer.querySelector('#st-card-memory-advisor-tuning')).toBeNull();
     // Cron is a read-only readout here, not a form.
     expect(developer.querySelector('#st-card-cron [data-settings-diagnostics]')).not.toBeNull();
     const diagnosticsScope = developer.querySelector('#st-card-cron [data-settings-panel-scope]');
@@ -1141,8 +1161,12 @@ describe('SettingsPage batch-3 leaves', () => {
       ['/settings/mcp', ['tool-select', 'external_delegation_mcp']],
       ['/settings/tasks', ['session_idle_eviction', 'task_wait']],
       ['/settings/search?tab=advanced', ['desktop_search']],
+      ['/settings/browser-control', ['native_browser']],
       ['/settings/developer', ['persistence_minidb_readmodel']],
     ];
+    const baseMeta = await client.meta();
+    client.meta.mockResolvedValue({ experimental_flags: { ...baseMeta.experimental_flags, native_browser: true } });
+    client.klient.rest = { connections: { list: async () => [], handshake: async () => ({}) }, browser: { list: async () => ({ connections: [] }) } } as never;
     for (const [path, flags] of homes) {
       const page = await renderSettings(path);
       await flush();
@@ -1156,6 +1180,8 @@ describe('SettingsPage batch-3 leaves', () => {
   });
 
   it('keeps Labs as a read-only index linking every flag to its page', async () => {
+    const baseMeta = { experimental_flags: { 'tool-select': true, task_wait: true, desktop_search: true, persistence_minidb_readmodel: true, auto_session_title: true, subagent_release_idle: true, 'agent-profile-routes': true, external_delegation_mcp: true, image_format_conversion: false, native_ssh: false, session_idle_eviction: false } };
+    client.meta.mockResolvedValue(baseMeta);
     const labs = await renderSettings('/settings/labs');
     await flush();
     const card = labs.querySelector('#st-card-labs')!;
@@ -1222,7 +1248,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(container.querySelector('#st-card-exp-extensions [data-experimental-row="external_delegation_mcp"]')).not.toBeNull();
   });
 
-  it('mounts the developer page with limits first and raw JSON after', async () => {
+  it('mounts the developer page with the cron readout first and raw JSON after', async () => {
     const container = await renderSettings('/settings/developer');
     const card = container.querySelector('#st-card-advanced')!;
     expect(card).not.toBeNull();
@@ -1230,7 +1256,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(card.textContent).toContain('Advanced configuration for permissions, loop controls, and background tasks. Validated on save.');
     expect(card.textContent).not.toContain('kap-server');
     const order = [...container.querySelectorAll('[data-settings-card]')].map((node) => node.id);
-    expect(order).toEqual(['st-card-resource-limits', 'st-card-retry', 'st-card-session-residency', 'st-card-token-counting', 'st-card-memory-advisor-tuning', 'st-card-cron', 'st-card-advanced', 'st-card-labs', 'st-card-exp-developer']);
+    expect(order).toEqual(['st-card-cron', 'st-card-advanced', 'st-card-labs', 'st-card-exp-developer']);
 
     const writes = client.patchConfig.mock.calls.length;
     await setTextarea(card.querySelector('textarea')!, '{');
@@ -1385,12 +1411,17 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(extensions.querySelector('[data-test-location]')?.textContent).toBe('/settings/extensions?tab=mcp');
     expect(extensions.querySelector('#st-card-mcp')).not.toBeNull();
 
-    // Browser & computer now renders both its halves on one page; the legacy
+    // Browser & computer renders its halves as switchable tabs; the legacy
     // computer-control address still resolves to the same section.
+    client.klient.rest = { connections: { list: async () => [], handshake: async () => ({}) }, browser: { list: async () => ({ connections: [] }) } } as never;
     const browser = await renderSettings('/settings/browser-control', { guarded: true });
     await flush();
     expect(browser.querySelector('#st-card-browser-enabled')).not.toBeNull();
-    expect(browser.querySelector('#st-card-computer-enabled')).not.toBeNull();
+    expect(browser.querySelector('[data-browser-control-tab="computer"]')).not.toBeNull();
+
+    const computerTab = await renderSettings('/settings/browser-control?tab=computer', { guarded: true });
+    await flush();
+    expect(computerTab.querySelector('#st-card-computer-enabled')).not.toBeNull();
 
     const legacyComputer = await renderSettings('/settings/computer-control', { guarded: true });
     await flush();
@@ -1441,6 +1472,7 @@ describe('SettingsPage search ownership', () => {
     const ssh = await renderSettings('/settings/ssh');
     const plugins = await renderSettings('/settings/plugins');
     const spaces = await renderSettings('/settings/spaces');
+    const browserControl = await renderSettings('/settings/browser-control');
     const connectionServices = await renderSettings('/settings/connection-services?tab=web');
     const accessKiki = await renderSettings('/settings/connection-services?tab=kiki');
     const accessClients = await renderSettings('/settings/connection-services?tab=clients');
@@ -1460,7 +1492,7 @@ describe('SettingsPage search ownership', () => {
         ])
         .map((match) => match[1]!),
     );
-    for (const page of [general, agents, subagents, mcp, sessions, permissions, tasks, developer, labs, defaults, searchAdvanced, ssh, plugins, spaces, connectionServices, accessKiki, accessClients]) {
+    for (const page of [general, agents, subagents, mcp, sessions, permissions, tasks, developer, labs, defaults, searchAdvanced, ssh, plugins, spaces, browserControl, connectionServices, accessKiki, accessClients]) {
       for (const card of page.querySelectorAll('[id^="st-card-"]')) rendered.add(card.id);
     }
     expect(rendered.size).toBeGreaterThan(10);
@@ -1628,7 +1660,7 @@ describe('SettingsPage search locating', () => {
     await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 2100); }); });
     expect(scrollIntoView).not.toHaveBeenCalled();
 
-    gate.resolve({ experimental_flags: { native_browser: false } });
+    gate.resolve({ experimental_flags: { persistence_minidb_readmodel: true } });
     await flush();
     await flush();
 
@@ -1646,7 +1678,7 @@ describe('SettingsPage search locating', () => {
     const container = await renderSettings('/settings/developer#st-card-exp-developer');
 
     await act(async () => { window.dispatchEvent(new Event('wheel')); });
-    gate.resolve({ experimental_flags: { native_browser: false } });
+    gate.resolve({ experimental_flags: { persistence_minidb_readmodel: true } });
     await flush();
     await flush();
 
@@ -1711,7 +1743,7 @@ describe('SettingsPage search locating', () => {
     const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
     const container = await renderSettings('/settings/developer#st-card-exp-developer');
 
-    gate.resolve({ experimental_flags: { native_browser: false } });
+    gate.resolve({ experimental_flags: { persistence_minidb_readmodel: true } });
     await flush();
     await flush();
 
@@ -1738,7 +1770,7 @@ describe('SettingsPage search locating', () => {
     const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
     const container = await renderSettings('/settings/developer#st-card-exp-developer');
 
-    gate.resolve({ experimental_flags: { native_browser: false } });
+    gate.resolve({ experimental_flags: { persistence_minidb_readmodel: true } });
     await flush();
     await flush();
 

@@ -135,77 +135,80 @@ function CurrentConnectionContent() {
       <SectionCard
         id="st-card-conn-server"
         title={t('st.conn.connectedTitle')}
-        actions={
-          <button
-            type="button"
-            data-conn-reconnect
-            onClick={() => { socket?.nudge(); }}
-            className={wsStatus !== 'open' ? PRIMARY_BUTTON : SECONDARY_BUTTON}
-          >
-            {t('st.conn.reconnect')}
-          </button>
-        }
       >
-        <div role="group" aria-label={t('st.conn.statusTitle')} className="space-y-1.5">
-          <div className="flex items-center gap-2" data-conn-ws-status={wsStatus}>
-            <span aria-hidden className={`inline-block h-2 w-2 shrink-0 rounded-full ${statusDotClass}`} />
-            <span className={`text-[14px] font-medium ${statusTextClass}`}>{t(`st.conn.ws.${wsStatus}`)}</span>
+        {isSsh ? (
+          <div className="space-y-1.5 text-[12.5px] text-ink">
+            <p className="font-medium">{t('connect.remoteScope')} · {sshLabel}</p>
+            <p className="text-ink-soft">{t('connect.sshRemoteSettings')}</p>
+            <button type="button" onClick={activateLocal} className={`${SECONDARY_BUTTON} mt-1`}>
+              {t('connect.switchLocal')}
+            </button>
           </div>
-
-          {isSsh ? (
-            <div className="space-y-1.5 pt-1 text-[12.5px] text-ink">
-              <p className="font-medium">{t('connect.remoteScope')} · {sshLabel}</p>
-              <p className="text-ink-soft">{t('connect.sshRemoteSettings')}</p>
-              <button type="button" onClick={activateLocal} className={`${SECONDARY_BUTTON} mt-1`}>
-                {t('connect.switchLocal')}
-              </button>
-            </div>
-          ) : !editingEndpoint ? (
-            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-              <span className="break-all font-mono text-[15px] text-ink" data-conn-url>
-                {config.url.trim() || (typeof window !== 'undefined' ? window.location.origin : '')}
-              </span>
-              <button
-                type="button"
-                data-conn-edit
-                onClick={() => { setEditingEndpoint(true); }}
-                className="shrink-0 rounded px-1.5 py-0.5 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
-              >
-                {t('st.secret.edit')}
-              </button>
-            </div>
-          ) : null}
-
-          <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11.5px] text-ink-faint">
-            <span>{t('st.conn.version')} <span className="font-mono text-ink-soft">{meta.server_version}</span></span>
-            <span aria-hidden>·</span>
-            <span>{t('st.conn.backend')} <span className="font-mono text-ink-soft">{meta.backend ?? 'v1'}</span></span>
-            <span aria-hidden>·</span>
-            {closes > 0 ? (
-              <a
-                href="#st-card-conn-log"
-                data-conn-drops-link
-                onClick={(event) => {
-                  event.preventDefault();
-                  document.getElementById('st-card-conn-log')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }}
-                className="text-ink-soft underline decoration-hairline underline-offset-2 hover:text-ink"
-              >
-                {t('st.conn.dropsSinceStart', { closes })}
-              </a>
-            ) : (
-              <span>{t('st.conn.dropsSinceStart', { closes: 0 })}</span>
-            )}
-            {!isSsh && config.token.trim() === '' ? (
-              <>
-                <span aria-hidden>·</span>
-                <span data-conn-no-token>{t('st.conn.noToken')}</span>
-              </>
-            ) : null}
-          </p>
-        </div>
+        ) : null}
 
         <SettingsBox>
+          {!editingEndpoint ? (
+            <SettingField
+              label={
+                <span className="flex items-center gap-2" data-conn-ws-status={wsStatus}>
+                  <span aria-hidden className={`inline-block h-2 w-2 shrink-0 rounded-full ${statusDotClass}`} />
+                  <span className={`font-medium ${statusTextClass}`}>{t(`st.conn.ws.${wsStatus}`)}</span>
+                  <span className="break-all font-mono text-ink" data-conn-url>
+                    {config.url.trim() || (typeof window !== 'undefined' ? window.location.origin : '')}
+                  </span>
+                </span>
+              }
+              help={
+                <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+                  <span>{t('st.conn.version')} <span className="font-mono">{meta.server_version}</span></span>
+                  <span aria-hidden>·</span>
+                  <span>{t('st.conn.backend')} <span className="font-mono">{meta.backend ?? 'v1'}</span></span>
+                  <span aria-hidden>·</span>
+                  {closes > 0 ? (
+                    <a
+                      href="#st-card-conn-log"
+                      data-conn-drops-link
+                      onClick={(event) => {
+                        event.preventDefault();
+                        document.getElementById('st-card-conn-log')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                      }}
+                      className="underline decoration-hairline underline-offset-2 hover:text-ink"
+                    >
+                      {t('st.conn.dropsSinceStart', { closes })}
+                    </a>
+                  ) : (
+                    <span>{t('st.conn.dropsSinceStart', { closes: 0 })}</span>
+                  )}
+                  {!isSsh && config.token.trim() === '' ? (
+                    <>
+                      <span aria-hidden>·</span>
+                      <span data-conn-no-token>{t('st.conn.noToken')}</span>
+                    </>
+                  ) : null}
+                </span>
+              }
+            >
+              <button
+                type="button"
+                data-conn-reconnect
+                onClick={() => { socket?.nudge(); }}
+                className={wsStatus !== 'open' ? PRIMARY_BUTTON : SECONDARY_BUTTON}
+              >
+                {t('st.conn.reconnect')}
+              </button>
+              {!isSsh ? (
+                <button
+                  type="button"
+                  data-conn-edit
+                  onClick={() => { setEditingEndpoint(true); }}
+                  className={SECONDARY_BUTTON}
+                >
+                  {t('st.secret.edit')}
+                </button>
+              ) : null}
+            </SettingField>
+          ) : null}
+
           {!isSsh && editingEndpoint ? <form
             className="space-y-4"
             onSubmit={(event) => { event.preventDefault(); applyDrafts(); }}
@@ -256,7 +259,11 @@ function CurrentConnectionContent() {
           {/* Same connection, so the waits live with the address rather than a
               second card: the two numbers this device applies to requests on it. */}
           <div id="st-card-conn-timeout" className="contents">
-            <SettingField label={t('st.conn.timeoutLabel')} htmlFor="st-conn-request-timeout">
+            <SettingField
+              label={t('st.conn.timeoutLabel')}
+              htmlFor="st-conn-request-timeout"
+              help={t('st.conn.timeoutRowHelp')}
+            >
               <SavedTick show={timeoutSaved} />
               <CommitInput
                 id="st-conn-request-timeout"
@@ -268,7 +275,11 @@ function CurrentConnectionContent() {
               />
               <span className="text-[12px] text-ink-faint">{t('st.conn.timeoutUnit')}</span>
             </SettingField>
-            <SettingField label={t('st.conn.readingTimeoutLabel')} htmlFor="st-conn-reading-timeout">
+            <SettingField
+              label={t('st.conn.readingTimeoutLabel')}
+              htmlFor="st-conn-reading-timeout"
+              help={t('st.conn.readingTimeoutRowHelp')}
+            >
               <SavedTick show={readingTimeoutSaved} />
               <CommitInput id="st-conn-reading-timeout" className="w-24 text-right" inputMode="numeric"
                 value={String(savedReadingTimeout)}

@@ -88,7 +88,7 @@ export function SectionCard({
   scope?: PanelScope;
   /** Quiet note under the heading — the browser signpost for desktop-only
    * groups, so they cost one line instead of a page of disabled controls. */
-  aside?: string;
+  aside?: React.ReactNode;
   /** A section-wide control on the heading line (one switch or add button). */
   actions?: React.ReactNode;
 }) {

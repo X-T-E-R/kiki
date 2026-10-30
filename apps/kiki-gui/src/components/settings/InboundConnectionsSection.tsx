@@ -162,6 +162,7 @@ export function InboundConnectionsSection() {
     <SectionCard id="st-card-inbound-connections" title={t('st.inbound.title')} scope="server" actions={(
       <button type="button" data-inbound-invite className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
         disabled={!effective || api === null}
+        title={!effective ? t('st.inbound.inviteNeedsGate') : undefined}
         onClick={() => { setDialog({ kind: 'invite' }); }}>
         <Icon name="plus" size={12} />{t('st.inbound.invite')}
       </button>
@@ -191,20 +192,23 @@ export function InboundConnectionsSection() {
               ) : null}
             </div>
 
-            {!effective ? (
-              <Hint>{t(status.data.unavailableReason === 'dangerous_auth_bypass' ? 'st.inbound.inviteUnavailable' : 'st.inbound.inviteNeedsGate')}</Hint>
+            {status.data.unavailableReason === 'dangerous_auth_bypass' ? (
+              <Hint>{t('st.inbound.inviteUnavailable')}</Hint>
             ) : null}
 
-            {grants.length === 0 ? (
+            {/* While the gate is shut the empty line has nothing to add: the
+                gate hint above and the disabled invite's title already say the
+                one next step. */}
+            {effective && grants.length === 0 ? (
               <p className="text-[13px] text-ink-soft" data-inbound-empty>{t('st.inbound.emptyLine')}</p>
-            ) : (
+            ) : grants.length > 0 ? (
               <div aria-label={t('st.inbound.listTitle')} data-inbound-list>
                 {grants.map((grant) => (
                   <InboundGrantRow key={grant.id} grant={grant}
                     onRevoke={() => { setDialog({ kind: 'revoke', grantId: grant.id, name: grant.label }); }} />
                 ))}
               </div>
-            )}
+            ) : null}
           </>
         ) : null}
 

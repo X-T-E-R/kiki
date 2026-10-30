@@ -90,7 +90,7 @@ export function SettingField({
   layout = 'row',
   children,
 }: {
-  label: string;
+  label: React.ReactNode;
   /** Set when the control is a real form element, so the label activates it. */
   htmlFor?: string;
   /** Id on the label text, for `aria-labelledby` on grouped controls. */
