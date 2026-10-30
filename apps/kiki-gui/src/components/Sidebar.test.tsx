@@ -2728,24 +2728,25 @@ describe('Sidebar room rows', () => {
     expect(roomRest.continue).toHaveBeenCalledWith('room_1');
   });
 
-  it('renames through the shared dialog with the room heading', async () => {
+  it('renames inline on the row, with the room heading as the field label', async () => {
     roomRest.get.mockResolvedValue(roomDocument(roomSummary({ id: 'room_1' })));
     roomRest.update.mockResolvedValue(roomDocument(roomSummary({ id: 'room_1' })));
     const { container } = await mount(listedRoom(roomSummary({ id: 'room_1', title: '0.31 发布' })));
     const menu = await openRoomMenu(container);
     await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="rename"]')!.click(); });
-    // The dialog renders through a body portal.
-    const dialog = document.body.querySelector('[aria-label="Rename room"]');
-    expect(dialog).not.toBeNull();
-    const input = dialog!.querySelector('input')!;
+    // The row-local editor portals to <body> over the row's title.
+    const editor = document.body.querySelector('[data-rename-editor="room_1"]');
+    expect(editor).not.toBeNull();
+    const input = editor!.querySelector<HTMLInputElement>('[data-rename-input]')!;
+    expect(input.getAttribute('aria-label')).toBe('Rename room');
     expect(input.value).toBe('0.31 发布');
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
       setter.call(input, '0.32 发布');
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    const save = [...dialog!.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
-    await act(async () => { save.click(); });
+    await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+    await settle();
     expect(roomRest.update).toHaveBeenCalledWith('room_1', { name: '0.32 发布' });
   });
 

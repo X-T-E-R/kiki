@@ -22,6 +22,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import { useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
 
@@ -96,7 +97,6 @@ import { RelativeTime } from './RelativeTime';
 import { useSessionSeen } from './ActivityPage';
 import { useSessionActivity } from './ActivityPanel';
 import { ConfirmDialog } from './ConfirmDialog';
-import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { AnchoredPopover } from './overlays/AnchoredPopover';
 import { LifeMark } from './LifeMark';
@@ -1890,8 +1890,9 @@ export function Sidebar({
           onNewRoom={() => { setRoomDraft(joiningRoom); setJoiningRoom(null); }} />
       ) : null}
       {renaming !== null ? (
-        <RenameDialog
-          currentTitle={renaming.kind === 'room' ? renaming.title : renaming.session.title}
+        <SidebarRenameEditor
+          key={renaming.id}
+          item={renaming}
           heading={renaming.kind === 'room' ? t('room.renameTitle') : t('rename.title')}
           onSubmit={async (title) => {
             if (renaming.kind === 'room') await roomApi.updateRoom(renaming.id, { name: title });
@@ -3642,69 +3643,109 @@ function SessionMenu({
 
 /** Rename dialog seeded with the current title; the caller owns the write
  * (a thread's profile patch, a room's name patch). */
-function RenameDialog({
-  currentTitle,
+/**
+ * The one/two-value tier: renaming a session or room edits the row it names,
+ * not a dialog. The editor portals to <body> over the row's title so the row
+ * never reflows while the field is open; Enter saves, Escape cancels, and a
+ * click anywhere else closes without writing. The title it covers carries
+ * data-session-title / data-room-title, so the field lands exactly on it.
+ */
+function SidebarRenameEditor({
+  item,
   heading,
   onSubmit,
   onClose,
   onRenamed,
 }: {
-  currentTitle: string;
+  item: ConversationListItem;
   heading: string;
   onSubmit: (title: string) => Promise<unknown>;
   onClose: () => void;
   onRenamed: () => void;
 }) {
   const { t } = useI18n();
+  const currentTitle = item.kind === 'room' ? item.title : item.session.title;
   const [title, setTitle] = useState(currentTitle);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fieldRef = useRef<HTMLDivElement | null>(null);
+  const [anchor, setAnchor] = useState<{ left: number; top: number; width: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const selector = item.kind === 'room'
+      ? `[data-room-row="${item.id}"] [data-room-title]`
+      : `[data-session-row="${item.id}"] [data-session-title]`;
+    const target = document.querySelector<HTMLElement>(selector);
+    if (target === null) { onClose(); return; }
+    const rect = target.getBoundingClientRect();
+    setAnchor({ left: rect.left - 4, top: rect.top - 4, width: Math.max(rect.width + 32, 200) });
+  }, [item, onClose]);
+
+  useEffect(() => {
+    if (anchor !== null) fieldRef.current?.querySelector<HTMLInputElement>('[data-autofocus]')?.focus();
+  }, [anchor]);
+
+  useEffect(() => {
+    const unregister = registerOverlay('sidebar-rename');
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (fieldRef.current !== null && !fieldRef.current.contains(event.target as Node)) onClose();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => {
+      unregister();
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('pointerdown', onPointerDown, true);
+    };
+  }, [onClose]);
 
   const submit = () => {
     const trimmed = title.trim();
     if (trimmed === '' || busy) return;
+    if (trimmed === currentTitle) { onClose(); return; }
     setBusy(true);
     setError(null);
     void Promise.resolve(onSubmit(trimmed))
       .then(onRenamed)
-      .catch((error: unknown) => {
+      .catch((cause: unknown) => {
         setBusy(false);
-        setError(error instanceof Error ? error.message : String(error));
+        setError(cause instanceof Error ? cause.message : String(cause));
       });
   };
 
-  return (
-    <Dialog onClose={onClose} ariaLabel={heading} overlayId="rename-dialog">
-      <h2 className="font-display text-[18px] font-semibold text-ink">{heading}</h2>
+  if (anchor === null) return null;
+  return createPortal(
+    <div
+      ref={fieldRef}
+      role="dialog"
+      aria-label={heading}
+      data-rename-editor={item.id}
+      className="anim-enter fixed z-50 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
+      style={{ left: anchor.left, top: anchor.top, width: anchor.width }}
+    >
       <input
         data-autofocus
-        className="mt-3 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-accent"
+        data-rename-input
+        aria-label={heading}
+        className="h-7 w-full rounded-md bg-paper px-2 text-[13px] text-ink outline-none focus:ring-2 focus:ring-selected-ink/40"
         value={title}
+        maxLength={200}
         onChange={(event) => { setTitle(event.target.value); }}
         onKeyDown={(event) => {
-          if (event.key === 'Enter') submit();
+          if (event.key === 'Enter') { event.preventDefault(); submit(); }
         }}
+        onFocus={(event) => { event.currentTarget.select(); }}
       />
       {error !== null ? (
-        <p className="mt-2 font-mono text-[11px] text-danger">{error}</p>
+        <p className="mt-1 px-1 font-mono text-[11px] text-danger">{error}</p>
       ) : null}
-      <div className="mt-4 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
-        >
-          {t('common.cancel')}
-        </button>
-        <button
-          type="button"
-          disabled={busy || title.trim() === ''}
-          onClick={submit}
-          className="rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-on-accent transition-colors hover:bg-accent-deep disabled:opacity-50"
-        >
-          {busy ? t('common.saving') : t('common.save')}
-        </button>
-      </div>
-    </Dialog>
+    </div>,
+    document.body,
   );
 }
