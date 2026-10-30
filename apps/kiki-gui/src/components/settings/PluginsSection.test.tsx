@@ -17,6 +17,7 @@ import { InstalledPluginsList } from './plugins/InstalledPluginsList';
 import { PluginSettingsPage } from './plugins/PluginSettingsPage';
 import { InstallFlow } from '../capabilities/InstallFlow';
 import { SettingsNavTree } from './SettingsNav';
+import { useOptionalInstalledPlugins } from '../capabilities/usePlugins';
 
 const PLUGIN = {
   id: 'notes',
@@ -121,7 +122,26 @@ const browserSetupPresets = vi.fn(async () => ({
 const mocks = vi.hoisted(() => ({ client: {} as Record<string, unknown> }));
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client: mocks.client, scopeId: 'scope-test', sshLabel: null }),
+  useConnection: () => ({
+    client: mocks.client,
+    // The computer section reads the same global MCP/env plane the MCP page
+    // does; a browser-page mount still needs it answered.
+    klient: {
+      global: {
+        env: async () => ({ platform: 'linux', arch: 'x64' }),
+        mcp: {
+          list: async () => [],
+          add: async () => ({}),
+          update: async () => ({}),
+          remove: async () => ({}),
+          test: async () => ({}),
+          stop: async () => ({}),
+        },
+      },
+    },
+    scopeId: 'scope-test',
+    sshLabel: null,
+  }),
   useOptionalConnection: () => ({ client: mocks.client, scopeId: 'scope-test', sshLabel: null }),
 }));
 
@@ -299,12 +319,23 @@ function locationOf(container: HTMLElement): string | null {
 function LeafAtRoute() {
   const { search } = useLocation();
   // The navigation is mounted with the page, the way the real settings screen
-  // mounts it: the two must stay in step about what is installed.
+  // mounts it: the two must stay in step about what is installed. An open
+  // plugin names itself in the header breadcrumb, resolved from the same
+  // installed-plugins query the list and the navigation read.
+  const pluginId = pluginSettingsIdFromQuery(search);
   return <>
     <LocationProbe />
+    <PluginCrumb pluginId={pluginId} />
     <SettingsNavTree active="plugins" onNavigate={() => {}} />
-    <PluginsSection pluginId={pluginSettingsIdFromQuery(search)} />
+    <PluginsSection pluginId={pluginId} />
   </>;
+}
+
+function PluginCrumb({ pluginId }: { readonly pluginId: string | null }) {
+  const installed = useOptionalInstalledPlugins().plugins;
+  if (pluginId === null) return null;
+  const label = installed.find((plugin) => plugin.id === pluginId)?.displayName ?? pluginId;
+  return <span data-settings-plugin-title>{label}</span>;
 }
 
 function LocationProbe() {
@@ -774,11 +805,13 @@ describe('PluginsSection', () => {
     getPluginSettings.mockResolvedValue({ values: {}, secretsConfigured: [] });
   });
 
-  it('keeps the navigation in step with the installed list as it changes', async () => {
-    // The list is what fetches; a plugin's own page and the navigation only
-    // read. So the navigation has to follow that one query: it must show what
-    // the server has reported, and stop showing it once the list moves on —
-    // without an unrelated re-render happening to re-read the cache.
+  it('keeps the navigation and an open page in step with the installed list as it changes', async () => {
+    // The flattened tree never lists installed plugins — a plugin's own page
+    // names itself in the header breadcrumb instead, and both read the one
+    // installed-plugins query. So that query is what the header must follow:
+    // it names what the server has reported, and stops naming it once the
+    // list moves on — without an unrelated re-render happening to re-read
+    // the cache.
     listPlugins.mockResolvedValue({
       plugins: [PLUGIN, { ...PLUGIN, id: 'later', displayName: 'Later', enabled: false }],
     });
@@ -786,23 +819,25 @@ describe('PluginsSection', () => {
     // The list is a query of its own, so it lands a tick after the page does.
     await flush();
     await flush();
-    const seen = () => [...container.querySelectorAll('[data-settings-nav-plugin]')]
-      .map((node) => node.getAttribute('data-settings-nav-plugin'));
-    expect(seen()).toEqual(['notes', 'later']);
+    expect(container.querySelector('[data-settings-nav-plugin]')).toBeNull();
+    expect(container.querySelector('[data-settings-plugin-title]')).toBeNull();
 
     // Open a plugin's own page the way a reader does, by clicking its row.
     await click(container.querySelector('[data-plugin-open-settings="notes"]')!);
     await flush();
     expect(locationOf(container)).toBe('/settings/plugins?plugin=notes');
-    // The navigation is still naming both plugins on the sub-page.
-    expect(seen()).toEqual(['notes', 'later']);
+    // The page names the open plugin in the breadcrumb.
+    expect(container.querySelector('[data-settings-plugin-title]')?.textContent).toBe('Notes');
 
-    // The list changes while that page is open — the navigation follows it
+    // The list changes while that page is open — the crumb follows it
     // without anything else having to re-render it.
     listPlugins.mockResolvedValue({ plugins: [{ ...PLUGIN, id: 'later', displayName: 'Later' }] });
     await leafHandles.queryClient!.invalidateQueries({ queryKey: ['plugins'] });
     await flush();
-    expect(seen(), 'a plugin gone from the list must leave the navigation').toEqual(['later']);
+    expect(
+      container.querySelector('[data-settings-plugin-title]')?.textContent,
+      'a plugin gone from the list must leave the breadcrumb',
+    ).toBe('notes');
     // Hand the shared mock back the way the rest of the file expects to find it.
     listPlugins.mockResolvedValue({ plugins: [PLUGIN] });
   });
@@ -889,8 +924,8 @@ describe('PluginsSection', () => {
     getCapability.mockResolvedValue({ ...WEBBRIDGE, state: 'partial',
       steps: [{ id: 'detect', state: 'failed', detail: 'Loopback health endpoint refused the connection' }] });
     const container = await renderBrowser();
-    expect(container.querySelector('[data-webbridge-blocking]')?.textContent).toBe('These parts are not ready: Health check.');
-    expect(container.textContent).not.toContain('Loopback health endpoint refused the connection');
+    expect(container.querySelector('[data-webbridge-blocking]')?.textContent).toContain('These parts are not ready: Health check.');
+    expect(container.querySelector('[data-webbridge-readiness]')?.textContent).not.toContain('Loopback health endpoint refused the connection');
   });
 
   it('shows a working runtime as one status line and nothing else', async () => {
@@ -914,7 +949,9 @@ describe('PluginsSection', () => {
     expect(container.querySelector('[data-webbridge-details]')).toBeNull();
     expect(container.querySelector('[data-webbridge-install-note]')).toBeNull();
     expect(container.querySelector('[data-webbridge-step]')).toBeNull();
-    const text = container.textContent ?? '';
+    // Only the bridge's own card speaks here — the page's other sections
+    // (computer executor details) are allowed to keep their own detail fold.
+    const text = container.querySelector('[data-webbridge-readiness]')?.textContent ?? '';
     for (const gone of [
       'Unverified:', 'does not match the pinned release', 'identity is not authenticated',
       'Service identity', 'Plugin package integrity', 'Check details', 'unverified',
@@ -933,8 +970,11 @@ describe('PluginsSection', () => {
       install: { running: false, note: 'some future installer sentence' },
       steps: [{ id: 'daemon', state: 'ok' }, { id: 'skill', state: 'ok' }, { id: 'extension', state: 'ok' }] });
     const container = await renderBrowser();
-    expect(container.textContent).not.toContain('some future installer sentence');
-    expect(container.textContent).toContain('Working');
+    // The bridge card neither prints the unknown note nor invents copy for it;
+    // the status word is all it says. (The computer section's own details fold
+    // may show its install note — that is its card, not the bridge's.)
+    expect(container.querySelector('[data-webbridge-readiness]')?.textContent).not.toContain('some future installer sentence');
+    expect(container.querySelector('[data-webbridge-readiness]')?.textContent).toContain('Working');
   });
 
   it('names the one blocking step when the runtime is only partly up', async () => {
@@ -947,7 +987,7 @@ describe('PluginsSection', () => {
     const container = await renderBrowser();
     expect(container.querySelector('[data-webbridge-state="partial"]')?.textContent).toBe(' · Set up, but not everything is working');
     // Only the step that blocks the feature is named; the healthy ones are not.
-    expect(container.querySelector('[data-webbridge-blocking]')?.textContent).toBe('These parts are not ready: Browser extension.');
+    expect(container.querySelector('[data-webbridge-blocking]')?.textContent).toContain('These parts are not ready: Browser extension.');
   });
 
   it('names a required missing service binary instead of a health check', async () => {
@@ -959,7 +999,7 @@ describe('PluginsSection', () => {
       ] });
     const container = await renderBrowser();
     const blocking = container.querySelector('[data-webbridge-blocking]')?.textContent;
-    expect(blocking).toBe('These parts are not ready: Service binary、Local service.');
+    expect(blocking).toContain('These parts are not ready: Service binary、Local service.');
     expect(blocking).not.toContain('Health check');
     expect(container.querySelector('[data-webbridge-details]')).toBeNull();
   });
