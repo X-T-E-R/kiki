@@ -17,10 +17,10 @@ import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { useLayoutPreferences } from '../../lib/layoutHooks';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { Hint, Toggle } from '../controls';
+import { Toggle } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
-import { SettingField } from './fields';
+import { SettingField, SettingsBox } from './fields';
 import { SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
 import { AppendTimingField } from './CommunicationSection';
 import { SpacePrefOrigin } from './spaces/SpacePrefOrigin';
@@ -61,19 +61,21 @@ export function GeneralSection() {
   return (
     <>
       <SectionCard id="st-card-language" title={t('st.language.regionTitle')}>
-        <SettingField label={t('st.language.title')} labelId="language-label">
-          <SettingsSegmented<Locale>
-            ariaLabelledBy="language-label"
-            dataAttr="data-locale-choice"
-            value={locale}
-            onChange={setLocale}
-            choices={[{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }]}
-          />
-        </SettingField>
+        <SettingsBox>
+          <SettingField label={t('st.language.title')} labelId="language-label">
+            <SettingsSegmented<Locale>
+              ariaLabelledBy="language-label"
+              dataAttr="data-locale-choice"
+              value={locale}
+              onChange={setLocale}
+              choices={[{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }]}
+            />
+          </SettingField>
+        </SettingsBox>
       </SectionCard>
 
       <SectionCard id="st-card-composer" title={t('st.composer.title')} scope="app">
-        <div className="space-y-1">
+        <SettingsBox>
           <SettingField
             label={t('st.composer.sendShortcut')}
             labelId="send-shortcut-label"
@@ -94,71 +96,71 @@ export function GeneralSection() {
               ]}
             />
           </SettingField>
-          <div data-settings-field className="space-y-0.5 py-1">
+          <div className="space-y-1">
+            <AppendTimingField />
             <SpacePrefOrigin item="defaultAppendTiming" label={t('st.communication.appendTimingTitle')} />
           </div>
-          <AppendTimingField />
-          <div data-settings-field className="space-y-0.5 py-1">
+          <SettingField label={t('st.composer.persistDrafts')} help={t('st.composer.persistDraftsHint')}>
+            <button
+              type="button"
+              className={SECONDARY_BUTTON}
+              data-composer-clear-drafts
+              onClick={() => setConfirmClearDrafts(true)}
+            >
+              {t('st.composer.clearDrafts')}
+            </button>
             <Toggle
-              layout="row"
+              layout="bare"
               label={t('st.composer.persistDrafts')}
               checked={settings.draftPersistence}
               onChange={(checked) => {
                 writeSettings({ draftPersistence: checked });
               }}
             />
-            <Hint>{t('st.composer.persistDraftsHint')}</Hint>
-            <div className="pt-1">
-              <button
-                type="button"
-                className={SECONDARY_BUTTON}
-                data-composer-clear-drafts
-                onClick={() => setConfirmClearDrafts(true)}
-              >
-                {t('st.composer.clearDrafts')}
-              </button>
-            </div>
-          </div>
-        </div>
+          </SettingField>
+        </SettingsBox>
       </SectionCard>
 
       <SectionCard id="st-card-ui-behavior" title={t('st.uiBehavior.title')} scope="app">
-        <div className="space-y-1">
-          <div data-settings-field className="space-y-0.5 py-1">
-            <Toggle
-              layout="row"
-              label={t('st.transcript.foldSteps')}
-              checked={settings.foldSteps}
-              onChange={(checked) => { writeSettings({ foldSteps: checked }); }}
-            />
-            <Hint>{t('st.transcript.foldStepsHint')}</Hint>
+        <SettingsBox>
+          <div className="space-y-1">
+            <SettingField label={t('st.transcript.foldSteps')} help={t('st.transcript.foldStepsHint')}>
+              <Toggle
+                layout="bare"
+                label={t('st.transcript.foldSteps')}
+                checked={settings.foldSteps}
+                onChange={(checked) => { writeSettings({ foldSteps: checked }); }}
+              />
+            </SettingField>
             <SpacePrefOrigin item="foldSteps" label={t('st.transcript.foldSteps')} />
           </div>
-          <div data-settings-field data-setting-rail-open className="space-y-0.5 py-1">
-            <Toggle
-              layout="row"
-              label={t('st.layout.railOpenByDefault')}
-              checked={settings.railOpenByDefault}
-              onChange={(checked) => { writeSettings({ railOpenByDefault: checked }); }}
-            />
-            <Hint>{t('st.layout.railOpenByDefaultHint')}</Hint>
+          <div data-setting-rail-open>
+            <SettingField label={t('st.layout.railOpenByDefault')} help={t('st.layout.railOpenByDefaultHint')}>
+              <Toggle
+                layout="bare"
+                label={t('st.layout.railOpenByDefault')}
+                checked={settings.railOpenByDefault}
+                onChange={(checked) => { writeSettings({ railOpenByDefault: checked }); }}
+              />
+            </SettingField>
           </div>
           {/* The /new worktree opt-in's "don't ask again" lands back here. */}
-          <div data-settings-field data-setting-worktree-confirm className="space-y-0.5 py-1">
-            <Toggle
-              layout="row"
-              label={t('st.composer.worktreeConfirm')}
-              checked={!settings.worktreeSkipConfirm}
-              onChange={(checked) => { writeSettings({ worktreeSkipConfirm: !checked }); }}
-            />
-            <Hint>{t('st.composer.worktreeConfirmHint')}</Hint>
+          <div data-setting-worktree-confirm className="space-y-1">
+            <SettingField label={t('st.composer.worktreeConfirm')} help={t('st.composer.worktreeConfirmHint')}>
+              <Toggle
+                layout="bare"
+                label={t('st.composer.worktreeConfirm')}
+                checked={!settings.worktreeSkipConfirm}
+                onChange={(checked) => { writeSettings({ worktreeSkipConfirm: !checked }); }}
+              />
+            </SettingField>
             <SpacePrefOrigin item="worktreeSkipConfirm" label={t('st.composer.worktreeConfirm')} />
           </div>
-        </div>
+        </SettingsBox>
       </SectionCard>
 
       <SectionCard id="st-card-sidebar-nav" title={t('st.sidebarNav.title')} scope="app" aside={t('st.sidebarNav.hint')}>
-        <div data-sidebar-nav-toggles className="grid gap-2 sm:grid-cols-2">
+        <div data-sidebar-nav-toggles className="grid rounded-lg border border-hairline bg-panel px-4 py-1.5 sm:grid-cols-2 sm:gap-x-8">
           {ALL_SIDEBAR_NAV_KEYS.map((key) => {
             const isPinned = layoutPrefs.pinnedNavItems.includes(key);
             const label = key === 'personas'
@@ -167,7 +169,7 @@ export function GeneralSection() {
                 ? t('discovery.title')
                 : t(`nav.${key}`);
             return (
-              <div key={key} data-nav-item-toggle={key} className="py-1">
+              <div key={key} data-nav-item-toggle={key} className="py-1.5">
                 <Toggle
                   layout="row"
                   label={label}

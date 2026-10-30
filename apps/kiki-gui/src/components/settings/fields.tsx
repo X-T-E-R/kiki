@@ -38,11 +38,37 @@ export function SettingsGroup({
 }) {
   return (
     <div className="space-y-2 pt-5 first:pt-0" data-settings-group>
-      <div>
+      <div className="px-1">
         <p className="text-[13px] font-medium text-ink">{title}</p>
         {help !== undefined ? <Hint>{help}</Hint> : null}
       </div>
-      <div className="space-y-2">{children}</div>
+      <SettingsBox>{children}</SettingsBox>
+    </div>
+  );
+}
+
+/**
+ * The container a run of settings lives in: one bordered panel, one row per
+ * decision, a hairline between rows. The section heading names the topic; the
+ * box makes its rows read as one object instead of loose lines on the page.
+ * Lists, tables and long free text stay outside a box.
+ *
+ * Every direct child is a row and gets the row padding, so a `SettingField`,
+ * a `DependentField`, a button line or a notice all line up on one edge. A
+ * child that renders nothing (a desktop-only row in the browser, a wrapper
+ * whose component returned null) is hidden and draws no line.
+ */
+export function SettingsBox({ children, className = '', ...rest }: {
+  children: React.ReactNode;
+  className?: string;
+} & Record<`data-${string}`, string | undefined>) {
+  return (
+    <div
+      {...rest}
+      data-settings-box
+      className={`rounded-lg border border-hairline bg-panel [&>*]:px-4 [&>*]:py-2.5 [&>:empty]:hidden [&>:not(:empty)~:not(:empty)]:border-t [&>:not(:empty)~:not(:empty)]:border-hairline ${className}`}
+    >
+      {children}
     </div>
   );
 }
