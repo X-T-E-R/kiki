@@ -30,8 +30,8 @@ import {
   type UsageMetric,
   type UsageTrendBucketWire,
 } from '../../lib/usageV2';
+import { SettingsSegmented, SettingsSelect } from '../settings/SettingsPrimitives';
 import {
-  AxisGroup,
   bucketCacheHit,
   bucketCost,
   bucketTokens,
@@ -39,15 +39,18 @@ import {
   formatPercent,
 } from './usageShared';
 
-/** Series fills on the paper/ink scale, strongest first, with the one accent
- * step the theme already uses so two neighbouring stacks stay apart. The last
- * slot is the "other" remainder. */
-const SERIES_FILLS = ['bg-ink/70', 'bg-accent/80', 'bg-ink/35', 'bg-ink/15'] as const;
-const OTHER_FILL = 'bg-hairline';
+/** Series fills on the paper/ink scale, strongest first but quiet, with the one
+ * accent step the theme already uses so two neighbouring stacks stay apart.
+ * The last slot is the "other" remainder. */
+const SERIES_FILLS = ['bg-ink/45', 'bg-accent/55', 'bg-ink/25', 'bg-ink/12'] as const;
+const OTHER_FILL = 'bg-hairline/60';
 const SERIES_LIMIT = SERIES_FILLS.length;
-/** Pointer/touch floor for one selectable bar; the row scrolls instead of
+/** A bucket never shrinks below the tap floor; the row scrolls instead of
  * squeezing bars below the target size. */
-const MIN_BAR_PX = 32;
+const MIN_BUCKET_PX = 36;
+/** A bar stays a slim column even when a bucket could hold a much wider one,
+ * so a short range reads as a few bars, not as solid blocks. */
+const MAX_BAR_PX = 48;
 
 export function TrendChart({
   trend,
@@ -87,52 +90,42 @@ export function TrendChart({
   const peakIndex = totals.indexOf(Math.max(0, ...totals));
   const formatValue = (value: number) =>
     metric === 'cache' ? formatPercent(value) : metric === 'tokens' ? time.formatTokens(value) : formatCostUsd(value);
-  // Each bar keeps at least a thumb-sized target; a long series scrolls inside
-  // the chart instead of squeezing the bars below it.
-  const chartWidth = Math.max(trend.length * MIN_BAR_PX, 0);
+  // A bucket keeps at least the tap floor; a long series scrolls inside the
+  // chart instead of squeezing buckets below it.
+  const chartWidth = Math.max(trend.length * MIN_BUCKET_PX, 0);
   // Label density: keep roughly 7 labels across the visible plot width. When
   // the chart scrolls, only the labels that are actually on screen count, so a
-  // long series thins out instead of printing a date under every bar.
-  const visibleBars = Math.max(1, Math.ceil(chartWidth / MIN_BAR_PX));
+  // long series thins out instead of printing a date under every bucket.
+  const visibleBars = Math.max(1, Math.ceil(chartWidth / MIN_BUCKET_PX));
   const labelEvery = Math.max(1, Math.ceil(trend.length / Math.max(2, Math.min(7, visibleBars))));
 
   return (
     <section data-usage-trend-card aria-label={t('usage.trend.title')}>
       <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-        <div
-          role="group"
-          aria-label={t('usage.trend.title')}
-          className="inline-flex flex-wrap items-center gap-0.5 rounded-md bg-ink/[0.04] p-0.5"
-        >
-          {(['cost', 'tokens', 'cache'] as const).map((candidate) => {
-            const selected = metric === candidate;
-            return (
-              <button
-                key={candidate}
-                type="button"
-                data-trend-metric={candidate}
-                onClick={() => { onMetricChange(candidate); }}
-                aria-pressed={selected}
-                className={`h-7 rounded-[5px] px-3 text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
-                  selected
-                    ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
-                    : 'text-ink-soft hover:text-ink'
-                }`}
-              >
-                {t(`usage.trend.metric.${candidate}`)}
-              </button>
-            );
-          })}
-        </div>
+        <SettingsSegmented<UsageMetric>
+          ariaLabel={t('usage.trend.title')}
+          dataAttr="data-trend-metric"
+          value={metric}
+          onChange={onMetricChange}
+          choices={(['cost', 'tokens', 'cache'] as const).map((candidate) => ({
+            value: candidate,
+            label: t(`usage.trend.metric.${candidate}`),
+          }))}
+        />
         {onGranularityChange !== undefined ? (
-          <AxisGroup
-            label={t('usage.axis.granularity')}
-            dataAxis="granularity"
-            options={USAGE_GRANULARITIES}
-            value={filters.granularity}
-            onChange={onGranularityChange}
-            labelFor={(option) => t(`usage.granularity.${option}`)}
-          />
+          <span className="flex items-center gap-2">
+            <span className="shrink-0 text-[13px] text-ink">{t('usage.axis.granularity')}</span>
+            <SettingsSelect<UsageGranularity>
+              ariaLabel={t('usage.axis.granularity')}
+              dataAttr="data-axis-select"
+              value={filters.granularity}
+              onChange={onGranularityChange}
+              choices={USAGE_GRANULARITIES.map((option) => ({
+                value: option,
+                label: t(`usage.granularity.${option}`),
+              }))}
+            />
+          </span>
         ) : null}
         <span className="ml-auto text-[12px] text-ink-faint">{t('usage.trend.clickHint')}</span>
       </div>
@@ -189,24 +182,33 @@ export function TrendChart({
                   aria-label={title}
                   onClick={() => { onSelect(selected ? null : bucket.key); }}
                   title={title}
-                  style={{ flexBasis: MIN_BAR_PX, minWidth: MIN_BAR_PX }}
-                  className={`group relative flex h-full shrink-0 grow flex-col justify-end rounded-t-[3px] transition-opacity focus-visible:outline-2 focus-visible:outline-selected-ink ${dimmed ? 'opacity-40 hover:opacity-80' : ''}`}
+                  style={{ flexBasis: MIN_BUCKET_PX, minWidth: MIN_BUCKET_PX }}
+                  className={`group relative flex h-full shrink-0 grow flex-col items-center justify-end transition-opacity focus-visible:outline-2 focus-visible:outline-selected-ink ${dimmed ? 'opacity-40 hover:opacity-80' : ''}`}
                 >
                   <span aria-hidden className="absolute inset-0 rounded-[3px] bg-ink/0 transition-colors group-hover:bg-ink/[0.035]" />
                   {total <= 0 ? (
-                    <span className="block h-[2px] w-full rounded-full bg-hairline" />
+                    <span className="block h-[2px] w-full max-w-[48px] rounded-full bg-hairline" />
                   ) : metric === 'cache' ? (
                     <span
-                      className={`block w-full rounded-t-[3px] ${selected ? 'bg-success/85' : 'bg-success/50 group-hover:bg-success/70'}`}
+                      className={`block w-full max-w-[48px] rounded-t-[2px] ${selected ? 'bg-success/70' : 'bg-success/45 group-hover:bg-success/60'}`}
                       style={{ height: `${heightPct}%` }}
                     />
                   ) : (
-                    <span className="flex w-full flex-col-reverse overflow-hidden rounded-t-[3px]" style={{ height: `${heightPct}%` }}>
-                      {segments.map((segment) => (
+                    <span
+                      className="flex w-full max-w-[48px] flex-col-reverse overflow-hidden rounded-t-[2px]"
+                      style={{ height: `${heightPct}%` }}
+                    >
+                      {segments.map((segment, segmentIndex) => (
                         <span
                           key={segment.key}
                           className={`block w-full ${segment.fill}`}
-                          style={{ height: `${(segment.value / total) * 100}%` }}
+                          style={{
+                            height: `${(segment.value / total) * 100}%`,
+                            // A transparent padding edge against the bar's paper
+                            // background, so stacked fills keep a paper line
+                            // between them instead of reading as one solid block.
+                            ...(segmentIndex > 0 ? { borderTop: '1px solid transparent', backgroundClip: 'padding-box' } : {}),
+                          }}
                         />
                       ))}
                     </span>
@@ -221,7 +223,7 @@ export function TrendChart({
       <div className="mt-2 overflow-x-auto">
         <div aria-hidden className="flex justify-center gap-1.5 px-1" style={chartWidth > 0 ? { minWidth: chartWidth } : undefined}>
           {trend.map((bucket, index) => (
-            <span key={bucket.key} style={{ flexBasis: MIN_BAR_PX, minWidth: MIN_BAR_PX }} className="shrink-0 grow truncate text-center text-[10px] text-ink-faint tabular-nums">
+            <span key={bucket.key} style={{ flexBasis: MIN_BUCKET_PX, minWidth: MIN_BUCKET_PX }} className="shrink-0 grow truncate text-center text-[10px] text-ink-faint tabular-nums">
               {index % labelEvery === 0 || index === trend.length - 1 ? bucketLabel(bucket, filters.granularity, locale) : ''}
             </span>
           ))}

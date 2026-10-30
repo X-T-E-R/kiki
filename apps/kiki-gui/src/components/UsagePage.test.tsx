@@ -1714,7 +1714,10 @@ describe('UsagePage manual full rescan', () => {
     expect(secondaryMeta.querySelector('[data-usage-reliability-toggle]')).not.toBeNull();
 
     expect(container.querySelector('[data-usage-filters] [data-axis="granularity"]')).toBeNull();
-    expect(container.querySelector('[data-usage-trend-card] [data-axis="granularity"]')).not.toBeNull();
+    // Granularity stays with the chart, demoted to a compact select whose
+    // wrapper carries the current value.
+    expect(container.querySelector('[data-usage-trend-card] [data-axis="granularity"]')).toBeNull();
+    expect(container.querySelector('[data-usage-trend-card] [data-axis-select]')).not.toBeNull();
 
     const panel = container.querySelector<HTMLElement>('[data-usage-filters-panel]')!;
     expect(panel.className).toContain('hidden');
