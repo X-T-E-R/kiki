@@ -842,8 +842,10 @@ describe('S2 fetch routing', () => {
     expect(container.querySelector('[data-nb-search-routing-mode="inherited"]')!.textContent).toContain('Following the source');
     // The package id and version come from the server's projection.
     expect(container.querySelector('[data-nb-search-routing-package]')!.textContent).toContain('kiki-common-direct 1');
-    // Its rule list is shown, not hidden behind a details block.
-    expect(container.querySelector('[data-nb-search-routing-builtin-rule="github-raw-text"]')!.textContent).toContain('direct.fetch');
+    // Its rule list is shown, not hidden behind a details block. The routing
+    // target prints in user words (direct fetch), with the raw id kept for the
+    // engine's own preview below.
+    expect(container.querySelector('[data-nb-search-routing-builtin-rule="github-raw-text"]')!.textContent).toContain('direct fetch');
     expect(container.querySelector<HTMLElement>('[data-nb-search-routing-builtin-rule="github-raw-text"]')!
       .dataset['nbSearchRoutingBuiltinRuleActive']).toBe('true');
     // The builtin switch is not editable while the source is in force.

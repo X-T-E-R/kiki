@@ -373,9 +373,18 @@ export function ComputerControlSection() {
   // leads with and the one action it offers: a single accent 安装 button,
   // nothing else red.
   const verdictAction = verdict.kind === 'unknown' ? (
-    <button type="button" className={SECONDARY_BUTTON} data-computer-retry onClick={() => { void check(); }}>
-      {t('common.retry')}
-    </button>
+    <>
+      <button type="button" className={SECONDARY_BUTTON} data-computer-retry onClick={() => { void check(); }}>
+        {t('common.retry')}
+      </button>
+      {canInstall ? (
+        <button type="button" className={PRIMARY_BUTTON} data-computer-install-btn
+          disabled={installing}
+          onClick={() => { setConfirmingInstall(true); }}>
+          {installing ? t('st.computer.installing') : installError === undefined ? t('st.computer.installButton') : t('st.computer.retryInstall')}
+        </button>
+      ) : null}
+    </>
   ) : (verdict.kind === 'not_installed' || verdict.kind === 'partial') && canInstall ? (
     <button type="button" className={PRIMARY_BUTTON} data-computer-install-btn
       disabled={installing}

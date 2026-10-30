@@ -39,9 +39,9 @@ export function PermissionList({ permissions, className = '' }: { readonly permi
 }
 
 /**
- * The trust boundary, stated where the permissions are: consent to install is
- * not per-call approval and not a sandbox. Same sentence in the install sheet
- * and on the detail page so the two never disagree.
+ * The trust boundary, stated where the permissions are: install consent is
+ * not per-call approval. Same sentence in the install sheet and on the detail
+ * page so the two never disagree.
  */
 export function PermissionBoundary({ className = '' }: { readonly className?: string }) {
   const { t } = useI18n();

@@ -28,6 +28,7 @@ import { INPUT, SECONDARY_BUTTON } from '../../ui';
 import { FORM_LABEL, SettingsSegmented, SettingsSelect } from '../SettingsPrimitives';
 import { AdvancedDetails } from '../fields';
 import { costLabelKey, latencyLabelKey } from './types';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import {
   nbSearchBuiltinRuleActive,
   nbSearchRoutingView,
@@ -57,8 +58,22 @@ function actionKind(rule: FetchRouteRule): ActionKind {
   return 'pipelines' in rule.action ? 'pipelines' : 'default';
 }
 
-function planText(rule: FetchRouteRule, defaultWord: string): string {
-  return 'pipelines' in rule.action ? rule.action.pipelines.join(' → ') : defaultWord;
+/**
+ * A pipeline id in the user's words where the rule rows print it. The builtin
+ * direct pipeline is 直抓; anything the map does not know falls back to the raw
+ * id so a future engine pipeline still renders.
+ */
+const PIPELINE_WORD_KEYS: Readonly<Record<string, I18nKey>> = {
+  'direct.fetch': 'st.nbSearch.pipeline.direct-fetch',
+};
+
+export function pipelineWord(t: (key: I18nKey) => string, pipelineId: string): string {
+  const key = PIPELINE_WORD_KEYS[pipelineId];
+  return key === undefined ? pipelineId : t(key);
+}
+
+function planText(t: (key: I18nKey) => string, rule: FetchRouteRule, defaultWord: string): string {
+  return 'pipelines' in rule.action ? rule.action.pipelines.map((id) => pipelineWord(t, id)).join(' → ') : defaultWord;
 }
 
 export function NbSearchRoutingEditor({
@@ -251,7 +266,7 @@ export function NbSearchRoutingEditor({
                     <span className="block break-all font-mono text-[11px] leading-relaxed text-ink-faint">{rule.match.origin}</span>
                   </span>
                   <span className="shrink-0 font-mono text-[11px] text-ink-soft">
-                    {planText(rule, t('st.nbSearch.routing.builtinDefaultChain'))}
+                    {planText(t, rule, t('st.nbSearch.routing.builtinDefaultChain'))}
                   </span>
                   <span className={`shrink-0 text-[12px] ${active ? 'text-ink-soft' : 'text-ink-faint'}`}>
                     {active ? t('st.nbSearch.routing.builtinActive') : t('st.nbSearch.routing.builtinDisabled')}
@@ -626,7 +641,7 @@ export function NbSearchRoutingEditor({
                   </span>
                 </span>
                 <span className="shrink-0 font-mono text-[11px] text-ink-soft">
-                  {planText(rule, t('st.nbSearch.routing.actionDefault'))}
+                  {planText(t, rule, t('st.nbSearch.routing.actionDefault'))}
                 </span>
               </li>
             ))}

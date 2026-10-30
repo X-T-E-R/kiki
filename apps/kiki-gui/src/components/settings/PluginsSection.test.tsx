@@ -268,9 +268,18 @@ async function renderPlugin(pluginId: string): Promise<HTMLDivElement> {
   return renderInto(<PluginsSection pluginId={pluginId} />);
 }
 
-/** The browser page, which now owns the WebBridge readiness card. */
+/** The browser page: the WebBridge readiness card lives inside the connection
+ *  list's 高级 sources fold, and that fold's own readiness disclosure. */
 async function renderBrowser(): Promise<HTMLDivElement> {
   const container = await renderInto(<BrowserControlSection />);
+  const sources = container.querySelector<HTMLDetailsElement>('[data-browser-sources]');
+  if (sources !== null && !sources.open) {
+    await act(async () => {
+      sources.open = true;
+      sources.dispatchEvent(new Event('toggle'));
+    });
+    await flush();
+  }
   for (let attempt = 0; attempt < 10 && container.querySelector('[data-webbridge-state]') === null; attempt++) {
     await flush();
   }
@@ -507,7 +516,7 @@ describe('PluginsSection', () => {
     const sheet = document.querySelector('[data-install-flow]')!;
     expect(sheet.textContent).toContain('It will be able to');
     expect(sheet.textContent).toContain('officecli');
-    expect(sheet.querySelector('[data-install-permissions] [data-permission-boundary]')?.textContent).toContain('not a sandbox');
+    expect(sheet.querySelector('[data-install-permissions] [data-permission-boundary]')?.textContent).toContain('still asks under your approval settings');
     const confirm = document.querySelector<HTMLButtonElement>('[data-install-confirm]')!;
     expect(confirm.textContent).toBe('Allow and install');
     await click(confirm);
@@ -630,7 +639,7 @@ describe('PluginsSection', () => {
     expect(groups).toEqual(['updates', 'on']);
     const row = container.querySelector('[data-list-group="updates"] [data-plugin-row="lint"]')!;
     expect(row.querySelector('[data-plugin-update="lint"]')?.textContent).toBe('Update to 9e8d7c6b5a41');
-    expect(container.querySelector('[data-plugins-update-check="checked"]')?.textContent).toContain('nothing installs on its own');
+    expect(container.querySelector('[data-plugins-update-check="checked"]')?.textContent).toContain('updates are flagged for you');
 
     // Update reuses the preview sheet on the plugin's own source and keeps it off.
     previewPlugin.mockResolvedValueOnce({ ...PLAN, id: 'lint', version: '0.4.0', consentRequired: false, changes: [], permissions: undefined as never });
@@ -660,8 +669,7 @@ describe('PluginsSection', () => {
     const container = await renderView({ view: 'detail', id: 'notes' });
     await flush();
     const boundary = container.querySelector('[data-plugin-needs] [data-permission-boundary]');
-    expect(boundary?.textContent).toContain('not approval of each call');
-    expect(boundary?.textContent).toContain('not a sandbox');
+    expect(boundary?.textContent).toContain('still asks under your approval settings');
   });
 
   it('never shows an empty market for a server that has not configured a catalog address', async () => {
