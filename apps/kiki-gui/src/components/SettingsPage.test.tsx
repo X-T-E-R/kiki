@@ -677,13 +677,18 @@ describe('SettingsPage memory advisor', () => {
     expect(container.querySelector<HTMLInputElement>('#memory-advisor-enabled')!.checked).toBe(true);
   });
 
-  it('removes the whole block only after confirmation', async () => {
+  it('removes the whole block at once and offers Undo with the captured config', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
     const container = await renderSettings('/settings/memory');
     await click(card(container).querySelector('[data-memory-advisor-remove]')!);
-    await click(card(container).querySelector('[data-memory-advisor-remove-do]')!);
     await flush();
     expect(advisorFake.patches.at(-1)).toEqual({ advisor: null });
+    // Reversible with the same data: the toast writes the captured advisor back.
+    const { getToasts } = await import('../lib/toasts');
+    const undo = getToasts().find((toast) => toast.undo !== undefined);
+    expect(undo).toBeDefined();
+    await undo!.undo!.run();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: advisorFake.advisor });
   });
 
   it('tunes the advisor numbers on the developer page, inside the schema range', async () => {
@@ -703,21 +708,17 @@ describe('SettingsPage memory advisor', () => {
     expect(tuning.querySelector('[data-memory-advisor-destination]')?.textContent).toBe('openai:https://api.example.test');
   });
 
-  it('keeps the remove dialog open with its reason when removal fails, and retries from there', async () => {
+  it('reports a failed removal in place and retries from the same button', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
     const container = await renderSettings('/settings/memory');
     client.patchMemoryAdvisorSettings.mockRejectedValueOnce(new Error('config is read-only'));
     await click(card(container).querySelector('[data-memory-advisor-remove]')!);
-    const confirm = () => card(container).querySelector<HTMLElement>('[data-memory-advisor-remove-do]');
-    await click(confirm()!);
     await flush();
-    expect(confirm()).toBeDefined();
-    expect(document.querySelector('[data-memory-advisor-remove-error]')?.textContent).toContain('config is read-only');
+    expect(document.querySelector('[data-memory-advisor-remove-error], [data-memory-advisor-settings] [role="alert"]')?.textContent).toContain('config is read-only');
     expect(advisorFake.advisor).toBeDefined();
-    await click(confirm()!);
+    await click(card(container).querySelector('[data-memory-advisor-remove]')!);
     await flush();
     expect(advisorFake.patches.at(-1)).toEqual({ advisor: null });
-    expect(confirm()).toBeNull();
   });
 
   it('accepts one heading-switch write at a time', async () => {
