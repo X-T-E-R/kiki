@@ -66,7 +66,7 @@ export class SshWindowsOutput extends Transform {
   }
 
   private emitXml(): void {
-    const strings = this.xml.matchAll(/<S\b[^>]*\bS=["'](?:Error|Warning|Verbose|Debug|Information|Output)["'][^>]*>([\s\S]*?)<\/S>/g);
+    const strings = this.xml.matchAll(/<S\b[^>]*\bS=["'](?:Error|Warning|Verbose|Debug|Information|Output)["'][^>]*>([\s\S]*?)<\/S>/gi);
     for (const match of strings) this.push(Buffer.from(xmlText(match[1]!), 'utf8'));
     this.xml = '';
   }

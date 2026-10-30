@@ -1120,8 +1120,8 @@ export class SSHKaos implements Kaos {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new KaosValueError(`SSHKaos.execWithEnv(): invalid env variable name ${JSON.stringify(key)}`);
       statements.push(`$env:${key}=${quote(value)}`);
     }
-    statements.push(`& {\n${script}\n}`, '$ok=$?', 'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; if (!$ok) { exit 1 }; exit 0');
-    return `try { ${statements.join('; ')} } catch { [Console]::Error.WriteLine($_.ToString()); exit 1 }`;
+    statements.push(`& {\n${script}\n} | ForEach-Object { $__kikiSshOutput.Process($_) }`, '$ok=$?', 'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; if (!$ok) { exit 1 }; exit 0');
+    return `$__kikiSshOutput = { Out-Default }.GetSteppablePipeline(); $__kikiSshOutput.Begin($true); try { ${statements.join('; ')} } catch { [Console]::Error.WriteLine($_.ToString()); exit 1 } finally { $__kikiSshOutput.End() }`;
   }
 
   private static _buildWindowsExecCommand(args: string[], cwd: string, env?: Record<string, string>): string {

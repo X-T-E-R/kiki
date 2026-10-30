@@ -231,4 +231,13 @@ describe('Windows SSH output', () => {
     for await (const chunk of stream) chunks.push(Buffer.from(chunk as Buffer));
     expect(Buffer.concat(chunks).toString('utf8')).toBe('中文\n错误 & detail\r\nplain\n');
   });
+
+  test.each(['Warning', 'warning'])('retains formatted text and %s records around fragmented progress CLIXML', async (streamName) => {
+    const formatted = '\r\nPath\r\n----\r\nE:\\scratch\r\nexample.txt\r\n';
+    const bytes = Buffer.from(`${formatted}#< CLIXML\r\n<Objs><Obj S="progress"><MS>noise</MS></Obj><S S="${streamName}">example-warning_x000D__x000A_</S></Objs>\r\ntail`);
+    const stream = Readable.from(Array.from(bytes, (byte) => Buffer.from([byte]))).pipe(new SshWindowsOutput(936));
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) chunks.push(Buffer.from(chunk as Buffer));
+    expect(Buffer.concat(chunks).toString('utf8')).toBe(`${formatted}example-warning\r\ntail`);
+  });
 });

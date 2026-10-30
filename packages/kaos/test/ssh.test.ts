@@ -1,4 +1,6 @@
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { win32 } from 'node:path';
 
 import { KaosFileExistsError, KaosValueError } from '#/errors';
 import {
@@ -737,6 +739,58 @@ describe('SSHKaos._buildExecCommand', () => {
   it('omits the assignment section entirely when env is an empty object', () => {
     // Matches the behavior of plain exec() — no leading space, no KEY=...
     expect(build(['cmd', 'arg'], '/home/user', {})).toBe('cd /home/user && cmd arg');
+  });
+});
+
+describe.skipIf(process.platform !== 'win32')('Windows SSH script formatting', () => {
+  const build = (SSHKaos as unknown as {
+    _buildWindowsScript: (script: string, cwd: string) => string;
+  })._buildWindowsScript;
+
+  async function run(script: string, cwd = process.cwd()) {
+    const source = `$ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); ${build(script, cwd)}`;
+    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(source, 'utf16le').toString('base64')]);
+    const result = new Promise<number | null>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', resolve);
+    });
+    child.stdin.end();
+    const [stdout, stderr, code] = await Promise.all([streamToBuffer(child.stdout), streamToBuffer(child.stderr), result]);
+    return { stdout: stdout.toString('utf8'), stderr: stderr.toString('utf8'), code };
+  }
+
+  it.each(['\\', '/'])('renders PathInfo and subsequent pipeline text with %s cwd separators', async (separator) => {
+    const cwd = process.cwd().replaceAll('\\', separator);
+    const result = await run("Get-Location; 'alpha', 'beta' | Select-Object -First 1", cwd);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toContain(win32.normalize(cwd));
+    expect(result.stdout).toContain('alpha');
+    expect(result.stdout).not.toContain('beta');
+  });
+
+  it.each([
+    "[pscustomobject]@{ Name='example-item'; Value=42 }",
+    "[pscustomobject]@{ Name='example-item'; Value=42 } | Format-Table",
+  ])('renders arbitrary objects and explicit formatting followed by text: %s', async (object) => {
+    const result = await run(`${object}; 'tail'`);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('example-item');
+    expect(result.stdout).toContain('42');
+    expect(result.stdout).toContain('tail');
+  });
+
+  it.each([
+    ['exit 7', 7, ''],
+    ['& cmd.exe /d /c "exit 9"', 9, ''],
+    ['throw "example-failure"', 1, 'example-failure'],
+  ])('flushes formatted output and preserves stderr/status on %s', async (ending, code, stderr) => {
+    const result = await run(`Get-Location; 'tail'; ${ending}`);
+    expect(result.code).toBe(code);
+    expect(result.stdout).toContain(win32.normalize(process.cwd()));
+    expect(result.stdout).toContain('tail');
+    if (stderr === '') expect(result.stderr).toBe('');
+    else expect(result.stderr).toContain(stderr);
   });
 });
 
