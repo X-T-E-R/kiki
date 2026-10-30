@@ -7,6 +7,8 @@ import { IConfigService, ISessionManager, type Scope } from '@kiki/agent-core-v2
 import type { PluginImSendRequest } from '@kiki/agent-core-v2';
 import { NotificationService } from '../src/services/notifications/notificationService';
 import { ensurePluginDigestReceipts } from '../src/services/notifications/pluginDigestDelivery';
+import { sendProvider } from '../src/services/notifications/providerDelivery';
+import type { ProviderContext } from '@nb-im/core';
 
 const transport = vi.hoisted(() => ({
   posts: [] as Array<{ body: string; authorization?: string }>,
@@ -15,6 +17,7 @@ const transport = vi.hoisted(() => ({
   status: 200,
   body: '{}',
   hold: undefined as Promise<void> | undefined,
+  afterDispatch: undefined as Promise<void> | undefined,
   marker: 'leak-marker',
 }));
 
@@ -30,6 +33,7 @@ vi.mock('@nb-im/core', async (original) => {
         if (state !== 'ready') return { blocked: state };
         if (transport.mode === 'throw') throw new Error(transport.marker);
         transport.posts.push({ body: input.body, authorization: input.authorization });
+        if (transport.afterDispatch !== undefined) await transport.afterDispatch;
         if (transport.mode === 'status') return { status: transport.status, body: transport.body };
         return { status: 200, body: '{}' };
       },
@@ -64,6 +68,7 @@ describe('plugin digest delivery', () => {
     transport.status = 200;
     transport.body = '{}';
     transport.hold = undefined;
+    transport.afterDispatch = undefined;
     errors.length = 0;
   });
   afterEach(async () => {
@@ -265,6 +270,73 @@ describe('plugin digest delivery', () => {
     expect(errors).toEqual([]);
   });
 
+  it('pauses settings before joining a hung digest and preserves its unknown receipt', async () => {
+    await boot();
+    await httpChannel();
+    const revision = (await service.pluginImRoutes(signal()))[0]!.routeRevision;
+    let release = () => {};
+    transport.afterDispatch = new Promise<void>((resolve) => { release = resolve; });
+    const pending = service.pluginImSend(request(revision), signal(), mailPlugin);
+    await vi.waitFor(() => expect(transport.posts).toHaveLength(1));
+    const started = performance.now();
+    await service.updateSettings({ ...service.getSettings().global, enabled: false });
+    expect(performance.now() - started).toBeLessThan(1500);
+    await expect(pending).resolves.toMatchObject({ status: 'unknown', retryable: false });
+    expect(await service.pluginImRoutes(signal())).toEqual([]);
+    release();
+    transport.afterDispatch = undefined;
+    await service.updateSettings({ ...service.getSettings().global, enabled: true });
+    const next = (await service.pluginImRoutes(signal()))[0]!.routeRevision;
+    expect(next).toBe(revision);
+    expect(await service.pluginImSend(request(next), signal(), mailPlugin)).toMatchObject({ status: 'unknown' });
+    expect(transport.posts).toHaveLength(1);
+    await service.close();
+    await boot(errors, true);
+    expect(await service.pluginImSend(request(revision), signal(), mailPlugin)).toMatchObject({ status: 'unknown' });
+    expect(transport.posts).toHaveLength(1);
+  });
+
+  it.each([false, true])('closes hung scene and digest sends after dispatch=%s', async (dispatched) => {
+    await boot();
+    await httpChannel(service, secret);
+    const revision = (await service.pluginImRoutes(signal()))[0]!.routeRevision;
+    let release = () => {};
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    if (dispatched) transport.afterDispatch = hold;
+    else transport.hold = hold;
+    service.sendTest('mail');
+    const pending = service.pluginImSend(request(revision), signal(), mailPlugin);
+    await vi.waitFor(() => expect(transport.entered).toBe(2), { timeout: 5000 });
+    const started = performance.now();
+    await service.close();
+    expect(performance.now() - started).toBeLessThan(1500);
+    await expect(pending).resolves.toMatchObject(dispatched ? { status: 'unknown' } : { status: 'failed', diagnosticCode: 'route_changed' });
+    release();
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    expect(transport.posts).toHaveLength(dispatched ? 2 : 0);
+    await boot(errors, true);
+    expect(service.listDeliveries()[0]).toMatchObject({ status: dispatched ? 'unknown' : 'failed',
+      result: { diagnostic_code: dispatched ? 'send_outcome_unknown' : 'dispatch_stale' } });
+    expect((await service.pluginImSend(request(revision), signal(), mailPlugin)).status).toBe(dispatched ? 'unknown' : 'accepted');
+    expect(transport.posts).toHaveLength(dispatched ? 2 : 1);
+  });
+
+  it('settles caller cancellation after dispatch while the transport remains blocked', async () => {
+    await boot();
+    await httpChannel();
+    const revision = (await service.pluginImRoutes(signal()))[0]!.routeRevision;
+    let release = () => {};
+    transport.afterDispatch = new Promise<void>((resolve) => { release = resolve; });
+    const controller = new AbortController();
+    const pending = service.pluginImSend(request(revision), controller.signal, mailPlugin);
+    await vi.waitFor(() => expect(transport.posts).toHaveLength(1));
+    controller.abort();
+    await expect(pending).resolves.toMatchObject({ status: 'unknown' });
+    release();
+    expect(await service.pluginImSend(request(revision), signal(), mailPlugin)).toMatchObject({ status: 'unknown' });
+    expect(transport.posts).toHaveLength(1);
+  });
+
   it('lets two plugins send the same account key once each and keeps both receipts across restart', async () => {
     await boot();
     await httpChannel();
@@ -409,6 +481,33 @@ describe('plugin digest delivery', () => {
     const columns = raw.prepare('PRAGMA table_info(plugin_digest_receipts)').all() as Array<{ name: string }>;
     expect(columns.some((column) => column.name === 'plugin_id')).toBe(false);
     raw.close();
+  });
+
+  it.each([false, true])('enforces one absolute provider deadline after dispatch=%s', async (dispatch) => {
+    vi.useFakeTimers();
+    try {
+      let late: ProviderContext | undefined;
+      const begin = vi.fn(() => 'ready' as const);
+      const pending = sendProvider({ id: 'http', send: async (context) => {
+        late = context;
+        if (dispatch) context.beginDispatch();
+        await new Promise<void>(() => {});
+        return { status: 'accepted', message_ids: [], retryable: false };
+      } }, {
+        delivery_id: 'deadline', channel_id: 'mail', category: 'work_complete', text: 'Done',
+        idempotency_key: 'deadline', expires_at: new Date(Date.now() + 10).toISOString(),
+        instance: { provider_id: 'http', enabled: true, revision: 'v1', options: {} }, target: {},
+        canDispatch: () => 'ready', beginDispatch: begin, resolveCredential: () => secret,
+      }, signal());
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(pending).resolves.toMatchObject({ status: dispatch ? 'unknown' : 'failed',
+        diagnostic_code: dispatch ? 'send_outcome_unknown' : 'delivery_expired' });
+      expect(late!.beginDispatch()).toBe('stale');
+      expect(() => late!.resolveCredential('bearer')).toThrow('credential_scope_violation');
+      expect(begin).toHaveBeenCalledTimes(dispatch ? 1 : 0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.skipIf(process.platform === 'win32')('refuses a group-readable outbox before the runtime opens', async () => {

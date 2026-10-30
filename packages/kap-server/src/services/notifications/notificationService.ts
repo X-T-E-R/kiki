@@ -16,9 +16,10 @@ import {
   webhookProvider, type Config, type CredentialScope, type DeliveryView,
 } from '@nb-im/core';
 import { ensurePluginDigestReceipts, PluginDigestDelivery } from './pluginDigestDelivery';
+import { joinDeliveries, sendProvider } from './providerDelivery';
 
 type Settings = NotificationsConfig;
-type RuntimeState = { runtime: Runtime };
+type RuntimeState = { runtime: Runtime; controller: AbortController; sends: Set<Promise<unknown>>; retirement?: Promise<void> };
 const idPattern = /^[a-zA-Z0-9_.:-]{1,120}$/u;
 const sceneKeys = ['work_complete', 'question_pending'] as const;
 type Scene = typeof sceneKeys[number];
@@ -191,7 +192,15 @@ export class NotificationService {
     for (const id of Object.keys(settings.provider_instances)) {
       this.epochs.set(id, accountEpoch(settings, id) ?? randomUUID());
     }
-    const runtime = new Runtime(config, join(this.homeDir, 'notifications', 'outbox.sqlite'), adapters,
+    const controller = new AbortController();
+    const sends = new Set<Promise<unknown>>();
+    const bounded = adapters.map((provider) => ({ id: provider.id, send: (context: Parameters<typeof provider.send>[0]) => {
+      const send = sendProvider(provider, context, controller.signal);
+      sends.add(send);
+      void send.then(() => { sends.delete(send); }, () => { sends.delete(send); });
+      return send;
+    } }));
+    const runtime = new Runtime(config, join(this.homeDir, 'notifications', 'outbox.sqlite'), bounded,
       (slot: string, scope: CredentialScope) => {
         const spec = config.credential_slots[slot];
         if (!spec || spec.provider_id !== scope.provider_id ||
@@ -204,7 +213,7 @@ export class NotificationService {
     runtime.outbox.db.exec('CREATE INDEX IF NOT EXISTS notifications_channel_created_idx ON deliveries (channel_id, created_at DESC, delivery_id DESC)');
     ensurePluginDigestReceipts(runtime.outbox.db);
     runtime.start(() => { this.onError(); });
-    this.state = { runtime };
+    this.state = { runtime, controller, sends };
   }
 
   getSettings(): NotificationSettings {
@@ -226,24 +235,38 @@ export class NotificationService {
 
   private trackDigest<T>(run: Promise<T>): Promise<T> {
     this.activeDigests.add(run);
-    void run.finally(() => { this.activeDigests.delete(run); });
+    void run.then(() => { this.activeDigests.delete(run); }, () => { this.activeDigests.delete(run); });
     return run;
   }
 
-  private async drainDigests(): Promise<void> {
-    while (this.activeDigests.size > 0) await Promise.allSettled(this.activeDigests);
+  private stopRuntime(): RuntimeState | undefined {
+    const state = this.state;
+    state?.runtime.stop();
+    state?.controller.abort();
+    return state;
+  }
+
+  private retireRuntime(state: RuntimeState | undefined): Promise<void> {
+    if (state === undefined) return Promise.resolve();
+    return state.retirement ??= (async () => {
+      await joinDeliveries([...this.activeDigests, ...state.sends]);
+      state.runtime.close();
+      if (this.state === state) this.state = undefined;
+    })();
   }
 
   private mutate(change: (draft: Settings) => void): Promise<NotificationSettings> {
     let interrupted = false;
     const write = this.writes.then(async () => {
       if (this.stopped) throw new Error('notifications_stopped');
-      await this.drainDigests();
-      if (this.stopped) throw new Error('notifications_stopped');
-      this.pausing = true;
       const draft = structuredClone(this.settings);
       change(draft);
       validateSettings(draft);
+      this.pausing = true;
+      interrupted = true;
+      const old = this.stopRuntime();
+      await this.retireRuntime(old);
+      if (this.stopped) throw new Error('notifications_stopped');
       const config = this.core.accessor.get(IConfigService);
       for (const id of Object.keys({ ...this.settings.provider_instances, ...draft.provider_instances })) {
         const oldSlots = Object.entries(this.settings.credential_slots).filter(([, slot]) => (slot as NotificationCredentialSlot).provider_instance_id === id);
@@ -252,20 +275,10 @@ export class NotificationService {
         const nextBinding = [draft.provider_instances[id], nextSlots, nextSlots.map(([slot]) => draft.credential_values[slot]?.epoch_token)];
         if (JSON.stringify(oldBinding) !== JSON.stringify(nextBinding)) this.epochs.set(id, randomUUID());
       }
-      interrupted = true;
-      this.state?.runtime.stop();
       await config.replaceSections({ [NOTIFICATIONS_SECTION]: draft }, ConfigTarget.User);
       this.settings = draft;
       this.health.clear();
-      const old = this.state?.runtime;
-      if (old) {
-        for (let i = 0; i < 100; i++) {
-          try { old.close(); break; } catch (error) {
-            if (!(error instanceof Error && error.message === 'send_in_progress')) throw error;
-            await new Promise<void>((resolve) => { setTimeout(resolve, 100); });
-          }
-        }
-      }
+      if (this.stopped) throw new Error('notifications_stopped');
       this.openRuntime();
       interrupted = false;
       this.pausing = false;
@@ -393,7 +406,7 @@ export class NotificationService {
 
   sendTest(channelId: string): DeliveryView {
     const channel = this.settings.channels[channelId] as NotificationChannel | undefined;
-    if (!channel?.enabled) throw new Error('channel_unavailable');
+    if (this.stopped || this.pausing || !channel?.enabled || this.state === undefined) throw new Error('channel_unavailable');
     return this.state!.runtime.enqueue({ idempotency_key: `test:${randomUUID()}`, channel_id: channelId,
       category: 'work_complete', expires_at: new Date(Date.now() + 60_000).toISOString() });
   }
@@ -518,7 +531,7 @@ export class NotificationService {
     return from === to ? false : from < to ? now >= from && now < to : now >= from || now < to;
   }
   private dispatch(state: Watched, scene: Scene, key: string, valid: () => boolean, deliveries?: string[]): void {
-    if (this.stopped || !this.settings.global.enabled || !this.watched.has(state.session.id) || !valid()) return;
+    if (this.stopped || this.pausing || !this.settings.global.enabled || !this.watched.has(state.session.id) || !valid()) return;
     if (this.inQuietHours()) {
       const timer = setTimeout(() => {
         this.quietTimers.delete(timer);
@@ -547,22 +560,13 @@ export class NotificationService {
   }
   async close(): Promise<void> {
     this.stopped = true;
+    const state = this.stopRuntime();
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     for (const timer of this.quietTimers) clearTimeout(timer);
     this.quietTimers.clear();
     for (const id of this.watched.keys()) this.unwatch(id);
     for (const sub of this.subscriptions) sub.dispose();
-    await this.drainDigests();
-    await this.writes;
-    const runtime = this.state?.runtime;
-    runtime?.stop();
-    if (runtime) {
-      for (let i = 0; i < 100; i++) {
-        try { runtime.close(); break; } catch (error) {
-          if (!(error instanceof Error && error.message === 'send_in_progress')) throw error;
-          await new Promise<void>((resolve) => { setTimeout(resolve, 100); });
-        }
-      }
-    }
+    await joinDeliveries([this.writes]);
+    if (this.state === state) await this.retireRuntime(state);
   }
 }

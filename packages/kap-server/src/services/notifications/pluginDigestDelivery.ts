@@ -7,6 +7,7 @@ import {
   parsePluginImRequest, pluginImCaller, pluginImReceipt,
   type PluginImCapabilities, type PluginImErrorKind, type PluginImRoute, type PluginImSendReceipt, type PluginImSendRequest,
 } from '@kiki/agent-core-v2';
+import { sendProvider } from './providerDelivery';
 
 const PURPOSES = new Set<CredentialPurpose>([
   'telegram_bot', 'wecom_key', 'discord_token', 'slack_path', 'dingtalk_token', 'feishu_token',
@@ -352,11 +353,11 @@ export class PluginDigestDelivery {
       };
       let result: SendResult;
       try {
-        result = await provider.send({
+        result = await sendProvider(provider, {
           delivery_id: randomUUID(), channel_id: request.channelId, category: 'mail_digest' as Category, text: request.text,
           idempotency_key: request.idempotencyKey, expires_at: expiresAt, instance: snapshot, target,
           canDispatch, beginDispatch, resolveCredential,
-        });
+        }, signal);
       } catch {
         result = { status: 'unknown', message_ids: [], retryable: false, error_kind: 'unknown', diagnostic_code: 'send_outcome_unknown' };
       }
