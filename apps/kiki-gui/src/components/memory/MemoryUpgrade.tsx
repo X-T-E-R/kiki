@@ -38,7 +38,8 @@ const ISSUE_TEXT: Partial<Record<string, I18nKey>> = {
   unmatched_shadow_namespace: 'memory.upgrade.issue.unmatchedScope',
 };
 const VISIBLE_ISSUES = 5;
-const NON_BLOCKING_ISSUES = new Set(['current_revision_preserved', 'forgotten_source_rejected']);
+function blocksMigration(issue: MemoryMigrationIssue): boolean { return issue.issue !== 'current_revision_preserved' && (issue.issue !== 'forgotten_source_rejected' || issue.key === 'journal.jsonl'); }
+function issueText(issue: MemoryMigrationIssue): I18nKey { return issue.issue === 'forgotten_source_rejected' && issue.key === 'journal.jsonl' ? 'memory.upgrade.issue.other' : ISSUE_TEXT[issue.issue] ?? 'memory.upgrade.issue.other'; }
 /** Progress that has not moved for this long is offered a same-operation continue. */
 const STALL_MS = 30_000;
 
@@ -84,7 +85,7 @@ export function MemoryUpgradeStatus() {
   const issues = migration.issues;
   const shown = showAll ? issues : issues.slice(0, VISIBLE_ISSUES);
   const failureText = migration.failure === undefined ? undefined
-    : migration.failure.code === 'memory.source_invalid' ? tp('memory.upgrade.failure.sources', issues.filter((issue) => !NON_BLOCKING_ISSUES.has(issue.issue)).length)
+    : migration.failure.code === 'memory.source_invalid' ? tp('memory.upgrade.failure.sources', issues.filter(blocksMigration).length)
     : t('memory.upgrade.failure.other');
   const offerRetry = step === 'failed' || stalled;
 
@@ -131,7 +132,7 @@ export function MemoryUpgradeStatus() {
           <ul className="divide-y divide-hairline border-y border-hairline">
             {shown.map((issue, index) => (
               <li key={`${issue.scope}:${issue.key}:${issue.issue}:${index}`} data-memory-upgrade-issue={issue.issue} className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5 text-[12px]">
-                <span className="min-w-0 text-ink">{ISSUE_TEXT[issue.issue] === undefined ? t('memory.upgrade.issue.other') : t(ISSUE_TEXT[issue.issue]!)}</span>
+                <span className="min-w-0 text-ink">{t(issueText(issue))}</span>
                 <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint" title={`${issue.scope} ${issue.key}`}>
                   {issue.scope}{issue.key === '' ? '' : ` · ${issue.key}`}
                 </span>
@@ -178,7 +179,7 @@ export function MemoryMigrationIssues({ issues }: { readonly issues: readonly Me
       <ul className="divide-y divide-hairline border-y border-hairline">
         {shown.map((issue, index) => (
           <li key={`${issue.scope}:${issue.key}:${issue.issue}:${index}`} data-memory-migration-issue={issue.issue} className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5 py-1.5 text-[12px]">
-            <span className="min-w-0 text-ink">{ISSUE_TEXT[issue.issue] === undefined ? t('memory.upgrade.issue.other') : t(ISSUE_TEXT[issue.issue]!)}</span>
+            <span className="min-w-0 text-ink">{t(issueText(issue))}</span>
             <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint" title={`${issue.scope} ${issue.key}`}>
               {issue.scope}{issue.key === '' ? '' : ` · ${issue.key}`}
             </span>

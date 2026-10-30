@@ -2659,6 +2659,18 @@ describe('MemoryPage automatic upgrade', () => {
     expect(container.querySelector('[data-memory-upgrade-progress="2/2"]')).not.toBeNull();
   });
 
+  it('counts a whole-journal rejection as blocking instead of a forgotten-source success note', async () => {
+    seedMemories({ 'global::': [current()] });
+    vi.spyOn(client, 'memoryAuthority').mockResolvedValue({ ...failed, migration: { ...failed.migration, issues: [{ scope: 'memory/global', key: 'journal.jsonl', issue: 'forgotten_source_rejected' }] } });
+    const container = await renderPage();
+    const status = container.querySelector('[data-memory-upgrade="failed"]')!;
+    expect(status.querySelector('[data-memory-upgrade-failure="memory.source_invalid"]')!.textContent).toBe('1 source needs repair. Fix it, then retry the upgrade.');
+    const journal = status.querySelector('[data-memory-upgrade-issue="forgotten_source_rejected"]')!;
+    expect(journal.textContent).toContain('This source could not be imported');
+    expect(journal.textContent).not.toContain('A forgotten source was not imported again');
+    expect(journal.textContent).toContain('memory/global · journal.jsonl');
+  });
+
   it('shows the compatibility issue copy in Chinese', async () => {
     localStorage.setItem('kiki.locale', 'zh');
     seedMemories({ 'global::': [current()] });

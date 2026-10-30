@@ -90,7 +90,7 @@ Starting the upgraded Kiki automatically migrates existing memory through the SQ
 
 Storage migration preserves **Allow memory**: if it is off, agents still receive no saved memory and the advisor sends none out.
 
-If the upgrade stops, the [Memory API](/en/server/rest-api#backend-migration-and-recovery) reports its saved operation ID, last committed page and source issues. Normal memory access stays blocked instead of reading an older copy. Repair the reported source and retry that operation, or restart to continue from its saved progress; scopes with earlier issues are checked again. Forgotten sources are skipped, and stored corrections are kept instead of applying the source files. These two kinds of source notes do not block the upgrade; review their details on **/memory** after it finishes.
+If the upgrade stops, the [Memory API](/en/server/rest-api#backend-migration-and-recovery) reports its saved operation ID, last committed page and source issues. Normal memory access stays blocked instead of reading an older copy. Repair the reported source and retry that operation, or restart to continue from its saved progress; scopes with earlier issues are checked again. Only forgotten objects and their own history are skipped; other entries keep their history and Undo. Stored corrections are kept instead of applying the source files. These entry-level source notes do not block the upgrade; review their details on **/memory** after it finishes. An unreadable or wholly rejected journal still stops the upgrade.
 
 Upgrade other installations sharing the home as well; the backend marker governs compatible writers, not binaries released before that protocol.
 

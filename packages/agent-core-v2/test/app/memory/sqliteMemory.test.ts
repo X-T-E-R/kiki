@@ -25,6 +25,7 @@ import { IMemoryShadowImport, MemoryShadowImport } from '#/app/memory/memoryShad
 import { IMemoryPersistence, type MemoryCommit } from '#/persistence/interface/memoryPersistence';
 import { SqliteMemoryPersistence } from '#/persistence/backends/sqliteMemory/sqliteMemoryPersistence';
 import { MemoryDatabase } from '#/persistence/backends/sqliteMemory/database';
+import { memoryObjectSourceUnitId, memorySourceUnitId } from '#/app/memory/memorySourceIdentity';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAgentMemorySnapshot, AgentMemorySnapshot } from '#/app/memory/memorySnapshot';
@@ -468,6 +469,49 @@ describe('Memory shadow import and replay barriers', () => {
     expect(await store.get(global, duplicate.id)).toEqual(duplicate);
     expect((await store.provenance(global, duplicate.id)).relatedObjectIds).toEqual([duplicate.id]);
     expect((await store.get(global, entry.id))?.body).toBe(corrected.entry.body);
+  });
+
+  it.each([{ version: 2, forgotten: false }, { version: 3, forgotten: false }, { version: 3, forgotten: true }])('separates colliding source evidence from signatures when upgrading $version (prior barrier: $forgotten)', async ({ version, forgotten }) => {
+    const seed = (await save('Source evidence fixture')).entry;
+    const first: MemoryEntry = { ...seed, id: 'm_evidence_owner', title: 'Evidence owner', revision: 'evidence:r1', source: { writer: 'agent', session: 'first-attribution', turn: 17 } };
+    const second: MemoryEntry = { ...first, revision: 'evidence:r2', source: { ...first.source, session: 'second-attribution' } };
+    for (const entry of [first, second]) await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }]);
+    await close();
+    const db = new DatabaseSync(join(home, 'store/memory-sqlite-v1/memory.sqlite'));
+    const signature = memorySourceUnitId('memory/global', second.source, second.body)!;
+    try {
+      db.prepare('DELETE FROM sources WHERE object_id=?').run(first.id);
+      db.prepare('DELETE FROM source_links WHERE object_id=?').run(first.id);
+      db.prepare('DELETE FROM source_signatures WHERE object_id=?').run(first.id);
+      for (const entry of [first, second]) {
+        const id = version === 3 && entry === first ? memoryObjectSourceUnitId('memory/global', entry.id, entry.body) : memorySourceUnitId('memory/global', entry.source, entry.body)!;
+        db.prepare('INSERT INTO sources VALUES(?,?,?,?,?,?)').run(id, 'memory/global', entry.id, JSON.stringify(entry), null, entry.created);
+        db.prepare('INSERT INTO source_links VALUES(?,?,?)').run('memory/global', id, entry.id);
+        if (version === 3) db.prepare('INSERT INTO source_signatures VALUES(?,?,?)').run('memory/global', memorySourceUnitId('memory/global', entry.source, entry.body)!, entry.id);
+      }
+      const decision = { id: 'legacy-evidence-decision', scope: 'memory/global', objectId: first.id, revision: second.revision, kind: 'correction', reason: 'Retain attributed evidence', sourceIds: [signature] };
+      db.prepare('INSERT INTO adjudications VALUES(?,?,?,?,?,?)').run(decision.id, decision.scope, decision.objectId, decision.revision, 0, JSON.stringify(decision));
+      if (forgotten) db.prepare('INSERT INTO source_barriers VALUES(?,?,?,?)').run('memory/global', signature, '2026-01-02', 0);
+      db.exec(`PRAGMA user_version=${version}`);
+    } finally { db.close(); }
+    bind();
+    const payloads = [JSON.stringify(first), JSON.stringify(second)].toSorted();
+    expect((await store.provenance(global, first.id)).sources.map((source) => source.payload).toSorted()).toEqual(payloads);
+    if (!forgotten) {
+      const independent = { ...second, id: 'm_evidence_independent', title: 'Independent evidence peer' };
+      expect(await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${independent.id}.md`, payload: JSON.stringify(independent), entry: independent }])).toMatchObject({ imported: 1, issues: [] });
+      expect((await store.previewForget(global, [independent.id])).targets.map((target) => target.id)).toEqual([independent.id]);
+      await store.forget(global, [{ id: independent.id, expectedRevision: independent.revision }], 'forget-evidence-peer');
+    }
+    expect((await store.provenance(global, first.id)).sources.map((source) => source.payload).toSorted()).toEqual(payloads);
+    expect((await store.provenance(global, first.id)).relatedObjectIds).toEqual([first.id]);
+    expect(await store.get(global, first.id)).toEqual(second);
+    await close(); bind();
+    const reopened = await store.provenance(global, first.id);
+    expect(reopened.sources.map((source) => source.payload).toSorted()).toEqual(payloads);
+    const evidence = reopened.sources.find((source) => source.payload === JSON.stringify(second))!;
+    expect(reopened.adjudications.find((decision) => decision.id === 'legacy-evidence-decision')?.sourceIds).toEqual([evidence.id]);
+    expect(await persistence.source('memory/global', evidence.id)).toMatchObject({ state: 'registered', source: { objectId: first.id, payload: JSON.stringify(second), learnedAt: second.created } });
   });
 
   it('applies imported-source correction and forget to a changed legacy ID and real lorebook reimport', async () => {
@@ -1002,6 +1046,49 @@ describe('single Memory authority and isolated recovery', () => {
     expect(await managedMemory().authority.status()).toEqual(state);
   });
 
+  it('imports retained journal history and Undo beside a forgotten object', async () => {
+    const { memory, authority, legacy } = managedMemory();
+    const forgotten = await createManaged(legacy, 'Forgotten journal peer', 'Forget this independent rule.');
+    const original = await createManaged(legacy, 'Retained journal rule', 'Original retained version; exception 17.');
+    const changed = await legacy.put({ action: 'update', scope: global, id: original.entry.id, expectedRevision: original.entry.revision, type: original.entry.type, title: original.entry.title, body: 'Corrected retained version; exceptions 17 and 19.', reason: 'Owner correction', source });
+    for (const entry of [forgotten.entry, changed.entry]) await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: new TextDecoder().decode(await storage.read('memory/global', `entries/${entry.id}.md`)), entry }]);
+    await store.forget(global, [{ id: forgotten.entry.id, expectedRevision: forgotten.entry.revision }], 'forget-before-journal-import');
+    const expectedJournal = await legacy.journal(global, original.entry.id);
+    expect(expectedJournal).toHaveLength(2);
+    expect(await authority.prepare()).toMatchObject({ backend: 'sqlite', mode: 'active' });
+    expect(await memory.get(global, original.entry.id)).toEqual(changed.entry);
+    expect(await store.getRevision(global, original.entry.id, original.entry.revision)).toEqual(original.entry);
+    expect(await store.journal(global, original.entry.id)).toEqual(expectedJournal);
+    expect((await memory.undo(global, changed.operationId))?.body).toBe(original.entry.body);
+    expect(await memory.get(global, forgotten.entry.id)).toBeUndefined();
+    const retained = (await persistence.legacy('memory/global')).find((record) => record.key === 'journal.jsonl');
+    expect(retained?.payload).not.toContain(forgotten.entry.id);
+    expect(retained?.payload).toContain(original.entry.id);
+    expect((await authority.status()).migrationIssues).not.toContainEqual(expect.objectContaining({ key: 'journal.jsonl', issue: 'forgotten_source_rejected' }));
+  });
+
+  it('blocks a persisted whole-journal rejection until the same migration imports its history', async () => {
+    const { authority, legacy } = managedMemory();
+    const saved = await createManaged(legacy, 'Whole-journal rejection recovery');
+    await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${saved.entry.id}.md`, payload: JSON.stringify(saved.entry), entry: saved.entry }]);
+    const operationId = randomUUID();
+    await storage.write(MEMORY_AUTHORITY_SCOPE, 'backend.json', new TextEncoder().encode(JSON.stringify({ version: 1, epoch: 0, backend: 'legacy', mode: 'migrating', migration: { id: operationId, namespaces: ['memory/global'], index: 1, phase: 'importing', issues: [{ scope: 'memory/global', key: 'journal.jsonl', issue: 'forgotten_source_rejected' }] } })));
+    expect(await authority.migrate({ operationId })).toMatchObject({ backend: 'legacy', mode: 'migrating', migration: { phase: 'failed', failure: { code: 'memory.source_invalid' } } });
+    expect(await store.journal(global, saved.entry.id)).toEqual([]);
+    expect(await authority.retryMigration(operationId)).toMatchObject({ backend: 'sqlite', mode: 'active', migrationId: operationId });
+    expect(await store.journal(global, saved.entry.id)).toEqual(await legacy.journal(global, saved.entry.id));
+  });
+
+  it('keeps malformed journals blocking when the namespace has a forget barrier', async () => {
+    const { authority, legacy } = managedMemory();
+    const forgotten = await createManaged(legacy, 'Malformed journal peer');
+    await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${forgotten.entry.id}.md`, payload: JSON.stringify(forgotten.entry), entry: forgotten.entry }]);
+    await store.forget(global, [{ id: forgotten.entry.id, expectedRevision: forgotten.entry.revision }], 'forget-before-malformed-journal');
+    const raw = new TextDecoder().decode(await storage.read('memory/global', 'journal.jsonl'));
+    await storage.write('memory/global', 'journal.jsonl', new TextEncoder().encode(`${raw}invalid journal record\n`));
+    expect(await authority.migrate(migration())).toMatchObject({ backend: 'legacy', mode: 'migrating', migration: { phase: 'failed', failure: { code: 'memory.source_invalid' } } });
+  });
+
   it.each(['migrate', 'retry'] as const)('uses durable forget barriers beyond 1000 migration notes through %s', async (resume) => {
     const seed: MemoryEntry = { id: 'm_limit_seed', revision: 'mem2:limit-seed', type: 'feedback', title: 'Forgotten entry', body: 'Equal source and complete body.', status: 'active', pinned: false, source: { writer: 'agent', session: 'migration-limit-fixture', turn: 17 }, reason: 'Independent instruction', created: '2026-01-01', updated: '2026-01-01' };
     const entries = Array.from({ length: 1001 }, (_, index) => ({ ...seed, id: `m_limit_${String(index).padStart(4, '0')}` }));
@@ -1269,6 +1356,32 @@ describe('revision-bound Memory Markdown imports', () => {
     const current = await authority.exportMarkdown(global, saved.entry.id);
     const fresh = await authority.previewImport(global, fileInput(editFile(current.markdown, {}, 'Reconciled complete choice, exceptions 17 and 19.')));
     expect((await authority.applyImport(global, fresh.previewToken!, randomUUID())).entry.body).toBe(fresh.incoming.body);
+  });
+
+  it('allows revision-bound Markdown edits of a surviving equal-source peer while rejecting new-object replays', async () => {
+    const { memory, authority } = managedMemory();
+    await authority.migrate(migration());
+    const origin = { writer: 'agent' as const, session: 'markdown-independent-fixture', turn: 17 };
+    const mutation = { action: 'create' as const, scope: global, type: 'feedback' as const, title: 'First Markdown peer', body: 'Same source and complete body; exception 17.', reason: 'Independent instruction', source: origin };
+    const first = await memory.put(mutation);
+    const second = await memory.put({ ...mutation, title: 'Surviving Markdown peer' });
+    const exported = await authority.exportMarkdown(global, second.entry.id);
+    await authority.forget(global, [{ id: first.entry.id, expectedRevision: first.entry.revision }], randomUUID());
+    const markdown = editFile(exported.markdown, { title: 'Renamed surviving Markdown peer' });
+    const preview = await authority.previewImport(global, fileInput(markdown));
+    expect(preview).toMatchObject({ canApply: true, action: 'update', current: JSON.parse(JSON.stringify(second.entry)) });
+    const applied = await authority.applyImport(global, preview.previewToken!, randomUUID());
+    expect(applied.entry.id).toBe(second.entry.id);
+    expect(applied.entry.body).toBe(second.entry.body);
+    expect(applied.entry.title).toBe('Renamed surviving Markdown peer');
+    expect((await authority.previewImport(global, fileInput(markdown))).action).toBe('retained');
+    for (const originField of [{ origin: null }, {}]) {
+      const replay = editFile(exported.markdown, { id: 'new', revision: null, title: 'New object replay', ...originField });
+      await expect(authority.previewImport(global, fileInput(replay, 'file:///example/memory/new-locator.md'))).rejects.toMatchObject({ code: 'inactive_target' });
+    }
+    const unrelated = await createManaged(memory, 'Unrelated Markdown target', 'Distinct owner instruction.');
+    const forged = editFile(exported.markdown, { id: unrelated.entry.id, revision: unrelated.entry.revision, origin: { id: unrelated.entry.id, revision: unrelated.entry.revision } });
+    await expect(authority.previewImport(global, fileInput(forged))).rejects.toMatchObject({ code: 'inactive_target' });
   });
 
   it('blocks corrected or forgotten exported origins despite renamed IDs, titles and locators', async () => {
