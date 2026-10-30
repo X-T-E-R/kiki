@@ -11217,7 +11217,7 @@ export const zh = {
   'st.browser.allowedCount': '已允许 {count} 个',
   'st.browser.source.allowedOf': '已允许 {allowed}/{total}',
   'st.browser.found.title': '在这里发现、还没保存。勾选即保存并允许 Agent 使用。',
-  'st.browser.found.summary': '在这里发现 {count} 个{name}管道',
+  'st.browser.found.summary': '在这里发现 {count} 个{name}连接',
   'st.browser.found.allowAll': '全部允许',
   'st.browser.found.allowing': '允许中…',
   'st.browser.found.allow': '保存并允许 {name}',

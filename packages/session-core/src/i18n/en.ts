@@ -11312,7 +11312,7 @@ export const en = {
   'st.browser.allowedCount': '{count} allowed',
   'st.browser.source.allowedOf': '{allowed} of {total} allowed',
   'st.browser.found.title': 'Found here, not saved yet. Tick one to save it and let the Agent use it.',
-  'st.browser.found.summary': 'Found {count} {name} pipes here',
+  'st.browser.found.summary': 'Found {count} {name} connections here',
   'st.browser.found.allowAll': 'Allow all',
   'st.browser.found.allowing': 'Allowing…',
   'st.browser.found.allow': 'Save and allow {name}',
