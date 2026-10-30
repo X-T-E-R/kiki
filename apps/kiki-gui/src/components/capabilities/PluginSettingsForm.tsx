@@ -26,7 +26,7 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, InlineError, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter } from '../dirtyGuard';
 import { Icon } from '../icons';
-import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { INPUT, INPUT_BOX, SECONDARY_BUTTON } from '../ui';
 import { SettingField } from '../settings/fields';
 import { KEEP_SECRET, SecretField, type SecretDraft } from '../settings/SecretField';
 import { SettingsDraftFooter } from '../settings/SettingsPrimitives';
@@ -247,7 +247,7 @@ export function PluginSettingsForm({
     const border = invalid ? 'border-danger' : '';
     if (isConnectionField && providers.length > 0) {
       return (
-        <select id={fieldId} data-plugin-setting-connection={key} className={`${INPUT} h-8 w-64 py-1 ${border}`} aria-invalid={invalid}
+        <select id={fieldId} data-plugin-setting-connection={key} className={`${INPUT_BOX} h-8 w-64 py-1 ${border}`} aria-invalid={invalid}
           value={currentText} onChange={(event) => { edit(key, event.target.value); }}>
           <option value="">{t('cap.media.connection.selfManaged')}</option>
           {currentText !== '' && !providers.some((item) => item.id === currentText) ? <option value={currentText}>{currentText}</option> : null}
@@ -265,7 +265,7 @@ export function PluginSettingsForm({
     }
     if (choices !== undefined) {
       return (
-        <select id={fieldId} className={`${INPUT} h-8 w-64 py-1 ${border}`} aria-invalid={invalid}
+        <select id={fieldId} className={`${INPUT_BOX} h-8 w-64 py-1 ${border}`} aria-invalid={invalid}
           value={currentText} onChange={(event) => { edit(key, event.target.value); }}>
           <option value="">{property.default === undefined ? t('cap.media.setting.notSet') : String(property.default)}</option>
           {choices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}
@@ -280,7 +280,7 @@ export function PluginSettingsForm({
       );
     }
     return (
-      <input id={fieldId} className={`${INPUT} h-8 w-64 py-1 ${property.type === 'number' ? 'font-mono' : ''} ${border}`}
+      <input id={fieldId} className={`${INPUT_BOX} h-8 w-64 py-1 ${property.type === 'number' ? 'font-mono' : ''} ${border}`}
         inputMode={property.type === 'number' ? 'decimal' : undefined} aria-invalid={invalid}
         placeholder={property.default === undefined ? undefined : String(property.default)}
         value={currentText} onChange={(event) => { edit(key, event.target.value); }} />

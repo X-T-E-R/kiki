@@ -3,8 +3,15 @@
  * settings page, dialogs, chips, and banners stay on the same visual tokens.
  */
 
-export const INPUT =
-  'w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint';
+/**
+ * The input's shape without a width. Pair it with an explicit width
+ * (`w-24`, `w-64`): `INPUT` carries `w-full`, which wins the cascade over a
+ * second width class whatever the order in the attribute.
+ */
+export const INPUT_BOX =
+  'rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint';
+
+export const INPUT = `w-full ${INPUT_BOX}`;
 
 export const SMALL_INPUT =
   'rounded-md border border-hairline bg-paper px-2 py-1.5 text-[12px] text-ink outline-none focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint';

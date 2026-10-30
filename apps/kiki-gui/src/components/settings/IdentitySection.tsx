@@ -21,7 +21,7 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SaveStatus, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
-import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../ui';
+import { DANGER_GHOST_BUTTON, INPUT, INPUT_BOX, SECONDARY_BUTTON } from '../ui';
 import { AdvancedDetails, SettingField } from './fields';
 import { GlobalRequestIdentityCard } from './ModelsSection';
 import { SectionCard } from './SectionCard';
@@ -484,7 +484,7 @@ function CustomProfileEditor({ profile, catalog, edit, baseline, onPatch, onDisc
               onChange={(next) => { set({ track: next }); }} />
           ) : null}
           {draft.version.mode === 'fixed' ? (
-            <input className={`${INPUT} h-8 w-36 py-0 font-mono`} aria-label={t('st.identity.versionFixedAria')} data-identity-version
+            <input className={`${INPUT_BOX} h-8 w-36 py-0 font-mono`} aria-label={t('st.identity.versionFixedAria')} data-identity-version
               value={draft.version.value} spellCheck={false}
               onChange={(event) => { set({ version: { mode: 'fixed', value: event.target.value } }); }} />
           ) : null}

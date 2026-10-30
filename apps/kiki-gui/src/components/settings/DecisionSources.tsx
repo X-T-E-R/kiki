@@ -37,7 +37,7 @@ import { useMemoryAdvisor } from '../memory/useMemoryAdvisor';
 import { buildCatalogModelOptions, useProviderGroupLabel } from '../modelSelectOptions';
 import { hostLabel } from '../providerPresets';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
-import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { INPUT, INPUT_BOX, SECONDARY_BUTTON } from '../ui';
 import { FieldIssue, SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
@@ -430,7 +430,7 @@ function LegacyJevKey({ source, onMoved }: {
       <div className="flex flex-wrap items-end gap-2">
         <label className="block space-y-1">
           <span className="block text-[12px] text-ink-soft">{t('st.reviewer.moveId')}</span>
-          <input data-reviewer-move-id className={`${INPUT} w-48 font-mono`} value={id}
+          <input data-reviewer-move-id className={`${INPUT_BOX} w-48 font-mono`} value={id}
             disabled={moving} spellCheck={false} autoComplete="off" aria-invalid={idIssue !== null}
             aria-describedby={idIssue === null ? undefined : 'reviewer-move-id-issue'}
             onChange={(event) => { setId(event.target.value); setTouched(true); setFeedback(null); }} />

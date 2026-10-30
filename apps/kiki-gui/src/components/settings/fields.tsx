@@ -58,7 +58,10 @@ export function SettingsGroup({
  * Every direct child is a row and gets the row padding, so a `SettingField`,
  * a `DependentField`, a button line or a notice all line up on one edge. A
  * child that renders nothing (a desktop-only row in the browser, a wrapper
- * whose component returned null) is hidden and draws no line.
+ * whose component returned null) is hidden and draws no line. A
+ * `display: contents` wrapper (kept for a deep-link anchor id) draws no box
+ * of its own, so its children are the rows: they get the padding and the
+ * line instead, except the very first row of the group.
  */
 export function SettingsBox({ children, className = '', ...rest }: {
   children: React.ReactNode;
@@ -68,7 +71,7 @@ export function SettingsBox({ children, className = '', ...rest }: {
     <div
       {...rest}
       data-settings-box
-      className={`[&>*]:py-3 [&>:empty]:hidden [&>:not(:empty)~:not(:empty)]:border-t [&>:not(:empty)~:not(:empty)]:border-hairline ${className}`}
+      className={`[&>*]:py-3 [&>:empty]:hidden [&>:not(:empty)~:not(:empty)]:border-t [&>:not(:empty)~:not(:empty)]:border-hairline [&>.contents>*]:py-3 [&>.contents>*]:border-t [&>.contents>*]:border-hairline [&>.contents:first-child>:first-child]:border-t-0 ${className}`}
     >
       {children}
     </div>

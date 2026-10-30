@@ -31,7 +31,7 @@ import { FeedbackLine, InlineError, Toggle, type Feedback } from '../../controls
 import { useDirtyGuard, useDirtyReporter } from '../../dirtyGuard';
 import { Icon } from '../../icons';
 import { SidePanel } from '../../SidePanel';
-import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
+import { INPUT, INPUT_BOX, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { AxisGroup } from '../usageShared';
 import { UsageExportConsentFacts, UsageExportPreviewBlock } from './UsageExportPreview';
 import {
@@ -49,7 +49,7 @@ const FIELD_LABEL = 'block text-[12px] text-ink-soft';
 const ROW_WRAP = 'flex flex-wrap items-end gap-x-3 gap-y-2';
 const HINT = 'text-[11.5px] leading-relaxed text-ink-faint';
 const SELECT = 'h-8 rounded-md border border-hairline bg-paper px-2 text-[12.5px] text-ink outline-none focus:border-selected-ink';
-const NUM_INPUT = `${INPUT} w-24 text-right font-mono tabular-nums`;
+const NUM_INPUT = `${INPUT_BOX} w-24 text-right font-mono tabular-nums`;
 
 const ADD = 'usage.export.form.addTitle';
 
@@ -610,11 +610,11 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
                 <div className={ROW_WRAP}>
                   <label className="block space-y-1">
                     <span className={FIELD_LABEL}>{t('usage.export.form.privateHost')}</span>
-                    <input value={state.privateHost} spellCheck={false} aria-invalid={invalid === 'usage.export.form.invalidPrivateHost'} onChange={(event) => { patch({ privateHost: event.target.value }); }} className={`${INPUT} w-44`} />
+                    <input value={state.privateHost} spellCheck={false} aria-invalid={invalid === 'usage.export.form.invalidPrivateHost'} onChange={(event) => { patch({ privateHost: event.target.value }); }} className={`${INPUT_BOX} w-44`} />
                   </label>
                   <label className="block space-y-1">
                     <span className={FIELD_LABEL}>{t('usage.export.form.privateIp')}</span>
-                    <input value={state.privateIp} spellCheck={false} aria-invalid={invalid === 'usage.export.form.invalidPrivateIp'} onChange={(event) => { patch({ privateIp: event.target.value }); }} className={`${INPUT} w-36 font-mono`} />
+                    <input value={state.privateIp} spellCheck={false} aria-invalid={invalid === 'usage.export.form.invalidPrivateIp'} onChange={(event) => { patch({ privateIp: event.target.value }); }} className={`${INPUT_BOX} w-36 font-mono`} />
                   </label>
                   <label className="block space-y-1">
                     <span className={FIELD_LABEL}>{t('usage.export.form.privatePort')}</span>
@@ -648,7 +648,7 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
                   const ms = fromLocalInput(event.target.value);
                   patch({ historyInput: event.target.value, historyFrom: ms ?? state.historyFrom });
                 }}
-                className={`${INPUT} w-56 font-mono text-[12px]`}
+                className={`${INPUT_BOX} w-56 font-mono text-[12px]`}
               />
             </label>
             <label className="block space-y-1">

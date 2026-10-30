@@ -97,7 +97,7 @@ import {
   withModelProtocols,
   type ModelProtocolChoice,
 } from './settings/modelProtocolDraft';
-import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
+import { DANGER_GHOST_BUTTON, INPUT, INPUT_BOX, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_INPUT } from './ui';
 
 /**
  * Where a model-picker option came from. `configured` is a stored model entity
@@ -392,7 +392,7 @@ export function MsUnitInput({
           step="any"
           aria-label={ariaLabel}
           disabled={disabled}
-          className={`${INPUT} w-24 text-right`}
+          className={`${INPUT_BOX} w-24 text-right`}
           value={shown}
           onFocus={() => { setFocused(true); }}
           onBlur={() => { setFocused(false); }}
