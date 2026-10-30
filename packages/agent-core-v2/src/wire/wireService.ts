@@ -545,7 +545,9 @@ export class WireService extends Service implements IWireService {
       base === undefined || base.generation !== this.journalGeneration) return false;
     const generation = this.journalGeneration;
     const before = await this.log.sourceRevision?.(this.wireScope, AGENT_WIRE_RECORD_KEY);
-    const size = before?.size ?? await this.journalSize() ?? 0;
+    if (before === undefined || base.identity?.identity === undefined || before.identity !== base.identity.identity ||
+      before.unexplained !== base.identity.unexplained) return false;
+    const size = before.size;
     if (size < base.state.size) return false;
     const result = await this.resumeJournalDigest(base, size);
     const after = await this.log.sourceRevision?.(this.wireScope, AGENT_WIRE_RECORD_KEY);

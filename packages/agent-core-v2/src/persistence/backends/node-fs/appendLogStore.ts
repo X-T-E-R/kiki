@@ -74,7 +74,7 @@ interface LogState {
   ready: Promise<void>;
   retirement: Promise<void> | undefined;
   position?: AppendPosition;
-  source?: { revision: number; stat: StorageFileStat | undefined };
+  source?: { revision: number; unexplained: number; stat: StorageFileStat | undefined };
   uncertainAppend?: {
     readonly start: AppendPosition;
     readonly encoded: Uint8Array;
@@ -133,20 +133,24 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     if (this.storage.stat === undefined) return undefined;
     await this.flush(scope, key);
     const state = this.state(scope, key);
-    const source = state.source ??= { revision: 0, stat: undefined };
+    const source = state.source ??= { revision: 0, unexplained: 0, stat: undefined };
     const info = await this.storage.stat(scope, key);
     if (state.flushPromise !== undefined) {
       source.revision++;
+      source.unexplained++;
       source.stat = undefined;
       return undefined;
     }
     this.observeSource(source, info);
-    return info === undefined ? undefined : { revision: source.revision, size: info.size, identity: info.identity };
+    return info === undefined ? undefined : { revision: source.revision, unexplained: source.unexplained, size: info.size, identity: info.identity };
   }
 
   private observeSource(source: NonNullable<LogState['source']>, info: StorageFileStat | undefined): void {
     const previous = source.stat;
-    if (previous?.identity !== info?.identity || previous?.size !== info?.size || previous?.revision !== info?.revision) source.revision++;
+    if (previous?.identity !== info?.identity || previous?.size !== info?.size || previous?.revision !== info?.revision) {
+      source.revision++;
+      source.unexplained++;
+    }
     source.stat = info;
   }
 
@@ -166,12 +170,22 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
         source.stat = after;
       } else {
         source.revision++;
-        source.stat = undefined;
+        const grewWithinBatch = appendCommitted(error) !== false && before !== undefined && after !== undefined &&
+          before.identity !== undefined && before.identity === after.identity &&
+          after.size > before.size && after.size <= before.size + data.byteLength;
+        if (grewWithinBatch) source.stat = after;
+        else {
+          source.unexplained++;
+          source.stat = undefined;
+        }
       }
       throw error;
     }
     const after = await this.storage.stat(scope, key).catch(() => undefined);
-    if (before === undefined || after === undefined || before.identity !== after.identity || after.size !== before.size + data.byteLength) source.revision++;
+    if (before === undefined || after === undefined || before.identity !== after.identity || after.size !== before.size + data.byteLength) {
+      source.revision++;
+      source.unexplained++;
+    }
     source.stat = after;
   }
 
@@ -304,7 +318,10 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
             const generation = randomUUID();
             await this.storage.write(scope, `${key}.generation`, textEncoder.encode(generation), { atomic: true });
             state.position = undefined;
-            if (state.source !== undefined) state.source.revision++;
+            if (state.source !== undefined) {
+              state.source.revision++;
+              state.source.unexplained++;
+            }
             await this.storage.write(scope, key, encoded, { atomic: true });
             const boundary = encoded.slice(-4096);
             committed = { generation, offset: encoded.byteLength, boundary };

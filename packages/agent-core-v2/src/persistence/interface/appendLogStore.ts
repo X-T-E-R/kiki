@@ -81,6 +81,12 @@ export interface ColdSealResult {
 /** A process-local revision invalidated by observed metadata changes outside successful appends; absent identity disables incremental digest reuse. */
 export interface AppendLogSourceRevision {
   readonly revision: number;
+  /**
+   * Counts revision changes that no append of this store can explain: every observed change between appends,
+   * a lost observation, a managed rewrite, and a failed append whose file did not grow within its own batch.
+   * A failed append that grew the file within its batch advances `revision` but not this count.
+   */
+  readonly unexplained: number;
   readonly size: number;
   readonly identity?: string;
 }

@@ -45,6 +45,8 @@ export interface IWireService {
    * When the journal does not match accepted events, the epoch still closes
    * and the receipt records `trusted: false`. The receipt binds the journal size
    * and the SHA-256 of its last bytes, not a hash of the whole journal.
+   * A rewrite of bytes before the epoch base and outside that tail is therefore not detected
+   * until the next new base, whether the concurrent append succeeded or failed.
    */
   sealTranscriptEpoch?(): Promise<void>;
   verifyTranscriptLiveEpoch?(): Promise<boolean>;

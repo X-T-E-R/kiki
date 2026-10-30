@@ -527,13 +527,18 @@ describe('WireService seal', () => {
     await reopened.beginTranscriptEpoch!();
     reopened.appendRecord({ type: 'turn.prompt', turnId: 9, text: 'after-reopen' });
     await reopened.flush();
-    return { live, sealed, reopened: await reopened.verifyTranscriptLiveEpoch!() };
+    return { live, sealed: { state: sealed?.state, trusted: sealed?.trusted, reanchor: sealed?.reanchor === true }, reopened: await reopened.verifyTranscriptLiveEpoch!() };
   }
 
-  const TRUSTED = { live: true, sealed: expect.objectContaining({ state: 'sealed', trusted: true }), reopened: true };
+  const TRUSTED = { live: true, sealed: { state: 'sealed', trusted: true, reanchor: false }, reopened: true };
+  const UNRECOVERABLE = {
+    live: false,
+    sealed: { state: 'sealed', trusted: false, reanchor: false },
+    reopened: false,
+  };
   const REANCHORED = {
     live: false,
-    sealed: expect.objectContaining({ state: 'sealed', trusted: false, reanchor: true }),
+    sealed: { state: 'sealed', trusted: false, reanchor: true },
     reopened: true,
   };
 
@@ -567,6 +572,116 @@ describe('WireService seal', () => {
       expect(await sealAndReopen(wire, scope, storage, disposables)).toEqual(mode === 'uncommitted' ? TRUSTED : REANCHORED);
     } finally {
       resetUnexpectedErrorHandler();
+    }
+  });
+
+  async function patchPrefixByte(fileStorage: FileStorageService, truncate: boolean) {
+    const path = fileStorage.pathFor('main', AGENT_WIRE_RECORD_KEY);
+    const original = Buffer.from((await fileStorage.read('main', AGENT_WIRE_RECORD_KEY))!);
+    const offset = original.indexOf('original-prefix');
+    const changed = Buffer.from(original);
+    changed[offset] = 0x4d;
+    const handle = await open(path, 'r+');
+    try {
+      if (truncate) await handle.truncate(0);
+      await handle.write(changed, 0, changed.byteLength, 0);
+      await handle.sync();
+    } finally { await handle.close(); }
+  }
+
+  it.each([
+    { name: 'no failed append (control)', failure: undefined, truncate: false, bytes: 0, expected: 'unrecoverable' },
+    { name: 'committed:false, nothing written', failure: false, truncate: false, bytes: 0, expected: 'unrecoverable' },
+    { name: 'committed:true, nothing written', failure: true, truncate: false, bytes: 0, expected: 'unrecoverable' },
+    { name: 'committed:true, truncate-rewrite then 13 bytes', failure: true, truncate: true, bytes: 13, expected: 'undetectable' },
+    { name: 'committed:true, in-place rewrite then 13 bytes', failure: true, truncate: false, bytes: 13, expected: 'undetectable' },
+  ] as const)('classifies a base prefix rewrite outside the tail, $name', async ({ failure, truncate, bytes, expected }) => {
+    const base = await mkdtemp(join(tmpdir(), 'wire-prefix-rewrite-'));
+    const host = new DisposableStore();
+    setUnexpectedErrorHandler(() => {});
+    try {
+      const { fileStorage, fileWire } = await realFileEpoch(base, host);
+      const append = fileStorage.append.bind(fileStorage);
+      let failing = failure !== undefined;
+      const error = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'injected append failure', {
+        details: { errno: 'ENOSPC', committed: failure ?? false },
+      });
+      fileStorage.append = async (scope, key, data, options) => {
+        if (failing && key === AGENT_WIRE_RECORD_KEY) {
+          failing = false;
+          await patchPrefixByte(fileStorage, truncate);
+          if (bytes > 0) await append(scope, key, data.subarray(0, bytes), options);
+          throw error;
+        }
+        await append(scope, key, data, options);
+      };
+      if (failure === undefined) await patchPrefixByte(fileStorage, truncate);
+      fileWire.appendRecord({ type: 'turn.prompt', turnId: 1, text: 'accepted-tail' });
+      if (failure !== undefined) await expect(fileWire.flush()).rejects.toBe(error);
+      await fileWire.flush();
+      expect(Buffer.from((await fileStorage.read('main', AGENT_WIRE_RECORD_KEY))!).toString('utf8')).not.toContain('original-prefix');
+      expect(await sealAndReopen(fileWire, 'main', fileStorage, host)).toEqual(expected === 'unrecoverable' ? UNRECOVERABLE : REANCHORED);
+    } finally {
+      resetUnexpectedErrorHandler();
+      await host.dispose();
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('does not let a failure that changed nothing make a later rewrite in the same epoch re-anchor', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'wire-benign-failure-'));
+    const host = new DisposableStore();
+    setUnexpectedErrorHandler(() => {});
+    try {
+      const { fileStorage, fileWire } = await realFileEpoch(base, host);
+      const append = fileStorage.append.bind(fileStorage);
+      let failing = true;
+      const error = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'injected append failure', {
+        details: { errno: 'ENOSPC', committed: false },
+      });
+      fileStorage.append = async (scope, key, data, options) => {
+        if (failing && key === AGENT_WIRE_RECORD_KEY) {
+          failing = false;
+          throw error;
+        }
+        await append(scope, key, data, options);
+      };
+      fileWire.appendRecord({ type: 'turn.prompt', turnId: 1, text: 'accepted-tail' });
+      await expect(fileWire.flush()).rejects.toBe(error);
+      await fileWire.flush();
+      expect(await fileWire.verifyTranscriptLiveEpoch!()).toBe(true);
+      fileWire.appendRecord({ type: 'turn.prompt', turnId: 2, text: 'more' });
+      await fileWire.flush();
+      await patchPrefixByte(fileStorage, false);
+      expect(await sealAndReopen(fileWire, 'main', fileStorage, host)).toEqual(UNRECOVERABLE);
+    } finally {
+      resetUnexpectedErrorHandler();
+      await host.dispose();
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('cannot detect a base prefix rewrite absorbed by a successful append, like the failed-append growth class', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'wire-absorbed-rewrite-'));
+    const host = new DisposableStore();
+    try {
+      const { fileStorage, fileWire } = await realFileEpoch(base, host);
+      const append = fileStorage.append.bind(fileStorage);
+      let rewriting = true;
+      fileStorage.append = async (scope, key, data, options) => {
+        if (rewriting && key === AGENT_WIRE_RECORD_KEY) {
+          rewriting = false;
+          await patchPrefixByte(fileStorage, true);
+        }
+        await append(scope, key, data, options);
+      };
+      fileWire.appendRecord({ type: 'turn.prompt', turnId: 1, text: 'accepted-tail' });
+      await fileWire.flush();
+      expect(Buffer.from((await fileStorage.read('main', AGENT_WIRE_RECORD_KEY))!).toString('utf8')).not.toContain('original-prefix');
+      expect(await sealAndReopen(fileWire, 'main', fileStorage, host)).toEqual(TRUSTED);
+    } finally {
+      await host.dispose();
+      await rm(base, { recursive: true, force: true });
     }
   });
 
@@ -673,14 +788,14 @@ describe('WireService seal', () => {
   });
 
   it.each([
-    { change: 'replace', committed: false },
-    { change: 'in-place', committed: false },
-    { change: 'in-place', committed: true },
-    { change: 'truncate-rewrite', committed: false },
-    { change: 'truncate-rewrite', committed: true },
-    { change: 'truncate-rewrite-partial', committed: true },
-    { change: 'truncate-rewrite-full', committed: true },
-  ] as const)('never certifies an epoch whose base was rewritten during a failed append, $change committed=$committed', async ({ change, committed }) => {
+    { change: 'replace', committed: false, expected: 'unrecoverable' },
+    { change: 'in-place', committed: false, expected: 'unrecoverable' },
+    { change: 'in-place', committed: true, expected: 'unrecoverable' },
+    { change: 'truncate-rewrite', committed: false, expected: 'unrecoverable' },
+    { change: 'truncate-rewrite', committed: true, expected: 'unrecoverable' },
+    { change: 'truncate-rewrite-partial', committed: true, expected: 'undetectable' },
+    { change: 'truncate-rewrite-full', committed: true, expected: 'undetectable' },
+  ] as const)('never certifies an epoch whose base was rewritten during a failed append, $change committed=$committed', async ({ change, committed, expected }) => {
     const base = await mkdtemp(join(tmpdir(), 'wire-failed-append-'));
     const host = new DisposableStore();
     setUnexpectedErrorHandler(() => {});
@@ -717,7 +832,7 @@ describe('WireService seal', () => {
       failing = false;
       await fileWire.flush();
       expect(Buffer.from((await fileStorage.read('main', AGENT_WIRE_RECORD_KEY))!).toString('utf8')).toContain('modified-prefix');
-      expect(await sealAndReopen(fileWire, 'main', fileStorage, host)).toEqual(REANCHORED);
+      expect(await sealAndReopen(fileWire, 'main', fileStorage, host)).toEqual(expected === 'unrecoverable' ? UNRECOVERABLE : REANCHORED);
     } finally {
       resetUnexpectedErrorHandler();
       await host.dispose();
@@ -726,10 +841,10 @@ describe('WireService seal', () => {
   });
 
   it.each([
-    { moment: 'before-write', change: 'truncate', count: 13 },
-    { moment: 'after-write', change: 'in-place', count: 13 },
-    { moment: 'after-write', change: 'in-place', count: 0 },
-  ] as const)('never certifies an epoch another process rewrote inside the append handle window, $moment $change bytes=$count', async ({ moment, change, count }) => {
+    { moment: 'before-write', change: 'truncate', count: 13, expected: 'undetectable' },
+    { moment: 'after-write', change: 'in-place', count: 13, expected: 'undetectable' },
+    { moment: 'after-write', change: 'in-place', count: 0, expected: 'unrecoverable' },
+  ] as const)('never certifies an epoch another process rewrote inside the append handle window, $moment $change bytes=$count', async ({ moment, change, count, expected }) => {
     const base = await mkdtemp(join(tmpdir(), 'wire-second-writer-'));
     const host = new DisposableStore();
     setUnexpectedErrorHandler(() => {});
@@ -761,7 +876,7 @@ describe('WireService seal', () => {
       expect(text).toContain('modified-prefix');
       expect(text).not.toContain('original-prefix');
       expect((await fileLog.sourceRevision!('main', AGENT_WIRE_RECORD_KEY))?.revision).toBeGreaterThan(revisionBefore!.revision);
-      expect(await sealAndReopen(fileWire, 'main', fileStorage, host)).toEqual(REANCHORED);
+      expect(await sealAndReopen(fileWire, 'main', fileStorage, host)).toEqual(expected === 'unrecoverable' ? UNRECOVERABLE : REANCHORED);
     } finally {
       resetUnexpectedErrorHandler();
       await host.dispose();

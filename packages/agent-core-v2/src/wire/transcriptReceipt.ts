@@ -20,9 +20,11 @@ export interface WireTranscriptReceipt {
   readonly trusted: boolean;
   readonly wire?: WireTranscriptReceiptWire;
   /**
-   * Set only on an untrusted sealed receipt whose epoch lost its proof because a failed append broke the
-   * observed source chain, not because accepted bytes diverged. The next epoch may start trusted from this
-   * receipt's size and tail; this receipt itself certifies nothing.
+   * Set only on an untrusted sealed receipt whose epoch lost its proof solely because a failed append grew the
+   * file within its own batch, with no unexplained source change, and whose appended bytes still match the
+   * accepted records. The next epoch may start trusted from this receipt's size and tail; this receipt itself
+   * certifies nothing. Like a successful append, it cannot detect a concurrent rewrite of bytes before the
+   * epoch base and outside the tail.
    */
   readonly reanchor?: true;
 }
