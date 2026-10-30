@@ -3622,7 +3622,7 @@ function SessionMenu({
           >
             {isPinnedSession(session) ? t('menu.unpin') : t('menu.pin')}
           </button>
-          <button type="button" role="menuitem" className={itemClass} onClick={onRename}>
+          <button type="button" role="menuitem" data-menu-item="rename" className={itemClass} onClick={onRename}>
             {t('menu.rename')}
           </button>
           <button
