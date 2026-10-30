@@ -60,8 +60,10 @@ export function DetailSplit({ selected, list, rail, detail, label, data }: {
         const target = root.closest<HTMLElement>('[id^="st-card-"]') ?? root;
         const scroller = target.closest<HTMLElement>('[data-settings-scroll]');
         if (scroller === null) target.scrollIntoView?.({ block: 'start' });
-        else if (target.getBoundingClientRect().top < scroller.getBoundingClientRect().top) {
-          scroller.scrollTop += target.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 24;
+        else if (root.getBoundingClientRect().top < scroller.getBoundingClientRect().top) {
+          // The split itself, not its card: a card that starts above the fold
+          // would leave the pane header clipped under a sticky toolbar.
+          scroller.scrollTop += root.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 56;
         }
         return;
       }

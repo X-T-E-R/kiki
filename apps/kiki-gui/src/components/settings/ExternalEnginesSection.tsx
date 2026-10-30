@@ -1057,8 +1057,9 @@ function EngineDetailPane({ item, overrides, display, onClose, onFault, onRegist
               </div>
               <dl className="space-y-2">
                 <Fact label={t('st.engines.program')} dataFact="program">
-                  {program !== undefined ? <span className="break-all font-mono text-[12px]">{program}</span> : <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
-                  {source !== undefined ? <span className="block text-[12px] text-ink-faint">{t('st.engines.source')} <span className="font-mono text-[11.5px]">{source}</span></span> : null}
+                  {source === 'kiki-managed'
+                    ? <span>{t('st.engines.managedByKiki')}</span>
+                    : program !== undefined ? <span className="break-all text-[12.5px]">{program}</span> : <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
                 </Fact>
                 <Fact label={t('st.engines.version')} dataFact="version">
                   {version ?? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
@@ -1124,6 +1125,21 @@ function EngineDetailPane({ item, overrides, display, onClose, onFault, onRegist
                 </div>
               ) : null}
               <EngineOverrides item={item} program={program} onCheck={runCheck}>
+                {program !== undefined || source !== undefined ? (
+                  <dl className="space-y-1.5 pt-3">
+                    {program !== undefined ? (
+                      <Fact label={t('st.engines.program')} dataFact="program-path">
+                        <span className="break-all">{program}</span>{' '}
+                        <CopyCommand command={program} />
+                      </Fact>
+                    ) : null}
+                    {source !== undefined ? (
+                      <Fact label={t('st.engines.source')} dataFact="source">
+                        <span className="break-all">{source}</span>
+                      </Fact>
+                    ) : null}
+                  </dl>
+                ) : null}
                 <div className="space-y-1.5 pt-3">
                 <dl className="space-y-1.5">
                   <Fact label={t('st.engines.cap.prompt')} dataFact="cap-prompt">
@@ -1162,7 +1178,6 @@ function EngineDetailPane({ item, overrides, display, onClose, onFault, onRegist
                 <p className="text-[12px] leading-4 text-ink-faint">{t(caps?.negotiated !== undefined ? 'st.engines.capsNegotiated' : 'st.engines.capsDeclared')}</p>
               </div>
               </EngineOverrides>
-              <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.configHint')}</p>
             </section>
 
             {customRegistration ? (

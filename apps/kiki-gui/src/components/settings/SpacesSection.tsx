@@ -393,7 +393,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
                 {t(space.credentials_shared === false ? 'st.spaces.credIsolatedShort' : 'st.spaces.credSharedShort')}
               </span>
             ) : null}
-            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={space.path}>{space.path}</span>
+            <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-faint" title={space.path}>{space.path}</span>
           </div>
         ) : (
           <div className="min-w-0 flex-1">
@@ -409,7 +409,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
                 </span>
               ) : null}
             </div>
-            <p className="truncate font-mono text-[11px] text-ink-faint" title={space.path}>{space.path}</p>
+            <p className="truncate text-[11.5px] text-ink-faint" title={space.path}>{space.path}</p>
             {restartNote?.id === space.id ? <p className="text-[12px] font-medium text-amber-ink" data-space-restart-note>{restartNote.text}</p> : null}
           </div>
         )}
