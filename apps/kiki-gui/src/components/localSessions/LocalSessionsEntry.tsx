@@ -45,7 +45,18 @@ export function LocalSessionsEntry({
         <Icon name="branch" size={12} className="text-ink-faint" />
         {t(variant === 'button' ? 'localSessions.browse' : 'localSessions.entry')}
       </button>
-      {open ? <LocalSessionsDialog initialExecutorId={executorId} onClose={() => { setOpen(false); }} /> : null}
+      {open ? (
+        // The surface replaces the entry's row; a quiet scrim gives the
+        // dismiss a target without stacking a second dialog layer.
+        <>
+          <button type="button" aria-label={t('common.close')} tabIndex={-1}
+            onClick={() => { setOpen(false); }}
+            className="fixed inset-0 z-40 cursor-default bg-shell/20" />
+          <div className="fixed inset-x-0 top-10 z-40 flex justify-center px-4">
+            <LocalSessionsDialog initialExecutorId={executorId} onClose={() => { setOpen(false); }} />
+          </div>
+        </>
+      ) : null}
     </>
   );
 }

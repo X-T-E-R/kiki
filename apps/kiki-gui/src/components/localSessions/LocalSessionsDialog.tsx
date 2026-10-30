@@ -167,7 +167,7 @@ function Preview({
   const partial = detail.data?.summary.partial ?? summary.partial;
   const messages = detail.data?.messages ?? [];
   return (
-    <div data-local-preview={summary.id} className="flex min-h-0 flex-1 flex-col">
+    <div data-local-preview={summary.id} className="flex flex-col">
       <div className="shrink-0 space-y-1 border-b border-hairline px-1 pt-1 pb-3">
         <h3 data-detail-heading tabIndex={-1} className="truncate text-[14px] font-medium text-ink outline-none" title={localSessionName(summary)}>{localSessionName(summary)}</h3>
         {summary.cwd !== undefined ? <p className="truncate font-mono text-[11px] text-ink-faint" title={summary.cwd}>{summary.cwd}</p> : null}
@@ -188,7 +188,7 @@ function Preview({
           </div>
         ) : null}
       </div>
-      <div data-local-preview-body className="min-h-0 flex-1 overflow-y-auto px-1 py-3">
+      <div data-local-preview-body className="px-1 py-3">
         {detail.isPending ? <p className="text-[13px] text-ink-faint">{t('localSessions.previewLoading')}</p> : null}
         {detail.isError ? <p role="alert" className="text-[13px] text-danger">{t('localSessions.previewFailed', { detail: errorText(locale, detail.error) })}</p> : null}
         {detail.isSuccess && messages.length === 0 ? <p className="text-[13px] text-ink-soft">{t('localSessions.previewEmpty')}</p> : null}
@@ -284,7 +284,7 @@ export function LocalSessionsDialog({
           ) : null}
         </div>
       ) : null}
-      <div data-local-list className="max-h-[min(60vh,480px)] overflow-y-auto overscroll-contain px-1 py-1">
+      <div data-local-list className="px-1 py-1">
         {catalog.isPending || (executorId !== undefined && directory.isPending) ? (
           <p className="px-3 py-2 text-[12.5px] text-ink-faint">{t('localSessions.loading')}</p>
         ) : null}
@@ -324,7 +324,7 @@ export function LocalSessionsDialog({
   );
 
   return (
-    <div data-local-sessions className="rounded-2xl border border-hairline bg-panel p-4 shadow-[var(--kiki-sheet-shadow)]">
+    <div data-local-sessions className="w-full max-w-3xl rounded-2xl border border-hairline bg-panel p-4 shadow-[var(--kiki-sheet-shadow)]">
       <DetailSplit
         selected={selected?.id ?? null}
         label={title}

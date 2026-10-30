@@ -125,10 +125,22 @@ export function AnchoredPopover({
       pointerInside.current = false;
       if (!inside) close(false);
     };
+    // Focus can sit on the trigger (a pointer-opened menu never moves it):
+    // Escape must still close the popover, before the page's own layers.
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (surfaceRef.current?.contains(event.target as Node) === true) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (role === 'menu') { closeRef.current(); restoreTriggerFocus(); }
+      else close(true);
+    };
     document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
     return () => {
       unregister();
       document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
       const active = document.activeElement;
       if (active === null || active === document.body || surface?.contains(active) === true) {
         if (role === 'menu') restoreTriggerFocus();

@@ -90,6 +90,7 @@ export default {
         main: {
           agent_id: 'main',
           has_more: false,
+          meta: { agent: { contextTokens: 312_000, maxContextTokens: 550_000 } },
           items: [
             turn('1', 90, 'Port the importer to the new schema.', 'Mapped the old columns; starting with the reader.'),
             compaction('m-compact-summarize', 80, { strategy: 'summarize', shapeVersion: 1 }),
