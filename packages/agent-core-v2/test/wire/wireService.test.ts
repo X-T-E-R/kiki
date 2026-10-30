@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, open, rm, stat, utimes } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, open, rm, stat, utimes, type FileHandle } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -485,7 +486,58 @@ describe('WireService seal', () => {
     }
   });
 
-  it.each(['uncommitted', 'partial', 'sync'] as const)('keeps the epoch trusted after a proven append recovery, mode=%s', async (mode) => {
+  const SECOND_WRITER = [
+    "const fs = require('node:fs');",
+    'const [path, mode] = process.argv.slice(1);',
+    'const original = fs.readFileSync(path);',
+    "const changed = Buffer.from(original.toString('utf8').replace('original-prefix', 'modified-prefix'));",
+    "if (changed.equals(original) || changed.byteLength !== original.byteLength) throw new Error('unexpected writer input');",
+    "const fd = fs.openSync(path, 'r+');",
+    "if (mode === 'truncate') fs.ftruncateSync(fd, 0);",
+    'fs.writeSync(fd, changed, 0, changed.byteLength, 0);',
+    'fs.fsyncSync(fd);',
+    'fs.closeSync(fd);',
+    'process.stdout.write(String(process.pid));',
+  ].join('\n');
+
+  async function realFileEpoch(base: string, host: DisposableStore, openAppend?: (path: string) => Promise<FileHandle>) {
+    const fileStorage = new FileStorageService(base, undefined, undefined, true, openAppend);
+    const fileIx = host.add(new TestInstantiationService());
+    fileIx.stub(IFileSystemStorageService, fileStorage);
+    fileIx.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    const fileLog = fileIx.get(IAppendLogStore);
+    const fileWire = registerTestAgentWire(fileIx, 'main', { log: fileLog, storage: fileStorage, logger: noopLogger, telemetry: noopTelemetryService });
+    await fileWire.seal();
+    fileWire.appendRecord({ type: 'turn.prompt', turnId: 0, text: `original-prefix${'x'.repeat(16384)}` });
+    await fileWire.flush();
+    await fileWire.beginTranscriptEpoch!();
+    expect(await fileWire.verifyTranscriptLiveEpoch!()).toBe(true);
+    return { fileStorage, fileLog, fileWire };
+  }
+
+  async function sealAndReopen(target: IWireService, scope: string, store: IFileSystemStorageService, host: DisposableStore, onSealed?: () => void) {
+    const live = await target.verifyTranscriptLiveEpoch!();
+    await target.sealTranscriptEpoch!();
+    onSealed?.();
+    const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from((await store.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!).toString('utf8')));
+    const reopened = registerTestAgentWire(host.add(new TestInstantiationService()), scope, {
+      log: new AppendLogStore(store), storage: store, logger: noopLogger, telemetry: noopTelemetryService,
+    });
+    await reopened.seal();
+    await reopened.beginTranscriptEpoch!();
+    reopened.appendRecord({ type: 'turn.prompt', turnId: 9, text: 'after-reopen' });
+    await reopened.flush();
+    return { live, sealed, reopened: await reopened.verifyTranscriptLiveEpoch!() };
+  }
+
+  const TRUSTED = { live: true, sealed: expect.objectContaining({ state: 'sealed', trusted: true }), reopened: true };
+  const REANCHORED = {
+    live: false,
+    sealed: expect.objectContaining({ state: 'sealed', trusted: false, reanchor: true }),
+    reopened: true,
+  };
+
+  it.each(['uncommitted', 'partial', 'sync'] as const)('recovers an append failure and re-anchors trust at the next epoch, mode=%s', async (mode) => {
     await wire.seal();
     await wire.beginTranscriptEpoch!();
     expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
@@ -512,18 +564,111 @@ describe('WireService seal', () => {
       const text = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8');
       expect(text.split('\n').filter(Boolean)).toHaveLength(2);
       expect(text).toContain(`${JSON.stringify(accepted)}\n`);
-      expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+      expect(await sealAndReopen(wire, scope, storage, disposables)).toEqual(mode === 'uncommitted' ? TRUSTED : REANCHORED);
+    } finally {
+      resetUnexpectedErrorHandler();
+    }
+  });
+
+  it('does not re-anchor when the bytes appended after a failed append diverge', async () => {
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    const scope = testWireScope(SCOPE, KEY);
+    const append = storage.append.bind(storage);
+    let failing = true;
+    const error = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'injected full disk', {
+      details: { committed: true, errno: 'ENOSPC' },
+    });
+    storage.append = async (target, key, bytes, options) => {
+      if (failing && key === AGENT_WIRE_RECORD_KEY) {
+        await append(target, key, bytes.subarray(0, 13), options);
+        throw error;
+      }
+      await append(target, key, bytes, options);
+    };
+    setUnexpectedErrorHandler(() => {});
+    try {
+      wire.appendRecord({ type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'a' }] } as WireRecord);
+      await expect(wire.flush()).rejects.toBe(error);
+      failing = false;
+      await wire.flush();
+      const original = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8');
+      await storage.write(scope, AGENT_WIRE_RECORD_KEY, Buffer.from(original.replace('"text":"a"', '"text":"b"')));
       await wire.sealTranscriptEpoch!();
       const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from((await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!).toString('utf8')));
-      expect(sealed).toMatchObject({ format: 2, state: 'sealed', trusted: true });
+      expect(sealed).toMatchObject({ state: 'sealed', trusted: false });
+      expect(sealed?.reanchor).toBeUndefined();
       const reopened = registerTestAgentWire(disposables.add(new TestInstantiationService()), scope, {
         log: new AppendLogStore(storage), storage, logger: noopLogger, telemetry: noopTelemetryService,
       });
       await reopened.seal();
       await reopened.beginTranscriptEpoch!();
-      expect(await reopened.verifyTranscriptLiveEpoch!()).toBe(true);
+      expect(await reopened.verifyTranscriptLiveEpoch!()).toBe(false);
     } finally {
       resetUnexpectedErrorHandler();
+    }
+  });
+
+  it.each([
+    { mode: 'plain', expected: 'trusted' },
+    { mode: 'uncommitted', expected: 'trusted' },
+    { mode: 'started-zero', expected: 'trusted' },
+    { mode: 'partial', expected: 'reanchored' },
+    { mode: 'full-sync', expected: 'reanchored' },
+    { mode: 'repeat-sync', expected: 'reanchored' },
+  ] as const)('recovers a real file append without full hashing, mode=$mode', async ({ mode, expected }) => {
+    const base = await mkdtemp(join(tmpdir(), 'wire-normal-append-'));
+    const host = new DisposableStore();
+    setUnexpectedErrorHandler(() => {});
+    try {
+      const { fileStorage, fileLog, fileWire } = await realFileEpoch(base, host);
+      const revisionBefore = await fileLog.sourceRevision!('main', AGENT_WIRE_RECORD_KEY);
+      const append = fileStorage.append.bind(fileStorage);
+      let calls = 0;
+      const failure = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'injected append failure', {
+        details: { errno: 'ENOSPC', committed: mode !== 'uncommitted' },
+      });
+      fileStorage.append = async (scope, key, bytes, options) => {
+        if (key === AGENT_WIRE_RECORD_KEY && mode !== 'plain') {
+          calls++;
+          if (calls === 1) {
+            if (mode === 'partial') await append(scope, key, bytes.subarray(0, 13), options);
+            if (mode === 'full-sync' || mode === 'repeat-sync') await append(scope, key, bytes, options);
+            throw failure;
+          }
+          if (mode === 'repeat-sync' && calls === 2) {
+            await append(scope, key, bytes, options);
+            throw failure;
+          }
+        }
+        await append(scope, key, bytes, options);
+      };
+      const reads = { counting: true, full: 0 };
+      const readStream = fileStorage.readStream.bind(fileStorage);
+      fileStorage.readStream = (scope, key, range, options) => {
+        if (reads.counting && key === AGENT_WIRE_RECORD_KEY && (range === undefined || range.start === 0)) reads.full++;
+        return readStream(scope, key, range, options);
+      };
+      fileWire.appendRecord({ type: 'turn.prompt', turnId: 1, text: 'accepted-tail' });
+      if (mode !== 'plain') {
+        await expect(fileWire.flush()).rejects.toBe(failure);
+        if (mode === 'repeat-sync') await expect(fileWire.flush()).rejects.toBe(failure);
+      }
+      await fileWire.flush();
+      fileWire.appendRecord({ type: 'turn.prompt', turnId: 2, text: 'ordinary-follow-up' });
+      await fileWire.flush();
+      const text = Buffer.from((await fileStorage.read('main', AGENT_WIRE_RECORD_KEY))!).toString('utf8');
+      expect(text.split('accepted-tail')).toHaveLength(2);
+      expect(text.split('ordinary-follow-up')).toHaveLength(2);
+      const revisionAfter = (await fileLog.sourceRevision!('main', AGENT_WIRE_RECORD_KEY))?.revision;
+      if (expected === 'trusted') expect(revisionAfter).toBe(revisionBefore?.revision);
+      else expect(revisionAfter).toBeGreaterThan(revisionBefore!.revision);
+      expect(await sealAndReopen(fileWire, 'main', fileStorage, host, () => { reads.counting = false; })).toEqual(expected === 'trusted' ? TRUSTED : REANCHORED);
+      expect(reads.full).toBe(0);
+    } finally {
+      resetUnexpectedErrorHandler();
+      await host.dispose();
+      await rm(base, { recursive: true, force: true });
     }
   });
 
@@ -535,22 +680,12 @@ describe('WireService seal', () => {
     { change: 'truncate-rewrite', committed: true },
     { change: 'truncate-rewrite-partial', committed: true },
     { change: 'truncate-rewrite-full', committed: true },
-  ] as const)('rejects a real file rewrite of the epoch base during a failed append, $change committed=$committed', async ({ change, committed }) => {
+  ] as const)('never certifies an epoch whose base was rewritten during a failed append, $change committed=$committed', async ({ change, committed }) => {
     const base = await mkdtemp(join(tmpdir(), 'wire-failed-append-'));
     const host = new DisposableStore();
     setUnexpectedErrorHandler(() => {});
     try {
-      const fileStorage = new FileStorageService(base);
-      const fileIx = host.add(new TestInstantiationService());
-      fileIx.stub(IFileSystemStorageService, fileStorage);
-      fileIx.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
-      const fileLog = fileIx.get(IAppendLogStore);
-      const fileWire = registerTestAgentWire(fileIx, 'main', { log: fileLog, storage: fileStorage, logger: noopLogger, telemetry: noopTelemetryService });
-      await fileWire.seal();
-      fileWire.appendRecord({ type: 'turn.prompt', turnId: 0, text: `original-prefix${'x'.repeat(16384)}` });
-      await fileWire.flush();
-      await fileWire.beginTranscriptEpoch!();
-      expect(await fileWire.verifyTranscriptLiveEpoch!()).toBe(true);
+      const { fileStorage, fileWire } = await realFileEpoch(base, host);
       const path = fileStorage.pathFor('main', AGENT_WIRE_RECORD_KEY);
       const original = Buffer.from((await fileStorage.read('main', AGENT_WIRE_RECORD_KEY))!);
       const changed = Buffer.from(original.toString('utf8').replace('original-prefix', 'modified-prefix'));
@@ -582,16 +717,7 @@ describe('WireService seal', () => {
       failing = false;
       await fileWire.flush();
       expect(Buffer.from((await fileStorage.read('main', AGENT_WIRE_RECORD_KEY))!).toString('utf8')).toContain('modified-prefix');
-      expect(await fileWire.verifyTranscriptLiveEpoch!()).toBe(false);
-      await fileWire.sealTranscriptEpoch!();
-      const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from((await fileStorage.read('main', WIRE_TRANSCRIPT_RECEIPT_KEY))!).toString('utf8')));
-      expect(sealed).toMatchObject({ state: 'sealed', trusted: false });
-      const reopened = registerTestAgentWire(host.add(new TestInstantiationService()), 'main', {
-        log: new AppendLogStore(fileStorage), storage: fileStorage, logger: noopLogger, telemetry: noopTelemetryService,
-      });
-      await reopened.seal();
-      await reopened.beginTranscriptEpoch!();
-      expect(await reopened.verifyTranscriptLiveEpoch!()).toBe(false);
+      expect(await sealAndReopen(fileWire, 'main', fileStorage, host)).toEqual(REANCHORED);
     } finally {
       resetUnexpectedErrorHandler();
       await host.dispose();
@@ -599,64 +725,43 @@ describe('WireService seal', () => {
     }
   });
 
-  it.each(['plain', 'uncommitted', 'started-zero', 'partial', 'full-sync', 'repeat-sync'] as const)('keeps a real file epoch trusted through a normal append recovery, mode=%s', async (mode) => {
-    const base = await mkdtemp(join(tmpdir(), 'wire-normal-append-'));
+  it.each([
+    { moment: 'before-write', change: 'truncate', count: 13 },
+    { moment: 'after-write', change: 'in-place', count: 13 },
+    { moment: 'after-write', change: 'in-place', count: 0 },
+  ] as const)('never certifies an epoch another process rewrote inside the append handle window, $moment $change bytes=$count', async ({ moment, change, count }) => {
+    const base = await mkdtemp(join(tmpdir(), 'wire-second-writer-'));
     const host = new DisposableStore();
     setUnexpectedErrorHandler(() => {});
+    let failing = false;
+    let writerPid: string | undefined;
+    const writer = (path: string) => { writerPid = execFileSync(process.execPath, ['-e', SECOND_WRITER, path, change], { encoding: 'utf8' }); };
     try {
-      const fileStorage = new FileStorageService(base);
-      const fileIx = host.add(new TestInstantiationService());
-      fileIx.stub(IFileSystemStorageService, fileStorage);
-      fileIx.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
-      const fileLog = fileIx.get(IAppendLogStore);
-      const fileWire = registerTestAgentWire(fileIx, 'main', { log: fileLog, storage: fileStorage, logger: noopLogger, telemetry: noopTelemetryService });
-      await fileWire.seal();
-      fileWire.appendRecord({ type: 'turn.prompt', turnId: 0, text: `original-prefix${'x'.repeat(16384)}` });
-      await fileWire.flush();
-      await fileWire.beginTranscriptEpoch!();
-      const revisionBefore = await fileLog.sourceRevision!('main', AGENT_WIRE_RECORD_KEY);
-      const append = fileStorage.append.bind(fileStorage);
-      let calls = 0;
-      const failure = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'injected append failure', {
-        details: { errno: 'ENOSPC', committed: mode !== 'uncommitted' },
+      const { fileStorage, fileLog, fileWire } = await realFileEpoch(base, host, async (path) => {
+        const handle = await open(path, 'a');
+        if (!failing) return handle;
+        return {
+          stat: handle.stat.bind(handle), sync: handle.sync.bind(handle), close: handle.close.bind(handle),
+          writeFile: async (bytes: Uint8Array) => {
+            if (moment === 'before-write') writer(path);
+            if (count > 0) await handle.writeFile(bytes.subarray(0, count));
+            if (moment === 'after-write') writer(path);
+            throw Object.assign(new Error('injected writeFile ENOSPC'), { code: 'ENOSPC' });
+          },
+        } as unknown as FileHandle;
       });
-      fileStorage.append = async (scope, key, bytes, options) => {
-        if (key === AGENT_WIRE_RECORD_KEY && mode !== 'plain') {
-          calls++;
-          if (calls === 1) {
-            if (mode === 'partial') await append(scope, key, bytes.subarray(0, 13), options);
-            if (mode === 'full-sync' || mode === 'repeat-sync') await append(scope, key, bytes, options);
-            throw failure;
-          }
-          if (mode === 'repeat-sync' && calls === 2) {
-            await append(scope, key, bytes, options);
-            throw failure;
-          }
-        }
-        await append(scope, key, bytes, options);
-      };
+      const revisionBefore = await fileLog.sourceRevision!('main', AGENT_WIRE_RECORD_KEY);
+      failing = true;
       fileWire.appendRecord({ type: 'turn.prompt', turnId: 1, text: 'accepted-tail' });
-      if (mode !== 'plain') {
-        await expect(fileWire.flush()).rejects.toBe(failure);
-        if (mode === 'repeat-sync') await expect(fileWire.flush()).rejects.toBe(failure);
-      }
-      await fileWire.flush();
-      fileWire.appendRecord({ type: 'turn.prompt', turnId: 2, text: 'ordinary-follow-up' });
+      await expect(fileWire.flush()).rejects.toMatchObject({ code: 'storage.disk_full', details: { committed: true } });
+      failing = false;
+      expect(writerPid).not.toBe(String(process.pid));
       await fileWire.flush();
       const text = Buffer.from((await fileStorage.read('main', AGENT_WIRE_RECORD_KEY))!).toString('utf8');
-      expect(text.split('accepted-tail')).toHaveLength(2);
-      expect(text.split('ordinary-follow-up')).toHaveLength(2);
-      expect((await fileLog.sourceRevision!('main', AGENT_WIRE_RECORD_KEY))?.revision).toBe(revisionBefore?.revision);
-      expect(await fileWire.verifyTranscriptLiveEpoch!()).toBe(true);
-      await fileWire.sealTranscriptEpoch!();
-      const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from((await fileStorage.read('main', WIRE_TRANSCRIPT_RECEIPT_KEY))!).toString('utf8')));
-      expect(sealed).toMatchObject({ state: 'sealed', trusted: true });
-      const reopened = registerTestAgentWire(host.add(new TestInstantiationService()), 'main', {
-        log: new AppendLogStore(fileStorage), storage: fileStorage, logger: noopLogger, telemetry: noopTelemetryService,
-      });
-      await reopened.seal();
-      await reopened.beginTranscriptEpoch!();
-      expect(await reopened.verifyTranscriptLiveEpoch!()).toBe(true);
+      expect(text).toContain('modified-prefix');
+      expect(text).not.toContain('original-prefix');
+      expect((await fileLog.sourceRevision!('main', AGENT_WIRE_RECORD_KEY))?.revision).toBeGreaterThan(revisionBefore!.revision);
+      expect(await sealAndReopen(fileWire, 'main', fileStorage, host)).toEqual(REANCHORED);
     } finally {
       resetUnexpectedErrorHandler();
       await host.dispose();

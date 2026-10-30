@@ -19,6 +19,12 @@ export interface WireTranscriptReceipt {
   readonly state: 'open' | 'sealed';
   readonly trusted: boolean;
   readonly wire?: WireTranscriptReceiptWire;
+  /**
+   * Set only on an untrusted sealed receipt whose epoch lost its proof because a failed append broke the
+   * observed source chain, not because accepted bytes diverged. The next epoch may start trusted from this
+   * receipt's size and tail; this receipt itself certifies nothing.
+   */
+  readonly reanchor?: true;
 }
 
 function isSha256Hex(value: unknown): value is string {
@@ -33,6 +39,8 @@ export function parseWireTranscriptReceipt(value: unknown): WireTranscriptReceip
       (receipt['state'] !== 'open' && receipt['state'] !== 'sealed') || typeof receipt['trusted'] !== 'boolean') {
     return undefined;
   }
+  const reanchor = receipt['reanchor'];
+  if (reanchor !== undefined && (reanchor !== true || receipt['state'] !== 'sealed' || receipt['trusted'] !== false)) return undefined;
   const wire = receipt['wire'];
   if (receipt['state'] === 'open') {
     if (wire !== undefined) return undefined;

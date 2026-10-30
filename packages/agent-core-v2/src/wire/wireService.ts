@@ -59,6 +59,8 @@ export class WireService extends Service implements IWireService {
     | undefined;
   private persistFailure: { readonly error: unknown } | undefined;
   private freshJournal = false;
+  private epochReanchorable = false;
+  private epochAppendFailed = false;
   private transcriptEpoch: WireTranscriptReceipt | undefined;
   private epochBase: {
     readonly generation: number;
@@ -127,8 +129,8 @@ export class WireService extends Service implements IWireService {
       } catch {
         previous = undefined;
       }
-      const sealed = previous?.state === 'sealed' && previous.trusted ? previous.wire : undefined;
-      if (sealed !== undefined && 'sha256' in sealed) this.sealedPrefix = { size: sealed.size, sha256: sealed.sha256 };
+      const sealed = previous?.state === 'sealed' && (previous.trusted || previous.reanchor === true) ? previous.wire : undefined;
+      if (previous?.trusted === true && sealed !== undefined && 'sha256' in sealed) this.sealedPrefix = { size: sealed.size, sha256: sealed.sha256 };
       trusted = sealed !== undefined && base.size === sealed.size &&
         (!('tailSha256' in sealed) || (sealed.tailBytes <= base.boundary.byteLength &&
           wireTailSha256(base.boundary.subarray(base.boundary.byteLength - sealed.tailBytes)) === sealed.tailSha256));
@@ -150,6 +152,8 @@ export class WireService extends Service implements IWireService {
       { atomic: true },
     );
     this.transcriptEpoch = epoch;
+    this.epochReanchorable = trusted;
+    this.epochAppendFailed = false;
     this.epochBase = {
       generation: this.journalGeneration,
       identity: base.identity,
@@ -174,15 +178,16 @@ export class WireService extends Service implements IWireService {
       digest = await this.readEpochDigest();
       if (this.transcriptEpoch?.state !== 'open') throw new Error('Transcript epoch is not open');
     }
+    const reanchor = digest === undefined && await this.appendedRegionMatches();
     digest ??= await this.readUnverifiedTail();
     if (digest === undefined) throw new Error('Transcript wire changed while sealing its epoch');
     const open = this.transcriptEpoch;
     if (open?.state !== 'open') throw new Error('Transcript epoch is not open');
-    const certified = open.trusted && this.transcriptDigestMatches(digest.state, this.epochAcceptedRecords);
+    const certified = open.trusted && !reanchor && this.transcriptDigestMatches(digest.state, this.epochAcceptedRecords);
     if (open.trusted && !certified) {
       this.verifiedAcceptedRecords = -1;
       this.transcriptEpoch = { ...open, trusted: false };
-      onUnexpectedError(new Error('Transcript wire contents do not match accepted events'));
+      if (!reanchor) onUnexpectedError(new Error('Transcript wire contents do not match accepted events'));
     }
     const sealing = this.transcriptEpoch;
     if (sealing?.state !== 'open') throw new Error('Transcript epoch is not open');
@@ -193,6 +198,7 @@ export class WireService extends Service implements IWireService {
       state: 'sealed',
       trusted: sealing.trusted,
       wire: { size: digest.state.size, tailBytes: tail.byteLength, tailSha256: wireTailSha256(tail) },
+      reanchor: reanchor && digest.state.size === this.epochExpectedSize && digest.state.endsWithNewline ? true : undefined,
     };
     await this.storage.write(
       this.wireScope,
@@ -339,6 +345,7 @@ export class WireService extends Service implements IWireService {
     }
     if (truncation !== undefined || rewrittenRecords !== undefined) {
       if (this.transcriptEpoch?.state === 'open') this.transcriptEpoch = { ...this.transcriptEpoch, trusted: false };
+      this.epochReanchorable = false;
     }
     if (truncation !== undefined) {
       this.resetJournalPrefix();
@@ -405,6 +412,7 @@ export class WireService extends Service implements IWireService {
     try {
       await this.log.flush(this.wireScope, AGENT_WIRE_RECORD_KEY);
     } catch (error) {
+      this.epochAppendFailed = true;
       if (this.persistFailure !== undefined) throw this.persistFailure.error;
       throw error;
     }
@@ -529,6 +537,21 @@ export class WireService extends Service implements IWireService {
       }
     }
     return result;
+  }
+
+  private async appendedRegionMatches(): Promise<boolean> {
+    const base = this.epochBase;
+    if (!this.epochReanchorable || !this.epochAppendFailed || this.persistFailure !== undefined ||
+      base === undefined || base.generation !== this.journalGeneration) return false;
+    const generation = this.journalGeneration;
+    const before = await this.log.sourceRevision?.(this.wireScope, AGENT_WIRE_RECORD_KEY);
+    const size = before?.size ?? await this.journalSize() ?? 0;
+    if (size < base.state.size) return false;
+    const result = await this.resumeJournalDigest(base, size);
+    const after = await this.log.sourceRevision?.(this.wireScope, AGENT_WIRE_RECORD_KEY);
+    return result !== undefined && generation === this.journalGeneration && before?.revision === after?.revision &&
+      before?.identity === after?.identity && before?.size === after?.size &&
+      this.transcriptDigestMatches(result.state, this.epochAcceptedRecords);
   }
 
   private async readUnverifiedTail(): Promise<{ state: WireDigestState; boundary: Buffer } | undefined> {
@@ -679,7 +702,7 @@ export class WireService extends Service implements IWireService {
       ? Buffer.from(`${JSON.stringify(record)}\n`)
       : undefined;
     this.log.append(this.wireScope, AGENT_WIRE_RECORD_KEY, record, {
-      onError: onUnexpectedError,
+      onError: (error) => { this.epochAppendFailed = true; onUnexpectedError(error); },
     });
     this.appendedBytes += Buffer.byteLength(`${JSON.stringify(record)}\n`);
     for (const listener of this.appendListeners) listener(this.appendedBytes);

@@ -5,7 +5,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
 
-import { IFileSystemStorageService, StorageError, StorageErrors, type StorageAppendObservation, type StorageFileStat } from '#/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, StorageErrors, type StorageFileStat } from '#/persistence/interface/storage';
 import { discardColdSegments, discardColdUnlocked, readLogicalBytes, sealColdSegments, withColdExclusive } from '#/persistence/coldSegmentLog';
 import { withColdReaderGate } from '#/persistence/backends/node-fs/fileLock';
 import {
@@ -158,15 +158,11 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     }
     const before = await this.storage.stat(scope, key).catch(() => undefined);
     this.observeSource(source, before);
-    let observed: StorageAppendObservation | undefined;
     try {
-      await this.storage.append(scope, key, data, { durable: true, observe: (observation) => { observed = observation; } });
+      await this.storage.append(scope, key, data, { durable: true });
     } catch (error) {
       const after = before === undefined ? undefined : await this.storage.stat(scope, key).catch(() => undefined);
-      const unchanged = after !== undefined && sameStat(before, after);
-      const ownWrite = observed?.after !== undefined && after !== undefined && sameStat(before, observed.before) &&
-        sameStat(observed.after, after) && after.size >= before!.size && after.size <= before!.size + data.byteLength;
-      if (unchanged || ownWrite) {
+      if (sameStat(before, after)) {
         source.stat = after;
       } else {
         source.revision++;
@@ -175,8 +171,7 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       throw error;
     }
     const after = await this.storage.stat(scope, key).catch(() => undefined);
-    if (before === undefined || after === undefined || before.identity !== after.identity || after.size !== before.size + data.byteLength ||
-      (observed !== undefined && !sameStat(before, observed.before))) source.revision++;
+    if (before === undefined || after === undefined || before.identity !== after.identity || after.size !== before.size + data.byteLength) source.revision++;
     source.stat = after;
   }
 

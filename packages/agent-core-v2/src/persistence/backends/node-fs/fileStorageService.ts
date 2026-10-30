@@ -1,5 +1,5 @@
 import '#/_base/utils/fsWatchGuard';
-import { createReadStream, mkdirSync, statSync, type BigIntStats } from 'node:fs';
+import { createReadStream, mkdirSync, statSync } from 'node:fs';
 import { mkdir, open, readFile, readdir, rename, stat, unlink, type FileHandle } from 'node:fs/promises';
 import { posix } from 'node:path';
 import { FSWatcher } from 'chokidar';
@@ -61,14 +61,6 @@ export async function openAppendAfterTransientDenial(
     }
   }
   throw last;
-}
-
-function toFileStat(info: BigIntStats): StorageFileStat {
-  return {
-    size: Number(info.size),
-    identity: info.ino > 0n ? `${info.dev}:${info.ino}:${info.birthtimeNs}` : undefined,
-    revision: `${info.mtimeNs}:${info.ctimeNs}`,
-  };
 }
 
 function isEnoent(error: unknown): boolean {
@@ -239,9 +231,7 @@ export class FileStorageService implements IFileSystemStorageService {
       const fh = await openAppendAfterTransientDenial(() => this.openAppend === undefined
         ? open(filePath, 'a', this.fileMode)
         : this.openAppend(filePath));
-      let opened: StorageFileStat | undefined;
       try {
-        if (options.observe !== undefined) opened = toFileStat(await fh.stat({ bigint: true }));
         if (data.byteLength > 0) {
           committed = true;
           await fh.writeFile(data);
@@ -250,10 +240,6 @@ export class FileStorageService implements IFileSystemStorageService {
           await fh.sync();
         }
       } finally {
-        if (opened !== undefined) {
-          const after = await fh.stat({ bigint: true }).then(toFileStat, () => undefined);
-          options.observe?.({ before: opened, after });
-        }
         await fh.close();
       }
       await this.syncDirOnce(dir);
@@ -334,7 +320,12 @@ export class FileStorageService implements IFileSystemStorageService {
   async stat(scope: string, key: string): Promise<StorageFileStat | undefined> {
     const filePath = this.pathFor(scope, key);
     try {
-      return toFileStat(await stat(filePath, { bigint: true }));
+      const info = await stat(filePath, { bigint: true });
+      return {
+        size: Number(info.size),
+        identity: info.ino > 0n ? `${info.dev}:${info.ino}:${info.birthtimeNs}` : undefined,
+        revision: `${info.mtimeNs}:${info.ctimeNs}`,
+      };
     } catch (error) {
       if (isEnoent(error)) return undefined;
       throw toStorageIoError(error, { path: filePath, op: 'stat' });

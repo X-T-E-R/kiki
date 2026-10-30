@@ -123,14 +123,6 @@ export interface StorageWriteOptions {
 
 export interface StorageAppendOptions {
   readonly durable?: boolean;
-  /** Receives the file as this append's own handle saw it before writing and after its last write, once the append settles or fails. */
-  readonly observe?: (observation: StorageAppendObservation) => void;
-}
-
-/** Metadata seen through one append's handle; `after` is absent when the post-write observation failed. */
-export interface StorageAppendObservation {
-  readonly before: StorageFileStat;
-  readonly after?: StorageFileStat;
 }
 
 export interface StorageLockOptions {
