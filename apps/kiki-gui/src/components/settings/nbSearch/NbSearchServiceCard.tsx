@@ -12,7 +12,7 @@
  * credential reads the key editor already owns.
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { NbSearchCapabilities, NbSearchKeyUsageView, NbSearchManagedCredentialView } from '@kiki/protocol';
 import { setNbSearchCredentialEnv, type NbSearchDraft } from '@kiki/session-core/settings';
 
@@ -134,6 +134,11 @@ export interface NbSearchServiceCardProps {
   children?: ReactNode;
   /** Open from the start — a card that needs attention opens itself. */
   defaultOpen?: boolean;
+  /** Controlled open state for a single-open list: when set, the parent decides which row is open. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  /** A card that opened itself (needsKey) tells the list it is open without taking the single slot. */
+  onSelfOpen?: () => void;
 }
 
 export function serviceCardState(
@@ -169,6 +174,9 @@ export function NbSearchServiceCard({
   removeTitle,
   children,
   defaultOpen = false,
+  open: controlledOpen,
+  onOpenChange,
+  onSelfOpen,
 }: NbSearchServiceCardProps) {
   const { t } = useI18n();
   const profiles = useMemo(() => laneProfiles(capabilities, draft), [capabilities, draft]);
@@ -209,10 +217,28 @@ export function NbSearchServiceCard({
     && info.credentialRequirement !== 'none'
     && (instance === undefined || !instance.credential.configured)
     && keyDraft.mode === 'keep';
-  const [open, setOpen] = useState(defaultOpen || needsAttention);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen || needsAttention);
+  // Controlled by the list (single-open) when the parent passes `open`;
+  // a card that needs attention opens itself either way.
+  const open = needsAttention || (controlledOpen ?? uncontrolledOpen);
+  // The attention case registers with the single-open list too, so a sibling
+  // click closes it once its own draft is clean; while needsAttention holds,
+  // the row stays open no matter what the list says. Registering fires once
+  // per attention spell, not per render — the callback identity changes every
+  // render, so it is read through a ref and never re-triggers the effect.
+  const onSelfOpenRef = useRef(onSelfOpen);
+  onSelfOpenRef.current = onSelfOpen;
+  const wasAttention = useRef(false);
   useEffect(() => {
-    if (needsAttention) setOpen(true);
-  }, [needsAttention]);
+    if (needsAttention && !wasAttention.current) onSelfOpenRef.current?.();
+    wasAttention.current = needsAttention;
+  }, [needsAttention, controlledOpen]);
+
+  const setOpen = (next: boolean | ((current: boolean) => boolean)) => {
+    const value = typeof next === 'function' ? next(open) : next;
+    setUncontrolledOpen(value);
+    onOpenChange?.(value);
+  };
 
   const editableInstanceId = editableInstance?.id;
   const providerDraft = editableInstanceId === undefined ? undefined : draft.providers[editableInstanceId];

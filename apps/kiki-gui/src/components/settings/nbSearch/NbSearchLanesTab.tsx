@@ -165,13 +165,16 @@ export function NbSearchLanesTab({
     const coveredProviders = new Set(
       activeCards.map((card) => card.providerId).filter((id): id is string => id !== undefined),
     );
-    // The lane card edits the provider's first instance; a second configured
-    // instance of that provider keeps its own card.
+    // The lane card edits the provider's saved instance when there is one,
+    // its first instance otherwise; a second configured instance of that
+    // provider keeps its own card.
     const laneCoveredInstances = new Set(
       activeCards.flatMap((card) => {
         const providerId = card.providerId;
         if (providerId === undefined) return [];
-        const first = capabilities.providers.instances.find((instance) => instance.provider_id === providerId);
+        const saved = capabilities.providers.instances.find((instance) =>
+          instance.provider_id === providerId && draft.providers[instance.id] !== undefined);
+        const first = saved ?? capabilities.providers.instances.find((instance) => instance.provider_id === providerId);
         return first === undefined ? [] : [first.id];
       }),
     );
@@ -200,6 +203,38 @@ export function NbSearchLanesTab({
     return cards;
   }, [bindingConfig, capabilities, allCards, activeCards, draft.providers, labelOf, t]);
 
+  // Single-open: opening a row closes the previous one, like the browser
+  // list. A row that holds an unsaved key is never hidden behind a sibling:
+  // it stays open next to the new one until its keys are saved or dropped.
+  const [openCardId, setOpenCardId] = useState<string | null>(null);
+  const [stickyOpen, setStickyOpen] = useState<readonly string[]>([]);
+  const dirtyCards = new Set(
+    Object.entries(keyDrafts)
+      .filter(([, entry]) => entry.mode !== 'keep')
+      .map(([instanceId]) => cardIdForInstance(instanceId, capabilities, activeCards, instanceCards)),
+  );
+  const selectOpen = (cardId: string, next: boolean) => {
+    if (next) {
+      // Rows that already hold pending keys stay open next to the new one —
+      // an unsaved key is never hidden behind a sibling. A clean row closes.
+      setStickyOpen((sticky) => {
+        const keep = new Set(sticky.filter((id) => dirtyCards.has(id)));
+        if (openCardId !== null && openCardId !== cardId && dirtyCards.has(openCardId)) keep.add(openCardId);
+        return [...keep];
+      });
+      setOpenCardId(cardId);
+    } else {
+      if (openCardId === cardId) setOpenCardId(null);
+      setStickyOpen((sticky) => sticky.filter((id) => id !== cardId && dirtyCards.has(id)));
+    }
+  };
+  const isOpen = (cardId: string) => openCardId === cardId || (stickyOpen.includes(cardId) && dirtyCards.has(cardId));
+  // A self-opened row (needsKey) registers as sticky without taking the single
+  // slot, so it never closes a row the user clicked open.
+  const registerOpen = (cardId: string) => {
+    setStickyOpen((sticky) => (sticky.includes(cardId) ? sticky : [...sticky, cardId]));
+  };
+
   const effective = useMemo(
     () => resolveEffectiveDefaultLane(capabilities, draft.defaultSearchLane),
     [capabilities, draft.defaultSearchLane],
@@ -215,38 +250,38 @@ export function NbSearchLanesTab({
   });
 
   return (
-    <SectionCard id="st-card-search-providers" title={t('st.nbSearch.providersTitle')}>
+    <SectionCard
+      id="st-card-search-providers"
+      title={t('st.nbSearch.providersTitle')}
+      actions={directoryOpen ? (
+        <button
+          type="button"
+          className={`${SECONDARY_BUTTON} shrink-0`}
+          aria-expanded={directoryOpen}
+          data-nb-search-add-service
+          onClick={() => { setDirectoryOpen(false); }}
+        >
+          <span className="inline-flex items-center gap-1">
+            <Icon name="close" size={12} />
+            {t('st.nbSearch.services.cancelAdd')}
+          </span>
+        </button>
+      ) : activeCards.length + instanceCards.length > 0 ? (
+        <button
+          type="button"
+          className={`${SECONDARY_BUTTON} shrink-0`}
+          aria-expanded={directoryOpen}
+          data-nb-search-add-service
+          onClick={() => { setDirectoryOpen(true); }}
+        >
+          <span className="inline-flex items-center gap-1">
+            <Icon name="plus" size={12} />
+            {t('st.nbSearch.services.add')}
+          </span>
+        </button>
+      ) : undefined}
+    >
       <div className="space-y-4" data-nb-search-services-tab>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {directoryOpen ? (
-            <button
-              type="button"
-              className={`${SECONDARY_BUTTON} shrink-0`}
-              aria-expanded={directoryOpen}
-              data-nb-search-add-service
-              onClick={() => { setDirectoryOpen(false); }}
-            >
-              <span className="inline-flex items-center gap-1">
-                <Icon name="close" size={12} />
-                {t('st.nbSearch.services.cancelAdd')}
-              </span>
-            </button>
-          ) : activeCards.length + instanceCards.length > 0 ? (
-            <button
-              type="button"
-              className={`${SECONDARY_BUTTON} shrink-0`}
-              aria-expanded={directoryOpen}
-              data-nb-search-add-service
-              onClick={() => { setDirectoryOpen(true); }}
-            >
-              <span className="inline-flex items-center gap-1">
-                <Icon name="plus" size={12} />
-                {t('st.nbSearch.services.add')}
-              </span>
-            </button>
-          ) : null}
-        </div>
-
         {directoryOpen ? (
           <div className="space-y-2" data-nb-search-directory>
             <Hint>{t('st.nbSearch.services.directoryHint')}</Hint>
@@ -328,6 +363,9 @@ export function NbSearchLanesTab({
                 readCredential={readCredential}
                 readKeyUsage={readKeyUsage}
                 saving={saving}
+                open={isOpen(card.id)}
+                onOpenChange={(next) => { selectOpen(card.id, next); }}
+                onSelfOpen={() => { registerOpen(card.id); }}
                 defaultState={defaultLaneId === card.id ? (inheritedDefault ? 'inherit' : 'default') : 'none'}
                 // 设为默认 stays available on every other card even while the
                 // current default is inherited: choosing one is exactly how the
@@ -358,6 +396,9 @@ export function NbSearchLanesTab({
                   readCredential={readCredential}
                   readKeyUsage={readKeyUsage}
                   saving={saving}
+                  open={isOpen(card.id)}
+                  onOpenChange={(next) => { selectOpen(card.id, next); }}
+                  onSelfOpen={() => { registerOpen(card.id); }}
                 />
               );
             })}
@@ -409,4 +450,17 @@ function cardKeyDraft(
 ): KeyDraft {
   const instanceId = cardInstanceId(capabilities, providerId);
   return instanceId === undefined ? { mode: 'keep' } : keyDrafts[instanceId] ?? { mode: 'keep' };
+}
+
+/** The card that edits one instance: its own `instance:<id>` card, or the lane card of its provider. */
+function cardIdForInstance(
+  instanceId: string,
+  capabilities: NbSearchCapabilities,
+  activeCards: readonly ServiceCard[],
+  instanceCards: readonly ServiceCard[],
+): string {
+  if (instanceCards.some((card) => card.id === `instance:${instanceId}`)) return `instance:${instanceId}`;
+  const providerId = capabilities.providers.instances.find((instance) => instance.id === instanceId)?.provider_id;
+  const lane = activeCards.find((card) => card.providerId !== undefined && card.providerId === providerId);
+  return lane?.id ?? `instance:${instanceId}`;
 }
