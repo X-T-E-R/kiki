@@ -24,10 +24,11 @@ import { ContinuationStepRequest, MessageStepRequest } from '#/agent/loop/stepRe
 const OLD = 'example/old-model';
 const NEW = 'example/new-model';
 const hosts: TestAgentContext[] = [];
-async function host(generate?: TestAgentOptions['generate']) {
+async function host(generate?: TestAgentOptions['generate'], thinking = false) {
   const ctx = testAgent({ autoConfigure: false, generate, initialConfig: {
     providers: { example: { type: 'kimi', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' } },
-    models: { [OLD]: { provider: 'example', model: 'old-model', maxContextSize: 200_000 },
+    models: { [OLD]: { provider: 'example', model: 'old-model', maxContextSize: 200_000,
+      capabilities: thinking ? ['thinking'] : undefined, supportEfforts: thinking ? ['high', 'max'] : undefined, defaultEffort: thinking ? 'high' : undefined },
       [NEW]: { provider: 'example', model: 'new-model', maxContextSize: 100_000 } },
   } }, agentServices((reg) => {
     reg.define(IAgentPromptService, AgentPromptService);
@@ -51,6 +52,92 @@ afterEach(async () => {
 });
 
 describe('model switch control queue with real engine', () => {
+  it('applies idle direct settings without a queue slot and restores the same operation receipt', async () => {
+    const ctx = await host();
+    const svc = ctx.get(IAgentPromptService);
+    const input = { operationId: 'idle-setting', model: NEW, mode: 'direct' as const, intent: 'setting' as const };
+    expect(await svc.switchModel(input)).toMatchObject({ state: 'completed', binding: { model: NEW } });
+    expect(ctx.get(IAgentStateService).get(promptQueueKey).order).toEqual([]);
+    expect(svc.listModelSwitches()).toMatchObject([{ placement: 'setting', queueIndex: -1 }]);
+    const cold = await host();
+    await cold.restore(await records(ctx));
+    expect(await cold.get(IAgentPromptService).switchModel(input)).toMatchObject({ state: 'completed' });
+    expect((await records(cold)).filter(record => record.type === 'agent.model_switch')).toHaveLength(1);
+    await expect(svc.switchModel({ ...input, intent: undefined })).rejects.toMatchObject({ code: 'request.invalid' });
+  });
+
+  it('recovers an uncertain setting without a queue slot or a repeated binding commit', async () => {
+    const ctx = await host();
+    const svc = ctx.get(IAgentPromptService);
+    vi.spyOn(ctx.get(ISessionMetadata), 'updateAgent').mockRejectedValueOnce(new Error('metadata unavailable'));
+    const input = { operationId: 'uncertain-setting', model: NEW, mode: 'direct' as const, intent: 'setting' as const };
+    expect(await svc.switchModel(input)).toMatchObject({ state: 'preparing', error: { message: 'metadata unavailable' } });
+    const cold = await host();
+    await cold.restore(await records(ctx));
+    const restored = cold.get(IAgentPromptService);
+    expect(cold.get(IAgentStateService).get(promptQueueKey).order).toEqual([]);
+    expect(restored.list().hold).toEqual({ reason: 'recovery', count: 1 });
+    expect(restored.listModelSwitches()).toMatchObject([{ placement: 'setting', queueIndex: -1, receipt: { state: 'preparing' } }]);
+    expect(await restored.recoverModelSwitch(input.operationId, 'retry')).toMatchObject({ state: 'completed', binding: { model: NEW } });
+    expect(await restored.switchModel(input)).toMatchObject({ state: 'completed' });
+    expect(restored.list().hold).toBeUndefined();
+    expect((await records(cold)).filter(record => record.type === 'agent.model_switch')).toHaveLength(1);
+  });
+
+  it('coalesces running direct settings and applies the latest at the next LLM step before the turn ends', async () => {
+    const scripted = createScriptedGenerate();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let calls = 0;
+    const ctx = await host(async (...args) => {
+      if (++calls === 1) { entered.resolve(); await release.promise; }
+      return scripted.generate(...args);
+    }, true);
+    const svc = ctx.get(IAgentPromptService);
+    scripted.mockNextResponse({ type: 'text', text: 'First request intact.' });
+    scripted.mockNextResponse({ type: 'text', text: 'Second request uses latest effort.' });
+    try {
+      const active = await svc.enqueue({ id: 'setting-active', message: { role: 'user', content: [{ type: 'text', text: 'Long task.' }], toolCalls: [] } });
+      await entered.promise;
+      ctx.get(IAgentLoopService).enqueue(new ContinuationStepRequest());
+      await svc.switchModel({ operationId: 'effort-first', model: OLD, thinking: 'high', mode: 'direct', intent: 'setting' });
+      await svc.switchModel({ operationId: 'effort-last', model: OLD, thinking: 'max', mode: 'direct', intent: 'setting' });
+      expect(svc.getModelSwitch('effort-first')).toMatchObject({ state: 'cancelled' });
+      expect(ctx.get(IAgentStateService).get(promptQueueKey).order).toEqual([]);
+      expect(ctx.llmCalls).toHaveLength(0);
+      release.resolve();
+      await active.completion;
+      const journal = await records(ctx);
+      const requests = journal.filter(record => record.type === 'llm.request');
+      expect(svc.getModelSwitch('effort-last')).toMatchObject({ state: 'completed', binding: { thinking: 'max' } });
+      expect(requests).toMatchObject([{ modelAlias: OLD }, { modelAlias: OLD, thinkingEffort: 'max' }]);
+      expect(journal.filter(record => record.type === 'agent.model_switch')).toMatchObject([{ operationId: 'effort-last', thinking: 'max' }]);
+      expect(journal.indexOf(requests[1]!)).toBeLessThan(journal.findIndex(record => record.type === 'turn.ended'));
+    } finally { release.resolve(); }
+  });
+
+  it('keeps a setting ordered when a queued message already captured a previous setting', async () => {
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const scripted = createScriptedGenerate();
+    const ctx = await host(async (...args) => { if (scripted.calls.length === 0) { entered.resolve(); await release.promise; } return scripted.generate(...args); });
+    const svc = ctx.get(IAgentPromptService);
+    scripted.mockNextResponse({ type: 'text', text: 'Active reply.' });
+    scripted.mockNextResponse({ type: 'text', text: 'Captured answer.' });
+    try {
+      const active = await svc.enqueue({ id: 'ordered-setting-active', message: { role: 'user', content: [{ type: 'text', text: 'Existing task.' }], toolCalls: [] } });
+      await entered.promise;
+      await svc.switchModel({ operationId: 'captured-setting', model: NEW, mode: 'direct', intent: 'setting' });
+      const message = await svc.enqueue({ id: 'captured-message', message: { role: 'user', content: [{ type: 'text', text: 'Question bound to first choice.' }], toolCalls: [] }, execution: { afterModelSwitch: 'captured-setting' } });
+      await svc.switchModel({ operationId: 'ordered-setting', model: OLD, mode: 'direct', intent: 'setting' });
+      expect(svc.getModelSwitch('captured-setting')).toMatchObject({ state: 'pending' });
+      expect(svc.listModelSwitches().find(entry => entry.input.operationId === 'ordered-setting')).toMatchObject({ placement: undefined, queueIndex: 1 });
+      release.resolve();
+      await Promise.all([active.completion, message.completion]);
+      expect((await records(ctx)).filter(record => record.type === 'llm.request')).toMatchObject([{ modelAlias: OLD }, { modelAlias: NEW }]);
+    } finally { release.resolve(); }
+  });
+
   it('delivers simultaneous native steers as one model user batch and restores each distinct request receipt', async () => {
     const scripted = createScriptedGenerate();
     const entered = deferred<void>();

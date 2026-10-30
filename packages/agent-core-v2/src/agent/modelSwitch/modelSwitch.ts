@@ -5,12 +5,14 @@ import type { Hooks } from '#/hooks';
 
 export type ModelSwitchMode = 'direct' | 'compact' | 'fresh';
 
+/** With `intent: 'setting'`, direct changes coalesce until a queued message requires ordering and apply at the next native request boundary, or immediately while idle. Omit `intent` for an explicitly ordered switch. */
 export interface ModelSwitchInput {
   readonly operationId: string;
   readonly model: string;
   readonly mode: ModelSwitchMode;
   readonly thinking?: string | null;
   readonly selectedFromModel?: string;
+  readonly intent?: 'setting';
 }
 
 export interface ModelSwitchReceipt {

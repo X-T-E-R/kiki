@@ -858,17 +858,26 @@ export class FixtureKlient {
           toModel: input.model,
           mode: input.mode,
         };
-        const entry = { input: structuredClone(input), receipt, revision: 0, originalBinding, queueIndex: nextModelSwitchQueueIndex(session, store) };
+        const setting = input.intent === 'setting' && input.mode === 'direct' && nextModelSwitchQueueIndex(session, store) === 0;
+        if (setting) for (const previous of store.values()) {
+          if (previous.placement !== 'setting' || previous.receipt.state !== 'pending') continue;
+          previous.receipt = { ...previous.receipt, state: 'cancelled' };
+          this.emitAgentModelSwitch(procedure.sessionId, procedure.agentId, 'prompt.model_switch_status', { operationId: previous.input.operationId, receipt: structuredClone(previous.receipt) });
+        }
+        const entry = { input: structuredClone(input), receipt, revision: 0, originalBinding, placement: setting ? 'setting' : undefined, queueIndex: setting ? -1 : nextModelSwitchQueueIndex(session, store) };
         store.set(input.operationId, entry);
         this.emitAgentModelSwitch(procedure.sessionId, procedure.agentId, 'prompt.model_switch_queued', {
-          entry: { input: structuredClone(entry.input), receipt: structuredClone(entry.receipt), revision: entry.revision, originalBinding: structuredClone(entry.originalBinding) },
-          queueIndex: entry.queueIndex,
+          entry: { input: structuredClone(entry.input), receipt: structuredClone(entry.receipt), revision: entry.revision, originalBinding: structuredClone(entry.originalBinding), placement: entry.placement },
+          queueIndex: Math.max(0, entry.queueIndex),
         });
+        if (setting && session.record.busy !== true && session.inFlightTurn === null && session.activePrompt === null) {
+          this.applyBindingSettings(procedure.sessionId, procedure.agentId);
+        }
         this.emitAgentModelSwitch(procedure.sessionId, procedure.agentId, 'prompt.model_switch_status', {
           operationId: input.operationId,
           receipt: structuredClone(entry.receipt),
         });
-        return structuredClone(receipt);
+        return structuredClone(entry.receipt);
       }
       case 'agentPromptService.updateModelSwitch': {
         const session = server.sessions.get(procedure.sessionId);
@@ -2162,6 +2171,23 @@ export class FixtureKlient {
       for (const [id, subscription] of state.subscriptions) {
         if (subscription.scope === 'core') this.server.sendFrame(socket, { type: 'event', id, data });
       }
+    }
+  }
+
+  applyBindingSettings(sessionId, agentId = 'main') {
+    const session = this.server.sessions.get(sessionId);
+    if (session === undefined) return;
+    const store = modelSwitchStore(this.server, session, agentId);
+    for (const entry of store.values()) {
+      if (entry.placement !== 'setting' || entry.receipt.state !== 'pending') continue;
+      const model = entry.input.model;
+      const catalog = this.server.scenario?.data.models?.find(item => (item.id ?? item.model) === model);
+      const thinking = entry.input.thinking ?? catalog?.default_effort ?? 'high';
+      entry.receipt = { ...entry.receipt, state: 'completed', binding: { model, thinking } };
+      if (agentId === 'main') session.record.agent_config = { ...session.record.agent_config, model };
+      const batch = session.transcript.commit(agentId, [{ op: 'meta.merge', meta: { agent: { model, thinkingEffort: thinking } } }]);
+      if (batch !== undefined) this.server.fanoutTranscriptOps(session, agentId, batch);
+      this.emitAgentModelSwitch(sessionId, agentId, 'prompt.model_switch_status', { operationId: entry.input.operationId, receipt: structuredClone(entry.receipt) });
     }
   }
 

@@ -4,7 +4,7 @@ export const modelSwitchModeSchema = z.enum(['direct', 'compact', 'fresh']);
 export type ModelSwitchMode = z.infer<typeof modelSwitchModeSchema>;
 export const modelSwitchInputSchema = z.object({
   operationId: z.string().min(1), model: z.string().min(1), mode: modelSwitchModeSchema,
-  thinking: z.string().nullable().optional(), selectedFromModel: z.string().optional(),
+  thinking: z.string().nullable().optional(), selectedFromModel: z.string().optional(), intent: z.literal('setting').optional(),
 });
 export const modelSwitchReceiptSchema = z.object({
   operationId: z.string(), agentId: z.string(), state: z.enum(['pending', 'preparing', 'completed', 'failed', 'cancelled']),
@@ -15,7 +15,7 @@ export const modelSwitchReceiptSchema = z.object({
 });
 export const queuedModelSwitchSchema = z.object({
   input: modelSwitchInputSchema, receipt: modelSwitchReceiptSchema, revision: z.number().int().nonnegative(),
-  originalBinding: z.object({ model: z.string(), thinking: z.string() }), queueIndex: z.number().int(),
+  originalBinding: z.object({ model: z.string(), thinking: z.string() }), placement: z.literal('setting').optional(), queueIndex: z.number().int(),
 });
 
 export const modelSwitchQueuedEventSchema = z.object({

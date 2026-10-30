@@ -5161,6 +5161,16 @@ describe('session SSH stays resident and rides no message', () => {
     expect(sshRemove).not.toHaveBeenCalled();
   });
 
+  it.each(['applying', 'next_step', 'next_message'] as const)('shows an ordinary binding setting as a quiet %s label instead of a queued switch', async (state) => {
+    listModels.mockResolvedValue({ items: [{ id: 'fixture/kiki-pro', provider_id: 'fixture', remote_id: 'kiki-pro', display_name: 'Kiki Pro', max_context_size: 131072, support_efforts: ['high', 'max'], default_effort: 'high' }] });
+    const { container } = await renderComposer({ model: 'fixture/kiki-pro', efforts: ['high', 'max'], effort: 'high', bindingSetting: { model: 'fixture/kiki-pro', thinking: 'max', state } });
+    for (let index = 0; index < 5; index += 1) await settle();
+    expect(container.querySelector('[data-binding-setting]')?.textContent).toBe(state === 'applying' ? 'Applying…' : state === 'next_step' ? 'Applies from the next step' : 'Applies from the next message');
+    expect(container.querySelector('[data-model-switch-pending]')).toBeNull();
+    expect(container.querySelector('[data-model-switch-pending-line]')).toBeNull();
+    expect(container.querySelector('#composer-model-select')?.textContent).toContain('max');
+  });
+
   it('names a queued switch in words above the input and keeps the row chip for wide toolbars', async () => {
     listModels.mockResolvedValue({
       items: [{ id: 'fixture/kiki-lite', provider_id: 'fixture', remote_id: 'kiki-lite', display_name: 'Kiki Lite', max_context_size: 131072 }],

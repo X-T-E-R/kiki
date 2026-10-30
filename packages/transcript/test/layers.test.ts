@@ -4629,6 +4629,22 @@ describe('AgentTranscriptDraft differential replay', () => {
 });
 
 describe('wire model binding facts', () => {
+  it.each(['example/old', 'example/new'])('projects direct settings without pending notices and retains committed model dividers from %s', from => {
+    const adapter = new TranscriptWireAdapter('main');
+    const pending = { operationId: 'setting', fromModel: from, toModel: 'example/new', state: 'pending', mode: 'direct' };
+    expect(adapter.add({ type: 'prompt.model_switch_queued', entry: { placement: 'setting', receipt: pending } })).toEqual([]);
+    const restored = new TranscriptWireAdapter('main');
+    restored.restore(JSON.parse(JSON.stringify(adapter.checkpoint())));
+    const commit = restored.add({ type: 'agent.model_switch', operationId: 'setting', fromModel: from, toModel: 'example/new', thinking: 'max', mode: 'direct' });
+    const operations = commit.flatMap(fact => fact.operations);
+    expect(operations[0]).toEqual({ op: 'meta.merge', meta: { agent: { model: 'example/new', thinkingEffort: 'max' } } });
+    expect(operations).toHaveLength(from === 'example/new' ? 1 : 2);
+    if (from !== 'example/new') expect(operations[1]).toMatchObject({ op: 'marker.upsert', item: { marker: 'model.switch', payload: { state: 'completed', change: 'model' } } });
+    const completed = restored.add({ type: 'prompt.model_switch_status', operationId: 'setting', receipt: { ...pending, state: 'completed', binding: { model: 'example/new', thinking: 'max' } } });
+    expect(completed.flatMap(fact => fact.operations)).toEqual([{ op: 'meta.merge', meta: { agent: { model: 'example/new', thinkingEffort: 'max' } } }]);
+    const reordered = restored.add({ type: 'prompt.model_switch_queued', entry: { receipt: { ...pending, mode: 'compact' } } });
+    expect(reordered.flatMap(fact => fact.operations)).toMatchObject([{ op: 'marker.upsert', item: { payload: { state: 'pending', mode: 'compact' } } }]);
+  });
   it('projects a canonical committed binding immediately without reviving a pending selection', () => {
     const transcript = new AgentTranscript('main');
     const reducer = new TranscriptFactReducer(transcript);

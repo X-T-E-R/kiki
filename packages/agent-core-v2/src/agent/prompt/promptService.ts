@@ -470,7 +470,7 @@ export const promptQueueKey = defineState<PersistedPromptQueueState>(
     const id = modelSwitchQueueId(event.entry.input.operationId);
     const existing = state.order.indexOf(id);
     if (existing >= 0) state.order.splice(existing, 1);
-    state.order.splice(Math.min(event.queueIndex, state.order.length), 0, id);
+    if (event.entry.placement !== 'setting') state.order.splice(Math.min(event.queueIndex, state.order.length), 0, id);
   })
   .on(ModelSwitchQueueStatus, (state, event) => {
     if (event.receipt.state === 'pending' || event.receipt.state === 'preparing') return;
@@ -878,18 +878,28 @@ export class AgentPromptService implements IAgentPromptService {
       if (!input.operationId.trim() || !input.model.trim() || !['direct', 'compact', 'fresh'].includes(input.mode)) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'Model switching requires an operationId, model and explicit mode.');
       }
+      if (input.intent === 'setting' && input.mode !== 'direct') {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'Only a direct binding change can be applied as a setting.');
+      }
       const existing = this.states.get(modelSwitchQueueKey).get(input.operationId);
       if (existing !== undefined) {
-        if (existing.input.model !== input.model || existing.input.mode !== input.mode || existing.input.thinking !== input.thinking) {
+        if (existing.input.model !== input.model || existing.input.mode !== input.mode || existing.input.thinking !== input.thinking || existing.input.intent !== input.intent) {
           throw new Error2(ErrorCodes.REQUEST_INVALID, 'This operationId already belongs to another model switch.');
         }
         await this.wire.flush();
         return;
       }
+      const placement = input.intent === 'setting' && this.queueOrder.length === 0 ? 'setting' as const : undefined;
+      if (placement === 'setting') {
+        for (const entry of this.states.get(modelSwitchQueueKey).values()) {
+          if (entry.placement !== 'setting' || this.getModelSwitch(entry.input.operationId)?.state !== 'pending') continue;
+          await this.dispatcher.dispatch(new ModelSwitchQueueStatus({ operationId: entry.input.operationId, receipt: { ...entry.receipt, state: 'cancelled' } }));
+        }
+      }
       const originalBinding = { model: this.profile.getModel(), thinking: this.profile.data().thinkingLevel };
       const receipt: ModelSwitchReceipt = { operationId: input.operationId, agentId: this.scopeContext.agentId,
         state: 'pending', fromModel: originalBinding.model, toModel: input.model, mode: input.mode };
-      await this.dispatcher.dispatch(new ModelSwitchQueued({ entry: { input: { ...input }, receipt, revision: 0, originalBinding }, queueIndex: this.queueOrder.length }));
+      await this.dispatcher.dispatch(new ModelSwitchQueued({ entry: { input: { ...input }, receipt, revision: 0, originalBinding, placement }, queueIndex: this.queueOrder.length }));
       await this.wire.flush();
     });
     if (this.getModelSwitch(input.operationId)?.state === 'preparing' && !this.queueOrder.includes(modelSwitchQueueId(input.operationId))) {
@@ -899,19 +909,34 @@ export class AgentPromptService implements IAgentPromptService {
     return this.getModelSwitch(input.operationId)!;
   }
 
-  private readonly liveSwitchBoundaries = new Map<string, { prompts: Record[]; promise: Promise<void> }>();
+  private readonly liveSwitchBoundaries = new Map<string, { operationId: string; setting: boolean; prompts: Record[]; promise: Promise<void> }>();
 
   private scheduleLiveModelSwitch(operationId: string): boolean {
     if ((this.profile.data().executorId ?? 'native') !== 'native' || this.loop.status().state !== 'running') return false;
+    const entry = this.requireModelSwitch(operationId);
+    if (entry.input.intent === 'setting' && entry.placement !== 'setting') return false;
     if (this.liveSwitchBoundaries.has(operationId)) return true;
-    const live = { prompts: [] as Record[], promise: Promise.resolve() };
+    if (entry.placement === 'setting') {
+      const scheduled = [...this.liveSwitchBoundaries.values()].find(live => live.setting && live.prompts.length === 0);
+      if (scheduled !== undefined) {
+        this.liveSwitchBoundaries.delete(scheduled.operationId);
+        scheduled.operationId = operationId;
+        this.liveSwitchBoundaries.set(operationId, scheduled);
+        return true;
+      }
+    }
+    const live = { operationId, setting: entry.placement === 'setting', prompts: [] as Record[], promise: Promise.resolve() };
     this.liveSwitchBoundaries.set(operationId, live);
     live.promise = this.loop.atStepBoundary(async boundary => {
-      if (this.getModelSwitch(operationId)?.state !== 'pending' || this.isQueueSlotEditHeld(modelSwitchQueueId(operationId))) return;
-      if (live.prompts.length > 0) await this.runSwitchBoundary(live.prompts, boundary);
-      else await this.runModelSwitch(operationId, boundary);
+      do {
+        const target = live.operationId;
+        if (this.getModelSwitch(target)?.state !== 'pending' || this.isQueueSlotEditHeld(modelSwitchQueueId(target))) return;
+        if (live.prompts.length > 0) await this.runSwitchBoundary(live.prompts, boundary);
+        else await this.runModelSwitch(target, boundary);
+        if (target === live.operationId) return;
+      } while (live.setting && this.switchFlight === undefined && this.getModelSwitch(live.operationId)?.state === 'pending');
     }).catch(onUnexpectedError).finally(() => {
-      this.liveSwitchBoundaries.delete(operationId);
+      this.liveSwitchBoundaries.delete(live.operationId);
       for (const item of live.prompts) this.boundaryPromptIds.delete(item.id);
     });
     return true;
@@ -925,7 +950,8 @@ export class AgentPromptService implements IAgentPromptService {
     }
     if (!input.model.trim() || !['direct', 'compact', 'fresh'].includes(input.mode)) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Invalid model switch target or mode.');
     const receipt = { ...entry.receipt, toModel: input.model, mode: input.mode };
-    await this.dispatcher.dispatch(new ModelSwitchQueued({ entry: { ...entry, input: { ...input }, receipt, revision: entry.revision + 1 }, queueIndex: this.queueOrder.indexOf(modelSwitchQueueId(input.operationId)) }));
+    const placement = input.mode === 'direct' ? entry.placement : undefined;
+    await this.dispatcher.dispatch(new ModelSwitchQueued({ entry: { ...entry, input: { ...input, intent: input.mode === 'direct' ? input.intent : undefined }, placement, receipt, revision: entry.revision + 1 }, queueIndex: Math.max(0, this.queueOrder.indexOf(modelSwitchQueueId(input.operationId))) }));
     await this.wire.flush();
     if (!this.scheduleLiveModelSwitch(input.operationId)) void this.startNext();
     return receipt;
@@ -989,10 +1015,10 @@ export class AgentPromptService implements IAgentPromptService {
         return;
       }
       if (current.state === 'cancelled') throw new Error2(ErrorCodes.REQUEST_INVALID, 'A cancelled switch requires a new operationId.');
-      const input = changedMode ? { ...entry.input, mode: mode! } : entry.input;
+      const input = changedMode ? { ...entry.input, mode: mode!, intent: undefined } : entry.input;
       const receipt: ModelSwitchReceipt = { ...current, mode: input.mode, state: current.state === 'preparing' ? 'preparing' : 'pending', error: undefined };
       const oldIndex = this.queueOrder.indexOf(modelSwitchQueueId(operationId));
-      await this.dispatcher.dispatch(new ModelSwitchQueued({ entry: { ...entry, input, receipt, revision: entry.revision + (changedMode ? 1 : 0) }, queueIndex: oldIndex < 0 ? this.queueOrder.length : oldIndex }));
+      await this.dispatcher.dispatch(new ModelSwitchQueued({ entry: { ...entry, input, receipt, placement: changedMode ? undefined : entry.placement, revision: entry.revision + (changedMode ? 1 : 0) }, queueIndex: oldIndex < 0 ? this.queueOrder.length : oldIndex }));
       await this.wire.flush();
       this.immediateModelSwitchIds.add(operationId);
     });
@@ -1528,6 +1554,10 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private nextReadyQueueId(): string | undefined {
+    const setting = [...this.states.get(modelSwitchQueueKey).values()].find(entry =>
+      entry.placement === 'setting' && (entry.receipt.state === 'pending' || entry.receipt.state === 'preparing') &&
+      (!this.recoveryHold || this.immediateModelSwitchIds.has(entry.input.operationId)));
+    if (setting !== undefined) return modelSwitchQueueId(setting.input.operationId);
     const priority = this.queueOrder.find((id) => {
       const prompt = this.pending.find((item) => item.id === id);
       return prompt?.message.origin?.kind === 'cron_job' &&
@@ -1613,7 +1643,8 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private recoveryQueueCount(): number {
-    return this.pending.length + this.queueOrder.filter((id) => this.isQueuedModelSwitch(id)).length;
+    return this.pending.length + [...this.states.get(modelSwitchQueueKey).values()].filter(entry =>
+      entry.receipt.state === 'pending' || entry.receipt.state === 'preparing').length;
   }
 
   private queueHold(): PromptQueueHold | undefined {
@@ -1726,7 +1757,8 @@ export class AgentPromptService implements IAgentPromptService {
     const queueIndex = new Map(persisted.order.map((id, index) => [id, index]));
     this.pending.sort((left, right) =>
       (queueIndex.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (queueIndex.get(right.id) ?? Number.MAX_SAFE_INTEGER));
-    const hasQueuedModelSwitch = persisted.order.some((id) => this.isQueuedModelSwitch(id));
+    const hasQueuedModelSwitch = [...this.states.get(modelSwitchQueueKey).values()].some(entry =>
+      entry.receipt.state === 'pending' || entry.receipt.state === 'preparing');
     if (recovered > 0 || hasQueuedModelSwitch) this.recoveryHold = true;
     else if (this.recoveryQueueCount() === 0) this.recoveryHold = false;
   }

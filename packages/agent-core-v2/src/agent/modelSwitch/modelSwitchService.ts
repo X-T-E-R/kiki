@@ -120,7 +120,7 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
   }
 
   private assertSameInput(previous: ModelSwitchInput, input: ModelSwitchInput): void {
-    if (previous.model !== input.model || previous.mode !== input.mode || previous.thinking !== input.thinking) {
+    if (previous.model !== input.model || previous.mode !== input.mode || previous.thinking !== input.thinking || previous.intent !== input.intent) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'This model switch operationId already belongs to a different model, mode or effort.');
     }
   }

@@ -8,6 +8,7 @@ export interface QueuedModelSwitch {
   readonly receipt: ModelSwitchReceipt;
   readonly revision: number;
   readonly originalBinding: { readonly model: string; readonly thinking: string };
+  readonly placement?: 'setting';
 }
 
 export class ModelSwitchQueued extends Event2<{ entry: QueuedModelSwitch; queueIndex: number }> {

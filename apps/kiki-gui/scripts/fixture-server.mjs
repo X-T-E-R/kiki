@@ -1657,7 +1657,10 @@ class FixtureServer {
       this.emitTranscriptFromFrame(session, frame);
     }
     // A step beginning is where an accepted steer becomes durable context.
-    if (partial.type === 'turn.step.started') this.deliverPendingSteers(session, frame);
+    if (partial.type === 'turn.step.started') {
+      this.klient.applyBindingSettings(sessionId, partial.agentId ?? partial.agent_id ?? 'main');
+      this.deliverPendingSteers(session, frame);
+    }
     // keep the session record honest for the polling sidebar
     if (partial.type === 'event.session.work_changed') {
       Object.assign(session.record, {

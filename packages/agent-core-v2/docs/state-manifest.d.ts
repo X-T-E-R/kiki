@@ -3607,6 +3607,7 @@ export interface AgentStateSnapshot {
       readonly mode: /* ModelSwitchMode — packages/agent-core-v2/src/agent/modelSwitch/modelSwitch.ts */ 'direct' | 'compact' | 'fresh';
       readonly thinking?: string | null;
       readonly selectedFromModel?: string;
+      readonly intent?: 'setting';
     };
     readonly receipt: /* ModelSwitchReceipt — packages/agent-core-v2/src/agent/modelSwitch/modelSwitch.ts */ {
       readonly operationId: string;
@@ -7234,6 +7235,7 @@ export interface AgentStateSnapshot {
       readonly mode: /* ModelSwitchMode — packages/agent-core-v2/src/agent/modelSwitch/modelSwitch.ts */ 'direct' | 'compact' | 'fresh';
       readonly thinking?: string | null;
       readonly selectedFromModel?: string;
+      readonly intent?: 'setting';
     };
     readonly receipt: /* ModelSwitchReceipt — packages/agent-core-v2/src/agent/modelSwitch/modelSwitch.ts */ {
       readonly operationId: string;
@@ -7258,6 +7260,7 @@ export interface AgentStateSnapshot {
       readonly model: string;
       readonly thinking: string;
     };
+    readonly placement?: 'setting';
   }>;
   // src/agent/prompt/promptOps.ts
   // replayable · durable — folds: PromptAccepted, ContextUndo

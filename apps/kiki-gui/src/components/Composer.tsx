@@ -315,6 +315,7 @@ export function Composer({
   serverDefaultModel,
   modelSource,
   pendingModelSwitch,
+  bindingSetting,
   pendingRuntimeControls,
   onCancelRuntimeControls,
   modelSwitchError,
@@ -422,6 +423,13 @@ export function Composer({
    * target is visible without pretending the actual model already changed.
    */
   pendingModelSwitch?: PendingModelSwitch;
+  bindingSetting?: {
+    readonly model: string;
+    readonly thinking?: string | null;
+    readonly state: 'applying' | 'next_step' | 'next_message' | 'failed';
+    readonly error?: string;
+    readonly onRetry?: () => void;
+  };
   /** Controls captured for the next real prompt, not a separate queue item. */
   pendingRuntimeControls?: PendingRuntimeControls;
   /** Clears the pending prompt controls without touching the live binding. */
@@ -2329,10 +2337,12 @@ export function Composer({
     }
   };
 
-  const effectiveModel = validatingModel;
+  const effectiveModel = bindingSetting?.model ?? validatingModel;
+  const statusModel = bindingSetting === undefined ? selectedModel : resolveCatalogModel(models, bindingSetting.model);
+  const statusEffort = bindingSetting?.thinking === null ? statusModel?.default_effort : bindingSetting?.thinking ?? effort;
   // The status line names the model by its catalog display name (the inherit
   // source and provider live in the picker and the tooltip).
-  const modelShortLabel = selectedModel?.display_name ?? effectiveModel;
+  const modelShortLabel = statusModel?.display_name ?? effectiveModel;
   // The queued switch names its target the same way the picker does.
   const pendingSwitchChange = pendingModelSwitch === undefined ? undefined : pendingModelSwitchChange({
     ...pendingModelSwitch,
@@ -2499,11 +2509,11 @@ export function Composer({
             nativeLabel={t('composer.agentDefaultName')}
             models={models}
             modelOptions={modelOptions}
-            currentModel={externalExecution ? validatingModel : model}
+            currentModel={bindingSetting?.model ?? (externalExecution ? validatingModel : model)}
             effectiveModel={effectiveModel}
             modelShortLabel={modelShortLabel}
             modelSource={modelSource}
-            currentEffort={effort}
+            currentEffort={statusEffort}
             efforts={externalExecution ? executorEfforts : efforts}
             onChangeModel={(next) => {
               if (externalExecution) return writeExecutorModel(next);
@@ -2545,8 +2555,8 @@ export function Composer({
           engineLabel={externalExecution && !executorModelWritable ? engineLabel(executorId!, executorId!, executorCatalog) : engine?.label}
           executorLabel={externalExecution ? engineLabel(executorId!, executorId!, executorCatalog) : undefined}
           openSignal={modelMenuSignal}
-          model={externalExecution ? validatingModel : model}
-          resolvedModelKey={resolvedModelKey}
+          model={bindingSetting?.model ?? (externalExecution ? validatingModel : model)}
+          resolvedModelKey={bindingSetting === undefined ? resolvedModelKey : statusModel?.id}
           effectiveModel={effectiveModel}
           shortLabel={modelShortLabel}
           modelSource={modelSource}
@@ -2558,10 +2568,19 @@ export function Composer({
             return onChangeModel(next);
           }}
           efforts={externalExecution ? executorEfforts : efforts}
-          effort={effort}
+          effort={statusEffort}
           onChangeEffort={onChangeEffort}
         />
       ),
+    });
+  }
+  if (bindingSetting !== undefined) {
+    statusSegments.push({
+      key: 'binding-setting',
+      node: <span data-binding-setting={bindingSetting.state} className="flex min-w-0 items-center gap-1 text-[11px] text-ink-faint" title={bindingSetting.error}>
+        {t(`modelSwitch.setting.${bindingSetting.state}`)}
+        {bindingSetting.onRetry !== undefined ? <button type="button" className="underline" onClick={bindingSetting.onRetry}>{t('common.retry')}</button> : null}
+      </span>,
     });
   }
   if (pendingModelSwitch !== undefined) {

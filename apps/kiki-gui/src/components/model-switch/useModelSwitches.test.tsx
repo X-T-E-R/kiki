@@ -94,6 +94,27 @@ it('ends failed initial loading with an explicit error and supports an actual re
   expect(handle).toMatchObject({ error: undefined, loading: false });
   expect(handle.switches[0]?.input.operationId).toBe('retry');
 });
+it('keeps settings out of ordered indicators while retaining the latest dependency and clearing completion', async () => {
+  const setting = { ...entry('setting'), placement: 'setting' as const, queueIndex: -1 };
+  connection.list.mockResolvedValue([setting]);
+  await render();
+  expect(handle.active).toBeUndefined();
+  expect(handle.setting?.input.operationId).toBe('setting');
+  expect(handle.dependency?.input.operationId).toBe('setting');
+  await emit({ kind: 'queued', entry: setting, queueIndex: 0 });
+  expect(handle.switches[0]?.queueIndex).toBe(-1);
+  await emit({ kind: 'status', operationId: 'setting', receipt: { ...setting.receipt, state: 'completed' } });
+  expect(handle.setting).toBeUndefined();
+  expect(handle.dependency).toBeUndefined();
+});
+it('does not resurrect an older failed setting after its replacement completed', async () => {
+  connection.list.mockResolvedValue([
+    { ...entry('old', 'failed'), placement: 'setting', queueIndex: -1 },
+    { ...entry('new', 'completed'), placement: 'setting', queueIndex: -1 },
+  ]);
+  await render();
+  expect(handle.setting).toBeUndefined();
+});
 it('uses the queue tail for future sends and the first operation only for current display', async () => {
   connection.list.mockResolvedValue([entry('running', 'preparing', -1), entry('first', 'pending', 0), entry('last', 'pending', 2)]);
   await render(); expect(handle.active?.input.operationId).toBe('first');

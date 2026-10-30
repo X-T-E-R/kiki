@@ -7,8 +7,9 @@ import { useConnection } from '../../state/connection';
 export interface ModelSwitchesHandle {
   /** Every operation the engine still tracks, oldest queue slot first. */
   readonly switches: readonly QueuedModelSwitch[];
-  /** First pending/preparing operation for the existing pending indicator. */
+  /** First ordered pending/preparing operation for the queue indicator. */
   readonly active: QueuedModelSwitch | undefined;
+  readonly setting: QueuedModelSwitch | undefined;
   /** Future sends follow the last queued switch, otherwise the preparing switch. */
   readonly dependency: QueuedModelSwitch | undefined;
   /** A list read is in flight; errors end loading. */
@@ -54,7 +55,7 @@ export function useModelSwitches(sessionId: string, agentId: string | undefined)
     const publish = () => { setOperations(new Map(current)); };
     const apply = (event: AgentModelSwitchEvent) => {
       if (event.kind === 'queued') {
-        current.set(event.entry.input.operationId, { ...event.entry, queueIndex: event.queueIndex });
+        current.set(event.entry.input.operationId, { ...event.entry, queueIndex: event.entry.placement === 'setting' ? -1 : event.queueIndex });
         unknownStatuses.delete(event.entry.input.operationId);
       } else {
         const existing = current.get(event.operationId);
@@ -143,12 +144,15 @@ export function useModelSwitches(sessionId: string, agentId: string | undefined)
   }, [wsStatus, refresh]);
 
   const switches = useMemo<readonly QueuedModelSwitch[]>(() => [...operations.values()].toSorted((left, right) => {
-    const leftIndex = left.queueIndex >= 0 ? left.queueIndex : Number.MAX_SAFE_INTEGER;
-    const rightIndex = right.queueIndex >= 0 ? right.queueIndex : Number.MAX_SAFE_INTEGER;
+    const leftIndex = left.placement === 'setting' ? -1 : left.queueIndex >= 0 ? left.queueIndex : Number.MAX_SAFE_INTEGER;
+    const rightIndex = right.placement === 'setting' ? -1 : right.queueIndex >= 0 ? right.queueIndex : Number.MAX_SAFE_INTEGER;
     return leftIndex - rightIndex;
   }), [operations]);
-  const active = switches.find((entry) => entry.receipt.state === 'pending' || entry.receipt.state === 'preparing');
+  const active = switches.find((entry) => entry.placement !== 'setting' && (entry.receipt.state === 'pending' || entry.receipt.state === 'preparing'));
+  const latestSetting = switches.findLast((entry) => entry.placement === 'setting');
+  const recoveringSetting = switches.find(entry => entry.placement === 'setting' && entry.receipt.state === 'preparing' && entry.receipt.error !== undefined);
+  const setting = recoveringSetting ?? (latestSetting?.receipt.state === 'completed' || latestSetting?.receipt.state === 'cancelled' ? undefined : latestSetting);
   const dependency = switches.findLast((entry) => entry.receipt.state === 'pending')
     ?? switches.find((entry) => entry.receipt.state === 'preparing');
-  return { switches, active, dependency, loading, error, refresh };
+  return { switches, active, setting, dependency, loading, error, refresh };
 }

@@ -143,6 +143,7 @@ interface AgentModelSwitchPayload {
     mode: 'direct' | 'compact' | 'fresh';
     thinking?: string;
     selectedFromModel?: string;
+    intent?: 'setting';
   };
   agentId: string;
   fromModel: string;
@@ -1080,6 +1081,7 @@ interface PromptModelSwitchQueuedPayload {
       mode: 'direct' | 'compact' | 'fresh';
       thinking?: string | null;
       selectedFromModel?: string;
+      intent?: 'setting';
     };
     receipt: {
       operationId: string;
@@ -1104,6 +1106,7 @@ interface PromptModelSwitchQueuedPayload {
       model: string;
       thinking: string;
     };
+    placement?: 'setting';
   };
   queueIndex: number;
 }

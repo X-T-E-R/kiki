@@ -1327,7 +1327,7 @@ it('applies a picked thinking effort through the agent facade and refreshes the 
   expect(high).not.toBeNull();
   await act(async () => { high?.click(); });
   await settle();
-  expect(harness.switchAgentModel).toHaveBeenCalledWith('session', 'child', expect.objectContaining({ model: 'kiki-pro', thinking: 'high', mode: 'direct' }));
+  expect(harness.switchAgentModel).toHaveBeenCalledWith('session', 'child', expect.objectContaining({ model: 'kiki-pro', thinking: 'high', mode: 'direct', intent: 'setting' }));
   expect(invalidate).toHaveBeenCalledWith({
     queryKey: ['agentCapabilities', { session_id: 'session', agent_id: 'child' }],
   });
@@ -1693,6 +1693,9 @@ it('lists and switches raw models and efforts from the actual external executor,
   expect(Array.from(dock.querySelectorAll('[data-effort]')).map((row) => row.getAttribute('data-effort'))).toEqual(['medium', 'high']);
   await act(async () => { dock.querySelector<HTMLButtonElement>('[data-effort="high"]')!.click(); });
   expect(harness.setAgentEffort).toHaveBeenCalledWith('session', 'child', 'high');
+  expect(dock.querySelector('[data-binding-setting="next_message"]')?.textContent).toContain('Applies from the next message');
+  expect(dock.querySelectorAll('[data-binding-setting]')).toHaveLength(1);
+  expect(harness.switchAgentModel).not.toHaveBeenCalled();
 });
 
 it.each(['unknown', 'partial', 'failed', 'unsupported'] as const)('keeps %s external catalogs sendable without native replacement choices', async (kind) => {

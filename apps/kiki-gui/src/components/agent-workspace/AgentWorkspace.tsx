@@ -803,6 +803,10 @@ function ChildAgentWorkspace({
   const crumbs = useMemo(() => agentPath(forest, agentId), [forest, agentId]);
   const selectedStatus = selectedNode?.status ?? selectedSubagent?.status;
   const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
+  const [externalBindingSetting, setExternalBindingSetting] = useState<{ model: string; thinking?: string }>();
+  useEffect(() => {
+    if (!headerBusy) setExternalBindingSetting(undefined);
+  }, [headerBusy]);
   const displayName = selectedNode?.label ?? selectedSubagent?.name ?? agentId;
   const displayModel = agentLiveState.model ?? selectedNode?.model ?? selectedSubagent?.model;
   const resolvedCrumbs = useMemo(() => {
@@ -1105,6 +1109,7 @@ function ChildAgentWorkspace({
           model: choice.toModel,
           mode: choice.mode,
           selectedFromModel: choice.fromModel,
+          intent: choice.mode === 'direct' ? 'setting' : undefined,
         });
       }
       setModelSwitchDialog(undefined);
@@ -1202,11 +1207,12 @@ function ChildAgentWorkspace({
       ? undefined
       : externalExecutor ? displayModel : resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)?.id ?? displayModel;
     if (current !== undefined && target === current) return;
-    // A child with no conversation yet has nothing to hand over: the pick is a
-    // plain rebind, exactly the pre-switch behaviour.
-    if (agentLiveState.blocks.length === 0) {
+    // External executors own their context. Native children without history
+    // also have nothing to hand over, so both use a plain binding change.
+    if (externalExecutor || agentLiveState.blocks.length === 0) {
       try {
         await client.setAgentModel(sessionId, agentId, model);
+        if (externalExecutor && headerBusy) setExternalBindingSetting(previous => ({ model, thinking: previous?.thinking ?? displayEffort }));
       } catch (error) {
         // The pick is a server-side rebind that can fail (a closed child whose
         // persisted binding cannot be restored). Swallow it here — the select is
@@ -1257,12 +1263,14 @@ function ChildAgentWorkspace({
   const handleChangeAgentEffort = async (effort: string | undefined) => {
     if (!agentKnown || agentTerminal || effort === undefined || effort === displayEffort) return;
     try {
-      if (externalExecutor) await client.setAgentEffort(sessionId, agentId, effort);
-      else {
+      if (externalExecutor) {
+        await client.setAgentEffort(sessionId, agentId, effort);
+        if (headerBusy && displayModel !== undefined) setExternalBindingSetting(previous => ({ model: previous?.model ?? displayModel, thinking: effort }));
+      } else {
         const model = modelSwitches.dependency?.input.model ?? displayModel;
         if (model === undefined) return;
         const receipt = await client.switchAgentModel(sessionId, agentId, {
-          operationId: crypto.randomUUID(), model, thinking: effort === '' ? null : effort, mode: 'direct',
+          operationId: crypto.randomUUID(), model, thinking: effort === '' ? null : effort, mode: 'direct', intent: 'setting',
         });
         if (receipt.state === 'failed') throw new Error(receipt.error?.message ?? t('modelSwitch.listFailed'));
         modelSwitches.refresh();
@@ -1455,6 +1463,15 @@ function ChildAgentWorkspace({
             mode: modelSwitches.active.input.mode,
             originalThinking: modelSwitches.active.originalBinding.thinking,
             targetThinking: modelSwitches.active.input.thinking,
+          }}
+          bindingSetting={modelSwitches.setting === undefined ? externalExecutor && externalBindingSetting !== undefined ? {
+            ...externalBindingSetting, state: 'next_message',
+          } : undefined : {
+            model: modelSwitches.setting.input.model,
+            thinking: modelSwitches.setting.input.thinking,
+            state: modelSwitches.setting.receipt.error !== undefined || modelSwitches.setting.receipt.state === 'failed' ? 'failed' : headerBusy ? 'next_step' : 'applying',
+            error: modelSwitches.setting.receipt.error?.message,
+            onRetry: modelSwitches.setting.receipt.error === undefined && modelSwitches.setting.receipt.state !== 'failed' ? undefined : () => modelSwitchActions.retry?.(modelSwitches.setting!.input.operationId),
           }}
           modelSwitchError={modelSwitches.error === undefined ? undefined : {
             detail: modelSwitches.error.message,

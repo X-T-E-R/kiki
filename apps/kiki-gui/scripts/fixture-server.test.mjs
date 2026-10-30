@@ -443,3 +443,41 @@ test('remote-connection list data is the connection array', async () => {
     await server.stop();
   }
 });
+
+
+test('binding settings fixture applies idle picks and only the latest running pick at the next step', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'binding-settings' });
+  const sessionId = 'session_fixture_model_switch';
+  const session = server.sessions.get(sessionId);
+  const origin = `http://127.0.0.1:${server.http.address().port}`;
+  const headers = { authorization: 'Bearer kiki-fixture-token', 'content-type': 'application/json' };
+  const call = async (method, params) => {
+    const response = await fetch(`${origin}/api/klient/call`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ procedure: { scope: 'agent', sessionId, agentId: 'main', service: 'agentPromptService', method }, params }),
+    });
+    const body = await response.json();
+    assert.equal(body.code, 0, body.msg);
+    return body.data;
+  };
+  const setting = (operationId, thinking) => ({ operationId, model: 'fixture/kiki-pro', mode: 'direct', intent: 'setting', thinking });
+  try {
+    assert.equal((await call('switchModel', [setting('idle', 'max')])).state, 'completed');
+    assert.deepEqual(await call('switchModel', [setting('idle', 'max')]), await call('getModelSwitch', ['idle']));
+    server.emit(sessionId, { type: 'event.session.work_changed', payload: { busy: true, pending_interaction: 'none' } });
+    assert.equal((await call('switchModel', [setting('first', 'high')])).state, 'pending');
+    assert.equal((await call('switchModel', [setting('last', 'xhigh')])).state, 'pending');
+    assert.equal((await call('getModelSwitch', ['first'])).state, 'cancelled');
+    assert.equal((await call('listModelSwitches', [])).filter(entry => entry.queueIndex >= 0).length, 0);
+    server.emit(sessionId, { type: 'turn.step.started', payload: { turnId: 4, step: 2 } });
+    assert.deepEqual((await call('getModelSwitch', ['last'])).binding, { model: 'fixture/kiki-pro', thinking: 'xhigh' });
+    assert.equal(session.record.busy, true);
+    const compact = await call('switchModel', [{ operationId: 'compact', model: 'fixture/kiki-lite', mode: 'compact' }]);
+    assert.equal(compact.state, 'pending');
+    const entries = await call('listModelSwitches', []);
+    assert.equal(entries.find(entry => entry.input.operationId === 'compact').queueIndex, 0);
+    assert.equal(entries.find(entry => entry.input.operationId === 'compact').placement, undefined);
+  } finally {
+    await server.stop();
+  }
+});

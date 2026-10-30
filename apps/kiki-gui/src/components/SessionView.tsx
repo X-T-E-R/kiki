@@ -2728,6 +2728,7 @@ export function SessionView({
         const receipt = await client.switchAgentModel(sessionId, MAIN_AGENT_ID, {
           operationId: crypto.randomUUID(), model: choice.toModel, mode: choice.mode,
           thinking: modelSwitchThinking, selectedFromModel: choice.fromModel,
+          intent: choice.mode === 'direct' ? 'setting' : undefined,
         });
         if (receipt.state === 'failed') throw new Error(receipt.error?.message ?? t('modelSwitch.listFailed'));
         modelSwitches.refresh();
@@ -2804,7 +2805,7 @@ export function SessionView({
     // modelTouched false, so a same-executor switch onto a profile with no pin
     // omitted it from the send while the composer kept showing it.
     const selectsBoundModel = target === currentBoundModel && pendingProfile === undefined && !executionPending;
-    if (selectsBoundModel || pendingProfile !== undefined || executionPending || (state.loaded && !sessionHasStartedConversation(state.blocks))) {
+    if (selectsBoundModel || harness !== undefined || pendingProfile !== undefined || executionPending || (state.loaded && !sessionHasStartedConversation(state.blocks))) {
       setModelOverride(model);
       setModelChoice({ model: sessionModel, thinking: state.thinkingEffort });
       setModelTouched(true);
@@ -2812,7 +2813,7 @@ export function SessionView({
       return;
     }
     openModelSwitchPanel(target);
-  }, [canonicalModel, currentBoundModel, executionPending, openModelSwitchPanel, pendingProfile, sessionModel, state.blocks, state.loaded, state.thinkingEffort]);
+  }, [canonicalModel, currentBoundModel, executionPending, harness, openModelSwitchPanel, pendingProfile, sessionModel, state.blocks, state.loaded, state.thinkingEffort]);
 
   const runModelSwitchAction = useCallback((
     operationId: string,
@@ -2940,7 +2941,7 @@ export function SessionView({
     }
     void client.switchAgentModel(sessionId, MAIN_AGENT_ID, {
       operationId: crypto.randomUUID(), model: modelSwitches.dependency?.input.model ?? currentBoundModel,
-      thinking: effort === '' ? null : effort ?? null, mode: 'direct',
+      thinking: effort === '' ? null : effort ?? null, mode: 'direct', intent: 'setting',
     }).then(receipt => {
       if (receipt.state === 'failed') throw new Error(receipt.error?.message ?? t('modelSwitch.listFailed'));
       modelSwitches.refresh();
@@ -5006,6 +5007,15 @@ boundExecution,
               mode: modelSwitches.active.input.mode,
               originalThinking: modelSwitches.active.originalBinding.thinking,
               targetThinking: modelSwitches.active.input.thinking,
+            }}
+            bindingSetting={modelSwitches.setting === undefined ? harness !== undefined && !executionPending && pendingProfile === undefined && pendingRuntimeControls !== undefined && effectiveModel !== undefined ? {
+              model: effectiveModel, thinking: effectiveEffort, state: 'next_message',
+            } : undefined : {
+              model: modelSwitches.setting.input.model,
+              thinking: modelSwitches.setting.input.thinking,
+              state: modelSwitches.setting.receipt.error !== undefined || modelSwitches.setting.receipt.state === 'failed' ? 'failed' : composerBusy ? 'next_step' : 'applying',
+              error: modelSwitches.setting.receipt.error?.message,
+              onRetry: modelSwitches.setting.receipt.error === undefined && modelSwitches.setting.receipt.state !== 'failed' ? undefined : () => modelSwitchActions.retry?.(modelSwitches.setting!.input.operationId),
             }}
             pendingRuntimeControls={pendingRuntimeControls}
             onCancelRuntimeControls={cancelPendingRuntimeControls}

@@ -127,6 +127,7 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly modelSwitchChanges?: readonly [string, string][];
   readonly compaction?: CompactionProjectionCheckpoint;
   readonly queuedModelSwitchIds?: readonly string[];
+  readonly bindingSettingIds?: readonly string[];
   readonly prompts?: readonly [string, TranscriptPrompt][];
   readonly hiddenPromptIds?: readonly string[];
   readonly deliveries?: readonly [string, MessageDelivery][];
@@ -163,6 +164,7 @@ export class TranscriptWireAdapter {
   readonly #cancelRequests = new Map<string, TurnCancellation>();
   readonly #prompts = new Map<string, TranscriptPrompt>();
   readonly #queuedModelSwitchIds = new Set<string>();
+  readonly #bindingSettingIds = new Set<string>();
   readonly #hiddenPromptIds = new Set<string>();
   readonly #deliveries = new Map<string, MessageDelivery>();
   readonly #deliveryUndoRecords = new Map<string, DeliveryUndoRecord>();
@@ -245,6 +247,7 @@ export class TranscriptWireAdapter {
       modelSwitchChanges: [...this.#modelSwitchChanges],
       compaction: this.#compaction.checkpoint(),
       queuedModelSwitchIds: [...this.#queuedModelSwitchIds],
+      bindingSettingIds: [...this.#bindingSettingIds],
       prompts: [...this.#prompts],
       hiddenPromptIds: [...this.#hiddenPromptIds],
       deliveries: [...this.#deliveries],
@@ -326,6 +329,7 @@ export class TranscriptWireAdapter {
     replaceMap(this.#modelSwitchChanges, checkpoint.modelSwitchChanges ?? []);
     this.#compaction.restore(checkpoint.compaction);
     replaceSet(this.#queuedModelSwitchIds, checkpoint.queuedModelSwitchIds ?? []);
+    replaceSet(this.#bindingSettingIds, checkpoint.bindingSettingIds ?? []);
     replaceMap(this.#prompts, checkpoint.prompts ?? []);
     replaceSet(this.#hiddenPromptIds, checkpoint.hiddenPromptIds ?? []);
     replaceMap(this.#deliveries, checkpoint.deliveries ?? []);
@@ -436,11 +440,16 @@ export class TranscriptWireAdapter {
       const receipt = objectOf(record['receipt']) ?? objectOf(entry?.['receipt']);
       const operationId = stringOf(record['operationId']) ?? stringOf(receipt?.['operationId']);
       if (operationId === undefined) return [];
-      if (record.type === 'prompt.model_switch_queued') this.#queuedModelSwitchIds.add(operationId);
+      if (record.type === 'prompt.model_switch_queued') {
+        this.#queuedModelSwitchIds.add(operationId);
+        if (entry?.['placement'] === 'setting') this.#bindingSettingIds.add(operationId);
+        else this.#bindingSettingIds.delete(operationId);
+      }
+      const setting = this.#bindingSettingIds.has(operationId);
       const committed = record.type === 'agent.model_switch';
       const from = stringOf(committed ? record['fromModel'] : receipt?.['fromModel']);
       const to = stringOf(committed ? record['toModel'] : receipt?.['toModel']);
-      const state = committed ? (this.#queuedModelSwitchIds.has(operationId) ? 'preparing' : 'completed') : stringOf(receipt?.['state']);
+      const state = committed ? (this.#queuedModelSwitchIds.has(operationId) && !setting ? 'preparing' : 'completed') : stringOf(receipt?.['state']);
       const mode = committed ? record['mode'] : receipt?.['mode'];
       const thinking = stringOf(committed ? record['thinking'] : objectOf(receipt?.['binding'])?.['thinking']);
       const change = committed && from === to && mode === 'direct' && thinking !== undefined && this.#thinkingEffort !== undefined && thinking !== this.#thinkingEffort
@@ -462,6 +471,7 @@ export class TranscriptWireAdapter {
         }
         if (Object.keys(agent).length > 0) operations.push({ op: 'meta.merge', meta: { agent } });
       }
+      if (setting && (!committed || from === to)) return operations;
       operations.push({ op: 'marker.upsert', item: { kind: 'marker', markerId: `model-switch:${operationId}`, marker: 'model.switch', at: isoOf(record.time),
         payload: { operationId, from, to, state, mode, change,
           windowEpoch: committed ? record['newEpoch'] : receipt?.['windowEpoch'],
