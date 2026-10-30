@@ -156,8 +156,14 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     try {
       await this.storage.append(scope, key, data, { durable: true });
     } catch (error) {
-      source.revision++;
-      source.stat = undefined;
+      const after = before === undefined ? undefined : await this.storage.stat(scope, key).catch(() => undefined);
+      if (before === undefined || after === undefined || after.identity !== before.identity ||
+        after.size < before.size || after.size > before.size + data.byteLength) {
+        source.revision++;
+        source.stat = undefined;
+      } else {
+        source.stat = after;
+      }
       throw error;
     }
     const after = await this.storage.stat(scope, key).catch(() => undefined);

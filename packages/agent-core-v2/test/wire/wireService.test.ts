@@ -485,6 +485,77 @@ describe('WireService seal', () => {
     }
   });
 
+  it.each(['uncommitted', 'partial', 'sync'] as const)('keeps the epoch trusted after a proven append recovery, mode=%s', async (mode) => {
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+    const scope = testWireScope(SCOPE, KEY);
+    const append = storage.append.bind(storage);
+    let failing = true;
+    const error = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'injected full disk', {
+      details: { committed: mode !== 'uncommitted', errno: 'ENOSPC' },
+    });
+    storage.append = async (target, key, bytes, options) => {
+      if (failing && key === AGENT_WIRE_RECORD_KEY) {
+        if (mode !== 'uncommitted') await append(target, key, mode === 'partial' ? bytes.subarray(0, 13) : bytes, options);
+        throw error;
+      }
+      await append(target, key, bytes, options);
+    };
+    setUnexpectedErrorHandler(() => {});
+    try {
+      const accepted = { type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'recovered 中文' }] } as WireRecord;
+      wire.appendRecord(accepted);
+      await expect(wire.flush()).rejects.toBe(error);
+      failing = false;
+      await wire.flush();
+      const text = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8');
+      expect(text.split('\n').filter(Boolean)).toHaveLength(2);
+      expect(text).toContain(`${JSON.stringify(accepted)}\n`);
+      expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+      await wire.sealTranscriptEpoch!();
+      const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from((await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!).toString('utf8')));
+      expect(sealed).toMatchObject({ format: 2, state: 'sealed', trusted: true });
+      const reopened = registerTestAgentWire(disposables.add(new TestInstantiationService()), scope, {
+        log: new AppendLogStore(storage), storage, logger: noopLogger, telemetry: noopTelemetryService,
+      });
+      await reopened.seal();
+      await reopened.beginTranscriptEpoch!();
+      expect(await reopened.verifyTranscriptLiveEpoch!()).toBe(true);
+    } finally {
+      resetUnexpectedErrorHandler();
+    }
+  });
+
+  it('still rejects the epoch when an uncertain append finds changed bytes', async () => {
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    const scope = testWireScope(SCOPE, KEY);
+    const append = storage.append.bind(storage);
+    let failing = true;
+    const error = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'injected full disk', {
+      details: { committed: true, errno: 'ENOSPC' },
+    });
+    storage.append = async (target, key, bytes, options) => {
+      if (failing && key === AGENT_WIRE_RECORD_KEY) {
+        await append(target, key, Buffer.from('X'.repeat(13)), options);
+        throw error;
+      }
+      await append(target, key, bytes, options);
+    };
+    setUnexpectedErrorHandler(() => {});
+    try {
+      wire.appendRecord({ type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'lost' }] } as WireRecord);
+      await expect(wire.flush()).rejects.toBe(error);
+      failing = false;
+      await expect(wire.flush()).rejects.toMatchObject({ code: 'storage.corrupted' });
+      await wire.sealTranscriptEpoch!().catch(() => undefined);
+      expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
+    } finally {
+      resetUnexpectedErrorHandler();
+    }
+  });
+
   it('seals a trusted receipt when an accepted record lands during the first digest', async () => {
     await wire.seal();
     await wire.beginTranscriptEpoch!();

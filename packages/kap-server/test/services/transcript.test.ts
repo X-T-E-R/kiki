@@ -1,4 +1,5 @@
 import { appendFile as appendFixtureFile, mkdtemp, mkdir, rm, writeFile as writeFixtureFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
@@ -314,6 +315,42 @@ describe('TranscriptService projection', () => {
     for (const hostile of ['../../main', '..', 'a/b', 'a\\b']) {
       const snapshot = await service.readColdSnapshot('s1', hostile);
       expect(snapshot?.items).toEqual([]);
+    }
+  });
+
+  it.each([1, 2])('verifies a sealed format-%s receipt against short and long UTF-8 wires and rejects truncation, appends or tail edits', async (format) => {
+    const home = await mkdtemp(join(tmpdir(), `transcript-receipt-${format}-`));
+    const service = new TranscriptService({ homeDir: home, core: coldCore() });
+    const verify = async (path: string) => (service as unknown as {
+      verifyWireReceipt(path: string, info: unknown, signal: AbortSignal): Promise<boolean>;
+    }).verifyWireReceipt(path, await fsPromises.stat(path), new AbortController().signal);
+    try {
+      const path = join(home, 'wire.jsonl');
+      for (const length of [0, 1, 2000]) {
+        const bytes = length === 0 ? Buffer.alloc(0) : Buffer.from(`${JSON.stringify({ type: 'metadata', protocol_version: '1.8' })}\n${
+          JSON.stringify({ type: 'context.append_message', text: '中'.repeat(length) })}\n`);
+        const tail = bytes.subarray(Math.max(0, bytes.byteLength - 4096));
+        const wire = format === 1
+          ? { size: bytes.byteLength, sha256: createHash('sha256').update(bytes).digest('hex') }
+          : { size: bytes.byteLength, tailBytes: tail.byteLength, tailSha256: createHash('sha256').update(tail).digest('hex') };
+        await writeFixtureFile(path, bytes);
+        await writeFixtureFile(join(home, WIRE_TRANSCRIPT_RECEIPT_KEY), JSON.stringify({
+          format, epoch: `example-${length}`, trusted: true, state: 'sealed', wire,
+        }));
+        expect(await verify(path)).toBe(length > 0);
+        if (length === 0) continue;
+        await writeFixtureFile(path, bytes.subarray(0, bytes.byteLength - 2));
+        expect(await verify(path)).toBe(false);
+        await writeFixtureFile(path, Buffer.concat([bytes, Buffer.from('{}\n')]));
+        expect(await verify(path)).toBe(false);
+        const changed = Buffer.from(bytes);
+        changed[changed.byteLength - 3]! ^= 1;
+        await writeFixtureFile(path, changed);
+        expect(await verify(path)).toBe(false);
+      }
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true });
     }
   });
 
