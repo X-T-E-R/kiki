@@ -9,13 +9,45 @@ import { AgentTaskPersistence, IAgentTaskService } from '#/agent/task/task';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IEventDispatcher } from '#/state/eventDispatcher';
 import { TERMINAL_STATUSES } from '#/agent/task/types';
 import { TaskOutputTool } from '#/agent/tools/task/task-output/taskOutputTool';
 import { TaskListTool } from '#/agent/tools/task/task-list/taskListTool';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
+import { IThreadMailboxStore } from '#/app/threadCommunication/threadMailboxStore';
 import { createAgentTaskPersistence, TASK_TEST_SESSION_SCOPE, TASK_TEST_AGENT_SCOPE, type TaskServiceTestManager } from './stubs';
-import { taskServices, createTestAgent, homeDirServices, type TestAgentContext } from '../../harness';
+import { appService, taskServices, createTestAgent, homeDirServices, type TestAgentContext } from '../../harness';
 import { executeTool, type TestExecutableToolContext } from '../../tools/fixtures/execute-tool';
+
+const TEST_THREAD_MAILBOX: IThreadMailboxStore = {
+  _serviceBrand: undefined,
+  readMessages: async () => ({ items: [] }),
+  acceptMessage: async () => ({
+    message: {
+      messageId: 'test-message',
+      producer: { kind: 'external_client' },
+      target: { hostId: 'test-host', workspaceId: 'test-workspace', sessionId: 'test-session' },
+      content: '',
+      idempotencyKey: 'test-message',
+      acceptedAt: 0,
+      targetSeq: 0,
+    },
+    deduplicated: false,
+    delivery: 'pending',
+    payloadConflict: false,
+  }),
+  claimNext: async () => undefined,
+  acknowledgeDelivery: async () => false,
+  markUndeliverable: async () => false,
+  cancelProducer: async () => 0,
+  listPendingTargets: async () => [],
+  appendActivity: async () => ({ seq: 0, epoch: 'test', kind: 'lifecycle', at: 0, reason: 'test' }),
+  readActivity: async () => ({ epoch: 'test', latestSeq: 0, activities: [] }),
+  getWorkspaceOverride: async () => undefined,
+  setWorkspaceOverride: async () => {},
+  clearWorkspaceOverride: async () => {},
+  close: async () => {},
+};
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -27,7 +59,11 @@ interface TaskServiceFixture {
 
 function createTaskService(homedir: string): TaskServiceFixture {
   const persistence = createAgentTaskPersistence(homedir);
-  const ctx = createTestAgent(homeDirServices(homedir), taskServices());
+  const ctx = createTestAgent(
+    homeDirServices(homedir),
+    appService(IThreadMailboxStore, TEST_THREAD_MAILBOX),
+    taskServices(),
+  );
   const manager = ctx.get(IAgentTaskService) as TaskServiceTestManager;
   return {
     ctx,
@@ -140,6 +176,7 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
     try {
       await waitForTaskNotifications(ctx, manager);
       await ctx.expectResumeMatches();
+      await ctx.get(IEventDispatcher).saveReplayCheckpoint?.();
     } finally {
       await ctx.dispose();
       rmSync(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
