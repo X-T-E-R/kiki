@@ -90,6 +90,21 @@ async function choose(container: ParentNode, selector: string, value: string) {
   await click(document.body, `[data-option-value="${value}"]`);
 }
 function binding(container: ParentNode, id: string) { return container.querySelector<HTMLElement>(`[data-im-binding="${id}"]`)!; }
+/** Test this binding through the row's ⋯ menu (portaled to <body>). */
+async function testBindingVia(row: HTMLElement, id: string) {
+  await click(row, '[data-im-binding-menu]');
+  await click(document.body, `[data-im-test-binding="${id}"]`);
+}
+/** One account's row, opened. Everything binding-scoped runs against it. */
+async function accountRow(container: ParentNode, id: string) {
+  await click(container, `[data-im-account="${id}"] > div button[aria-controls]`);
+  return container.querySelector<HTMLElement>(`[data-im-account="${id}"]`)!;
+}
+/** The first account's open body, for tests that seed exactly one account. */
+async function openFirstAccount(container: ParentNode) {
+  await click(container, '[data-im-account] > div button[aria-controls]');
+  return container;
+}
 /** Opens "Add channel", picks the platform and, where it offers both, the two-way route. */
 async function addTwoWay(brand: string) {
   await click(document.body, '[data-notify-add-open]');
@@ -144,7 +159,8 @@ describe('ChannelsCard two-way accounts', () => {
 
   it.each(platforms)('groups two %s channels under one account and edits only the chosen target, options and off override', async (kind) => {
     fixture = createImSettingsFixture(imChannelSnapshot(kind));
-    const container = await render();
+    await render();
+    const container = await openFirstAccount(document.body);
     const before = fixture.read().bindings[0]!;
     const contact = binding(container, 'binding-contact');
     const group = binding(container, 'binding-group');
@@ -172,7 +188,7 @@ describe('ChannelsCard two-way accounts', () => {
 
   it('uses immediate for discovery, preserves saved delivery choices, and persists queue changes', async () => {
     fixture = createImSettingsFixture(imChannelSnapshot('telegram'));
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const contact = binding(container, 'binding-contact');
     await click(contact, '[data-im-binding-options-toggle]');
     expect(contact.querySelector('[data-im-binding-busy="queue"]')?.getAttribute('aria-pressed')).toBe('true');
@@ -202,29 +218,35 @@ describe('ChannelsCard two-way accounts', () => {
 
   it('opens add-channel discovery without an account-wide target and confirms independent drafts across accounts', async () => {
     fixture = createImSettingsFixture(imSettingsSnapshot());
-    const container = await render('360px');
+    await render('360px');
+    await accountRow(document.body, 'account-tg');
+    const container = await accountRow(document.body, 'account-a');
     const original = fixture.read().bindings;
     expect(container.querySelector('[data-im-bind-flow="account-a"]')?.textContent).toContain('Have the contact send a direct message');
     expect(container.querySelector('[data-im-bind-flow="account-a"] [data-im-target]')).toBeNull();
     fixture.discover('account-a', 'wx-new');
     fixture.discover('account-tg', 'tg-new');
+    // The refresh lands both discoveries in one snapshot. account-a stays
+    // open; account-tg's own draft comes from a visit to its row.
     await click(container, '[data-im-account="account-a"] [data-im-refresh-discovery]');
     const wx = container.querySelector<HTMLElement>('[data-im-discovery="wx-new"]')!;
-    const tg = container.querySelector<HTMLElement>('[data-im-discovery="tg-new"]')!;
     await click(wx, '[data-im-target-kind="session"]');
     await choose(wx, '#im-target-wx-new', 'session:reading-list');
+    const accountTg = await accountRow(document.body, 'account-tg');
+    const tg = accountTg.querySelector<HTMLElement>('[data-im-discovery="tg-new"]')!;
     await click(tg, '[data-im-also-home]');
-    expect(wx.querySelector('[data-im-target="session:reading-list"]')).not.toBeNull();
     expect(tg.querySelector('[data-im-target="persona:lin"]')).not.toBeNull();
-    await click(wx, '[data-im-confirm]');
     await click(tg, '[data-im-confirm]');
+    await click(await accountRow(document.body, 'account-a'), '[data-im-discovery="wx-new"] [data-im-confirm]');
     expect(fixture.calls.filter((item) => item.operation === 'confirm')).toEqual([
-      { operation: 'confirm', id: 'wx-new', body: { target: { kind: 'session', session_id: 'reading-list' }, busy: 'immediate', reply: 'final', mobile_interactions: true, also_home: false } },
       { operation: 'confirm', id: 'tg-new', body: { target: { kind: 'persona', persona_id: 'lin' }, busy: 'immediate', reply: 'final', mobile_interactions: true, also_home: true } },
+      { operation: 'confirm', id: 'wx-new', body: { target: { kind: 'session', session_id: 'reading-list' }, busy: 'immediate', reply: 'final', mobile_interactions: true, also_home: false } },
     ]);
     expect(fixture.read().bindings.slice(0, original.length)).toEqual(original);
-    expect(container.querySelectorAll('[data-im-account="account-a"] [data-im-binding]')).toHaveLength(3);
-    expect(container.querySelectorAll('[data-im-account="account-tg"] [data-im-binding]')).toHaveLength(2);
+    await accountRow(document.body, 'account-tg');
+    expect(document.body.querySelectorAll('[data-im-account="account-tg"] [data-im-binding]')).toHaveLength(2);
+    await accountRow(document.body, 'account-a');
+    expect(document.body.querySelectorAll('[data-im-account="account-a"] [data-im-binding]')).toHaveLength(3);
   });
 
   it('keeps an explicit off when re-confirming a paused channel; only explicit enable and on restore it', async () => {
@@ -232,7 +254,7 @@ describe('ChannelsCard two-way accounts', () => {
     state.bindings[1] = { ...state.bindings[1]!, enabled: false, session_enabled: false };
     state.discoveries = [{ ...state.bindings[1]!, id: 'rediscovered', preview: 'hello again', at: '2026-10-23T00:00:00.000Z' }];
     fixture = createImSettingsFixture(state);
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const untouched = fixture.read().bindings[0];
     await click(container, '[data-im-confirm="rediscovered"]');
     const group = binding(container, 'binding-group');
@@ -247,7 +269,7 @@ describe('ChannelsCard two-way accounts', () => {
   });
 
   it('keeps the global master authoritative and preserves explicit off through default changes', async () => {
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     await rules(container);
     await click(container, '#im-default');
     expect(fixture.read().policy.default_enabled).toBe(false);
@@ -264,9 +286,11 @@ describe('ChannelsCard two-way accounts', () => {
     const state = imSettingsSnapshot();
     state.bindings[0] = { ...state.bindings[0]!, persona_id: undefined };
     fixture = createImSettingsFixture(state);
-    const container = await render();
-    expect(binding(container, 'binding-topic').textContent).toContain('Research group · Lin · Paper reviews');
-    expect(binding(container, 'binding-topic').textContent).toContain('42');
+    await render();
+    await accountRow(document.body, 'account-tg');
+    const container = await accountRow(document.body, 'account-a');
+    expect(document.body.querySelector<HTMLElement>('[data-im-binding="binding-topic"]')!.textContent).toContain('Research group · Lin · Paper reviews');
+    expect(document.body.querySelector<HTMLElement>('[data-im-binding="binding-topic"]')!.textContent).toContain('42');
     expect(binding(container, 'binding-contact').querySelector('[data-im-binding-target="session:lin-daily"]')).not.toBeNull();
     await choose(binding(container, 'binding-contact'), '#im-binding-target-binding-contact', 'persona:lin');
     expect(fixture.read().bindings[0]?.persona_id).toBe('lin');
@@ -289,7 +313,7 @@ describe('ChannelsCard two-way accounts', () => {
     const state = fixture.read();
     state.discoveries[0]!.identity = { ...state.discoveries[0]!.identity, chat_kind, topic_id };
     fixture.replace(state);
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const row = container.querySelector<HTMLElement>('[data-im-discovery]')!;
     expect(row.querySelector('[data-im-unsupported]')?.textContent).toBe(locale === 'en'
       ? 'This WeChat connection supports direct messages only. Group chats are not supported.'
@@ -308,7 +332,7 @@ describe('ChannelsCard two-way accounts', () => {
     const state = fixture.read();
     state.discoveries[0]!.identity.topic_id = '42';
     fixture.replace(state);
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const row = container.querySelector<HTMLElement>('[data-im-discovery]')!;
     expect(row.querySelector('[data-im-unsupported]')).toBeNull();
     await click(row, '[data-im-confirm]');
@@ -321,7 +345,7 @@ describe('ChannelsCard two-way accounts', () => {
     state.discoveries[0]!.identity = { ...state.discoveries[0]!.identity, chat_kind: undefined, chat_title: 'Design group' };
     fixture.replace(state);
     vi.spyOn(fixture.client.imSessions, 'confirm').mockRejectedValueOnce(new Error('unsupported_wechat_group'));
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const row = container.querySelector<HTMLElement>('[data-im-discovery]')!;
     expect(row.querySelector('[data-im-unsupported]')).toBeNull();
     await click(row, '[data-im-confirm]');
@@ -332,10 +356,11 @@ describe('ChannelsCard two-way accounts', () => {
   });
 
   it('removes only the named channel after confirmation', async () => {
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const group = binding(container, 'binding-group');
-    await click(group, '[data-im-binding-options-toggle]');
-    await click(group, '[data-im-remove]');
+    await click(group, '[data-im-binding-menu]');
+    // The menu is portaled to <body>, so the item lives outside the row.
+    await click(document.body, '[data-im-remove]');
     expect(fixture.calls.some((item) => item.operation === 'removeBinding')).toBe(false);
     expect(group.textContent).toContain('Remove Mei?');
     await click(group, '[data-im-remove-confirm]');
@@ -345,7 +370,7 @@ describe('ChannelsCard two-way accounts', () => {
 
   it('shows mutation failure beside the affected channel and permits recovery', async () => {
     const update = vi.spyOn(fixture.client.imSessions, 'updateBinding').mockRejectedValueOnce(new Error('Could not save. Try again.'));
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const group = binding(container, 'binding-group');
     await click(group, '[data-im-session-switch]');
     expect(group.textContent).toContain('Could not save. Try again.');
@@ -363,6 +388,7 @@ describe('ChannelsCard two-way accounts', () => {
     const container = await render();
     expect(container.textContent).toContain('Could not load IM accounts.');
     await click(container, '[data-im-retry]');
+    await openFirstAccount(container);
     await act(settle);
     expect(container.querySelector('[data-im-account]')).not.toBeNull();
     expect(container.querySelector('[data-im-catalog-error]')).not.toBeNull();
@@ -376,7 +402,7 @@ describe('ChannelsCard two-way accounts', () => {
     const state = { ...empty, instances: [{ ...imChannelSnapshot().instances[0]!, listening: false, adapter: 'stopped' as const }] };
     fixture = createImSettingsFixture(state);
     const check = vi.spyOn(fixture.client.imSessions, 'check').mockResolvedValueOnce({ ok: false, account_id: 'account-a' });
-    const container = await render('360px');
+    await render(); const container = await openFirstAccount(document.body);
     expect(container.querySelector('[data-im-bind-flow]')?.textContent).toContain('Start listening to add conversations.');
     expect(container.querySelector('[data-im-target]')).toBeNull();
     await click(container, '[data-im-bind-listen]');
@@ -393,7 +419,7 @@ describe('ChannelsCard two-way accounts', () => {
     const state = imChannelSnapshot();
     state.instances[0] = { ...state.instances[0]!, connection };
     fixture = createImSettingsFixture(state);
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     expect(container.querySelector('[data-im-instance-state]')?.getAttribute('data-im-instance-state')).toBe(connection);
     expect(container.querySelector('[data-im-instance-state]')?.textContent).not.toBe('Listening');
     if (connection === 'auth_expired') {
@@ -452,7 +478,7 @@ describe('ChannelsCard two-way accounts', () => {
 
   it('searches a thread beyond the initial catalog for only the edited binding', async () => {
     vi.spyOn(fixture.client, 'listSessions').mockResolvedValue({ items: [{ id: 'older-thread', title: 'Older research' }] });
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const group = binding(container, 'binding-group');
     await click(group, '[data-im-binding-options-toggle]');
     await input(group, '[data-im-binding-target-search]', 'Older');
@@ -466,7 +492,7 @@ describe('ChannelsCard two-way accounts', () => {
     const state = imChannelSnapshot();
     state.instances[0] = { ...state.instances[0]!, adapter: 'stopped' };
     fixture = createImSettingsFixture(state);
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     expect(container.querySelector('[data-im-instance-state]')?.textContent).toBe('Connection stopped');
     expect(container.querySelector('[data-im-retry-connection="account-a"]')).not.toBeNull();
   });
@@ -474,7 +500,7 @@ describe('ChannelsCard two-way accounts', () => {
   it.each(platforms)('keeps platform %s text restrictions accurate', async (kind) => {
     fixture = createImSettingsFixture(imChannelSnapshot(kind));
     fixture.discover();
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     await click(binding(container, 'binding-contact'), '[data-im-binding-options-toggle]');
     await click(container, '[data-im-discovery] [data-im-advanced-toggle]');
     const live = kind === 'telegram' || kind === 'feishu_app';
@@ -774,7 +800,7 @@ describe('ChannelsCard two-way accounts', () => {
       sessions: fiftySessions,
     });
 
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const flow = container.querySelector<HTMLElement>('[data-im-bind-flow="wx-live"]')!;
     expect(flow).not.toBeNull();
     expect(flow.textContent).toContain('Have the contact send a direct message');
@@ -815,11 +841,11 @@ describe('ChannelsCard two-way accounts', () => {
     localStorage.setItem('kiki.locale', locale);
     fixture = createImSettingsFixture(imChannelSnapshot());
     const testSpy = vi.spyOn(fixture.client.imSessions, 'testBinding');
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const contact = binding(container, 'binding-contact');
 
     // 1. Delivered
-    await click(contact, '[data-im-test-binding="binding-contact"]');
+    await testBindingVia(contact, 'binding-contact');
     expect(testSpy).toHaveBeenCalledTimes(1);
     expect(testSpy).toHaveBeenLastCalledWith('binding-contact');
     expect(contact.querySelector('[data-im-test-binding-result="binding-contact"]')?.textContent).toContain(
@@ -828,7 +854,7 @@ describe('ChannelsCard two-way accounts', () => {
 
     // 2. Unknown (must not auto-resend)
     testSpy.mockResolvedValueOnce({ binding_id: 'binding-contact', status: 'unknown', message_ids: [] });
-    await click(contact, '[data-im-test-binding="binding-contact"]');
+    await testBindingVia(contact, 'binding-contact');
     expect(testSpy).toHaveBeenCalledTimes(2);
     expect(contact.querySelector('[data-im-test-binding-result="binding-contact"]')?.textContent).toContain(
       locale === 'en' ? 'do not auto-resend' : '切勿自动重发',
@@ -836,13 +862,13 @@ describe('ChannelsCard two-way accounts', () => {
 
     // 3. Partial (preserves detail/ids, no invented pending count, no auto-resend)
     testSpy.mockResolvedValueOnce({ binding_id: 'binding-contact', status: 'partial', message_ids: ['msg-1'], detail: 'timeout on second chunk' });
-    await click(contact, '[data-im-test-binding="binding-contact"]');
+    await testBindingVia(contact, 'binding-contact');
     expect(testSpy).toHaveBeenCalledTimes(3);
     expect(contact.querySelector('[data-im-test-binding-result="binding-contact"]')?.textContent).toContain('timeout on second chunk');
 
     // 4. Failed: channel_not_connected
     testSpy.mockResolvedValueOnce({ binding_id: 'binding-contact', status: 'failed', message_ids: [], detail: 'channel_not_connected' });
-    await click(contact, '[data-im-test-binding="binding-contact"]');
+    await testBindingVia(contact, 'binding-contact');
     expect(testSpy).toHaveBeenCalledTimes(4);
     expect(contact.querySelector('[data-im-test-binding-result="binding-contact"]')?.textContent).toContain(
       locale === 'en' ? 'Account is not listening' : '账号当前未开启监听',
@@ -874,7 +900,7 @@ describe('ChannelsCard two-way accounts', () => {
 
   it('rebinds the target at once with rebind: true, offers undo to the prior target, and handles 40949 conflict details', async () => {
     fixture = createImSettingsFixture(imChannelSnapshot('telegram'));
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const group = binding(container, 'binding-group');
     const updateSpy = vi.spyOn(fixture.client.imSessions, 'updateBinding');
 
@@ -926,7 +952,7 @@ describe('ChannelsCard two-way accounts', () => {
       session_enabled: true,
     };
     fixture = createImSettingsFixture(state);
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const contact = binding(container, 'binding-contact');
     const updateSpy = vi.spyOn(fixture.client.imSessions, 'updateBinding');
 
@@ -973,7 +999,7 @@ describe('ChannelsCard two-way accounts', () => {
       at: '2026-10-27T01:00:00.000Z',
     }];
     fixture = createImSettingsFixture(state);
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const row = container.querySelector<HTMLElement>('[data-im-discovery="tg-disc-group"]')!;
 
     expect(row.querySelector('[data-im-group-options]')).not.toBeNull();
@@ -1001,7 +1027,7 @@ describe('ChannelsCard two-way accounts', () => {
     const state = imChannelSnapshot('telegram');
     // binding-group starts with binding_scope: 'sender'
     fixture = createImSettingsFixture(state);
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const group = binding(container, 'binding-group');
     const updateSpy = vi.spyOn(fixture.client.imSessions, 'updateBinding');
 
@@ -1080,7 +1106,7 @@ describe('ChannelsCard two-way accounts', () => {
     state.bindings = [firstBinding, secondBinding];
     fixture = createImSettingsFixture(state);
     const updateSpy = vi.spyOn(fixture.client.imSessions, 'updateBinding');
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const firstRow = binding(container, 'binding-group');
     const secondRow = binding(container, 'binding-group-2');
     await click(firstRow, '[data-im-binding-options-toggle]');
@@ -1124,7 +1150,7 @@ describe('ChannelsCard two-way accounts', () => {
       identity: { ...state.discoveries[0]!.identity, chat_id: 'disc-group-2', chat_title: 'Release Team' },
     });
     fixture = createImSettingsFixture(state);
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const firstRow = container.querySelector<HTMLElement>('[data-im-discovery="tg-disc-group-1"]')!;
     const secondRow = container.querySelector<HTMLElement>('[data-im-discovery="tg-disc-group-2"]')!;
     await click(firstRow, '[data-im-discovery-scope="chat"]');
@@ -1158,7 +1184,7 @@ describe('ChannelsCard two-way accounts', () => {
     const state = imChannelSnapshot('telegram');
     state.bindings[1] = { ...state.bindings[1]!, identity: { ...state.bindings[1]!.identity, topic_id: '42' } };
     fixture = createImSettingsFixture(state);
-    const container = await render();
+    await render(); const container = await openFirstAccount(document.body);
     const group = binding(container, 'binding-group');
     const updateSpy = vi.spyOn(fixture.client.imSessions, 'updateBinding');
 

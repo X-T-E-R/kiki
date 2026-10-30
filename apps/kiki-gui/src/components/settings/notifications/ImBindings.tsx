@@ -18,13 +18,17 @@ import {
 
 import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
+import { copyTextToClipboard } from '../../../lib/clipboard';
 import { pushUndoToast } from '../../../lib/toasts';
 import { FeedbackLine, type Feedback } from '../../controls';
-import { DisclosureChevron } from '../../icons';
+import { Icon } from '../../icons';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
+import { AnchoredPopover, usePopover } from '../../overlays/AnchoredPopover';
+import { AdvancedDetails } from '../fields';
+import { StatusText } from './rowParts';
 import { FORM_LABEL, SettingsSegmented, SettingsSelect, type SettingsChoice } from '../SettingsPrimitives';
 import {
-  bindingTargetChoices, bindingTargetValue, defaultTarget, IM_KEY as KEY, identityLabel, liveText, MEDIA_KIND_KEYS, parseTarget,
+  bindingTargetChoices, bindingTargetName, bindingTargetValue, defaultTarget, IM_KEY as KEY, identityLabel, liveText, MEDIA_KIND_KEYS, parseTarget,
   type SetupPlatformEntry, type Translator,
 } from './imModel';
 import { useImAction } from './useImSessions';
@@ -146,18 +150,27 @@ function GroupBindingOptions({
   );
 }
 
-export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = true }: {
+/**
+ * One conversation as a row inside its channel's body: name, a facts line
+ * (bound thread, IM 对话 on/off), the switch and a ⋯ menu (test, unbind). A
+ * click opens the editor inline; the parent keeps one open at a time, and a
+ * row with unsaved edits keeps its editor next to the next click (rule 13).
+ * Chat/sender ids live once, in the 高级 fold with a copy action (rule 14).
+ */
+export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = true, expanded, onToggle }: {
   binding: ImBinding;
   policy: ImSessionSnapshot['policy'];
   catalog: ImCatalog | undefined;
   setupPlatform?: SetupPlatformEntry;
   inbound?: boolean;
+  expanded: boolean;
+  onToggle: () => void;
 }) {
   const { t } = useI18n();
   const { client } = useConnection();
   const action = useImAction();
-  const [expanded, setExpanded] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const menu = usePopover();
   const [search, setSearch] = useState('');
   const [testing, setTesting] = useState(false);
   const [testFeedback, setTestFeedback] = useState<Feedback>(null);
@@ -269,18 +282,28 @@ export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = 
     }
   };
 
-  return <div data-im-binding={binding.id} aria-busy={action.saving || testing} className="space-y-3 py-3">
-    <div className="grid min-w-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(180px,1fr)_auto] md:items-center">
-      <div className="min-w-0 space-y-0.5">
-        <p className="break-words text-[13px] font-medium text-ink" data-im-binding-identity>{identity}</p>
-        <IdentityIds identity={binding.identity} singleLine={!expanded} />
-      </div>
-      <div className="min-w-0">
-        <SettingsSelect id={`im-binding-target-${binding.id}`} variant="form" ariaLabel={`${identity}: ${t('st.im.target')}`} value={targetValue}
-          choices={bindingTargetChoices(targetCatalog, binding, t)} emptyText={binding.session_id} disabled={action.saving}
-          onChange={onSelectTarget} dataAttr="data-im-binding-target" />
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
+
+
+  return <div data-im-binding={binding.id} data-open={expanded ? 'true' : undefined} aria-busy={action.saving || testing}>
+    <div className={`flex min-h-11 items-center gap-2 py-1.5 transition-colors ${expanded ? 'bg-ink/[0.03] rounded-lg' : ''}`}>
+      <button type="button" data-im-binding-options-toggle={binding.id} aria-expanded={expanded} aria-controls={`im-binding-editor-${binding.id}`}
+        aria-label={t('st.notify.expandAria', { name: identity })} onClick={onToggle}
+        className="group/row flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40">
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className="min-w-0 truncate text-[13px] font-medium text-ink" data-im-binding-identity>{identity}</span>
+            {!binding.enabled ? <span className="shrink-0 rounded-[4px] border border-hairline px-1.5 py-px text-[11px] leading-4 text-ink-faint">{t('st.im.disabled')}</span> : null}
+          </span>
+          <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px]">
+            <StatusText tone={blocked ? (binding.pending_reanchor ? 'warn' : 'idle') : on ? 'ok' : 'idle'}>
+              {blocked ? t(binding.pending_reanchor ? 'st.im.pendingReanchor' : !policy.allowed ? 'st.im.railOffAllowed' : 'st.im.railOffBinding') : on ? t('st.im.on') : t('st.im.off')}
+            </StatusText>
+            <span aria-hidden className="text-ink-faint">·</span>
+            <span className="min-w-0 truncate text-ink-faint">{bindingTargetName(targetCatalog, binding, t)}</span>
+          </span>
+        </span>
+      </button>
+      <div className="flex shrink-0 items-center gap-1.5 pl-1">
         <button type="button" role="switch" aria-checked={on} aria-label={`${identity}: ${t('st.im.sessionSwitch')}`}
           className="inline-flex min-h-8 items-center gap-2 rounded-md px-2 py-1 text-[13px] text-ink transition-colors hover:bg-ink/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
           data-im-session-switch={binding.id} disabled={action.saving || blocked}
@@ -292,48 +315,49 @@ export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = 
               on ? 'translate-x-[16px] bg-selected-ink' : 'translate-x-[3px] bg-ink-faint'
             }`} />
           </span>
-          <span>{t('st.im.sessionSwitch')}</span>
-          <span className="sr-only">: {t(on ? 'st.im.on' : 'st.im.off')}</span>
+          <span className="sr-only">{t('st.im.sessionSwitch')}: {t(on ? 'st.im.on' : 'st.im.off')}</span>
         </button>
-        <button
-          type="button"
-          className={SECONDARY_BUTTON}
-          data-im-test-binding={binding.id}
-          disabled={action.saving || testing}
-          onClick={() => { void runTestBinding(); }}
-        >
-          {t(testing ? 'st.im.testingBinding' : 'st.im.testBinding')}
-        </button>
-        <button
-          type="button"
-          className={`${SECONDARY_BUTTON} inline-flex items-center gap-1 px-2.5`}
-          data-im-binding-options-toggle={binding.id}
-          aria-label={t('st.im.bindingOptions')}
-          aria-expanded={expanded}
-          onClick={() => { setExpanded((open) => !open); setRemoving(false); }}
-        >
-          <DisclosureChevron open={expanded} />
-          <span className="sr-only">{t('st.im.bindingOptions')}</span>
+        <button type="button" data-im-binding-menu={binding.id} {...menu.triggerProps}
+          aria-label={t('st.im.bindingMenuAria', { name: identity })}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink">
+          <Icon name="more" size={14} />
         </button>
       </div>
     </div>
     {blocked ? (
-      <p className="text-[13px] text-ink-soft" data-im-binding-blocked>
+      <p className="sr-only" data-im-binding-blocked>
         {t(binding.pending_reanchor ? 'st.im.pendingReanchor' : !policy.allowed ? 'st.im.railOffAllowed' : 'st.im.railOffBinding')}
       </p>
     ) : null}
     {testFeedback !== null ? (
-      <div data-im-test-binding-result={binding.id}>
+      <div className="py-1" data-im-test-binding-result={binding.id}>
         <FeedbackLine feedback={testFeedback} />
       </div>
     ) : null}
-    {expanded ? <div data-im-binding-details={binding.id} className="space-y-3 pt-3">
-      <IdentityIds identity={binding.identity} singleLine={false} />
-      <label className="block max-w-sm space-y-1">
-        <span className={FORM_LABEL}>{t('st.im.searchTarget')}</span>
+    <AnchoredPopover {...menu.popoverProps} role="menu" align="end" widthClassName="w-44"
+      label={t('st.im.bindingMenuAria', { name: identity })} data={{ 'data-im-binding-menu-panel': binding.id }}>
+      <div className="-m-1.5 flex flex-col p-1">
+        <button type="button" role="menuitem" data-im-test-binding={binding.id} disabled={action.saving || testing}
+          onClick={() => { menu.setOpen(false); void runTestBinding(); }}
+          className="flex min-h-9 w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] text-ink outline-none transition-colors hover:bg-paper focus-visible:bg-paper disabled:cursor-not-allowed disabled:opacity-50">
+          {t(testing ? 'st.im.testingBinding' : 'st.im.testBinding')}
+        </button>
+        <button type="button" role="menuitem" data-im-remove={binding.id}
+          onClick={() => { menu.setOpen(false); setRemoving(true); if (!expanded) onToggle(); }}
+          className="flex min-h-9 w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] text-danger outline-none transition-colors hover:bg-paper focus-visible:bg-paper">
+          {t('st.im.unbind')}
+        </button>
+      </div>
+    </AnchoredPopover>
+    <div id={`im-binding-editor-${binding.id}`} hidden={!expanded} data-im-binding-details={binding.id} className="space-y-4 pl-1 pb-3 pt-2">
+      <div className="max-w-md space-y-1.5">
+        <span className={FORM_LABEL}>{t('st.im.target')}</span>
+        <SettingsSelect id={`im-binding-target-${binding.id}`} variant="form" ariaLabel={`${identity}: ${t('st.im.target')}`} value={targetValue}
+          choices={bindingTargetChoices(targetCatalog, binding, t)} emptyText={binding.session_id} disabled={action.saving}
+          onChange={onSelectTarget} dataAttr="data-im-binding-target" />
         <input type="search" data-im-binding-target-search value={search} aria-label={t('st.im.searchTarget')} placeholder={t('st.im.searchTarget')} className={INPUT} onChange={(event) => { setSearch(event.target.value); }} />
-      </label>
-      {sessions.isError ? <p role="alert" className="text-[13px] text-danger">{t('st.im.searchError')}</p> : null}
+        {sessions.isError ? <p role="alert" className="text-[13px] text-danger">{t('st.im.searchError')}</p> : null}
+      </div>
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-[13px] text-ink-soft">{t('st.im.sessionSwitch')}</span>
         <SettingsSegmented ariaLabel={`${identity}: ${t('st.im.sessionSwitch')}`} value={binding.session_enabled === undefined ? 'default' : binding.session_enabled ? 'on' : 'off'} disabled={action.saving || binding.pending_reanchor}
@@ -356,17 +380,46 @@ export function BindingRow({ binding, policy, catalog, setupPlatform, inbound = 
       /> : null}
       <BindingOptions kind={binding.provider_kind} setupPlatform={setupPlatform} capabilities={boundChannelView?.capabilities} busy={binding.busy} reply={binding.reply} actions={binding.mobile_interactions} disabled={action.saving} prefix="data-im-binding"
         onBusy={(busy) => { update({ busy }); }} onReply={(reply) => { update({ reply }); }} onActions={(mobile_interactions) => { update({ mobile_interactions }); }} />
-      <div className="flex flex-wrap items-center gap-2">
-        <button type="button" className={SECONDARY_BUTTON} data-im-enabled={binding.id} disabled={action.saving} onClick={() => { update({ enabled: !binding.enabled }); }}>{t(binding.enabled ? 'st.im.disable' : 'st.im.enable')}</button>
-        {removing ? <>
-          <span className="text-[13px] text-ink-soft">{t('st.im.removeConfirm', { name: identity })}</span>
-          <button type="button" className={DANGER_GHOST_BUTTON} data-im-remove-confirm={binding.id} disabled={action.saving} onClick={() => { void action.run(() => client.imSessions.removeBinding(binding.id)); }}>{t('st.im.remove')}</button>
-          <button type="button" className={SECONDARY_BUTTON} onClick={() => { setRemoving(false); }}>{t('common.cancel')}</button>
-        </> : <button type="button" className={DANGER_GHOST_BUTTON} data-im-remove={binding.id} onClick={() => { setRemoving(true); }}>{t('st.im.remove')}</button>}
-      </div>
-    </div> : null}
-    <FeedbackLine feedback={action.error === undefined ? null : { tone: 'error', text: action.error }} />
+      <AdvancedDetails summary={t('st.section.advanced')} data-im-binding-advanced={binding.id}>
+        <IdentityIds identity={binding.identity} />
+        <button type="button" className={SECONDARY_BUTTON} data-im-enabled={binding.id} disabled={action.saving}
+          onClick={() => { update({ enabled: !binding.enabled }); }}>
+          {t(binding.enabled ? 'st.im.disable' : 'st.im.enable')}
+        </button>
+      </AdvancedDetails>
+      {removing ? <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[13px] text-ink-soft">{t('st.im.removeConfirm', { name: identity })}</span>
+        <button type="button" className={DANGER_GHOST_BUTTON} data-im-remove-confirm={binding.id} disabled={action.saving} onClick={() => { void action.run(() => client.imSessions.removeBinding(binding.id)); }}>{t('st.im.unbind')}</button>
+        <button type="button" className={SECONDARY_BUTTON} onClick={() => { setRemoving(false); }}>{t('common.cancel')}</button>
+      </div> : null}
+      <FeedbackLine feedback={action.error === undefined ? null : { tone: 'error', text: action.error }} />
+    </div>
   </div>;
+}
+
+/** Raw chat/sender ids, once, with a copy action: the 高级 fold's content. */
+function IdentityIds({ identity }: { identity: ImIdentity }) {
+  const { t } = useI18n();
+  const parts = [
+    { label: t('st.im.chatId'), value: identity.chat_id },
+    { label: t('st.im.senderId'), value: identity.sender_id },
+    ...(identity.topic_id !== '0' ? [{ label: t('st.im.topicId'), value: identity.topic_id }] : []),
+  ];
+  return (
+    <p data-im-identity-ids className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+      {parts.map((part, index) => (
+        <span key={part.label} className="inline-flex min-w-0 items-baseline gap-1">
+          {index > 0 ? <span aria-hidden className="text-ink-faint">·</span> : null}
+          <span>{part.label}:</span>
+          <button type="button" data-im-copy-id={part.value} title={t('st.channels.copyHint', { value: part.value })}
+            onClick={() => { void copyTextToClipboard(part.value); }}
+            className="min-w-0 break-all font-mono text-[11.5px] text-ink-soft underline decoration-dotted decoration-ink-faint/60 underline-offset-2 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink">
+            {part.value}
+          </button>
+        </span>
+      ))}
+    </p>
+  );
 }
 
 export function DiscoveryRow({ discovery, catalog, setupPlatform, initialTarget, inbound = true }: {
@@ -406,7 +459,7 @@ export function DiscoveryRow({ discovery, catalog, setupPlatform, initialTarget,
         <p className="break-words text-[14px] font-medium text-ink">{identityLabel(discovery.identity, t)}</p>
         {discovery.preview !== '' ? <p className="min-w-0 truncate text-[13px] text-ink-soft" title={discovery.preview}>“{discovery.preview}”</p> : null}
       </div>
-      <IdentityIds identity={discovery.identity} singleLine />
+      <IdentityIds identity={discovery.identity} />
     </div>
     {unsupported ? <p data-im-unsupported className="text-[13px] leading-5 text-ink-soft">{t('st.im.wechatDirectOnly')}</p> : <TargetPicker id={`im-target-${discovery.id}`} value={selected} onChange={setTarget} catalog={catalog} disabled={action.saving} />}
     {!unsupported && selected.startsWith('persona:') ? <label className="flex min-h-8 items-center gap-2 text-[13px] text-ink-soft">
@@ -521,20 +574,6 @@ function BindingOptions({ kind, setupPlatform, capabilities, busy, reply, action
       </p>
     ) : null}
   </div>;
-}
-
-function IdentityIds({ identity, singleLine = false }: { identity: ImIdentity; singleLine?: boolean }) {
-  const { t } = useI18n();
-  const full = `${t('st.im.chatId')}: ${identity.chat_id} · ${t('st.im.senderId')}: ${identity.sender_id}${identity.topic_id !== '0' ? ` · ${t('st.im.topicId')}: ${identity.topic_id}` : ''}`;
-  return (
-    <p
-      className={`font-mono text-[12px] leading-5 text-ink-soft ${singleLine ? 'truncate' : 'break-all'}`}
-      title={singleLine ? full : undefined}
-      data-im-identity-ids
-    >
-      {full}
-    </p>
-  );
 }
 
 function ReplyMode({ kind, setupPlatform, value, onChange, disabled, dataAttr }: {

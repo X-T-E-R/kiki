@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 
 import { useI18n } from '../../../i18n';
-import { DisclosureChevron, Icon } from '../../icons';
+import { Icon } from '../../icons';
 import type { BrandId } from './catalog';
 
 /** Short marks: the tile says which platform without a logo we do not ship. */
@@ -70,7 +70,9 @@ export function StatusText({ tone, children, data }: { tone: StatusTone; childre
 /**
  * One row of "My channels": the tile, the name with its capability, and a
  * second line that leads with status; the row's own switch sits on the
- * right. The whole left side opens the row's detail underneath.
+ * right. The whole left side opens the row's detail underneath — no chevron:
+ * the open state is a quiet tint on the summary strip and the body sits
+ * under the row as its continuation (batch rules 11-14).
  */
 export function ChannelListRow({ brand, twoWay, name, status, meta, control, open, onToggle, bodyId, expandLabel, children, data }: {
   brand: BrandId;
@@ -88,7 +90,7 @@ export function ChannelListRow({ brand, twoWay, name, status, meta, control, ope
 }) {
   return (
     <div {...data} data-open={open ? 'true' : undefined}>
-      <div className="flex min-h-[60px] items-center gap-2 px-3 py-2">
+      <div className={`flex min-h-[60px] items-center gap-2 px-3 py-2 transition-colors ${open ? 'bg-ink/[0.03]' : ''}`}>
         <button type="button" aria-expanded={open} aria-controls={bodyId} aria-label={expandLabel} onClick={onToggle}
           className="group/row -my-1 -ml-1 flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-md px-1 py-1 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-selected-ink/40">
           <PlatformMark brand={brand} twoWay={twoWay} />
@@ -105,11 +107,10 @@ export function ChannelListRow({ brand, twoWay, name, status, meta, control, ope
               </> : null}
             </span>
           </span>
-          <DisclosureChevron open={open} className="shrink-0 text-ink-faint transition-colors group-hover/row:text-ink-soft" />
         </button>
         {control !== undefined ? <div className="flex shrink-0 items-center gap-2 pl-1">{control}</div> : null}
       </div>
-      <div id={bodyId} hidden={!open} data-channel-body className="space-y-5 border-t border-hairline bg-ink/[0.015] px-4 pb-5 pt-4 sm:pl-[60px] sm:pr-5">
+      <div id={bodyId} hidden={!open} data-channel-body className="space-y-5 px-4 pb-5 pt-4 sm:pl-[60px] sm:pr-5">
         {children}
       </div>
     </div>

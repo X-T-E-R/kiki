@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import type { ImCatalog, ImConnectionDetail, ImSessionSnapshot } from '@kiki/protocol';
@@ -6,9 +6,11 @@ import { pluginSettingsPath } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
+import { copyTextToClipboard } from '../../../lib/clipboard';
 import { FeedbackLine, Toggle } from '../../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { FORM_LABEL } from '../SettingsPrimitives';
+import { AdvancedDetails } from '../fields';
 import { brandOfIm } from './catalog';
 import { BindingRow, DiscoveryRow, TargetPicker } from './ImBindings';
 import {
@@ -30,7 +32,7 @@ const TONE: Record<ImAccountState, StatusTone> = {
  * fixing, the conversations themselves (bound chats and newly heard ones),
  * and the account's own re-authorization.
  */
-export function ImAccountRow({ account, data, catalog, setupPlatform, initialTarget, preselectedTarget, onPreselectTarget, defaultOpen }: {
+export function ImAccountRow({ account, data, catalog, setupPlatform, initialTarget, preselectedTarget, onPreselectTarget, open, onToggle }: {
   account: ImInstanceStatus;
   data: ImSessionSnapshot;
   catalog: ImCatalog | undefined;
@@ -38,7 +40,8 @@ export function ImAccountRow({ account, data, catalog, setupPlatform, initialTar
   initialTarget: string;
   preselectedTarget?: string;
   onPreselectTarget: (target: string) => void;
-  defaultOpen: boolean;
+  open: boolean;
+  onToggle: () => void;
 }) {
   const { t } = useI18n();
   const { client } = useConnection();
@@ -48,8 +51,12 @@ export function ImAccountRow({ account, data, catalog, setupPlatform, initialTar
   const bindings = data.bindings.filter((item) => item.provider_instance_id === account.id);
   const discoveries = data.discoveries.filter((item) => item.provider_instance_id === account.id);
   const state = instanceState(account);
-  const [open, setOpen] = useState(defaultOpen || discoveries.length > 0 || state === 'auth_expired');
   const [reauthorizing, setReauthorizing] = useState(false);
+  // A fresh server echo must not fight the person's unsaved choice of which
+  // conversation they are editing, so a binding keeps its open editor until
+  // they leave it.
+  const [openBinding, setOpenBinding] = useState<string | null>(null);
+  useEffect(() => { if (!open) setOpenBinding(null); }, [open]);
   const name = instanceDisplayName(account, t);
   const brand = brandOfIm(account.provider_kind);
   const qqPlugin = account.provider_kind.startsWith('plugin:kiki-qq/') || account.id.startsWith('plugin:kiki-qq/');
@@ -68,7 +75,7 @@ export function ImAccountRow({ account, data, catalog, setupPlatform, initialTar
     <ChannelListRow
       data={{ 'data-im-account': account.id, 'data-im-instance-row': account.id, 'data-channel-row': `im:${account.id}` }}
       brand={brand} twoWay name={name} status={status} meta={meta}
-      open={open} onToggle={() => { setOpen((value) => !value); }} bodyId={bodyId}
+      open={open} onToggle={onToggle} bodyId={bodyId}
       expandLabel={t('st.notify.expandAria', { name })}
       control={canListen ? (
         <span data-im-listen={account.id} className="contents">
@@ -83,7 +90,7 @@ export function ImAccountRow({ account, data, catalog, setupPlatform, initialTar
         onReauthorize={() => { setReauthorizing(true); }} />
       <FeedbackLine feedback={action.error === undefined ? null : { tone: 'error', text: action.error }} />
 
-      {state === 'auth_expired' && bindings.length === 0 && discoveries.length === 0 ? null : <section className="space-y-2" data-im-conversations={account.id}>
+      {state === 'auth_expired' && bindings.length === 0 && discoveries.length === 0 ? null : <section className="space-y-3" data-im-conversations={account.id}>
         <div className="flex items-center justify-between gap-2">
           <p className="text-[13px] font-medium text-ink">{t('st.channels.conversations')}</p>
           {account.listening ? (
@@ -99,7 +106,12 @@ export function ImAccountRow({ account, data, catalog, setupPlatform, initialTar
           ))}
         </div> : null}
         {bindings.length > 0 ? <div data-im-bindings-list className="divide-y divide-hairline rounded-lg border border-hairline bg-panel px-3">
-          {bindings.map((binding) => <BindingRow key={binding.id} binding={binding} policy={data.policy} catalog={catalog} setupPlatform={setupPlatform} inbound={account.inbound !== false} />)}
+          {bindings.map((binding) => (
+            <BindingRow key={binding.id} binding={binding} policy={data.policy} catalog={catalog} setupPlatform={setupPlatform}
+              inbound={account.inbound !== false}
+              expanded={openBinding === binding.id}
+              onToggle={() => { setOpenBinding((current) => current === binding.id ? null : binding.id); }} />
+          ))}
         </div> : null}
         {state === 'auth_expired' ? null : <div data-im-bind-flow={account.id} className="space-y-3 rounded-lg border border-dashed border-hairline-strong px-3.5 py-3">
           <p className="text-[12.5px] leading-5 text-ink-soft" data-im-awaiting-discovery>
@@ -120,30 +132,33 @@ export function ImAccountRow({ account, data, catalog, setupPlatform, initialTar
         </div>}
       </section>}
 
-      <section className="space-y-3 pt-4" data-im-account-settings={account.id}>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[12px]">
-          <span className="text-ink-faint">{t('st.channels.accountId')}</span>
-          <span className="min-w-0 break-all font-mono text-ink-soft" data-im-adapter={account.adapter}>{account.account_id ?? account.id}</span>
-          <span className="ml-auto flex flex-wrap items-center gap-2">
-            {qqPlugin ? (
-              <Link to={pluginSettingsPath('kiki-qq')} className="text-selected-ink hover:underline" data-im-plugin-settings="kiki-qq">
-                {t('st.im.configureAccount')}
-              </Link>
-            ) : state === 'auth_expired' && !reauthorizing ? null : (
-              <button type="button" className={SECONDARY_BUTTON} data-im-reauthorize={account.id} aria-expanded={reauthorizing}
-                onClick={() => { setReauthorizing((value) => !value); }}>
-                {t(reauthorizing ? 'st.im.closeBindFlow' : 'st.im.reauthorize')}
-              </button>
-            )}
-          </span>
+      <AdvancedDetails summary={t('st.section.advanced')} data-im-account-advanced={account.id}>
+        <div className="space-y-3" data-im-account-settings={account.id}>
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="min-w-0 break-all font-mono text-[12px] text-ink-soft" data-im-adapter={account.adapter}>{account.account_id ?? account.id}</span>
+            <button type="button" data-im-copy-account className="rounded px-1.5 py-0.5 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink"
+              onClick={() => { void copyTextToClipboard(account.account_id ?? account.id); }}>
+              {t('st.channels.copy')}
+            </button>
+          </p>
+          {qqPlugin ? (
+            <Link to={pluginSettingsPath('kiki-qq')} className="text-selected-ink hover:underline" data-im-plugin-settings="kiki-qq">
+              {t('st.im.configureAccount')}
+            </Link>
+          ) : state === 'auth_expired' && !reauthorizing ? null : (
+            <button type="button" className="text-selected-ink hover:underline" data-im-reauthorize={account.id} aria-expanded={reauthorizing}
+              onClick={() => { setReauthorizing((value) => !value); }}>
+              {t(reauthorizing ? 'st.im.closeBindFlow' : 'st.im.reauthorize')}
+            </button>
+          )}
         </div>
         {reauthorizing && !qqPlugin ? (
-          <div className="rounded-lg border border-hairline bg-panel p-4" data-im-connect-drawer data-im-instance={account.id}>
+          <div className="mt-3 rounded-lg border border-hairline bg-panel p-4" data-im-connect-drawer data-im-instance={account.id}>
             <Reauthorize account={account} setupPlatform={setupPlatform}
               onDone={() => { setReauthorizing(false); }} />
           </div>
         ) : null}
-      </section>
+      </AdvancedDetails>
     </ChannelListRow>
   );
 }

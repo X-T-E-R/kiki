@@ -470,7 +470,7 @@ export function PluginCatalogDialog({
     >
       <div className="space-y-1">
         {entries.length === 0 ? (
-          <p className="text-[12px] text-ink-faint">{t('cap.plugins.noMatch', { query })}</p>
+          <p className="text-[12px] text-ink-faint">{query.trim() === '' ? t('cap.plugins.noneAvailable') : t('cap.plugins.noMatch', { query })}</p>
         ) : entries.map((entry) => (
           <button key={entry.id} type="button" onClick={() => { onPick(entry); }} className={`flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition-colors hover:bg-ink/[0.04] ${FOCUS_RING}`} data-rail-plugin-catalog-entry={entry.id}>
             <CapabilityIcon icon={entry.icon} kind="plugin" size="sm" />

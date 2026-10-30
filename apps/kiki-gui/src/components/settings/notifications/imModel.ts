@@ -63,6 +63,24 @@ export function bindingTargetValue(binding: ImBinding): string {
         : 'unassigned';
 }
 
+/**
+ * The thread a binding lands on, as a short name for the row's facts line.
+ * Personas keep their name, sessions their title; an unassigned or
+ * re-anchoring binding says so in words, never as a raw id.
+ */
+export function bindingTargetName(catalog: ImCatalog | undefined, binding: ImBinding, t: Translator): string {
+  if (binding.pending_reanchor) return t('st.im.pendingReanchor');
+  if (binding.persona_id !== undefined) {
+    const name = catalog?.personas.find((item) => item.id === binding.persona_id)?.name;
+    return name === undefined ? binding.persona_id : `${t('st.im.kindPersona')} · ${name}`;
+  }
+  if (binding.session_id !== undefined) {
+    const title = catalog?.sessions.find((item) => item.id === binding.session_id)?.title;
+    return title === undefined ? binding.session_id : `${t('st.im.kindSession')} · ${title}`;
+  }
+  return t('st.im.pendingReanchor');
+}
+
 export function bindingTargetChoices(catalog: ImCatalog | undefined, binding: ImBinding, t: Translator): { value: string; label: string }[] {
   const choices = [
     ...(catalog?.personas ?? []).map((item) => ({ value: `persona:${item.id}`, label: `${t('st.im.kindPersona')} · ${item.name}` })),

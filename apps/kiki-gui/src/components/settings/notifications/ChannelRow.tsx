@@ -23,18 +23,18 @@ import { useNotificationWrites } from './useNotifications';
  * go, check and test, then recent activity. Which moments it hears is chosen
  * in the rules tab, not here. Instant apply.
  */
-export function ChannelRow({ channelId, channel, settings, provider, deliveries, defaultOpen }: {
+export function ChannelRow({ channelId, channel, settings, provider, deliveries, open, onToggle }: {
   channelId: string;
   channel: NotificationChannel;
   settings: NotificationSettings;
   provider: NotificationProviderDescriptor | undefined;
   deliveries: readonly NotificationDelivery[];
-  defaultOpen: boolean;
+  open: boolean;
+  onToggle: () => void;
 }) {
   const { t, time } = useI18n();
   const { api, apply, refresh, refreshDeliveries } = useNotificationWrites();
   const save = useInstantSave();
-  const [open, setOpen] = useState(defaultOpen);
   const [pending, setPending] = useState<string | null>(null);
   const [action, setAction] = useState<'check' | 'test' | null>(null);
   const [result, setResult] = useState<Feedback>(null);
@@ -110,7 +110,7 @@ export function ChannelRow({ channelId, channel, settings, provider, deliveries,
       brand={brandOfPush(providerId)} twoWay={false} name={name}
       status={<ChannelStatus state={state} enabled={channel.enabled} paused={!settings.global.enabled} />}
       meta={name !== typeName ? typeName : undefined}
-      open={open} onToggle={() => { setOpen((value) => !value); }} bodyId={bodyId}
+      open={open} onToggle={onToggle} bodyId={bodyId}
       expandLabel={t('st.notify.expandAria', { name })}
       control={<>
         {status('enabled')}

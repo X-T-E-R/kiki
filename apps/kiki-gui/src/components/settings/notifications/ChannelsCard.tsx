@@ -185,10 +185,10 @@ export function ChannelsCard({ adding, setAdding }: { adding: boolean; setAdding
                       setupPlatform={setupCatalog.data?.platforms.find((item) => item.provider_kind === entry.account.provider_kind)}
                       initialTarget={initialTarget} preselectedTarget={preselected[entry.account.id]}
                       onPreselectTarget={(value) => { setPreselected((current) => ({ ...current, [entry.account.id]: value })); }}
-                      defaultOpen={opened === entry.key || (entry.account.listening && !im.bindings.some((item) => item.provider_instance_id === entry.account.id))} />
+                      open={opened === entry.key} onToggle={() => { setOpened((current) => current === entry.key ? null : entry.key); }} />
                   ) : entry.kind === 'push' && push !== undefined ? (
                     <ChannelRow channelId={entry.id} channel={entry.channel} settings={push} provider={providerOf(entry.channel)}
-                      deliveries={byChannel.get(entry.id) ?? []} defaultOpen={opened === entry.key} />
+                      deliveries={byChannel.get(entry.id) ?? []} open={opened === entry.key} onToggle={() => { setOpened((current) => current === entry.key ? null : entry.key); }} />
                   ) : null} />
               </div>
             )}
