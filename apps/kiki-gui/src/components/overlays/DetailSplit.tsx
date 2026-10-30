@@ -62,11 +62,21 @@ export function DetailSplit({ selected, list, rail, detail, label, data }: {
           const target = root.closest<HTMLElement>('[id^="st-card-"]') ?? root;
           target.scrollIntoView?.({ block: 'start' });
         } else {
-          // Always land the pane's header in view, below any sticky toolbar in
-          // the card above it: an opened split can sit far below the fold or
-          // start above it, and the card's own edge answers neither.
+          // Always land the pane's header in view, below any sticky chrome the
+          // page or card pins to the scroller's top (tab strips, list
+          // toolbars). Measure it: a fixed guess clips the header whenever the
+          // toolbar wraps to two rows.
+          let clearance = 16;
+          for (const node of scroller.querySelectorAll<HTMLElement>('[data-list-toolbar], [role="tablist"], [data-profile-tabs]')) {
+            if (node.closest('[data-detail-split="open"]') !== null) continue;
+            const style = getComputedStyle(node);
+            if (style.position !== 'sticky' && style.position !== 'fixed') continue;
+            const rect = node.getBoundingClientRect();
+            if (rect.height === 0) continue;
+            clearance = Math.max(clearance, rect.bottom - scroller.getBoundingClientRect().top + 16);
+          }
           const delta = root.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-          scroller.scrollTop += delta - 56;
+          scroller.scrollTop += delta - clearance;
         }
         return;
       }
