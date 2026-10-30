@@ -265,34 +265,31 @@ function RosterSummaryChapter({
   const open = openFilter !== null;
   return (
     <section data-inspector-agents="">
-      <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
+      {/* The head row stays one line (name, count, chevron far right); the
+          summary chips live on their own line below it. */}
+      <div className="flex min-h-7 items-center gap-1">
         <button
           type="button"
           aria-expanded={open}
           onClick={() => { setOpenFilter(open ? null : 'all'); }}
-          className="group -mx-1.5 flex h-7 min-w-0 items-center gap-1.5 rounded-md px-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+          className="group -mx-1.5 flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
         >
           <span className={INSPECTOR_HEAD}>{t('rail.group.agents')}</span>
           <span className="shrink-0 text-[12px] text-ink-faint tabular-nums">{rosterCount}</span>
+          <span className="ml-auto" />
+          <DisclosureChevron open={open} />
         </button>
-        {!open ? (
+        {actions}
+      </div>
+      {!open ? (
+        <div className="pt-0.5">
           <RosterSummary
             counts={model.counts}
             filter="all"
             onFilter={(bucket) => { setOpenFilter(bucket); }}
           />
-        ) : null}
-        {actions !== undefined ? <span className="ml-auto">{actions}</span> : <span className="ml-auto" />}
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-label={t(open ? 'inspector.collapseAgent' : 'inspector.expandAgent', { name: t('rail.group.agents') })}
-          onClick={() => { setOpenFilter(open ? null : 'all'); }}
-          className="-mr-1.5 flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-        >
-          <DisclosureChevron open={open} />
-        </button>
-      </div>
+        </div>
+      ) : null}
       {open ? (
         <div className="pt-1">
           {children(openFilter)}
@@ -596,7 +593,7 @@ export function Rail({
   const recordSection = (
     <div
       id="rail-todos"
-      className={`space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [&_[data-agent-notes-state=empty]]:hidden [&_[data-agent-panel-part=work]:has([data-agent-notes-state=empty]):not(:has([data-agent-hooks-section],[data-agent-plan],[data-agent-plan-error]))]:hidden [&:has([data-agent-notes-state=empty]):not(:has([data-rail-todos],[data-agent-hooks-section],[data-agent-plan],[data-agent-plan-error]))]:hidden [&_[data-agent-todo-section]]:hidden [&_[data-agent-todos-status]]:hidden`}
+      className={`space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [&_[data-agent-notes-state=empty]]:hidden [&_[data-agent-panel-part=work]:has([data-agent-notes-state=empty]):not(:has([data-agent-hooks-section],[data-agent-plan],[data-agent-plan-error]))]:hidden [&_[data-agent-todo-section]]:hidden [&_[data-agent-todos-status]]:hidden`}
     >
       <RailSection title={t('rail.group.record')} data-rail-group="record">
         <RailTodos sessionId={state.sessionId} agentId={focusedAgentId} state={state} />
@@ -678,7 +675,7 @@ export function Rail({
           {/* The session's facts are plain label/value lines here — no fold
               inside the chapter's fold. */}
           <dl data-inspector-session="">
-            <InspectorRow label={t('rail.directory')} title={session.metadata.cwd} mono>{session.metadata.cwd}</InspectorRow>
+            <InspectorRow label={t('rail.directory')} title={session.metadata.cwd}><span className="truncate" style={{ direction: 'rtl', unicodeBidi: 'plaintext' }}>{session.metadata.cwd}</span></InspectorRow>
             {session.message_count > 0 ? <InspectorRow label={t('rail.messages')}>{String(session.message_count)}</InspectorRow> : null}
             <InspectorRow label={t('rail.updatedRow')}><RelativeTime at={session.updated_at} /></InspectorRow>
           </dl>
