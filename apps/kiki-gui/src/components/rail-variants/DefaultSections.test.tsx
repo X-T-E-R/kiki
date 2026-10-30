@@ -1,15 +1,15 @@
 // @vitest-environment jsdom
 
 /**
- * The rail splits observation from control into two independent folded entries.
- * Tools, skills, and subagent targets stay in the three-tab observation fold;
- * plugins, system capabilities, and MCP servers live in the control fold.
- * Plugin and MCP tools remain observable in the complete tools inventory.
+ * The rail's capabilities chapter is ONE fold: the observation tabs (tools,
+ * skills, subagent targets) sit beside the session switches (plugins, system
+ * capabilities, MCP servers), because "它能用什么" covers both. Plugin and MCP
+ * tools remain observable in the complete tools inventory.
  *
  * The agent-panel and plugin-usage reads fail independently. A failed read
  * leaves a quiet retry line in its own group. A partial capability answer keeps
  * the tabs that answered and gives only the missing kind the retry. Explicit
- * unsupported errors hide their own group, not the system and MCP controls.
+ * unsupported errors hide their own group, not the rest.
  */
 
 import { act } from 'react';
@@ -201,17 +201,16 @@ async function settle() {
   for (let i = 0; i < 5; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
 }
 
-/** The observation fold, opened. */
+/** The one capabilities fold, opened. */
 async function openFold(): Promise<HTMLElement> {
-  const head = container.querySelector<HTMLElement>('[data-rail-capabilities="observation"] [aria-expanded]')!;
+  const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]')!;
   await act(async () => { head.click(); });
   return head;
 }
 
-/** The control fold, opened. */
-async function openControls(): Promise<HTMLElement> {
-  const head = container.querySelector<HTMLElement>('[data-rail-capabilities="control"] [aria-expanded]')!;
-  await act(async () => { head.click(); });
+function fold(): HTMLElement {
+  const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]');
+  if (head === null) throw new Error('no capabilities fold head');
   return head;
 }
 
@@ -222,62 +221,46 @@ async function tab(id: string) {
 }
 
 describe('CapabilitiesBlock', () => {
-  it('keeps observation and control as independent default-closed folds', async () => {
+  it('keeps observation and control as one default-closed fold', async () => {
     readCapabilities.mockResolvedValue(full);
     getUsage.mockResolvedValue(pluginAnswer());
     getSessionCaps.mockResolvedValue(buildSessionCapabilities());
     await render();
     await settle();
-    const observation = container.querySelector('[data-rail-capabilities="observation"]')!;
-    const controls = container.querySelector('[data-rail-capabilities="control"]')!;
-    const observationHead = observation.querySelector<HTMLButtonElement>('[aria-expanded]')!;
-    const controlHead = controls.querySelector<HTMLButtonElement>('[aria-expanded]')!;
+    const head = fold();
     expect(readCapabilities).not.toHaveBeenCalled();
     expect(getUsage).not.toHaveBeenCalled();
-    expect(observationHead.getAttribute('aria-expanded')).toBe('false');
-    expect(controlHead.getAttribute('aria-expanded')).toBe('false');
-    expect(observationHead.textContent).toContain('能力清单');
-    expect(observationHead.textContent).not.toContain('工具');
-    expect(controlHead.textContent).toBe('能力控制');
-    expect(controlHead.querySelector('[data-fold-summary]')).toBeNull();
-    expect(observation.querySelector('[data-agent-capabilities-section]')).toBeNull();
-    expect(controls.querySelector('[data-rail-plugin="demo"]')).toBeNull();
+    expect(head.getAttribute('aria-expanded')).toBe('false');
+    expect(head.textContent).toContain('能力');
+    expect(container.querySelector('[data-agent-capabilities-section]')).toBeNull();
+    expect(container.querySelector('[data-rail-plugin="demo"]')).toBeNull();
 
     await openFold();
-    await settle();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
-    expect(getUsage).not.toHaveBeenCalled();
-    expect(observationHead.getAttribute('aria-expanded')).toBe('true');
-    expect(controlHead.getAttribute('aria-expanded')).toBe('false');
-    expect(observation.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
-    expect(observation.querySelector('[data-capability-tab-button="plugins"]')).toBeNull();
-    expect(observation.querySelector('[data-capability-group-chip="mcp:github"]')).not.toBeNull();
-    await tab('skills');
-    expect(observation.textContent).toContain('api-diff');
-    expect(observation.textContent).toContain('release-notes');
-
-    await openControls();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
     expect(getUsage).toHaveBeenCalledTimes(1);
     expect(getSessionCaps).toHaveBeenCalledTimes(1);
-    expect(observationHead.getAttribute('aria-expanded')).toBe('true');
-    expect(controlHead.getAttribute('aria-expanded')).toBe('true');
-    expect(controls.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
-    expect(controls.querySelector('[data-optional-capability="browser"]')).not.toBeNull();
-    expect(controls.querySelector('[data-capability-tab-button]')).toBeNull();
+    expect(head.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
+    expect(container.querySelector('[data-capability-tab-button="plugins"]')).toBeNull();
+    expect(container.querySelector('[data-capability-group-chip="mcp:github"]')).not.toBeNull();
+    await tab('skills');
+    expect(container.textContent).toContain('api-diff');
+    expect(container.textContent).toContain('release-notes');
+    expect(container.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
+    expect(container.querySelector('[data-optional-capability="browser"]')).not.toBeNull();
 
-    await act(async () => { observationHead.click(); });
-    expect(observation.querySelector('[data-agent-capabilities-section]')).toBeNull();
-    expect(controls.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
+    await act(async () => { head.click(); });
+    expect(container.querySelector('[data-agent-capabilities-section]')).toBeNull();
+    expect(container.querySelector('[data-rail-plugin="demo"]')).toBeNull();
 
     await openFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
-    expect(observation.querySelector('[data-agent-capabilities-section]')).not.toBeNull();
+    expect(container.querySelector('[data-agent-capabilities-section]')).not.toBeNull();
   });
 
-  it('counts usable plugins only inside the expanded plugin group', async () => {
+  it('lists plugins of every state inside the opened fold, disabled ones out of the switch', async () => {
     readCapabilities.mockResolvedValue(full);
     getUsage.mockResolvedValue(pluginAnswer({
       plugins: [
@@ -288,16 +271,11 @@ describe('CapabilitiesBlock', () => {
     }));
     await render();
     await settle();
-    const head = container.querySelector('[data-rail-capabilities="control"] [aria-expanded]')!;
     expect(getUsage).not.toHaveBeenCalled();
-    expect(head.textContent).toBe('能力控制');
-    expect(head.querySelector('[data-fold-summary]')).toBeNull();
-    expect(container.querySelector('[data-rail-plugin-count]')).toBeNull();
-    await openControls();
+    await openFold();
     await settle();
     expect(getUsage).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[data-rail-control-group="plugins"] h4')?.textContent).toBe('插件1');
-    expect(container.querySelector('[data-rail-plugin-count]')?.textContent).toBe('1');
+    expect(container.querySelector('[data-rail-control-group="plugins"] h4')?.textContent).toBe('插件');
     expect(container.querySelectorAll('[data-rail-plugin]')).toHaveLength(3);
   });
 
@@ -313,8 +291,8 @@ describe('CapabilitiesBlock', () => {
     getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
-    // Closed folds do not invent a count; built-ins alone are 3 of 4 enabled (Grep is off).
-    const head = container.querySelector<HTMLElement>('[data-rail-capabilities="observation"] [aria-expanded]')!;
+    // Closed fold does not invent a count; built-ins alone are 3 of 4 enabled (Grep is off).
+    const head = fold();
     expect(head.textContent).not.toContain('工具');
     expect(container.querySelector('[data-rail-capabilities-preview]')).toBeNull();
     await openFold();
@@ -329,26 +307,19 @@ describe('CapabilitiesBlock', () => {
     getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
-    const block = container.querySelector('[data-rail-capabilities="observation"]')!;
-    // The block stays a fold: the plugins half is still true, so the head has
-    // no fake counts and no alert, and the failure is told where it belongs.
     expect(readCapabilities).not.toHaveBeenCalled();
-    expect(block.textContent).toContain('能力清单');
-    expect(block.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
     await openFold();
     await settle();
-    const status = block.querySelector('[data-rail-capabilities-unavailable]')!;
+    const status = container.querySelector('[data-rail-capabilities-unavailable]')!;
     expect(status.getAttribute('role')).toBe('status');
     expect(status.className).toContain('text-ink-faint');
     expect(status.className).not.toMatch(/danger|amber|attention/);
     expect(status.textContent).toContain('暂时读不到能力信息。');
-    // The control fold is a different read and is not dragged into the failure.
-    await openControls();
-    await settle();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
+    // The plugin read is a different answer and is not dragged into the failure.
     expect(getUsage).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[data-rail-capabilities="control"] [data-rail-plugin="demo"]')).not.toBeNull();
-    const retry = block.querySelector<HTMLButtonElement>('[data-rail-capabilities-retry]')!;
+    expect(container.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
+    const retry = container.querySelector<HTMLButtonElement>('[data-rail-capabilities-retry]')!;
     expect(retry.textContent).toBe('重试');
     readCapabilities.mockResolvedValue(full);
     await act(async () => { retry.click(); });
@@ -358,7 +329,7 @@ describe('CapabilitiesBlock', () => {
     expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
   });
 
-  it('tells a failed plugin read inside the control fold only', async () => {
+  it('tells a failed plugin read inside the fold only', async () => {
     readCapabilities.mockResolvedValue(full);
     getUsage.mockRejectedValue(new Error('network down'));
     await render();
@@ -366,15 +337,11 @@ describe('CapabilitiesBlock', () => {
     await openFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
-    expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
-    await openControls();
-    await settle();
-    expect(readCapabilities).toHaveBeenCalledTimes(1);
     expect(getUsage).toHaveBeenCalledTimes(1);
+    expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
     const line = container.querySelector('[data-rail-plugins-unavailable]')!;
     expect(line.textContent).toContain('暂时读不到当前对话的插件使用情况。');
     expect(line.querySelector('button')!.textContent).toBe('重试');
-    expect(container.querySelector('[data-rail-capabilities="observation"] [data-rail-plugins-unavailable]')).toBeNull();
   });
 
   it('has no plugins tab when the server does not offer plugin usage', async () => {
@@ -382,23 +349,21 @@ describe('CapabilitiesBlock', () => {
     getUsage.mockRejectedValue(unsupported());
     await render();
     await settle();
-    const head = container.querySelector<HTMLElement>('[data-rail-capabilities="observation"] [aria-expanded]')!;
+    const head = fold();
     expect(readCapabilities).not.toHaveBeenCalled();
     expect(getUsage).not.toHaveBeenCalled();
     expect(head.textContent).not.toContain('工具');
-    expect(head.textContent).not.toContain('插件');
     await openFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
-    expect(getUsage).not.toHaveBeenCalled();
+    expect(getUsage).toHaveBeenCalledTimes(1);
     expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
     expect(container.querySelector('[data-capability-tab-button="plugins"]')).toBeNull();
     await act(async () => { head.click(); });
     expect(head.textContent).toContain('工具 4');
-    await openControls();
+    await openFold();
     await settle();
-    expect(getUsage).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[data-rail-control-group="plugins"]')).toBeNull();
+    expect(container.querySelector('[data-rail-plugin]')).toBeNull();
   });
 
   it('keeps controls without an observation tab strip when the capability scope is unsupported', async () => {
@@ -408,40 +373,30 @@ describe('CapabilitiesBlock', () => {
     await settle();
     expect(readCapabilities).not.toHaveBeenCalled();
     expect(getUsage).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-rail-capabilities="observation"]')).not.toBeNull();
-    const head = container.querySelector<HTMLElement>('[data-rail-capabilities="control"] [aria-expanded]')!;
-    expect(head.textContent).toBe('能力控制');
-    expect(head.querySelector('[data-fold-summary]')).toBeNull();
-    await openControls();
-    await settle();
-    expect(readCapabilities).not.toHaveBeenCalled();
-    expect(getUsage).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
-    expect(container.querySelector('[data-rail-control-group="system"]')).not.toBeNull();
+    expect(container.querySelector('[data-rail-capabilities]')).not.toBeNull();
     await openFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[data-rail-capabilities="observation"]')).toBeNull();
+    expect(getUsage).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
+    expect(container.querySelector('[data-rail-control-group="system"]')).not.toBeNull();
+    expect(container.querySelector('[data-agent-capabilities-section]')).toBeNull();
     expect(container.querySelector('[role="tablist"]')).toBeNull();
   });
 
-  it('keeps the system-control fold when observation and plugin usage are unsupported', async () => {
+  it('keeps the system-control group when observation and plugin usage are unsupported', async () => {
     readCapabilities.mockRejectedValue(unsupported());
     getUsage.mockRejectedValue(unsupported());
     await render();
     await settle();
     expect(readCapabilities).not.toHaveBeenCalled();
     expect(getUsage).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-rail-capabilities="observation"]')).not.toBeNull();
-    expect(container.querySelector('[data-rail-capabilities="control"]')).not.toBeNull();
+    expect(container.querySelector('[data-rail-capabilities]')).not.toBeNull();
     await openFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[data-rail-capabilities="observation"]')).toBeNull();
-    await openControls();
-    await settle();
     expect(getUsage).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[data-rail-control-group="plugins"]')).toBeNull();
+    expect(container.querySelector('[data-rail-plugin]')).toBeNull();
     expect(container.querySelector('[data-rail-control-group="system"]')).not.toBeNull();
   });
 
@@ -457,7 +412,7 @@ describe('CapabilitiesBlock', () => {
     await render();
     await settle();
     // The closed fold reports no kinds before its first consumer opens it.
-    const head = container.querySelector<HTMLElement>('[data-rail-capabilities="observation"] [aria-expanded]')!;
+    const head = fold();
     expect(readCapabilities).not.toHaveBeenCalled();
     expect(head.textContent).not.toContain('工具');
     await openFold();
@@ -500,7 +455,7 @@ describe('CapabilitiesBlock', () => {
     getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
-    const head = container.querySelector<HTMLElement>('[data-rail-capabilities="observation"] [aria-expanded]')!;
+    const head = fold();
     expect(readCapabilities).not.toHaveBeenCalled();
     expect(head.textContent).not.toContain('技能');
     await openFold();
@@ -527,9 +482,9 @@ describe('CapabilitiesBlock', () => {
     getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
-    // The observation fold stays with three tabs: tools and skills get the quiet
-    // line and subagents shows the answered empty list. Plugins stay in controls.
-    const head = container.querySelector<HTMLElement>('[data-rail-capabilities="observation"] [aria-expanded]')!;
+    // The observation half stays with three tabs: tools and skills get the quiet
+    // line and subagents shows the answered empty list. Plugins stay below.
+    const head = fold();
     expect(readCapabilities).not.toHaveBeenCalled();
     expect(head.textContent).not.toContain('工具');
     await openFold();
@@ -539,7 +494,6 @@ describe('CapabilitiesBlock', () => {
     await act(async () => { head.click(); });
     const summary = head.querySelector('[data-fold-summary]')!;
     expect(summary.textContent).toContain('子智能体 0');
-    expect(summary.textContent).not.toContain('插件');
     expect(summary.textContent).not.toContain('工具');
     expect(summary.textContent).not.toContain('技能');
     await openFold();
@@ -548,10 +502,8 @@ describe('CapabilitiesBlock', () => {
     expect(container.querySelector('[data-rail-capabilities-unavailable]')).not.toBeNull();
     await tab('subagents');
     expect(container.textContent).toContain('这个智能体不能派发子智能体。');
-    await openControls();
-    await settle();
     expect(getUsage).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[data-rail-capabilities="control"] [data-rail-plugin="demo"]')).not.toBeNull();
+    expect(container.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
   });
 
   it('shows the full inventory when available:false ships with the fields, as a live dispatch-off answer does', async () => {
@@ -566,7 +518,7 @@ describe('CapabilitiesBlock', () => {
     await settle();
     // available:false is a dispatch flag, not a scope verdict: every tab keeps
     // its content and the head reports counts only after the read has settled.
-    const head = container.querySelector<HTMLElement>('[data-rail-capabilities="observation"] [aria-expanded]')!;
+    const head = fold();
     expect(readCapabilities).not.toHaveBeenCalled();
     expect(head.textContent).not.toContain('工具');
     await openFold();
@@ -575,7 +527,6 @@ describe('CapabilitiesBlock', () => {
     expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
     await act(async () => { head.click(); });
     expect(head.textContent).toContain('工具 4 · 技能 4 · 子智能体 2');
-    expect(head.textContent).not.toContain('插件');
     await openFold();
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(1);
@@ -602,17 +553,15 @@ describe('CapabilitiesBlock', () => {
     expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
   });
 
-  it('keeps the unresolved observation title visible and releases its request when closed', async () => {
+  it('keeps the unresolved fold title visible and releases its request when closed', async () => {
     readCapabilities.mockReturnValue(new Promise(() => {}));
     getUsage.mockReturnValue(new Promise(() => {}));
     await render();
     await settle();
-    const observation = container.querySelector('[data-rail-capabilities="observation"]')!;
-    const observationHead = observation.querySelector<HTMLButtonElement>('[aria-expanded]')!;
+    const head = fold();
     expect(readCapabilities).not.toHaveBeenCalled();
     expect(getUsage).not.toHaveBeenCalled();
-    expect(observationHead.getAttribute('aria-expanded')).toBe('false');
-    expect(container.querySelector('[data-rail-capabilities="control"] [aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
+    expect(head.getAttribute('aria-expanded')).toBe('false');
 
     await openFold();
     await settle();
@@ -621,11 +570,9 @@ describe('CapabilitiesBlock', () => {
     expect(signal).toBeInstanceOf(AbortSignal);
     expect(signal?.aborted).toBe(false);
 
-    await act(async () => { observationHead.click(); });
+    await act(async () => { head.click(); });
     await settle();
     expect(signal?.aborted).toBe(true);
-    expect(getUsage).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-rail-capabilities="control"] [aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
   });
 });
 

@@ -158,7 +158,11 @@ export const InspectorOverview = memo(function InspectorOverview({
         }`}
       >
         {t('inspector.scopeTree')}
-        {treePartial ? <span className="ml-1 text-[11px]" aria-hidden>*</span> : null}
+        {treePartial ? (
+          // The whole-tree count is missing some agents: say so in words
+          // rather than leaning on a bare asterisk nobody reads.
+          <span className="ml-1 whitespace-nowrap text-[11px] text-amber-ink">{t('inspector.treePartialShort')}</span>
+        ) : null}
       </button>
     </div>
   );
