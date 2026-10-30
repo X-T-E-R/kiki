@@ -8,8 +8,8 @@ interface ErrorHandlerHost {
   setErrorHandler(
     handler: (
       err: FastifyError,
-      req: { id: string; log: { error: (obj: object | string, msg?: string) => void } },
-      reply: Pick<FastifyReply, 'status' | 'send' | 'type' | 'serializer' | 'removeHeader'>,
+      req: { id: string; log: { error: (obj: object | string, msg?: string) => void; debug?: (obj: object | string, msg?: string) => void } },
+      reply: Pick<FastifyReply, 'status' | 'send' | 'type' | 'serializer' | 'removeHeader'> & { readonly raw?: { readonly destroyed: boolean; readonly writableEnded: boolean } },
     ) => void,
   ): unknown;
 }
@@ -46,7 +46,11 @@ export function installErrorHandler(app: ErrorHandlerHost): void {
         .send(errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, err.message, requestId, err.stack));
       return;
     }
-    req.log.error({ error_type: err.code ?? err.name, request_id: requestId }, 'unhandled error');
+    if (err.name === 'AbortError' && reply.raw?.destroyed === true && !reply.raw.writableEnded) {
+      req.log.debug?.({ request_id: requestId }, 'request aborted by client');
+    } else {
+      req.log.error({ error_type: err.code ?? err.name, request_id: requestId }, 'unhandled error');
+    }
     const errorKind = isError2(err) ? providerErrorKindOf(err.details) : undefined;
     reply.status(200).send({
       ...errEnvelope(

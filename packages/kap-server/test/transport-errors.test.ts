@@ -103,6 +103,32 @@ describe('installErrorHandler (catch-all)', () => {
     } finally { await app.close(); }
   });
 
+  it('does not report a client disconnect abort as an unhandled error', async () => {
+    const lines: { level: number; msg: string; error_type?: unknown }[] = [];
+    const app = Fastify({ logger: { level: 'debug', stream: { write: (line: string) => void lines.push(JSON.parse(line)) } } });
+    installErrorHandler(app);
+    app.get('/slow', async (_req, reply) => {
+      const disconnect = new AbortController();
+      reply.raw.once('close', () => { if (!reply.raw.writableFinished) disconnect.abort(); });
+      await new Promise((_resolve, reject) => disconnect.signal.addEventListener('abort', () => reject(disconnect.signal.reason)));
+    });
+    app.get('/broken', async () => { throw new DOMException('upstream gave up', 'AbortError'); });
+    try {
+      await app.listen({ host: '127.0.0.1', port: 0 });
+      const { port } = app.server.address() as { port: number };
+      const client = new AbortController();
+      const pending = fetch(`http://127.0.0.1:${port}/slow`, { signal: client.signal }).catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      client.abort();
+      await pending;
+      await expect.poll(() => lines.some((line) => line.msg === 'request aborted by client' || line.msg === 'unhandled error')).toBe(true);
+      expect(lines.filter((line) => line.msg === 'unhandled error')).toEqual([]);
+      expect(lines.some((line) => line.msg === 'request aborted by client')).toBe(true);
+      expect(await (await fetch(`http://127.0.0.1:${port}/broken`)).json()).toMatchObject({ code: ErrorCode.INTERNAL_ERROR });
+      expect(lines.filter((line) => line.msg === 'unhandled error')).toHaveLength(1);
+    } finally { await app.close(); }
+  });
+
   it('keeps unknown exceptions at INTERNAL_ERROR', () => {
     expect(run(new Error('boom')).code).toBe(ErrorCode.INTERNAL_ERROR);
   });
