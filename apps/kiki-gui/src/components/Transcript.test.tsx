@@ -1682,8 +1682,10 @@ describe('reasoning completion chrome', () => {
 describe('live and event chrome', () => {
   // Cold start of the queue fixture is several seconds and used to run inside
   // the first row-actions test. That test's 5s budget then expired while the
-  // shared boot promise was still pending, and the next case inherited it.
-  beforeAll(startEditFixture);
+  // shared boot promise was still pending, and the next case inherited it. The
+  // boot itself gets a settled-load budget: the whole suite contends for the
+  // same fixture spawn, so the 10s default expires under parallel workers.
+  beforeAll(startEditFixture, 30_000);
 
   it('shows elapsed time after three seconds and cleans up the timer', async () => {
     vi.useFakeTimers();
@@ -3267,7 +3269,7 @@ describe('explicit unknown timing', () => {
 });
 
 describe('message row actions', () => {
-  beforeAll(startEditFixture);
+  beforeAll(startEditFixture, 30_000);
   it('shows edit/fork on settled user rows and regenerate/fork on the latest final reply only', async () => {
     const rowActions: TranscriptRowActions = {
       disabled: false,
