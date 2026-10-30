@@ -109,7 +109,10 @@ export interface ISessionMetadata {
   read(): Promise<SessionMeta>;
   /** Commits this session's accepted writes and deferred metadata without waiting for other sessions or derived mirrors. */
   drain(): Promise<void>;
-  /** Returns a detached metadata value synchronously after `ready` resolves. */
+  /**
+   * Returns a detached metadata value synchronously after `ready` resolves.
+   * Calls share one copy until the metadata changes, so callers must not mutate it.
+   */
   snapshot(): SessionMeta;
   getAgentExecutor(agentId: string): Promise<string | undefined>;
   usage(): SessionUsageSummary | undefined;

@@ -111,6 +111,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   };
 
   private readonly deferredChanges = new Set<keyof SessionMeta>();
+  private detached: { readonly source: SessionMeta; readonly value: SessionMeta } | undefined;
   private readonly outcomes: AgentOutcomeDocuments;
 
   private async persist(): Promise<void> {
@@ -223,7 +224,9 @@ export class SessionMetadata extends Service implements ISessionMetadata {
 
   snapshot(): SessionMeta {
     if (!this.initialized) throw new BugIndicatingError('Session metadata snapshot requires ready');
-    return structuredClone(this.data);
+    const data = this.data;
+    if (this.detached?.source !== data) this.detached = { source: data, value: structuredClone(data) };
+    return this.detached.value;
   }
 
   async getAgentExecutor(agentId: string): Promise<string | undefined> {

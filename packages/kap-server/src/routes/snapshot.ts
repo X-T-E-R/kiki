@@ -44,6 +44,7 @@ import {
   projectHydratedMessageHistoryTail,
   rehydrateCold,
 } from '../services/messages/messageHistory';
+import { readColdSessionMeta } from '../services/snapshot/coldSessionMeta';
 import { readColdMainWireProjection } from '../services/snapshot/coldSnapshotSource';
 import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
 import { readAgentRuntimeControls } from './sessionAgentConfig';
@@ -154,23 +155,34 @@ export async function assembleBrowseSnapshotSource(
   const fields = { sessionId, requestId: timing.requestId };
   const summary = await timeSessionViewPhase('snapshot_index', fields, () => core.accessor.get(ISessionIndex).get(sessionId), timing);
   if (summary === undefined) throw new SnapshotNotFoundError(sessionId);
-  const meta = await timeSessionViewPhase('snapshot_metadata', fields, () => core.accessor.get(IAtomicDocumentStore).get<SessionMeta>(
-    `sessions/${summary.workspaceId}/${sessionId}`, 'state.json',
-  ), timing);
+  const meta = await timeSessionViewPhase('snapshot_metadata', fields, () => readColdSessionMeta(core, summary.workspaceId, sessionId), timing);
   if (meta === undefined) throw new SnapshotNotFoundError(sessionId);
   const cursor = await timeSessionViewPhase('snapshot_cursor', fields, () => broadcaster.getCursor(sessionId), timing);
   const workspace = await timeSessionViewPhase('snapshot_workspace', fields,
     () => core.accessor.get(IWorkspaceService).get(summary.workspaceId), timing);
   timing.signal?.throwIfAborted();
-  const subagents = sessionAgentRoster(sessionId, meta);
+  const { subagents, counts } = coldBrowseRoster(sessionId, meta);
   return {
     as_of_seq: cursor.seq, epoch: cursor.epoch || `cold:${sessionId}`,
     session: toWireSession({ ...meta, workspaceId: summary.workspaceId }, workspace?.root ?? meta.cwd ?? '',
       await resolveSessionBindingFacts(core, sessionId, summary.workspaceId, summary.usage, meta.agents?.['main'], timing.signal, { includeAccounting: false }), cursor.seq),
     messages: { items: [], has_more: false }, in_flight_turn: null,
-    subagents, agent_counts: sessionAgentCounts(meta.agents, subagents),
+    subagents, agent_counts: counts,
     pending_approvals: [], pending_questions: [],
   };
+}
+
+type ColdBrowseRoster = { readonly sessionId: string; readonly subagents: SnapshotSubagent[]; readonly counts: ReturnType<typeof sessionAgentCounts> };
+
+const coldBrowseRosters = new WeakMap<SessionMeta, ColdBrowseRoster>();
+
+function coldBrowseRoster(sessionId: string, meta: SessionMeta): ColdBrowseRoster {
+  const cached = coldBrowseRosters.get(meta);
+  if (cached?.sessionId === sessionId) return cached;
+  const subagents = sessionAgentRoster(sessionId, meta);
+  const entry = { sessionId, subagents, counts: sessionAgentCounts(meta.agents, subagents) };
+  coldBrowseRosters.set(meta, entry);
+  return entry;
 }
 
 export async function assembleSnapshot(
@@ -226,9 +238,7 @@ async function assembleColdSnapshot(
   signal?.throwIfAborted();
   const summary = await timeSessionViewPhase('snapshot_index', fields, () => core.accessor.get(ISessionIndex).get(sessionId), timing);
   if (summary === undefined) throw new SnapshotNotFoundError(sessionId);
-  const meta = await timeSessionViewPhase('snapshot_metadata', fields, () => core.accessor.get(IAtomicDocumentStore).get<SessionMeta>(
-    `sessions/${summary.workspaceId}/${sessionId}`, 'state.json',
-  ), timing);
+  const meta = await timeSessionViewPhase('snapshot_metadata', fields, () => readColdSessionMeta(core, summary.workspaceId, sessionId), timing);
   if (meta === undefined) throw new SnapshotNotFoundError(sessionId);
   signal?.throwIfAborted();
   const cursor = await timeSessionViewPhase('snapshot_cursor', fields, () => broadcaster.getCursor(sessionId), timing);
@@ -317,7 +327,7 @@ async function assembleSnapshotFromLease(
       const facts = resolveSessionFacts(core, sessionId);
       const model = readBoundModel(main);
       const runtime = new Map(handle.accessor.get(IAgentLifecycleService).list().map((agent) =>
-        [agent.id, structuredClone(agent.accessor.get(IAgentActivityView).state())] as const));
+        [agent.id, agent.accessor.get(IAgentActivityView).state()] as const));
       const [workspace, controls] = await Promise.all([
         timeSessionViewPhase('snapshot_workspace', fields,
           () => core.accessor.get(IWorkspaceService).get(workspaceId), timing),
@@ -472,8 +482,7 @@ export async function readBrowseSnapshotContent(
       if (summary === undefined) return undefined;
       timing.signal?.throwIfAborted();
       if (field !== 'subagents' && field !== 'session') return readContentSegment({ in_flight_turn: null, pending_approvals: [], pending_questions: [] }, ref);
-      const meta = await timeSessionViewPhase('snapshot_metadata', fields, () => core.accessor.get(IAtomicDocumentStore).get<SessionMeta>(
-        `sessions/${summary.workspaceId}/${sessionId}`, 'state.json'), timing);
+      const meta = await timeSessionViewPhase('snapshot_metadata', fields, () => readColdSessionMeta(core, summary.workspaceId, sessionId), timing);
       if (meta === undefined) return undefined;
       timing.signal?.throwIfAborted();
       if (field === 'subagents') {
@@ -528,7 +537,7 @@ export async function readBrowseSnapshotContent(
         capture: field !== 'session' && field !== 'subagents' ? undefined : async () => {
           const meta = metadata.snapshot();
           const runtime = new Map(handle.accessor.get(IAgentLifecycleService).list().map((agent) =>
-            [agent.id, structuredClone(agent.accessor.get(IAgentActivityView).state())] as const));
+            [agent.id, agent.accessor.get(IAgentActivityView).state()] as const));
           if (field === 'subagents') return { meta, runtime, session: undefined };
           const workspaceId = handle.accessor.get(ISessionContext).workspaceId;
           const facts = resolveSessionFacts(core, sessionId);

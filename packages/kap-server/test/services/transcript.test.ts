@@ -192,6 +192,10 @@ describe('TranscriptService projection', () => {
       expect(cold).toEqual(Object.entries(meta.agents).map(([id, agent]) => descriptorFromMeta(id, agent)));
       expect(cold?.find((agent) => agent.agentId === 'child')?.createdAt).toBe(new Date(1234).toISOString());
       expect(cold?.find((agent) => agent.agentId === 'legacy')?.createdAt).toBeUndefined();
+      cold?.push({ agentId: 'caller-added', type: 'sub' });
+      expect(await service.readColdRoster('s1')).toHaveLength(2);
+      await writeFile(join(home, 'sessions', 'ws', 's1', 'state.json'), JSON.stringify({ agents: { ...meta.agents, later: { type: 'sub' } } }));
+      expect((await service.readColdRoster('s1'))?.map((agent) => agent.agentId)).toEqual(['child', 'legacy', 'later']);
     } finally {
       service.dispose();
       await rm(home, { recursive: true, force: true });

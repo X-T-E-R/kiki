@@ -115,6 +115,7 @@ const COLD_SNAPSHOT_CACHE_MAX_BYTES = 4 << 20;
 const RETAINED_COLD_TURNS_BYTES = 1024 * 1024;
 const RETAINED_COLD_TURN_ENTRY_BYTES = 8 << 20;
 const COLD_SNAPSHOT_CACHE_MAX_ENTRIES = 32;
+const COLD_ROSTER_CACHE_MAX_ENTRIES = 32;
 const FIRST_SCREEN_WINDOW_BYTES = 1 << 20;
 const FIRST_SCREEN_WINDOW_MAX_BYTES = 8 << 20;
 const LIVE_EPOCH_VERIFY_WAIT_MS = 1_500;
@@ -467,6 +468,7 @@ export class TranscriptService {
   private readonly coldSnapshotFlights = new Map<string, ColdSnapshotFlight>();
   private readonly residencyMaintenance = new Map<string, { controller: AbortController; again: boolean }>();
   private readonly coldSnapshotCache = new Map<string, ColdSnapshotCacheEntry>();
+  private readonly coldRosterCache = new Map<string, { readonly revision: string; readonly roster: readonly AgentDescriptor[] }>();
   private readonly retainedColdTurns = new Map<string, { fingerprint: string; turns: ReadonlyMap<string, TranscriptTurn>; bytes: number }>();
   private readonly coldWireWindows = new Map<string, ColdWireWindow>();
   private coldWireWindowBytes = 0;
@@ -1718,19 +1720,33 @@ export class TranscriptService {
   async readColdRoster(sessionId: string): Promise<AgentDescriptor[] | undefined> {
     const summary = await this.deps.core.accessor.get(ISessionIndex).get(sessionId);
     if (summary === undefined) return undefined;
+    const path = join(this.deps.homeDir, SESSIONS_ROOT, summary.workspaceId, sessionId, STATE_FILE);
+    let revision: string;
     let meta: SessionMeta;
     try {
-      const raw = await readFile(
-        join(this.deps.homeDir, SESSIONS_ROOT, summary.workspaceId, sessionId, STATE_FILE),
-        'utf-8',
-      );
-      meta = JSON.parse(raw) as SessionMeta;
+      revision = stateFingerprint(await stat(path, { bigint: true }));
+      const cached = this.coldRosterCache.get(sessionId);
+      if (cached?.revision === revision) {
+        this.coldRosterCache.delete(sessionId);
+        this.coldRosterCache.set(sessionId, cached);
+        return [...cached.roster];
+      }
+      meta = JSON.parse(await readFile(path, 'utf-8')) as SessionMeta;
     } catch {
       return [];
     }
-    return Object.entries(meta.agents ?? {}).map(([agentId, agentMeta]) =>
+    const roster = Object.entries(meta.agents ?? {}).map(([agentId, agentMeta]) =>
       descriptorFromMeta(agentId, agentMeta),
     );
+    const after = await stat(path, { bigint: true }).catch(() => undefined);
+    this.coldRosterCache.delete(sessionId);
+    if (after !== undefined && stateFingerprint(after) === revision) {
+      this.coldRosterCache.set(sessionId, { revision, roster });
+      while (this.coldRosterCache.size > COLD_ROSTER_CACHE_MAX_ENTRIES) {
+        this.coldRosterCache.delete(this.coldRosterCache.keys().next().value!);
+      }
+    }
+    return [...roster];
   }
 
   private deleteColdSnapshotCache(key: string): void {
@@ -3537,6 +3553,10 @@ async function sealStamp(wirePath: string): Promise<string> {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'plain';
     throw error;
   }
+}
+
+function stateFingerprint(info: { readonly size: bigint; readonly ino: bigint; readonly mtimeNs: bigint; readonly ctimeNs: bigint }): string {
+  return `${String(info.size)}:${String(info.ino)}:${String(info.mtimeNs)}:${String(info.ctimeNs)}`;
 }
 
 function fileFingerprint(info: {

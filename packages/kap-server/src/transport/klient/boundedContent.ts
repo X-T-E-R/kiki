@@ -39,13 +39,16 @@ function selectContent(entity: object, path: Path): unknown {
 }
 
 function fieldRevision(entity: object, path: Path, through?: number): string {
-  let fields = fieldRevisions.get(entity);
-  if (fields === undefined) { fields = new Map(); fieldRevisions.set(entity, fields); }
   const selected = selectContent(entity, path);
+  const owner = selected !== null && typeof selected === 'object' ? selected : entity;
+  let fields = fieldRevisions.get(owner);
+  if (fields === undefined) { fields = new Map(); fieldRevisions.set(owner, fields); }
   const structure = isStructurePath(path) && Array.isArray(selected);
   const count = structure ? through ?? selected.length : undefined;
   if (structure && count! > selected.length) throw new ContentChangedError();
-  const key = JSON.stringify([path, count]);
+  const key = owner === entity
+    ? JSON.stringify([path, count])
+    : JSON.stringify([structure, isRosterPath(path), count, Array.isArray(selected) ? selected.length : undefined]);
   const existing = fields.get(key);
   if (existing !== undefined) return existing;
   const revision = structure

@@ -12,6 +12,7 @@ import {
   IAgentScopeContext,
   IAppendLogStore,
   IAtomicDocumentStore,
+  IFileSystemStorageService,
   IAgentTaskService,
   IEventBus,
   IAgentLifecycleService,
@@ -93,10 +94,12 @@ describe('server-v2 snapshot route enrichment', () => {
     let missing = false;
     const get = vi.fn(async (_scope: string, key: string) => key === 'state.json' ? meta
       : missing ? undefined : { version: 1, resultSummary: receipt });
+    let metaRevision = 1;
     const core = { accessor: fakeAccessor([
       [ISessionManager, { get: () => undefined }],
       [ISessionIndex, { get: async () => ({ workspaceId: 'ws' }) }],
       [IAtomicDocumentStore, { get }],
+      [IFileSystemStorageService, { stat: async () => ({ size: 1, revision: String(metaRevision) }) }],
     ]) };
     const candidates = sessionAgentRoster('s1', meta);
     const index = candidates.findIndex((agent) => agent.id === 'child');
@@ -108,6 +111,9 @@ describe('server-v2 snapshot route enrichment', () => {
     get.mockClear();
     const rosterRef = { source: ref.source, path: ['subagents'], kind: 'array' as const, offset: 0,
       total: candidates.length, revision: contentRevision(candidates.map((agent) => agent.agent_id ?? agent.id)) };
+    await readBrowseSnapshotContent(core as never, {} as never, 's1', 'main', rosterRef);
+    expect(get.mock.calls.map(([, key]) => key)).toEqual([]);
+    metaRevision = 2;
     await readBrowseSnapshotContent(core as never, {} as never, 's1', 'main', rosterRef);
     expect(get.mock.calls.map(([, key]) => key)).toEqual(['state.json']);
     missing = true;

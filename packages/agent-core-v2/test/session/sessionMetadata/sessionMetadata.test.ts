@@ -273,10 +273,12 @@ describe('SessionMetadata', () => {
     await meta.registerAgent('child', { labels: { phase: 'before' }, status: 'completed' });
     await meta.update({ custom: { nested: { value: 'before' } } });
     const captured = meta.snapshot();
+    expect(meta.snapshot()).toBe(captured);
     await meta.updateAgent('child', (agent) => ({ ...agent, labels: { phase: 'after' }, status: 'failed' }));
     await meta.update({ custom: { nested: { value: 'after' } } });
     expect(captured.agents?.['child']).toMatchObject({ labels: { phase: 'before' }, status: 'completed' });
     expect(captured.custom).toEqual({ nested: { value: 'before' } });
+    expect(meta.snapshot()).not.toBe(captured);
     captured.custom!['nested'] = 'caller edit';
     expect((await meta.read()).custom).toEqual({ nested: { value: 'after' } });
   });
