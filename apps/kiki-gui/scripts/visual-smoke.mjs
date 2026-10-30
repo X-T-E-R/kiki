@@ -275,10 +275,15 @@ const SCENARIOS = [
       const currentBodies = [];
       // Model an older server: no independent-default metadata, and only an
       // empty body is accepted by its strict enable/disable routes.
-      await page.route(/\/api\/plugins$/, async (route) => {
+      await page.route(/\/api\/klient\/call$/, async (route) => {
+        const { procedure } = route.request().postDataJSON();
+        if (procedure.service !== 'pluginService' || procedure.method !== 'listPlugins') {
+          await route.continue();
+          return;
+        }
         const response = await route.fetch();
         const body = await response.json();
-        for (const plugin of body.data.plugins) {
+        for (const plugin of body.data) {
           if (plugin.id === 'kiki-notes') delete plugin.defaultEnabled;
         }
         await route.fulfill({ response, json: body });
@@ -297,12 +302,12 @@ const SCENARIOS = [
       await page.goto(link('/settings/plugins'), { waitUntil: 'domcontentloaded' });
       const row = page.locator('[data-plugin-row="kiki-notes"]');
       for (const enabled of [false, true]) {
-        await row.locator('input[type="checkbox"]').click();
+        await row.locator('[data-plugin-row-switch] label').click();
         await page.locator(`[data-plugin-row="kiki-notes"][data-plugin-enabled="${enabled}"]`).waitFor({ timeout: 10_000 });
       }
       const modern = page.locator('[data-plugin-row="sketchbook"]');
       for (const enabled of [false, true]) {
-        await modern.locator('input[type="checkbox"]').click();
+        await modern.locator('[data-plugin-row-switch] label').click();
         await page.locator(`[data-plugin-row="sketchbook"][data-plugin-enabled="${enabled}"]`).waitFor({ timeout: 10_000 });
       }
       if (currentBodies.length !== 2 || currentBodies.some((body) => body.defaultEnabled !== false)) {
@@ -310,7 +315,7 @@ const SCENARIOS = [
       }
       const shots = [await shot(page, 'plugin-toggle-list')];
       await row.locator('[data-plugin-open-settings]').click();
-      const master = page.locator('[data-plugin-settings-switch] input');
+      const master = page.locator('[data-plugin-settings-switch] label');
       for (const enabled of [false, true]) {
         await master.click();
         await page.waitForFunction((checked) => document.querySelector('[data-plugin-settings-switch] input')?.checked === checked, enabled);

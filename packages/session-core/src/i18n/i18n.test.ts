@@ -183,13 +183,13 @@ describe('LocalizedError / errorText', () => {
 
   it('never prints a zod issue array as JSON', () => {
     const drift = { name: 'ZodError', issues: [{ code: 'invalid_type', path: ['advisor_status'], message: 'Invalid input' }] };
-    expect(errorText('zh', drift)).toBe('服务器返回的记忆顾问数据无法识别');
-    expect(errorText('en', drift)).toBe('The server returned memory advisor data Kiki could not read');
+    expect(errorText('zh', drift)).toBe(translate('zh', 'err.memoryAdvisorData'));
+    expect(errorText('en', drift)).toBe(translate('en', 'err.memoryAdvisorData'));
     const generic = { name: 'ZodError', issues: [{ code: 'invalid_type', path: ['models'], message: 'Invalid input' }] };
-    expect(errorText('zh', generic)).toBe('服务器返回了无法识别的数据');
+    expect(errorText('zh', generic)).toBe(translate('zh', 'err.serverData'));
     // The same drift stringified by an upstream producer is still caught.
     const stringified = '[ { "expected": "object", "code": "invalid_type", "path": [ "advisor_status" ], "message": "Invalid input" } ]';
-    expect(errorText('zh', stringified)).toBe('服务器返回的记忆顾问数据无法识别');
+    expect(errorText('zh', stringified)).toBe(translate('zh', 'err.memoryAdvisorData'));
   });
 });
 
