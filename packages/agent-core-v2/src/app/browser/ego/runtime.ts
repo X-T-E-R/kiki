@@ -45,6 +45,7 @@ const FINISH = 'KIKI_EGO_FINISH ';
 const TABS = 'KIKI_EGO_TABS ';
 const PAGE = 'KIKI_EGO_PAGE ';
 const REFUSED = 'KIKI_EGO_REFUSED';
+const EGO_PROBE_TIMEOUT_MS = 5_000;
 
 const fileTails = new Map<string, Promise<unknown>>();
 
@@ -356,14 +357,25 @@ export class EgoBrowserRuntime {
     }
   }
 
-  async probe(connection: BrowserResolvedConnection, signal?: AbortSignal): Promise<{ readonly resolution: EgoCliResolution; readonly output: string; readonly kind: 'ready' | 'onboarding' | 'not_ready' | 'missing' | 'choose' }> {
-    const resolution = await this.resolve(connection, signal);
-    if (resolution.kind !== 'found') return { resolution, output: '', kind: resolution.kind };
-    const directory = join(tmpdir(), 'kiki-ego');
-    const result = await this.run(resolution.path, connection, directory, egoReadyScript(), signal, signal !== undefined);
-    const output = `${result.stdout}\n${result.stderr}`;
-    if (result.aborted) throw signal?.reason ?? new BrowserError('browser.execution_failed', 'Ego Lite check was cancelled');
-    return { resolution, output, kind: classifyEgoCheck(output) };
+  async probe(connection: BrowserResolvedConnection, callerSignal?: AbortSignal): Promise<{ readonly resolution: EgoCliResolution; readonly output: string; readonly kind: 'ready' | 'onboarding' | 'not_ready' | 'missing' | 'choose' }> {
+    const deadline = new AbortController();
+    const timeoutError = new BrowserError('browser.execution_failed', 'Ego Lite probe timed out after 5000ms; check that the browser is started and onboarding is complete, then retry.');
+    const timer = setTimeout(() => deadline.abort(timeoutError), EGO_PROBE_TIMEOUT_MS);
+    timer.unref?.();
+    const signal = linkAbort(callerSignal, deadline.signal) ?? deadline.signal;
+    try {
+      const resolution = await this.resolve(connection, signal);
+      signal.throwIfAborted();
+      if (resolution.kind !== 'found') return { resolution, output: '', kind: resolution.kind };
+      const directory = join(tmpdir(), 'kiki-ego');
+      const result = await this.run(resolution.path, connection, directory, egoReadyScript(), signal, true);
+      signal.throwIfAborted();
+      const output = `${result.stdout}\n${result.stderr}`;
+      if (result.aborted) throw callerSignal?.reason ?? deadline.signal.reason ?? new BrowserError('browser.execution_failed', 'Ego Lite check was cancelled');
+      return { resolution, output, kind: classifyEgoCheck(output) };
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async runAgent(input: {

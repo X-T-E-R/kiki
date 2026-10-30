@@ -387,6 +387,56 @@ describe('Ego Lite control', () => {
       expect(browserConnectionRecord(configs.get('ego-lite')!)).not.toHaveProperty('endpointDisplay');
     } finally { await ix.dispose(); }
   });
+
+  it('times out a direct connect probe, kills once, and removes its temporary script', async () => {
+    vi.useFakeTimers();
+    const { files, fs } = memoryFs([versioned]);
+    const remove = vi.fn(async (path: string) => { files.delete(path); });
+    const trackedFs = { ...fs, remove } as IHostFileSystem;
+    const proc = scripted((_command, args) => args.includes('nodejs') ? { hang: true } : { code: 0 });
+    const configs = new Map<string, BrowserResolvedConnection>([['ego-lite', connection]]);
+    const ix = new TestInstantiationService();
+    ix.stub(IFlagService, { enabled: () => true });
+    ix.stub(IHostProcessService, proc.service);
+    ix.stub(IHostFileSystem, trackedFs);
+    ix.stub(IBrowserBackendFactory, { open: vi.fn(async () => { throw new Error('unused'); }) });
+    ix.stub(IBrowserConnectionStore, {
+      list: async () => ({ connections: [browserConnectionRecord(connection)] }),
+      resolve: async (id: string) => {
+        const found = configs.get(id);
+        if (found === undefined) throw new Error('missing');
+        return found;
+      },
+    });
+    ix.set(IBrowserControlService, new SyncDescriptor(BrowserControlService));
+    const control = ix.get(IBrowserControlService);
+    let settled = false;
+    let result: unknown;
+    let failure: unknown;
+    let pending: Promise<unknown> | undefined;
+    try {
+      pending = control.connect('ego-lite').then((value) => { settled = true; result = value; }, (error: unknown) => { settled = true; failure = error; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(proc.calls.filter((call) => call.args.includes('nodejs'))).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(proc.kills[0]).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.resolve();
+      expect(settled).toBe(true);
+      expect(failure).toBeUndefined();
+      expect(result).toMatchObject({ state: 'failed', failure: { code: 'browser.execution_failed' }, error: expect.stringContaining('5000ms') });
+      expect(result).toMatchObject({ error: expect.stringMatching(/started|onboarding|retry/i) });
+      expect(proc.kills[0]).toHaveBeenCalledTimes(1);
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(remove.mock.calls[0]?.[0]).toMatch(/[\\/]ego-scripts[\\/]/);
+      expect([...files.keys()].some((path) => /ego-scripts/.test(path))).toBe(false);
+    } finally {
+      proc.kills.forEach((kill) => release(kill));
+      await Promise.allSettled([pending]);
+      vi.useRealTimers();
+      await ix.dispose();
+    }
+  });
 });
 
 describe('Ego Lite successful status recovery', () => {
