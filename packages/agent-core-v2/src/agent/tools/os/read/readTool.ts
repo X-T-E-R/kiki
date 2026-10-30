@@ -263,7 +263,7 @@ export class ReadTool implements IReadTool {
           pathClass: env.pathClass,
           homeDir: env.homeDir,
         }),
-      execute: async () => {
+      execute: async ({ signal }) => {
         const lease = target.host === undefined
           ? this.runtime.acquire(['fs']) : acquireToolRuntime(this.runtime, target.host, ['fs']);
         try {
@@ -279,7 +279,7 @@ export class ReadTool implements IReadTool {
           } catch (error) {
             return { isError: true, output: error instanceof Error ? error.message : String(error) };
           }
-          const result = tagSshResult(await this.execution(lease.runtime.fs!, args, path, inspected.identity.runtimeId), inspected);
+          const result = tagSshResult(await this.execution(lease.runtime.fs!, args, path, inspected.identity.runtimeId, signal), inspected);
           return this.resultTruncation.isSpillFilePath(path)
             ? { ...result, spillExempt: true as const }
             : result;
@@ -290,7 +290,7 @@ export class ReadTool implements IReadTool {
     };
   }
 
-  private async execution(fs: IHostFileSystem, args: ReadInput, safePath: string, runtimeId: string): Promise<ExecutableToolResult> {
+  private async execution(fs: IHostFileSystem, args: ReadInput, safePath: string, runtimeId: string, signal?: AbortSignal): Promise<ExecutableToolResult> {
     try {
       let stat: Awaited<ReturnType<IHostFileSystem['stat']>>;
       try {
@@ -351,10 +351,11 @@ export class ReadTool implements IReadTool {
             startLine: lineOffset,
             maxLines: effectiveLimit + 1,
             errors: 'strict',
+            signal,
           });
           sourceStartLine = lineOffset;
         } else {
-          lines = fs.readLines(safePath, { errors: 'strict' });
+          lines = fs.readLines(safePath, { errors: 'strict', signal });
         }
       }
 

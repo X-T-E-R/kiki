@@ -382,7 +382,7 @@ describe('ReadTool', () => {
       ),
     );
     expect(readBytes).toHaveBeenCalledWith('/tmp/external.txt', MEDIA_SNIFF_BYTES);
-    expect(readLines).toHaveBeenCalledWith('/tmp/external.txt', { errors: 'strict' });
+    expect(readLines).toHaveBeenCalledWith('/tmp/external.txt', { errors: 'strict', signal: expect.any(AbortSignal) });
   });
 
   it('marks a workspace symlink to an external target for approval before reading', async () => {
@@ -482,7 +482,7 @@ describe('ReadTool', () => {
       ),
     );
     expect(readBytes).toHaveBeenCalledWith('/home/test/notes/today.txt', MEDIA_SNIFF_BYTES);
-    expect(readLines).toHaveBeenCalledWith('/home/test/notes/today.txt', { errors: 'strict' });
+    expect(readLines).toHaveBeenCalledWith('/home/test/notes/today.txt', { errors: 'strict', signal: expect.any(AbortSignal) });
   });
 
   it('declares sensitive targets for permission evaluation before reading', async () => {
@@ -812,6 +812,7 @@ describe('ReadTool', () => {
       startLine: 5,
       maxLines: 4,
       errors: 'strict',
+      signal: expect.any(AbortSignal),
     });
     expect(readLines).not.toHaveBeenCalled();
   });

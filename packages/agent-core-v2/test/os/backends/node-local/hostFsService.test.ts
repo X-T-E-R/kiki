@@ -4,6 +4,8 @@ import { join } from 'pathe';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { CpuWorkerError } from '#/app/cpuWorker/host';
+import * as cpuRuntime from '#/app/cpuWorker/runtime';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 
 import { symlinkDir, windowsSymlinksUnavailable } from '../../../_base/utils/symlink';
@@ -17,6 +19,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  await cpuRuntime.closeCpuPool();
   await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
@@ -135,5 +139,60 @@ describe('HostFileSystem readLineRange', () => {
       'new-value-513\n',
       'new-value-514\n',
     ]);
+  });
+
+  describe('CPU worker routing', () => {
+    async function largeFixture(): Promise<{ path: string; lines: string[] }> {
+      const path = join(dir, 'large.log');
+      const lines = Array.from({ length: 4000 }, (_, index) => `${String(index + 1)} ${'x'.repeat(120)}\n`);
+      await writeFile(path, lines.join(''), 'utf-8');
+      return { path, lines };
+    }
+
+    it('reads large files in a CPU worker with the signal outside the operation', async () => {
+      const { path, lines } = await largeFixture();
+      const run = vi.spyOn(cpuRuntime, 'runCpuTask');
+      const controller = new AbortController();
+      const window: string[] = [];
+      for await (const line of fs.readLineRange(path, { startLine: 3500, maxLines: 3, signal: controller.signal })) window.push(line);
+      expect(window).toEqual(lines.slice(3499, 3502));
+      expect(run).toHaveBeenCalledOnce();
+      expect(run.mock.calls[0]).toEqual([
+        { type: 'file.lineRange', path, options: { startLine: 3500, maxLines: 3 } },
+        { signal: controller.signal },
+      ]);
+    });
+
+    it('keeps small files on the in-process reader', async () => {
+      const path = join(dir, 'small.txt');
+      await writeFile(path, 'a\nb\nc\n', 'utf-8');
+      const run = vi.spyOn(cpuRuntime, 'runCpuTask');
+      await expect(collect(path, 2, 2)).resolves.toEqual(['b\n', 'c\n']);
+      expect(run).not.toHaveBeenCalled();
+    });
+
+    it('falls back in process when the pool is full or the worker asset is missing', async () => {
+      const { path, lines } = await largeFixture();
+      const run = vi.spyOn(cpuRuntime, 'runCpuTask')
+        .mockRejectedValueOnce(new CpuWorkerError('CPU_QUEUE_FULL', 'CPU worker queue is full'))
+        .mockRejectedValueOnce(new Error('CPU worker asset is unavailable'));
+      await expect(collect(path, 10, 2)).resolves.toEqual(lines.slice(9, 11));
+      await expect(collect(path, 3999, 5)).resolves.toEqual(lines.slice(3998));
+      expect(run).toHaveBeenCalledTimes(2);
+    });
+
+    it('surfaces worker timeouts and caller cancellation instead of rereading', async () => {
+      const { path } = await largeFixture();
+      const run = vi.spyOn(cpuRuntime, 'runCpuTask')
+        .mockRejectedValueOnce(new CpuWorkerError('CPU_TIMEOUT', 'CPU task timed out'));
+      await expect(collect(path, 10, 2)).rejects.toMatchObject({ code: 'CPU_TIMEOUT' });
+      const controller = new AbortController();
+      const reason = new Error('cancel read');
+      run.mockImplementationOnce(async () => {
+        controller.abort(reason);
+        throw new CpuWorkerError('CPU_WORKER_EXIT', 'terminated');
+      });
+      await expect(fs.readLineRange(path, { startLine: 10, maxLines: 2, signal: controller.signal }).next()).rejects.toBe(reason);
+    });
   });
 });

@@ -16,7 +16,17 @@ import { decodeTextWithErrors, type TextDecodeErrors } from '#/_base/execEnv/dec
 
 import { type HostDirEntry, type HostFileStat, IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { toHostFsError } from '#/os/interface/hostFsErrors';
+import { CpuWorkerError } from '#/app/cpuWorker/host';
+import { runCpuTask } from '#/app/cpuWorker/runtime';
+import type { FileLineRangeOperation } from '#/app/cpuWorker/tasks';
 import { LocalLineReader, type LineRangeOptions, type LineReadOptions } from './lineReader';
+
+const LINE_RANGE_WORKER_MIN_BYTES = 256 * 1024;
+
+function isWorkerUnavailable(error: unknown): boolean {
+  if (error instanceof CpuWorkerError) return error.code !== 'CPU_TIMEOUT';
+  return error instanceof Error && error.message === 'CPU worker asset is unavailable';
+}
 
 export class HostFileSystem implements IHostFileSystem {
   declare readonly _serviceBrand: undefined;
@@ -86,8 +96,42 @@ export class HostFileSystem implements IHostFileSystem {
     return this.lineReader.readLines(path, options);
   }
 
-  readLineRange(path: string, options: LineRangeOptions): AsyncGenerator<string> {
-    return this.lineReader.readLineRange(path, options);
+  async *readLineRange(path: string, options: LineRangeOptions): AsyncGenerator<string> {
+    const { signal, ...range } = options;
+    signal?.throwIfAborted();
+    const lines = range.maxLines > 0 && await this.isLargeFile(path)
+      ? await this.readLineRangeInWorker(path, range, signal)
+      : undefined;
+    if (lines === undefined) {
+      yield* this.lineReader.readLineRange(path, options);
+      return;
+    }
+    for (const line of lines) {
+      signal?.throwIfAborted();
+      yield line;
+    }
+  }
+
+  private async readLineRangeInWorker(
+    path: string,
+    range: FileLineRangeOperation['options'],
+    signal: AbortSignal | undefined,
+  ): Promise<string[] | undefined> {
+    try {
+      return await runCpuTask<string[]>({ type: 'file.lineRange', path, options: range } satisfies FileLineRangeOperation, { signal });
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (isWorkerUnavailable(error)) return undefined;
+      throw error;
+    }
+  }
+
+  private async isLargeFile(path: string): Promise<boolean> {
+    try {
+      return (await nodeStat(path)).size >= LINE_RANGE_WORKER_MIN_BYTES;
+    } catch {
+      return false;
+    }
   }
 
   async createExclusive(path: string, data: Uint8Array): Promise<boolean> {
