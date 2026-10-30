@@ -100,7 +100,8 @@ function InstalledPluginRow({ plugin, origin, onOpen }: {
     setBusy(true);
     setFailure(null);
     try {
-      await client.setPluginState(plugin.id, { enabled, defaultEnabled: pluginDefaultOn(plugin) });
+      if (plugin.defaultEnabled === undefined) await client.setPluginEnabled(plugin.id, enabled);
+      else await client.setPluginState(plugin.id, { enabled, defaultEnabled: plugin.defaultEnabled });
       await invalidate();
     } catch (error) {
       setFailure(error);

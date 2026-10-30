@@ -671,6 +671,88 @@ describe('NbSearchSection status', () => {
     expect(saved['balance_ttl_ms']).toBe(600_000);
   });
 
+  it('keeps a shared instance endpoint and credential binding after removing another lane and reloading', async () => {
+    const lane = { provider_instance_id: 'exa.default', operation_id: 'search', latency: 'fast' as const, cost: 'cheap' as const };
+    const caps: NbSearchCapabilities = {
+      ...PROJECTED_CAPABILITIES,
+      search: { ...PROJECTED_CAPABILITIES.search, lanes: [
+        ...PROJECTED_CAPABILITIES.search.lanes,
+        { ...PROJECTED_CAPABILITIES.search.lanes[0]!, id: 'exa.other' },
+      ] },
+      configuration: { ...PROJECTED_CAPABILITIES.configuration!, lanes: { ...PROJECTED_CAPABILITIES.configuration!.lanes, 'exa.other': lane } },
+      inherited_configuration: { ...PROJECTED_CAPABILITIES.inherited_configuration!, lanes: { ...PROJECTED_CAPABILITIES.inherited_configuration!.lanes, 'exa.other': lane } },
+    };
+    const shared = { provider_id: 'exa', enabled: true, base_url: 'https://example.test/team', credential_slot_id: 'team-search', options: { user_location: 'team' } };
+    let saved = { providers: {}, nb_search: {
+      provider_instances: { 'exa.default': shared },
+      credential_slots: { 'team-search': { provider_id: 'exa', env: 'EXAMPLE_TEAM_KEY' } },
+    } } as unknown as KikiConfigResponse;
+    getConfig.mockImplementation(async () => saved);
+    getNbSearchCapabilities.mockResolvedValue(caps);
+    patchConfig.mockImplementation(async (patch: Record<string, unknown>) => { saved = { ...saved, ...patch }; return saved; });
+    const container = await renderSection('/settings/search?tab=search');
+    const other = container.querySelector('[data-nb-search-service-card="exa.other"]')!;
+    await click(other.querySelector('button[aria-expanded]')!);
+    await click(other.querySelector('[data-nb-search-service-remove]')!);
+    await click(document.querySelector('[data-confirm-action="confirm"]')!);
+    // Make a real save even when removing an inherited lane leaves its binding unchanged.
+    await click(container.querySelector('[data-nb-search-service-card="github.repositories"] button[aria-expanded]')!);
+    await click(container.querySelector('[data-nb-search-service-make-default="github.repositories"]')!);
+    await click(saveButtonOf(container)!);
+    await flush();
+    expect(saved.nb_search?.provider_instances?.['exa.default']).toEqual(shared);
+    expect(saved.nb_search?.credential_slots?.['team-search']).toEqual({ provider_id: 'exa', env: 'EXAMPLE_TEAM_KEY' });
+    const reloaded = await renderSection('/settings/search?tab=search');
+    const detail = await openServiceDetail(reloaded, 'exa.default');
+    expect(detail.querySelector<HTMLInputElement>('[data-nb-search-base-url]')!.value).toBe('https://example.test/team');
+    expect(detail.querySelector<HTMLInputElement>('[data-nb-search-credential-env]')!.value).toBe('EXAMPLE_TEAM_KEY');
+  });
+
+  it('edits the bound instance across address, enabled state and key draft without changing its sibling', async () => {
+    const caps: NbSearchCapabilities = {
+      ...PROJECTED_CAPABILITIES,
+      providers: { ...PROJECTED_CAPABILITIES.providers, instances: [
+        ...PROJECTED_CAPABILITIES.providers.instances,
+        { ...PROJECTED_CAPABILITIES.providers.instances[0]!, id: 'exa.team', availability: 'ready', issues: [], credential: { requirement: 'required', configured: true, slot_id: 'team-search' } },
+      ] },
+      configuration: { ...PROJECTED_CAPABILITIES.configuration!, lanes: { ...PROJECTED_CAPABILITIES.configuration!.lanes, 'exa.search': { ...PROJECTED_CAPABILITIES.configuration!.lanes['exa.search']!, provider_instance_id: 'exa.team' } } },
+      inherited_configuration: { ...PROJECTED_CAPABILITIES.inherited_configuration!, lanes: { ...PROJECTED_CAPABILITIES.inherited_configuration!.lanes, 'exa.search': { ...PROJECTED_CAPABILITIES.inherited_configuration!.lanes['exa.search']!, provider_instance_id: 'exa.team' } } },
+    };
+    const sibling = { provider_id: 'exa', enabled: true, base_url: 'https://example.test/default' };
+    getNbSearchCapabilities.mockResolvedValue(caps);
+    getConfig.mockResolvedValue({ providers: {}, nb_search: { provider_instances: {
+      'exa.default': sibling,
+      'exa.team': { provider_id: 'exa', enabled: true, base_url: 'https://example.test/team', credential_slot_id: 'team-search' },
+    } } } as unknown as KikiConfigResponse);
+    readNbSearchCredential.mockImplementation(async (id: string) => ({ ...MANAGED_KEYS, instance_id: id, slot_id: id === 'exa.team' ? 'team-search' : id }));
+    const container = await renderSection('/settings/search?tab=search');
+    const row = container.querySelector('[data-nb-search-service-card="exa.search"]')!;
+    expect(row.querySelector('[data-nb-search-service-state]')?.getAttribute('data-nb-search-service-state')).toBe('ready');
+    expect(container.querySelector('[data-nb-search-service-card="instance:exa.default"]')).not.toBeNull();
+    expect(container.querySelector('[data-nb-search-service-card="instance:exa.team"]')).toBeNull();
+    await click(row.querySelector('button[aria-expanded]')!);
+    const detail = row.querySelector<HTMLDivElement>('[data-nb-search-service-body]')!;
+    for (const summary of detail.querySelectorAll('details:not([open]) > summary')) await click(summary);
+    expect(detail.querySelector<HTMLInputElement>('[data-nb-search-base-url]')!.value).toBe('https://example.test/team');
+    expect(detail.querySelector('[data-nb-search-base-url]')!.id).toBe('exa.team-base-url');
+    expect(readNbSearchCredential).toHaveBeenCalledWith('exa.team', false);
+    await setInputValue(detail.querySelector<HTMLInputElement>('[data-nb-search-base-url]')!, 'https://example.test/team-new');
+    await click(row.querySelector('[data-nb-search-service-enabled] input')!);
+    await click(detail.querySelector('[data-key-replace]')!);
+    await setInputValue(detail.querySelector<HTMLInputElement>('[data-key-input]')!, 'example-team-key');
+    await click(detail.querySelector('[data-key-add]')!);
+    // Opening the sibling must not hide or transfer the bound instance's pending key.
+    const siblingRow = container.querySelector('[data-nb-search-service-card="instance:exa.default"]')!;
+    await click(siblingRow.querySelector('button[aria-expanded]')!);
+    expect(row.querySelector('[data-keys-mode="set"]')).not.toBeNull();
+    await click(saveButtonOf(container)!);
+    await flush();
+    const patch = patchConfig.mock.calls[0]![0] as { nb_search: { provider_instances: Record<string, unknown> } };
+    expect(patch.nb_search.provider_instances['exa.default']).toEqual(sibling);
+    expect(patch.nb_search.provider_instances['exa.team']).toMatchObject({ enabled: false, base_url: 'https://example.test/team-new', credential_slot_id: 'team-search' });
+    expect(writeNbSearchCredential).toHaveBeenCalledExactlyOnceWith('exa.team', 'example-team-key', 'fixture-old', 'fixture-binding');
+  });
+
   it('removes a service explicitly and leaves the other instances alone', async () => {
     getNbSearchCapabilities.mockResolvedValue({
       ...PROJECTED_CAPABILITIES,

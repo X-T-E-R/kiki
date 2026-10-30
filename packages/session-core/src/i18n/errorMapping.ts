@@ -32,8 +32,6 @@ const NOT_FOUND_NOUNS: Readonly<Record<string, I18nKey>> = {
 
 /** Codes whose localized copy does not follow the not-found pattern. */
 const SPECIFIC_CODE_KEYS: Readonly<Record<number, I18nKey>> = {
-  40001: 'err.serverData',
-  40002: 'err.serverData',
   40111: 'err.authMissing',
   40112: 'err.authRevoked',
   40113: 'err.modelUnresolved',

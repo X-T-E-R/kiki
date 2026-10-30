@@ -34,36 +34,11 @@ import {
   optionsIssue,
 } from './fieldIssues';
 import {
-  cardInstance,
   cardProviderInfo,
   laneProfiles,
   setServiceEnabled,
   type CardProviderInfo,
 } from './serviceCards';
-
-/** Card facts straight from the provider id — the path every engine-catalog card takes. */
-function providerInfo(
-  capabilities: NbSearchCapabilities,
-  draft: NbSearchDraft,
-  providerId: string,
-): CardProviderInfo | null {
-  const descriptor = capabilities.providers.descriptors.find((candidate) => candidate.provider_id === providerId);
-  if (descriptor === undefined) return null;
-  // The saved override pins the instance this card edits; without one, the
-  // provider's first reported instance stands in.
-  const instance = capabilities.providers.instances.find((candidate) =>
-    candidate.provider_id === providerId && draft.providers[candidate.id] !== undefined)
-    ?? capabilities.providers.instances.find((candidate) => candidate.provider_id === providerId);
-  const draftProvider = instance === undefined ? undefined : draft.providers[instance.id];
-  return {
-    providerId,
-    instanceId: instance?.id,
-    enabled: draftProvider?.enabled ?? instance?.enabled ?? true,
-    credentialRequirement: descriptor.activation.credential as CardProviderInfo['credentialRequirement'],
-    needsEndpoint: descriptor.activation.endpoint !== 'none',
-    hasOptions: descriptor.option_keys.length > 0,
-  };
-}
 
 /** Card facts for a provider instance the user configured directly (no lane needed). */
 function instanceInfo(
@@ -181,35 +156,10 @@ export function NbSearchServiceCard({
   const info = useMemo(
     () => kind === 'instance'
       ? instanceInfo(capabilities, draft, instanceId ?? '')
-      : card.providerId !== undefined
-        ? providerInfo(capabilities, draft, card.providerId)
-        : cardProviderInfo(capabilities, draft, profiles, kind, card.id),
-    [capabilities, draft, profiles, kind, card.id, card.providerId, instanceId],
+      : cardProviderInfo(capabilities, draft, profiles, kind, card.id),
+    [capabilities, draft, profiles, kind, card.id, instanceId],
   );
-
-  const instance = useMemo(
-    () => kind === 'instance'
-      ? capabilities.providers.instances.find((candidate) => candidate.id === instanceId)
-      : info?.instanceId === undefined
-        ? cardInstance(capabilities, draft, profiles, kind, card.id)
-        : capabilities.providers.instances.find((candidate) => candidate.id === info.instanceId),
-    [capabilities, draft, profiles, kind, card.id, instanceId, info],
-  );
-
-
-  // The instance this card edits keys and address on: the provider's saved or
-  // single instance, whichever the page keeps the override on.
-  const editableInstance = useMemo(
-    () => kind === 'instance'
-      ? instance
-      : info?.providerId === undefined
-        ? instance
-        : capabilities.providers.instances.find((candidate) =>
-          candidate.provider_id === info.providerId
-          && (draft.providers[candidate.id] !== undefined || candidate.id === instance?.id))
-        ?? instance,
-    [capabilities, draft, info, instance, kind],
-  );
+  const instance = capabilities.providers.instances.find((candidate) => candidate.id === info?.instanceId);
 
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
   // A row opens only on click (or a deep link the parent maps to `open`); a
@@ -223,7 +173,7 @@ export function NbSearchServiceCard({
     onOpenChange?.(value);
   };
 
-  const editableInstanceId = editableInstance?.id;
+  const editableInstanceId = info?.instanceId;
   const providerDraft = editableInstanceId === undefined ? undefined : draft.providers[editableInstanceId];
   const credentialSlots = (draft.credentialSlots ?? {}) as Record<string, { env?: string } | null>;
   const credentialEnv = providerDraft === undefined

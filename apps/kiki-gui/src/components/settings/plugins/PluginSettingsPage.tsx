@@ -179,7 +179,9 @@ function PluginEffectiveScope({ plugin }: { readonly plugin: PluginSummary }) {
       <SettingField label={t('st.plugins.enable')} htmlFor={`plugin-${plugin.id}-enabled`} help={plugin.enabled ? undefined : t('st.plugins.enableOffHint')}>
         <span data-plugin-settings-switch>
           <Toggle id={`plugin-${plugin.id}-enabled`} layout="bare" label={t('st.plugins.enable')} checked={plugin.enabled} disabled={busy}
-            onChange={(checked) => { void run(() => client.setPluginState(plugin.id, { enabled: checked, defaultEnabled: defaultOn })); }} />
+            onChange={(checked) => { void run(() => plugin.defaultEnabled === undefined
+              ? client.setPluginEnabled(plugin.id, checked)
+              : client.setPluginState(plugin.id, { enabled: checked, defaultEnabled: plugin.defaultEnabled })); }} />
         </span>
       </SettingField>
       <SettingField label={t('cap.defaultOn')} htmlFor={`plugin-${plugin.id}-default-on`} help={t(defaultOn ? 'st.plugins.defaultOnHint' : 'st.plugins.defaultOffHint')}>

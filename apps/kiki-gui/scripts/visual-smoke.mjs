@@ -267,6 +267,64 @@ const SCENARIOS = [
     },
   },
   {
+    name: 'plugin-toggle-compatibility',
+    fixture: 'plugin-settings-pages',
+    tags: ['smoke', 'settings', 'plugins'],
+    async run(page, link) {
+      const legacyBodies = [];
+      const currentBodies = [];
+      // Model an older server: no independent-default metadata, and only an
+      // empty body is accepted by its strict enable/disable routes.
+      await page.route(/\/api\/plugins$/, async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        for (const plugin of body.data.plugins) {
+          if (plugin.id === 'kiki-notes') delete plugin.defaultEnabled;
+        }
+        await route.fulfill({ response, json: body });
+      });
+      await page.route(/\/api\/plugins\/kiki-notes:(enable|disable)$/, async (route) => {
+        const body = route.request().postDataJSON();
+        legacyBodies.push(body);
+        if (Object.keys(body).length !== 0) {
+          await route.fulfill({ json: { code: 40001, msg: 'Unknown plugin action field', data: null } });
+        } else await route.continue();
+      });
+      await page.route(/\/api\/plugins\/sketchbook:(enable|disable)$/, async (route) => {
+        currentBodies.push(route.request().postDataJSON());
+        await route.continue();
+      });
+      await page.goto(link('/settings/plugins'), { waitUntil: 'domcontentloaded' });
+      const row = page.locator('[data-plugin-row="kiki-notes"]');
+      for (const enabled of [false, true]) {
+        await row.locator('input[type="checkbox"]').click();
+        await page.locator(`[data-plugin-row="kiki-notes"][data-plugin-enabled="${enabled}"]`).waitFor({ timeout: 10_000 });
+      }
+      const modern = page.locator('[data-plugin-row="sketchbook"]');
+      for (const enabled of [false, true]) {
+        await modern.locator('input[type="checkbox"]').click();
+        await page.locator(`[data-plugin-row="sketchbook"][data-plugin-enabled="${enabled}"]`).waitFor({ timeout: 10_000 });
+      }
+      if (currentBodies.length !== 2 || currentBodies.some((body) => body.defaultEnabled !== false)) {
+        throw new Error('the plugin master switch changed its independent default');
+      }
+      const shots = [await shot(page, 'plugin-toggle-list')];
+      await row.locator('[data-plugin-open-settings]').click();
+      const master = page.locator('[data-plugin-settings-switch] input');
+      for (const enabled of [false, true]) {
+        await master.click();
+        await page.waitForFunction((checked) => document.querySelector('[data-plugin-settings-switch] input')?.checked === checked, enabled);
+      }
+      if (legacyBodies.length !== 4 || legacyBodies.some((body) => Object.keys(body).length !== 0)) {
+        throw new Error('older server plugin actions did not keep their empty request body');
+      }
+      shots.push(await shot(page, 'plugin-toggle-page'));
+      await page.setViewportSize({ width: 390, height: 900 });
+      shots.push(await shot(page, 'plugin-toggle-page-narrow'));
+      return shots;
+    },
+  },
+  {
     name: 'settings-appearance',
     tags: ['smoke', 'settings', 'appearance'],
     async run(page, link) {

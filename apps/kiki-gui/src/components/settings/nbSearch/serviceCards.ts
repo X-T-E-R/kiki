@@ -125,8 +125,9 @@ export function cardProviderInfo(
   // all candidates — prefer one that really exists over guessing `.default`.
   const namedInstance = config?.provider_instance_id;
   const candidates = capabilities.providers.instances.filter((candidate) => candidate.provider_id === providerId);
-  const instance = candidates.find((candidate) => candidate.id === namedInstance) ?? candidates[0];
-  const draftProvider = instance === undefined ? undefined : draft.providers[instance.id];
+  const instance = namedInstance === undefined ? candidates[0] : candidates.find((candidate) => candidate.id === namedInstance);
+  const instanceId = namedInstance ?? instance?.id;
+  const draftProvider = instanceId === undefined ? undefined : draft.providers[instanceId];
   const enabled = draftProvider?.enabled ?? instance?.enabled ?? true;
   const credentialRequirement = descriptor?.activation.credential ?? instance?.credential.requirement ?? 'required';
   const endpointRequirement = descriptor?.activation.endpoint ?? instance?.endpoint.requirement ?? 'none';
@@ -210,7 +211,7 @@ export function cardInstance(
   if (providerId === undefined) return undefined;
   const namedInstance = kind === 'lane' ? laneConfig(capabilities, draft, id)?.provider_instance_id : undefined;
   const instances = capabilities.providers.instances.filter((instance) => instance.provider_id === providerId);
-  return instances.find((instance) => instance.id === namedInstance) ?? instances[0];
+  return namedInstance === undefined ? instances[0] : instances.find((instance) => instance.id === namedInstance);
 }
 
 /** 启用/停用服务: write the enable flag on the provider instance override. */
@@ -295,11 +296,15 @@ export function removeService(
 ): NbSearchDraft {
   if (kind === 'lane') {
     let next = setNbSearchLane(draft, id, undefined);
-    // The service leaves Kiki's list, so the saved instance override behind it
-    // (key slot, address, enable) leaves with it — that is what the patch must
-    // drop. A lane the layer below declared stays inherited.
-    const instanceId = cardInstance(capabilities, draft, laneProfiles(capabilities, draft), 'lane', id)?.id;
-    if (instanceId !== undefined && draft.providers[instanceId] !== undefined) {
+    const instanceId = cardProviderInfo(capabilities, draft, laneProfiles(capabilities, draft), 'lane', id)?.instanceId;
+    const bindings = {
+      ...(capabilities.inherited_configuration?.lanes ?? capabilities.configuration?.lanes),
+      ...next.advanced?.lanes,
+    };
+    const shared = Object.entries(bindings).some(([laneId, lane]) => laneId !== id && lane?.provider_instance_id === instanceId);
+    // Removing one method must keep the address, options and credential binding
+    // of any other search or fetch method sharing its instance.
+    if (instanceId !== undefined && !shared && draft.providers[instanceId] !== undefined) {
       next = {
         ...next,
         providers: {

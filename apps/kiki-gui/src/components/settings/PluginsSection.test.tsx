@@ -427,6 +427,22 @@ describe('PluginsSection', () => {
     listPlugins.mockResolvedValue({ plugins: [PLUGIN] });
   });
 
+  it.each([
+    { surface: 'list', enabled: true },
+    { surface: 'list', enabled: false },
+    { surface: 'page', enabled: true },
+    { surface: 'page', enabled: false },
+  ])('toggles an older server plugin from $enabled on the $surface without sending defaultEnabled', async ({ surface, enabled }) => {
+    listPlugins.mockResolvedValue({ plugins: [{ ...PLUGIN, enabled, globalEnabled: enabled }] });
+    const container = surface === 'list' ? await renderLeaf() : await renderPlugin('notes');
+    const selector = surface === 'list' ? '[data-plugin-row-switch="notes"]' : '[data-plugin-settings-switch]';
+    await click(container.querySelector(`${selector} input[type="checkbox"]`)!);
+    await flush();
+    expect(setPluginEnabled).toHaveBeenCalledExactlyOnceWith('notes', !enabled);
+    expect(setPluginState).not.toHaveBeenCalled();
+    listPlugins.mockResolvedValue({ plugins: [PLUGIN] });
+  });
+
   it('toggles a plugin off through the enable switch', async () => {
     const container = await renderView();
     await click(container.querySelector('[data-plugin-row="notes"] input[type="checkbox"]')!);
@@ -761,7 +777,8 @@ describe('PluginsSection', () => {
     const container = await renderLeaf();
     await click(container.querySelector('[data-plugin-row="notes"] input[type="checkbox"]')!);
     await flush();
-    expect(setPluginState).toHaveBeenCalledWith('notes', { enabled: false, defaultEnabled: true });
+    expect(setPluginEnabled).toHaveBeenCalledWith('notes', false);
+    expect(setPluginState).not.toHaveBeenCalled();
     expect(container.querySelector('[data-plugin-settings-page]')).toBeNull();
   });
 

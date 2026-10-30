@@ -29,7 +29,7 @@ import { nbSearchServiceCards, operationWord, providerLabelKey, serviceTitle, ty
 import type { KeyDraft } from './NbSearchMultiKeyEditor';
 import { NbSearchServiceCard } from './NbSearchServiceCard';
 import { NbSearchLaneComposer } from './NbSearchLaneComposer';
-import { addLaneService, addPipelineService, clearDefaultLane, engineLaneProfiles, makeDefaultLane, removeService } from './serviceCards';
+import { addLaneService, addPipelineService, cardProviderInfo, clearDefaultLane, engineLaneProfiles, laneProfiles, makeDefaultLane, removeService } from './serviceCards';
 import type { NbSearchAdvancedBinding } from './advancedSupport';
 
 type ReadCredential = (instanceId: string, reveal: boolean) => Promise<import('@kiki/protocol').NbSearchManagedCredentialView>;
@@ -54,6 +54,8 @@ export function NbSearchLanesTab({
 }) {
   const { t } = useI18n();
   const draft = advanced.draft;
+  const profiles = useMemo(() => laneProfiles(capabilities, draft), [capabilities, draft]);
+  const boundInstanceId = (card: ServiceCard) => cardProviderInfo(capabilities, draft, profiles, 'lane', card.id)?.instanceId;
   const bindingConfig = advanced.config;
   const [directoryOpen, setDirectoryOpen] = useState(false);
   const labelOf = (providerId: string) => {
@@ -144,15 +146,14 @@ export function NbSearchLanesTab({
       ...Object.keys((bindingConfig?.provider_instances ?? {}) as Record<string, unknown>),
       ...((capabilities.configuration as { provider_instance_ids?: readonly string[] } | undefined)?.provider_instance_ids ?? []),
     ]);
-    return allCards.filter((card) =>
-      Object.prototype.hasOwnProperty.call(ownLanes, card.id)
-      || inherited?.[card.id] !== undefined
-      || (inherited === undefined && capabilities.configuration?.lanes[card.id] !== undefined)
-      || (card.providerId !== undefined
-        && capabilities.providers.instances.some((instance) =>
-          instance.provider_id === card.providerId
-          && (overriddenInstances.has(instance.id) || configuredInstanceIds.has(instance.id)))));
-  }, [allCards, ownLanes, capabilities, bindingConfig, configuredInstanceIds]);
+    return allCards.filter((card) => {
+      const instanceId = boundInstanceId(card);
+      return Object.prototype.hasOwnProperty.call(ownLanes, card.id)
+        || inherited?.[card.id] !== undefined
+        || (inherited === undefined && capabilities.configuration?.lanes[card.id] !== undefined)
+        || (instanceId !== undefined && (overriddenInstances.has(instanceId) || configuredInstanceIds.has(instanceId)));
+    });
+  }, [allCards, ownLanes, capabilities, bindingConfig, configuredInstanceIds, profiles]);
   const directoryCards = useMemo(
     () => directoryCardsAll.filter((card) => !activeCards.some((active) => active.id === card.id)),
     [directoryCardsAll, activeCards],
@@ -166,22 +167,9 @@ export function NbSearchLanesTab({
       ...configuredInstanceIds,
       ...((capabilities.configuration as { provider_instance_ids?: readonly string[] } | undefined)?.provider_instance_ids ?? []),
     ]);
-    const coveredProviders = new Set(
-      activeCards.map((card) => card.providerId).filter((id): id is string => id !== undefined),
-    );
-    // The lane card edits the provider's saved instance when there is one,
-    // its first instance otherwise; a second configured instance of that
-    // provider keeps its own card.
-    const laneCoveredInstances = new Set(
-      activeCards.flatMap((card) => {
-        const providerId = card.providerId;
-        if (providerId === undefined) return [];
-        const saved = capabilities.providers.instances.find((instance) =>
-          instance.provider_id === providerId && draft.providers[instance.id] !== undefined);
-        const first = saved ?? capabilities.providers.instances.find((instance) => instance.provider_id === providerId);
-        return first === undefined ? [] : [first.id];
-      }),
-    );
+    // A lane covers only the instance it edits; other configured instances
+    // of the same provider keep their own card.
+    const laneCoveredInstances = new Set(activeCards.map(boundInstanceId));
     const cards: ServiceCard[] = [];
     const cardFor = (instanceId: string, providerId: string) => {
       const descriptor = capabilities.providers.descriptors.find((candidate) => candidate.provider_id === providerId);
@@ -209,7 +197,7 @@ export function NbSearchLanesTab({
     };
     for (const instance of capabilities.providers.instances) {
       if (!overridden.has(instance.id)) continue;
-      if (coveredProviders.has(instance.provider_id) && laneCoveredInstances.has(instance.id)) continue;
+      if (laneCoveredInstances.has(instance.id)) continue;
       cardFor(instance.id, instance.provider_id);
     }
     // An instance this draft created exists nowhere on the server yet; it
@@ -220,18 +208,23 @@ export function NbSearchLanesTab({
       cardFor(instanceId, provider.providerId);
     }
     return cards;
-  }, [bindingConfig, capabilities, allCards, activeCards, draft.providers, labelOf, t]);
+  }, [bindingConfig, capabilities, activeCards, draft.providers, profiles, labelOf, t]);
 
   // Single-open: opening a row closes the previous one, like the browser
   // list. A row that holds an unsaved key is never hidden behind a sibling:
   // it stays open next to the new one until its keys are saved or dropped.
   const [openCardId, setOpenCardId] = useState<string | null>(null);
   const [pinnedOpen, setPinnedOpen] = useState<readonly string[]>([]);
-  const dirtyCards = new Set(
-    Object.entries(keyDrafts)
-      .filter(([, entry]) => entry.mode !== 'keep')
-      .map(([instanceId]) => cardIdForInstance(instanceId, capabilities, activeCards, instanceCards)),
-  );
+  const dirtyInstanceIds = new Set(Object.entries(keyDrafts)
+    .filter(([, entry]) => entry.mode !== 'keep')
+    .map(([instanceId]) => instanceId));
+  const dirtyCards = new Set([
+    ...activeCards.filter((card) => {
+      const instanceId = boundInstanceId(card);
+      return instanceId !== undefined && dirtyInstanceIds.has(instanceId);
+    }).map((card) => card.id),
+    ...instanceCards.filter((card) => dirtyInstanceIds.has(card.id.slice('instance:'.length))).map((card) => card.id),
+  ]);
   const selectOpen = (cardId: string, next: boolean) => {
     if (next) {
       // Rows that already hold pending keys stay open next to the new one —
@@ -369,9 +362,9 @@ export function NbSearchLanesTab({
                 capabilities={capabilities}
                 draft={draft}
                 onChange={advanced.onChange}
-                keyDraft={cardKeyDraft(keyDrafts, capabilities, card.providerId)}
+                keyDraft={keyDrafts[boundInstanceId(card) ?? ''] ?? { mode: 'keep' }}
                 onKeyDraftChange={(next) => {
-                  const instanceId = cardInstanceId(capabilities, card.providerId);
+                  const instanceId = boundInstanceId(card);
                   if (instanceId !== undefined) onKeyDraftChange(instanceId, next);
                 }}
                 readCredential={readCredential}
@@ -445,34 +438,4 @@ export function NbSearchLanesTab({
       </div>
     </SectionCard>
   );
-}
-
-function cardInstanceId(
-  capabilities: NbSearchCapabilities,
-  providerId: string | undefined,
-): string | undefined {
-  if (providerId === undefined) return undefined;
-  return capabilities.providers.instances.find((instance) => instance.provider_id === providerId)?.id;
-}
-
-function cardKeyDraft(
-  keyDrafts: Readonly<Record<string, KeyDraft>>,
-  capabilities: NbSearchCapabilities,
-  providerId: string | undefined,
-): KeyDraft {
-  const instanceId = cardInstanceId(capabilities, providerId);
-  return instanceId === undefined ? { mode: 'keep' } : keyDrafts[instanceId] ?? { mode: 'keep' };
-}
-
-/** The card that edits one instance: its own `instance:<id>` card, or the lane card of its provider. */
-function cardIdForInstance(
-  instanceId: string,
-  capabilities: NbSearchCapabilities,
-  activeCards: readonly ServiceCard[],
-  instanceCards: readonly ServiceCard[],
-): string {
-  if (instanceCards.some((card) => card.id === `instance:${instanceId}`)) return `instance:${instanceId}`;
-  const providerId = capabilities.providers.instances.find((instance) => instance.id === instanceId)?.provider_id;
-  const lane = activeCards.find((card) => card.providerId !== undefined && card.providerId === providerId);
-  return lane?.id ?? `instance:${instanceId}`;
 }

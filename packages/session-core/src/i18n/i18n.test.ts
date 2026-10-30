@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { en } from './en';
 import { zh } from './zh';
+import { sessionActionErrorText } from '../commands/sessionActions';
 import {
   detectLocale,
   errorText,
@@ -10,6 +11,7 @@ import {
   translatePlural,
   type I18nKey,
 } from './locale';
+import { ApiError } from '../transport';
 import { formatDuration, relativeTime, timeUntil } from '../util/time';
 
 describe('detectLocale', () => {
@@ -154,6 +156,29 @@ describe('LocalizedError / errorText', () => {
     const unmapped = { code: 40917, message: 'goal objective is empty (code 40917)' };
     expect(errorText('zh', unmapped)).toBe('goal objective is empty (code 40917)');
     expect(errorText('zh', new Error('something else (code 42901)'))).toBe('请求太频繁了，请稍后再试');
+  });
+
+  it('keeps validation refusal messages for ApiError objects and legacy suffixes', () => {
+    const refusals = [
+      { code: 40001, message: 'Choose a profile Markdown (.md) file' },
+      { code: 40002, message: 'Malformed request: profile data is missing' },
+    ] as const;
+    for (const locale of ['en', 'zh'] as const) {
+      for (const refusal of refusals) {
+        const error = new ApiError({ code: refusal.code, msg: refusal.message, data: null });
+        expect(errorText(locale, error)).toBe(error.message);
+        const legacy = `${refusal.message} (code${refusal.code})`;
+        expect(errorText(locale, legacy)).toBe(legacy);
+      }
+    }
+  });
+
+  it('keeps session action copy localized and unknown refusal text raw', () => {
+    const undoUnavailable = new ApiError({ code: 40911, msg: 'undo unavailable', data: null });
+    expect(sessionActionErrorText('en', undoUnavailable)).toBe(translate('en', 'error.nothingToUndo'));
+    expect(sessionActionErrorText('zh', undoUnavailable)).toBe(translate('zh', 'error.nothingToUndo'));
+    const refusal = new ApiError({ code: 40001, msg: 'Archive refused: drafts remain', data: null });
+    expect(sessionActionErrorText('en', refusal)).toBe(refusal.message);
   });
 
   it('never prints a zod issue array as JSON', () => {
