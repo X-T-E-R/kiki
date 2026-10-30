@@ -5,7 +5,7 @@ import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, type Event } from '#/_base/event';
 
-import { IFileSystemStorageService, StorageError, StorageErrors, type StorageFileStat } from '#/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, StorageErrors, type StorageAppendObservation, type StorageFileStat } from '#/persistence/interface/storage';
 import { discardColdSegments, discardColdUnlocked, readLogicalBytes, sealColdSegments, withColdExclusive } from '#/persistence/coldSegmentLog';
 import { withColdReaderGate } from '#/persistence/backends/node-fs/fileLock';
 import {
@@ -29,6 +29,11 @@ const textEncoder = new TextEncoder();
 const TRANSIENT_APPEND_ERRNOS = new Set(['EBUSY', 'EPERM', 'EACCES']);
 
 const pendingRetirements = new Set<Promise<void>>();
+
+function sameStat(left: StorageFileStat | undefined, right: StorageFileStat | undefined): boolean {
+  return left !== undefined && right !== undefined &&
+    left.identity === right.identity && left.size === right.size && left.revision === right.revision;
+}
 
 function appendCommitted(error: unknown): boolean | undefined {
   if (error === null || typeof error !== 'object') return undefined;
@@ -153,24 +158,25 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     }
     const before = await this.storage.stat(scope, key).catch(() => undefined);
     this.observeSource(source, before);
+    let observed: StorageAppendObservation | undefined;
     try {
-      await this.storage.append(scope, key, data, { durable: true });
+      await this.storage.append(scope, key, data, { durable: true, observe: (observation) => { observed = observation; } });
     } catch (error) {
       const after = before === undefined ? undefined : await this.storage.stat(scope, key).catch(() => undefined);
-      const wroteBytes = appendCommitted(error) !== false && after !== undefined && before !== undefined &&
-        after.size > before.size;
-      if (before === undefined || after === undefined || after.identity !== before.identity ||
-        after.size < before.size || after.size > before.size + data.byteLength ||
-        (!wroteBytes && after.revision !== before.revision)) {
+      const unchanged = after !== undefined && sameStat(before, after);
+      const ownWrite = observed?.after !== undefined && after !== undefined && sameStat(before, observed.before) &&
+        sameStat(observed.after, after) && after.size >= before!.size && after.size <= before!.size + data.byteLength;
+      if (unchanged || ownWrite) {
+        source.stat = after;
+      } else {
         source.revision++;
         source.stat = undefined;
-      } else {
-        source.stat = after;
       }
       throw error;
     }
     const after = await this.storage.stat(scope, key).catch(() => undefined);
-    if (before === undefined || after === undefined || before.identity !== after.identity || after.size !== before.size + data.byteLength) source.revision++;
+    if (before === undefined || after === undefined || before.identity !== after.identity || after.size !== before.size + data.byteLength ||
+      (observed !== undefined && !sameStat(before, observed.before))) source.revision++;
     source.stat = after;
   }
 

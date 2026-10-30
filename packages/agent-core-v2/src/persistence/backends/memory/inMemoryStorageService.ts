@@ -94,8 +94,14 @@ export class InMemoryStorageService implements IFileSystemStorageService {
     scope: string,
     key: string,
     data: Uint8Array,
-    _options: StorageAppendOptions = {},
+    options: StorageAppendOptions = {},
   ): Promise<void> {
+    const before = options.observe === undefined ? undefined : await this.stat(scope, key);
+    this.appendBytes(scope, key, data);
+    if (before !== undefined) options.observe?.({ before, after: await this.stat(scope, key) });
+  }
+
+  private appendBytes(scope: string, key: string, data: Uint8Array): void {
     const bucket = this.bucket(scope);
     const existing = bucket.get(key);
     if (existing === undefined) {

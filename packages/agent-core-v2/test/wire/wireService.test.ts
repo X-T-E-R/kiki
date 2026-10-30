@@ -533,6 +533,8 @@ describe('WireService seal', () => {
     { change: 'in-place', committed: true },
     { change: 'truncate-rewrite', committed: false },
     { change: 'truncate-rewrite', committed: true },
+    { change: 'truncate-rewrite-partial', committed: true },
+    { change: 'truncate-rewrite-full', committed: true },
   ] as const)('rejects a real file rewrite of the epoch base during a failed append, $change committed=$committed', async ({ change, committed }) => {
     const base = await mkdtemp(join(tmpdir(), 'wire-failed-append-'));
     const host = new DisposableStore();
@@ -564,11 +566,13 @@ describe('WireService seal', () => {
           else {
             const handle = await open(path, 'r+');
             try {
-              if (change === 'truncate-rewrite') await handle.truncate(0);
+              if (change !== 'in-place') await handle.truncate(0);
               await handle.write(changed, 0, changed.byteLength, 0);
               await handle.sync();
             } finally { await handle.close(); }
           }
+          if (change === 'truncate-rewrite-partial') await append(scope, key, bytes.subarray(0, 13), options);
+          if (change === 'truncate-rewrite-full') await append(scope, key, bytes, options);
           throw failure;
         }
         await append(scope, key, bytes, options);
@@ -577,10 +581,17 @@ describe('WireService seal', () => {
       await expect(fileWire.flush()).rejects.toBe(failure);
       failing = false;
       await fileWire.flush();
+      expect(Buffer.from((await fileStorage.read('main', AGENT_WIRE_RECORD_KEY))!).toString('utf8')).toContain('modified-prefix');
       expect(await fileWire.verifyTranscriptLiveEpoch!()).toBe(false);
       await fileWire.sealTranscriptEpoch!();
       const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from((await fileStorage.read('main', WIRE_TRANSCRIPT_RECEIPT_KEY))!).toString('utf8')));
       expect(sealed).toMatchObject({ state: 'sealed', trusted: false });
+      const reopened = registerTestAgentWire(host.add(new TestInstantiationService()), 'main', {
+        log: new AppendLogStore(fileStorage), storage: fileStorage, logger: noopLogger, telemetry: noopTelemetryService,
+      });
+      await reopened.seal();
+      await reopened.beginTranscriptEpoch!();
+      expect(await reopened.verifyTranscriptLiveEpoch!()).toBe(false);
     } finally {
       resetUnexpectedErrorHandler();
       await host.dispose();
@@ -588,8 +599,8 @@ describe('WireService seal', () => {
     }
   });
 
-  it('keeps a real file epoch trusted after a partial failed append is recovered', async () => {
-    const base = await mkdtemp(join(tmpdir(), 'wire-partial-append-'));
+  it.each(['plain', 'uncommitted', 'started-zero', 'partial', 'full-sync', 'repeat-sync'] as const)('keeps a real file epoch trusted through a normal append recovery, mode=%s', async (mode) => {
+    const base = await mkdtemp(join(tmpdir(), 'wire-normal-append-'));
     const host = new DisposableStore();
     setUnexpectedErrorHandler(() => {});
     try {
@@ -603,26 +614,49 @@ describe('WireService seal', () => {
       fileWire.appendRecord({ type: 'turn.prompt', turnId: 0, text: `original-prefix${'x'.repeat(16384)}` });
       await fileWire.flush();
       await fileWire.beginTranscriptEpoch!();
+      const revisionBefore = await fileLog.sourceRevision!('main', AGENT_WIRE_RECORD_KEY);
       const append = fileStorage.append.bind(fileStorage);
-      let failing = true;
+      let calls = 0;
       const failure = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'injected append failure', {
-        details: { errno: 'ENOSPC', committed: true },
+        details: { errno: 'ENOSPC', committed: mode !== 'uncommitted' },
       });
       fileStorage.append = async (scope, key, bytes, options) => {
-        if (failing && key === AGENT_WIRE_RECORD_KEY) {
-          await append(scope, key, bytes.subarray(0, 13), options);
-          throw failure;
+        if (key === AGENT_WIRE_RECORD_KEY && mode !== 'plain') {
+          calls++;
+          if (calls === 1) {
+            if (mode === 'partial') await append(scope, key, bytes.subarray(0, 13), options);
+            if (mode === 'full-sync' || mode === 'repeat-sync') await append(scope, key, bytes, options);
+            throw failure;
+          }
+          if (mode === 'repeat-sync' && calls === 2) {
+            await append(scope, key, bytes, options);
+            throw failure;
+          }
         }
         await append(scope, key, bytes, options);
       };
       fileWire.appendRecord({ type: 'turn.prompt', turnId: 1, text: 'accepted-tail' });
-      await expect(fileWire.flush()).rejects.toBe(failure);
-      failing = false;
+      if (mode !== 'plain') {
+        await expect(fileWire.flush()).rejects.toBe(failure);
+        if (mode === 'repeat-sync') await expect(fileWire.flush()).rejects.toBe(failure);
+      }
       await fileWire.flush();
+      fileWire.appendRecord({ type: 'turn.prompt', turnId: 2, text: 'ordinary-follow-up' });
+      await fileWire.flush();
+      const text = Buffer.from((await fileStorage.read('main', AGENT_WIRE_RECORD_KEY))!).toString('utf8');
+      expect(text.split('accepted-tail')).toHaveLength(2);
+      expect(text.split('ordinary-follow-up')).toHaveLength(2);
+      expect((await fileLog.sourceRevision!('main', AGENT_WIRE_RECORD_KEY))?.revision).toBe(revisionBefore?.revision);
       expect(await fileWire.verifyTranscriptLiveEpoch!()).toBe(true);
       await fileWire.sealTranscriptEpoch!();
       const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from((await fileStorage.read('main', WIRE_TRANSCRIPT_RECEIPT_KEY))!).toString('utf8')));
       expect(sealed).toMatchObject({ state: 'sealed', trusted: true });
+      const reopened = registerTestAgentWire(host.add(new TestInstantiationService()), 'main', {
+        log: new AppendLogStore(fileStorage), storage: fileStorage, logger: noopLogger, telemetry: noopTelemetryService,
+      });
+      await reopened.seal();
+      await reopened.beginTranscriptEpoch!();
+      expect(await reopened.verifyTranscriptLiveEpoch!()).toBe(true);
     } finally {
       resetUnexpectedErrorHandler();
       await host.dispose();
