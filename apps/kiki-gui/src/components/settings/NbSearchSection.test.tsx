@@ -374,6 +374,51 @@ describe('NbSearchSection status', () => {
     expect(services.textContent).not.toContain('example.documents@1');
   });
 
+  it('names the operation in the row’s own words and skips fetch-only services', async () => {
+    getNbSearchCapabilities.mockResolvedValue({
+      ...PROJECTED_CAPABILITIES,
+      providers: {
+        ...PROJECTED_CAPABILITIES.providers,
+        descriptors: [
+          ...PROJECTED_CAPABILITIES.providers.descriptors,
+          { provider_id: 'brave', adapter_version: '1', query_operations: [{ operation_id: 'search', output: { channel: 'results', schema_id: 'nb-search.results@1' }, built_in_async: true }], fetch_operations: [], activation: { credential: 'required', endpoint: 'none' }, option_keys: [] },
+          { provider_id: 'browser-render', adapter_version: '1', query_operations: [], fetch_operations: [{ operation_id: 'render' }], activation: { credential: 'none', endpoint: 'none' }, option_keys: [] },
+        ],
+        instances: [
+          ...PROJECTED_CAPABILITIES.providers.instances,
+          { id: 'brave.default', provider_id: 'brave', enabled: true, availability: 'ready' as const, issues: [], credential: { requirement: 'required' as const, configured: true, slot_id: 'brave.default' }, endpoint: { requirement: 'none' as const, configured: false } },
+          { id: 'browser-render.default', provider_id: 'browser-render', enabled: true, availability: 'ready' as const, issues: [], credential: { requirement: 'none' as const, configured: false }, endpoint: { requirement: 'none' as const, configured: false } },
+        ],
+      },
+      search: {
+        ...PROJECTED_CAPABILITIES.search,
+        lanes: [
+          ...PROJECTED_CAPABILITIES.search.lanes,
+          { id: 'brave.search', output: { channel: 'results' as const, schema_id: 'nb-search.results@1' }, execution_modes: ['sync' as const], availability: 'ready' as const, issues: [], latency: 'fast' as const, cost: 'cheap' as const },
+          { id: 'browser-render.render', output: { channel: 'typed' as const, schema_id: 'nb-search.contents@1' }, execution_modes: ['sync' as const], availability: 'ready' as const, issues: [], latency: 'slow' as const, cost: 'expensive' as const },
+        ],
+      },
+      configuration: {
+        ...PROJECTED_CAPABILITIES.configuration!,
+        lanes: {
+          ...PROJECTED_CAPABILITIES.configuration!.lanes,
+          'brave.search': { provider_instance_id: 'brave.default', operation_id: 'search', latency: 'fast' as const, cost: 'cheap' as const },
+          'browser-render.render': { provider_instance_id: 'browser-render.default', operation_id: 'render', latency: 'slow' as const, cost: 'expensive' as const },
+        },
+        provider_instance_ids: [...PROJECTED_CAPABILITIES.configuration!.provider_instance_ids, 'brave.default'],
+      },
+    });
+    const container = await renderSection('/settings/search?tab=search');
+    const services = container.querySelector('[data-nb-search-service-cards]')!;
+    // The provider label already says 搜索, so the row adds no second word.
+    const braveCard = services.querySelector('[data-nb-search-service-card="brave.search"]')!;
+    expect(braveCard.querySelector('[data-row-name]')!.textContent).toBe('Brave Search');
+    // The typed channel's operation word is a word, not the raw operation id.
+    expect(services.textContent).toContain('example docs');
+    // A fetch-only service belongs to the fetch tab, never to this list.
+    expect(services.textContent).not.toContain('Browser rendering');
+  });
+
   it('names the lane actually in use when the default is inherited', async () => {
     getNbSearchCapabilities.mockResolvedValue({
       ...PROJECTED_CAPABILITIES,

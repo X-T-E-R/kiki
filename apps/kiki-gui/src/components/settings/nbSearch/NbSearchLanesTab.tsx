@@ -25,11 +25,11 @@ import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { SectionCard } from '../SectionCard';
 import { AdvancedDetails } from '../fields';
 import { ListEmpty, ListToolbar, useListView } from '../list';
-import { nbSearchServiceCards, providerLabelKey, type ServiceCard } from './types';
+import { nbSearchServiceCards, operationWord, providerLabelKey, serviceTitle, type ServiceCard } from './types';
 import type { KeyDraft } from './NbSearchMultiKeyEditor';
 import { NbSearchServiceCard } from './NbSearchServiceCard';
 import { NbSearchLaneComposer } from './NbSearchLaneComposer';
-import { addLaneService, addPipelineService, clearDefaultLane, engineLaneProfiles, makeDefaultLane, removeService } from './serviceCards';
+import { DEFAULT_FETCH_PAIR, addLaneService, addPipelineService, chainPipelines, clearDefaultLane, engineLaneProfiles, makeDefaultLane, removeService } from './serviceCards';
 import type { NbSearchAdvancedBinding } from './advancedSupport';
 
 type ReadCredential = (instanceId: string, reveal: boolean) => Promise<import('@kiki/protocol').NbSearchManagedCredentialView>;
@@ -72,6 +72,8 @@ export function NbSearchLanesTab({
     const descriptorProvider = new Map(
       capabilities.providers.descriptors.map((descriptor) => [descriptor.provider_id, descriptor.provider_id]),
     );
+    // Only lanes whose provider can actually search: a fetch-only service
+    // (browser rendering) belongs to 网页抓取, never to this list.
     const searchCards = capabilities.search.lanes.flatMap((lane) => {
       const profile = engineProfiles[lane.id];
       if (profile === undefined) return [];
@@ -79,11 +81,13 @@ export function NbSearchLanesTab({
       // instance id as if it were a provider) is not a service card.
       const providerId = descriptorProvider.get(profile.provider_id);
       if (providerId === undefined) return [];
-      const operationWord = lane.output.channel === 'results' ? t('st.nbSearch.operation.search') : profile.operation_id;
+      const descriptor = capabilities.providers.descriptors.find((candidate) => candidate.provider_id === providerId);
+      if (descriptor === undefined || descriptor.query_operations.length === 0) return [];
+      const word = operationWord(t, lane, profile.operation_id);
       return [{
         id: lane.id,
-        title: `${labelOf(providerId)} ${operationWord}`.trim(),
-        subtitle: operationWord,
+        title: serviceTitle(labelOf(providerId), word),
+        subtitle: word,
         operationId: profile.operation_id,
         providerId,
         latency: lane.latency,
@@ -181,11 +185,21 @@ export function NbSearchLanesTab({
     const cards: ServiceCard[] = [];
     const cardFor = (instanceId: string, providerId: string) => {
       const descriptor = capabilities.providers.descriptors.find((candidate) => candidate.provider_id === providerId);
+      // A saved instance that only fetches belongs to the fetch tab's chain;
+      // the search tab lists it only when it sits on no chain either —
+      // otherwise the key the user saved for it would be unreachable.
+      const fetches = (descriptor?.fetch_operations.length ?? 0) > 0
+        || capabilities.fetch.pipelines.some((pipeline) => pipeline.stages[0]?.id === providerId);
+      const onChain = capabilities.fetch.pipelines.some((pipeline) =>
+        pipeline.stages[0]?.id === providerId
+        && chainPipelines(capabilities, draft, DEFAULT_FETCH_PAIR.inputKind, DEFAULT_FETCH_PAIR.representation).pipelines.includes(pipeline.id));
+      if (fetches && onChain) return;
       const searches = (descriptor?.query_operations.length ?? 0) > 0;
+      const word = searches ? t('st.nbSearch.operation.search') : t('st.nbSearch.role.service');
       cards.push({
         id: `instance:${instanceId}`,
-        title: searches ? `${labelOf(providerId)} ${t('st.nbSearch.operation.search')}`.trim() : labelOf(providerId),
-        subtitle: searches ? t('st.nbSearch.operation.search') : t('st.nbSearch.role.service'),
+        title: searches ? serviceTitle(labelOf(providerId), word) : labelOf(providerId),
+        subtitle: word,
       });
     };
     for (const instance of capabilities.providers.instances) {

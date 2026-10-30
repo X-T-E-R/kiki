@@ -164,6 +164,38 @@ export function providerLabelKey(providerId: string): I18nKey | undefined {
 }
 
 /**
+ * The human word for a lane's operation: results channels are 搜索, a typed
+ * channel the dictionary knows gets its own word (documents → 文档), and an
+ * unknown operation id stays raw — a future engine operation still renders.
+ */
+const OPERATION_WORD_KEYS: Readonly<Record<string, I18nKey>> = {
+  search: 'st.nbSearch.operation.search',
+  documents: 'st.nbSearch.operation.documents',
+};
+
+export function operationWord(
+  t: (key: I18nKey) => string,
+  lane: { readonly output: { readonly channel: string } } | undefined,
+  operationId: string,
+): string {
+  if (lane?.output.channel === 'results') return t('st.nbSearch.operation.search');
+  const key = OPERATION_WORD_KEYS[operationId];
+  return key === undefined ? operationId : t(key);
+}
+
+/**
+ * "Exa 搜索", never "Brave 搜索 搜索": a label that already ends with the
+ * operation word takes no second one. The comparison is word-based and
+ * case-insensitive, so "Brave Search" + "search" and "Brave 搜索" + "搜索"
+ * both collapse while "GitHub" + "search" does not.
+ */
+export function serviceTitle(providerLabel: string, operation: string): string {
+  const words = providerLabel.toLowerCase().split(/[\s·-]+/);
+  if (words.includes(operation.toLowerCase())) return providerLabel;
+  return `${providerLabel} ${operation}`.trim();
+}
+
+/**
  * What one service card leads with: the provider's name plus the lane or
  * pipeline a person would recognise ("Exa 搜索"). The card's lane / pipeline
  * id stays inside the service body, never on the row.
@@ -190,10 +222,10 @@ function laneCard(
   const profile = lanes[laneId];
   if (profile === undefined) return null;
   const providerLabel = t(providerLabelKey(profile.provider_id) ?? 'st.nbSearch.providerFallback');
-  const operationLabel = lane?.output.channel === 'results' ? t('st.nbSearch.operation.search') : profile.operation_id;
+  const operationLabel = operationWord(t, lane, profile.operation_id);
   return {
     id: laneId,
-    title: `${providerLabel} ${operationLabel}`.trim(),
+    title: serviceTitle(providerLabel, operationLabel),
     subtitle: operationLabel,
     latency: lane?.latency,
     cost: lane?.cost,

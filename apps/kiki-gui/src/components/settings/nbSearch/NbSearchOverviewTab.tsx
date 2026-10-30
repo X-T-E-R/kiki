@@ -7,7 +7,7 @@ import type { NbSearchCapabilities, NbSearchTestStatus } from '@kiki/protocol';
 import { SectionCard } from '../SectionCard';
 import { useI18n } from '../../../i18n';
 import { SECONDARY_BUTTON } from '../../ui';
-import { fetchUrlState, providerLabelKey, webSearchState } from './types';
+import { fetchUrlState, operationWord, providerLabelKey, serviceTitle, webSearchState } from './types';
 import { engineLaneProfiles } from './serviceCards';
 import { NbSearchReadinessRow } from './NbSearchReadinessRow';
 
@@ -35,7 +35,7 @@ export function NbSearchOverviewTab({
       const labelKey = providerLabelKey(profile.provider_id);
       const provider = labelKey === undefined ? profile.provider_id : t(labelKey);
       const lane = capabilities.search.lanes.find((candidate) => candidate.id === id);
-      if (lane?.output.channel === 'results') return `${provider} ${t('st.nbSearch.operation.search')}`;
+      if (lane !== undefined) return serviceTitle(provider, operationWord(t, lane, profile.operation_id));
       return provider;
     }
     const pipeline = capabilities.fetch.pipelines.find((candidate) => candidate.id === id);
