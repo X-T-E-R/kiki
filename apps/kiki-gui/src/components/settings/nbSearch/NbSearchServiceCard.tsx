@@ -12,7 +12,7 @@
  * credential reads the key editor already owns.
  */
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { NbSearchCapabilities, NbSearchKeyUsageView, NbSearchManagedCredentialView } from '@kiki/protocol';
 import { setNbSearchCredentialEnv, type NbSearchDraft } from '@kiki/session-core/settings';
 
@@ -137,8 +137,6 @@ export interface NbSearchServiceCardProps {
   /** Controlled open state for a single-open list: when set, the parent decides which row is open. */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
-  /** A card that opened itself (needsKey) tells the list it is open without taking the single slot. */
-  onSelfOpen?: () => void;
 }
 
 export function serviceCardState(
@@ -176,7 +174,6 @@ export function NbSearchServiceCard({
   defaultOpen = false,
   open: controlledOpen,
   onOpenChange,
-  onSelfOpen,
 }: NbSearchServiceCardProps) {
   const { t } = useI18n();
   const profiles = useMemo(() => laneProfiles(capabilities, draft), [capabilities, draft]);
@@ -213,26 +210,11 @@ export function NbSearchServiceCard({
     [capabilities, draft, info, instance, kind],
   );
 
-  const needsAttention = info !== null && info.enabled
-    && info.credentialRequirement !== 'none'
-    && (instance === undefined || !instance.credential.configured)
-    && keyDraft.mode === 'keep';
-  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen || needsAttention);
-  // Controlled by the list (single-open) when the parent passes `open`;
-  // a card that needs attention opens itself either way.
-  const open = needsAttention || (controlledOpen ?? uncontrolledOpen);
-  // The attention case registers with the single-open list too, so a sibling
-  // click closes it once its own draft is clean; while needsAttention holds,
-  // the row stays open no matter what the list says. Registering fires once
-  // per attention spell, not per render — the callback identity changes every
-  // render, so it is read through a ref and never re-triggers the effect.
-  const onSelfOpenRef = useRef(onSelfOpen);
-  onSelfOpenRef.current = onSelfOpen;
-  const wasAttention = useRef(false);
-  useEffect(() => {
-    if (needsAttention && !wasAttention.current) onSelfOpenRef.current?.();
-    wasAttention.current = needsAttention;
-  }, [needsAttention, controlledOpen]);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+  // A row opens only on click (or a deep link the parent maps to `open`); a
+  // missing key shows as the amber 缺少密钥 word on the collapsed row, never
+  // as an auto-opened form. Single-open lives in the list.
+  const open = controlledOpen ?? uncontrolledOpen;
 
   const setOpen = (next: boolean | ((current: boolean) => boolean)) => {
     const value = typeof next === 'function' ? next(open) : next;

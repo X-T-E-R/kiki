@@ -207,7 +207,7 @@ export function NbSearchLanesTab({
   // list. A row that holds an unsaved key is never hidden behind a sibling:
   // it stays open next to the new one until its keys are saved or dropped.
   const [openCardId, setOpenCardId] = useState<string | null>(null);
-  const [stickyOpen, setStickyOpen] = useState<readonly string[]>([]);
+  const [pinnedOpen, setPinnedOpen] = useState<readonly string[]>([]);
   const dirtyCards = new Set(
     Object.entries(keyDrafts)
       .filter(([, entry]) => entry.mode !== 'keep')
@@ -217,23 +217,18 @@ export function NbSearchLanesTab({
     if (next) {
       // Rows that already hold pending keys stay open next to the new one —
       // an unsaved key is never hidden behind a sibling. A clean row closes.
-      setStickyOpen((sticky) => {
-        const keep = new Set(sticky.filter((id) => dirtyCards.has(id)));
+      setPinnedOpen((pinned) => {
+        const keep = new Set(pinned.filter((id) => dirtyCards.has(id)));
         if (openCardId !== null && openCardId !== cardId && dirtyCards.has(openCardId)) keep.add(openCardId);
         return [...keep];
       });
       setOpenCardId(cardId);
     } else {
       if (openCardId === cardId) setOpenCardId(null);
-      setStickyOpen((sticky) => sticky.filter((id) => id !== cardId && dirtyCards.has(id)));
+      setPinnedOpen((pinned) => pinned.filter((id) => id !== cardId && dirtyCards.has(id)));
     }
   };
-  const isOpen = (cardId: string) => openCardId === cardId || (stickyOpen.includes(cardId) && dirtyCards.has(cardId));
-  // A self-opened row (needsKey) registers as sticky without taking the single
-  // slot, so it never closes a row the user clicked open.
-  const registerOpen = (cardId: string) => {
-    setStickyOpen((sticky) => (sticky.includes(cardId) ? sticky : [...sticky, cardId]));
-  };
+  const isOpen = (cardId: string) => openCardId === cardId || (pinnedOpen.includes(cardId) && dirtyCards.has(cardId));
 
   const effective = useMemo(
     () => resolveEffectiveDefaultLane(capabilities, draft.defaultSearchLane),
@@ -365,7 +360,6 @@ export function NbSearchLanesTab({
                 saving={saving}
                 open={isOpen(card.id)}
                 onOpenChange={(next) => { selectOpen(card.id, next); }}
-                onSelfOpen={() => { registerOpen(card.id); }}
                 defaultState={defaultLaneId === card.id ? (inheritedDefault ? 'inherit' : 'default') : 'none'}
                 // 设为默认 stays available on every other card even while the
                 // current default is inherited: choosing one is exactly how the
@@ -398,7 +392,6 @@ export function NbSearchLanesTab({
                   saving={saving}
                   open={isOpen(card.id)}
                   onOpenChange={(next) => { selectOpen(card.id, next); }}
-                  onSelfOpen={() => { registerOpen(card.id); }}
                 />
               );
             })}

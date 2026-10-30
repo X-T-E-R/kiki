@@ -1539,6 +1539,7 @@ describe('NbSearchSection sub-pages and progressive disclosure', () => {
 
     // Clicking a card's row opens it; the default never changes as a side effect.
     const githubCard = searchPanel.querySelector('[data-nb-search-service-card="github.repositories"]')!;
+    await click(githubCard.querySelector('button[aria-expanded]')!);
     expect(githubCard.getAttribute('data-open')).toBe('true');
     expect(searchPanel.querySelector('[data-nb-search-service-default]')).not.toBeNull();
     expect(githubCard.querySelector('[data-nb-search-service-body]')).not.toBeNull();
