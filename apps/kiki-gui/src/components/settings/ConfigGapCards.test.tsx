@@ -100,16 +100,23 @@ describe('config gap cards', () => {
     expect(steps.value).toBe('');
     await commitText(steps, '40');
     expect(patchConfig).toHaveBeenLastCalledWith({ loop_control: { max_steps_per_turn: 40 } });
-    const attempts = container.querySelector<HTMLInputElement>('[data-loop-max-attempts]')!;
-    expect(attempts.value).toBe('5');
-    await commitText(attempts, 'x');
-    expect(patchConfig).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain('whole number');
+    // Attempts-per-step is edited on the Retry card, which owns the key that wins.
+    expect(container.querySelector('[data-loop-max-attempts]')).toBeNull();
     const strategy = container.querySelector('[data-loop-subagent-strategy]')!;
     expect(selectText(strategy)).toContain('Summarize');
     await pickValue(strategy, 'data-loop-subagent-strategy', 'fresh');
     expect(patchConfig).toHaveBeenLastCalledWith({ loop_control: { subagent_context_strategy: 'fresh' } });
     for (const [patch] of patchConfig.mock.calls) expect(patch).not.toHaveProperty('replace_domains');
+  });
+
+  it('shows the loop attempts value as the retry row’s placeholder until it is overridden', async () => {
+    const container = await render(<RetryPolicyCard />);
+    const attempts = container.querySelector<HTMLInputElement>('#retry-max-attempts')!;
+    expect(attempts.value).toBe('');
+    expect(attempts.placeholder).toBe('5');
+    await commitText(attempts, '9');
+    await click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
+    expect(patchConfig).toHaveBeenLastCalledWith({ retry: { max_attempts: 9 }, replace_domains: ['retry'] });
   });
 
   it('sends bash_file_tool_hints with the task policy draft', async () => {
@@ -129,7 +136,7 @@ describe('config gap cards', () => {
     const advanced = card.querySelector('[data-task-policy-advanced]')!;
     const fieldFor = (label: string) => [...card.querySelectorAll('label')]
       .find((node) => node.textContent === label)!.control as HTMLInputElement;
-    for (const label of ['Maximum running tasks', 'Bash task timeout (s)']) {
+    for (const label of ['Maximum running tasks', 'Bash task timeout']) {
       expect(advanced.contains(fieldFor(label))).toBe(false);
     }
     for (const label of ['Wait ceiling (s)', 'Maximum steered turns', 'Kill grace period (ms)']) {
@@ -139,7 +146,7 @@ describe('config gap cards', () => {
     // no sentence has to say so. Each number's own default, its 0, and its
     // floor live behind that field's `i`.
     expect(fieldFor('Maximum running tasks').placeholder).toBe('No limit');
-    expect(fieldFor('Bash task timeout (s)').placeholder).toBe('600');
+    expect(fieldFor('Bash task timeout').placeholder).toBe('600');
     expect(card.textContent).not.toContain('Empty allows any number of background tasks at once');
     // A switch already shows whether it is on: "on by default" restated under
     // it told a reader nothing they could not see. What each switch *does*
@@ -160,7 +167,7 @@ describe('config gap cards', () => {
       return id === null ? '' : document.querySelector(`#${id}`)?.textContent ?? '';
     };
     expect(await openHelp('Maximum running tasks')).toContain('At least 1.');
-    expect(await openHelp('Bash task timeout (s)')).toContain('600 s');
+    expect(await openHelp('Bash task timeout')).toContain('600 s');
     expect(await openHelp('Wait ceiling (s)')).toContain('2147483 s');
     expect(await openHelp('Maximum steered turns')).toContain('100000');
     expect(await openHelp('Kill grace period (ms)')).toContain('5000 ms');

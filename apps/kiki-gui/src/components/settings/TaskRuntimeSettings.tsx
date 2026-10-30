@@ -34,26 +34,30 @@ const TASK_DEFAULTS = {
 } as const;
 
 /** One number draft, in the row's control slot at a fixed width. */
-function DraftNumberRow({ label, id, value, placeholder, detail, disabled, onChange }: {
+function DraftNumberRow({ label, id, value, placeholder, detail, unit, disabled, onChange }: {
   readonly label: string;
   readonly id: string;
   readonly value: string;
   readonly placeholder?: string;
   readonly detail?: string;
+  readonly unit?: string;
   readonly disabled: boolean;
   readonly onChange: (value: string) => void;
 }) {
   return (
     <SettingField label={label} htmlFor={id} detail={detail}>
-      <input
-        id={id}
-        className="h-8 w-24 rounded-md border border-hairline bg-paper px-2 text-right font-mono text-[12.5px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-selected-ink disabled:opacity-60"
-        inputMode="numeric"
-        value={value}
-        placeholder={placeholder}
-        disabled={disabled}
-        onChange={(event) => { onChange(event.target.value); }}
-      />
+      <div className="flex items-center gap-1.5">
+        <input
+          id={id}
+          className="h-8 w-24 rounded-md border border-hairline bg-paper px-2 text-right font-mono text-[12.5px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-selected-ink disabled:opacity-60"
+          inputMode="numeric"
+          value={value}
+          placeholder={placeholder}
+          disabled={disabled}
+          onChange={(event) => { onChange(event.target.value); }}
+        />
+        {unit !== undefined ? <span className="text-[12px] text-ink-faint">{unit}</span> : null}
+      </div>
     </SettingField>
   );
 }
@@ -196,6 +200,7 @@ export function TaskPolicyCard() {
               value={draft.bashTaskTimeoutS}
               placeholder={TASK_DEFAULTS.bashTaskTimeoutS}
               detail={t('st.taskPolicy.bashTimeoutDetail', { seconds: TASK_DEFAULTS.bashTaskTimeoutS })}
+              unit={t('st.residency.secondsUnit')}
               disabled={saving}
               onChange={(bashTaskTimeoutS) => { updateTask({ bashTaskTimeoutS }); }}
             />

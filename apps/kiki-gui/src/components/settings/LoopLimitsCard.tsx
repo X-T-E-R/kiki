@@ -26,6 +26,12 @@ function readLoopLimits(value: unknown): { maxSteps?: number; maxAttempts?: numb
   };
 }
 
+/**
+ * Attempts-per-step has exactly one row on this tab, and it lives on the Retry
+ * card below: `[retry] max_attempts` wins at runtime and loop_control's value
+ * is only the fallback it shows as its placeholder.
+ */
+
 const WHOLE_NUMBER = /^\d+$/;
 
 /**
@@ -38,7 +44,6 @@ export function LoopLimitsCard() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const steps = useInstantSave();
-  const attempts = useInstantSave();
   const strategy = useInstantSave();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
@@ -75,21 +80,6 @@ export function LoopLimitsCard() {
           />
         </SettingField>
         <FeedbackLine feedback={steps.error} />
-        <SettingField label={t('st.loopLimits.maxAttempts')} help={t('st.loopLimits.maxAttemptsHelp')}>
-          <SaveStatus saving={attempts.saving} saved={attempts.saved} />
-          <CommitInput
-            ariaLabel={t('st.loopLimits.maxAttempts')}
-            dataAttr="data-loop-max-attempts"
-            className="w-24"
-            inputMode="numeric"
-            placeholder="5"
-            value={loop.maxAttempts === undefined ? '' : String(loop.maxAttempts)}
-            validate={(text) => (text === '' ? t('st.loopLimits.attemptsRequired') : validateCount(text))}
-            disabled={attempts.saving}
-            onCommit={(text) => void attempts.run(write({ max_attempts_per_step: Number(text) }))}
-          />
-        </SettingField>
-        <FeedbackLine feedback={attempts.error} />
         <SettingField label={t('st.loopLimits.subagentStrategy')} help={t('st.loopLimits.subagentStrategyHelp')}>
           <SaveStatus saving={strategy.saving} saved={strategy.saved} />
           <SettingsSelect<ContextStrategy>

@@ -48,6 +48,12 @@ function draftFromConfig(config: KikiConfigResponse): RetryDraft {
   };
 }
 
+/** `[loop_control] max_attempts_per_step`, the value retry's budget wins over. */
+function loopAttemptsFromConfig(config: KikiConfigResponse): string {
+  const raw = (config.loop_control ?? {}) as Record<string, unknown>;
+  return numberText(raw['maxAttemptsPerStep'] ?? raw['max_attempts_per_step']);
+}
+
 type Issue = { readonly key: string; readonly text: string };
 
 /** Builds the full-domain replacement, or the first field that blocks it. */
@@ -88,10 +94,17 @@ function retryPatch(draft: RetryDraft, t: ReturnType<typeof useI18n>['t']): { pa
   };
 }
 
+/** The unit sitting right of a number input, one shape everywhere. */
+function Unit({ children }: { readonly children: string }) {
+  return <span className="text-[12px] text-ink-faint">{children}</span>;
+}
+
 /**
  * Models → Defaults → Retry: the step-retry budget and ordered per-error
- * policies. One draft for the whole list, because policy order decides which
- * one applies; saving replaces the retry domain.
+ * policies. This is the only attempts row on the tab — `[retry] max_attempts`
+ * wins at runtime, and an empty box inherits whatever loop_control holds (the
+ * placeholder shows that value). One draft for the whole list, because policy
+ * order decides which one applies; saving replaces the retry domain.
  */
 export function RetryPolicyCard() {
   const { client } = useConnection();
@@ -116,13 +129,15 @@ export function RetryPolicyCard() {
     focusId.current = null;
   });
 
-  if (draft === null) {
+  if (draft === null || configQuery.data === undefined) {
     return (
       <SectionCard id="st-card-retry" title={t('st.retry.title')}>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>}
       </SectionCard>
     );
   }
+
+  const inheritedAttempts = loopAttemptsFromConfig(configQuery.data);
 
   const update = (next: RetryDraft) => { setDraft(next); setDirty(true); setIssue(null); };
   const updatePolicy = (id: number, patch: Partial<PolicyDraft>) => {
@@ -165,10 +180,15 @@ export function RetryPolicyCard() {
         <Hint>{t('st.retry.hint')}</Hint>
         <fieldset disabled={saving} className="min-w-0 space-y-4 disabled:opacity-60">
           <SettingsBox>
-            <SettingField label={t('st.retry.maxAttempts')} htmlFor="retry-max-attempts">
-              <input id="retry-max-attempts" className={fieldClass('max')} inputMode="numeric" placeholder="5" value={draft.maxAttempts}
-                aria-invalid={issue?.key === 'max'}
-                onChange={(event) => { update({ ...draft, maxAttempts: event.target.value }); }} />
+            <SettingField label={t('st.retry.maxAttempts')} htmlFor="retry-max-attempts"
+              help={t('st.retry.maxAttemptsHelp')}>
+              <div className="flex items-center gap-1.5">
+                <input id="retry-max-attempts" className={fieldClass('max')} inputMode="numeric"
+                  placeholder={inheritedAttempts === '' ? '5' : inheritedAttempts} value={draft.maxAttempts}
+                  aria-invalid={issue?.key === 'max'}
+                  onChange={(event) => { update({ ...draft, maxAttempts: event.target.value }); }} />
+                <Unit>{t('st.retry.attemptsUnit')}</Unit>
+              </div>
             </SettingField>
           </SettingsBox>
           {issueFor('max') !== null ? <p role="alert" className="text-[12px] text-danger">{issueFor('max')}</p> : null}
@@ -188,23 +208,8 @@ export function RetryPolicyCard() {
             <ol data-retry-policies className="divide-y divide-hairline rounded-lg border border-hairline [&>:empty]:hidden">
               {draft.policies.map((policy, index) => (
                 <li key={policy.id} data-retry-policy={index} className="space-y-1 px-4 py-2.5">
-                  <SettingField label={t('st.retry.match')} htmlFor={`retry-match-${policy.id}`}>
-                    <input id={`retry-match-${policy.id}`} className={fieldClass(`match-${policy.id}`, 'w-full max-w-64', 'text-left')} value={policy.match}
-                      placeholder="^provider\.rate_limit$" aria-invalid={issue?.key === `match-${policy.id}`}
-                      onChange={(event) => { updatePolicy(policy.id, { match: event.target.value }); }} />
-                  </SettingField>
-                  <SettingField label={t('st.retry.policyAttempts')}>
-                    <input className={fieldClass(`attempts-${policy.id}`)} inputMode="numeric" value={policy.maxAttempts}
-                      aria-label={t('st.retry.policyAttempts')} aria-invalid={issue?.key === `attempts-${policy.id}`}
-                      onChange={(event) => { updatePolicy(policy.id, { maxAttempts: event.target.value }); }} />
-                  </SettingField>
-                  <SettingField label={t('st.retry.backoff')}>
-                    <input className={fieldClass(`backoff-${policy.id}`)} inputMode="numeric" value={policy.backoff}
-                      aria-label={t('st.retry.backoff')} aria-invalid={issue?.key === `backoff-${policy.id}`}
-                      onChange={(event) => { updatePolicy(policy.id, { backoff: event.target.value }); }} />
-                  </SettingField>
                   <div className="flex items-center justify-between gap-2">
-                    <Toggle layout="row" label={t('st.retry.retry')} checked={policy.retry}
+                    <Toggle layout="row" label={t('st.retry.policyEnabled')} checked={policy.retry}
                       onChange={(retry) => { updatePolicy(policy.id, { retry }); }} />
                     <div className="flex items-center gap-1">
                       <button type="button" className={SECONDARY_BUTTON} disabled={index === 0}
@@ -222,6 +227,27 @@ export function RetryPolicyCard() {
                       </button>
                     </div>
                   </div>
+                  <SettingField label={t('st.retry.match')} htmlFor={`retry-match-${policy.id}`}>
+                    <input id={`retry-match-${policy.id}`} className={fieldClass(`match-${policy.id}`, 'w-full max-w-64', 'text-left')} value={policy.match}
+                      placeholder="^provider\.rate_limit$" aria-invalid={issue?.key === `match-${policy.id}`}
+                      onChange={(event) => { updatePolicy(policy.id, { match: event.target.value }); }} />
+                  </SettingField>
+                  <SettingField label={t('st.retry.policyAttempts')}>
+                    <div className="flex items-center gap-1.5">
+                      <input className={fieldClass(`attempts-${policy.id}`)} inputMode="numeric" value={policy.maxAttempts}
+                        aria-label={t('st.retry.policyAttempts')} aria-invalid={issue?.key === `attempts-${policy.id}`}
+                        onChange={(event) => { updatePolicy(policy.id, { maxAttempts: event.target.value }); }} />
+                      <Unit>{t('st.retry.attemptsUnit')}</Unit>
+                    </div>
+                  </SettingField>
+                  <SettingField label={t('st.retry.backoff')}>
+                    <div className="flex items-center gap-1.5">
+                      <input className={fieldClass(`backoff-${policy.id}`)} inputMode="numeric" value={policy.backoff}
+                        aria-label={t('st.retry.backoff')} aria-invalid={issue?.key === `backoff-${policy.id}`}
+                        onChange={(event) => { updatePolicy(policy.id, { backoff: event.target.value }); }} />
+                      <Unit>{t('st.residency.msUnit')}</Unit>
+                    </div>
+                  </SettingField>
                   {[`match-${policy.id}`, `attempts-${policy.id}`, `backoff-${policy.id}`].map((key) => (issueFor(key) !== null
                     ? <p key={key} role="alert" className="text-[12px] text-danger">{issueFor(key)}</p>
                     : null))}

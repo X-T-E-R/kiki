@@ -17,6 +17,18 @@ import {
   type MemoryAdvisorNumberField,
 } from '@kiki/session-core/settings';
 
+/** The unit that sits right of each number input, read from the field's wire name. */
+const FIELD_UNIT: Readonly<Record<MemoryAdvisorNumberField, 'ms' | 'tokens' | 'chars' | undefined>> = {
+  first_step_wait_ms: 'ms',
+  timeout_ms: 'ms',
+  max_calls_per_turn: undefined,
+  max_full_units: undefined,
+  judge_input_tokens: 'tokens',
+  candidate_chars: 'chars',
+  catalog_page_items: undefined,
+  max_catalog_pages: undefined,
+};
+
 import { useI18n } from '../../i18n';
 import { FeedbackLine, SaveStatus, Toggle, type Feedback } from '../controls';
 import type { useMemoryAdvisor } from '../memory/useMemoryAdvisor';
@@ -73,15 +85,19 @@ export function MemoryAdvisorTuning({ workspaceId, advisor }: {
       </SettingField>
       {MEMORY_ADVISOR_NUMBER_FIELDS.map((field) => {
         const range = MEMORY_ADVISOR_RANGES[field];
+        const unit = FIELD_UNIT[field];
         return (
           <SettingField key={field} label={t(`memory.advisor.field.${field}` as I18nKey)} htmlFor={`memory-advisor-${field}`}
             detail={t('memory.advisor.fieldDefault', { value: range.fallback })}>
             {statusFor(field)}
-            <CommitInput id={`memory-advisor-${field}`} dataAttr={`data-memory-advisor-${field.replaceAll('_', '-')}`}
-              className="w-24 text-right" inputMode="numeric" disabled={busy}
-              value={String(config?.[field] ?? range.fallback)}
-              validate={(text) => (parseMemoryAdvisorNumber(field, text) === null ? t('memory.advisor.fieldInvalid', { min: range.min, max: range.max }) : null)}
-              onCommit={(text) => { write(field, { advisor: { [field]: Number(text) } }); }} />
+            <div className="flex items-center gap-1.5">
+              <CommitInput id={`memory-advisor-${field}`} dataAttr={`data-memory-advisor-${field.replaceAll('_', '-')}`}
+                className="w-24 text-right" inputMode="numeric" disabled={busy}
+                value={String(config?.[field] ?? range.fallback)}
+                validate={(text) => (parseMemoryAdvisorNumber(field, text) === null ? t('memory.advisor.fieldInvalid', { min: range.min, max: range.max }) : null)}
+                onCommit={(text) => { write(field, { advisor: { [field]: Number(text) } }); }} />
+              {unit !== undefined ? <span className="text-[12px] text-ink-faint">{t(`st.residency.${unit === 'ms' ? 'msUnit' : unit === 'tokens' ? 'tokensUnit' : 'charsUnit'}` as I18nKey)}</span> : null}
+            </div>
           </SettingField>
         );
       })}
