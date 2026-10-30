@@ -582,6 +582,47 @@ describe('SessionViewTarget', () => {
     }
   });
 
+  it('keeps an in-flight seed when a re-attach only widens grades and applies the wider grades afterwards', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const seeded: string[][] = [];
+    const broadcaster = {
+      subscribe: vi.fn(async () => true), unsubscribe: vi.fn(),
+      getBufferedSince: vi.fn(async () => ({ events: [], resyncRequired: false, currentSeq: 7, epoch: 'session-epoch' })),
+      flushTranscriptSeed: vi.fn(async (_sessionId: string, target: SessionViewTarget) => {
+        const grades = (broadcaster.subscribe.mock.calls.at(-1) as unknown as [string, SessionViewTarget, unknown, Record<string, string>])[3];
+        seeded.push(Object.keys(grades).toSorted());
+        if (seeded.length === 1) await blocked;
+        await target.drain();
+      }),
+    };
+    const send = vi.fn();
+    const errors = vi.fn();
+    const connection = new SessionViewHttpConnection(broadcaster as unknown as SessionEventBroadcaster, send, errors);
+    const attach = (transcriptGrades: Record<string, string>) => connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: {
+      generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+      input: { sessionCursor: { seq: 7, epoch: 'session-epoch' }, transcriptGrades },
+    } });
+    try {
+      attach({ main: 'delta' });
+      await vi.waitFor(() => expect(seeded).toHaveLength(1));
+      attach({ main: 'delta', child: 'delta' });
+      attach({ main: 'delta', child: 'delta', other: 'turn' });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(broadcaster.unsubscribe).not.toHaveBeenCalled();
+      expect(seeded).toHaveLength(1);
+      release();
+      await vi.waitFor(() => expect(seeded).toHaveLength(2));
+      expect(seeded[1]).toEqual(['child', 'main', 'other']);
+      await vi.waitFor(() => expect(send.mock.calls.filter(([frame]) => frame.data.type === 'ready')).toHaveLength(2));
+      expect(broadcaster.unsubscribe).not.toHaveBeenCalled();
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      release();
+      connection.dispose();
+    }
+  });
+
   it('streams child activity transitions after the first drain even at the same durable cursor', async () => {
     const signals: SessionViewSignal[] = [];
     const target = new SessionViewTarget('s1', (signal) => signals.push(signal));

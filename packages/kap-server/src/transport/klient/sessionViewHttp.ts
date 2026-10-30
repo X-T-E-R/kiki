@@ -9,10 +9,12 @@ import { RPCError, type KlientFrame } from '@kiki/klient/host';
 import type { FastifyInstance } from 'fastify';
 import {
   acceptsTranscriptCoverage,
+  GRADE_RANK,
   gradeFor,
   requestsTranscript,
   TRANSCRIPT_CLIENT_UPGRADE_MESSAGE,
   TRANSCRIPT_COVERAGE_VERSION,
+  type TranscriptGradeSpec,
 } from '@kiki/transcript';
 import { okEnvelope } from '../../protocol/envelope';
 import { withReplyCloseSignal } from '../../procedures/requestSignal';
@@ -132,6 +134,7 @@ export class SessionViewHttpConnection {
   private readonly views = new Map<string, AttachedView>();
   private readonly tasks = new Map<string, Promise<void>>();
   private readonly frames = new Map<string, KlientFrame>();
+  private readonly expansions = new Map<string, KlientFrame>();
   private readonly pendingDisposals = new Set<Promise<void>>();
   private readonly detached = new Set<string>();
   private readonly activationListener: IDisposable | undefined;
@@ -149,7 +152,8 @@ export class SessionViewHttpConnection {
         if (this.closed) return;
         for (const [id, view] of this.views) {
           if (view.sessionId !== sessionId || view.cold === undefined) continue;
-          const frame = this.frames.get(id);
+          const frame = this.expansions.get(id) ?? this.frames.get(id);
+          this.expansions.delete(id);
           if (frame !== undefined) this.receive({ ...frame });
         }
       }).catch((error: unknown) => {
@@ -166,11 +170,18 @@ export class SessionViewHttpConnection {
     if (id.length === 0 || this.closed) return true;
     if (frame.type === 'view_detach') {
       this.detached.add(id);
+      this.expansions.delete(id);
       this.frames.delete(id);
       this.detach(id);
       return true;
     }
     this.detached.delete(id);
+    const inFlight = this.frames.get(id);
+    if (this.tasks.has(id) && inFlight !== undefined && expandsAttach(inFlight, frame)) {
+      this.expansions.set(id, frame);
+      return true;
+    }
+    this.expansions.delete(id);
     this.frames.set(id, frame);
     const replacedCold = this.views.get(id)?.cold !== undefined;
     this.views.get(id)?.diagnostics.abort();
@@ -181,7 +192,13 @@ export class SessionViewHttpConnection {
       if (this.frames.get(id) !== frame || this.closed || this.detached.has(id)) return;
       this.detach(id);
       this.sendError(id, error);
-    }).finally(() => { if (this.tasks.get(id) === next) this.tasks.delete(id); });
+    }).finally(() => {
+      if (this.tasks.get(id) !== next) return;
+      this.tasks.delete(id);
+      const expansion = this.expansions.get(id);
+      this.expansions.delete(id);
+      if (expansion !== undefined && !this.closed && !this.detached.has(id)) this.receive(expansion);
+    });
     this.tasks.set(id, next);
     return true;
   }
@@ -344,6 +361,29 @@ export class SessionViewHttpConnection {
     }
     for (const id of this.views.keys()) this.detach(id);
     this.frames.clear();
+    this.expansions.clear();
     this.tasks.clear();
   }
+}
+
+function attachGrades(frame: KlientFrame): { generation: unknown; grades: TranscriptGradeSpec } | undefined {
+  const data = frame.data as { input?: { transcriptGrades?: unknown }; generation?: unknown } | null | undefined;
+  const grades = data?.input?.transcriptGrades;
+  if (grades === null || typeof grades !== 'object') return undefined;
+  return { generation: data?.generation, grades: grades as TranscriptGradeSpec };
+}
+
+function expandsAttach(current: KlientFrame, next: KlientFrame): boolean {
+  if (current.sessionId !== next.sessionId) return false;
+  const before = attachGrades(current);
+  const after = attachGrades(next);
+  if (before === undefined || after === undefined || before.generation !== after.generation) return false;
+  let raised = false;
+  for (const agentId of new Set([...Object.keys(before.grades), ...Object.keys(after.grades)])) {
+    const previous = GRADE_RANK[gradeFor(before.grades, agentId)];
+    const following = GRADE_RANK[gradeFor(after.grades, agentId)];
+    if (following < previous) return false;
+    if (following > previous) raised = true;
+  }
+  return raised;
 }
