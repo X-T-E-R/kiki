@@ -544,19 +544,32 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
   }
 
   it('returns a well-formed snapshot for a fresh session', async () => {
-    const sid = await createSession();
-    const snap = await snapshot(sid);
+    const events = vi.spyOn(SessionEventJournal.prototype, 'append');
+    try {
+      const sid = await createSession();
+      const snap = await snapshot(sid);
+      const capturedEvents = events.mock.calls.filter(([seq, envelope]) =>
+        envelope.session_id === sid && seq <= snap.as_of_seq);
 
-    expect(snap.session.id).toBe(sid);
-    expect(snap.as_of_seq).toBe(2);
-    expect(snap.epoch).toMatch(/^ep_/);
-    expect(snap.messages.items).toEqual([]);
-    expect(snap.in_flight_turn).toBeNull();
-    expect(snap.context_tokens).toBe(0);
-    expect(snap.max_context_tokens).toBeUndefined();
-    expect(snap.context_breakdown).toBeUndefined();
-    expect(snap.pending_approvals).toEqual([]);
-    expect(snap.pending_questions).toEqual([]);
+      expect(snap.session.id).toBe(sid);
+      expect(capturedEvents.map(([seq]) => seq)).toEqual(
+        Array.from({ length: snap.as_of_seq }, (_, index) => index + 1),
+      );
+      expect(capturedEvents.map(([, envelope]) => envelope.type)).toEqual(expect.arrayContaining([
+        'event.session.created', 'agent.created',
+      ]));
+      expect(capturedEvents.at(-1)?.[1].epoch).toBe(snap.epoch);
+      expect(snap.epoch).toMatch(/^ep_/);
+      expect(snap.messages.items).toEqual([]);
+      expect(snap.in_flight_turn).toBeNull();
+      expect(snap.context_tokens).toBe(0);
+      expect(snap.max_context_tokens).toBeUndefined();
+      expect(snap.context_breakdown).toBeUndefined();
+      expect(snap.pending_approvals).toEqual([]);
+      expect(snap.pending_questions).toEqual([]);
+    } finally {
+      events.mockRestore();
+    }
   });
 
   it('continues legacy message previews through HTTP and rejects changed history references', async () => {
@@ -755,6 +768,9 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
 
   it('keeps the legacy snapshot readable and skips history work in transcript mode', async () => {
     const sid = await createSession();
+    await ensureMainAgent(sid);
+    const main = getLiveSessionById(server!.core.accessor, sid)!.accessor.get(IAgentLifecycleService).get('main')!;
+    await main.accessor.get(IAgentTaskService).resumeRestoration?.();
     const compactRes = await fetch(`${base}/api/sessions/${sid}/snapshot?mode=transcript`, {
       headers: authHeaders(server as RunningServer),
     } as never);
@@ -1814,12 +1830,17 @@ describe('server-v2 session operation lease', () => {
   it('releases the session operation when snapshot assembly rejects', async () => {
     const sessionId = await createSession();
     await ensureMainAgent(sessionId);
+    const main = getLiveSessionById(server!.core.accessor, sessionId)!.accessor.get(IAgentLifecycleService).get('main')!;
+    await main.accessor.get(IAgentTaskService).resumeRestoration?.();
     const manager = managerOf();
+    const leases = spyLeases(manager);
     const broadcaster = {
       getSnapshotState: async () => { throw new Error('capture failed'); },
     };
     await expect(assembleSnapshot(server!.core, broadcaster as never, sessionId, 'transcript'))
       .rejects.toThrow('capture failed');
+    expect(leases.acquires).toEqual([`${sessionId}:operation`]);
+    expect(leases.disposals).toEqual([sessionId]);
     expect(manager.residencyReport!().pinnedSessions).toBe(0);
     expect(await manager.evictIfIdle!(sessionId)).toBe(true);
   });
