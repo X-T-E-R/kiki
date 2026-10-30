@@ -88,7 +88,13 @@ export function RemoteConnectionsSection() {
       : t('st.remote.configures', { origin: connectionAddress(control.baseUrl), home: controlHomeLabel });
 
   return (
-    <SectionCard id="st-card-remote-connections" title={t('st.remote.outboundTitle')} scope="server">
+    <SectionCard id="st-card-remote-connections" title={t('st.remote.outboundTitle')} scope="server"
+      actions={control === null ? undefined : (
+        <button type="button" data-remote-add className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
+          onClick={() => { setDialog({ kind: 'add' }); }}>
+          <Icon name="plus" size={12} />{t('st.remote.add')}
+        </button>
+      )}>
       <div className="space-y-4" data-remote-connections>
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
           <p className="min-w-0 text-[12.5px] text-ink-soft" data-remote-source>{sourceLine}</p>
@@ -110,13 +116,7 @@ export function RemoteConnectionsSection() {
 
         {connections.isSuccess && records.length === 0 ? (
           <div data-remote-empty>
-            <ListEmpty kind="none" title={t('st.remote.emptyTitle')} body={t('st.remote.emptyBody')}
-              action={control !== null ? (
-                <button type="button" data-remote-add className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
-                  onClick={() => { setDialog({ kind: 'add' }); }}>
-                  <Icon name="plus" size={12} />{t('st.remote.add')}
-                </button>
-              ) : undefined} />
+            <ListEmpty kind="none" title={t('st.remote.emptyTitle')} body={t('st.remote.emptyBody')} />
           </div>
         ) : null}
 
@@ -127,15 +127,6 @@ export function RemoteConnectionsSection() {
                 onEnter={() => { enterRemoteSpace(record.id, record.label); }}
                 onMenu={(anchor, element) => { setMenu({ record, anchor, anchorElement: element }); }} />
             ))}
-          </div>
-        ) : null}
-
-        {records.length > 0 && control !== null ? (
-          <div className="flex justify-end">
-            <button type="button" data-remote-add className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
-              onClick={() => { setDialog({ kind: 'add' }); }}>
-              <Icon name="plus" size={12} />{t('st.remote.add')}
-            </button>
           </div>
         ) : null}
 

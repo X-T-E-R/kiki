@@ -59,11 +59,18 @@ export function InboundConnectionsSection() {
 
   return (
     <SectionCard id="st-card-inbound-connections" title={t('st.inbound.title')} scope="server" actions={(
-      // The other direction is the outbound card on the same view.
-      <button type="button" data-inbound-outbound-link className="text-[12.5px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink"
-        onClick={() => { document.getElementById('st-card-remote-connections')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>
-        {t('st.remote.outboundTitle')}
-      </button>
+      <>
+        <button type="button" data-inbound-invite className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
+          disabled={!effective || api === null}
+          onClick={() => { setDialog({ kind: 'invite' }); }}>
+          <Icon name="plus" size={12} />{t('st.inbound.invite')}
+        </button>
+        {/* The other direction is the outbound card on the same view. */}
+        <button type="button" data-inbound-outbound-link className="text-[12.5px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink"
+          onClick={() => { document.getElementById('st-card-remote-connections')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}>
+          {t('st.remote.outboundTitle')}
+        </button>
+      </>
     )}>
       <div className="space-y-4" data-inbound-connections>
         {control === null ? <Hint>{t('st.remote.controlUnavailable')}</Hint> : null}
@@ -84,14 +91,6 @@ export function InboundConnectionsSection() {
               ) : null}
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-[12.5px] font-medium text-ink">{t('st.inbound.listTitle')}</p>
-              <button type="button" data-inbound-invite className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
-                disabled={!effective || api === null}
-                onClick={() => { setDialog({ kind: 'invite' }); }}>
-                <Icon name="plus" size={12} />{t('st.inbound.invite')}
-              </button>
-            </div>
             {!effective ? (
               <Hint>{t(status.data.unavailableReason === 'dangerous_auth_bypass' ? 'st.inbound.inviteUnavailable' : 'st.inbound.inviteNeedsGate')}</Hint>
             ) : null}
