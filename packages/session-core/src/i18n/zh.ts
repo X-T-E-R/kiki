@@ -7292,7 +7292,7 @@ export const zh = {
   'st.purpose.hooks': '事件发生时会运行的规则。',
 
   'st.purpose.workspaces': '服务器已知的文件夹。注销后不会删除其中的文件和会话。',
-  'st.purpose.about': '版本、构建、Server 标识与更新。',
+  'st.purpose.about': '当前版本与更新。',
   'st.purpose.permissions': '决定 Agent 每走一步之前，要不要先问你。',
   'st.purpose.developer': '引擎参数、底层配置、系统诊断与实验性功能索引。',
   'st.purpose.labs': '实验性功能体验与开关设置。',

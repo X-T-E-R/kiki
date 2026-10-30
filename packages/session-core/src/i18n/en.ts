@@ -7365,7 +7365,7 @@ export const en = {
   'st.purpose.hooks': 'Rules that run when an event happens.',
 
   'st.purpose.workspaces': 'Folders the server knows about. Unregistering one keeps its files and sessions.',
-  'st.purpose.about': 'Version, build, server identity, and updates.',
+  'st.purpose.about': 'Current version and updates.',
   'st.purpose.permissions': 'Decide whether an agent asks you before each step.',
   'st.purpose.developer': 'Engine parameters, low-level configuration, system diagnostics, and experimental feature index.',
   'st.purpose.labs': 'Experimental features and feature flags.',
