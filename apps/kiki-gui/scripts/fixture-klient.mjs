@@ -1698,13 +1698,20 @@ export class FixtureKlient {
           platform: server.scenario?.data.bootstrap?.platform ?? 'linux',
         };
       case 'capabilityService.listCapabilities': {
-        const capability = server.scenario?.data.computerCapability;
-        return capability === undefined ? [] : [structuredClone(capability)];
+        // A scenario seeds the capabilities its page reads: `computerCapability`
+        // for the computer leaf, `browserCapabilities` for the bridge behind a
+        // browser route.
+        return [
+          server.scenario?.data.computerCapability,
+          ...(server.scenario?.data.browserCapabilities ?? []),
+        ].filter((entry) => entry !== undefined).map((entry) => structuredClone(entry));
       }
       case 'capabilityService.getCapability': {
         const [id] = args;
-        const capability = server.scenario?.data.computerCapability;
-        if (capability === undefined || id !== capability.id) throw invalid(`no fixture capability for ${String(id)}`, 40404);
+        const capability = id === server.scenario?.data.computerCapability?.id
+          ? server.scenario.data.computerCapability
+          : server.scenario?.data.browserCapabilities?.find((entry) => entry.id === id);
+        if (capability === undefined) throw invalid(`no fixture capability for ${String(id)}`, 40404);
         return structuredClone(capability);
       }
       case 'capabilityService.installCapability': {

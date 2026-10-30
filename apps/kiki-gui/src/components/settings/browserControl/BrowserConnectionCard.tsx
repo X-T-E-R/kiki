@@ -27,7 +27,7 @@
  * pressing check / connect does that.
  */
 
-import { useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -48,7 +48,7 @@ import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../../co
 import { useDirtyGuard } from '../../dirtyGuard';
 import { Icon } from '../../icons';
 import { Tag } from '../../capabilities/primitives';
-import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../../ui';
+import { INPUT, SECONDARY_BUTTON } from '../../ui';
 import { AdvancedDetails } from '../fields';
 import { RowFrame } from '../RowFrame';
 import { SpaceRowMenu, type SpaceMenuItem } from '../spaces/SpaceRowMenu';
@@ -65,6 +65,26 @@ import {
 } from './browserDraft';
 
 type RuntimeAction = 'check' | 'connect' | 'disconnect';
+
+/**
+ * The section heading row owns the visible 添加浏览器 button; the card renders
+ * a hidden one that opens the same view, so the add flow stays one
+ * implementation. The heading's click reaches the card through this context.
+ */
+const BrowserAddContext = createContext<(() => void) | null>(null);
+
+/** The 添加浏览器 button the connections heading row shows. */
+export function AddBrowserAction() {
+  const { t } = useI18n();
+  const openAdd = useContext(BrowserAddContext);
+  return (
+    <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-browser-add-heading
+      onClick={() => { openAdd?.(); }}>
+      <Icon name="plus" size={12} />
+      {t('st.browser.add')}
+    </button>
+  );
+}
 
 /**
  * The development-candidate flag that gates a run
@@ -540,51 +560,24 @@ export function BrowserConnectionCard() {
     return key !== undefined && (attempted || hasContent) ? t(key) : null;
   };
 
-  /** The editor an open row expands inline under itself. No back row: the row
-   *  above it is the way back (click again to close), and the list never left. */
+  /** The editor an open row expands inline under itself: a continuation of the
+   *  row, not a second card — no repeated name or id header (the row above
+   *  says both), no allow tag (the row's own switch does), and no delete
+   *  button (deletion lives only in the ⋯ menu). A new draft keeps one quiet
+   *  title, since it has no row to speak for it yet. */
   const renderDetail = (): React.ReactNode => {
     if (draft === null) return null;
     return (
       <div className="min-w-0 space-y-4" data-browser-detail={draft.original?.id ?? 'new'}>
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <h3 className="text-[15px] font-medium text-ink" data-browser-detail-name>
-              {draft.name.trim() === '' ? t('st.browser.newTitle') : draft.name}
-            </h3>
-            <p className="flex flex-wrap items-baseline gap-x-2 text-[12px] text-ink-faint">
-              <span className="font-mono">{isNewDraft(draft) ? t('st.browser.idPending') : draft.id}</span>
-              <span>{typeLabel(t, draft.type)}</span>
-              {selectedStatus === undefined ? null : (
-                <span className="min-w-0 break-all font-mono" data-browser-execution-host>
-                  {draft.type === 'agent-browser-cdp'
-                    ? endpointHost(draft.original?.endpointDisplay) ?? t('st.browser.location.unknown')
-                    : selectedStatus.executionHost}
-                </span>
-              )}
-            </p>
-          </div>
-          {isNewDraft(draft) ? null : (
-            <div className="flex shrink-0 items-center gap-2.5">
-              {selectedRow === undefined ? null : (
-                <span data-browser-detail-allowed={allowance.isEffective(selectedRow) ? 'true' : 'false'}>
-                  <Tag tone={allowance.isEffective(selectedRow) ? 'accent' : 'faint'}>
-                    {t(allowance.isEffective(selectedRow) ? 'st.browser.status.allowed' : 'st.browser.state.disabled')}
-                  </Tag>
-                </span>
-              )}
-              <button type="button" className={DANGER_GHOST_BUTTON} data-browser-delete
-                disabled={deleting || saving}
-                onClick={() => { if (selectedRow !== undefined) setDeleteTarget(selectedRow); }}>
-                {t('st.browser.delete')}
-              </button>
-            </div>
-          )}
-        </div>
-
-        {isNewDraft(draft) ? <Hint>{t('st.browser.createHint')}</Hint> : null}
+        {isNewDraft(draft) ? (
+          <>
+            <h3 className="text-[15px] font-medium text-ink" data-browser-detail-name>{t('st.browser.newTitle')}</h3>
+            <Hint>{t('st.browser.createHint')}</Hint>
+          </>
+        ) : null}
 
         {isNewDraft(draft) || selectedStatus === undefined ? null : (
-          <div className="space-y-2 pt-4" data-browser-runtime>
+          <div className="space-y-2" data-browser-runtime>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
               <BrowserStateMark state={liveEnabled ? selectedStatus.state : 'disabled'} />
               {selectedStatus.driverVersion === undefined ? null : (
@@ -592,6 +585,13 @@ export function BrowserConnectionCard() {
                   {t('st.browser.driverLine', { version: selectedStatus.driverVersion })}
                 </span>
               )}
+              {/* Where the run happens, in plain words — the fact the old id
+                  header line carried. */}
+              <span className="min-w-0 break-all font-mono text-[11px] text-ink-faint" data-browser-execution-host>
+                {draft.type === 'agent-browser-cdp'
+                  ? endpointHost(draft.original?.endpointDisplay) ?? t('st.browser.location.unknown')
+                  : selectedStatus.executionHost}
+              </span>
               {selectedStatus.checkedAt === undefined ? null : (
                 <span className="text-[11px] text-ink-faint">{t('st.browser.checkedAt', { at: whenText(locale, selectedStatus.checkedAt) ?? '' })}</span>
               )}
@@ -831,15 +831,10 @@ export function BrowserConnectionCard() {
 
   const listView = (
     <div className="min-w-0 space-y-3">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <div className="mr-auto min-w-0" />
-        <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-browser-add
-          disabled={saving || deleting}
-          onClick={() => { setAdding(true); }}>
-          <Icon name="plus" size={12} />
-          {t('st.browser.add')}
-        </button>
-      </div>
+      {/* The visible add button is the heading row's; this one opens the same
+          view for deep links and tests, hidden from the page. */}
+      <button type="button" className="hidden" data-browser-add aria-hidden="true" tabIndex={-1}
+        onClick={() => { setAdding(true); }} />
       <div aria-label={t('st.browser.connectionsTitle')} className="min-w-0">
         {query.isLoading ? <p className="text-[13px] text-ink-faint" role="status">{t('st.browser.loading')}</p> : null}
         {query.isError ? <InlineError error={query.error} /> : null}
@@ -864,6 +859,7 @@ export function BrowserConnectionCard() {
   );
 
   return (
+    <BrowserAddContext.Provider value={() => { setAdding(true); }}>
     <div className="min-w-0" data-browser-connections data-browser-view={adding ? 'add' : 'list'}>
       {adding ? addView : (
         <>
@@ -888,12 +884,15 @@ export function BrowserConnectionCard() {
           onConfirm={() => { void remove(); }} />
       ) : null}
     </div>
+    </BrowserAddContext.Provider>
   );
 }
 
 /**
- * The sources, folded under the list for management: each one's switch, the
- * preparation and the checks. A search hit on the old setup card opens it.
+ * The sources, folded under the list for management: the shared chevron fold,
+ * and each source inside is one row of its own (name, status word, switch)
+ * that opens its setup inline. A search hit on the old setup card opens the
+ * fold; a hit on the bridge opens the Kimi row.
  */
 function SourcesFold({ defaultOpen }: { readonly defaultOpen: boolean }) {
   const { t } = useI18n();
@@ -909,25 +908,26 @@ function SourcesFold({ defaultOpen }: { readonly defaultOpen: boolean }) {
     if (flashId === 'st-card-browser-setup' || flashId === 'st-card-webbridge') setOpen(true);
   }, [flashId]);
   return (
-    <details
+    <div
       id="st-card-browser-setup"
       data-settings-card="st-card-browser-setup"
-      data-browser-sources
-      open={open}
       className={`scroll-mt-4 pt-3 ${flashId === 'st-card-browser-setup' ? 'settings-card-flash' : ''}`}
     >
       {/* Explicit state, not the DOM's own toggle: jsdom never fires the
           event, so a controlled `open` would always swallow the click. */}
-      <summary
-        className="cursor-pointer select-none text-[13px] text-ink-soft hover:text-ink"
-        onClick={(event) => { event.preventDefault(); setOpen((current) => !current); }}
+      <AdvancedDetails
+        summary={t('st.browser.setup.title')}
+        data-browser-sources
+        open={open || undefined}
+        onToggle={(event) => { setOpen((event.currentTarget as HTMLDetailsElement).open); }}
       >
-        {t('st.browser.setup.title')}
-      </summary>
-      <div className="pt-3">
-        {open ? <BrowserSetupWizard /> : null}
-      </div>
-    </details>
+        {open ? (
+          <div className="pt-2">
+            <BrowserSetupWizard />
+          </div>
+        ) : null}
+      </AdvancedDetails>
+    </div>
   );
 }
 

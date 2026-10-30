@@ -30,7 +30,7 @@ import { ComputerControlSection } from './ComputerControlSection';
 import { CapabilityHeader } from './CapabilityHeader';
 import { SectionCard } from './SectionCard';
 import { useInstantSave } from './useInstantSave';
-import { BrowserConnectionCard } from './browserControl/BrowserConnectionCard';
+import { AddBrowserAction, BrowserConnectionCard } from './browserControl/BrowserConnectionCard';
 import { BrowserToolPolicy } from './browserControl/BrowserToolPolicy';
 import { useBrowserAllowance } from './browserControl/browserAllowance';
 import { AdvancedDetails } from './fields';
@@ -122,7 +122,9 @@ function BrowserSection() {
 
   return (
     <>
-      <SectionCard id="st-card-browser-enabled" title={t('st.browser.title')}>
+      {/* The header IS the section heading (name, sentence, switch), so the
+          card carries no title of its own — one "浏览器控制", not two. */}
+      <SectionCard id="st-card-browser-enabled" title="">
         <CapabilityHeader
           title={t('st.browser.title')}
           verdict={{ kind: loading ? 'loading' : verdict.kind, tone: loading ? 'unknown' : verdict.tone, text, detail }}
@@ -156,7 +158,7 @@ function BrowserSection() {
         </CapabilityHeader>
       </SectionCard>
 
-      <SectionCard id="st-card-browser-connections" title={t('st.browser.connectionsTitle')}>
+      <SectionCard id="st-card-browser-connections" title={t('st.browser.connectionsTitle')} actions={<AddBrowserAction />}>
         <BrowserConnectionCard />
         <AdvancedDetails summary={t('st.browser.advanced')} data-browser-advanced-fold>
           <div className="space-y-4 pt-1">

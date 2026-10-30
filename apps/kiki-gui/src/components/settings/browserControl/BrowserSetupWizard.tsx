@@ -31,7 +31,7 @@
  * column would read as a gallery rather than as three answers to one question.
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import type { BrowserSourceId } from '@kiki/session-core/settings';
@@ -49,6 +49,7 @@ import { Icon } from '../../icons';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { AdvancedDetails } from '../fields';
+import { SettingsFlashContext } from '../SectionCard';
 import { SettingsSelect } from '../SettingsPrimitives';
 import { SOURCE_NAME_KEYS, useBrowserAllowance } from './browserAllowance';
 import { WebBridgeReadiness } from './WebBridgeReadiness';
@@ -142,11 +143,11 @@ interface FoundItem {
 }
 
 /** One route. The name is the server's `displayName`; the rest is its own answer. */
-function BrowserRoute({ preset, active, onSelect, children }: {
+function BrowserRoute({ preset, flashOpen, children }: {
   readonly preset: BrowserSetupStatus;
-  readonly active: boolean;
-  readonly onSelect: () => void;
-  /** Extra blocks this route owns, drawn after its actions (the local bridge check). */
+  /** A search hit on a card this route owns asks the row to open. */
+  readonly flashOpen?: boolean;
+  /** Extra blocks this route owns, folded with its detail (the local bridge check). */
   readonly children?: ReactNode;
 }) {
   const { t, locale } = useI18n();
@@ -403,19 +404,37 @@ function BrowserRoute({ preset, active, onSelect, children }: {
     }
   };
 
+  // A working route with nothing to do stays a row until the reader clicks;
+  // anything the route still offers or is doing — an action, a move, a
+  // blocker, a warning, a failure, an unsaved find — opens by itself so the
+  // next step is already on screen.
+  const [openDetail, setOpenDetail] = useState(false);
+  useEffect(() => {
+    if (flashOpen === true) setOpenDetail(true);
+  }, [flashOpen]);
+  const hasActions = routeActions && (
+    (prepare !== undefined && canPrepare)
+    || (connect !== undefined && preset.candidates === undefined)
+    || openAction !== undefined
+  );
+  const expanded = openDetail || !settled || hasActions || moving || forcedOff
+    || warned !== undefined || preset.error !== undefined || found.length > 0
+    || (sourceEnabled && needsLine);
+
   return (
     <li
       data-browser-route={preset.preset}
       data-browser-route-state={sourceEnabled ? readiness : 'disabled'}
-      data-browser-route-active={active ? 'true' : 'false'}
       data-browser-source-enabled={sourceEnabled ? 'true' : 'false'}
-      className={`min-w-0 border-t border-hairline py-3.5 first:border-t-0 first:pt-1 ${active ? 'bg-ink/[0.02]' : ''}`}
+      className="min-w-0 border-t border-hairline py-3 first:border-t-0 first:pt-1"
     >
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        {/* The row opens its own setup inline; the switch beside it is the
+            only state change. No chevron, no third fold level. */}
         <button type="button" data-browser-route-select
-          aria-pressed={active}
-          onClick={onSelect}
-          className="mr-auto min-w-0 text-left text-[14px] font-medium text-ink hover:underline underline-offset-2">
+          aria-expanded={expanded}
+          onClick={() => { setOpenDetail((current) => !current); }}
+          className="mr-auto min-w-0 rounded text-left text-[13.5px] font-medium text-ink outline-none transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40">
           {name}
         </button>
         {owned.length === 0 ? null : (
@@ -456,6 +475,8 @@ function BrowserRoute({ preset, active, onSelect, children }: {
         </>
       ) : (
         <>
+          {/* The blurb stands on the row even folded: it is the route's one
+              line of what this is, not setup detail. */}
           {preset.preset === 'ego-lite' ? (
             <p className="mt-1 max-w-[62ch] text-[12.5px] leading-5 text-ink-soft" data-browser-route-ego-next>
               {t(egoNextKey(preset))}
@@ -465,7 +486,8 @@ function BrowserRoute({ preset, active, onSelect, children }: {
               {t(`st.browser.route.blurb.${preset.preset}`)}
             </p>
           )}
-
+          {expanded ? (
+            <>
           {found.length > 0 ? (
             <div className="mt-2.5 space-y-1" data-browser-source-items={preset.preset}>
               <p className="text-[12px] text-ink-faint">{t('st.browser.found.title')}</p>
@@ -644,58 +666,68 @@ function BrowserRoute({ preset, active, onSelect, children }: {
 
           <FeedbackLine feedback={feedback} />
 
-          {(updateAction !== undefined || shortcutAction !== undefined) ? (
-            <AdvancedDetails summary={t('st.browser.route.advanced')} data-browser-route-advanced>
-              <div className="flex flex-col gap-2 pt-1">
-                <div className="flex flex-wrap items-center gap-2">
-                  {updateAction === undefined || hasVersionMismatch ? null : (
-                    <button type="button" className={SECONDARY_BUTTON} data-browser-route-update
-                      disabled={busy !== null}
-                      onClick={() => { void act('update'); }}>
-                      {busy === 'update' ? t('st.browser.route.updating') : t('st.browser.route.update')}
-                    </button>
+          {/* One 高级 fold per route, not two: what it checked, then the rare
+              actions (update, shortcut). The detection list leads because a
+              reader who opens this fold usually wants the why. */}
+          {(updateAction !== undefined || shortcutAction !== undefined || preset.steps.some((item) => item.detail !== undefined)) ? (
+            <div className="mt-2.5">
+              {/* One fold; both ids stay so deep links and checks for either
+                  old fold keep landing on it. */}
+              <AdvancedDetails summary={t('st.browser.route.advanced')} data-browser-route-advanced data-browser-route-diagnostics
+                open={openDiagnostics || undefined}
+                onToggle={(event) => { setDiagnosticsOpen((event.currentTarget as HTMLDetailsElement).open); }}>
+                <div className="space-y-2 pt-1">
+                  {preset.steps.every((item) => item.detail === undefined) ? null : (
+                    <>
+                      <dl className="space-y-1.5" data-browser-route-diagnostics>
+                        {preset.steps.map((item) => (
+                          <div key={item.id} className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)] gap-x-3 gap-y-0.5">
+                            <dt className="text-ink-faint">{step(item.id)}</dt>
+                            <dd className="min-w-0 text-ink-soft">
+                              {t(`st.browser.stepState.${item.state}`)}
+                              {item.reason === undefined ? '' : ` · ${item.reason}`}
+                              {item.detail === undefined ? '' : <span className="block text-ink-faint">{item.detail}</span>}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                      <p className="font-mono text-ink-faint break-all" data-browser-route-source>{preset.sourceUrl}</p>
+                      <p className="text-ink-faint">
+                        {t('st.browser.route.hostLine')} <span className="font-mono break-all">{preset.executionHost}</span>
+                      </p>
+                    </>
                   )}
-                  {shortcutAction === undefined ? null : (
-                    <button type="button" className={SECONDARY_BUTTON} data-browser-route-shortcut
-                      disabled={busy !== null}
-                      onClick={() => { void act('shortcut'); }}>
-                      {busy === 'shortcut' ? t('st.browser.route.creatingShortcut') : t('st.browser.route.shortcut')}
-                    </button>
+                  {updateAction === undefined && shortcutAction === undefined ? null : (
+                    <div className="flex flex-wrap items-center gap-2">
+                      {updateAction === undefined || hasVersionMismatch ? null : (
+                        <button type="button" className={SECONDARY_BUTTON} data-browser-route-update
+                          disabled={busy !== null}
+                          onClick={() => { void act('update'); }}>
+                          {busy === 'update' ? t('st.browser.route.updating') : t('st.browser.route.update')}
+                        </button>
+                      )}
+                      {shortcutAction === undefined ? null : (
+                        <button type="button" className={SECONDARY_BUTTON} data-browser-route-shortcut
+                          disabled={busy !== null}
+                          onClick={() => { void act('shortcut'); }}>
+                          {busy === 'shortcut' ? t('st.browser.route.creatingShortcut') : t('st.browser.route.shortcut')}
+                        </button>
+                      )}
+                      {shortcutAction === undefined ? null : (
+                        <p className="basis-full text-[11px] text-ink-faint">
+                          {preset.executionHost === 'local' || preset.executionHost === '127.0.0.1' || preset.executionHost === 'localhost'
+                            ? t('st.browser.route.shortcutHostLocal')
+                            : t('st.browser.route.shortcutHostRemote', { host: preset.executionHost })}
+                        </p>
+                      )}
+                    </div>
                   )}
                 </div>
-                {shortcutAction === undefined ? null : (
-                  <p className="text-[11px] text-ink-faint">
-                    {preset.executionHost === 'local' || preset.executionHost === '127.0.0.1' || preset.executionHost === 'localhost'
-                      ? t('st.browser.route.shortcutHostLocal')
-                      : t('st.browser.route.shortcutHostRemote', { host: preset.executionHost })}
-                  </p>
-                )}
-              </div>
-            </AdvancedDetails>
+              </AdvancedDetails>
+            </div>
           ) : null}
-
-          {preset.steps.every((item) => item.detail === undefined) ? null : (
-            <AdvancedDetails summary={t('st.browser.route.diagnostics')} data-browser-route-diagnostics
-              open={openDiagnostics || undefined}
-              onToggle={(event) => { setDiagnosticsOpen((event.currentTarget as HTMLDetailsElement).open); }}>
-              <dl className="space-y-1.5">
-                {preset.steps.map((item) => (
-                  <div key={item.id} className="grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)] gap-x-3 gap-y-0.5">
-                    <dt className="text-ink-faint">{step(item.id)}</dt>
-                    <dd className="min-w-0 text-ink-soft">
-                      {t(`st.browser.stepState.${item.state}`)}
-                      {item.reason === undefined ? '' : ` · ${item.reason}`}
-                      {item.detail === undefined ? '' : <span className="block text-ink-faint">{item.detail}</span>}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-              <p className="font-mono text-ink-faint break-all" data-browser-route-source>{preset.sourceUrl}</p>
-              <p className="text-ink-faint">
-                {t('st.browser.route.hostLine')} <span className="font-mono break-all">{preset.executionHost}</span>
-              </p>
-            </AdvancedDetails>
-          )}
+            </>
+          ) : null}
         </>
       )}
 
@@ -730,7 +762,7 @@ function BrowserRoute({ preset, active, onSelect, children }: {
 export function BrowserSetupWizard() {
   const { client, scopeId, sshLabel } = useConnection();
   const { t } = useI18n();
-  const [picked, setPicked] = useState<string | null>(null);
+  const flashId = useContext(SettingsFlashContext);
 
   const query = useQuery({
     queryKey: browserKeys.presets(scopeId),
@@ -748,18 +780,10 @@ export function BrowserSetupWizard() {
   });
 
   const presets = query.data?.presets ?? [];
-  const external = presets.filter((preset) => preset.controlSurface === 'external-app');
-  const managed = presets.filter((preset) => preset.controlSurface !== 'external-app');
-  // Preselect the route that is already furthest along, so a reader who came
-  // back to a working setup lands on it rather than on the first row.
-  const chosen = presets.find((preset) => preset.preset === picked)
-    ?? managed.find((preset) => presetReadiness(preset) === 'connected' || presetReadiness(preset) === 'ready')
-    ?? managed[0]
-    ?? presets[0];
 
   // The local bridge check belongs to the Kimi route; with no such route on
   // this server it still has a place, so its bookmark keeps working.
-  const bridgeRoute = managed.some((preset) => preset.preset === 'kimi-webbridge');
+  const bridgeRoute = presets.some((preset) => preset.preset === 'kimi-webbridge');
 
   return (
     <div className="space-y-3" data-browser-setup>
@@ -779,25 +803,14 @@ export function BrowserSetupWizard() {
       ) : presets.length === 0 ? (
         <Hint>{t('st.browser.route.none')}</Hint>
       ) : (
-        <>
-          <ul className="divide-y divide-hairline" data-browser-routes>
-            {managed.map((preset, index) => (
-              <BrowserRoute key={`${preset.preset}-${index}`} preset={preset} active={chosen?.preset === preset.preset}
-                onSelect={() => { setPicked(preset.preset); }}>
-                {preset.preset === 'kimi-webbridge' ? <WebBridgeReadiness /> : null}
-              </BrowserRoute>
-            ))}
-          </ul>
-          {external.length === 0 ? null : (
-            <>
-              <ul className="divide-y divide-hairline" data-browser-routes-external>
-                {external.map((preset, index) => (
-                  <BrowserRoute key={`${preset.preset}-${index}`} preset={preset} active={false} onSelect={() => {}} />
-                ))}
-              </ul>
-            </>
-          )}
-        </>
+        <ul className="divide-y divide-hairline" data-browser-routes>
+          {presets.map((preset, index) => (
+            <BrowserRoute key={`${preset.preset}-${index}`} preset={preset}
+              flashOpen={preset.preset === 'kimi-webbridge' && flashId === 'st-card-webbridge'}>
+              {preset.preset === 'kimi-webbridge' ? <WebBridgeReadiness /> : null}
+            </BrowserRoute>
+          ))}
+        </ul>
       )}
 
       {bridgeRoute ? null : <WebBridgeReadiness />}

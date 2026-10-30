@@ -1,9 +1,12 @@
 /**
- * The head of one capability section (browser, computer, a plugin): the name,
- * one status sentence that says what the Agent can do right now, the master
- * 启用 switch, and — only while the capability is on — the 新会话默认开启
- * switch under it. An optional primary action (安装执行器) sits next to the
- * verdict, so a missing capability offers exactly one next move.
+ * The head of one capability section (browser, computer, a plugin). It IS the
+ * section heading, not a row under one: the name at the page's subheading
+ * size, one status sentence under it that says what the Agent can do right
+ * now, and the master switch on the right edge — bare, because a labelled
+ * "Enable" next to a switch says the same thing twice. Only while the
+ * capability is on, the 新会话默认开启 switch sits under the sentence, and an
+ * optional primary action (安装执行器) rides the verdict line, so a missing
+ * capability offers exactly one next move.
  *
  * Everything is wired by the owner; this component owns the layout and the
  * click model only: the switches are the only controls on the header, and the
@@ -27,28 +30,25 @@ function HeaderSwitch({ id, attr, label, checked, disabled, onChange }: {
   readonly onChange: (next: boolean) => void;
 }) {
   return (
-    <span className="inline-flex items-center gap-2">
-      <label htmlFor={id} className={`text-[13px] ${disabled ? 'text-ink-faint' : 'cursor-pointer text-ink'}`}>{label}</label>
-      <button
-        type="button"
-        id={id}
-        role="switch"
-        aria-checked={checked}
-        aria-label={label}
-        disabled={disabled}
-        {...{ [attr]: '' }}
-        onClick={() => { onChange(!checked); }}
-        className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-[var(--kiki-motion-quick)] ${
-          checked ? 'bg-selected ring-selected-ink/45' : 'bg-hairline ring-hairline-strong'
-        } ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
-      >
-        <span
-          className={`inline-block h-3 w-3 transform rounded-full transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
-            checked ? 'translate-x-[16px] bg-selected-ink' : 'translate-x-[3px] bg-ink-faint'
-          }`}
-        />
-      </button>
-    </span>
+    <button
+      type="button"
+      id={id}
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      {...{ [attr]: '' }}
+      onClick={() => { onChange(!checked); }}
+      className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-[var(--kiki-motion-quick)] ${
+        checked ? 'bg-selected ring-selected-ink/45' : 'bg-hairline ring-hairline-strong'
+      } ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+    >
+      <span
+        className={`inline-block h-3 w-3 transform rounded-full transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
+          checked ? 'translate-x-[16px] bg-selected-ink' : 'translate-x-[3px] bg-ink-faint'
+        }`}
+      />
+    </button>
   );
 }
 
@@ -103,20 +103,10 @@ export function CapabilityHeader({
   const enabledDisabled = saving === true || enabledLockedReason !== undefined;
   const defaultOnDisabled = defaultOn?.locked === true || defaultOnSaving === true;
   return (
-    <div className="space-y-3" {...{ [attrs.enabled]: enabled ? 'true' : 'false' }}>
-      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-          <span className="text-[15px] font-medium text-ink" data-capability-name>{title}</span>
-          <ControlVerdictLine
-            attr={attrs.verdict}
-            kind={verdict.kind}
-            tone={verdict.tone}
-            text={verdict.text}
-            detail={verdict.detail}
-            action={primaryAction ?? verdict.action}
-          />
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
+    <div className="space-y-2.5" {...{ [attrs.enabled]: enabled ? 'true' : 'false' }}>
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h3 className="mr-auto font-display text-[16px] leading-6 text-ink" data-capability-name>{title}</h3>
+        <div className="flex shrink-0 items-center gap-2 self-center">
           <SaveStatus saving={saving === true} saved={saved === true} />
           {enabledLockedReason === undefined ? null : (
             <span className="text-[12px] text-ink-faint" data-capability-locked-reason>{enabledLockedReason}</span>
@@ -131,17 +121,28 @@ export function CapabilityHeader({
           />
         </div>
       </div>
+      <ControlVerdictLine
+        attr={attrs.verdict}
+        kind={verdict.kind}
+        tone={verdict.tone}
+        text={verdict.text}
+        detail={verdict.detail}
+        action={primaryAction ?? verdict.action}
+      />
       {children}
       {enabled && defaultOn !== undefined && onDefaultOnChange !== undefined ? (
         <div className="flex items-center gap-2" {...(attrs.defaultOn === undefined ? {} : { [attrs.defaultOn]: '' })}>
-          <HeaderSwitch
-            id={`${attrs.enabledSwitch.replace(/^data-/, '')}-default-on`}
-            attr="data-capability-default-switch"
-            label={t('cap.switch.defaultOn')}
-            checked={defaultOn.checked}
-            disabled={defaultOnDisabled}
-            onChange={onDefaultOnChange}
-          />
+          <span className="inline-flex items-center gap-2">
+            <span className={`text-[12.5px] ${defaultOnDisabled ? 'text-ink-faint' : 'text-ink-soft'}`}>{t('cap.switch.defaultOn')}</span>
+            <HeaderSwitch
+              id={`${attrs.enabledSwitch.replace(/^data-/, '')}-default-on`}
+              attr="data-capability-default-switch"
+              label={t('cap.switch.defaultOn')}
+              checked={defaultOn.checked}
+              disabled={defaultOnDisabled}
+              onChange={onDefaultOnChange}
+            />
+          </span>
           <SaveStatus saving={defaultOnSaving === true} saved={false} />
         </div>
       ) : null}

@@ -22,6 +22,7 @@ import type { CapabilityStatus } from '../../../lib/client';
 import { useConnection } from '../../../state/connection';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { FeedbackLine, InlineError, type Feedback } from '../../controls';
+import { Icon } from '../../icons';
 import { SECONDARY_BUTTON } from '../../ui';
 import { SettingsCardMountContext, SettingsFlashContext } from '../SectionCard';
 
@@ -34,8 +35,32 @@ function BusyHint({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * The stale approval the bridge may still name: the store window's pending
+ * approval is gone, which is a fact of the flow (the window lapsed), not a
+ * failure of the bridge. It gets one quiet line plus the retry, never a red
+ * error block.
+ */
+function isStaleApproval(error: unknown, locale: Parameters<typeof errorText>[0]): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  // The raw envelope names it (`approval.not_found`); so does the mapped text
+  // in either locale once the client has already translated it.
+  if (/approval/i.test(message) && /not_?found|40401/i.test(message)) return true;
+  return errorText(locale, error) === errorText(locale, new Error('approval.not_found'));
+}
+
 function QueryRetry({ error, onRetry }: { error: unknown; onRetry: () => void }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  if (isStaleApproval(error, locale)) {
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-webbridge-approval-expired>
+        <p className="text-[12px] text-ink-soft">{t('st.webbridge.approvalExpired')}</p>
+        <button type="button" className={SECONDARY_BUTTON} data-plugins-retry onClick={onRetry}>
+          {t('st.webbridge.reconnect')}
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="space-y-2">
       <InlineError error={error} />
@@ -118,7 +143,9 @@ export function WebBridgeReadiness() {
       onToggle={(event) => { setOpen((event.currentTarget as HTMLDetailsElement).open); }}
       className={`mt-2.5 scroll-mt-4 text-[12px] ${flashId === 'st-card-webbridge' ? 'settings-card-flash' : ''}`}
     >
-      <summary className="cursor-pointer select-none text-[12px] text-ink-soft hover:text-ink">
+      {/* The shared fold chevron, not the browser's ▶ marker. */}
+      <summary className="-ml-1 inline-flex min-h-7 cursor-pointer list-none select-none items-center gap-1 rounded px-1 font-medium text-ink-soft outline-none transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
+        <Icon name="chevron" size={12} className="shrink-0 text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] ease-out [details[open]>summary>&]:rotate-90 motion-reduce:transition-none" />
         <span className="font-medium">{t('st.plugins.runtimeTitle')}</span>
         {capability === undefined || query.isError ? null : (
           <span className={capability.state === 'ready' ? 'text-ink-soft' : 'text-ink'} data-webbridge-state={capability.state}>

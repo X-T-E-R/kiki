@@ -37,6 +37,7 @@ import { useConnection } from '../../state/connection';
 import type { CapabilityStatus, KikiConfigPatch } from '../../lib/client';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
+import { Icon } from '../icons';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard, SettingsCardMountContext } from './SectionCard';
 import { AdvancedDetails, SettingField } from './fields';
@@ -445,7 +446,9 @@ export function ComputerControlSection() {
 
   return (
     <div className="space-y-6" data-settings-computer-control>
-      <SectionCard id="st-card-computer-enabled" title={t('st.computer.title')}>
+      {/* The header IS the section heading (name, sentence, switch), so the
+          card carries no title of its own — one "电脑控制", not two. */}
+      <SectionCard id="st-card-computer-enabled" title="">
         <CapabilityHeader
           title={t('st.computer.title')}
           verdict={{ kind: verdict.kind, tone: verdict.tone, text: verdictText, action: verdictAction ?? undefined }}
@@ -715,13 +718,15 @@ function WindowsMcpRegistrationFold({ scopeId }: { readonly scopeId: string }) {
   };
 
   return (
-    <details className="text-[11px] text-ink-soft" data-computer-windows-mcp-register open={opened || undefined}>
+    <details className="text-[12px] text-ink-soft" data-computer-windows-mcp-register open={opened || undefined}>
       {/* Explicit state, not the DOM's own toggle: jsdom never fires the
-          event, so a controlled `open` would always swallow the click. */}
+          event, so a controlled `open` would always swallow the click. The
+          shared fold chevron, not the browser's ▶ marker. */}
       <summary
-        className="cursor-pointer select-none font-medium text-ink-soft hover:text-ink"
+        className="-ml-1 inline-flex min-h-7 cursor-pointer list-none select-none items-center gap-1 rounded px-1 font-medium text-ink-soft outline-none transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden"
         onClick={(event) => { event.preventDefault(); setOpened((current) => !current); }}
       >
+        <Icon name="chevron" size={12} className={`shrink-0 text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] ease-out motion-reduce:transition-none ${opened ? 'rotate-90' : ''}`} />
         {t('st.computer.windowsMcp.registerSummary')}
       </summary>
       <div className="mt-1.5 space-y-1.5 leading-relaxed">

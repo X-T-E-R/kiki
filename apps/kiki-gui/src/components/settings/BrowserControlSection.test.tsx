@@ -1595,14 +1595,17 @@ describe('BrowserControlSection', () => {
     await clickRow('kimi-webbridge');
 
     // Nothing on this branch asks for a CDP address, the style cannot be pointed
-    // at one, and the form says which bridge it is talking to; the detail header
-    // shows read-only allowance instead of a duplicate enable toggle.
+    // at one, and the form says which bridge it is talking to. The detail carries
+    // no second name/id header and no allow tag or delete button: the row above
+    // states those, and deletion lives in the row's ⋯ menu.
     expect(query('[data-secret-field]')).toBeNull();
     expect(query('[data-browser-type]')?.dataset['browserType']).toBe('kimi-webbridge');
     expect(query('[data-browser-bridge]')?.textContent).toContain('local HTTP bridge');
     expect(query('[data-browser-check]')?.textContent).toBe('Check bridge');
     expect(query('[data-browser-connect]')?.textContent).toBe('Connect bridge');
-    expect(query('[data-browser-detail-allowed="true"]')).not.toBeNull();
+    expect(query('[data-browser-detail-allowed]')).toBeNull();
+    expect(query('[data-browser-detail] [data-browser-delete]')).toBeNull();
+    expect(query('[data-browser-detail-name]')).toBeNull();
 
     setInput('[data-browser-name-input]', 'Daily Edge (work)');
     await settle();
