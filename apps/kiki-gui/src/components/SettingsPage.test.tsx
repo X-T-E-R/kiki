@@ -155,6 +155,7 @@ const client = {
   listTools: vi.fn(async () => ({ tools: [] })),
   listNamedAgentProfiles: vi.fn(async () => ({ items: [] })),
   getMemorySettings: vi.fn(async () => ({ enabled: true, approval: 'auto', budget: 2000, workspaces: {} as Record<string, boolean> })),
+  memoryAuthority: vi.fn(async (): Promise<unknown> => ({ version: 1, epoch: 0, backend: 'sqlite', mode: 'normal' })),
   patchMemorySettings: vi.fn(async (patch: { enabled?: boolean; approval?: string; budget?: number }) => ({ enabled: true, approval: 'auto', budget: 2000, workspaces: {}, ...patch })),
   getWorkspaceMemorySettings: vi.fn(async (id: string) => ({ workspace_id: id, enabled: null as boolean | null, effective_enabled: true })),
   patchWorkspaceMemorySettings: vi.fn(async (id: string, enabled: boolean | null) => ({ workspace_id: id, enabled, effective_enabled: enabled !== false })),
@@ -252,6 +253,8 @@ beforeEach(() => {
   klient.global.mcp.listStoredOAuthCredentials.mockResolvedValue([]);
   client.listNamedAgentProfiles.mockClear();
   client.getMemorySettings.mockClear();
+  client.memoryAuthority.mockReset();
+  client.memoryAuthority.mockImplementation(async () => ({ version: 1, epoch: 0, backend: 'sqlite', mode: 'normal' }));
   client.patchMemorySettings.mockClear();
   client.getWorkspaceMemorySettings.mockClear();
   client.patchWorkspaceMemorySettings.mockClear();
@@ -530,6 +533,22 @@ describe('SettingsPage panel scopes', () => {
     expect(client.patchMemorySettings).toHaveBeenCalledWith({ enabled: false });
     expect(client.getMemoryAdvisorSettings.mock.calls.length).toBeGreaterThan(advisorReads);
     expect(container.querySelector<HTMLInputElement>('#memory-enabled')!.checked).toBe(false);
+  });
+
+  it('shows one upgrade line instead of every card failing while memory is being upgraded', async () => {
+    client.memoryAuthority.mockImplementation(async () => ({
+      version: 1, epoch: 0, backend: 'legacy', mode: 'migrating',
+      migration: { id: '00000000-0000-4000-8000-000000000000', namespaces: [], index: 0, issues: [], phase: 'failed' },
+    }));
+    client.getMemorySettings.mockImplementation(async () => { throw Object.assign(new Error('Memory startup migration failed'), { code: 40001 }); });
+    const container = await renderSettings('/settings/memory');
+    await flush();
+    await flush();
+    expect(container.querySelector('[data-memory-settings-upgrading="failed"]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-settings-open-upgrade]')?.getAttribute('href')).toBe('/memory');
+    expect(container.querySelector('#memory-enabled')).toBeNull();
+    expect(container.textContent).not.toContain('服务器返回了无法识别的数据');
+    expect(container.textContent).not.toContain('could not be read');
   });
 
   it('updates the capability config the allow switch reads, then retries a failed save', async () => {
