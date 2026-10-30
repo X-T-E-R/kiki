@@ -939,7 +939,14 @@ describe('GrepTool', () => {
   });
 
   it('filters sensitive files from content output and appends a warning', async () => {
-    const stdout = ['/workspace/src/main.ts:10:hit', '/workspace/.env:1:SECRET=hit', ''].join('\n');
+    const stdout = [
+      '/workspace/src/main.ts:10:hit',
+      '/workspace/.env:1:SECRET=hit',
+      '/workspace/.env:2:SECRET=hit',
+      '/workspace/./.env:3:SECRET=hit',
+      '/workspace/src/main.ts:11:hit',
+      '',
+    ].join('\n');
     const exec = vi.fn().mockResolvedValue(processWithOutput(stdout));
     const tool = new GrepTool(createFakeKaos({ exec }), workspace);
 
@@ -956,6 +963,7 @@ describe('GrepTool', () => {
       '/workspace',
     );
     expect(result.output).toContain('src/main.ts:10:hit');
+    expect(result.output).toContain('src/main.ts:11:hit');
     expect(result.output).not.toContain('SECRET=hit');
     expect(result.output).toContain('Filtered 1 sensitive file(s): .env');
   });

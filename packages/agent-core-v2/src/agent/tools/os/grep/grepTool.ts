@@ -684,15 +684,24 @@ function filterSensitiveLines(
   pathClass: PathClass,
 ): ParsedGrepLine[] {
   const kept: ParsedGrepLine[] = [];
+  const sensitivity = new Map<string, string | undefined>();
   for (const line of lines) {
     if (line.kind === 'separator') {
       kept.push(line);
       continue;
     }
-    const filePath = parsedFilePath(line, mode, pathClass);
-    if (filePath !== undefined && isSensitiveFile(filePath)) {
-      filteredPaths.add(filePath);
-      continue;
+    const rawPath = rawFilePath(line, mode, pathClass);
+    if (rawPath !== undefined) {
+      let sensitivePath = sensitivity.get(rawPath);
+      if (!sensitivity.has(rawPath)) {
+        const filePath = normalize(rawPath);
+        sensitivePath = isSensitiveFile(filePath) ? filePath : undefined;
+        sensitivity.set(rawPath, sensitivePath);
+      }
+      if (sensitivePath !== undefined) {
+        filteredPaths.add(sensitivePath);
+        continue;
+      }
     }
     kept.push(line);
   }
@@ -716,28 +725,28 @@ function normalizeContextSeparators(lines: readonly ParsedGrepLine[]): ParsedGre
   return normalized;
 }
 
-function parsedFilePath(
+function rawFilePath(
   line: ParsedGrepLine,
   mode: GrepMode,
   pathClass: PathClass,
 ): string | undefined {
-  if (line.kind === 'record') return normalize(line.filePath);
+  if (line.kind === 'record') return line.filePath;
   if (line.kind === 'separator') return undefined;
   const text = line.text;
-  if (mode === 'files_with_matches') return normalize(text);
+  if (mode === 'files_with_matches') return text;
   if (mode === 'count_matches') {
     const idx = text.lastIndexOf(':');
-    return idx > 0 ? normalize(text.slice(0, idx)) : normalize(text);
+    return idx > 0 ? text.slice(0, idx) : text;
   }
   return extractContentFilePath(text, pathClass);
 }
 
 function extractContentFilePath(line: string, pathClass: PathClass): string | undefined {
   const m = CONTENT_LINE_RE.exec(line);
-  if (m?.[1] !== undefined) return normalize(m[1]);
+  if (m?.[1] !== undefined) return m[1];
 
   const separatorIndex = noLineNumberContentSeparatorIndex(line, pathClass);
-  return separatorIndex > 0 ? normalize(line.slice(0, separatorIndex)) : undefined;
+  return separatorIndex > 0 ? line.slice(0, separatorIndex) : undefined;
 }
 
 function noLineNumberContentSeparatorIndex(line: string, pathClass: PathClass): number {
