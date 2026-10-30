@@ -7303,7 +7303,7 @@ export const zh = {
   'st.purpose.permissions': '决定 Agent 每走一步之前，要不要先问你。',
   'st.purpose.developer': '引擎参数、底层配置、系统诊断与实验性功能索引。',
   'st.purpose.labs': '实验性功能体验与开关设置。',
-  'st.perm.defaultTitle': '默认权限模式',
+  'st.perm.defaultTitle': '审批方式',
   'st.perm.dangerousBash': '危险 Bash 命令',
   'st.perm.dangerousBash.default': '默认',
   'st.perm.dangerousBash.on': '开启',

@@ -7376,7 +7376,7 @@ export const en = {
   'st.purpose.permissions': 'Decide whether an agent asks you before each step.',
   'st.purpose.developer': 'Engine parameters, low-level configuration, system diagnostics, and experimental feature index.',
   'st.purpose.labs': 'Experimental features and feature flags.',
-  'st.perm.defaultTitle': 'Default permission mode',
+  'st.perm.defaultTitle': 'Approvals',
   'st.perm.dangerousBash': 'Dangerous Bash commands',
   'st.perm.dangerousBash.default': 'Default',
   'st.perm.dangerousBash.on': 'On',
