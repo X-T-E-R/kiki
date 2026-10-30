@@ -11324,6 +11324,7 @@ export const en = {
   'st.browser.row.sourceOff': '{source} (source off)',
   'st.browser.menu.open': '{name} actions',
   'st.browser.menu.openRow': 'Open {name}',
+  'st.decision.openRow': 'Open {name}',
   'st.browser.menu.setDefault': 'Set as default',
   'st.browser.menu.clearDefault': 'Clear default',
   'st.browser.menu.runBlocked': 'Allow this connection first',

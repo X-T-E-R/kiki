@@ -11229,6 +11229,7 @@ export const zh = {
   'st.browser.row.sourceOff': '{source}（来源已关闭）',
   'st.browser.menu.open': '{name} 的操作',
   'st.browser.menu.openRow': '展开 {name}',
+  'st.decision.openRow': '展开 {name}',
   'st.browser.menu.setDefault': '设为默认',
   'st.browser.menu.clearDefault': '取消默认',
   'st.browser.menu.runBlocked': '先允许这条连接',
