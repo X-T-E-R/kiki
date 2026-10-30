@@ -17,6 +17,7 @@ import type {
 } from '@kiki/acp-client';
 import { describe, expect, it, vi } from 'vitest';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { coldPromptFixture } from './coldPromptFixture';
 import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
 import { attachExternalMailboxHarness } from './mailboxHarness';
@@ -347,6 +348,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     },
   } as unknown as ISessionMcpHandle;
   const services = new Map<unknown, unknown>([
+    [IBootstrapService, { homeDir: 'C:/home/example/.kiki' }],
     [ISessionContext, { sessionId: 'session-fixture' }],
     [IAgentScopeContext, { parentAgentId: options.parentAgentId }],
     [IHarnessMcpService, { acquire: vi.fn(async () => ({ server: {
@@ -658,6 +660,7 @@ export function createExecutionHarness(options: FakeHarnessOptions = {}): {
   ix.set(IWireService, harness.wire);
   ix.set(ISessionApprovalService, harness.approval);
   ix.set(ISessionInteractionService, harness.interaction);
+  ix.set(IBootstrapService, { homeDir: 'C:/home/example/.kiki' } as IBootstrapService);
   ix.set(ISessionMcpHandle, harness.mcpHandle);
   ix.set(ISessionWorkspaceContext, harness.workspace);
   ix.provide(IAgentLoopService, {} as IAgentLoopService);
@@ -788,6 +791,22 @@ describe('ACP external executor', () => {
   });
 
 
+  it.each(['claude-acp', 'agy-cli', 'grok-acp'])('keeps %s native children bare without implicitly leasing a bridge', async (executorId) => {
+    const harness = createHarness({ executorId, parentAgentId: 'main', supportsMcp: true,
+      unpinModel: true, thinkingEffort: 'off', mcpServers: { relay: { transport: 'stdio', command: 'node' } } });
+    const execution = resolveExecutionBinding({ executor: executorId }, undefined, undefined, undefined);
+    const session = harness.createSession({ ...harness.executorContext, binding: { ...harness.executorContext.binding,
+      execution, systemPrompt: '', modelAlias: undefined, kikiContext: [], allowKikiSubagents: false } });
+    try {
+      const run = await session.run({ kind: 'prompt', prompt: 'ONLY_ASSIGNED_TASK' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(harness.opens[0]?.mcpServers).toEqual([]);
+      expect(harness.starts[0]?.prompt).toBe('ONLY_ASSIGNED_TASK');
+      expect(harness.opens[0]?.systemPromptOverride).toBeUndefined();
+      expect(harness.selections).toEqual([]);
+    } finally { await session.shutdown(); }
+  });
+
   it('keeps direct ACP factory payload bare across a durable generation boundary', async () => {
     const harness = createHarness({ unpinModel: true, thinkingEffort: 'off',
       mcpServers: { relay: { transport: 'stdio', command: 'node' } },
@@ -893,7 +912,7 @@ describe('ACP external executor', () => {
     const forwarded = createHarness({ mcpServers: config, supportsMcp: true, thinkingEffort: 'off', unpinModel: true });
     await forwarded.session.run({ kind: 'prompt', prompt: 'Hello' }, { signal: new AbortController().signal });
     expect(forwarded.opens[0]?.mcpServers).toEqual([
-      { name: 'relay', command: 'node', args: ['relay.js'], env: [] },
+      { name: 'relay', command: 'node', args: ['relay.js'], env: [{ name: 'KIKI_HOME', value: 'C:/home/example/.kiki' }] },
     ]);
     await forwarded.session.shutdown();
 

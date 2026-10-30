@@ -18,6 +18,9 @@ import { AgentCollaborationMessagingService } from '#/session/agentCollaboration
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { ILogService } from '#/_base/log/log';
+import { stubLog } from '../../_base/log/stubs';
 
 export interface ExternalMailboxHarness {
   readonly messaging: IAgentCollaborationMessagingService;
@@ -115,6 +118,14 @@ export function attachExternalMailboxHarness(
     createdByLoad: () => true,
   } as unknown as ISessionMetadata);
   collaboration.stub(ISessionDispatchService, {});
+  collaboration.set(ILogService, stubLog());
+  const receipts = new Map<string, unknown>();
+  collaboration.stub(IAtomicDocumentStore, {
+    get: async <T>(scope: string, key: string) => receipts.get(`${scope}/${key}`) as T | undefined,
+    set: async (scope, key, value) => { receipts.set(`${scope}/${key}`, value); },
+    delete: async (scope, key) => { receipts.delete(`${scope}/${key}`); },
+    list: async scope => [...receipts.keys()].filter(key => key.startsWith(`${scope}/`)).map(key => key.slice(scope.length + 1)),
+  });
   collaboration.set(
     IAgentCollaborationMessagingService,
     new SyncDescriptor(AgentCollaborationMessagingService),

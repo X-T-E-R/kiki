@@ -10,7 +10,7 @@ import type { DelegatorRef, AgentMeta } from '#/session/sessionMetadata/sessionM
 import type { AgentRunHandle, AgentRunRequest } from '#/session/subagent/subagent';
 
 export interface DispatchResolvedBinding {
-  readonly model: string;
+  readonly model?: string;
   readonly thinking?: string;
   readonly selection?: BindingSelectionInput;
 }

@@ -37,6 +37,7 @@ import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentExecutorRegistry, type ResolvedAgentExecutor } from '#/app/agentExecutor/agentExecutor';
 import { recordNegotiatedSnapshot } from '#/agent/execution/negotiatedSnapshot';
+import { nativeTargets } from '@kiki/agent-profiles/nativeTarget';
 import { mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { AGENT_RUN_PROMPT_ORIGIN, runAgentTurn } from '#/session/subagent/runAgentTurn';
 import { createHooks } from '#/hooks';
@@ -97,11 +98,13 @@ function dispatchFor(ctx: TestAgentContext) {
   containers.push(ix);
   const childHandle: IAgentScopeHandle = { kind: 'agent', id: CHILD, accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
   const callerHandle: IAgentScopeHandle = { kind: 'agent', id: 'main', accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
-  ix.stub(IAgentLifecycleService, { onDidCreate: Event.None as Event<IAgentScopeHandle>, get: (id) => id === CHILD ? childHandle : id === 'main' ? callerHandle : undefined });
+  ix.stub(IAgentLifecycleService, { onDidCreate: Event.None as IAgentLifecycleService['onDidCreate'],
+    get: (id) => id === CHILD ? childHandle : id === 'main' ? callerHandle : undefined });
   ix.stub(IAgentCollaborationRegistry, {});
   ix.set(IConfigService, ctx.get(IConfigService));
   ix.set(IModelService, ctx.get(IModelService));
   ix.set(IModelCatalog, ctx.get(IModelCatalog));
+  ix.set(IAgentExecutorRegistry, ctx.get(IAgentExecutorRegistry));
   ix.set(ISessionMetadata, ctx.get(ISessionMetadata));
   ix.set(ISessionAgentProfileCatalog, ctx.get(ISessionAgentProfileCatalog));
   ix.set(ILogService, ctx.get(ILogService));
@@ -504,6 +507,33 @@ describe('dispatch resume through model switch and real native run', () => {
     expect((await metadata.read()).agents![CHILD]).toBeUndefined();
   });
 
+  it.each(['codex-app-server', 'claude-acp', 'agy-cli', 'grok-acp'])('resumes %s native defaults without manufacturing a Kiki model', async (id) => {
+    const ctx = await host();
+    const registry = ctx.get(IAgentExecutorRegistry);
+    const delivered: unknown[] = [];
+    const resolved: ResolvedAgentExecutor = { descriptor: { id, protocol: 'acp', args: [], revision: 'fixture' }, options: {},
+      provider: { id, protocol: 'acp', validateOptions: () => ({}), validateBinding: binding => ({ ok: true, binding }),
+        create: context => ({ hooks: createHooks(['onWillRun']), status: () => ({ state: 'idle' }), cancel: () => false,
+          settled: async () => {}, shutdown: async () => {}, run: async request => {
+            delivered.push({ request, binding: context.binding });
+            throw new Error('fixture-native-run-reached');
+          } }) } };
+    vi.spyOn(registry, 'resolve').mockReturnValue(resolved);
+    vi.spyOn(registry, 'resolveExecutable').mockResolvedValue(resolved);
+    vi.spyOn(registry, 'validateBinding').mockImplementation((_id, _options, binding) => ({ ok: true, binding }));
+    await ctx.get(IAgentProfileService).bind({ resolvedProfile: nativeTargets([resolved.descriptor])[0], delegationPosition: 'sub' });
+    const { dispatch, child } = dispatchFor(ctx);
+    const run = await dispatch.runOnExisting(child, 'Continue native task', options(`native-${id}`));
+    await expect(run.started).rejects.toThrow('fixture-native-run-reached');
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ request: { prompt: 'Continue native task', promptId: `resume-prompt:native-${id}` },
+      binding: { execution: { selection: { executor: id } }, systemPrompt: '' } });
+    expect(ctx.get(IAgentProfileService).data().modelAlias).toBeUndefined();
+    expect(ctx.get(IAgentModelSwitchService).get(`native-${id}`)).toBeUndefined();
+    await expect(dispatch.runOnExisting(child, 'Fresh default', options(`fresh-${id}`, { newWindow: true })))
+      .rejects.toThrow('explicit vendor model');
+  });
+
   it('does not mark actual external model application successful merely because canonical binding committed', async () => {
     const ctx = await host();
     const registry = ctx.get(IAgentExecutorRegistry);
@@ -677,6 +707,7 @@ describe('dispatch resume after cancellation with deferred task notifications', 
     ix.set(ISessionContext, ctx.get(ISessionContext));
     ix.set(ISessionMetadata, ctx.get(ISessionMetadata));
     ix.set(ISessionDispatchService, dispatch);
+    ix.set(IAtomicDocumentStore, ctx.get(IAtomicDocumentStore));
     ix.set(ILogService, ctx.get(ILogService));
     ix.stub(ISessionManager, {});
     ix.set(IAgentCollaborationMessagingService, new SyncDescriptor(AgentCollaborationMessagingService));

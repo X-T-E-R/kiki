@@ -1,4 +1,9 @@
 import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
+import { isNativeTarget } from '@kiki/agent-profiles/nativeTarget';
+import { normalizeAgentProfile } from '@kiki/agent-profiles/agentProfile';
+import { applySpawnPolicy } from '@kiki/agent-profiles/applySubagentLease';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { resolveNativeTargetBinding } from '#/session/subagent/nativeTargetBinding';
 import { randomUUID } from 'node:crypto';
 
 import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
@@ -104,6 +109,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
     @IModelService private readonly models: IModelService,
     @ILogService private readonly log: ILogService,
+    @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
   ) {}
 
   private readonly capacity = new DispatchCapacity();
@@ -182,7 +188,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     const callerBinding = requester.accessor.get(IAgentProfileService).data();
     const binding = this.resolveBinding(input, target, callerBinding);
     const inheritAlias = (alias: string | undefined) => resolveInheritedModelAlias(alias, callerBinding.modelAlias);
-    const resolvedProfile = selection.baseProfile.modelAlias === INHERIT_MODEL_ALIAS
+    const resolvedProfile = isNativeTarget(profile) ? profile : selection.baseProfile.modelAlias === INHERIT_MODEL_ALIAS
       ? { ...selection.baseProfile, modelAlias: inheritAlias(selection.baseProfile.modelAlias) }
       : selection.baseProfile;
     const resolvedRoute = selection.route === undefined ? undefined : {
@@ -520,6 +526,31 @@ export class SessionDispatchService implements ISessionDispatchService {
     const fingerprint = resumeFingerprint(originalRequest, options);
     const saved = readResumeRecord((await this.metadata.read()).agents?.[child.agentId], operationId);
     if (saved !== undefined) assertResumeFingerprint(saved.fingerprint, fingerprint);
+    if (childData.execution !== undefined && childData.modelAlias === undefined && options.bindingOverride?.modelAlias === undefined) {
+      if (options.bindingOverride?.newWindow === true || options.bindingOverride?.thinkingEffort !== undefined) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'Select an explicit vendor model before changing the native context or effort; ordinary resume keeps the original native session and defaults.');
+      }
+      const frozen = childData.boundProfile;
+      if (frozen === undefined || !isNativeTarget(frozen)) throw new Error2(ErrorCodes.CONFIG_INVALID, 'The native target policy is unavailable.');
+      let policyProfile = normalizeAgentProfile({ ...frozen, systemPrompt: () => '' });
+      for (const constraint of callerConstraints) policyProfile = applySpawnPolicy(policyProfile, constraint.constraints);
+      resolveNativeTargetBinding(policyProfile, {}, this.config, this.executors, childData.execution);
+      checkResume();
+      const record = saved ?? { operationId, fingerprint, request: originalRequest,
+        switchInput: { operationId, mode: 'direct' as const }, state: 'accepted' as const };
+      await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'ready' });
+      const request: AgentRunRequest = originalRequest.kind === 'prompt'
+        ? { ...originalRequest, promptId: originalRequest.promptId ?? `resume-prompt:${operationId}` } : originalRequest;
+      if (options.requesterAgentId !== undefined) this.recordDelegatedRun(options.requesterAgentId, child.agentId);
+      const started = this.runs.run(child.agentId, request, { signal: options.signal, onReady: options.onReady, capacityReservation: reservation })
+        .then(async handle => {
+          await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'started', turnId: handle.turn.id });
+          return handle;
+        });
+      return { child: this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta), request, lineage: options.lineage, started };
+    }
+    if (saved !== undefined && saved.switchInput.model === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID,
+      'The original resume used native defaults, but the binding changed. Inspect that operation before starting another run.');
     const modelSwitch = child.agent.accessor.get(IAgentModelSwitchService);
     const switchState = modelSwitch.get(operationId)?.state;
     const recoveringCommit = saved !== undefined && (switchState === 'preparing' || switchState === 'completed');
@@ -549,6 +580,7 @@ export class SessionDispatchService implements ISessionDispatchService {
         mode: options.bindingOverride?.newWindow === true ? 'fresh' as const : 'direct' as const },
     };
     if (saved === undefined) await writeResumeRecord(this.metadata, child.agentId, record);
+    if (record.switchInput.model === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'A model switch requires an explicit bound model.');
     const receipt = await modelSwitch.execute(record.switchInput, { binding, signal: options.signal });
     if (receipt.state !== 'completed') {
       throw new Error2(receipt.state === 'preparing' ? ErrorCodes.STORAGE_IO_FAILED : ErrorCodes.REQUEST_INVALID,
@@ -746,9 +778,17 @@ export class SessionDispatchService implements ISessionDispatchService {
   ): DispatchResolvedBinding {
     const selection = target.selection;
     const profile = target.effectiveProfile;
+    if (isNativeTarget(profile)) {
+      const result = resolveNativeTargetBinding(profile, {
+        modelAlias: input.modelAlias ?? input.resolvedBinding?.model,
+        thinkingEffort: input.thinkingEffort ?? input.resolvedBinding?.thinking,
+      }, this.config, this.executors);
+      return { model: result.execution.effective.model, thinking: result.execution.effective.thinking };
+    }
     const native = (profile.executor ?? 'native') === 'native';
     const resolver = modelAliasResolverForExecutor(profile.executor, this.models);
     if (input.resolvedBinding !== undefined) {
+      if (input.resolvedBinding.model === undefined) throw new Error2(ErrorCodes.MODEL_NOT_CONFIGURED, 'A role profile requires a configured model');
       const model = resolver.resolveId(input.resolvedBinding.model) ?? input.resolvedBinding.model;
       const thinking = native
         ? resolveThinkingEffortForModel(input.resolvedBinding.thinking, undefined, this.modelCatalog.get(model), false, true)
