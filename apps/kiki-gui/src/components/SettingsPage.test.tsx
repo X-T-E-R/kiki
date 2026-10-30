@@ -450,7 +450,7 @@ describe('SettingsPage panel scopes', () => {
 
   it('shows the Extensions & tools page intro on /settings/mcp and keeps the timeouts card title concise', async () => {
     const mcp = await renderSettings('/settings/mcp');
-    expect(mcp.querySelector('[data-settings-intro]')?.textContent).toBe('Manage skills, MCP tool servers, and installed plugins.');
+    expect(mcp.querySelector('[data-settings-intro]')?.textContent).toBe('Manage plugins, skills, and MCP servers.');
     expect(mcp.textContent).not.toContain('Server-wide MCP timeouts.');
     expect(mcp.querySelector('#st-card-mcp-timeouts')).not.toBeNull();
   });
