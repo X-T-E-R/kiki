@@ -1654,7 +1654,10 @@ describe('Composer profile file', () => {
     await settle();
 
     const error = container.querySelector('[data-execution-file-error]');
-    expect(error?.textContent).toContain('Choose a profile Markdown (.md) file');
+    // The definitive 40001 maps to the localized server-data copy
+    // (errorMapping); the refusal is shown, changes nothing, and keeps the
+    // typed path so the reader can fix it.
+    expect(error?.textContent).toBe(translate('en', 'err.serverData'));
     expect(container.querySelector('[data-execution-file-preview]')).toBeNull();
     expect(onChangeExecution).not.toHaveBeenCalled();
     // The form is still open on the same text, so the reader can fix the path.
