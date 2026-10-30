@@ -20,7 +20,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useI18n } from '../../i18n';
-import { clampOverlayPosition } from '../../lib/overlayPosition';
+import { placeAnchored } from '../overlays/anchoredPosition';
 import { Icon } from '../icons';
 
 const TRIGGER =
@@ -46,16 +46,16 @@ export function SettingHelp({ children, className = '' }: {
   const openedByClick = useRef(false);
   const helpId = useId();
 
+  // The shared anchored placement: below the `i` while it fits, flipped when
+  // the viewport is tighter, clamped inside the window.
   const place = () => {
     const anchor = triggerRef.current?.getBoundingClientRect();
     const bubble = bubbleRef.current;
     if (anchor === undefined || bubble === null) return;
     const size = bubble.getBoundingClientRect();
-    const viewport = { width: window.innerWidth, height: window.innerHeight };
-    const below = anchor.bottom + 6;
-    const above = anchor.top - size.height - 6;
-    const top = below + size.height + 8 > viewport.height && above >= 8 ? above : below;
-    setPosition(clampOverlayPosition(anchor.left, top, { width: size.width, height: size.height }, viewport));
+    const placed = placeAnchored(anchor, { width: size.width, height: size.height },
+      { width: window.innerWidth, height: window.innerHeight }, { gap: 6 });
+    setPosition({ left: placed.left, top: placed.top });
   };
 
   // Measure, then place against the trigger, flipping above when there is no
