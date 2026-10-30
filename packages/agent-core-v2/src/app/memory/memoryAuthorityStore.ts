@@ -261,7 +261,7 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
           progress = { ...progress, phase: 'validating' };
           state = { ...state, migration: progress };
           await lease.publish(state);
-          const issues = await this.validateAndReconcile(progress.namespaces, progress.id, progress.issues);
+          const issues = await this.validateAndReconcile(progress.namespaces, progress.id);
           progress = { ...progress, issues: uniqueIssues([...progress.issues, ...issues]) };
         }
         const blocking = progress.issues.filter(blocksMigration);
@@ -286,11 +286,12 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
       }
     }, signal);
   }
-  private async validateAndReconcile(bases: readonly string[], operationId: string, importedIssues: readonly MigrationIssue[]): Promise<MigrationIssue[]> {
+  private async validateAndReconcile(bases: readonly string[], operationId: string): Promise<MigrationIssue[]> {
     const issues: MigrationIssue[] = [];
     for (const base of bases) {
       const inventory = await this.legacy.inventory(parseNamespace(base));
       if (!inventory.complete) { issues.push({ scope: base, key: '', issue: 'legacy_inventory_incomplete' }); continue; }
+      const rejected = new Set(await this.persistence.rejectedLegacyIds(base, inventory.entries));
       const expected = new Map(inventory.entries.map((entry) => [entry.id, entry]));
       if (expected.size !== inventory.entries.length) issues.push({ scope: base, key: '', issue: 'duplicate_legacy_identity' });
       const events = await this.persistence.journal(base);
@@ -308,8 +309,7 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
         }
       }
       for (const entry of expected.values()) {
-        const rejected = importedIssues.some((issue) => issue.scope === base && issue.issue === 'forgotten_source_rejected' && (issue.key === `entries/${entry.id}.md` || issue.key === `inbox/${entry.id}.md`));
-        if (rejected) continue;
+        if (rejected.has(entry.id)) continue;
         if (!view.objects.some((object) => object.id === entry.id)) issues.push({ scope: base, key: entry.id, issue: 'legacy_head_missing' });
         const preserved = view.objects.some((object) => object.id === entry.id && object.revision !== entry.revision);
         const event = latest.get(entry.id);

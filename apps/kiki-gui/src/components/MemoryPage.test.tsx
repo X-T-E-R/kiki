@@ -2634,7 +2634,7 @@ describe('MemoryPage automatic upgrade', () => {
     { scope: 'memory/global', key: 'entries/m_forgotten.md', issue: 'forgotten_source_rejected' },
     { scope: 'memory/global', key: 'notes.md', issue: 'unreadable_source' },
   ];
-  const failed = { version: 1, epoch: 2, backend: 'legacy', mode: 'migrating', migration: { id: operation, namespaces, index: 2, issues, phase: 'failed', failure: { code: 'memory.source_invalid', message: 'Memory source validation found 8 issue(s); repair the listed sources and retry this operation' } } } as const;
+  const failed = { version: 1, epoch: 2, backend: 'legacy', mode: 'migrating', migration: { id: operation, namespaces, index: 2, issues, phase: 'failed', failure: { code: 'memory.source_invalid', message: 'Memory source validation found 6 issue(s); repair the listed sources and retry this operation' } } } as const;
   const running = { ...failed, migration: { id: operation, namespaces, index: 0, issues: [], phase: 'importing' } } as const;
   const current = () => fixtureEntry({ id: 'm_deploy', title: 'Deployment procedure', revision: 'mem2:rev-current' });
 
@@ -2643,7 +2643,7 @@ describe('MemoryPage automatic upgrade', () => {
     vi.spyOn(client, 'memoryAuthority').mockResolvedValue(failed);
     const container = await renderPage();
     const status = container.querySelector('[data-memory-upgrade="failed"]')!;
-    expect(status.querySelector('[data-memory-upgrade-failure="memory.source_invalid"]')!.textContent).toBe('8 sources need repair. Fix them, then retry the upgrade.');
+    expect(status.querySelector('[data-memory-upgrade-failure="memory.source_invalid"]')!.textContent).toBe('6 sources need repair. Fix them, then retry the upgrade.');
     expect(container.querySelector('[data-memory-store]')!.textContent).toBe('Upgrade stopped');
     expect(status.textContent).not.toContain('Memory source validation found');
     expect(status.querySelectorAll('[data-memory-upgrade-issue]')).toHaveLength(5);

@@ -103,8 +103,33 @@ export class MemoryDatabase {
       if (replay !== undefined) return replay;
       if (this.generation() !== input.expectedGeneration) conflict('Memory commit generation changed; reread and reconcile');
       const generation = input.expectedGeneration + 1;
-      const aliases = input.edits.flatMap((edit) => {
+      const touched = new Set<string>();
+      for (const edit of input.edits) {
+        const key = JSON.stringify([edit.scope, edit.id]);
+        if (touched.has(key)) throw new Error('Duplicate Memory transaction target');
+        touched.add(key);
+        const head = this.db.prepare('SELECT revision FROM heads WHERE scope=? AND id=?').get(edit.scope, edit.id);
+        if ((head?.['revision'] ?? null) !== edit.expectedRevision) conflict('Memory revision conflict');
+        if (edit.entry !== null && (edit.entry.id !== edit.id || edit.entry.revision !== edit.revision)) throw new Error('Memory object identity mismatch');
         this.linkHistoricalSources(edit.scope, edit.id);
+      }
+      for (const transfer of input.sourceTransfers ?? []) {
+        const from = input.edits.find((edit) => edit.scope === transfer.scope && edit.id === transfer.from);
+        const to = input.edits.find((edit) => edit.scope === transfer.scope && edit.id === transfer.to);
+        if (to?.entry === undefined || to.entry === null || transfer.from === transfer.to) conflict('Invalid Memory source lineage transfer');
+        if (from === undefined) {
+          const parent = this.db.prepare('SELECT r.entry,h.revision FROM heads h JOIN revisions r ON r.scope=h.scope AND r.id=h.id AND r.revision=h.revision WHERE h.scope=? AND h.id=?').get(transfer.scope, transfer.from);
+          if (parent === undefined || parent['entry'] === null || this.blocked(transfer.scope, transfer.from) || to.entry.status !== 'pending' || to.entry.supersedes !== transfer.from || to.entry.supersedes_revision !== parent['revision']) conflict('Memory proposal source changed');
+        } else if (from.entry === null) {
+          const proposal = from.expectedRevision === null ? undefined : this.revision(from.scope, from.id, from.expectedRevision);
+          if (proposal?.status !== 'pending' || proposal.pending_action === undefined || proposal.supersedes !== to.id || proposal.supersedes_revision !== to.expectedRevision || to.entry.status !== (proposal.pending_action === 'archive' ? 'archived' : 'active')) conflict('Invalid Memory source lineage transfer');
+        } else if (from.expectedRevision === null || this.revision(from.scope, from.id, from.expectedRevision) === undefined || from.entry.status !== 'superseded' || from.entry.superseded_by !== to.id || to.entry.status !== 'active') conflict('Invalid Memory source lineage transfer');
+      }
+      for (const transfer of input.sourceTransfers ?? []) {
+        this.linkHistoricalSources(transfer.scope, transfer.from);
+        this.db.prepare('INSERT OR IGNORE INTO source_signatures SELECT scope,source_id,? FROM source_signatures WHERE scope=? AND object_id=?').run(transfer.to, transfer.scope, transfer.from);
+      }
+      const aliases = input.edits.flatMap((edit) => {
         if (edit.entry === null) return [];
         const signature = memorySourceUnitId(edit.scope, edit.entry.source, edit.entry.body, edit.entry.basis?.refs);
         if (signature !== undefined && this.signatureBlocked(edit.scope, signature, edit.id)) conflict('Memory source has a forget barrier');
@@ -123,15 +148,8 @@ export class MemoryDatabase {
         const linked = this.db.prepare('SELECT object_id FROM source_links WHERE scope=? AND source_id=?').all(alias.scope, alias.id).map((row) => String(row['object_id']));
         if (linked.length > 0 && !linked.includes(alias.objectId) && !input.sourceTransfers?.some((transfer) => transfer.scope === alias.scope && transfer.to === alias.objectId && linked.includes(transfer.from))) conflict('Memory source was concurrently registered; reread its current lineage');
       }
-      const touched = new Set<string>();
       for (const edit of input.edits) {
-        const key = JSON.stringify([edit.scope, edit.id]);
-        if (touched.has(key)) throw new Error('Duplicate Memory transaction target');
-        touched.add(key);
         if (this.blocked(edit.scope, edit.id)) conflict('Memory target has a forget barrier');
-        const head = this.db.prepare('SELECT revision FROM heads WHERE scope=? AND id=?').get(edit.scope, edit.id);
-        if ((head?.['revision'] ?? null) !== edit.expectedRevision) conflict('Memory revision conflict');
-        if (edit.entry !== null && (edit.entry.id !== edit.id || edit.entry.revision !== edit.revision)) throw new Error('Memory object identity mismatch');
         this.db.prepare('INSERT INTO revisions VALUES(?,?,?,?,?)').run(edit.scope, edit.id, edit.revision, generation, edit.entry === null ? null : JSON.stringify(edit.entry));
         this.db.prepare('INSERT INTO commit_views VALUES(?,?,?,?)').run(edit.scope, edit.id, generation, edit.revision);
         this.db.prepare('INSERT INTO heads VALUES(?,?,?) ON CONFLICT(scope,id) DO UPDATE SET revision=excluded.revision').run(edit.scope, edit.id, edit.revision);
@@ -146,16 +164,7 @@ export class MemoryDatabase {
         for (const signature of source.signatures ?? []) this.db.prepare('INSERT OR IGNORE INTO source_signatures VALUES(?,?,?)').run(source.scope, signature, source.objectId);
       }
       for (const alias of aliases) this.db.prepare('INSERT OR IGNORE INTO source_links VALUES(?,?,?)').run(alias.scope, alias.id, alias.objectId);
-      for (const transfer of input.sourceTransfers ?? []) {
-        const from = input.edits.find((edit) => edit.scope === transfer.scope && edit.id === transfer.from);
-        const to = input.edits.find((edit) => edit.scope === transfer.scope && edit.id === transfer.to);
-        if (to?.entry === undefined || to.entry === null) conflict('Invalid Memory source lineage transfer');
-        if (from === undefined) {
-          const parent = this.db.prepare('SELECT revision FROM heads WHERE scope=? AND id=?').get(transfer.scope, transfer.from);
-          if (this.blocked(transfer.scope, transfer.from) || to.entry.status !== 'pending' || to.entry.supersedes !== transfer.from || to.entry.supersedes_revision !== parent?.['revision']) conflict('Memory proposal source changed');
-        } else if (to.entry.status === 'pending' || from.entry !== null && (from.entry.status !== 'superseded' || to.entry.status !== 'active')) conflict('Invalid Memory source lineage transfer');
-        this.db.prepare('INSERT OR IGNORE INTO source_links SELECT scope,source_id,? FROM source_links WHERE scope=? AND object_id=?').run(transfer.to, transfer.scope, transfer.from);
-      }
+      for (const transfer of input.sourceTransfers ?? []) this.db.prepare('INSERT OR IGNORE INTO source_links SELECT scope,source_id,? FROM source_links WHERE scope=? AND object_id=?').run(transfer.to, transfer.scope, transfer.from);
       for (const decision of input.adjudications ?? []) {
         if (this.blocked(decision.scope, decision.objectId)) conflict('Memory adjudication has a forget barrier');
         const head = this.db.prepare('SELECT revision FROM heads WHERE scope=? AND id=?').get(decision.scope, decision.objectId);
@@ -224,6 +233,13 @@ export class MemoryDatabase {
   private relatedObjects(scope: string, id: string): string[] {
     return this.db.prepare('WITH RECURSIVE affected(id) AS (SELECT ? UNION SELECT linked.object_id FROM affected JOIN source_links origin ON origin.scope=? AND origin.object_id=affected.id JOIN source_links linked ON linked.scope=origin.scope AND linked.source_id=origin.source_id) SELECT id FROM affected ORDER BY id').all(id, scope).map((row) => String(row['id']));
   }
+  private legacyEntryBlocked(scope: string, entry: MemoryEntry): boolean {
+    const signature = memorySourceUnitId(scope, entry.source, entry.body, entry.basis?.refs);
+    return this.blocked(scope, entry.id) || this.source(scope, memoryObjectSourceUnitId(scope, entry.id, entry.body)).state === 'forgotten' || signature !== undefined && this.signatureBlocked(scope, signature, entry.id);
+  }
+  rejectedLegacyIds(scope: string, entries: readonly MemoryEntry[]): readonly string[] {
+    return entries.filter((entry) => this.legacyEntryBlocked(scope, entry)).map((entry) => entry.id);
+  }
   importLegacy(batch: readonly MemoryLegacyPayload[]): MemoryImportResult {
     if (batch.length > 1000) throw new Error('Memory import batch exceeds 1000 records');
     return this.transaction(() => {
@@ -240,10 +256,8 @@ export class MemoryDatabase {
         }
         const entry = record.entry;
         const sourceId = entry === undefined ? undefined : memoryObjectSourceUnitId(record.scope, entry.id, entry.body);
-        const signature = entry === undefined ? undefined : memorySourceUnitId(record.scope, entry.source, entry.body, entry.basis?.refs);
-        const source = sourceId === undefined ? undefined : this.source(record.scope, sourceId);
         let issue = record.issue;
-        if (source?.state === 'forgotten' || signature !== undefined && this.signatureBlocked(record.scope, signature, entry!.id) || entry !== undefined && this.blocked(record.scope, entry.id) || entry === undefined && this.db.prepare('SELECT 1 FROM barriers WHERE scope=? LIMIT 1').get(record.scope) !== undefined) {
+        if (entry !== undefined ? this.legacyEntryBlocked(record.scope, entry) : this.db.prepare('SELECT 1 FROM barriers WHERE scope=? LIMIT 1').get(record.scope) !== undefined) {
           issues.push({ scope: record.scope, key: record.key, issue: 'forgotten_source_rejected' }); continue;
         }
         for (const previous of record.history ?? []) if (!this.blocked(record.scope, previous.id)) this.db.prepare('INSERT OR IGNORE INTO revisions VALUES(?,?,?,?,?)').run(record.scope, previous.id, previous.revision, 0, JSON.stringify(previous));
