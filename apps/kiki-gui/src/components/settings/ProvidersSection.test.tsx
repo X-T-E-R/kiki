@@ -146,11 +146,11 @@ describe('ProvidersSection zone order and status', () => {
     expect(providersCard).not.toBeNull();
     expect(authCard).not.toBeNull();
     expect(enginesCard).not.toBeNull();
-    expect(providersCard?.textContent).toContain('API key providers');
+    expect(providersCard?.textContent).toContain('API services');
     expect(providersCard?.textContent).not.toMatch(/[①②③]/);
     expect(authCard?.textContent).toContain('Account sign-in (subscription)');
     expect(authCard?.textContent).not.toMatch(/[①②③]/);
-    expect(enginesCard?.textContent).toContain('Local HTTP and CLI');
+    expect(enginesCard?.textContent).toContain('CLI engines on this machine');
     expect(enginesCard?.textContent).not.toContain('Local CLI harnesses');
     expect(enginesCard?.textContent).not.toMatch(/[①②③]/);
   });
@@ -222,11 +222,13 @@ describe('ProvidersSection configured rows', () => {
   it('puts each configured provider in one zone and does not sign in a configured account again', async () => {
     installMixedProviders();
     const container = await render();
-    expect(zoneRows(container, 'apikey')).toEqual(['openai-api']);
+    // A local HTTP server is an API at a local address: it lists with the API
+    // services, and the CLI-engine card holds no connection rows.
+    expect(zoneRows(container, 'apikey')).toEqual(['openai-api', 'ollama']);
     expect(zoneRows(container, 'oauth')).toEqual(['copilot']);
-    expect(zoneRows(container, 'harnesses')).toEqual(['ollama']);
+    expect(zoneRows(container, 'harnesses')).toEqual([]);
     const rows = [...container.querySelectorAll('[data-connection-row]')];
-    expect(rows.map((row) => row.getAttribute('data-connection-row'))).toEqual(['openai-api', 'copilot', 'ollama']);
+    expect(rows.map((row) => row.getAttribute('data-connection-row'))).toEqual(['openai-api', 'ollama', 'copilot']);
     expect(new Set(rows.map((row) => row.getAttribute('data-connection-row'))).size).toBe(3);
 
     const account = container.querySelector<HTMLElement>('[data-providers-zone="oauth"] [data-connection-row="copilot"]');
@@ -238,7 +240,6 @@ describe('ProvidersSection configured rows', () => {
     expect(container.querySelectorAll('[data-oauth-method="github-copilot"]')).toHaveLength(0);
     expect(container.querySelector('[data-providers-zone="oauth"] [data-oauth-method="grok-build"]')).not.toBeNull();
     expect(container.querySelector('[data-providers-zone="apikey"] [data-connection-row="copilot"]')).toBeNull();
-    expect(container.querySelector('[data-providers-zone="apikey"] [data-connection-row="ollama"]')).toBeNull();
     expect([...container.querySelectorAll('[data-list-filter]')].map((chip) => chip.getAttribute('data-list-filter')))
       .toEqual(['all', 'api', 'account', 'local', 'attention']);
     const search = container.querySelector('[data-list-search]');
@@ -250,8 +251,8 @@ describe('ProvidersSection configured rows', () => {
     installMixedProviders();
     const container = await render();
     await typeSearch(container, 'ollama');
-    expect(zoneRows(container, 'harnesses')).toEqual(['ollama']);
-    expect(zoneRows(container, 'apikey')).toEqual([]);
+    expect(zoneRows(container, 'apikey')).toEqual(['ollama']);
+    expect(zoneRows(container, 'harnesses')).toEqual([]);
     expect(zoneRows(container, 'oauth')).toEqual([]);
     expect(container.querySelector('[data-list-empty="no-match"]')).toBeNull();
 
@@ -261,9 +262,9 @@ describe('ProvidersSection configured rows', () => {
     expect(container.querySelector('[data-oauth-method="grok-build"]')).not.toBeNull();
 
     await typeSearch(container, '');
-    expect(zoneRows(container, 'apikey')).toEqual(['openai-api']);
+    expect(zoneRows(container, 'apikey')).toEqual(['openai-api', 'ollama']);
     expect(zoneRows(container, 'oauth')).toEqual(['copilot']);
-    expect(zoneRows(container, 'harnesses')).toEqual(['ollama']);
+    expect(zoneRows(container, 'harnesses')).toEqual([]);
   });
 
   it('keeps every row when oauth methods resolve after providers, then moves the account', async () => {
@@ -273,9 +274,9 @@ describe('ProvidersSection configured rows', () => {
     listOAuthMethods.mockReturnValue(new Promise((resolve) => { resolveMethods = resolve; }));
     const container = await render();
     expect(container.querySelectorAll('[data-connection-row]')).toHaveLength(3);
-    expect(zoneRows(container, 'apikey')).toEqual(['copilot', 'openai-api']);
+    expect(zoneRows(container, 'apikey')).toEqual(['copilot', 'openai-api', 'ollama']);
     expect(zoneRows(container, 'oauth')).toEqual([]);
-    expect(zoneRows(container, 'harnesses')).toEqual(['ollama']);
+    expect(zoneRows(container, 'harnesses')).toEqual([]);
 
     await act(async () => { resolveMethods([CONFIGURED_ACCOUNT, FRESH_ACCOUNT]); });
     await expect.poll(() => ({
@@ -283,9 +284,9 @@ describe('ProvidersSection configured rows', () => {
       oauth: zoneRows(container, 'oauth'),
       local: zoneRows(container, 'harnesses'),
     })).toEqual({
-      api: ['openai-api'],
+      api: ['openai-api', 'ollama'],
       oauth: ['copilot'],
-      local: ['ollama'],
+      local: [],
     });
     expect(container.querySelectorAll('[data-connection-row="copilot"]')).toHaveLength(1);
     expect(container.querySelectorAll('[data-oauth-method="github-copilot"]')).toHaveLength(0);
@@ -308,9 +309,9 @@ describe('ProvidersSection configured rows', () => {
       oauth: zoneRows(container, 'oauth'),
       local: zoneRows(container, 'harnesses'),
     })).toEqual({
-      api: ['openai-api'],
+      api: ['openai-api', 'ollama'],
       oauth: ['copilot'],
-      local: ['ollama'],
+      local: [],
     });
     expect(container.querySelectorAll('[data-connection-row]')).toHaveLength(3);
     expect(container.querySelectorAll('[data-oauth-method="github-copilot"]')).toHaveLength(0);

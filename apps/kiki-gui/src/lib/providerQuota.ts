@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProviderCatalogItem, ProviderQuotaMeter, ProviderQuotaSnapshot, ProviderQuotaSource } from '@kiki/protocol';
 import { useConnection } from '../state/connection';
-import { isLocalBaseUrl } from '../components/providerPresets';
 import {
   configuredEngineDescriptors, engineDisplayOf, engineOverridesOf, engineVisibilityOf,
 } from '../components/settings/profileEditor/engines';
@@ -207,14 +206,13 @@ export function quotaEngineScopeOf(config: { readonly raw?: unknown } | undefine
 
 /**
  * Where a source is configured. A provider lands on the settings card that
- * lists that connection (API keys, account sign-ins, or this machine), under
+ * lists that connection (API services including local HTTP servers, or account sign-ins), under
  * the same id the quota row shows.
  */
 export function quotaSettingsHref(source: ProviderQuotaSource, provider?: ProviderCatalogItem): string {
   if (source.kind === 'external_service' || source.auth.action === 'external_service_settings') return '/settings/search#st-card-search-providers';
   if (source.kind === 'executor' || source.auth.action === 'executor_login') return '/settings/ai#st-card-engines';
   if (provider?.oauth !== undefined || source.auth.action === 'oauth_login') return '/settings/ai?tab=providers';
-  if (provider !== undefined && isLocalBaseUrl(provider.base_url)) return '/settings/ai#st-card-engines';
   return '/settings/ai#st-card-providers';
 }
 

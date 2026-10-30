@@ -943,15 +943,16 @@ describe('Connections list', () => {
     const rows = [...container.querySelectorAll<HTMLElement>('[data-connection-row]')];
     expect(rows.map((row) => [row.dataset['connectionRow'], row.dataset['connectionKind']])).toEqual([
       ['edge:gateway', 'api'],
-      ['managed:kimi-code', 'account'],
+      // A local HTTP server lists with the API services; its kind tag still says local.
       ['ollama', 'local'],
+      ['managed:kimi-code', 'account'],
     ]);
     // The account row names the sign-in and its kind, never a wire protocol.
-    const accountSummary = rows[1]!.querySelector('summary')!.textContent;
+    const accountSummary = rows[2]!.querySelector('summary')!.textContent;
     expect(accountSummary).toContain('Kimi Code');
     expect(accountSummary).toContain('Account');
     expect(accountSummary).not.toContain('Moonshot');
-    expect(rows[2]!.querySelector('summary')!.textContent).toContain('Local server · localhost:11434');
+    expect(rows[1]!.querySelector('summary')!.textContent).toContain('Local server · localhost:11434');
     expect(rows[0]!.querySelector('[data-connection-status]')!.textContent).toContain('Connected');
     // No per-row protocol/identity/key pills in the collapsed row.
     expect(rows[0]!.querySelector('summary')!.textContent).not.toContain('key stored');

@@ -217,7 +217,10 @@ export function ProvidersSection() {
       <div data-providers-zone="apikey">
         <SectionCard id="st-card-providers" title={stripZoneNumeral(t('st.providers.zone3.title'))}>
           <div className="space-y-3">
-            {connectionRows(visibleOf('api'))}
+            {/* A local HTTP server (Ollama, LM Studio) is an API the user points
+                at an address, so it lists with the API services; the card
+                below is only for CLI engines Kiki drives. */}
+            {connectionRows([...visibleOf('api'), ...visibleOf('local')])}
             {empty ? (
               <div data-connections-empty>
                 <ListEmpty kind="none" title={t('st.connections.emptyTitle')} body={t('st.connections.emptyBody')} />
@@ -263,7 +266,6 @@ export function ProvidersSection() {
 
       <div data-providers-zone="harnesses">
         <SectionCard id="st-card-engines" title={t('st.providers.localConnectionsTitle')} actions={<ExternalEnginesVisibilitySwitch />}>
-          {visibleOf('local').length > 0 ? <div className="mb-4">{connectionRows(visibleOf('local'))}</div> : null}
           <ExternalEnginesList />
           <div className="mt-4">
             <Link
