@@ -301,9 +301,14 @@ describe('server-v2 /api/debug RPC', () => {
       },
       runtimes: {
         workspaceId,
-        runtimes: [{ runtimeId: 'local', status: 'ready' }],
+        runtimes: expect.arrayContaining([expect.objectContaining({ runtimeId: 'local', status: 'ready' })]),
       },
     });
+    expect(
+      workspace.body.data!.runtimes.runtimes
+        .map((runtime) => runtime.runtimeId)
+        .filter((runtimeId) => runtimeId !== 'local' && !runtimeId.startsWith('ssh:')),
+    ).toEqual([]);
     expect(workspace.body.data).not.toHaveProperty('accessor');
     expect(workspace.body.data).not.toHaveProperty('container');
 
