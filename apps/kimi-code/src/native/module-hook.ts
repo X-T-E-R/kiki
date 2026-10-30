@@ -15,6 +15,7 @@ interface ModuleWithLoad {
 const nodeRequire = createRequire(import.meta.url);
 let installed = false;
 const loadingPackages = new Set<string>();
+const loadedPackages = new Map<string, unknown>();
 
 // pi-tui loads its platform-specific native helpers via an absolute-path
 // require() computed from import.meta.url / process.execPath
@@ -44,10 +45,12 @@ export function installNativeModuleHook(): void {
       (request === '@napi-rs/keyring' || request === 'node-pty' || request === '@kiki/auth-native') &&
       !loadingPackages.has(request) && getSeaAssetSource() !== null
     ) {
+      if (loadedPackages.has(request)) return loadedPackages.get(request);
       loadingPackages.add(request);
       try {
         const pkg = loadNativePackage(request);
         if (pkg === null) throw new Error(`Native package assets are unavailable: ${request}`);
+        loadedPackages.set(request, pkg);
         return pkg;
       } finally {
         loadingPackages.delete(request);

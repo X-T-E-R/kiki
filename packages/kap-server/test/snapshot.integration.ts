@@ -107,7 +107,7 @@ describe('server-v2 snapshot route enrichment', () => {
     expect(get.mock.calls.filter(([, key]) => key.startsWith('agent-outcomes/')).map(([, key]) => key)).toEqual([sidecar]);
     get.mockClear();
     const rosterRef = { source: ref.source, path: ['subagents'], kind: 'array' as const, offset: 0,
-      total: candidates.length, revision: contentRevision(candidates) };
+      total: candidates.length, revision: contentRevision(candidates.map((agent) => agent.agent_id ?? agent.id)) };
     await readBrowseSnapshotContent(core as never, {} as never, 's1', 'main', rosterRef);
     expect(get.mock.calls.map(([, key]) => key)).toEqual(['state.json']);
     missing = true;

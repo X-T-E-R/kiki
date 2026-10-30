@@ -38,6 +38,7 @@ const ISSUE_TEXT: Partial<Record<string, I18nKey>> = {
   unmatched_shadow_namespace: 'memory.upgrade.issue.unmatchedScope',
 };
 const VISIBLE_ISSUES = 5;
+const NON_BLOCKING_ISSUES = new Set(['current_revision_preserved', 'forgotten_source_rejected']);
 /** Progress that has not moved for this long is offered a same-operation continue. */
 const STALL_MS = 30_000;
 
@@ -83,7 +84,7 @@ export function MemoryUpgradeStatus() {
   const issues = migration.issues;
   const shown = showAll ? issues : issues.slice(0, VISIBLE_ISSUES);
   const failureText = migration.failure === undefined ? undefined
-    : migration.failure.code === 'memory.source_invalid' ? tp('memory.upgrade.failure.sources', issues.length)
+    : migration.failure.code === 'memory.source_invalid' ? tp('memory.upgrade.failure.sources', issues.filter((issue) => !NON_BLOCKING_ISSUES.has(issue.issue)).length)
     : t('memory.upgrade.failure.other');
   const offerRetry = step === 'failed' || stalled;
 

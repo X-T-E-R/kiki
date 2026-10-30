@@ -270,26 +270,43 @@ function sanitizeSegment(value: string): string {
   return sanitized.length > 0 ? sanitized : 'unknown';
 }
 
+let seaAssetSource: NativeAssetSource | null | undefined;
+
 export function getSeaAssetSource(): NativeAssetSource | null {
+  if (seaAssetSource !== undefined) return seaAssetSource;
   const sea = loadSeaModule();
-  if (sea === null || !sea.isSea()) return null;
-  return {
+  if (sea === null || !sea.isSea()) {
+    seaAssetSource = null;
+    return null;
+  }
+  seaAssetSource = {
     getAssetKeys: () => sea.getAssetKeys(),
     getRawAsset: (assetKey) => sea.getRawAsset(assetKey),
   };
+  return seaAssetSource;
 }
+
+const embeddedManifests = new WeakMap<NativeAssetSource, Map<string, NativeAssetManifest | null>>();
 
 export function getEmbeddedNativeAssetManifest(
   source = getSeaAssetSource(),
   target = currentTarget(),
 ): NativeAssetManifest | null {
   if (source === null) return null;
+  const cached = embeddedManifests.get(source)?.get(target);
+  if (cached !== undefined) return cached;
   const key = nativeAssetManifestKey(target);
-  if (!source.getAssetKeys().includes(key)) return null;
-  const raw = source.getRawAsset(key);
-  const parsed: unknown = JSON.parse(toBuffer(raw).toString('utf-8'));
-  validateNativeAssetManifest(parsed, target);
-  return parsed as NativeAssetManifest;
+  let manifest: NativeAssetManifest | null = null;
+  if (source.getAssetKeys().includes(key)) {
+    const raw = source.getRawAsset(key);
+    const parsed: unknown = JSON.parse(toBuffer(raw).toString('utf-8'));
+    validateNativeAssetManifest(parsed, target);
+    manifest = parsed as NativeAssetManifest;
+  }
+  const byTarget = embeddedManifests.get(source) ?? new Map<string, NativeAssetManifest | null>();
+  byTarget.set(target, manifest);
+  embeddedManifests.set(source, byTarget);
+  return manifest;
 }
 
 export function getNativeCacheBase(options: NativeAssetOptions = {}): string {
@@ -313,13 +330,20 @@ export function getNativeCacheBase(options: NativeAssetOptions = {}): string {
   return joinPosix(optionalEnvValue(env, 'XDG_CACHE_HOME') ?? joinPosix(home, '.cache'), 'kimi-code');
 }
 
+const manifestHashes = new Map<string, string>();
+
 export function getNativeAssetCacheRoot(
   manifest: NativeAssetManifest,
   options: NativeAssetOptions = {},
 ): string {
   const validated = validateNativeAssetManifest(manifest);
   const version = sanitizeSegment(options.version ?? KIMI_BUILD_INFO.version ?? 'dev');
-  const manifestHash = sha256(JSON.stringify(manifest));
+  const serialized = JSON.stringify(manifest);
+  let manifestHash = manifestHashes.get(serialized);
+  if (manifestHash === undefined) {
+    manifestHash = sha256(serialized);
+    manifestHashes.set(serialized, manifestHash);
+  }
   return join(
     getNativeCacheBase(options),
     'native',
@@ -388,6 +412,64 @@ function ensureEntryFile(cacheRoot: string): void {
   );
 }
 
+const VERIFIED_STAMP = '.kimi-native-verified.json';
+const verifiedRoots = new Set<string>();
+
+/**
+ * Forget which native asset trees this process has already verified, so the next
+ * {@link ensureNativeAssetTree} call re-checks the cache as a fresh process would.
+ */
+export function resetNativeAssetVerification(): void {
+  verifiedRoots.clear();
+}
+
+type VerifiedStamp = Record<string, { readonly size: number; readonly mtimeMs: number }>;
+
+function stampedTreeIntact(cacheRoot: string, files: readonly NativeAssetFile[]): boolean {
+  let stamp: VerifiedStamp;
+  try {
+    stamp = JSON.parse(readFileSync(join(cacheRoot, VERIFIED_STAMP), 'utf-8')) as VerifiedStamp;
+  } catch {
+    return false;
+  }
+  for (const file of files) {
+    const recorded = stamp[file.relativePath];
+    if (recorded === undefined) return false;
+    try {
+      const path = resolveAssetPath(cacheRoot, file.relativePath);
+      const stat = statSync(path);
+      if (stat.size !== recorded.size || stat.mtimeMs !== recorded.mtimeMs) return false;
+      ensureFileMode(path, file.mode);
+    } catch {
+      return false;
+    }
+  }
+  return existsSync(join(cacheRoot, 'node_modules', '.kimi-native-entry.cjs'));
+}
+
+function writeVerifiedStamp(cacheRoot: string, files: readonly NativeAssetFile[]): void {
+  const stamp: VerifiedStamp = {};
+  for (const file of files) {
+    const stat = statSync(resolveAssetPath(cacheRoot, file.relativePath));
+    stamp[file.relativePath] = { size: stat.size, mtimeMs: stat.mtimeMs };
+  }
+  const path = join(cacheRoot, VERIFIED_STAMP);
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    writeFileSync(tempPath, JSON.stringify(stamp));
+    renameSync(tempPath, path);
+  } catch {
+    rmSync(tempPath, { force: true });
+  }
+}
+
+/**
+ * Materialize the embedded native asset tree into the versioned cache and return its root.
+ *
+ * Checksums are verified when a tree is first extracted or repaired. Afterwards a size+mtime
+ * stamp stands in for the full hash on later process starts, and within one process the tree
+ * is checked at most once.
+ */
 export function ensureNativeAssetTree(options: NativeAssetOptions = {}): string | null {
   const source = options.source ?? getSeaAssetSource();
   if (source === null) return null;
@@ -398,11 +480,16 @@ export function ensureNativeAssetTree(options: NativeAssetOptions = {}): string 
   const manifest = validateNativeAssetManifest(rawManifest);
 
   const cacheRoot = getNativeAssetCacheRoot(rawManifest, options);
-  const sourceKeys = new Set(source.getAssetKeys());
+  if (verifiedRoots.has(cacheRoot)) return cacheRoot;
   const files = [
     ...manifest.packages.flatMap((pkg) => pkg.files),
     ...manifest.runtimeFiles,
   ];
+  if (stampedTreeIntact(cacheRoot, files)) {
+    verifiedRoots.add(cacheRoot);
+    return cacheRoot;
+  }
+  const sourceKeys = new Set(source.getAssetKeys());
   for (const file of files) {
     if (!sourceKeys.has(file.assetKey)) {
       throw new Error(`Native asset is missing: ${file.assetKey}`);
@@ -417,6 +504,8 @@ export function ensureNativeAssetTree(options: NativeAssetOptions = {}): string 
     ensureFile(resolveAssetPath(cacheRoot, file.relativePath), bytes, file.sha256, file.mode);
   }
   ensureEntryFile(cacheRoot);
+  writeVerifiedStamp(cacheRoot, files);
+  verifiedRoots.add(cacheRoot);
   return cacheRoot;
 }
 

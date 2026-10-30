@@ -1,3 +1,4 @@
+import type { MemoryEntry } from '../../../app/memory/memoryStore.ts';
 import type { MemoryCommit, MemoryLegacyPayload } from '../../interface/memoryPersistence.ts';
 
 export type MemoryOperation =
@@ -9,6 +10,7 @@ export type MemoryOperation =
   | { readonly type: 'source'; readonly scope: string; readonly id: string }
   | { readonly type: 'provenance'; readonly scope: string; readonly id: string }
   | { readonly type: 'importLegacy'; readonly batch: readonly MemoryLegacyPayload[] }
+  | { readonly type: 'rejectedLegacyIds'; readonly scope: string; readonly entries: readonly MemoryEntry[] }
   | { readonly type: 'legacy'; readonly scope: string }
   | { readonly type: 'namespaces' }
   | { readonly type: 'backup'; readonly destination: string }

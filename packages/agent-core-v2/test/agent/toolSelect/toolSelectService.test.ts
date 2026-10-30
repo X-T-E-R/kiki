@@ -86,8 +86,10 @@ let flagEnabled: boolean;
 let activeToolNames: ReadonlySet<string> | undefined;
 let disclosureToolActive: boolean;
 let providerType: string;
+let policyChecks = 0;
 
 beforeEach(() => {
+  policyChecks = 0;
   disposables = new DisposableStore();
   capabilities = makeCapabilities({ tool_use: true, dynamically_loaded_tools: true });
   flagEnabled = false;
@@ -371,7 +373,10 @@ function registerSharedServices(
     getRequester: () => ({ model: { protocol: 'openai', providerType } }) as ReturnType<IModelCatalog['getRequester']>,
   });
   reg.definePartialInstance(IAgentToolPolicyService, {
-    isToolActive: (name: string) => activeToolNames === undefined || activeToolNames.has(name),
+    isToolActive: (name: string) => {
+      policyChecks += 1;
+      return activeToolNames === undefined || activeToolNames.has(name);
+    },
     isToolActiveForDisclosure: () => disclosureToolActive,
   });
   reg.definePartialInstance(IFlagService, {
@@ -666,6 +671,20 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     flagEnabled = true;
   });
 
+  it('computes the loadable set with policy checks linear in the registered tools', () => {
+    const h = createHarness();
+    disposables.add(h.registry.register(h.ix.createInstance(SelectToolsTool), { source: 'builtin' }));
+    const names = Array.from({ length: 60 }, (_, index) => `mcp__srv__tool_${String(index).padStart(2, '0')}`);
+    for (const name of names) registerMcp(h, new StubMcpTool(name));
+    policyChecks = 0;
+    const loadable = h.sut.loadableNames();
+    expect([...loadable]).toEqual(names);
+    expect(policyChecks).toBeLessThan(names.length * 4);
+    for (const name of names) expect(h.sut.isLoadable(name)).toBe(true);
+    expect(policyChecks).toBeGreaterThan(names.length * names.length);
+    expect(h.sut.isLoadable('SelectTools')).toBe(false);
+  });
+
   it('hides unloaded MCP tools, marks loaded MCP tools deferred, keeps builtins and SelectTools', () => {
     const h = createHarness();
     registerBuiltin(h, new EchoTool());
@@ -693,6 +712,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     expect(shaped.map((entry) => entry.name)).toEqual(['HistoryRead']);
     expect(shaped[0]?.deferred).toBeUndefined();
     expect(h.sut.isLoadable('HistoryRead')).toBe(false);
+    expect(h.sut.loadableNames().size).toBe(0);
   });
 
   it('announces a deferred browser operation without putting its schema on tools[]', async () => {
@@ -708,6 +728,8 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     expect(h.sut.isLoadable('browser__agent_browser_snapshot')).toBe(true);
     expect(h.sut.isLoadable('browser__ego_run')).toBe(false);
     expect(h.sut.isLoadable('HistoryRead')).toBe(false);
+    expect([...h.sut.loadableNames()]).toEqual(h.registry.list().map((entry) => entry.name).filter((name) => h.sut.isLoadable(name)));
+    expect([...h.sut.loadableNames()]).toEqual(['browser__agent_browser_snapshot']);
 
     const announced = await announce(h);
     expect(announced).toContain('<tools_added>\nbrowser__agent_browser_snapshot —');

@@ -35,6 +35,7 @@ import { EventDispatcherService, REPLAY_CHECKPOINT_GROWTH_BYTES } from '#/state/
 import { IWireService, type WireJournalReadOptions } from '#/wire/wire';
 import { WireService } from '#/wire/wireService';
 import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
+import { WIRE_TRANSCRIPT_RECEIPT_KEY } from '#/wire/transcriptReceipt';
 
 const SCOPE = 'sessions/s/agents/main';
 const CHECKPOINT_SCOPE = `${SCOPE}/replay-checkpoints`;
@@ -380,10 +381,13 @@ describe('replay checkpoint tail', () => {
     expect(texts(restored.state)).toEqual(['prefix-user', 'prefix-assistant']);
   });
 
-  it('uses a trusted sealed digest when an older checkpoint has no prefix hash', async () => {
+  it('uses a legacy full-journal sealed digest when an older checkpoint has no prefix hash', async () => {
     const first = await checkpointed();
-    await first.wire.beginTranscriptEpoch!();
-    await first.wire.sealTranscriptEpoch!();
+    const sealedBytes = Buffer.from(await bytesOf(first.storage));
+    await first.storage.write(SCOPE, WIRE_TRANSCRIPT_RECEIPT_KEY, Buffer.from(JSON.stringify({
+      format: 1, epoch: 'legacy', state: 'sealed', trusted: true,
+      wire: { size: sealedBytes.byteLength, sha256: createHash('sha256').update(sealedBytes).digest('hex') },
+    })));
     const saved = await first.docs.get<{ wire: { prefixSha256?: string } }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
     delete saved?.wire.prefixSha256;
     await first.docs.set(CHECKPOINT_SCOPE, CHECKPOINT_KEY, saved);
@@ -441,6 +445,51 @@ describe('replay checkpoint tail', () => {
     expect(texts(corruptHost.state)).toEqual(['prefix-user', 'prefix-assistant']);
     const repaired = Buffer.from(await bytesOf(corrupt.storage)).toString('utf8');
     expect(repaired).not.toContain('not-json');
+  });
+
+  it('checkpoints a large journal with a boundary digest instead of hashing its whole prefix', async () => {
+    const storage = new CountingStorage();
+    const first = harness(storage);
+    await seed(first.wire);
+    for (let index = 0; index < 32; index += 1) {
+      first.wire.appendRecord({ type: 'context.append_message', message: message('user', `bulk-${index}-${'x'.repeat(8192)}`), time: 10 + index });
+    }
+    await first.wire.flush();
+    await first.dispatcher.restore();
+    const size = (await bytesOf(storage)).byteLength;
+    expect(size).toBeGreaterThan(256 * 1024);
+    storage.streamBytes = 0;
+    await expect(first.dispatcher.saveReplayCheckpoint?.()).resolves.toBe(true);
+    expect(storage.streamBytes).toBeLessThan(128 * 1024);
+    const saved = await first.docs.get<{ wire: { prefixSha256?: string; boundarySha256?: string } }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
+    expect(saved?.wire.prefixSha256).toBeUndefined();
+    expect(saved?.wire.boundarySha256).toMatch(/^[a-f0-9]{64}$/);
+
+    first.wire.appendRecord({ type: 'context.append_message', message: message('user', 'after-boundary'), time: 99 });
+    await first.wire.flush();
+    const tailed = harness(storage);
+    const reads = watchReads(tailed.wire);
+    await tailed.dispatcher.restore();
+    expect(reads.full).toBe(0);
+    expect(reads.tails).toEqual([size]);
+    expect(texts(tailed.state).at(-1)).toBe('after-boundary');
+
+    const original = Buffer.from(await bytesOf(storage));
+    const middle = Buffer.from(original);
+    middle.set(Buffer.from('BULK'), middle.indexOf(Buffer.from('bulk-16-')));
+    await storage.write(SCOPE, AGENT_WIRE_RECORD_KEY, middle);
+    const unobserved = harness(storage);
+    const unobservedReads = watchReads(unobserved.wire);
+    await unobserved.dispatcher.restore();
+    expect(unobservedReads.full).toBe(0);
+
+    const boundary = Buffer.from(original);
+    boundary[size - 100] = boundary[size - 100] === 0x78 ? 0x79 : 0x78;
+    await storage.write(SCOPE, AGENT_WIRE_RECORD_KEY, boundary);
+    const rewritten = harness(storage);
+    const rewrittenReads = watchReads(rewritten.wire);
+    await rewritten.dispatcher.restore();
+    expect(rewrittenReads.full).toBe(1);
   });
 
   it('hashes only the bytes appended since the previous prefix digest', async () => {
@@ -557,11 +606,11 @@ describe('replay checkpoint tail', () => {
     const first = await checkpointed();
     vi.useFakeTimers();
     const previous = await first.docs.get<{ wire: { size: number } }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
-    const originalHash = first.wire.journalSha256!.bind(first.wire);
+    const originalHash = first.wire.journalBoundarySha256!.bind(first.wire);
     const entered = deferred();
     const release = deferred();
     let hashes = 0;
-    first.wire.journalSha256 = async (byteLength: number) => {
+    first.wire.journalBoundarySha256 = async (byteLength: number) => {
       hashes += 1;
       if (hashes === 1) {
         entered.resolve();

@@ -14,6 +14,7 @@ function execute(operation: MemoryOperation): unknown {
     case 'source': return database.source(operation.scope, operation.id);
     case 'provenance': return database.provenance(operation.scope, operation.id);
     case 'importLegacy': return database.importLegacy(operation.batch);
+    case 'rejectedLegacyIds': return database.rejectedLegacyIds(operation.scope, operation.entries);
     case 'legacy': return database.legacy(operation.scope);
     case 'namespaces': return database.namespaces();
     case 'backup': return database.backup(operation.destination);

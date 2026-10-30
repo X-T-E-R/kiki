@@ -57,6 +57,7 @@ interface ReplayCheckpointEnvelope {
     readonly mtimeMs: number;
     readonly headHash?: string;
     readonly prefixSha256?: string;
+    readonly boundarySha256?: string;
   };
   readonly stateNames: readonly string[];
   readonly graph: ReplayCheckpointGraph;
@@ -537,10 +538,13 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       if (saved?.revision === revision && saved.wire.size === wire.size &&
         saved.wire.mtimeMs === wire.mtimeMs && saved.wire.headHash === wire.headHash) return true;
       phase = 'journal_digest';
-      const prefixSha256 = this.wire.journalSha256 === undefined
-        ? undefined
-        : await this.wire.journalSha256(wire.size);
-      if (this.wire.journalSha256 !== undefined && prefixSha256 === undefined) return this.skipReplayCheckpoint('journal_changed');
+      const small = wire.size < JOURNAL_HEAD_HASH_BYTES || this.wire.journalBoundarySha256 === undefined;
+      const digest = small
+        ? this.wire.journalSha256 === undefined ? undefined : await this.wire.journalSha256(wire.size)
+        : await this.wire.journalBoundarySha256!(wire.size);
+      if ((small ? this.wire.journalSha256 : this.wire.journalBoundarySha256) !== undefined && digest === undefined) {
+        return this.skipReplayCheckpoint('journal_changed');
+      }
       if (!this.checkpointStable(generation, revision)) return false;
       phase = 'encode';
       const payload: ReplayCheckpointPayload = {
@@ -556,7 +560,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       const envelope: ReplayCheckpointEnvelope = {
         format: 1,
         replayAbi: REPLAY_ABI_VERSION,
-        wire: prefixSha256 === undefined ? wire : { ...wire, prefixSha256 },
+        wire: digest === undefined ? wire : small ? { ...wire, prefixSha256: digest } : { ...wire, boundarySha256: digest },
         stateNames: keys.map((key) => key.name),
         graph,
       };
@@ -600,14 +604,20 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       if (!exact) {
         if (wire.size < envelope.wire.size) return undefined;
         if (!headMatches && envelope.wire.size >= JOURNAL_HEAD_HASH_BYTES) return undefined;
+        const boundary = isSha256(envelope.wire.boundarySha256) && headMatches && this.wire.journalBoundarySha256 !== undefined
+          ? await this.wire.journalBoundarySha256(envelope.wire.size)
+          : undefined;
+        if (boundary !== undefined && boundary !== envelope.wire.boundarySha256) return undefined;
         const sealed = this.wire.sealedJournalDigest?.();
-        const prefixSha256 = isSha256(envelope.wire.prefixSha256)
+        const prefixSha256 = boundary !== undefined ? undefined : isSha256(envelope.wire.prefixSha256)
           ? envelope.wire.prefixSha256
           : sealed !== undefined && sealed.size === envelope.wire.size && isSha256(sealed.sha256)
             ? sealed.sha256
             : undefined;
-        if (prefixSha256 === undefined || this.wire.journalSha256 === undefined) return undefined;
-        if (await this.wire.journalSha256(envelope.wire.size) !== prefixSha256) return undefined;
+        if (boundary === undefined) {
+          if (prefixSha256 === undefined || this.wire.journalSha256 === undefined) return undefined;
+          if (await this.wire.journalSha256(envelope.wire.size) !== prefixSha256) return undefined;
+        }
         if (wire.size > envelope.wire.size) tailByte = envelope.wire.size;
       }
       const payload = decodeReplayCheckpointGraph(envelope.graph) as ReplayCheckpointPayload;

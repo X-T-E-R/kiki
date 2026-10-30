@@ -108,7 +108,7 @@ import { SessionMetadata } from '#/session/sessionMetadata/sessionMetadataServic
 import { ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
 import { AgentCollaborationRegistry, IAgentCollaborationRegistry, COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
 import { createWireMetadataRecord, type WireRecord } from '#/wire/record';
-import { WIRE_TRANSCRIPT_RECEIPT_KEY, digestWireBytes, parseWireTranscriptReceipt } from '#/wire/transcriptReceipt';
+import { WIRE_TRANSCRIPT_RECEIPT_KEY, parseWireTranscriptReceipt } from '#/wire/transcriptReceipt';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
@@ -1858,7 +1858,7 @@ describe('AgentLifecycleService', () => {
     const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
       (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
     ).toString('utf8')));
-    expect(sealed).toMatchObject({ state: 'sealed', trusted: true, epoch: open?.epoch, wire: { size: expect.any(Number), sha256: expect.any(String) } });
+    expect(sealed).toMatchObject({ state: 'sealed', trusted: true, epoch: open?.epoch, wire: { size: expect.any(Number), tailSha256: expect.any(String) } });
     expect(sealed?.wire?.size).toBeGreaterThan(0);
   });
 
@@ -1890,12 +1890,13 @@ describe('AgentLifecycleService', () => {
     expect(svc.get('child')).toBeUndefined();
     const persisted = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8');
     expect(persisted).toBe(changed);
-    const observed = await digestWireBytes(storage.readStream(scope, AGENT_WIRE_RECORD_KEY));
     const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
       (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
     ).toString('utf8')));
-    expect(sealed).toMatchObject({ state: 'sealed', trusted: false, wire: { size: observed.size, sha256: observed.sha256 } });
-    expect(sealed?.wire?.sha256).toBe(createHash('sha256').update(persisted).digest('hex'));
+    const tail = Buffer.from(persisted).subarray(Math.max(0, Buffer.byteLength(persisted) - 4096));
+    expect(sealed).toMatchObject({ state: 'sealed', trusted: false, wire: {
+      size: Buffer.byteLength(persisted), tailBytes: tail.byteLength, tailSha256: createHash('sha256').update(tail).digest('hex'),
+    } });
     expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
     expect(unexpected).toEqual([expect.objectContaining({ message: 'Transcript wire contents do not match accepted events' })]);
     expect(receipts).toContainEqual(expect.objectContaining({

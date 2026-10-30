@@ -127,6 +127,12 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
       this.shapeTools(this.toolRegistry.list()).some((entry) => entry.name === SELECT_TOOLS_TOOL_NAME);
   }
 
+  loadableNames(): ReadonlySet<string> {
+    if (!this.enabled()) return new Set();
+    if (!this.shapeTools(this.toolRegistry.list()).some((entry) => entry.name === SELECT_TOOLS_TOOL_NAME)) return new Set();
+    return new Set(this.loadableToolNames());
+  }
+
   shapeHistory(messages: readonly ContextMessage[]): readonly ContextMessage[] {
     if (!this.enabled()) return stripDynamicToolContext(messages);
     let shaped: ContextMessage[] | undefined;

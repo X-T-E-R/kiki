@@ -34,6 +34,7 @@ export class SqliteMemoryPersistence extends Disposable implements IMemoryPersis
   source(...[scope, id]: Parameters<IMemoryPersistence['source']>): ReturnType<IMemoryPersistence['source']> { return this.operation({ type: 'source', scope, id }); }
   provenance(...[scope, id]: Parameters<IMemoryPersistence['provenance']>): ReturnType<IMemoryPersistence['provenance']> { return this.operation({ type: 'provenance', scope, id }); }
   importLegacy(batch: readonly MemoryLegacyPayload[]): ReturnType<IMemoryPersistence['importLegacy']> { return this.operation({ type: 'importLegacy', batch }); }
+  rejectedLegacyIds(...[scope, entries]: Parameters<IMemoryPersistence['rejectedLegacyIds']>): ReturnType<IMemoryPersistence['rejectedLegacyIds']> { return this.operation({ type: 'rejectedLegacyIds', scope, entries }); }
   legacy(scope: string): ReturnType<IMemoryPersistence['legacy']> { return this.operation({ type: 'legacy', scope }); }
   namespaces(): ReturnType<IMemoryPersistence['namespaces']> { return this.operation({ type: 'namespaces' }); }
   async backup(recoveryId: string): ReturnType<IMemoryPersistence['backup']> {

@@ -4,6 +4,9 @@ import type { RecordDehydrator, WireRecord } from './record';
 
 export const JOURNAL_HEAD_HASH_BYTES = 64 * 1024;
 
+/** Bytes bound by {@link IWireService.journalBoundarySha256}. */
+export const JOURNAL_BOUNDARY_HASH_BYTES = 4096;
+
 /**
  * Coordinate of the durable journal's current byte content. An exact checkpoint
  * matches `size`, `mtimeMs`, and `headHash`. `headHash` binds the leading bytes
@@ -38,7 +41,8 @@ export interface IWireService {
    * Closes the open transcript epoch after its durable flush.
    * A flush or receipt-write failure rejects and leaves the epoch open.
    * When the journal does not match accepted events, the epoch still closes
-   * and the receipt records `trusted: false` with the observed digest.
+   * and the receipt records `trusted: false`. The receipt binds the journal size
+   * and the SHA-256 of its last bytes, not a hash of the whole journal.
    */
   sealTranscriptEpoch?(): Promise<void>;
   verifyTranscriptLiveEpoch?(): Promise<boolean>;
@@ -48,6 +52,11 @@ export interface IWireService {
   journalIdentity?(): Promise<WireJournalIdentity>;
   /** SHA-256 of the first `byteLength` bytes, or undefined if the journal is shorter. */
   journalSha256?(byteLength: number): Promise<string | undefined>;
+  /**
+   * SHA-256 of the last {@link JOURNAL_BOUNDARY_HASH_BYTES} bytes before `byteLength`
+   * (or of all of them when fewer), or undefined if the journal is shorter.
+   */
+  journalBoundarySha256?(byteLength: number): Promise<string | undefined>;
   /** Bytes queued through this process, reset when the journal is replaced. */
   appendedByteCount?(): number;
   /** Fires after those bytes are queued. The count is cumulative for this process. */

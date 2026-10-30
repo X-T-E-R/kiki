@@ -354,6 +354,63 @@ describe('Memory shadow import and replay barriers', () => {
     await expect(store.ingest({ mutation, unit })).rejects.toThrow('source unit has been forgotten');
   });
 
+  it.each(['supersede', 'proposal'] as const)('transfers an independent peer lineage through %s after its equal-source peer is forgotten', async (action) => {
+    const seed = (await save('Independent peer fixture')).entry;
+    const origin = { writer: 'agent' as const, session: 'retained-peer-fixture', turn: 17 };
+    const [first, second] = ['m_forgotten_peer', 'm_retained_peer'].map((id): MemoryEntry => ({ ...seed, id, title: id, source: origin }));
+    const records = [first!, second!].map((entry) => ({ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }));
+    expect(await persistence.importLegacy(records)).toMatchObject({ imported: 2, issues: [] });
+    await store.forget(global, [{ id: first!.id, expectedRevision: first!.revision }], 'forget-equal-source-peer');
+    await close(); bind();
+    const result = await store.put({ action: action === 'proposal' ? 'update' : 'supersede', pending: action === 'proposal', scope: global, id: second!.id, expectedRevision: second!.revision, type: second!.type, title: 'Replacement independent rule', body: second!.body, source: origin, reason: 'Retain the complete instruction' });
+    const ids = [second!.id, result.entry.id].toSorted();
+    expect((await store.previewForget(global, [second!.id])).targets.map((target) => target.id)).toEqual(ids);
+    expect((await store.provenance(global, result.entry.id)).sources).toContainEqual(expect.objectContaining({ payload: records[1]!.payload }));
+    expect(await store.get(global, first!.id)).toBeUndefined();
+    if (action === 'proposal') {
+      const approved = await store.put({ action: 'update', scope: global, id: result.entry.id, expectedRevision: result.entry.revision, type: result.entry.type, title: result.entry.title, body: result.entry.body, source, reason: 'Approve the retained peer proposal' });
+      expect(approved.entry.id).toBe(second!.id);
+      expect(approved.entry.status).toBe('active');
+    } else {
+      expect(result.entry.status).toBe('active');
+      expect((await store.get(global, second!.id))?.superseded_by).toBe(result.entry.id);
+      const restoredSource = await store.put({ action: 'supersede', scope: global, id: result.entry.id, expectedRevision: result.entry.revision, type: result.entry.type, title: 'Next independent successor', body: result.entry.body, source: origin, reason: 'Keep the same source lineage' });
+      expect((await store.previewForget(global, [restoredSource.entry.id])).targets.map((target) => target.id).toSorted()).toEqual([...ids, restoredSource.entry.id].toSorted());
+    }
+    expect(await persistence.importLegacy(records.slice(0, 1))).toMatchObject({ imported: 0, issues: [expect.objectContaining({ issue: 'forgotten_source_rejected' })] });
+    await expect(store.put({ action: 'create', scope: global, type: second!.type, title: 'Unrelated replay', body: second!.body, source: origin, reason: 'Unrelated creation' })).rejects.toThrow('source unit has been forgotten');
+  });
+
+  it('rejects invalid transfers before granting a forgotten signature to a new identity', async () => {
+    const seed = (await save('Transfer boundary fixture')).entry;
+    const origin = { writer: 'agent' as const, session: 'transfer-boundary-fixture', turn: 17 };
+    const [first, second] = ['m_transfer_forgotten', 'm_transfer_retained'].map((id): MemoryEntry => ({ ...seed, id, title: id, source: origin }));
+    await persistence.importLegacy([first!, second!].map((entry) => ({ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry })));
+    await store.forget(global, [{ id: first!.id, expectedRevision: first!.revision }], 'forget-transfer-peer');
+    const before = await persistence.read(['memory/global']);
+    const replacement = { ...second!, id: 'm_invalid_successor', revision: 'mem2:invalid-successor', title: 'Invalid successor' };
+    const target = { scope: 'memory/global', id: replacement.id, expectedRevision: null, entry: replacement, revision: replacement.revision };
+    const invalid: MemoryCommit[] = [
+      { operationId: 'transfer-forgotten-parent', request: 'forgotten-parent', expectedGeneration: before.generation, edits: [{ ...target, entry: { ...replacement, status: 'pending', supersedes: first!.id, supersedes_revision: first!.revision } }], sourceTransfers: [{ scope: 'memory/global', from: first!.id, to: replacement.id }], result: {} },
+      { operationId: 'transfer-stale-proposal', request: 'stale-proposal', expectedGeneration: before.generation, edits: [{ ...target, entry: { ...replacement, status: 'pending', supersedes: second!.id, supersedes_revision: 'stale' } }], sourceTransfers: [{ scope: 'memory/global', from: second!.id, to: replacement.id }], result: {} },
+      { operationId: 'transfer-active-parent', request: 'active-parent', expectedGeneration: before.generation, edits: [{ scope: 'memory/global', id: second!.id, expectedRevision: second!.revision, revision: 'mem2:still-active', entry: { ...second!, revision: 'mem2:still-active' } }, target], sourceTransfers: [{ scope: 'memory/global', from: second!.id, to: replacement.id }], result: {} },
+      { operationId: 'transfer-deleted-active-parent', request: 'deleted-active-parent', expectedGeneration: before.generation, edits: [{ scope: 'memory/global', id: second!.id, expectedRevision: second!.revision, revision: 'mem2:invalid-delete', entry: null }, target], sourceTransfers: [{ scope: 'memory/global', from: second!.id, to: replacement.id }], result: {} },
+      { operationId: 'transfer-misdirected-successor', request: 'misdirected-successor', expectedGeneration: before.generation, edits: [{ scope: 'memory/global', id: second!.id, expectedRevision: second!.revision, revision: 'mem2:invalid-link', entry: { ...second!, status: 'superseded', superseded_by: 'm_unrelated', revision: 'mem2:invalid-link' } }, target], sourceTransfers: [{ scope: 'memory/global', from: second!.id, to: replacement.id }], result: {} },
+    ];
+    for (const [index, commit] of invalid.entries()) {
+      await expect(persistence.commit(commit)).rejects.toMatchObject({ code: 'revision_conflict', message: index < 2 ? 'Memory proposal source changed' : 'Invalid Memory source lineage transfer' });
+      expect(await persistence.receipt(commit.operationId)).toBeUndefined();
+      expect(await persistence.read(['memory/global'])).toEqual(before);
+    }
+    await expect(persistence.commit({ operationId: 'unrelated-signature-create', request: 'unrelated-create', expectedGeneration: before.generation, edits: [target], result: {} })).rejects.toThrow('source has a forget barrier');
+    await store.delete(global, second!.id, second!.revision);
+    const deleted = await persistence.read(['memory/global']);
+    const tombstone = deleted.objects.find((object) => object.id === second!.id)!;
+    const resurrection: MemoryCommit = { operationId: 'transfer-deleted-preimage', request: 'deleted-preimage', expectedGeneration: deleted.generation, edits: [{ scope: 'memory/global', id: second!.id, expectedRevision: tombstone.revision, revision: 'mem2:invalid-resurrection', entry: { ...second!, status: 'superseded', superseded_by: replacement.id, revision: 'mem2:invalid-resurrection' } }, target], sourceTransfers: [{ scope: 'memory/global', from: second!.id, to: replacement.id }], result: {} };
+    await expect(persistence.commit(resurrection)).rejects.toMatchObject({ code: 'revision_conflict', message: 'Invalid Memory source lineage transfer' });
+    expect(await persistence.read(['memory/global'])).toEqual(deleted);
+  });
+
   it('forgets recoverably deleted preimages and rejects an obsolete preview after a new successor', async () => {
     const saved = await save('Deleted private preimage');
     await store.delete(global, saved.entry.id, saved.entry.revision);
@@ -943,6 +1000,42 @@ describe('single Memory authority and isolated recovery', () => {
     expect((await createManaged(memory, 'Write after retained issues')).outcome).toBe('applied');
     await close(); bind();
     expect(await managedMemory().authority.status()).toEqual(state);
+  });
+
+  it.each(['migrate', 'retry'] as const)('uses durable forget barriers beyond 1000 migration notes through %s', async (resume) => {
+    const seed: MemoryEntry = { id: 'm_limit_seed', revision: 'mem2:limit-seed', type: 'feedback', title: 'Forgotten entry', body: 'Equal source and complete body.', status: 'active', pinned: false, source: { writer: 'agent', session: 'migration-limit-fixture', turn: 17 }, reason: 'Independent instruction', created: '2026-01-01', updated: '2026-01-01' };
+    const entries = Array.from({ length: 1001 }, (_, index) => ({ ...seed, id: `m_limit_${String(index).padStart(4, '0')}` }));
+    const record = (entry: MemoryEntry) => ({ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    for (let offset = 0; offset < entries.length; offset += 1000) await persistence.importLegacy(entries.slice(offset, offset + 1000).map(record));
+    for (let offset = 0; offset < entries.length; offset += 1000) await store.forget(global, entries.slice(offset, offset + 1000).map((entry) => ({ id: entry.id, expectedRevision: entry.revision })), `forget-limit-${offset}`);
+    const input = migration();
+    if (resume === 'retry') await storage.write(MEMORY_AUTHORITY_SCOPE, 'backend.json', new TextEncoder().encode(JSON.stringify({ version: 1, epoch: 0, backend: 'legacy', mode: 'migrating', migration: { id: input.operationId, namespaces: ['memory/global'], index: 1, phase: 'failed', issues: [{ scope: 'memory/global', key: entries.at(-1)!.id, issue: 'legacy_head_missing' }], failure: { code: 'memory.source_invalid', message: 'Previous truncated forget notes' } } })));
+    await close(); bind();
+    const { memory, authority, legacy } = managedMemory();
+    vi.spyOn(legacy, 'inventory').mockResolvedValue({ entries, complete: true, warnings: [], fingerprint: 'forgotten-inventory' });
+    vi.spyOn(ix.get(IMemoryShadowImport), 'run').mockImplementation(async (_scope, after) => {
+      const page = entries.filter((entry) => after === undefined || record(entry).key > after).slice(0, 128);
+      const imported = await persistence.importLegacy(page.map(record));
+      const complete = page.at(-1)?.id === entries.at(-1)!.id || page.length === 0;
+      return { ...imported, complete, nextKey: complete ? undefined : record(page.at(-1)!).key };
+    });
+    const state = resume === 'retry' ? await authority.retryMigration(input.operationId) : await authority.migrate({ ...input, maxPages: 64 });
+    expect(state).toMatchObject({ backend: 'sqlite', mode: 'active', migrationId: input.operationId });
+    expect(state.migrationIssues).toHaveLength(1000);
+    expect(state.migrationIssues?.every((issue) => issue.issue === 'forgotten_source_rejected')).toBe(true);
+    expect(await memory.list(global, true)).toEqual([]);
+    const checkpoint = await memory.checkpoint!();
+    expect(await authority.retryMigration(input.operationId)).toEqual(state);
+    expect(await memory.checkpoint!()).toBe(checkpoint);
+  }, 30_000);
+
+  it('keeps a genuinely missing legacy head blocking despite an unverified forgotten-source note', async () => {
+    const { authority, legacy } = managedMemory();
+    const entry: MemoryEntry = { id: 'm_missing_legacy', revision: 'mem2:missing', type: 'feedback', title: 'Missing legacy entry', body: 'Complete expected legacy body.', status: 'active', pinned: false, source, reason: 'Owner instruction', created: '2026-01-01', updated: '2026-01-01' };
+    vi.spyOn(legacy, 'inventory').mockResolvedValue({ entries: [entry], complete: true, warnings: [], fingerprint: 'missing-inventory' });
+    vi.spyOn(ix.get(IMemoryShadowImport), 'run').mockResolvedValue({ complete: true, imported: 0, retained: 0, issues: [{ scope: 'memory/global', key: `entries/${entry.id}.md`, issue: 'forgotten_source_rejected' }] });
+    const state = await authority.migrate(migration());
+    expect(state).toMatchObject({ backend: 'legacy', mode: 'migrating', migration: { phase: 'failed', issues: expect.arrayContaining([{ scope: 'memory/global', key: entry.id, issue: 'legacy_head_missing' }]) } });
   });
 
   it('keeps blocking source failures visible when nonfatal migration notes fill the issue limit', async () => {

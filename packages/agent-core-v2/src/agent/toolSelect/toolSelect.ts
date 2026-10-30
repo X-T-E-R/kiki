@@ -26,6 +26,9 @@ export interface IAgentToolSelectService {
 
   isLoadable(name: string): boolean;
 
+  /** Every name for which `isLoadable` holds, computed once for callers that test many names. */
+  loadableNames(): ReadonlySet<string>;
+
   shapeHistory(messages: readonly ContextMessage[]): readonly ContextMessage[];
 
   load(names: readonly string[]): LoadToolsResult;

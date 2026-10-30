@@ -92,6 +92,7 @@ export interface IMemoryPersistence {
   source(scope: string, id: string): Promise<MemorySourceState>;
   provenance(scope: string, id: string): Promise<MemoryProvenance>;
   importLegacy(batch: readonly MemoryLegacyPayload[]): Promise<MemoryImportResult>;
+  rejectedLegacyIds(scope: string, entries: readonly MemoryEntry[]): Promise<readonly string[]>;
   legacy(scope: string): Promise<readonly MemoryLegacyPayload[]>;
   namespaces(): Promise<readonly string[]>;
   backup(recoveryId: string): Promise<{ readonly generation: number; readonly scope: string }>;

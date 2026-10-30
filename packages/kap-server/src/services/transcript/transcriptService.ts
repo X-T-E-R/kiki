@@ -30,6 +30,8 @@ import {
   WIRE_TRANSCRIPT_RECEIPT_KEY,
   digestWireBytes,
   parseWireTranscriptReceipt,
+  wireTailSha256,
+  type WireTranscriptReceiptWire,
 } from '@kiki/agent-core-v2/wire/transcriptReceipt';
 import {
   AgentTranscript,
@@ -2610,33 +2612,18 @@ export class TranscriptService {
       this.touchVerifiedWireReceipt(wirePath);
       return true;
     }
-    let logical: LogicalWire | undefined;
+    let verified: boolean;
     try {
-      logical = await openLogicalWire(wirePath);
+      verified = await verifySealedWireBytes(wirePath, receipt.wire, signal);
     } catch (error) {
       if (isStorageCorrupted(error)) {
         this.deleteVerifiedWireReceipt(wirePath);
         return false;
       }
       throw error;
-    }
-    let digest: Awaited<ReturnType<typeof digestWireBytes>>;
-    try {
-      digest = logical === undefined
-        ? await digestWireBytes(createReadStream(wirePath, { signal }))
-        : await digestWireBytes(logicalWireChunks(logical, signal));
-    } catch (error) {
-      if (isStorageCorrupted(error)) {
-        this.deleteVerifiedWireReceipt(wirePath);
-        return false;
-      }
-      throw error;
-    } finally {
-      logical?.close();
     }
     signal.throwIfAborted();
-    if (digest.size === 0 || !digest.endsWithNewline ||
-        digest.size !== receipt.wire.size || digest.sha256 !== receipt.wire.sha256) {
+    if (!verified) {
       this.deleteVerifiedWireReceipt(wirePath);
       return false;
     }
@@ -3481,14 +3468,22 @@ function isStorageCorrupted(error: unknown): boolean {
   return error instanceof Error && (error as { code?: unknown }).code === StorageErrors.codes.STORAGE_CORRUPTED;
 }
 
-async function sealStamp(wirePath: string): Promise<string> {
-  try {
-    const info = await stat(join(dirname(wirePath), `${basename(wirePath)}.segments.json`));
-    return `${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'plain';
-    throw error;
+async function verifySealedWireBytes(wirePath: string, wire: WireTranscriptReceiptWire, signal: AbortSignal): Promise<boolean> {
+  if (wire.size === 0) return false;
+  if ('tailSha256' in wire) {
+    const tail = await readWireTail(wirePath, wire.size, wire.tailBytes, signal);
+    return tail.byteLength === wire.tailBytes && tail.at(-1) === 0x0a && wireTailSha256(tail) === wire.tailSha256;
   }
+  const logical = await openLogicalWire(wirePath);
+  let digest: Awaited<ReturnType<typeof digestWireBytes>>;
+  try {
+    digest = logical === undefined
+      ? await digestWireBytes(createReadStream(wirePath, { signal }))
+      : await digestWireBytes(logicalWireChunks(logical, signal));
+  } finally {
+    logical?.close();
+  }
+  return digest.endsWithNewline && digest.size === wire.size && digest.sha256 === wire.sha256;
 }
 
 async function* logicalWireChunks(source: LogicalWire, signal: AbortSignal): AsyncGenerator<Uint8Array> {
@@ -3500,6 +3495,38 @@ async function* logicalWireChunks(source: LogicalWire, signal: AbortSignal): Asy
     if (chunk.byteLength === 0) break;
     position += chunk.byteLength;
     yield chunk;
+  }
+}
+
+async function readWireTail(wirePath: string, size: number, length: number, signal: AbortSignal): Promise<Buffer> {
+  if (length === 0) return Buffer.alloc(0);
+  const logical = await openLogicalWire(wirePath);
+  if (logical !== undefined) {
+    try {
+      if (logical.size !== size) return Buffer.alloc(0);
+      return Buffer.from(await logical.readAt(size - length, length));
+    } finally {
+      logical.close();
+    }
+  }
+  const handle = await open(wirePath, 'r');
+  try {
+    signal.throwIfAborted();
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, size - length);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+async function sealStamp(wirePath: string): Promise<string> {
+  try {
+    const info = await stat(join(dirname(wirePath), `${basename(wirePath)}.segments.json`));
+    return `${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'plain';
+    throw error;
   }
 }
 
