@@ -446,7 +446,8 @@ function BrowserRoute({ preset, autoOpen, flashOpen, children }: {
   // anything the route still offers or is doing — an action, a move, a
   // blocker, a warning, a failure, an unsaved find — opens by itself so the
   // next step is already on screen.
-  const expanded = openDetail || (autoOpen && (sourceEnabled || preset.state === 'preparing'));
+  const [userOpened, setUserOpened] = useState(false);
+  const expanded = userOpened || openDetail || (autoOpen && (sourceEnabled || preset.state === 'preparing'));
 
   return (
     <li>
@@ -457,7 +458,7 @@ function BrowserRoute({ preset, autoOpen, flashOpen, children }: {
           'data-browser-source-enabled': sourceEnabled ? 'true' : 'false',
         }}
         open={expanded}
-        onToggle={() => { setOpenDetail((current) => !current); }}
+        onToggle={() => { setUserOpened((current) => !current); }}
         bodyId={`browser-route-body-${preset.preset}`}
         expandLabel={t('st.browser.menu.openRow', { name })}
         name={name}
