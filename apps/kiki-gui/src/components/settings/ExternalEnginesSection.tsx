@@ -1071,7 +1071,9 @@ function EngineDetailPane({ item, overrides, display, onClose, onFault, onRegist
                     {credentialDetail !== undefined ? <span className="font-mono text-[11.5px]"> · {credentialDetail}</span> : null}
                   </span> : null}
                   {login === 'unknown' && shown === undefined ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginStale')}</span> : null}
-                  {login === 'logged_out' ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginOrKey')}</span> : null}
+                  {login === 'logged_out' ? <span className="block text-[12px] text-ink-faint">
+                    {t(loginCommand !== undefined && apiKeyEnv !== undefined ? 'st.engines.loginOrKey' : 'st.engines.loginOneRoute')}
+                  </span> : null}
                   {loginCommand !== undefined && login !== 'logged_in' ? (
                     <span className="mt-1 flex flex-wrap items-center gap-2">
                       <span className="text-[12px] text-ink-faint">{t('st.engines.loginCommand')}</span>
