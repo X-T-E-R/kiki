@@ -12,6 +12,7 @@ import {
   IAgentScopeContext,
   IAppendLogStore,
   ICpuWorkerService,
+  IFileSystemStorageService,
   IAtomicDocumentStore,
   IFileSystemStorageService,
   IAgentTaskService,
@@ -2388,11 +2389,13 @@ describe('cold session snapshot', () => {
     });
     await main.accessor.get(IWireService).flush();
     await closeSessionById(server!.core.accessor, sessionId);
-    const appendLog = server!.core.accessor.get(IAppendLogStore);
-    const raw = concreteMethod(appendLog, 'read');
+    const storage = server!.core.accessor.get(IFileSystemStorageService);
+    const raw = concreteMethod(storage, 'readStream');
+    const requests = vi.spyOn(server!.core.accessor.get(ICpuWorkerService), 'request');
+    const closed = deferred();
     let releaseRead = (): void => {};
     let observed: AbortSignal | undefined;
-    const read = vi.spyOn(appendLog, 'read').mockImplementation((scope, key, options) => {
+    const read = vi.spyOn(storage, 'readStream').mockImplementation((scope, key, range, options) => {
       if (String(scope).endsWith('/agents/main') && key === AGENT_WIRE_RECORD_KEY) {
         observed = options?.signal;
         const signal = options?.signal;
@@ -2402,12 +2405,14 @@ describe('cold session snapshot', () => {
           else signal?.addEventListener('abort', () => resolve(), { once: true });
         });
         return (async function* () {
-          await held;
-          if (signal?.aborted === true) throw new DOMException('The operation was aborted', 'AbortError');
-          yield* raw.call(appendLog, scope, key, options);
+          try {
+            await held;
+            signal?.throwIfAborted();
+            yield* raw.call(storage, scope, key, range, options);
+          } finally { closed.resolve(); }
         })();
       }
-      return raw.call(appendLog, scope, key, options);
+      return raw.call(storage, scope, key, range, options);
     });
     const controller = new AbortController();
     const spies = restorationSpies();
@@ -2418,14 +2423,20 @@ describe('cold session snapshot', () => {
     void pending.catch(() => undefined);
     try {
       await vi.waitFor(() => expect(observed).toBeDefined());
+      const workerSignal = requests.mock.calls.find(([operation]) => (operation as { type?: string }).type === 'wire.context')?.[1]?.signal;
+      expect(workerSignal).toBe(observed);
       controller.abort();
       await expect(pending).rejects.toThrow();
+      await vi.waitFor(() => expect(observed?.aborted).toBe(true));
+      expect(workerSignal?.aborted).toBe(true);
+      await closed.promise;
       expect(spies.acquire).not.toHaveBeenCalled();
       expect(spies.resume).not.toHaveBeenCalled();
       expect(spies.workspaceAcquire).not.toHaveBeenCalled();
     } finally {
       releaseRead();
       read.mockRestore();
+      requests.mockRestore();
       spies.acquire.mockRestore();
       spies.resume.mockRestore();
       spies.workspaceAcquire.mockRestore();
@@ -2457,22 +2468,22 @@ describe('cold session snapshot', () => {
     });
     await main.accessor.get(IWireService).flush();
     await closeSessionById(server!.core.accessor, sessionId);
-    const appendLog = server!.core.accessor.get(IAppendLogStore);
-    const raw = concreteMethod(appendLog, 'read');
+    const storage = server!.core.accessor.get(IFileSystemStorageService);
+    const raw = concreteMethod(storage, 'readStream');
     let releaseRead = (): void => {};
     let held = false;
     let entered!: () => void;
     const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
-    const read = vi.spyOn(appendLog, 'read').mockImplementation((scope, key, options) => {
+    const read = vi.spyOn(storage, 'readStream').mockImplementation((scope, key, range, options) => {
       if (!held && String(scope).endsWith('/agents/main') && key === AGENT_WIRE_RECORD_KEY) {
         held = true;
         return (async function* () {
           entered();
           await new Promise<void>((resolve) => { releaseRead = resolve; });
-          yield* raw.call(appendLog, scope, key, options);
+          yield* raw.call(storage, scope, key, range, options);
         })();
       }
-      return raw.call(appendLog, scope, key, options);
+      return raw.call(storage, scope, key, range, options);
     });
     const spies = restorationSpies();
     const pending = fetch(`${base}/api/sessions/${sessionId}/snapshot`, {
