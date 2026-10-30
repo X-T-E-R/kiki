@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import type { CanonicalMailboxDatabase } from '#/persistence/backends/sqliteMailbox/database';
 import { openRuntimeMailbox } from '#/persistence/backends/sqliteMailbox/authority';
-import type { MailboxWrite } from '#/persistence/backends/sqliteMailbox/protocol';
+import { MAILBOX_QUEUE_FULL, type MailboxWrite } from '#/persistence/backends/sqliteMailbox/protocol';
 
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
@@ -632,9 +632,9 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
           return result;
         } catch (error) {
           throwIfAborted(signal);
-          if (!isRetryableMailboxRuntimeResponse(error)) throw error;
+          if (!isRetryableMailboxRuntimeResponse(error) && !isMailboxQueueFull(error)) throw error;
           lastRetryError = error;
-          const code = (error as HomeRuntimeError).code;
+          const code = (error as { readonly code: string }).code;
           if (code === 'runtime.timeout') firstTimeoutError ??= error as HomeRuntimeError;
           retries.set(code, (retries.get(code) ?? 0) + 1);
           if (ownerSettlement !== undefined && (code === 'runtime.timeout' || code === 'runtime.duplicate_request')) {
@@ -891,6 +891,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
           head.message.claim.leaseUntil > now
         )
       ) {
+        if (!metaChanged && receipt === undefined) return null;
         const ops: MailboxWrite<StoredDoc>[] = [this.receiptOp(receiptKey, method, ctx, input, null)];
         if (metaChanged) ops.unshift({ op: 'set', key: metaKey, value: { ...meta, nextDeliverableSeq: head.seq } });
         throwIfAborted(ctx.signal);
@@ -2004,6 +2005,10 @@ function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
       },
     );
   });
+}
+
+function isMailboxQueueFull(error: unknown): boolean {
+  return (error as { readonly code?: unknown } | null)?.code === MAILBOX_QUEUE_FULL;
 }
 
 function isRetryableMailboxRuntimeResponse(error: unknown): boolean {

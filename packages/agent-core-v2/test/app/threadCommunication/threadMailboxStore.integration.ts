@@ -1231,6 +1231,37 @@ describe('runtime thread mailbox', () => {
     } finally { gate.restore(); }
   });
 
+  it('retries a full storage queue within the call deadline and keeps empty claims read-only', async () => {
+    const item = harness(homeDir); open.push(item);
+    const accepted = await item.store.acceptMessage(acceptInput('queue-full-claim'));
+    const original = CanonicalMailboxDatabase.prototype.partitionGet;
+    let rejected = 0;
+    CanonicalMailboxDatabase.prototype.partitionGet = async function (...args: Parameters<typeof original>) {
+      if (rejected < 2) {
+        rejected++;
+        throw Object.assign(new Error('Canonical mailbox queue full; request was not dispatched'), { code: 'mailbox.queue_full', committed: false });
+      }
+      return original.apply(this, args);
+    };
+    const input = { target, consumerId: 'consumer', leaseMs: 10_000 };
+    let claim: ThreadDeliveryClaim | undefined;
+    try {
+      claim = await item.store.claimNext(input, { requestId: 'queue-full-claim' });
+    } finally { CanonicalMailboxDatabase.prototype.partitionGet = original; }
+    expect(rejected).toBe(2);
+    expect(claim).toMatchObject({ message: { messageId: accepted.message.messageId }, fence: 1 });
+    expect(await item.store.acknowledgeDelivery(claim!)).toBe(true);
+    expect(await item.store.claimNext(input)).toBeUndefined();
+    const batch = vi.spyOn(CanonicalMailboxDatabase.prototype, 'partitionBatch');
+    try {
+      expect(await item.store.claimNext(input, { requestId: 'empty-claim' })).toBeUndefined();
+      expect(await item.store.claimNext(input, { requestId: 'empty-claim' })).toBeUndefined();
+      expect(batch).not.toHaveBeenCalled();
+    } finally { batch.mockRestore(); }
+    await item.store.acceptMessage(acceptInput('after-empty-claim'));
+    expect((await item.store.claimNext(input, { requestId: 'empty-claim' }))?.message.idempotencyKey).toBe('after-empty-claim');
+  });
+
   it('reports initialization rather than shard contention before storage opens', async () => {
     const item = harness(homeDir); open.push(item);
     await item.runtime.ready();

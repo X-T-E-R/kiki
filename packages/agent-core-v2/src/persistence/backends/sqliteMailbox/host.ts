@@ -2,7 +2,9 @@ import { statSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
-import { mailboxWorkerEntry, type MailboxOperation, type MailboxRequest, type MailboxResponse } from './protocol';
+import { MAILBOX_QUEUE_FULL, mailboxWorkerEntry, type MailboxOperation, type MailboxRequest, type MailboxResponse } from './protocol';
+
+const MAILBOX_MAX_WAITING = 128;
 
 interface Pending {
   readonly operation: MailboxOperation;
@@ -51,7 +53,7 @@ export class MailboxWorker {
   request<T>(operation: MailboxOperation, signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted();
     if (this.stopped || this.closing !== undefined) return Promise.reject(new Error('Canonical mailbox worker closed; reopen and reconcile the request receipt'));
-    if (this.waiting.length >= 128) return Promise.reject(new Error('Canonical mailbox queue full'));
+    if (this.waiting.length >= MAILBOX_MAX_WAITING) return Promise.reject(Object.assign(new Error('Canonical mailbox queue full; request was not dispatched'), { code: MAILBOX_QUEUE_FULL, committed: false }));
     return this.enqueue<T>(operation, signal);
   }
 

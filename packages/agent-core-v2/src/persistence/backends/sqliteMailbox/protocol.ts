@@ -48,6 +48,9 @@ export type MailboxResponse =
   | { readonly id: number; readonly result: unknown }
   | { readonly id: number; readonly error: { readonly message: string; readonly code?: string; readonly committed?: boolean } };
 
+/** Error code for a mailbox request rejected before dispatch because the worker queue is full. */
+export const MAILBOX_QUEUE_FULL = 'mailbox.queue_full';
+
 let entry: string | undefined;
 export function configureMailboxWorkerRuntime(path: string): void { entry = path; }
 export function mailboxWorkerEntry(): string | undefined { return entry; }
