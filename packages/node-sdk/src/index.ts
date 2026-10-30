@@ -2,6 +2,7 @@ export { installNbSearchWorkerHost, runNbSearchWorkerCommand, NB_SEARCH_WORKER_C
 export { configureQueryStoreWorkerRuntime } from '#/query-store-worker';
 export { configureUsageReadModelWorkerRuntime } from '#/usage-read-model-worker';
 export { configureMemoryWorkerRuntime } from '#/memory-worker';
+export { configureCpuWorkerRuntime } from '#/cpu-worker';
 export { configureMailboxWorkerRuntime } from '@kiki/agent-core-v2/persistence/backends/sqliteMailbox/protocol';
 export { assertMailboxStartupReady, createMailboxMigrationService } from '#/storage-migration';
 export type { MailboxMigrationOptions, MailboxMigrationPhase, MailboxMigrationProgress, MailboxMigrationService, MailboxMigrationSource, MailboxMigrationStatus, MailboxRecoveryCleanupPlan } from '#/storage-migration';

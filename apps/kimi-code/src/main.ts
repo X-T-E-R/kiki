@@ -43,6 +43,7 @@ import { installQueryStoreWorker } from './native/query-store-worker';
 import { installUsageReadModelWorker } from './native/usage-read-model-worker';
 import { installMailboxWorker } from './native/mailbox-worker';
 import { installMemoryWorker } from './native/memory-worker';
+import { installCpuWorker } from './native/cpu-worker';
 import { installNativeModuleHook } from './native/module-hook';
 import { runNativeAssetSmokeIfRequested } from './native/smoke';
 
@@ -159,6 +160,14 @@ function bootstrap(): void {
       : memoryWorkerInstall.status === 'failed'
         ? `memory-worker:failed code=${memoryWorkerInstall.errorCode} sha256=${memoryWorkerInstall.assetSha256 ?? 'unknown'}`
         : `memory-worker:${memoryWorkerInstall.status}`,
+  );
+  const cpuWorkerInstall = installCpuWorker();
+  startupTrace(
+    cpuWorkerInstall.status === 'installed'
+      ? `cpu-worker:installed basename=${cpuWorkerInstall.basename} sha256=${cpuWorkerInstall.assetSha256}`
+      : cpuWorkerInstall.status === 'failed'
+        ? `cpu-worker:failed code=${cpuWorkerInstall.errorCode} sha256=${cpuWorkerInstall.assetSha256 ?? 'unknown'}`
+        : `cpu-worker:${cpuWorkerInstall.status}`,
   );
   if (isSea()) {
     const queryWorker = getKapSqliteQueryWorkerFile();

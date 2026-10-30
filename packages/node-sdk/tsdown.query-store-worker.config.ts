@@ -2,6 +2,17 @@ import { resolve } from 'node:path';
 
 import { defineConfig } from 'tsdown';
 
+import { rawTextPlugin } from '../../build/raw-text-plugin.mjs';
+
+const workerAlwaysBundle = [
+  /^@kiki\//,
+  /^@jimp\//,
+  /^@jsquash\/webp(?:\/|$)/,
+  /^jimp$/,
+  /^wasm-feature-detect$/,
+  /^zod$/,
+];
+
 const workerEntry = resolve(
   import.meta.dirname,
   '../agent-core-v2/src/persistence/backends/sqlite/entry.ts',
@@ -29,8 +40,9 @@ function workerConfig(name: string, entry: string) {
     sourcemap: false,
     minify: false,
     silent: true,
+    plugins: [rawTextPlugin()],
     deps: {
-      alwaysBundle: [/^@kiki\//],
+      alwaysBundle: workerAlwaysBundle,
       onlyBundle: false,
     },
     outputOptions: {
@@ -45,4 +57,5 @@ export default [
   workerConfig('usage-read-model-worker', usageReadModelWorkerEntry),
   workerConfig('mailbox-worker', mailboxWorkerEntry),
   workerConfig('memory-worker', resolve(import.meta.dirname, '../agent-core-v2/src/persistence/backends/sqliteMemory/entry.ts')),
+  workerConfig('cpu-worker', resolve(import.meta.dirname, '../agent-core-v2/src/app/cpuWorker/entry.ts')),
 ];

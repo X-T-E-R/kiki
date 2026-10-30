@@ -26,6 +26,7 @@ import {
   getNativeCacheBase,
   getNativePackageRoot,
   getUsageReadModelWorkerFile,
+  getCpuWorkerFile,
   getPluginHostRunnerFile,
   getWindowsProcessHelperFile,
   resetNativeAssetVerification,
@@ -37,7 +38,8 @@ import { installMinidbTextBuildWorker } from '#/native/minidb-worker';
 import { installKapUsageWorker } from '#/native/usage-worker';
 import { installUsageReadModelWorker } from '#/native/usage-read-model-worker';
 import { resetUsageWorkerRuntime, usageWorkerEntry } from '@kiki/kap-server/usage-worker-runtime';
-import { configureMemoryWorkerRuntime, configureUsageReadModelWorkerRuntime } from '@kiki/node-sdk';
+import { configureCpuWorkerRuntime, configureMemoryWorkerRuntime, configureUsageReadModelWorkerRuntime } from '@kiki/node-sdk';
+import { installCpuWorker } from '#/native/cpu-worker';
 import { installMemoryWorker } from '#/native/memory-worker';
 import { smokeMemoryWorker } from '#/native/smoke';
 import { build } from 'tsdown';
@@ -174,6 +176,7 @@ afterEach(() => {
   resetUsageWorkerRuntime();
   configureUsageReadModelWorkerRuntime(undefined);
   configureMemoryWorkerRuntime(undefined);
+  configureCpuWorkerRuntime({ entry: undefined });
 });
 
 describe('native assets', () => {
@@ -403,6 +406,38 @@ describe('native assets', () => {
       const manifest: NativeAssetManifest = { version: NATIVE_ASSET_MANIFEST_VERSION, target: 'test-target', packages: [], runtimeFiles: [{ key: 'memory-worker', assetKey: key, relativePath: 'runtime/memory/memory-worker.mjs', sha256: sha256('original'), mode: 0o644 }] };
       const source: NativeAssetSource = { getAssetKeys: () => [key], getRawAsset: () => Buffer.from('corrupt') };
       expect(installMemoryWorker({ cacheBase: dir, manifest, source, version: 'test' })).toMatchObject({ status: 'failed' });
+    } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  });
+
+  it.each([
+    ['SDK', '../../../../packages/node-sdk/tsdown.query-store-worker.config.ts'],
+    ['npm', '../../tsdown.dist-worker.config.ts'],
+    ['SEA', '../../tsdown.worker.config.ts'],
+  ] as const)('builds and installs the fresh %s CPU worker bundle', async (_lane, config) => {
+    const dir = mkdtempSync(join(tmpdir(), 'kiki-cpu-worker-bundle-'));
+    try {
+      await build({ config: resolve(import.meta.dirname, config), filter: 'cpu-worker', outDir: join(dir, 'bundle') });
+      const runtime = join(dir, 'bundle', 'cpu-worker.mjs');
+      expect(checkBundle(runtime, { worker: true })).toEqual([]);
+      const content = readFileSync(runtime);
+      const key = 'native/test-target/runtime/cpu-worker';
+      const manifest: NativeAssetManifest = { version: NATIVE_ASSET_MANIFEST_VERSION, target: 'test-target', packages: [], runtimeFiles: [{ key: 'cpu-worker', assetKey: key, relativePath: 'runtime/cpu/cpu-worker.mjs', sha256: sha256(content), mode: 0o644 }] };
+      const source: NativeAssetSource = { getAssetKeys: () => [key], getRawAsset: (asset) => { if (asset !== key) throw new Error('Unexpected CPU worker asset'); return content; } };
+      const options = { cacheBase: join(dir, 'cache'), manifest, source, version: 'test' };
+      expect(installCpuWorker(options)).toMatchObject({ status: 'installed', basename: 'cpu-worker.mjs' });
+      expect(getCpuWorkerFile(options)).toBe(join(dir, 'cache', 'native', 'test', 'test-target', sha256(JSON.stringify(manifest)), 'runtime', 'cpu', 'cpu-worker.mjs'));
+    } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  }, 60_000);
+
+  it('reports missing and corrupt CPU assets before worker configuration', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kiki-cpu-worker-invalid-'));
+    try {
+      const missing = fakeManifest({});
+      expect(installCpuWorker({ ...missing, cacheBase: dir, version: 'test' })).toEqual({ status: 'asset-missing' });
+      const key = 'native/test-target/runtime/cpu-worker';
+      const manifest: NativeAssetManifest = { version: NATIVE_ASSET_MANIFEST_VERSION, target: 'test-target', packages: [], runtimeFiles: [{ key: 'cpu-worker', assetKey: key, relativePath: 'runtime/cpu/cpu-worker.mjs', sha256: sha256('original'), mode: 0o644 }] };
+      const source: NativeAssetSource = { getAssetKeys: () => [key], getRawAsset: () => Buffer.from('corrupt') };
+      expect(installCpuWorker({ cacheBase: dir, manifest, source, version: 'test' })).toMatchObject({ status: 'failed' });
     } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
 

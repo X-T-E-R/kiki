@@ -22,6 +22,8 @@ import {
   validateImageDataUrl,
 } from '#/agent/media/image-compress';
 import { sniffImageDimensions } from '#/agent/media/file-type';
+import { decodeImageVerdict } from '#/agent/media/imageDecode';
+import * as cpuRuntime from '#/app/cpuWorker/runtime';
 import {
   normalizeImageMime,
   unsupportedImageMimeFromUrl,
@@ -525,18 +527,51 @@ describe('compressImageForModel — performance', () => {
     const corrupt = Buffer.from(png);
     corrupt.fill(0, 40);
     const corruptUrl = `data:image/png;base64,${corrupt.toString('base64')}`;
-    const decode = vi.spyOn(Jimp, 'fromBuffer');
+    const decode = vi.spyOn(cpuRuntime, 'runCpuTask');
+    const mainDecode = vi.spyOn(Jimp, 'fromBuffer');
     try {
+      await Promise.all(Array.from({ length: 8 }, () => validateImageDataUrl(url)));
       for (let i = 0; i < 20; i += 1) {
         const validated = await validateImageDataUrl(url);
-        expect(validated?.mimeType).toBe('image/png');
-        expect(validated?.bytes.equals(Buffer.from(png))).toBe(true);
+        expect(validated).toEqual({ mimeType: 'image/png', base64: Buffer.from(png).toString('base64'), bytes: Buffer.from(png) });
         expect(await validateImageDataUrl(corruptUrl)).toBeNull();
       }
       expect(decode).toHaveBeenCalledTimes(2);
+      expect(mainDecode).not.toHaveBeenCalled();
     } finally {
       decode.mockRestore();
+      mainDecode.mockRestore();
+      await cpuRuntime.closeCpuPool();
     }
+  });
+
+  it('matches inline decode verdicts for PNG, JPEG, GIF, WebP and BMP including corrupt input', async () => {
+    const png = await solidPng(7, 5);
+    const jpeg = await solidJpeg(7, 5);
+    const image = new Jimp({ width: 7, height: 5, color: 0x778899ff });
+    const gif = await image.getBuffer('image/gif');
+    const bmp = await image.getBuffer('image/bmp');
+    const webp = Buffer.from('UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAfQ//73v/+BiOh/AAA=', 'base64');
+    try {
+      for (const [mimeType, bytes] of [['image/png', png], ['image/jpeg', jpeg], ['image/gif', gif], ['image/bmp', bmp], ['image/webp', webp]] as const) {
+        for (const input of [bytes, bytes.subarray(0, 10)]) {
+          const copy = Uint8Array.from(input).buffer;
+          expect(await cpuRuntime.runCpuTask({ type: 'image.decode', bytes: copy, mimeType }, { transferList: [copy] }))
+            .toBe(await decodeImageVerdict(input, mimeType));
+        }
+      }
+    } finally { await cpuRuntime.closeCpuPool(); }
+  });
+
+  it('reports worker infrastructure failure without caching a corrupt-image verdict', async () => {
+    const png = await noisePng(11, 13);
+    const url = `data:image/png;base64,${Buffer.from(png).toString('base64')}`;
+    const decode = vi.spyOn(cpuRuntime, 'runCpuTask').mockRejectedValueOnce(Object.assign(new Error('CPU timed out'), { code: 'CPU_TIMEOUT' }));
+    try {
+      await expect(validateImageDataUrl(url)).rejects.toMatchObject({ code: 'CPU_TIMEOUT' });
+      await expect(validateImageDataUrl(url)).resolves.not.toBeNull();
+      expect(decode).toHaveBeenCalledTimes(2);
+    } finally { decode.mockRestore(); await cpuRuntime.closeCpuPool(); }
   });
 });
 

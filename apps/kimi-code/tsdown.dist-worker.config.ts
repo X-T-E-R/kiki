@@ -6,7 +6,17 @@ import { resolve } from 'node:path';
 
 import { defineConfig } from 'tsdown';
 
+import { rawTextPlugin } from '../../build/raw-text-plugin.mjs';
+
 const appRoot = import.meta.dirname;
+const workerAlwaysBundle = [
+  /^@kiki\//,
+  /^@jimp\//,
+  /^@jsquash\/webp(?:\/|$)/,
+  /^jimp$/,
+  /^wasm-feature-detect$/,
+  /^zod$/,
+];
 
 function workerConfig(name: string, entry: string) {
   return defineConfig({
@@ -22,8 +32,9 @@ function workerConfig(name: string, entry: string) {
     sourcemap: false,
     minify: false,
     silent: true,
+    plugins: [rawTextPlugin()],
     deps: {
-      alwaysBundle: [/^@kiki\//],
+      alwaysBundle: workerAlwaysBundle,
       onlyBundle: false,
     },
     outputOptions: {
@@ -39,4 +50,5 @@ export default [
   workerConfig('usage-read-model-worker', '../../packages/agent-core-v2/src/persistence/backends/sqlite/usageEntry.ts'),
   workerConfig('mailbox-worker', '../../packages/agent-core-v2/src/persistence/backends/sqliteMailbox/entry.ts'),
   workerConfig('memory-worker', '../../packages/agent-core-v2/src/persistence/backends/sqliteMemory/entry.ts'),
+  workerConfig('cpu-worker', '../../packages/agent-core-v2/src/app/cpuWorker/entry.ts'),
 ];

@@ -15,7 +15,9 @@ import {
   resolveEffectiveImageMime,
   unsupportedImageMimeFromUrl,
 } from './image-format-policy';
-import { decodeWebp, isAnimatedWebp } from './webp-decode';
+import { isAnimatedWebp } from './webp-decode';
+import { decodeToJimp } from './imageDecode';
+import { runCpuTask } from '#/app/cpuWorker/runtime';
 
 export const MAX_IMAGE_EDGE_PX = 2000;
 
@@ -309,6 +311,7 @@ const DECODABLE_IMAGE_MIMES = new Set([
 
 const DECODE_VERDICT_LIMIT = 1024;
 const decodeVerdicts = new Map<string, boolean>();
+const decodingImages = new Map<string, Promise<boolean>>();
 
 async function decodesAsImage(bytes: Buffer, mimeType: string): Promise<boolean> {
   const key = `${mimeType}:${createHash('sha256').update(bytes).digest('base64')}`;
@@ -318,18 +321,17 @@ async function decodesAsImage(bytes: Buffer, mimeType: string): Promise<boolean>
     decodeVerdicts.set(key, known);
     return known;
   }
-  let verdict: boolean;
+  const active = decodingImages.get(key);
+  if (active !== undefined) return active;
+  const copy = Uint8Array.from(bytes).buffer;
+  const decoding = runCpuTask<boolean>({ type: 'image.decode', bytes: copy, mimeType }, { transferList: [copy] });
+  decodingImages.set(key, decoding);
   try {
-    await decodeToJimp(bytes, mimeType);
-    verdict = true;
-  } catch {
-    verdict = false;
-  }
-  decodeVerdicts.set(key, verdict);
-  if (decodeVerdicts.size > DECODE_VERDICT_LIMIT) {
-    decodeVerdicts.delete(decodeVerdicts.keys().next().value!);
-  }
-  return verdict;
+    const verdict = await decoding;
+    decodeVerdicts.set(key, verdict);
+    if (decodeVerdicts.size > DECODE_VERDICT_LIMIT) decodeVerdicts.delete(decodeVerdicts.keys().next().value!);
+    return verdict;
+  } finally { decodingImages.delete(key); }
 }
 
 /** Proves a complete image data URL decodes as an image. The decode verdict is remembered by
@@ -699,19 +701,6 @@ interface EncodeOptions {
   readonly byteBudget: number;
   readonly fallbackEdges: readonly number[];
   readonly outputMimes: ReadonlySet<string>;
-}
-
-async function decodeToJimp(bytes: Uint8Array, normalizedMime: string): Promise<JimpImage> {
-  const { Jimp } = await import('jimp');
-  if (normalizedMime === 'image/webp') {
-    const decoded = await decodeWebp(bytes);
-    return Jimp.fromBitmap({
-      data: Buffer.from(decoded.data.buffer, decoded.data.byteOffset, decoded.data.byteLength),
-      width: decoded.width,
-      height: decoded.height,
-    });
-  }
-  return Jimp.fromBuffer(Buffer.from(bytes));
 }
 
 async function encodeWithinBudget(
