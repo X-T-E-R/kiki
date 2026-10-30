@@ -11,6 +11,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import type { Stats } from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { decodeTextWithErrors, type TextDecodeErrors } from '#/_base/execEnv/decodeText';
@@ -19,6 +20,8 @@ import { type HostDirEntry, type HostFileStat, IHostFileSystem } from '#/os/inte
 import { toHostFsError } from '#/os/interface/hostFsErrors';
 
 const READ_CHUNK_SIZE = 64 * 1024;
+const LINE_INDEX_CHUNK_SIZE = 1024 * 1024;
+const MAX_EXACT_LINE_LOCATIONS = 128;
 const LINE_CHECKPOINT_INTERVAL = 256;
 const MAX_LINE_INDEX_ENTRIES = 64;
 const MAX_LINE_CHECKPOINTS = 4096;
@@ -35,6 +38,8 @@ interface LineIndexEntry {
   readonly ino: number;
   checkpointInterval: number;
   checkpoints: LineCheckpoint[];
+  readonly locations: Map<number, LineCheckpoint>;
+  locating?: Promise<void>;
 }
 
 function isUtf8Encoding(encoding: BufferEncoding): boolean {
@@ -187,7 +192,7 @@ export class HostFileSystem implements IHostFileSystem {
     try {
       const stat = await fh.stat();
       const index = this.lineIndex(path, stat);
-      const checkpoint = this.lineCheckpoint(index.checkpoints, startLine);
+      const checkpoint = await this.locateLine(fh, index, startLine);
       const buf = Buffer.alloc(READ_CHUNK_SIZE);
       let pending: Buffer[] = [];
       let pendingOffset = 0;
@@ -201,9 +206,7 @@ export class HostFileSystem implements IHostFileSystem {
         const chunk = buf.subarray(0, bytesRead);
         let lineStart = 0;
 
-        for (let i = 0; i < chunk.length; i += 1) {
-          const byte = chunk[i];
-          if (byte !== 0x0a) continue;
+        for (let i = chunk.indexOf(0x0a); i >= 0; i = chunk.indexOf(0x0a, i + 1)) {
           const piece = chunk.subarray(lineStart, i + 1);
           const lineOffset = pending.length === 0 ? fileOffset + lineStart : pendingOffset;
           const line = pending.length === 0 ? piece : Buffer.concat([...pending, piece]);
@@ -258,6 +261,7 @@ export class HostFileSystem implements IHostFileSystem {
       ino: stat.ino,
       checkpointInterval: LINE_CHECKPOINT_INTERVAL,
       checkpoints: [{ line: 1, offset: 0 }],
+      locations: new Map(),
     };
     this.lineIndexes.set(path, next);
     while (this.lineIndexes.size > MAX_LINE_INDEX_ENTRIES) {
@@ -266,6 +270,42 @@ export class HostFileSystem implements IHostFileSystem {
       this.lineIndexes.delete(oldest);
     }
     return next;
+  }
+
+  private async locateLine(fh: FileHandle, index: LineIndexEntry, startLine: number): Promise<LineCheckpoint> {
+    const cached = index.locations.get(startLine);
+    if (cached !== undefined) return cached;
+    const locate = (index.locating ?? Promise.resolve()).then(async () => {
+      const existing = index.locations.get(startLine);
+      if (existing !== undefined) return existing;
+      const checkpoint = await this.scanToLine(fh, index, startLine);
+      index.locations.set(startLine, checkpoint);
+      if (index.locations.size > MAX_EXACT_LINE_LOCATIONS) index.locations.delete(index.locations.keys().next().value!);
+      return checkpoint;
+    });
+    index.locating = locate.then(() => {}, () => {});
+    return locate;
+  }
+
+  private async scanToLine(fh: FileHandle, index: LineIndexEntry, startLine: number): Promise<LineCheckpoint> {
+    const checkpoint = this.lineCheckpoint(index.checkpoints, startLine);
+    let line = checkpoint.line;
+    let offset = checkpoint.offset;
+    if (line === startLine) return checkpoint;
+    const buffer = Buffer.allocUnsafe(LINE_INDEX_CHUNK_SIZE);
+    while (offset < index.size) {
+      const { bytesRead } = await fh.read(buffer, 0, Math.min(buffer.length, index.size - offset), offset);
+      if (bytesRead === 0) break;
+      const chunk = buffer.subarray(0, bytesRead);
+      for (let newline = chunk.indexOf(0x0a); newline >= 0; newline = chunk.indexOf(0x0a, newline + 1)) {
+        line++;
+        const nextOffset = offset + newline + 1;
+        this.recordLineCheckpoint(index, line, nextOffset);
+        if (line === startLine) return { line, offset: nextOffset };
+      }
+      offset += bytesRead;
+    }
+    return { line, offset };
   }
 
   private lineCheckpoint(checkpoints: readonly LineCheckpoint[], startLine: number): LineCheckpoint {

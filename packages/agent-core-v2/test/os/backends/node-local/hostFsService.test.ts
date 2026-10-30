@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, stat as nodeStat, symlink, writeFile } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 
@@ -69,6 +69,24 @@ describe('HostFileSystem readLineRange', () => {
     for await (const line of fs.readLineRange(path, { startLine, maxLines })) lines.push(line);
     return lines;
   }
+
+  it('shares high-offset indexing without materializing skipped wire records', async () => {
+    const path = join(dir, 'large-wire.jsonl');
+    const lines = Array.from({ length: 18000 }, (_, index) => `${JSON.stringify({ index, text: '数据'.repeat(650), pad: 'x'.repeat(200) })}\r\n`);
+    await writeFile(path, lines.join(''), 'utf-8');
+    const concat = vi.spyOn(Buffer, 'concat');
+    try {
+      const offsets = [12450, 14130, 16050, 16970];
+      const windows = await Promise.all(offsets.map((offset) => collect(path, offset, 35)));
+      expect(windows).toEqual(offsets.map((offset) => lines.slice(offset - 1, offset + 34)));
+      expect(concat.mock.calls.length).toBeLessThan(32);
+      concat.mockClear();
+      expect(await collect(path, 14130, 35)).toEqual(windows[1]);
+      expect(concat.mock.calls.length).toBeLessThan(8);
+    } finally {
+      concat.mockRestore();
+    }
+  });
 
   it('reads a bounded window and preserves a BOM on non-first lines', async () => {
     const path = join(dir, 'range.txt');
