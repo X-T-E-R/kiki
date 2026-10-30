@@ -6,6 +6,7 @@
  * launch a CLI or read a credential.
  */
 import { act } from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { existsSync } from 'node:fs';
@@ -81,7 +82,7 @@ describe('external engine enable proof', () => {
     const catalog = [codex, pending, missing];
     const queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
-      root.render(<QueryClientProvider client={queries}><I18nProvider><ExternalEnginesList /></I18nProvider></QueryClientProvider>);
+      root.render(<MemoryRouter><QueryClientProvider client={queries}><I18nProvider><ExternalEnginesList /></I18nProvider></QueryClientProvider></MemoryRouter>);
     });
     await settle();
 
@@ -96,9 +97,9 @@ describe('external engine enable proof', () => {
       return found;
     };
     const closePanel = async (id: string): Promise<void> => {
-      const overlay = document.querySelector<HTMLElement>(`[data-engine-panel-overlay="${id}"]`);
-      if (overlay === null) return;
-      await act(async () => { overlay.querySelector<HTMLButtonElement>('button[aria-label]')!.click(); });
+      const close = document.querySelector<HTMLButtonElement>('[data-detail-close]');
+      if (close === null) return;
+      await act(async () => close.click());
       await settle();
     };
 
