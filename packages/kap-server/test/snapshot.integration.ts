@@ -12,7 +12,6 @@ import {
   IAgentScopeContext,
   IAppendLogStore,
   ICpuWorkerService,
-  IFileSystemStorageService,
   IAtomicDocumentStore,
   IFileSystemStorageService,
   IAgentTaskService,
