@@ -12,6 +12,12 @@ The App-scope `ISessionManager` (`src/app/sessionManager/`) is the cross-workspa
 
 Agent profile registration remains App-visible through `IAgentProfileRegistry`; each Session's `ISessionAgentProfileCatalog` owns the effective merged/scoped view. Use the effective catalog for execution decisions rather than an unfiltered list of registrations. Workspace MCP and trust services remain Program-owned; process-wide management and persistence stay in their App domains described below.
 
+## CPU worker pool
+
+`src/app/cpuWorker/` owns the App-scoped CPU worker pool. `[cpu_workers]` is read when the App service is created; the pool starts worker threads lazily on the first request and closes during App teardown. Keep the effective size as `max(1, min(os.availableParallelism() - 1, max_workers))`, and bound waiting work by both `max_queue` and `max_queued_bytes`. `timeout_ms` covers queue wait and execution.
+
+Pool operations must be pure functions over their inputs and outputs: do not capture or mutate shared business state. Use `transferList` for large owned buffers when moving them to a worker. Active cancellation or timeout terminates the worker; do not replay that work, and let later work open a replacement. The first landed consumer is image decode.
+
 ## Units and contribution points (L3)
 
 The DI kernel (`src/_base/di/`) owns the unit layer on top of the scoped registry:

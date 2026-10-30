@@ -33,6 +33,7 @@ Kiki 在运行时监听 `config.toml` 和 `credentials/credentials.toml`。保�
 | 设置 | 生效时机 |
 | --- | --- |
 | [`request_governance`](#request-governance) | 修改加载后立即重新判断等待中的请求和 Agent 启动；在飞工作正常结束 |
+| [`cpu_workers`](#cpu-workers) | 下次启动进程；创建 App 服务时读取本节配置 |
 | `default_model`、`default_permission_mode`、`default_plan_mode` 等会话默认值 | 新会话；已有会话保留自己的选择 |
 | [`identity`](#identity) | 下次启动进程 |
 | [`tui.toml`](#tui-toml) | 下次启动，或在 TUI 执行 `/reload-tui` |
@@ -811,6 +812,27 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 `max_edge_px` 可被环境变量 `KIKI_IMAGE_MAX_EDGE_PX` 覆盖，`read_byte_budget` 可被 `KIKI_IMAGE_READ_BYTE_BUDGET` 覆盖，优先级均高于配置文件。
 
 哪些图片格式能送达模型，取决于该请求最终解析到的 provider。所有 provider 都接受 PNG、JPEG、GIF 和 WebP；Kimi provider 额外接受 BMP、HEIC 和 HEIF，因此 iPhone 照片无需先转换。其他图片会被替换为一行文本提示，说明当前 provider 接受的格式。
+
+## `cpu_workers`
+
+`cpu_workers` 控制 App 级 CPU 密集型工作的 worker 池。当前首个落地用途是图片数据校验时的首次解码（decode）；它不会改变 [`image`](#image) 中的图片尺寸或格式限制。worker 会在首次请求时按需创建，并在 App teardown 时关闭。
+
+```toml
+[cpu_workers]
+max_workers = 4
+max_queue = 64
+max_queued_bytes = 67108864
+timeout_ms = 30000
+```
+
+| 字段 | 类型 | 默认值 | 环境变量 | 说明 |
+| --- | --- | --- | --- | --- |
+| `max_workers` | `integer` | `4` | `KIKI_CPU_MAX_WORKERS` | 接受 `1`–`64`；实际 worker 数为 `max(1, min(os.availableParallelism() - 1, max_workers))` |
+| `max_queue` | `integer` | `64` | `KIKI_CPU_MAX_QUEUE` | 接受 `1`–`1024`；等待 worker 的请求数上限，不计入正在执行的请求 |
+| `max_queued_bytes` | `integer` | `67108864`（64 MiB） | `KIKI_CPU_MAX_QUEUED_BYTES` | 正整数；等待请求声明的总字节数上限 |
+| `timeout_ms` | `integer` | `30000`（30 秒） | `KIKI_CPU_TIMEOUT_MS` | 接受 `1`–`2147483647`；单位为毫秒，包含请求在队列中的等待时间 |
+
+环境变量优先于 `config.toml`，并在启动时读取。队列同时受 `max_queue` 和 `max_queued_bytes` 限制；任一上限达到后，新请求会以 `CPU_QUEUE_FULL` 拒绝，而不是继续等待。正在执行的请求被取消或超时时，其 worker 会终止，下一项请求在重新打开的 worker 上执行；失败的工作不会重放。
 
 ## `session_title`
 

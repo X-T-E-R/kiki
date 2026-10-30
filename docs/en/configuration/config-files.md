@@ -33,6 +33,7 @@ Reloading a file and applying a setting have different timing:
 | Setting | When it takes effect |
 | --- | --- |
 | [`request_governance`](#request-governance) | Re-evaluates waiting requests and agent admissions as soon as the edit is loaded; active work finishes normally |
+| [`cpu_workers`](#cpu-workers) | Next process start; the pool reads the section when the App service is created |
 | Session defaults such as `default_model`, `default_permission_mode`, and `default_plan_mode` | New sessions; an existing session keeps its own choices |
 | [`identity`](#identity) | Next process start |
 | [`tui.toml`](#tui-toml) | Next start, or `/reload-tui` in the TUI |
@@ -825,6 +826,27 @@ Like the `tools` / `disallowedTools` fields of an agent file, this section shape
 `max_edge_px` can be overridden by the `KIKI_IMAGE_MAX_EDGE_PX` environment variable and `read_byte_budget` by `KIKI_IMAGE_READ_BYTE_BUDGET`; both take higher priority than `config.toml`.
 
 Which image formats reach the model depends on the provider the request resolves to. Every provider accepts PNG, JPEG, GIF, and WebP; the Kimi provider additionally accepts BMP, HEIC, and HEIF, so an iPhone photo needs no conversion first. Any other image is replaced by a text notice that names the formats the current provider accepts.
+
+## `cpu_workers`
+
+`cpu_workers` controls the App-scoped pool for CPU-bound work. Its first landed consumer is the initial image decode used to validate image data; it does not change the image size or format limits in [`image`](#image). The pool creates worker threads lazily on the first request and closes them during App teardown.
+
+```toml
+[cpu_workers]
+max_workers = 4
+max_queue = 64
+max_queued_bytes = 67108864
+timeout_ms = 30000
+```
+
+| Field | Type | Default | Environment variable | Description |
+| --- | --- | --- | --- | --- |
+| `max_workers` | `integer` | `4` | `KIKI_CPU_MAX_WORKERS` | Accepts `1`–`64`; the actual worker count is `max(1, min(os.availableParallelism() - 1, max_workers))` |
+| `max_queue` | `integer` | `64` | `KIKI_CPU_MAX_QUEUE` | Accepts `1`–`1024`; maximum number of requests waiting for a worker, not counting active requests |
+| `max_queued_bytes` | `integer` | `67108864` (64 MiB) | `KIKI_CPU_MAX_QUEUED_BYTES` | Positive integer; maximum total bytes declared by queued requests |
+| `timeout_ms` | `integer` | `30000` (30 seconds) | `KIKI_CPU_TIMEOUT_MS` | Accepts `1`–`2147483647`; request timeout in milliseconds, including time spent waiting in the queue |
+
+Environment variables take precedence over `config.toml` and are read at startup. The queue is bounded by both `max_queue` and `max_queued_bytes`; when either limit is reached, new requests are rejected with `CPU_QUEUE_FULL` rather than waiting. If an active request is canceled or times out, its worker is terminated and the next request starts on a replacement; the failed work is not replayed.
 
 ## `session_title`
 
