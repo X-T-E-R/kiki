@@ -32,7 +32,7 @@ const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 export interface IpcChannelOptions {
   readonly socketPath: string;
   readonly token?: string;
-  /** Per-call deadline from invocation, including connection setup (ms). Default `30000`; `0` disables. Cancelling one caller leaves the shared connection alive. */
+  /** Per-call deadline from invocation, including connection setup (ms). Default `30000`; `0` disables. Cancelling one caller leaves the shared connection alive. Timeout errors carry `transport.timeout` and an outcome of `not_sent` or `unknown`; reconcile unknown writes rather than retrying them automatically. */
   readonly callTimeoutMs?: number;
 }
 
@@ -137,7 +137,9 @@ export class IpcChannel implements KlientChannel {
     };
     const promise = new Promise<unknown>((resolve, reject) => {
       const timer = deadlineMs > 0
-        ? setTimeout(() => fail(new RPCError(50001, `call timed out after ${deadlineMs}ms`)), deadlineMs)
+        ? setTimeout(() => fail(new RPCError(50001, `call timed out after ${deadlineMs}ms`, {
+            outcome: sent ? 'unknown' : 'not_sent', phase: sent ? 'response' : 'connect', timeoutMs: deadlineMs,
+          }, 'transport.timeout', id, undefined, 'transport')), deadlineMs)
         : undefined;
       this.pending.set(id, { resolve, reject, timer });
     });

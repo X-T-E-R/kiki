@@ -119,7 +119,8 @@ describe('IpcChannel call deadline', () => {
     const channel = new IpcChannel({ socketPath: '/tmp/klient-timeout', callTimeoutMs: 50 });
     const socket = netMock.current!;
     const call = channel.call({}, 'service', 'write', []);
-    const rejected = expect(call).rejects.toThrow('call timed out after 50ms');
+    const rejected = expect(call).rejects.toMatchObject({ message: 'call timed out after 50ms',
+      reason: 'transport.timeout', details: { outcome: 'not_sent', phase: 'connect', timeoutMs: 50 } });
     await vi.advanceTimersByTimeAsync(50);
     await rejected;
     socket.emit('connect');
@@ -131,8 +132,9 @@ describe('IpcChannel call deadline', () => {
   it('does not restart the budget after connecting', async () => {
     const channel = new IpcChannel({ socketPath: '/tmp/klient-timeout' });
     const socket = netMock.current!;
-    const call = channel.call({}, 'service', 'method', [], { timeoutMs: 70_000 });
-    const rejected = expect(call).rejects.toThrow('call timed out after 70000ms');
+    const call = channel.call({}, 'service', 'write', [], { timeoutMs: 70_000 });
+    const rejected = expect(call).rejects.toMatchObject({ message: 'call timed out after 70000ms',
+      reason: 'transport.timeout', requestId: expect.any(String), details: { outcome: 'unknown', phase: 'response' } });
     await vi.advanceTimersByTimeAsync(40_000);
     socket.emit('connect');
     await vi.advanceTimersByTimeAsync(29_999);
