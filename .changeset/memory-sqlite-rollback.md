@@ -2,4 +2,4 @@
 "@kiki/cli": patch
 ---
 
-Keep saved memory and recovery backups compatible with the previous SQLite backend.
+Preserve memory source evidence and forget choices across SQLite backend upgrades and rollbacks.

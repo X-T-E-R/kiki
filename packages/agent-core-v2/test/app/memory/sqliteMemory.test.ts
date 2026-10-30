@@ -80,7 +80,7 @@ async function close(): Promise<void> { await persistence.close(); await storage
 const save = (title: string, body = 'Keep the numeric limit 17 and the exception; never publish private data.') => store.put({ action: 'create', scope: global, type: 'feedback', title, body, reason: 'Human instruction', source });
 const update = (entry: MemoryEntry, body: string) => store.put({ action: 'update', scope: global, id: entry.id, expectedRevision: entry.revision, type: entry.type, title: entry.title, body, reason: 'Human correction', source });
 beforeEach(async () => { await mkdir(join(process.cwd(), '.tmp'), { recursive: true }); home = await mkdtemp(join(process.cwd(), '.tmp', 'sqlite-memory-')); approval = 'auto'; bind(); });
-afterEach(async () => { await close(); await rm(home, { force: true, recursive: true }); });
+afterEach(async () => { await close(); await rm(home, { force: true, recursive: true, maxRetries: 8, retryDelay: 100 }); });
 
 describe('canonical Memory transactions', () => {
   it('keeps the authority outside cache and recovers receipts and immutable revisions after reopening', async () => {
@@ -492,7 +492,7 @@ describe('Memory shadow import and replay barriers', () => {
       }
       const decision = { id: 'legacy-evidence-decision', scope: 'memory/global', objectId: first.id, revision: second.revision, kind: 'correction', reason: 'Retain attributed evidence', sourceIds: [signature] };
       db.prepare('INSERT INTO adjudications VALUES(?,?,?,?,?,?)').run(decision.id, decision.scope, decision.objectId, decision.revision, 0, JSON.stringify(decision));
-      if (forgotten) db.prepare('INSERT INTO source_barriers VALUES(?,?,?,?)').run('memory/global', signature, '2026-01-02', 0);
+      if (forgotten) db.prepare("INSERT INTO source_barriers SELECT ?,?,?,value FROM metadata WHERE key='generation'").run('memory/global', signature, '2026-01-02');
       db.exec(`DELETE FROM metadata WHERE key='source_evidence_version'; PRAGMA user_version=${version}`);
     } finally { db.close(); }
     bind();
@@ -580,6 +580,75 @@ describe('Memory shadow import and replay barriers', () => {
         expect(current.revision(scope, forgotten.id, forgotten.revision)).toBeUndefined();
       } finally { current.close(); }
     }
+  });
+
+  it.each([false, true])('repairs existing forgotten history before trusting old provenance (old registration first: %s)', async (registerFirst) => {
+    const scope = 'memory/global';
+    const path = join(home, 'leaked-history.sqlite');
+    const seed: MemoryEntry = { ...(await save('Existing leak fixture')).entry, id: 'm_leak_forgotten', revision: 'leak:forgotten', source: { writer: 'agent', session: 'leak-origin', turn: 17 } };
+    const survivor = { ...seed, id: 'm_leak_survivor', revision: 'leak:survivor' };
+    const replay = { ...seed, id: 'm_leak_replay', revision: 'leak:replay' };
+    const record = (entry: MemoryEntry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    let current = new MemoryDatabase(path);
+    try {
+      current.importLegacy([record(seed), record(survivor)]);
+      current.commit({ operationId: 'forget-leak-origin', request: 'forget-leak-origin', expectedGeneration: current.read([scope]).generation, edits: [], barriers: [{ scope, objectId: seed.id, at: '2026-01-02' }], result: {} });
+    } finally { current.close(); }
+    const events = [
+      { id: replay.id, operationId: 'leaked-create', action: 'create', before: null, beforeRevision: null, afterRevision: replay.revision, at: replay.created, writer: replay.source.writer },
+      { id: replay.id, operationId: 'leaked-update', action: 'update', before: JSON.stringify(replay), beforeRevision: replay.revision, afterRevision: 'leak:renamed', at: replay.updated, writer: replay.source.writer },
+    ];
+    const raw = new DatabaseSync(path);
+    try {
+      raw.prepare('INSERT INTO revisions VALUES(?,?,?,?,?)').run(scope, replay.id, replay.revision, 0, JSON.stringify(replay));
+      for (const event of events) raw.prepare('INSERT INTO journal(scope,id,operation_id,payload) VALUES(?,?,?,?)').run(scope, replay.id, event.operationId, JSON.stringify(event));
+      raw.prepare('INSERT INTO legacy VALUES(?,?,?,NULL,NULL,NULL)').run(scope, 'journal.jsonl', events.map((event) => JSON.stringify(event)).join('\n'));
+      raw.exec("DELETE FROM metadata WHERE key='source_evidence_version'; PRAGMA user_version=4");
+    } finally { raw.close(); }
+    if (registerFirst) {
+      const raw = new DatabaseSync(path); try { raw.exec('PRAGMA user_version=3'); } finally { raw.close(); }
+      const old = new Schema3MemoryDatabase(path);
+      try { old.provenance(scope, replay.id); expect(old.importLegacy([record(replay)]).imported).toBe(1); } finally { old.close(); }
+    }
+    current = new MemoryDatabase(path);
+    try {
+      expect(current.revision(scope, replay.id, replay.revision)).toBeUndefined();
+      expect(current.journal(scope, replay.id)).toEqual([]);
+      expect(current.legacy(scope).every((item) => !item.payload.includes(replay.id))).toBe(true);
+      expect(current.revision(scope, survivor.id, survivor.revision)).toEqual(JSON.parse(JSON.stringify(survivor)));
+      expect(current.provenance(scope, survivor.id).sources.map((item) => item.payload)).toEqual([JSON.stringify(survivor)]);
+    } finally { current.close(); }
+    const old = new Schema3MemoryDatabase(path);
+    try { expect(old.provenance(scope, replay.id).sources).toEqual([]); } finally { old.close(); }
+    current = new MemoryDatabase(path);
+    try {
+      expect(current.importLegacy([record(replay)])).toMatchObject({ imported: 0, issues: [expect.objectContaining({ issue: 'forgotten_source_rejected' })] });
+      expect(current.read([scope]).objects.map((object) => object.id)).toEqual([survivor.id]);
+    } finally { current.close(); }
+  });
+
+  it.each([2, 3])('recovers all %s old-writer source revisions after returning to the current backend', async (count) => {
+    const scope = 'memory/global';
+    const path = join(home, 'old-writer-evidence.sqlite');
+    let current = new MemoryDatabase(path); current.close();
+    const seed = (await save('Old writer evidence fixture')).entry;
+    const entries = Array.from({ length: count }, (_, index): MemoryEntry => ({ ...seed, id: 'm_old_writer_evidence', revision: `old-evidence:${index + 1}`, source: { writer: 'agent', session: `old-evidence-${index + 1}`, turn: 17 } }));
+    const record = (entry: MemoryEntry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    const old = new Schema3MemoryDatabase(path);
+    try { for (const entry of entries) old.importLegacy([record(entry)]); } finally { old.close(); }
+    current = new MemoryDatabase(path);
+    try {
+      for (const entry of entries) expect(current.revision(scope, entry.id, entry.revision)).toEqual(JSON.parse(JSON.stringify(entry)));
+      const payloads = entries.map((entry) => JSON.stringify(entry)).toSorted();
+      expect(current.provenance(scope, entries[0]!.id).sources.map((item) => item.payload).toSorted()).toEqual(payloads);
+      expect(current.importLegacy([record(entries.at(-1)!)])).toMatchObject({ retained: 1 });
+      const peer = { ...entries.at(-1)!, id: 'm_old_writer_peer' };
+      current.importLegacy([record(peer)]);
+      current.commit({ operationId: 'forget-old-writer-peer', request: 'forget-old-writer-peer', expectedGeneration: current.read([scope]).generation, edits: [], barriers: [{ scope, objectId: peer.id, at: '2026-01-02' }], result: {} });
+      expect(current.provenance(scope, entries[0]!.id).sources.map((item) => item.payload).toSorted()).toEqual(payloads);
+    } finally { current.close(); }
+    current = new MemoryDatabase(path);
+    try { expect(current.provenance(scope, entries[0]!.id).sources).toHaveLength(count); } finally { current.close(); }
   });
 
   it('applies imported-source correction and forget to a changed legacy ID and real lorebook reimport', async () => {
