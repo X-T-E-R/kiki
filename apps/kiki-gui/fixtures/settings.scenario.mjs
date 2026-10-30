@@ -260,7 +260,7 @@ export default {
         { id: 'direct.fetch', input_kinds: ['url'], media_types: ['text/html', 'text/plain'], representations: ['markdown', 'text'], execution_modes: ['sync', 'async'], egress: 'url', stages: [{ id: 'direct-http', role: 'acquire' }], availability: 'ready', issues: [], latency: 'fast', cost: 'free' },
         { id: 'jina.reader', input_kinds: ['url'], media_types: ['text/html'], representations: ['markdown', 'text'], execution_modes: ['sync', 'async'], egress: 'url', stages: [{ id: 'jina-reader', role: 'reader' }], availability: 'unavailable', issues: [{ code: 'LANE_NOT_CONFIGURED' }], latency: 'medium', cost: 'free' },
         { id: 'tavily.extract', input_kinds: ['url'], media_types: ['text/html'], representations: ['markdown', 'text'], execution_modes: [], egress: 'url', stages: [{ id: 'tavily-extract', role: 'extract' }], availability: 'unavailable', issues: [{ code: 'CREDENTIAL_NOT_CONFIGURED' }], latency: 'medium', cost: 'cheap' },
-        { id: 'browser.render', input_kinds: ['url'], media_types: ['text/html'], representations: ['markdown', 'text'], execution_modes: ['async'], egress: 'url', stages: [{ id: 'browser.chromium', role: 'acquire' }], availability: 'ready', issues: [], latency: 'slow', cost: 'expensive' },
+        { id: 'browser.render', input_kinds: ['url'], media_types: ['text/html'], representations: ['markdown', 'text'], execution_modes: ['async'], egress: 'url', stages: [{ id: 'browser-render', role: 'acquire' }], availability: 'ready', issues: [], latency: 'slow', cost: 'expensive' },
       ],
       limits: { max_source_bytes: 2_097_152, max_response_bytes: 2_097_152, max_content_chars: 200_000, max_redirects: 5, max_timeout_ms: 60_000, max_inline_bytes: 65_536 },
       // What the server reports for fetch routing: the maintained package plus
@@ -348,6 +348,17 @@ export default {
       // Write-only extras: names only, values never read back.
       custom_header_keys: ['X-Team'],
       env_keys: ['KIMI_BASE_URL'],
+    },
+    {
+      // A decision service: the connections card under the models list reads
+      // it as a row (address, key source, model), never as a chat provider.
+      id: 'typesafe',
+      type: 'system_one',
+      has_api_key: true,
+      status: 'connected',
+      base_url: 'https://api.typesafe.ai/v1',
+      default_model: 'jev-latest',
+      models: [],
     },
     {
       // The OAuth-managed provider: its collapsed summary still carries the
@@ -575,6 +586,8 @@ export default {
     advisor_status: {
       state: 'ready',
       consent_required: false,
+      destination: 'fixture:https://api.fixture.test',
+      provider: 'fixture', origin: 'https://api.fixture.test',
       protocol: 'chat_json',
       model: 'fixture/kiki-lite',
       source_status: { state: 'ready', protocol: 'chat_json', model: 'fixture/kiki-lite' },
@@ -688,6 +701,17 @@ export default {
       workspace_id: 'wd_fixture_000000000002',
       source_file: 'C:/fixture/shared/agents/reviewer.md',
       description: 'Review code changes and suggest improvements.',
+      main: false,
+      routes: [],
+    },
+    {
+      // Only in the `other` workspace: a deep link to it from another
+      // workspace offers the switch instead of a bare "not in this list".
+      name: 'docs-writer',
+      source: 'workspace',
+      workspace_id: 'wd_fixture_000000000001',
+      source_file: 'C:/fixture/other/.kiki/agents/docs-writer.md',
+      description: 'Write the docs site.',
       main: false,
       routes: [],
     },

@@ -17,6 +17,7 @@ import { InstalledPluginsList } from './plugins/InstalledPluginsList';
 import { PluginSettingsPage } from './plugins/PluginSettingsPage';
 import { InstallFlow } from '../capabilities/InstallFlow';
 import { SettingsNavTree } from './SettingsNav';
+import { useOptionalInstalledPlugins } from '../capabilities/usePlugins';
 
 const PLUGIN = {
   id: 'notes',
@@ -56,6 +57,7 @@ const getPlugin = vi.fn(async (): Promise<PluginInfo> => ({
 const getConfig = vi.fn(async () => ({}));
 const patchConfig = vi.fn(async (body: unknown) => body);
 const setPluginEnabled = vi.fn(async () => ({ ok: true }));
+const setPluginState = vi.fn(async () => ({ ok: true }));
 const removePlugin = vi.fn(async () => ({ ok: true }));
 const installPlugin = vi.fn(async () => PLUGIN);
 const PLAN = {
@@ -120,7 +122,26 @@ const browserSetupPresets = vi.fn(async () => ({
 const mocks = vi.hoisted(() => ({ client: {} as Record<string, unknown> }));
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client: mocks.client, scopeId: 'scope-test', sshLabel: null }),
+  useConnection: () => ({
+    client: mocks.client,
+    // The computer section reads the same global MCP/env plane the MCP page
+    // does; a browser-page mount still needs it answered.
+    klient: {
+      global: {
+        env: async () => ({ platform: 'linux', arch: 'x64' }),
+        mcp: {
+          list: async () => [],
+          add: async () => ({}),
+          update: async () => ({}),
+          remove: async () => ({}),
+          test: async () => ({}),
+          stop: async () => ({}),
+        },
+      },
+    },
+    scopeId: 'scope-test',
+    sshLabel: null,
+  }),
   useOptionalConnection: () => ({ client: mocks.client, scopeId: 'scope-test', sshLabel: null }),
 }));
 
@@ -137,6 +158,7 @@ Object.assign(mocks.client, {
   getConfig,
   patchConfig,
   setPluginEnabled,
+  setPluginState,
   removePlugin,
   installPlugin,
   previewPlugin,
@@ -181,6 +203,7 @@ afterEach(() => {
   getConfig.mockClear();
   patchConfig.mockClear();
   setPluginEnabled.mockClear();
+  setPluginState.mockClear();
   removePlugin.mockClear();
   installPlugin.mockClear();
   previewPlugin.mockClear();
@@ -245,9 +268,18 @@ async function renderPlugin(pluginId: string): Promise<HTMLDivElement> {
   return renderInto(<PluginsSection pluginId={pluginId} />);
 }
 
-/** The browser page, which now owns the WebBridge readiness card. */
+/** The browser page: the WebBridge readiness card lives inside the connection
+ *  list's 高级 sources fold, and that fold's own readiness disclosure. */
 async function renderBrowser(): Promise<HTMLDivElement> {
   const container = await renderInto(<BrowserControlSection />);
+  const sources = container.querySelector<HTMLDetailsElement>('[data-browser-sources]');
+  if (sources !== null && !sources.open) {
+    await act(async () => {
+      sources.open = true;
+      sources.dispatchEvent(new Event('toggle'));
+    });
+    await flush();
+  }
   for (let attempt = 0; attempt < 10 && container.querySelector('[data-webbridge-state]') === null; attempt++) {
     await flush();
   }
@@ -296,12 +328,23 @@ function locationOf(container: HTMLElement): string | null {
 function LeafAtRoute() {
   const { search } = useLocation();
   // The navigation is mounted with the page, the way the real settings screen
-  // mounts it: the two must stay in step about what is installed.
+  // mounts it: the two must stay in step about what is installed. An open
+  // plugin names itself in the header breadcrumb, resolved from the same
+  // installed-plugins query the list and the navigation read.
+  const pluginId = pluginSettingsIdFromQuery(search);
   return <>
     <LocationProbe />
+    <PluginCrumb pluginId={pluginId} />
     <SettingsNavTree active="plugins" onNavigate={() => {}} />
-    <PluginsSection pluginId={pluginSettingsIdFromQuery(search)} />
+    <PluginsSection pluginId={pluginId} />
   </>;
+}
+
+function PluginCrumb({ pluginId }: { readonly pluginId: string | null }) {
+  const installed = useOptionalInstalledPlugins().plugins;
+  if (pluginId === null) return null;
+  const label = installed.find((plugin) => plugin.id === pluginId)?.displayName ?? pluginId;
+  return <span data-settings-plugin-title>{label}</span>;
 }
 
 function LocationProbe() {
@@ -365,38 +408,48 @@ describe('PluginsSection', () => {
     expect(row.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
   });
 
-  it('offers a way back from “decide later” without touching the master switch', async () => {
-    // A plugin installed with the global default off keeps the master on, so
-    // the switch beside its name already reads on and cannot express the
-    // choice. The row must offer that choice explicitly, and turning the
-    // master off and on again is NOT a way to get it.
-    const later = { ...PLUGIN, globalEnabled: false };
+  it('says what a plugin does for new sessions, and changes the default only on its own page', async () => {
+    // A plugin installed with "decide later" is enabled but not on by default.
+    // The row says so in words; it has one switch, and that switch never moves
+    // the default. The default is its own switch on the plugin's page.
+    const later = { ...PLUGIN, globalEnabled: false, defaultEnabled: false };
     listPlugins.mockResolvedValue({ plugins: [later] });
-    setPluginEnabled.mockClear();
     const container = await renderLeafAt('/settings/plugins');
     await flush();
     const row = container.querySelector('[data-plugin-row="notes"]')!;
-    expect(row.querySelector('[data-plugin-global-default]')!.getAttribute('data-plugin-global-default')).toBe('off');
-    const action = row.querySelector<HTMLButtonElement>('[data-plugin-enable-everywhere="notes"]')!;
-    expect(action.textContent).toBe('Enable everywhere');
-    // The master switch is on and stays on: one write, and it is the one that
-    // sets the default.
-    expect(row.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
-    // Setting the default is not opening the plugin. A user who reaches for
-    // this action to change the default must not be carried out of the list
-    // into that plugin's page on the way.
-    await click(action);
+    expect(row.querySelector('[data-plugin-status]')!.getAttribute('data-plugin-status')).toBe('on-demand');
+    expect(row.textContent).toContain('On when you turn it on');
+    expect(row.querySelectorAll('[role="switch"]')).toHaveLength(1);
+    await click(row.querySelector('input[type="checkbox"]')!);
     await flush();
-    expect(setPluginEnabled).toHaveBeenCalledExactlyOnceWith('notes', true);
+    expect(setPluginState).toHaveBeenCalledExactlyOnceWith('notes', { enabled: false, defaultEnabled: false });
+    expect(setPluginEnabled).not.toHaveBeenCalled();
     expect(locationOf(container)).toBe('/settings/plugins');
-    expect(container.querySelector('[data-plugin-settings-page]')).toBeNull();
+
+    setPluginState.mockClear();
+    const page = await renderPlugin('notes');
+    const defaultSwitch = page.querySelector('[data-plugin-default-switch] input[type="checkbox"]') as HTMLInputElement;
+    expect(defaultSwitch.checked).toBe(false);
+    await click(defaultSwitch);
+    await flush();
+    expect(setPluginState).toHaveBeenCalledExactlyOnceWith('notes', { enabled: true, defaultEnabled: true });
+    listPlugins.mockResolvedValue({ plugins: [PLUGIN] });
   });
 
-  it('offers no such action once the global default is already on', async () => {
-    listPlugins.mockResolvedValue({ plugins: [{ ...PLUGIN, globalEnabled: true }] });
-    const container = await renderLeaf();
+  it.each([
+    { surface: 'list', enabled: true },
+    { surface: 'list', enabled: false },
+    { surface: 'page', enabled: true },
+    { surface: 'page', enabled: false },
+  ])('toggles an older server plugin from $enabled on the $surface without sending defaultEnabled', async ({ surface, enabled }) => {
+    listPlugins.mockResolvedValue({ plugins: [{ ...PLUGIN, enabled, globalEnabled: enabled }] });
+    const container = surface === 'list' ? await renderLeaf() : await renderPlugin('notes');
+    const selector = surface === 'list' ? '[data-plugin-row-switch="notes"]' : '[data-plugin-settings-switch]';
+    await click(container.querySelector(`${selector} input[type="checkbox"]`)!);
     await flush();
-    expect(container.querySelector('[data-plugin-enable-everywhere]')).toBeNull();
+    expect(setPluginEnabled).toHaveBeenCalledExactlyOnceWith('notes', !enabled);
+    expect(setPluginState).not.toHaveBeenCalled();
+    listPlugins.mockResolvedValue({ plugins: [PLUGIN] });
   });
 
   it('toggles a plugin off through the enable switch', async () => {
@@ -463,7 +516,7 @@ describe('PluginsSection', () => {
     const sheet = document.querySelector('[data-install-flow]')!;
     expect(sheet.textContent).toContain('It will be able to');
     expect(sheet.textContent).toContain('officecli');
-    expect(sheet.querySelector('[data-install-permissions] [data-permission-boundary]')?.textContent).toContain('not a sandbox');
+    expect(sheet.querySelector('[data-install-permissions] [data-permission-boundary]')?.textContent).toContain('the system does not enforce them');
     const confirm = document.querySelector<HTMLButtonElement>('[data-install-confirm]')!;
     expect(confirm.textContent).toBe('Allow and install');
     await click(confirm);
@@ -586,7 +639,7 @@ describe('PluginsSection', () => {
     expect(groups).toEqual(['updates', 'on']);
     const row = container.querySelector('[data-list-group="updates"] [data-plugin-row="lint"]')!;
     expect(row.querySelector('[data-plugin-update="lint"]')?.textContent).toBe('Update to 9e8d7c6b5a41');
-    expect(container.querySelector('[data-plugins-update-check="checked"]')?.textContent).toContain('nothing installs on its own');
+    expect(container.querySelector('[data-plugins-update-check="checked"]')?.textContent).toContain('updates are flagged for you');
 
     // Update reuses the preview sheet on the plugin's own source and keeps it off.
     previewPlugin.mockResolvedValueOnce({ ...PLAN, id: 'lint', version: '0.4.0', consentRequired: false, changes: [], permissions: undefined as never });
@@ -616,8 +669,7 @@ describe('PluginsSection', () => {
     const container = await renderView({ view: 'detail', id: 'notes' });
     await flush();
     const boundary = container.querySelector('[data-plugin-needs] [data-permission-boundary]');
-    expect(boundary?.textContent).toContain('not approval of each call');
-    expect(boundary?.textContent).toContain('not a sandbox');
+    expect(boundary?.textContent).toContain('does not run in a sandbox');
   });
 
   it('never shows an empty market for a server that has not configured a catalog address', async () => {
@@ -643,8 +695,9 @@ describe('PluginsSection', () => {
     const container = await renderLeaf();
     const row = container.querySelector('[data-plugin-row="notes"]')!;
     expect(row.textContent).toContain('Notes');
-    expect(row.textContent).toContain('v1.0.0');
     expect(row.textContent).toContain('Local folder');
+    expect(row.textContent).toContain('On in new sessions');
+    expect(row.textContent).toContain('1 skill');
     expect(row.querySelector('[role="switch"]')?.getAttribute('aria-checked')).toBe('true');
     // The market stays in Capabilities: this leaf links there once, and offers
     // no catalog address of its own.
@@ -733,6 +786,8 @@ describe('PluginsSection', () => {
     await click(container.querySelector('[data-plugin-row="notes"] input[type="checkbox"]')!);
     await flush();
     expect(setPluginEnabled).toHaveBeenCalledWith('notes', false);
+    expect(setPluginState).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-plugin-settings-page]')).toBeNull();
   });
 
   it('gives an installed plugin its own page: name, a way back, its switch and its form', async () => {
@@ -775,11 +830,13 @@ describe('PluginsSection', () => {
     getPluginSettings.mockResolvedValue({ values: {}, secretsConfigured: [] });
   });
 
-  it('keeps the navigation in step with the installed list as it changes', async () => {
-    // The list is what fetches; a plugin's own page and the navigation only
-    // read. So the navigation has to follow that one query: it must show what
-    // the server has reported, and stop showing it once the list moves on —
-    // without an unrelated re-render happening to re-read the cache.
+  it('keeps the navigation and an open page in step with the installed list as it changes', async () => {
+    // The flattened tree never lists installed plugins — a plugin's own page
+    // names itself in the header breadcrumb instead, and both read the one
+    // installed-plugins query. So that query is what the header must follow:
+    // it names what the server has reported, and stops naming it once the
+    // list moves on — without an unrelated re-render happening to re-read
+    // the cache.
     listPlugins.mockResolvedValue({
       plugins: [PLUGIN, { ...PLUGIN, id: 'later', displayName: 'Later', enabled: false }],
     });
@@ -787,23 +844,25 @@ describe('PluginsSection', () => {
     // The list is a query of its own, so it lands a tick after the page does.
     await flush();
     await flush();
-    const seen = () => [...container.querySelectorAll('[data-settings-nav-plugin]')]
-      .map((node) => node.getAttribute('data-settings-nav-plugin'));
-    expect(seen()).toEqual(['notes', 'later']);
+    expect(container.querySelector('[data-settings-nav-plugin]')).toBeNull();
+    expect(container.querySelector('[data-settings-plugin-title]')).toBeNull();
 
     // Open a plugin's own page the way a reader does, by clicking its row.
     await click(container.querySelector('[data-plugin-open-settings="notes"]')!);
     await flush();
     expect(locationOf(container)).toBe('/settings/plugins?plugin=notes');
-    // The navigation is still naming both plugins on the sub-page.
-    expect(seen()).toEqual(['notes', 'later']);
+    // The page names the open plugin in the breadcrumb.
+    expect(container.querySelector('[data-settings-plugin-title]')?.textContent).toBe('Notes');
 
-    // The list changes while that page is open — the navigation follows it
+    // The list changes while that page is open — the crumb follows it
     // without anything else having to re-render it.
     listPlugins.mockResolvedValue({ plugins: [{ ...PLUGIN, id: 'later', displayName: 'Later' }] });
     await leafHandles.queryClient!.invalidateQueries({ queryKey: ['plugins'] });
     await flush();
-    expect(seen(), 'a plugin gone from the list must leave the navigation').toEqual(['later']);
+    expect(
+      container.querySelector('[data-settings-plugin-title]')?.textContent,
+      'a plugin gone from the list must leave the breadcrumb',
+    ).toBe('notes');
     // Hand the shared mock back the way the rest of the file expects to find it.
     listPlugins.mockResolvedValue({ plugins: [PLUGIN] });
   });
@@ -890,8 +949,8 @@ describe('PluginsSection', () => {
     getCapability.mockResolvedValue({ ...WEBBRIDGE, state: 'partial',
       steps: [{ id: 'detect', state: 'failed', detail: 'Loopback health endpoint refused the connection' }] });
     const container = await renderBrowser();
-    expect(container.querySelector('[data-webbridge-blocking]')?.textContent).toBe('These parts are not ready: Health check.');
-    expect(container.textContent).not.toContain('Loopback health endpoint refused the connection');
+    expect(container.querySelector('[data-webbridge-blocking]')?.textContent).toContain('These parts are not ready: Health check.');
+    expect(container.querySelector('[data-webbridge-readiness]')?.textContent).not.toContain('Loopback health endpoint refused the connection');
   });
 
   it('shows a working runtime as one status line and nothing else', async () => {
@@ -915,7 +974,9 @@ describe('PluginsSection', () => {
     expect(container.querySelector('[data-webbridge-details]')).toBeNull();
     expect(container.querySelector('[data-webbridge-install-note]')).toBeNull();
     expect(container.querySelector('[data-webbridge-step]')).toBeNull();
-    const text = container.textContent ?? '';
+    // Only the bridge's own card speaks here — the page's other sections
+    // (computer executor details) are allowed to keep their own detail fold.
+    const text = container.querySelector('[data-webbridge-readiness]')?.textContent ?? '';
     for (const gone of [
       'Unverified:', 'does not match the pinned release', 'identity is not authenticated',
       'Service identity', 'Plugin package integrity', 'Check details', 'unverified',
@@ -934,8 +995,11 @@ describe('PluginsSection', () => {
       install: { running: false, note: 'some future installer sentence' },
       steps: [{ id: 'daemon', state: 'ok' }, { id: 'skill', state: 'ok' }, { id: 'extension', state: 'ok' }] });
     const container = await renderBrowser();
-    expect(container.textContent).not.toContain('some future installer sentence');
-    expect(container.textContent).toContain('Working');
+    // The bridge card neither prints the unknown note nor invents copy for it;
+    // the status word is all it says. (The computer section's own details fold
+    // may show its install note — that is its card, not the bridge's.)
+    expect(container.querySelector('[data-webbridge-readiness]')?.textContent).not.toContain('some future installer sentence');
+    expect(container.querySelector('[data-webbridge-readiness]')?.textContent).toContain('Working');
   });
 
   it('names the one blocking step when the runtime is only partly up', async () => {
@@ -948,7 +1012,7 @@ describe('PluginsSection', () => {
     const container = await renderBrowser();
     expect(container.querySelector('[data-webbridge-state="partial"]')?.textContent).toBe(' · Set up, but not everything is working');
     // Only the step that blocks the feature is named; the healthy ones are not.
-    expect(container.querySelector('[data-webbridge-blocking]')?.textContent).toBe('These parts are not ready: Browser extension.');
+    expect(container.querySelector('[data-webbridge-blocking]')?.textContent).toContain('These parts are not ready: Browser extension.');
   });
 
   it('names a required missing service binary instead of a health check', async () => {
@@ -960,7 +1024,7 @@ describe('PluginsSection', () => {
       ] });
     const container = await renderBrowser();
     const blocking = container.querySelector('[data-webbridge-blocking]')?.textContent;
-    expect(blocking).toBe('These parts are not ready: Service binary、Local service.');
+    expect(blocking).toContain('These parts are not ready: Service binary、Local service.');
     expect(blocking).not.toContain('Health check');
     expect(container.querySelector('[data-webbridge-details]')).toBeNull();
   });
@@ -1157,7 +1221,7 @@ describe('InstallFlow scope choice', () => {
     for (let attempt = 0; attempt < 20 && container.querySelector('[data-plugin-settings="notes"]') === null; attempt += 1) await flush();
     const scopeCard = container.querySelector('[data-plugin-effective-scope="notes"]');
     expect(scopeCard).not.toBeNull();
-    expect(scopeCard?.querySelector('[data-plugin-scope-global="on"]')).not.toBeNull();
+    expect(scopeCard?.getAttribute('data-plugin-scope-global')).toBe('on');
     expect(scopeCard?.querySelector('[data-plugin-scope-workspaces]')?.getAttribute('href')).toBe('/settings/workspaces');
     expect(container.querySelector('[data-plugin-settings-sticky-footer]')).not.toBeNull();
   });
@@ -1226,7 +1290,9 @@ describe('workspace usage cache subscription', () => {
     queryClient.setQueryData(alpha, usage('ws-a', 'Alpha', 4, 'on'));
 
     const container = await renderSurfaces(queryClient);
-    const summary = () => container.querySelector('[data-plugin-row="notes"] [data-plugin-scope-summary]')?.textContent ?? '';
+    // The page lists only workspaces with their own choice, named with it.
+    const summary = () => [...container.querySelectorAll('[data-plugin-scope-workspace]')]
+      .map((row) => `${row.querySelector('span')?.textContent}: ${row.querySelector('[aria-pressed="true"]')?.textContent}`).join(' ');
     expect(pressed(container, 'ws-a')).toBe('on');
     expect(summary()).toContain('Alpha: On');
     expect(queryClient.getQueryCache().findAll({ queryKey: ['plugin-usage'] }).every((query) => query.getObserversCount() === 0)).toBe(true);
@@ -1278,7 +1344,8 @@ describe('workspace usage cache subscription', () => {
     });
     expect(queryClient.getQueryData(alpha)).toMatchObject({ revision: 6, plugins: [{ override: 'inherit' }] });
     expect(queryClient.getQueryData(['plugin-usage', { workspace_id: 'ws-a', stale: true }])).toMatchObject({ revision: 2, plugins: [{ override: 'on' }] });
-    expect(pressed(container, 'ws-a')).toBe('inherit');
+    // Back on the default: no longer an exception, so the row leaves the list.
+    expect(container.querySelector('[data-plugin-scope-workspace="ws-a"]')).toBeNull();
     expect(summary()).not.toContain('Alpha: On');
     expect(summary()).not.toContain('Alpha: Off');
     expect(getPluginUsage).not.toHaveBeenCalled();

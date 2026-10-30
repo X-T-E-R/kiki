@@ -2,6 +2,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
 import { updateNamedAgentProfileRequestSchema, type NamedAgentProfile } from '@kiki/protocol';
 import { readDraft, resetDraftMemoryForTests, writeDraft } from '@kiki/session-core/composer';
@@ -14,7 +15,7 @@ const { client, reportDirty, confirmDiscard, navigate } = vi.hoisted(() => ({
     listNamedAgentProfiles: vi.fn(), listShippedAgentProfiles: vi.fn(), listWorkspaceCatalog: vi.fn(), getConfig: vi.fn(),
     updateNamedAgentProfile: vi.fn(), createAgentProfile: vi.fn(), patchConfig: vi.fn(), restoreShippedAgentProfile: vi.fn(),
     readHostFile: vi.fn(), getAgentCapabilities: vi.fn(), listModels: vi.fn(), listExecutors: vi.fn(),
-    previewExecutorPrompt: vi.fn(), createSession: vi.fn(),
+    previewExecutorPrompt: vi.fn(), createSession: vi.fn(), getRecipe: vi.fn(),
     klient: { rest: { agents: { previewModelMenu: vi.fn() } } },
   },
 }));
@@ -24,8 +25,12 @@ vi.mock('../../state/connection', () => ({
 // No `runAction` here on purpose: this file models a page that is not dirty,
 // so the handoff creates and leaves without a prompt. The cancel-the-leave order
 // is covered against the real guard in askKiki.dirtyOrder.test.tsx.
+// The guarded navigator records every call and still moves the router, so
+// `?agent=` opens and closes the in-page detail as it does in the app.
+const routerNavigate: { current: ((...args: unknown[]) => void) | null } = { current: null };
 vi.mock('../dirtyGuard', () => ({
-  useDirtyGuard: () => ({ confirmDiscard }), useGuardedNavigate: () => navigate,
+  useDirtyGuard: () => ({ confirmDiscard }),
+  useGuardedNavigate: () => (...args: unknown[]) => { navigate(...args); routerNavigate.current?.(...args); },
   useDirtyReporter: (id: string, dirty: boolean) => reportDirty(id, dirty),
 }));
 
@@ -52,7 +57,19 @@ const settle = async () => {
 };
 const buttonIn = (scope: ParentNode, value: string) => [...scope.querySelectorAll<HTMLButtonElement>('button')]
   .find((button) => button.textContent?.trim() === value)!;
-const sheet = () => document.body.querySelector<HTMLElement>('[role="dialog"]')!;
+/** The open editing surface: the in-page profile detail, or the create panel. */
+const sheet = () => document.body.querySelector<HTMLElement>('[data-agent-create-panel] [role="dialog"]')
+  ?? document.body.querySelector<HTMLElement>('[data-detail-pane]')!;
+let currentSearch = '';
+function RouterProbe() {
+  const go = useNavigate();
+  routerNavigate.current = (target: unknown, options?: unknown) => {
+    if (typeof target === 'number') void go(target);
+    else void go(target as string, options as object);
+  };
+  currentSearch = useLocation().search;
+  return null;
+}
 async function typeIn(input: HTMLTextAreaElement | HTMLInputElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(
     input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value',
@@ -68,6 +85,9 @@ async function choose(trigger: HTMLElement, label: string) {
 async function open(name: string) {
   await act(async () => container.querySelector<HTMLButtonElement>(`[data-team-open="${name}"]`)!.click());
   await settle();
+}
+async function openTab(tab: string) {
+  await act(async () => sheet().querySelector<HTMLButtonElement>(`[data-profile-tab="${tab}"]`)!.click());
 }
 async function save() {
   await act(async () => buttonIn(sheet(), 'Save').click());
@@ -102,9 +122,9 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); queries.clear(); container.remove(); });
 async function render() {
-  await act(async () => root.render(<QueryClientProvider client={queries}><I18nProvider>
-    <UnifiedAgentManager />
-  </I18nProvider></QueryClientProvider>));
+  await act(async () => root.render(<MemoryRouter initialEntries={['/settings/agents']}><QueryClientProvider client={queries}><I18nProvider>
+    <RouterProbe /><UnifiedAgentManager />
+  </I18nProvider></QueryClientProvider></MemoryRouter>));
   await settle();
 }
 
@@ -112,14 +132,19 @@ describe('agents team view', () => {
   it('lists every agent with model, effort and whom it may call, and flags an alias the catalog lacks', async () => {
     await render();
     const rows = [...container.querySelectorAll<HTMLElement>('[data-team-row]')].map((row) => row.dataset['teamRow']);
-    // Grouped by source (global before built-in); main agents first within a group.
-    expect(rows).toEqual(['agent', 'reviewer', 'explore']);
+    // Grouped by what the user talks to: main agents, then the helpers they dispatch.
+    expect(rows).toEqual(['agent', 'explore', 'reviewer']);
     const lead = container.querySelector('[data-team-row="agent"]')!;
     expect(lead.querySelector('[data-team-dispatch]')?.textContent).toContain('reviewer, explore');
     expect(lead.querySelector('[data-team-effort]')?.textContent).toContain('High');
     const reviewer = container.querySelector('[data-team-row="reviewer"]')!;
-    // An empty preset list says what it is: no preset selectable, path still works.
-    expect(reviewer.querySelector('[data-team-dispatch]')?.textContent).toContain('No preset selectable here.');
+    // An empty preset list reads as a quiet fact, not a warning.
+    expect(reviewer.querySelector('[data-team-dispatch]')?.textContent).toContain('No presets');
+    // An undeclared list is the neutral default.
+    expect(container.querySelector('[data-team-row="explore"] [data-team-dispatch]')?.textContent).toContain('Default');
+    // Where the file lives is a row tag, not a group: a built-in says so, your own folder says nothing.
+    expect(container.querySelector('[data-team-row="explore"] [data-team-tag="source"]')?.textContent).toBe('Built-in');
+    expect(container.querySelector('[data-team-row="reviewer"] [data-team-tag="source"]')).toBeNull();
     expect(reviewer.querySelector('[data-team-warning]')).not.toBeNull();
     expect(container.querySelector('[data-team-warnings]')?.textContent).toContain('1 setting needs attention');
     // A built-in is read-only: its cells are text, not pickers.
@@ -137,45 +162,82 @@ describe('agents team view', () => {
     expect(container.querySelector('[data-saved-tick]')).not.toBeNull();
   });
 
-  it('filters to main agents', async () => {
-    await render();
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-team-filter="main"]')!.click());
-    expect(container.querySelectorAll('[data-team-row]')).toHaveLength(1);
-  });
-
-  it('groups workspace, global and built-in agents, main above subagents, and hides an empty group', async () => {
+  it('groups main agents above helpers, tags the project source, and hides an empty group', async () => {
     const local: NamedAgentProfile = { ...sub, name: 'local-lead', main: true, source: 'workspace', source_file: '/fixture/.kiki/agents/local-lead.md' };
     const localSub: NamedAgentProfile = { ...sub, name: 'local-helper', source: 'workspace', source_file: '/fixture/.kiki/agents/local-helper.md' };
     client.listNamedAgentProfiles.mockResolvedValue({ items: [main, sub, explore, localSub, local], complete: true });
     await render();
     const groups = [...container.querySelectorAll<HTMLElement>('[data-team-group]')];
-    expect(groups.map((group) => group.dataset['teamGroup'])).toEqual(['workspace', 'global', 'builtin']);
-    expect([...groups[0]!.querySelectorAll<HTMLElement>('[data-team-row]')].map((row) => row.dataset['teamRow'])).toEqual(['local-lead', 'local-helper']);
-    expect([...groups[0]!.querySelectorAll<HTMLElement>('[data-team-kind]')].map((row) => row.dataset['teamKind'])).toEqual(['main', 'subagent']);
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [main, sub, explore], complete: true });
+    expect(groups.map((group) => group.dataset['teamGroup'])).toEqual(['main', 'subagent']);
+    expect([...groups[0]!.querySelectorAll<HTMLElement>('[data-team-row]')].map((row) => row.dataset['teamRow'])).toEqual(['agent', 'local-lead']);
+    expect(container.querySelector('[data-team-row="local-helper"] [data-team-tag="source"]')?.textContent).toBe('Project');
+    // Engine status lives on the providers page; this page has no status strip and no layout switch.
+    expect(container.querySelector('[data-agent-passthrough-presets]')).toBeNull();
+    expect(container.querySelector('[data-team-layout]')).toBeNull();
+    // Disabling by name is a rare action kept in one quiet fold at the bottom.
+    expect(container.querySelector('details[data-disabled-by-name-fold]')?.hasAttribute('open')).toBe(false);
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [sub, explore], complete: true });
     await act(async () => { await queries.invalidateQueries(); });
     await settle();
-    expect(container.querySelector('[data-team-group="workspace"]')).toBeNull();
+    expect(container.querySelector('[data-team-group="main"]')).toBeNull();
   });
 
-  it('shows each main agent with its roster, lease pins winning over the member pin', async () => {
-    const second: NamedAgentProfile = { ...sub, name: 'lead-two', main: true, source_file: '/fixture/lead-two/SYSTEM.md', allowed_subagents: ['agent'] };
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [main, sub, explore, second], complete: true });
+  it('offers the workspace an agent lives in when a deep link misses the current one', async () => {
+    // `frontend` only exists in ws-two; the page is aimed at ws-one. The link
+    // must name the workspace instead of reading as "not in this list".
+    const other: NamedAgentProfile = { ...sub, name: 'frontend', workspace_id: 'ws-two', source_file: '/other/frontend/SYSTEM.md' };
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [
+      { id: 'ws-one', root: '/fixture', name: 'Fixture', pinned: false, last_opened_at: '2026-01-02T00:00:00Z' },
+      { id: 'ws-two', root: '/other', name: 'Other', pinned: false, last_opened_at: '2026-01-01T00:00:00Z' },
+    ] });
+    client.listNamedAgentProfiles.mockImplementation(async (query?: unknown) =>
+      typeof query === 'string' && query === 'ws-two'
+        ? { items: [other], complete: true }
+        : { items: [main, sub, explore], complete: true });
     await render();
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-team-layout="teams"]')!.click());
-    const teams = [...container.querySelectorAll<HTMLElement>('[data-roster-team]')].map((team) => team.dataset['rosterTeam']);
-    expect(teams).toEqual(['agent', 'lead-two']);
-    const lead = container.querySelector('[data-roster-team="agent"]')!;
-    expect([...lead.querySelectorAll<HTMLElement>('[data-roster-member]')].map((row) => row.dataset['rosterMember'])).toEqual(['reviewer', 'explore']);
-    const leased = lead.querySelector('[data-roster-member="explore"]')!;
-    expect(leased.textContent).toContain('fixture/lite');
-    expect(leased.textContent).toContain('set by agent');
-    expect(lead.querySelector('[data-roster-member="reviewer"]')?.textContent).toContain('typo/model');
-    // A main agent called by name is shown as it is, marked Main.
-    expect(container.querySelector('[data-roster-team="lead-two"] [data-roster-member="agent"]')?.textContent).toContain('Main');
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-roster-team="agent"] [data-roster-open="explore"]')!.click());
+    await act(async () => { routerNavigate.current?.({ pathname: '/settings/agents', search: '?workspace=ws-one&agent=frontend' }); });
     await settle();
-    expect(sheet().querySelector('[data-agent-detail="explore"]')).not.toBeNull();
+    const line = container.querySelector('[data-agent-elsewhere]')!;
+    expect(line.textContent).toContain('Other');
+    await act(async () => line.querySelector<HTMLButtonElement>('[data-agent-elsewhere-open]')!.click());
+    await settle();
+    // The switch keeps the detail addressed; the list reload shows the agent.
+    expect(currentSearch).toContain('workspace=ws-two');
+    expect(currentSearch).toContain('agent=frontend');
+  });
+
+  it('keeps the open detail on a deliberate workspace switch when the name resolves there too', async () => {
+    const twin: NamedAgentProfile = { ...sub, workspace_id: 'ws-two' };
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [
+      { id: 'ws-one', root: '/fixture', name: 'Fixture', pinned: false, last_opened_at: '2026-01-02T00:00:00Z' },
+      { id: 'ws-two', root: '/other', name: 'Other', pinned: false, last_opened_at: '2026-01-01T00:00:00Z' },
+    ] });
+    client.listNamedAgentProfiles.mockImplementation(async (query?: unknown) =>
+      typeof query === 'string' && query === 'ws-two'
+        ? { items: [twin], complete: true }
+        : { items: [main, sub, explore], complete: true });
+    await render();
+    await open('reviewer');
+    expect(currentSearch).toBe('?agent=reviewer');
+    await act(async () => { routerNavigate.current?.({ pathname: '/settings/agents', search: '?workspace=ws-two&agent=reviewer' }); });
+    await settle();
+    expect(container.querySelector('[data-agent-missing]')).toBeNull();
+    expect(sheet().querySelector('[data-agent-detail="reviewer"]')).not.toBeNull();
+  });
+
+  it('writes a deliberate workspace pick to the address (replace), dropping the detail', async () => {
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [
+      { id: 'ws-one', root: '/fixture', name: 'Fixture', pinned: false, last_opened_at: '2026-01-02T00:00:00Z' },
+      { id: 'ws-two', root: '/other', name: 'Other', pinned: false, last_opened_at: '2026-01-01T00:00:00Z' },
+    ] });
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('#agents-workspace-select')!.click());
+    await settle();
+    const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find((item) => item.textContent?.includes('Other'))!;
+    await act(async () => option.click());
+    await settle();
+    expect(currentSearch).toContain('workspace=ws-two');
   });
 
   it('greys a shadowed file and says which file wins', async () => {
@@ -196,7 +258,41 @@ describe('agents team view', () => {
   });
 });
 
-describe('profile editor sheet', () => {
+describe('profile editor detail', () => {
+  it('opens a profile in the page with a rail of names, addressed by ?agent=', async () => {
+    await render();
+    await open('reviewer');
+    expect(currentSearch).toBe('?agent=reviewer');
+    // In-page, not modal: no scrim, no dialog, the team table hidden but mounted.
+    expect(document.body.querySelector('[aria-modal="true"]')).toBeNull();
+    expect(container.querySelector('[data-detail-split="open"]')).not.toBeNull();
+    expect(container.querySelector<HTMLElement>('[data-detail-list]')!.hidden).toBe(true);
+    const rail = container.querySelector<HTMLElement>('[data-agent-rail]')!;
+    expect([...rail.querySelectorAll('[data-detail-rail-item]')].map((item) => item.getAttribute('data-detail-rail-item')))
+      .toEqual(['agent', 'explore', 'reviewer']);
+    expect(rail.querySelector('[data-detail-rail-item="reviewer"]')?.getAttribute('aria-current')).toBe('page');
+    // The rail switches profiles in place.
+    await act(async () => rail.querySelector<HTMLButtonElement>('[data-detail-rail-item="agent"]')!.click());
+    await settle();
+    expect(currentSearch).toBe('?agent=agent');
+    expect(sheet().querySelector('[data-agent-detail="agent"]')).not.toBeNull();
+  });
+
+  it('creates in a side panel and lands in the new profile detail', async () => {
+    const created = { ...explore, name: 'explore-fast', source: 'user', source_file: '/fixture/home/agents/explore-fast.md', workspace_id: 'ws-one' };
+    client.createAgentProfile.mockResolvedValue(created);
+    await render();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-profile-new]')!.click());
+    expect(document.body.querySelector('[data-agent-create-panel] [role="dialog"]')).not.toBeNull();
+    await typeIn(sheet().querySelector<HTMLInputElement>('#new-profile-name')!, 'explore-fast');
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [main, sub, explore, created], complete: true });
+    await act(async () => buttonIn(sheet(), 'Create agent').click());
+    await settle();
+    expect(document.body.querySelector('[data-agent-create-panel]')).toBeNull();
+    expect(currentSearch).toBe('?agent=explore-fast');
+    expect(sheet().querySelector('[data-agent-detail="explore-fast"]')).not.toBeNull();
+  });
+
   it('puts the instructions first and saves only what changed', async () => {
     client.updateNamedAgentProfile.mockResolvedValue({ ...main, prompt: 'New instructions' });
     await render();
@@ -207,6 +303,34 @@ describe('profile editor sheet', () => {
     await save();
     expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', {
       scope: 'user', workspace_id: 'ws-one', source_file: '/fixture/agent/SYSTEM.md', prompt: 'New instructions',
+    });
+  });
+
+  it('edits recipe options in the run tab and saves them without dropping other values', async () => {
+    const profile = { ...main, recipe: './recipe.toml', recipe_options: { safe: true, legacy: false } };
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile, sub, explore], complete: true });
+    client.getRecipe.mockResolvedValue({ resolved: { options: [
+      { id: 'safe', name: 'Safe mode', default: false },
+      { id: 'fast', name: 'Fast mode', default: false, description: 'Use the shorter prompt.' },
+    ] } });
+    client.updateNamedAgentProfile.mockImplementation(async (_name: string, body: Record<string, unknown>) => ({ ...profile, ...body }));
+    await render();
+    await open('agent');
+    await openTab('run');
+    const options = sheet().querySelector<HTMLElement>('[data-profile-panel="run"] [data-profile-block="runs"] [data-recipe-options]')!;
+    expect(options).not.toBeNull();
+    expect(client.getRecipe).toHaveBeenCalledWith('/fixture/agent/./recipe.toml');
+    const fast = options.querySelector<HTMLInputElement>('[data-recipe-option="fast"] input')!;
+    expect(fast.closest('[data-settings-field]')).not.toBeNull();
+    expect(options.querySelector<HTMLInputElement>('[data-recipe-option="safe"] input')!.checked).toBe(true);
+    await act(async () => { fast.click(); });
+    await settle();
+    expect(sheet().querySelector('[data-profile-tab="run"] [data-profile-tab-dirty]')).not.toBeNull();
+    expect(sheet().querySelector<HTMLButtonElement>('[data-profile-tab="raw"]')!.disabled).toBe(true);
+    await save();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledExactlyOnceWith('agent', {
+      scope: 'user', workspace_id: 'ws-one', source_file: '/fixture/agent/SYSTEM.md',
+      recipe_options: { safe: true, legacy: false, fast: true },
     });
   });
 
@@ -244,13 +368,14 @@ describe('profile editor sheet', () => {
     expect(sheet().querySelector('[data-profile-diagnostic="shadows"] [data-shadowed-file="/fixture/agent/old/SYSTEM.md"]')).not.toBeNull();
   });
 
-  it('sets and clears spawn constraints under Advanced', async () => {
+  it('sets and clears what dispatched helpers may use on the dispatch tab', async () => {
     const constrained = { ...main, spawn_constraints: { allowed_models: ['fixture/lite'], disallowed_tools: ['WebFetch'] } };
     client.listNamedAgentProfiles.mockResolvedValue({ items: [constrained, sub, explore], complete: true });
     client.updateNamedAgentProfile.mockResolvedValue(constrained);
     await render();
     await open('agent');
-    const advanced = sheet().querySelector<HTMLElement>('[data-profile-section="advanced"]')!;
+    await openTab('dispatch');
+    const advanced = sheet().querySelector<HTMLElement>('[data-model-rules="spawn"]')!;
     expect(advanced.querySelector('[data-alias-chips="spawn-allowed-models"] [data-alias-chip="fixture/lite"]')).not.toBeNull();
     await act(async () => advanced.querySelector<HTMLButtonElement>('[data-spawn-effort="max"]')!.click());
     await save();
@@ -269,7 +394,7 @@ describe('profile editor sheet', () => {
     // preset file given by path still works, so it is not a save blocker.
     const field = sheet().querySelector<HTMLElement>('[data-dispatch-allowed]')!;
     expect(field.getAttribute('data-declared')).toBe('true');
-    expect(field.querySelector('[data-dispatch-allowed-empty]')?.textContent).toContain('A definition supplied by path is unaffected by this list');
+    expect(field.querySelector('[data-dispatch-allowed-empty]')?.textContent).toBe('No presets');
     // Nothing is edited, so the footer is not a save blocker: the old
     // "empty list" rejection is gone with the removed three-way control.
     expect(sheet().querySelector('[data-settings-draft]')?.getAttribute('data-dirty')).not.toBe('true');
@@ -305,6 +430,7 @@ describe('profile editor sheet', () => {
     expect(sheet().querySelector('[data-alias-missing="true"]')).toBeNull();
     expect(sheet().querySelector('#profile-effort')?.textContent).toContain('Max');
     await act(async () => sheet().querySelector<HTMLButtonElement>('[data-agent-back]')!.click());
+    await settle();
     await open('agent');
     expect(sheet().querySelector('#lease-model-reviewer [data-alias-missing]')).toBeNull();
   });
@@ -417,7 +543,23 @@ describe('profile editor sheet', () => {
     }));
   });
 
-  it('guards a dirty draft when the sheet closes and discards on request', async () => {
+  it('splits the sheet into question tabs, moves by arrow keys, marks unsaved tabs and locks the file tab', async () => {
+    await render();
+    await open('agent');
+    const tabs = [...sheet().querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Who it is', 'How it runs', 'Who it dispatches', 'Tools', 'Advanced', 'File']);
+    expect(sheet().querySelector('[data-profile-panel="identity"]')?.hasAttribute('hidden')).toBe(false);
+    await act(async () => { tabs[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
+    expect(sheet().querySelector('[data-profile-tab="run"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(sheet().querySelector('[data-profile-tab="run"]'));
+    expect(sheet().querySelector('[data-profile-panel="identity"]')?.hasAttribute('hidden')).toBe(true);
+    await typeIn(sheet().querySelector<HTMLTextAreaElement>('#profile-prompt')!, 'Edited');
+    expect(sheet().querySelector('[data-profile-tab="identity"] [data-profile-tab-dirty]')).not.toBeNull();
+    expect(sheet().querySelector('[data-profile-tab="run"] [data-profile-tab-dirty]')).toBeNull();
+    expect(sheet().querySelector<HTMLButtonElement>('[data-profile-tab="raw"]')!.disabled).toBe(true);
+  });
+
+  it('reports a dirty draft, discards on request, and closes through the guarded navigator', async () => {
     await render();
     await open('agent');
     await typeIn(sheet().querySelector<HTMLTextAreaElement>('#profile-prompt')!, 'Unsaved');
@@ -425,8 +567,13 @@ describe('profile editor sheet', () => {
     await act(async () => buttonIn(sheet(), 'Discard changes').click());
     expect(sheet().querySelector<HTMLTextAreaElement>('#profile-prompt')!.value).toBe('Old instructions');
     await act(async () => sheet().querySelector<HTMLButtonElement>('[data-agent-back]')!.click());
-    expect(confirmDiscard).toHaveBeenCalledWith('agent-raw:/fixture/agent/SYSTEM.md', expect.any(Function));
-    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    await settle();
+    await settle();
+    // Closing is a guarded navigation, so the shared leave prompt owns any draft.
+    expect(navigate).toHaveBeenLastCalledWith(-1);
+    expect(currentSearch).toBe('');
+    expect(document.body.querySelector('[data-detail-pane]')).toBeNull();
+    expect(document.body.querySelector('[aria-modal="true"]')).toBeNull();
   });
 
   it('edits the raw file as a separate mode and reloads the form from the echo', async () => {
@@ -569,9 +716,11 @@ describe('profile menu restriction and advice editor', () => {
     client.updateNamedAgentProfile.mockResolvedValue({ ...main, preferred_models: ['fixture/lite'], preferred_efforts: ['low'] });
     await render();
     await open('agent');
-    expect(sheet().querySelector('[data-profile-section="soft-advice"]')?.textContent).toContain('Soft advice');
-    await choose(sheet().querySelector<HTMLElement>('#preferred-models-add')!, 'fixture/lite');
-    await choose(sheet().querySelector<HTMLElement>('#preferred-efforts-add')!, 'low');
+    await openTab('run');
+    const rules = sheet().querySelector<HTMLElement>('[data-model-rules="self"]')!;
+    expect([...rules.querySelectorAll('[data-rule-column]')].map((node) => node.textContent)).toEqual(['Only these', 'Prefer', 'Avoid', 'Never']);
+    await choose(rules.querySelector<HTMLElement>('#preferred-models-add')!, 'fixture/lite');
+    await act(async () => rules.querySelector<HTMLButtonElement>('[data-preferred-effort="low"]')!.click());
     await save();
     expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', {
       scope: 'user', workspace_id: 'ws-one', source_file: main.source_file,
@@ -618,7 +767,8 @@ it('requires an explicit save after a restricted TeamView default change', async
   await choose(container.querySelector<HTMLElement>('[data-team-row="agent"] [data-team-model] button')!, 'fixture/lite');
   await settle();
   expect(client.updateNamedAgentProfile).not.toHaveBeenCalled();
-  const review = container.querySelector<HTMLElement>('[data-team-menu-review="agent"]')!;
+  // The menu review is a popover anchored to the model cell, portaled to <body>.
+  const review = document.body.querySelector<HTMLElement>('[data-team-menu-review="agent"]')!;
   expect(review.querySelector('[data-menu-removed]')?.textContent).toContain('fixture/opus');
   await act(async () => review.querySelector<HTMLButtonElement>('[data-team-menu-save]')!.click());
   await settle();

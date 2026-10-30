@@ -54,7 +54,7 @@ export function NumberField({ label, value, onChange, placeholder, hint, detail 
 /** One settings cluster: a quiet heading plus a one-line "what it affects". */
 export function Group({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
-    <section className="space-y-3 border-t border-hairline pt-3 first:border-t-0 first:pt-0">
+    <section className="space-y-3 pt-3 first:pt-0">
       <div>
         <h3 className="text-[12px] font-semibold text-ink">{title}</h3>
         {hint !== undefined ? <p className="mt-0.5 text-[12px] leading-snug text-ink-faint">{hint}</p> : null}

@@ -15,7 +15,6 @@ import {
   BUILTIN_SKINS,
   DEFAULT_SKIN_ID,
   buildSkinExport,
-  builtinSkinDescriptionKey,
   builtinSkinNameKey,
   findBuiltinSkin,
   declaredVariants,
@@ -44,7 +43,7 @@ export const PAPER_SWATCH = {
   dark: findBuiltinSkin(DEFAULT_SKIN_ID)!.variants.dark!.colors!,
 };
 
-/** A swatch row rendered from the skin's own tokens, so it cannot lie. */
+/** A swatch rendered from the skin's own tokens, so it cannot lie. */
 function SkinSwatch({ skin, theme }: { skin: SkinFile; theme: ResolvedTheme }) {
   const variant = skin.variants[theme] ?? skin.variants[declaredVariants(skin)[0] ?? 'light'];
   // The default skin, and a variant that sets no colors (it shows the base
@@ -52,9 +51,9 @@ function SkinSwatch({ skin, theme }: { skin: SkinFile; theme: ResolvedTheme }) {
   const colors = skin.id === DEFAULT_SKIN_ID || (variant !== undefined && variant.colors === undefined) ? PAPER_SWATCH[theme] : variant?.colors ?? {};
   const cells = [colors.canvas, colors.paper, colors.panel, colors.accent].map((value) => value ?? 'transparent');
   return (
-    <span aria-hidden className="flex h-5 shrink-0 overflow-hidden rounded-[4px] ring-1 ring-hairline">
+    <span aria-hidden className="flex h-9 shrink-0 self-center overflow-hidden rounded-[6px] ring-1 ring-hairline">
       {cells.map((color, index) => (
-        <span key={index} className="h-full w-3" style={{ backgroundColor: color }} />
+        <span key={index} className="h-full w-5" style={{ backgroundColor: color }} />
       ))}
     </span>
   );
@@ -91,8 +90,7 @@ export function SkinPicker({ theme, labelledBy }: { theme: ResolvedTheme; labell
 
   return (
     <div className="space-y-2">
-      {/* Rows stretch to the tallest card in their line, so a wrapped
-          description never leaves a ragged grid. */}
+      {/* A tile is a choice, not a document: swatch and name carry it. */}
       <ul className="grid gap-1 sm:grid-cols-2" aria-labelledby={labelledBy}>
         {options.map(({ skin, source }) => {
           const selected = stored.selection.source === source && stored.selection.id === skin.id;
@@ -100,8 +98,6 @@ export function SkinPicker({ theme, labelledBy }: { theme: ResolvedTheme; labell
           const only = variants.length === 1 ? t(variants[0] === 'dark' ? 'st.skin.darkOnly' : 'st.skin.lightOnly') : null;
           // Built-ins speak the UI language; a user skin shows its author's text.
           const nameKey = source === 'builtin' ? builtinSkinNameKey(skin.id) : undefined;
-          const descriptionKey = source === 'builtin' ? builtinSkinDescriptionKey(skin.id) : undefined;
-          const description = descriptionKey !== undefined ? t(descriptionKey) : skin.description;
           return (
             <li key={`${source}:${skin.id}`} className="flex">
               <button
@@ -109,7 +105,7 @@ export function SkinPicker({ theme, labelledBy }: { theme: ResolvedTheme; labell
                 aria-pressed={selected}
                 data-skin-choice={skin.id}
                 onClick={() => { writeSkinPrefs({ selection: { source, id: skin.id ?? '' } }); }}
-                className={`flex min-h-[72px] w-full items-start gap-3 rounded-[10px] px-3 py-2 text-left transition-colors ${
+                className={`flex w-full items-center gap-3 rounded-[10px] px-3 py-2.5 text-left transition-colors ${
                   selected
                     ? 'bg-panel shadow-[var(--kiki-sheet-shadow)]'
                     : 'hover:bg-ink/[0.04]'
@@ -124,11 +120,6 @@ export function SkinPicker({ theme, labelledBy }: { theme: ResolvedTheme; labell
                       {only !== null ? ` · ${only}` : ''}
                     </span>
                   </span>
-                  {description !== undefined ? (
-                    <span data-skin-description className="mt-0.5 line-clamp-2 block text-[12px] leading-4 text-ink-soft" title={description}>
-                      {description}
-                    </span>
-                  ) : null}
                 </span>
               </button>
             </li>

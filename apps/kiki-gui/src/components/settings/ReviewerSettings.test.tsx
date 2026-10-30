@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n';
+import { DecisionJudgeRows } from './DecisionSources';
 import { ReviewerSettings } from './ReviewerSettings';
 
-const { client } = vi.hoisted(() => ({ client: { getConfig: vi.fn(), listModels: vi.fn(), listProviders: vi.fn(), patchConfig: vi.fn(), revealSecret: vi.fn(), moveReviewerKey: vi.fn() } }));
+const { client } = vi.hoisted(() => ({ client: { getConfig: vi.fn(), listModels: vi.fn(), listProviders: vi.fn(), patchConfig: vi.fn(), revealSecret: vi.fn(), moveReviewerKey: vi.fn(), getMemoryAdvisorSettings: vi.fn(), patchMemoryAdvisorSettings: vi.fn() } }));
 vi.mock('../../state/connection', () => ({ useConnection: () => ({ client }) }));
 const navigate = vi.hoisted(() => vi.fn());
 vi.mock('../dirtyGuard', () => ({ useDirtyReporter: vi.fn(), useGuardedNavigate: () => navigate }));
@@ -31,6 +33,8 @@ beforeEach(() => {
   client.getConfig.mockResolvedValue({ permission: {} });
   client.listModels.mockResolvedValue({ items: [{ id: 'test-model', provider_id: 'test', display_name: 'Test model' }] });
   client.listProviders.mockResolvedValue({ items: [] });
+  client.getMemoryAdvisorSettings.mockResolvedValue({ enabled: true, approval: 'auto', budget: 2000, workspaces: {}, effective_enabled: true,
+    advisor: { mode: 'off' }, advisor_status: { state: 'off', consent_required: false, logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0 } });
   client.patchConfig.mockImplementation(async (patch: { permission: { reviewer: Record<string, unknown> } }) => ({ permission: { reviewer: {
     backend: patch.permission.reviewer['backend'], model: patch.permission.reviewer['model'],
     timeoutMs: patch.permission.reviewer['timeout_ms'],
@@ -46,9 +50,12 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); queries.clear(); container.remove(); });
 async function render() {
-  await act(async () => root.render(<QueryClientProvider client={queries}><I18nProvider>
+  // The reviewer card shows the source; the decision-models rows (Models &
+  // providers) are where an older key is moved, so both render together.
+  await act(async () => root.render(<MemoryRouter><QueryClientProvider client={queries}><I18nProvider>
     <ReviewerSettings />
-  </I18nProvider></QueryClientProvider>));
+    <DecisionJudgeRows />
+  </I18nProvider></QueryClientProvider></MemoryRouter>));
   await settle();
 }
 
@@ -65,7 +72,8 @@ describe('permission reviewer settings', () => {
     expect(container.querySelector('#reviewer-model')).toBeNull();
     expect(container.querySelector('#reviewer-api-key')).toBeNull();
     expect(container.querySelector('[data-decision-summary-value]')?.textContent).toBe('typesafe · jev-latest');
-    await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '5000');
+    // The field works in seconds (unit right of the input); the wire keeps ms.
+    await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '5');
     await act(async () => button('Save').click());
     await settle();
     expect(client.patchConfig).toHaveBeenCalledWith({ permission: { reviewer: {
@@ -73,11 +81,11 @@ describe('permission reviewer settings', () => {
     } } });
   });
 
-  it('links the read-only source to Who decides', async () => {
+  it('links the read-only source to Decision models', async () => {
     await render();
     expect(container.querySelector('[data-decision-summary-value]')?.textContent).toBe('Not chosen');
     await act(async () => container.querySelector<HTMLButtonElement>('[data-decision-change]')!.click());
-    expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=defaults#st-card-decision-judges');
+    expect(navigate).toHaveBeenCalledWith('/settings/ai?tab=providers#st-card-decision-connections');
   });
 
   it('echoes an older Jev key and moves it on the server into a free connection ID', async () => {
@@ -194,9 +202,9 @@ describe('permission reviewer settings', () => {
 
   it('discards tuning changes without writing', async () => {
     await render();
-    await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '6000');
+    await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '6');
     await act(async () => button('Discard changes').click());
-    expect(container.querySelector<HTMLInputElement>('input[type="number"]')?.value).toBe('8000');
+    expect(container.querySelector<HTMLInputElement>('input[type="number"]')?.value).toBe('8');
     expect(client.patchConfig).not.toHaveBeenCalled();
   });
 });

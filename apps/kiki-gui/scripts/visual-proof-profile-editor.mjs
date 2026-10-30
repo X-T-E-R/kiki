@@ -1,17 +1,20 @@
 /**
  * Visual-proof walker for the Agents team view and profile editor (fixture
- * `profile-editor`): the team table, the editor sheet on its frequent
- * fields, subagents with lease pins and model candidates, Advanced open, the
+ * `profile-editor`): the team table, the editor sheet tab by tab, subagents
+ * with lease pins and model candidates, the Advanced tab, the
  * raw file, diagnostics (missing alias, a shadowed file), the new-profile
  * starts, and an external-engine profile. Both themes; 1440 and 390.
  */
 
 export function createProfileEditorWalker({ page, shot, resizeViewport, setProofTheme, view, webUrl, fixtureUrl, fixtureToken, control }) {
   const url = (path) => `${webUrl}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl())}&token=${fixtureToken}`;
-  const sheet = () => page.locator('[role="dialog"]');
+  // The agent editor is an in-page detail, not a dialog.
+  const sheet = () => page.locator('[data-agent-detail]');
+  // Creating an agent is a side panel over the list.
+  const createPanel = () => page.locator('[data-agent-create-panel]');
   const assertNoOverflow = async (label) => {
     const overflow = await page.evaluate(() => {
-      const panel = document.querySelector('[role="dialog"]');
+      const panel = document.querySelector('[data-agent-detail]');
       const doc = document.documentElement.scrollWidth > window.innerWidth + 1;
       return doc || (panel instanceof HTMLElement && panel.scrollWidth > panel.clientWidth + 1);
     });
@@ -29,17 +32,13 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
   };
   const closeSheet = async () => {
     await sheet().locator('[data-agent-back]').first().click();
-    await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 5000 });
+    await page.waitForSelector('[data-agent-detail]', { state: 'detached', timeout: 5000 });
   };
+  // The editor is tabbed: open the tab that owns the target before scrolling to it.
   const scrollTo = async (selector) => {
+    const panel = await sheet().locator(selector).first().evaluate((element) => element.closest('[data-profile-panel]')?.getAttribute('data-profile-panel') ?? null);
+    if (panel !== null) await sheet().locator(`[data-profile-tab="${panel}"]`).click();
     await sheet().locator(selector).first().evaluate((element) => element.scrollIntoView({ block: 'start' }));
-    await page.waitForTimeout(200);
-  };
-  // Teams: one card per main agent with its dispatchable roster.
-  const showTeams = async () => {
-    await page.locator('[data-team-layout="teams"]').click();
-    await page.waitForSelector('[data-roster-team="lead"] [data-roster-member="implementer"]', { timeout: 5000 });
-    if (await page.locator('[data-roster-team="lead"] [data-roster-member="think"]').count() !== 1) throw new Error('lead team is missing a leased member');
     await page.waitForTimeout(200);
   };
   // Unsaved state: edit two frequent fields; the draft footer must announce them.
@@ -68,11 +67,8 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
     });
     if (escapes) throw new Error('May call cell overflows the card');
     const groupOrder = await page.locator('[data-team-group]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-team-group')));
-    if (groupOrder.join(',') !== 'workspace,global,builtin') throw new Error(`unexpected group order ${groupOrder.join(',')}`);
+    if (groupOrder.join(',') !== 'main,subagent') throw new Error(`unexpected group order ${groupOrder.join(',')}`);
     await shot(`profile-team-${theme}`);
-    await showTeams();
-    await shot(`profile-teams-${theme}`);
-    await page.locator('[data-team-layout="list"]').click();
 
     // Frequent fields: prompt pane + identity/model rail.
     await openProfile('[data-team-open="lead"]');
@@ -80,6 +76,7 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
     await makeDirty();
     await shot(`profile-editor-unsaved-${theme}`);
     await discardDraft();
+    await sheet().locator('[data-profile-tab="run"]').click();
     await sheet().locator('#profile-effort').click();
     await page.waitForSelector('[role="option"]', { timeout: 3000 });
     await shot(`profile-editor-effort-open-${theme}`);
@@ -138,8 +135,13 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
     await sheet().locator('[data-settings-draft][data-dirty="true"]').waitFor({ state: 'detached', timeout: 5000 });
     await closeSheet();
     await openProfile('[data-team-row="implementer"] [data-team-open]');
+    await sheet().locator('[data-profile-tab="dispatch"]').click();
     if (await sheet().locator('[data-dispatch-can-spawn-mode="off"][aria-pressed="true"]').count() !== 1) throw new Error('the saved switch did not come back');
     await shot(`profile-dispatch-saved-${theme}`);
+    // Back to undeclared, so the helper limits below are on screen again.
+    await sheet().locator('[data-dispatch-can-spawn-mode="inherit"]').click();
+    await sheet().locator('[data-settings-draft] button').filter({ hasText: /Save|保存/ }).first().click();
+    await sheet().locator('[data-settings-draft][data-dirty="true"]').waitFor({ state: 'detached', timeout: 5000 });
     await closeSheet();
 
     await openProfile('[data-team-open="implementer"]');
@@ -147,11 +149,11 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
     await shot(`profile-diag-shadows-${theme}`);
     await scrollTo('[data-profile-section="model-profiles"]');
     await shot(`profile-editor-model-profiles-${theme}`);
-    await sheet().locator('[data-profile-section="advanced"] > summary').click();
-    if (await sheet().locator('[data-alias-chips="spawn-allowed-models"] [data-alias-chip]').count() !== 2) throw new Error('spawn constraints not loaded');
     await scrollTo('[data-profile-section="advanced"]');
     await shot(`profile-editor-advanced-${theme}`);
-    await scrollTo('[data-profile-field="spawnConstraints"]');
+    await sheet().locator('[data-profile-tab="dispatch"]').click();
+    await scrollTo('[data-model-rules="spawn"]');
+    if (await sheet().locator('[data-alias-chips="spawn-allowed-models"] [data-alias-chip]').count() !== 2) throw new Error('spawn constraints not loaded');
     await shot(`profile-editor-spawn-${theme}`);
     await sheet().locator('[data-profile-mode="raw"]').click();
     await sheet().locator('[data-profile-raw] textarea').waitFor({ timeout: 5000 });
@@ -173,11 +175,11 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
 
     // External engine + main expression; the engine picker reads GET /executors.
     await openProfile('[data-team-open="implementer-grok"]');
+    await sheet().locator('[data-profile-tab="run"]').click();
     await sheet().locator('#profile-engine').click();
-    await page.waitForSelector('[role="option"]:has-text("Claude Code")', { timeout: 3000 });
+    await page.waitForSelector('[role="option"]', { timeout: 3000 });
     await shot(`profile-engine-catalog-${theme}`);
     await page.keyboard.press('Escape');
-    await sheet().locator('[data-profile-section="tools"] > summary').click();
     await shot(`profile-external-engine-${theme}`);
     await scrollTo('[data-profile-section="tools"]');
     if (await sheet().locator('[data-profile-field="tools"][data-field-applicability="ignored"]').count() !== 1) throw new Error('ignored tools not marked');
@@ -192,12 +194,14 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
     await page.locator('[data-profile-new]').click();
     await page.waitForSelector('[data-agent-create]', { timeout: 5000 });
     await shot(`profile-new-copy-${theme}`);
-    await sheet().locator('[data-new-start="blank"]').click();
-    await sheet().locator('#new-profile-name').fill('reviewer');
+    await createPanel().locator('[data-new-start="blank"]').click();
+    await createPanel().locator('#new-profile-name').fill('reviewer');
     await page.waitForTimeout(200);
     await shot(`profile-new-blank-taken-${theme}`);
-    await sheet().locator('#new-profile-name').fill('');
-    await closeSheet();
+    await createPanel().locator('#new-profile-name').fill('');
+    await createPanel().getByRole('button', { name: /^(Close|关闭)$/ }).first().click();
+    await page.locator('[role="alertdialog"] button').filter({ hasText: /Discard|丢弃/ }).first().click({ timeout: 2000 }).catch(() => undefined);
+    await page.waitForSelector('[data-agent-create]', { state: 'detached', timeout: 5000 });
   }
 
   async function mobile(theme) {
@@ -205,15 +209,11 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
     await openTeam();
     await assertNoOverflow('team view at 390');
     await shot(`profile-team-390-${theme}`);
-    await showTeams();
-    await assertNoOverflow('teams at 390');
-    await shot(`profile-teams-390-${theme}`);
-    await page.locator('[data-team-layout="list"]').click();
     await openProfile('[data-team-open="lead"]');
     await assertNoOverflow('editor at 390');
     await shot(`profile-editor-390-${theme}`);
-    await scrollTo('[data-profile-rail]');
-    await shot(`profile-editor-rail-390-${theme}`);
+    await scrollTo('[data-profile-field="description"]');
+    await shot(`profile-editor-identity-390-${theme}`);
     await makeDirty();
     await shot(`profile-editor-unsaved-390-${theme}`);
     await discardDraft();
@@ -225,7 +225,6 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
     await sheet().locator('[data-dispatch-can-spawn-mode="inherit"]').click();
     await assertNoOverflow('child agent lists at 390');
     await discardDraft();
-    await sheet().locator('[data-profile-section="advanced"] > summary').click();
     await scrollTo('[data-profile-section="advanced"]');
     await assertNoOverflow('advanced at 390');
     await shot(`profile-editor-advanced-390-${theme}`);
@@ -237,7 +236,10 @@ export function createProfileEditorWalker({ page, shot, resizeViewport, setProof
     await page.waitForSelector('[data-agent-create]', { timeout: 5000 });
     await assertNoOverflow('new profile at 390');
     await shot(`profile-new-390-${theme}`);
-    await closeSheet();
+    await createPanel().getByRole('button', { name: /^(Close|关闭)$/ }).first().click();
+    // A copy start is a draft already; the leave guard asks before dropping it.
+    await page.locator('[role="alertdialog"] button').filter({ hasText: /Discard|丢弃/ }).first().click({ timeout: 2000 }).catch(() => undefined);
+    await page.waitForSelector('[data-agent-create]', { state: 'detached', timeout: 5000 });
     await resizeViewport(1440);
   }
 

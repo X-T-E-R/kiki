@@ -110,7 +110,7 @@ export function NbSearchQualityEditor({
           </p>
         ) : (
           <>
-            <ul className="divide-y divide-hairline" data-nb-search-quality-markers>
+            <ul className="space-y-0" data-nb-search-quality-markers>
               {(own ?? []).map((marker, index) => (
                 <li key={`${index}:${marker}`} className="flex items-center gap-2 py-1">
                   <span className="min-w-0 flex-1 break-all font-mono text-[11px] text-ink">{marker}</span>

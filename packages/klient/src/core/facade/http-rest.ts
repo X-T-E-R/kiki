@@ -764,7 +764,7 @@ export interface HttpRestFacade {
     info(id: string): Promise<PluginInfo>;
     settings(id: string): Promise<import('@kiki/protocol').PluginSettingsResponse>;
     setSettings(id: string, input: import('@kiki/protocol').PluginSettingsPatch): Promise<import('@kiki/protocol').PluginSettingsResponse>;
-    setEnabled(id: string, enabled: boolean): Promise<{ readonly ok: true }>;
+    setEnabled(id: string, enabled: boolean, options?: { readonly defaultEnabled?: boolean }): Promise<{ readonly ok: true }>;
     remove(id: string, options?: { readonly deleteData?: boolean }): Promise<{ readonly ok: true }>;
     rollback(id: string): Promise<{ readonly ok: true }>;
     installPrerequisite(id: string, input: import('@kiki/protocol').PluginPrerequisiteInstall): Promise<{ readonly ok: true }>;

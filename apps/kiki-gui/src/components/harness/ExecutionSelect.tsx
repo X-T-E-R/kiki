@@ -20,6 +20,7 @@ import {
   isNativeExecutor,
   type ExecutionChoice,
 } from '@kiki/session-core/composer';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import {
   resolveCatalogModel,
   sortThinkingEffortsForDisplay,
@@ -743,7 +744,7 @@ export function ExecutionSelect({
                         isLevelActive ? EFFORT_SELECTED_CLASS : EFFORT_IDLE_CLASS
                       }`}
                     >
-                      {level}
+                      {t(`composer.effort.${level}` as I18nKey) === `composer.effort.${level}` ? level : t(`composer.effort.${level}` as I18nKey)}
                     </button>
                   );
                 })}

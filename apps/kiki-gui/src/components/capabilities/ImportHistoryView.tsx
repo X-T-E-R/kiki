@@ -1078,7 +1078,7 @@ function ImportPreviewPanel({
         <p className="text-[12px] leading-4 text-ink-soft" data-plugin-import-no-losses>{t('cap.import.noLosses')}</p>
       )}
       <PreviewSample preview={preview} />
-      <div className="flex flex-wrap items-center gap-2 border-t border-hairline pt-3">
+      <div className="flex flex-wrap items-center gap-2 pt-3">
         {/* One short line, not a paragraph. For an archive it is the reason the
             result cannot be continued; for a session it is the one honest
             limit — the conversation's old tool calls and system text arrive as

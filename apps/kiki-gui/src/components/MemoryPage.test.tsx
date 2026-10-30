@@ -347,7 +347,7 @@ describe('MemoryPage advisor switch', () => {
     const setup = container.querySelector<HTMLButtonElement>('[data-memory-advisor-setup]')!;
     expect(setup.textContent).toBe('Choose a source');
     await act(async () => { setup.click(); });
-    expect(onNavigate).toHaveBeenCalledWith('/settings/ai?tab=defaults#st-card-decision-judges');
+    expect(onNavigate).toHaveBeenCalledWith('/settings/ai?tab=providers#st-card-decision-connections');
   });
 
   it('shows a failed switch as a retryable toast and keeps the saved state', async () => {
@@ -2139,12 +2139,18 @@ describe('MemoryPage governed store', () => {
     seedMemories({ 'global::': [current()] });
     vi.spyOn(client, 'memoryAuthority').mockResolvedValue(sqlite);
     vi.spyOn(client, 'memoryProvenance').mockResolvedValue({ sources: [], adjudications: [], relatedObjectIds: ['m_deploy'] });
+    const remove = vi.spyOn(client, 'deleteMemory').mockResolvedValue({ operation_id: 'op_drop' });
     const container = await renderPage();
     await click(container, '[data-memory-row="m_deploy"]');
     expect(container.querySelector('[data-memory-delete]')?.textContent).toBe('Delete');
     expect(container.querySelector('[data-memory-forget-open]')?.textContent).toBe('Forget permanently');
     await click(container, '[data-memory-delete]');
-    expect(document.body.textContent).toContain('You can undo this from the entry history.');
+    expect(remove).toHaveBeenCalled();
+    // Undoable deletes run at once: the toast names the inverse, and no
+    // confirmation claimed anything is permanent.
+    const deleted = getToasts().find((toast) => toast.undo !== undefined && toast.text.includes('Deleted'));
+    expect(deleted).toBeDefined();
+    expect(container.querySelector('[data-memory-detail="m_deploy"]')).toBeNull();
   });
 
   it('reads everything but withholds every edit in read-only recovery, and resumes with the exact recovery id and epoch', async () => {

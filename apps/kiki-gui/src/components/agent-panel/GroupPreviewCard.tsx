@@ -18,14 +18,10 @@ import { createPortal } from 'react-dom';
 import { floatingSurfaceZIndex } from '../../lib/uiBusy';
 
 import { useI18n } from '../../i18n';
-import { clampOverlayPosition } from '../../lib/overlayPosition';
+import { placeAnchored } from '../overlays/anchoredPosition';
 import { toolGroupCountLine } from './toolGroupText';
 import { toolGroupPreview, type ToolGroup } from './toolGroups';
 
-/** The viewer's padding around the card, matching `clampOverlayPosition`. */
-const MARGIN = 8;
-/** Stacks above the chip once the space below drops under this. */
-const MIN_BELOW = 96;
 /** Never wider than this on a wide rail, however wide the cluster is. */
 const MAX_WIDTH = 360;
 
@@ -72,16 +68,13 @@ export function GroupPreviewCard({
     return () => { observer.disconnect(); };
   }, []);
 
-  // First paint before the measurement: the natural width, so the reader never
-  // sees a one-frame flash of a collapsed box.
+  // The shared anchored placement: below the chip while it fits, flipped when
+  // the viewport is tighter, clamped inside the window — one rule for every
+  // floating surface in the app.
   const place = (): { left: number; top: number } => {
     const viewport = { width: window.innerWidth, height: window.innerHeight };
-    const height = size?.height ?? 0;
-    const below = viewport.height - anchor.rect.bottom;
-    const top = below >= Math.max(MIN_BELOW, height)
-      ? anchor.rect.bottom + 6
-      : Math.max(MARGIN, anchor.rect.top - height - 6);
-    return clampOverlayPosition(anchor.rect.left, top, { width, height }, viewport, MARGIN);
+    const placed = placeAnchored(anchor.rect, { width, height: size?.height ?? 0 }, viewport, { gap: 6 });
+    return { left: placed.left, top: placed.top };
   };
 
   const names = (list: readonly string[], label: string, more: number) => (

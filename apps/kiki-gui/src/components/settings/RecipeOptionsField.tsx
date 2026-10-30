@@ -5,6 +5,7 @@ import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Toggle, type Feedback } from '../controls';
+import { SettingField, SettingsBox } from './fields';
 
 export function RecipeOptionsField({ recipe, sourceFile, values, options, disabled = false, onChange }: {
   recipe: string | undefined;
@@ -33,18 +34,21 @@ export function RecipeOptionsField({ recipe, sourceFile, values, options, disabl
   const definitions = options ?? query.data?.resolved.options ?? [];
   if (query.isError && options === undefined) return <FeedbackLine feedback={{ tone: 'error', text: errorText(locale, query.error) }} />;
   if (definitions.length === 0) return null;
-  return <fieldset className="min-w-0 space-y-2" disabled={disabled || saving} data-recipe-options>
-    <legend className="mb-1 text-[12px] font-medium text-ink-soft">{t('st.recipe.options')}</legend>
-    {definitions.map((option) => <div key={option.id} className="space-y-0.5" data-recipe-option={option.id}>
-      <Toggle id={`${id}-${option.id}`} layout="row" label={option.name} checked={values?.[option.id] ?? option.default} disabled={disabled || saving}
-        onChange={(checked) => {
-          setSaving(true); setFeedback(null);
-          void Promise.resolve().then(() => onChange({ ...values, [option.id]: checked })).catch((error: unknown) => {
-            setFeedback({ tone: 'error', text: errorText(locale, error) });
-          }).finally(() => { setSaving(false); });
-        }} />
-      {option.description === undefined ? null : <p className="text-[11.5px] leading-5 text-ink-faint">{option.description}</p>}
-    </div>)}
+  return <fieldset className="min-w-0" disabled={disabled || saving} data-recipe-options>
+    <legend className="text-[13px] font-medium text-ink">{t('st.recipe.options')}</legend>
+    <SettingsBox>
+      {definitions.map((option) => <div key={option.id} data-recipe-option={option.id}>
+        <SettingField label={option.name} htmlFor={`${id}-${option.id}`} help={option.description}>
+          <Toggle id={`${id}-${option.id}`} layout="bare" label={option.name} checked={values?.[option.id] ?? option.default} disabled={disabled || saving}
+            onChange={(checked) => {
+              setSaving(true); setFeedback(null);
+              void Promise.resolve().then(() => onChange({ ...values, [option.id]: checked })).catch((error: unknown) => {
+                setFeedback({ tone: 'error', text: errorText(locale, error) });
+              }).finally(() => { setSaving(false); });
+            }} />
+        </SettingField>
+      </div>)}
+    </SettingsBox>
     <FeedbackLine feedback={feedback} />
   </fieldset>;
 }

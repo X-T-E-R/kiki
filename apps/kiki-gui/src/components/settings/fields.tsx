@@ -19,6 +19,7 @@
  */
 
 import { Hint } from '../controls';
+import { Icon } from '../icons';
 import { SettingHelp } from './SettingHelp';
 
 /**
@@ -36,12 +37,43 @@ export function SettingsGroup({
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-2 border-t border-hairline pt-5 first:border-t-0 first:pt-0" data-settings-group>
+    <div className="space-y-2 pt-5 first:pt-0" data-settings-group>
       <div>
         <p className="text-[13px] font-medium text-ink">{title}</p>
         {help !== undefined ? <Hint>{help}</Hint> : null}
       </div>
-      <div className="space-y-2">{children}</div>
+      <SettingsBox>{children}</SettingsBox>
+    </div>
+  );
+}
+
+/**
+ * The run of settings under one section heading: one row per decision, a
+ * hairline between rows, no frame and no fill. The heading names the topic;
+ * the aligned rows and the lines between them make it read as one group
+ * instead of loose label/hint fragments. Not a card: the page background
+ * shows through, and a frame is reserved for real object lists.
+ * Lists, tables and long free text stay outside.
+ *
+ * Every direct child is a row and gets the row padding, so a `SettingField`,
+ * a `DependentField`, a button line or a notice all line up on one edge. A
+ * child that renders nothing (a desktop-only row in the browser, a wrapper
+ * whose component returned null) is hidden and draws no line. A
+ * `display: contents` wrapper (kept for a deep-link anchor id) draws no box
+ * of its own, so its children are the rows: they get the padding and the
+ * line instead, except the very first row of the group.
+ */
+export function SettingsBox({ children, className = '', ...rest }: {
+  children: React.ReactNode;
+  className?: string;
+} & Record<`data-${string}`, string | undefined>) {
+  return (
+    <div
+      {...rest}
+      data-settings-box
+      className={`[&>*]:py-3 [&>:empty]:hidden [&>:not(:empty)~:not(:empty)]:border-t [&>:not(:empty)~:not(:empty)]:border-hairline [&>.contents>*]:py-3 [&>.contents>*]:border-t [&>.contents>*]:border-hairline [&>.contents:first-child>:first-child]:border-t-0 ${className}`}
+    >
+      {children}
     </div>
   );
 }
@@ -61,7 +93,7 @@ export function SettingField({
   layout = 'row',
   children,
 }: {
-  label: string;
+  label: React.ReactNode;
   /** Set when the control is a real form element, so the label activates it. */
   htmlFor?: string;
   /** Id on the label text, for `aria-labelledby` on grouped controls. */
@@ -140,8 +172,12 @@ export function AdvancedDetails({
   children: React.ReactNode;
 } & React.DetailsHTMLAttributes<HTMLDetailsElement>) {
   return (
-    <details className="text-[11px] text-ink-soft" {...rest}>
-      <summary className="cursor-pointer select-none font-medium text-ink-soft hover:text-ink">
+    // The same chevron and 12px text as every other fold in the app, not the
+    // browser's ▶ marker at 11px: a collapsed tail should read as one quiet,
+    // familiar control wherever it sits.
+    <details className="text-[12px] text-ink-soft" {...rest}>
+      <summary className="-ml-1 inline-flex min-h-7 cursor-pointer list-none select-none items-center gap-1 rounded px-1 font-medium text-ink-soft outline-none transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
+        <Icon name="chevron" size={12} className="shrink-0 text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] ease-out [details[open]>summary>&]:rotate-90 motion-reduce:transition-none" />
         {summary}
       </summary>
       <div className="mt-1.5 space-y-1.5 leading-relaxed">{children}</div>

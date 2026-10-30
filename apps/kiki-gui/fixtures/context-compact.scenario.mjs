@@ -76,12 +76,12 @@ export default {
     session('session_fixture_compact_95', 'Fixture: window 358.6k', 'fixture/window-358k', 200_000, 358_600),
   ],
   snapshots: {
-    session_fixture_compact_room: { messages: [], has_more: false },
-    session_fixture_compact_past: { messages: [], has_more: false },
-    session_fixture_compact_budget: { messages: [], has_more: false },
-    session_fixture_compact_tiny: { messages: [], has_more: false },
-    session_fixture_compact_legacy: { messages: [], has_more: false },
-    session_fixture_compact_95: { messages: [], has_more: false },
+    session_fixture_compact_room: { messages: [], has_more: false, agent_transcripts: { main: { agent_id: 'main', has_more: false, meta: { agent: { contextTokens: 312_000, maxContextTokens: 550_000 } }, items: [] } } },
+    session_fixture_compact_past: { messages: [], has_more: false, agent_transcripts: { main: { agent_id: 'main', has_more: false, meta: { agent: { contextTokens: 430_000, maxContextTokens: 550_000 } }, items: [] } } },
+    session_fixture_compact_budget: { messages: [], has_more: false, agent_transcripts: { main: { agent_id: 'main', has_more: false, meta: { agent: { contextTokens: 180_000, maxContextTokens: 550_000 } }, items: [] } } },
+    session_fixture_compact_tiny: { messages: [], has_more: false, agent_transcripts: { main: { agent_id: 'main', has_more: false, meta: { agent: { contextTokens: 41_000, maxContextTokens: 96_000 } }, items: [] } } },
+    session_fixture_compact_legacy: { messages: [], has_more: false, agent_transcripts: { main: { agent_id: 'main', has_more: false, meta: { agent: { contextTokens: 120_000, maxContextTokens: 550_000 } }, items: [] } } },
+    session_fixture_compact_95: { messages: [], has_more: false, agent_transcripts: { main: { agent_id: 'main', has_more: false, meta: { agent: { contextTokens: 200_000, maxContextTokens: 358_600 } }, items: [] } } },
   },
   autoCompact: {
     windows: {

@@ -5,7 +5,7 @@
  * (or an optional retry) settles them. Mounted once at the app root.
  */
 
-import { useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 
 import { useI18n } from '../i18n';
@@ -38,12 +38,17 @@ function ToastCard({ toast }: { toast: ToastItem }) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  // Sticky errors have no timer; success/info self-dismiss.
+  // Sticky errors have no timer; success/info self-dismiss. Pointer or focus
+  // inside pauses the clock, so an undo is never pulled from under a reader.
+  const duration = toast.durationMs ?? TOAST_AUTO_DISMISS_MS;
+  const [paused, setPaused] = useState(false);
+  const remaining = useRef(duration);
   useEffect(() => {
-    if (toast.tone === 'error') return;
-    const timer = setTimeout(() => { dismissToast(toast.id); }, TOAST_AUTO_DISMISS_MS);
-    return () => { clearTimeout(timer); };
-  }, [toast.id, toast.tone]);
+    if (toast.tone === 'error' || paused) return;
+    const started = Date.now();
+    const timer = setTimeout(() => { dismissToast(toast.id); }, remaining.current);
+    return () => { clearTimeout(timer); remaining.current = Math.max(0, remaining.current - (Date.now() - started)); };
+  }, [toast.id, toast.tone, paused]);
 
   const metaLine = [
     toast.code !== undefined ? `code ${toast.code}` : undefined,
@@ -70,11 +75,16 @@ function ToastCard({ toast }: { toast: ToastItem }) {
   return (
     <div
       role="status"
-      className={`anim-enter flex w-88 max-w-full flex-col rounded-xl border bg-panel p-2 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)] ${TONE_CLASS[toast.tone]}`}
+      data-toast={toast.undo !== undefined ? 'undo' : toast.tone}
+      onPointerEnter={() => { setPaused(true); }}
+      onPointerLeave={() => { setPaused(false); }}
+      onFocus={() => { setPaused(true); }}
+      onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setPaused(false); }}
+      className={`anim-enter relative flex w-88 max-w-full flex-col overflow-hidden rounded-xl border bg-panel p-2 shadow-[0_8px_24px_-10px_rgba(28,25,23,0.3)] ${toast.undo !== undefined ? TONE_CLASS.info : TONE_CLASS[toast.tone]}`}
     >
       <div className="flex items-start gap-2">
         <span aria-hidden className="mt-[2px] flex w-3.5 shrink-0 justify-center">
-          {TONE_ICON[toast.tone] === null ? null : <Icon name={TONE_ICON[toast.tone]!} />}
+          {toast.undo !== undefined ? null : TONE_ICON[toast.tone] === null ? null : <Icon name={TONE_ICON[toast.tone]!} />}
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-[12px] leading-snug break-words">{toast.text}</p>
@@ -92,6 +102,29 @@ function ToastCard({ toast }: { toast: ToastItem }) {
             >
               {copied ? <Icon name="check" size={12} /> : null}
               {copied ? t('cb.copied') : t('cb.copy')}
+            </button>
+          ) : null}
+          {toast.undo !== undefined ? (
+            <button
+              type="button"
+              data-toast-undo
+              onClick={() => {
+                dismissToast(toast.id);
+                void toast.undo?.run();
+              }}
+              className="rounded-md px-2 py-0.5 text-[12px] font-semibold text-selected-ink transition-colors hover:bg-selected-ink/10 focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:py-2"
+            >
+              {toast.undo.label ?? t('toast.undo')}
+            </button>
+          ) : null}
+          {toast.undo !== undefined ? (
+            <button
+              type="button"
+              aria-label={t('toast.dismissAria')}
+              onClick={() => { dismissToast(toast.id); }}
+              className="flex h-6 w-6 items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink pointer-coarse:h-9 pointer-coarse:w-9"
+            >
+              <Icon name="close" size={12} />
             </button>
           ) : null}
           {toast.retry !== undefined ? (
@@ -118,6 +151,12 @@ function ToastCard({ toast }: { toast: ToastItem }) {
           ) : null}
         </div>
       </div>
+      {toast.undo !== undefined ? (
+        // The time left to undo, as a hairline that drains; it holds still
+        // while paused and under reduced motion it is simply absent.
+        <span aria-hidden data-toast-countdown className="toast-countdown absolute inset-x-0 bottom-0 h-[2px] origin-left bg-selected-ink/35"
+          style={{ animationDuration: `${duration}ms`, animationPlayState: paused ? 'paused' : 'running' }} />
+      ) : null}
       {toast.detail !== undefined && toast.detail !== '' ? (
         <div className="mt-1.5 pt-1 border-t border-hairline/50">
           <button

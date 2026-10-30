@@ -1,11 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useRef, useState } from 'react';
 
 import { readDesktopPrefs } from '@kiki/session-core/settings';
 
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
-import { clampOverlayPosition } from '../lib/overlayPosition';
 import { useSpacePreferencesFrame } from '../lib/spacePreferences';
 import { spaceSettingsTargetOf } from '../lib/spaceSettings';
 import { browsableRemote, connectionAddress, remoteSummaryView, useRemoteConnections } from '../lib/remoteConnections';
@@ -26,17 +24,15 @@ import {
 import { pushToast } from '../lib/toasts';
 import { readHomeViewRoute } from '../lib/spaceViewState';
 import type { PreparedScope } from '../lib/navScope';
-import { registerOverlay } from '../lib/uiBusy';
 import { useConnection } from '../state/connection';
 import type { RemoteConnection } from '@kiki/protocol';
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { Icon } from './icons';
+import { AnchoredPopover } from './overlays/AnchoredPopover';
 import { SpaceDot } from './settings/spaces/SpaceDot';
 import { RemoteStateChip } from './settings/remote/parts';
 import { useRemoteSpaceEntry, useReturnToLocalSpace } from './settings/remote/useRemoteSpaceEntry';
 import { Wordmark } from './Wordmark';
-
-const MENU_WIDTH = 296;
 
 /**
  * §6.4 / §9.4: the sidebar wordmark is the one space entry. It is always a
@@ -209,7 +205,7 @@ export function SpaceSwitcher() {
         <Icon name="chevron" size={12} className="shrink-0 rotate-90 text-ink-faint transition-transform group-hover:text-ink-soft group-aria-expanded:-rotate-90" />
       </button>
       {open ? (
-        <SpaceMenu anchor={triggerRef.current} onClose={() => { setOpen(false); }}>
+        <SpaceMenu anchor={triggerRef} onClose={() => { setOpen(false); }}>
           {inRemoteScope ? (
             <>
               <p data-space-remote-note className="px-3 pt-2 pb-2 text-[12px] leading-[1.45] text-ink-soft">{t('sidebar.space.remoteBody', { name: sshLabel ?? currentRemoteName })}</p>
@@ -340,46 +336,31 @@ function RemoteSpaceRow({ record, current, shortcut, showShortcut, onEnter }: {
   );
 }
 
-function SpaceMenu({ anchor, onClose, children }: { anchor: HTMLElement | null; onClose: () => void; children: React.ReactNode }) {  const { t } = useI18n();
-  const ref = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState(0);
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  useLayoutEffect(() => {
-    setHeight(ref.current?.offsetHeight ?? 0);
-    ref.current?.querySelector<HTMLButtonElement>('[aria-current="true"], button')?.focus();
-  }, []);
-  useEffect(() => {
-    const unregister = registerOverlay('space-switcher-menu');
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.stopPropagation(); closeRef.current(); anchor?.focus(); return; }
-      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-      const buttons = [...(ref.current?.querySelectorAll<HTMLButtonElement>('button') ?? [])];
-      const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-      event.preventDefault();
-      buttons[event.key === 'ArrowDown' ? (index + 1) % buttons.length : (index - 1 + buttons.length) % buttons.length]?.focus();
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof Node)) return;
-      if (ref.current?.contains(event.target) === true || anchor?.contains(event.target) === true) return;
-      closeRef.current();
-    };
-    window.addEventListener('keydown', onKeyDown, true);
-    window.addEventListener('pointerdown', onPointerDown, true);
-    return () => {
-      unregister();
-      window.removeEventListener('keydown', onKeyDown, true);
-      window.removeEventListener('pointerdown', onPointerDown, true);
-    };
-  }, [anchor]);
-  const rect = anchor?.getBoundingClientRect();
-  const position = clampOverlayPosition(rect?.left ?? 8, (rect?.bottom ?? 0) + 4, { width: MENU_WIDTH, height }, { width: window.innerWidth, height: window.innerHeight });
-  return createPortal(
-    <div ref={ref} role="menu" aria-label={t('sidebar.space.menuTitle')} data-space-switcher-menu
-      style={{ left: position.left, top: position.top, width: MENU_WIDTH }}
-      className="anim-enter fixed z-50 max-h-[min(72vh,480px)] overflow-y-auto rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]">
+function SpaceMenu({ anchor, onClose, children }: { anchor: React.RefObject<HTMLButtonElement | null>; onClose: () => void; children: React.ReactNode }) {
+  const { t } = useI18n();
+  return (
+    <AnchoredPopover
+      open
+      onClose={onClose}
+      anchorRef={anchor}
+      id="space-switcher-menu"
+      label={t('sidebar.space.menuTitle')}
+      role="menu"
+      widthClassName="w-[296px]"
+      className="p-1"
+      data={{ 'data-space-switcher-menu': '' }}
+      initialFocusSelector='[aria-current="true"]'
+      onSurfaceKeyDown={(event) => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return false;
+        const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button')];
+        if (buttons.length === 0) return false;
+        const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        event.preventDefault();
+        buttons[event.key === 'ArrowDown' ? (index + 1) % buttons.length : (index - 1 + buttons.length) % buttons.length]?.focus();
+        return true;
+      }}
+    >
       {children}
-    </div>,
-    document.body,
+    </AnchoredPopover>
   );
 }

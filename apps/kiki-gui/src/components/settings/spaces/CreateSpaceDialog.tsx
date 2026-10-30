@@ -188,7 +188,7 @@ export function CreateSpaceDialog({ client: controlClient, mainPath, canOpen, on
           ) : null}
         </div>
 
-        <fieldset disabled={existingSpace} className={`mt-5 border-t border-hairline pt-4 ${existingSpace ? 'opacity-50' : ''}`} data-space-inherit>
+        <fieldset disabled={existingSpace} className={`mt-5 pt-4 ${existingSpace ? 'opacity-50' : ''}`} data-space-inherit>
           <legend className="sr-only">{t('st.spaces.inheritHeading')}</legend>
           <p aria-hidden className="text-[13px] font-medium text-ink">{t('st.spaces.inheritHeading')}</p>
           <div className="mt-2 divide-y divide-hairline">

@@ -17,14 +17,14 @@ import {
   useLiveAgentGovernance,
   type LiveAgentDimensionKind,
 } from '../lib/liveAgentGovernance';
-import { pushToast } from '../lib/toasts';
+import { pushToast, pushUndoToast } from '../lib/toasts';
 import { useRequestGovernance } from '../lib/useRequestGovernance';
 import { useConnection } from '../state/connection';
-import { ConfirmDialog } from './ConfirmDialog';
 import { FeedbackLine, Toggle } from './controls';
 import { Icon } from './icons';
 import { InlineEditor } from './InlineEditor';
-import { AxisGroup } from './usage/usageShared';
+import { SettingsSelect } from './settings/SettingsPrimitives';
+import { AxisGroup, UsageSectionHeading } from './usage/usageShared';
 import { DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
 type GovernanceRule = RequestGovernanceSnapshot['rules'][number];
@@ -155,26 +155,35 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
     return id;
   };
 
+  const requestSummary = [
+    `${t('usage.governance.running')} ${snapshot.active}`,
+    `${t('usage.governance.queued')} ${snapshot.queued}`,
+  ].join(' · ');
+  const agentSummary = [
+    `${t('usage.governance.mainAgents')} ${agentSnapshot?.mainActive ?? agentSnapshot?.main ?? 0}`,
+    `${t('usage.governance.subagents')} ${agentSnapshot?.subActive ?? agentSnapshot?.subagent ?? 0}`,
+    ...(agentSnapshot != null && (agentSnapshot.independentActive ?? agentSnapshot.independent ?? 0) > 0
+      ? [`${t('usage.governance.independentAgents')} ${agentSnapshot.independentActive ?? agentSnapshot.independent ?? 0}`]
+      : []),
+    ...(agentSnapshot != null && agentSnapshot.queued > 0 ? [`${t('usage.governance.queued')} ${agentSnapshot.queued}`] : []),
+  ].join(' · ');
+
   return (
-    <div className="space-y-6">
-      {/* Model Requests Group */}
-      <details open data-governance-live className="group/live rounded-lg border border-hairline bg-panel p-4">
-        <summary data-governance-details-toggle className="flex min-h-9 cursor-pointer list-none flex-wrap items-center gap-x-6 gap-y-2 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-selected-ink [&::-webkit-details-marker]:hidden">
-          <span className="font-medium text-[13px] text-ink">{t('usage.governance.viewRequests')}</span>
-          <span className="inline-flex items-baseline gap-2">
-            <span className="text-[11.5px] text-ink-faint">{t('usage.governance.running')}</span>
-            <span data-governance-active className="font-mono text-[14px] text-ink tabular-nums">{snapshot.active}</span>
-          </span>
-          <span className="inline-flex items-baseline gap-2">
-            <span className="text-[11.5px] text-ink-faint">{t('usage.governance.queued')}</span>
-            <span data-governance-queued className="font-mono text-[14px] text-ink tabular-nums">{snapshot.queued}</span>
-          </span>
-          <span className="ml-auto inline-flex items-center gap-1.5 text-[11.5px] text-ink-soft">
-            {t('usage.governance.details')}
-            <Icon name="chevron" size={12} className="text-ink-faint group-open/live:rotate-90" />
-          </span>
-        </summary>
-        <div className="grid gap-x-8 gap-y-5 pt-3 lg:grid-cols-2">
+    <div className="space-y-8">
+      {/* Model requests: a section on the page, not a card — the heading and
+          the muted count line carry the group, the tables divide by hairlines. */}
+      <section data-governance-live>
+        <UsageSectionHeading
+          title={t('usage.governance.viewRequests')}
+          help={requestSummary}
+          actions={(
+            <>
+              <span className="sr-only" data-governance-active>{snapshot.active}</span>
+              <span className="sr-only" data-governance-queued>{snapshot.queued}</span>
+            </>
+          )}
+        />
+        <div className="grid gap-x-8 gap-y-5 lg:grid-cols-2">
           <section className="min-w-0">
             <div className="mb-3 flex flex-wrap items-center gap-3">
               {options.length > 1 && dimension !== undefined ? (
@@ -201,10 +210,10 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
                   {shown.map((row) => (
                     <li key={`${row.dimension}:${row.id}`} data-governance-row={row.id} className="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] items-baseline py-2">
                       <span className="flex min-w-0 items-baseline gap-1.5">
-                        <span className="min-w-0 truncate font-mono text-[12.5px] text-ink" title={row.id}>{dimensionLabel(row)}</span>
+                        <span className="min-w-0 truncate text-[13px] text-ink" title={row.id}>{dimensionLabel(row)}</span>
                       </span>
-                      <span className="text-right font-mono text-[12.5px] text-ink tabular-nums">{row.active}</span>
-                      <span className="text-right font-mono text-[12.5px] text-ink-soft tabular-nums">{row.queued}</span>
+                      <span className="text-right text-[12.5px] text-ink tabular-nums">{row.active}</span>
+                      <span className="text-right text-[12.5px] text-ink-soft tabular-nums">{row.queued}</span>
                     </li>
                   ))}
                 </ol>
@@ -217,100 +226,79 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
               <ol className="divide-y divide-hairline">
                 {snapshot.waiting.map((row) => (
                   <li key={row.attemptId} className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 py-2 text-[12.5px]">
-                    <span className="min-w-0 truncate font-mono text-ink" title={row.modelId}>{row.modelId}</span>
+                    <span className="min-w-0 truncate text-ink" title={row.modelId}>{row.modelId}</span>
                     {row.blockingRules.length > 0 ? (
-                      <span className="min-w-0 truncate text-ink-faint">{t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}</span>
+                      <span className="min-w-0 truncate font-mono text-[12px] text-ink-faint">{t('usage.governance.blockedBy', { rules: row.blockingRules.join(', ') })}</span>
                     ) : null}
-                    <span className="ml-auto shrink-0 font-mono text-ink-soft tabular-nums">{time.formatDuration(row.waitedMs)}</span>
+                    <span className="ml-auto shrink-0 text-ink-soft tabular-nums">{time.formatDuration(row.waitedMs)}</span>
                   </li>
                 ))}
               </ol>
             </section>
           ) : null}
         </div>
-      </details>
+      </section>
 
-      {/* Live / Active Agents Group */}
-      <details open data-governance-live-agents className="group/live rounded-lg border border-hairline bg-panel p-4">
-        <summary data-governance-agents-details-toggle className="flex min-h-9 cursor-pointer list-none flex-wrap items-center gap-x-6 gap-y-2 rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-selected-ink [&::-webkit-details-marker]:hidden">
-          <span className="font-medium text-[13px] text-ink">{t('usage.governance.viewAgents')}</span>
-          <span className="inline-flex items-baseline gap-2">
-            <span className="text-[11.5px] text-ink-faint">{t('usage.governance.mainAgents')}</span>
-            <span data-governance-main-agents className="font-mono text-[14px] text-ink tabular-nums">{agentSnapshot?.mainActive ?? agentSnapshot?.main ?? 0}</span>
-          </span>
-          <span className="inline-flex items-baseline gap-2">
-            <span className="text-[11.5px] text-ink-faint">{t('usage.governance.subagents')}</span>
-            <span data-governance-sub-agents className="font-mono text-[14px] text-ink tabular-nums">{agentSnapshot?.subActive ?? agentSnapshot?.subagent ?? 0}</span>
-          </span>
-          {(agentSnapshot?.independentActive ?? agentSnapshot?.independent ?? 0) > 0 ? (
-            <span className="inline-flex items-baseline gap-2">
-              <span className="text-[11.5px] text-ink-faint">{t('usage.governance.independentAgents')}</span>
-              <span data-governance-independent-agents className="font-mono text-[14px] text-ink tabular-nums">{agentSnapshot?.independentActive ?? agentSnapshot?.independent ?? 0}</span>
-            </span>
-          ) : null}
-          <span className="inline-flex items-baseline gap-2">
-            <span className="text-[11.5px] text-ink-faint">{t('usage.governance.totalAgents')}</span>
-            <span data-governance-total-agents className="font-mono text-[14px] text-ink tabular-nums">{agentSnapshot?.totalActive ?? agentSnapshot?.active ?? 0}</span>
-          </span>
-          {(agentSnapshot?.queued ?? 0) > 0 ? (
-            <span className="inline-flex items-baseline gap-2">
-              <span className="text-[11.5px] text-ink-faint">{t('usage.governance.queued')}</span>
-              <span data-governance-agents-queued className="font-mono text-[14px] text-ink tabular-nums">{agentSnapshot?.queued}</span>
-            </span>
-          ) : null}
-          <span className="ml-auto inline-flex items-center gap-1.5 text-[11.5px] text-ink-soft">
-            {t('usage.governance.details')}
-            <Icon name="chevron" size={12} className="text-ink-faint group-open/live:rotate-90" />
-          </span>
-        </summary>
-        <div className="pt-3">
-          <div className="mb-3 flex flex-wrap items-center gap-3">
-            <AxisGroup
-              label={t('usage.governance.byDimension')}
-              dataAxis="governance-agent-dimension"
-              options={agentOptions}
-              value={agentDimension}
-              onChange={(next) => { setChosenAgentDim(next); }}
-              labelFor={(option) => {
-                if (option === 'executor') return t('usage.governance.executor');
-                if (option === 'profile') return t('usage.governance.profile');
-                if (option === 'model') return t('usage.governance.model');
-                return t(`usage.governance.${option}` as I18nKey);
-              }}
-            />
-          </div>
-          {shownAgentRows.length === 0 ? (
-            <p data-governance-agents-empty className="text-[12.5px] text-ink-faint">{t('usage.governance.idleAgents')}</p>
-          ) : (
-            <div className="overflow-x-auto pb-1" data-governance-agent-dimensions data-governance-agent-dimension={agentDimension}>
-              <div className="min-w-[480px]">
-                <div aria-hidden className="grid grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_4.5rem] gap-x-2 pb-2 text-[11px] text-ink-faint">
-                  <span>{t('usage.governance.target')}</span>
-                  <span className="text-right">{t('usage.governance.mainAgents')}</span>
-                  <span className="text-right">{t('usage.governance.subagents')}</span>
-                  <span className="text-right">{t('usage.governance.independentAgents')}</span>
-                  <span className="text-right">{t('usage.governance.totalAgents')}</span>
-                </div>
-                <ol className="divide-y divide-hairline border-t border-hairline">
-                  {shownAgentRows.map((row) => (
-                    <li key={`${row.dimension}:${row.id ?? 'unknown'}`} data-governance-agent-row={row.id ?? 'unknown'} className="grid grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_4.5rem] items-baseline gap-x-2 py-2">
-                      <span className="flex min-w-0 items-baseline gap-1.5">
-                        <span className="min-w-0 truncate font-mono text-[12.5px] text-ink" title={row.id ?? ''}>
-                          {agentRowDisplay(row.id)}
-                        </span>
-                      </span>
-                      <span className="text-right font-mono text-[12.5px] text-ink tabular-nums">{row.mainActive ?? row.main}</span>
-                      <span className="text-right font-mono text-[12.5px] text-ink-soft tabular-nums">{row.subActive ?? row.subagent}</span>
-                      <span className="text-right font-mono text-[12.5px] text-ink-faint tabular-nums">{row.independentActive ?? row.independent ?? 0}</span>
-                      <span className="text-right font-mono text-[12.5px] text-ink tabular-nums">{row.totalActive ?? row.active}</span>
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            </div>
+      <section data-governance-live-agents>
+        <UsageSectionHeading
+          title={t('usage.governance.viewAgents')}
+          help={agentSummary}
+          actions={(
+            <>
+              <span className="sr-only" data-governance-main-agents>{agentSnapshot?.mainActive ?? agentSnapshot?.main ?? 0}</span>
+              <span className="sr-only" data-governance-sub-agents>{agentSnapshot?.subActive ?? agentSnapshot?.subagent ?? 0}</span>
+              <span className="sr-only" data-governance-independent-agents>{agentSnapshot?.independentActive ?? agentSnapshot?.independent ?? 0}</span>
+              <span className="sr-only" data-governance-total-agents>{agentSnapshot?.totalActive ?? agentSnapshot?.active ?? 0}</span>
+              <span className="sr-only" data-governance-agents-queued>{agentSnapshot?.queued ?? 0}</span>
+            </>
           )}
+        />
+        <div className="mb-3 flex flex-wrap items-center gap-3">
+          <AxisGroup
+            label={t('usage.governance.byDimension')}
+            dataAxis="governance-agent-dimension"
+            options={agentOptions}
+            value={agentDimension}
+            onChange={(next) => { setChosenAgentDim(next); }}
+            labelFor={(option) => {
+              if (option === 'executor') return t('usage.governance.executor');
+              if (option === 'profile') return t('usage.governance.profile');
+              if (option === 'model') return t('usage.governance.model');
+              return t(`usage.governance.${option}` as I18nKey);
+            }}
+          />
         </div>
-      </details>
+        {shownAgentRows.length === 0 ? (
+          <p data-governance-agents-empty className="text-[12.5px] text-ink-faint">{t('usage.governance.idleAgents')}</p>
+        ) : (
+          <div className="overflow-x-auto pb-1" data-governance-agent-dimensions data-governance-agent-dimension={agentDimension}>
+            <div className="min-w-[480px]">
+              <div aria-hidden className="grid grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_4.5rem] gap-x-2 pb-2 text-[11px] text-ink-faint">
+                <span>{t('usage.governance.target')}</span>
+                <span className="text-right">{t('usage.governance.mainAgents')}</span>
+                <span className="text-right">{t('usage.governance.subagents')}</span>
+                <span className="text-right">{t('usage.governance.independentAgents')}</span>
+                <span className="text-right">{t('usage.governance.totalAgents')}</span>
+              </div>
+              <ol className="divide-y divide-hairline border-t border-hairline">
+                {shownAgentRows.map((row) => (
+                  <li key={`${row.dimension}:${row.id ?? 'unknown'}`} data-governance-agent-row={row.id ?? 'unknown'} className="grid grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_4.5rem] items-baseline gap-x-2 py-2">
+                    <span className="flex min-w-0 items-baseline gap-1.5">
+                      <span className="min-w-0 truncate text-[13px] text-ink" title={row.id ?? ''}>
+                        {agentRowDisplay(row.id)}
+                      </span>
+                    </span>
+                    <span className="text-right text-[12.5px] text-ink tabular-nums">{row.mainActive ?? row.main}</span>
+                    <span className="text-right text-[12.5px] text-ink-soft tabular-nums">{row.subActive ?? row.subagent}</span>
+                    <span className="text-right text-[12.5px] text-ink-faint tabular-nums">{row.independentActive ?? row.independent ?? 0}</span>
+                    <span className="text-right text-[12.5px] text-ink tabular-nums">{row.totalActive ?? row.active}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -456,7 +444,6 @@ function ruleFromDraft(draft: RuleDraft, otherIds: ReadonlySet<string>): { rule:
 
 function ruleSummary(rule: GovernanceRule, t: (key: I18nKey, params?: Record<string, string | number>) => string): string {
   const isAgent = rule.resource === 'agent_execution' || (rule.resource as any) === 'live_agent';
-  const tag = t(isAgent ? 'usage.governance.tagAgentExecution' : 'usage.governance.tagModelRequest');
 
   let target: string;
   if (isAgent) {
@@ -483,7 +470,6 @@ function ruleSummary(rule: GovernanceRule, t: (key: I18nKey, params?: Record<str
   const cap = rule.maxConcurrent === undefined ? t('usage.governance.unlimited') : String(rule.maxConcurrent);
   const wait = rule.maxWaitMs === undefined ? undefined : t('usage.governance.summaryWait', { seconds: rule.maxWaitMs / 1000 });
   return [
-    tag,
     t(rule.scope === 'global' ? 'usage.governance.global' : 'usage.governance.eachSession'),
     target,
     `${t('usage.governance.cap')} ${cap}`,
@@ -767,7 +753,6 @@ function LimitsPanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
   const rules = snapshot.rules;
   /** The row whose editor is open, or 'new' while the add form is. */
   const [editorFor, setEditorFor] = useState<string | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<GovernanceRule | null>(null);
   const [resourceFilter, setResourceFilter] = useState<'all' | 'model_request' | 'agent_execution'>('all');
 
   const modelOptions = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
@@ -803,12 +788,19 @@ function LimitsPanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
       );
       return client.setRequestGovernanceRules(next as any);
     },
-    onSuccess: async () => {
-      setPendingDelete(null);
+    // Deleting a rule is reversible: the full list before the delete is kept
+    // and written back by the toast's Undo, so there is no confirm step.
+    onMutate: () => rules,
+    onSuccess: async (_echo, rule, previous) => {
       setEditorFor(null);
       await refresh();
+      pushUndoToast({
+        text: t('usage.governance.deleted', { name: rule.id }),
+        undoFailedText: t('toast.undoFailed'),
+        undo: async () => { await client.setRequestGovernanceRules(previous); await refresh(); },
+      });
     },
-    onError: (error: unknown) => { setPendingDelete(null); writeError(error); void refresh(); },
+    onError: (error: unknown) => { writeError(error); void refresh(); },
   });
 
   const saveEdited = (originalId: string | null) => async (rule: GovernanceRule) => {
@@ -838,31 +830,36 @@ function LimitsPanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
 
   const list = (
     <section data-governance-rules>
+      <UsageSectionHeading
+        title={t('usage.governance.limitsTitle')}
+        help={tp('usage.governance.ruleCount', rules.length)}
+        actions={(
+          <button
+            type="button"
+            data-governance-add
+            disabled={editorFor !== null}
+            onClick={() => { setEditorFor('new'); }}
+            className={SECONDARY_BUTTON}
+          >
+            {t('usage.governance.addRule')}
+          </button>
+        )}
+      />
       <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h2 className="text-[13px] font-medium text-ink">{t('usage.governance.limitsTitle')}</h2>
-        <p className="text-[11.5px] text-ink-faint">{tp('usage.governance.ruleCount', rules.length)}</p>
-        <AxisGroup
-          label={t('usage.governance.resource')}
-          dataAxis="governance-rules-resource-filter"
-          options={['all', 'model_request', 'agent_execution'] as const}
-          value={resourceFilter}
-          onChange={(next) => { setResourceFilter(next); }}
-          labelFor={(option) => {
-            if (option === 'model_request') return t('usage.governance.resourceModelRequest');
-            if (option === 'agent_execution') return t('usage.governance.resourceAgentExecution');
-            return t('usage.governance.allRules');
-          }}
-        />
-        <button
-          type="button"
-          data-governance-add
-          disabled={editorFor !== null}
-          onClick={() => { setEditorFor('new'); }}
-          className="ml-auto inline-flex min-h-8 items-center gap-1.5 rounded-sm text-[12px] text-ink-soft hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-selected-ink disabled:opacity-50"
-        >
-          <Icon name="plus" size={12} />
-          {t('usage.governance.addRule')}
-        </button>
+        <span className="flex items-center gap-2">
+          <span className="shrink-0 text-[13px] text-ink">{t('usage.governance.resource')}</span>
+          <SettingsSelect<'all' | 'model_request' | 'agent_execution'>
+            ariaLabel={t('usage.governance.resource')}
+            dataAttr="data-axis-select"
+            value={resourceFilter}
+            onChange={(next) => { setResourceFilter(next); }}
+            choices={[
+              { value: 'all', label: t('usage.governance.allRules') },
+              { value: 'model_request', label: t('usage.governance.resourceModelRequest') },
+              { value: 'agent_execution', label: t('usage.governance.resourceAgentExecution') },
+            ]}
+          />
+        </span>
       </div>
       {filteredRules.length === 0 && editorFor !== 'new' ? (
         <div data-governance-empty className="py-3">
@@ -923,7 +920,7 @@ function LimitsPanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
                   providerOptions={providerIds}
                   onSubmit={saveEdited(rule.id)}
                   onCancel={() => { setEditorFor(null); }}
-                  onDelete={() => { setPendingDelete(rule); }}
+                  onDelete={() => { remove.mutate(rule); }}
                 />
               </InlineEditor>
             </li>
@@ -936,15 +933,6 @@ function LimitsPanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
   return (
     <div>
       {list}
-      <ConfirmDialog
-        open={pendingDelete !== null}
-        title={t('usage.governance.deleteTitle')}
-        body={pendingDelete === null ? undefined : t('usage.governance.deleteBody', { name: pendingDelete.id })}
-        confirmLabel={t('usage.governance.deleteRule')}
-        busy={remove.isPending}
-        onConfirm={() => { if (pendingDelete !== null) remove.mutate(pendingDelete); }}
-        onCancel={() => { setPendingDelete(null); }}
-      />
     </div>
   );
 }

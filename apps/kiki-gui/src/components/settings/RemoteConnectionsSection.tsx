@@ -27,10 +27,10 @@ import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { Icon } from '../icons';
-import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { SECONDARY_BUTTON } from '../ui';
 import { useSpaceSettingsTarget } from '../../lib/spaceSettings';
+import { AdvancedDetails } from './fields';
 import { SectionCard } from './SectionCard';
-import { ListEmpty } from './list';
 import { MAIN_SPACE_ID } from '../../lib/spaces';
 import { SpaceRowMenu } from './spaces/SpaceRowMenu';
 import { AddConnectionDialog } from './remote/AddConnectionDialog';
@@ -88,35 +88,23 @@ export function RemoteConnectionsSection() {
       : t('st.remote.configures', { origin: connectionAddress(control.baseUrl), home: controlHomeLabel });
 
   return (
-    <SectionCard id="st-card-remote-connections" title={t('st.remote.outboundTitle')} scope="server" actions={control !== null ? (
-      <button type="button" data-remote-add className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
-        onClick={() => { setDialog({ kind: 'add' }); }}>
-        <Icon name="plus" size={12} />{t('st.remote.add')}
-      </button>
-    ) : undefined}>
+    <SectionCard id="st-card-remote-connections" title={t('st.remote.outboundTitle')} scope="server"
+      aside={<span data-remote-source>{sourceLine}</span>}
+      actions={control === null ? undefined : (
+        // One primary per screen: the invite on the card above is it; adding
+        // an outbound connection stays secondary.
+        <button type="button" data-remote-add className={`${SECONDARY_BUTTON} inline-flex items-center gap-1`}
+          onClick={() => { setDialog({ kind: 'add' }); }}>
+          <Icon name="plus" size={12} />{t('st.remote.add')}
+        </button>
+      )}>
       <div className="space-y-4" data-remote-connections>
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-          <p className="min-w-0 text-[12.5px] text-ink-soft" data-remote-source>{sourceLine}</p>
-          <span className="flex shrink-0 items-center gap-4">
-            {/* The other direction lives with the rest of inbound access. */}
-            <button type="button" data-remote-inbound-link className="text-[12.5px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink"
-              onClick={() => { void navigate('/settings/connection-services?tab=kiki#st-card-inbound-connections'); }}>
-              {t('st.inbound.title')}
-            </button>
-            <button type="button" data-remote-diagnostics className="text-[12.5px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink"
-              onClick={() => { void navigate('/settings/connection'); }}>
-              {t('st.remote.diagnostics')}
-            </button>
-          </span>
-        </div>
-
         {connections.isLoading ? <Hint>{t('st.remote.loading')}</Hint> : null}
         {connections.isError ? <InlineError error={connections.error} /> : null}
 
         {connections.isSuccess && records.length === 0 ? (
-          <div data-remote-empty>
-            <ListEmpty kind="none" title={t('st.remote.emptyTitle')} body={t('st.remote.emptyBody')} />
-          </div>
+          // One quiet line, not a dashed box (#12).
+          <p className="text-[13px] text-ink-soft" data-remote-empty>{t('st.remote.emptyLine')}</p>
         ) : null}
 
         {records.length > 0 ? (
@@ -132,8 +120,19 @@ export function RemoteConnectionsSection() {
         <FeedbackLine feedback={feedback} />
         <CloudflareEntry />
 
+        {/* 连接诊断 lives here, off the standing page (#12); the reciprocal
+            cross-links are gone because the two cards are already adjacent. */}
+        <AdvancedDetails summary={t('st.computer.advanced')} data-remote-advanced-fold>
+          <div className="pt-1">
+            <button type="button" data-remote-diagnostics className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+              onClick={() => { void navigate('/settings/connection'); }}>
+              {t('st.remote.diagnostics')}
+            </button>
+          </div>
+        </AdvancedDetails>
+
         {identity.data !== undefined && identity.data !== null ? (
-          <div className="border-t border-hairline pt-4" data-remote-self-identity>
+          <div className="pt-4" data-remote-self-identity>
             <CopyField id="remote-self-identity" dataAttr="self"
               label={t('st.remote.identityTitle')}
               value={identityBlock(identity.data.identity)}

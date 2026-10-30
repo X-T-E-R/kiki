@@ -2,6 +2,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutorCatalogItem } from '@kiki/protocol';
 import type { ExecutorCheckResult } from '../../lib/client';
@@ -49,7 +50,7 @@ afterEach(async () => { await act(async () => root.unmount()); container.remove(
 
 async function render() {
   const queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  await act(async () => root.render(<QueryClientProvider client={queries}><I18nProvider><ExternalEnginesList /></I18nProvider></QueryClientProvider>));
+  await act(async () => root.render(<MemoryRouter><QueryClientProvider client={queries}><I18nProvider><ExternalEnginesList /></I18nProvider></QueryClientProvider></MemoryRouter>));
   await settle();
 }
 
@@ -74,7 +75,7 @@ async function openEngine(id: string): Promise<HTMLElement> {
 }
 
 async function closeEngine(): Promise<void> {
-  const close = document.querySelector<HTMLButtonElement>('[data-engine-panel-overlay] header button');
+  const close = document.querySelector<HTMLButtonElement>('[data-detail-close]');
   if (close === null) return;
   await act(async () => close.click());
   await settle();

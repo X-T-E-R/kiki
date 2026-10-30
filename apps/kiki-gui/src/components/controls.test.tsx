@@ -74,19 +74,24 @@ describe('InlineError', () => {
     expect(chinese.text).toBe('实验开关“usage_export”必须为 true 或 false。');
   });
 
-  it('keeps the recorded reason and the wire code beside it', async () => {
+  it('maps a known wire code to localized copy instead of raw server English', async () => {
     // The shape kap-server's REST path rejects with: a numeric code plus the
-    // server's own wording. Neither half is dropped on the way to the screen.
+    // server's own wording. A known code speaks the active locale
+    // (errorMapping), so neither half reaches the screen raw.
     const wire = Object.assign(new Error('session not found'), { code: 40401 });
-    const { text } = await render(wire);
-    expect(text).toBe('session not found (40401)');
+    expect((await render(wire, 'en')).text).toBe('That session no longer exists');
+    expect((await render(wire, 'zh')).text).toBe('会话已经不存在了');
   });
 
   it('reads a rejected envelope instead of printing [object Object]', async () => {
     const { text } = await render({ code: 40401, msg: 'session.not_found' });
     expect(text).not.toBe('[object Object]');
-    expect(text).toContain('session.not_found');
-    expect(text).toContain('40401');
+    // The mapped code replaces the server's reason string; an unmapped code
+    // still passes its raw wording through.
+    expect(text).toBe('That session no longer exists');
+    const unmapped = await render({ code: 40917, msg: 'goal objective is empty (code 40917)' });
+    expect(unmapped.text).toContain('goal objective is empty');
+    expect(unmapped.text).toContain('40917');
   });
 
   it('falls back to the locale sentence when there is no readable message', async () => {

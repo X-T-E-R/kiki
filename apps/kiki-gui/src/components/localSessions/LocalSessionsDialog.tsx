@@ -8,7 +8,10 @@
  *            the server's reason code, and stays previewable.
  *   preview  the bounded transcript the server returns. It is a sample, not
  *            a copy: `partial` and every warning are stated above it, so an
- *            excerpt never reads as the whole history.
+ *            excerpt never reads as the whole history. The whole flow — pick
+ *            one, read it, continue it — is one SidePanel (README tier 4:
+ *            creating something); the new-session page has no room to host a
+ *            real in-page detail split.
  *   continue the one primary action. It attaches the vendor session to a
  *            Kiki session (sending nothing) and opens it; a session that was
  *            already attached opens the existing one (`created: false`).
@@ -34,15 +37,18 @@ import {
 } from '../../lib/localSessions';
 import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { RelativeTime } from '../RelativeTime';
+import { SidePanel } from '../SidePanel';
 import { useExecutorCatalogQuery } from '../settings/profileEditor/engines';
-import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { segmentClass } from '../WorkspaceScopeControl';
 
 const LIST_LIMIT = 100;
+
+/** Standard primary weight: the one continue action, not a marketing CTA. */
+const CONTINUE_BUTTON =
+  'inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
 
 /** Codes the resume route documents; each gets wording that says what to do. */
 const RESUME_ERROR_KEYS: Readonly<Record<number, 'localSessions.error.disabled' | 'localSessions.error.locked' | 'localSessions.error.missing' | 'localSessions.error.workspace'>> = {
@@ -100,6 +106,7 @@ function SessionRow({
         type="button"
         data-local-session={summary.id}
         data-local-resumable={summary.resume.supported}
+        data-detail-trigger={summary.id}
         aria-current={selected ? 'true' : undefined}
         onClick={onSelect}
         className={`relative flex w-full flex-col gap-0.5 rounded-lg px-3 py-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
@@ -112,7 +119,7 @@ function SessionRow({
           <RelativeTime at={summary.updated_at} className="shrink-0 text-[11.5px] text-ink-faint tabular-nums" />
         </span>
         <span className="flex min-w-0 items-baseline gap-1.5 text-[12px] leading-4 text-ink-faint">
-          {folder !== undefined ? <span className="min-w-0 truncate font-mono text-[11px]" title={summary.cwd}>{folder}</span> : null}
+          {folder !== undefined ? <span className="min-w-0 truncate text-[11px]" title={summary.cwd}>{folder}</span> : null}
           {summary.parent_id !== undefined ? <span className="shrink-0">· {t('localSessions.branch')}</span> : null}
         </span>
         {!summary.resume.supported ? (
@@ -163,28 +170,25 @@ function Preview({
   const partial = detail.data?.summary.partial ?? summary.partial;
   const messages = detail.data?.messages ?? [];
   return (
-    <div data-local-preview={summary.id} className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 space-y-1 border-b border-hairline px-5 pt-4 pb-3">
-        <h3 className="truncate text-[14px] font-medium text-ink" title={localSessionName(summary)}>{localSessionName(summary)}</h3>
-        {summary.cwd !== undefined ? <p className="truncate font-mono text-[11px] text-ink-faint" title={summary.cwd}>{summary.cwd}</p> : null}
+    <div data-local-preview={summary.id} className="flex flex-col">
+      <div className="shrink-0 space-y-1 border-b border-hairline px-1 pt-1 pb-3">
+        <h3 data-detail-heading tabIndex={-1} className="sr-only">{localSessionName(summary)}</h3>
+        {summary.cwd !== undefined ? <p className="truncate text-[11px] text-ink-faint" title={summary.cwd}>{summary.cwd}</p> : null}
         {partial || warnings.length > 0 ? (
-          <div data-local-partial role="note" className="mt-1.5 flex items-start gap-1.5 text-[12px] leading-4 text-amber-ink">
-            <Icon name="partial" size={12} className="mt-[2px]" />
-            <div className="min-w-0">
-              <p>{t('localSessions.partial')}</p>
-              {warnings.length > 0 ? (
-                <ul className="mt-0.5 space-y-0.5 text-ink-soft">
-                  {warnings.map((warning) => {
-                    const key = previewWarningKey(warning);
-                    return <li key={warning} data-local-warning={warning}>{key !== undefined ? t(key) : <span className="font-mono text-[11px]">{warning}</span>}</li>;
-                  })}
-                </ul>
-              ) : null}
-            </div>
-          </div>
+          // One quiet line: what an excerpt means, the specific codes as quiet
+          // mono only when the server sends one we do not know.
+          <p data-local-partial role="note" className="mt-1.5 text-[12px] leading-4 text-ink-soft">
+            {t('localSessions.partial')}{warnings.some((warning) => previewWarningKey(warning) === undefined) ? ' ' : null}
+            {warnings.map((warning) => {
+              const key = previewWarningKey(warning);
+              return key === undefined
+                ? <span key={warning} data-local-warning={warning} className="font-mono text-[11px]">{warning}</span>
+                : <span key={warning} data-local-warning={warning} className="sr-only">{t(key)}</span>;
+            })}
+          </p>
         ) : null}
       </div>
-      <div data-local-preview-body className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+      <div data-local-preview-body className="px-1 py-3">
         {detail.isPending ? <p className="text-[13px] text-ink-faint">{t('localSessions.previewLoading')}</p> : null}
         {detail.isError ? <p role="alert" className="text-[13px] text-danger">{t('localSessions.previewFailed', { detail: errorText(locale, detail.error) })}</p> : null}
         {detail.isSuccess && messages.length === 0 ? <p className="text-[13px] text-ink-soft">{t('localSessions.previewEmpty')}</p> : null}
@@ -235,7 +239,7 @@ export function LocalSessionsDialog({
   });
   const items = directory.data?.items ?? [];
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
-  const selected = items.find((item) => item.id === selectedId) ?? items[0];
+  const selected = items.find((item) => item.id === selectedId);
   useEffect(() => { setSelectedId(undefined); }, [executorId]);
   const [resuming, setResuming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -243,7 +247,7 @@ export function LocalSessionsDialog({
   const canContinue = selected !== undefined && selected.resume.supported && resumeEnabled && !resuming;
 
   const resume = async () => {
-    if (!canContinue || executorId === undefined) return;
+    if (!canContinue || executorId === undefined || selected === undefined) return;
     setResuming(true);
     setError(null);
     try {
@@ -261,34 +265,46 @@ export function LocalSessionsDialog({
   };
 
   const title = t('localSessions.title');
+  const browsing = selected === undefined;
   return (
-    <Dialog
-      onClose={() => { if (!resuming) onClose(); }}
-      ariaLabel={title}
+    <SidePanel
+      title={browsing ? title : localSessionName(selected)}
+      description={browsing ? t('localSessions.intro') : undefined}
       overlayId="local-sessions"
-      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.lg} flex h-[min(86vh,720px)] flex-col !p-0`}
-    >
-      <header className="flex shrink-0 items-start gap-3 px-5 pt-4 pb-3">
-        <div className="min-w-0 flex-1 space-y-1">
-          <h2 className="font-display text-[18px] font-semibold tracking-tight text-ink">{title}</h2>
-          <p className="text-[12.5px] leading-5 text-ink-soft">{t('localSessions.intro')}</p>
-        </div>
-        <button type="button" onClick={onClose} disabled={resuming} aria-label={t('common.close')}
-          className="-mr-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink pointer-coarse:h-11 pointer-coarse:w-11">
-          <Icon name="close" size={16} />
-        </button>
-      </header>
-      {executorId !== undefined ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 px-5 pb-3">
-          <SourceTabs sources={sources} value={executorId} onChange={setPicked} />
-          {directory.data !== undefined ? (
-            <p data-local-root className="min-w-0 truncate font-mono text-[11px] text-ink-faint" title={directory.data.root}>{directory.data.root}</p>
+      onClose={() => { if (!resuming) onClose(); }}
+      width="lg"
+      data={{ 'data-local-sessions': '' }}
+      back={browsing ? undefined : { label: title, onClick: () => { setSelectedId(undefined); setError(null); }, data: { 'data-local-back': '' } }}
+      stepKey={selected?.id ?? 'list'}
+      footer={
+        <>
+          <div className="min-w-0 flex-1 text-[12px] leading-4">
+            {error !== null ? <p role="alert" data-local-error className="text-danger">{error}</p>
+              : !browsing && !resumeEnabled ? <p data-local-disabled className="text-ink-soft">{t('localSessions.resumeDisabled')}</p>
+                : !browsing && !selected.resume.supported ? <p className="text-ink-faint">{t('localSessions.cannotContinue')}</p>
+                  : !browsing ? <p className="text-ink-faint">{t('localSessions.continueHint')}</p> : null}
+          </div>
+          {!browsing ? (
+            <button type="button" data-local-continue className={CONTINUE_BUTTON}
+              disabled={!canContinue} aria-busy={resuming} onClick={() => void resume()}>
+              {resuming ? <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-current border-t-transparent motion-reduce:animate-none" /> : null}
+              {resuming ? t('localSessions.continuing') : t('localSessions.continue')}
+            </button>
           ) : null}
-        </div>
-      ) : null}
-      <div className="flex min-h-0 flex-1 border-t border-hairline">
-        <div data-local-list className="flex w-[19rem] shrink-0 flex-col border-r border-hairline max-md:w-full max-md:border-r-0">
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+        </>
+      }
+    >
+      {browsing ? (
+        <>
+          {executorId !== undefined ? (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pb-3">
+              <SourceTabs sources={sources} value={executorId} onChange={setPicked} />
+              {directory.data !== undefined ? (
+                <p data-local-root className="min-w-0 truncate font-mono text-[11px] text-ink-faint" title={directory.data.root}>{directory.data.root}</p>
+              ) : null}
+            </div>
+          ) : null}
+          <div data-local-list>
             {catalog.isPending || (executorId !== undefined && directory.isPending) ? (
               <p className="px-3 py-2 text-[12.5px] text-ink-faint">{t('localSessions.loading')}</p>
             ) : null}
@@ -309,40 +325,22 @@ export function LocalSessionsDialog({
             ) : null}
             <ul className="space-y-0.5">
               {items.map((item) => (
-                <SessionRow key={item.id} summary={item} selected={item.id === selected?.id} onSelect={() => { setSelectedId(item.id); setError(null); }} />
+                <SessionRow key={item.id} summary={item} selected={false}
+                  onSelect={() => { setSelectedId(item.id); setError(null); }} />
               ))}
             </ul>
           </div>
           {directory.data !== undefined && (directory.data.truncated || directory.data.unreadable_files > 0) ? (
-            <p data-local-truncated className="shrink-0 border-t border-hairline px-4 py-2 text-[11.5px] leading-4 text-ink-faint">
+            <p data-local-truncated className="border-t border-hairline pt-2 text-[11.5px] leading-4 text-ink-faint">
               {directory.data.truncated ? t('localSessions.truncated', { count: items.length }) : null}
               {directory.data.truncated && directory.data.unreadable_files > 0 ? ' · ' : null}
               {directory.data.unreadable_files > 0 ? t('localSessions.unreadable', { count: directory.data.unreadable_files }) : null}
             </p>
           ) : null}
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col max-md:hidden">
-          {selected !== undefined && executorId !== undefined ? (
-            <Preview key={`${executorId}:${selected.id}`} executorId={executorId} summary={selected} />
-          ) : (
-            <p className="px-5 py-4 text-[13px] text-ink-faint">{t('localSessions.pickOne')}</p>
-          )}
-        </div>
-      </div>
-      <footer className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-t border-hairline px-5 py-3">
-        <div className="min-w-0 flex-1 text-[12px] leading-4">
-          {error !== null ? <p role="alert" data-local-error className="text-danger">{error}</p>
-            : !resumeEnabled ? <p data-local-disabled className="text-ink-soft">{t('localSessions.resumeDisabled')}</p>
-              : selected !== undefined && !selected.resume.supported ? <p className="text-ink-faint">{t('localSessions.cannotContinue')}</p>
-                : selected !== undefined ? <p className="text-ink-faint">{t('localSessions.continueHint')}</p> : null}
-        </div>
-        <button type="button" className={SECONDARY_BUTTON} disabled={resuming} onClick={onClose}>{t('common.cancel')}</button>
-        <button type="button" data-local-continue className={`${PRIMARY_BUTTON} inline-flex items-center gap-1.5`}
-          disabled={!canContinue} aria-busy={resuming} onClick={() => void resume()}>
-          {resuming ? <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-current border-t-transparent motion-reduce:animate-none" /> : null}
-          {resuming ? t('localSessions.continuing') : t('localSessions.continue')}
-        </button>
-      </footer>
-    </Dialog>
+        </>
+      ) : (
+        executorId !== undefined ? <Preview key={selected.id} executorId={executorId} summary={selected} /> : null
+      )}
+    </SidePanel>
   );
 }

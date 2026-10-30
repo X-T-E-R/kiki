@@ -213,7 +213,7 @@ describe('ContextMeter with a compaction point', () => {
     }));
     const { container } = await render({ used: 100_000, autoCompact: wiring({ status: status(400_000, 'session'), onSave }) });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-compact-source-trigger]')!.click(); });
-    const menu = container.querySelector('[data-compact-source-menu]')!;
+    const menu = document.querySelector('[data-compact-source-menu]')!;
     expect(menu.textContent).toContain('Default for Opus 5.5 (400k)');
     expect(menu.textContent).toContain('Global default (72.7%)');
     expect(menu.querySelector<HTMLButtonElement>('[data-compact-save="profile"]')?.disabled).toBe(true);
@@ -232,7 +232,7 @@ describe('ContextMeter with a compaction point', () => {
     }));
     const { container } = await render({ used: 100_000, autoCompact: wiring({ status: status(420_000, 'session'), onSave }) });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-compact-source-trigger]')!.click(); });
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-compact-save="global"]')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-compact-save="global"]')!.click(); });
     expect(container.querySelector('[data-compact-note]')?.textContent)
       .toBe('Saved as the global default (76.4%), but model sets 400k. This session stays at 420k.');
     expect(getToasts()).toHaveLength(0);
@@ -242,7 +242,7 @@ describe('ContextMeter with a compaction point', () => {
     const autoCompact = wiring({ status: status(400_000, 'session') });
     const { container } = await render({ used: 100_000, autoCompact });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-compact-source-trigger]')!.click(); });
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-compact-reset]')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-compact-reset]')!.click(); });
     expect(autoCompact.onCommit).toHaveBeenCalledWith(null);
   });
 
@@ -250,7 +250,7 @@ describe('ContextMeter with a compaction point', () => {
     const onSave = vi.fn(async () => { throw Object.assign(new Error('read only'), { code: 40934 }); });
     const { container } = await render({ used: 100_000, autoCompact: wiring({ profile: { name: 'custom', editable: true }, onSave }) });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-compact-source-trigger]')!.click(); });
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-compact-save="profile"]')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-compact-save="profile"]')!.click(); });
     expect(container.querySelector('[data-compact-note="error"]')?.textContent).toContain('Built-in profiles can’t be changed');
   });
 });

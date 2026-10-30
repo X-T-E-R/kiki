@@ -6,12 +6,11 @@
  */
 
 import { memo, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
-import { useQuery } from '@tanstack/react-query';
 
 import { MAIN_AGENT_ID, type AgentForest, type Block, type NoticeBlock, type SessionViewState } from '@kiki/session-core/session';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
-import { useConnection, useOptionalControllerRegistry } from '../../state/connection';
+import { useOptionalControllerRegistry } from '../../state/connection';
 import { AgentCapabilitiesSection, capabilityCounts } from '../agent-panel/AgentCapabilitiesSection';
 import { AgentDetailDrawer } from '../agent-panel/AgentDetailDrawer';
 import { useAgentPanelCatalog } from '../agent-panel/useAgentPanelCatalog';
@@ -21,9 +20,7 @@ import { isCapabilityUnsupportedError, capabilityFieldGaps, mapPanelSkills, mapP
 import { capabilitySourceLabel, SOURCE_TONE_CLASS } from '../agent-panel/sourceLabel';
 import type { AgentIdentity, DetailDrawerTarget } from '../agent-panel/types';
 import { OptionalCapabilityRows, SessionMcpRail } from '../capabilities/optionalCapabilityUi';
-import { availableCount } from '../capabilities/pluginUsage';
 import { SessionPluginsPanel } from '../capabilities/SessionPluginsPanel';
-import { PLUGIN_QUERY_KEYS } from '../capabilities/usePlugins';
 import { Icon } from '../icons';
 import { ExecutorAuthStatus } from '../harness/ExecutorAuthStatus';
 import { age, decidable, pendingId, pendingSubject, useNow, type PendingItem } from './model';
@@ -66,75 +63,6 @@ function useAgentState(sessionId: string, agentId: string): SessionViewState | u
     [controller, agentId],
   );
   return useSyncExternalStore(subscribe, read, read);
-}
-
-/** Done items fold to one line once there are at least this many. */
-const FOLD_DONE_AT = 2;
-
-/**
- * 待办: the agent's checklist. Open items always show; finished ones fold to
- * a single 已完成 N 项 line (when there are two or more) that opens them in
- * place. Read-only: the agent writes its list.
- */
-export function RailTodos({ sessionId, agentId }: { sessionId: string; agentId: string }) {
-  const { t } = useI18n();
-  const todos = (useAgentState(sessionId, agentId)?.todos ?? []).filter((todo) =>
-    todo.status === 'pending' || todo.status === 'in_progress' || todo.status === 'done');
-  const [open, setOpen] = useState(true);
-  const [showDone, setShowDone] = useState(false);
-  if (todos.length === 0) return null;
-  const doneCount = todos.filter((todo) => todo.status === 'done').length;
-  const foldDone = doneCount >= FOLD_DONE_AT && !showDone;
-  const rows = foldDone ? todos.filter((todo) => todo.status !== 'done') : todos;
-  return (
-    <section data-rail-todos="">
-      <button type="button" aria-expanded={open} onClick={() => { setOpen((v) => !v); }} className={SECTION_BUTTON}>
-        <span className={`${INSPECTOR_HEAD} transition-colors group-hover:text-ink`}>{t('inspector.todos')}</span>
-        <span className="text-[12px] text-ink-faint tabular-nums">{doneCount}/{todos.length}</span>
-        <span className="flex-1" />
-        <InspectorChevron open={open} />
-      </button>
-      {open ? (
-        <ul className="max-h-44 space-y-1 overflow-y-auto pt-1 pr-0.5">
-          {doneCount >= FOLD_DONE_AT ? (
-            <li>
-              <button
-                type="button"
-                data-rail-todos-done-toggle=""
-                aria-expanded={showDone}
-                onClick={() => { setShowDone((v) => !v); }}
-                className={`-ml-1.5 flex h-7 w-[calc(100%+0.375rem)] items-center gap-2 rounded-md pl-1.5 text-left text-[12.5px] text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink ${FOCUS_RING}`}
-              >
-                <span aria-hidden className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] bg-ink/[0.08] text-ink-soft"><Icon name="check" size={12} /></span>
-                <span className="flex-1">{showDone ? t('rail.todos.hideDone') : t('rail.todos.doneCount', { count: doneCount })}</span>
-                <InspectorChevron open={showDone} />
-              </button>
-            </li>
-          ) : null}
-          {rows.map((todo, index) => (
-            <li key={`${index}:${todo.title}`} data-rail-todo={todo.status} className="flex items-start gap-2 py-0.5">
-              <span
-                aria-hidden
-                className={`mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-[4px] border ${
-                  todo.status === 'done'
-                    ? 'border-transparent bg-ink/[0.08] text-ink-soft'
-                    : todo.status === 'in_progress' ? 'border-ink-soft text-ink-soft' : 'border-hairline-strong bg-panel'
-                }`}
-              >
-                {todo.status === 'done' ? <Icon name="check" size={12} /> : todo.status === 'in_progress' ? <Icon name="dot" size={12} /> : null}
-              </span>
-              <span className={`text-[13px] leading-snug break-words ${
-                todo.status === 'done' ? 'text-ink-faint line-through' : todo.status === 'in_progress' ? 'font-medium text-ink' : 'text-ink-soft'
-              }`}>
-                <span className="sr-only">{t(todo.status === 'done' ? 'rail.todo.srDone' : todo.status === 'in_progress' ? 'rail.todo.srInProgress' : 'rail.todo.srPending')}</span>
-                {todo.title}
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </section>
-  );
 }
 
 /**
@@ -244,7 +172,9 @@ export function profileEffortDisplay(profile: {
       }
     }
   }
-  return t('subagent.effort', { effort: String(profile.thinking_effort) });
+  const level = String(profile.thinking_effort);
+  const key = `composer.effort.${level}` as I18nKey;
+  return t('subagent.effort', { effort: t(key) === key ? level : t(key) });
 }
 
 export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspaceId, cwd, externalDriver }: {
@@ -477,29 +407,19 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
 });
 
 /**
- * Two independent folds keep observation separate from control. Tools, skills,
- * and subagent targets describe what the focused agent can use. Plugins,
- * system capabilities, and MCP servers change what this conversation may use.
- * Plugin and MCP tools remain in the tools inventory because they are still
- * part of the observed, complete tool list.
+ * What the focused agent can use, as one fold: the observation tabs (tools,
+ * skills, dispatch targets) sit directly beside the session's own switches
+ * (plugins, system capabilities, MCP servers), because the reader's question
+ * — "它能用什么" — covers both. Plugin and MCP tools remain in the tools
+ * inventory because they are still part of the observed, complete tool list.
  */
 export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { sessionId: string; agentId: string; workspaceId?: string; cwd?: string }) {
   const { t } = useI18n();
-  const { client } = useConnection();
-  const [observationOpen, setObservationOpen] = useState(false);
-  const [controlOpen, setControlOpen] = useState(false);
+  const [open, setOpen] = useState(false);
   const query = { session_id: sessionId, agent_id: agentId };
   const state = useAgentState(sessionId, agentId);
-  const read = useAgentPanelCatalog(query, observationOpen,
+  const read = useAgentPanelCatalog(query, open,
     JSON.stringify([state?.profile, state?.model, state?.permissionMode, state?.planMode]));
-  const pluginRead = useQuery({
-    queryKey: PLUGIN_QUERY_KEYS.usage(sessionId),
-    queryFn: () => client.getPluginUsage({ session_id: sessionId }),
-    enabled: controlOpen,
-    subscribed: controlOpen,
-    staleTime: 5_000,
-    retry: false,
-  });
   const tools = useMemo(() => mapPanelTools(read.data?.tools), [read.data?.tools]);
   const skills = useMemo(() => mapPanelSkills(read.data?.skills), [read.data?.skills]);
   const targets = useMemo(() => mapPanelSubagentTargets(read.data?.targets), [read.data?.targets]);
@@ -508,29 +428,28 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
   const capFailed = data === undefined && read.isError && !capUnsupported;
   const capPending = data === undefined && !read.isError;
   const gaps = data === undefined || capUnsupported ? undefined : capabilityFieldGaps(data);
-  const pluginsUnsupported = isCapabilityUnsupportedError(pluginRead.error);
 
-  const observationSegments: string[] = [];
+  const segments: string[] = [];
   if (data !== undefined && !capUnsupported) {
     const counts = capabilityCounts(tools, skills, targets);
-    if (data.tools !== undefined) observationSegments.push(`${t('inspector.cap.tools')} ${counts.toolsOn}`);
-    if (data.skills !== undefined) observationSegments.push(`${t('inspector.cap.skills')} ${counts.skills}`);
-    if (data.targets !== undefined) observationSegments.push(`${t('inspector.cap.subagents')} ${counts.subagents}`);
+    if (data.tools !== undefined) segments.push(`${t('inspector.cap.tools')} ${counts.toolsOn}`);
+    if (data.skills !== undefined) segments.push(`${t('inspector.cap.skills')} ${counts.skills}`);
+    if (data.targets !== undefined) segments.push(`${t('inspector.cap.subagents')} ${counts.subagents}`);
   }
-  const observationSummary = observationSegments.length === 0 ? undefined : observationSegments.join(' · ');
+  const summary = segments.length === 0 ? undefined : segments.join(' · ');
 
   return (
-    <>
-      {!capUnsupported ? (
-        <section data-rail-capabilities="observation">
-          <FoldHead
-            title={t('rail.capabilities.observeTitle')}
-            summary={observationSummary}
-            open={observationOpen}
-            onToggle={() => { setObservationOpen((value) => !value); }}
-          />
-          {observationOpen ? (
-            <div className="pt-1">
+    <section data-rail-capabilities="">
+      <FoldHead
+        title={t('rail.group.capabilities')}
+        summary={summary}
+        open={open}
+        onToggle={() => { setOpen((value) => !value); }}
+      />
+      {open ? (
+        <div className="pt-1 space-y-4">
+          {!capUnsupported ? (
+            <div>
               <ExecutorAuthStatus observation={data?.executor_auth} />
               <AgentCapabilitiesSection
                 tools={tools}
@@ -544,33 +463,19 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
               />
             </div>
           ) : null}
-        </section>
-      ) : null}
-      <section data-rail-capabilities="control" data-rail-controls="">
-        <FoldHead
-          title={t('rail.capabilities.controlTitle')}
-          open={controlOpen}
-          onToggle={() => { setControlOpen((value) => !value); }}
-        />
-        {controlOpen ? (
-          <div className="pt-1">
-            {!pluginsUnsupported ? (
-              <div className="-mx-2 mb-2" data-rail-control-group="plugins">
-                <h4 className="flex items-baseline gap-1.5 px-2 pb-0.5 text-[11px] font-medium text-ink-faint">
-                  {t('inspector.cap.plugins')}
-                  {pluginRead.data !== undefined ? <span data-rail-plugin-count className="font-normal tabular-nums">{availableCount(pluginRead.data.plugins)}</span> : null}
-                </h4>
-                <SessionPluginsPanel sessionId={sessionId} />
-              </div>
-            ) : null}
-            <div data-rail-control-group="system">
-              <h4 className="pb-0.5 text-[11px] font-medium text-ink-faint">{t('rail.capabilities.systemTitle')}</h4>
-              <OptionalCapabilityRows sessionId={sessionId} />
-            </div>
-            <SessionMcpRail sessionId={sessionId} />
+          <div className="-mx-2" data-rail-control-group="plugins">
+            <h4 className="flex items-baseline gap-1.5 px-2 pb-0.5 text-[11px] font-medium text-ink-faint">
+              {t('inspector.cap.plugins')}
+            </h4>
+            <SessionPluginsPanel sessionId={sessionId} />
           </div>
-        ) : null}
-      </section>
-    </>
+          <div data-rail-control-group="system">
+            <h4 className="pb-0.5 text-[11px] font-medium text-ink-faint">{t('rail.capabilities.systemTitle')}</h4>
+            <OptionalCapabilityRows sessionId={sessionId} />
+          </div>
+          <SessionMcpRail sessionId={sessionId} />
+        </div>
+      ) : null}
+    </section>
   );
 }

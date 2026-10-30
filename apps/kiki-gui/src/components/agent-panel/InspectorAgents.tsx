@@ -190,7 +190,7 @@ function coarseElapsed(since: string | undefined, now: number): string | undefin
  * The summary line: one toggle per non-empty status bucket. Pressing one
  * filters the list to it; pressing it again (or Show all) clears.
  */
-function RosterSummary({
+export function RosterSummary({
   counts,
   filter,
   onFilter,
@@ -401,6 +401,7 @@ export const AgentRoster = memo(function AgentRoster({
   waitingAgentIds,
   onSelect,
   actions,
+  initialFilter,
 }: {
   forest: AgentForest;
   /** Whose team: main, or the focused agent when it has its own children. */
@@ -411,10 +412,12 @@ export const AgentRoster = memo(function AgentRoster({
   onSelect: (agentId: string) => void;
   /** Controls beside the summary (e.g. Stop all). */
   actions?: ReactNode;
+  /** The bucket a summary chip already asked for; the roster starts filtered. */
+  initialFilter?: RosterBucket | 'all';
 }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
-  const [filter, setFilter] = useState<RosterBucket | 'all'>('all');
+  const [filter, setFilter] = useState<RosterBucket | 'all'>(initialFilter ?? 'all');
   const [query, setQuery] = useState('');
   const [unknownOpen, setUnknownOpen] = useState(false);
   const [doneOpen, setDoneOpen] = useState(false);

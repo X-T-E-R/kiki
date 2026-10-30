@@ -88,7 +88,7 @@ export function SectionCard({
   scope?: PanelScope;
   /** Quiet note under the heading — the browser signpost for desktop-only
    * groups, so they cost one line instead of a page of disabled controls. */
-  aside?: string;
+  aside?: React.ReactNode;
   /** A section-wide control on the heading line (one switch or add button). */
   actions?: React.ReactNode;
 }) {
@@ -103,14 +103,16 @@ export function SectionCard({
   const note = effect ?? badge;
   const target: PanelScope = scope ?? (id !== undefined && DEVICE_CARD_IDS.has(id) ? 'app' : 'server');
   const hasBody = children !== undefined && children !== null && children !== false;
-  // Flat grouped rows: one hairline and the T1 display heading carry the
-  // grouping. This is the only heading style inside the content pane; sub-
-  // blocks use `SettingsGroup` (T3/500) and fields use T3/400 labels.
+  // Flat grouped rows: the T1 display heading and the space above it carry
+  // the grouping — no rule between cards, so a page reads as a few sections
+  // instead of a stack of strips. This is the only heading style inside the
+  // content pane; sub-blocks use `SettingsGroup` (T3/500) and fields use
+  // T3/400 labels.
   return (
     <section
       id={id}
       data-settings-card={id}
-      className={`scroll-mt-4 border-t border-hairline pt-6 first:border-t-0 first:pt-0 ${flashId !== null && flashId === id ? 'settings-card-flash' : ''}`}
+      className={`scroll-mt-4 pt-4 first:pt-0 ${flashId !== null && flashId === id ? 'settings-card-flash' : ''}`}
     >
       <div className={`flex flex-wrap items-baseline gap-x-3 gap-y-1 ${hasBody ? 'mb-3' : ''}`}>
         <h2 className="mr-auto font-display text-[18px] leading-6 text-ink">{title}</h2>

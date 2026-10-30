@@ -627,7 +627,7 @@ describe('SessionsSection archive entry', () => {
     await click(container.querySelector('[data-sessions-tab="behavior"]')!);
     expect(cards()).toEqual(['st-card-defaults', 'st-card-questions', 'st-card-agent-messaging']);
     await click(container.querySelector('[data-sessions-tab="runtime"]')!);
-    expect(cards()).toEqual(['st-card-task-policy', 'st-card-cron']);
+    expect(cards()).toEqual(['st-card-task-policy', 'st-card-session-residency', 'st-card-resource-limits']);
     await click(container.querySelector('[data-sessions-tab="conversations"]')!);
 
     const entry = container.querySelector('[data-settings-open-archived]')!;

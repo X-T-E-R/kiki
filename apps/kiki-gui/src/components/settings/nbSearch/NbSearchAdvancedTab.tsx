@@ -1,13 +1,12 @@
 import type { NbSearchDraft } from '@kiki/session-core/settings';
 import type { NbSearchTestStatus } from '@kiki/protocol';
 import { SectionCard } from '../SectionCard';
-import { SettingsGroup } from '../fields';
-import { FORM_LABEL } from '../SettingsPrimitives';
+import { SettingField, SettingsGroup } from '../fields';
 import { FeedbackLine, Hint } from '../../controls';
 import { useI18n } from '../../../i18n';
 import { fetchUrlState, webSearchState } from './types';
 import { NbSearchReadinessRow } from './NbSearchReadinessRow';
-import { INPUT, SECONDARY_BUTTON } from '../../ui';
+import { SECONDARY_BUTTON } from '../../ui';
 import { NbSearchFileScopeEditor } from './NbSearchFileScopeEditor';
 import { NbSearchQualityEditor } from './NbSearchQualityEditor';
 import type { NbSearchAdvancedBinding } from './advancedSupport';
@@ -31,10 +30,11 @@ function NumberField({
   const numeric = Number(trimmed);
   const invalid = trimmed !== '' && (!Number.isInteger(numeric) || numeric < 0);
   return (
-    <label className={FORM_LABEL}>
-      {label}
+    <SettingField label={label} help={invalid ? undefined : hint}>
+      {/* INPUT's w-full would override w-24 in the cascade, so the width
+          comes first and the shared input shape follows. */}
       <input
-        className={`${INPUT} mt-1 font-mono`}
+        className="w-24 rounded-lg border border-hairline bg-paper px-3 py-2 font-mono text-[12px] text-ink outline-none transition-colors placeholder:text-ink-faint focus:border-accent disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
         inputMode="numeric"
         value={value}
         onChange={(event) => {
@@ -42,15 +42,11 @@ function NumberField({
         }}
       />
       {invalid ? (
-        <p role="alert" data-field-issue className="mt-1 font-normal text-[12px] leading-4 text-danger">
+        <p role="alert" data-field-issue className="basis-full text-[12px] leading-4 text-danger">
           {t('st.nbSearch.invalidNumber', { value: trimmed })}
         </p>
-      ) : (
-        <span className="mt-1 block font-normal text-[11px] leading-relaxed text-ink-faint">
-          {hint}
-        </span>
-      )}
-    </label>
+      ) : null}
+    </SettingField>
   );
 }
 
@@ -88,105 +84,99 @@ export function NbSearchAdvancedTab({
   const { t } = useI18n();
 
   return (
-    <div className="space-y-4">
+    <>
       {/* Execution budgets card with anchor st-card-search-execution */}
       <SectionCard id="st-card-search-execution" title={t('st.nbSearch.executionTitle')}>
         <div className="space-y-3">
           <Hint>{t('st.nbSearch.executionHint')}</Hint>
           <fieldset disabled={saving} className="space-y-3 disabled:opacity-60">
             <Group title={t('st.nbSearch.groupBudgets')}>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <NumberField
-                  label={t('st.nbSearch.maxProviderCalls')}
-                  hint={t('st.nbSearch.maxProviderCallsHint')}
-                  value={execution.maxProviderCalls}
-                  onChange={(maxProviderCalls) => {
-                    onUpdateExecution({ maxProviderCalls });
-                  }}
-                />
-                <NumberField
-                  label={t('st.nbSearch.maxConcurrency')}
-                  hint={t('st.nbSearch.maxConcurrencyHint')}
-                  value={execution.maxConcurrency}
-                  onChange={(maxConcurrency) => {
-                    onUpdateExecution({ maxConcurrency });
-                  }}
-                />
-                <NumberField
-                  label={t('st.nbSearch.retryCount')}
-                  hint={t('st.nbSearch.retryCountHint')}
-                  value={execution.retryCount}
-                  onChange={(retryCount) => {
-                    onUpdateExecution({ retryCount });
-                  }}
-                />
-              </div>
+              <NumberField
+                label={t('st.nbSearch.maxProviderCalls')}
+                hint={t('st.nbSearch.maxProviderCallsHint')}
+                value={execution.maxProviderCalls}
+                onChange={(maxProviderCalls) => {
+                  onUpdateExecution({ maxProviderCalls });
+                }}
+              />
+              <NumberField
+                label={t('st.nbSearch.maxConcurrency')}
+                hint={t('st.nbSearch.maxConcurrencyHint')}
+                value={execution.maxConcurrency}
+                onChange={(maxConcurrency) => {
+                  onUpdateExecution({ maxConcurrency });
+                }}
+              />
+              <NumberField
+                label={t('st.nbSearch.retryCount')}
+                hint={t('st.nbSearch.retryCountHint')}
+                value={execution.retryCount}
+                onChange={(retryCount) => {
+                  onUpdateExecution({ retryCount });
+                }}
+              />
             </Group>
 
             <Group title={t('st.nbSearch.groupTimeouts')}>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <NumberField
-                  label={t('st.nbSearch.searchTimeout')}
-                  hint={t('st.nbSearch.searchTimeoutHint')}
-                  value={execution.searchTimeoutMs}
-                  onChange={(searchTimeoutMs) => {
-                    onUpdateExecution({ searchTimeoutMs });
-                  }}
-                />
-                <NumberField
-                  label={t('st.nbSearch.fetchTimeout')}
-                  hint={t('st.nbSearch.fetchTimeoutHint')}
-                  value={execution.fetchTimeoutMs}
-                  onChange={(fetchTimeoutMs) => {
-                    onUpdateExecution({ fetchTimeoutMs });
-                  }}
-                />
-              </div>
+              <NumberField
+                label={t('st.nbSearch.searchTimeout')}
+                hint={t('st.nbSearch.searchTimeoutHint')}
+                value={execution.searchTimeoutMs}
+                onChange={(searchTimeoutMs) => {
+                  onUpdateExecution({ searchTimeoutMs });
+                }}
+              />
+              <NumberField
+                label={t('st.nbSearch.fetchTimeout')}
+                hint={t('st.nbSearch.fetchTimeoutHint')}
+                value={execution.fetchTimeoutMs}
+                onChange={(fetchTimeoutMs) => {
+                  onUpdateExecution({ fetchTimeoutMs });
+                }}
+              />
             </Group>
 
             <Group title={t('st.nbSearch.groupFetchLimits')}>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <NumberField
-                  label={t('st.nbSearch.maxInlineBytes')}
-                  hint={t('st.nbSearch.maxInlineBytesHint')}
-                  value={execution.maxInlineBytes}
-                  onChange={(maxInlineBytes) => {
-                    onUpdateExecution({ maxInlineBytes });
-                  }}
-                />
-                <NumberField
-                  label={t('st.nbSearch.maxSourceBytes')}
-                  hint={t('st.nbSearch.maxSourceBytesHint')}
-                  value={execution.fetchMaxSourceBytes}
-                  onChange={(fetchMaxSourceBytes) => {
-                    onUpdateExecution({ fetchMaxSourceBytes });
-                  }}
-                />
-                <NumberField
-                  label={t('st.nbSearch.maxResponseBytes')}
-                  hint={t('st.nbSearch.maxResponseBytesHint')}
-                  value={execution.fetchMaxResponseBytes}
-                  onChange={(fetchMaxResponseBytes) => {
-                    onUpdateExecution({ fetchMaxResponseBytes });
-                  }}
-                />
-                <NumberField
-                  label={t('st.nbSearch.maxContentChars')}
-                  hint={t('st.nbSearch.maxContentCharsHint')}
-                  value={execution.fetchMaxContentChars}
-                  onChange={(fetchMaxContentChars) => {
-                    onUpdateExecution({ fetchMaxContentChars });
-                  }}
-                />
-                <NumberField
-                  label={t('st.nbSearch.maxRedirects')}
-                  hint={t('st.nbSearch.maxRedirectsHint')}
-                  value={execution.fetchMaxRedirects}
-                  onChange={(fetchMaxRedirects) => {
-                    onUpdateExecution({ fetchMaxRedirects });
-                  }}
-                />
-              </div>
+              <NumberField
+                label={t('st.nbSearch.maxInlineBytes')}
+                hint={t('st.nbSearch.maxInlineBytesHint')}
+                value={execution.maxInlineBytes}
+                onChange={(maxInlineBytes) => {
+                  onUpdateExecution({ maxInlineBytes });
+                }}
+              />
+              <NumberField
+                label={t('st.nbSearch.maxSourceBytes')}
+                hint={t('st.nbSearch.maxSourceBytesHint')}
+                value={execution.fetchMaxSourceBytes}
+                onChange={(fetchMaxSourceBytes) => {
+                  onUpdateExecution({ fetchMaxSourceBytes });
+                }}
+              />
+              <NumberField
+                label={t('st.nbSearch.maxResponseBytes')}
+                hint={t('st.nbSearch.maxResponseBytesHint')}
+                value={execution.fetchMaxResponseBytes}
+                onChange={(fetchMaxResponseBytes) => {
+                  onUpdateExecution({ fetchMaxResponseBytes });
+                }}
+              />
+              <NumberField
+                label={t('st.nbSearch.maxContentChars')}
+                hint={t('st.nbSearch.maxContentCharsHint')}
+                value={execution.fetchMaxContentChars}
+                onChange={(fetchMaxContentChars) => {
+                  onUpdateExecution({ fetchMaxContentChars });
+                }}
+              />
+              <NumberField
+                label={t('st.nbSearch.maxRedirects')}
+                hint={t('st.nbSearch.maxRedirectsHint')}
+                value={execution.fetchMaxRedirects}
+                onChange={(fetchMaxRedirects) => {
+                  onUpdateExecution({ fetchMaxRedirects });
+                }}
+              />
             </Group>
 
             {/* The two domains below belong to the same fetch behaviour as the
@@ -279,6 +269,6 @@ export function NbSearchAdvancedTab({
           ) : null}
         </div>
       </SectionCard>
-    </div>
+    </>
   );
 }

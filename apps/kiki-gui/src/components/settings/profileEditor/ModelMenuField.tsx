@@ -15,7 +15,6 @@ export function ModelMenuField({ checked, baselineChecked, disabled, onChange, p
   const { t } = useI18n();
   return <div data-profile-field="restrictModelsToMenu" className="space-y-2">
     <Toggle layout="row" label={t('st.profiles.restrictModelsToMenu')} checked={checked} disabled={disabled} onChange={onChange} />
-    <p className="text-[11.5px] leading-snug text-ink-soft">{t(checked ? 'st.profiles.menuOnHint' : 'st.profiles.menuOffHint')}</p>
     {checked ? <ModelMenuPreview value={preview} pending={pending} error={error} onRetry={onRetry} /> : null}
     {!checked && baselineChecked ? <p data-menu-disabled role="status" className="text-[12px] text-amber-ink">{t('st.profiles.menuDisabled')}</p> : null}
   </div>;

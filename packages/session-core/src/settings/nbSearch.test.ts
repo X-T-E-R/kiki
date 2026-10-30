@@ -513,7 +513,7 @@ describe('nbSearchConfigPatch', () => {
       ...base,
       fetchChainInherited: false,
       fetchChain: [],
-    }, CAPABILITIES)).toThrowError(/at least one pipeline/);
+    }, CAPABILITIES)).toThrowError(/at least one fetch service/);
   });
 });
 

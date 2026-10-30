@@ -24,10 +24,9 @@ import { prefersDark, resolveTheme } from '../../lib/theme';
 import { Hint } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
 import { AppearancePacks } from './AppearancePacks';
-import { AppearancePreview } from './AppearancePreview';
 import { BackgroundSettings, useBackgroundPrefs } from './BackgroundSettings';
 import { SectionCard } from './SectionCard';
-import { SettingField } from './fields';
+import { SettingField, SettingsBox } from './fields';
 import { FontRoleField } from './FontRoleField';
 import { firstFamily } from '../../lib/fontDetect';
 import { SettingsSegmented } from './SettingsPrimitives';
@@ -97,9 +96,10 @@ function skinFaceName(variable: '--font-sans' | '--font-mono', tweak: string | u
 
 /**
  * Settings → Appearance. Every control applies the moment it changes, so the
- * app (and the preview at the top) is the feedback; there is no draft to save.
- * The one page-level action is "Restore defaults", which keeps an undo; it is
- * only there once something is customized (the theme choice does not count).
+ * app itself is the feedback; there is no draft to save. The first choice is
+ * the theme and the skin tiles — the page's protagonist. The one page-level
+ * action is "Restore defaults", which keeps an undo; it is only there once
+ * something is customized (the theme choice does not count).
  */
 export function AppearanceSection() {
   const { t } = useI18n();
@@ -149,40 +149,42 @@ export function AppearanceSection() {
 
   return (
     <div className="space-y-6" data-appearance-page data-skin-settings>
-      <div className="space-y-2">
-        <AppearancePreview />
-        <div className={`flex-wrap items-center gap-x-3 gap-y-1 ${undo === null && atDefaults ? 'hidden' : 'flex min-h-8'}`} data-appearance-actions>
-          {undo !== null ? (
-            <>
-              <span role="status" className="text-[12px] text-ink-soft">{t('st.appearance.restored')}</span>
+      <SectionCard
+        id="st-card-appearance"
+        title={t('st.appearance.colorTitle')}
+        scope={appearanceScope}
+        actions={(
+          <div className={`flex-wrap items-center gap-x-3 gap-y-1 ${undo === null && atDefaults ? 'hidden' : 'flex'}`} data-appearance-actions>
+            {undo !== null ? (
+              <>
+                <span role="status" className="text-[12px] text-ink-soft">{t('st.appearance.restored')}</span>
+                <button
+                  type="button"
+                  className="text-[12px] font-medium text-ink-soft underline-offset-2 hover:text-ink hover:underline"
+                  onClick={() => { writeAppearance(undo); setUndo(null); }}
+                >
+                  {t('st.appearance.undo')}
+                </button>
+              </>
+            ) : null}
+            {!atDefaults ? (
               <button
                 type="button"
-                className="text-[12px] font-medium text-ink-soft underline-offset-2 hover:text-ink hover:underline"
-                onClick={() => { writeAppearance(undo); setUndo(null); }}
+                data-appearance-restore
+                className={SECONDARY_BUTTON}
+                onClick={() => {
+                  const before = readAppearance();
+                  writeAppearance(defaultAppearanceFor(before));
+                  setUndo(before);
+                }}
               >
-                {t('st.appearance.undo')}
+                {t('st.appearance.restoreDefaults')}
               </button>
-            </>
-          ) : null}
-          {!atDefaults ? (
-            <button
-              type="button"
-              data-appearance-restore
-              className={`${SECONDARY_BUTTON} ml-auto`}
-              onClick={() => {
-                const before = readAppearance();
-                writeAppearance(defaultAppearanceFor(before));
-                setUndo(before);
-              }}
-            >
-              {t('st.appearance.restoreDefaults')}
-            </button>
-          ) : null}
-        </div>
-      </div>
-
-      <SectionCard id="st-card-appearance" title={t('st.appearance.colorTitle')} scope={appearanceScope}>
-        <div className="space-y-2">
+            ) : null}
+          </div>
+        )}
+      >
+        <SettingsBox>
           <SettingField label={t('st.appearance.theme')} labelId="theme-label">
             <SpacePrefOrigin item="theme" label={t('st.appearance.theme')} />
             <SettingsSegmented<ThemePreference>
@@ -196,13 +198,15 @@ export function AppearanceSection() {
             />
           </SettingField>
           <div className="space-y-2 py-1" data-settings-field>
-            <div className="space-y-0.5">
-              <span id="skin-label" className="text-[13px] text-ink">{t('st.skin.title')}</span>
-              <p className="text-[12px] leading-4 text-ink-faint">{t('st.skin.hint')}</p>
-            </div>
+            <span id="skin-label" className="block text-[13px] text-ink">{t('st.skin.title')}</span>
             <SpacePrefOrigin item="skin" label={t('st.skin.title')} />
             <SkinPicker theme={theme} labelledBy="skin-label" />
           </div>
+        </SettingsBox>
+      </SectionCard>
+
+      <SectionCard id="st-card-appearance-layout" title={t('st.appearance.layoutTitle')} scope={appearanceScope}>
+        <SettingsBox>
           <SettingField label={t('st.skin.accent')} htmlFor="skin-accent" help={t('st.skin.accentHint')}>
             <SpacePrefOrigin item="tweaks" label={t('st.skin.accent')} />
             <input
@@ -218,60 +222,6 @@ export function AppearanceSection() {
               </button>
             ) : null}
           </SettingField>
-        </div>
-      </SectionCard>
-
-      <SectionCard id="st-card-appearance-background" title={t('st.bg.title')} scope={appearanceScope}>
-        <div className="space-y-2">
-          <Hint>{t('st.bg.hint')}</Hint>
-          <SpacePrefOrigin item="background" label={t('st.bg.title')} />
-          <BackgroundSettings theme={theme} />
-        </div>
-      </SectionCard>
-
-      <SectionCard id="st-card-appearance-type" title={t('st.appearance.typeTitle')} scope={appearanceScope}>
-        <div className="space-y-2">
-          <FontRoleField
-            role="sans"
-            label={t('st.skin.font')}
-            presets={fontPresets(FONT_CHOICES, '--font-sans')}
-            presetValue={sans.preset}
-            custom={sans.custom}
-            fallback={SANS_FALLBACK}
-            onPreset={(value) => { setTweak('fontSans', value === '' ? undefined : value); }}
-            onCustom={(stack) => { setTweak('fontSans', stack); }}
-          />
-          {/* The mark belongs to this row, not to the interface font above it. */}
-          <FontRoleField
-            role="prose"
-            label={t('st.appearance.prose')}
-            help={t('st.appearance.proseHint')}
-            note={<SpacePrefOrigin item="proseFont" label={t('st.appearance.prose')} />}
-            presets={[
-              { value: 'serif', label: t('st.appearance.prose.serif') },
-              { value: 'sans', label: t('st.appearance.prose.sans') },
-            ]}
-            presetValue={settings.proseFont}
-            custom={tweaks.fontProse}
-            fallback={PROSE_FALLBACK}
-            onPreset={(value) => { setLocal({ proseFont: value === 'sans' ? 'sans' : 'serif' }); }}
-            onCustom={(stack) => { setTweak('fontProse', stack); }}
-          />
-          <FontRoleField
-            role="mono"
-            label={t('st.skin.fontMono')}
-            presets={fontPresets(MONO_CHOICES, '--font-mono')}
-            presetValue={mono.preset}
-            custom={mono.custom}
-            fallback={MONO_FALLBACK}
-            onPreset={(value) => { setTweak('fontMono', value === '' ? undefined : value); }}
-            onCustom={(stack) => { setTweak('fontMono', stack); }}
-          />
-        </div>
-      </SectionCard>
-
-      <SectionCard id="st-card-appearance-layout" title={t('st.appearance.layoutTitle')} scope={appearanceScope}>
-        <div className="space-y-2">
           <SettingField label={t('st.skin.radius')} htmlFor="skin-radius">
             <input
               id="skin-radius"
@@ -314,15 +264,65 @@ export function AppearanceSection() {
             />
             {inSpace ? <span className="text-[12px] text-ink-faint">{t('st.scope.device')}</span> : null}
           </SettingField>
+        </SettingsBox>
+      </SectionCard>
+
+      <SectionCard id="st-card-appearance-background" title={t('st.bg.title')} scope={appearanceScope}>
+        <div className="space-y-2">
+          <Hint>{t('st.bg.hint')}</Hint>
+          <SpacePrefOrigin item="background" label={t('st.bg.title')} />
+          <BackgroundSettings theme={theme} />
         </div>
       </SectionCard>
 
-      <SectionCard id="st-card-appearance-packs" title={t('st.pack.title')} scope={appearanceScope}>
-        <AppearancePacks />
+      <SectionCard id="st-card-appearance-type" title={t('st.appearance.typeTitle')} scope={appearanceScope}>
+        <SettingsBox>
+          <FontRoleField
+            role="sans"
+            label={t('st.skin.font')}
+            presets={fontPresets(FONT_CHOICES, '--font-sans')}
+            presetValue={sans.preset}
+            custom={sans.custom}
+            fallback={SANS_FALLBACK}
+            onPreset={(value) => { setTweak('fontSans', value === '' ? undefined : value); }}
+            onCustom={(stack) => { setTweak('fontSans', stack); }}
+          />
+          {/* The mark belongs to this row, not to the interface font above it. */}
+          <FontRoleField
+            role="prose"
+            label={t('st.appearance.prose')}
+            help={t('st.appearance.proseHint')}
+            note={<SpacePrefOrigin item="proseFont" label={t('st.appearance.prose')} />}
+            presets={[
+              { value: 'serif', label: t('st.appearance.prose.serif') },
+              { value: 'sans', label: t('st.appearance.prose.sans') },
+            ]}
+            presetValue={settings.proseFont}
+            custom={tweaks.fontProse}
+            fallback={PROSE_FALLBACK}
+            onPreset={(value) => { setLocal({ proseFont: value === 'sans' ? 'sans' : 'serif' }); }}
+            onCustom={(stack) => { setTweak('fontProse', stack); }}
+          />
+          <FontRoleField
+            role="mono"
+            label={t('st.skin.fontMono')}
+            presets={fontPresets(MONO_CHOICES, '--font-mono')}
+            presetValue={mono.preset}
+            custom={mono.custom}
+            fallback={MONO_FALLBACK}
+            onPreset={(value) => { setTweak('fontMono', value === '' ? undefined : value); }}
+            onCustom={(stack) => { setTweak('fontMono', stack); }}
+          />
+        </SettingsBox>
       </SectionCard>
 
-      <SectionCard id="st-card-skin-files" title={t('st.skin.filesTitle')} scope="app">
-        <SkinFiles />
+      <SectionCard id="st-card-skin-files" title={t('st.skin.filesTitle')} scope={appearanceScope}>
+        <div className="space-y-6">
+          <AppearancePacks />
+          <div className="pt-5">
+            <SkinFiles />
+          </div>
+        </div>
       </SectionCard>
     </div>
   );

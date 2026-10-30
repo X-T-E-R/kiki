@@ -6,7 +6,7 @@ import type { NamedAgentProfile } from '../../../lib/client';
 import { Icon } from '../../icons';
 import { SearchableSelect } from '../../SearchableSelect';
 import { SettingsSegmented } from '../SettingsPrimitives';
-import { allowedSubagentsOpen, isOpenDomain, openAllowedSubagents, PRESET_DOMAIN_OPEN as WILDCARD, type ProfileDraft, type SubagentLeaseDraft, type SubagentPolicyDraft } from './profileDraft';
+import { allowedSubagentsOpen, effortLabel, isOpenDomain, openAllowedSubagents, PRESET_DOMAIN_OPEN as WILDCARD, type ProfileDraft, type SubagentLeaseDraft, type SubagentPolicyDraft } from './profileDraft';
 import { EffortPicker, ModelPicker } from './fields';
 
 /**
@@ -33,19 +33,21 @@ export function SubagentsField({ draft, onChange, profiles, models, disabled, se
 }) {
   const { t } = useI18n();
   const policy = draft.subagentPolicy;
-  return <div className="space-y-3" data-subagents-field>
+  return <div className="space-y-8" data-subagents-field>
     <CanSpawnSwitch policy={policy} disabled={disabled}
       onChange={(canSpawnSubagents) => onChange({ subagentPolicy: { ...policy, canSpawnSubagents } })} />
-    {policy.canSpawnSubagents === false ? null : <div className="space-y-4" data-dispatch-lists>
+    {policy.canSpawnSubagents === false ? null : <div className="space-y-8" data-dispatch-lists>
       <PresetListField policy={policy} onChange={onChange} profiles={profiles} models={models} disabled={disabled} self={self} />
-      <NameListField id="preferred" list={policy.preferredSubagents} policy={policy} known={policy.allowedSubagents?.map((entry) => entry.name)}
-        onChange={onChange} disabled={disabled}
-        titleKey="st.profiles.dispatchPreferred" hintKey="st.profiles.dispatchPreferredHint" emptyKey="st.profiles.dispatchEmptyPreferred"
-        addLabel={t('st.profiles.dispatchAddToPreferred')} />
-      <NameListField id="deny" list={policy.denySubagents} policy={policy} known={policy.allowedSubagents?.map((entry) => entry.name)}
-        onChange={onChange} disabled={disabled}
-        titleKey="st.profiles.dispatchDeny" hintKey="st.profiles.dispatchDenyHint" emptyKey="st.profiles.dispatchEmptyDeny"
-        addLabel={t('st.profiles.dispatchAddToDeny')} />
+      <div className="grid min-w-0 gap-8 sm:grid-cols-2">
+        <NameListField id="preferred" list={policy.preferredSubagents} policy={policy} known={policy.allowedSubagents?.map((entry) => entry.name)}
+          onChange={onChange} disabled={disabled}
+          titleKey="st.profiles.dispatchPreferred"
+          addLabel={t('st.profiles.dispatchAddToPreferred')} />
+        <NameListField id="deny" list={policy.denySubagents} policy={policy} known={policy.allowedSubagents?.map((entry) => entry.name)}
+          onChange={onChange} disabled={disabled}
+          titleKey="st.profiles.dispatchDeny"
+          addLabel={t('st.profiles.dispatchAddToDeny')} />
+      </div>
     </div>}
   </div>;
 }
@@ -65,9 +67,9 @@ function CanSpawnSwitch({ policy, disabled, onChange }: {
   // One control, three states. A switch cannot say "this profile declares
   // nothing", and drawing it as on would be a claim the profile never made, so
   // the segments carry the whole value and there is no separate toggle.
-  return <div data-dispatch-can-spawn data-declared={declared === undefined ? 'false' : 'true'} className="space-y-1.5">
-    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
-      <span className="min-w-0 text-[12px] font-medium text-ink-soft">{t('st.profiles.dispatchCanSpawn')}</span>
+  return <div data-dispatch-can-spawn data-profile-field="canSpawnSubagents" data-declared={declared === undefined ? 'false' : 'true'} className="space-y-1.5">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+      <span className="min-w-0 text-[13px] font-semibold text-ink">{t('st.profiles.dispatchCanSpawn')}</span>
       <SettingsSegmented<'inherit' | 'on' | 'off'> ariaLabel={t('st.profiles.dispatchCanSpawn')}
         value={declared === undefined ? 'inherit' : declared ? 'on' : 'off'}
         disabled={disabled} dataAttr="data-dispatch-can-spawn-mode"
@@ -78,9 +80,7 @@ function CanSpawnSwitch({ policy, disabled, onChange }: {
           { value: 'off', label: t('st.profiles.dispatchCanSpawnOff') },
         ]} />
     </div>
-    <p className="text-[11.5px] leading-snug text-ink-faint">{t(declared === false
-      ? 'st.profiles.dispatchCanSpawnOffHint'
-      : declared === undefined ? 'st.profiles.dispatchCanSpawnInheritHint' : 'st.profiles.dispatchHint')}</p>
+    {declared === false ? <p className="text-[12px] text-ink-faint">{t('st.profiles.dispatchCanSpawnOffShort')}</p> : null}
   </div>;
 }
 
@@ -125,9 +125,10 @@ function PresetListField({ policy, onChange, profiles, models, disabled, self }:
     setEntries(next);
   };
   const last = rowEntries.length - 1;
-  return <div className="space-y-2" data-dispatch-allowed data-declared={declared ? 'true' : 'false'}>
-    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-      <span className="min-w-0 text-[12px] font-medium text-ink-soft">{t('st.profiles.dispatchAllowed')}</span>
+  return <div className="space-y-2.5" data-dispatch-allowed data-declared={declared ? 'true' : 'false'}>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+      <span className="min-w-0 text-[13px] font-semibold text-ink">{t('st.profiles.dispatchAllowed')}</span>
+      <span className="flex-1" />
       {open ? <button type="button" data-dispatch-allowed-narrow disabled={disabled}
         onClick={() => onChange({ subagentPolicy: { ...policy, allowedSubagents: rowEntries } })}
         className={HEADER_BUTTON}>{t('st.profiles.dispatchNarrowToList')}</button> : null}
@@ -135,9 +136,9 @@ function PresetListField({ policy, onChange, profiles, models, disabled, self }:
         onClick={() => onChange({ subagentPolicy: { ...policy, allowedSubagents: openAllowedSubagents(entries) } })}
         className={HEADER_BUTTON}>{t('st.profiles.dispatchClearList')}</button> : null}
     </div>
-    {!declared || allowedSubagentsOpen(entries) ? <p data-dispatch-allowed-unset className="text-[11.5px] leading-snug text-ink-soft">
+    {!declared || allowedSubagentsOpen(entries) ? <p data-dispatch-allowed-unset className="text-[12px] text-ink-faint">
       {t(allowedSubagentsOpen(entries) ? 'st.profiles.dispatchAllowedOpen' : 'st.profiles.dispatchAllowedUnset')}</p>
-      : entries!.length === 0 ? <p data-dispatch-allowed-empty className="text-[11.5px] leading-snug text-ink-soft">
+      : entries!.length === 0 ? <p data-dispatch-allowed-empty className="text-[12px] text-ink-faint">
         {t('st.profiles.dispatchAllowedEmpty')}</p> : null}
     {rowEntries.length > 0 ? <ol className="divide-y divide-hairline rounded-lg border border-hairline" data-subagent-rows>
       {rowEntries.map((entry, index) => {
@@ -162,7 +163,7 @@ function PresetListField({ policy, onChange, profiles, models, disabled, self }:
             <span className="min-w-0 truncate font-mono text-[12.5px] text-ink" title={entry.name}>{entry.name}</span>
             {target?.main === true ? <span className={BADGE} title={t('st.profiles.rosterMainMemberHint')}>{t('st.agentManager.main')}</span> : null}
             {entry.source !== undefined ? <span className={BADGE} title={entry.source}>{t('st.profiles.scopedLease')}</span> : null}
-            {denied.has(entry.name) ? <span className={BADGE} title={t('st.profiles.dispatchDenyHint')}>{t('st.profiles.dispatchDeny')}</span> : null}
+            {denied.has(entry.name) ? <span className={BADGE}>{t('st.profiles.dispatchDeny')}</span> : null}
             {missing ? <span data-subagent-missing className="inline-flex shrink-0 items-center text-amber-ink" title={t('st.profiles.subagentMissing')}>
               <Icon name="warning" size={12} /><span className="sr-only">{t('st.profiles.subagentMissing')}</span></span> : null}
           </span>
@@ -176,8 +177,8 @@ function PresetListField({ policy, onChange, profiles, models, disabled, self }:
                 onChange={(value) => update(index, { modelAlias: value })} />
             </div>
             <EffortPicker id={`lease-effort-${entry.name}`} value={entry.effort} disabled={disabled}
-              unsetLabel={t('st.profiles.leaseInherits', { value: ownEffort ?? t('st.profiles.effortUnset') })}
-              unsetTrigger={<span className="truncate text-ink-soft">{ownEffort ?? t('st.profiles.effortUnset')}</span>}
+              unsetLabel={t('st.profiles.leaseInherits', { value: ownEffort !== undefined ? effortLabel(ownEffort, t) : t('st.profiles.effortUnset') })}
+              unsetTrigger={<span className="truncate text-ink-soft">{ownEffort !== undefined ? effortLabel(ownEffort, t) : t('st.profiles.effortUnset')}</span>}
               ariaLabel={`${entry.name} · ${t('st.profiles.leaseEffort')}`}
               onChange={(value) => update(index, { effort: value })} />
           </div>
@@ -201,8 +202,6 @@ function PresetListField({ policy, onChange, profiles, models, disabled, self }:
         </li>;
       })}
     </ol> : null}
-    {declared && entries!.length === 0 ? <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.profiles.dispatchEmptyPresets')}</p> : null}
-    <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.profiles.dispatchAllowedHint')}</p>
     <SearchableSelect id="dispatch-add-preset" value="" disabled={disabled} hideChevron allowCustomValue
       options={candidates.map((profile) => ({
         value: profile.name, label: profile.name, description: profile.description,
@@ -220,7 +219,7 @@ function PresetListField({ policy, onChange, profiles, models, disabled, self }:
  * name sets, so both are chips plus a free-text add — a name the catalog does
  * not carry is still a legal entry, and it is marked rather than refused.
  */
-function NameListField({ id, list, policy, known, onChange, disabled, titleKey, hintKey, emptyKey, addLabel }: {
+function NameListField({ id, list, policy, known, onChange, disabled, titleKey, addLabel }: {
   id: string;
   list: readonly string[] | undefined;
   policy: SubagentPolicyDraft;
@@ -229,8 +228,6 @@ function NameListField({ id, list, policy, known, onChange, disabled, titleKey, 
   onChange: (next: Pick<ProfileDraft, 'subagentPolicy'>) => void;
   disabled: boolean;
   titleKey: 'st.profiles.dispatchPreferred' | 'st.profiles.dispatchDeny';
-  hintKey: 'st.profiles.dispatchPreferredHint' | 'st.profiles.dispatchDenyHint';
-  emptyKey: 'st.profiles.dispatchEmptyPreferred' | 'st.profiles.dispatchEmptyDeny';
   addLabel: string;
 }) {
   const { t } = useI18n();
@@ -238,15 +235,14 @@ function NameListField({ id, list, policy, known, onChange, disabled, titleKey, 
   const setList = (next: readonly string[]) => onChange({
     subagentPolicy: { ...policy, [id === 'deny' ? 'denySubagents' : 'preferredSubagents']: next },
   });
-  return <div className="space-y-1.5" data-dispatch-names={id} data-declared={list === undefined ? 'false' : 'true'}>
-    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-      <span className="min-w-0 text-[12px] font-medium text-ink-soft">{t(titleKey)}</span>
+  return <div className="min-w-0 space-y-2" data-dispatch-names={id} data-declared={list === undefined ? 'false' : 'true'}>
+    <div className="flex h-7 items-center gap-2">
+      <span className="min-w-0 text-[13px] font-semibold text-ink">{t(titleKey)}</span>
       {list !== undefined && list.length > 0 ? <button type="button" data-dispatch-clear={id} disabled={disabled}
         onClick={() => setList([])}
-        className="h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink disabled:opacity-50">
+        className="h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-faint hover:bg-ink/[0.04] hover:text-ink disabled:opacity-50">
         {t(id === 'deny' ? 'st.profiles.dispatchClearDeny' : 'st.profiles.dispatchClearPreferred')}</button> : null}
     </div>
-    <p className="text-[11.5px] leading-snug text-ink-faint">{t(hintKey)}</p>
     <div className="flex flex-wrap items-center gap-1.5">
       {(list ?? []).map((name, index) => {
         const unknown = known !== undefined && !listed.has(name);
@@ -263,15 +259,14 @@ function NameListField({ id, list, policy, known, onChange, disabled, titleKey, 
         </span>;
       })}
       <SearchableSelect id={`dispatch-add-${id}`} value="" options={[]} allowCustomValue disabled={disabled} hideFilter
-        ariaLabel={addLabel} searchPlaceholder={addLabel} emptyText={t('st.profiles.noMoreAgents')}
+        ariaLabel={addLabel} searchPlaceholder={addLabel} emptyText={t('st.profiles.noMoreAgents')} hideChevron
         triggerLabel={<span className="inline-flex items-center gap-1"><Icon name="plus" size={12} />{addLabel}</span>}
-        buttonClassName="inline-flex h-7 items-center rounded-md px-2 text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink disabled:opacity-50"
+        buttonClassName={`inline-flex h-7 items-center rounded-md px-2 ${(list ?? []).length === 0 ? '-ml-2' : ''} text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink disabled:opacity-50`}
         onChange={(name) => {
           const value = name.trim();
           if (value !== '' && !(list ?? []).includes(value)) setList([...(list ?? []), value]);
         }} />
     </div>
-    {(list ?? []).length === 0 ? <p className="text-[11.5px] leading-snug text-ink-faint">{t(emptyKey)}</p> : null}
   </div>;
 }
 

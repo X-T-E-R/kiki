@@ -169,6 +169,19 @@ async function click(selector: string) {
   await settle();
 }
 
+/** The clickable summary of one accordion row: RowFrame's expand button inside the row's frame. */
+async function clickRow(name: string) {
+  await click(`[data-computer-connection="${name}"] > div > button[aria-controls]`);
+}
+
+/** The 高级 fold the machine facts and the model usage preference live in;
+ *  opening it once is the fold doing its job, not a second navigation. */
+async function openAdvanced() {
+  if (query('[data-computer-advanced-fold]')?.hasAttribute('open') !== true) {
+    await click('[data-computer-advanced-fold] > summary');
+  }
+}
+
 function setInput(selector: string, value: string) {
   const input = query<HTMLInputElement | HTMLTextAreaElement>(selector);
   if (input === null) throw new Error(`No element for ${selector}`);
@@ -281,13 +294,14 @@ describe('ComputerControlSection', () => {
 
     await render(guard);
     await settleUntil('[data-computer-connection="kiki-computer"]');
-    await click('[data-computer-connection="kiki-computer"]');
+    await clickRow('kiki-computer');
     await act(async () => { setInput('[data-computer-name-input]', 'renamed-computer'); });
     await settle();
 
-    // Detail replaces the list on desktop too; pressing back asks the dirty guard.
-    expect(query('[data-computer-connection="second-computer"]')).toBeNull();
-    await click('[data-computer-back]');
+    // The list stays visible behind the open row; closing it (pressing the row
+    // again, the old back button's replacement) asks the dirty guard.
+    expect(query('[data-computer-connection="second-computer"]')).not.toBeNull();
+    await clickRow('kiki-computer');
     expect(asked).toEqual([reported.at(-1)]);
     // Still the edited draft, not the list.
     expect(query<HTMLInputElement>('[data-computer-name-input]')?.value).toBe('renamed-computer');
@@ -295,7 +309,7 @@ describe('ComputerControlSection', () => {
     await act(async () => { pending[0]?.(); });
     await settle();
     expect(query('[data-computer-connection="second-computer"]')).not.toBeNull();
-    await click('[data-computer-connection="second-computer"]');
+    await clickRow('second-computer');
     expect(query<HTMLInputElement>('[data-computer-name-input]')?.value).toBe('second-computer');
   });
 
@@ -311,7 +325,7 @@ describe('ComputerControlSection', () => {
 
     await render(guard);
     await settleUntil('[data-computer-connection="kiki-computer"]');
-    await click('[data-computer-connection="kiki-computer"]');
+    await clickRow('kiki-computer');
     setInput('[data-computer-command-input]', 'C:\\Users\\fixture\\other\\cua-driver.exe');
     await settle();
 
@@ -330,7 +344,7 @@ describe('ComputerControlSection', () => {
     await settleUntil('[data-computer-connection="kiki-computer"]');
     expect(query('[data-computer-connection="fixture-fs"]')).toBeNull();
 
-    await click('[data-computer-connection="kiki-computer"]');
+    await clickRow('kiki-computer');
     expect(query<HTMLInputElement>('[data-computer-command-input]')?.value).toBe(CUA_CONFIG.command);
     expect(query<HTMLTextAreaElement>('[data-computer-args-input]')?.value).toBe('mcp');
     expect(query('[data-computer-executor]')?.dataset['computerExecutor']).toBe('local');
@@ -345,7 +359,7 @@ describe('ComputerControlSection', () => {
 
     await render();
     await settleUntil('[data-computer-connection="kiki-computer"]');
-    await click('[data-computer-connection="kiki-computer"]');
+    await clickRow('kiki-computer');
 
     setInput('[data-computer-command-input]', edited);
     await settle();
@@ -369,7 +383,7 @@ describe('ComputerControlSection', () => {
 
     await render();
     await settleUntil('[data-computer-connection="kiki-computer"]');
-    await click('[data-computer-connection="kiki-computer"]');
+    await clickRow('kiki-computer');
 
     setInput('[data-computer-command-input]', 'C:\\other\\cua-driver.exe');
     await settle();
@@ -386,7 +400,7 @@ describe('ComputerControlSection', () => {
 
     await render();
     await settleUntil('[data-computer-connection="kiki-computer"]');
-    await click('[data-computer-connection="kiki-computer"]');
+    await clickRow('kiki-computer');
     await click('[data-computer-stop-btn]');
     await click('[data-confirm-action="confirm"]');
 
@@ -411,7 +425,7 @@ describe('ComputerControlSection', () => {
 
     await render();
     await settleUntil('[data-computer-connection="plugin-computer"]');
-    await click('[data-computer-connection="plugin-computer"]');
+    await clickRow('plugin-computer');
 
     expect(query<HTMLInputElement>('[data-computer-command-input]')?.closest('fieldset')?.disabled).toBe(true);
     expect(query('[data-settings-draft^="computer-control:"]')).toBeNull();
@@ -427,6 +441,8 @@ describe('ComputerControlSection', () => {
     mcpAdd.mockResolvedValue([managedEntry({ name: 'kiki-computer', config: { ...CUA_CONFIG, command: CAPABILITY.plan!.destination, args: ['mcp', '--direct'] } })]);
 
     await render();
+    await settleUntil('[data-computer-add]');
+    await click('[data-computer-add]');
     await settleUntil('[data-computer-new]');
     await click('[data-computer-new]');
 
@@ -477,11 +493,13 @@ describe('ComputerControlSection', () => {
     getConfig.mockResolvedValue({} as KikiConfigResponse);
 
     await render();
+    await openAdvanced();
     await settleUntil('[data-computer-preference-choice="avoid"]');
-
     expect(query('[data-computer-preference-choice="avoid"]')?.getAttribute('aria-pressed')).toBe('true');
     expect(query('[data-computer-preference-choice="prefer"]')?.getAttribute('aria-pressed')).toBe('false');
-    expect(query('[data-computer-preference-source]')?.getAttribute('data-computer-preference-source')).toBe('default');
+    // The 来源 tag names the layer only when it overrode the home value; a
+    // plain stored choice earns no tag, so default renders nothing.
+    expect(query('[data-computer-preference-source]')).toBeNull();
     expect(query('[data-computer-preference-reset]')).toBeNull();
     expect(query('[data-settings-draft="computer-preference"]')).toBeNull();
     expect(installCapability).not.toHaveBeenCalled();
@@ -497,6 +515,7 @@ describe('ComputerControlSection', () => {
     } as KikiConfigResponse);
 
     await render();
+    await openAdvanced();
     await settleUntil('[data-computer-preference-choice="prefer"]');
 
     await click('[data-computer-preference-choice="prefer"]');
@@ -525,6 +544,7 @@ describe('ComputerControlSection', () => {
     } as KikiConfigResponse);
 
     await render();
+    await openAdvanced();
     await settleUntil('[data-computer-preference-reset]');
 
     expect(query('[data-computer-preference-source]')?.getAttribute('data-computer-preference-source')).toBe('home');
@@ -540,7 +560,9 @@ describe('ComputerControlSection', () => {
     // Echo applied: avoids, default source, reset button disappears, cache updated
     expect(query('[data-computer-preference-choice="avoid"]')?.getAttribute('aria-pressed')).toBe('true');
     expect(query('[data-computer-preference-choice="prefer"]')?.getAttribute('aria-pressed')).toBe('false');
-    expect(query('[data-computer-preference-source]')?.getAttribute('data-computer-preference-source')).toBe('default');
+    // The 来源 tag names the layer only when it overrode the home value; a
+    // plain stored choice earns no tag, so default renders nothing.
+    expect(query('[data-computer-preference-source]')).toBeNull();
     expect(query('[data-computer-preference-reset]')).toBeNull();
     expect(queries.getQueryData(['config', 'local'])).toEqual({
       computer_control: { usagePreference: 'avoid', usagePreferenceSource: 'default' },
@@ -554,6 +576,7 @@ describe('ComputerControlSection', () => {
     patchConfig.mockRejectedValue(new Error('Network error'));
 
     await render();
+    await openAdvanced();
     await settleUntil('[data-computer-preference-choice="prefer"]');
 
     await click('[data-computer-preference-choice="prefer"]');
@@ -578,6 +601,7 @@ describe('ComputerControlSection', () => {
     } as KikiConfigResponse);
 
     await render();
+    await openAdvanced();
     await settleUntil('[data-computer-preference-choice="avoid"]');
 
     expect(query<HTMLButtonElement>('[data-computer-preference-choice="avoid"]')?.disabled).toBe(true);
@@ -591,6 +615,7 @@ describe('ComputerControlSection', () => {
     getConfig.mockRejectedValue(new Error('config service unavailable'));
 
     await render();
+    await openAdvanced();
     await settleUntil('[data-computer-preference-state="failed"]');
 
     expect(query('[data-computer-preference-choice="avoid"]')).toBeNull();
@@ -623,6 +648,7 @@ describe('ComputerControlSection', () => {
     } as KikiConfigResponse);
 
     await render();
+    await openAdvanced();
     await settleUntil('[data-computer-preference-reset]');
 
     expect(query('[data-computer-preference-source]')?.getAttribute('data-computer-preference-source')).toBe('home');
@@ -649,11 +675,13 @@ describe('ComputerControlSection', () => {
     getConfig.mockResolvedValue(preferenceConfig('avoid', 'default'));
     patchConfig.mockImplementationOnce(() => localSave.promise).mockImplementationOnce(() => remoteSave.promise);
     await render();
+    await openAdvanced();
     await click('[data-computer-preference-choice="prefer"]');
 
     connection.scopeId = 'ssh:office-mac';
     getConfig.mockResolvedValue(preferenceConfig('prefer', 'base'));
     await render();
+    await openAdvanced();
     await settleUntil('[data-computer-preference-source="base"]');
     await click('[data-computer-preference-choice="avoid"]');
     expect(patchConfig).toHaveBeenCalledTimes(2);
@@ -679,6 +707,7 @@ describe('ComputerControlSection', () => {
     getConfig.mockResolvedValue(preferenceConfig('avoid', 'home'));
     patchConfig.mockImplementationOnce(() => oldRequest.promise).mockImplementationOnce(() => newRequest.promise);
     await render();
+    await openAdvanced();
     if (oldAction === 'save') {
       await click('[data-computer-preference-choice="prefer"]');
     } else {
@@ -688,6 +717,7 @@ describe('ComputerControlSection', () => {
     await render();
     connection.scopeId = 'local';
     await render();
+    await openAdvanced();
     await act(async () => { queries.setQueryData(['config', 'local'], preferenceConfig('prefer', 'home')); });
     await settle();
     await click('[data-computer-preference-choice="avoid"]');
@@ -710,6 +740,7 @@ describe('ComputerControlSection', () => {
     getConfig.mockResolvedValue(preferenceConfig('avoid', 'default'));
     patchConfig.mockImplementationOnce(() => save.promise);
     await render();
+    await openAdvanced();
     await click('[data-computer-preference-choice="prefer"]');
     const newer = preferenceConfig('avoid', 'base');
     await act(async () => { queries.setQueryData(['config', 'local'], newer); });
@@ -724,6 +755,7 @@ describe('ComputerControlSection', () => {
     getConfig.mockResolvedValue(preferenceConfig('avoid', 'default'));
     patchConfig.mockImplementationOnce(() => save.promise);
     await render();
+    await openAdvanced();
     await click('[data-computer-preference-choice="prefer"]');
     await act(async () => { root.render(<></>); });
     const timer = vi.spyOn(globalThis, 'setTimeout');
@@ -749,6 +781,7 @@ describe('ComputerControlSection', () => {
     }));
 
     await render();
+    await openAdvanced();
     await settleUntil('[data-computer-preference-choice="prefer"]');
 
     await click('[data-computer-preference-choice="prefer"]');
@@ -1121,6 +1154,7 @@ describe('ComputerControlSection', () => {
       getConfig.mockRejectedValue(new Error('config read failed'));
 
       await render();
+      await openAdvanced();
       await settleUntil('[data-computer-preference-state="failed"]');
       expect(query('[data-computer-verdict="unknown"]')).not.toBeNull();
       expect(query('[data-computer-verdict="ready"]')).toBeNull();
@@ -1177,14 +1211,15 @@ describe('ComputerControlSection', () => {
       });
 
       await render();
+      // 登记已有的 Windows-MCP is one entry of the 添加 menu's add view, and
+      // its own fold opens inside it.
+      await settleUntil('[data-computer-add]');
+      await click('[data-computer-add]');
       await settleUntil('[data-computer-windows-mcp-register]');
 
       const details = query<HTMLDetailsElement>('[data-computer-windows-mcp-register]');
       expect(details).not.toBeNull();
-      await act(async () => {
-        details!.open = true;
-        details!.dispatchEvent(new Event('toggle'));
-      });
+      await click('[data-computer-windows-mcp-register] > summary');
       await settleUntil('[data-computer-windows-mcp-plan]');
       expect(query('[data-computer-windows-mcp-plan]')?.textContent).toContain('Windows-MCP v0.8.8');
 

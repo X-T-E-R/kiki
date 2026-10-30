@@ -49,7 +49,7 @@ export function SpaceCredentialsCard({ client: controlClient, onEnterMain }: {
   return (
     <SectionCard id="st-card-space-credentials" title={t('st.spaces.credTitle')} scope="server">
       <div className="space-y-3">
-        <div className="rounded-lg bg-ink/[0.03] p-3" data-space-cred-current={shared ? 'shared' : 'isolated'}>
+        <div data-space-cred-current={shared ? 'shared' : 'isolated'}>
           <p className="text-[13px] font-medium text-ink">{t(shared ? 'st.spaces.credShared' : 'st.spaces.credIsolated')}</p>
           <p className="mt-0.5 text-[12px] text-ink-faint">{t(shared ? 'st.spaces.credSharedDesc' : 'st.spaces.credIsolatedDesc')}</p>
         </div>

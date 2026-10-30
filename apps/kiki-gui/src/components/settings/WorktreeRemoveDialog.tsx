@@ -20,9 +20,8 @@ import {
   type WorktreeRemovalOutcome,
 } from '../../lib/worktrees';
 import { useConnection } from '../../state/connection';
+import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine } from '../controls';
-import { Dialog } from '../Dialog';
-import { DANGER_BUTTON, SECONDARY_BUTTON } from '../ui';
 
 export function outcomeReasonKey(outcome: WorktreeRemovalOutcome): I18nKey {
   return outcome === 'removed' ? 'st.worktrees.outcome.failed' : `st.worktrees.outcome.${outcome}`;
@@ -90,11 +89,23 @@ export function WorktreeRemoveDialog({
   const title = t('st.worktrees.removeTitle', { branch: record.branch });
 
   return (
-    <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={title} overlayId="worktree-remove-dialog" role="alertdialog">
-      <h2 className="font-display text-[18px] font-semibold text-ink">{title}</h2>
-      <p className="mt-3 text-[13px] leading-relaxed text-ink-soft">
-        {t('st.worktrees.removeBody')}
-      </p>
+    <ConfirmDialog
+      open
+      stacked
+      title={title}
+      body={t('st.worktrees.removeBody')}
+      tone="danger"
+      busy={busy}
+      overlayId="worktree-remove-dialog"
+      confirmLabel={phase.kind === 'check-failed' ? t('st.worktrees.retry') : lossy ? t('st.worktrees.removeConfirmLoss') : t('st.worktrees.removeConfirm')}
+      confirmDisabled={phase.kind === 'checking'}
+      confirmData={{ 'data-worktree-remove-confirm': phase.kind === 'checking' ? 'checking' : phase.kind === 'check-failed' ? 'retry' : lossy ? 'loss' : 'clean' }}
+      onCancel={onClose}
+      onConfirm={() => {
+        if (phase.kind === 'check-failed') { inspect(); return; }
+        if (inspection !== undefined) remove(inspection);
+      }}
+    >
       <p className="mt-1 font-mono text-[11.5px] break-all text-ink-faint">{record.path}</p>
 
       <div data-worktree-remove-phase={phase.kind} className="mt-4" aria-live="polite">
@@ -127,25 +138,6 @@ export function WorktreeRemoveDialog({
         ) : null}
         {error !== null ? <div className="mt-2"><FeedbackLine feedback={{ tone: 'error', text: error }} /></div> : null}
       </div>
-
-      <div className="mt-6 flex flex-wrap justify-end gap-2">
-        <button type="button" data-autofocus className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>
-          {t('common.cancel')}
-        </button>
-        {phase.kind === 'check-failed' ? (
-          <button type="button" className={SECONDARY_BUTTON} onClick={() => { inspect(); }}>{t('st.worktrees.retry')}</button>
-        ) : (
-          <button
-            type="button"
-            data-worktree-remove-confirm={lossy ? 'loss' : 'clean'}
-            className={DANGER_BUTTON}
-            disabled={inspection === undefined || busy}
-            onClick={() => { if (inspection !== undefined) remove(inspection); }}
-          >
-            {lossy ? t('st.worktrees.removeConfirmLoss') : t('st.worktrees.removeConfirm')}
-          </button>
-        )}
-      </div>
-    </Dialog>
+    </ConfirmDialog>
   );
 }

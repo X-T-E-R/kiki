@@ -379,7 +379,7 @@ export interface GlobalPluginsFacade {
   info(id: string): Promise<PluginInfo>;
   preview(input: import('@kiki/protocol').PluginPreviewRequest, options?: Pick<CallOptions, 'signal'>): Promise<import('@kiki/protocol').PluginInstallPlan>;
   install(input: string | import('@kiki/protocol').PluginInstallRequest): Promise<PluginSummary>;
-  setEnabled(input: { id: string; enabled: boolean }): Promise<void>;
+  setEnabled(input: { id: string; enabled: boolean; defaultEnabled?: boolean }): Promise<void>;
   setMcpServerEnabled(input: { id: string; server: string; enabled: boolean }): Promise<void>;
   remove(id: string): Promise<void>;
   reload(): Promise<ReloadSummary>;

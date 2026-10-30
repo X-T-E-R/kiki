@@ -63,7 +63,7 @@ export function NbSearchFileScopeEditor({
       </p>
 
       {state === 'inherit' && inherited.length > 0 ? (
-        <ul className="divide-y divide-hairline" data-nb-search-filescope-inherited>
+        <ul className="space-y-0" data-nb-search-filescope-inherited>
           {inherited.map((scope) => (
             <li key={scope.id} className="flex flex-wrap items-baseline gap-x-2 py-1.5">
               <span className="font-mono text-[11px] text-ink">{scope.id}</span>
@@ -77,7 +77,7 @@ export function NbSearchFileScopeEditor({
       ) : null}
 
       {state === 'custom' ? (
-        <ul className="divide-y divide-hairline" data-nb-search-filescope-rows>
+        <ul className="space-y-0" data-nb-search-filescope-rows>
           {rows.map((scope, index) => (
             <li key={`${index}:${scope.id}`} className="flex items-start gap-2 py-2">
               <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.4fr)_minmax(0,1fr)]">

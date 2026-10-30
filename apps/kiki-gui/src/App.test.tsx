@@ -350,7 +350,8 @@ describe('App sidebar Escape wiring', () => {
     expect(anyOverlayOpen()).toBe(true);
     expect(anyOverlayOpen(['app-sidebar'])).toBe(false);
     await act(async () => { element<HTMLButtonElement>('[data-filter-menu-toggle]').click(); });
-    expect(container.querySelector('[data-filter-menu]')).not.toBeNull();
+    // The menu rides the shared AnchoredPopover, which portals to <body>.
+    expect(document.querySelector('[data-filter-menu]')).not.toBeNull();
     expect(anyOverlayOpen(['app-sidebar'])).toBe(true);
     return trigger;
   }
@@ -358,8 +359,12 @@ describe('App sidebar Escape wiring', () => {
   async function escape() {
     const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
     let overlayOpen = false;
+    // An open popover owns Escape on its own surface (the AnchoredPopover
+    // handles the key where focus sits, portaled under <body>); with no
+    // popover open the key is the window-level one the drawer listens for.
+    const target = document.querySelector('[data-anchored-popover]') ?? window;
     await act(async () => {
-      window.dispatchEvent(event);
+      target.dispatchEvent(event);
       // Read before React's effect cleanup: this is what a later global
       // abort listener would see during the same native event dispatch.
       overlayOpen = anyOverlayOpen();
@@ -375,7 +380,7 @@ describe('App sidebar Escape wiring', () => {
 
     const first = await escape();
     expect(first.event.defaultPrevented).toBe(true);
-    expect(container.querySelector('[data-filter-menu]')).toBeNull();
+    expect(document.querySelector('[data-filter-menu]')).toBeNull();
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
     expect(element('#app-sidebar').classList.contains('open')).toBe(true);
     expect(anyOverlayOpen()).toBe(true);

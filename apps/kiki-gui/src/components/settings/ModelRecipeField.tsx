@@ -21,7 +21,7 @@ import { useI18n } from '../../i18n';
 import { useRecipeList, useRecipeMutation } from '../../lib/recipeQueries';
 import { recipeRevisionShort } from '../../lib/recipes';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, type Feedback } from '../controls';
+import { FeedbackLine, type Feedback } from '../controls';
 import { RecipeAuthorWorkbench, RecipeForkChoice } from './RecipeAuthorWorkbench';
 import { RecipeStudio } from './RecipeStudio';
 
@@ -126,12 +126,6 @@ export function ModelRecipeField({ modelId, modelName, onCommitRecipe, appliedId
 
   return (
     <div className="min-w-0 space-y-3" data-model-recipe={modelId}>
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <p className="text-[12px] font-medium text-ink-soft">{t('st.recipe.title')}</p>
-        <span className="text-[11.5px] text-ink-faint" data-recipe-mode-label>
-          {appliedId === undefined ? t('st.recipe.modeManual') : t('st.recipe.modeRecipe')}
-        </span>
-      </div>
 
       {appliedId === undefined ? (
         <p className="text-[12px] leading-5 text-ink-soft" data-recipe-state-manual>
@@ -163,16 +157,6 @@ export function ModelRecipeField({ modelId, modelName, onCommitRecipe, appliedId
             </p>
           ) : null}
         </div>
-      )}
-
-      {appliedId === undefined ? null : (
-        <>
-          {/* Stated once, in the model's terms, and never repeated per field. */}
-          <div className="space-y-1" data-recipe-ignored>
-            <p className="text-[12px] leading-5 text-ink-soft">{t('st.recipe.keptNotice')}</p>
-            <Hint>{t('st.recipe.keptDetail')}</Hint>
-          </div>
-        </>
       )}
 
       <div className="flex flex-wrap items-center gap-2">

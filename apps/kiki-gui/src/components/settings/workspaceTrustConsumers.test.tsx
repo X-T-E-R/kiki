@@ -15,7 +15,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Workspace, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
-import { WorkspacesSection } from './WorkspacesSection';
+import { WorkspacesSection, workspaceDisplayName } from './WorkspacesSection';
 import { findMcpWorkspace, McpView } from '../capabilities/McpView';
 
 const client = {
@@ -194,27 +194,30 @@ describe('workspace trust consumers', () => {
     expect(container.textContent).not.toContain('Trust unavailable');
     expect(client.untrustWorkspace).not.toHaveBeenCalled();
   });
-  it('uses the real menu and disabled trigger while a trust write is pending; failure remains retryable', async () => {
-    let rejectWrite: (error: Error) => void = () => {};
-    client.trustWorkspace.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectWrite = reject; }));
+  it('shows trust as a read-only row tag and never offers to change it from the list', async () => {
+    client.getWorkspaceTrust.mockResolvedValue({ trusted: true });
     const container = await mount(<WorkspacesSection />);
-    await click('[data-workspace-more]', container); await click('[data-menu-item="trust"]');
-    expect(client.trustWorkspace).toHaveBeenCalledExactlyOnceWith('wd_example_000000000000');
-    expect(container.querySelector<HTMLButtonElement>('[data-workspace-more]')!.disabled).toBe(true);
-    await act(async () => rejectWrite(new Error('Trust write failed'))); await flush();
-    expect(container.textContent).toContain('Trust write failed');
-    expect(container.querySelector<HTMLButtonElement>('[data-workspace-more]')!.disabled).toBe(false);
-    await click('[data-workspace-more]', container); await click('[data-menu-item="trust"]');
-    expect(client.trustWorkspace).toHaveBeenCalledTimes(2);
-    expect(client.untrustWorkspace).not.toHaveBeenCalled();
-    expect(container.textContent).not.toContain('Trust write failed');
-  });
-  it('does not offer a trust mutation when the saved trust state is unknown', async () => {
-    client.getWorkspaceTrust.mockRejectedValue(new Error('Trust read failed'));
-    const container = await mount(<WorkspacesSection />);
+    expect(container.querySelector('[data-workspace-trust-badge]')!.textContent).toBe('Trusted');
     await click('[data-workspace-more]', container);
+    // Trust changes on the workspace's own page, not from a list row.
     expect(document.querySelector('[data-menu-item="trust"]')).toBeNull();
-    expect(container.textContent).toContain('Trust read failed');
+    expect(client.trustWorkspace).not.toHaveBeenCalled();
+    expect(client.untrustWorkspace).not.toHaveBeenCalled();
+  });
+  it('folds failed trust reads into one page-level line instead of one raw error per row', async () => {
+    client.listWorkspaceCatalog.mockResolvedValue({
+      items: [catalogEntry('/work/project', 'Example'), catalogEntry('/work/other', 'Other', 'wd_other_000000000000')],
+    });
+    client.getWorkspaceTrust.mockRejectedValue(new Error('workspace not found: wd_example_000000000000 (code 40410)'));
+    const container = await mount(<WorkspacesSection />);
+    // No raw server text anywhere: the aggregate line says what failed, and
+    // no row prints the server's English under itself.
+    expect(container.querySelectorAll('[data-workspace-trust-failure]')).toHaveLength(1);
+    expect(container.querySelector('[data-workspace-trust-failure]')!.textContent).toContain('Could not read trust state for some workspaces');
+    expect(container.textContent).not.toContain('workspace not found');
+    expect(container.textContent).not.toContain('40410');
+    // A failed read hides the tag rather than guessing a state.
+    expect(container.querySelector('[data-workspace-trust-badge]')).toBeNull();
     expect(client.trustWorkspace).not.toHaveBeenCalled();
   });
   it('shows an accurate error and retry action in MCP view when reading trust fails', async () => {
@@ -236,5 +239,17 @@ describe('workspace trust consumers', () => {
     expect(client.getWorkspaceTrust).toHaveBeenCalledTimes(2);
     expect(strip.textContent).toContain('Current workspace is trusted.');
     expect(strip.querySelector<HTMLButtonElement>('button')?.textContent?.trim()).toBe('Revoke trust');
+  });
+});
+
+describe('workspaceDisplayName', () => {
+  const ws = (name: string, root: string) => ({ name, root }) as Workspace;
+  it('names hash-named install folders by their readable parent', () => {
+    expect(workspaceDisplayName(ws('d300ab12438ce6eca4cad18e-584b5088878881472890d883', 'C:/Users/me/AppData/Local/Example/Kiki/releases/d300ab12438ce6eca4cad18e-584b5088878881472890d883'))).toBe('Kiki · d300ab1…');
+    expect(workspaceDisplayName(ws('19f77dc7-7a61-43d9-b000-000000000000', '/tmp/19f77dc7-7a61-43d9-b000-000000000000'))).toBe('tmp · 19f77dc…');
+  });
+  it('keeps ordinary names as they are', () => {
+    expect(workspaceDisplayName(ws('Creator', 'E:/Creator'))).toBe('Creator');
+    expect(workspaceDisplayName(ws('feature-branch-design', '/w/feature-branch-design'))).toBe('feature-branch-design');
   });
 });

@@ -14,6 +14,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { I18nProvider } from '../../i18n';
 import { readLayoutPreferences, writeLayoutPreferences } from '@kiki/session-core/settings';
 import type { KikiConfigResponse } from '../../lib/client';
+import { clearToasts, getToasts } from '../../lib/toasts';
 import { GeneralSection } from './GeneralSection';
 import { PermissionsSection } from './PermissionsSection';
 import { PlanSettings } from './PlanSettings';
@@ -294,7 +295,7 @@ describe('PlanSettings plan gate defaults', () => {
   it('offers four permission defaults, saving review immediately', async () => {
     const container = await renderSection('permissions');
     const card = container.querySelector('#st-card-permission-defaults')!;
-    const choices = [...card.querySelectorAll<HTMLButtonElement>('[role="group"][aria-label="Default permission mode"] button')];
+    const choices = [...card.querySelectorAll<HTMLButtonElement>('[role="group"][aria-labelledby="permission-default-mode-label"] button')];
     expect(choices.map((choice) => choice.textContent)).toEqual(['Ask every time', 'Auto', 'Approve for me', 'Full access']);
     await click(choices[2]!);
     expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'review' });
@@ -303,7 +304,7 @@ describe('PlanSettings plan gate defaults', () => {
 
   it('writes the dangerous Bash guard from the default mode card', async () => {
     const container = await renderSection('permissions');
-    const choice = container.querySelector<HTMLButtonElement>('#st-card-permission-defaults [role="group"][aria-label="Dangerous Bash commands"] button:nth-child(2)')!;
+    const choice = container.querySelector<HTMLButtonElement>('#st-card-permission-defaults [role="group"][aria-labelledby="permission-dangerous-bash-label"] button:nth-child(2)')!;
     await click(choice);
     expect(patchConfig).toHaveBeenCalledWith({ permission: { dangerous_bash: 'on' } });
     expect(container.textContent).toContain('Full access');
@@ -644,11 +645,10 @@ describe('PlanSettings plan gate defaults', () => {
     const container = await renderSection('sessions');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const field = promptField(container);
-    // Deleting a body is irreversible, so it says so before it does.
+    // Restoring is reversible: it runs at once and offers an undo instead of asking.
+    clearToasts();
     await click(field.querySelector('[data-session-title-prompt-restore]')!);
-    const dialog = document.querySelector('[role="alertdialog"]')!;
-    expect(dialog.textContent).toContain('Your version is removed.');
-    await click([...dialog.querySelectorAll('button')].find((button) => button.textContent?.includes('Restore'))!);
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
     expect(patchConfig).toHaveBeenCalledWith({ session_title: { prompt: null } });
@@ -656,6 +656,14 @@ describe('PlanSettings plan gate defaults', () => {
     expect(stored.session_title?.['prompt']).toBeUndefined();
     expect(stored.session_title?.model).toBe('custom-model');
     expect(promptField(container).dataset['promptSource']).toBe('default');
+
+    // Undo writes the same custom body back.
+    const toast = getToasts().at(-1)!;
+    expect(toast.text).toBe('Built-in prompt restored');
+    await act(async () => { await toast.undo!.run(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(patchConfig).toHaveBeenLastCalledWith({ session_title: { prompt: CUSTOM_TITLE_PROMPT } });
+    expect(promptField(container).dataset['promptSource']).toBe('custom');
   });
 
   // A blank box is the same request as restore, so it must reach the server as

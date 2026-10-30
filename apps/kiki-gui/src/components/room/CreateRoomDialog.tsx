@@ -12,7 +12,7 @@ import { sortWorkspacesByPinnedThenRecency } from '@kiki/session-core/sessions';
 import { useI18n } from '../../i18n';
 import { ROOMS_QUERY_KEY, useBotRoomApi } from '../../lib/botRooms';
 import { useConnection } from '../../state/connection';
-import { Dialog } from '../Dialog';
+import { SidePanel } from '../SidePanel';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { PersonaAvatar, personaAvatarOf } from '../persona/PersonaAvatar';
@@ -71,11 +71,21 @@ export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) 
   };
 
   return (
-    <Dialog onClose={() => { if (!create.isPending) onClose(); }} ariaLabel={t('room.new')} overlayId="create-room-dialog">
-      <form data-create-room onSubmit={(event) => { event.preventDefault(); submit(); }}>
-        <h2 className="font-display text-[18px] font-semibold text-ink">{t('room.new')}</h2>
-
-        <label className="mt-4 block">
+    <SidePanel
+      title={t('room.new')}
+      overlayId="create-room-dialog"
+      onClose={() => { if (!create.isPending) onClose(); }}
+      width="md"
+      footer={
+        <>
+          <span className="flex-1" />
+          <button type="button" className={SECONDARY_BUTTON} disabled={create.isPending} onClick={onClose}>{t('common.cancel')}</button>
+          <button type="submit" form="create-room-form" data-create-room-submit className={PRIMARY_BUTTON} disabled={create.isPending}>{t('room.new')}</button>
+        </>
+      }
+    >
+      <form id="create-room-form" data-create-room onSubmit={(event) => { event.preventDefault(); submit(); }}>
+        <label className="block">
           <span className="text-[12.5px] font-medium text-ink-soft">{t('room.name')}</span>
           <input data-autofocus value={name} maxLength={200}
             placeholder={t('room.namePlaceholder')}
@@ -152,11 +162,7 @@ export function CreateRoomDialog({ onClose }: { readonly onClose: () => void }) 
           </p>
         ) : null}
 
-        <div className="mt-6 flex justify-end gap-2">
-          <button type="button" className={SECONDARY_BUTTON} disabled={create.isPending} onClick={onClose}>{t('common.cancel')}</button>
-          <button type="submit" data-create-room-submit className={PRIMARY_BUTTON} disabled={create.isPending}>{t('room.new')}</button>
-        </div>
       </form>
-    </Dialog>
+    </SidePanel>
   );
 }

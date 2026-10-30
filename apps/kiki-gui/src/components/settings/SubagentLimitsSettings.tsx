@@ -6,7 +6,7 @@ import { useI18n } from '../../i18n';
 import { FeedbackLine, Hint } from '../controls';
 import { SMALL_INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
-import { SettingField } from './fields';
+import { SettingField, SettingsBox } from './fields';
 import { SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
@@ -49,16 +49,21 @@ export function SubagentLimitsSettings() {
     }
     setDirty(false); setError(undefined);
   };
-  const field = (id: string, label: string, help: string, value: string, set: (next: string) => void, step: string) => (
+  // Units sit right of the input, never in the label.
+  const field = (id: string, label: string, help: string, value: string, set: (next: string) => void, step: string, unit?: string) => (
     <SettingField label={label} htmlFor={id} help={help}>
-      <input id={id} className={`${SMALL_INPUT} h-8 w-24 text-right tabular-nums`} type="number" min="0" step={step} value={value}
-        onChange={(event) => { set(event.target.value); setDirty(true); }} />
+      <span className="flex items-center gap-1.5">
+        <input id={id} className={`${SMALL_INPUT} h-8 w-24 text-right tabular-nums`} type="number" min="0" step={step} value={value}
+          onChange={(event) => { set(event.target.value); setDirty(true); }} />
+        {unit !== undefined ? <span className="text-[12px] text-ink-faint">{unit}</span> : null}
+      </span>
     </SettingField>
   );
   return <SectionCard id="st-card-subagent-limits" title={t('st.subagentLimits.title')}>
+    <SettingsBox>
     <Hint>{t('st.subagentLimits.lead')}</Hint>
     <fieldset disabled={saving || config.isPending || config.isError} className="mt-2 space-y-1">
-      {field('subagent-limit-hours', t('st.subagentLimits.timeoutShort'), t('st.subagentLimits.timeoutHelp'), hours, setHours, 'any')}
+      {field('subagent-limit-hours', t('st.subagentLimits.timeoutShort'), t('st.subagentLimits.timeoutHelp'), hours, setHours, 'any', t('st.subagentLimits.hoursUnit'))}
       {field('subagent-limit-direct', t('st.subagentLimits.directShort'), t('st.subagentLimits.directHelp'), direct, setDirect, '1')}
       {field('subagent-limit-total', t('st.subagentLimits.totalShort'), t('st.subagentLimits.totalHelp'), total, setTotal, '1')}
     </fieldset>
@@ -66,5 +71,6 @@ export function SubagentLimitsSettings() {
       saveLabel={t('st.boardStorage.save')} saveDisabled={config.isPending || config.isError}
       onSave={() => { void save(); }} onDiscard={discard} />
     {error || config.error ? <FeedbackLine feedback={{ tone: 'error', text: error ?? config.error?.message ?? '' }} /> : null}
+    </SettingsBox>
   </SectionCard>;
 }

@@ -39,7 +39,7 @@ import { ContextStepper } from '../ProviderFields';
 import { FeedbackLine, Hint, InlineError, SavedTick, type Feedback } from '../controls';
 import { SMALL_INPUT } from '../ui';
 import { CompactPointField } from './CompactPointField';
-import { AdvancedDetails } from './fields';
+import { AdvancedDetails, SettingField, SettingsBox } from './fields';
 import { SectionCard } from './SectionCard';
 import { useSavedTick } from './useSavedTick';
 
@@ -254,7 +254,7 @@ export function ModelContextFields({
         ? t('st.compact.pointClampHint', { tokens: formatCompactTokens(bounds?.ceil ?? 0) })
         : formatCompactTokens(trackValue ?? autoCompact);
   return (
-    <div data-model-context-fields className="space-y-3 border-t border-hairline pt-3">
+    <div data-model-context-fields className="space-y-3 pt-3">
       <div className="space-y-1">
         <p className="text-[12px] font-medium text-ink-soft">{t('st.compact.windowLabel')}</p>
         <ContextStepper value={windowTokens} onChange={onWindowChange} ariaLabel={t('st.models.contextAria', { model: modelId })} />
@@ -267,11 +267,11 @@ export function ModelContextFields({
             onPick={onWindowChange}
           />
         </div>
-        <p className="max-w-[62ch] text-[12px] leading-snug text-ink-faint">
-          {inputTokens !== undefined && preview.valid
-            ? t('st.compact.windowInputHint', { tokens: formatCompactTokens(usable) })
-            : t('st.compact.windowHint')}
-        </p>
+        {inputTokens !== undefined && preview.valid ? (
+          <p className="max-w-[62ch] text-[12px] leading-snug text-ink-faint">
+            {t('st.compact.windowInputHint', { tokens: formatCompactTokens(usable) })}
+          </p>
+        ) : null}
       </div>
       {hideCompaction === true ? null : (
       <div>
@@ -485,9 +485,15 @@ export function GlobalCompactionCard() {
   return (
     <SectionCard id="st-card-auto-compact" title={t('st.compact.globalTitle')}>
       <div className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <label htmlFor="st-auto-compact-percent" className="text-[13px] text-ink">{t('st.compact.globalLabel')}</label>
-          <div className="flex items-center gap-1">
+        <SettingsBox>
+          <SettingField
+            label={t('st.compact.globalLabel')}
+            htmlFor="st-auto-compact-percent"
+            help={hasLegacy
+              ? t('st.compact.globalLegacyHint', { percent: String(Math.round((legacyRatio ?? 0.85) * 100)) })
+              : t('st.compact.globalHint')}
+          >
+            <SavedTick show={tick} />
             <input
               id="st-auto-compact-percent"
               data-global-auto-compact
@@ -499,29 +505,26 @@ export function GlobalCompactionCard() {
               onBlur={savePercent}
               onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); savePercent(); } }}
             />
-            <span aria-hidden className="text-[13px] text-ink-soft">%</span>
-          </div>
-          <SavedTick show={tick} />
-        </div>
-        <Hint>{hasLegacy
-          ? t('st.compact.globalLegacyHint', { percent: String(Math.round((legacyRatio ?? 0.85) * 100)) })
-          : t('st.compact.globalHint')}</Hint>
+            <span aria-hidden className="text-[12px] text-ink-faint">%</span>
+          </SettingField>
+        </SettingsBox>
         <AdvancedDetails summary={t('st.compact.advanced')} data-auto-compact-advanced>
-          <div className="flex flex-wrap items-center gap-2">
-            <label htmlFor="st-auto-compact-reserve" className="text-[13px] text-ink">{t('st.compact.reserveLabel')}</label>
-            <input
-              id="st-auto-compact-reserve"
-              inputMode="decimal"
-              className={`${SMALL_INPUT} h-8 w-24 text-right font-mono tabular-nums`}
-              value={reserve}
-              placeholder="50k"
-              disabled={saving || configQuery.data === undefined}
-              onChange={(event) => { setReserve(event.target.value); }}
-              onBlur={saveReserve}
-              onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); saveReserve(); } }}
-            />
-          </div>
-          <p className="max-w-[62ch] text-[12px] leading-snug text-ink-faint">{t('st.compact.reserveHint')}</p>
+          <SettingsBox>
+            <SettingField label={t('st.compact.reserveLabel')} htmlFor="st-auto-compact-reserve" help={t('st.compact.reserveHint')}>
+              <input
+                id="st-auto-compact-reserve"
+                inputMode="decimal"
+                className={`${SMALL_INPUT} h-8 w-24 text-right font-mono tabular-nums`}
+                value={reserve}
+                placeholder="50k"
+                disabled={saving || configQuery.data === undefined}
+                onChange={(event) => { setReserve(event.target.value); }}
+                onBlur={saveReserve}
+                onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); saveReserve(); } }}
+              />
+              <span aria-hidden className="text-[12px] text-ink-faint">tokens</span>
+            </SettingField>
+          </SettingsBox>
         </AdvancedDetails>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={feedback} />

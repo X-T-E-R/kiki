@@ -88,7 +88,7 @@ export function DimensionBreakdown({
             >
               {label}
             </p>
-            <p className="truncate font-mono text-[11px] text-ink-faint">
+            <p className="truncate text-[11px] text-ink-faint">
               {row.mixedAttribution
                 ? t('usage.dim.mixedAttribution')
                 : dimension === 'agent'
@@ -99,21 +99,21 @@ export function DimensionBreakdown({
         </div>
         <div className="hidden items-center gap-2 sm:flex">
           <ShareBar ratio={share} />
-          <span className="w-9 shrink-0 text-right font-mono text-[11px] text-ink-faint tabular-nums">{formatPercent(share)}</span>
+          <span className="w-9 shrink-0 text-right text-[11px] text-ink-faint tabular-nums">{formatPercent(share)}</span>
         </div>
         <span
           data-usage-breakdown-tokens={row.key}
-          className="hidden text-right font-mono text-[12px] text-ink-soft tabular-nums sm:block"
+          className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block"
         >
           {tokensTotalUnknown(row) ? '—' : time.formatTokens(row.totalTokens)}
           {row.tokensUnknown && row.totalTokens > 0 ? <KnownSubtotalMarker /> : null}
         </span>
-        <span className="hidden text-right font-mono text-[12px] text-ink-soft tabular-nums sm:block">
+        <span className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block">
           {formatPercent(cacheHit)}
         </span>
         <span
           data-usage-breakdown-cost={row.key}
-          className="text-right font-mono text-[13px] font-semibold text-ink tabular-nums"
+          className="text-right text-[13px] font-semibold text-ink tabular-nums"
         >
           {formatCostOrDash(row.costUsdEstimated, tokensTotalUnknown(row))}
           {row.costUnknown ? <Icon name="partial" size={12} className="ml-1 inline-block align-[-1px] text-amber-ink" /> : null}
@@ -167,7 +167,7 @@ export function DimensionBreakdown({
                   className="mb-2 ml-10 inline-flex min-h-7 items-center gap-2 rounded-md px-2 text-[12px] text-ink-soft hover:bg-ink/[0.05] hover:text-ink"
                 >
                   {t('usage.agent.subagents', { count: children.length })}
-                  <span className="font-mono text-ink-faint tabular-nums">
+                  <span className="text-ink-faint tabular-nums">
                     {formatCostOrDash(childCost, false)} · {time.formatTokens(childTokens.input_other + childTokens.output + childTokens.input_cache_read + childTokens.input_cache_creation)}
                   </span>
                 </button>

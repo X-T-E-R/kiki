@@ -1,9 +1,10 @@
 /**
- * Decision services in Connections: Jev, any System One service, and rerank
- * or classifier endpoints. Each is an ordinary connection, so its address,
- * key, reveal and removal work the way every other connection's do; it only
- * has no chat models. Which job uses which service is chosen elsewhere
- * (AI › Defaults › Who decides), never here.
+ * Decision models, in Models & providers: which service each job asks
+ * (approval review, Memory Advisor), then the services — Jev, any System One
+ * service, and rerank or classifier endpoints. Each service is an ordinary
+ * connection, so its address, key, reveal and removal work the way every
+ * other connection's do; it only has no chat models. This card is the only
+ * place a decision source is chosen or a decision key is entered.
  */
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
@@ -27,10 +28,12 @@ import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
 import { useDirtyReporter } from '../dirtyGuard';
-import { DisclosureChevron, Icon } from '../icons';
+import { Icon } from '../icons';
 import { hostLabel } from '../providerPresets';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
+import { DecisionJudgeRows } from './DecisionSources';
+import { RowFrame } from './RowFrame';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails, SettingField } from './fields';
 import { FieldIssue, SettingsDraftFooter, SettingsSegmented } from './SettingsPrimitives';
@@ -133,6 +136,12 @@ export function DecisionConnectionsCard({ providers, configuredIds, onChanged }:
   const requested = params.get(DECISION_CONNECTION_PARAM);
   const [adding, setAdding] = useState(hash === ADD_HASH);
   useEffect(() => { if (hash === ADD_HASH) setAdding(true); }, [hash]);
+  // The list's one open slot (#13): a deep link names its row, a click moves
+  // it; a row holding unsaved edits keeps its own open state (#14).
+  const [openId, setOpenId] = useState<string | null>(requested);
+  // The one home for decision models: which job uses what on top, then the
+  // services themselves with their address and key. No other page asks for
+  // a decision key or picks a decision source.
   return (
     <SectionCard id="st-card-decision-connections" title={t('st.decision.connectionsTitle')}
       actions={adding ? undefined : (
@@ -141,19 +150,28 @@ export function DecisionConnectionsCard({ providers, configuredIds, onChanged }:
           <Icon name="plus" size={12} />{t('st.decision.add')}
         </button>
       )}>
-      <div className="space-y-3" data-decision-connections>
-        {providers.length === 0 ? <Hint>{t('st.decision.connectionsHint')}</Hint> : (
-          <div className="divide-y divide-hairline overflow-hidden rounded-lg border border-hairline" data-decision-list>
-            {providers.map((provider) => (
-              <DecisionConnectionRow key={provider.id} provider={provider} defaultOpen={requested === provider.id} onChanged={onChanged} />
-            ))}
-          </div>
-        )}
-        {adding ? (
-          <NewDecisionConnection configuredIds={configuredIds}
-            onCancel={() => { setAdding(false); }}
-            onCreated={async () => { await onChanged(); setAdding(false); }} />
-        ) : null}
+      <div className="space-y-6" data-decision-connections>
+        <div className="space-y-2">
+          <Hint>{t('st.decision.judgesHint')}</Hint>
+          <DecisionJudgeRows />
+        </div>
+        <div className="space-y-2" data-decision-services>
+          {providers.length === 0 ? <Hint>{t('st.decision.connectionsHint')}</Hint> : (
+            <div data-decision-list>
+              {providers.map((provider) => (
+                <DecisionConnectionRow key={provider.id} provider={provider}
+                  open={openId === provider.id}
+                  onOpenChange={(open) => { setOpenId(open ? provider.id : null); }}
+                  defaultOpen={requested === provider.id} onChanged={onChanged} />
+              ))}
+            </div>
+          )}
+          {adding ? (
+            <NewDecisionConnection configuredIds={configuredIds}
+              onCancel={() => { setAdding(false); }}
+              onCreated={async () => { await onChanged(); setAdding(false); }} />
+          ) : null}
+        </div>
       </div>
     </SectionCard>
   );
@@ -318,8 +336,12 @@ function NewDecisionConnection({ configuredIds, onCancel, onCreated }: {
 }
 
 /** One saved decision service: a row that opens into its fields, test and removal. */
-function DecisionConnectionRow({ provider, defaultOpen, onChanged }: {
+function DecisionConnectionRow({ provider, open, onOpenChange, defaultOpen, onChanged }: {
   readonly provider: ProviderCatalogItem;
+  /** The list's one open slot, unless this row holds unsaved edits — then it
+   *  keeps its own open state so an edit is never folded away (#14). */
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
   readonly defaultOpen: boolean;
   readonly onChanged: () => Promise<void>;
 }) {
@@ -482,33 +504,52 @@ function DecisionConnectionRow({ provider, defaultOpen, onChanged }: {
             reason: t(`st.decision.reason.${test.result.reason ?? 'unavailable'}` as I18nKey),
           })}</span>;
 
+  // A dirty row answers its own open state; a clean one rides the list's
+  // single slot.
+  const [selfOpen, setSelfOpen] = useState(defaultOpen);
+  useEffect(() => { if (defaultOpen) setSelfOpen(true); }, [defaultOpen]);
+  const expanded = dirty ? selfOpen : open;
+
   return (
-    <details data-decision-row={provider.id} data-decision-health={state} className="group/decision [&[open]]:bg-paper" open={defaultOpen || undefined}>
-      <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2 outline-none transition-colors hover:bg-ink/[0.03] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
-        <span aria-hidden className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-ink/[0.05] text-ink-soft">
-          <Icon name="gate" size={14} />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="flex min-w-0 items-baseline gap-2">
-            <span className="truncate text-[13px] font-medium text-ink">{preset.id === 'jev' ? t('st.decision.preset.jev') : provider.id}</span>
-            {preset.id === 'jev' ? <span className="hidden truncate font-mono text-[11px] text-ink-faint sm:inline">{provider.id}</span> : null}
+    <RowFrame
+      data={{
+        'data-decision-row': provider.id,
+        'data-decision-health': state,
+      }}
+      open={expanded}
+      onToggle={() => { if (dirty) setSelfOpen((current) => !current); else onOpenChange(!open); }}
+      bodyId={`decision-row-body-${provider.id}`}
+      expandLabel={t('st.decision.openRow', { name: provider.id })}
+      name={preset.id === 'jev' ? t('st.decision.preset.jev') : provider.id}
+      marks={(
+        <span className="flex shrink-0 items-center gap-1.5">
+          {dirty ? <span className="text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
+          <span data-decision-status={state} className={`inline-flex items-center gap-1.5 text-[12px] ${
+            state === 'error' ? 'text-danger' : state === 'setup' ? 'text-amber-ink' : 'text-ink-faint'}`}>
+            <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${state === 'error' ? 'bg-danger' : state === 'setup' ? 'bg-amber-rule' : 'bg-success'}`} />
+            {stateText}
           </span>
-          <span className="block truncate text-[12px] text-ink-faint">
-            {t(`st.decision.protocol.${protocol}` as I18nKey)}
-            {hostLabel(provider.effective_base_url ?? provider.base_url) !== undefined ? ` · ${hostLabel(provider.effective_base_url ?? provider.base_url)}` : ''}
-            {provider.default_model !== undefined ? <> · <span className="font-mono text-[11.5px]">{provider.default_model}</span></> : null}
-          </span>
         </span>
-        {dirty ? <span className="shrink-0 text-[11px] font-medium text-amber-ink">{t('st.dirty.badge')}</span> : null}
-        <span data-decision-status={state} className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${
-          state === 'error' ? 'text-danger' : state === 'setup' ? 'text-amber-ink' : 'text-ink-faint'}`}>
-          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${state === 'error' ? 'bg-danger' : state === 'setup' ? 'bg-amber-rule' : 'bg-success'}`} />
-          <span className="hidden sm:inline">{stateText}</span>
-          <span className="sr-only sm:hidden">{stateText}</span>
-        </span>
-        <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/decision:rotate-90" />
-      </summary>
-      <div className="space-y-4 px-3 pb-4 pt-1 sm:pl-[3.25rem]">
+      )}
+      subtitle={(
+        <>
+          <span>{t(`st.decision.protocol.${protocol}` as I18nKey)}</span>
+          {hostLabel(provider.effective_base_url ?? provider.base_url) === undefined ? null : (
+            <>
+              <span aria-hidden>·</span>
+              <span>{hostLabel(provider.effective_base_url ?? provider.base_url)}</span>
+            </>
+          )}
+          {provider.default_model === undefined ? null : (
+            <>
+              <span aria-hidden>·</span>
+              <span>{provider.default_model}</span>
+            </>
+          )}
+        </>
+      )}
+    >
+      <div className="space-y-4">
         {destination !== undefined ? (
           <div data-decision-test className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
             <button type="button" data-decision-test-button className={SECONDARY_BUTTON} disabled={testing || saving || dirty}
@@ -545,6 +586,6 @@ function DecisionConnectionRow({ provider, defaultOpen, onChanged }: {
         confirmLabel={t('st.decision.removeConfirm')} busy={saving}
         onConfirm={() => { setConfirming(false); void remove(); }}
         onCancel={() => { setConfirming(false); }} />
-    </details>
+    </RowFrame>
   );
 }

@@ -647,7 +647,7 @@ function PreviewSummary({ preview }: { readonly preview: SettingsTransferPreview
       </div>
       <div className="space-y-2">
         {preview.categories.map((summary) => (
-          <div key={summary.id} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-t border-hairline pt-2 first:border-t-0 first:pt-0">
+          <div key={summary.id} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 pt-2 first:pt-0">
             <span className="text-[12px] font-medium text-ink">{t(CATEGORY_LABEL_KEYS[summary.id])}</span>
             <span className="text-right text-[11px] tabular-nums text-ink-faint">
               {t('st.settingsTransfer.summaryItems', { count: summary.items })}

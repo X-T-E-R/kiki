@@ -4,38 +4,37 @@ import type { NotificationChannel, NotificationDelivery, NotificationProviderDes
 import { useI18n } from '../../../i18n';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { FeedbackLine, SaveStatus, Toggle, type Feedback } from '../../controls';
-import { DisclosureChevron } from '../../icons';
 import { DANGER_GHOST_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { CardActions, SettingField, SettingsGroup } from '../fields';
 import { CommitInput } from '../SettingsPrimitives';
 import { useInstantSave } from '../useInstantSave';
 import { ChannelFields } from './ChannelFields';
-import { CapabilityTags, ChannelStatus } from './ChannelStatus';
+import { brandOfPush } from './catalog';
+import { ChannelStatus } from './ChannelStatus';
 import { DeliveryLog } from './DeliveryLog';
 import { channelState, channelsUsing, errorKindKey, lastDelivery, providerGuideKey, providerLabel, reasonKey } from './model';
+import { ChannelListRow } from './rowParts';
 import { useNotificationWrites } from './useNotifications';
-import { LIST_ROW_HEIGHT, type ListDensity } from '../list';
 
 /**
- * One channel as a row in the bordered channel list: name, type, the state
- * that matters, and its switch on one line. Underneath, in the order a person
+ * One alert channel as a row of "My channels": name, type, the state that
+ * matters, and its switch on one line. Underneath, in the order a person
  * sets one up: where to get the credentials, the connection, where messages
  * go, check and test, then recent activity. Which moments it hears is chosen
  * in the rules tab, not here. Instant apply.
  */
-export function ChannelRow({ channelId, channel, settings, provider, deliveries, defaultOpen, density }: {
+export function ChannelRow({ channelId, channel, settings, provider, deliveries, open, onToggle }: {
   channelId: string;
   channel: NotificationChannel;
   settings: NotificationSettings;
   provider: NotificationProviderDescriptor | undefined;
   deliveries: readonly NotificationDelivery[];
-  defaultOpen: boolean;
-  density: ListDensity;
+  open: boolean;
+  onToggle: () => void;
 }) {
   const { t, time } = useI18n();
   const { api, apply, refresh, refreshDeliveries } = useNotificationWrites();
   const save = useInstantSave();
-  const [open, setOpen] = useState(defaultOpen);
   const [pending, setPending] = useState<string | null>(null);
   const [action, setAction] = useState<'check' | 'test' | null>(null);
   const [result, setResult] = useState<Feedback>(null);
@@ -105,28 +104,20 @@ export function ChannelRow({ channelId, channel, settings, provider, deliveries,
     if (ok) setConfirming(false);
   };
 
-  const compact = density === 'compact';
   return (
-    <div data-notify-channel={channelId} data-open={open ? 'true' : undefined}>
-      <div className={`flex items-center gap-3 px-3 ${compact ? 'py-0.5' : 'py-2'}`} style={{ minHeight: LIST_ROW_HEIGHT[density] }}>
-        <button type="button" aria-expanded={open} aria-controls={bodyId} aria-label={t('st.notify.expandAria', { name })}
-          onClick={() => { setOpen((value) => !value); }}
-          className="-my-1 -ml-1 flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-md px-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
-          <DisclosureChevron open={open} className="shrink-0 text-ink-faint" />
-          <span className="min-w-0 truncate text-[13px] font-medium text-ink">{name}</span>
-          {name !== typeName && !compact ? <span className="hidden shrink-0 text-[12px] text-ink-faint sm:inline">{typeName}</span> : null}
-          {!compact ? (
-            <span className="ml-1 hidden min-w-0 items-center gap-1.5 md:inline-flex">
-              <CapabilityTags sendOnly={provider?.can_send === true && !provider.can_receive} unverified={provider?.status === 'unverified'} />
-            </span>
-          ) : null}
-        </button>
-        <ChannelStatus state={state} />
+    <ChannelListRow
+      data={{ 'data-notify-channel': channelId, 'data-channel-row': `push:${channelId}` }}
+      brand={brandOfPush(providerId)} twoWay={false} name={name}
+      status={<ChannelStatus state={state} enabled={channel.enabled} paused={!settings.global.enabled} />}
+      meta={name !== typeName ? typeName : undefined}
+      open={open} onToggle={onToggle} bodyId={bodyId}
+      expandLabel={t('st.notify.expandAria', { name })}
+      control={<>
         {status('enabled')}
         <Toggle layout="bare" label={t('st.notify.channelToggle', { name })} checked={channel.enabled && !unavailable}
           disabled={save.saving || unavailable} onChange={(enabled) => { writeChannel('enabled', { enabled }); }} />
-      </div>
-      <div id={bodyId} hidden={!open} className="space-y-5 border-t border-hairline px-4 pb-4 pt-4 sm:pl-9">
+      </>}
+    >
         {unavailable ? (
           <p className="max-w-[62ch] text-[12px] leading-snug text-amber-ink" data-notify-dependency>
             {t(reasonKey(provider?.status_reason))}
@@ -137,10 +128,7 @@ export function ChannelRow({ channelId, channel, settings, provider, deliveries,
             {t(providerGuideKey(providerId)!)}
           </p>
         ) : null}
-        <div className="flex flex-wrap items-center gap-1.5 md:hidden">
-          <CapabilityTags sendOnly={provider?.can_send === true && !provider.can_receive} unverified={provider?.status === 'unverified'} />
-        </div>
-        <SettingField label={t('st.notify.name')} htmlFor={`${bodyId}-label`} help={t('st.notify.nameHint')}>
+        <SettingField label={t('st.notify.name')} htmlFor={`${bodyId}-label`}>
           {status('label')}
           <CommitInput id={`${bodyId}-label`} className="w-56" value={channel.label ?? ''} placeholder={typeName} disabled={save.saving}
             onCommit={(text) => {
@@ -184,11 +172,10 @@ export function ChannelRow({ channelId, channel, settings, provider, deliveries,
             {t('st.notify.remove')}
           </button>
         </div>
-      </div>
       <ConfirmDialog open={confirming} title={t('st.notify.removeTitle', { name })} body={t('st.notify.removeBody')}
         consequences={[t(onlyUser ? 'st.notify.removeConnection' : 'st.notify.removeKeepConnection')]}
         confirmLabel={t('st.notify.remove')} busy={removing} overlayId="notify-remove"
         onConfirm={() => void remove()} onCancel={() => { setConfirming(false); }} />
-    </div>
+    </ChannelListRow>
   );
 }

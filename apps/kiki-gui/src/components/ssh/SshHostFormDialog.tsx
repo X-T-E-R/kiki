@@ -1,9 +1,10 @@
 /**
- * Add / edit one SSH host. The same dialog serves Settings › SSH hosts and the
- * composer's ＋ › SSH hosts › New host, so a host created mid-conversation is
- * the same record as one created in settings. Only fields the host store
- * accepts are editable; sign-in and per-host approval are drawn disabled
- * until the server can take them.
+ * Add / edit one SSH host (the side-panel tier: one form walking one object,
+ * so a second overlay never stacks over it). The same panel serves Settings ›
+ * SSH hosts and the composer's ＋ › SSH hosts › New host, so a host created
+ * mid-conversation is the same record as one created in settings. Only fields
+ * the host store accepts are editable; sign-in and per-host approval are drawn
+ * disabled until the server can take them.
  */
 
 import { useId, useState } from 'react';
@@ -13,8 +14,9 @@ import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { SSH_HOSTNAME_PATTERN, SSH_HOST_ID_PATTERN, sshHostInput, type SshHost, type SshHostInput } from '../../lib/ssh';
 import { Toggle } from '../controls';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { FieldIssue, FORM_LABEL } from '../settings/SettingsPrimitives';
+import { SetupSteps } from '../settings/SetupSteps';
+import { SidePanel } from '../SidePanel';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { ComingSoonTag } from './SshBits';
 
@@ -120,24 +122,36 @@ export function SshHostFormDialog({
   const issueId = (key: keyof Issues) => (issues[key] === undefined ? undefined : `${field(key)}-issue`);
 
   return (
-    <Dialog
-      onClose={() => { if (!saving) onClose(); }}
-      ariaLabel={title}
+    <SidePanel
+      title={title}
       overlayId="ssh-host-form"
-      stacked
-      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[calc(100dvh-32px)] overflow-y-auto`}
+      width="md"
+      onClose={() => { if (!saving) onClose(); }}
+      description={mode.kind === 'override' ? t('st.ssh.form.overrideHint') : t('st.ssh.form.intro')}
+      footer={(
+        <>
+          <button type="submit" form={`${uid}-form`} data-ssh-form-submit className={PRIMARY_BUTTON} disabled={saving}>
+            {saving ? t('common.saving') : submitLabel}
+          </button>
+          <button type="button" className={`${SECONDARY_BUTTON} ml-auto`} disabled={saving} onClick={onClose}>
+            {t('common.cancel')}
+          </button>
+        </>
+      )}
     >
       <form
+        id={`${uid}-form`}
         data-ssh-host-form={mode.kind}
         noValidate
         onSubmit={(event) => { event.preventDefault(); void submit(); }}
       >
-        <h2 className="font-display text-[18px] leading-6 text-ink">{title}</h2>
-        <p className="mt-1 max-w-[62ch] text-[12px] leading-4 text-ink-faint">
-          {mode.kind === 'override' ? t('st.ssh.form.overrideHint') : t('st.ssh.form.intro')}
-        </p>
-
-        <fieldset disabled={saving} className="mt-5 grid min-w-0 gap-x-4 gap-y-4 sm:grid-cols-2">
+        {mode.kind === 'create' ? (
+          // Rule 16: the form asks for a host and a key, so it first says what a
+          // working setup actually needs, in the form's own words.
+          <SetupSteps data={{ 'data-ssh-guidance': '' }}
+            steps={[t('st.ssh.guide.step1'), t('st.ssh.guide.step2'), t('st.ssh.guide.step3')]} />
+        ) : null}
+        <fieldset disabled={saving} className="grid min-w-0 gap-x-4 gap-y-4 sm:grid-cols-2">
           <div>
             <label htmlFor={field('id')} className={FORM_LABEL}>{t('st.ssh.form.alias')}</label>
             <input
@@ -287,16 +301,7 @@ export function SshHostFormDialog({
         {serverError !== null ? (
           <p role="alert" data-ssh-form-error className="mt-4 text-[12px] leading-4 text-danger">{serverError}</p>
         ) : null}
-
-        <div className="mt-6 flex flex-wrap justify-end gap-2">
-          <button type="button" className={SECONDARY_BUTTON} disabled={saving} onClick={onClose}>
-            {t('common.cancel')}
-          </button>
-          <button type="submit" data-ssh-form-submit className={PRIMARY_BUTTON} disabled={saving}>
-            {saving ? t('common.saving') : submitLabel}
-          </button>
-        </div>
       </form>
-    </Dialog>
+    </SidePanel>
   );
 }

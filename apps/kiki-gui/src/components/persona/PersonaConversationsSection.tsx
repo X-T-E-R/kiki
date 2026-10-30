@@ -7,23 +7,24 @@
  * Nothing here re-derives ownership from the wire: the server's attribution is
  * the authority, and a client-side guess would silently drop cold rows.
  *
- * The daily pointer moves through `PUT /api/personas/{id}/home` (D4) with the
- * consequence spelled out before it happens, and only where the server would
- * accept it: a persistent, idle, same-persona, non-room conversation.
+ * The daily pointer moves through `PUT /api/personas/{id}/home` (D4). The move
+ * is reversible with the same data — the previous home id is captured before
+ * the write — so it applies immediately and the undo toast offers the inverse;
+ * it is offered only where the server would accept it: a persistent, idle,
+ * same-persona, non-room conversation.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';import type { PersonaSummary, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { sessionRowState } from '@kiki/session-core/sessions';
 import type { SessionSeenMap } from '@kiki/session-core/settings';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
-import { pushToast } from '../../lib/toasts';
+import { pushToast, pushUndoToast } from '../../lib/toasts';
 import { ROOM_ITEMS_QUERY_KEY } from '../../lib/useConversationList';
 import { useConnection } from '../../state/connection';
 import { useGuardedNavigate } from '../dirtyGuard';
-import { ConfirmDialog } from '../ConfirmDialog';
 import { Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
 import { RelativeTime } from '../RelativeTime';
@@ -59,7 +60,6 @@ export function PersonaConversationsSection({
   const [workspaceFilter, setWorkspaceFilter] = useState('');
   const [search, setSearch] = useState('');
   const [pages, setPages] = useState(INITIAL_PAGES);
-  const [target, setTarget] = useState<Session | null>(null);
 
   const workspaceMap = useMemo(() => new Map(workspaceOptions.map((w) => [w.id, w.name])), [workspaceOptions]);
   // A room seat's own session title is generated, not the room's name; the row
@@ -122,22 +122,36 @@ export function PersonaConversationsSection({
     });
   }, [conversationsQuery.data, persona.homeSessionId, search]);
 
+  // The home id the inverse needs, captured before the write lands.
+  const previousHomeRef = useRef<string | undefined>(persona.homeSessionId);
   const changeDaily = useMutation({
     mutationFn: (sessionId: string) => {
+      previousHomeRef.current = persona.homeSessionId;
       const rest = client.klient.rest;
       if (rest === undefined) throw new Error(t('persona.conversationsUnavailable'));
       return rest.personas.setHome(persona.id, sessionId);
     },
     onSuccess: () => {
-      setTarget(null);
-      pushToast({ tone: 'success', text: t('persona.dailyChangedToast', { name: persona.name }) });
-      void queryClient.invalidateQueries({ queryKey: PERSONAS_QUERY_KEY });
-      void queryClient.invalidateQueries({ queryKey: personaQueryKey(persona.id) });
-      void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      void queryClient.invalidateQueries({ queryKey: ['bots'] });
+      const previousHome = previousHomeRef.current;
+      const refresh = () => {
+        void queryClient.invalidateQueries({ queryKey: PERSONAS_QUERY_KEY });
+        void queryClient.invalidateQueries({ queryKey: personaQueryKey(persona.id) });
+        void queryClient.invalidateQueries({ queryKey: ['sessions'] });
+        void queryClient.invalidateQueries({ queryKey: ['bots'] });
+      };
+      pushUndoToast({
+        text: t('persona.dailyChangedToast', { name: persona.name }),
+        undoFailedText: t('toast.undoFailed'),
+        undo: async () => {
+          if (previousHome === undefined) return;
+          const rest = client.klient.rest;
+          if (rest === undefined) throw new Error(t('persona.conversationsUnavailable'));
+          await rest.personas.setHome(persona.id, previousHome);
+          refresh();
+        },
+      });
+      refresh();
     },
-    // The failure keeps the confirmation and the user's selection: retrying is
-    // the next click, and nothing has moved.
     onError: (error: unknown) => {
       pushToast({ tone: 'error', text: t('persona.dailyChangeFailed', { detail: errorText(locale, error) }) });
     },
@@ -268,7 +282,8 @@ export function PersonaConversationsSection({
                   <button
                     type="button"
                     data-persona-set-daily={session.id}
-                    onClick={() => { setTarget(session); }}
+                    onClick={() => { changeDaily.mutate(session.id); }}
+                    disabled={changeDaily.isPending}
                     className="shrink-0 rounded-md px-2 py-1 text-[12px] text-ink-faint opacity-0 transition-opacity duration-[var(--kiki-motion-quick)] group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink [@media(hover:none)]:opacity-100"
                   >
                     {t('persona.setAsDaily')}
@@ -290,27 +305,6 @@ export function PersonaConversationsSection({
         >
           {t('sidebar.loadMore')} · {t('persona.conversationsShown', { count: total })}
         </button>
-      ) : null}
-
-      {target !== null ? (
-        <ConfirmDialog
-          open
-          title={t('persona.confirmSetDailyTitle')}
-          confirmLabel={t('persona.confirmSetDaily')}
-          busy={changeDaily.isPending}
-          onCancel={() => { setTarget(null); }}
-          onConfirm={() => { changeDaily.mutate(target.id); }}
-        >
-          <p className="text-[13px] leading-relaxed text-ink-soft">
-            {t('persona.confirmSetDailyBody', {
-              name: persona.name,
-              title: target.title?.trim() !== '' && target.title !== undefined ? target.title : t('sidebar.untitled'),
-            })}
-          </p>
-          <p className="mt-2 text-[12px] leading-relaxed text-ink-faint">
-            {t('persona.confirmSetDailyNote', { name: persona.name })}
-          </p>
-        </ConfirmDialog>
       ) : null}
     </div>
   );

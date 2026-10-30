@@ -42,13 +42,12 @@ import { useGuardedNavigate } from '../dirtyGuard';
 import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
-import { AgentProfileEditorDialog } from './AgentProfileEditorDialog';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
 import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
 import { SubagentDefaultTargetCard, SubagentOpenModeCard } from './SubagentsSection';
-import { UnifiedAgentManager } from './UnifiedAgentManager';
+import { AGENT_QUERY_PARAM, UnifiedAgentManager } from './UnifiedAgentManager';
 import { SubagentToolSettingsCard } from './subagentTools/ToolSettingsCard';
 import { useSavedTick } from './useSavedTick';
 import { AliasChips } from './profileEditor/fields';
@@ -193,7 +192,6 @@ export function NamedAgentProfileRow({
     (profile.request_params !== undefined && Object.keys(profile.request_params).length > 0) ||
     (profile.model_profiles?.length ?? 0) > 0 ||
     constraints !== undefined;
-  const [editorOpen, setEditorOpen] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [rowSaved, pingRowSaved] = useSavedTick();
   const saveRaw = async (rawText: string) => {
@@ -371,7 +369,14 @@ export function NamedAgentProfileRow({
             {t('st.namedAgents.newSession')}
           </button>
           {writable && showEditor ? (
-            <button type="button" className={SECONDARY_BUTTON} onClick={() => { setFeedback(null); setEditorOpen(true); }}>
+            <button type="button" className={SECONDARY_BUTTON}
+              data-agent-edit={profile.name}
+              onClick={() => {
+                setFeedback(null);
+                const params = new URLSearchParams(window.location.search);
+                params.set(AGENT_QUERY_PARAM, profile.name);
+                void navigate(`/settings/agents?${params.toString()}`);
+              }}>
               {t('st.namedAgents.edit')}
             </button>
           ) : null}
@@ -381,17 +386,6 @@ export function NamedAgentProfileRow({
         <p data-toggle-scope-hint className="sr-only">
           {t('st.namedAgents.namedToggleHint')}
         </p>
-      ) : null}
-      {editorOpen ? (
-        <AgentProfileEditorDialog
-          profile={profile}
-          onClose={() => { setEditorOpen(false); }}
-          onSaved={(updated) => {
-            onUpdated(updated);
-            setFeedback(null);
-            pingRowSaved();
-          }}
-        />
       ) : null}
       <>
           {summaryChips.length > 0 ? (
@@ -405,7 +399,7 @@ export function NamedAgentProfileRow({
           {subagentLeases.length > 0 ? (
             <SubagentLeaseList items={subagentLeases} variant="compact" />
           ) : null}
-          <details className="mt-2 border-t border-hairline pt-2" data-technical-details>
+          <details className="mt-2 pt-2" data-technical-details>
             <summary className="cursor-pointer select-none text-[12px] font-medium text-ink-faint hover:text-ink-soft">
               {t('st.namedAgents.technicalDetails')}
             </summary>
@@ -462,7 +456,7 @@ export function NamedAgentProfileRow({
         onDirtyChange={onRawDirtyChange}
       />
       {effective && profile.main === true && workspaceFallbackId !== undefined ? (
-        <div className="mt-3 border-t border-hairline pt-2">
+        <div className="mt-3 pt-2">
           <AgentCapabilitiesPanel query={{ workspace_id: workspaceFallbackId, profile: profile.name }} />
         </div>
       ) : null}
@@ -772,8 +766,12 @@ export function AgentsSection() {
       ) : (
         <div className="space-y-4">
           <UnifiedAgentManager />
-          <AgentRuntimeCard />
-          <PromptConfigCard />
+          {/* While one profile is open the page is about that profile; the
+              page-wide cards come back with the list. */}
+          {new URLSearchParams(search).has(AGENT_QUERY_PARAM) ? null : <>
+            <AgentRuntimeCard />
+            <PromptConfigCard />
+          </>}
         </div>
       )}
     </div>

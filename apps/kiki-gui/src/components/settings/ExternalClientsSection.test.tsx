@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExternalClientConnection, ExternalClientListener } from '@kiki/klient';
 import { I18nProvider } from '../../i18n';
 import { listenerReadiness, readExternalClientMark } from '../../lib/externalClients';
+import { clearToasts, getToasts } from '../../lib/toasts';
 import { ExternalClientsSection, policyChangeOf } from './ExternalClientsSection';
 
 const HOUR = 3_600_000;
@@ -51,6 +52,7 @@ const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  clearToasts();
   localStorage.setItem('kiki.locale', 'en');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   facade.list.mockResolvedValue({ connections: [chatgpt], listener: stopped });
@@ -237,9 +239,9 @@ describe('external clients settings panel', () => {
     await settle();
     (row.querySelector('[data-xc-pause]') as HTMLElement).click();
     await settle();
-    // Pausing narrows access, so it asks before it stops anything in flight.
-    (document.querySelector('[data-confirm-action="confirm"]') as HTMLElement).click();
-    await settle();
+    // Pausing is fully reversible from the same row, so it runs at once; the
+    // recovery path is the toast's undo, not a confirm ahead of the click.
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
     expect(facade.update).toHaveBeenCalledWith('conn_chatgpt', { enabled: false });
     expect(facade.revoke).not.toHaveBeenCalled();
   });
@@ -388,8 +390,8 @@ describe('external clients settings panel', () => {
     (row.querySelector('[data-xc-save]') as HTMLElement).click();
     await settle();
     const dialog = document.querySelector('[role="alertdialog"]') as HTMLElement;
-    expect(dialog.textContent).toContain('Change what this client may do?');
-    expect(dialog.textContent).toContain('running right now is stopped');
+    expect(dialog.textContent).toContain('Narrow what “ChatGPT” may do?');
+    expect(dialog.textContent).toContain('running right now');
     // The panel cannot know how much is in flight, so it must not claim zero.
     expect(dialog.textContent).not.toMatch(/\b0 (tasks|operations|agents)\b/i);
     expect(facade.update).not.toHaveBeenCalled();
@@ -398,20 +400,20 @@ describe('external clients settings panel', () => {
     expect(facade.update).toHaveBeenCalledWith('conn_chatgpt', { mode: 'yolo' });
   });
 
-  it('confirms a pause for the same reason, and resumes without asking', async () => {
+  it('pauses at once and offers the resume as the toast undo', async () => {
     await render();
     (container.querySelector('[data-xc-row="conn_chatgpt"] summary') as HTMLElement).click();
     await settle();
     (firstRow().querySelector('[data-xc-pause]') as HTMLElement).click();
     await settle();
-    const dialog = document.querySelector('[role="alertdialog"]') as HTMLElement;
-    expect(dialog.textContent).toContain('Pause this connection?');
-    expect(dialog.textContent).toContain('can be resumed');
-    expect(facade.update).not.toHaveBeenCalled();
-    (dialog.querySelector('[data-confirm-action="confirm"]') as HTMLElement).click();
-    await settle();
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
     expect(facade.update).toHaveBeenCalledWith('conn_chatgpt', { enabled: false });
     expect(facade.revoke).not.toHaveBeenCalled();
+    const toast = getToasts().find((item) => item.undo !== undefined);
+    expect(toast?.text).toContain('Paused ChatGPT');
+    await act(async () => { await toast!.undo!.run(); });
+    await settle();
+    expect(facade.update).toHaveBeenLastCalledWith('conn_chatgpt', { enabled: true });
   });
 
   it('resumes without asking, because it stops nothing', async () => {

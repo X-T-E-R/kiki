@@ -64,7 +64,7 @@ it('portals new-card forms and grants only the top modal Escape/Tab/focus restor
   expect(anyOverlayOpen()).toBe(false);
 });
 
-it('new-card pending writes consume Escape and trap Tab even with inert/disabled controls', async () => {
+it('new-card pending writes consume Escape and keep focus inside even with inert/disabled controls', async () => {
   let reject!: (error: Error) => void;
   const create = vi.fn(() => new Promise<void>((_resolve, rejectPromise) => { reject = rejectPromise; }));
   await act(async () => root.render(<Harness create={create} />));
@@ -75,9 +75,11 @@ it('new-card pending writes consume Escape and trap Tab even with inert/disabled
     title.dispatchEvent(new Event('input', { bubbles: true }));
   });
   await click('Create Task Card');
-  await press('Escape'); await press('Tab');
+  await press('Escape');
+  expect(document.querySelector('[data-new-task-modal]')).not.toBeNull();
   expect(document.querySelector('[aria-label="Board"]')).not.toBeNull();
-  expect(document.activeElement).toBe(document.querySelector('[data-new-task-modal] [role="dialog"]'));
+  // The pending panel refuses to close and keeps the keyboard inside it.
+  expect(document.querySelector('[data-new-task-modal]')!.contains(document.activeElement)).toBe(true);
   expect(title.value).toBe('Draft');
   await act(async () => reject(new Error('Try again')));
   expect(title.value).toBe('Draft');

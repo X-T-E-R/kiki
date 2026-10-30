@@ -751,6 +751,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(state.autoWorkspace).toBe(false);
     expect(state.targetReady).toBe(false);
     expect(state.selectionReady).toBe(false);
+    expect(state.workspacesError).toContain('Workspace read failed');
     expect(state.workspacesError).toContain(`code ${code}`);
     await act(async () => { await state.send(state.draft, state.attachments); });
     expect(client.createSession).not.toHaveBeenCalled();
@@ -810,7 +811,13 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = latestDraftState!;
     await act(async () => { await state.send(state.draft, state.attachments); });
     state = latestDraftState!;
-    expect(state.error).toContain(`code ${code}`);
+    if (code === -2) {
+      // Code -2 reads as a slow-server timeout, not as the raw "Create failed".
+      expect(state.error).toBe('The server is responding slowly. Try again shortly');
+    } else {
+      expect(state.error).toContain('Create failed');
+      expect(state.error).toContain(`code ${code}`);
+    }
     expect(state.creationNotice).toBe(code < 0 ? 'Creation is not confirmed yet. Check the result to continue with the same session. Starting another conversation keeps this attempt for later.' : null);
     expect(state.busy).toBe(false);
     expect(state.creationPending).toBe(false);

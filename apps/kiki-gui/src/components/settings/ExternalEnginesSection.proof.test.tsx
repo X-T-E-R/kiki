@@ -6,6 +6,7 @@
  * launch a CLI or read a credential.
  */
 import { act } from 'react';
+import { MemoryRouter } from 'react-router-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { existsSync } from 'node:fs';
@@ -81,7 +82,7 @@ describe('external engine enable proof', () => {
     const catalog = [codex, pending, missing];
     const queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
-      root.render(<QueryClientProvider client={queries}><I18nProvider><ExternalEnginesList /></I18nProvider></QueryClientProvider>);
+      root.render(<MemoryRouter><QueryClientProvider client={queries}><I18nProvider><ExternalEnginesList /></I18nProvider></QueryClientProvider></MemoryRouter>);
     });
     await settle();
 
@@ -96,9 +97,9 @@ describe('external engine enable proof', () => {
       return found;
     };
     const closePanel = async (id: string): Promise<void> => {
-      const overlay = document.querySelector<HTMLElement>(`[data-engine-panel-overlay="${id}"]`);
-      if (overlay === null) return;
-      await act(async () => { overlay.querySelector<HTMLButtonElement>('button[aria-label]')!.click(); });
+      const close = document.querySelector<HTMLButtonElement>('[data-detail-close]');
+      if (close === null) return;
+      await act(async () => close.click());
       await settle();
     };
 
@@ -178,9 +179,9 @@ describe('external engine enable proof', () => {
           + `<body class="bg-canvas text-ink"><div style="width:${width}px;padding:16px">${container.innerHTML}</div></body></html>`,
         );
         await page.addStyleTag({ path: join(assets, cssName) });
-        const idBox = await page.locator('[data-engine-row="codex-app-server"] [data-engine-open] .font-mono').boundingBox();
-        if (width === 1280) expect(idBox).not.toBeNull();
-        else expect(idBox).toBeNull();
+        // The raw id no longer rides beside the name (#14); the label box is the row's anchor.
+        const labelBox = await page.locator('[data-engine-row="codex-app-server"] [data-engine-open] .font-medium').boundingBox();
+        expect(labelBox).not.toBeNull();
         expect(await page.locator('[data-engine-row="missing-acp"] [data-engine-status]').getAttribute('data-engine-status')).toBe('missing');
         const overflow = await page.evaluate(() => ({
           doc: document.documentElement.scrollWidth,

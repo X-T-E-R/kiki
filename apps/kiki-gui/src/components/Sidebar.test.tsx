@@ -20,6 +20,7 @@ import {
   type SessionSortOrder,
 } from '@kiki/session-core/sessions';
 import { subscribeComposerInserts } from '@kiki/session-core/composer';
+import { ApiError } from '@kiki/session-core/transport';
 import {
   DEFAULT_PINNED_NAV_ITEMS,
   DEFAULT_SESSION_LIST_FILTERS,
@@ -375,7 +376,7 @@ async function openViewMenu(container: HTMLDivElement): Promise<HTMLElement> {
   await act(async () => {
     toggle.click();
   });
-  const menu = container.querySelector<HTMLElement>('[data-view-menu]');
+  const menu = document.querySelector<HTMLElement>('[data-view-menu]');
   if (menu === null) throw new Error('view menu did not open');
   return menu;
 }
@@ -386,7 +387,7 @@ async function openFilterMenu(container: HTMLDivElement): Promise<HTMLElement> {
   await act(async () => {
     toggle.click();
   });
-  const menu = container.querySelector<HTMLElement>('[data-filter-menu]');
+  const menu = document.querySelector<HTMLElement>('[data-filter-menu]');
   if (menu === null) throw new Error('filter menu did not open');
   return menu;
 }
@@ -1042,10 +1043,13 @@ describe('Sidebar archive feedback', () => {
     expect(container.querySelector('[data-session-row="s-child"]')).not.toBeNull();
   });
 
-  it('refreshes the list behind an unfinished worktree archive and keeps the dialog', async () => {
+  it.each([
+    [new Error('Some conversations could not be archived. Retry to finish archiving: s-child: busy'), 'could not be archived'],
+    [new ApiError({ code: 40001, msg: 'Archive refused: this conversation has uncommitted drafts', data: null }), 'Archive refused'],
+  ])('refreshes the list behind an unfinished worktree archive and keeps the dialog: %s', async (failure, detail) => {
     const worktree = { worktree_id: 'wt_1', branch: 'feat/notes', source_root: 'C:/repo', base_ref: 'refs/heads/main' } as NonNullable<Session['worktree']>;
     const target = { ...session('s-wt'), title: 'Worktree thread', worktree } as Session & { worktree: NonNullable<Session['worktree']> };
-    archiveSession.mockRejectedValue(new Error('Some conversations could not be archived. Retry to finish archiving: s-child: busy'));
+    archiveSession.mockRejectedValue(failure);
     const { container, queryClient } = await mount({
       sessions: [target],
       sessionGroups: [{ key: 'today', label: 'Today', items: [target] }],
@@ -1065,7 +1069,7 @@ describe('Sidebar archive feedback', () => {
     expect(archiveSession).toHaveBeenCalledWith('s-wt', { include_attached: true, exclude_session_ids: [] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions'] });
     expect(document.body.querySelector('[data-archive-confirm]')).not.toBeNull();
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain('could not be archived');
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain(detail);
     expect(checkbox.checked).toBe(true);
     expect(confirm!.disabled).toBe(false);
   });
@@ -1383,7 +1387,7 @@ describe('Sidebar view menu', () => {
     expect(onGroupBy).toHaveBeenCalledWith('none');
     expect(onSortBy).toHaveBeenCalledWith('created-desc');
     // Preferences do not dismiss the panel; the list rearranges behind it.
-    expect(container.querySelector('[data-view-menu]')).not.toBeNull();
+    expect(document.querySelector('[data-view-menu]')).not.toBeNull();
   });
 
   it('collapses a workspace group and previews at most eight sessions before "Show N more"', async () => {
@@ -1570,18 +1574,19 @@ describe('Sidebar filters', () => {
     try {
       const { container } = await mount({ ...listed(), workspaceOptions: [wsA, wsB] });
       const menu = await openFilterMenu(container);
-      expect(container.querySelector('[data-filter-menu]')).not.toBeNull();
+      expect(document.querySelector('[data-filter-menu]')).not.toBeNull();
       expect(sidebarOpen).toBe(true);
 
-      // First Escape: consumed by useAnchoredMenu ('sidebar-filter-menu').
+      // First Escape: consumed by the AnchoredPopover surface ('sidebar-filter-menu').
       // It sets defaultPrevented, closes the menu, and appDrawerKeyDown yields because
-      // anyOverlayOpen(['app-sidebar']) is true.
+      // anyOverlayOpen(['app-sidebar']) is true. The popover owns Escape on its surface,
+      // so dispatch where focus sits (React flushes the synthetic handler inside act).
       await act(async () => {
-        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
       });
 
       // Filter menu is closed, but drawer stays open!
-      expect(container.querySelector('[data-filter-menu]')).toBeNull();
+      expect(document.querySelector('[data-filter-menu]')).toBeNull();
       expect(sidebarOpen).toBe(true);
       expect(abortActive).not.toHaveBeenCalled();
 
@@ -1656,7 +1661,7 @@ describe('Sidebar session menu location & link group', () => {
     const menu = await openSessionMenu(container);
     await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="join-room"]')!.click(); });
     await settle();
-    expect(document.querySelector('[data-join-room-dialog]')?.textContent).toContain('Add 2 threads');
+    expect(document.querySelector('[data-join-room-dialog]')?.closest('[role="dialog"]')?.textContent).toContain('Add 2 threads');
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-join-room-new]')!.click(); });
     expect(document.querySelectorAll('[data-new-thread-room-member]')).toHaveLength(2);
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-new-thread-room-submit]')!.click(); });
@@ -2727,24 +2732,25 @@ describe('Sidebar room rows', () => {
     expect(roomRest.continue).toHaveBeenCalledWith('room_1');
   });
 
-  it('renames through the shared dialog with the room heading', async () => {
+  it('renames inline on the row, with the room heading as the field label', async () => {
     roomRest.get.mockResolvedValue(roomDocument(roomSummary({ id: 'room_1' })));
     roomRest.update.mockResolvedValue(roomDocument(roomSummary({ id: 'room_1' })));
     const { container } = await mount(listedRoom(roomSummary({ id: 'room_1', title: '0.31 发布' })));
     const menu = await openRoomMenu(container);
     await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="rename"]')!.click(); });
-    // The dialog renders through a body portal.
-    const dialog = document.body.querySelector('[aria-label="Rename room"]');
-    expect(dialog).not.toBeNull();
-    const input = dialog!.querySelector('input')!;
+    // The row-local editor portals to <body> over the row's title.
+    const editor = document.body.querySelector('[data-rename-editor="room_1"]');
+    expect(editor).not.toBeNull();
+    const input = editor!.querySelector<HTMLInputElement>('[data-rename-input]')!;
+    expect(input.getAttribute('aria-label')).toBe('Rename room');
     expect(input.value).toBe('0.31 发布');
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
       setter.call(input, '0.32 发布');
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    const save = [...dialog!.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
-    await act(async () => { save.click(); });
+    await act(async () => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+    await settle();
     expect(roomRest.update).toHaveBeenCalledWith('room_1', { name: '0.32 发布' });
   });
 
@@ -3063,8 +3069,8 @@ describe('sidebar secondary navigation', () => {
       viewMenuBtn?.click();
     });
 
-    expect(container.querySelector('[data-nav-item-toggle="board"]')).toBeNull();
-    const cronToggle = container.querySelector<HTMLButtonElement>('[data-nav-item-toggle="cron"]');
+    expect(document.querySelector('[data-nav-item-toggle="board"]')).toBeNull();
+    const cronToggle = document.querySelector<HTMLButtonElement>('[data-nav-item-toggle="cron"]');
     expect(cronToggle).not.toBeNull();
     expect(cronToggle?.getAttribute('aria-checked')).toBe('false');
 
@@ -3078,7 +3084,7 @@ describe('sidebar secondary navigation', () => {
     expect(container.querySelector('[data-primary-nav] [data-nav-cron]')).not.toBeNull();
 
     // Negative: unpin 'memory'
-    const memoryToggle = container.querySelector<HTMLButtonElement>('[data-nav-item-toggle="memory"]');
+    const memoryToggle = document.querySelector<HTMLButtonElement>('[data-nav-item-toggle="memory"]');
     expect(memoryToggle).not.toBeNull();
     expect(memoryToggle?.getAttribute('aria-checked')).toBe('true');
 

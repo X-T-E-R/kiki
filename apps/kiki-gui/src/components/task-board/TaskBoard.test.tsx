@@ -261,7 +261,9 @@ describe('TaskBoard Component Presentation', () => {
 
     const newModal = document.body.querySelector('[data-new-task-modal]');
     expect(newModal).not.toBeNull();
-    expect(newModal?.firstElementChild?.className).toContain('max-w-[880px]');
+    // Creation flows are the side-panel tier (640px cap), not a centered dialog.
+    expect(newModal?.firstElementChild?.className).toContain('kiki-side-panel');
+    expect(newModal?.firstElementChild?.className).toContain('sm:max-w-[640px]');
 
     const titleInput = newModal!.querySelector('input[type="text"]') as HTMLInputElement;
     await act(async () => {

@@ -24,8 +24,8 @@ import {
 
 import { useI18n } from '../../../i18n';
 import { Icon } from '../../icons';
+import { pushUndoToast } from '../../../lib/toasts';
 import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../../ui';
-import { ConfirmDialog } from '../../ConfirmDialog';
 import { AdvancedDetails } from '../fields';
 import { FieldIssue, FORM_LABEL, SettingsSelect } from '../SettingsPrimitives';
 import { costLabelKey, latencyLabelKey } from './types';
@@ -88,7 +88,6 @@ export function NbSearchLaneEditor({
   const [idText, setIdText] = useState(laneId);
   const [idIssue, setIdIssue] = useState<string | null>(null);
   const [evidenceText, setEvidenceText] = useState((profile?.evidence_groups ?? []).join(', '));
-  const [confirming, setConfirming] = useState(false);
   // Passing capabilities folds in the references that live in the layers below
   // Kiki's own config, so deleting a method names every consumer.
   const references = nbSearchLaneReferences(binding.draft, laneId, capabilities);
@@ -151,12 +150,20 @@ export function NbSearchLaneEditor({
   };
 
   const remove = () => {
-    if (references.length > 0) {
-      setConfirming(true);
-      return;
-    }
-    bindingRef.current.onChange(setNbSearchLane(bindingRef.current.draft, laneId, undefined));
+    // Draft-level removal is fully reversible: the lane (and every other edit
+    // in the draft) only reaches the server through the page's own save, so
+    // run it now and offer the inverse instead of asking first. The toast's
+    // undo puts the captured lane back into whatever draft is current.
+    const removed = setNbSearchLane(bindingRef.current.draft, laneId, undefined);
+    bindingRef.current.onChange(removed);
     onClose();
+    pushUndoToast({
+      text: t('st.nbSearch.custom.lane.removed', { lane: laneId }),
+      undoFailedText: t('toast.undoFailed'),
+      undo: () => {
+        bindingRef.current.onChange(setNbSearchLane(bindingRef.current.draft, laneId, build({})));
+      },
+    });
   };
 
   const fieldSelect = <T extends string>(
@@ -331,6 +338,23 @@ export function NbSearchLaneEditor({
         </p>
       ))}
 
+      {/* Entries that still point at this method stay named before it goes:
+          the removal itself is reversible (draft + undo), but the reader
+          should know which references the save will leave dangling. */}
+      {actions.canRemoveLocal && references.length > 0 ? (
+        <div className="space-y-1" data-nb-search-lane-references>
+          <p className="text-[12px] leading-4 text-amber-ink">{t('st.nbSearch.custom.removeReferenced')}</p>
+          <ul className="space-y-1">
+            {references.map((path) => (
+              <li key={path} className="text-[12px] text-ink">
+                {nbSearchReferenceSubject(t, path)}
+                <span className="ml-1 font-mono text-[11px] text-ink-faint">{path}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-2 pt-1">
         {editable ? null : (
           <button
@@ -379,30 +403,6 @@ export function NbSearchLaneEditor({
         </button>
       </div>
 
-      <ConfirmDialog
-        open={confirming}
-        title={t('st.nbSearch.custom.lane.removeTitle', { lane: laneId })}
-        body={t('st.nbSearch.custom.removeReferenced')}
-        confirmLabel={t('st.nbSearch.custom.lane.remove')}
-        overlayId={`nb-search-lane-remove-${laneId}`}
-        onCancel={() => {
-          setConfirming(false);
-        }}
-        onConfirm={() => {
-          setConfirming(false);
-          bindingRef.current.onChange(setNbSearchLane(bindingRef.current.draft, laneId, undefined));
-          onClose();
-        }}
-      >
-        <ul className="space-y-1" data-nb-search-lane-references>
-          {references.map((path) => (
-            <li key={path} className="text-[12px] text-ink">
-              {nbSearchReferenceSubject(t, path)}
-              <span className="ml-1 font-mono text-[11px] text-ink-faint">{path}</span>
-            </li>
-          ))}
-        </ul>
-      </ConfirmDialog>
     </div>
   );
 }

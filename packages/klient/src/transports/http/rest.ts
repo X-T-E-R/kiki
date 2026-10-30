@@ -804,9 +804,9 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       info: (id: string) => transport.json('/plugins/' + encodeURIComponent(id)),
       settings: (id: string) => transport.json(`/plugins/${encodeURIComponent(id)}/settings`),
       setSettings: (id: string, input) => transport.json(`/plugins/${encodeURIComponent(id)}/settings`, { method: 'POST', body: input }),
-      setEnabled: (id: string, enabled: boolean) => transport.json(
+      setEnabled: (id: string, enabled: boolean, options?: { readonly defaultEnabled?: boolean }) => transport.json(
         `/plugins/${encodeURIComponent(id)}:${enabled ? 'enable' : 'disable'}`,
-        { method: 'POST', body: {} },
+        { method: 'POST', body: options?.defaultEnabled === undefined ? {} : { defaultEnabled: options.defaultEnabled } },
       ),
       remove: (id: string, options) => transport.json(
         `/plugins/${encodeURIComponent(id)}:remove`,

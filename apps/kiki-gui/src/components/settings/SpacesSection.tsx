@@ -30,24 +30,24 @@ import {
   type SpaceListItem,
 } from '../../lib/spaces';
 import { detectShortcutPlatform } from '../../lib/shortcuts';
-import { pushToast } from '../../lib/toasts';
+import { pushToast, pushUndoToast } from '../../lib/toasts';
 import { readHomeViewRoute } from '../../lib/spaceViewState';
 import type { PreparedScope } from '../../lib/navScope';
 import { useConnection } from '../../state/connection';
-import { ConfirmDialog } from '../ConfirmDialog';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { Icon } from '../icons';
+import { DetailBack, DetailSplit, DetailRailGroup, DetailRailItem, useDetailParam } from '../overlays';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingField, SettingsBox } from './fields';
+import { SettingsSegmented } from './SettingsPrimitives';
 import { LIST_ROW_HEIGHT, ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec, type ListSortSpec } from './list';
-import { CreateSpaceDialog } from './spaces/CreateSpaceDialog';
-import { AttachSpaceDialog, DeleteSpaceDialog, SpaceCredentialsDialog } from './spaces/SpaceDialogs';
+import { SpaceFormPanel } from './spaces/SpaceFormPanel';
+import { DeleteSpaceDialog, SpaceCredentialsDialog } from './spaces/SpaceDialogs';
 import { SpaceDot } from './spaces/SpaceDot';
 import { SpaceRowMenu, type SpaceMenuItem } from './spaces/SpaceRowMenu';
 import { SpaceCredentialsCard } from './spaces/SubspaceCards';
 import { SpaceSettingsDetail } from './spaces/SpaceSettingsDetail';
-import { RemoteConnectionsSection } from './RemoteConnectionsSection';
 
 /**
  * Settings → Spaces (§9.1). The main space manages the list; a space sees the
@@ -68,7 +68,6 @@ export function SpacesSection() {
       <WindowModeCard sub={sub} />
       {controlClient === null ? <Hint>{t('st.spaces.loading')}</Hint> : <>
         <SpaceListCard sub={sub} client={controlClient} target={controlTarget} openLocalSpace={openLocalSpace} />
-        <RemoteConnectionsSection />
         {sub ? <SpaceCredentialsCard client={controlClient} onEnterMain={() => openLocalSpace(MAIN_SPACE_ID, mode)} /> : null}
         {sub ? <CurrentSpaceSettings target={controlTarget} /> : null}
       </>}
@@ -90,7 +89,7 @@ function CurrentSpaceSettings({ target }: { target: SpaceSettingsTarget | null }
   const here = currentSpace();
   const selected = target === null ? null : { ...target, identity: { ...target.identity, homeId: currentSpaceId() } };
   return (
-    <section id="st-card-space-overrides" className="border-t border-hairline pt-6" data-space-settings-section>
+    <section id="st-card-space-overrides" className="pt-6" data-space-settings-section>
       <SpaceSettingsDetail target={selected} name={here?.name ?? currentSpaceId()} />
     </section>
   );
@@ -134,6 +133,7 @@ function WindowModeCard({ sub }: { sub: boolean }) {
   const host = useHost();
   const { t } = useI18n();
   const [prefs, setPrefs] = useState(readDesktopPrefs);
+  // Windowing only exists on the desktop app; the browser shows no card at all.
   const desktop = host.kind === 'tauri';
   // What the running process uses; a new choice waits for the next launch.
   const [launched] = useState(() => launchWindowMode(readDesktopPrefs().windowMode));
@@ -153,39 +153,34 @@ function WindowModeCard({ sub }: { sub: boolean }) {
     if (host.kind === 'tauri') void host.writeDesktopPrefs({ windowMode });
   };
 
-  const aside = !desktop ? t('st.spaces.windowBrowserHint') : sub ? t('st.spaces.windowSubHint') : undefined;
+  if (!desktop) return null;
+  const aside = sub ? t('st.spaces.windowSubHint') : undefined;
   return (
     <SectionCard id="st-card-space-window" title={t('st.spaces.windowTitle')} scope="app" aside={aside}>
-      {desktop && !sub ? (
-        <fieldset className="space-y-2" data-space-window-mode={prefs.windowMode}>
-          <legend className="sr-only">{t('st.spaces.windowTitle')}</legend>
-          <div className="grid gap-2 sm:grid-cols-2">
-            {([
-              { value: 'switch', titleKey: 'st.spaces.windowSwitch', descKey: 'st.spaces.windowSwitchDesc' },
-              { value: 'windows', titleKey: 'st.spaces.windowWindows', descKey: 'st.spaces.windowWindowsDesc' },
-            ] as const).map((option) => {
-              const selected = prefs.windowMode === option.value;
-              return (
-                <label key={option.value} data-space-window-choice={option.value}
-                  className={`cursor-pointer rounded-lg p-3 transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-selected-ink/50 ${selected ? 'bg-panel shadow-[var(--kiki-sheet-shadow)]' : 'bg-ink/[0.03] hover:bg-ink/[0.05]'}`}>
-                  <span className="flex items-start gap-2">
-                    <input type="radio" name="space-window-mode" checked={selected} onChange={() => { choose(option.value); }}
-                      className="mt-0.5 accent-[var(--color-selected-ink)]" />
-                    <span>
-                      <span className="block text-[13px] font-medium text-ink">{t(option.titleKey)}</span>
-                      <span className="mt-0.5 block text-[12px] text-ink-faint">{t(option.descKey)}</span>
-                    </span>
-                  </span>
-                </label>
-              );
-            })}
-          </div>
+      {!sub ? (
+        <SettingsBox data-space-window-mode={prefs.windowMode} data-testid="space-window-box">
+          <SettingField
+            label={t('st.spaces.windowTitle')}
+            labelId="space-window-label"
+            help={t(prefs.windowMode === 'switch' ? 'st.spaces.windowSwitchDesc' : 'st.spaces.windowWindowsDesc')}
+          >
+            <SettingsSegmented<SpaceWindowMode>
+              ariaLabelledBy="space-window-label"
+              dataAttr="data-space-window-choice"
+              value={prefs.windowMode}
+              onChange={choose}
+              choices={[
+                { value: 'switch', label: t('st.spaces.windowSwitch') },
+                { value: 'windows', label: t('st.spaces.windowWindows') },
+              ]}
+            />
+          </SettingField>
           <p className="text-[12px] text-ink-faint" data-space-window-note>
             {prefs.windowMode !== launched
               ? <span className="font-medium text-amber-ink">{t('st.spaces.windowPending')}</span>
               : t('st.spaces.windowNextLaunch')}
           </p>
-        </fieldset>
+        </SettingsBox>
       ) : null}
     </SectionCard>
   );
@@ -203,10 +198,11 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
   const queryClient = useQueryClient();
   const spaces = useSpaces(client);
   const statuses = useSpaceStatuses(host);
+  const detail = useDetailParam('space');
+  const [panel, setPanel] = useState<{ kind: 'create' } | { kind: 'attach' } | null>(null);
   const [dialog, setDialog] = useState<
-    | { kind: 'create' } | { kind: 'attach' }
-    | { kind: 'remove'; space: SpaceListItem } | { kind: 'delete'; space: SpaceListItem }
-    | { kind: 'credentials'; space: SpaceListItem } | { kind: 'settings'; space: SpaceListItem } | null
+    | { kind: 'delete'; space: SpaceListItem }
+    | { kind: 'credentials'; space: SpaceListItem } | null
   >(null);
   const [menu, setMenu] = useState<{ space: SpaceListItem; anchor: DOMRect; anchorElement: HTMLElement } | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
@@ -223,7 +219,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
   const wantsCreate = !sub && new URLSearchParams(location.search).get('new') === '1';
   useEffect(() => {
     if (!wantsCreate) return;
-    setDialog({ kind: 'create' });
+    setPanel({ kind: 'create' });
     void navigate(location.pathname, { replace: true });
   }, [wantsCreate, navigate, location.pathname]);
 
@@ -233,6 +229,9 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
   // The list is anchored on the main space; every sort keeps it first.
   const ordered = useMemo(() => [...(main === undefined ? [] : [main]), ...others], [main, others]);
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: spaceKeys.all }); };
+  // One space's own settings, addressed at `?space=<id>`: a space is an
+  // existing object from this list, so it edits in the page, not in a dialog.
+  const detailSpace = detail.selected === null ? undefined : ordered.find((space) => space.id === detail.selected);
 
   const spaceLabel = useCallback(
     (space: SpaceListItem) => (space.id === MAIN_SPACE_ID ? t('st.spaces.main') : space.name),
@@ -309,12 +308,31 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
     return undefined;
   };
 
+  /**
+   * Taking a space off the list leaves its folder untouched, so it is
+   * reversible: it runs at once and the toast's Undo attaches the same folder
+   * again. Deleting a space's files stays behind its own confirmation.
+   */
+  const removeFromList = (space: SpaceListItem) => {
+    setFeedback(null);
+    void homesApi(client).remove(space.id)
+      .then(() => {
+        refresh();
+        pushUndoToast({
+          text: t('st.spaces.removedUndo', { name: space.name }),
+          undoFailedText: t('toast.undoFailed'),
+          undo: async () => { await homesApi(client).attach({ path: space.path }); refresh(); },
+        });
+      })
+      .catch((error: unknown) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); });
+  };
+
   const menuItems = (space: SpaceListItem): SpaceMenuItem[] => {
     const isMain = space.id === MAIN_SPACE_ID;
     return [
       // Every row, the main space included: what this space follows, what it
       // holds, and the way to change either — without opening the space first.
-      { key: 'settings', label: t('st.spaces.settingsMenu'), run: () => { setDialog({ kind: 'settings', space }); } },
+      { key: 'settings', label: t('st.spaces.settingsMenu'), run: () => { detail.open(space.id); } },
       ...(host.revealPath !== undefined ? [{ key: 'reveal', label: t('st.spaces.reveal'), separatorBefore: true, run: () => { void host.revealPath?.(space.path).catch(() => undefined); } }] : []),
       ...(!isMain ? [{ key: 'credentials', label: t('st.spaces.credentials'), run: () => { setDialog({ kind: 'credentials', space }); } }] : []),
       ...(desktop && host.createSpaceShortcut !== undefined ? [{
@@ -330,7 +348,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
           .catch((error: unknown) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); });
       } }] : []),
       ...(!isMain ? [
-        { key: 'remove', label: t('st.spaces.removeFromList'), separatorBefore: true, run: () => { setDialog({ kind: 'remove', space }); } },
+        { key: 'remove', label: t('st.spaces.removeFromList'), separatorBefore: true, run: () => { removeFromList(space); } },
         { key: 'delete', label: t('st.spaces.delete'), danger: true, blockedReason: deleteBlock(space), run: () => { setDialog({ kind: 'delete', space }); } },
       ] : []),
     ];
@@ -361,25 +379,33 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
         <SpaceDot color={isMain ? 'var(--color-ink-faint)' : space.color} />
         {compact ? (
           <div className="flex min-w-0 flex-1 items-baseline gap-x-2">
-            <span className="min-w-0 truncate text-[13px] font-medium text-ink" title={label}>{label}</span>
+            <button type="button" data-detail-trigger={space.id} onClick={() => { detail.open(space.id); }}
+              title={label}
+              className="min-w-0 shrink truncate rounded text-left text-[13px] font-medium text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
+              {label}
+            </button>
             {!isMain ? (
               <span className="shrink-0 text-[12px] text-ink-faint" data-space-cred={space.credentials_shared === false ? 'isolated' : 'shared'}>
                 {t(space.credentials_shared === false ? 'st.spaces.credIsolatedShort' : 'st.spaces.credSharedShort')}
               </span>
             ) : null}
-            <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={space.path}>{space.path}</span>
+            <span className="min-w-0 flex-1 truncate text-[11.5px] text-ink-faint" title={space.path}>{space.path}</span>
           </div>
         ) : (
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-baseline gap-x-2">
-              <span className="min-w-0 truncate text-[13px] font-medium text-ink" title={label}>{label}</span>
+              <button type="button" data-detail-trigger={space.id} onClick={() => { detail.open(space.id); }}
+                title={label}
+                className="min-w-0 shrink truncate rounded text-left text-[13px] font-medium text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
+                {label}
+              </button>
               {!isMain ? (
                 <span className="shrink-0 text-[12px] text-ink-faint" data-space-cred={space.credentials_shared === false ? 'isolated' : 'shared'}>
                   {t(space.credentials_shared === false ? 'st.spaces.credIsolatedShort' : 'st.spaces.credSharedShort')}
                 </span>
               ) : null}
             </div>
-            <p className="truncate font-mono text-[11px] text-ink-faint" title={space.path}>{space.path}</p>
+            <p className="truncate text-[11.5px] text-ink-faint" title={space.path}>{space.path}</p>
             {restartNote?.id === space.id ? <p className="text-[12px] font-medium text-amber-ink" data-space-restart-note>{restartNote.text}</p> : null}
           </div>
         )}
@@ -402,7 +428,14 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
                   onClick={() => { enter(space); }}>
                   {entering === space.id ? t('sidebar.space.starting', { name: label }) : t(mode === 'switch' ? 'st.spaces.switch' : 'st.spaces.open')}
                 </button>
-              ) : null}
+              ) : (
+                // The browser cannot open another space; looking at and changing
+                // what it holds is the row's primary action there.
+                <button type="button" data-space-settings-open={space.id} className={SECONDARY_BUTTON}
+                  onClick={() => { detail.open(space.id); }}>
+                  {t('st.spaces.settingsMenu')}
+                </button>
+              )}
             </>
           )}
           {!sub ? (
@@ -419,9 +452,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
     );
   };
 
-  return (
-    <SectionCard id="st-card-spaces" title={t('st.spaces.listTitle')} scope="server">
-      <div className="space-y-3" data-space-list>
+  const listContent = <div className="space-y-3" data-space-list>
         {sub ? <Hint>{t('st.spaces.subManageHint')}</Hint> : null}
 
         {spaces.isLoading ? <Hint>{t('st.spaces.loading')}</Hint> : null}
@@ -429,16 +460,12 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
 
         {items.length > 0 ? (
           <>
-            <ListToolbar view={view} total={ordered.length} filters={filters} sorts={sorts}
-              searchLabel={t('st.spaces.search')} searchPlaceholder={t('st.spaces.searchPlaceholder')}
-              actions={!sub ? (
-                <>
-                  <button type="button" data-space-new className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`} onClick={() => { setDialog({ kind: 'create' }); }}>
-                    <Icon name="plus" size={12} />{t('st.spaces.new')}
-                  </button>
-                  <button type="button" data-space-attach-open className={SECONDARY_BUTTON} onClick={() => { setDialog({ kind: 'attach' }); }}>{t('st.spaces.attach')}</button>
-                </>
-              ) : undefined} />
+            {/* A short list needs no filter or sort: the create entries sit on
+                the card head then, the toolbar only when the list earns it. */}
+            {ordered.length < 8 ? null : (
+              <ListToolbar view={view} total={ordered.length} filters={filters} sorts={sorts}
+                searchLabel={t('st.spaces.search')} searchPlaceholder={t('st.spaces.searchPlaceholder')} />
+            )}
             {view.visible.length === 0 ? (
               <ListEmpty kind="no-match" title={t('st.spaces.noMatchTitle')}
                 body={view.query.trim() !== '' ? t('st.spaces.noMatches', { query: view.query.trim() }) : undefined}
@@ -455,41 +482,64 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
             <ListEmpty kind="none" title={t('st.spaces.emptyTitle')} body={t('st.spaces.emptyBody')} />
           </div>
         ) : null}
-        {!desktop && others.length > 0 ? <Hint>{t('st.spaces.desktopOnly')}</Hint> : null}
         <FeedbackLine feedback={feedback} />
+      </div>;
+
+  const rail = <DetailRailGroup label={t('st.spaces.listTitle')} count={ordered.length}>
+    {ordered.map((space) => <DetailRailItem key={space.id} itemKey={space.id}
+      label={spaceLabel(space)} hint={space.path} current={space.id === detailSpace?.id}
+      trailing={<SpaceDot color={space.id === MAIN_SPACE_ID ? 'var(--color-ink-faint)' : space.color} size={6} />}
+      onSelect={() => { detail.open(space.id); }} />)}
+  </DetailRailGroup>;
+
+  const spaceDetail = detailSpace === undefined ? null : <div className="space-y-3">
+    <div className="md:hidden">
+      <DetailBack label={t('st.spaces.listTitle')} onClick={detail.close} data={{ 'data-space-detail-back': '' }} />
+    </div>
+    <div className="flex min-w-0 items-start justify-between gap-3">
+      <div className="min-w-0">
+        <h3 data-detail-heading tabIndex={-1} className="flex min-w-0 items-center gap-2 font-display text-[18px] font-semibold text-ink outline-none">
+          <SpaceDot color={detailSpace.id === MAIN_SPACE_ID ? 'var(--color-ink-faint)' : detailSpace.color} />
+          <span className="min-w-0 break-words">{spaceLabel(detailSpace)}</span>
+        </h3>
+        <p className="mt-0.5 truncate text-[12px] text-ink-faint" title={detailSpace.path}>{detailSpace.path}</p>
       </div>
+      <button type="button" onClick={detail.close} aria-label={t('common.close')} title={t('common.close')} data-detail-close
+        className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink md:flex">
+        <Icon name="close" size={14} />
+      </button>
+    </div>
+    <SpaceSettingsDetail
+      target={target === null ? null : { ...target, identity: { ...target.identity, homeId: detailSpace.id } }}
+      name={spaceLabel(detailSpace)} />
+  </div>;
+
+  return (
+    <SectionCard id="st-card-spaces" title={t('st.spaces.listTitle')} scope="server"
+      actions={!sub ? (
+        <div className="flex items-center gap-2">
+          <button type="button" data-space-new className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`} onClick={() => { setPanel({ kind: 'create' }); }}>
+            <Icon name="plus" size={12} />{t('st.spaces.new')}
+          </button>
+          <button type="button" data-space-attach-open className={SECONDARY_BUTTON} onClick={() => { setPanel({ kind: 'attach' }); }}>{t('st.spaces.attach')}</button>
+        </div>
+      ) : undefined}>
+      <DetailSplit selected={detailSpace?.id ?? null} label={t('st.spaces.listTitle')}
+        data={{ 'data-spaces-split': '' }} list={listContent} rail={rail} detail={spaceDetail} />
 
       {menu !== null ? (
         <SpaceRowMenu anchor={menu.anchor} anchorElement={menu.anchorElement} items={menuItems(menu.space)} onClose={() => { setMenu(null); }}
           ariaLabel={t('st.spaces.menuAria', { name: menu.space.name })} />
       ) : null}
 
-      {dialog?.kind === 'create' ? (
-        <CreateSpaceDialog client={client} mainPath={main?.path ?? ''} canOpen={desktop}
-          onClose={() => { setDialog(null); }}
-          onCreated={(record, open, existing) => {
-            setDialog(null);
+      {panel !== null ? (
+        <SpaceFormPanel client={client} mainPath={main?.path ?? ''} canOpen={desktop} mode={panel.kind}
+          onClose={() => { setPanel(null); }}
+          onDone={(record, open, existing) => {
+            setPanel(null);
             refresh();
             pushToast({ tone: 'success', text: t(existing ? 'st.spaces.attached' : 'st.spaces.created', { name: record.name }) });
             if (open) enter(record);
-          }} />
-      ) : null}
-      {dialog?.kind === 'attach' ? (
-        <AttachSpaceDialog client={client} onClose={() => { setDialog(null); }}
-          onAttached={(record) => { setDialog(null); refresh(); setFeedback({ tone: 'success', text: t('st.spaces.attached', { name: record.name }) }); }} />
-      ) : null}
-      {dialog?.kind === 'remove' ? (
-        <ConfirmDialog open overlayId="space-remove-confirm" tone="default"
-          title={t('st.spaces.removeTitle', { name: dialog.space.name })}
-          body={t('st.spaces.removeBody')}
-          confirmLabel={t('st.spaces.removeFromList')}
-          onCancel={() => { setDialog(null); }}
-          onConfirm={() => {
-            const target = dialog.space;
-            setDialog(null);
-            void homesApi(client).remove(target.id)
-              .then(() => { refresh(); setFeedback({ tone: 'success', text: t('st.spaces.removed', { name: target.name }) }); })
-              .catch((error: unknown) => { setFeedback({ tone: 'error', text: errorText(locale, error) }); });
           }} />
       ) : null}
       {dialog?.kind === 'delete' ? (
@@ -500,13 +550,6 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
             refresh();
             setFeedback({ tone: 'success', text: t('st.spaces.deleted', { name }) });
           }} />
-      ) : null}
-      {dialog?.kind === 'settings' ? (
-        <Dialog onClose={() => { setDialog(null); }} overlayId="space-settings-dialog"
-          ariaLabel={t('st.spaces.settingsTitle', { name: spaceLabel(dialog.space) })}
-          panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[calc(100dvh-2rem)] overflow-y-auto`}>
-          <SpaceSettingsDetail target={target === null ? null : { ...target, identity: { ...target.identity, homeId: dialog.space.id } }} name={spaceLabel(dialog.space)} />
-        </Dialog>
       ) : null}
       {dialog?.kind === 'credentials' ? (
         <SpaceCredentialsDialog client={client} space={dialog.space} onClose={() => { setDialog(null); }}

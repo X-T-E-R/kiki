@@ -19,7 +19,7 @@ import { useI18n } from '../../i18n';
 import { ROOMS_QUERY_KEY, roomQueryKey, useBotRoomApi } from '../../lib/botRooms';
 import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
-import { Dialog } from '../Dialog';
+import { SidePanel } from '../SidePanel';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { PersonaAvatar } from '../persona/PersonaAvatar';
@@ -81,11 +81,22 @@ export function NewThreadRoomDialog({
   const ready = !blocked && countOk && name.trim() !== '' && !create.isPending;
 
   return (
-    <Dialog onClose={() => { if (!create.isPending) onClose(); }} ariaLabel={t('room.newFromThreadsTitle')} overlayId="new-thread-room-dialog">
-      <form data-new-thread-room onSubmit={(event) => { event.preventDefault(); if (ready) create.mutate(); }}>
-        <h2 className="font-display text-[17px] font-semibold text-ink">{t('room.newFromThreadsTitle')}</h2>
-        <p className="mt-1 text-[12.5px] leading-5 text-ink-soft text-pretty">{t('room.newFromThreadsHint')}</p>
-        {blocked ? <div className="mt-3"><CommsOffNotice /></div> : null}
+    <SidePanel
+      title={t('room.newFromThreadsTitle')}
+      description={t('room.newFromThreadsHint')}
+      overlayId="new-thread-room-dialog"
+      onClose={() => { if (!create.isPending) onClose(); }}
+      width="md"
+      footer={
+        <>
+          <span className="flex-1" />
+          <button type="button" className={SECONDARY_BUTTON} disabled={create.isPending} onClick={onClose}>{t('common.cancel')}</button>
+          <button type="submit" form="new-thread-room-form" data-new-thread-room-submit className={PRIMARY_BUTTON} disabled={!ready}>{t('room.createFromThreads')}</button>
+        </>
+      }
+    >
+      <form id="new-thread-room-form" data-new-thread-room onSubmit={(event) => { event.preventDefault(); if (ready) create.mutate(); }}>
+        {blocked ? <div className="mt-1"><CommsOffNotice /></div> : null}
 
         <label className="mt-4 block">
           <span className="text-[12.5px] font-medium text-ink-soft">{t('room.name')}</span>
@@ -135,12 +146,8 @@ export function NewThreadRoomDialog({
           </p>
         ) : null}
 
-        <div className="mt-6 flex justify-end gap-2">
-          <button type="button" className={SECONDARY_BUTTON} disabled={create.isPending} onClick={onClose}>{t('common.cancel')}</button>
-          <button type="submit" data-new-thread-room-submit className={PRIMARY_BUTTON} disabled={!ready}>{t('room.createFromThreads')}</button>
-        </div>
       </form>
-    </Dialog>
+    </SidePanel>
   );
 }
 
@@ -180,10 +187,20 @@ export function JoinRoomDialog({ session, threads = [session], onNewRoom, onClos
   const blocked = commsEnabled === false;
 
   return (
-    <Dialog onClose={() => { if (!join.isPending) onClose(); }} ariaLabel={heading} overlayId="join-room-dialog">
+    <SidePanel
+      title={heading}
+      overlayId="join-room-dialog"
+      onClose={() => { if (!join.isPending) onClose(); }}
+      width="md"
+      footer={
+        <>
+          <span className="flex-1" />
+          <button type="button" className={SECONDARY_BUTTON} disabled={join.isPending} onClick={onClose}>{t('common.cancel')}</button>
+        </>
+      }
+    >
       <div data-join-room-dialog>
-        <h2 className="font-display text-[17px] font-semibold text-ink">{heading}</h2>
-        {blocked ? <div className="mt-3"><CommsOffNotice /></div> : null}
+        {blocked ? <div className="mt-1"><CommsOffNotice /></div> : null}
         {onNewRoom !== undefined ? (
           <button type="button" data-join-room-new disabled={blocked || join.isPending} onClick={onNewRoom}
             className="mt-3 flex min-h-10 w-full items-center gap-2 rounded-lg border border-hairline px-3 text-left text-[13px] text-ink transition-colors hover:bg-ink/[0.04] disabled:text-ink-faint disabled:hover:bg-transparent">
@@ -227,10 +244,7 @@ export function JoinRoomDialog({ session, threads = [session], onNewRoom, onClos
             <span>{t('room.actionFailed', { detail: errorText(join.error) })}</span>
           </p>
         ) : null}
-        <div className="mt-5 flex justify-end">
-          <button type="button" className={SECONDARY_BUTTON} disabled={join.isPending} onClick={onClose}>{t('common.cancel')}</button>
-        </div>
       </div>
-    </Dialog>
+    </SidePanel>
   );
 }

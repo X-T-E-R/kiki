@@ -16,12 +16,13 @@ import type { KikiClient } from '../../../lib/client';
 import { connectionsApi, endpointIssue, fingerprint, labelIssue, readInvitationBlock } from '../../../lib/remoteConnections';
 import { useNativeSshEnabled, useSshHosts } from '../../../lib/ssh';
 import { MAIN_SPACE_ID, useSpaces } from '../../../lib/spaces';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../../Dialog';
 import { FeedbackLine, Toggle, type Feedback } from '../../controls';
+import { SidePanel } from '../../SidePanel';
 import { Icon } from '../../icons';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { SettingField } from '../fields';
 import { SecretField } from '../SecretField';
+import { SetupSteps } from '../SetupSteps';
 import { connectionFailureText } from './parts';
 import { AddConnectionBySshDialog } from './AddConnectionBySshDialog';
 
@@ -72,8 +73,8 @@ export function AddConnectionDialog({ client, sshProfiles, defaultHome, initial,
   // paste and the token have nothing to check locally.
   const blocked = invitation === null || labelProblem !== null || endpointProblem !== null || token.trim() === '' || saving;
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const submit = async (event?: React.FormEvent) => {
+    event?.preventDefault();
     if (blocked || invitation === null) return;
     setSaving(true);
     setFailure(null);
@@ -106,16 +107,18 @@ export function AddConnectionDialog({ client, sshProfiles, defaultHome, initial,
     );
   }
 
+  const formId = 'remote-connection-add-form';
   return (
-    <Dialog onClose={onClose} overlayId="remote-connection-add" ariaLabel={t('st.remote.addTitle')}
-      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[calc(100dvh-2rem)] overflow-y-auto`}>
-      <form className="space-y-5" onSubmit={(event) => { void submit(event); }} data-remote-add-form>
-        <div>
-          <h2 className="text-[14px] font-medium text-ink">{t('st.remote.addTitle')}</h2>
-          <p className="mt-1 max-w-[62ch] text-[12.5px] leading-snug text-ink-soft">
-            {t('st.remote.addBody')}
-          </p>
-        </div>
+    <SidePanel onClose={onClose} overlayId="remote-connection-add" title={t('st.remote.addTitle')}
+      description={t('st.remote.addBody')} width="lg"
+      footer={<>
+        <button type="button" className={SECONDARY_BUTTON} onClick={onClose}>{t('common.cancel')}</button>
+        <button type="submit" form={formId} data-remote-add-submit className={PRIMARY_BUTTON} disabled={blocked}
+          onClick={(event) => { event.preventDefault(); void submit(); }}>
+          {saving ? t('st.remote.adding') : t('st.remote.add')}
+        </button>
+      </>}>
+      <form id={formId} className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit(); }} data-remote-add-form>
 
         {sshFlag.enabled === true ? (
           <div role="tablist" aria-label={t('st.remote.addTitle')} data-remote-add-ways className="flex gap-1.5">
@@ -143,6 +146,10 @@ export function AddConnectionDialog({ client, sshProfiles, defaultHome, initial,
             </button>
           </p>
         ) : null}
+
+        {/* Rule 16: what to fetch from the other Kiki before filling this in. */}
+        <SetupSteps data={{ 'data-remote-add-steps': '' }}
+          steps={[t('st.remote.guide.step1'), t('st.remote.guide.step2'), t('st.remote.guide.step3')]} />
 
         <SettingField label={t('st.remote.invitation')} htmlFor="remote-connection-invitation" layout="stack"
           help={invitation === null ? t('st.remote.invitationHint') : undefined}>
@@ -195,14 +202,7 @@ export function AddConnectionDialog({ client, sshProfiles, defaultHome, initial,
         </SettingField>
 
         <FeedbackLine feedback={failure} />
-
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <button type="button" className={SECONDARY_BUTTON} onClick={onClose}>{t('common.cancel')}</button>
-          <button type="submit" data-remote-add-submit className={PRIMARY_BUTTON} disabled={blocked}>
-            {saving ? t('st.remote.adding') : t('st.remote.add')}
-          </button>
-        </div>
       </form>
-    </Dialog>
+    </SidePanel>
   );
 }

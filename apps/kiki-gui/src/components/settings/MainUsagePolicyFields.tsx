@@ -1,29 +1,24 @@
 /**
- * Who a parameter belongs to: shared, or one identity that differs.
+ * The values people set on a model day to day: default effort, service tier,
+ * the generated-token ceiling, the context budget and the compaction point.
  *
- * One model, one set of shared values. An identity may carry a difference on a
- * handful of those fields, and only those fields; everything else keeps
- * inheriting. The scope switch lives on the model editor itself and is passed
- * down here: switching scopes re-points the same rows at a different layer, so
- * there is one place to read a value, one place to write it, and one Save.
- * This component used to own a second switch; two switches for one scope is
- * how the same value ended up editable from two directions.
+ * Each row edits the shared value — the one every agent uses. An identity
+ * (`main`, `independent`) may carry its own value on top of a row; that layer
+ * opens in a popover anchored to the row's "Per agent" control (the anchored
+ * popover tier, `overlays/AnchoredPopover`), so the difference is read and
+ * restored right where the shared value is set, and there is still one Save.
  *
  * Three states a field can be in, and they stay three because the engine reads
  * them apart:
  *   - shared   — the model's own value
- *   - set      — this position's own number or word
+ *   - set      — this identity's own number or word
  *   - not sent — the tier is deliberately omitted so the API default applies,
  *                which is not the same as being unset. Thinking has no such
  *                state: it is switched off by the effort string `off`.
  *
  * The resolved value and its origin come from the server and describe the last
  * saved draft. They are withheld while the draft is unsaved rather than shown
- * as the result of what the person just typed; this editor does not solve the
- * model itself.
- *
- * Giving a difference back is an explicit control, never a side effect of
- * editing something else.
+ * as the result of what the person just typed.
  */
 
 import type { I18nKey } from '@kiki/session-core/i18n';
@@ -31,14 +26,15 @@ import { useEffect, useState } from 'react';
 
 import { useI18n } from '../../i18n';
 import { formatCompactTokens, parseCompactInput } from '../../lib/autoCompact';
-import { Hint } from '../controls';
 import { SMALL_INPUT } from '../ui';
-import { SettingField } from './fields';
+import { AnchoredPopover, usePopover } from '../overlays';
+import { effortLabel } from './profileEditor/profileDraft';
+import { SettingHelp } from './SettingHelp';
 import { SettingsSelect } from './SettingsPrimitives';
 import {
   COUNT_USAGE_FIELDS,
   EMPTY_USAGE_BRANCH,
-  USAGE_POLICY_FIELDS,
+  USAGE_POSITIONS,
   USAGE_SERVICE_TIERS,
   clearUsageField,
   setUsageText,
@@ -50,8 +46,6 @@ import {
   type UsagePosition,
 } from './mainUsagePolicyDraft';
 
-export type UsageScope = 'shared' | UsagePosition;
-
 const FIELD_LABEL: Readonly<Record<UsagePolicyField, I18nKey>> = {
   thinking_effort: 'st.usagePolicy.thinkingEffort',
   service_tier: 'st.usagePolicy.serviceTier',
@@ -60,18 +54,17 @@ const FIELD_LABEL: Readonly<Record<UsagePolicyField, I18nKey>> = {
   max_completion_tokens: 'st.usagePolicy.maxCompletionTokens',
 };
 
-/**
- * Which fields share a line. Every field here is a short control: two pickers
- * and two token inputs, each of which reads in one glance. Only the compaction
- * row keeps a line to itself, because it alone carries presets, a hint and the
- * track, and a slider cannot be squeezed into half a row. Narrow widths fall
- * back to one column, with the same fields in the same order.
- */
-const USAGE_PAIRED_FIELDS: readonly UsagePolicyField[] = [
-  'thinking_effort', 'service_tier', 'context_budget', 'max_completion_tokens',
+const POSITION_LABEL: Readonly<Record<UsagePosition, I18nKey>> = {
+  main: 'st.modelScope.main',
+  independent: 'st.modelScope.independent',
+};
+
+/** Reading order: the two pickers, the two ceilings, then the compaction row. */
+const ROW_ORDER: readonly UsagePolicyField[] = [
+  'thinking_effort', 'service_tier', 'max_completion_tokens', 'context_budget', 'auto_compact',
 ];
 
-/** One resolved field: what the position really gets, and where it came from. */
+/** One resolved field: what the identity really gets, and where it came from. */
 export interface ResolvedUsageField {
   value: string;
   source: string | undefined;
@@ -81,192 +74,270 @@ export interface UsagePolicyView {
   draft: UsagePolicyDraft;
   /** Per field: the shared layer's value, already rendered for a person. */
   shared: Readonly<Record<UsagePolicyField, string>>;
-  /** Per position, the server's resolved value and origin. */
+  /** Per identity, the server's resolved value and origin. */
   resolved: Readonly<Record<UsagePosition, Readonly<Partial<Record<UsagePolicyField, ResolvedUsageField>>>>>;
   /** The field that blocked the last save, if any. */
   issue: { position: UsagePosition; field: UsagePolicyField } | null;
-  /** True when any position holds unsaved differences. */
+  /** True when any identity holds unsaved differences. */
   dirty: boolean;
 }
 
-/** An edit to the shared layer; each field routes to the control that owns it. */
+/** An edit to the shared layer; each field routes to the draft that owns it. */
 export type SharedUsageEdit = Readonly<Partial<Record<UsagePolicyField, string>>>;
 
 export function MainUsagePolicyFields({
-  modelId, scope, view, onSharedChange, onChange, compaction, compactionControl, disabled = false,
+  modelId, view, efforts, onSharedChange, onChange, sharedIssue = null, compactionControl, compactionTrack, disabled = false,
 }: {
   modelId: string;
-  /** The page's own scope selector; this group only reads through it. */
-  scope: UsageScope;
   view: UsagePolicyView;
+  /** A shared value the last save refused, with its message. */
+  sharedIssue?: { field: UsagePolicyField; text: string } | null;
+  /** The efforts this model supports, in display order. */
+  efforts: readonly string[];
   onSharedChange: (next: SharedUsageEdit) => void;
   onChange: (next: UsagePolicyDraft) => void;
-  /** The compaction track and hint, shown under the compaction row. */
-  compaction?: React.ReactNode;
-  /** The compaction field itself, with its presets and percentage entry. */
-  compactionControl?: React.ReactNode;
+  /** The shared compaction field, with its presets. */
+  compactionControl: React.ReactNode;
+  /** The compaction track under it. */
+  compactionTrack: React.ReactNode;
   disabled?: boolean;
 }) {
-  const { t } = useI18n();
-  const branch = scope === 'shared' ? undefined : (view.draft[scope] ?? EMPTY_USAGE_BRANCH);
   return (
-    <div data-main-usage-policy={modelId} data-usage-scope={scope}
-      className="min-w-0 space-y-2 border-t border-hairline pt-4 disabled:opacity-60">
-      <div className="grid gap-x-4 gap-y-1 sm:grid-cols-2" data-usage-fields={scope}>
-        {USAGE_POLICY_FIELDS.map((field) => (
-          <div
-            key={field}
-            // Only the compaction row takes the full measure; the short fields
-            // pair up, whatever the width.
-            className={USAGE_PAIRED_FIELDS.includes(field) ? undefined : 'sm:col-span-2'}
-          >
-            <UsageRow field={field} scope={scope} modelId={modelId} disabled={disabled}
-              branch={branch ?? EMPTY_USAGE_BRANCH} shared={view.shared[field]}
-              resolved={scope === 'shared' ? undefined : view.resolved[scope]?.[field]}
-              draftDirty={scope !== 'shared' && view.dirty}
-              invalid={view.issue !== null && view.issue.field === field
-                && (scope === 'shared' || view.issue.position === scope)}
-              onSharedChange={onSharedChange}
-              onChange={(next) => onChange({ ...view.draft, [scope]: next })}
-              compaction={field === 'auto_compact' ? compaction : undefined}
-              compactionControl={field === 'auto_compact' ? compactionControl : undefined} />
-          </div>
-        ))}
+    <div data-main-usage-policy={modelId} className="grid min-w-0 gap-x-5 gap-y-4 sm:grid-cols-2" data-usage-fields>
+      {ROW_ORDER.map((field) => (
+        <div key={field} className={field === 'auto_compact' ? 'min-w-0 sm:col-span-2' : 'min-w-0'}>
+          <UsageRow field={field} modelId={modelId} view={view} efforts={efforts} disabled={disabled}
+            onSharedChange={onSharedChange} onChange={onChange}
+            sharedIssue={sharedIssue?.field === field ? sharedIssue.text : undefined}
+            sharedControl={field === 'auto_compact' ? compactionControl : undefined}
+            below={field === 'auto_compact' ? compactionTrack : undefined} />
+        </div>
+      ))}
+    </div>
+  );
+}
+function UsageRow({
+  field, modelId, view, efforts, onSharedChange, onChange, sharedIssue, sharedControl, below, disabled,
+}: {
+  sharedIssue?: string;
+  field: UsagePolicyField;
+  modelId: string;
+  view: UsagePolicyView;
+  efforts: readonly string[];
+  onSharedChange: (next: SharedUsageEdit) => void;
+  onChange: (next: UsagePolicyDraft) => void;
+  sharedControl?: React.ReactNode;
+  below?: React.ReactNode;
+  disabled: boolean;
+}) {
+  const { t } = useI18n();
+  const label = t(FIELD_LABEL[field]);
+  const fieldId = `usage-${modelId}-${field}`;
+  const shared = view.shared[field];
+  const overridden = USAGE_POSITIONS.filter((position) =>
+    usageFieldValue(view.draft[position] ?? EMPTY_USAGE_BRANCH, field) !== '');
+  const flagged = view.issue !== null && view.issue.field === field;
+  const popover = usePopover();
+  const { setOpen } = popover;
+  // A save refused on an identity value opens the popover that holds it.
+  useEffect(() => { if (flagged) setOpen(true); }, [flagged, setOpen]);
+  const expanded = popover.open;
+  // Without an override the toggle stays out of sight until the row is
+  // hovered or anything in it has focus; it never leaves the tab order.
+  const quiet = overridden.length === 0 && !expanded;
+
+  return (
+    <div data-usage-row={field} className="group min-w-0 space-y-1.5">
+      <div className="flex min-h-6 items-center justify-between gap-2">
+        <label htmlFor={sharedControl === undefined ? fieldId : undefined} className="text-[12px] font-medium text-ink-soft">{label}</label>
+        <button type="button" data-usage-identity-toggle={field}
+          data-usage-toggle-quiet={quiet ? '' : undefined}
+          {...popover.triggerProps}
+          className={`inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-[11.5px] transition-[color,background-color,opacity] focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:h-9 ${
+            overridden.length > 0
+              ? 'bg-selected-ink/10 font-medium text-selected-ink hover:bg-selected-ink/15'
+              : 'text-ink-faint hover:bg-ink/[0.04] hover:text-ink'
+          } ${quiet ? 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100' : ''}`}>
+          <span data-usage-override-marker={overridden.length > 0 ? overridden.join(' ') : undefined}>
+            {overridden.length > 0
+              ? overridden.map((position) => t(POSITION_LABEL[position])).join(' · ')
+              : t('st.usagePolicy.perAgent')}
+          </span>
+          <svg aria-hidden viewBox="0 0 12 12" className={`size-2.5 transition-transform ${expanded ? 'rotate-180' : ''}`}>
+            <path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          </svg>
+        </button>
       </div>
-      {scope === 'shared' ? null : <Hint>{t('st.usagePolicy.capsHelp')}</Hint>}
+      <div data-usage-shared={field} className="min-w-0">
+        {sharedControl ?? <SharedControl field={field} id={fieldId} label={label} value={shared}
+          efforts={efforts} disabled={disabled} invalid={sharedIssue !== undefined} onSharedChange={onSharedChange} />}
+      </div>
+      {sharedIssue === undefined ? null : (
+        <p role="alert" className="text-[12px] text-danger" data-usage-shared-issue={field}>{sharedIssue}</p>
+      )}
+      {below}
+      <AnchoredPopover {...popover.popoverProps} label={t('st.usagePolicy.perAgentTitle', { field: label })} align="end"
+        widthClassName="w-[22rem]" data={{ 'data-usage-identities': field }}>
+        <p className="mb-2 text-[12px] font-medium text-ink-soft">{t('st.usagePolicy.perAgentTitle', { field: label })}</p>
+        <div className="space-y-2">
+          {USAGE_POSITIONS.map((position) => (
+            <IdentityLine key={position} field={field} position={position} modelId={modelId} label={label}
+              view={view} efforts={efforts} disabled={disabled} onChange={onChange} />
+          ))}
+        </div>
+      </AnchoredPopover>
     </div>
   );
 }
 
-function UsageRow({
-  field, scope, modelId, branch, shared, resolved, draftDirty, invalid, onSharedChange, onChange, compaction, compactionControl, disabled = false,
-}: {
+function SharedControl({ field, id, label, value, efforts, disabled, invalid, onSharedChange }: {
   field: UsagePolicyField;
-  scope: UsageScope;
-  modelId: string;
-  branch: UsageBranchDraft;
-  shared: string;
-  resolved: ResolvedUsageField | undefined;
-  draftDirty: boolean;
   invalid: boolean;
+  id: string;
+  label: string;
+  value: string;
+  efforts: readonly string[];
+  disabled: boolean;
   onSharedChange: (next: SharedUsageEdit) => void;
-  onChange: (next: UsageBranchDraft) => void;
-  disabled?: boolean;
-  /** The compaction control, which only the compaction row carries. */
-  compaction?: React.ReactNode;
-  /** Replaces the plain input for the compaction row, which has its own. */
-  compactionControl?: React.ReactNode;
 }) {
   const { t } = useI18n();
-  const label = t(FIELD_LABEL[field]);
-  const fieldId = `usage-${modelId}-${scope}-${field}`;
-  const current = scope === 'shared' ? shared : usageFieldValue(branch, field);
-  const overridden = scope !== 'shared' && current !== '';
-  const own = scope === 'shared' ? shared : ownText(field, branch, t);
-  // A saved projection describes the saved draft. While this one is unsaved it
-  // answers a question the person is no longer asking, so it is dropped rather
-  // than shown as if the edit had already taken effect.
-  const effective = draftDirty ? own : (resolved?.value !== undefined && resolved.value !== '' ? resolved.value : own);
-  const origin = draftDirty ? undefined : resolved?.source;
-  const problem = invalid ? t('st.usagePolicy.issueCount') : null;
-  // Only say something when the two genuinely differ; a restatement of the same
-  // number reads as new information that it is not.
-  const differs = overridden && effective !== '' && effective !== shared;
+  if (field === 'service_tier') {
+    return <SettingsSelect id={id} variant="form" mono dataAttr="data-usage-value" ariaLabel={label}
+      disabled={disabled}
+      value={value === '' ? 'unset' : value}
+      onChange={(next) => { onSharedChange({ [field]: next === 'unset' ? '' : next }); }}
+      choices={[
+        { value: 'unset', label: t('st.usagePolicy.unset') },
+        ...USAGE_SERVICE_TIERS.map((tier) => ({ value: tier, label: tier })),
+      ]} />;
+  }
+  if (field === 'thinking_effort') {
+    return <SettingsSelect id={id} variant="form" dataAttr="data-usage-value" ariaLabel={label}
+      disabled={disabled}
+      value={value === '' ? 'unset' : value}
+      onChange={(next) => { onSharedChange({ [field]: next === 'unset' ? '' : next }); }}
+      choices={[
+        { value: 'unset', label: t('st.usagePolicy.unset') },
+        ...effortChoices(efforts, value, t),
+        { value: 'off', label: t('st.usagePolicy.off') },
+      ]} />;
+  }
+  return <UsageTextInput id={id} field={field} label={label} value={value} invalid={invalid}
+    placeholder={t('st.usagePolicy.unset')} disabled={disabled}
+    onCommit={(next) => { onSharedChange({ [field]: next }); }} />;
+}
+/**
+ * One identity's value for one field. Empty means it uses the shared value,
+ * which the placeholder or the inherit option names. The restore verb sits at
+ * the end of the line so every identity puts it in the same place.
+ */
+function IdentityLine({ field, position, modelId, label, view, efforts, disabled, onChange }: {
+  field: UsagePolicyField;
+  position: UsagePosition;
+  modelId: string;
+  label: string;
+  view: UsagePolicyView;
+  efforts: readonly string[];
+  disabled: boolean;
+  onChange: (next: UsagePolicyDraft) => void;
+}) {
+  const { t } = useI18n();
+  const branch = view.draft[position] ?? EMPTY_USAGE_BRANCH;
+  const put = (next: UsageBranchDraft) => { onChange({ ...view.draft, [position]: next }); };
+  const current = usageFieldValue(branch, field);
+  const overridden = current !== '';
+  const shared = view.shared[field];
+  const id = `usage-${modelId}-${position}-${field}`;
+  const who = t(POSITION_LABEL[position]);
+  const aria = `${who} · ${label}`;
+  const own = ownText(field, branch, t);
+  const resolved = view.resolved[position]?.[field];
+  // A saved projection describes the saved draft. While a draft is unsaved it
+  // answers a question the person is no longer asking, so it is dropped.
+  const effective = view.dirty ? own : (resolved?.value !== undefined && resolved.value !== '' ? resolved.value : own);
+  const origin = view.dirty ? undefined : resolved?.source;
+  const clamped = overridden && effective !== '' && effective !== own;
+  const invalid = view.issue !== null && view.issue.field === field && view.issue.position === position;
+  const sharedText = shared === '' ? t('st.usagePolicy.unset') : formatUsageValue(field, field === 'thinking_effort' ? effortLabel(shared, t) : shared);
+  const inheritLabel = t('st.usagePolicy.inheritValue', { value: sharedText });
 
-  return <div data-usage-row={field}>
-    <SettingField label={label} labelId={`${fieldId}-label`} layout="stack"
-      help={differs
-        ? <span className="flex flex-wrap items-baseline gap-x-1.5">
-          <span>{shared === '' ? t('st.usagePolicy.unset') : formatUsageValue(field, shared)}</span>
-          <span aria-hidden>→</span>
-          <span className="tabular-nums" data-usage-effective={field}>{formatUsageValue(field, effective)}</span>
-        </span>
-        : undefined}
-      detail={differs && origin !== undefined
-        // The origin is a config path: reference text behind the label's `i`,
-        // not a line on the first screen.
-        ? <span className="font-mono text-[11px] break-all" data-usage-source={field}>{origin}</span>
-        : undefined}>
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        {field === 'service_tier'
-          ? scope === 'shared'
-            ? <SettingsSelect id={fieldId} variant="form" mono dataAttr="data-usage-value" ariaLabel={label}
-              disabled={disabled}
-              value={shared === '' ? 'unset' : shared}
-              onChange={(next) => { onSharedChange({ [field]: next === 'unset' ? '' : next }); }}
-              choices={[
-                { value: 'unset', label: t('st.usagePolicy.unset') },
-                ...USAGE_SERVICE_TIERS.map((tier) => ({ value: tier, label: tier })),
-              ]} />
-            : <SettingsSelect id={fieldId} variant="form" mono dataAttr="data-usage-value" ariaLabel={label}
-              disabled={disabled}
-              value={branch.tier} onChange={(next) => onChange({ ...branch, tier: next as TierDraft })}
-              choices={[
-                { value: 'inherit', label: t('st.usagePolicy.inherit') },
-                { value: 'not_sent', label: t('st.usagePolicy.omit') },
-                ...USAGE_SERVICE_TIERS.map((tier) => ({ value: tier, label: tier })),
-              ]} />
-          // The compaction control brings its own presets and hint, so it is
-          // wrapped to the width of its own input: the row's line then holds the
-          // input and the restore together, and the presets, hint and track keep
-          // the lines below instead of pushing the restore off this one.
-          : <div className="min-w-0 max-w-full">{compactionControl ?? <UsageTextInput
-            id={fieldId} field={field} label={label}
-            disabled={disabled}
-            value={current}
-            invalid={problem !== null}
-            placeholder={scope === 'shared' || shared === ''
-              ? undefined
-              : COUNT_USAGE_FIELDS.has(field) ? t('st.usagePolicy.inheritSharedPoint') : formatUsageValue(field, shared)}
-            onCommit={(next) => {
-              if (scope === 'shared') onSharedChange({ [field]: next });
-              else onChange(setUsageText(branch, field as Exclude<UsagePolicyField, 'service_tier'>, next));
-            }} />}</div>}
-        {overridden
-          // On the control's own line, at its end, so every row puts this verb in
-          // the same place. A `basis-full` line also pinned it, but in a paired
-          // cell that dropped a full empty line under the field and left the
-          // action nearer the neighbour than its own control. The presets below
-          // sit on their own line, so the control line has the room for it.
-          ? <button type="button" data-usage-restore={field}
-            disabled={disabled}
-            className="ms-auto shrink-0 self-start rounded px-1.5 py-1 text-[12px] text-ink-soft underline decoration-ink/20 underline-offset-4 hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint disabled:no-underline"
-            onClick={() => { if (!disabled) onChange({ ...branch, ...clearUsageField(field) }); }}>{t('st.usagePolicy.restoreInherit')}</button>
-          : null}
-        {problem !== null
-          ? <p role="alert" className="w-full text-[12px] text-danger" data-usage-issue={field}>{problem}</p>
-          : null}
+  let control: React.ReactNode;
+  if (field === 'service_tier') {
+    control = <SettingsSelect id={id} variant="form" mono dataAttr="data-usage-value" ariaLabel={aria}
+      disabled={disabled} value={branch.tier} onChange={(next) => { put({ ...branch, tier: next as TierDraft }); }}
+      choices={[
+        { value: 'inherit', label: inheritLabel },
+        { value: 'not_sent', label: t('st.usagePolicy.omit') },
+        ...USAGE_SERVICE_TIERS.map((tier) => ({ value: tier, label: tier })),
+      ]} />;
+  } else if (field === 'thinking_effort') {
+    control = <SettingsSelect id={id} variant="form" dataAttr="data-usage-value" ariaLabel={aria}
+      disabled={disabled} value={current === '' ? 'inherit' : current}
+      onChange={(next) => { put(setUsageText(branch, field, next === 'inherit' ? '' : next)); }}
+      choices={[
+        { value: 'inherit', label: inheritLabel },
+        ...effortChoices(efforts, current === 'off' ? '' : current, t),
+        { value: 'off', label: t('st.usagePolicy.off') },
+      ]} />;
+  } else {
+    control = <UsageTextInput id={id} field={field} label={aria} value={current} invalid={invalid}
+      placeholder={inheritLabel} disabled={disabled}
+      onCommit={(next) => { put(setUsageText(branch, field, next)); }} />;
+  }
+
+  return (
+    <div data-usage-position={position} className="space-y-1">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="w-20 shrink-0 truncate text-[12px] text-ink-soft" title={who}>{who}</span>
+        <div className="min-w-0 flex-1">{control}</div>
+        {overridden ? (
+          <button type="button" data-usage-restore={field} disabled={disabled}
+            title={t('st.usagePolicy.restoreInherit')} aria-label={`${t('st.usagePolicy.restoreInherit')} · ${aria}`}
+            className="shrink-0 rounded px-1.5 py-1 text-[11.5px] text-ink-soft underline decoration-ink/20 underline-offset-4 hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint disabled:no-underline"
+            onClick={() => { if (!disabled) put({ ...branch, ...clearUsageField(field) }); }}>
+            {t('st.usagePolicy.restoreShort')}
+          </button>
+        ) : null}
       </div>
-      {compaction}
-    </SettingField>
-  </div>;
+      {clamped ? (
+        <p className="flex items-center gap-1.5 ps-[5.5rem] text-[11.5px] text-ink-faint">
+          <span>{t('st.usagePolicy.effectiveShort')}</span>
+          <span className="tabular-nums text-ink-soft" data-usage-effective={field}>{formatUsageValue(field, effective)}</span>
+          {origin === undefined ? null : (
+            <SettingHelp><span className="break-all font-mono text-[11px]" data-usage-source={field}>{origin}</span></SettingHelp>
+          )}
+        </p>
+      ) : null}
+      {invalid ? (
+        <p role="alert" className="ps-[5.5rem] text-[12px] text-danger" data-usage-issue={field}>{t('st.usagePolicy.issueCount')}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/** The model's efforts as picker choices, keeping a stored value that is not among them. */
+function effortChoices(efforts: readonly string[], current: string, t: (key: I18nKey) => string) {
+  const list = efforts.filter((level) => level !== 'off');
+  if (current !== '' && current !== 'off' && !list.includes(current)) list.push(current);
+  return list.map((level) => ({ value: level, label: level === 'off' ? t('st.usagePolicy.off') : effortLabel(level, t) }));
 }
 
 /**
  * Token counts read the way the field they belong to settles — `180k`, `1M` —
- * so the input, its placeholder, and the shared → effective line speak with one
- * voice. A value that is not a count (mid-typing text the row will reject) is
- * shown as typed rather than mangled. Efforts and tiers are words and stay as
- * they are.
+ * so the input, its placeholder and the resolved line speak with one voice. A
+ * value that is not a count is shown as typed.
  */
 export function formatUsageValue(field: UsagePolicyField, value: string): string {
   if (!COUNT_USAGE_FIELDS.has(field)) return value;
   const count = Number(value);
-  return Number.isFinite(count) ? formatCompactTokens(count) : value;
+  return value !== '' && Number.isFinite(count) ? formatCompactTokens(count) : value;
 }
 
 /**
- * One editable field. Token counts take the same read/write the compaction point
- * does — `160k`, `0.2M` and `160000` are all accepted and the field settles on
- * `160k` — so three numbers in this panel stop reading three ways. The draft
- * keeps the plain integer either way, so validation, the wire and the resolved
- * line are untouched by how the value was typed.
- *
- * The draft is updated on every keystroke, exactly as a plain field would be, so
- * validation and Save still see the text being typed. The `k` form appears when
- * the field is left, which is the one moment a value is known to be finished.
- * Anything unreadable keeps its text and is reported by the row's own check
- * rather than being rewritten here.
+ * One token-count field. `160k`, `0.2M` and `160000` are all accepted and the
+ * field settles on `160k` when it is left; the draft keeps the plain integer,
+ * so validation and the wire never see the display form. Anything unreadable
+ * keeps its text and is reported by the save check.
  */
 function UsageTextInput({
   id, field, label, value, invalid, placeholder, onCommit, disabled = false,
@@ -285,9 +356,8 @@ function UsageTextInput({
   const [text, setText] = useState(display);
   const [editing, setEditing] = useState(false);
 
-  // A change from outside this field (a scope switch, a reload after save, the
-  // restore control) re-reads it, but never mid-edit: that would move the caret
-  // and discard what is being typed.
+  // An outside change (a reload after save, the restore control) re-reads the
+  // field, but never mid-edit: that would move the caret.
   useEffect(() => {
     if (disabled) setEditing(false);
   }, [disabled]);
@@ -298,7 +368,7 @@ function UsageTextInput({
   return <input
     id={id} data-usage-value={field} aria-label={label} aria-invalid={invalid}
     disabled={disabled}
-    className={`${SMALL_INPUT} ${invalid ? 'border-danger' : ''} ${isCount ? 'font-mono tabular-nums' : ''}`}
+    className={`${SMALL_INPUT} h-8 w-full ${invalid ? 'border-danger' : ''} ${isCount ? 'font-mono tabular-nums' : ''}`}
     inputMode={isCount ? 'decimal' : undefined}
     spellCheck={false} autoComplete="off"
     value={text}
@@ -308,8 +378,6 @@ function UsageTextInput({
       setEditing(true);
       setText(next);
       if (!isCount) { onCommit(next); return; }
-      // Hand the plain integer up as typed, so an unfinished number is never
-      // rescaled mid-keystroke, and hand the `k` form up as soon as it parses.
       const parsed = parseCompactInput(next);
       onCommit(parsed.kind === 'tokens' ? String(parsed.tokens) : next);
     }}
@@ -321,7 +389,7 @@ function UsageTextInput({
     }} />;
 }
 
-/** This position's own value, read on the same terms as the shared one. */
+/** This identity's own value, read on the same terms as the shared one. */
 function ownText(field: UsagePolicyField, branch: UsageBranchDraft, t: (key: I18nKey) => string): string {
   const value = usageFieldValue(branch, field);
   if (value === '') return '';

@@ -275,12 +275,12 @@ describe('ApprovalCard plan_enter', () => {
     resolution: undefined,
   };
 
-  it('renders the plan-enter title and timeout copy, not a raw JSON detail', async () => {
+  it('renders the plan-enter title and body, not a raw JSON detail', async () => {
     const onResolve = vi.fn(() => Promise.resolve());
     const container = await renderCard(PLAN_ENTER_BLOCK, onResolve);
 
     expect(container.textContent).toContain('Enter plan mode?');
-    expect(container.textContent).toContain('rejected automatically');
+    expect(container.textContent).toContain('research and propose a plan');
     // No JSON dump of the payload, and the ordinary approve/reject row stays.
     expect(container.textContent).not.toContain('"kind"');
     expect(container.textContent).toContain('Approve');
@@ -358,7 +358,7 @@ describe('ApprovalCard always allow', () => {
       request: { ...COMMAND_BLOCK.request, approval_id: 'approval-cmd-2' } }, onResolve);
     await act(async () => { click(container.querySelector('[data-approval-always-allow]')!); });
     expect(onResolve).not.toHaveBeenCalled();
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Could not save the rule');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('The rule didn’t save');
     expect(container.querySelector('[data-approval-always-allow]')?.hasAttribute('disabled')).toBe(false);
   });
 
@@ -452,7 +452,7 @@ describe('QuestionCard', () => {
     expect(optionButton(container, 'Option A').getAttribute('aria-pressed')).toBe('true');
     await act(async () => { submitButton(container).click(); });
     expect(onAnswer).toHaveBeenCalledTimes(2);
-    expect(container.textContent).toContain('Sent to kiki');
+    expect(container.textContent).toContain('Sent to Kiki');
   });
 
   it('resets selection and ignores a late response when the tray moves to another question', async () => {
@@ -468,7 +468,7 @@ describe('QuestionCard', () => {
     expect(optionButton(container, 'Option A').getAttribute('aria-pressed')).toBe('false');
     expect(submitButton(container).disabled).toBe(true);
     await act(async () => { resolve(); });
-    expect(container.textContent).not.toContain('Sent to kiki');
+    expect(container.textContent).not.toContain('Sent to Kiki');
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 

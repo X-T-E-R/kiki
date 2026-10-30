@@ -21,7 +21,7 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SaveStatus, Toggle, type Feedback } from '../controls';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
-import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../ui';
+import { DANGER_GHOST_BUTTON, INPUT, INPUT_BOX, SECONDARY_BUTTON } from '../ui';
 import { AdvancedDetails, SettingField } from './fields';
 import { GlobalRequestIdentityCard } from './ModelsSection';
 import { SectionCard } from './SectionCard';
@@ -484,7 +484,7 @@ function CustomProfileEditor({ profile, catalog, edit, baseline, onPatch, onDisc
               onChange={(next) => { set({ track: next }); }} />
           ) : null}
           {draft.version.mode === 'fixed' ? (
-            <input className={`${INPUT} h-8 w-36 py-0 font-mono`} aria-label={t('st.identity.versionFixedAria')} data-identity-version
+            <input className={`${INPUT_BOX} h-8 w-36 py-0 font-mono`} aria-label={t('st.identity.versionFixedAria')} data-identity-version
               value={draft.version.value} spellCheck={false}
               onChange={(event) => { set({ version: { mode: 'fixed', value: event.target.value } }); }} />
           ) : null}
@@ -611,7 +611,7 @@ function IdentityPreview({ profileId, basePreset, track, draft }: {
   const userAgent = preview?.headers.find((header) => header.name.toLowerCase() === 'user-agent');
   const fieldCount = preview === undefined ? 0 : preview.headers.length + params.length;
   return (
-    <section aria-labelledby={`identity-preview-${profileId}`} className="space-y-2 border-t border-hairline pt-4" data-identity-preview>
+    <section aria-labelledby={`identity-preview-${profileId}`} className="space-y-2 pt-4" data-identity-preview>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h4 id={`identity-preview-${profileId}`} className="text-[13px] font-medium text-ink">
           {t(draft === undefined ? 'st.identity.previewTitle' : 'st.identity.previewTitleDraft')}
@@ -827,7 +827,7 @@ function ManifestField({ url }: { url: string | null }) {
     }
   };
   return (
-    <div className="mt-4 border-t border-hairline pt-4">
+    <div className="mt-4 pt-4">
       <SettingField label={t('st.identity.manifestLabel')} help={t('st.identity.manifestHelp')} layout="stack">
         <div className="flex flex-wrap items-start gap-2">
           <CommitInput value={url ?? ''} className="w-[min(100%,28rem)] font-mono" ariaLabel={t('st.identity.manifestLabel')}

@@ -7,6 +7,7 @@
  */
 
 import { act, useState } from 'react';
+import { getToasts } from '../../lib/toasts';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
@@ -142,6 +143,7 @@ async function click(selector: string) {
 
 async function type(selector: string, value: string) {
   const input = document.querySelector<HTMLInputElement>(selector)!;
+
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
   await act(async () => { setter.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); });
 }
@@ -360,11 +362,11 @@ describe('SpacesSection in the main space', () => {
 
   it('records the window mode for the next launch', async () => {
     // The choice starts on switch mode so picking the other one is a change:
-    // clicking the already-checked radio fires nothing.
+    // clicking the already-selected segment fires nothing.
     writeDesktopPrefs({ windowMode: 'switch' });
     resetLaunchWindowMode();
     await render(<SpacesSection />);
-    await click('[data-space-window-choice="windows"] input');
+    await click('[data-space-window-choice="windows"]');
     expect(host.writeDesktopPrefs).toHaveBeenCalledWith({ windowMode: 'windows' });
     expect(document.querySelector('[data-space-window-note]')?.textContent).toBe('Restart Kiki to use this.');
   });
@@ -598,10 +600,11 @@ describe('direct remote settings control operations', () => {
     expect(document.querySelector<HTMLInputElement>('[data-space-name]')!.value).toBe('Local Draft');
     expect(document.body.textContent).toContain('Local folder access denied');
     expect(host.openSpace).not.toHaveBeenCalled();
-    await click('[data-space-create] button[type="button"]:last-of-type');
+    // Closing the panel is the header's ×; the attach entry lives on the list.
+    await click('button[aria-label="Close"]');
     await click('[data-space-attach-open]');
     await type('[data-space-attach-path]', 'D:\\existing');
-    await click('[data-space-attach] button[type="submit"]');
+    await click('[data-space-attach-submit]');
     expect(homes.attach).toHaveBeenCalledWith({ path: 'D:\\existing' });
     expect(homes.list.mock.calls.length).toBeGreaterThan(1);
     for (const spy of Object.values(remote.homes)) expect(spy).not.toHaveBeenCalled();
@@ -628,8 +631,15 @@ describe('direct remote settings control operations', () => {
     homes.remove.mockResolvedValue(LIST);
     await click('[data-space-menu="h-paper"]');
     await click('[data-space-menu-item="remove"]');
-    await click('[data-confirm-action="confirm"]');
+    // Removing from the list keeps the folder, so it runs at once with an undo.
+    expect(document.querySelector('[data-confirm-action="confirm"]')).toBeNull();
     expect(homes.remove).toHaveBeenCalledWith('h-paper');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    const undo = getToasts().at(-1)!;
+    expect(undo.undo).toBeDefined();
+    homes.attach.mockResolvedValue({ id: 'h-paper', name: 'Paper', path: 'D:\\paper' });
+    await act(async () => { await undo.undo!.run(); });
+    expect(homes.attach).toHaveBeenCalledWith({ path: 'D:\\paper' });
     homes.create.mockResolvedValue({ id: 'local-created', name: 'Local New', path: 'D:\\local-new' });
     await click('[data-space-new]');
     await type('[data-space-name]', 'Local New');
@@ -655,7 +665,7 @@ describe('direct remote settings control operations', () => {
     await click('[data-space-settings-failed] button');
     expect(localMeta).toHaveBeenCalledTimes(2);
     expect(homes.detail).toHaveBeenCalledWith('h-paper');
-    expect(document.querySelector('[data-space-settings-name]')?.textContent).toBe('Paper');
+    expect(document.querySelector('[data-detail-heading]')?.textContent).toContain('Paper');
     for (const spy of Object.values(remote.homes)) expect(spy).not.toHaveBeenCalled();
   });
 

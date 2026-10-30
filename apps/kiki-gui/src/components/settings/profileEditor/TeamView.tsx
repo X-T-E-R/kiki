@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useMemo, useRef, useState } from 'react';
 
 import type { ModelCatalogItem } from '@kiki/protocol';
 import { useI18n } from '../../../i18n';
@@ -6,37 +6,22 @@ import type { NamedAgentProfile } from '../../../lib/client';
 import { DisclosureChevron, Icon } from '../../icons';
 import { sourceBadgeLabel } from '../../agent-panel/SourceBadge';
 import { SearchableSelect } from '../../SearchableSelect';
-import { SETTINGS_SELECT_TRIGGER, SettingsSegmented } from '../SettingsPrimitives';
+import { SETTINGS_SELECT_TRIGGER } from '../SettingsPrimitives';
 import { ListEmpty, ListToolbar, useListView, type ListSortSpec } from '../list';
 import { diagnosticTone, type ProfileDiagnostic } from './diagnostics';
 import { dispatchFieldsOf, EFFORTS, effortLabel, isExternalExecutor } from './profileDraft';
-import { TeamRoster } from './TeamRoster';
 import { ModelMenuPreview } from './ModelMenuPreview';
 import { useModelMenuPreview } from './useModelMenuPreview';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
+import { AnchoredPopover } from '../../overlays';
 
-export type TeamFilter = 'all' | 'main' | 'subagent';
-type TeamLayout = 'list' | 'teams';
-/** Names the "May call" cell shows before collapsing the rest into +N. */
+/** Names the "Dispatches" cell shows before collapsing the rest into +N. */
 const DISPATCH_SHOWN = 2;
 
-type SourceGroup = 'workspace' | 'global' | 'builtin';
-const GROUP_ORDER: readonly SourceGroup[] = ['workspace', 'global', 'builtin'];
-const GROUP_LABEL = {
-  workspace: 'st.profiles.groupWorkspace',
-  global: 'st.profiles.groupGlobal',
-  builtin: 'st.profiles.groupBuiltin',
-} as const;
-
-/**
- * Workspace = the selected workspace's own agent folders; global = the user
- * home and configured extra folders; built-in = shipped with Kiki.
- */
-export function sourceGroup(source: string): SourceGroup {
-  if (source === 'workspace') return 'workspace';
-  if (source === 'builtin') return 'builtin';
-  return 'global';
-}
+/** The two populations a person thinks in: agents they talk to, and the helpers those agents send out. */
+type KindGroup = 'main' | 'subagent';
+const KIND_ORDER: readonly KindGroup[] = ['main', 'subagent'];
+const KIND_LABEL = { main: 'st.profiles.groupMain', subagent: 'st.profiles.groupSubagents' } as const;
 
 export interface TeamRow {
   readonly key: string;
@@ -47,236 +32,213 @@ export interface TeamRow {
   readonly engineLabel?: string;
 }
 
-const displayName = (profile: NamedAgentProfile, locale: string) => profile.name === 'agent' && profile.main
+export const displayName = (profile: NamedAgentProfile, locale: string) => profile.name === 'agent' && profile.main
   ? locale === 'zh' ? 'Kiki（默认）' : 'Kiki'
   : profile.name;
 
-/** Who this profile may dispatch, as a short cell. */
-function dispatchCell(profile: NamedAgentProfile, t: ReturnType<typeof useI18n>['t']): { text: string; names: string[] } {
+/** Who this profile may dispatch, as a short cell. An undeclared list is the default, drawn quietly. */
+function dispatchCell(profile: NamedAgentProfile, t: ReturnType<typeof useI18n>['t']): { text: string; names: string[]; quiet: boolean } {
   const dispatch = dispatchFieldsOf(profile);
-  if (dispatch.can_spawn_subagents === false) return { text: t('st.profiles.dispatchCanSpawnOff'), names: [] };
-  if (dispatch.allowed_subagents === undefined) return { text: t('st.profiles.dispatchNotDeclared'), names: [] };
-  if (dispatch.allowed_subagents.length === 0) return { text: t('st.profiles.dispatchAllowedEmpty'), names: [] };
-  const names = dispatch.allowed_subagents.map((entry) => typeof entry === 'string' ? entry : entry.name);
-  return { text: names.join(', '), names };
+  if (dispatch.can_spawn_subagents === false) return { text: t('st.profiles.dispatchNone'), names: [], quiet: true };
+  if (dispatch.allowed_subagents === undefined) return { text: t('st.profiles.dispatchNotDeclared'), names: [], quiet: true };
+  const names = dispatch.allowed_subagents.map((entry) => typeof entry === 'string' ? entry : entry.name)
+    .filter((name) => name !== '*');
+  if (names.length === 0) {
+    return dispatch.allowed_subagents.length === 0
+      ? { text: t('st.profiles.dispatchListEmpty'), names: [], quiet: true }
+      : { text: t('st.profiles.dispatchNotDeclared'), names: [], quiet: true };
+  }
+  return { text: names.join(', '), names, quiet: false };
 }
 
+const TAG = 'shrink-0 rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] leading-[18px] text-ink-soft';
+const TAG_OUTLINE = 'shrink-0 rounded-[4px] border border-hairline px-1.5 text-[11px] leading-[16px] text-ink-soft';
+
 /**
- * One table across every profile: role, engine, model, effort, and who it
- * may dispatch. Model and effort edit in place (each change saves on its own,
- * like the other single-choice settings); a warning mark flags a pin that does
- * not resolve or a file that does not run. This is the view the operator used
- * to keep by hand in AGENTS.md, now read from the files themselves.
+ * The agents, in the two groups a person actually keeps apart: the agents
+ * they talk to, and the helpers those agents dispatch. Where a file lives and
+ * whether it can be edited are small tags on the row, not groupings. Model
+ * and effort edit in place (each change saves on its own); a warning mark
+ * flags a pin that does not resolve or a file that does not run.
  */
-export function TeamView({ rows, models, filter, onFilter, onOpen, onQuickSave, savingKey, onNew, toolbar, newActions }: {
+export function TeamView({ rows, models, onOpen, onQuickSave, savingKey, onNew, newActions, loading = false }: {
   rows: readonly TeamRow[];
   models: readonly ModelCatalogItem[];
-  filter: TeamFilter;
-  onFilter: (filter: TeamFilter) => void;
   onOpen: (row: TeamRow) => void;
   onQuickSave: (row: TeamRow, patch: { pinned_model_alias?: string | null; thinking_effort?: string | null }) => void;
   savingKey?: string;
   onNew: () => void;
-  toolbar?: React.ReactNode;
-  /**
-   * Secondary verbs that belong beside "New agent" rather than in the filter
-   * row: an action the user reaches for *instead of* creating one by hand reads
-   * as a peer of the button it replaces, not as another filter control.
-   */
+  /** Verbs that stand in for creating an agent by hand sit beside "New agent". */
   newActions?: React.ReactNode;
+  /** While the catalog is still answering, an empty list is not the empty state. */
+  loading?: boolean;
 }) {
   const { t, tp, locale } = useI18n();
-  const [layout, setLayout] = useState<TeamLayout>('list');
   const [pendingModel, setPendingModel] = useState<{ key: string; alias: string }>();
+  // The menu review for a pinned model opens anchored to that row's model cell.
+  const pendingAnchor = useRef<HTMLElement | null>(null);
+  const pendingRow = pendingModel === undefined ? undefined : rows.find((row) => row.key === pendingModel.key);
   const modelIds = useMemo(() => new Set(models.map((model) => model.id)), [models]);
-  // The parent's segmented picks the population (it also drives the tombstone
-  // list); the list toolbar searches and sorts within it. Main agents lead.
-  const scoped = useMemo(() => rows
-    .filter((row) => filter === 'all' || (filter === 'main') === row.profile.main)
-    .toSorted((a, b) => Number(b.profile.main) - Number(a.profile.main)), [rows, filter]);
   const sorts = useMemo<readonly ListSortSpec<TeamRow>[]>(() => [
     { id: 'order', label: t('st.list.sort.order'), compare: () => 0 },
     { id: 'name', label: t('st.list.sort.name'), compare: (a, b) => a.profile.name.localeCompare(b.profile.name) },
   ], [t]);
   const view = useListView({
-    listId: 'agent-profiles', items: scoped, keyOf: (row) => row.key, sorts,
+    listId: 'agent-profiles', items: rows, keyOf: (row) => row.key, sorts,
     textOf: (row) => [row.profile.name, row.profile.description],
   });
-  const compact = view.density === 'compact';
   const modelChoices = (current: string) => [
     { value: '', label: t('st.profiles.modelUnset') },
     ...models.map((model) => ({ value: model.id, label: model.id, group: model.provider_id })),
     ...(current !== '' && current !== 'inherit' && !modelIds.has(current) ? [{ value: current, label: current, hint: t('st.profiles.aliasMissingShort') }] : []),
   ];
   const warnings = rows.reduce((count, row) => count + row.diagnostics.filter((item) => diagnosticTone(item) === 'warning').length, 0);
-  // Source groups in precedence order; the default sort keeps the `scoped`
-  // order (main above subagents), a chosen sort applies within each group.
-  const groups = GROUP_ORDER.map((id) => ({
+  const kindOf = (row: TeamRow): KindGroup => row.profile.main ? 'main' : 'subagent';
+  const groups = KIND_ORDER.map((id) => ({
     id,
-    rows: view.visible.filter((row) => sourceGroup(row.profile.source) === id),
-    total: scoped.filter((row) => sourceGroup(row.profile.source) === id).length,
+    rows: view.visible.filter((row) => kindOf(row) === id),
+    total: rows.filter((row) => kindOf(row) === id).length,
   })).filter((group) => group.rows.length > 0);
-  const viewSwitch = <SettingsSegmented<TeamLayout> ariaLabel={t('st.profiles.layout')} value={layout} onChange={setLayout} dataAttr="data-team-layout"
-    choices={[{ value: 'list', label: t('st.profiles.layoutList') }, { value: 'teams', label: t('st.profiles.layoutTeams') }]} />;
-  if (layout === 'teams') return <div className="space-y-3" data-team-view>
-    <div className="flex flex-wrap items-center gap-2">
-      {viewSwitch}
-      <div className="ml-auto flex items-center gap-2">{toolbar}</div>
-    </div>
-    {/* The teams layout has no New button of its own, so the secondary verbs
-        that belong beside it have to ride this row instead. */}
-    {newActions !== undefined ? <div className="flex flex-wrap items-center justify-end gap-2">{newActions}</div> : null}
-    <TeamRoster rows={rows} onOpen={onOpen} displayName={(profile) => displayName(profile, locale)} />
-  </div>;
   const newButton = <button type="button" data-profile-new onClick={onNew}
-    className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-accent px-3 text-[12.5px] font-semibold text-on-accent transition-colors hover:bg-accent-deep">
+    className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-accent px-3 text-[12.5px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
     <Icon name="plus" size={12} />{t('st.agentManager.new')}
   </button>;
   return <div className="space-y-3" data-team-view>
-    <div className="flex flex-wrap items-center gap-2">
-      {viewSwitch}
-      <SettingsSegmented<TeamFilter> ariaLabel={t('st.profiles.filter')} value={filter} onChange={onFilter} dataAttr="data-team-filter"
-        choices={(['all', 'main', 'subagent'] as const).map((item) => ({ value: item, label: t(`st.agentManager.${item}`) }))} />
-      <div className="ml-auto flex items-center gap-2">{toolbar}</div>
-    </div>
-    <ListToolbar view={view} total={scoped.length} searchLabel={t('st.profiles.search')} searchPlaceholder={t('st.profiles.search')}
-      sorts={sorts} actions={<>{newButton}{newActions}</>} />
+    <ListToolbar view={view} total={rows.length} searchLabel={t('st.profiles.search')} searchPlaceholder={t('st.profiles.search')}
+      sorts={sorts} showDensity={false} actions={<>{newButton}{newActions}</>} />
     {warnings > 0 ? <p data-team-warnings className="inline-flex items-center gap-1.5 text-[12px] text-amber-ink">
       <Icon name="warning" size={12} />{tp('st.profiles.teamWarnings', warnings)}
     </p> : null}
     <div className="overflow-x-auto px-1">
       <table className="w-full min-w-[640px] table-fixed border-separate border-spacing-0 text-left text-[13px] max-sm:min-w-0 max-sm:table-auto" data-team-table>
         <thead className="max-sm:hidden">
-          <tr className="text-[11.5px] font-medium text-ink-faint">
-            <th scope="col" className="border-b border-hairline py-2 pr-3 font-medium">{t('st.profiles.colRole')}</th>
-            <th scope="col" className="w-[12rem] border-b border-hairline py-2 pr-3 font-medium">{t('st.profiles.model')}</th>
-            <th scope="col" className="w-[7rem] border-b border-hairline py-2 pr-3 font-medium">{t('st.profiles.effort')}</th>
-            <th scope="col" className="w-[10rem] border-b border-hairline py-2 font-medium">{t('st.profiles.colDispatches')}</th>
+          <tr className="text-[11.5px] text-ink-faint">
+            <th scope="col" className="border-b border-hairline py-2 pr-3 font-normal"><span className="sr-only">{t('st.profiles.colRole')}</span></th>
+            <th scope="col" className="w-[12rem] border-b border-hairline py-2 pr-3 font-normal">{t('st.profiles.model')}</th>
+            <th scope="col" className="w-[7.5rem] border-b border-hairline py-2 pr-3 font-normal">{t('st.profiles.effort')}</th>
+            <th scope="col" className="w-[11rem] border-b border-hairline py-2 font-normal">{t('st.profiles.colDispatches')}</th>
           </tr>
         </thead>
-        {groups.map((group) => {
+        {groups.map((group, groupIndex) => {
           const folded = view.isFolded(group.id);
-          const label = t(GROUP_LABEL[group.id]);
+          const label = t(KIND_LABEL[group.id]);
           return <tbody key={group.id} data-team-group={group.id}>
-          {/* ListGroup is a <section> and cannot wrap a tbody, so the table keeps
-              its own fold header in the ListGroup look (chevron, label, count). */}
-          <tr className="max-sm:block">
-            <th scope="colgroup" colSpan={4} className="border-b border-hairline pb-0.5 pt-2 text-left font-medium max-sm:block">
-              <button type="button" aria-expanded={!folded} data-team-group-toggle={group.id}
-                aria-label={folded ? t('sidebar.expandGroup', { label }) : t('sidebar.collapseGroup', { label })}
-                onClick={() => { view.toggleFold(group.id); }}
-                className="-ml-1 flex h-8 w-full min-w-0 items-center gap-1.5 rounded-md px-1 text-left text-[12px] font-medium text-section-ink transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
-                <DisclosureChevron open={!folded} className="text-ink-faint" />
-                <span className="min-w-0 truncate">{label}</span>
-                <span className="shrink-0 font-normal tabular-nums text-ink-faint">
-                  {group.rows.length === group.total ? group.rows.length : t('st.list.countOf', { shown: group.rows.length, total: group.total })}
-                </span>
-              </button>
-            </th>
-          </tr>
-          {folded ? null : group.rows.map((row, index) => {
-            const { profile } = row;
-            // A light label where the main agents end and the subagents begin;
-            // a name sort interleaves the two, so it drops the separators.
-            const kindLabel = view.sort === 'order' && (index === 0 || group.rows[index - 1]!.profile.main !== profile.main)
-              ? <tr key={`${row.key}:kind`} data-team-kind={profile.main ? 'main' : 'subagent'} className="max-sm:block">
-                <td colSpan={4} className="pb-0.5 pt-2 text-[11px] font-medium uppercase tracking-[0.04em] text-ink-faint max-sm:block">
-                  {t(profile.main ? 'st.profiles.groupMain' : 'st.profiles.groupSubagents')}
-                </td>
-              </tr> : null;
-            return [kindLabel, renderRow(row)];
-          })}
-        </tbody>;
+            {/* ListGroup is a <section> and cannot wrap a tbody, so the table keeps
+                its own fold header in the ListGroup look (chevron, label, count). */}
+            <tr className="max-sm:block">
+              <th scope="colgroup" colSpan={4} className={`border-b border-hairline pb-1 text-left font-medium max-sm:block ${groupIndex === 0 ? 'pt-3' : 'pt-7'}`}>
+                <button type="button" aria-expanded={!folded} data-team-group-toggle={group.id}
+                  aria-label={folded ? t('sidebar.expandGroup', { label }) : t('sidebar.collapseGroup', { label })}
+                  onClick={() => { view.toggleFold(group.id); }}
+                  className="-ml-1 flex h-8 w-full min-w-0 items-center gap-1.5 rounded-md px-1 text-left transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
+                  <DisclosureChevron open={!folded} className="text-ink-faint" />
+                  <span className="min-w-0 truncate text-[13px] font-semibold text-ink">{label}</span>
+                  <span className="shrink-0 text-[12px] font-normal tabular-nums text-ink-faint">
+                    {group.rows.length === group.total ? group.rows.length : t('st.list.countOf', { shown: group.rows.length, total: group.total })}
+                  </span>
+                </button>
+              </th>
+            </tr>
+            {folded ? null : group.rows.map(renderRow)}
+          </tbody>;
         })}
       </table>
-      {view.visible.length === 0 ? <ListEmpty kind={view.narrowed ? 'no-match' : 'none'}
+      {view.visible.length === 0 && !loading ? <ListEmpty kind={view.narrowed ? 'no-match' : 'none'}
         title={t(view.narrowed ? 'st.profiles.teamNoMatch' : 'st.profiles.teamEmpty')}
         action={view.narrowed ? undefined : newButton} onClear={view.narrowed ? view.clear : undefined} /> : null}
     </div>
+    {pendingModel !== undefined && pendingRow !== undefined ? (
+      <AnchoredPopover open id="team-menu-review" anchorRef={pendingAnchor} onClose={() => setPendingModel(undefined)}
+        label={t('st.profiles.modelFor', { name: pendingRow.profile.name })} widthClassName="w-[26rem]"
+        data={{ 'data-team-menu-review': pendingRow.profile.name }}>
+        <QuickModelMenuReview profile={pendingRow.profile} alias={pendingModel.alias} disabled={savingKey === pendingRow.key}
+          onCancel={() => setPendingModel(undefined)} onSave={() => {
+            onQuickSave(pendingRow, { pinned_model_alias: pendingModel.alias === '' ? null : pendingModel.alias });
+            setPendingModel(undefined);
+          }} />
+      </AnchoredPopover>
+    ) : null}
   </div>;
 
   function renderRow(row: TeamRow) {
-            const { profile } = row;
-            const dispatch = dispatchCell(profile, t);
-            const external = isExternalExecutor(profile.executor);
-            const warn = row.diagnostics.filter((item) => diagnosticTone(item) === 'warning');
-            const aliasMissing = row.diagnostics.some((item) => item.kind === 'aliasMissing' && item.field === 'model_alias');
-            const shadowed = row.diagnostics.some((item) => item.kind === 'shadowedBy');
-            const alias = profile.pinned_model_alias ?? '';
-            const effort = profile.thinking_effort ?? '';
-            const saving = savingKey === row.key;
-            const quickEditable = row.writable && !saving && !shadowed;
-            const cellPad = compact ? 'py-1' : 'py-2';
-            return <Fragment key={row.key}><tr data-team-row={profile.name} data-team-source={profile.source}
-              className={`align-top max-sm:flex max-sm:flex-wrap max-sm:gap-x-3 max-sm:border-b max-sm:border-hairline max-sm:py-2 ${shadowed || profile.disabled ? 'text-ink-faint' : ''}`}>
-              <td className={`border-b border-hairline ${cellPad} pr-3 max-sm:w-full max-sm:border-0 max-sm:p-0`}>
-                <button type="button" onClick={() => onOpen(row)} data-team-open={profile.name}
-                  className="group -mx-1 flex min-h-9 w-full min-w-0 flex-col items-start rounded-md px-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/50">
-                  <span className="flex w-full min-w-0 items-center gap-1.5">
-                    <span className={`min-w-0 truncate font-medium group-hover:underline ${shadowed ? 'line-through decoration-ink-faint/60' : 'text-ink'}`}>{displayName(profile, locale)}</span>
-                    {profile.main ? <span className="shrink-0 rounded-[4px] bg-ink/[0.05] px-1.5 text-[11px] text-ink-soft">{t('st.agentManager.main')}</span> : null}
-                    {external ? <span data-team-engine className="shrink-0 rounded-[4px] border border-hairline px-1.5 text-[11px] text-ink-soft">{row.engineLabel ?? profile.executor}</span> : null}
-                    {profile.disabled ? <span className="shrink-0 text-[11.5px] text-ink-faint">{t('st.namedAgents.disabledBadge')}</span> : null}
-                    {warn.length > 0 ? <span data-team-warning className="shrink-0 text-amber-ink" title={tp('st.profiles.rowWarnings', warn.length)}>
-                      <Icon name="warning" size={12} /><span className="sr-only">{tp('st.profiles.rowWarnings', warn.length)}</span>
-                    </span> : null}
-                  </span>
-                  <span className={`w-full truncate text-[12px] text-ink-faint ${compact ? 'hidden' : ''}`}>
-                    {sourceBadgeLabel(t, profile.source)}{row.shipped && profile.source !== 'builtin' ? ` · ${t('st.profiles.shippedCopy')}` : ''}
-                    {profile.description !== undefined ? ` · ${profile.description}` : ''}
-                  </span>
-                </button>
-              </td>
-              <td className={`border-b border-hairline ${cellPad} pr-3 max-sm:border-0 max-sm:p-0`} data-team-model>
-                <span className="sr-only sm:hidden">{t('st.profiles.model')}</span>
-                {quickEditable && !external ? <SearchableSelect id={`team-model-${row.key}`} value={alias} allowCustomValue
-                  options={modelChoices(alias)} ariaLabel={t('st.profiles.modelFor', { name: profile.name })} searchPlaceholder="provider/model"
-                  triggerSuffix={aliasMissing ? <Icon name="warning" size={12} className="shrink-0 text-amber-ink" /> : undefined}
-                  triggerLabel={alias === '' ? <span className="font-sans text-ink-soft">{t('st.profiles.modelUnset')}</span>
-                    : <span className="min-w-0 truncate font-mono">{alias}</span>}
-                  buttonClassName={`${SETTINGS_SELECT_TRIGGER} w-full max-w-[12rem] text-[12px] ${aliasMissing ? 'text-amber-ink' : ''}`}
-                  onChange={(next) => {
-                    if (next === alias) { setPendingModel(undefined); return; }
-                    if (profile.restrict_models_to_menu === true) setPendingModel({ key: row.key, alias: next });
-                    else onQuickSave(row, { pinned_model_alias: next === '' ? null : next });
-                  }} />
-                  : <span className={`inline-flex h-8 items-center gap-1 font-mono text-[12px] ${aliasMissing ? 'text-amber-ink' : ''}`}>
-                    {aliasMissing ? <Icon name="warning" size={12} /> : null}{alias === '' ? <span className="font-sans text-ink-soft">{t('st.profiles.modelUnset')}</span> : alias}
-                  </span>}
-              </td>
-              <td className={`border-b border-hairline ${cellPad} pr-3 max-sm:border-0 max-sm:p-0`} data-team-effort>
-                {quickEditable ? <SearchableSelect id={`team-effort-${row.key}`} value={effort} hideFilter
-                  options={[{ value: '', label: '—' }, ...EFFORTS.map((level) => ({ value: level, label: effortLabel(level) })),
-                    ...(effort !== '' && !(EFFORTS as readonly string[]).includes(effort) ? [{ value: effort, label: effortLabel(effort) }] : [])]}
-                  triggerLabel={effort === '' ? <span className="text-ink-soft">—</span> : effortLabel(effort)}
-                  ariaLabel={t('st.profiles.effortFor', { name: profile.name })} buttonClassName={`${SETTINGS_SELECT_TRIGGER} text-[12px]`}
-                  onChange={(next) => { if (next !== effort) onQuickSave(row, { thinking_effort: next === '' ? null : next }); }} />
-                  : <span className="inline-flex h-8 items-center text-[12px]">{effort === '' ? <span className="text-ink-soft">—</span> : effort}</span>}
-              </td>
-              <td className={`min-w-0 border-b border-hairline ${cellPad} text-[12px] max-sm:w-full max-sm:border-0 max-sm:p-0`} data-team-dispatch
-                title={dispatch.names.length > DISPATCH_SHOWN ? dispatch.text : undefined}>
-                {/* One line: the first names, then +N; the full list is in the title. */}
-                <span className="flex h-8 min-w-0 items-center gap-1 whitespace-nowrap">
-                  <span className="shrink-0 text-ink-faint sm:hidden">{t('st.profiles.colDispatches')}:</span>
-                  <span className={`min-w-0 truncate ${dispatch.names.length > 0 ? 'text-ink-soft' : 'text-ink-faint'}`}>
-                    {dispatch.names.length > 0 ? dispatch.names.slice(0, DISPATCH_SHOWN).join(', ') : dispatch.text}
-                  </span>
-                  {dispatch.names.length > DISPATCH_SHOWN ? <span data-team-dispatch-more className="shrink-0 rounded-[4px] bg-ink/[0.05] px-1 text-[11px] text-ink-soft">
-                    {t('st.profiles.dispatchMore', { count: dispatch.names.length - DISPATCH_SHOWN })}
-                    <span className="sr-only">: {dispatch.names.slice(DISPATCH_SHOWN).join(', ')}</span>
-                  </span> : null}
-                </span>
-              </td>
-            </tr>
-            {pendingModel?.key === row.key ? <tr data-team-menu-review={profile.name} className="max-sm:block">
-              <td colSpan={4} className="border-b border-hairline py-3 max-sm:block">
-                <QuickModelMenuReview profile={profile} alias={pendingModel.alias} disabled={saving}
-                  onCancel={() => setPendingModel(undefined)} onSave={() => {
-                    onQuickSave(row, { pinned_model_alias: pendingModel.alias === '' ? null : pendingModel.alias });
-                    setPendingModel(undefined);
-                  }} />
-              </td>
-            </tr> : null}</Fragment>;
+    const { profile } = row;
+    const dispatch = dispatchCell(profile, t);
+    const external = isExternalExecutor(profile.executor);
+    const warn = row.diagnostics.filter((item) => diagnosticTone(item) === 'warning');
+    const aliasMissing = row.diagnostics.some((item) => item.kind === 'aliasMissing' && item.field === 'model_alias');
+    const shadowed = row.diagnostics.some((item) => item.kind === 'shadowedBy');
+    const alias = profile.pinned_model_alias ?? '';
+    const effort = profile.thinking_effort ?? '';
+    const saving = savingKey === row.key;
+    const quickEditable = row.writable && !saving && !shadowed;
+    // Where the file lives is a quiet tag; the common case (your own folder) carries none.
+    const sourceTag = profile.source === 'user' ? undefined
+      : profile.source === 'workspace' ? t('st.profiles.tagProject') : sourceBadgeLabel(t, profile.source);
+    const muted = shadowed || profile.disabled;
+    return <Fragment key={row.key}><tr data-team-row={profile.name} data-team-source={profile.source}
+      className={`align-top max-sm:flex max-sm:flex-wrap max-sm:gap-x-3 max-sm:border-b max-sm:border-hairline max-sm:py-2.5 ${muted ? 'text-ink-faint' : ''}`}>
+      <td className="border-b border-hairline py-2 pr-3 max-sm:w-full max-sm:border-0 max-sm:p-0">
+        <button type="button" onClick={() => onOpen(row)} data-team-open={profile.name} data-detail-trigger={profile.name}
+          className="group -mx-1 flex min-h-10 w-full min-w-0 flex-col items-start justify-center rounded-md px-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/50">
+          <span className="flex w-full min-w-0 items-center gap-1.5">
+            <span className={`min-w-0 truncate font-medium group-hover:underline group-hover:decoration-ink-faint group-hover:underline-offset-2 ${shadowed ? 'line-through decoration-ink-faint/60' : muted ? '' : 'text-ink'}`}>{displayName(profile, locale)}</span>
+            {warn.length > 0 ? <span data-team-warning className="shrink-0 text-amber-ink" title={tp('st.profiles.rowWarnings', warn.length)}>
+              <Icon name="warning" size={12} /><span className="sr-only">{tp('st.profiles.rowWarnings', warn.length)}</span>
+            </span> : null}
+            {external ? <span data-team-engine className={TAG_OUTLINE}>{row.engineLabel ?? profile.executor}</span> : null}
+            {sourceTag !== undefined ? <span data-team-tag="source" className={TAG}>{sourceTag}</span> : null}
+            {row.shipped && profile.source !== 'builtin' ? <span data-team-tag="shipped" className={TAG}>{t('st.profiles.shippedCopy')}</span> : null}
+            {!row.writable && profile.source !== 'builtin' ? <span data-team-tag="readonly" className={TAG}>{t('st.agentManager.readOnlyShort')}</span> : null}
+            {shadowed ? <span data-team-tag="shadowed" className={TAG}>{t('st.profiles.tagInactive')}</span> : null}
+            {profile.disabled ? <span data-team-tag="disabled" className={TAG}>{t('st.namedAgents.disabledBadge')}</span> : null}
+          </span>
+          {profile.description !== undefined && profile.description !== ''
+            ? <span className="w-full truncate text-[12px] text-ink-faint">{profile.description}</span> : null}
+        </button>
+      </td>
+      <td className="border-b border-hairline py-2 pr-3 max-sm:border-0 max-sm:p-0" data-team-model
+        ref={(node) => { if (pendingModel?.key === row.key) pendingAnchor.current = node; }}>
+        {quickEditable && !external ? <SearchableSelect id={`team-model-${row.key}`} value={alias} allowCustomValue
+          options={modelChoices(alias)} ariaLabel={t('st.profiles.modelFor', { name: profile.name })} searchPlaceholder="provider/model"
+          triggerSuffix={aliasMissing ? <Icon name="warning" size={12} className="shrink-0 text-amber-ink" /> : undefined}
+          triggerLabel={alias === '' ? <span className="font-sans text-ink-faint">{t('st.profiles.modelUnset')}</span>
+            : <span className="min-w-0 truncate font-mono">{alias}</span>}
+          buttonClassName={`${SETTINGS_SELECT_TRIGGER} w-full max-w-[12rem] text-[12px] ${aliasMissing ? 'text-amber-ink' : ''}`}
+          onChange={(next) => {
+            if (next === alias) { setPendingModel(undefined); return; }
+            if (profile.restrict_models_to_menu === true) setPendingModel({ key: row.key, alias: next });
+            else onQuickSave(row, { pinned_model_alias: next === '' ? null : next });
+          }} />
+          : <span className={`inline-flex h-8 max-w-full items-center gap-1 font-mono text-[12px] ${aliasMissing ? 'text-amber-ink' : ''}`}>
+            <span className="font-sans text-ink-faint sm:hidden">{t('st.profiles.model')}</span>
+            {aliasMissing ? <Icon name="warning" size={12} /> : null}
+            {alias === '' ? <span className="font-sans text-ink-faint">{t('st.profiles.modelUnset')}</span> : <span className="min-w-0 truncate">{alias}</span>}
+          </span>}
+      </td>
+      <td className="border-b border-hairline py-2 pr-3 max-sm:border-0 max-sm:p-0" data-team-effort>
+        {quickEditable ? <SearchableSelect id={`team-effort-${row.key}`} value={effort} hideFilter
+          options={[{ value: '', label: t('st.profiles.effortUnset') }, ...EFFORTS.map((level) => ({ value: level, label: effortLabel(level, t) })),
+            ...(effort !== '' && !(EFFORTS as readonly string[]).includes(effort) ? [{ value: effort, label: effortLabel(effort, t) }] : [])]}
+          triggerLabel={effort === '' ? <span className="text-ink-faint">{t('st.profiles.effortUnset')}</span> : effortLabel(effort, t)}
+          ariaLabel={t('st.profiles.effortFor', { name: profile.name })} buttonClassName={`${SETTINGS_SELECT_TRIGGER} text-[12px]`}
+          onChange={(next) => { if (next !== effort) onQuickSave(row, { thinking_effort: next === '' ? null : next }); }} />
+          : <span className="inline-flex h-8 items-center gap-1 text-[12px]"><span className="text-ink-faint sm:hidden">{t('st.profiles.effort')}</span>{effort === '' ? <span className="text-ink-faint">{t('st.profiles.effortUnset')}</span> : effortLabel(effort, t)}</span>}
+      </td>
+      <td className="min-w-0 border-b border-hairline py-2 text-[12px] max-sm:w-full max-sm:border-0 max-sm:p-0" data-team-dispatch
+        title={dispatch.names.length > DISPATCH_SHOWN ? dispatch.text : undefined}>
+        <span className="flex h-8 min-w-0 items-center gap-1 whitespace-nowrap">
+          <span className="shrink-0 text-ink-faint sm:hidden">{t('st.profiles.colDispatches')}</span>
+          <span className={`min-w-0 truncate ${dispatch.quiet ? 'text-ink-faint' : 'text-ink-soft'}`}>
+            {dispatch.names.length > 0 ? dispatch.names.slice(0, DISPATCH_SHOWN).join(', ') : dispatch.text}
+          </span>
+          {dispatch.names.length > DISPATCH_SHOWN ? <span data-team-dispatch-more className="shrink-0 rounded-[4px] bg-ink/[0.05] px-1 text-[11px] text-ink-soft">
+            {t('st.profiles.dispatchMore', { count: dispatch.names.length - DISPATCH_SHOWN })}
+            <span className="sr-only">: {dispatch.names.slice(DISPATCH_SHOWN).join(', ')}</span>
+          </span> : null}
+        </span>
+      </td>
+    </tr>
+    </Fragment>;
   }
 }
 

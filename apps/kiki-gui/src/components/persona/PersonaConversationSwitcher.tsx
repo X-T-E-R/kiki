@@ -11,38 +11,30 @@
  * opens the full list. Search appears only once the list is too long to read.
  *
  * Keyboard follows the sidebar's overlay menu: ↑↓ move, Esc closes and hands
- * focus back to the anchor, registerOverlay keeps the busy line honest.
- *
- * Placement is the shared fixed-overlay primitive (`clampOverlayPosition`,
- * the same one the row menus and the annotation bubble use): the panel is
- * measured, hung under the reference block, clamped inside the viewport and
- * flipped above it when it would not fit below. It re-places itself while the
- * page or the sidebar scrolls underneath it, so it never detaches from the
- * person or the row it belongs to.
+ * focus back to the anchor. Placement is the shared anchored-popover tier
+ * (`overlays/AnchoredPopover` + `placeAnchored`): portalled to the body,
+ * flipped and shifted inside the viewport, re-placed while the page or the
+ * sidebar scrolls underneath it, so it never detaches from the person or the
+ * row it belongs to.
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { sessionRowState } from '@kiki/session-core/sessions';
 import type { SessionSeenMap } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
-import { clampOverlayPosition } from '../../lib/overlayPosition';
-import { registerOverlay } from '../../lib/uiBusy';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
+import { AnchoredPopover } from '../overlays';
 import { RelativeTime } from '../RelativeTime';
 import { PersonaAvatar, personaAvatarOf, type PersonaAvatarData } from './PersonaAvatar';
 import { personaNewConversationUrl } from './personaNavigation';
 import type { PersonaDirectoryEntry } from './usePersonaDirectory';
 
-const SWITCHER_WIDTH = 320;
 /** Rows the list shows before it truncates: the daily row plus eight others. */
 const MAX_OTHER_ROWS = 8;
-/** Gap between the trigger and the panel, and the viewport edge margin. */
-const PLACEMENT_GAP = 6;
-const PLACEMENT_MARGIN = 8;
 
 export interface PersonaConversationSwitcherProps {
   readonly anchor: HTMLElement | null;
@@ -118,54 +110,16 @@ export function PersonaConversationSwitcher({
 }: PersonaConversationSwitcherProps) {
   const { t } = useI18n();
   const navigate = useGuardedNavigate();
-  const popoverRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState('');
-  const [panelSize, setPanelSize] = useState<{ width: number; height: number } | null>(null);
-  // Bumped by a scroll or a resize to re-read the reference box and re-place
-  // the fixed panel with it.
-  const [placementTick, setPlacementTick] = useState(0);
-
+  // The callers hand over a measured element, not a ref; the popover tier
+  // anchors to a ref, so this adapter holds it for the panel's lifetime.
+  const anchorRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
-    const unregister = registerOverlay(`persona-switcher-${persona.id}`);
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        onClose();
-        anchor?.focus();
-      }
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof Element)) return;
-      if (event.target.closest('[data-persona-conversation-switcher]') !== null) return;
-      // The trigger owns the open state, and it also holds the chevron's icon:
-      // closing on the pointerdown would be undone by the click that follows.
-      if (anchor?.contains(event.target) === true) return;
-      onClose();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('pointerdown', onPointerDown, true);
-    popoverRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-    return () => {
-      unregister();
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('pointerdown', onPointerDown, true);
-    };
-  }, [anchor, onClose, persona.id]);
-
-  // The panel is fixed, so it has to follow its trigger when the transcript or
-  // the sidebar scrolls under it, and when the window changes size.
-  useEffect(() => {
-    const replace = () => { setPlacementTick((tick) => tick + 1); };
-    window.addEventListener('resize', replace);
-    window.addEventListener('scroll', replace, true);
-    return () => {
-      window.removeEventListener('resize', replace);
-      window.removeEventListener('scroll', replace, true);
-    };
-  }, []);
+    anchorRef.current = alignTo ?? anchor;
+    return () => { anchorRef.current = null; };
+  }, [anchor, alignTo]);
 
   const workspaceMap = useMemo(() => new Map(workspaceOptions.map((w) => [w.id, w.name])), [workspaceOptions]);
-
-  const switcherKey = `${persona.id}:${anchor?.dataset['personaSwitcherToggle'] ?? ''}:${anchor?.dataset['personaHeaderToggle'] ?? ''}`;
 
   const items = useMemo(() => {
     const personaSessions = sessions.filter((s) => !s.archived);
@@ -245,59 +199,32 @@ export function PersonaConversationSwitcher({
     return current?.workspace_id;
   }, [activeSessionId, sessions]);
 
-  const rect = useMemo(
-    () => (alignTo ?? anchor)?.getBoundingClientRect() ?? null,
-    // `placementTick` is the signal that the trigger may have moved under us.
-    [alignTo, anchor, placementTick],
-  );
   const avatarData: PersonaAvatarData = personaAvatarOf(persona);
 
-  useLayoutEffect(() => {
-    const panel = popoverRef.current;
-    if (panel === null) return;
-    const next = { width: panel.offsetWidth, height: panel.offsetHeight };
-    setPanelSize((previous) =>
-      previous?.width === next.width && previous.height === next.height ? previous : next,
-    );
-  }, [items, panelSize, placementTick, query]);
-
-  const viewport = { width: window.innerWidth, height: window.innerHeight };
-  const measured = panelSize ?? { width: Math.min(SWITCHER_WIDTH, viewport.width - PLACEMENT_MARGIN * 2), height: 0 };
-  const below = (rect?.bottom ?? PLACEMENT_MARGIN) + PLACEMENT_GAP;
-  const above = (rect?.top ?? PLACEMENT_MARGIN) - measured.height - PLACEMENT_GAP;
-  // Room below first; over the trigger when the panel is taller than what is
-  // left of the viewport but fits above it.
-  const opensUp = panelSize !== null
-    && below + measured.height + PLACEMENT_MARGIN > viewport.height
-    && above >= PLACEMENT_MARGIN;
-  const position = clampOverlayPosition(
-    align === 'end'
-      ? (rect?.right ?? measured.width) - measured.width
-      : (rect?.left ?? PLACEMENT_MARGIN),
-    opensUp ? above : below,
-    measured,
-    viewport,
-    PLACEMENT_MARGIN,
-  );
-
   return (
-    <div
-      key={switcherKey}
-      ref={popoverRef}
-      data-persona-conversation-switcher
-      data-switcher-placement={opensUp ? 'above' : 'below'}
-      role="menu"
-      aria-label={t('persona.switcherAria', { name: persona.name })}
-      style={{ left: position.left, top: position.top }}
-      className="anim-enter fixed z-50 flex max-h-[min(70vh,480px)] w-80 max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-[10px] border border-hairline bg-panel shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
-      onKeyDown={(event) => {
-        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    <AnchoredPopover
+      open
+      onClose={onClose}
+      anchorRef={anchorRef}
+      id={`persona-switcher-${persona.id}`}
+      label={t('persona.switcherAria', { name: persona.name })}
+      align={align}
+      widthClassName="w-80"
+      className="flex max-h-[min(70vh,480px)] flex-col overflow-y-hidden p-0"
+      data={{ 'data-persona-conversation-switcher': '' }}
+      initialFocusSelector="[role='menuitem']"
+      onSurfaceKeyDown={(event) => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return false;
+        // A pure arrow key; an Escape that reached here was not consumed by an
+        // inner control, so the popover's own handler closes it.
         event.preventDefault();
         const menuItems = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
         const index = menuItems.indexOf(document.activeElement as HTMLElement);
         menuItems[(index + (event.key === 'ArrowDown' ? 1 : -1) + menuItems.length) % menuItems.length]?.focus();
+        return true;
       }}
     >
+      <div role="menu" aria-label={t('persona.switcherAria', { name: persona.name })} className="flex min-h-0 flex-1 flex-col">
       {/* Who this list belongs to; settings is the persona's, not the session's. */}
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-hairline px-3">
         <PersonaAvatar persona={avatarData} size={20} decorative />
@@ -434,6 +361,7 @@ export function PersonaConversationSwitcher({
           <Icon name="arrowRight" size={12} />
         </button>
       </div>
-    </div>
+      </div>
+    </AnchoredPopover>
   );
 }

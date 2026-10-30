@@ -7,6 +7,7 @@ import {
   type ImProviderKind,
 } from '@kiki/protocol';
 
+import { pushUndoToast } from '../../lib/toasts';
 import { useChannelsI18n as useI18n } from './channelsI18n';
 import { useOptionalConnection } from '../../state/connection';
 import { FOCUS_RING } from '../rail-variants/shell';
@@ -287,11 +288,14 @@ function SessionChannelsRailBody({
     );
   };
 
-  // R4: Execute Rebind from Modal
+  // R4: Execute Rebind from Modal. Reversible (the binding just points at a
+  // conversation), so it runs at once and the toast rebinds back to the
+  // captured prior owner; the modal opens only to show the move first.
   const handleExecuteRebind = async () => {
     if (!connection) return;
     const candidateId = rebindConflict?.existing_binding_id || rebindCandidate?.id;
     if (!candidateId) return;
+    const priorSessionId = rebindConflict?.previous_session_id ?? rebindCandidate?.currentSessionId;
 
     setRebindModalOpen(false);
     await runAction(candidateId, async () => {
@@ -312,6 +316,18 @@ function SessionChannelsRailBody({
         output_enabled: true,
       });
     });
+    if (priorSessionId !== undefined && priorSessionId !== sessionId) {
+      pushUndoToast({
+        text: t('st.im.rebind.transferred'),
+        undoFailedText: t('toast.undoFailed'),
+        undo: async () => { await connection.client.imSessions.updateBinding(candidateId, {
+          session_id: priorSessionId,
+          rebind: true,
+          input_enabled: true,
+          output_enabled: true,
+        }); },
+      });
+    }
   };
 
   // R1: Strip 'notify:' prefix so klient sends raw channelId
@@ -338,6 +354,11 @@ function SessionChannelsRailBody({
   };
 
   if (connection === null || snapshotQuery.data === undefined || policy === undefined) return null;
+  // A session with no channels keeps the whole chapter out of the rail (the
+  // other empty chapters already follow that rule) — unless something still
+  // needs this surface: the SendMessage tool row, a failed row read, or a
+  // candidate waiting to bind.
+  if (bindings.length === 0 && boundNotifyChannels.length === 0 && candidates.length === 0 && sessionCapQuery.isSuccess && smRow === undefined) return null;
 
   // R2: Authoritative status copy based on effective/allowed/reason (never guess)
   let smStatusText: string;
@@ -629,7 +650,7 @@ function SessionChannelsRailBody({
           </div>
 
           {/* Footer note: internal visible & borrowing status */}
-          <div className="flex items-center justify-between text-[11.5px] text-ink-faint pt-1 border-t border-hairline/60">
+          <div className="flex items-center justify-between text-[11.5px] text-ink-faint pt-2">
             <span className="truncate">
               {t('st.im.internalAlwaysOn')} · {t('st.im.borrowing')}:{' '}
               {isBorrowingEnabled ? t('st.im.on') : t('st.im.off')}

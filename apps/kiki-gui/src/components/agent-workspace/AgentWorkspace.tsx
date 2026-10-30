@@ -285,6 +285,9 @@ function WorkspaceSurface({
   // Below lg the rail is an overlay layer for every shell (the session's too),
   // so the open rail gets the same tap-outside backdrop an overlay shell has.
   const narrowOverlay = useMediaQuery('(max-width: 1023px)');
+  // The routed agent page keeps its drawer rail at every width; only the
+  // session shell's shared rail stays away below lg.
+  const railAsDrawer = railIsOverlay || !narrowOverlay;
   const loadDetail = useCallback(
     (agentId: string, kind: TranscriptDetailKind, id: string) =>
       controller?.loadTranscriptDetail(agentId, kind, id) ?? Promise.resolve(false),
@@ -325,7 +328,10 @@ function WorkspaceSurface({
       </div>
       {timelineOverlay}
       {slots.dock !== null ? createPortal(dock, slots.dock) : null}
-      {slots.rail !== null && railOpen ? createPortal(rail, slots.rail) : null}
+      {/* Below lg the session shell's shared rail never mounts: the routed
+          agent page carries it as its own drawer there, so a header toggle
+          would open an inspector with no agent context behind it. */}
+      {slots.rail !== null && railOpen && railAsDrawer ? createPortal(rail, slots.rail) : null}
       {(railIsOverlay || narrowOverlay) && railOpen ? (
         <div role="button" tabIndex={-1} aria-label={t('sv.closePanel')}
           className="app-overlay-backdrop lg:hidden" onClick={onCloseRail}

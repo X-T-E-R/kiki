@@ -830,7 +830,7 @@ describe('ContextMeter interaction', () => {
     });
 
     const usage = container.querySelector('[data-context-usage]');
-    expect(container.querySelector('[data-context-usage-error]')?.textContent).toContain('could not be read');
+    expect(container.querySelector('[data-context-usage-error]')?.textContent).toContain('Couldn’t read cumulative usage.');
     expect(container.querySelector('[data-context-usage-error]')?.getAttribute('title')).toBe('read-failed');
     // The zeros the server falls back to are placeholders, not a measurement.
     expect(usage?.textContent).not.toContain('Input');

@@ -54,8 +54,6 @@ export function NbSearchTabBar({
         return 'st.nbSearch.tab.search';
       case 'fetch':
         return 'st.nbSearch.tab.fetch';
-      case 'providers':
-        return 'st.nbSearch.tab.providers';
       case 'advanced':
         return 'st.nbSearch.tab.advanced';
     }
@@ -89,7 +87,7 @@ export function NbSearchTabBar({
             }`}
           >
             <span>{t(tabLabelKey(tab))}</span>
-            {tab === 'providers' && attentionCount > 0 ? (
+            {tab === 'search' && attentionCount > 0 ? (
               <span
                 className="text-[11px] font-medium tabular-nums text-amber-ink"
                 title={tp('st.nbSearch.tabBar.attention', attentionCount)}

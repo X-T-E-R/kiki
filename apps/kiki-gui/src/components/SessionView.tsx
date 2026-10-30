@@ -187,7 +187,7 @@ import { useExecutorCatalog } from './settings/profileEditor/engines';
 import { NeedsYouTray, type NeedsYouTrayHandle } from './NeedsYouTray';
 import { reportAttention } from '../lib/awayNotify';
 import { useViewedSession } from '../lib/useAwayNotifications';
-import { pushToast } from '../lib/toasts';
+import { pushToast, pushUndoToast } from '../lib/toasts';
 import { useThreadTitle } from '../lib/threadTitles';
 import { actionChordText, matchesShortcutAction, useShortcutState } from '../lib/shortcuts';
 import { anyOverlayOpen, registerOverlay } from '../lib/uiBusy';
@@ -457,8 +457,13 @@ function Header({
   const waiting = approvals + questions;
   const runningTasks = state.tasks.filter((task) => task.status === 'running').length;
   const isNarrow = useMediaQuery('(max-width: 639px)');
+  // Below lg the rail is an overlay drawer owned by the routed agent page, so
+  // the header's rail toggle is dead weight there (same rule the cockpit
+  // switch already follows inside the rail).
+  const railToggleVisible = useMediaQuery('(min-width: 1024px)');
 
   const { sidebarOpen } = useSidebarContext();
+
 
   return (
     <WorkspaceHeader main>
@@ -602,7 +607,7 @@ function Header({
         <span className="flex-1" />
       )}
       <PreviewToggleButton />
-      {railAvailable ? (
+      {railAvailable && railToggleVisible ? (
         <button
           type="button"
           onClick={onToggleRail}
@@ -941,10 +946,13 @@ export function SessionActionsMenu({
               {t('modelSwitch.menuFreshContext')}
             </button>
           ) : null}
+          {/* Undo rewrites the conversation, so it sits apart from the safe
+              metadata actions above and reads as danger before any hover. */}
+          <div className="my-1 h-px bg-hairline" />
           <button
             type="button"
             role="menuitem"
-            className={`${itemClass} hover:text-danger`}
+            className={`${itemClass} text-danger hover:bg-danger/10`}
             onClick={() => { pick('undo'); }}
           >
             {t('menu.undo')}
@@ -967,6 +975,7 @@ function useMediaQuery(query: string): boolean {
     const list = window.matchMedia(query);
     const onChange = (event: MediaQueryListEvent) => { setMatches(event.matches); };
     setMatches(list.matches);
+
     list.addEventListener('change', onChange);
     return () => { list.removeEventListener('change', onChange); };
   }, [query]);
@@ -1916,6 +1925,7 @@ export function SessionView({
   // external engine is run as it is, so an untouched mode is not sent.
   const permissionTouchedRef = useRef(false);
   const isNarrowScreen = useMediaQuery('(max-width: 1023px)');
+
   const [userRailOpen, setUserRailOpen] = useState(() => defaults.railOpenByDefault);
   // Below lg the rail is an overlay layer (full-screen on a phone): it opens
   // only from an explicit toggle this visit, never from the saved default —
@@ -1937,10 +1947,13 @@ export function SessionView({
     if (isNarrowScreen) setNarrowRailOpen(false);
     else setUserRailOpen(false);
   }, [isNarrowScreen]);
-  // The phone's back closes the rail layer before route navigation.
-  useLayerHistory('session-rail', railOpen && isNarrowScreen, closeRail);
+  // The phone's back closes the rail layer before route navigation. The
+  // session shell's rail never opens below lg, so the layer only arms where
+  // an open is possible — otherwise its unwinding `history.back()` would
+  // consume the route itself on a narrow → wide hop.
+  useLayerHistory('session-rail', narrowRailOpen && isNarrowScreen, closeRail);
   const cockpit = railOpen && railMode === 'cockpit';
-  const railIsOverlay = false;
+  const railIsOverlay = isNarrowScreen;
   // Focused panel-tab agent: the active agent panel tab in the preview
   // workspace, reported up by the bridge below. This is the shared right
   // rail's owner when the user is looking at an embedded subagent view — the
@@ -2980,19 +2993,27 @@ export function SessionView({
         cancelPendingRuntimeControls();
         return;
       }
+      // A profile pick inside the execution control flows through the engine
+      // branch with a fresh-context confirm; direct profile changes are
+      // reversible composer-control edits and apply at once with an undo toast.
+      const before = { profile: pendingProfile, model: modelOverride, effort: effortOverride, modelTouched, effortTouched };
+      applyPendingProfile(name);
       if (state.loaded && !sessionHasStartedConversation(state.blocks)) {
-        applyPendingProfile(name);
-        return;
+        pushUndoToast({
+          text: t('profile.switched', { profile: name }),
+          undoFailedText: t('toast.undoFailed'),
+          undo: () => {
+            setPendingProfile(before.profile);
+            setModelOverride(before.model);
+            setEffortOverride(before.effort);
+            setModelTouched(before.modelTouched);
+            setEffortTouched(before.effortTouched);
+          },
+        });
       }
-      setProfileSwitchConfirm(name);
     },
-    [applyPendingProfile, boundProfile, pendingProfile, state.blocks, state.loaded],
+    [applyPendingProfile, boundProfile, pendingProfile, modelOverride, effortOverride, modelTouched, effortTouched, state.blocks, state.loaded, cancelPendingRuntimeControls, t],
   );
-  const confirmProfileSwitchRun = useCallback(() => {
-    if (profileSwitchConfirm === undefined) return;
-    applyPendingProfile(profileSwitchConfirm);
-    setProfileSwitchConfirm(undefined);
-  }, [applyPendingProfile, profileSwitchConfirm]);
 
   // Engine pick. A live session that has already spoken asks once, because the
   // next message starts a fresh remote generation; an untouched session applies
@@ -3054,8 +3075,30 @@ export function SessionView({
       applyPendingExecution(next);
       return;
     }
+    // Same native engine, only the profile (and its own pins) moves: this is
+    // the reversible composer-control branch, applied at once with an undo
+    // toast instead of the fresh-context confirm a real engine switch keeps.
+    if (isNativeExecutor(next.executor)
+      && isNativeExecutor(current.executor)
+      && next.profile !== current.profile) {
+      const before = { profile: pendingProfile, execution: pendingExecution, model: modelOverride, effort: effortOverride, modelTouched, effortTouched };
+      applyPendingExecution(next);
+      pushUndoToast({
+        text: t('profile.switched', { profile: next.profile ?? DEFAULT_AGENT_PROFILE }),
+        undoFailedText: t('toast.undoFailed'),
+        undo: () => {
+          setPendingProfile(before.profile);
+          setPendingExecution(before.execution);
+          setModelOverride(before.model);
+          setEffortOverride(before.effort);
+          setModelTouched(before.modelTouched);
+          setEffortTouched(before.effortTouched);
+        },
+      });
+      return;
+    }
     setExecutionSwitchConfirm(next);
-  }, [applyPendingExecution, boundExecution, cancelPendingExecution, canonicalModel, currentBoundModel, handleEffortChange, pendingExecution, state.blocks, state.loaded]);
+  }, [applyPendingExecution, boundExecution, cancelPendingExecution, canonicalModel, currentBoundModel, handleEffortChange, pendingExecution, modelOverride, effortOverride, modelTouched, effortTouched, state.blocks, state.loaded, t]);
   const confirmExecutionSwitchRun = useCallback(() => {
     if (executionSwitchConfirm === undefined) return;
     applyPendingExecution(executionSwitchConfirm);
@@ -5369,23 +5412,6 @@ boundExecution,
         confirmLabel={t('sv.queueClearAll')}
         onConfirm={confirmClearQueueRun}
         onCancel={() => { setConfirmClearQueue(false); }}
-      />
-      <ConfirmDialog
-        open={profileSwitchConfirm !== undefined}
-        overlayId="confirm-profile-switch"
-        title={t('profile.switchTitle', { profile: profileSwitchConfirm ?? '' })}
-        body={t('profile.switchBody')}
-        consequences={[
-          t('profile.switchModelReset'),
-          t('profile.switchSubagents'),
-          // Only worth saying when a turn is actually in flight: it is the one
-          // thing a user switching mid-run is unsure about.
-          ...(composerBusy ? [t('profile.switchRunningTurn')] : []),
-        ]}
-        confirmLabel={t('profile.switchConfirm')}
-        tone="default"
-        onConfirm={confirmProfileSwitchRun}
-        onCancel={() => { setProfileSwitchConfirm(undefined); }}
       />
       <ConfirmDialog
         open={executionSwitchConfirm !== undefined}

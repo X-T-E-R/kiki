@@ -28,7 +28,7 @@ type LoginMethod = 'agent' | 'password' | 'keyFile' | 'keyText';
 type SaveScope = NonNullable<SshCredential['save']>;
 
 const PRIMARY =
-  'inline-flex min-h-8 items-center rounded-md bg-accent px-3 text-[13px] font-semibold text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
+  'inline-flex min-h-8 items-center rounded-md bg-accent px-3 text-[13px] font-medium text-primary-foreground transition-colors duration-[var(--kiki-motion-quick)] hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
 const SECONDARY =
   'inline-flex min-h-8 items-center rounded-md px-3 text-[13px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink disabled:opacity-60';
 const LABEL = 'block text-[12px] font-medium text-ink-soft';

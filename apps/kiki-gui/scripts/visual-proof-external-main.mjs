@@ -93,12 +93,12 @@ export function createExternalMainWalker({ page, shot, view, webUrl, fixtureUrl,
     await page.waitForTimeout(300);
     const section = '[data-profile-section="kiki-context"]';
     const showSection = async () => {
-      await page.locator(`[role="dialog"] ${section}`).first().evaluate((element) => element.scrollIntoView({ block: 'start' }));
+      await page.locator(`[data-agent-detail] ${section}`).first().evaluate((element) => element.scrollIntoView({ block: 'start' }));
       await page.waitForTimeout(250);
     };
     const reopen = async (profileName) => {
-      await page.locator('[role="dialog"] [data-agent-back]').first().click();
-      await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 5000 });
+      await page.locator('[data-agent-detail] [data-agent-back]').first().click();
+      await page.waitForSelector('[data-agent-detail]', { state: 'detached', timeout: 5000 });
       await page.locator(`[data-team-open="${profileName}"]`).first().click();
       await page.waitForSelector('[data-profile-editor]', { timeout: 5000 });
     };
@@ -110,7 +110,7 @@ export function createExternalMainWalker({ page, shot, view, webUrl, fixtureUrl,
     await page.locator(`${section} [data-kiki-capability="board"] label`).first().click();
     await page.waitForTimeout(200);
     await shot(name('profile-claude-dirty'));
-    await page.locator('[role="dialog"] [data-settings-discard]').first().click();
+    await page.locator('[data-agent-detail] [data-settings-discard]').first().click();
     await reopen('lead-codex');
     await showSection();
     if (await page.locator(`${section} [data-kiki-context-field="empty"]`).count() !== 1) throw new Error('lead-codex kiki_context: [] does not read as explicit all-off');

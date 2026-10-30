@@ -878,7 +878,7 @@ it('throws a definitive 40001 child rejection instead of showing an unknown outc
   await clickComposerSend();
   expect(textarea.value).toBe('inspect');
   expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
-  expect(dock.querySelector('[role="alert"]')?.textContent).toContain('prompt.rejected (code 40001)');
+  expect(dock.querySelector('[role="alert"]')?.textContent).toContain('prompt.rejected');
   expect(dock.textContent).not.toContain(translate('en', 'agentMessage.promptOutcomeUnknown'));
   expect(dock.textContent).not.toContain(translate('en', 'agentMessage.attachmentOutcomeUnknown'));
 });

@@ -57,8 +57,8 @@ const openPreset = vi.fn<(preset: BrowserPresetId, input?: Record<string, unknow
 const updatePreset = vi.fn<(preset: BrowserPresetId, input?: Record<string, unknown>) => Promise<BrowserSetupStatus>>();
 const createShortcut = vi.fn<(preset: BrowserPresetId, input?: Record<string, unknown>) => Promise<BrowserSetupStatus>>();
 const cancelSetup = vi.fn<(preset: BrowserPresetId) => Promise<BrowserSetupStatus>>();
-const getCapability = vi.fn(async () => ({
-  id: 'kimi-webbridge', displayName: 'Kimi WebBridge', description: 'desc', supported: true, state: 'ready',
+const getCapability = vi.fn(async (id?: string) => ({
+  id: id ?? 'kimi-webbridge', displayName: 'Kimi WebBridge', description: 'desc', supported: true, state: 'ready',
   steps: [{ id: 'daemon', state: 'ok' }, { id: 'skill', state: 'ok' }, { id: 'extension', state: 'ok' }],
   install: { running: false },
 }));
@@ -74,6 +74,10 @@ const refreshToolPolicy = vi.fn<AgentFacade['refreshToolPolicy']>();
 const isToolEnabled = vi.fn<AgentFacade['isToolEnabled']>();
 const policyAgent = vi.fn(() => ({ inspectToolPolicy, refreshToolPolicy, isToolEnabled }));
 const policySession = vi.fn(() => ({ agent: policyAgent }));
+// The stacked computer section reads the machine and the MCP plane beside the
+// browser ones; an empty machine and an empty plane are its quiet default.
+const computerEnv = vi.fn(async () => ({ platform: 'win32', arch: 'x64' }));
+const computerMcpList = vi.fn(async () => [] as readonly unknown[]);
 
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
@@ -84,7 +88,7 @@ vi.mock('../../state/connection', () => ({
       getConfig,
       patchConfig,
       setBrowserControlEnabled,
-      klient: { session: policySession, rest: { browser: { list, upsert, remove, setDefault, status, check, connect, disconnect, tabs, catalog, setupPresets, setupStatus, prepare, connectPreset, openPreset, updatePreset, createShortcut, cancelSetup } } },
+      klient: { session: policySession, global: { env: computerEnv, mcp: { list: computerMcpList } }, rest: { browser: { list, upsert, remove, setDefault, status, check, connect, disconnect, tabs, catalog, setupPresets, setupStatus, prepare, connectPreset, openPreset, updatePreset, createShortcut, cancelSetup } } },
     },
     scopeId: connection.scopeId,
     sshLabel: connection.sshLabel,
@@ -264,12 +268,13 @@ async function settleUntil(selector: string) {
   throw new Error(`Timed out waiting for ${selector}`);
 }
 
+// The add panel is portaled to <body>, so lookups read the whole document.
 function query<T extends Element = HTMLElement>(selector: string): T | null {
-  return container.querySelector<T>(selector);
+  return document.querySelector<T>(selector);
 }
 
 function queryAll<T extends Element = HTMLElement>(selector: string): NodeListOf<T> {
-  return container.querySelectorAll<T>(selector);
+  return document.querySelectorAll<T>(selector);
 }
 
 async function render(guard?: DirtyGuardValue) {
@@ -293,11 +298,39 @@ async function render(guard?: DirtyGuardValue) {
   await settle();
 }
 
+async function renderAt(initialEntries: string[]) {
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queries}>
+        <I18nProvider>
+          <MemoryRouter initialEntries={initialEntries}>
+            <BrowserControlSection />
+          </MemoryRouter>
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+  });
+  await settle();
+}
+
 async function click(selector: string) {
   const button = query<HTMLButtonElement>(selector);
   if (button === null) throw new Error(`No element for ${selector}`);
   await act(async () => { button.click(); });
   await settle();
+}
+
+/** The clickable summary of one accordion row: RowFrame's expand button inside the row's frame. */
+async function clickRow(id: string) {
+  await click(`[data-browser-row="${id}"] > div > button[aria-controls]`);
+}
+
+/** The checkbox input of a connection's allow control: a listed row's switch
+ *  (`data-browser-allow-switch`) or a found-item box in the wizard
+ *  (`data-browser-allow-checkbox`). */
+function allowBox<T extends HTMLInputElement = HTMLInputElement>(id: string): T | null {
+  return query<T>(`[data-browser-allow-switch="${id}"] input`)
+    ?? query<T>(`[data-browser-allow-checkbox="${id}"]`);
 }
 
 /** `<details>` toggles are the element's own event; jsdom does not fire it for us. */
@@ -361,10 +394,74 @@ afterEach(async () => {
 });
 
 describe('BrowserControlSection', () => {
+  describe('the tab strip', () => {
+    it('shows 浏览器 | 电脑 tabs and mounts the browser tab by default', async () => {
+      await render();
+      expect(query('[role="tablist"]')).not.toBeNull();
+      expect(query('[data-browser-control-panel]')?.getAttribute('data-browser-control-panel')).toBe('browser');
+      expect(query('[data-browser-control-tab="browser"]')?.getAttribute('aria-selected')).toBe('true');
+      expect(query('[data-browser-control-tab="computer"]')?.getAttribute('aria-selected')).toBe('false');
+      expect(query('[data-browser-verdict]')).not.toBeNull();
+      expect(query('[data-computer-verdict]')).toBeNull();
+    });
+
+    it('selects the computer tab on ?tab=computer and switches back on click', async () => {
+      await renderAt(['/settings/browser-control?tab=computer']);
+      await settleUntil('[data-computer-verdict]');
+      expect(query('[data-browser-control-panel]')?.getAttribute('data-browser-control-panel')).toBe('computer');
+      expect(query('[data-browser-verdict]')).toBeNull();
+      await click('[data-browser-control-tab="browser"]');
+      await settleUntil('[data-browser-verdict]');
+      expect(query('[data-browser-control-panel]')?.getAttribute('data-browser-control-panel')).toBe('browser');
+    });
+
+    it('selects the card-owning tab for a #st-card-* hash without a tab', async () => {
+      await renderAt(['/settings/browser-control#st-card-computer-mcp']);
+      await settleUntil('[data-computer-verdict]');
+      expect(query('[data-browser-control-panel]')?.getAttribute('data-browser-control-panel')).toBe('computer');
+      expect(query('[data-browser-control-tab="computer"]')?.getAttribute('aria-selected')).toBe('true');
+    });
+  });
+
+  // The wizard, the sources and the WebBridge check all live under the 高级
+  // fold the list carries; opening it once per render is the fold doing its
+  // job, not a second navigation.
+  const openSources = async () => {
+    if (query('[data-browser-sources]')?.hasAttribute('open') !== true) await click('[data-browser-sources] > summary');
+  };
+  const openWebbridge = async () => {
+    if (query('[data-webbridge-readiness]')?.hasAttribute('open') !== true) await toggleDetails('[data-webbridge-readiness]');
+  };
+
   describe('the wizard', () => {
+    it('opens at most the first actionable route and keeps the rest as rows', async () => {
+      setupPresets.mockResolvedValue({ presets: [KIMI_NEEDS_EXTENSION, MANAGED_READY, CODEX_EXTERNAL] });
+      await render();
+      await openSources();
+      await settleUntil('[data-browser-route="kimi-webbridge"]');
+
+      const bodyOf = (id: string) => query(`[data-browser-route="${id}"] [data-row-body]`);
+      // Kimi needs the extension, so its body is the one open slot's initial
+      // value; the independent browser and Codex stay rows with their status
+      // word until clicked.
+      expect(bodyOf('kimi-webbridge')?.hasAttribute('hidden')).toBe(false);
+      expect(bodyOf('independent-browser')?.hasAttribute('hidden')).toBe(true);
+      expect(bodyOf('codex-browser')?.hasAttribute('hidden')).toBe(true);
+
+      // A click moves the one open slot: the independent browser opens and
+      // Kimi closes (#13).
+      const independent = query<HTMLButtonElement>('[data-browser-route="independent-browser"] > div > button[aria-controls]');
+      expect(independent).not.toBeNull();
+      await act(async () => { independent?.click(); });
+      await settle();
+      expect(bodyOf('independent-browser')?.hasAttribute('hidden')).toBe(false);
+      expect(bodyOf('kimi-webbridge')?.hasAttribute('hidden')).toBe(true);
+      expect(bodyOf('codex-browser')?.hasAttribute('hidden')).toBe(true);
+    });
     it('names each route, says what it still needs, and offers nothing the server did not', async () => {
       setupPresets.mockResolvedValue({ presets: [KIMI_NEEDS_EXTENSION, MANAGED_READY, CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route="kimi-webbridge"]');
 
       expect(query('[data-browser-routes]')).not.toBeNull();
@@ -389,6 +486,9 @@ describe('BrowserControlSection', () => {
       })] });
       localStorage.setItem('kiki.locale', 'en');
       await render();
+      await openSources();
+      await openSources();
+
       await settleUntil('[data-browser-route="ego-lite"]');
       const english = query('[data-browser-route="ego-lite"]');
       expect(english?.textContent).toContain('Download Ego Lite yourself, finish its own setup window, then check it here. Kiki does not install it and does not import Chrome data.');
@@ -402,6 +502,8 @@ describe('BrowserControlSection', () => {
       const settled = { ...checking, state, reason: state === 'ready' ? 'ego_ready' : 'ego_detection_failed', steps: [], actions: [], error: state === 'failed' ? 'Ego Lite detection timed out after 5000ms' : undefined };
       setupPresets.mockResolvedValueOnce({ presets: [MANAGED_READY, checking] }).mockResolvedValue({ presets: [MANAGED_READY, settled] });
       await render();
+      await openSources();
+      await openSources();
       await settleUntil('[data-browser-route="ego-lite"][data-browser-route-state="preparing"]');
       expect(query('[data-browser-route-ego-next]')?.textContent).toBe('Checking which browsers are ready…');
       expect(query('[data-browser-route="ego-lite"]')?.textContent).not.toContain('Download Ego Lite yourself');
@@ -424,6 +526,8 @@ describe('BrowserControlSection', () => {
       })] });
       localStorage.setItem('kiki.locale', 'zh');
       await render();
+      await openSources();
+      await openSources();
       await settleUntil('[data-browser-route="ego-lite"]');
       const chinese = query('[data-browser-route="ego-lite"]');
       expect(chinese?.textContent).not.toContain('请自行下载 Ego Lite');
@@ -448,11 +552,13 @@ describe('BrowserControlSection', () => {
       setupPresets.mockResolvedValue({ presets: [onboarding] });
       connectPreset.mockResolvedValue(onboarding);
       await render();
+      await openSources();
+      await openSources();
       await settleUntil('[data-browser-route="ego-lite"]');
       await click('[data-browser-route-connect]');
       await settle();
       expect(query('[data-browser-route-error]')).toBeNull();
-      expect(query('[data-feedback-tone="error"]')).toBeNull();
+      expect(query('[data-browser-route="ego-lite"] [data-feedback-tone="error"]')).toBeNull();
       expect(query('[data-browser-route-ego-next]')?.textContent).toBe('请先完成 Ego Lite 自己的设置窗口，然后再检查。');
       expect(query('[data-browser-route="ego-lite"]')?.textContent?.match(/Please complete the onboarding process first/g)).toEqual(['Please complete the onboarding process first']);
       expect(query('[data-browser-route-diagnostics]')?.textContent).toContain('Please complete the onboarding process first');
@@ -470,6 +576,8 @@ describe('BrowserControlSection', () => {
       })] });
       localStorage.setItem('kiki.locale', 'en');
       await render();
+      await openSources();
+      await openSources();
       await settleUntil('[data-browser-route="ego-lite"][data-browser-route-state="ready"]');
       const route = query('[data-browser-route="ego-lite"]');
       expect(query('[data-browser-route-ego-next]')?.textContent).toBe('Ego Lite is ready. Allow this connection, then select it for the agent.');
@@ -486,6 +594,8 @@ describe('BrowserControlSection', () => {
       })] });
       localStorage.setItem('kiki.locale', 'en');
       await render();
+      await openSources();
+      await openSources();
       await settleUntil('[data-browser-route="ego-lite"][data-browser-route-state="connected"]');
       expect(query('[data-browser-route-ego-next]')?.textContent).toBe('This Ego Lite connection is open. Select it for the agent to use the page.');
       expect(query('[data-browser-route="ego-lite"]')?.textContent).not.toContain('Download Ego Lite yourself');
@@ -496,6 +606,7 @@ describe('BrowserControlSection', () => {
     it('gives an external control surface no Kiki action at all', async () => {
       setupPresets.mockResolvedValue({ presets: [KIMI_NEEDS_EXTENSION, MANAGED_READY, CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route="codex-browser"]');
 
       const row = query('[data-browser-route="codex-browser"]');
@@ -528,6 +639,7 @@ describe('BrowserControlSection', () => {
         return current;
       });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-prepare]');
 
       // Nothing is written on the way in: reading the routes starts no install.
@@ -558,6 +670,7 @@ describe('BrowserControlSection', () => {
         actions: [{ id: 'prepare' }, { id: 'connect' }],
       }), CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-prepare]');
 
       const row = query('[data-browser-route="independent-browser"]');
@@ -588,6 +701,7 @@ describe('BrowserControlSection', () => {
       }), CODEX_EXTERNAL] });
 
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-open]');
 
       const row = query('[data-browser-route="independent-browser"]');
@@ -618,6 +732,7 @@ describe('BrowserControlSection', () => {
       }), CODEX_EXTERNAL] });
 
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-open]');
 
       await click('[data-browser-route-open]');
@@ -641,6 +756,7 @@ describe('BrowserControlSection', () => {
       }), CODEX_EXTERNAL] });
 
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-open]');
 
       await click('[data-browser-route-open]');
@@ -663,6 +779,7 @@ describe('BrowserControlSection', () => {
       }), CODEX_EXTERNAL] });
 
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-update]');
 
       await click('[data-browser-route-update]');
@@ -685,6 +802,7 @@ describe('BrowserControlSection', () => {
       }), CODEX_EXTERNAL] });
 
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-update]');
 
       await click('[data-browser-route-update]');
@@ -701,6 +819,7 @@ describe('BrowserControlSection', () => {
         steps: [{ id: 'driver', state: 'missing' }, { id: 'feature', state: 'user_action', reason: 'feature_disabled' }],
       }), CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-prepare]');
 
       const row = query('[data-browser-route="independent-browser"]');
@@ -726,6 +845,7 @@ describe('BrowserControlSection', () => {
         actions: [],
       }), CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-forced-off]');
 
       const row = query('[data-browser-route="independent-browser"]');
@@ -764,6 +884,7 @@ describe('BrowserControlSection', () => {
         actions: [{ id: 'prepare' }, { id: 'connect' }],
       }), CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-warning]');
 
       const row = query('[data-browser-route="kimi-webbridge"]');
@@ -785,6 +906,7 @@ describe('BrowserControlSection', () => {
         ],
       }), CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-prepare]');
 
       const row = query('[data-browser-route="independent-browser"]');
@@ -807,6 +929,7 @@ describe('BrowserControlSection', () => {
         ],
       }), CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-blocker="extension"]');
 
       const row = query('[data-browser-route="kimi-webbridge"]');
@@ -821,6 +944,7 @@ describe('BrowserControlSection', () => {
       // has no subject there and must not appear.
       setupPresets.mockResolvedValue({ presets: [MANAGED_READY, CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route="codex-browser"]');
 
       const codex = query('[data-browser-route="codex-browser"]');
@@ -837,6 +961,7 @@ describe('BrowserControlSection', () => {
         actions: [{ id: 'cancel' }],
       }), CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-progress]');
 
       expect(query('[data-browser-route-progress="chrome-download"]')?.textContent).toContain('62%');
@@ -851,6 +976,7 @@ describe('BrowserControlSection', () => {
         steps: [{ id: 'driver', state: 'failed', reason: 'install_failed' }],
       }), CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-error]');
 
       expect(query('[data-browser-route-error]')?.textContent).toContain('HTTP 503');
@@ -873,6 +999,7 @@ describe('BrowserControlSection', () => {
 
       setupPresets.mockResolvedValue({ presets: [unsupportedPreset, forcedOffPreset, failedPreset] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-routes]');
 
       const routes = queryAll('[data-browser-route="independent-browser"]');
@@ -892,6 +1019,7 @@ describe('BrowserControlSection', () => {
       });
       setupPresets.mockResolvedValue({ presets: [needsActionWithProbe, CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route="kimi-webbridge"]');
 
       expect(query('[data-browser-route-connect]')).not.toBeNull();
@@ -910,6 +1038,7 @@ describe('BrowserControlSection', () => {
       });
       setupPresets.mockResolvedValue({ presets: [webbridgeWithOpenAndMismatch, CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route="kimi-webbridge"]');
 
       expect(query('[data-browser-route-open]')).not.toBeNull();
@@ -921,6 +1050,7 @@ describe('BrowserControlSection', () => {
     it('reads the routes once and never re-reads a settled route on a timer', async () => {
       setupPresets.mockResolvedValue({ presets: [KIMI_NEEDS_EXTENSION, MANAGED_READY, CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route="kimi-webbridge"]');
       expect(setupPresets).toHaveBeenCalledTimes(1);
       // One list read covers the whole wizard; a settled route is re-read on
@@ -937,6 +1067,7 @@ describe('BrowserControlSection', () => {
       // re-read has to actually work when asked — this is that path.
       setupPresets.mockResolvedValue({ presets: [KIMI_NEEDS_EXTENSION, CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route="kimi-webbridge"]');
       const before = setupPresets.mock.calls.length;
 
@@ -959,6 +1090,7 @@ describe('BrowserControlSection', () => {
         actions: [{ id: 'cancel' }],
       }), CODEX_EXTERNAL] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route-progress]');
       // A preparing route is the only one worth a timer; the interval is a
       // short poll so a download shows progress, not a fixed 1s cadence.
@@ -972,19 +1104,19 @@ describe('BrowserControlSection', () => {
     list.mockResolvedValue({ connections: [profileRow(), cdpRow(), profileRow({ id: 'qa', name: 'Regression', enabled: false })], defaultBrowser: 'research' });
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
 
     // Same type twice, each under its own stable id.
-    expect(query('[data-browser-connection="research"]')).not.toBeNull();
-    expect(query('[data-browser-connection="qa"]')).not.toBeNull();
-    expect(query('[data-browser-connection="preview"]')).not.toBeNull();
-    expect(query('[data-browser-connection="research"]')?.textContent).toContain('research');
-    // The row names the role; the literal machine is one click away, in the
-    // detail, so five rows do not repeat the same hostname.
-    expect(query('[data-browser-connection="research"]')?.textContent).toContain('Server');
+    expect(query('[data-browser-row="research"]')).not.toBeNull();
+    expect(query('[data-browser-row="qa"]')).not.toBeNull();
+    expect(query('[data-browser-row="preview"]')).not.toBeNull();
+    // The row names the role and shows the person's name for it; the id
+    // itself is one click away, in the open detail, so five rows do not
+    // repeat the same hostname.
+    expect(query('[data-browser-row="research"]')?.textContent).toContain('Server');
     // A CDP row names the machine its endpoint points at; the record's redacted
     // projection only, never the endpoint itself.
-    expect(query('[data-browser-connection="preview"]')?.textContent).toContain('127.0.0.1:9222');
+    expect(query('[data-browser-row="preview"]')?.textContent).toContain('127.0.0.1:9222');
     expect(container.textContent).not.toContain('http://127.0.0.1:9222');
     expect(query('[data-browser-state="idle"]')).not.toBeNull();
     expect(query('[data-browser-state="disabled"]')).not.toBeNull();
@@ -994,17 +1126,17 @@ describe('BrowserControlSection', () => {
     list.mockResolvedValue({ connections: [bridgeRow(), cdpRow(), profileRow()] });
 
     await render();
-    await settleUntil('[data-browser-connection="kimi-webbridge"]');
+    await settleUntil('[data-browser-row="kimi-webbridge"]');
 
     // The type and the place are both facts the record carries: the bridge is
     // reached over its own local daemon, so there is no host to show — and the
     // row must not borrow the CDP branch's "address not set" wording for it.
-    const bridge = query('[data-browser-connection="kimi-webbridge"]')?.textContent ?? '';
+    const bridge = query('[data-browser-row="kimi-webbridge"]')?.textContent ?? '';
     expect(bridge).toContain('Kimi WebBridge');
     expect(bridge).toContain('Local bridge');
     expect(bridge).not.toContain('address not set');
     // The CDP row still names the machine its endpoint points at.
-    expect(query('[data-browser-connection="preview"]')?.textContent).toContain('127.0.0.1:9222');
+    expect(query('[data-browser-row="preview"]')?.textContent).toContain('127.0.0.1:9222');
   });
 
   it('keeps the bridge readable in Chinese, on the row and in the form', async () => {
@@ -1012,10 +1144,10 @@ describe('BrowserControlSection', () => {
     list.mockResolvedValue({ connections: [bridgeRow()] });
 
     await render();
-    await settleUntil('[data-browser-connection="kimi-webbridge"]');
-    expect(query('[data-browser-connection="kimi-webbridge"]')?.textContent).toContain('本地桥接');
+    await settleUntil('[data-browser-row="kimi-webbridge"]');
+    expect(query('[data-browser-row="kimi-webbridge"]')?.textContent).toContain('本地桥接');
 
-    await click('[data-browser-connection="kimi-webbridge"]');
+    await clickRow('kimi-webbridge');
     // No CDP address is offered anywhere on this branch, in either language.
     expect(query('[data-secret-field]')).toBeNull();
     expect(query('[data-browser-bridge]')?.textContent).toContain('本地 HTTP 桥接');
@@ -1047,8 +1179,8 @@ describe('BrowserControlSection', () => {
     list.mockResolvedValue({ connections: [profileRow()] });
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
 
     expect(query<HTMLButtonElement>('[data-browser-check]')?.disabled).toBe(false);
     expect(query<HTMLButtonElement>('[data-browser-connect]')?.disabled).toBe(false);
@@ -1069,8 +1201,8 @@ describe('BrowserControlSection', () => {
     disconnect.mockResolvedValue(released.status);
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
     setInput('[data-browser-profile-input]', 'C:\\kiki\\browsers\\edited');
     await settle();
 
@@ -1098,8 +1230,8 @@ describe('BrowserControlSection', () => {
     ));
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
     await click('[data-browser-connect]');
     await settle();
 
@@ -1129,8 +1261,8 @@ describe('BrowserControlSection', () => {
     });
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
 
     // Neither is read while the fold is shut.
     expect(tabs).not.toHaveBeenCalled();
@@ -1180,8 +1312,8 @@ describe('BrowserControlSection', () => {
     ));
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
     await toggleDetails('[data-browser-runtime-tree]');
 
     // Nothing live: the fold says so rather than asking for a list.
@@ -1198,8 +1330,8 @@ describe('BrowserControlSection', () => {
     ));
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
     await toggleDetails('[data-browser-runtime-tree]');
     await settle();
 
@@ -1220,14 +1352,15 @@ describe('BrowserControlSection', () => {
     };
 
     await render(guard);
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
     setInput('[data-browser-name-input]', 'Renamed');
     await settle();
 
-    // Detail replaces the list on desktop too; pressing back asks the dirty guard.
-    expect(query('[data-browser-connection="qa"]')).toBeNull();
-    await click('[data-browser-back]');
+    // The list stays visible behind the open row; closing it (pressing the
+    // row again, the old back button's replacement) asks the dirty guard.
+    expect(query('[data-browser-row="qa"]')).not.toBeNull();
+    await clickRow('research');
     expect(asked).toEqual([reported.at(-1)]);
     expect(asked[0]).toBe('browser-control:local:research');
     // Still the edited draft, not the list.
@@ -1235,8 +1368,8 @@ describe('BrowserControlSection', () => {
 
     await act(async () => { pending[0]?.(); });
     await settle();
-    expect(query('[data-browser-connection="qa"]')).not.toBeNull();
-    await click('[data-browser-connection="qa"]');
+    expect(query('[data-browser-row="qa"]')).not.toBeNull();
+    await clickRow('qa');
     expect(query<HTMLInputElement>('[data-browser-name-input]')?.value).toBe('Regression');
   });
 
@@ -1251,8 +1384,8 @@ describe('BrowserControlSection', () => {
     };
 
     await render(guard);
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
     setInput('[data-browser-profile-input]', 'C:\\kiki\\browsers\\other');
     await settle();
 
@@ -1275,8 +1408,8 @@ describe('BrowserControlSection', () => {
     });
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
     setInput('[data-browser-profile-input]', edited);
     await settle();
     expect(query('[data-settings-draft]')?.hasAttribute('hidden')).toBe(false);
@@ -1299,8 +1432,8 @@ describe('BrowserControlSection', () => {
     upsert.mockRejectedValue(new Error('browser.invalid: expected an absolute server path'));
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
     setInput('[data-browser-profile-input]', 'C:\\kiki\\browsers\\kept');
     await settle();
     await save();
@@ -1322,8 +1455,8 @@ describe('BrowserControlSection', () => {
     check.mockResolvedValue(failed.status);
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
     await click('[data-browser-check]');
 
     expect(check).toHaveBeenCalledWith('research');
@@ -1348,8 +1481,8 @@ describe('BrowserControlSection', () => {
     ));
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
     await click('[data-browser-connect]');
     await settle();
 
@@ -1361,8 +1494,9 @@ describe('BrowserControlSection', () => {
     expect(connect).toHaveBeenCalledWith('research');
     expect(query('[data-browser-state="idle"]')).not.toBeNull();
     expect(container.textContent).not.toContain('Connected.');
-    // And the refused run offers the trip to the existing switch.
-    expect(query('[data-browser-open-flag]')?.textContent).toBe('Open the switch');
+    // And the refused run offers the trip to the switch, which now lives on
+    // this tab's own Experimental rows.
+    expect(query('[data-browser-open-flag]')?.textContent).toBe('Open the switch below');
   });
 
   it('says what a disconnect does to the resource, by the ownership the server reports', async () => {
@@ -1373,8 +1507,8 @@ describe('BrowserControlSection', () => {
     }));
 
     await render();
-    await settleUntil('[data-browser-connection="preview"]');
-    await click('[data-browser-connection="preview"]');
+    await settleUntil('[data-browser-row="preview"]');
+    await clickRow('preview');
 
     // Connected: the meaning of disconnecting is stated before it is pressed.
     expect(container.textContent).toContain('the borrowed browser stays');
@@ -1399,8 +1533,8 @@ describe('BrowserControlSection', () => {
     disconnect.mockResolvedValue(stopped.status);
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
     await click('[data-browser-disconnect]');
 
     expect(query('[data-browser-outcome="disconnect:unconfirmed"]')?.textContent).toContain('The operation’s outcome is unconfirmed.');
@@ -1417,8 +1551,8 @@ describe('BrowserControlSection', () => {
     list.mockResolvedValue({ connections: [cdpRow()] });
 
     await render();
-    await settleUntil('[data-browser-connection="preview"]');
-    await click('[data-browser-connection="preview"]');
+    await settleUntil('[data-browser-row="preview"]');
+    await clickRow('preview');
     await settleUntil('[data-secret-field]');
 
     expect(revealSecret).not.toHaveBeenCalled();
@@ -1426,6 +1560,25 @@ describe('BrowserControlSection', () => {
 
     await click('[data-secret-reveal]');
     expect(revealSecret).toHaveBeenCalledWith({ kind: 'browser_endpoint', browser_id: 'preview' });
+  });
+
+  it('opens the add panel from the heading button, walks into a route and back, and closes', async () => {
+    await render();
+    expect(query('[data-browser-add-panel]')).toBeNull();
+    await click('[data-browser-add-heading]');
+    await settleUntil('[data-browser-pick="independent-browser"]');
+    expect(query('[data-browser-add-panel]')?.getAttribute('data-browser-add-panel')).toBe('pick');
+
+    await click('[data-browser-pick="independent-browser"]');
+    expect(query('[data-browser-add-panel]')?.getAttribute('data-browser-add-panel')).toBe('independent-browser');
+    expect(query('[data-browser-add-view] [data-browser-route="independent-browser"]')).not.toBeNull();
+    // The route step is the route's own body: no row, no source switch.
+    expect(query('[data-browser-add-view] [data-browser-source-switch]')).toBeNull();
+
+    await click('[data-browser-back]');
+    expect(query('[data-browser-add-panel]')?.getAttribute('data-browser-add-panel')).toBe('pick');
+    await click('.kiki-side-panel header button[aria-label="Close"]');
+    expect(query('[data-browser-add-panel]')).toBeNull();
   });
 
   it('creates a connection with the input the published schema accepts', async () => {
@@ -1449,9 +1602,9 @@ describe('BrowserControlSection', () => {
       name: 'Demo', enabled: true, driverPath: undefined, type: 'agent-browser-profile',
       profilePath: undefined, executablePath: undefined, headed: undefined,
     });
-    // Returning to the list shows the new connection as the server has it.
-    await click('[data-browser-back]');
-    await settleUntil('[data-browser-connection="demo"]');
+    // The new connection now has its own row, open where the editor was.
+    await settleUntil('[data-browser-row="demo"]');
+    await clickRow('demo');
   });
 
   it('creates a bridge connection from the style picker, with no endpoint', async () => {
@@ -1485,9 +1638,9 @@ describe('BrowserControlSection', () => {
       name: 'Daily Edge', enabled: true, driverPath: undefined, type: 'kimi-webbridge',
     });
     // Read back as the server returns it: the new record is the bridge, not CDP.
-    await click('[data-browser-back]');
-    await settleUntil('[data-browser-connection="daily-edge"]');
-    expect(query('[data-browser-connection="daily-edge"]')?.textContent).toContain('Local bridge');
+    await settleUntil('[data-browser-row="daily-edge"]');
+    await clickRow('daily-edge');
+    expect(query('[data-browser-row="daily-edge"]')?.textContent).toContain('Local bridge');
   });
 
   it('writes the visible-window choice only for a profile connection', async () => {
@@ -1498,8 +1651,8 @@ describe('BrowserControlSection', () => {
     });
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
 
     // A profile starts its own browser, so headless vs. window is a real choice.
     expect(query('[data-browser-headed]')).not.toBeNull();
@@ -1523,8 +1676,8 @@ describe('BrowserControlSection', () => {
       return { connection: row };
     });
     await render();
-    await settleUntil('[data-browser-connection="kimi-webbridge"]');
-    await click('[data-browser-connection="kimi-webbridge"]');
+    await settleUntil('[data-browser-row="kimi-webbridge"]');
+    await clickRow('kimi-webbridge');
     // The stored style stays selected: becoming a bridge is a choice, not a default.
     expect(query('[data-browser-type]')?.dataset['browserType']).toBe('agent-browser-cdp');
     setInput('[data-browser-name-input]', 'External browser');
@@ -1535,8 +1688,8 @@ describe('BrowserControlSection', () => {
     queries.clear();
     root = createRoot(container);
     await render();
-    await settleUntil('[data-browser-connection="kimi-webbridge"]');
-    expect(query('[data-browser-connection="kimi-webbridge"]')?.textContent).toContain('External browser');
+    await settleUntil('[data-browser-row="kimi-webbridge"]');
+    expect(query('[data-browser-row="kimi-webbridge"]')?.textContent).toContain('External browser');
     expect(query('[data-browser-verdict="allowed"]')?.textContent).toContain('Allowed browsers: 1');
     expect(setDefault).not.toHaveBeenCalled();
     expect(patchConfig).not.toHaveBeenCalled();
@@ -1556,18 +1709,21 @@ describe('BrowserControlSection', () => {
     });
 
     await render();
-    await settleUntil('[data-browser-connection="kimi-webbridge"]');
-    await click('[data-browser-connection="kimi-webbridge"]');
+    await settleUntil('[data-browser-row="kimi-webbridge"]');
+    await clickRow('kimi-webbridge');
 
     // Nothing on this branch asks for a CDP address, the style cannot be pointed
-    // at one, and the form says which bridge it is talking to; the detail header
-    // shows read-only allowance instead of a duplicate enable toggle.
+    // at one, and the form says which bridge it is talking to. The detail carries
+    // no second name/id header and no allow tag or delete button: the row above
+    // states those, and deletion lives in the row's ⋯ menu.
     expect(query('[data-secret-field]')).toBeNull();
     expect(query('[data-browser-type]')?.dataset['browserType']).toBe('kimi-webbridge');
     expect(query('[data-browser-bridge]')?.textContent).toContain('local HTTP bridge');
     expect(query('[data-browser-check]')?.textContent).toBe('Check bridge');
     expect(query('[data-browser-connect]')?.textContent).toBe('Connect bridge');
-    expect(query('[data-browser-detail-allowed="true"]')).not.toBeNull();
+    expect(query('[data-browser-detail-allowed]')).toBeNull();
+    expect(query('[data-browser-detail] [data-browser-delete]')).toBeNull();
+    expect(query('[data-browser-detail-name]')).toBeNull();
 
     setInput('[data-browser-name-input]', 'Daily Edge (work)');
     await settle();
@@ -1596,8 +1752,8 @@ describe('BrowserControlSection', () => {
     });
 
     await render();
-    await settleUntil('[data-browser-connection="kimi-webbridge"]');
-    await click('[data-browser-connection="kimi-webbridge"]');
+    await settleUntil('[data-browser-row="kimi-webbridge"]');
+    await clickRow('kimi-webbridge');
     await toggleDetails('[data-browser-runtime-tree]');
     await click('[data-browser-catalog-read]');
     await settleUntil('[data-browser-catalog]');
@@ -1621,12 +1777,12 @@ describe('BrowserControlSection', () => {
     await settleUntil('[data-browser-row="kimi-webbridge"]');
     // The bridge is listed once, with the other browsers, and attributed to the
     // Kimi source rather than repeated under its route.
-    expect(query('[data-browser-route="kimi-webbridge"] [data-browser-allow-checkbox]')).toBeNull();
+    expect(query('[data-browser-route="kimi-webbridge"] [data-browser-allow-switch]')).toBeNull();
     expect(query('[data-browser-row="kimi-webbridge"] [data-browser-row-type]')?.getAttribute('data-browser-row-type')).toBe('kimi-webbridge');
     // A switched-off connection cannot be allowed, so ticking the box is also the
     // request to switch it on — through the bridge's own branch, not a CDP write.
-    expect(query<HTMLInputElement>('[data-browser-allow-checkbox="kimi-webbridge"]')?.checked).toBe(false);
-    await click('[data-browser-allow-checkbox="kimi-webbridge"]');
+    expect(allowBox('kimi-webbridge')?.checked).toBe(false);
+    await click(`[data-browser-allow-switch=\"kimi-webbridge\"] input`);
 
     expect(patchConfig).toHaveBeenCalledWith({ browser_control: { allowed_browsers: ['kimi-webbridge'] } });
     expect(upsert).toHaveBeenCalledWith('kimi-webbridge', {
@@ -1640,8 +1796,8 @@ describe('BrowserControlSection', () => {
     list.mockResolvedValue({ connections: [row] });
     upsert.mockResolvedValue({ connection: row });
     await render();
-    await settleUntil('[data-browser-connection="official-browser"]');
-    await click('[data-browser-connection="official-browser"]');
+    await settleUntil('[data-browser-row="official-browser"]');
+    await clickRow('official-browser');
     expect(query('[data-browser-official-binding]')?.textContent).toContain(row.browserId);
     expect(query('[data-secret-field]')).toBeNull();
     setInput('[data-browser-name-input]', 'Renamed official browser');
@@ -1658,8 +1814,8 @@ describe('BrowserControlSection', () => {
     });
 
     await render();
-    await settleUntil('[data-browser-connection="preview"]');
-    await click('[data-browser-connection="preview"]');
+    await settleUntil('[data-browser-row="preview"]');
+    await clickRow('preview');
     await settleUntil('[data-secret-field]');
 
     // The endpoint decides how that browser runs; the page cannot switch it.
@@ -1685,8 +1841,8 @@ describe('BrowserControlSection', () => {
     });
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
     expect(query<HTMLInputElement>('[data-browser-headed] input')?.checked).toBe(true);
 
     await click('[data-browser-headed] input');
@@ -1702,7 +1858,7 @@ describe('BrowserControlSection', () => {
     list.mockResolvedValue({ connections: [profileRow()] });
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
     await click('[data-browser-add]');
     await click('[data-browser-add-manual]');
     setInput('[data-browser-id-input]', 'research');
@@ -1719,14 +1875,16 @@ describe('BrowserControlSection', () => {
     setDefault.mockResolvedValue({ browser: undefined });
 
     await render();
-    await settleUntil('[data-browser-default]');
-    expect(query('[data-browser-default]')?.dataset['browserDefault']).toBe('research');
+    await settleUntil('[data-browser-default-tag="research"]');
+    // The default is chosen only from the row's own 设为默认 / 取消默认 item,
+    // shown only by the tag: there is no select on the list's header line.
+    expect(query('[data-browser-default-tag="research"]')).not.toBeNull();
+    expect(query('[data-browser-default-tag="preview"]')).toBeNull();
 
-    await act(async () => { query<HTMLButtonElement>('#browser-default')?.click(); });
-    await settle();
+    await click('[data-browser-row-menu-button="research"]');
     await act(async () => {
-      [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')]
-        .find((option) => option.textContent?.includes('Choose each time'))?.click();
+      [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+        .find((option) => option.dataset['spaceMenuItem'] === 'default')?.click();
     });
     await settle();
 
@@ -1739,8 +1897,8 @@ describe('BrowserControlSection', () => {
     list.mockResolvedValue({ connections: [profileRow()] });
 
     await render();
-    await settleUntil('[data-browser-connection="research"]');
-    await click('[data-browser-connection="research"]');
+    await settleUntil('[data-browser-row="research"]');
+    await clickRow('research');
     await settleUntil('[data-browser-execution-host]');
     expect(query('[data-browser-execution-host]')?.textContent).toBe(BUS_USER);
 
@@ -1757,10 +1915,10 @@ describe('BrowserControlSection', () => {
       })),
     });
     await render();
-    await settleUntil('[data-browser-connection="office-mac"]');
+    await settleUntil('[data-browser-row="office-mac"]');
 
-    expect(query('[data-browser-connection="research"]')).toBeNull();
-    await click('[data-browser-connection="office-mac"]');
+    expect(query('[data-browser-row="research"]')).toBeNull();
+    await clickRow('office-mac');
     await settleUntil('[data-browser-execution-host]');
     expect(query('[data-browser-execution-host]')?.textContent).toBe('office-mac-host');
   });
@@ -1768,7 +1926,7 @@ describe('BrowserControlSection', () => {
 
   describe('WebBridgeReadiness', () => {
     it('respects valid server browserExtensionUrl instead of only fixed chrome url', async () => {
-      getCapability.mockResolvedValueOnce({
+      getCapability.mockResolvedValue({
         id: 'kimi-webbridge', displayName: 'Kimi WebBridge', description: 'desc', supported: true, state: 'ready',
         steps: [{ id: 'daemon', state: 'ok' }],
         install: { running: false },
@@ -1780,6 +1938,8 @@ describe('BrowserControlSection', () => {
       } as any);
 
       await render();
+      await openSources();
+      await openWebbridge();
       await settleUntil('[data-webbridge-extension]');
 
       const link = query<HTMLAnchorElement>('[data-webbridge-extension]');
@@ -1787,7 +1947,7 @@ describe('BrowserControlSection', () => {
     });
 
     it('still offers retry button when install or daemon fails', async () => {
-      getCapability.mockResolvedValueOnce({
+      getCapability.mockResolvedValue({
         id: 'kimi-webbridge', displayName: 'Kimi WebBridge', description: 'desc', supported: true, state: 'failed',
         steps: [{ id: 'daemon', state: 'failed' }],
         install: { running: false, error: 'Daemon crashed on startup' },
@@ -1798,6 +1958,8 @@ describe('BrowserControlSection', () => {
       } as any);
 
       await render();
+      await openSources();
+      await openWebbridge();
       await settleUntil('[data-webbridge-prepare]');
 
       const retryBtn = query('[data-webbridge-prepare]');
@@ -1833,10 +1995,11 @@ describe('BrowserControlSection', () => {
       let current = codexWithCandidates;
       setupPresets.mockImplementation(async () => ({ presets: [current] }));
       await render();
+      await openSources();
       await settleUntil('[data-browser-route="codex-browser"]');
 
       expect(query('[data-browser-source-items="codex-browser"]')).not.toBeNull();
-      const pipe2Box = query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser-use-pipe-2"]');
+      const pipe2Box = allowBox('codex-browser-use-pipe-2');
       expect(pipe2Box).not.toBeNull();
       expect(pipe2Box?.checked).toBe(false);
 
@@ -1871,6 +2034,7 @@ describe('BrowserControlSection', () => {
       };
       setupPresets.mockResolvedValue({ presets: [codexEmpty] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route="codex-browser"]');
 
       expect(query('[data-browser-candidates-empty]')).not.toBeNull();
@@ -1881,6 +2045,7 @@ describe('BrowserControlSection', () => {
     it('displays error on failed connect and supports retry', async () => {
       setupPresets.mockResolvedValue({ presets: [codexWithCandidates] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route="codex-browser"]');
 
       connectPreset.mockResolvedValueOnce({
@@ -1889,10 +2054,9 @@ describe('BrowserControlSection', () => {
         error: 'Connection to extension pipe was refused',
       });
 
-      await act(async () => { query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser-use-pipe-1"]')?.click(); });
+      await act(async () => { allowBox('codex-browser-use-pipe-1')?.click(); });
       await settle();
-
-      expect(query('[data-feedback-tone="error"]')?.textContent).toContain('Connection to extension pipe was refused');
+      expect(query('[data-browser-route="codex-browser"] [data-feedback-tone="error"]')?.textContent).toContain('Connection to extension pipe was refused');
 
       connectPreset.mockResolvedValueOnce({
         ...codexWithCandidates,
@@ -1902,7 +2066,7 @@ describe('BrowserControlSection', () => {
         browserId: 'codex-browser-use-pipe-1',
       });
 
-      await act(async () => { query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser-use-pipe-1"]')?.click(); });
+      await act(async () => { allowBox('codex-browser-use-pipe-1')?.click(); });
       await settle();
       expect(connectPreset).toHaveBeenCalledTimes(2);
       expect(query('[data-browser-route="codex-browser"] [data-feedback-tone="info"]')?.textContent).toContain('saved');
@@ -1913,6 +2077,7 @@ describe('BrowserControlSection', () => {
     it('handles late-arriving candidates cleanly when refetched', async () => {
       setupPresets.mockResolvedValueOnce({ presets: [{ ...codexWithCandidates, candidates: [] }] });
       await render();
+      await openSources();
       await settleUntil('[data-browser-route="codex-browser"]');
 
       expect(query('[data-browser-candidates-empty]')).not.toBeNull();
@@ -1950,7 +2115,8 @@ describe('BrowserControlSection', () => {
       setupPresets.mockResolvedValue({ presets: [codexWithCandidates] });
 
       await render();
-      await toggleDetails('[data-browser-sources]');
+      await openSources();
+      await openSources();
       await settleUntil('[data-browser-source-items="codex-browser"]');
 
       const countBadge = query('[data-browser-allowed-count="codex-browser"]');
@@ -1958,11 +2124,11 @@ describe('BrowserControlSection', () => {
       expect(countBadge?.textContent).toContain('1 of 1 allowed');
       // The saved connection is a browser row; only what is not saved yet stays under the route.
       expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(2);
-      expect(queryAll('[data-browser-allow-checkbox="work-browser"]')).toHaveLength(1);
+      expect(queryAll('[data-browser-allow-switch="work-browser"] input')).toHaveLength(1);
       expect(query('[data-browser-route="codex-browser"] [data-browser-allow-checkbox="work-browser"]')).toBeNull();
 
-      const registered = query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]');
-      const unregistered = query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser-use-pipe-2"]');
+      const registered = allowBox('work-browser');
+      const unregistered = allowBox('codex-browser-use-pipe-2');
       expect(registered?.checked).toBe(true);
       expect(unregistered?.checked).toBe(false);
       expect(query('[data-browser-allow-checkbox="codex-browser-use-pipe-1"]')).toBeNull();
@@ -2031,7 +2197,7 @@ describe('BrowserControlSection', () => {
       process.on('unhandledRejection', onRejection);
 
       const clickBox = async (id: string) => {
-        const box = query<HTMLInputElement>(`[data-browser-allow-checkbox="${id}"]`);
+        const box = allowBox(id);
         expect(box).not.toBeNull();
         await act(async () => { box?.click(); });
         await settle();
@@ -2039,17 +2205,18 @@ describe('BrowserControlSection', () => {
 
       try {
         await render();
-        await toggleDetails('[data-browser-sources]');
+        await openSources();
+        await openSources();
         await settleUntil('[data-browser-source-items="codex-browser"]');
 
         expect(() => { store.rejectUnknown(['codex-browser-use-pipe-1']); }).toThrow('Unknown browser connection "codex-browser-use-pipe-1"');
         expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(2);
-        expect(queryAll('[data-browser-allow-checkbox="work-browser"]')).toHaveLength(1);
+        expect(queryAll('[data-browser-allow-switch="work-browser"] input')).toHaveLength(1);
         expect(query('[data-browser-route="codex-browser"] [data-browser-allow-checkbox="work-browser"]')).toBeNull();
-        expect(query('[data-browser-route="codex-browser"] [data-browser-allow-checkbox="research"]')).toBeNull();
+        expect(query('[data-browser-route="codex-browser"] [data-browser-allow-switch="research"]')).toBeNull();
         expect(query('[data-browser-identity="codex-browser-use-pipe-1"]')).not.toBeNull();
-        expect(query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.checked).toBe(true);
-        expect(query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser-use-pipe-2"]')?.checked).toBe(false);
+        expect(allowBox('work-browser')?.checked).toBe(true);
+        expect(allowBox('codex-browser-use-pipe-2')?.checked).toBe(false);
         expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('1 of 1 allowed');
         expect(query('[data-browser-verdict="allowed"]')?.textContent).toContain('Allowed browsers: 2');
 
@@ -2074,8 +2241,8 @@ describe('BrowserControlSection', () => {
         expect(store.state.allowed).toEqual(['research', 'work-browser']);
         expect(patchConfig).toHaveBeenCalledTimes(2);
         expect(query('[data-browser-route="codex-browser"] [data-feedback-tone="error"]')?.textContent).toContain('pipe refused');
-        expect(query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser-use-pipe-2"]')?.checked).toBe(false);
-        expect(query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser-use-pipe-2"]')?.disabled).toBe(false);
+        expect(allowBox('codex-browser-use-pipe-2')?.checked).toBe(false);
+        expect(allowBox('codex-browser-use-pipe-2')?.disabled).toBe(false);
 
         connectPreset.mockImplementation(async (presetName: string, input: Record<string, unknown>) => {
           expect(presetName).toBe('codex-browser');
@@ -2111,7 +2278,7 @@ describe('BrowserControlSection', () => {
         // Saved now, so it moves from the route's found list to the browser rows.
         expect(queryAll('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toHaveLength(1);
         expect(query('[data-browser-allow-checkbox="codex-browser-use-pipe-2"]')).toBeNull();
-        expect(query<HTMLInputElement>('[data-browser-allow-checkbox="codex-browser"]')?.checked).toBe(true);
+        expect(allowBox('codex-browser')?.checked).toBe(true);
         expect(query('[data-browser-row="codex-browser"] [data-browser-identity="codex-browser-use-pipe-2"]')).not.toBeNull();
 
         await clickBox('codex-browser-use-pipe-3');
@@ -2158,10 +2325,17 @@ describe('BrowserControlSection', () => {
       process.on('unhandledRejection', onRejection);
       try {
         await render();
-        await settleUntil('[data-browser-default]');
+        await openSources();
+        await settleUntil('[data-browser-default-tag="work-browser"]');
         setDefault.mockRejectedValueOnce(new Error('default refused'));
 
-        await selectOption('#browser-default', 'Choose each time');
+        // 取消默认 is the same row menu item that set it, against the tag's row.
+        await click('[data-browser-row-menu-button="work-browser"]');
+        await act(async () => {
+          [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+            .find((option) => option.dataset['spaceMenuItem'] === 'default')?.click();
+        });
+        await settle();
 
         expect(reasons).toEqual([]);
         expect(query('[data-browser-connections] [data-feedback-tone="error"]')?.textContent).toContain('default refused');
@@ -2169,20 +2343,25 @@ describe('BrowserControlSection', () => {
         expect(store.state.defaultBrowser).toBe('work-browser');
         expect(patchConfig).not.toHaveBeenCalled();
         expect(connectPreset).not.toHaveBeenCalled();
-        expect(query('[data-browser-default]')?.dataset['browserDefault']).toBe('work-browser');
+        expect(query('[data-browser-default-tag="work-browser"]')).not.toBeNull();
 
         setDefault.mockImplementationOnce(async (browser?: string) => {
           store.state.defaultBrowser = browser;
           return { browser };
         });
-        await selectOption('#browser-default', 'Choose each time');
+        await click('[data-browser-row-menu-button="work-browser"]');
+        await act(async () => {
+          [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+            .find((option) => option.dataset['spaceMenuItem'] === 'default')?.click();
+        });
+        await settle();
 
         expect(setDefault).toHaveBeenCalledTimes(2);
         expect(setDefault).toHaveBeenLastCalledWith(undefined);
         expect(store.state.defaultBrowser).toBeUndefined();
         expect(store.state.allowed).toEqual(['work-browser', 'research']);
         expect(query('[data-browser-connections] [data-feedback-tone="error"]')).toBeNull();
-        expect(query('[data-browser-default]')?.dataset['browserDefault']).toBe('');
+        expect(query('[data-browser-default-tag="work-browser"]')).toBeNull();
         expect(reasons).toEqual([]);
       } finally {
         process.off('unhandledRejection', onRejection);
@@ -2344,24 +2523,24 @@ describe('BrowserControlSection', () => {
       });
 
       await render();
-      await toggleDetails('[data-browser-sources]');
+      await openSources();
       await settleUntil('[data-browser-row="work-browser"]');
 
       expect(() => { store.rejectUnknown(['codex-browser-use-pipe-1']); }).toThrow('Unknown browser connection "codex-browser-use-pipe-1"');
       expect(query('[data-browser-verdict="none_allowed"]')?.textContent).toContain('No browser is allowed.');
       expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('0 of 2 allowed');
-      expect(queryAll('[data-browser-list] [data-browser-allow-checkbox]')).toHaveLength(2);
-      expect(query('[data-browser-route="codex-browser"] [data-browser-allow-checkbox]')).toBeNull();
+      expect(queryAll('[data-browser-list] [data-browser-allow-switch] input')).toHaveLength(2);
+      expect(query('[data-browser-route="codex-browser"] [data-browser-allow-switch]')).toBeNull();
       expect(query('[data-browser-allow-checkbox="codex-browser-use-pipe-1"]')).toBeNull();
       expect(query('[data-browser-identity="codex-browser-use-pipe-1"]')).not.toBeNull();
-      const cb1 = query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]');
-      const cb2 = query<HTMLInputElement>('[data-browser-allow-checkbox="lab-browser"]');
+      const cb1 = allowBox('work-browser');
+      const cb2 = allowBox('lab-browser');
       expect(cb1?.checked).toBe(false);
       expect(cb2?.checked).toBe(false);
 
       await act(async () => { cb1?.click(); });
       await settle();
-      await act(async () => { query<HTMLInputElement>('[data-browser-allow-checkbox="lab-browser"]')?.click(); });
+      await act(async () => { allowBox('lab-browser')?.click(); });
       await settle();
 
       expect(store.state.allowed).toEqual(['work-browser', 'lab-browser']);
@@ -2370,16 +2549,16 @@ describe('BrowserControlSection', () => {
       expect(query('[data-browser-verdict="allowed"]')?.textContent).toContain('Allowed browsers: 2');
       expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('2 of 2 allowed');
 
-      await act(async () => { query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.click(); });
+      await act(async () => { allowBox('work-browser')?.click(); });
       await settle();
 
       expect(store.state.allowed).toEqual(['lab-browser']);
       expect(store.state.defaultBrowser).toBeUndefined();
       expect(query('[data-browser-verdict="allowed"]')?.textContent).toContain('Allowed browsers: 1');
       expect(query('[data-browser-allowed-count="codex-browser"]')?.textContent).toContain('1 of 2 allowed');
-      expect(query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.checked).toBe(false);
-      expect(query<HTMLInputElement>('[data-browser-allow-checkbox="lab-browser"]')?.checked).toBe(true);
-      expect(queryAll('[data-browser-list] [data-browser-allow-checkbox]')).toHaveLength(2);
+      expect(allowBox('work-browser')?.checked).toBe(false);
+      expect(allowBox('lab-browser')?.checked).toBe(true);
+      expect(queryAll('[data-browser-list] [data-browser-allow-switch] input')).toHaveLength(2);
     });
 
     it('toggles a browser source off to hide its checklist and exclude it from active counts, while preserving checked connections on restore without stealth-selecting new items', async () => {
@@ -2424,15 +2603,15 @@ describe('BrowserControlSection', () => {
       await render();
       expect(query('[data-browser-sources] summary')?.textContent).toBe('Browser sources');
       expect(query('[data-browser-sources-attention]')).toBeNull();
-      await toggleDetails('[data-browser-sources]');
+      await openSources();
       await settleUntil('[data-browser-source-items="codex-browser"]');
 
-      const sourceSwitch = query<HTMLButtonElement>('[data-browser-source-switch="codex-browser"]');
+      const sourceSwitch = query<HTMLElement>('[data-browser-source-switch="codex-browser"]');
       expect(sourceSwitch).not.toBeNull();
       expect(sourceSwitch?.getAttribute('aria-checked')).toBe('true');
       expect(query('[data-browser-verdict="allowed"]')?.textContent).toContain('Allowed browsers: 1');
-      expect(query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.checked).toBe(true);
-      expect(query<HTMLInputElement>('[data-browser-allow-checkbox="lab-browser"]')?.checked).toBe(false);
+      expect(allowBox('work-browser')?.checked).toBe(true);
+      expect(allowBox('lab-browser')?.checked).toBe(false);
 
       await click('[data-browser-source-switch="codex-browser"]');
       expect(store.state.disabledSources).toEqual(['codex-browser']);
@@ -2440,7 +2619,7 @@ describe('BrowserControlSection', () => {
       expect(query('[data-browser-source-items="codex-browser"]')).toBeNull();
       expect(query('[data-browser-verdict="none_allowed"]')?.textContent).toContain('No browser is allowed.');
       expect(query('[data-browser-route="codex-browser"]')?.getAttribute('data-browser-route-state')).toBe('disabled');
-      expect(query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.disabled).toBe(true);
+      expect(allowBox('work-browser')?.disabled).toBe(true);
       expect(query('[data-browser-row="work-browser"] [data-browser-source-tag="codex-browser"]')?.textContent).toContain('source off');
 
       await click('[data-browser-source-switch="codex-browser"]');
@@ -2448,8 +2627,8 @@ describe('BrowserControlSection', () => {
       expect(store.state.allowed).toEqual(['work-browser']);
       await settleUntil('[data-browser-source-items="codex-browser"]');
       expect(query('[data-browser-verdict="allowed"]')?.textContent).toContain('Allowed browsers: 1');
-      expect(query<HTMLInputElement>('[data-browser-allow-checkbox="work-browser"]')?.checked).toBe(true);
-      expect(query<HTMLInputElement>('[data-browser-allow-checkbox="lab-browser"]')?.checked).toBe(false);
+      expect(allowBox('work-browser')?.checked).toBe(true);
+      expect(allowBox('lab-browser')?.checked).toBe(false);
     });
   });
 });

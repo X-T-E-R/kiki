@@ -245,9 +245,14 @@ export function NewSessionPage({
   dailyPersonaId?: string;
 }) {
   const location = useLocation();
+  // The local-session detail is URL-addressed (useDetailParam), so the detail
+  // param must not re-key the page: remounting would drop the surface that
+  // just opened. Every other search change keeps the remount.
+  const contentSearch = new URLSearchParams(location.search);
+  contentSearch.delete('localSession');
   return (
     <NewSessionPageContent
-      key={`${location.key}:${location.search}:${dailyPersonaId ?? ''}`}
+      key={contentSearch.toString() + ':' + (dailyPersonaId ?? '')}
       onToggleSidebar={onToggleSidebar ?? (() => {})}
       prefillNavigationKey={location.key}
       dailyPersonaId={dailyPersonaId}

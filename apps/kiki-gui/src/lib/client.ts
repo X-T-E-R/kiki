@@ -889,6 +889,8 @@ export interface PluginSummary {
   readonly icon?: string;
   readonly enabled: boolean;
   readonly globalEnabled: boolean;
+  /** Default for workspaces without their own choice; older servers omit it. */
+  readonly defaultEnabled?: boolean;
   readonly state: 'ok' | 'error';
   readonly skillCount: number;
   readonly mcpServerCount: number;
@@ -2808,6 +2810,14 @@ export class KikiClient {
 
   setPluginEnabled(pluginId: string, enabled: boolean): Promise<{ readonly ok: true }> {
     return this.run(this.rest.plugins.setEnabled(pluginId, enabled));
+  }
+
+  /**
+   * Set the master switch and the default for workspaces separately. The
+   * one-argument form above moves both together, as older servers expect.
+   */
+  setPluginState(pluginId: string, state: { readonly enabled: boolean; readonly defaultEnabled: boolean }): Promise<{ readonly ok: true }> {
+    return this.run(this.rest.plugins.setEnabled(pluginId, state.enabled, { defaultEnabled: state.defaultEnabled }));
   }
 
   removePlugin(pluginId: string, options?: { readonly deleteData?: boolean }): Promise<{ readonly ok: true }> {

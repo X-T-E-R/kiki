@@ -9,8 +9,8 @@ import {
 
 import { useI18n } from '../../i18n';
 import { ChipSelect } from '../ChipSelect';
-import { Hint } from '../controls';
 import { INPUT } from '../ui';
+import { SettingHelp } from './SettingHelp';
 import { FORM_LABEL, SettingsSelect } from './SettingsPrimitives';
 
 /**
@@ -123,8 +123,13 @@ const TABLES = [
   { field: 'overrides', label: 'st.modelEngine.overrides', help: 'st.modelEngine.overridesHelp' },
 ] as const;
 
-export function ModelEngineFields({ modelId, value, onChange, issue, disabled = false }: {
+export function ModelEngineFields({ modelId, value, onChange, issue, part = 'engine', disabled = false }: {
   modelId: string;
+  /**
+   * `engine`: aliases, size limits, thinking keys and the raw request tables.
+   * `prompts`: the structured prompt objects, which belong with the prose.
+   */
+  part?: 'engine' | 'prompts';
   value: ModelEngineDraft;
   onChange: (next: ModelEngineDraft) => void;
   disabled?: boolean;
@@ -155,7 +160,7 @@ export function ModelEngineFields({ modelId, value, onChange, issue, disabled = 
     ? <p role="alert" className="mt-1 text-[12px] font-normal text-danger">{issue.text}</p>
     : null);
   const border = (field: EngineField) => (issue?.field === field ? 'border-danger' : '');
-  const numberField = (field: 'maxInputSize' | 'maxOutputSize' | 'contextBudget', label: string) => (
+  const numberField = (field: 'maxInputSize' | 'maxOutputSize', label: string) => (
     <label className={FORM_LABEL}>
       {label}
       <input className={`${INPUT} mt-1 font-mono font-normal ${border(field)}`} inputMode="numeric" value={value[field]}
@@ -172,44 +177,9 @@ export function ModelEngineFields({ modelId, value, onChange, issue, disabled = 
     </label>
   );
 
-  return (
-    <fieldset disabled={disabled} className="min-w-0 space-y-3 pt-3 disabled:opacity-60" data-model-engine-fields={modelId}>
-      <p className="text-[12px] font-semibold text-ink">{t('st.modelEngine.title')}</p>
-      <div className="space-y-1">
-        <p className={FORM_LABEL}>{t('st.modelEngine.aliases')}</p>
-        <Hint>{t('st.modelEngine.aliasesHelp')}</Hint>
-        <ChipSelect values={value.aliases} knownOptions={[]} onChange={(aliases) => { set('aliases', aliases); }}
-          ariaLabel={t('st.modelEngine.aliasesAria', { model: modelId })}
-          addPlaceholder={t('st.chips.addPlaceholder')} removeLabel={(alias) => t('st.chips.removeAria', { value: alias })} />
-      </div>
-      <div className="grid gap-3 sm:grid-cols-3">
-        {numberField('maxInputSize', t('st.modelEngine.maxInput'))}
-        {numberField('maxOutputSize', t('st.modelEngine.maxOutput'))}
-        {numberField('contextBudget', t('st.modelEngine.contextBudget'))}
-      </div>
-      <Hint>{t('st.modelEngine.sizesHelp')}</Hint>
-      <div className="grid gap-3 sm:grid-cols-3">
-        {textField('offEffort', t('st.modelEngine.offEffort'))}
-        {textField('reasoningKey', t('st.modelEngine.reasoningKey'))}
-        <div className={FORM_LABEL}>
-          {t('st.modelEngine.adaptive')}
-          <div className="mt-1 font-normal">
-            <SettingsSelect<ModelEngineDraft['adaptiveThinking']>
-              variant="form"
-              ariaLabel={t('st.modelEngine.adaptive')}
-              dataAttr="data-model-engine-adaptive"
-              value={value.adaptiveThinking}
-              onChange={(next) => { set('adaptiveThinking', next); }}
-              choices={[
-                { value: 'inherit', label: t('st.modelEngine.adaptiveInherit') },
-                { value: 'on', label: t('st.modelEngine.adaptiveOn') },
-                { value: 'off', label: t('st.modelEngine.adaptiveOff') },
-              ]}
-            />
-          </div>
-        </div>
-      </div>
-      <Hint>{t('st.modelEngine.thinkingHelp')}</Hint>
+  if (part === 'prompts') {
+    return (
+      <fieldset disabled={disabled} className="min-w-0 space-y-1 disabled:opacity-60" data-model-prompt-structure={modelId}>
       <details data-model-cognition-editor className="pt-2">
         <summary className="cursor-pointer py-1 text-[13px] font-medium text-ink">{t('st.promptIdentity.cognitionTitle')}</summary>
         <div className="space-y-4 pt-3">
@@ -244,10 +214,46 @@ export function ModelEngineFields({ modelId, value, onChange, issue, disabled = 
           {issueLine('promptOverrides')}
         </div>
       </details>
+      </fieldset>
+    );
+  }
+
+  return (
+    <fieldset disabled={disabled} className="min-w-0 space-y-4 disabled:opacity-60" data-model-engine-fields={modelId}>
+      <div className="space-y-1">
+        <p className={FORM_LABEL}>{t('st.modelEngine.aliases')}</p>
+        <ChipSelect values={value.aliases} knownOptions={[]} onChange={(aliases) => { set('aliases', aliases); }}
+          ariaLabel={t('st.modelEngine.aliasesAria', { model: modelId })}
+          addPlaceholder={t('st.chips.addPlaceholder')} removeLabel={(alias) => t('st.chips.removeAria', { value: alias })} />
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {numberField('maxInputSize', t('st.modelEngine.maxInput'))}
+        {numberField('maxOutputSize', t('st.modelEngine.maxOutput'))}
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        {textField('offEffort', t('st.modelEngine.offEffort'))}
+        {textField('reasoningKey', t('st.modelEngine.reasoningKey'))}
+        <div className={FORM_LABEL}>
+          {t('st.modelEngine.adaptive')}
+          <div className="mt-1 font-normal">
+            <SettingsSelect<ModelEngineDraft['adaptiveThinking']>
+              variant="form"
+              ariaLabel={t('st.modelEngine.adaptive')}
+              dataAttr="data-model-engine-adaptive"
+              value={value.adaptiveThinking}
+              onChange={(next) => { set('adaptiveThinking', next); }}
+              choices={[
+                { value: 'inherit', label: t('st.modelEngine.adaptiveInherit') },
+                { value: 'on', label: t('st.modelEngine.adaptiveOn') },
+                { value: 'off', label: t('st.modelEngine.adaptiveOff') },
+              ]}
+            />
+          </div>
+        </div>
+      </div>
       {TABLES.map(({ field, label, help }) => (
         <label key={field} className={`${FORM_LABEL} block`}>
-          {t(label)}
-          <span className="mt-0.5 block text-[12px] font-normal leading-snug text-ink-faint">{t(help)}</span>
+          <span className="flex items-center gap-1.5">{t(label)}<SettingHelp>{t(help)}</SettingHelp></span>
           <textarea rows={3} spellCheck={false} data-model-engine={field}
             aria-invalid={issue?.field === field}
             className={`${INPUT} mt-1 h-auto py-1.5 font-mono text-[12px] font-normal leading-5 ${border(field)}`}

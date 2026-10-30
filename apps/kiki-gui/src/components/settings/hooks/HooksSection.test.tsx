@@ -146,29 +146,60 @@ describe('hooks settings (dual shape)', () => {
     expect(editor('legacy').querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('echo updated');
   });
 
-  it('blocks saving a new command rule until the command is filled, then removes it', async () => {
+  it('blocks saving a new rule until the inject text is filled, then removes it', async () => {
     await mount();
-    expect(container.textContent).toContain('No automatic actions configured yet.');
-    await click('Add command rule');
+    expect(container.textContent).toContain('No hooks yet.');
+    await click('Add rule');
+    expect(editor('declarative').querySelector<HTMLInputElement>('input.font-mono')!.value).toBe('rule-1');
+    await saveActions();
+    expect(client.patchConfig).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-hook-issue="text"]')).not.toBeNull();
+    const text = editor('declarative').querySelector<HTMLTextAreaElement>('textarea')!;
+    await change(text, 'Remember the goal');
+    await saveActions();
+    expect(config.hooks).toEqual({
+      schemaVersion: 2,
+      enabled: true,
+      disabled: [],
+      files: [],
+      rules: [{ id: 'rule-1', event: 'prompt.submit', priority: 100, enabled: true, match: {}, action: { type: 'inject', text: 'Remember the goal' } }],
+      legacy: [],
+    });
+    await act(async () => { ruleRow('declarative:rule-1').click(); });
+    await flush();
+    await click('Remove rule');
+    await saveActions();
+    expect((config.hooks as { rules: unknown[] }).rules).toEqual([]);
+  });
+
+  it('switches a new rule to a command rule inside the editor', async () => {
+    await mount();
+    await click('Add rule');
+    await act(async () => { editor('declarative').querySelector<HTMLButtonElement>('[data-hook-kind="command"]')!.click(); });
+    await flush();
     await saveActions();
     expect(client.patchConfig).not.toHaveBeenCalled();
     expect(container.querySelector('[data-hook-issue="command"]')).not.toBeNull();
     const command = editor('legacy').querySelector<HTMLTextAreaElement>('textarea')!;
     await change(command, 'echo hi');
     await saveActions();
-    expect(config.hooks).toEqual([{ event: 'PreToolUse', command: 'echo hi' }]);
-    await act(async () => { ruleRow('legacy:0').click(); });
+    expect(config.hooks).toEqual({
+      schemaVersion: 2,
+      enabled: true,
+      disabled: [],
+      files: [],
+      rules: [],
+      legacy: [{ event: 'PreToolUse', command: 'echo hi' }],
+    });
+    // Switching the command rule back to a text rule keeps one object.
+    await act(async () => { editor('legacy').querySelector<HTMLButtonElement>('[data-hook-kind="declarative"]')!.click(); });
     await flush();
-    await click('Remove rule');
-    await saveActions();
-    expect(config.hooks).toEqual([]);
+    expect(editor('declarative').querySelector<HTMLInputElement>('input.font-mono')!.value).toBe('rule-1');
   });
 
   it('reads a mixed v2 object and saves one rule edit without dropping anything else', async () => {
     config.hooks = structuredClone(V2_MIXED);
     await mount();
-    expect(container.textContent).toContain('Declarative rules');
-    expect(container.textContent).toContain('Command rules');
     expect(ruleRow('declarative:focus').textContent).toContain('Before each step');
     expect(ruleRow('declarative:watch').textContent).toContain('Observe');
     await act(async () => { ruleRow('declarative:focus').click(); });
@@ -189,7 +220,7 @@ describe('hooks settings (dual shape)', () => {
   it('converts a legacy array to v2 explicitly when the first declarative rule is added', async () => {
     config.hooks = [{ event: 'Stop', command: 'echo stop' }];
     await mount();
-    await click('Add declarative rule');
+    await click('Add rule');
     // The legacy rule moved into the v2 object; the new rule is open for editing.
     expect(ruleRow('legacy:0').textContent).toContain('Before an agent stops');
     expect(editor('declarative').querySelector<HTMLInputElement>('input.font-mono')!.value).toBe('rule-1');
@@ -206,6 +237,22 @@ describe('hooks settings (dual shape)', () => {
       rules: [{ id: 'rule-1', event: 'prompt.submit', priority: 100, enabled: true, match: {}, action: { type: 'inject', text: 'Guide the turn' } }],
       legacy: [{ event: 'Stop', command: 'echo stop' }],
     });
+  });
+
+  it('switches one declarative rule off from its row, without opening the editor', async () => {
+    config.hooks = structuredClone(V2_MIXED);
+    await mount();
+    const rowSwitch = container.querySelector<HTMLInputElement>('[data-hooks-row-switch="focus"] input[type="checkbox"]')!;
+    expect(rowSwitch.checked).toBe(true);
+    await act(async () => { rowSwitch.click(); });
+    await flush();
+    await saveActions();
+    expect((config.hooks as typeof V2_MIXED).rules[0]!.enabled).toBe(false);
+    expect((config.hooks as typeof V2_MIXED).rules[1]!.enabled).toBe(true);
+    // Clicking the row itself still only opens the rule for editing.
+    await act(async () => { ruleRow('declarative:watch').click(); });
+    await flush();
+    expect((config.hooks as typeof V2_MIXED).rules[1]!.enabled).toBe(true);
   });
 
   it('switches the whole declarative set off without touching command rules', async () => {
@@ -280,7 +327,9 @@ describe('hooks settings (dual shape)', () => {
     expect(container.querySelector('[data-hooks-reset-json]')!.hasAttribute('disabled')).toBe(true);
     expect(client.patchConfig).not.toHaveBeenCalled();
     await click('Use rule form');
-    expect(container.querySelector('[data-hook-editor]')).toBeNull();
+    // Back in the form, the selected rule is the one the user was looking at,
+    // and no stale issue line survives the mode round-trip.
+    expect(container.querySelector<HTMLInputElement>('[data-hook-editor="declarative"] input.font-mono')!.value).toBe('focus');
     expect(container.querySelector('[data-hook-issue]')).toBeNull();
   });
 
@@ -398,16 +447,16 @@ describe('handing a new hook rule to Kiki', () => {
   it('keeps an unsaved rule draft on screen: the handoff leaves it to the guard, not over it', async () => {
     client.createSession.mockResolvedValue({ id: 'hooks-ask-dirty' });
     await mount();
-    await click('Add command rule');
-    const command = editor('legacy').querySelector<HTMLTextAreaElement>('textarea')!;
-    await change(command, 'echo half-written');
+    await click('Add rule');
+    const text = editor('declarative').querySelector<HTMLTextAreaElement>('textarea')!;
+    await change(text, 'half-written guidance');
 
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-hooks-ask-kiki]')!.click(); });
     await flush(); await flush();
 
     // The rule the user is still editing is still there; the draft text and the
     // unsaved marker survive the navigation request.
-    expect(editor('legacy').querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('echo half-written');
+    expect(editor('declarative').querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('half-written guidance');
     const draftBar = container.querySelector<HTMLElement>('[data-settings-draft="hooks"]')!;
     expect(draftBar.dataset['dirty']).toBe('true');
   });

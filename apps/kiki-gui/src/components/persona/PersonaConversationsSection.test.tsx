@@ -100,19 +100,23 @@ describe('one persona\'s conversations', () => {
     expect(container.textContent).toContain('没有匹配的对话');
   });
 
-  it('moves the daily pointer through the real API and keeps the confirmation until it succeeds', async () => {
+  it('moves the daily pointer at once and the undo toast offers the previous home back', async () => {
     listSessions.mockResolvedValue({ items: [session({ id: 'home_lin' }), session({ id: 'topic_1', title: '排查构建' })], has_more: false });
     setHome.mockResolvedValue({ version: 1, archived: false, homeSessionId: 'topic_1' });
     const container = await render();
 
+    // No confirmation: the move is reversible with the same data, so it runs now.
     await act(async () => { container.querySelector<HTMLElement>('[data-persona-set-daily="topic_1"]')!.click(); });
-    const confirm = container.querySelector<HTMLButtonElement>('[data-confirm-dialog-confirm]')
-      ?? [...container.querySelectorAll('button')].find((button) => button.textContent === '确认更换')!;
-    await act(async () => { confirm.click(); });
+    for (let index = 0; index < 4; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
     // The klient signature is (id, sessionId): an object here would 400.
     expect(setHome).toHaveBeenCalledWith('lin-lan', 'topic_1');
-    expect(getToasts().some((toast) => toast.tone === 'success')).toBe(true);
+    const toast = getToasts().at(-1);
+    expect(toast?.undo?.run).toBeTypeOf('function');
+
+    // The inverse restores the home id captured before the write.
+    await act(async () => { await toast!.undo!.run(); });
+    expect(setHome).toHaveBeenLastCalledWith('lin-lan', 'home_lin');
   });
 
   it('reports a failed pointer change and leaves the choice on screen to retry', async () => {
@@ -121,13 +125,10 @@ describe('one persona\'s conversations', () => {
     const container = await render();
 
     await act(async () => { container.querySelector<HTMLElement>('[data-persona-set-daily="topic_1"]')!.click(); });
-    const confirm = container.querySelector<HTMLButtonElement>('[data-confirm-dialog-confirm]')
-      ?? [...container.querySelectorAll('button')].find((button) => button.textContent === '确认更换')!;
-    await act(async () => { confirm.click(); });
     for (let index = 0; index < 4; index += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
-    // No success is claimed, and the dialog is still there for the next try.
-    expect(getToasts().some((toast) => toast.tone === 'success')).toBe(false);
+    // No success is claimed, and the row is still there for the next try.
+    expect(getToasts().some((toast) => toast.undo !== undefined)).toBe(false);
     expect(getToasts().some((toast) => toast.tone === 'error')).toBe(true);
     expect(container.querySelector('[data-persona-set-daily="topic_1"]')).not.toBeNull();
   });

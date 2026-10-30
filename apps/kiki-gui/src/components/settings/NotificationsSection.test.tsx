@@ -27,11 +27,12 @@ const revealSecret = vi.fn();
 const imSessions = {
   snapshot: vi.fn(async () => ({ policy: { allowed: true, default_enabled: true }, instances: [], discoveries: [], bindings: [], strangers: [], voice_fallbacks: 0 })),
   catalog: vi.fn(async () => ({ personas: [], sessions: [] })),
+  setupCatalog: vi.fn(async () => ({ platforms: [] })),
   setPolicy: vi.fn(), paste: vi.fn(), check: vi.fn(), listen: vi.fn(), confirm: vi.fn(), dismiss: vi.fn(), updateBinding: vi.fn(), removeBinding: vi.fn(),
 };
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ scopeId: 'fixture', client: { notifications: api, revealSecret, imSessions } }),
+  useConnection: () => ({ scopeId: 'fixture', client: { notifications: api, revealSecret, imSessions, getConfig: async () => ({}) } }),
 }));
 vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser', notify: async () => {} }) }));
 
@@ -126,18 +127,25 @@ describe('NotificationsSection', () => {
     notifier.reset();
   });
 
-  it('shows each failure as its own state and tags send-only, unverified channels', async () => {
+  it('shows each failure as its own state and marks every alert channel as alerts only', async () => {
     const container = await render();
     const state = (id: string) => container.querySelector(`[data-notify-channel="${id}"] [data-notify-state]`)?.getAttribute('data-notify-state');
     expect(state('a')).toBe('ok');
     expect(state('b')).toBe('unauthorized');
     // The component is missing: that wins over the stale connection health.
     expect(state('c')).toBe('dependency');
-    expect(container.querySelector('[data-notify-channel="a"] [data-notify-tag="send-only"]')).not.toBeNull();
-    expect(container.querySelector('[data-notify-channel="a"] [data-notify-tag="unverified"]')).not.toBeNull();
-    expect(container.textContent).not.toMatch(/reply|Receive/i);
+    for (const id of ['a', 'b', 'c']) {
+      expect(container.querySelector(`[data-notify-channel="${id}"] [data-channel-capability="alerts"]`)).not.toBeNull();
+    }
     // No Save button: the page is instant apply.
     expect([...container.querySelectorAll('button')].some((button) => button.textContent === 'Save')).toBe(false);
+  });
+
+  it('keeps a paused master switch visible on the list and on each row', async () => {
+    const container = await render({ ...SETTINGS, global: { ...GLOBAL, enabled: false } });
+    expect(container.querySelector('[data-notify-paused-banner]')).not.toBeNull();
+    expect(container.querySelector('[data-notify-channel="a"] [data-notify-state]')?.textContent).toBe('Paused');
+    expect(container.querySelector('[data-notify-tab-paused]')).not.toBeNull();
   });
 
   it('writes the whole global object on a switch', async () => {
@@ -169,7 +177,9 @@ describe('NotificationsSection', () => {
     await click(container.querySelector('[data-notify-channel="b"] button[aria-expanded]'));
     expect(container.querySelector('[data-notify-channel="b"] [data-notify-guide="telegram"]')?.textContent).toContain('@BotFather');
     await click(container.querySelector('[data-notify-add-open]'));
-    expect(container.querySelector('[data-notify-add] [data-notify-guide="telegram"]')).not.toBeNull();
+    await click(container.querySelector('[data-channel-brand="telegram"]'));
+    await click(container.querySelector('[data-channel-route="push:telegram"]'));
+    expect(container.querySelector('[data-notify-add="telegram"] [data-notify-guide="telegram"]')).not.toBeNull();
   });
 
   it('reports a failed test send with the platform reason', async () => {
@@ -188,19 +198,25 @@ describe('NotificationsSection', () => {
     expect(container.querySelector('[data-notify-channel="a"] [data-notify-result]')!.textContent).toContain('Send a test notification');
   });
 
-  it('empty state, then an add form without script and with unavailable types named', async () => {
+  it('empty state, then one add panel listing both kinds, with unavailable types marked and no script', async () => {
     const container = await render({ ...SETTINGS, provider_instances: {}, channels: {}, credential_slots: {} });
     expect(container.querySelector('[data-notify-empty]')).not.toBeNull();
     await click(container.querySelector('[data-notify-add-open]'));
-    expect(container.querySelector('[data-notify-add]')).not.toBeNull();
+    const brands = [...container.querySelectorAll('[data-channel-brand]')].map((card) => card.getAttribute('data-channel-brand'));
+    expect(brands).toEqual(expect.arrayContaining(['wechat', 'telegram', 'feishu', 'qq', 'http', 'email', 'windows', 'other']));
+    const telegram = container.querySelector('[data-channel-brand="telegram"]')!;
+    expect(telegram.querySelector('[data-channel-capability="two-way"]')).not.toBeNull();
+    expect(telegram.querySelector('[data-channel-capability="alerts"]')).not.toBeNull();
     const unavailable = [...container.querySelectorAll('[data-notify-unavailable-provider]')].map((row) => row.getAttribute('data-notify-unavailable-provider'));
-    expect(unavailable).toEqual(['windows_toast', 'smtp']);
+    expect(unavailable).toEqual(expect.arrayContaining(['smtp', 'windows_toast']));
+    expect(container.querySelector<HTMLButtonElement>('[data-channel-brand="email"]')?.disabled).toBe(true);
     expect(container.textContent).not.toContain('Script');
+    expect(container.querySelector('[data-im-wechat]')).toBeNull();
   });
 
-  it('opens the add form when a search hit or link targets its card', async () => {
+  it('opens the add panel when a search hit or link targets its card', async () => {
     const container = await render(SETTINGS, '/settings/notifications#st-card-notify-add');
-    expect(container.querySelector('#st-card-notify-add [data-notify-add]')).not.toBeNull();
+    expect(container.querySelector('#st-card-notify-add [data-channel-brands]')).not.toBeNull();
   });
 
   it('creates the instance and slot first, then the channel', async () => {
@@ -208,6 +224,9 @@ describe('NotificationsSection', () => {
     api.setCredential.mockResolvedValue({ configured: true });
     const container = await render({ ...SETTINGS, provider_instances: {}, channels: {}, credential_slots: {} });
     await click(container.querySelector('[data-notify-add-open]'));
+    await click(container.querySelector('[data-channel-brand="telegram"]'));
+    await click(container.querySelector('[data-channel-route="push:telegram"]'));
+    expect(container.querySelector('[data-notify-add-connection]')).toBeNull();
     const form = container.querySelector('[data-notify-add]')!;
     const setInput = async (input: HTMLInputElement, value: string) => {
       await act(async () => {
@@ -237,8 +256,9 @@ describe('NotificationsSection', () => {
     expect(container.querySelector('[data-notify-tab="accounts"]')?.getAttribute('aria-selected')).toBe('true');
     const accounts = container.querySelector('#notify-panel-accounts')!;
     expect(accounts.classList.contains('hidden')).toBe(false);
-    expect(accounts.querySelector('#st-card-im-session')).not.toBeNull();
-    expect(accounts.querySelector('#st-card-notify-channels')).not.toBeNull();
+    // One list: the two-way anchor sits inside the channels card.
+    expect(accounts.querySelector('#st-card-notify-channels #st-card-im-session')).not.toBeNull();
+    expect(accounts.querySelectorAll('[data-settings-card]')).toHaveLength(1);
     // A channel needing attention marks the tab that holds it.
     expect(container.querySelector('[data-notify-tab-attention="accounts"]')).not.toBeNull();
 

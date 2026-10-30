@@ -17,10 +17,10 @@ import type { SessionSeenMap } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { BOTS_QUERY_KEY, useBotRoomApi } from '../../lib/botRooms';
 import { pushToast } from '../../lib/toasts';
-import { registerOverlay } from '../../lib/uiBusy';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
+import { AnchoredPopover } from '../overlays/AnchoredPopover';
 import { PersonaAvatar, personaAvatarOf, type PersonaAvatarData } from '../persona/PersonaAvatar';
 import { usePersonaList } from '../persona/usePersonas';
 import { CreateRoomDialog } from '../room/CreateRoomDialog';
@@ -124,12 +124,10 @@ export function SidebarBotRoomGroups({
             </button>
           ) : null}
         </div>
-        {enableOpen ? (
-          <EnableBotMenu anchor={enableButton.current} personas={candidates}
-            busyId={enable.isPending ? enable.variables?.id : undefined}
-            onPick={(persona) => { enable.mutate(persona); }}
-            onClose={() => { setEnableOpen(false); }} />
-        ) : null}
+        <EnableBotMenu open={enableOpen} anchor={enableButton} personas={candidates}
+          busyId={enable.isPending ? enable.variables?.id : undefined}
+          onPick={(persona) => { enable.mutate(persona); }}
+          onClose={() => { setEnableOpen(false); }} />
         <ul className="flex flex-col gap-px">
           {bots.map((bot) => {
             const home = bot.homeSessionId === undefined ? undefined : sessionById.get(bot.homeSessionId);
@@ -203,53 +201,43 @@ export function AvatarStack({
   );
 }
 
-const MENU_WIDTH = 240;
-
 function EnableBotMenu({
+  open,
   anchor,
   personas,
   busyId,
   onPick,
   onClose,
 }: {
-  readonly anchor: HTMLElement | null;
+  readonly open: boolean;
+  readonly anchor: React.RefObject<HTMLButtonElement | null>;
   readonly personas: readonly PersonaSummary[];
   readonly busyId: string | undefined;
   readonly onPick: (persona: PersonaSummary) => void;
   readonly onClose: () => void;
 }) {
   const { t } = useI18n();
-  const menuRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const unregister = registerOverlay('sidebar-enable-bot');
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { onClose(); anchor?.focus(); }
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof HTMLElement) || event.target.closest('[data-enable-bot-menu], [data-bot-enable-toggle]') === null) onClose();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('pointerdown', onPointerDown, true);
-    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-    return () => {
-      unregister();
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('pointerdown', onPointerDown, true);
-    };
-  }, [anchor, onClose]);
-  const rect = anchor?.getBoundingClientRect();
-  const left = Math.max(8, Math.min((rect?.right ?? MENU_WIDTH) - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8));
   return (
-    <div ref={menuRef} data-enable-bot-menu role="menu" aria-label={t('bot.enable')}
-      style={{ left, top: (rect?.bottom ?? 0) + 4, width: MENU_WIDTH }}
-      className="anim-enter fixed z-50 max-h-[min(60vh,360px)] overflow-y-auto rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
-      onKeyDown={(event) => {
-        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-        event.preventDefault();
+    <AnchoredPopover
+      open={open}
+      onClose={onClose}
+      anchorRef={anchor}
+      id="sidebar-enable-bot"
+      label={t('bot.enable')}
+      role="menu"
+      widthClassName="w-60"
+      className="p-1"
+      data={{ 'data-enable-bot-menu': '' }}
+      onSurfaceKeyDown={(event) => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return false;
         const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+        if (items.length === 0) return false;
+        event.preventDefault();
         const index = items.indexOf(document.activeElement as HTMLElement);
         items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
-      }}>
+        return true;
+      }}
+    >
       <p className="px-3 pt-2 pb-1 text-[12px] font-medium text-ink-faint">{t('bot.enable')}</p>
       {personas.map((persona) => (
         <button key={persona.id} type="button" role="menuitem" data-enable-bot={persona.id}
@@ -262,6 +250,6 @@ function EnableBotMenu({
           {busyId === persona.id ? <span className="status-dot-busy ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-ink-faint" /> : null}
         </button>
       ))}
-    </div>
+    </AnchoredPopover>
   );
 }

@@ -10,7 +10,7 @@
  * process's computer MCP children and whether the write behind it persisted.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
@@ -27,6 +27,7 @@ import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../../ui';
 import { useDirtyGuard } from '../../dirtyGuard';
 import { McpSecretRows, mcpSecretLines } from '../McpSecretRows';
 import { AdvancedDetails } from '../fields';
+import { RowFrame } from '../RowFrame';
 import {
   FORM_LABEL,
   SettingsDraftFooter,
@@ -60,6 +61,26 @@ function entryKey(entry: Pick<McpManagedServer, 'source' | 'name'>): string {
   return `${entry.source}:${entry.name}`;
 }
 
+/**
+ * The connections heading row owns the visible 添加 button; the card renders
+ * a hidden one that opens the same view, so the add flow stays one
+ * implementation. The heading's click reaches the card through this context.
+ */
+const ComputerAddContext = createContext<(() => void) | null>(null);
+
+/** The 添加 button the computer connections heading row shows. */
+export function AddComputerAction() {
+  const { t } = useI18n();
+  const openAdd = useContext(ComputerAddContext);
+  return (
+    <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-computer-add-heading
+      onClick={() => { openAdd?.(); }}>
+      <Icon name="plus" size={12} />
+      {t('st.computer.add')}
+    </button>
+  );
+}
+
 export function ComputerConnectionCard({ platform, planBinary, summary, footer }: {
   /** Server platform, used for a new entry's default args. */
   platform: string | undefined;
@@ -84,6 +105,8 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
 
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [draft, setDraft] = useState<ComputerDraft | null>(null);
+  /** The add view: the two ways in, one of which is the manual form. */
+  const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; output: string } | null>(null);
@@ -107,6 +130,7 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
   /** Replace the open draft. The escape route for a new connection is Discard. */
   const applyDraft = (next: ComputerDraft | null) => {
     setDraft(next);
+    setAdding(false);
     setSelectedKey(next?.original === undefined ? null : entryKey(next.original));
     setTestResult(null);
     setStopResult(null);
@@ -229,64 +253,35 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
   const draftWindowsNotReady = draftWindowsReadiness !== undefined && draftWindowsReadiness !== 'ready';
   const draftWindowsUnverified = draftWindowsReadiness === 'unverified';
 
-  const list = (
-    <nav aria-label={t('st.computer.connectionsTitle')} className="min-w-0 space-y-2">
-      {query.isLoading ? <p className="text-[13px] text-ink-faint" role="status">{t('st.computer.loading')}</p> : null}
-      {query.isError ? <InlineError error={query.error} /> : null}
-      {query.isSuccess && entries.length === 0 ? (
-        <p className="py-1 text-[13px] text-ink-soft" data-computer-empty>{t('st.computer.empty')}</p>
-      ) : null}
-      {entries.length > 0 ? (
-        <ul className="space-y-0.5">
-          {entries.map((entry) => {
-            const kind = computerExecutorKind(entry.config);
-            return (
-              <li key={entryKey(entry)}>
-                <button
-                  type="button"
-                  data-computer-connection={entry.name}
-                  data-computer-connection-kind={kind}
-                  aria-current={selectedKey === entryKey(entry) ? 'true' : undefined}
-                  onClick={() => { open(draftForEntry(entry)); }}
-                  className="row-interactive flex w-full min-w-0 flex-col items-start gap-0.5 py-1.5 pr-2 pl-3 text-left"
-                >
-                  <span className="flex w-full min-w-0 items-center gap-1.5">
-                    <span className="truncate text-[13px] text-ink">{entry.name}</span>
-                    {kind === undefined ? null : (
-                      <Tag>{t(kind === 'windows-mcp' ? 'st.computer.kind.windowsMcp' : 'st.computer.kind.cua')}</Tag>
-                    )}
-                    {entry.mutable ? null : (
-                      <Tag>{entry.plugin !== undefined ? t('st.mcp.fromPlugin', { name: entry.plugin.name }) : t('st.mcp.readOnly')}</Tag>
-                    )}
-                  </span>
-                  <span className="max-w-full truncate font-mono text-[11px] text-ink-faint" title={commandSummary(entry.config)}>
-                    {commandSummary(entry.config)}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
-    </nav>
-  );
+  /**
+   * One row per connection: the name, its kind and origin as quiet tags, and
+   * the command it runs. Clicking the summary opens the editor inline under
+   * the row — the list stays visible — and never changes state; the 添加 menu
+   * at the top offers the two ways in (a manual entry, or registering an
+   * already installed Windows-MCP environment on Windows).
+   */
+  /** The editor an open row expands inline under itself; a new connection's
+   *  editor renders in place under the list header, since it has no row yet. */
+  const renderDetail = (): ReactNode => {
+    if (draft === null) return null;
+    return (
+      <div className="min-w-0 space-y-4" data-computer-detail={draft.original?.name ?? 'new'}>
+        {draftWindowsNotReady ? (
+          <p className="text-[12px] text-amber-ink" data-computer-windows-mcp-not-ready>
+            {t(draftWindowsUnverified ? 'st.computer.windowsMcp.unverified' : 'st.computer.windowsMcp.notServeReady')}
+          </p>
+        ) : null}
 
-  const detail = draft === null ? null : (
-    <div className="min-w-0 space-y-4">
-      <button type="button" data-computer-back
-        className="inline-flex items-center gap-1 rounded text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:underline"
-        onClick={() => { open(null); }}>
-        <Icon name="arrowLeft" size={12} />
-        {t('st.computer.connectionsTitle')}
-      </button>
-
-      {draftWindowsNotReady ? (
-        <p className="text-[12px] text-amber-ink" data-computer-windows-mcp-not-ready>
-          {t(draftWindowsUnverified ? 'st.computer.windowsMcp.unverified' : 'st.computer.windowsMcp.notServeReady')}
-        </p>
-      ) : null}
-
-      <fieldset disabled={saving || stopping || readOnly} className="min-w-0 space-y-4">
+        {/* Where the command comes from, before the form asks for it: the one
+            click path first (the header's install writes this entry), then what
+            a hand entry actually is. */}
+        {draft.original !== undefined || planBinary !== undefined ? null : (
+          <ol className="max-w-[62ch] list-decimal space-y-0.5 pl-4 text-[12px] leading-[18px] text-ink-soft marker:text-ink-faint" data-computer-mcp-steps>
+            <li>{t('st.computer.mcpSteps.1')}</li>
+            <li>{t('st.computer.mcpSteps.2')}</li>
+          </ol>
+        )}
+        <fieldset disabled={saving || stopping || readOnly} className="min-w-0 space-y-4">
         <div className="space-y-1.5">
           <label className={FORM_LABEL} htmlFor="computer-name">{t('st.computer.fieldName')}</label>
           <div className="flex items-center gap-3">
@@ -465,8 +460,59 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
           onDiscard={() => { applyDraft(draft.original === undefined ? null : draftForEntry(draft.original)); }}
         />
       )}
+      </div>
+    );
+  };
+
+  const list = (
+    <div aria-label={t('st.computer.connectionsTitle')} className="min-w-0">
+      {query.isLoading ? <p className="text-[13px] text-ink-faint" role="status">{t('st.computer.loading')}</p> : null}
+      {query.isError ? <InlineError error={query.error} /> : null}
+      {query.isSuccess && entries.length === 0 ? (
+        <p className="py-1 text-[13px] text-ink-soft" data-computer-empty>{t('st.computer.empty')}</p>
+      ) : null}
+      {entries.length > 0 ? (
+        <div className="divide-y divide-hairline/70" data-computer-list>
+          {entries.map((entry) => {
+            const kind = computerExecutorKind(entry.config);
+            const openRow = selectedKey === entryKey(entry);
+            return (
+              <RowFrame
+                key={entryKey(entry)}
+                data={{
+                  'data-computer-connection': entry.name,
+                  'data-computer-connection-kind': kind,
+                }}
+                open={openRow}
+                onToggle={() => { if (openRow) open(null); else open(draftForEntry(entry)); }}
+                bodyId={`computer-row-body-${entry.source}-${entry.name}`}
+                expandLabel={t('st.computer.menu.openRow', { name: entry.name })}
+                name={entry.name}
+                marks={(
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    {kind === undefined ? null : (
+                      <Tag>{t(kind === 'windows-mcp' ? 'st.computer.kind.windowsMcp' : 'st.computer.kind.cua')}</Tag>
+                    )}
+                    {entry.mutable ? null : (
+                      <Tag>{entry.plugin !== undefined ? t('st.mcp.fromPlugin', { name: entry.plugin.name }) : t('st.mcp.readOnly')}</Tag>
+                    )}
+                  </span>
+                )}
+                subtitle={(
+                  <span className="max-w-full truncate font-mono text-[11px] text-ink-faint" title={commandSummary(entry.config)}>
+                    {commandSummary(entry.config)}
+                  </span>
+                )}
+              >
+                {openRow && draft !== null ? renderDetail() : null}
+              </RowFrame>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
+
 
   const stopConsequences = draft?.original === undefined ? [] : [
     commandSummary(draft.original.config),
@@ -474,21 +520,39 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
   ];
 
   return (
-    <div className="min-w-0 space-y-3" data-computer-connections data-computer-view={detail === null ? 'list' : 'detail'}>
-      {detail ?? (
-        <>
-          <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
-            <div className="mr-auto min-w-0">{summary}</div>
+    <ComputerAddContext.Provider value={() => { setAdding(true); }}>
+    <div className="min-w-0 space-y-3" data-computer-connections data-computer-view={adding ? 'add' : 'list'}>
+      {adding ? (
+        <div className="min-w-0 space-y-4" data-computer-add-view>
+          <button type="button" data-computer-back
+            className="inline-flex items-center gap-1 rounded text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:underline"
+            onClick={() => { setAdding(false); }}>
+            <Icon name="arrowLeft" size={12} />{t('st.computer.connectionsTitle')}
+          </button>
+          <div className="space-y-2">
             <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-computer-new
               onClick={() => { open(newComputerDraft(platform, planBinary)); }}>
               <Icon name="plus" size={12} />
               {t('st.computer.setupEntry')}
             </button>
+            {footer}
           </div>
+        </div>
+      ) : (
+        <>
+          {/* The visible add button is the heading row's; this one opens the
+              same view for deep links and tests, hidden from the page. */}
+          <button type="button" className="hidden" data-computer-add aria-hidden="true" tabIndex={-1}
+            disabled={saving || stopping}
+            onClick={() => { setAdding(true); }} />
+          {summary}
           {list}
-          {footer}
         </>
       )}
+      {/* A connection being created has no row yet: its editor renders in
+          place under the list header, the way an existing one renders under
+          its own row. */}
+      {draft !== null && !adding && selectedKey === null ? renderDetail() : null}
       <ConfirmDialog
         open={confirmingStop}
         overlayId="confirm-computer-stop"
@@ -501,5 +565,6 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
         onConfirm={() => { void stop(); }}
       />
     </div>
+    </ComputerAddContext.Provider>
   );
 }

@@ -20,8 +20,8 @@ import { useI18n } from '../../../i18n';
 import type { KikiClient } from '../../../lib/client';
 import { connectionsApi, fingerprint, remoteProfileFor, sshRemoteHomeLabel } from '../../../lib/remoteConnections';
 import type { SshHost } from '../../../lib/ssh';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../../Dialog';
 import { FeedbackLine, Toggle, type Feedback } from '../../controls';
+import { SidePanel } from '../../SidePanel';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { SettingField } from '../fields';
 import { connectionFailureText } from './parts';
@@ -86,8 +86,8 @@ export function AddConnectionBySshDialog({ client, profiles, defaultHome, initia
   const needsEnsure = plan?.state === 'ensure_required';
   const canSubmit = profile !== undefined && plan !== null && label.trim() !== '' && !busy;
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const submit = async (event?: React.FormEvent) => {
+    event?.preventDefault();
     if (!canSubmit || profile === undefined || plan === null) return;
     setBusy(true);
     setFailure(null);
@@ -107,14 +107,18 @@ export function AddConnectionBySshDialog({ client, profiles, defaultHome, initia
     }
   };
 
+  const formId = 'remote-connection-ssh-form';
   return (
-    <Dialog onClose={onClose} overlayId="remote-connection-ssh" ariaLabel={t('st.ssh.remote.addTitle')}
-      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} max-h-[calc(100dvh-2rem)] overflow-y-auto`}>
-      <form className="space-y-5" onSubmit={(event) => { void submit(event); }} data-remote-ssh-form>
-        <div>
-          <h2 className="text-[14px] font-medium text-ink">{t('st.ssh.remote.addTitle')}</h2>
-          <p className="mt-1 max-w-[62ch] text-[12.5px] leading-snug text-ink-soft">{t('st.ssh.remote.addBody')}</p>
-        </div>
+    <SidePanel onClose={onClose} overlayId="remote-connection-ssh" title={t('st.ssh.remote.addTitle')}
+      description={t('st.ssh.remote.addBody')} width="lg"
+      footer={<>
+        <button type="button" className={SECONDARY_BUTTON} onClick={onClose}>{t('common.cancel')}</button>
+        <button type="submit" form={formId} data-remote-ssh-submit className={PRIMARY_BUTTON} disabled={!canSubmit}
+          onClick={(event) => { event.preventDefault(); void submit(); }}>
+          {busy ? t('st.ssh.remote.working') : t(needsEnsure ? 'st.ssh.remote.start' : 'st.ssh.remote.attachAction')}
+        </button>
+      </>}>
+      <form id={formId} className="space-y-5" onSubmit={(event) => { event.preventDefault(); void submit(); }} data-remote-ssh-form>
 
         <SettingField label={t('st.ssh.remote.profileField')} htmlFor="remote-ssh-profile" layout="stack"
           help={t('st.ssh.remote.profileHint')}>
@@ -171,14 +175,7 @@ export function AddConnectionBySshDialog({ client, profiles, defaultHome, initia
         </SettingField>
 
         <FeedbackLine feedback={failure} />
-
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <button type="button" className={SECONDARY_BUTTON} onClick={onClose}>{t('common.cancel')}</button>
-          <button type="submit" data-remote-ssh-submit className={PRIMARY_BUTTON} disabled={!canSubmit}>
-            {busy ? t('st.ssh.remote.working') : t(needsEnsure ? 'st.ssh.remote.start' : 'st.ssh.remote.attachAction')}
-          </button>
-        </div>
       </form>
-    </Dialog>
+    </SidePanel>
   );
 }

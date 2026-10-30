@@ -17,11 +17,12 @@
  * focuses the box from anywhere outside an editable surface.
  *
  * The session row menu opens from the hover ⋯ button or a right-click
- * anywhere on the row; the undo confirmation and rename dialog build on the
- * shared `Dialog` primitive.
+ * anywhere on the row; the undo confirmation rides the shared ConfirmDialog
+ * and the header menus the shared AnchoredPopover.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import { useInfiniteQuery, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useLocation } from 'react-router-dom';
 
@@ -36,6 +37,7 @@ import {
   type SessionActionContext,
 } from '@kiki/session-core/commands';
 import { appendToDraft, requestComposerInsert, threadRefLink } from '@kiki/session-core/composer';
+import { errorText } from '@kiki/session-core/i18n';
 import {
   formatElapsedClock,
   hasActiveSessionFilters,
@@ -96,8 +98,8 @@ import { RelativeTime } from './RelativeTime';
 import { useSessionSeen } from './ActivityPage';
 import { useSessionActivity } from './ActivityPanel';
 import { ConfirmDialog } from './ConfirmDialog';
-import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
+import { AnchoredPopover } from './overlays/AnchoredPopover';
 import { LifeMark } from './LifeMark';
 import { DisclosureChevron, Icon, Spinner } from './icons';
 import { SpaceSwitcher } from './SpaceSwitcher';
@@ -518,12 +520,14 @@ export function Sidebar({
     isLoading: boolean;
     isError: boolean;
     error: Error | null;
+    /** Absent (undefined) while the first page has not landed. */
+    data?: unknown;
     hasNextPage?: boolean;
     isFetchingNextPage?: boolean;
     fetchNextPage?: () => Promise<unknown>;
   };
   /** The room summaries fetch; a failure is shown, never read as "no rooms". */
-  roomsQuery?: { readonly isError: boolean };
+  roomsQuery?: { readonly isError: boolean; readonly data?: unknown };
   workspaceOptions: readonly WorkspaceCatalogEntry[];
   filters: SessionListFilters;
   onFiltersChange: (filters: SessionListFilters) => void;
@@ -1457,31 +1461,31 @@ export function Sidebar({
           </div>
         ) : null}
         {sessionsQuery.isError ? (
-          <div className="mx-1 mt-2 border-l-2 border-danger py-1 pl-3">
-            <p className="text-[12.5px] font-medium text-danger">{t('sidebar.loadFailed')}</p>
-            <p className="mt-0.5 text-[12px] text-ink-soft">
-              {sessionsQuery.error?.message ?? t('common.unknownError')}
-            </p>
+          <p className="mx-2 mt-2 text-[12px] leading-5 text-ink-soft" data-sessions-error>
+            {`${t('sidebar.loadFailed')} · `}
+            {errorText(locale, sessionsQuery.error)}
+            {' · '}
             <button
               type="button"
               onClick={() => void queryClient.invalidateQueries({ queryKey: ['sessions'] })}
-              className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
+              className="font-medium text-ink underline underline-offset-2"
             >
               {t('common.retry')}
             </button>
-          </div>
+          </p>
         ) : null}
         {roomsQuery?.isError === true ? (
-          <div className="mx-1 mt-2 border-l-2 border-danger py-1 pl-3" data-rooms-error>
-            <p className="text-[12.5px] font-medium text-danger">{t('sidebar.roomsLoadFailed')}</p>
+          <p className="mx-2 mt-2 text-[12px] leading-5 text-ink-soft" data-rooms-error>
+            {t('sidebar.roomsLoadFailed')}
+            {' · '}
             <button
               type="button"
               onClick={() => void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY })}
-              className="mt-1 text-[12px] font-medium text-ink underline underline-offset-2"
+              className="font-medium text-ink underline underline-offset-2"
             >
               {t('common.retry')}
             </button>
-          </div>
+          </p>
         ) : null}
         {sessionGroups.length === 0 && !sessionsQuery.isLoading && !sessionsQuery.isError ? (
           <div className="px-2 pt-4" data-sidebar-empty>
@@ -1807,7 +1811,7 @@ export function Sidebar({
 
       {openMenu === 'view' ? (
         <SidebarViewMenu
-          anchor={viewMenuButtonRef.current}
+          anchor={viewMenuButtonRef}
           onClose={() => { setOpenMenu(null); }}
           groupBy={groupBy}
           onGroupBy={onGroupBy}
@@ -1817,7 +1821,7 @@ export function Sidebar({
       ) : null}
       {openMenu === 'filter' ? (
         <SidebarFilterMenu
-          anchor={filterMenuButtonRef.current}
+          anchor={filterMenuButtonRef}
           onClose={() => { setOpenMenu(null); }}
           filters={filters}
           onToggleStatus={toggleStatus}
@@ -1889,8 +1893,9 @@ export function Sidebar({
           onNewRoom={() => { setRoomDraft(joiningRoom); setJoiningRoom(null); }} />
       ) : null}
       {renaming !== null ? (
-        <RenameDialog
-          currentTitle={renaming.kind === 'room' ? renaming.title : renaming.session.title}
+        <SidebarRenameEditor
+          key={renaming.id}
+          item={renaming}
           heading={renaming.kind === 'room' ? t('room.renameTitle') : t('rename.title')}
           onSubmit={async (title) => {
             if (renaming.kind === 'room') await roomApi.updateRoom(renaming.id, { name: title });
@@ -1919,43 +1924,26 @@ export function Sidebar({
         />
       ) : null}
       {confirmUndo !== null ? (
-        <Dialog
-          onClose={() => { setConfirmUndo(null); }}
-          ariaLabel={t('undo.title')}
+        <ConfirmDialog
+          open
+          title={t('undo.title')}
+          body={t('undo.bodyNamed', { title: resolveTitle(sessionLabel(confirmUndo, untitled)) })}
+          confirmLabel={t('undo.confirm')}
           overlayId="sidebar-confirm-undo"
-        >
-          <h2 className="font-display text-[18px] font-semibold text-ink">{t('undo.title')}</h2>
-          <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">
-            {t('undo.bodyNamed', { title: resolveTitle(sessionLabel(confirmUndo, untitled)) })}
-          </p>
-          <div className="mt-4 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => { setConfirmUndo(null); }}
-              className="rounded-md border border-hairline px-3 py-1.5 text-[13px] text-ink-soft transition-colors hover:text-ink"
-            >
-              {t('common.cancel')}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const session = confirmUndo;
-                setConfirmUndo(null);
-                setActionError(null);
-                void undoLastTurn(actionContext, session)
-                  .then(() => {
-                    setActionNotice(t('action.undoDone', { title: resolveTitle(sessionLabel(session, untitled)) }));
-                  })
-                  .catch((error: unknown) => {
-                    setActionError(t('action.undoFailed', { detail: sessionActionErrorText(locale, error) }));
-                  });
-              }}
-              className="rounded-md bg-danger px-3 py-1.5 text-[13px] font-medium text-on-danger transition-colors hover:bg-danger/90"
-            >
-              {t('undo.confirm')}
-            </button>
-          </div>
-        </Dialog>
+          onConfirm={() => {
+            const session = confirmUndo;
+            setConfirmUndo(null);
+            setActionError(null);
+            void undoLastTurn(actionContext, session)
+              .then(() => {
+                setActionNotice(t('action.undoDone', { title: resolveTitle(sessionLabel(session, untitled)) }));
+              })
+              .catch((error: unknown) => {
+                setActionError(t('action.undoFailed', { detail: sessionActionErrorText(locale, error) }));
+              });
+          }}
+          onCancel={() => { setConfirmUndo(null); }}
+        />
       ) : null}
       {confirmArchiveWorktree?.worktree !== undefined ? (
         <WorktreeArchiveDialog
@@ -3109,74 +3097,22 @@ function MenuMark({ on }: { on: boolean }) {
   );
 }
 
-/** Shared anchored-popover plumbing: measured clamp, Escape, outside click, focus entry/arrow nav/restore. */
-function useAnchoredMenu(anchor: HTMLElement | null, onClose: () => void, overlayId: string, selector: string) {
-  const menuRef = useRef<HTMLDivElement>(null);
-  const returnFocusRef = useRef<HTMLElement | null>(null);
-  const [size, setSize] = useState<{ width: number; height: number } | undefined>(undefined);
-  useLayoutEffect(() => {
-    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const node = menuRef.current;
-    if (node !== null) setSize({ width: node.offsetWidth, height: node.offsetHeight });
-    node?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
-  }, []);
 
-  const restoreTriggerFocus = () => {
-    const trigger = returnFocusRef.current;
-    if (trigger === null || trigger === document.body || !trigger.isConnected) return;
-    trigger.focus();
-  };
-
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-
-  useEffect(() => {
-    const unregister = registerOverlay(overlayId);
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      const owned = menuRef.current?.contains(document.activeElement) === true;
-      closeRef.current();
-      if (owned) restoreTriggerFocus();
-    };
-    // The triggers are excluded so their own click can toggle the menu shut.
-    const onPointerDown = (event: PointerEvent) => {
-      if (!(event.target instanceof HTMLElement) || event.target.closest(selector) === null) {
-        closeRef.current();
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('pointerdown', onPointerDown, true);
-    return () => {
-      unregister();
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('pointerdown', onPointerDown, true);
-    };
-  }, [overlayId, selector]);
-  const rect = anchor?.getBoundingClientRect();
-  const position = clampOverlayPosition(
-    (rect?.right ?? MENU_WIDTH) - MENU_WIDTH,
-    (rect?.bottom ?? 0) + 4,
-    size ?? { width: MENU_WIDTH, height: 0 },
-    { width: window.innerWidth, height: window.innerHeight },
-  );
-  const onMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
-    const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])];
-    if (items.length === 0) return;
-    event.preventDefault();
-    const index = items.indexOf(document.activeElement as HTMLButtonElement);
-    const next = event.key === 'Home' ? 0
-      : event.key === 'End' ? items.length - 1
-      : event.key === 'ArrowDown' ? (index + 1) % items.length
-      : (index - 1 + items.length) % items.length;
-    items[next]?.focus();
-  };
-  return { menuRef, onMenuKeyDown, style: { left: position.left, top: position.top, width: MENU_WIDTH } };
+/** Menu-key semantics shared by the sidebar's anchored menus: ↑↓/Home/End
+ * rove between items, consumed here so AnchoredPopover only owns Escape. */
+function menuArrowKeys(event: React.KeyboardEvent<HTMLDivElement>): boolean {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return false;
+  const items = [...(event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])];
+  if (items.length === 0) return false;
+  event.preventDefault();
+  const index = items.indexOf(document.activeElement as HTMLButtonElement);
+  const next = event.key === 'Home' ? 0
+    : event.key === 'End' ? items.length - 1
+    : event.key === 'ArrowDown' ? (index + 1) % items.length
+    : (index - 1 + items.length) % items.length;
+  items[next]?.focus();
+  return true;
 }
-
-const MENU_PANEL =
-  'anim-enter fixed z-50 max-h-[min(72vh,480px)] overflow-y-auto rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]';
 
 /** Arrangement only: grouping and sorting. Nothing here hides a session. */
 function SidebarViewMenu({
@@ -3187,7 +3123,7 @@ function SidebarViewMenu({
   sortBy,
   onSortBy,
 }: {
-  anchor: HTMLElement | null;
+  anchor: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
   groupBy: 'time' | 'workspace' | 'none';
   onGroupBy: (groupBy: 'time' | 'workspace' | 'none') => void;
@@ -3195,7 +3131,6 @@ function SidebarViewMenu({
   onSortBy: (sortBy: SessionSortOrder) => void;
 }) {
   const { t } = useI18n();
-  const { menuRef, onMenuKeyDown, style } = useAnchoredMenu(anchor, onClose, 'sidebar-view-menu', '[data-view-menu], [data-view-menu-toggle]');
   const layoutPrefs = useLayoutPreferences();
   const pinnedSet = useMemo(() => new Set<SidebarNavKey>(layoutPrefs.pinnedNavItems), [layoutPrefs.pinnedNavItems]);
   const groups: readonly { value: 'time' | 'workspace' | 'none'; label: string }[] = [
@@ -3210,7 +3145,19 @@ function SidebarViewMenu({
     title: t('sidebar.sortTitle'),
   };
   return (
-    <div ref={menuRef} onKeyDown={onMenuKeyDown} data-view-menu role="menu" aria-label={t('sidebar.viewMenu')} style={style} className={MENU_PANEL}>
+    <AnchoredPopover
+      open
+      onClose={onClose}
+      anchorRef={anchor}
+      id="sidebar-view-menu"
+      label={t('sidebar.viewMenu')}
+      role="menu"
+      align="end"
+      widthClassName="w-[232px]"
+      className="p-1"
+      data={{ 'data-view-menu': '' }}
+      onSurfaceKeyDown={menuArrowKeys}
+    >
       <p className={MENU_HEADING}>{t('sidebar.viewGroupHeading')}</p>
       {groups.map((option) => (
         <button
@@ -3271,7 +3218,7 @@ function SidebarViewMenu({
           </button>
         );
       })}
-    </div>
+    </AnchoredPopover>
   );
 }
 
@@ -3292,7 +3239,7 @@ function SidebarFilterMenu({
   onToggleWorkspacePin,
   onManageWorkspaces,
 }: {
-  anchor: HTMLElement | null;
+  anchor: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
   filters: SessionListFilters;
   onToggleStatus: (status: SessionStatusFilter) => void;
@@ -3304,7 +3251,6 @@ function SidebarFilterMenu({
   onManageWorkspaces: () => void;
 }) {
   const { t } = useI18n();
-  const { menuRef, onMenuKeyDown, style } = useAnchoredMenu(anchor, onClose, 'sidebar-filter-menu', '[data-filter-menu], [data-filter-menu-toggle]');
   const statuses: readonly { value: SessionStatusFilter; label: string }[] = [
     { value: 'running', label: t('sidebar.statusRunning') },
     { value: 'needs-me', label: t('sidebar.statusNeedsMe') },
@@ -3318,7 +3264,19 @@ function SidebarFilterMenu({
     { value: 'only', label: t('sidebar.archivedOnly') },
   ];
   return (
-    <div ref={menuRef} onKeyDown={onMenuKeyDown} data-filter-menu data-view-menu-filters role="menu" aria-label={t('sidebar.filterMenu')} style={style} className={MENU_PANEL}>
+    <AnchoredPopover
+      open
+      onClose={onClose}
+      anchorRef={anchor}
+      id="sidebar-filter-menu"
+      label={t('sidebar.filterMenu')}
+      role="menu"
+      align="end"
+      widthClassName="w-[232px]"
+      className="p-1"
+      data={{ 'data-filter-menu': '', 'data-view-menu-filters': '' }}
+      onSurfaceKeyDown={menuArrowKeys}
+    >
       <p className={MENU_HEADING}>{t('sidebar.filterStatusHeading')}</p>
       {statuses.map((option) => (
         <button
@@ -3397,7 +3355,7 @@ function SidebarFilterMenu({
           <span className="truncate">{option.label}</span>
         </button>
       ))}
-    </div>
+    </AnchoredPopover>
   );
 }
 
@@ -3667,7 +3625,7 @@ function SessionMenu({
           >
             {isPinnedSession(session) ? t('menu.unpin') : t('menu.pin')}
           </button>
-          <button type="button" role="menuitem" className={itemClass} onClick={onRename}>
+          <button type="button" role="menuitem" data-menu-item="rename" className={itemClass} onClick={onRename}>
             {t('menu.rename')}
           </button>
           <button
@@ -3688,69 +3646,109 @@ function SessionMenu({
 
 /** Rename dialog seeded with the current title; the caller owns the write
  * (a thread's profile patch, a room's name patch). */
-function RenameDialog({
-  currentTitle,
+/**
+ * The one/two-value tier: renaming a session or room edits the row it names,
+ * not a dialog. The editor portals to <body> over the row's title so the row
+ * never reflows while the field is open; Enter saves, Escape cancels, and a
+ * click anywhere else closes without writing. The title it covers carries
+ * data-session-title / data-room-title, so the field lands exactly on it.
+ */
+function SidebarRenameEditor({
+  item,
   heading,
   onSubmit,
   onClose,
   onRenamed,
 }: {
-  currentTitle: string;
+  item: ConversationListItem;
   heading: string;
   onSubmit: (title: string) => Promise<unknown>;
   onClose: () => void;
   onRenamed: () => void;
 }) {
   const { t } = useI18n();
+  const currentTitle = item.kind === 'room' ? item.title : item.session.title;
   const [title, setTitle] = useState(currentTitle);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fieldRef = useRef<HTMLDivElement | null>(null);
+  const [anchor, setAnchor] = useState<{ left: number; top: number; width: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const selector = item.kind === 'room'
+      ? `[data-room-row="${item.id}"] [data-room-title]`
+      : `[data-session-row="${item.id}"] [data-session-title]`;
+    const target = document.querySelector<HTMLElement>(selector);
+    if (target === null) { onClose(); return; }
+    const rect = target.getBoundingClientRect();
+    setAnchor({ left: rect.left - 4, top: rect.top - 4, width: Math.max(rect.width + 32, 200) });
+  }, [item, onClose]);
+
+  useEffect(() => {
+    if (anchor !== null) fieldRef.current?.querySelector<HTMLInputElement>('[data-autofocus]')?.focus();
+  }, [anchor]);
+
+  useEffect(() => {
+    const unregister = registerOverlay('sidebar-rename');
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (fieldRef.current !== null && !fieldRef.current.contains(event.target as Node)) onClose();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    window.addEventListener('pointerdown', onPointerDown, true);
+    return () => {
+      unregister();
+      window.removeEventListener('keydown', onKeyDown, true);
+      window.removeEventListener('pointerdown', onPointerDown, true);
+    };
+  }, [onClose]);
 
   const submit = () => {
     const trimmed = title.trim();
     if (trimmed === '' || busy) return;
+    if (trimmed === currentTitle) { onClose(); return; }
     setBusy(true);
     setError(null);
     void Promise.resolve(onSubmit(trimmed))
       .then(onRenamed)
-      .catch((error: unknown) => {
+      .catch((cause: unknown) => {
         setBusy(false);
-        setError(error instanceof Error ? error.message : String(error));
+        setError(cause instanceof Error ? cause.message : String(cause));
       });
   };
 
-  return (
-    <Dialog onClose={onClose} ariaLabel={heading} overlayId="rename-dialog">
-      <h2 className="font-display text-[18px] font-semibold text-ink">{heading}</h2>
+  if (anchor === null) return null;
+  return createPortal(
+    <div
+      ref={fieldRef}
+      role="dialog"
+      aria-label={heading}
+      data-rename-editor={item.id}
+      className="anim-enter fixed z-50 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
+      style={{ left: anchor.left, top: anchor.top, width: anchor.width }}
+    >
       <input
         data-autofocus
-        className="mt-3 w-full rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-accent"
+        data-rename-input
+        aria-label={heading}
+        className="h-7 w-full rounded-md bg-paper px-2 text-[13px] text-ink outline-none focus:ring-2 focus:ring-selected-ink/40"
         value={title}
+        maxLength={200}
         onChange={(event) => { setTitle(event.target.value); }}
         onKeyDown={(event) => {
-          if (event.key === 'Enter') submit();
+          if (event.key === 'Enter') { event.preventDefault(); submit(); }
         }}
+        onFocus={(event) => { event.currentTarget.select(); }}
       />
       {error !== null ? (
-        <p className="mt-2 font-mono text-[11px] text-danger">{error}</p>
+        <p className="mt-1 px-1 font-mono text-[11px] text-danger">{error}</p>
       ) : null}
-      <div className="mt-4 flex justify-end gap-2">
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-lg border border-hairline px-3 py-1.5 text-[12.5px] text-ink-soft transition-colors hover:text-ink"
-        >
-          {t('common.cancel')}
-        </button>
-        <button
-          type="button"
-          disabled={busy || title.trim() === ''}
-          onClick={submit}
-          className="rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-semibold text-on-accent transition-colors hover:bg-accent-deep disabled:opacity-50"
-        >
-          {busy ? t('common.saving') : t('common.save')}
-        </button>
-      </div>
-    </Dialog>
+    </div>,
+    document.body,
   );
 }

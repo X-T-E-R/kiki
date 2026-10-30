@@ -216,7 +216,7 @@ export function EngineDefaults({ item, saved, onSaved }: {
   };
 
   return (
-    <details data-engine-defaults className="border-t border-hairline pt-3 [&[open]]:space-y-3">
+    <details data-engine-defaults className="pt-3 [&[open]]:space-y-3">
       <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-ink-soft [&::-webkit-details-marker]:hidden">
         <DisclosureChevron open={false} className="text-ink-faint" />
         {t('st.engines.defaults.title')}
@@ -248,7 +248,7 @@ export function EngineDefaults({ item, saved, onSaved }: {
           </select>
         </Field>
       </div>
-      <div className="space-y-2 border-t border-hairline pt-3">
+      <div className="space-y-2 pt-3">
         <p className="text-[12px] font-medium text-ink-soft">{t('st.kikiContext.title')}</p>
         <ul className="space-y-2.5">
           <li data-engine-default-group="subagents" className="space-y-1">
@@ -274,7 +274,7 @@ export function EngineDefaults({ item, saved, onSaved }: {
           </li>
         </ul>
       </div>
-      <div className="space-y-2 border-t border-hairline pt-3">
+      <div className="space-y-2 pt-3">
         <p className="text-[12px] font-medium text-ink-soft">{t('st.executorPrompt.title')}</p>
         <Field label={t('st.executorPrompt.delivery')} htmlFor={`${item.id}-default-delivery`}>
           <select id={`${item.id}-default-delivery`} data-engine-default="executor_prompt.delivery" disabled={saving}
@@ -316,7 +316,7 @@ export function EngineDefaults({ item, saved, onSaved }: {
       </div>
       <div
         data-engine-defaults-shape={draft.kikiContext === undefined ? 'absent' : draft.kikiContext.length === 0 ? 'empty' : 'list'}
-        className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-t border-hairline pt-2.5">
+        className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 pt-2.5">
         <p className="min-w-0 text-[11.5px] leading-snug text-ink-faint">
           <span className="font-mono text-[11px] text-ink-soft">kiki_context</span>{' '}
           {draft.kikiContext === undefined ? t('st.kikiContext.fieldAbsent')

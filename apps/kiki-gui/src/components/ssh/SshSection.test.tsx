@@ -192,7 +192,10 @@ describe('config sync switch', () => {
 
     expect(syncSwitch(container)?.getAttribute('aria-checked')).toBe('false');
     expect(syncChecked(container)).toBe(false);
-    expect(body(container)).toContain('Not set anywhere yet; on by default.');
+    // Where the value comes from is storage bookkeeping; the row states what
+    // the switch does, never its provenance.
+    expect(body(container)).toContain('Hosts in your system SSH config appear here automatically.');
+    expect(body(container)).not.toContain('Not set anywhere yet');
   });
 
   it('keeps the stored off value when every config alias is shadowed', async () => {

@@ -12,6 +12,16 @@ type IndexState = SearchMessagesResponse['index_state'];
 
 export const SEARCH_INDEX_STATE_KEY = ['search-index-state'] as const;
 
+/**
+ * A server that has never indexed answers `session.not_found (code 40401)`.
+ * That is the empty state, not a failure: the index appears the first time it
+ * runs, and the raw code belongs nowhere near a user.
+ */
+function isIndexNotBuiltYet(error: unknown): boolean {
+  return error !== null && typeof error === 'object'
+    && 'code' in error && (error as { code: unknown }).code === 40401;
+}
+
 /** Reasons the user cannot fix by restarting the indexer. */
 const NOT_RETRYABLE = new Set<IndexState['reason']>(['disabled', 'runtime_disabled']);
 
@@ -52,25 +62,28 @@ export function SearchIndexStatusCard() {
   };
 
   const counts = index === undefined ? undefined : { indexed: index.indexed_sessions, total: index.total_sessions };
-  const line = index === undefined
-    ? state.isError
-      ? t('st.searchIndex.checkFailed', { reason: state.error instanceof Error ? state.error.message : String(state.error) })
-      : t('st.searchIndex.checking')
-    : index.state === 'unavailable'
-      ? t(`sidebar.results.unavailable.${index.reason ?? 'generic'}`)
-      : index.state === 'building'
-        ? t('st.searchIndex.building', counts)
-        : index.state === 'readonly'
-          ? t('st.searchIndex.readonly', counts)
-          : t('st.searchIndex.ready', counts);
+  const notBuilt = index === undefined && state.isError && isIndexNotBuiltYet(state.error);
+  const line = notBuilt
+    ? t('st.searchIndex.notBuilt')
+    : index === undefined
+      ? state.isError
+        ? t('st.searchIndex.checkFailed', { reason: state.error instanceof Error ? state.error.message : String(state.error) })
+        : t('st.searchIndex.checking')
+      : index.state === 'unavailable'
+        ? t(`sidebar.results.unavailable.${index.reason ?? 'generic'}`)
+        : index.state === 'building'
+          ? t('st.searchIndex.building', counts)
+          : index.state === 'readonly'
+            ? t('st.searchIndex.readonly', counts)
+            : t('st.searchIndex.ready', counts);
   const canRetry = index?.state === 'unavailable' && !NOT_RETRYABLE.has(index.reason);
 
   return (
     <SectionCard id="st-card-search-index" title={t('st.searchIndex.title')}>
-      <div className="space-y-3" data-search-index-status={index?.state ?? (state.isError ? 'error' : 'checking')} data-search-index-reason={index?.reason}>
+      <div className="space-y-3" data-search-index-status={index?.state ?? (notBuilt ? 'not-built' : state.isError ? 'error' : 'checking')} data-search-index-reason={index?.reason}>
         <p
           role="status"
-          className={`text-[12.5px] ${index?.state === 'unavailable' || state.isError ? 'text-danger' : 'text-ink-soft'}`}
+          className={`text-[12.5px] ${index?.state === 'unavailable' || (state.isError && !notBuilt) ? 'text-danger' : 'text-ink-soft'}`}
         >
           {line}
         </p>
@@ -79,7 +92,7 @@ export function SearchIndexStatusCard() {
           <button type="button" className={SECONDARY_BUTTON} data-search-index-retry disabled={retrying} onClick={() => { void retry(); }}>
             {retrying ? t('st.searchIndex.retrying') : t('st.searchIndex.retry')}
           </button>
-        ) : state.isError ? (
+        ) : state.isError && !notBuilt ? (
           <button type="button" className={SECONDARY_BUTTON} data-search-index-recheck onClick={() => { void state.refetch(); }}>
             {t('common.retry')}
           </button>

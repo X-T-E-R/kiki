@@ -54,6 +54,12 @@ async function render() {
 
 const body = () => document.body;
 
+/** Open a row's preview (the in-page detail). */
+async function openRow(id: string) {
+  await act(async () => { (body().querySelector('[data-local-session="' + id + '"]') as HTMLButtonElement).click(); });
+  await settle();
+}
+
 describe('LocalSessionsDialog', () => {
   it('shows the partial preview with its warnings and translates why a row cannot continue', async () => {
     client.listLocalSessions.mockResolvedValue({ root: '/home/.claude/projects', exists: true, truncated: false, unreadable_files: 0, resume_enabled: true,
@@ -64,10 +70,14 @@ describe('LocalSessionsDialog', () => {
     }));
     await render();
     expect(client.listLocalSessions).toHaveBeenCalledWith('claude-acp', 100);
+    await openRow('external:claude:a');
     expect(body().querySelector('[data-local-partial]')?.textContent).toContain('Partial preview');
     expect(body().querySelector('[data-local-warning="transcript_sampled"]')?.textContent).toContain('only the beginning and the end');
     expect(body().querySelector('[data-local-warning="mystery_code"]')?.textContent).toBe('mystery_code');
     expect(body().querySelector('[data-local-message="user"]')?.textContent).toContain('Fix the parser');
+    // Back returns to the list inside the same panel (SidePanel push navigation).
+    await act(async () => { (body().querySelector('[data-local-back]') as HTMLButtonElement).click(); });
+    await settle();
     const blocked = body().querySelector('[data-local-session="external:claude:b"]')!;
     expect(blocked.querySelector('[data-local-unsupported="working_directory_missing"]')?.textContent).toBe('Its working folder is not recorded.');
     await act(async () => { (blocked as HTMLButtonElement).click(); });
@@ -80,6 +90,7 @@ describe('LocalSessionsDialog', () => {
     client.getLocalSession.mockResolvedValue({ summary: summary('a'), warnings: [], messages: [] });
     client.resumeLocalSession.mockResolvedValue({ session_id: 'session_existing', executor_id: 'claude-acp', created: false });
     await render();
+    await openRow('external:claude:a');
     await act(async () => { body().querySelector<HTMLButtonElement>('[data-local-continue]')!.click(); });
     await settle();
     expect(client.resumeLocalSession).toHaveBeenCalledWith('claude-acp', 'external:claude:a', { source_home: '/home/.claude' });
@@ -91,6 +102,7 @@ describe('LocalSessionsDialog', () => {
     client.getLocalSession.mockResolvedValue({ summary: summary('a'), warnings: [], messages: [] });
     client.resumeLocalSession.mockRejectedValue(new ApiError({ code: 40933, msg: 'locked', data: null }));
     await render();
+    await openRow('external:claude:a');
     await act(async () => { body().querySelector<HTMLButtonElement>('[data-local-continue]')!.click(); });
     await settle();
     expect(body().querySelector('[data-local-error]')?.textContent).toContain('Another Kiki window');
@@ -101,6 +113,7 @@ describe('LocalSessionsDialog', () => {
     client.listLocalSessions.mockResolvedValue({ root: '/r', exists: true, truncated: false, unreadable_files: 0, resume_enabled: false, items: [summary('a')] });
     client.getLocalSession.mockResolvedValue({ summary: summary('a'), warnings: [], messages: [] });
     await render();
+    await openRow('external:claude:a');
     expect(body().querySelector('[data-local-disabled]')).not.toBeNull();
     expect(body().querySelector<HTMLButtonElement>('[data-local-continue]')?.disabled).toBe(true);
   });

@@ -48,7 +48,6 @@ import { NotificationsSection } from './settings/NotificationsSection';
 import { PermissionsSection } from './settings/PermissionsSection';
 import { PluginsSection } from './settings/PluginsSection';
 import { BrowserControlSection } from './settings/BrowserControlSection';
-import { ComputerControlSection } from './settings/ComputerControlSection';
 import { SECTIONS, type SectionId } from './settings/sections';
 import { SettingsCardMountContext, SettingsFlashContext, SettingsPageScopeContext } from './settings/SectionCard';
 import { SettingsPaneBoundary } from './settings/SettingsPaneBoundary';
@@ -56,6 +55,7 @@ import { SessionsSection } from './settings/SessionsSection';
 import { SessionsImportPage } from './settings/SessionsImportPage';
 import { ShortcutsSection } from './settings/ShortcutsSection';
 import { SettingsNav, SettingsNavTree, SettingsSearch } from './settings/SettingsNav';
+import { useOptionalInstalledPlugins } from './capabilities/usePlugins';
 import { SkillsSection } from './settings/SkillsSection';
 import { SpacesSection } from './settings/SpacesSection';
 import { SpaceDot } from './settings/spaces/SpaceDot';
@@ -193,14 +193,12 @@ function SpaceBand() {
 function MobileSettingsDrawer({
   active,
   activeTab,
-  activePluginId,
   open,
   onClose,
   onNavigate,
 }: {
   active: SectionId;
   activeTab?: string | null;
-  activePluginId: string | null;
   open: boolean;
   onClose: () => void;
   onNavigate: (section: SectionId) => void;
@@ -248,7 +246,7 @@ function MobileSettingsDrawer({
             <Icon name="close" size={16} />
           </button>
         </div>
-        <SettingsNavTree active={active} activeTab={activeTab} activePluginId={activePluginId} onNavigate={onNavigate} onAfterNavigate={onClose} />
+        <SettingsNavTree active={active} activeTab={activeTab} onNavigate={onNavigate} onAfterNavigate={onClose} />
       </div>
     </div>
   );
@@ -481,8 +479,10 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'mcp' ? <McpSection />
     : active === 'external-clients' ? <ConnectionServicesSection />
     : active === 'plugins' ? <PluginsSection pluginId={activePluginId} />
-    : active === 'browser-control' ? <BrowserControlSection />
-    : active === 'computer-control' ? <ComputerControlSection />
+    // The two leaves merged into one page: browser-control hosts both tabs,
+    // and `?tab=computer` selects the computer tab, so the old split keeps its
+    // addresses.
+    : active === 'browser-control' || active === 'computer-control' ? <BrowserControlSection />
     : active === 'search' ? <NbSearchSection />
     : active === 'hooks' ? <HooksSection />
     : active === 'spaces' ? <SpacesSection />
@@ -493,9 +493,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'extensions' ? <ExtensionsSection pluginId={activePluginId} />
     : active === 'environment-tools' ? (
         currentTab === 'search' ? <NbSearchSection />
-        : currentTab === 'browser-control' ? <BrowserControlSection />
-        : currentTab === 'computer-control' ? <ComputerControlSection />
-        : <div className="space-y-6"><NbSearchSection /><BrowserControlSection /><ComputerControlSection /></div>
+        : <div className="space-y-6"><NbSearchSection /><BrowserControlSection /></div>
       )
     : active === 'remote' ? <div className="space-y-6"><ConnectionSection /><SshSection /><ConnectionServicesSection /></div>
     : active === 'system' ? <div className="space-y-6"><DeveloperSection /><AboutSection /><DesktopLogCard /></div>
@@ -504,13 +502,20 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   // A feature page ends with the experimental flags that change it; tabbed
   // pages show them on one tab only, so a hit on the rows lands where they are.
   const experimentalTab = active === null ? undefined : experimentalTabForSection(active);
-  const showExperimental = active !== null && active !== 'labs'
+  // A plugin's own page is about that plugin; the page's flags stay on the list.
+  const showExperimental = active !== null && active !== 'labs' && activePluginId === null
     && (experimentalTab === undefined || currentTab === experimentalTab);
 
   // A workspace's own page names the workspace in the breadcrumb, the way an
   // open plugin's page names its plugin: the page IS that object, and the
   // section label alone would not say which one.
   const activeLabel = workspaceDetailName ?? (activeLabelKey === undefined ? undefined : t(activeLabelKey));
+  // An open plugin's page gets one more breadcrumb segment with its own name;
+  // the navigation no longer lists installed plugins under the leaf.
+  const installedPlugins = useOptionalInstalledPlugins().plugins;
+  const pluginLabel = activePluginId === null
+    ? undefined
+    : installedPlugins.find((plugin) => plugin.id === activePluginId)?.displayName ?? activePluginId;
 
   const { sidebarOpen } = useSidebarContext();
 
@@ -535,10 +540,11 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
         <h1 className="flex min-w-0 flex-1 items-baseline gap-1.5 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
           <span className={activeLabel === undefined ? '' : 'font-normal text-ink-faint'}>{t('st.title')}</span>
           {activeLabel !== undefined ? <><span aria-hidden className="font-normal text-ink-faint">/</span><span data-settings-page-title className="truncate">{activeLabel}</span></> : null}
+          {pluginLabel !== undefined ? <><span aria-hidden className="font-normal text-ink-faint">/</span><span data-settings-plugin-title className="truncate font-normal text-ink-faint">{pluginLabel}</span></> : null}
         </h1>
       </header>
       <main className="flex min-h-0 flex-1 border-t border-hairline">
-        <div className="hidden shrink-0 border-r border-hairline lg:block"><SettingsNav active={active} activeTab={currentTab} activePluginId={activePluginId} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
+        <div className="hidden shrink-0 border-r border-hairline lg:block"><SettingsNav active={active} activeTab={currentTab} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
         <div className="flex min-w-0 flex-1 flex-col">
           {active !== null ? (
             <div className="border-b border-hairline px-4 py-2 lg:hidden">
@@ -569,7 +575,6 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               <MobileSettingsDrawer
                 active={active}
                 activeTab={currentTab}
-                activePluginId={activePluginId}
                 open={drawerOpen}
                 onClose={() => { setDrawerOpen(false); }}
                 onNavigate={guardedNavigate}
@@ -581,8 +586,10 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               <UnknownSettingsSection section={section ?? ''} onSearchHit={onSearchHit} />
             </div>
           ) : (
-            <div ref={scrollRef} data-settings-scroll className="relative min-h-0 flex-1 overflow-y-auto px-4 pb-16 pt-6 lg:px-10 lg:pt-8">
-              <div className="mx-auto max-w-[720px]">
+            <div ref={scrollRef} data-settings-scroll className="relative min-h-0 flex-1 overflow-y-auto px-4 pb-[var(--settings-scroll-pb)] pt-[var(--settings-scroll-pt)] [--settings-scroll-pb:4rem] [--settings-scroll-pt:1.5rem] has-[[data-detail-split=open]]:[--settings-scroll-pb:0px] lg:px-10 lg:[--settings-scroll-pt:2rem]">
+              {/* An open in-page detail (overlays/DetailSplit) takes a wider
+                  column: rail + editor need the room a reading column does not. */}
+              <div className="mx-auto max-w-[720px] transition-[max-width] duration-[var(--kiki-motion-base)] ease-[var(--kiki-ease-out)] has-[[data-detail-split=open]]:max-w-[1180px]">
                 {fromOnboarding ? (
                   <div
                     className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-card)] border border-accent/30 bg-accent/10 px-4 py-3 text-[13px] text-ink"

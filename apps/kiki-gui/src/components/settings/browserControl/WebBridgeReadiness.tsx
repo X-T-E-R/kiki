@@ -2,13 +2,11 @@
  * WebBridge readiness — whether the local bridge behind the Kimi route is
  * actually working, and the one action that starts it.
  *
- * It sits inside the Kimi route it serves as a fold, so the page says "Kimi"
- * once and a working bridge costs one quiet line. The fold opens by itself
- * when the bridge needs a person: a read that failed (the state is unknown,
- * never "fine"), a missing or failed runtime, or an install still running.
- * Its old bookmark still lands here (`st-card-webbridge` in
- * `LEGACY_CARD_ALIASES`): the block announces the id the way a settings card
- * does, opens, and flashes when a search hit asks for it.
+ * It renders as one status line inside the Kimi route's open body (name ·
+ * state · what is left, plus its check), not as a second fold on the row: the
+ * route's own 高级 fold already carries the step-by-step detection. Its old
+ * bookmark still lands here (`st-card-webbridge`): the block announces the id
+ * the way a settings card does and flashes when a search hit asks for it.
  */
 
 import { useContext, useEffect, useState } from 'react';
@@ -34,8 +32,32 @@ function BusyHint({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * The stale approval the bridge may still name: the store window's pending
+ * approval is gone, which is a fact of the flow (the window lapsed), not a
+ * failure of the bridge. It gets one quiet line plus the retry, never a red
+ * error block.
+ */
+function isStaleApproval(error: unknown, locale: Parameters<typeof errorText>[0]): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  // The raw envelope names it (`approval.not_found`); so does the mapped text
+  // in either locale once the client has already translated it.
+  if (/approval/i.test(message) && /not_?found|40401/i.test(message)) return true;
+  return errorText(locale, error) === errorText(locale, new Error('approval.not_found'));
+}
+
 function QueryRetry({ error, onRetry }: { error: unknown; onRetry: () => void }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  if (isStaleApproval(error, locale)) {
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-webbridge-approval-expired>
+        <p className="text-[12px] text-ink-soft">{t('st.webbridge.approvalExpired')}</p>
+        <button type="button" className={SECONDARY_BUTTON} data-plugins-retry onClick={onRetry}>
+          {t('st.webbridge.reconnect')}
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="space-y-2">
       <InlineError error={error} />
@@ -103,44 +125,33 @@ export function WebBridgeReadiness() {
   const runtimeMissing = steps.some((step) => (step.id === 'daemon' || step.id === 'skill') && (step.state === 'missing' || step.state === 'failed'));
   const stepFailed = steps.some((step) => step.state === 'failed');
   const needsSetup = capability !== undefined && capability.state !== 'unsupported' && (capability.state === 'not_installed' || runtimeMissing || stepFailed);
-  const attention = query.isError || needsSetup || capability?.install.running === true || capability?.install.error !== undefined
-    || (capability?.state === 'partial' && blocking.length > 0);
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    if (attention || flashId === 'st-card-webbridge') setOpen(true);
-  }, [attention, flashId]);
   return (
-    <details
+    <div
       id="st-card-webbridge"
       data-settings-card="st-card-webbridge"
       data-webbridge-readiness
-      open={open}
-      onToggle={(event) => { setOpen((event.currentTarget as HTMLDetailsElement).open); }}
-      className={`mt-2.5 scroll-mt-4 text-[12px] ${flashId === 'st-card-webbridge' ? 'settings-card-flash' : ''}`}
+      className={`mt-2.5 scroll-mt-4 space-y-2 text-[12px] ${flashId === 'st-card-webbridge' ? 'settings-card-flash' : ''}`}
     >
-      <summary className="cursor-pointer select-none text-[12px] text-ink-soft hover:text-ink">
-        <span className="font-medium">{t('st.plugins.runtimeTitle')}</span>
-        {capability === undefined || query.isError ? null : (
-          <span className={capability.state === 'ready' ? 'text-ink-soft' : 'text-ink'} data-webbridge-state={capability.state}>
-            {` · ${t(`st.plugins.runtimeState.${capability.state}`)}`}
-          </span>
-        )}
-      </summary>
-      <div className="mt-2 space-y-2">
+      {/* A status line, not a fold: what the bridge is, in the route's own
+          words, with its one check beside it. */}
       {query.isPending ? <BusyHint>{t('st.plugins.loading')}</BusyHint> : query.isError ? (
         <QueryRetry error={query.error} onRetry={() => { void query.refetch(); }} />
       ) : capability !== undefined ? (
-        <>
-          {capability.state === 'partial' && blocking.length > 0 ? (
-            <p className="text-[12px] leading-4 text-ink-soft" data-webbridge-blocking>
-              {t('st.plugins.runtimeState.partialHint', {
-                items: blocking.map((step) => t(WEBBRIDGE_BLOCKER_LABEL_KEYS[step.id] ?? 'st.plugins.runtimeStep.detect')).join('、'),
-              })}
-            </p>
-          ) : null}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <p className="text-ink-soft">
+            <span className="text-ink">{t('st.plugins.runtimeTitle')}</span>
+            <span data-webbridge-state={capability.state}>{` · ${t(`st.plugins.runtimeState.${capability.state}`)}`}</span>
+            {capability.state === 'partial' && blocking.length > 0 ? (
+              <span className="text-ink-faint" data-webbridge-blocking>
+                {` · ${t('st.plugins.runtimeState.partialHint', {
+                  items: blocking.map((step) => t(WEBBRIDGE_BLOCKER_LABEL_KEYS[step.id] ?? 'st.plugins.runtimeStep.detect')).join('、'),
+                })}`}
+              </span>
+            ) : null}
+          </p>
           {capability.install.running ? <BusyHint>{capability.install.step ?? t('st.plugins.runtimeStarted')}</BusyHint> : null}
           {capability.install.error ? <FeedbackLine feedback={{ tone: 'error', text: capability.install.error }} /> : null}
-          <div className="flex flex-wrap items-center gap-2">
+          <span className="flex flex-wrap items-center gap-2">
             <button type="button" className={SECONDARY_BUTTON} onClick={() => { void query.refetch(); }} data-webbridge-check>
               {t('st.plugins.checkHealth')}
             </button>
@@ -158,8 +169,8 @@ export function WebBridgeReadiness() {
                 {t('st.plugins.browserExtension')}
               </ExternalLink>
             ) : null}
-          </div>
-        </>
+          </span>
+        </div>
       ) : null}
       <FeedbackLine feedback={feedback} />
       {confirming?.plan !== undefined ? (
@@ -175,7 +186,6 @@ export function WebBridgeReadiness() {
           onCancel={() => { setConfirming(null); }}
           onConfirm={() => { void prepare(confirming); }} />
       ) : null}
-      </div>
-    </details>
+    </div>
   );
 }

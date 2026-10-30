@@ -277,7 +277,7 @@ function PromptPreview({ value, engineId, engineLabel, supported, steer, profile
       </li>)}
     </ol>
     {preview === null ? <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.executorPrompt.previewNoText')}</p> : null}
-    {steer !== undefined ? <p data-executor-prompt-steer className="border-t border-hairline pt-2 text-[11.5px] leading-snug text-ink-faint">
+    {steer !== undefined ? <p data-executor-prompt-steer className="pt-2 text-[11.5px] leading-snug text-ink-faint">
       {t('st.executorPrompt.steer', { mode: t(`st.executorPrompt.steerMode.${steer}`) })} {t('st.executorPrompt.steerLimit')}
     </p> : null}
   </div>;

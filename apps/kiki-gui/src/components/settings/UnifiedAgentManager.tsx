@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useState } from 'react';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
 import {
@@ -13,7 +14,9 @@ import type { NamedAgentProfile } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { useAskKiki, useAskKikiWorkspace, AskKikiButton } from '../askKiki';
 import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
-import { Dialog } from '../Dialog';
+import { Icon } from '../icons';
+import { DetailSplit, DetailRailGroup, DetailRailItem, useDetailParam } from '../overlays';
+import { SidePanel } from '../SidePanel';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { useDirtyGuard, useGuardedNavigate } from '../dirtyGuard';
 import { SearchableSelect } from '../SearchableSelect';
@@ -21,25 +24,33 @@ import { ShippedProfileControls } from './ShippedProfileControls';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails } from './fields';
 import { SETTINGS_SELECT_TRIGGER } from './SettingsPrimitives';
-import { profileDiagnostics, sameProfile } from './profileEditor/diagnostics';
+import { diagnosticTone, profileDiagnostics, sameProfile } from './profileEditor/diagnostics';
 import { engineLabel, useExecutorCatalog } from './profileEditor/engines';
 import { NewProfile } from './profileEditor/NewProfile';
 import { ProfileEditor } from './profileEditor/ProfileEditor';
 import { isWritable, writeScope } from './profileEditor/profileDraft';
-import { TeamView, type TeamFilter, type TeamRow } from './profileEditor/TeamView';
+import { displayName, TeamView, type TeamRow } from './profileEditor/TeamView';
 import { useSavedTick } from './useSavedTick';
 
 // Identity of the file, not of one workspace's registration: a refetch can
-// re-merge rows under another workspace id while the sheet is open.
+// re-merge rows under another workspace id while the detail is open.
 const profileKey = (profile: NamedAgentProfile) => `${profile.source}:${profile.source_file ?? ''}:${profile.name}`;
 
-type Sheet = { kind: 'edit'; key: string } | { kind: 'new'; source?: string } | null;
+/** The `?agent=` query: the profile whose detail is open. */
+export const AGENT_QUERY_PARAM = 'agent';
+/** The `?workspace=` query: the workspace this page is filtered to. */
+const WORKSPACE_QUERY_PARAM = 'workspace';
+
+/** The create flow, in a side panel; `source` prefills a duplicate. */
+type Creating = { source?: string } | null;
 
 /**
  * Agents: one team table across every profile (role, engine, model, effort,
- * who dispatches whom), and a full-width editor sheet per profile where the
- * instructions body is the main surface. Quick model/effort edits in the
- * table save immediately; the sheet is a draft with Save / Discard.
+ * who dispatches whom). Opening a profile edits it in the page
+ * (`overlays/DetailSplit`): the table folds into a rail of names beside the
+ * editor, and `?agent=<name>` addresses it. Creating one is a side panel that
+ * lands in the new profile's detail. Quick model/effort edits in the table
+ * save immediately; the detail is a draft with Save / Discard.
  */
 export function UnifiedAgentManager() {
   const { client } = useConnection();
@@ -47,9 +58,12 @@ export function UnifiedAgentManager() {
   const queryClient = useQueryClient();
   const guard = useDirtyGuard();
   const navigate = useGuardedNavigate();
-  const [filter, setFilter] = useState<TeamFilter>('all');
   const [workspaceId, setWorkspaceId] = useState<string>();
-  const [sheet, setSheet] = useState<Sheet>(null);
+  const detail = useDetailParam(AGENT_QUERY_PARAM);
+  const [creating, setCreating] = useState<Creating>(null);
+  // A profile just created: opened once the create panel's draft is gone, so
+  // landing on it does not trip the unsaved-changes guard.
+  const [landing, setLanding] = useState<string | null>(null);
   const [toggleSaving, setToggleSaving] = useState(false);
   const [namedDisabled, setNamedDisabled] = useState<string | null>(null);
   const [quickSaving, setQuickSaving] = useState<string>();
@@ -59,7 +73,16 @@ export function UnifiedAgentManager() {
   // Only consulted when this page has no workspace of its own to address.
   const kikiFallbackWorkspace = useAskKikiWorkspace();
   const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
-  const selectedWorkspaceId = workspaceId ?? sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id;
+  // The address is the truth for the scope: an explicit pick is written to
+  // `?workspace=` (replace, so Back lands on the previous page state) and a
+  // link carrying it wins; only without a param does the page fall back to
+  // the most recently used workspace.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const workspaceParam = searchParams.get(WORKSPACE_QUERY_PARAM) ?? undefined;
+  const selectedWorkspaceId = workspaceParam
+    ?? (workspaceId !== undefined && (workspacesQuery.data?.items ?? []).some((workspace) => workspace.id === workspaceId)
+      ? workspaceId : undefined)
+    ?? sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id;
   const profilesQuery = useQuery({
     queryKey: ['named-agent-profiles', selectedWorkspaceId ?? 'global'],
     queryFn: () => loadAgentProfileCatalog(client, selectedWorkspaceId
@@ -106,20 +129,59 @@ export function UnifiedAgentManager() {
     void invalidateAgentProfileCatalogs(queryClient);
     void queryClient.invalidateQueries({ queryKey: ['shipped-agent-profiles'] });
   };
-  const closeSheet = () => {
-    // The shared Dialog takes Escape in the capture phase, before an open
-    // picker inside the sheet sees it. Close that picker instead of the sheet.
-    const openPicker = document.querySelector<HTMLElement>('[role="dialog"] [aria-expanded="true"]');
-    if (openPicker !== null) { openPicker.click(); openPicker.focus(); return; }
-    const current = sheet?.kind === 'edit' ? rows.find((row) => row.key === sheet.key) : undefined;
-    const draftId = sheet?.kind === 'new' ? 'agent-create'
-      : current !== undefined ? `agent-detail:${current.profile.source}:${current.profile.source_file ?? ''}:${current.profile.name}` : undefined;
-    const close = () => setSheet(null);
-    if (guard?.confirmDiscard === undefined || draftId === undefined) { close(); return; }
-    const afterRaw = () => guard.confirmDiscard!(draftId, close);
-    if (current?.profile.source_file !== undefined) guard.confirmDiscard(`agent-raw:${current.profile.source_file}`, afterRaw);
-    else afterRaw();
+  // A name is the address when it is unique on this page; two files with one
+  // name (a shadowed copy) fall back to the full file identity.
+  const paramOf = (row: TeamRow) => rows.filter((other) => other.profile.name === row.profile.name).length === 1 ? row.profile.name : row.key;
+  const editing = detail.selected === null ? undefined
+    : rows.find((row) => paramOf(row) === detail.selected) ?? rows.find((row) => row.key === detail.selected);
+  // `?agent=` resolves across every workspace, not only the one in view: a
+  // deep link taken while another workspace is filtered names where the
+  // profile lives instead of reading as "not found". Only asked while the
+  // current catalog cannot answer.
+  const workspaces = workspacesQuery.data?.items ?? [];
+  const elsewhereQueries = useQueries({
+    queries: workspaces
+      .filter((workspace) => workspace.id !== selectedWorkspaceId)
+      .map((workspace) => ({
+        queryKey: ['named-agent-profiles', workspace.id],
+        queryFn: () => loadAgentProfileCatalog(client, { mode: 'workspace', workspaceId: workspace.id }),
+        enabled: detail.selected !== null && editing === undefined && profilesQuery.isSuccess && !profilesQuery.data.items.some((item) => item.name === detail.selected),
+        staleTime: 15_000,
+      })),
+  });
+  const elsewhere = useMemo(() => {
+    if (detail.selected === null || editing !== undefined) return undefined;
+    for (let i = 0; i < elsewhereQueries.length; i++) {
+      const items = elsewhereQueries[i]?.data?.items;
+      if (items !== undefined && items.some((item) => item.name === detail.selected)) return workspaces.filter((workspace) => workspace.id !== selectedWorkspaceId)[i];
+    }
+    return undefined;
+  }, [elsewhereQueries, workspaces, selectedWorkspaceId, editing, detail.selected]);
+  // A deliberate workspace switch keeps the open detail when the same name
+  // resolves there too.
+  const openName = editing !== undefined && detail.selected === editing.profile.name ? detail.selected : null;
+  const switchWorkspace = (next: string, keepOpen: boolean) => {
+    if (next === selectedWorkspaceId) return;
+    setWorkspaceId(next);
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current);
+      params.set(WORKSPACE_QUERY_PARAM, next);
+      if (!keepOpen) params.delete(AGENT_QUERY_PARAM);
+      return params;
+    }, { replace: true });
   };
+  const openRow = (row: TeamRow) => { detail.open(paramOf(row)); };
+  const closeCreate = () => {
+    if (guard?.confirmDiscard === undefined) { setCreating(null); return; }
+    guard.confirmDiscard('agent-create', () => setCreating(null));
+  };
+  useEffect(() => {
+    if (landing === null || creating !== null || guard?.dirty === true) return;
+    const row = rows.find((candidate) => candidate.key === landing);
+    if (row === undefined) return;
+    setLanding(null);
+    openRow(row);
+  }, [landing, creating, guard?.dirty, rows]);
   const toggleEnabled = async (profile: NamedAgentProfile, enabled: boolean) => {
     setToggleSaving(true);
     try {
@@ -164,10 +226,13 @@ export function UnifiedAgentManager() {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
     } finally { setQuickSaving(undefined); }
   };
-  const workspaceOptions = useMemo(() => (workspacesQuery.data?.items ?? []).map((workspace) => ({
-    value: workspace.id, label: workspace.name ?? workspace.root, hint: workspace.root, title: workspace.root,
-  })), [workspacesQuery.data]);
-  const editing = sheet?.kind === 'edit' ? rows.find((row) => row.key === sheet.key) : undefined;
+  const workspaceOptions = useMemo(() => (workspacesQuery.data?.items ?? []).map((workspace) => {
+    // A workspace's own name, else the folder it points at — never the raw
+    // registration id, which reads as a hash.
+    const base = workspace.root.replace(/[\/]+$/, '').split(/[\/]/).pop();
+    const label = workspace.name !== undefined && workspace.name !== '' ? workspace.name : base !== '' && base !== undefined ? base : workspace.id;
+    return { value: workspace.id, label, hint: workspace.root, title: workspace.root };
+  }), [workspacesQuery.data]);
   // Names disabled server-wide that no visible row exposes, so the by-name entry
   // can re-enable a profile the workspace filter does not show.
   const disabledNames = useMemo(
@@ -175,8 +240,7 @@ export function UnifiedAgentManager() {
       !profiles.some((profile) => profile.name === name)),
     [configQuery.data, profiles],
   );
-  const removed = shippedEntries.filter((entry) => entry.managed && entry.status === 'removed'
-    && (filter === 'all' || (filter === 'main') === entry.main));
+  const removed = shippedEntries.filter((entry) => entry.managed && entry.status === 'removed');
 
   /**
    * Whether the handoff knows where the session should run.
@@ -191,58 +255,15 @@ export function UnifiedAgentManager() {
 
   const workspacePicker = workspaceOptions.length > 0 ? <SearchableSelect id="agents-workspace-select" options={workspaceOptions}
     value={selectedWorkspaceId ?? ''} ariaLabel={t('new.workspace')} buttonClassName={SETTINGS_SELECT_TRIGGER}
-    triggerLabel={<span className="text-ink-soft">{t('st.profiles.resolveIn')} <span className="text-ink">{workspaceOptions.find((option) => option.value === selectedWorkspaceId)?.label}</span></span>}
-    onChange={(next) => { if (next !== selectedWorkspaceId) { setWorkspaceId(next); setSheet(null); } }} /> : null;
+    triggerLabel={<span className="min-w-0 text-ink-soft">{t('st.profiles.project')} <span className="inline-block max-w-56 truncate align-bottom text-ink">{workspaceOptions.find((option) => option.value === selectedWorkspaceId)?.label}</span></span>}
+    onChange={(next) => { switchWorkspace(next, openName !== null); }} /> : null;
 
-  return <SectionCard id="st-card-main-agents" title={t('st.agentManager.title')}>
-    <div className="space-y-4">
-      <Hint>{t('st.profiles.teamIntro')}</Hint>
-      <div
-        data-agent-passthrough-presets
-        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-panel/60 px-3 py-2 text-[12px]"
-      >
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium text-ink-soft">{t('composer.profileGroupPassthrough')}：</span>
-          <span
-            data-passthrough-preset="native"
-            className="inline-flex items-center gap-1.5 rounded-full border border-hairline bg-paper px-2.5 py-0.5 text-[12px] font-medium text-ink"
-          >
-            <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden />
-            Kiki
-            <span className="text-[11px] font-normal text-ink-faint">· {t('composer.profilePassthroughBadge')}</span>
-          </span>
-          {executors.filter((item) => item.id !== 'native').map((item) => {
-            const ready = item.status === 'ready';
-            const needsSetup = item.status === 'unknown';
-            return (
-              <span
-                key={item.id}
-                data-passthrough-preset={item.id}
-                className={`inline-flex items-center gap-1.5 rounded-full border border-hairline bg-paper px-2.5 py-0.5 text-[12px] ${ready ? 'font-medium text-ink' : 'text-ink-soft'}`}
-              >
-                <span
-                  className={`h-1.5 w-1.5 rounded-full ${ready ? 'bg-success' : needsSetup ? 'bg-amber-rule' : 'bg-ink-faint/50'}`}
-                  aria-hidden
-                />
-                {engineLabel(item.id, item.label ?? item.id, executors)}
-              </span>
-            );
-          })}
-        </div>
-        <button
-          type="button"
-          data-agent-passthrough-manage
-          onClick={() => { void navigate('/settings/providers#st-card-engines'); }}
-          className="text-[12px] font-medium text-accent-ink hover:underline"
-        >
-          {t('st.providers.zone2.title')} →
-        </button>
+  const list = <div className="space-y-4">
+      <div className="flex min-h-8 flex-wrap items-center justify-between gap-2" data-agents-scope>
+        {workspacePicker ?? <span />}
+        <SaveStatus saving={quickSaving !== undefined} saved={quickSaved} />
       </div>
-      <TeamView rows={rows} models={models} filter={filter} onFilter={setFilter} savingKey={quickSaving}
-        toolbar={<>
-          <SaveStatus saving={quickSaving !== undefined} saved={quickSaved} />
-          {workspacePicker}
-        </>}
+      <TeamView rows={rows} models={models} savingKey={quickSaving}
         // Beside "New agent", because that is the verb this one stands in for —
         // not in the filter row, where it read as another workspace control.
         newActions={
@@ -273,7 +294,7 @@ export function UnifiedAgentManager() {
             }}
           />
         }
-        onOpen={(row) => setSheet({ kind: 'edit', key: row.key })} onNew={() => setSheet({ kind: 'new' })}
+        onOpen={openRow} onNew={() => setCreating({})} loading={profilesQuery.isPending}
         onQuickSave={(row, patch) => void quickSave(row, patch)} />
       {removed.length > 0 ? <div className="space-y-1" data-shipped-removed-list>
         {removed.map((entry) => <div key={entry.template_id} data-shipped-removed={entry.template_id}
@@ -290,13 +311,8 @@ export function UnifiedAgentManager() {
       {/* The handoff is disabled while this is unresolved; say why rather than
           leaving a dead button. */}
       {!askKikiReady && workspacesQuery.isError ? <InlineError error={workspacesQuery.error} /> : null}
-      <AdvancedDetails summary={t('st.agentManager.disabledByName')}>
-        <p className="max-w-[72ch] text-[11.5px] leading-5 text-ink-faint">{t('st.agentManager.disabledByNameHint')}</p>
-        <p className="font-mono text-[11px] leading-5 text-ink-soft">
-          {t('st.agentIdentity.disabledProfiles')} ={' '}
-          {(configQuery.data?.disabled_named_profiles ?? []).join(', ') || '—'}
-        </p>
-        <div className="flex flex-wrap items-center gap-2">
+      <AdvancedDetails summary={t('st.agentManager.disabledByName')} data-disabled-by-name-fold className="pt-3 text-[11px] text-ink-soft">
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           <input
             className={`${INPUT} font-mono`}
             value={namedDisabled ?? ''}
@@ -336,29 +352,63 @@ export function UnifiedAgentManager() {
         ) : null}
       </AdvancedDetails>
       <FeedbackLine feedback={feedback} />
-    </div>
-    {sheet !== null ? <Dialog onClose={closeSheet} overlayId="agent-profile-sheet"
-      ariaLabel={editing !== undefined ? t('st.namedAgents.editProfileTitle', { name: editing.profile.name }) : t('st.agentManager.new')}
-      // z-40: the app-level discard confirmation (z-50) must stack above the sheet.
-      overlayClassName="fixed inset-0 z-40 flex items-stretch justify-center bg-shell/25 p-0 sm:p-4"
-      panelClassName="anim-enter flex w-full max-w-[1280px] flex-col overflow-y-auto overscroll-contain bg-canvas p-4 shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)] sm:rounded-2xl sm:border sm:border-hairline sm:p-6">
-      {sheet.kind === 'new' ? <NewProfile workspaceId={selectedWorkspaceId} workspaceOptions={workspaceOptions} profiles={profiles} shipped={shippedEntries}
-        initialSource={sheet.source} onCancel={closeSheet}
-        onCreated={(created) => { refresh(); setSheet({ kind: 'edit', key: profileKey(created) }); setFeedback({ tone: 'success', text: t('st.agentManager.created') }); }} />
-        : editing !== undefined ? <ProfileEditor key={editing.key} profile={editing.profile} writable={editing.writable} profiles={profiles}
-          models={models} diagnostics={editing.diagnostics} shippedEntry={shippedEntryForProfile(editing.profile, shippedEntries)}
-          onSaved={refresh} onClose={closeSheet}
-          onOpenWinner={(() => {
-            const winner = effective?.find((candidate) => candidate.name === editing.profile.name && !sameProfile(candidate, editing.profile));
-            const target = winner === undefined ? undefined : rows.find((row) => sameProfile(row.profile, winner));
-            return target === undefined ? undefined : () => setSheet({ kind: 'edit', key: target.key });
-          })()}
-          onToggleEnabled={(enabled) => toggleEnabled(editing.profile, enabled)} toggleSaving={toggleSaving || configQuery.isLoading}
-          newSessionBlocked={namedAgentNewSessionBlocked(editing.profile, relations.get(editing.profile))
-            || (effective !== undefined && !effective.some((winner) => sameProfile(winner, editing.profile)))}
-          onNewSession={() => { void navigate(namedAgentSessionHref(editing.profile, selectedWorkspaceId)); }}
-          onDuplicate={() => setSheet({ kind: 'new', source: editing.profile.name })} />
-          : <Hint>{t('st.agentManager.select')}</Hint>}
-    </Dialog> : null}
+    </div>;
+
+  // The rail: the same two groups as the table, names only.
+  const railGroups = (['main', 'subagent'] as const).map((kind) => ({
+    kind, rows: rows.filter((row) => (kind === 'main') === row.profile.main),
+  })).filter((group) => group.rows.length > 0);
+  const rail = <div data-agent-rail>
+    {railGroups.map((group) => <DetailRailGroup key={group.kind} count={group.rows.length}
+      label={t(group.kind === 'main' ? 'st.profiles.groupMain' : 'st.profiles.groupSubagents')}>
+      {group.rows.map((row) => <DetailRailItem key={row.key} itemKey={row.profile.name}
+        label={displayName(row.profile, locale)} current={row === editing}
+        muted={row.profile.disabled || row.diagnostics.some((item) => item.kind === 'shadowedBy')}
+        trailing={row.diagnostics.some((item) => diagnosticTone(item) === 'warning')
+          ? <Icon name="warning" size={12} className="shrink-0 text-amber-ink" /> : undefined}
+        onSelect={() => openRow(row)} />)}
+    </DetailRailGroup>)}
+  </div>;
+
+  const editor = editing === undefined ? null : <ProfileEditor key={editing.key} profile={editing.profile} writable={editing.writable} profiles={profiles}
+    models={models} diagnostics={editing.diagnostics} shippedEntry={shippedEntryForProfile(editing.profile, shippedEntries)}
+    onSaved={refresh} onClose={detail.close}
+    onOpenWinner={(() => {
+      const winner = effective?.find((candidate) => candidate.name === editing.profile.name && !sameProfile(candidate, editing.profile));
+      const target = winner === undefined ? undefined : rows.find((row) => sameProfile(row.profile, winner));
+      return target === undefined ? undefined : () => openRow(target);
+    })()}
+    onToggleEnabled={(enabled) => toggleEnabled(editing.profile, enabled)} toggleSaving={toggleSaving || configQuery.isLoading}
+    newSessionBlocked={namedAgentNewSessionBlocked(editing.profile, relations.get(editing.profile))
+      || (effective !== undefined && !effective.some((winner) => sameProfile(winner, editing.profile)))}
+    onNewSession={() => { void navigate(namedAgentSessionHref(editing.profile, selectedWorkspaceId)); }}
+    onDuplicate={() => setCreating({ source: editing.profile.name })} />;
+
+  return <SectionCard id="st-card-main-agents" title={t('st.agentManager.title')}>
+    <DetailSplit selected={editing === undefined ? null : editing.profile.name} label={t('st.profiles.team')}
+      data={{ 'data-agents-split': '' }} list={list} rail={rail} detail={editor} />
+    {detail.selected !== null && editing === undefined && !profilesQuery.isLoading
+      ? (elsewhere !== undefined ? (
+        <p data-agent-elsewhere className="flex flex-wrap items-center gap-x-1.5 text-[13px] text-ink-faint">
+          {t('st.profiles.inOtherWorkspace', { name: detail.selected, workspace: elsewhere.name ?? elsewhere.root })}
+          <button type="button" data-agent-elsewhere-open className="font-medium text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
+            onClick={() => { switchWorkspace(elsewhere.id, true); }}>
+            {t('st.profiles.openThere')}
+          </button>
+        </p>
+      ) : (
+        <p data-agent-missing className="text-[13px] text-ink-soft">{t('st.profiles.notFound')}</p>
+      )) : null}
+    {creating !== null ? <SidePanel title={t('st.agentManager.new')} overlayId="agent-create-panel" width="lg"
+      onClose={closeCreate} data={{ 'data-agent-create-panel': '' }}>
+      <NewProfile workspaceId={selectedWorkspaceId} workspaceOptions={workspaceOptions} profiles={profiles} shipped={shippedEntries}
+        initialSource={creating.source} onCancel={closeCreate}
+        onCreated={(created) => {
+          refresh();
+          setCreating(null);
+          setLanding(profileKey(created));
+          setFeedback({ tone: 'success', text: t('st.agentManager.created') });
+        }} />
+    </SidePanel> : null}
   </SectionCard>;
 }

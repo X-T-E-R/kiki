@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   clearToasts,
@@ -6,7 +6,9 @@ import {
   getToasts,
   MAX_TOASTS,
   pushToast,
+  pushUndoToast,
   runToastAction,
+  UNDO_TOAST_MS,
   subscribeToasts,
 } from './toasts';
 
@@ -87,5 +89,28 @@ describe('toast queue', () => {
       tone: 'error',
       text: 'Open: opener failed',
     });
+  });
+});
+
+describe('pushUndoToast', () => {
+  beforeEach(() => { clearToasts(); });
+
+  it('queues one undo action with the longer undo window', () => {
+    pushUndoToast({ text: 'Rule deleted', undo: () => {} });
+    expect(getToasts().at(-1)).toMatchObject({ tone: 'success', text: 'Rule deleted', durationMs: UNDO_TOAST_MS });
+    expect(getToasts().at(-1)?.undo).toBeDefined();
+  });
+
+  it('runs the inverse operation on undo', async () => {
+    const restore = vi.fn(async () => {});
+    pushUndoToast({ text: 'Removed', undo: restore });
+    await getToasts().at(-1)!.undo!.run();
+    expect(restore).toHaveBeenCalledOnce();
+  });
+
+  it('reports an undo that fails as an error toast', async () => {
+    pushUndoToast({ text: 'Removed', undoFailedText: 'Could not undo', undo: async () => { throw new Error('offline'); } });
+    await getToasts().at(-1)!.undo!.run();
+    expect(getToasts().at(-1)).toMatchObject({ tone: 'error', text: 'Could not undo: offline' });
   });
 });

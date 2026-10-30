@@ -2414,7 +2414,7 @@ describe('Composer file clipboard policy', () => {
       await dispatchClipboardPaste(textarea, [file]);
     } else {
       await act(async () => { textarea.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
-      await click(container.querySelector('[data-menu-action="paste"]')!);
+      await click(document.querySelector('[data-menu-action="paste"]')!);
       await settle();
       expect(navigator.clipboard.read).not.toHaveBeenCalled();
     }
@@ -4735,7 +4735,7 @@ describe('Composer send-timing menu', () => {
       'SendDefault timing: after this turn',
       'Send nowSend into the running turn — read before the next step',
       'Send after subagentsStarts once the running subagents finish',
-      'Send after tasksStarts once every running task finishes; resident services excluded',
+      'Send after tasksStarts once every running task finishes',
     ]);
   });
 
@@ -4923,7 +4923,7 @@ describe('Composer with a pending engine/profile switch', () => {
     expect(rows).toEqual([
       'SendDefault timing: after this turn',
       'Send after subagentsStarts once the running subagents finish',
-      'Send after tasksStarts once every running task finishes; resident services excluded',
+      'Send after tasksStarts once every running task finishes',
     ]);
   });
 

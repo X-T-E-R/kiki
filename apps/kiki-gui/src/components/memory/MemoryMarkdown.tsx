@@ -29,7 +29,7 @@ import {
 } from '../../lib/client';
 import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
+import { SidePanel } from '../SidePanel';
 import { VersionBlock } from '../MemoryHistory';
 import { downloadBlob } from '../persona/usePersonas';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
@@ -280,10 +280,31 @@ export function MemoryImportDialog({ target, onClose, onOpenEntry }: {
   const needsRepreview = moved || expired || failure?.kind === 'stale';
 
   return (
-    <Dialog onClose={() => { if (!busy) onClose(); }} dismissible={!busy && file === null} ariaLabel={t('memory.markdown.importTitle')} overlayId="memory-import"
-      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.lg} flex max-h-[88dvh] flex-col max-md:max-w-none`}>
-      <div data-memory-import={receipt === null ? (current?.action ?? 'form') : 'applied'} className="min-h-0 flex-1 space-y-5 overflow-y-auto">
-        <h3 className="font-display text-[18px] font-semibold text-ink">{t('memory.markdown.importTitle')}</h3>
+    <SidePanel onClose={() => { if (!busy) onClose(); }} dismissible={!busy && file === null} title={t('memory.markdown.importTitle')} overlayId="memory-import"
+      width="lg"
+      stepKey={receipt !== null ? 'applied' : current === undefined ? 'form' : 'preview'}
+      footer={<>
+        {receipt !== null ? (
+          <>
+            <button type="button" data-memory-import-close onClick={onClose} className={SECONDARY_BUTTON}>{t('common.close')}</button>
+            <button type="button" data-memory-import-open={receipt.entry.id} onClick={() => { onClose(); onOpenEntry(receipt.entry.id); }} className={PRIMARY_BUTTON}>{t('memory.markdown.openEntry')}</button>
+          </>
+        ) : (
+          <>
+            <button type="button" data-memory-import-cancel disabled={busy} onClick={onClose} className={SECONDARY_BUTTON}>{t('common.cancel')}</button>
+            {failure?.kind === 'closed' ? null : current === undefined || needsRepreview ? (
+              <button type="button" data-memory-import-preview disabled={!ready || busy || !writable} onClick={() => { if (writable) { apply.reset(); sendPreview(); } }} className={needsRepreview ? SECONDARY_BUTTON : PRIMARY_BUTTON}>
+                {t(needsRepreview ? 'memory.markdown.repreview' : previewing ? 'memory.markdown.previewing' : 'memory.markdown.preview')}
+              </button>
+            ) : appliable ? (
+              <button type="button" data-memory-import-confirm={current.action} disabled={busy || !writable} onClick={() => { if (!writable || applying.current) return; applying.current = true; apply.mutate(); }} className={PRIMARY_BUTTON}>
+                {t(current.action === 'create' ? 'memory.markdown.confirmCreate' : 'memory.markdown.confirmUpdate')}
+              </button>
+            ) : null}
+          </>
+        )}
+      </>}>
+      <div data-memory-import={receipt === null ? (current?.action ?? 'form') : 'applied'} className="space-y-5">
         {receipt !== null ? (
           <div data-memory-import-applied={receipt.entry.id} data-memory-import-operation={receipt.operationId} className="space-y-3">
             {readback.data !== undefined ? (
@@ -343,28 +364,7 @@ export function MemoryImportDialog({ target, onClose, onOpenEntry }: {
           </>
         )}
       </div>
-      <div className="mt-6 flex shrink-0 flex-wrap justify-end gap-2">
-        {receipt !== null ? (
-          <>
-            <button type="button" data-memory-import-close onClick={onClose} className={`${SECONDARY_BUTTON} pointer-coarse:py-3`}>{t('common.close')}</button>
-            <button type="button" data-memory-import-open={receipt.entry.id} onClick={() => { onClose(); onOpenEntry(receipt.entry.id); }} className={`${PRIMARY_BUTTON} pointer-coarse:py-3`}>{t('memory.markdown.openEntry')}</button>
-          </>
-        ) : (
-          <>
-            <button type="button" data-memory-import-cancel disabled={busy} onClick={onClose} className={`${SECONDARY_BUTTON} pointer-coarse:py-3`}>{t('common.cancel')}</button>
-            {failure?.kind === 'closed' ? null : current === undefined || needsRepreview ? (
-              <button type="button" data-memory-import-preview disabled={!ready || busy || !writable} onClick={() => { if (writable) { apply.reset(); sendPreview(); } }} className={`${needsRepreview ? SECONDARY_BUTTON : PRIMARY_BUTTON} pointer-coarse:py-3`}>
-                {t(needsRepreview ? 'memory.markdown.repreview' : previewing ? 'memory.markdown.previewing' : 'memory.markdown.preview')}
-              </button>
-            ) : appliable ? (
-              <button type="button" data-memory-import-confirm={current.action} disabled={busy || !writable} onClick={() => { if (!writable || applying.current) return; applying.current = true; apply.mutate(); }} className={`${PRIMARY_BUTTON} pointer-coarse:py-3`}>
-                {t(current.action === 'create' ? 'memory.markdown.confirmCreate' : 'memory.markdown.confirmUpdate')}
-              </button>
-            ) : null}
-          </>
-        )}
-      </div>
-    </Dialog>
+    </SidePanel>
   );
 }
 
@@ -433,7 +433,7 @@ function ImportPreview({ target, preview, reason, onOpenEntry }: {
   const currentEntry = preview.current;
   const tone = preview.canApply ? 'text-ink' : 'text-amber-ink';
   return (
-    <section data-memory-import-preview-result={preview.action} data-memory-import-can-apply={preview.canApply ? 'true' : 'false'} className="space-y-4 border-t border-hairline pt-4">
+    <section data-memory-import-preview-result={preview.action} data-memory-import-can-apply={preview.canApply ? 'true' : 'false'} className="space-y-4 pt-4">
       <div className="space-y-1">
         <p className={`text-[14px] font-medium ${tone}`}>{t(ACTION_TEXT[preview.action])}</p>
         {issue !== undefined ? <p data-memory-import-issue={preview.issue!.code} className="text-[12px] leading-relaxed text-amber-ink">{t(issue)}</p> : null}
@@ -504,7 +504,7 @@ function EntryMeta({ scope, id, revision, pinned, basedOn = false, pinnedChanged
 }) {
   const { t } = useI18n();
   return (
-    <dl data-memory-import-meta className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-t border-hairline pt-2 text-[12px]">
+    <dl data-memory-import-meta className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 pt-2 text-[12px]">
       <dt className="text-ink-faint">{t('memory.markdown.meta.scope')}</dt>
       <dd data-memory-import-meta-scope className="min-w-0 truncate text-ink-soft">{scopeText(scope, t)}</dd>
       <dt className="text-ink-faint">{t('memory.markdown.meta.id')}</dt>

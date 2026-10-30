@@ -1420,10 +1420,10 @@ describe('settings nav groups (IA purpose)', () => {
     expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts', 'notifications']);
     expect(sectionsOf('models-agents')).toEqual(['ai', 'agents']);
     expect(sectionsOf('sessions-work')).toEqual(['sessions', 'workspaces', 'memory']);
-    expect(sectionsOf('capabilities')).toEqual(['extensions', 'search', 'browser-control']);
-    expect(sectionsOf('rules')).toEqual(['permissions', 'hooks']);
+    expect(sectionsOf('capabilities')).toEqual(['extensions', 'search', 'browser-control', 'hooks']);
+    expect(sectionsOf('rules')).toEqual(['permissions']);
     expect(sectionsOf('connection')).toEqual(['connection', 'spaces', 'ssh', 'connection-services']);
-    expect(sectionsOf('advanced')).toEqual(['developer', 'about']);
+    expect(sectionsOf('advanced')).toEqual(['about', 'developer']);
     expect(resolveSettingsRoute('external-clients', '')).toMatchObject({ section: 'connection-services' });
     // Legacy routes resolve to their canonical merged leaf instead of landing on "unknown setting".
     expect(resolveSettingsRoute('extensions', '')).toMatchObject({ section: 'extensions' });
@@ -1441,7 +1441,7 @@ describe('settings nav groups (IA purpose)', () => {
     expect(settingsGroupForSection('external-clients')).toBeUndefined();
     expect(settingsGroupForSection('workspaces')?.id).toBe('sessions-work');
     expect(settingsGroupForSection('spaces')?.id).toBe('connection');
-    expect(placed.at(-1)).toBe('about');
+    expect(placed.at(-1)).toBe('developer');
     for (const retired of ['runtime', 'experimental', 'capabilities', 'advanced', 'automation', 'communication', 'identity', 'subagents', 'tasks', 'skills', 'mcp', 'plugins', 'computer-control', 'labs']) {
       expect(settingsGroupForSection(retired), retired).toBeUndefined();
     }
@@ -1571,9 +1571,9 @@ describe('settings search breadcrumbs and synonyms', () => {
     ['模型目录', 'st-card-providers'],
     ['模型目录刷新', 'st-card-catalog-refresh'],
     // The fold-steps switch moved from its own timeline card into the
-    // composer card; the legacy terms keep finding it.
-    ['transcript', 'st-card-composer'],
-    ['timeline', 'st-card-composer'],
+    // interface-behaviour card; the legacy terms keep finding it.
+    ['transcript', 'st-card-ui-behavior'],
+    ['timeline', 'st-card-ui-behavior'],
     ['Profiles', 'st-card-main-agents'],
     ['子 Agent', 'st-card-subagents'],
   ])('matches the legacy/synonym term %s in English', (term, cardId) => {
@@ -1586,7 +1586,7 @@ describe('settings search breadcrumbs and synonyms', () => {
     ['供应商', 'st-card-providers'],
     ['model catalog', 'st-card-providers'],
     ['catalog refresh', 'st-card-catalog-refresh'],
-    ['会话记录', 'st-card-composer'],
+    ['会话记录', 'st-card-ui-behavior'],
   ])('matches the legacy/synonym term %s in Chinese', (term, cardId) => {
     const index = buildSettingsSearchIndex({}, tZh);
     expect(searchSettings(index, term).some((hit) => hit.cardId === cardId)).toBe(true);
@@ -1670,6 +1670,8 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'search', cardId: 'st-card-exp-search', tab: 'advanced' });
     expect(resolveSettingsRoute('ai', '#st-card-exp-ai'))
       .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-exp-ai', tab: 'defaults' });
+    expect(resolveSettingsRoute('browser-control', '#st-card-exp-browser-control'))
+      .toEqual({ status: 'ok', section: 'browser-control', cardId: 'st-card-exp-browser-control', tab: 'browser' });
     expect(resolveSettingsRoute('general', '#st-card-defaults'))
       .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-defaults', tab: 'behavior' });
   });
@@ -1683,7 +1685,14 @@ describe('settings route resolver', () => {
       .toEqual({ status: 'ok', section: 'hooks', cardId: 'st-card-hooks', tab: undefined });
     expect(resolveSettingsRoute('communication', '')).toEqual({ status: 'ok', section: 'sessions', cardId: undefined, tab: 'behavior' });
     expect(resolveSettingsRoute('communication', '#st-card-token-counting'))
-      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-token-counting', tab: undefined });
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-token-counting', tab: 'defaults' });
+    // Cards the Developer page used to hold land on their owning pages.
+    expect(resolveSettingsRoute('advanced', '#st-card-retry'))
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-retry', tab: 'defaults' });
+    expect(resolveSettingsRoute('advanced', '#st-card-resource-limits'))
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-resource-limits', tab: 'runtime' });
+    expect(resolveSettingsRoute('advanced', '#st-card-session-residency'))
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-session-residency', tab: 'runtime' });
     for (const card of ['st-card-thread-communication', 'st-card-notify-parent', 'st-card-communication']) {
       expect(resolveSettingsRoute('communication', `#${card}`), card)
         .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: 'behavior' });
@@ -1744,7 +1753,7 @@ describe('settings route resolver', () => {
     expect(resolveSettingsRoute('runtime', '#st-card-communication'))
       .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: 'behavior' });
     expect(resolveSettingsRoute('runtime', '#st-card-resource-limits'))
-      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-resource-limits', tab: undefined });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-resource-limits', tab: 'runtime' });
     expect(resolveSettingsRoute('runtime', '#st-card-agent-runtime'))
       .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-runtime', tab: 'profiles' });
   });

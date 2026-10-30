@@ -132,8 +132,12 @@ describe('localizedCronSchedule', () => {
     expect(localizedCronSchedule('zh', '0 9,17 * * *', zh)).toBe('每天 09:00、17:00');
   });
 
+  it('names a grid of minute and hour lists as every pairing', () => {
+    expect(localizedCronSchedule('zh', '5,25 9,17 * * *', zh)).toBe('每天 09:05、09:25、17:05、17:25');
+  });
+
   it('leaves a rule with no readable name to the caller', () => {
-    expect(localizedCronSchedule('zh', '5,25 9,17 * * *', zh)).toBeUndefined();
+    expect(localizedCronSchedule('zh', '0,15 * * * *', zh)).toBeUndefined();
     expect(localizedCronSchedule('zh', 'not a cron', zh)).toBeUndefined();
     expect(localizedCronSchedule('zh', '', zh)).toBeUndefined();
   });

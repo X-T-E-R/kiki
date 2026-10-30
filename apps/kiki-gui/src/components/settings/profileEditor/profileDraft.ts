@@ -1,3 +1,4 @@
+import type { I18nKey } from '@kiki/session-core/i18n';
 import { parseNamedAgentTools } from '@kiki/session-core/settings';
 import type { NamedAgentProfile, UpdateNamedAgentProfileRequest } from '../../../lib/client';
 import type { KikiContextGroup } from '../../harness/kikiContext';
@@ -293,9 +294,19 @@ export function spawnConstraintsBody(value: SpawnConstraintsDraft): UpdateNamedA
 
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
-/** Display form of an effort level, matching the composer's picker ("High"); the value stays as stored. */
-export function effortLabel(level: string): string {
-  return level === '' ? level : level.charAt(0).toUpperCase() + level.slice(1);
+/** The i18n key naming an effort level; unknown values have none and print raw. */
+export function effortLabelKey(level: string): I18nKey | null {
+  return (EFFORTS as readonly string[]).includes(level) ? `composer.effort.${level}` as I18nKey : null;
+}
+
+/**
+ * Display form of an effort level, matching the composer's picker; the value
+ * stays as stored. Pass the translator and a known level speaks the locale
+ * (低/中/高…), an unknown one prints raw.
+ */
+export function effortLabel(level: string, t?: (key: I18nKey) => string): string {
+  const key = effortLabelKey(level);
+  return t !== undefined && key !== null ? t(key) : level === '' ? level : level.charAt(0).toUpperCase() + level.slice(1);
 }
 
 export function isExternalExecutor(executor: string | undefined): boolean {

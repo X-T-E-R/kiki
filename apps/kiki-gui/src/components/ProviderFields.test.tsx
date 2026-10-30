@@ -27,10 +27,10 @@ import { I18nProvider } from '../i18n';
 import { accountState, needsSignInAction } from './accountSignInState';
 import { AccountConnectionPanel } from './AccountConnectionPanel';
 import { NewProviderWizard, ProviderEditor } from './ProviderFields';
-import { DirtyGuardContext } from './dirtyGuard';
 import { ConnectionsTab } from './settings/ProvidersSection';
 import { SettingsCardMountContext } from './settings/SectionCard';
 import { optionLabels, optionValues, openOptions, openPanel, pickValue } from './settings/testControls';
+import { RouterDirtyGuard } from './settings/testDirtyGuard';
 
 const listDiscoveredModels = vi.fn(async () => ({ items: [] as Array<{ provider_id: string; fetched_at: number | null; attempted_at: number; models: Array<{ remote_id: string }> }> }));
 const refreshProvider = vi.fn();
@@ -266,9 +266,9 @@ async function renderSurface(children: ReactNode) {
         <MemoryRouter>
           <QueryClientProvider client={client}>
             <I18nProvider>
-              <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
+              <RouterDirtyGuard reportDirty={reportDirty}>
                 {content}
-              </DirtyGuardContext.Provider>
+              </RouterDirtyGuard>
             </I18nProvider>
           </QueryClientProvider>
         </MemoryRouter>,
@@ -382,9 +382,9 @@ describe('ProviderEditor save channel', () => {
           <MemoryRouter>
             <QueryClientProvider client={client}>
               <I18nProvider>
-                <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
+                <RouterDirtyGuard reportDirty={reportDirty}>
                   <ProviderEditor provider={provider} models={FAST_MODELS} onSaved={onSaved} />
-                </DirtyGuardContext.Provider>
+                </RouterDirtyGuard>
               </I18nProvider>
             </QueryClientProvider>
           </MemoryRouter>,
@@ -433,7 +433,7 @@ describe('ProviderEditor save channel', () => {
     getProviderEntity.mockResolvedValue({ ...COLON_PROVIDER, revision: 'provider-rev-1', defaults: { temperature: 0, max_completion_tokens: 8192 } });
     const container = await renderEditor(COLON_PROVIDER, FAST_MODELS, false, async () => {});
     const editor = container.querySelector<HTMLElement>('[data-generation-editor="provider:edge:gateway"]')!;
-    expect(editor.textContent).toContain('models without local overrides');
+    expect(editor.textContent).toContain('Provider request defaults');
     // The provider defaults entrance keeps all five parameters; on a model row
     // three of them move to the identity section's usage fields.
     for (const label of ['Temperature mode', 'Top P mode', 'Max generated tokens mode', 'Thinking mode / effort mode', 'Service tier mode']) {
@@ -680,7 +680,7 @@ describe('ProviderEditor save channel', () => {
     // The alias and the upstream id are both on the row.
     const modelRow = row.querySelector<HTMLElement>('[data-provider-models] [data-model-row="kimi-code/kimi-k2"]')!;
     expect(modelRow.textContent).toContain('kimi-k2');
-    await act(async () => { modelRow.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!.click(); });
+    await act(async () => { modelRow.querySelector<HTMLButtonElement>('button[data-detail-trigger]')!.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const editor = document.body.querySelector<HTMLElement>('[data-model-row-editor="kimi-code/kimi-k2"]')!;
     expect(editor).not.toBeNull();
@@ -705,7 +705,7 @@ describe('ProviderEditor save channel', () => {
     const { container } = await renderSurface(<ConnectionsTab />);
     const row = container.querySelector<HTMLDetailsElement>('[data-connection-row="edge:gateway"]')!;
     await act(async () => { row.open = true; });
-    await act(async () => { row.querySelector<HTMLButtonElement>('[data-model-row="fast"] button[aria-haspopup="dialog"]')!.click(); });
+    await act(async () => { row.querySelector<HTMLButtonElement>('[data-model-row="fast"] button[data-detail-trigger]')!.click(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const remove = () => document.body.querySelector<HTMLButtonElement>('[data-model-remove="fast"]')!;
     await act(async () => { remove().click(); });
@@ -943,15 +943,16 @@ describe('Connections list', () => {
     const rows = [...container.querySelectorAll<HTMLElement>('[data-connection-row]')];
     expect(rows.map((row) => [row.dataset['connectionRow'], row.dataset['connectionKind']])).toEqual([
       ['edge:gateway', 'api'],
-      ['managed:kimi-code', 'account'],
+      // A local HTTP server lists with the API services; its kind tag still says local.
       ['ollama', 'local'],
+      ['managed:kimi-code', 'account'],
     ]);
     // The account row names the sign-in and its kind, never a wire protocol.
-    const accountSummary = rows[1]!.querySelector('summary')!.textContent;
+    const accountSummary = rows[2]!.querySelector('summary')!.textContent;
     expect(accountSummary).toContain('Kimi Code');
     expect(accountSummary).toContain('Account');
     expect(accountSummary).not.toContain('Moonshot');
-    expect(rows[2]!.querySelector('summary')!.textContent).toContain('Local server · localhost:11434');
+    expect(rows[1]!.querySelector('summary')!.textContent).toContain('Local server · localhost:11434');
     expect(rows[0]!.querySelector('[data-connection-status]')!.textContent).toContain('Connected');
     // No per-row protocol/identity/key pills in the collapsed row.
     expect(rows[0]!.querySelector('summary')!.textContent).not.toContain('key stored');
@@ -1641,8 +1642,8 @@ describe('Connections list', () => {
       expect(panel().textContent).not.toContain('This connection now uses the sign-in already on this machine');
       // The description of what reuse is is also a claim about this credential,
       // so it is written as a capability rather than a statement of fact.
-      expect(panel().textContent).toContain('Kiki can use the sign-in Codex has on this machine');
-      expect(panel().textContent).not.toContain('Kiki uses the sign-in Codex already has on this machine');
+      expect(panel().textContent).toContain('Kiki can reuse the Codex sign-in already on this machine');
+      expect(panel().textContent).not.toContain('Kiki can use the sign-in Codex has on this machine');
       // Replacing a spent credential is done by checking the machine, so the
       // check stays available beside the way to let go of it.
       expect(panel().querySelector('[data-original-source-probe]')).not.toBeNull();

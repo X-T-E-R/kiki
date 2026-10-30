@@ -23,6 +23,10 @@ export interface ConfirmDialogProps {
   readonly cancelLabel?: string;
   readonly tone?: 'danger' | 'default';
   readonly busy?: boolean;
+  /** Disable the armed verb while a preflight is still out (the label stays). */
+  readonly confirmDisabled?: boolean;
+  /** Data attributes for the confirm button (proof walkers, tests). */
+  readonly confirmData?: Record<`data-${string}`, string>;
   /** Opt into modal ownership for app-level confirmations outside a Dialog. */
   readonly stacked?: boolean;
   /** uiBusy overlay id so Escape closes this dialog instead of aborting. */
@@ -41,6 +45,8 @@ export function ConfirmDialog({
   cancelLabel,
   tone = 'danger',
   busy = false,
+  confirmDisabled = false,
+  confirmData,
   stacked: ownStack = false,
   overlayId = 'confirm-dialog',
   onConfirm,
@@ -114,7 +120,7 @@ export function ConfirmDialog({
         <button ref={cancelRef} data-autofocus={stacked ? '' : undefined} type="button" className={`${SECONDARY_BUTTON} pointer-coarse:py-3`} disabled={busy} onClick={onCancel}>
           {cancelLabel ?? t('common.cancel')}
         </button>
-        <button type="button" data-confirm-action="confirm" className={`${tone === 'danger' ? DANGER_BUTTON : PRIMARY_BUTTON} pointer-coarse:py-3`} disabled={busy} onClick={onConfirm}>
+        <button type="button" data-confirm-action="confirm" {...confirmData} className={`${tone === 'danger' ? DANGER_BUTTON : PRIMARY_BUTTON} pointer-coarse:py-3`} disabled={busy || confirmDisabled} onClick={onConfirm}>
           {confirmLabel}
         </button>
       </div>

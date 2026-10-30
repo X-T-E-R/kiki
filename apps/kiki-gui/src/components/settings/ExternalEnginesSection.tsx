@@ -13,7 +13,7 @@ import { LocalSessionsEntry } from '../localSessions/LocalSessionsEntry';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
 import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../ui';
-import { SidePanel } from '../SidePanel';
+import { DetailBack, DetailRailGroup, DetailRailItem, DetailSplit, useDetailParam } from '../overlays';
 import { SettingsSegmented, type SettingsChoice } from './SettingsPrimitives';
 import {
   applyExecutorCheck,
@@ -121,7 +121,7 @@ function EngineVisibilityToggle({ item, overrides, display }: {
 
   return (
     <div data-engine-visible={item.id} data-visible={visible ? 'true' : 'false'}
-      className="space-y-1 border-t border-hairline pt-3">
+      className="space-y-1 pt-3">
       <Toggle
         layout="row"
         label={t('st.engines.showInList', { engine: item.label })}
@@ -248,23 +248,45 @@ export function ExternalEnginesList() {
     })();
   }, [catalogKey, client, configQuery.isSuccess, discoveryKey, display, engineIds, locale, query.isSuccess, queryClient]);
   const externalsVisible = engineVisibilityOf(overrides, display).externalsVisible;
+  // One engine's whole configuration opens in the page at `?engine=<id>`: an
+  // engine is an existing object from this list, not a panel over it.
+  const engineDetail = useDetailParam('engine');
+  const detailItem = engineDetail.selected === null ? undefined : engines.find((item) => item.id === engineDetail.selected);
+  // No rows, no box: an empty bordered list reads as a stray rule under the heading.
+  const list = engines.length === 0 && removalNote === undefined ? null : <div data-engine-list className="overflow-hidden rounded-lg border border-hairline bg-panel">
+    {removalNote !== undefined ? <p role="status" data-engine-removal-result className="border-b border-hairline px-3 py-2 text-[12px] leading-4 text-ink-soft">{removalNote}</p> : null}
+    {engines.map((item) => <EngineRow key={item.id} item={item} overrides={overrides} display={display} fault={faults[item.id]}
+      onOpen={() => { engineDetail.open(item.id); }} />)}
+    {/* Fresh check results merge into the catalog cache, so rows re-read
+        themselves when a check lands elsewhere (the detail's recheck). */}
+  </div>;
+  const rail = <DetailRailGroup label={t('st.engines.title')} count={engines.length}>
+    {engines.map((item) => <DetailRailItem key={item.id} itemKey={item.id} label={item.label}
+      current={item.id === detailItem?.id} onSelect={() => { engineDetail.open(item.id); }} />)}
+  </DetailRailGroup>;
+  const detail = detailItem === undefined ? null : <EngineDetailPane item={detailItem} overrides={overrides} display={display}
+    onClose={engineDetail.close}
+    onRegistrationRemoved={setRemovalNote}
+    onFault={(id, text) => {
+      setFaults((current) => {
+        const next = { ...current };
+        if (text === undefined) delete next[id];
+        else next[id] = text;
+        return next;
+      });
+    }} />;
   return (
     <div data-external-engines className="space-y-3">
+      <DetailSplit selected={detailItem?.id ?? null} label={t('st.engines.title')}
+        data={{ 'data-engines-split': '' }} list={list} rail={rail} detail={detail} />
       {faults['*'] !== undefined ? <p role="alert" data-engine-discovery-error className="text-[12px] leading-4 text-danger">{faults['*']}</p> : null}
       {engines.length > 0 && configQuery.isSuccess && !externalsVisible ? (
         <p data-engines-hidden-note className="text-[12px] leading-4 text-ink-faint">{t('st.engines.showAllInListOffHint')}</p>
       ) : null}
-      {engines.length > 0 ? (
-        <div data-engine-list className="overflow-hidden rounded-lg border border-hairline bg-panel">
-          {removalNote !== undefined ? <p role="status" data-engine-removal-result className="border-b border-hairline px-3 py-2 text-[12px] leading-4 text-ink-soft">{removalNote}</p> : null}
-          {engines.map((item) => <EngineRow key={item.id} item={item} overrides={overrides} display={display} fault={faults[item.id]} onRegistrationRemoved={setRemovalNote} />)}
-        </div>
-      ) : null}
       {query.isSuccess && engines.length === 0 ? (
-        <div data-engines-empty className="space-y-1 rounded-lg border border-dashed border-hairline-strong px-4 py-4">
-          <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.empty')}</p>
-          <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.engines.intro')}</p>
-        </div>
+        // One quiet line, not a dashed box: an empty list is a state, not an
+        // explanation (#12).
+        <p className="text-[13px] text-ink-soft" data-engines-empty>{t('st.engines.emptyLine')}</p>
       ) : null}
       {query.isLoading ? <Hint>{t('st.engines.loading')}</Hint> : null}
       {query.isError ? <InlineError error={query.error} /> : null}
@@ -492,8 +514,8 @@ type RunChoice = 'plain' | 'kiki';
  * A following engine highlights what that default currently is and says
  * nothing more on the row; a pinned one offers "follow default", which writes
  * `null`. An engine that cannot carry the bridge only states that it runs as
- * is. The row and the detail panel render the same control (`variant`), both
- * reading the shared config query, so they cannot disagree.
+ * is. The control lives in the engine's detail pane: the list row keeps one
+ * status word and a click opens the detail (rule 14).
  */
 const RUN_MODE_COPY = {
   en: {
@@ -518,11 +540,10 @@ function runModeCopy(locale: string) {
   return locale === 'zh' ? RUN_MODE_COPY.zh : RUN_MODE_COPY.en;
 }
 
-function EngineRunMode({ item, savedDefaults, onSaved, variant }: {
+function EngineRunMode({ item, savedDefaults, onSaved }: {
   item: ExecutorCatalogItem;
   savedDefaults: Record<string, unknown> | null | undefined;
   onSaved: () => Promise<void>;
-  variant: 'row' | 'panel';
 }) {
   const { client, scopeId, meta } = useConnection();
   const { t, locale } = useI18n();
@@ -590,15 +611,6 @@ function EngineRunMode({ item, savedDefaults, onSaved, variant }: {
     'data-mcp-supported': isUnsupported ? 'false' : 'true',
   };
 
-  if (variant === 'row') {
-    return (
-      <div {...data} className="flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
-        {error !== undefined ? <span role="alert" className="max-w-[14rem] truncate text-[12px] text-danger" title={error}>{error}</span> : null}
-        {restore}
-        {control}
-      </div>
-    );
-  }
   return (
     <div {...data} className="space-y-1.5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
@@ -611,7 +623,7 @@ function EngineRunMode({ item, savedDefaults, onSaved, variant }: {
   );
 }
 
-function EngineOverrides({ item, program, onCheck }: { item: ExecutorCatalogItem; program?: string; onCheck: () => Promise<ExecutorCheckResult | undefined> }) {
+function EngineOverrides({ item, program, onCheck, children }: { item: ExecutorCatalogItem; program?: string; onCheck: () => Promise<ExecutorCheckResult | undefined>; children?: React.ReactNode }) {
   const { client, scopeId, meta } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
@@ -683,7 +695,7 @@ function EngineOverrides({ item, program, onCheck }: { item: ExecutorCatalogItem
   };
 
   return (
-    <details data-engine-advanced className="border-t border-hairline pt-3 [&[open]]:space-y-3">
+    <details data-engine-advanced className="pt-3 [&[open]]:space-y-3">
       <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-ink-soft [&::-webkit-details-marker]:hidden">
         <DisclosureChevron open={false} className="text-ink-faint" />
         {t('st.engines.advanced')}
@@ -733,6 +745,7 @@ function EngineOverrides({ item, program, onCheck }: { item: ExecutorCatalogItem
         </button>
         <span className="text-[12px] text-ink-faint">{t('st.engines.override.recheck')}</span>
       </div>
+      {children}
       <FeedbackLine feedback={feedback} />
     </details>
   );
@@ -789,7 +802,7 @@ function registrationRemovalText(locale: string, result: {
   return [registration, builtin, resources, result.reason].filter((part): part is string => part !== undefined && part !== '').join(' ');
 }
 
-function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
+function EngineRow({ item, overrides, display, fault, onOpen }: {
   item: ExecutorCatalogItem;
   /** The config's `agent_executor_overrides` record, for the per-engine display choice. */
   overrides: Readonly<Record<string, unknown>> | undefined;
@@ -797,6 +810,80 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
   display: Readonly<Record<string, unknown>> | undefined;
   /** This engine's own check failure. It never changes another row. */
   fault?: string;
+  /** Opens this engine's in-page detail (`?engine=<id>`). */
+  onOpen: () => void;
+}) {
+  const { t } = useI18n();
+  const query = useExecutorCatalogQuery();
+  // A check's result is already merged into the cached catalog by the pane,
+  // so the freshest row state comes from the cache alone; refetching would
+  // needlessly re-read the whole list.
+  const current = query.data?.items.find((candidate) => candidate.id === item.id) ?? item;
+  const shown = catalogCheckOf(current);
+  const faultText = shown === undefined ? fault : undefined;
+  const health = faultText !== undefined && shown === undefined ? 'warning' : engineHealth(current, shown);
+  const healthText = t(HEALTH_KEY[health]);
+  const connection = current.connection;
+  const login: LoginStatus = shown?.login_status ?? connection?.login_status ?? 'unknown';
+  const credential = shown?.credential_source ?? connection?.credential_source;
+  const credentialKey = credentialLabel(credential);
+  // A check is the freshest fact: once one ran, an empty field means "not found", not "use the catalog".
+  const version = shown === undefined ? current.version : shown.version;
+  const summaryFacts = [
+    t('st.engines.kind'),
+    protocolLabel(item.protocol),
+    version,
+    health === 'missing' ? undefined : credentialKey === undefined ? t(`st.engines.login.${login}`) : t(credentialKey),
+  ].filter((part): part is string => part !== undefined);
+
+  // One row per engine: what it is and whether it works on the left, how it
+  // runs on the right — the one choice people make here every day. The rest
+  // (setup, checks, parameters, diagnostics) opens in the page, so the list
+  // stays a list. The row itself opens the detail; the run-mode control
+  // keeps its clicks to itself.
+  return (
+    <div data-engine-row={item.id} data-engine-health={health}
+      onClick={onOpen}
+      className="group/engine flex min-h-14 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-hairline px-3 py-2 transition-colors last:border-b-0 hover:bg-ink/[0.03]">
+      <button type="button" data-engine-open data-detail-trigger={item.id}
+        onClick={(event) => { event.stopPropagation(); onOpen(); }}
+        className="-my-1 flex min-w-0 flex-1 items-center gap-3 rounded-md py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
+        <span aria-hidden className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-ink/[0.05] text-ink-soft">
+          <Icon name="terminal" size={14} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className="truncate text-[13px] font-medium text-ink">{item.label}</span>
+          </span>
+          <span data-engine-summary className="block truncate text-[12px] text-ink-faint">{summaryFacts.join(' · ')}</span>
+        </span>
+        <span data-engine-status={health}
+          className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${
+            health === 'missing' ? 'text-danger' : health === 'warning' ? 'text-amber-ink' : 'text-ink-faint'}`}>
+          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
+            health === 'missing' ? 'bg-danger' : health === 'warning' ? 'bg-amber-rule' : health === 'unknown' ? 'bg-ink-faint' : 'bg-success'}`} />
+          <span className="hidden md:inline">{healthText}</span>
+          <span className="sr-only md:hidden">{healthText}</span>
+        </span>
+      </button>
+      <Icon name="chevron" size={12} className="shrink-0 text-ink-faint transition-colors group-hover/engine:text-ink-soft" />
+    </div>
+  );
+}
+
+/**
+ * One engine's whole configuration, opened in the page beside the engine
+ * rail (`?engine=<id>`). The same content the row's side panel carried:
+ * setup, checks, parameters, diagnostics and the custom-registration
+ * removal — as the pane of the DetailSplit, not a panel over the list.
+ */
+function EngineDetailPane({ item, overrides, display, onClose, onFault, onRegistrationRemoved }: {
+  item: ExecutorCatalogItem;
+  overrides: Readonly<Record<string, unknown>> | undefined;
+  display: Readonly<Record<string, unknown>> | undefined;
+  onClose: () => void;
+  /** A failed check leaves its reason on the row until the next one clears it. */
+  onFault?: (id: string, text: string | undefined) => void;
   onRegistrationRemoved?: (text: string) => void;
 }) {
   const { client, scopeId, meta } = useConnection();
@@ -821,26 +908,32 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
   const customRegistration = Object.hasOwn(configuredEngineDescriptors(config) ?? {}, item.id);
   const [removing, setRemoving] = useState(false);
   const shown = check ?? catalogCheckOf(item);
-  const faultText = localFault ?? (shown === undefined ? fault : undefined);
-  const health = faultText !== undefined && shown === undefined ? 'warning' : engineHealth(item, shown);
-  const healthText = t(HEALTH_KEY[health]);
+  const faultText = localFault;
+  const health = localFault !== undefined && shown === undefined ? 'warning' : engineHealth(item, shown);
   const login: LoginStatus = shown?.login_status ?? connection?.login_status ?? 'unknown';
   const credential = shown?.credential_source ?? connection?.credential_source;
   const credentialDetail = shown?.credential_detail ?? connection?.credential_detail;
   const credentialKey = credentialLabel(credential);
-  const apiKeyEnv = connection?.api_key_env;
-  // A check is the freshest fact: once one ran, an empty field means "not found", not "use the catalog".
+
   const version = shown === undefined ? item.version : shown.version;
   const programPath = shown?.requirements?.find((requirement) => requirement.role === 'program')?.path;
   const program = shown === undefined ? connection?.command : programPath ?? (shown.command || undefined);
   const source = shown === undefined ? connection?.source : shown.selected_source;
   const args = shown?.resolved_args ?? connection?.default_args ?? [];
+  const apiKeyEnv = connection?.api_key_env;
   const loginCommand = connection?.login_command?.join(' ');
   const caps = item.capabilities;
   const setup = shown?.requirements !== undefined && shown.requirements.length > 0;
   // Kiki installs and signs in Antigravity's ACP CLI itself; the generic
   // "copy this command" guide would show a sentence as a command.
   const antigravity = item.id === ANTIGRAVITY_ID;
+  const savedDefaults = engineDefaultsOf(config?.raw, item.id);
+  const summaryFacts = [
+    t('st.engines.kind'),
+    protocolLabel(item.protocol),
+    version,
+    health === 'missing' ? undefined : credentialKey === undefined ? t(`st.engines.login.${login}`) : t(credentialKey),
+  ].filter((part): part is string => part !== undefined);
 
   const runCheck = async (): Promise<ExecutorCheckResult | undefined> => {
     if (checking) return undefined;
@@ -853,12 +946,13 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
       setCheck(result);
       setCheckedAt(at);
       applyExecutorCheck(queryClient, executorCatalogQueryKey(scopeId, meta?.server_id), item.id, result, at);
-      await queryClient.invalidateQueries({ queryKey: executorCatalogQueryKey(scopeId, meta?.server_id) });
+      onFault?.(item.id, undefined);
       return result;
     } catch (error) {
       const text = errorText(locale, error);
       setLocalFault(text);
       setFeedback({ tone: 'error', text });
+      onFault?.(item.id, text);
       return undefined;
     } finally {
       setChecking(false);
@@ -883,62 +977,21 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
     }
   };
 
-  const summaryFacts = [
-    t('st.engines.kind'),
-    protocolLabel(item.protocol),
-    version,
-    health === 'missing' ? undefined : credentialKey === undefined ? t(`st.engines.login.${login}`) : t(credentialKey),
-  ].filter((part): part is string => part !== undefined);
-  const savedDefaults = engineDefaultsOf(config?.raw, item.id);
-  const [open, setOpen] = useState(false);
-
-  // One row per engine: what it is and whether it works on the left, how it
-  // runs on the right — the one choice people make here every day. The rest
-  // (setup, checks, parameters, diagnostics) opens beside the list, so the
-  // list stays a list. The row itself opens the panel; the run-mode control
-  // keeps its clicks to itself.
   return (
-    <>
-    <div data-engine-row={item.id} data-engine-health={health} data-engine-open-state={open ? 'open' : 'closed'}
-      onClick={() => { setOpen(true); }}
-      className="group/engine flex min-h-14 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-hairline px-3 py-2 transition-colors last:border-b-0 hover:bg-ink/[0.03]">
-      <button type="button" data-engine-open aria-haspopup="dialog"
-        onClick={(event) => { event.stopPropagation(); setOpen(true); }}
-        className="-my-1 flex min-w-0 flex-1 items-center gap-3 rounded-md py-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
-        <span aria-hidden className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-ink/[0.05] text-ink-soft">
-          <Icon name="terminal" size={14} />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="flex min-w-0 items-baseline gap-2">
-            <span className="truncate text-[13px] font-medium text-ink">{item.label}</span>
-            <span className="hidden truncate font-mono text-[11px] text-ink-faint sm:inline">{item.id}</span>
-          </span>
-          <span data-engine-summary className="block truncate text-[12px] text-ink-faint">{summaryFacts.join(' · ')}</span>
-        </span>
-        <span data-engine-status={health}
-          className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${
-            health === 'missing' ? 'text-danger' : health === 'warning' ? 'text-amber-ink' : 'text-ink-faint'}`}>
-          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
-            health === 'missing' ? 'bg-danger' : health === 'warning' ? 'bg-amber-rule' : health === 'unknown' ? 'bg-ink-faint' : 'bg-success'}`} />
-          <span className="hidden md:inline">{healthText}</span>
-          <span className="sr-only md:hidden">{healthText}</span>
-        </span>
-      </button>
-      <div data-engine-row-run className="order-last w-full pl-10 sm:order-none sm:w-auto sm:pl-0"
-        onClick={(event) => { event.stopPropagation(); }}>
-        <EngineRunMode item={item} savedDefaults={savedDefaults} onSaved={refetchConfig} variant="row" />
+    <div className="space-y-3">
+      <div className="md:hidden">
+        <DetailBack label={t('st.engines.title')} onClick={onClose} data={{ 'data-engine-back': '' }} />
       </div>
-      <Icon name="chevron" size={12} className="shrink-0 text-ink-faint transition-colors group-hover/engine:text-ink-soft" />
-    </div>
-      {open ? (
-        <SidePanel
-          title={item.label}
-          description={summaryFacts.join(' · ')}
-          overlayId="settings-engine-detail"
-          onClose={() => { setOpen(false); }}
-          width="lg"
-          data={{ 'data-engine-panel-overlay': item.id }}
-        >
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 data-detail-heading tabIndex={-1} className="font-display text-[18px] font-semibold text-ink outline-none">{item.label}</h3>
+          <p className="mt-0.5 truncate text-[12px] text-ink-faint">{summaryFacts.join(' · ')}</p>
+        </div>
+        <button type="button" onClick={onClose} aria-label={t('common.close')} title={t('common.close')} data-detail-close
+          className="hidden h-8 w-8 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink md:flex">
+          <Icon name="close" size={14} />
+        </button>
+      </div>
           <div data-engine-panel={item.id} className="space-y-6">
             <div className="space-y-4">
               {antigravity ? <AntigravitySetup login={login} onChanged={() => void runCheck()}
@@ -977,8 +1030,9 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
               </div>
               <dl className="space-y-2">
                 <Fact label={t('st.engines.program')} dataFact="program">
-                  {program !== undefined ? <span className="break-all font-mono text-[12px]">{program}</span> : <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
-                  {source !== undefined ? <span className="block text-[12px] text-ink-faint">{t('st.engines.source')} <span className="font-mono text-[11.5px]">{source}</span></span> : null}
+                  {source === 'kiki-managed'
+                    ? <span>{t('st.engines.managedByKiki')}</span>
+                    : program !== undefined ? <span className="break-all text-[12.5px]">{program}</span> : <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
                 </Fact>
                 <Fact label={t('st.engines.version')} dataFact="version">
                   {version ?? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
@@ -991,7 +1045,9 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
                     {credentialDetail !== undefined ? <span className="font-mono text-[11.5px]"> · {credentialDetail}</span> : null}
                   </span> : null}
                   {login === 'unknown' && shown === undefined ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginStale')}</span> : null}
-                  {login === 'logged_out' ? <span className="block text-[12px] text-ink-faint">{t('st.engines.loginOrKey')}</span> : null}
+                  {login === 'logged_out' ? <span className="block text-[12px] text-ink-faint">
+                    {t(loginCommand !== undefined && apiKeyEnv !== undefined ? 'st.engines.loginOrKey' : 'st.engines.loginOneRoute')}
+                  </span> : null}
                   {loginCommand !== undefined && login !== 'logged_in' ? (
                     <span className="mt-1 flex flex-wrap items-center gap-2">
                       <span className="text-[12px] text-ink-faint">{t('st.engines.loginCommand')}</span>
@@ -1008,9 +1064,9 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
               </dl>
             </div>
 
-            <section data-engine-section="run" className="space-y-3 border-t border-hairline pt-5">
+            <section data-engine-section="run" className="space-y-3 pt-5">
               <h3 className="text-[13px] font-medium text-ink">{runModeCopy(locale).title}</h3>
-              <EngineRunMode item={item} savedDefaults={savedDefaults} onSaved={refetchConfig} variant="panel" />
+              <EngineRunMode item={item} savedDefaults={savedDefaults} onSaved={refetchConfig} />
               <EngineDefaults item={item} saved={savedDefaults} onSaved={refetchConfig} />
             </section>
 
@@ -1018,7 +1074,7 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
               <EngineVisibilityToggle item={item} overrides={overrides} display={display} />
               {item.default_profile === true ? <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.defaultProfile')}</p> : null}
               {localSessionEngine(item.id) !== undefined ? (
-                <div data-engine-local-sessions className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-hairline pt-3">
+                <div data-engine-local-sessions className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-3">
                   <div className="min-w-0 flex-1">
                     <p className="text-[12px] font-medium text-ink-soft">{t('localSessions.settingsTitle')}</p>
                     <p className="text-[12px] leading-4 text-ink-faint">{t('localSessions.settingsHint', { engine: item.label })}</p>
@@ -1028,7 +1084,7 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
               ) : null}
             </section>
 
-            <section data-engine-section="details" className="space-y-4 border-t border-hairline pt-5">
+            <section data-engine-section="details" className="space-y-4 pt-5">
               {shown !== undefined && shown.diagnostics.length > 0 ? (
                 <div data-engine-diagnostics className="space-y-1">
                   <p className="text-[12px] font-medium text-ink-soft">{t('st.engines.diagnostics')}</p>
@@ -1043,11 +1099,23 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
                   </ul>
                 </div>
               ) : null}
-              <details data-engine-capabilities className="group/caps [&[open]]:space-y-2">
-                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[12px] font-medium text-ink-soft [&::-webkit-details-marker]:hidden">
-                  <DisclosureChevron open={false} className="text-ink-faint transition-transform group-open/caps:rotate-90" />
-                  {t('st.engines.capabilities')}
-                </summary>
+              <EngineOverrides item={item} program={program} onCheck={runCheck}>
+                {program !== undefined || source !== undefined ? (
+                  <dl className="space-y-1.5 pt-3">
+                    {program !== undefined ? (
+                      <Fact label={t('st.engines.program')} dataFact="program-path">
+                        <span className="break-all">{program}</span>{' '}
+                        <CopyCommand command={program} />
+                      </Fact>
+                    ) : null}
+                    {source !== undefined ? (
+                      <Fact label={t('st.engines.source')} dataFact="source">
+                        <span className="break-all">{source}</span>
+                      </Fact>
+                    ) : null}
+                  </dl>
+                ) : null}
+                <div className="space-y-1.5 pt-3">
                 <dl className="space-y-1.5">
                   <Fact label={t('st.engines.cap.prompt')} dataFact="cap-prompt">
                     {caps === undefined ? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>
@@ -1083,13 +1151,12 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
                   ) : null}
                 </dl>
                 <p className="text-[12px] leading-4 text-ink-faint">{t(caps?.negotiated !== undefined ? 'st.engines.capsNegotiated' : 'st.engines.capsDeclared')}</p>
-              </details>
-              <EngineOverrides item={item} program={program} onCheck={runCheck} />
-              <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.configHint')}</p>
+              </div>
+              </EngineOverrides>
             </section>
 
             {customRegistration ? (
-              <section data-engine-registration={item.id} className="space-y-1.5 border-t border-hairline pt-5">
+              <section data-engine-registration={item.id} className="space-y-1.5 pt-5">
                 <button type="button" data-engine-remove-registration className={DANGER_GHOST_BUTTON}
                   disabled={removing} aria-busy={removing} onClick={() => { void removeRegistration(); }}>
                   {t('common.remove')}
@@ -1103,8 +1170,6 @@ function EngineRow({ item, overrides, display, fault, onRegistrationRemoved }: {
             ) : null}
             <FeedbackLine feedback={feedback} />
           </div>
-        </SidePanel>
-      ) : null}
-    </>
+    </div>
   );
 }

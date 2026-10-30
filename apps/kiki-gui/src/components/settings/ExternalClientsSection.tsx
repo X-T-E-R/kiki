@@ -19,6 +19,7 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
+import { pushUndoToast } from '../../lib/toasts';
 import {
   epochToIso,
   EXTERNAL_CLIENT_DEFAULT_TOOLS,
@@ -40,6 +41,7 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, Toggle, type Feedback } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { HostSkillInstallCard } from './HostSkillInstallCard';
 import { ListEmpty } from './list';
 import { SectionCard } from './SectionCard';
 
@@ -179,7 +181,8 @@ const POLICY_FIELDS = ['workspace', 'mode', 'allowCommands', 'historyScope'] as 
 
 export type PolicyChange = 'pause' | 'access' | 'none';
 
-type PendingConfirm = { readonly kind: Exclude<PolicyChange, 'none'>; readonly action: 'save' | 'pause' };
+/** The one confirm left: saving a policy that narrows what the client may do. */
+type PendingConfirm = { readonly kind: 'access'; readonly action: 'save' };
 
 function sameSet(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((value) => b.includes(value));
@@ -313,21 +316,22 @@ function LocalAccess({ connectionId, api }: { connectionId: string; api: Facade 
       <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.xc.localHint')}</p>
       {command !== undefined ? (
         <div className="space-y-1.5" data-xc-local-config>
+          {/* Rule 16: the snippet, the copy button, and the apps it fits. */}
           <p className="text-[12px] text-ink-faint">{t('st.xc.localConfig')}</p>
           <CopyBlock value={command} label={t('st.xc.localCopy')} wrap />
+          <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">
+            {t('st.xc.localConfigHint')}
+            {' '}
+            {t('st.xc.localFits')}
+            {' '}
+            <span className="text-ink-soft">{t('st.xc.localToolNote')}</span>
+          </p>
         </div>
       ) : null}
       {query.isLoading ? <Hint>{t('st.xc.loading')}</Hint> : null}
       {query.isError ? (
         <p data-xc-local-error className="text-[12px] leading-4 text-danger">
           {t('st.xc.error.stdio', { reason: errorText(locale, query.error) })}
-        </p>
-      ) : null}
-      {command !== undefined ? (
-        <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">
-          {t('st.xc.localConfigHint')}
-          {' '}
-          <span className="text-ink-soft">{t('st.xc.localToolNote')}</span>
         </p>
       ) : null}
     </div>
@@ -345,6 +349,7 @@ function RemoteAccess({ listener }: { listener: ExternalClientListener | undefin
         <div className="space-y-1.5" data-xc-remote-url>
           <p className="text-[12px] text-ink-faint">{t('st.xc.remoteUrl')}</p>
           <CopyBlock value={mcpUrl} label={t('st.xc.remoteCopy')} wrap />
+          <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.xc.localFits')}</p>
         </div>
       ) : (
         <p data-xc-remote-missing className="text-[12px] leading-4 text-ink-faint">{t('st.xc.remoteUrlMissing')}</p>
@@ -425,7 +430,7 @@ function ListenerPanel({ listener, api, onChanged }: {
       {listener.state === 'error' && listener.error !== undefined ? (
         <p data-xc-listener-error className="text-[12px] leading-4 text-danger">{listener.error}</p>
       ) : null}
-      <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.xc.listenerDiscoveryHint')}</p>
+
       <Field label={t('st.xc.publicUrl')} hint={t('st.xc.publicUrlHint')} htmlFor="xc-public-url">
         <div className="flex flex-wrap items-center gap-2">
           <input id="xc-public-url" data-xc-public-url className={`${INPUT} min-w-0 flex-1 font-mono text-[11.5px]`}
@@ -443,6 +448,18 @@ function ListenerPanel({ listener, api, onChanged }: {
 }
 
 // ---- pending authorizations ----
+
+/** Scope ids are protocol words; the row names what the client can do. */
+const SCOPE_LABEL: Readonly<Record<string, I18nKey>> = {
+  'tools:read': 'st.xc.scope.toolsRead',
+  'tools:write': 'st.xc.scope.toolsWrite',
+  'history:read': 'st.xc.scope.historyRead',
+};
+
+function scopeLabel(scope: string, t: (key: I18nKey) => string): string {
+  const key = SCOPE_LABEL[scope];
+  return key === undefined ? scope : t(key);
+}
 
 function AuthorizationPanel({ requests, api, onChanged }: {
   requests: readonly ExternalClientAuthorization[];
@@ -470,11 +487,13 @@ function AuthorizationPanel({ requests, api, onChanged }: {
       <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.xc.authHint')}</p>
       {requests.map((request) => (
         <div key={request.id} data-xc-authorization={request.id}
-          className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 border-t border-hairline pt-2">
+          className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 pt-2">
           <div className="min-w-0 flex-1">
             <p className="truncate text-[13px] font-medium text-ink">{request.clientName ?? request.clientId}</p>
             {request.scopes.length > 0 ? (
-              <p className="truncate font-mono text-[11.5px] text-ink-faint">{request.scopes.join(' · ')}</p>
+              <p className="truncate text-[11.5px] text-ink-faint" data-xc-auth-scopes>
+                {request.scopes.map((scope) => scopeLabel(scope, t)).join(' · ')}
+              </p>
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -535,8 +554,8 @@ function ConnectionRow({ connection, api, onChanged }: {
       return;
     }
     const change = policyChangeOf(connection, draftToPatch(draft, connection));
-    if (change !== 'none' && !confirmed) {
-      setConfirming({ kind: change, action: 'save' });
+    if (!confirmed && (change === 'pause' || change === 'access')) {
+      setConfirming({ kind: 'access', action: 'save' });
       return;
     }
     setBusy(true);
@@ -554,17 +573,23 @@ function ConnectionRow({ connection, api, onChanged }: {
     }
   };
 
-  const setStatus = async (enabled: boolean, confirmed = false) => {
-    if (!enabled && !confirmed) {
-      setConfirming({ kind: 'pause', action: 'pause' });
-      return;
-    }
+  // Pausing is one click from the row and fully reversible (恢复 sits on the
+  // same row), so it runs at once and the toast offers its inverse — the
+  // paused body line above already says what pausing stops.
+  const setStatus = async (enabled: boolean) => {
     setBusy(true);
     setFeedback(null);
     try {
       await api.update(connection.id, { enabled });
-      setConfirming(null);
-      setFeedback({ tone: 'success', text: t(enabled ? 'st.xc.statusActive' : 'st.xc.statusPaused') });
+      if (enabled) {
+        setFeedback({ tone: 'success', text: t('st.xc.statusActive') });
+      } else {
+        pushUndoToast({
+          text: t('st.xc.pausedToast', { name: connection.name }),
+          undoFailedText: t('toast.undoFailed'),
+          undo: async () => { await api.update(connection.id, { enabled: true }); onChanged(); },
+        });
+      }
       onChanged();
     } catch (error) {
       setFeedback({ tone: 'error', text: t(enabled ? 'st.xc.error.resume' : 'st.xc.error.pause', { reason: errorText(locale, error) }) });
@@ -678,7 +703,7 @@ function ConnectionRow({ connection, api, onChanged }: {
               </Fact>
             </dl>
             <LocalAccess connectionId={connection.id} api={api} />
-            <div className="space-y-1 border-t border-hairline pt-3">
+            <div className="space-y-1 pt-3">
               <p className="text-[12px] font-medium text-ink-soft">{t('st.xc.sessions')}</p>
               {sessionsQuery.isLoading ? <Hint>{t('st.xc.loading')}</Hint> : null}
               {sessionsQuery.isError ? (
@@ -707,7 +732,7 @@ function ConnectionRow({ connection, api, onChanged }: {
                 </ul>
               ) : null}
             </div>
-            <div className="flex flex-wrap items-center gap-2 border-t border-hairline pt-3">
+            <div className="flex flex-wrap items-center gap-2 pt-3">
               {!revoked ? (
                 <>
                   <button type="button" data-xc-edit className={SECONDARY_BUTTON} disabled={busy}
@@ -742,14 +767,11 @@ function ConnectionRow({ connection, api, onChanged }: {
           onConfirm={() => { void revoke(); }} onCancel={() => { setRevoking(false); }} />
         <ConfirmDialog
           open={confirming !== null}
-          title={t(confirming?.kind === 'pause' ? 'st.xc.pauseConfirmTitle' : 'st.xc.policyConfirmTitle')}
-          body={t(confirming?.kind === 'pause' ? 'st.xc.pauseConfirmBody' : 'st.xc.policyConfirmBody', { name: connection.name })}
-          confirmLabel={t(confirming?.kind === 'pause' ? 'st.xc.pause' : 'st.xc.policyConfirm')}
+          title={t('st.xc.policyConfirmTitle', { name: connection.name })}
+          body={t('st.xc.policyConfirmBody', { name: connection.name })}
+          confirmLabel={t('st.xc.policyConfirm')}
           tone="danger" busy={busy}
-          onConfirm={() => {
-            if (confirming?.action === 'pause') void setStatus(false, true);
-            else void save(true);
-          }}
+          onConfirm={() => { void save(true); }}
           onCancel={() => { setConfirming(null); }}
         />
       </div>
@@ -898,7 +920,7 @@ export function ExternalClientsSection() {
           </button>
         ) : null}
         {adding && api !== undefined ? (
-          <div data-xc-create-panel className="space-y-3 border-t border-hairline pt-4">
+          <div data-xc-create-panel className="space-y-3 pt-4">
             <CreateConnection api={api} onCreated={() => { setAdding(false); refresh(); }} />
             <button type="button" data-xc-create-cancel
               className="min-h-8 rounded-md px-2.5 text-[12px] text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink"
@@ -907,19 +929,32 @@ export function ExternalClientsSection() {
             </button>
           </div>
         ) : null}
+        {/* A pending authorization is the most time-sensitive thing here, so it
+            answers first, above the list, never below it. */}
         {authorizations.length > 0 && api !== undefined ? (
-          <div className="border-t border-hairline pt-4">
+          <div className="pt-4">
             <AuthorizationPanel requests={authorizations} api={api} onChanged={refresh} />
           </div>
         ) : null}
         {listener !== undefined && api !== undefined ? (
-          <div className="border-t border-hairline pt-4">
-            <ListenerPanel listener={listener} api={api} onChanged={refresh} />
-            <div className="mt-3 border-t border-hairline pt-3">
-              <RemoteAccess listener={listener} />
-            </div>
+          <div className="pt-4">
+            <details data-xc-access-details className="group/xc-access">
+              <summary className="flex min-h-8 cursor-pointer list-none items-center gap-1.5 text-[12px] text-ink-soft transition-colors hover:text-ink [&::-webkit-details-marker]:hidden">
+                <DisclosureChevron open={false} className="transition-transform group-open/xc-access:rotate-90" />
+                {t('st.xc.accessTitle')}
+              </summary>
+              <div className="mt-2 space-y-3">
+                <ListenerPanel listener={listener} api={api} onChanged={refresh} />
+                <div className="pt-3">
+                  <RemoteAccess listener={listener} />
+                </div>
+              </div>
+            </details>
           </div>
         ) : null}
+        {/* The other job this tab answers: using Kiki from inside another
+            client, which installs a skill there rather than granting access. */}
+        <HostSkillInstallCard />
       </div>
     </SectionCard>
   );

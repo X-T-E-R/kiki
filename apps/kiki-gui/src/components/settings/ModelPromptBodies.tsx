@@ -24,7 +24,7 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import {
-  COGNITION_SLOTS, initialSlotText, restoreHint, savesAsInlineText, slotView,
+  COGNITION_SLOTS, initialSlotText, slotView,
   type CognitionSlot, type SlotView,
 } from './modelCognitionBodies';
 import type { EditScope } from './modelEditScope';
@@ -143,9 +143,9 @@ function PromptBodyField({ slot, label, view, text, onChange, disabled }: {
     <div className="space-y-1.5" data-prompt-body={slot} data-prompt-body-source={view?.source ?? 'unset'}>
       <div className="flex flex-wrap items-baseline justify-between gap-x-3">
         <p className="text-[12px] font-medium text-ink-soft">{label}</p>
-        {view === undefined || view.source === 'unset' ? null : (
+        {view === undefined || view.source !== 'files' ? null : (
           <span className="font-mono text-[11px] text-ink-faint" data-prompt-body-origin={slot}>
-            {view.source === 'files' ? view.files.map((file) => file.path).join(', ') : t('st.modelPrompt.inlineBody')}
+            {view.files.map((file) => file.path).join(', ')}
           </span>
         )}
       </div>
@@ -162,16 +162,6 @@ function PromptBodyField({ slot, label, view, text, onChange, disabled }: {
             className={`${SMALL_INPUT} h-auto w-full resize-y font-mono text-[12px] leading-5`}
             data-prompt-body-editor={slot} value={text}
             onChange={(event) => { onChange(event.target.value); }} />
-          {/*
-            A slot backed by an author file is a one-way move: saving stores the
-            text on the model and the file itself is untouched. That is said once
-            per slot, next to the words it describes, rather than as a question —
-            the conversion is the ordinary result of editing and saving, and a
-            person who wanted the file itself would be editing that file.
-          */}
-          {view !== undefined && savesAsInlineText(view) ? (
-            <p className="text-[11.5px] leading-5 text-ink-faint" data-prompt-convert-notice={slot}>{t('st.modelPrompt.savingConvertsHint')}</p>
-          ) : null}
         </>
       ) : (
         <>
@@ -199,9 +189,6 @@ function PromptBodyField({ slot, label, view, text, onChange, disabled }: {
                 ))}
               </ul>
             ) : null}
-            {restoreHint(view ?? { slot: 'overlay', source: 'unset', text: '', files: [], writable: false, sourceReadOnly: true, error: undefined }) === undefined ? null : (
-              <p className="text-[11px] leading-5 text-ink-faint">{t('st.modelPrompt.restoreHint')}</p>
-            )}
           </div>
         </>
       )}

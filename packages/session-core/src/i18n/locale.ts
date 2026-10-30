@@ -9,6 +9,7 @@
 
 import { en } from './en';
 import { zh } from './zh';
+import { mappedErrorKey } from './errorMapping';
 import { errorToText } from '../util/errorText';
 
 export type Locale = 'en' | 'zh';
@@ -85,8 +86,13 @@ export class LocalizedError extends Error {
   }
 }
 
-/** Localize a caught error when it carries an issue; otherwise pass through. */
+/**
+ * Localize a caught error: its own dictionary issue when it carries one, else
+ * the central server-code / zod-issue mapping, else the raw message.
+ */
 export function errorText(locale: Locale, error: unknown): string {
   if (error instanceof LocalizedError) return issueText(locale, error.issue);
-  return errorToText(error, translate(locale, 'common.unknownError'));
+  const raw = errorToText(error, translate(locale, 'common.unknownError'));
+  const mapped = mappedErrorKey(error, raw);
+  return mapped === undefined ? raw : translate(locale, mapped);
 }

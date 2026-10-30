@@ -21,6 +21,7 @@ import {
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../../i18n';
+import { clearToasts, getToasts } from '../../../lib/toasts';
 import { NbSearchLanesTab } from './NbSearchLanesTab';
 import { NbSearchFetchTab } from './NbSearchFetchTab';
 import { NbSearchAdvancedTab } from './NbSearchAdvancedTab';
@@ -252,19 +253,21 @@ function Host({
       {view === 'lanes' ? (
         <NbSearchLanesTab
           capabilities={capabilities}
-          defaultSearchLane={draft.defaultSearchLane}
-          onSelectLane={() => undefined}
           advanced={binding}
+          keyDrafts={{}}
+          onKeyDraftChange={() => undefined}
+          readCredential={() => Promise.reject(new Error('not in this suite'))}
+          readKeyUsage={() => Promise.reject(new Error('not in this suite'))}
         />
       ) : null}
       {view === 'fetch' ? (
         <NbSearchFetchTab
           capabilities={capabilities}
-          fetchChain={draft.fetchChain}
-          fetchChainInherited={draft.fetchChainInherited}
-          onChangeChain={() => undefined}
-          onToggleInherited={() => undefined}
           advanced={binding}
+          keyDrafts={{}}
+          onKeyDraftChange={() => undefined}
+          readCredential={() => Promise.reject(new Error('not in this suite'))}
+          readKeyUsage={() => Promise.reject(new Error('not in this suite'))}
         />
       ) : null}
       {view === 'advanced' ? (
@@ -306,6 +309,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   hosts.patch = null;
+  clearToasts();
 });
 
 afterEach(async () => {
@@ -392,7 +396,8 @@ describe('S2 search methods', () => {
     expect(container.querySelector('[data-nb-search-lane-row="exa.local"]')).not.toBeNull();
     expect(container.querySelector('[data-nb-search-lane-row="exa.local"]')!.textContent).toContain('Exa · search');
     // The row is not registered with the engine yet, and says so.
-    expect(container.querySelector('[data-nb-search-lane-execution="pending"]')).not.toBeNull();
+    // The row is not registered with the engine yet, and says so.
+    expect(container.querySelector('[data-nb-search-lane-row="exa.local"]')!.textContent).toContain('not saved');
 
     await save(container);
     expect(nbSearchOf()?.lanes).toEqual({
@@ -414,7 +419,7 @@ describe('S2 search methods', () => {
     const idInput = container.querySelector<HTMLInputElement>('[data-nb-search-lane-id]')!;
     await setInputValue(idInput, 'exa.local');
     await pressEnter(idInput);
-    await click(container.querySelector('[data-nb-search-lane-row="exa.local"] input[type="radio"]'));
+    await click(container.querySelector('[data-nb-search-lane-make-default="exa.local"]'));
     await save(container);
     expect(nbSearchOf()?.defaults).toEqual({ search_lane: 'exa.local' });
     expect(hosts.draft.defaultSearchLane).toBe('exa.local');
@@ -426,13 +431,44 @@ describe('S2 search methods', () => {
     const idInput = container.querySelector<HTMLInputElement>('[data-nb-search-lane-id]')!;
     await setInputValue(idInput, 'exa.local');
     await pressEnter(idInput);
-    await click(container.querySelector('[data-nb-search-lane-row="exa.local"] input[type="radio"]'));
+    await click(container.querySelector('[data-nb-search-lane-make-default="exa.local"]'));
 
-    await click(container.querySelector('[data-nb-search-lane-remove]'));
+    await click(container.querySelector('[data-nb-search-lane-edit="exa.local"]')!);
+    await click(container.querySelector('[data-nb-search-lane-edit="exa.local"]')!);
+    // The references are named inline above the action, not in a confirm.
     const references = container.querySelector('[data-nb-search-lane-references]');
     expect(references).not.toBeNull();
     expect(references!.textContent).toContain('the default search method');
     expect(references!.textContent).toContain('defaults.search_lane');
+  });
+
+  it('removes a method at once and the toast restores it into the draft', async () => {
+    const container = await render('lanes');
+    await click(container.querySelector('[data-nb-search-lane-add]'));
+    const idInput = container.querySelector<HTMLInputElement>('[data-nb-search-lane-id]')!;
+    await setInputValue(idInput, 'exa.local');
+    await pressEnter(idInput);
+    expect(hosts.draft.advanced?.lanes['exa.local']).not.toBeUndefined();
+
+    await click(container.querySelector('[data-nb-search-lane-edit="exa.local"]')!);
+    await click(container.querySelector('[data-nb-search-lane-edit="exa.local"]')!);
+    await click(container.querySelector('[data-nb-search-lane-remove]')!);
+    // No confirm: the draft loses the method and the row is gone at once.
+    expect(hosts.draft.advanced?.lanes['exa.local']).toBeUndefined();
+    expect(container.querySelector('[data-nb-search-lane-row="exa.local"]')).toBeNull();
+
+    // The toast store holds the inverse: run it and the method is back in the draft.
+    const toast = getToasts().at(-1);
+    expect(toast?.undo).not.toBeUndefined();
+    expect(toast!.text).toContain('exa.local');
+    await act(async () => { await toast!.undo!.run(); });
+    expect(hosts.draft.advanced?.lanes['exa.local']).toEqual({
+      provider_instance_id: 'exa.default',
+      operation_id: 'search',
+      latency: 'fast',
+      cost: 'cheap',
+    });
+    expect(container.querySelector('[data-nb-search-lane-row="exa.local"]')).not.toBeNull();
   });
 
   it('overrides a source-provided method and restores the source version', async () => {
@@ -628,15 +664,15 @@ describe('S2 fetch chains', () => {
 
   it('edits each input × output pair without dropping the other pairs', async () => {
     const container = await render('fetch');
-    // url → markdown: take the pair over, then drop its second fallback step.
-    await click(container.querySelector('[data-nb-search-fetch-customize]'));
+    // url → markdown: drop the second fallback step; editing marks the pair Kiki-owned.
     await click(container.querySelectorAll('[data-nb-search-fetch-remove]')[1] ?? null);
     expect(chainOf('url', 'markdown')).toEqual(['direct.fetch']);
 
-    // url → text: a different pair, edited from its own inherited chain.
+    // url → text: a different pair, edited inside the other-pairs disclosure.
+    await click(container.querySelector('[data-nb-search-fetch-other-pairs] > summary'));
     await choose(container, 'data-nb-search-fetch-representation', 'text');
-    await click(container.querySelector('[data-nb-search-fetch-customize]'));
-    await click(container.querySelector('[data-nb-search-fetch-add]'));
+    await choose(container, 'data-nb-search-fetch-input', 'url');
+    await click(container.querySelector('[data-nb-search-fetch-add-other]'));
     expect(chainOf('url', 'text')).toEqual(['direct.fetch', 'jina.reader']);
     // Switching pairs never rewrote the other one.
     expect(chainOf('url', 'markdown')).toEqual(['direct.fetch']);
@@ -657,15 +693,14 @@ describe('S2 fetch chains', () => {
 
   it('takes one pair back to the source order while the others stay untouched', async () => {
     const container = await render('fetch');
-    expect(container.querySelector('[data-nb-search-fetch-restore-all]')).toBeNull();
+    // The default pair starts out inherited, so no restore button yet.
+    expect(container.querySelector('[data-nb-search-fetch-restore]')).toBeNull();
 
-    await click(container.querySelector('[data-nb-search-fetch-customize]'));
-    expect(container.querySelector<HTMLElement>('[data-nb-search-fetch-mode]')!.dataset['nbSearchFetchMode']).toBe('edited');
-    expect(container.querySelector('[data-nb-search-fetch-snapshot]')!.textContent).toContain('1 pair uses the Kiki order');
+    await click(container.querySelector('[data-nb-search-fetch-remove]'));
+    expect(chainOf('url', 'markdown')).toEqual(['jina.reader']);
 
     await click(container.querySelector('[data-nb-search-fetch-restore]'));
-    expect(container.querySelector<HTMLElement>('[data-nb-search-fetch-mode]')!.dataset['nbSearchFetchMode']).toBe('source');
-    expect(container.querySelector('[data-nb-search-fetch-restore-all]')).toBeNull();
+    expect(chainOf('url', 'markdown')).toEqual(['direct.fetch', 'jina.reader']);
     await save(container);
     // Nothing left to override: the whole defaults domain keeps only the lane.
     expect(nbSearchOf()?.defaults).toEqual({ search_lane: 'github.repositories' });
@@ -673,19 +708,26 @@ describe('S2 fetch chains', () => {
 
   it('restores inheritance for every pair only through the all-pairs action', async () => {
     const container = await render('fetch');
-    await click(container.querySelector('[data-nb-search-fetch-customize]'));
+    await click(container.querySelector('[data-nb-search-fetch-remove]'));
+    await click(container.querySelector('[data-nb-search-fetch-other-pairs] > summary'));
     await choose(container, 'data-nb-search-fetch-representation', 'text');
-    await click(container.querySelector('[data-nb-search-fetch-customize]'));
-    expect(container.querySelector('[data-nb-search-fetch-snapshot]')!.textContent).toContain('2 pairs use the Kiki order');
+    await choose(container, 'data-nb-search-fetch-input', 'url');
+    await click(container.querySelector('[data-nb-search-fetch-add-other]')!);
 
     await save(container);
     // Any per-pair edit saves the whole array as a Kiki snapshot.
     expect(nbSearchOf()!.defaults!.fetch_chain).toHaveLength(8);
 
-    await click(container.querySelector('[data-nb-search-fetch-restore-all]'));
-    expect(hosts.draft.advanced?.fetchChains.every((chain) => chain.inherited)).toBe(true);
+    // The two chains the test edited go back to the source, one restore each:
+    // the default url → markdown chain, then url → text inside the disclosure.
+    await click(container.querySelector('[data-nb-search-fetch-restore]'));
+    await click(container.querySelector('[data-nb-search-fetch-restore-pair]'));
     await save(container);
-    expect(nbSearchOf()!.defaults!.fetch_chain).toBeUndefined();
+    // The re-read draft has both edited chains back on the source order.
+    const chainOf = (inputKind: string, representation: string) => hosts.draft.advanced?.fetchChains
+      .find((chain) => chain.inputKind === inputKind && chain.representation === representation)?.pipelines;
+    expect(chainOf('url', 'markdown')).toEqual(['direct.fetch', 'jina.reader']);
+    expect(chainOf('url', 'text')).toEqual(['direct.fetch']);
   });
 });
 
@@ -774,9 +816,9 @@ describe('S2 fetch routing', () => {
 
   it('previews the unsaved fallback chain for both no match and a user default action', async () => {
     const container = await render('fetch');
-    await click(container.querySelector('[data-nb-search-fetch-customize]'));
     await click(container.querySelector('[data-nb-search-fetch-remove]'));
-    expect(hosts.draft.fetchChain).toEqual(['jina.reader']);
+    expect(hosts.draft.advanced?.fetchChains
+      .find((chain) => chain.inputKind === 'url' && chain.representation === 'markdown')?.pipelines).toEqual(['jina.reader']);
     await setInputValue(container.querySelector<HTMLInputElement>('[data-nb-search-routing-preview-input]')!, 'https://example.test/page');
     expect(container.querySelector('[data-nb-search-routing-preview-result="default"]')!.textContent).toContain('jina.reader');
     expect(container.querySelector('[data-nb-search-routing-preview-result="default"]')!.textContent).not.toContain('direct.fetch');
@@ -800,8 +842,10 @@ describe('S2 fetch routing', () => {
     expect(container.querySelector('[data-nb-search-routing-mode="inherited"]')!.textContent).toContain('Following the source');
     // The package id and version come from the server's projection.
     expect(container.querySelector('[data-nb-search-routing-package]')!.textContent).toContain('kiki-common-direct 1');
-    // Its rule list is shown, not hidden behind a details block.
-    expect(container.querySelector('[data-nb-search-routing-builtin-rule="github-raw-text"]')!.textContent).toContain('direct.fetch');
+    // Its rule list is shown, not hidden behind a details block. The routing
+    // target prints in user words (direct fetch), with the raw id kept for the
+    // engine's own preview below.
+    expect(container.querySelector('[data-nb-search-routing-builtin-rule="github-raw-text"]')!.textContent).toContain('direct fetch');
     expect(container.querySelector<HTMLElement>('[data-nb-search-routing-builtin-rule="github-raw-text"]')!
       .dataset['nbSearchRoutingBuiltinRuleActive']).toBe('true');
     // The builtin switch is not editable while the source is in force.

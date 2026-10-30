@@ -1,27 +1,20 @@
 /**
- * Settings → Plugins: the plugins on this server, as the page's subject.
+ * Settings → Extensions → Plugins: the plugins on this server.
  *
- * This is a management list, not a market. Every row is one installed plugin
- * — the real name its own manifest carries, where it came from, its version,
- * whether it is on or broken — and the whole row is one move: to that
- * plugin's own settings page. Nothing configures in place here, so a list
- * stays readable however many plugins are installed.
+ * One row per plugin, the same frame as every other managed list: icon, name,
+ * origin as a quiet tag, and one line that says what the plugin does for a new
+ * session right now. The row body opens the plugin's own page; the switch on
+ * the right is the only control here, and it only starts or stops the plugin —
+ * the plugin's default for new sessions is kept as it is.
  *
- * Finding and installing a plugin is a different job from managing the ones
- * already here, so it is one action at the top — where the Skills and MCP
- * leaves put theirs — rather than a second subject buried under the list. It
- * renders in every state, including before the installed list has answered,
- * because a server with nothing installed is exactly when it is needed.
- *
- * The list reads the installed query the Capabilities page reads, so a toggle
- * or a removal made on either surface is what the other one shows.
+ * Finding a new plugin is a different job, so the market is one link on the
+ * card heading. The list reads the installed query the Capabilities page
+ * reads, so a change on either surface is what the other one shows.
  */
 
-import { useMemo, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
-import type { PluginUsageResponse } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import { pluginSettingsPath } from '@kiki/session-core/settings';
 
@@ -37,10 +30,9 @@ import { FeedbackLine, InlineError, Toggle } from '../../controls';
 import { Icon } from '../../icons';
 import { SECONDARY_BUTTON } from '../../ui';
 import { SectionCard } from '../SectionCard';
-import { useWorkspaceUsageCacheToken } from './PluginSettingsPage';
+import { pluginDefaultOn, pluginStatusKey, usePluginContributions } from './pluginState';
 
-/** Where a plugin came from, in the words the plugin list already uses. */
-const ORIGIN_KEYS = {
+export const ORIGIN_KEYS = {
   official: 'cap.origin.official',
   catalog: 'cap.origin.catalog',
   local: 'cap.origin.local',
@@ -52,26 +44,30 @@ export function InstalledPluginsList() {
   const { t } = useI18n();
   const navigate = useNavigate();
   const query = useInstalledPlugins();
-  // The catalog is only here to tell an official or catalogued plugin from a
-  // local one. Its query key is the one the Capabilities page already holds, so
-  // this costs no extra round-trip after a visit there — and its failure is
-  // this page's not to report: a plugin that is installed is still installed.
+  // Only used to tell an official or catalogued plugin from a local one; its
+  // failure is not this page's to report.
   const entriesQuery = usePluginMarketplace();
   const plugins = query.data?.plugins ?? [];
 
   return (
-    <SectionCard id="st-card-plugins" title={t('st.plugins.installedTitle')}>
-      <MarketAction />
+    <SectionCard
+      id="st-card-plugins"
+      title={t('st.plugins.installedTitle')}
+      actions={(
+        <Link to="/capabilities" className={LINK_CLASS} data-plugins-market-link>
+          {t('st.plugins.browseMarket')}
+          <Icon name="arrowRight" size={14} />
+        </Link>
+      )}
+    >
       {query.isPending ? (
         <p className="py-3 text-[13px] text-ink-faint" role="status">{t('cap.loading')}</p>
       ) : query.isError ? (
         <ListFailure error={query.error} onRetry={() => { void query.refetch(); }} />
       ) : plugins.length === 0 ? (
-        <div className="py-3" data-plugins-installed-empty>
-          <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.plugins.noneInstalledBody')}</p>
-        </div>
+        <p className="py-3 text-[13px] text-ink-soft" data-plugins-installed-empty>{t('st.plugins.noneInstalledBody')}</p>
       ) : (
-        <ul className="mt-3" data-plugins-installed-list>
+        <ul className="overflow-hidden rounded-lg border border-hairline bg-panel" data-plugins-installed-list>
           {plugins.map((plugin) => (
             <InstalledPluginRow
               key={plugin.id}
@@ -86,34 +82,6 @@ export function InstalledPluginsList() {
   );
 }
 
-/**
- * The way to find and install a plugin — one action, at the top, where the
- * Skills and MCP leaves put theirs. It is not this page's own job: this leaf
- * manages what is already installed, and the market is where new ones come
- * from, so the two are labelled as different places rather than one link
- * pretending to be the other.
- *
- * It carries no data of its own, so it is present whether the installed list
- * has loaded, failed, or turned out to be empty. A server with nothing
- * installed is exactly when someone needs it.
- */
-function MarketAction() {
-  const { t } = useI18n();
-  return (
-    <div className="mb-1 flex justify-end">
-      <Link to="/capabilities" className={LINK_CLASS} data-plugins-market-link>
-        {t('st.plugins.browseMarket')}
-        <Icon name="arrowRight" size={14} />
-      </Link>
-    </div>
-  );
-}
-
-/**
- * One installed plugin. The name is the target and the switch sits beside it,
- * so turning a plugin off never requires entering its settings page, and
- * entering it never takes a control away that belongs to the list.
- */
 function InstalledPluginRow({ plugin, origin, onOpen }: {
   readonly plugin: PluginSummary;
   readonly origin: PluginOrigin;
@@ -121,36 +89,19 @@ function InstalledPluginRow({ plugin, origin, onOpen }: {
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
-  const queryClient = useQueryClient();
   const invalidate = useInvalidatePlugins();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<unknown>(null);
   const broken = plugin.state === 'error' || plugin.hasErrors;
-
-  const usageCacheToken = useWorkspaceUsageCacheToken(plugin.id);
-  const cachedWorkspaceOverrides = useMemo(() => {
-    const found = new Map<string, { name: string; override: 'inherit' | 'on' | 'off'; revision: number }>();
-    for (const [, data] of queryClient.getQueriesData<PluginUsageResponse>({ queryKey: ['plugin-usage'] })) {
-      if (data?.target.workspace_id === undefined || data.target.session_id !== undefined) continue;
-      const item = data.plugins.find((candidate) => candidate.id === plugin.id);
-      if (item === undefined) continue;
-      const previous = found.get(data.target.workspace_id);
-      if (previous !== undefined && data.revision < previous.revision) continue;
-      found.set(data.target.workspace_id, { name: data.target.name, override: item.override, revision: data.revision });
-    }
-    return [...found.values()]
-      .filter((entry) => entry.override !== 'inherit')
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [queryClient, plugin.id, usageCacheToken]);
-  const scopeSummary = cachedWorkspaceOverrides
-    .map((entry) => `${entry.name}: ${entry.override === 'on' ? t('cap.state.on') : t('cap.state.off')}`)
-    .join(' · ');
+  const contributions = usePluginContributions(plugin);
+  const status = t(pluginStatusKey(plugin));
 
   const toggle = async (enabled: boolean) => {
     setBusy(true);
     setFailure(null);
     try {
-      await client.setPluginEnabled(plugin.id, enabled);
+      if (plugin.defaultEnabled === undefined) await client.setPluginEnabled(plugin.id, enabled);
+      else await client.setPluginState(plugin.id, { enabled, defaultEnabled: plugin.defaultEnabled });
       await invalidate();
     } catch (error) {
       setFailure(error);
@@ -161,84 +112,44 @@ function InstalledPluginRow({ plugin, origin, onOpen }: {
 
   return (
     <li className="border-b border-hairline last:border-b-0" data-plugin-row={plugin.id}
-      data-plugin-enabled={plugin.enabled ? 'true' : 'false'}
-      data-plugin-state={plugin.state}>
-      <div className="flex min-w-0 items-center gap-3 py-2.5">
+      data-plugin-enabled={plugin.enabled ? 'true' : 'false'} data-plugin-state={plugin.state}>
+      <div className="flex min-w-0 items-center gap-3 pr-3">
         <button
           type="button"
           onClick={onOpen}
           aria-label={t('st.plugins.openSettings', { name: plugin.displayName })}
-          className="flex min-w-0 flex-1 items-center gap-3 rounded-md py-1 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+          className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-3 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-selected-ink"
           data-plugin-open-settings={plugin.id}
         >
-          <span className={plugin.enabled ? '' : 'opacity-60 grayscale'}><CapabilityIcon icon={plugin.icon} /></span>
+          <span className={plugin.enabled ? '' : 'opacity-50 grayscale'}><CapabilityIcon icon={plugin.icon} /></span>
           <span className="min-w-0 flex-1">
             <span className="flex min-w-0 items-center gap-2">
               <span className={`min-w-0 truncate text-[13px] font-medium ${plugin.enabled ? 'text-ink' : 'text-ink-soft'}`}>{plugin.displayName}</span>
-              <span className="shrink-0"><Tag>{t(ORIGIN_KEYS[origin])}</Tag></span>
-              {broken ? <span className="shrink-0"><Tag tone="danger">{t('cap.state.error')}</Tag></span> : null}
+              <Tag>{t(ORIGIN_KEYS[origin])}</Tag>
+              {broken ? <Tag tone="danger">{t('cap.state.error')}</Tag> : null}
             </span>
-            <span className="mt-0.5 block truncate font-mono text-[11px] leading-4 text-ink-faint">
-              {[plugin.version !== undefined ? `v${plugin.version}` : undefined, plugin.id]
-                .filter((part) => part !== undefined).join(' · ')}
-            </span>
-            {/* The global default is a separate fact from the master switch
-                beside the name. A plugin installed with "decide later" keeps the
-                master on and this off, so printing only the master would read
-                as "on everywhere". */}
-            <span
-              className="mt-0.5 block truncate text-[11px] leading-4 text-ink-faint"
-              title={t('st.plugins.globalDefaultHint')}
-              data-plugin-global-default={plugin.globalEnabled ? 'on' : 'off'}
-              data-plugin-scope-summary
-            >
-              {plugin.globalEnabled ? t('st.plugins.globalDefaultOn') : t('st.plugins.globalDefaultOff')}
-              {scopeSummary === '' ? '' : ` · ${scopeSummary}`}
+            <span className="mt-0.5 block truncate text-[12px] leading-4 text-ink-faint" data-plugin-status={pluginDefaultOn(plugin) && plugin.enabled ? 'default-on' : plugin.enabled ? 'on-demand' : 'off'}>
+              {contributions === '' ? status : `${status} · ${contributions}`}
             </span>
           </span>
           <Icon name="chevron" size={14} className="shrink-0 text-ink-faint" />
         </button>
-        {/* The way back from "decide later", kept out of the name button so
-            setting the default never reads as opening this plugin's page. The
-            master switch cannot express it: it is already on, and turning it
-            off first would revoke an authorization this plugin may have. */}
-        {plugin.enabled && !plugin.globalEnabled ? (
-          <button
-            type="button"
-            data-plugin-enable-everywhere={plugin.id}
-            disabled={busy}
-            onClick={() => { void toggle(true); }}
-            title={t('st.plugins.enableEverywhereHint')}
-            className="shrink-0 rounded text-[11px] leading-4 text-ink-soft underline decoration-dotted underline-offset-2 transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-50"
-          >
-            {t('st.plugins.enableEverywhere')}
-          </button>
-        ) : null}
-        <span className="shrink-0">
-          <Toggle
-            // The master switch, named as such: "On" beside a plugin whose
-            // global default is off would otherwise read as "on everywhere".
-            label={plugin.enabled ? t('st.plugins.masterOn') : t('st.plugins.masterOff')}
-            checked={plugin.enabled}
-            disabled={busy}
-            onChange={(checked) => { void toggle(checked); }}
-          />
+        <span className="shrink-0" data-plugin-row-switch={plugin.id}>
+          <Toggle layout="bare" label={t('st.plugins.enableNamed', { name: plugin.displayName })}
+            checked={plugin.enabled} disabled={busy} onChange={(checked) => { void toggle(checked); }} />
         </span>
       </div>
-      {failure !== null ? <FeedbackLine feedback={{ tone: 'error', text: errorText(locale, failure) }} /> : null}
+      {failure !== null ? <div className="px-3 pb-2"><FeedbackLine feedback={{ tone: 'error', text: errorText(locale, failure) }} /></div> : null}
     </li>
   );
 }
 
-/** The list's own failure: what went wrong, and the one move that retries it. */
 function ListFailure({ error, onRetry }: { readonly error: unknown; readonly onRetry: () => void }) {
   const { t } = useI18n();
   return (
     <div className="space-y-2 py-2" data-plugins-installed-error>
       <InlineError error={error} />
-      <button type="button" className={SECONDARY_BUTTON} onClick={onRetry}>
-        {t('common.retry')}
-      </button>
+      <button type="button" className={SECONDARY_BUTTON} onClick={onRetry}>{t('common.retry')}</button>
     </div>
   );
 }

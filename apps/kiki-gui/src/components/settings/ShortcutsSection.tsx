@@ -29,7 +29,6 @@ import {
   type ShortcutPreferences,
 } from '@kiki/session-core/settings/shortcuts';
 import { shortcutConflictSchema, type ShortcutResponse } from '@kiki/protocol';
-import { settingsServerSnapshot, settingsSnapshot, subscribeSettings } from '@kiki/session-core/settings';
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import {
@@ -43,7 +42,7 @@ import {
 } from '../../lib/shortcuts';
 import { SHORTCUTS_QUERY_KEY } from '../../lib/useShortcutPreferences';
 import { useConnection } from '../../state/connection';
-import { ConfirmDialog } from '../ConfirmDialog';
+import { pushUndoToast } from '../../lib/toasts';
 import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
 import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
@@ -61,6 +60,12 @@ const CONTEXT_TITLE: Record<Context, I18nKey> = {
   composer: 'st.shortcuts.group.composer',
   approval: 'shortcuts.group.approvals',
   terminal: 'shortcuts.group.terminal',
+};
+
+/** The catalog gives two actions the same label; here each names where it works. */
+const ACTION_LABEL: Partial<Record<ShortcutAction, I18nKey>> = {
+  shortcuts: 'st.shortcuts.action.panelGlobal',
+  'shortcuts-help': 'st.shortcuts.action.panelOutsideFields',
 };
 
 /** Labels the catalog shares between two actions get a disambiguating line. */
@@ -168,7 +173,6 @@ export function ShortcutsSection() {
   const [saving, setSaving] = useState(false);
   const [saved, ping] = useSavedTick();
   const [error, setError] = useState<Feedback>(null);
-  const [confirmReset, setConfirmReset] = useState(false);
   // Clashes the server reported on the last rejected write, so the rows they
   // name stay marked until the next accepted write.
   const [rejected, setRejected] = useState<readonly ShortcutConflict[]>([]);
@@ -255,9 +259,22 @@ export function ShortcutsSection() {
   };
 
   const resetPlatform = () => {
-    setConfirmReset(false);
     setIssue(null);
-    void commit(() => client.resetShortcuts(platform, { platform }));
+    // Resetting rewrites only this platform's overrides, and the full
+    // preferences are in hand, so the inverse is writing them back: run the
+    // reset and offer Undo rather than asking first.
+    if (preferences === undefined) return;
+    const before = preferences;
+    void commit(() => client.resetShortcuts(platform, { platform })).then((done) => {
+      if (!done) return;
+      pushUndoToast({
+        text: t('st.shortcuts.resetDone', { name: PLATFORM_LABEL[platform] }),
+        undoFailedText: t('toast.undoFailed'),
+        undo: async () => {
+          await commit(() => client.writeShortcuts(platform, before));
+        },
+      });
+    });
   };
 
   const overridden = (action: ShortcutAction) => preferences?.overrides[platform]?.[action] !== undefined;
@@ -329,23 +346,13 @@ export function ShortcutsSection() {
           {bindings !== undefined ? (
             <div className="flex flex-wrap items-center gap-3 pt-1">
               <button type="button" data-shortcut-reset-all className={SECONDARY_BUTTON}
-                disabled={saving || !anyOverride} onClick={() => { setConfirmReset(true); }}>
+                disabled={saving || !anyOverride} onClick={resetPlatform}>
                 {t('st.shortcuts.resetAll', { name: PLATFORM_LABEL[platform] })}
               </button>
               {!anyOverride ? <span className="text-[12px] text-ink-faint">{t('st.shortcuts.allDefault')}</span> : null}
             </div>
           ) : null}
         </div>
-        <ConfirmDialog
-          open={confirmReset}
-          overlayId="confirm-shortcuts-reset"
-          title={t('st.shortcuts.resetAllTitle', { name: PLATFORM_LABEL[platform] })}
-          body={t('st.shortcuts.resetAllBody', { name: PLATFORM_LABEL[platform] })}
-          confirmLabel={t('st.shortcuts.resetAll', { name: PLATFORM_LABEL[platform] })}
-          busy={saving}
-          onConfirm={resetPlatform}
-          onCancel={() => { setConfirmReset(false); }}
-        />
       </SectionCard>
       <FixedKeysCard platform={platform} desktop={desktop} />
     </>
@@ -384,7 +391,7 @@ function ShortcutRow({
   onReset: () => void;
 }) {
   const { t } = useI18n();
-  const label = t(definition.labelKey as I18nKey);
+  const label = t(ACTION_LABEL[definition.id] ?? (definition.labelKey as I18nKey));
   const note = ACTION_NOTE[definition.id];
   const issueId = `shortcut-issue-${definition.id}`;
   const canAdd = chords.length < 4 && recordingIndex === null;
@@ -462,6 +469,7 @@ function ChordRecorder({ platform, desktop, describedBy, onRecorded, onCancel, o
   const { t } = useI18n();
   const ref = useRef<HTMLButtonElement>(null);
   const [unsupported, setUnsupported] = useState<string | null>(null);
+  const [reserved, setReserved] = useState(false);
   useEffect(() => {
     const release = beginShortcutRecording();
     ref.current?.focus();
@@ -477,16 +485,28 @@ function ChordRecorder({ platform, desktop, describedBy, onRecorded, onCancel, o
         aria-label={t('st.shortcuts.recordingAria')}
         onBlur={onCancel}
         onKeyDown={(event) => {
-          if (event.key === 'Tab') return;
-          event.preventDefault();
-          event.stopPropagation();
           if (event.nativeEvent.isComposing) return;
           const bare = !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey;
+          // A browser-reserved chord (Ctrl+Tab and friends) is swallowed by
+          // the browser in real use, so it never lands; saying so in place is
+          // worth more than pretending the recorder missed it. This check is
+          // before the Tab focus guard: focus must never move while recording.
+          if (event.key === 'Tab') {
+            if (!bare && !desktop) { event.preventDefault(); setUnsupported(null); setReserved(true); }
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
           if (event.key === 'Escape' && bare) { onCancel(); return; }
           if ((event.key === 'Backspace' || event.key === 'Delete') && bare && onDisable !== undefined) { onDisable(); return; }
           const result = chordFromEvent(event, platform);
           if (result.kind === 'pending') return;
           if (result.kind === 'unsupported') { setUnsupported(result.key); return; }
+          if (!desktop && browserOwnsChord(result.chord)) {
+            setUnsupported(null);
+            setReserved(true);
+            return;
+          }
           onRecorded(result.chord);
         }}
         className="inline-flex min-h-8 min-w-[9rem] items-center justify-center gap-1.5 rounded-md bg-selected px-3 text-[12px] font-medium text-selected-ink outline-2 outline-selected-ink/60 [outline-style:solid] pointer-coarse:min-h-11"
@@ -498,8 +518,8 @@ function ChordRecorder({ platform, desktop, describedBy, onRecorded, onCancel, o
         {unsupported !== null ? t('st.shortcuts.unsupported', { key: unsupported })
           : onDisable !== undefined ? t('st.shortcuts.recordHintClear') : t('st.shortcuts.recordHint')}
       </span>
-      {!desktop ? (
-        <span data-shortcut-browser-warning className="max-w-[16rem] text-right text-[11px] leading-tight text-amber-ink/90">
+      {reserved ? (
+        <span data-shortcut-browser-warning role="status" className="max-w-[16rem] text-right text-[11px] leading-tight text-amber-ink/90">
           {t('st.shortcuts.browserReservedWarning')}
         </span>
       ) : null}
@@ -510,15 +530,9 @@ function ChordRecorder({ platform, desktop, describedBy, onRecorded, onCancel, o
 /** Keys that are part of how a control works, listed so the table is complete. */
 function FixedKeysCard({ platform, desktop }: { platform: ShortcutPlatform; desktop: boolean }) {
   const { t } = useI18n();
-  const sendShortcut = useSyncExternalStore(subscribeSettings, settingsSnapshot, settingsServerSnapshot).sendShortcut;
-  const enter: ShortcutChord = { key: 'Enter', modifier: 'none', shift: false, alt: false };
-  // Send and newline follow General › "Send with", not the catalog defaults.
-  const sendRows = [
-    { id: 'send', labelKey: 'shortcuts.send', chords: [sendShortcut === 'cmd-enter' ? { ...enter, modifier: 'mod' as const } : enter] },
-    { id: 'newline', labelKey: 'shortcuts.newline', chords: [sendShortcut === 'cmd-enter' ? enter : { ...enter, shift: true }] },
-  ];
   const seen = new Set<string>();
-  const otherRows = SHORTCUT_CATALOG
+  const rows = SHORTCUT_CATALOG
+    // Send and newline live on General › "Send shortcut" — one action, one home.
     .filter((entry) => 'managedBy' in entry && entry.managedBy !== 'sendShortcut' && (desktop || !entry.desktopOnly))
     .map((entry) => ({ id: entry.id, labelKey: entry.labelKey, chords: [...entry.defaults] }))
     .filter((entry) => {
@@ -531,7 +545,7 @@ function FixedKeysCard({ platform, desktop }: { platform: ShortcutPlatform; desk
     <SectionCard id="st-card-shortcuts-fixed" title={t('st.shortcuts.fixedTitle')} scope="app">
       <p className="mb-3 max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.shortcuts.fixedHint')}</p>
       <ul className="divide-y divide-hairline border-y border-hairline">
-        {[...sendRows, ...otherRows].map((entry) => (
+        {rows.map((entry) => (
           <li key={entry.id} data-shortcut-fixed={entry.id} className="flex items-center justify-between gap-4 py-2">
             <span className="min-w-0 text-[12.5px] text-ink-soft">{t(entry.labelKey as I18nKey)}</span>
             <span className="flex shrink-0 items-center gap-1.5">

@@ -8,7 +8,7 @@
  * The source label doubles as the menu that saves the point as a default.
  */
 
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type RefObject } from 'react';
 
 import type { AutoCompactStatus, AutoCompactWriteResult } from '@kiki/protocol';
 
@@ -30,6 +30,7 @@ import {
 } from '../lib/autoCompact';
 import { pushToast } from '../lib/toasts';
 import { Icon } from './icons';
+import { AnchoredPopover } from './overlays/AnchoredPopover';
 import { TokenPresetRow } from './TokenPresetRow';
 
 export interface CompactSaveOutcome {
@@ -102,7 +103,7 @@ export function ContextCompactSection({
   const [pending, setPending] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const keyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const point = draft ?? status.tokens;
 
   useEffect(() => {
@@ -112,15 +113,6 @@ export function ContextCompactSection({
   useEffect(() => () => {
     if (keyTimer.current !== null) clearTimeout(keyTimer.current);
   }, []);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onPointer = (event: PointerEvent) => {
-      if (menuRef.current !== null && !menuRef.current.contains(event.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener('pointerdown', onPointer);
-    return () => { document.removeEventListener('pointerdown', onPointer); };
-  }, [menuOpen]);
 
   const layerName = (source: AutoCompactSource) => t(LAYER_KEY[source], {
     model: modelLabel ?? '',
@@ -234,8 +226,9 @@ export function ContextCompactSection({
     <div data-context-compact-section data-compact-source={status.source} className="mt-2">
       <div className="flex items-center justify-between gap-2">
         <p className="shrink-0 whitespace-nowrap text-[12px] font-medium text-ink-soft">{t('context.windowTitle')}</p>
-        <div ref={menuRef} className="relative min-w-0">
+        <div className="relative min-w-0">
           <button
+            ref={menuTriggerRef}
             type="button"
             data-compact-source-trigger
             aria-haspopup="menu"
@@ -249,21 +242,21 @@ export function ContextCompactSection({
             <span className="truncate">{sourceLabel}</span>
             <Icon name="chevron" size={12} className={`shrink-0 text-ink-faint transition-transform ${menuOpen ? '-rotate-90' : 'rotate-90'}`} />
           </button>
-          {menuOpen ? (
-            <CompactSourceMenu
-              tokens={status.tokens}
-              usable={usable}
-              modelLabel={modelLabel}
-              profile={profile}
-              canReset={onSession}
-              resetLabel={defaultStatus === undefined
-                ? t('context.compact.reset')
-                : t('context.compact.resetTo', { tokens: formatCompactTokens(defaultStatus.tokens), layer: layerName(defaultStatus.source) })}
-              onClose={() => { setMenuOpen(false); }}
-              onSave={(target) => { void save(target); }}
-              onReset={() => { setMenuOpen(false); void commit(null); }}
-            />
-          ) : null}
+          <CompactSourceMenu
+            open={menuOpen}
+            anchor={menuTriggerRef}
+            tokens={status.tokens}
+            usable={usable}
+            modelLabel={modelLabel}
+            profile={profile}
+            canReset={onSession}
+            resetLabel={defaultStatus === undefined
+              ? t('context.compact.reset')
+              : t('context.compact.resetTo', { tokens: formatCompactTokens(defaultStatus.tokens), layer: layerName(defaultStatus.source) })}
+            onClose={() => { setMenuOpen(false); }}
+            onSave={(target) => { void save(target); }}
+            onReset={() => { setMenuOpen(false); void commit(null); }}
+          />
         </div>
       </div>
       <div className="relative mt-2 h-6 pointer-coarse:h-11" data-compact-track>
@@ -398,6 +391,8 @@ const SOURCE_MENU_ROW =
  * the converted percentage for the global default.
  */
 function CompactSourceMenu({
+  open,
+  anchor,
   tokens,
   usable,
   modelLabel,
@@ -408,6 +403,8 @@ function CompactSourceMenu({
   onSave,
   onReset,
 }: {
+  open: boolean;
+  anchor: RefObject<HTMLButtonElement | null>;
   tokens: number;
   usable: number;
   modelLabel?: string;
@@ -419,29 +416,29 @@ function CompactSourceMenu({
   onReset: () => void;
 }) {
   const { t } = useI18n();
-  const listRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    listRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
-  }, []);
   const value = formatCompactTokens(tokens);
   const percent = compactPercentLabel(tokens, usable);
-  const move = (delta: number) => {
-    const rows = [...(listRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])];
-    const index = rows.indexOf(document.activeElement as HTMLButtonElement);
-    rows[(index + delta + rows.length) % rows.length]?.focus();
-  };
   return (
-    <div
-      ref={listRef}
+    <AnchoredPopover
+      open={open}
+      onClose={onClose}
+      anchorRef={anchor}
+      id="compact-source-menu"
+      label={t('context.compact.menuLabel')}
       role="menu"
-      data-compact-source-menu
-      aria-label={t('context.compact.menuLabel')}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') { event.stopPropagation(); onClose(); }
-        if (event.key === 'ArrowDown') { event.preventDefault(); move(1); }
-        if (event.key === 'ArrowUp') { event.preventDefault(); move(-1); }
+      align="end"
+      widthClassName="w-64"
+      className="p-1"
+      data={{ 'data-compact-source-menu': '' }}
+      onSurfaceKeyDown={(event) => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return false;
+        const rows = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+        if (rows.length === 0) return false;
+        const index = rows.indexOf(document.activeElement as HTMLButtonElement);
+        event.preventDefault();
+        rows[(index + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length]?.focus();
+        return true;
       }}
-      className="anim-enter absolute right-0 top-full z-40 mt-1 w-64 max-w-[calc(100vw-48px)] rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
     >
       <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('context.compact.menuLabel')}</p>
       <button type="button" role="menuitem" data-compact-save="model" className={SOURCE_MENU_ROW} onClick={() => { onSave('model'); }}>
@@ -474,6 +471,6 @@ function CompactSourceMenu({
           </button>
         </>
       ) : null}
-    </div>
+    </AnchoredPopover>
   );
 }

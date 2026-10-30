@@ -348,17 +348,35 @@ it('keeps unknown sends recoverable through an empty snapshot, restores only by 
   root = createRoot(container);
   const state = createViewState('session-example');
   await act(async () => root!.render(<I18nProvider><SubmissionRecovery sessionId="session-example" state={state} /></I18nProvider>));
-  expect(container.textContent).toContain('no send confirmation');
+  expect(container.textContent).toContain('not confirmed as sent');
   expect(readDraft('session-example')).toBe('');
-  expect(readUnconfirmedSubmissions('session-example')).toHaveLength(1);
-  const restore = [...container.querySelectorAll('button')].find(button => button.textContent === 'Restore to composer');
-  await act(async () => restore!.click());
-  expect(readDraft('session-example')).toBe('saved with an image');
-  expect(readComposerState('session-example').attachments).toHaveLength(1);
   expect(readUnconfirmedSubmissions('session-example')).toHaveLength(1);
   await act(async () => root!.render(<I18nProvider><SubmissionRecovery sessionId="session-example" state={{ ...state, queuedPromptIds: ['one'] }} /></I18nProvider>));
   expect(container.querySelector('[data-submission-recovery]')).toBeNull();
   expect(readUnconfirmedSubmissions('session-example')).toEqual([]);
+  expect(readDraft('session-example')).toBe('');
+});
+
+it('moves an unconfirmed send into the composer in one click, or drops it once the user says it arrived', async () => {
+  preserveSubmission({ sessionId: 'session-example', agentId: 'main', promptId: 'one', createdAt: '2026-01-01T00:00:00Z',
+    content: [{ type: 'text', text: 'saved with an image' }, { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'AAAA' } }] });
+  preserveSubmission({ sessionId: 'session-example', agentId: 'main', promptId: 'two', createdAt: '2026-01-01T00:00:01Z',
+    content: [{ type: 'text', text: 'already delivered' }] });
+  root = createRoot(container);
+  const state = createViewState('session-example');
+  await act(async () => root!.render(<I18nProvider><SubmissionRecovery sessionId="session-example" state={state} /></I18nProvider>));
+  expect(container.textContent).toContain('2 messages were not confirmed as sent');
+  const rows = () => [...container.querySelectorAll('[data-submission-recovery-item]')];
+  const action = (row: Element, label: string) => [...row.querySelectorAll('button')].find(button => button.textContent === label)!;
+  await act(async () => action(rows()[0]!, 'Put back in composer').click());
+  expect(readDraft('session-example')).toBe('saved with an image');
+  expect(readComposerState('session-example').attachments).toHaveLength(1);
+  expect(readUnconfirmedSubmissions('session-example').map(item => item.promptId)).toEqual(['two']);
+  expect(rows()).toHaveLength(1);
+  await act(async () => action(rows()[0]!, 'It arrived').click());
+  expect(readDraft('session-example')).toBe('saved with an image');
+  expect(readUnconfirmedSubmissions('session-example')).toEqual([]);
+  expect(container.querySelector('[data-submission-recovery]')).toBeNull();
 });
 
 

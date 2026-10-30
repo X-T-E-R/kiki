@@ -6,9 +6,9 @@ import type { KikiConfigResponse } from '@kiki/session-core/transport';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { useDirtyReporter } from '../dirtyGuard';
 import { Icon } from '../icons';
+import { InlineEditor } from '../InlineEditor';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { LIST_ROW_HEIGHT, ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec } from './list';
@@ -105,18 +105,20 @@ export function PermissionRulesSettings() {
     setFeedback(null);
   };
 
-  return <SectionCard id="st-card-permission-rules" title={t('st.perm.rulesTitle')}>
+  return <SectionCard id="st-card-permission-rules" title={t('st.perm.rulesTitle')}
+    actions={<button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data || editing !== null}
+      onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>{t('st.perm.add')}</button>}>
     <div className="space-y-3" data-permission-rules>
       <Hint>{t('st.perm.rulesHint')}</Hint>
       {configQuery.isLoading ? <Hint>{t('st.perm.loading')}</Hint> : rules.length === 0
-        ? <ListEmpty kind="none" title={t('st.perm.rulesEmpty')} />
+        ? (editing === null ? (
+          <div className="py-2" data-list-empty="none">
+            <p className="text-[13px] text-ink-soft">{t('st.perm.rulesEmpty')}</p>
+          </div>
+        ) : null)
         : <>
           <ListToolbar view={view} total={ruleItems.length} filters={filters}
-            searchLabel={t('st.perm.search')} searchPlaceholder={t('st.perm.searchPlaceholder')}
-            actions={
-              <button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data}
-                onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>{t('st.perm.add')}</button>
-            } />
+            searchLabel={t('st.perm.search')} searchPlaceholder={t('st.perm.searchPlaceholder')} />
           {view.visible.length === 0 ? (
             <ListEmpty kind="no-match" title={t('st.perm.noMatchTitle')}
               body={view.query.trim() !== '' ? t('st.perm.noMatches', { query: view.query.trim() }) : undefined}
@@ -126,6 +128,7 @@ export function PermissionRulesSettings() {
               renderRow={({ rule, index }) => {
                 const reorderBlocked = saving || editing !== null || view.narrowed;
                 return (
+                  <div data-permission-rule-row={rule.pattern}>
                   <div className="flex items-center gap-3 px-3 py-1.5 text-[13px]" style={{ minHeight: LIST_ROW_HEIGHT[view.density] }}>
                     <span className="flex min-w-0 flex-1 items-center gap-1.5 text-ink">
                       <span className="min-w-0 truncate font-mono text-[12px]" title={rule.pattern}>{rule.pattern}</span>
@@ -146,59 +149,70 @@ export function PermissionRulesSettings() {
                         aria-label={`${t('st.perm.delete')} ${rule.pattern}`} onClick={() => void remove(index)}>{t('st.perm.delete')}</button>
                     </div>
                   </div>
+                  {editing?.index === index ? <RuleEditor
+                    editing={editing} dirty={dirty} saving={saving} patternIssue={patternIssue} feedback={feedback}
+                    onUpdate={update} onSave={() => void saveDraft()}
+                    onCancel={() => { setEditing(null); setFeedback(null); }} /> : null}
+                  </div>
                 );
               }} />
           )}
         </>}
-      {rules.length === 0 ? (
-        <div className="flex items-center gap-3">
-          <button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data}
-            onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>{t('st.perm.add')}</button>
-          <SaveStatus saving={saving} saved={saved} />
-        </div>
-      ) : (
-        <SaveStatus saving={saving} saved={saved} />
-      )}
-      {/* A rule is four fields: a short dialog, not a block pushed into the list. */}
-      {editing !== null ? <Dialog
-        onClose={() => { setEditing(null); setFeedback(null); }}
-        ariaLabel={editing.index === null ? t('st.perm.addTitle') : t('st.perm.editTitle')}
-        overlayId="settings-permission-rule"
-        panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md}`}
-      >
-        <div className="space-y-3" data-permission-rule-editor>
-          <h2 className="font-display text-[18px] font-semibold text-ink">{editing.index === null ? t('st.perm.addTitle') : t('st.perm.editTitle')}</h2>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.pattern')}</span>
-              <input data-autofocus className={INPUT} value={editing.draft.pattern} onChange={(event) => update({ pattern: event.target.value })}
-                aria-invalid={patternIssue} aria-describedby={patternIssue ? 'permission-rule-pattern-error' : undefined}
-                placeholder="Bash(rm -rf*)" /></label>
-            <div className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.decision')}</span>
-              <SettingsSelect variant="form" ariaLabel={t('st.perm.decision')} value={editing.draft.decision}
-                onChange={(decision) => update({ decision })} choices={(['allow', 'deny', 'ask'] as const).map((value) => ({ value, label: t(`st.perm.decision.${value}`) }))} /></div>
-          </div>
-          <FieldIssue id="permission-rule-pattern-error" text={patternIssue ? t('st.perm.invalidPattern') : null} />
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.scope')}</span>
-              <SettingsSelect variant="form" ariaLabel={t('st.perm.scope')} value={editing.draft.scope}
-                onChange={(scope) => update({ scope })} choices={(['user', 'project', 'turn-override', 'session-runtime'] as const).map((value) => ({ value, label: t(`st.perm.scope.${value}`) }))} /></div>
-            <label className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.reason')}</span>
-              <input className={INPUT} value={editing.draft.reason} onChange={(event) => update({ reason: event.target.value })} /></label>
-          </div>
-          {editing.draft.scope === 'session-runtime' ? <Hint>{t('st.perm.sessionScopeHint')}</Hint> : null}
-          {/* A dialog keeps its commit button in view; leaving is Cancel. */}
-          <div className="flex flex-wrap items-center gap-2 pt-3" data-settings-draft="permission-rule" data-dirty={dirty ? 'true' : undefined}>
-            <button type="button" className={PRIMARY_BUTTON} disabled={!dirty || saving || !patternValid} onClick={() => void saveDraft()}>
-              {saving ? t('common.saving') : editing.index === null ? t('st.perm.add') : t('common.save')}
-            </button>
-            <button type="button" data-settings-discard="permission-rule" className={SECONDARY_BUTTON} disabled={saving}
-              onClick={() => { setEditing(null); setFeedback(null); }}>{t('common.cancel')}</button>
-          </div>
-          <FeedbackLine feedback={feedback} />
-        </div>
-      </Dialog> : null}
+      <SaveStatus saving={saving} saved={saved} />
+      {/* A rule is four fields: it edits in place under its row, not in a
+          dialog. Adding sits under the list; editing sits under the row itself. */}
+      {editing !== null && editing.index === null ? <RuleEditor
+        editing={editing} dirty={dirty} saving={saving} patternIssue={patternIssue} feedback={feedback}
+        onUpdate={update} onSave={() => void saveDraft()}
+        onCancel={() => { setEditing(null); setFeedback(null); }} /> : null}
       {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
       {editing === null ? <FeedbackLine feedback={feedback} /> : null}
     </div>
   </SectionCard>;
+}
+
+/** The four-field rule form, unfolded under the row it belongs to. */
+function RuleEditor({ editing, dirty, saving, patternIssue, feedback, onUpdate, onSave, onCancel }: {
+  editing: { index: number | null; draft: RuleDraft };
+  dirty: boolean;
+  saving: boolean;
+  patternIssue: boolean;
+  feedback: Feedback;
+  onUpdate: (patch: Partial<RuleDraft>) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useI18n();
+  const emptyPattern = editing.draft.pattern.trim() === '';
+  return (
+    <InlineEditor open lazy className="mt-1 bg-transparent p-0 pl-3">
+      <div className="space-y-3 py-1" data-permission-rule-editor>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.pattern')}</span>
+            <input data-autofocus className={INPUT} value={editing.draft.pattern} onChange={(event) => onUpdate({ pattern: event.target.value })}
+              aria-invalid={patternIssue} aria-describedby={patternIssue ? 'permission-rule-pattern-error' : undefined}
+              placeholder="Bash(rm -rf*)" /></label>
+          <div className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.decision')}</span>
+            <SettingsSelect variant="form" ariaLabel={t('st.perm.decision')} value={editing.draft.decision}
+              onChange={(decision) => onUpdate({ decision })} choices={(['allow', 'deny', 'ask'] as const).map((value) => ({ value, label: t(`st.perm.decision.${value}`) }))} /></div>
+        </div>
+        <FieldIssue id="permission-rule-pattern-error" text={patternIssue ? t('st.perm.invalidPattern') : null} />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.scope')}</span>
+            <SettingsSelect variant="form" ariaLabel={t('st.perm.scope')} value={editing.draft.scope}
+              onChange={(scope) => onUpdate({ scope })} choices={(['user', 'project', 'turn-override', 'session-runtime'] as const).map((value) => ({ value, label: t(`st.perm.scope.${value}`) }))} /></div>
+          <label className="space-y-1"><span className={FORM_LABEL}>{t('st.perm.reason')}</span>
+            <input className={INPUT} value={editing.draft.reason} onChange={(event) => onUpdate({ reason: event.target.value })} /></label>
+        </div>
+        {editing.draft.scope === 'session-runtime' ? <Hint>{t('st.perm.sessionScopeHint')}</Hint> : null}
+        <div className="flex flex-wrap items-center gap-2 pt-1" data-settings-draft="permission-rule" data-dirty={dirty ? 'true' : undefined}>
+          <button type="button" className={PRIMARY_BUTTON} disabled={!dirty || saving || patternIssue || emptyPattern} onClick={onSave}>
+            {saving ? t('common.saving') : editing.index === null ? t('st.perm.add') : t('common.save')}
+          </button>
+          <button type="button" data-settings-discard="permission-rule" className={SECONDARY_BUTTON} disabled={saving} onClick={onCancel}>{t('common.cancel')}</button>
+        </div>
+        <FeedbackLine feedback={feedback} />
+      </div>
+    </InlineEditor>
+  );
 }

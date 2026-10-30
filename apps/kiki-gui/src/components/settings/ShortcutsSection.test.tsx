@@ -131,6 +131,39 @@ describe('ShortcutsSection', () => {
     expect(client.writeShortcuts).not.toHaveBeenCalled();
   });
 
+  it('names the two shortcuts-panel rows after where they work', async () => {
+    const container = await render();
+    expect(container.querySelector('[data-shortcut-row="shortcuts"]')?.textContent).toContain('Shortcuts panel (everywhere)');
+    expect(container.querySelector('[data-shortcut-row="shortcuts-help"]')?.textContent).toContain('Shortcuts panel (outside fields)');
+  });
+
+  it('lists send and new line only as a pointer in the fixed-keys card', async () => {
+    const container = await render();
+    const fixed = container.querySelector('#st-card-shortcuts-fixed')!;
+    expect(fixed.querySelector('[data-shortcut-fixed="send"]')).toBeNull();
+    expect(fixed.querySelector('[data-shortcut-fixed="newline"]')).toBeNull();
+    expect(fixed.querySelector('[data-shortcut-fixed="escape-overlay"]')).not.toBeNull();
+  });
+
+  it('keeps the browser-reserved note until a reserved chord is pressed', async () => {
+    const container = await render();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-shortcut-row="switcher"] [data-shortcut-chord="0"]')!.click();
+    });
+    expect(container.querySelector('[data-shortcut-browser-warning]')).toBeNull();
+    const recorder = container.querySelector<HTMLButtonElement>('[data-shortcut-recording]')!;
+    await act(async () => {
+      recorder.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', ctrlKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(container.querySelector('[data-shortcut-recording]')).not.toBeNull();
+    await act(async () => {
+      recorder.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', ctrlKey: true, bubbles: true, cancelable: true }));
+    });
+    expect(container.querySelector('[data-shortcut-browser-warning]')).not.toBeNull();
+    expect(client.writeShortcuts).not.toHaveBeenCalled();
+    await act(async () => { recorder.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); });
+  });
+
   it('names the row the server rejected, including a clash on another platform', async () => {
     const container = await render();
     // The local check only knows this platform; the server validates every

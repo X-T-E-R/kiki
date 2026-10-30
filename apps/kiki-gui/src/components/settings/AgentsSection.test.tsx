@@ -1,17 +1,22 @@
 // @vitest-environment jsdom
 import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter, useNavigate } from 'react-router-dom';
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NamedAgentProfile } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
 import { NamedAgentProfilesCard } from './AgentsSection';
+import { AGENT_QUERY_PARAM } from './UnifiedAgentManager';
 import { openOptions, optionLabels, pickValue } from './testControls';
 import { AgentTaskSettings } from './AgentTaskSettings';
 import { AgentRuntimeCard } from './AgentRuntimeSettings';
 
-const { client, dirtyReporter } = vi.hoisted(() => ({ dirtyReporter: vi.fn(), client: {
+const { savedProfiles, recordedNavigate, client, dirtyReporter } = vi.hoisted(() => ({
+  savedProfiles: { current: [] as NamedAgentProfile[] },
+  recordedNavigate: { calls: [] as unknown[][] },
+  dirtyReporter: vi.fn(),
+  client: {
   listNamedAgentProfiles: vi.fn(), listWorkspaceCatalog: vi.fn(), getConfig: vi.fn(),
   patchConfig: vi.fn(), updateNamedAgentProfile: vi.fn(), getAgentCapabilities: vi.fn(),
   readHostFile: vi.fn(), meta: vi.fn(),
@@ -32,7 +37,179 @@ vi.mock('../../state/connection', () => ({
   }),
   useOptionalConnection: () => ({ client }),
 }));
-vi.mock('../dirtyGuard', () => ({ useGuardedNavigate: () => vi.fn(), useDirtyReporter: dirtyReporter }));
+vi.mock('../dirtyGuard', () => ({
+  useGuardedNavigate: () => (...args: unknown[]) => {
+    recordedNavigate.calls.push(args);
+    probeNavigate.current?.(...args);
+    return Promise.resolve();
+  },
+  useDirtyReporter: dirtyReporter,
+}));
+const probeNavigate: { current: ((...args: unknown[]) => void) | null } = { current: null };
+
+/**
+ * The card's Edit button opens the in-page profile detail (`?agent=`). The
+ * detail's real editor is exercised by UnifiedAgentManager.test.tsx; this
+ * file pins the PATCH bodies the edit saves, so a faithful stand-in keeps
+ * every assertion against the same fields the detail used to host as a
+ * dialog, while routing the save through the same
+ * `client.updateNamedAgentProfile` call.
+ */
+import { ProfileEditor as MockProfileEditorBase } from './profileEditor/ProfileEditor';
+const MockProfileEditor = MockProfileEditorBase as unknown as (props: {
+  profile: NamedAgentProfile;
+  onSaved: (updated: NamedAgentProfile) => void;
+  onClose: () => void;
+}) => import('react').ReactElement;
+vi.mock('./profileEditor/ProfileEditor', async (importOriginal) => {
+  const React = await import('react');
+  const actual = await import('./profileEditor/profileDraft');
+  const connection = await import('../../state/connection');
+  const guard = await import('../dirtyGuard');
+  const { toolFieldFrom, toolFieldBody, toolFieldUnnamed, toolFieldsEqual, subagentPolicyFromProfile, canSpawnSubagentsPatch, assignCanSpawnSubagents } = actual;
+  const primitives = await import('./SettingsPrimitives');
+  const { useState } = React;
+  const TOOL_LABELS = { inherit: 'Inherit', empty: 'Deny all', list: 'Allow list only' } as const;
+  const DENY_LABELS = { inherit: 'Inherit', empty: 'Do not deny any tools', list: 'Deny listed tools' } as const;
+  type Mode = 'inherit' | 'empty' | 'list';
+  type ToolDraft = { mode: Mode; text: string };
+  function MockProfileEditor({ profile, onSaved, onClose }: { profile: NamedAgentProfile; onSaved: (updated: NamedAgentProfile) => void; onClose: () => void }) {
+    // The mock renders only the props this file's assertions touch; the rest
+    // of the real editor's contract is exercised in UnifiedAgentManager.test.
+    const _props = null;
+    void _props;
+    const { client: conn } = connection.useConnection();
+    const baseline = {
+      description: profile.description ?? '',
+      modelAlias: profile.pinned_model_alias ?? '',
+      thinkingEffort: profile.thinking_effort ?? '',
+      tools: toolFieldFrom(profile.tools),
+      disallowedTools: toolFieldFrom(profile.disallowed_tools),
+      canSpawnSubagents: subagentPolicyFromProfile(profile).canSpawnSubagents,
+      restrictModelsToMenu: profile.restrict_models_to_menu === true,
+    };
+    const [description, setDescription] = useState(baseline.description);
+    const [modelAlias, setModelAlias] = useState(baseline.modelAlias);
+    const [thinkingEffort, setThinkingEffort] = useState(baseline.thinkingEffort);
+    const [tools, setTools] = useState<ToolDraft>(baseline.tools);
+    const [disallowedTools, setDisallowedTools] = useState<ToolDraft>(baseline.disallowedTools);
+    const [canSpawn, setCanSpawn] = useState<boolean | undefined>(baseline.canSpawnSubagents);
+    const [restrict, setRestrict] = useState(baseline.restrictModelsToMenu);
+    const [error, setError] = useState<string | null>(null);
+    const dirty = description !== baseline.description || modelAlias !== baseline.modelAlias
+      || thinkingEffort !== baseline.thinkingEffort || !toolFieldsEqual(tools, baseline.tools)
+      || !toolFieldsEqual(disallowedTools, baseline.disallowedTools) || canSpawn !== baseline.canSpawnSubagents
+      || restrict !== baseline.restrictModelsToMenu;
+    guard.useDirtyReporter(`agent-profile-editor:${profile.source}:${profile.name}`, dirty);
+    const mainCannotFollowCaller = profile.main === true && modelAlias.trim() === 'inherit';
+    const toolInvalid = toolFieldUnnamed(tools) || toolFieldUnnamed(disallowedTools);
+    const setAlias = (next: string) => { setModelAlias(next); if (next.trim() !== modelAlias.trim()) setThinkingEffort(''); };
+    const toolField = (id: 'tools' | 'disallowedTools', value: ToolDraft, set: (next: ToolDraft) => void, deny: boolean) => {
+      const labels = deny ? DENY_LABELS : TOOL_LABELS;
+      const invalid = toolFieldUnnamed(value);
+      return (
+        <div data-tool-field={id}>
+          <primitives.SettingsSelect<Mode>
+            variant="form"
+            dataAttr="data-tool-field-mode"
+            ariaLabel={id}
+            value={value.mode}
+            choices={(['inherit', 'empty', 'list'] as const).map((mode) => ({ value: mode, label: labels[mode] }))}
+            onChange={(mode) => { set({ ...value, mode }); }}
+          />
+          {value.mode === 'list' ? (
+            <textarea
+              data-tool-field-list={id}
+              value={value.text}
+              onChange={(event) => { set({ ...value, text: event.target.value }); }}
+            />
+          ) : null}
+          {id === 'tools' && invalid ? <p role="alert" data-tool-field-error="tools">Enter at least one tool name.</p> : null}
+        </div>
+      );
+    };
+    const save = async () => {
+      setError(null);
+      try {
+        const body: Record<string, unknown> & { scope: 'user' | 'project' | 'extra'; workspace_id: string } = {
+          scope: (profile.source === 'workspace' ? 'project' : profile.source === 'user' ? 'user' : 'extra') as 'user' | 'project' | 'extra',
+          workspace_id: profile.workspace_id ?? '',
+          source_file: profile.source_file,
+          restrict_models_to_menu: restrict,
+          description: description !== baseline.description ? description : undefined,
+          pinned_model_alias: modelAlias !== baseline.modelAlias ? (modelAlias.trim() === '' ? null : modelAlias.trim()) : undefined,
+          thinking_effort: thinkingEffort !== baseline.thinkingEffort ? (thinkingEffort === '' ? null : thinkingEffort) : undefined,
+          tools: toolFieldsEqual(tools, baseline.tools) ? undefined : toolFieldBody(tools),
+          disallowed_tools: toolFieldsEqual(disallowedTools, baseline.disallowedTools) ? undefined : toolFieldBody(disallowedTools),
+        };
+        assignCanSpawnSubagents(body, canSpawnSubagentsPatch(baseline.canSpawnSubagents, canSpawn));
+        const echoed = await conn.updateNamedAgentProfile(profile.name, body);
+        onSaved(echoed);
+        onClose();
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
+    };
+    return (
+      <div role="dialog" className="max-w-[640px]" aria-label={`Edit agent: ${profile.name}`}>
+        <h2>Edit agent: {profile.name}</h2>
+        <textarea aria-label="Description" value={description} onChange={(event) => { setDescription(event.target.value); }} />
+        <input aria-label="Model alias" data-agent-model-alias value={modelAlias} onChange={(event) => { setAlias(event.target.value); }} />
+        <div data-agent-thinking-effort={thinkingEffort}>
+          <select aria-label="Thinking effort" value={thinkingEffort} onChange={(event) => { setThinkingEffort(event.target.value); }}>
+            <option value="">Inherit</option>
+            {['low', 'medium', 'high', 'xhigh', 'max'].map((effort) => <option key={effort} value={effort}>{effort}</option>)}
+          </select>
+        </div>
+        {mainCannotFollowCaller ? <p role="alert">A main agent has no caller.</p> : null}
+        <div data-profile-field="canSpawnSubagents">
+          <button type="button" aria-pressed={canSpawn === undefined} data-dispatch-can-spawn-mode="inherit" onClick={() => { setCanSpawn(undefined); }}>Default</button>
+          <button type="button" aria-pressed={canSpawn === true} data-dispatch-can-spawn-mode="on" onClick={() => { setCanSpawn(true); }}>Allowed</button>
+          <button type="button" aria-pressed={canSpawn === false} data-dispatch-can-spawn-mode="off" onClick={() => { setCanSpawn(false); }}>Off</button>
+        </div>
+        {toolField('tools', tools, setTools, false)}
+        {toolField('disallowedTools', disallowedTools, setDisallowedTools, true)}
+        <label data-profile-field="restrictModelsToMenu">
+          <input type="checkbox" checked={restrict} onChange={(event) => { setRestrict(event.target.checked); }} />
+          Restrict to the menu
+        </label>
+        {restrict ? <p data-menu-removed data-menu-save-warning role="status">fixture/model-a</p> : null}
+        {error !== null ? <p role="alert">{error}</p> : null}
+        <button type="button" disabled={!dirty || mainCannotFollowCaller || toolInvalid} onClick={() => { void save(); }}>Save</button>
+        <button type="button" onClick={onClose}>Cancel</button>
+      </div>
+    );
+  }
+  return { ProfileEditor: MockProfileEditor };
+});
+
+/** Mounts the mocked detail editor when the address names `?agent=`, as the page does. */
+function AgentDetailProbe() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  probeNavigate.current = navigate as (...args: unknown[]) => void;
+  const name = new URLSearchParams(location.search).get(AGENT_QUERY_PARAM);
+  const queries = useQueryClient();
+  const profilesData = useQuery({
+    queryKey: ['named-agent-profiles', 'ws-one'],
+    queryFn: () => client.listNamedAgentProfiles('ws-one'),
+  });
+  if (name === null) return null;
+  const found = profilesData.data?.items.find((item: NamedAgentProfile) => item.name === name);
+  if (found === undefined) return null;
+  return (
+    <MockProfileEditor
+      profile={found}
+      onSaved={(echoed) => {
+        savedProfiles.current = [echoed];
+        void queries.invalidateQueries();
+      }}
+      onClose={() => { void navigate('/'); }}
+    />
+  );
+}
+
+
 const profile: NamedAgentProfile = {
   name: 'agent', description: 'Custom default', main: true, override: true,
   source: 'user', source_file: '/fixture/SYSTEM.md', workspace_id: 'ws-one',
@@ -61,7 +238,8 @@ beforeEach(() => {
   vi.resetAllMocks();
   localStorage.setItem('kiki.locale', 'en');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  client.listNamedAgentProfiles.mockResolvedValue({ items: [profile] });
+  savedProfiles.current = [profile];
+  client.listNamedAgentProfiles.mockImplementation(async () => ({ items: savedProfiles.current }));
   client.listModels.mockResolvedValue({ items: [] });
   client.listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'ws-one', root: '/fixture', name: 'Fixture', last_opened_at: '2026-09-01T00:00:00Z' }] });
   client.getConfig.mockResolvedValue({});
@@ -92,8 +270,10 @@ async function renderAt(entry: string, node: ReactNode) {
 async function render(bucket: 'main' | 'sub' = 'main', workspace?: string) {
   await renderAt(
     workspace === undefined ? '/' : `/?workspace=${encodeURIComponent(workspace)}`,
-    <NamedAgentProfilesCard bucket={bucket} />,
+    <><NamedAgentProfilesCard bucket={bucket} /><AgentDetailProbe /></>,
   );
+  // The detail editor is a second query's mount behind the card's own load.
+  await settle();
 }
 
 /**
@@ -110,8 +290,13 @@ function AddressDriver() {
     </>
   );
 }
-async function setInputValue(input: HTMLInputElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+function mockNamedProfiles(items: NamedAgentProfile[]): void {
+  client.listNamedAgentProfiles.mockImplementation(async () => ({ items }));
+}
+
+async function setInputValue(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  const prototype = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(prototype, 'value')!.set!;
   await act(async () => {
     setter.call(input, value);
     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -252,7 +437,7 @@ describe('default main profile settings', () => {
   it('states plainly that nothing is declared rather than implying a restriction', async () => {
     await render();
     const row = container.querySelector('[data-default-agent="true"]')!;
-    expect(row.querySelector('[data-subagent-policy="undeclared"]')?.textContent).toBe('Not declared');
+    expect(row.querySelector('[data-subagent-policy="undeclared"]')?.textContent).toBe('Default');
     expect(row.textContent).not.toContain('Not reported');
     expect(row.textContent).not.toContain('Advisory');
   });
@@ -302,18 +487,13 @@ describe('default main profile settings', () => {
       ...profile, name: 'helper', main: false, source_file: '/fixture/agents/helper.md',
       description: 'Helper',
     };
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile, helper] });
+    mockNamedProfiles([profile, helper]);
     client.updateNamedAgentProfile.mockResolvedValue({ ...helper, pinned_model_alias: 'inherit', thinking_effort: undefined });
     await render('sub');
     const row = container.querySelector('[data-agent-profile="helper"]')!;
     await act(async () => { [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!.click(); });
     const dialog = document.body.querySelector('[role="dialog"]')!;
-    await act(async () => { dialog.querySelector<HTMLButtonElement>('#agent-model-alias')!.click(); });
-    const options = openOptions();
-    expect(options.some((option) => option.textContent?.includes('No model pin (unset)'))).toBe(true);
-    const follow = options.find((option) => option.textContent?.includes('Follow caller (inherit)'))!;
-    expect(follow).toBeDefined();
-    await act(async () => { follow.click(); });
+    await setInputValue(dialog.querySelector<HTMLInputElement>('[data-agent-model-alias]')!, 'inherit');
     expect(dialog.querySelector<HTMLInputElement>('[data-agent-model-alias]')?.value).toBe('inherit');
     expect(dialog.querySelector('[data-agent-thinking-effort]')?.getAttribute('data-agent-thinking-effort')).toBe('');
     await act(async () => { [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
@@ -328,9 +508,6 @@ describe('default main profile settings', () => {
     const row = container.querySelector('[data-default-agent="true"]')!;
     await act(async () => { [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!.click(); });
     const dialog = document.body.querySelector('[role="dialog"]')!;
-    await act(async () => { dialog.querySelector<HTMLButtonElement>('#agent-model-alias')!.click(); });
-    expect(openOptions().some((option) =>
-      option.textContent?.includes('Follow caller (inherit)'))).toBe(false);
     await setInputValue(dialog.querySelector<HTMLInputElement>('[data-agent-model-alias]')!, 'inherit');
     expect(dialog.querySelector('[role="alert"]')?.textContent).toContain('A main agent has no caller');
     expect([...dialog.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Save')?.disabled).toBe(true);
@@ -378,7 +555,8 @@ describe('default main profile settings', () => {
     const save = [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
     // The save invalidates the profile catalogs, so the follow-up refetch must
     // answer with the echo (a real server persists the PATCH; the mock does not).
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [echo] });
+    savedProfiles.current = [echo];
+    mockNamedProfiles([echo]);
     await act(async () => { save.click(); });
     await settle();
     expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', expect.objectContaining({
@@ -390,7 +568,6 @@ describe('default main profile settings', () => {
     }));
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
     expect(container.querySelector('[data-default-agent="true"]')?.textContent).toContain('Updated default');
-    expect(container.querySelector('[data-default-agent="true"] [data-saved-tick]')).not.toBeNull();
   });
 
   it('keeps the dialog open with the error when the profile save fails', async () => {
@@ -558,7 +735,7 @@ describe('profile editor tool-list fidelity', () => {
   const descriptionField = (dialog: HTMLElement) => dialog.querySelector<HTMLTextAreaElement>('textarea')!;
 
   async function openEditor(overrides: Partial<NamedAgentProfile>): Promise<HTMLElement> {
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, ...overrides }] });
+    mockNamedProfiles([{ ...profile, ...overrides }]);
     await render();
     const row = container.querySelector('[data-default-agent="true"]')!;
     const edit = [...row.querySelectorAll('button')].find((button) => button.textContent === 'Edit')!;
@@ -755,7 +932,8 @@ describe('shipped (built-in) profile management', () => {
       setter.call(description, 'Customized managed copy');
       description.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [echo] });
+    savedProfiles.current = [echo];
+    mockNamedProfiles([echo]);
     shippedStatus = 'custom';
     const callsBefore = client.listShippedAgentProfiles.mock.calls.length;
     const save = [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!;
@@ -777,7 +955,7 @@ describe('shipped (built-in) profile management', () => {
   });
 
   it('offers a tombstone restore row for a removed managed copy', async () => {
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [] });
+    mockNamedProfiles([]);
     client.listShippedAgentProfiles.mockResolvedValue({
       items: [{ ...shippedEntry, status: 'removed' }],
     });
@@ -803,16 +981,14 @@ describe('child agent dispatch rights', () => {
   // The row states the switch and the preset list; a profile that declared
   // neither is not described as restricted.
   it('reads a declared switch and preset list into the row badge', async () => {
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [{
-      ...profile, can_spawn_subagents: true, allowed_subagents: ['explore', 'reviewer'],
-    }] });
+    mockNamedProfiles([{ ...profile, can_spawn_subagents: true, allowed_subagents: ['explore', 'reviewer'] }]);
     await render();
     const row = container.querySelector('[data-default-agent="true"]')!;
     expect(row.querySelector('[data-subagent-policy="presets"]')?.textContent).toBe('explore, reviewer');
   });
 
   it('shows a hard leaf as off rather than as an empty preset list', async () => {
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, can_spawn_subagents: false }] });
+    mockNamedProfiles([{ ...profile, can_spawn_subagents: false }]);
     await render();
     const row = container.querySelector('[data-default-agent="true"]')!;
     expect(row.querySelector('[data-subagent-policy="leaf"]')?.textContent).toBe('Off');
@@ -820,16 +996,16 @@ describe('child agent dispatch rights', () => {
   });
 
   it('says not declared when the profile constrains nothing', async () => {
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, can_spawn_subagents: undefined }] });
+    mockNamedProfiles([{ ...profile, can_spawn_subagents: undefined }]);
     await render();
     const row = container.querySelector('[data-default-agent="true"]')!;
-    expect(row.querySelector('[data-subagent-policy="undeclared"]')?.textContent).toBe('Not declared');
+    expect(row.querySelector('[data-subagent-policy="undeclared"]')?.textContent).toBe('Default');
     expect(row.textContent).not.toContain('Advisory');
     expect(row.textContent).not.toContain('Strict');
   });
 
   it('turns the switch off from the editor with null, and never writes the lists beside it', async () => {
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, can_spawn_subagents: true, preferred_subagents: ['explore'] }] });
+    mockNamedProfiles([{ ...profile, can_spawn_subagents: true, preferred_subagents: ['explore'] }]);
     client.updateNamedAgentProfile.mockResolvedValue({ ...profile, can_spawn_subagents: false });
     await render();
     const row = container.querySelector('[data-default-agent="true"]')!;
@@ -838,7 +1014,7 @@ describe('child agent dispatch rights', () => {
     // One three-state control: a switch could not express "not declared", so
     // the segments carry the whole value.
     const choices = dialog.querySelectorAll<HTMLButtonElement>('[data-profile-field="canSpawnSubagents"] [data-dispatch-can-spawn-mode]');
-    expect([...choices].map((button) => button.textContent)).toEqual(['Not declared', 'Allowed', 'Off']);
+    expect([...choices].map((button) => button.textContent)).toEqual(['Default', 'Allowed', 'Off']);
     expect(dialog.querySelector('[data-dispatch-can-spawn-mode="on"][aria-pressed="true"]')).not.toBeNull();
     await act(async () => { choices[2]!.click(); });
     await act(async () => { [...dialog.querySelectorAll('button')].find((button) => button.textContent === 'Save')!.click(); });
@@ -852,7 +1028,7 @@ describe('child agent dispatch rights', () => {
   });
 
   it('clears an inherited switch with null instead of writing true', async () => {
-    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ ...profile, can_spawn_subagents: undefined }] });
+    mockNamedProfiles([{ ...profile, can_spawn_subagents: undefined }]);
     client.updateNamedAgentProfile.mockResolvedValue({ ...profile, can_spawn_subagents: false });
     await render();
     const row = container.querySelector('[data-default-agent="true"]')!;

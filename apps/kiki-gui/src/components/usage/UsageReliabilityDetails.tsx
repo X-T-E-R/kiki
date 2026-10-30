@@ -73,13 +73,13 @@ export function UsageReliabilityDetails({ summary, reliability }: Pick<UsageResp
           <dl className={`${partial ? 'mt-4 border-t border-hairline pt-3' : ''} grid grid-cols-1 gap-x-8 gap-y-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]`}>
             <div>
               <dt className="text-[11.5px] text-ink-faint">{t('usage.reliability.coverage')}</dt>
-              <dd className="font-mono tabular-nums">
+              <dd className="tabular-nums">
                 {earliest !== null && latest !== null ? `${formatDate(earliest)} → ${formatDate(latest)}` : t('usage.reliability.coverageEmpty')}
               </dd>
             </div>
             <div>
               <dt className="text-[11.5px] text-ink-faint">{t('usage.reliability.scanned')}</dt>
-              <dd className="font-mono tabular-nums">{formatGrouped(reliability.scanned_sessions)}</dd>
+              <dd className="tabular-nums">{formatGrouped(reliability.scanned_sessions)}</dd>
             </div>
           </dl>
           <p className="mt-3 text-[11.5px] text-ink-faint">{t('usage.reliability.costSource')} · {t(reliability.includes_deleted_sessions ? 'usage.reliability.deleted.included' : 'usage.reliability.deleted.excluded')}</p>

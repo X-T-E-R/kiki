@@ -187,14 +187,17 @@ describe('open entry', () => {
     expect(document.querySelector('[data-web-access-link-expires]')).not.toBeNull();
   });
 
-  it('confirms before turning it off, and names what ends', async () => {
+  it('turns off at once and offers to reopen the same entry from the toast', async () => {
     const container = await render();
     await click(find(container, '[data-web-access-off]'));
-    // Nothing is sent on the click itself.
-    expect(webAccess.disable).not.toHaveBeenCalled();
-    const confirm = document.querySelector<HTMLElement>('[role="alertdialog"], [role="dialog"]');
-    expect(confirm).not.toBeNull();
-    expect(confirm!.textContent).toContain('Turn off web access?');
+    // Reversible with the same data, so it runs immediately; the queued undo
+    // toast re-enables with the captured mode and address.
+    expect(webAccess.disable).toHaveBeenCalled();
+    const { getToasts } = await import('../../lib/toasts');
+    const toast = getToasts().find((item) => item.undo !== undefined);
+    expect(toast).toBeDefined();
+    await act(async () => { await toast!.undo!.run(); });
+    expect(webAccess.enable).toHaveBeenCalled();
   });
 
   it('does not claim a link is open when the server reports it is not', async () => {

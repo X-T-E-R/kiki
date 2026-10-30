@@ -17,14 +17,10 @@ import { SECONDARY_BUTTON } from '../ui';
 import { DecisionConnectionsCard } from './DecisionConnections';
 import { ExternalEnginesList, ExternalEnginesVisibilitySwitch } from './ExternalEnginesSection';
 import { ListBody, ListEmpty, ListToolbar, useListView, type ListFilterSpec, type ListSortSpec } from './list';
-import { MODEL_QUERY_PARAM, ModelMaintenance, ProviderModelList } from './ModelsSection';
+import { MODEL_QUERY_PARAM, ModelDetailSplit, ModelMaintenance, ProviderModelList } from './ModelsSection';
 import { SectionCard, SettingsCardMountContext } from './SectionCard';
 
 const KIND_ORDER: readonly ConnectionKind[] = ['api', 'account', 'local'];
-
-function stripZoneNumeral(title: string): string {
-  return title.replace(/^[①②③]\s*/, '');
-}
 
 /**
  * Connections tab: one list, and one way to add to it.
@@ -54,7 +50,7 @@ export function OAuthAccountCard({
 }) {
   const { t } = useI18n();
   return (
-    <SectionCard id="st-card-auth" title={stripZoneNumeral(t('st.providers.zone1.title'))}>
+    <SectionCard id="st-card-auth" title={t('st.providers.zone1.title')}>
       <div className="space-y-3">
         {showHint ? (
           <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">
@@ -158,8 +154,7 @@ export function ProvidersSection() {
         models={models}
         defaultOpen={requestedModel !== null && models.some((model) => model.id === requestedModel && model.provider_id === provider.id)}
         modelList={(
-          <ProviderModelList providerId={provider.id} models={models}
-            inheritedImageTypes={provider.images?.accepted_types} onChanged={refreshProviderData} />
+          <ProviderModelList providerId={provider.id} models={models} />
         )}
         managed={accountProviders.has(provider.id)}
         modelCount={modelCount(provider.id)}
@@ -200,7 +195,7 @@ export function ProvidersSection() {
     </button>
   );
 
-  return (
+  const page = (
     <div className="space-y-6">
       {/* One search over every configured connection, then the three zones:
           API key, account sign-in, and services on this machine (HTTP and CLI).
@@ -216,9 +211,12 @@ export function ProvidersSection() {
           onClear={view.clear} />
       ) : null}
       <div data-providers-zone="apikey">
-        <SectionCard id="st-card-providers" title={stripZoneNumeral(t('st.providers.zone3.title'))}>
+        <SectionCard id="st-card-providers" title={t('st.providers.zone3.title')}>
           <div className="space-y-3">
-            {connectionRows(visibleOf('api'))}
+            {/* A local HTTP server (Ollama, LM Studio) is an API the user points
+                at an address, so it lists with the API services; the card
+                below is only for CLI engines Kiki drives. */}
+            {connectionRows([...visibleOf('api'), ...visibleOf('local')])}
             {empty ? (
               <div data-connections-empty>
                 <ListEmpty kind="none" title={t('st.connections.emptyTitle')} body={t('st.connections.emptyBody')} />
@@ -264,7 +262,6 @@ export function ProvidersSection() {
 
       <div data-providers-zone="harnesses">
         <SectionCard id="st-card-engines" title={t('st.providers.localConnectionsTitle')} actions={<ExternalEnginesVisibilitySwitch />}>
-          {visibleOf('local').length > 0 ? <div className="mb-4">{connectionRows(visibleOf('local'))}</div> : null}
           <ExternalEnginesList />
           <div className="mt-4">
             <Link
@@ -286,7 +283,16 @@ export function ProvidersSection() {
       </div>
 
       <ModelMaintenance />
+    </div>
+  );
 
+  // A model opened from any connection edits in the page: the connections
+  // fold into a rail and the model takes the column (`?model=<id>`).
+  return (
+    <>
+      <ModelDetailSplit list={page} models={modelsQuery.data?.items ?? []} providers={allProviders}
+        ready={modelsQuery.isSuccess} onChanged={refreshProviderData}
+        providerLabel={(id) => methodFor(id)?.label ?? id} />
       {addOpen && !empty ? (
         <SidePanel
           title={t('st.connections.addTitle')}
@@ -306,7 +312,7 @@ export function ProvidersSection() {
           </div>
         </SidePanel>
       ) : null}
-    </div>
+    </>
   );
 }
 

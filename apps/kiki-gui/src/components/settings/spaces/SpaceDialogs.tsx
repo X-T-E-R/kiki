@@ -4,76 +4,21 @@ import { useQuery } from '@tanstack/react-query';
 import type { SpaceRecord, UpdateSpaceResponse } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 
-import { useHost } from '../../../host';
 import { useI18n } from '../../../i18n';
-import { homesApi, isAbsolutePath, spaceKeys, type SpaceListItem } from '../../../lib/spaces';
+import { homesApi, spaceKeys, type SpaceListItem } from '../../../lib/spaces';
 import { useConnection } from '../../../state/connection';
 import type { KikiClient } from '../../../lib/client';
 import { FeedbackLine, Hint, type Feedback } from '../../controls';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../../Dialog';
+import { ConfirmDialog } from '../../ConfirmDialog';
 import { DANGER_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
-import { FieldIssue, FORM_LABEL } from '../SettingsPrimitives';
+import { FORM_LABEL } from '../SettingsPrimitives';
 import { SpaceDot } from './SpaceDot';
 
-/** "Add existing space…": registers a folder that already has this main space as its base. */
-export function AttachSpaceDialog({ client: controlClient, onClose, onAttached }: {
-  client?: KikiClient;
-  onClose: () => void;
-  onAttached: (record: SpaceRecord) => void;
-}) {
-  const { client: connectionClient } = useConnection();
-  const client = controlClient ?? connectionClient;
-  const host = useHost();
-  const { t, locale } = useI18n();
-  const pathId = useId();
-  const issueId = useId();
-  const [path, setPath] = useState('');
-  const [issue, setIssue] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState<Feedback>(null);
-
-  const submit = () => {
-    if (!isAbsolutePath(path)) { setIssue(t('st.spaces.pathRequired')); return; }
-    setBusy(true);
-    setFeedback(null);
-    void homesApi(client).attach({ path: path.trim() })
-      .then(onAttached)
-      .catch((error: unknown) => { setBusy(false); setFeedback({ tone: 'error', text: errorText(locale, error) }); });
-  };
-
-  return (
-    <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={t('st.spaces.attachTitle')} overlayId="space-attach-dialog">
-      <form data-space-attach onSubmit={(event) => { event.preventDefault(); submit(); }}>
-        <h2 className="font-display text-[18px] font-semibold text-ink">{t('st.spaces.attachTitle')}</h2>
-        <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">{t('st.spaces.attachBody')}</p>
-        <label htmlFor={pathId} className={`${FORM_LABEL} mt-4`}>{t('st.spaces.location')}</label>
-        <div className="mt-1.5 flex gap-2">
-          <input id={pathId} data-autofocus data-space-attach-path value={path} spellCheck={false} autoComplete="off"
-            aria-invalid={issue !== null} aria-describedby={issue !== null ? issueId : undefined}
-            onChange={(event) => { setPath(event.target.value); setIssue(null); }}
-            className={`${INPUT} min-w-0 flex-1 font-mono text-[12px]`} />
-          {host.pickDirectory !== undefined ? (
-            <button type="button" className={SECONDARY_BUTTON} onClick={() => {
-              void host.pickDirectory?.().then((picked) => { if (picked !== null) { setPath(picked); setIssue(null); } }).catch(() => undefined);
-            }}>{t('st.spaces.browse')}</button>
-          ) : null}
-        </div>
-        <FieldIssue id={issueId} text={issue} />
-        <div className="mt-3"><FeedbackLine feedback={feedback} /></div>
-        <div className="mt-5 flex justify-end gap-2">
-          <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
-          <button type="submit" className={PRIMARY_BUTTON} disabled={busy}>{busy ? t('common.saving') : t('st.spaces.attachConfirm')}</button>
-        </div>
-      </form>
-    </Dialog>
-  );
-}
-
 /**
- * Permanent deletion (`homes.erase`). The destructive button stays disabled
- * until the typed name matches exactly; the body names the folder and says the
- * delete is recursive and final, and points at "Remove from list" for keeping
- * the files.
+ * Permanent deletion (`homes.erase`). The destructive verb stays disabled until
+ * the typed name matches exactly; the body names the folder and says the delete
+ * is recursive and final, and points at "Remove from list" for keeping the
+ * files. Rendered through ConfirmDialog: the typed-name gate is its child.
  */
 export function DeleteSpaceDialog({ client: controlClient, space, onClose, onDeleted }: {
   client?: KikiClient;
@@ -100,28 +45,29 @@ export function DeleteSpaceDialog({ client: controlClient, space, onClose, onDel
   };
 
   return (
-    <Dialog role="alertdialog" onClose={() => { if (!busy) onClose(); }} ariaLabel={t('st.spaces.deleteTitle', { name: space.name })} overlayId="space-delete-dialog">
+    <ConfirmDialog
+      open
+      overlayId="space-delete-dialog"
+      title={t('st.spaces.deleteTitle', { name: space.name })}
+      body={t('st.spaces.deleteBody')}
+      confirmLabel={t('st.spaces.deleteConfirm')}
+      tone="danger"
+      busy={busy}
+      confirmDisabled={!matches}
+      confirmData={{ 'data-space-delete-confirm': '' }}
+      onCancel={onClose}
+      onConfirm={submit}
+    >
       <form data-space-delete={space.id} onSubmit={(event) => { event.preventDefault(); submit(); }}>
-        <h2 className="flex items-center gap-2 font-display text-[18px] font-semibold text-ink">
-          <SpaceDot color={space.color} />
-          <span className="min-w-0 break-words">{t('st.spaces.deleteTitle', { name: space.name })}</span>
-        </h2>
-        <p className="mt-3 text-[13px] leading-relaxed text-ink-soft">{t('st.spaces.deleteBody')}</p>
         <p data-space-delete-path className="mt-2 break-all rounded-md bg-danger/[0.06] px-3 py-2 font-mono text-[12px] text-ink">{space.path}</p>
         <p className="mt-2 text-[12.5px] text-ink-soft">{t('st.spaces.deleteKeepHint')}</p>
         <label htmlFor={inputId} className={`${FORM_LABEL} mt-4`}>{t('st.spaces.deleteTypeLabel', { name: space.name })}</label>
-        <input id={inputId} data-autofocus data-space-delete-input value={typed} autoComplete="off" spellCheck={false}
+        <input id={inputId} data-space-delete-input value={typed} autoComplete="off" spellCheck={false}
           onChange={(event) => { setTyped(event.target.value); }}
           className={`${INPUT} mt-1.5 text-[13px]`} />
-        <div className="mt-3"><FeedbackLine feedback={feedback} /></div>
-        <div className="mt-5 flex justify-end gap-2">
-          <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
-          <button type="submit" data-space-delete-confirm className={DANGER_BUTTON} disabled={!matches || busy}>
-            {t('st.spaces.deleteConfirm')}
-          </button>
-        </div>
+        {feedback !== null ? <div className="mt-3"><FeedbackLine feedback={feedback} /></div> : null}
       </form>
-    </Dialog>
+    </ConfirmDialog>
   );
 }
 
@@ -132,7 +78,9 @@ const targetKey = (target: CopyTarget) => `${target.workspaceId ?? ''}\u0000${ta
  * §9.5 from the main space: flip a space between shared and separate
  * accounts in one `PATCH /homes/{id}`. Going separate may copy the main
  * space's saved SSH passwords for the hosts ticked here (default: none).
- * Going back to shared keeps whatever the space saved on its own.
+ * Going back to shared keeps whatever the space saved on its own. Rendered
+ * through ConfirmDialog: the copy-selection is its child, the armed verb is
+ * the direction being switched to.
  */
 export function SpaceCredentialsDialog({ client: controlClient, space, onClose, onDone }: {
   client?: KikiClient;
@@ -182,13 +130,18 @@ export function SpaceCredentialsDialog({ client: controlClient, space, onClose, 
   const kindLabel = (kind: 'password' | 'passphrase') => t(kind === 'password' ? 'st.spaces.kind.password' : 'st.spaces.kind.passphrase');
 
   return (
-    <Dialog onClose={() => { if (!busy) onClose(); }} ariaLabel={t('st.spaces.credDialogTitle', { name: space.name })} overlayId="space-credentials-dialog"
-      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm} max-h-[calc(100dvh-2rem)] overflow-y-auto`}>
-      <div data-space-credentials={space.id} data-space-credentials-target={target}>
-        <h2 className="flex items-center gap-2 font-display text-[18px] font-semibold text-ink">
-          <SpaceDot color={space.color} />
-          <span className="min-w-0 break-words">{t('st.spaces.credDialogTitle', { name: space.name })}</span>
-        </h2>
+    <ConfirmDialog
+      open
+      overlayId="space-credentials-dialog"
+      title={t('st.spaces.credDialogTitle', { name: space.name })}
+      tone="default"
+      busy={busy}
+      confirmLabel={t(target === 'isolated' ? 'st.spaces.credSwitchToIsolated' : 'st.spaces.credSwitchToShared')}
+      confirmData={{ 'data-space-credentials-confirm': '' }}
+      onCancel={onClose}
+      onConfirm={submit}
+    >
+      <div data-space-credentials={space.id} data-space-credentials-target={target} className="max-h-[55dvh] overflow-y-auto">
         <div className="mt-3 grid gap-2 sm:grid-cols-2" aria-hidden>
           {(['shared', 'isolated'] as const).map((mode) => {
             const isTarget = mode === target;
@@ -205,7 +158,7 @@ export function SpaceCredentialsDialog({ client: controlClient, space, onClose, 
         {target === 'isolated' ? (
           <>
             <p className="mt-4 text-[13px] leading-relaxed text-ink-soft">{t('st.spaces.credToIsolatedNote', { name: space.name })}</p>
-            <fieldset className="mt-4 border-t border-hairline pt-3" data-space-copy-ssh>
+            <fieldset className="mt-4 pt-3" data-space-copy-ssh>
               <legend className="sr-only">{t('st.spaces.copySsh', { name: space.name })}</legend>
               <div className="flex items-baseline justify-between gap-3">
                 <p aria-hidden className="text-[13px] font-medium text-ink">{t('st.spaces.copySsh', { name: space.name })}</p>
@@ -250,16 +203,10 @@ export function SpaceCredentialsDialog({ client: controlClient, space, onClose, 
         )}
 
         <div className="mt-3"><FeedbackLine feedback={feedback} /></div>
-        <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
-          {target === 'isolated' && selected.size > 0 ? (
-            <span className="mr-auto text-[12px] text-ink-faint">{tp('st.spaces.copyCount', selected.size)}</span>
-          ) : null}
-          <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
-          <button type="button" data-space-credentials-confirm className={PRIMARY_BUTTON} disabled={busy} onClick={submit}>
-            {busy ? t('common.saving') : t(target === 'isolated' ? 'st.spaces.credSwitchToIsolated' : 'st.spaces.credSwitchToShared')}
-          </button>
-        </div>
+        {target === 'isolated' && selected.size > 0 ? (
+          <p className="mt-2 text-[12px] text-ink-faint">{tp('st.spaces.copyCount', selected.size)}</p>
+        ) : null}
       </div>
-    </Dialog>
+    </ConfirmDialog>
   );
 }

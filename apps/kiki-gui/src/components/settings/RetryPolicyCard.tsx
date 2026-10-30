@@ -7,8 +7,9 @@ import type { KikiConfigPatch, KikiConfigResponse } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { Icon } from '../icons';
-import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingField, SettingsBox } from './fields';
 import { FORM_LABEL, SettingsDraftFooter } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
@@ -60,6 +61,12 @@ function draftFromConfig(config: KikiConfigResponse): RetryDraft {
   };
 }
 
+/** `[loop_control] max_attempts_per_step`, the value retry's budget wins over. */
+function loopAttemptsFromConfig(config: KikiConfigResponse): string {
+  const raw = (config.loop_control ?? {}) as Record<string, unknown>;
+  return numberText(raw['maxAttemptsPerStep'] ?? raw['max_attempts_per_step']);
+}
+
 type Issue = { readonly key: string; readonly text: string };
 
 /** Builds the full-domain replacement, or the first field that blocks it. */
@@ -103,10 +110,17 @@ function retryPatch(draft: RetryDraft, t: ReturnType<typeof useI18n>['t']): { pa
   };
 }
 
+/** The unit sitting right of a number input, one shape everywhere. */
+function Unit({ children }: { readonly children: string }) {
+  return <span className="text-[12px] text-ink-faint">{children}</span>;
+}
+
 /**
- * Developer → Retry: the step-retry budget and ordered per-error policies.
- * One draft for the whole list, because policy order decides which one
- * applies; saving replaces the retry domain.
+ * Models → Defaults → Retry: the step-retry budget and ordered per-error
+ * policies. This is the only attempts row on the tab — `[retry] max_attempts`
+ * wins at runtime, and an empty box inherits whatever loop_control holds (the
+ * placeholder shows that value). One draft for the whole list, because policy
+ * order decides which one applies; saving replaces the retry domain.
  */
 export function RetryPolicyCard() {
   const { client } = useConnection();
@@ -131,13 +145,15 @@ export function RetryPolicyCard() {
     focusId.current = null;
   });
 
-  if (draft === null) {
+  if (draft === null || configQuery.data === undefined) {
     return (
       <SectionCard id="st-card-retry" title={t('st.retry.title')}>
         {configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>}
       </SectionCard>
     );
   }
+
+  const inheritedAttempts = loopAttemptsFromConfig(configQuery.data);
 
   const update = (next: RetryDraft) => { setDraft(next); setDirty(true); setIssue(null); };
   const updatePolicy = (id: number, patch: Partial<PolicyDraft>) => {
@@ -169,25 +185,35 @@ export function RetryPolicyCard() {
   };
 
   const issueFor = (key: string) => (issue?.key === key ? issue.text : null);
-  const fieldClass = (key: string) => `${INPUT} mt-1 font-mono font-normal ${issue?.key === key ? 'border-danger' : ''}`;
+  // Draft inputs sit in a row's control slot at a fixed width; the match
+  // pattern is the only one that reads long, so it keeps a wider box.
+  const fieldClass = (key: string, width = 'w-20', align = 'text-right') =>
+    `h-8 ${width} rounded-md border border-hairline bg-paper px-2 ${align} font-mono text-[12.5px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-selected-ink disabled:opacity-60 ${issue?.key === key ? 'border-danger' : ''}`;
 
   return (
     <SectionCard id="st-card-retry" title={t('st.retry.title')} effect="newSessions">
       <div className="space-y-4">
         <Hint>{t('st.retry.hint')}</Hint>
         <fieldset disabled={saving} className="min-w-0 space-y-4 disabled:opacity-60">
-          <label className={`${FORM_LABEL} block max-w-[12rem]`}>
-            {t('st.retry.maxAttempts')}
-            <input className={fieldClass('max')} inputMode="numeric" placeholder="5" value={draft.maxAttempts}
-              aria-invalid={issue?.key === 'max'}
-              onChange={(event) => { update({ ...draft, maxAttempts: event.target.value }); }} />
-          </label>
+          <SettingsBox>
+            <SettingField label={t('st.retry.maxAttempts')} htmlFor="retry-max-attempts"
+              help={t('st.retry.maxAttemptsHelp')}>
+              <div className="flex items-center gap-1.5">
+                <input id="retry-max-attempts" className={fieldClass('max')} inputMode="numeric"
+                  placeholder={inheritedAttempts === '' ? '5' : inheritedAttempts} value={draft.maxAttempts}
+                  aria-invalid={issue?.key === 'max'}
+                  onChange={(event) => { update({ ...draft, maxAttempts: event.target.value }); }} />
+                <Unit>{t('st.retry.attemptsUnit')}</Unit>
+              </div>
+            </SettingField>
+            <div data-retry-partial-responses>
+              <SettingField label={t('st.retry.partialResponses')} help={t('st.retry.partialResponsesHint')}>
+                <Toggle layout="bare" label={t('st.retry.partialResponses')} checked={draft.retryPartialResponses}
+                  onChange={(retryPartialResponses) => { update({ ...draft, retryPartialResponses }); }} />
+              </SettingField>
+            </div>
+          </SettingsBox>
           {issueFor('max') !== null ? <p role="alert" className="text-[12px] text-danger">{issueFor('max')}</p> : null}
-          <div data-retry-partial-responses className="space-y-1">
-            <Toggle layout="row" label={t('st.retry.partialResponses')} checked={draft.retryPartialResponses}
-              onChange={(retryPartialResponses) => { update({ ...draft, retryPartialResponses }); }} />
-            <Hint>{t('st.retry.partialResponsesHint')}</Hint>
-          </div>
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
               <span className={FORM_LABEL}>{t('st.retry.policies')}</span>
@@ -201,48 +227,51 @@ export function RetryPolicyCard() {
               </button>
             </div>
             {draft.policies.length === 0 ? <Hint>{t('st.retry.empty')}</Hint> : null}
-            <ol className="space-y-2" data-retry-policies>
+            <ol data-retry-policies className="divide-y divide-hairline rounded-lg border border-hairline [&>:empty]:hidden">
               {draft.policies.map((policy, index) => (
-                <li key={policy.id} data-retry-policy={index} className="grid gap-2 border-t border-hairline pt-2 first:border-t-0 first:pt-0 sm:grid-cols-[minmax(0,2fr)_6rem_7rem_auto_auto] sm:items-end">
-                  <label className={FORM_LABEL}>
-                    {t('st.retry.match')}
-                    <input id={`retry-match-${policy.id}`} className={fieldClass(`match-${policy.id}`)} value={policy.match}
+                <li key={policy.id} data-retry-policy={index} className="space-y-1 px-4 py-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <Toggle layout="row" label={t('st.retry.policyEnabled')} checked={policy.retry}
+                      onChange={(retry) => { updatePolicy(policy.id, { retry }); }} />
+                    <div className="flex items-center gap-1">
+                      <button type="button" className={SECONDARY_BUTTON} disabled={index === 0}
+                        aria-label={t('st.retry.moveUp', { n: index + 1 })} onClick={() => { move(index, -1); }}>
+                        <Icon name="arrowUp" size={14} />
+                      </button>
+                      <button type="button" className={SECONDARY_BUTTON} disabled={index === draft.policies.length - 1}
+                        aria-label={t('st.retry.moveDown', { n: index + 1 })} onClick={() => { move(index, 1); }}>
+                        <Icon name="arrowDown" size={14} />
+                      </button>
+                      <button type="button" className={SECONDARY_BUTTON}
+                        aria-label={t('st.retry.removePolicy', { n: index + 1 })}
+                        onClick={() => { update({ ...draft, policies: draft.policies.filter((entry) => entry.id !== policy.id) }); }}>
+                        <Icon name="close" size={14} />
+                      </button>
+                    </div>
+                  </div>
+                  <SettingField label={t('st.retry.match')} htmlFor={`retry-match-${policy.id}`}>
+                    <input id={`retry-match-${policy.id}`} className={fieldClass(`match-${policy.id}`, 'w-full max-w-64', 'text-left')} value={policy.match}
                       placeholder="^provider\.rate_limit$" aria-invalid={issue?.key === `match-${policy.id}`}
                       onChange={(event) => { updatePolicy(policy.id, { match: event.target.value }); }} />
-                  </label>
-                  <label className={FORM_LABEL}>
-                    {t('st.retry.policyAttempts')}
-                    <input className={fieldClass(`attempts-${policy.id}`)} inputMode="numeric" value={policy.maxAttempts}
-                      aria-invalid={issue?.key === `attempts-${policy.id}`}
-                      onChange={(event) => { updatePolicy(policy.id, { maxAttempts: event.target.value }); }} />
-                  </label>
-                  <label className={FORM_LABEL}>
-                    {t('st.retry.backoff')}
-                    <input className={fieldClass(`backoff-${policy.id}`)} inputMode="numeric" value={policy.backoff}
-                      aria-invalid={issue?.key === `backoff-${policy.id}`}
-                      onChange={(event) => { updatePolicy(policy.id, { backoff: event.target.value }); }} />
-                  </label>
-                  <div className="flex h-8 items-center">
-                    <Toggle label={t('st.retry.retry')} checked={policy.retry}
-                      onChange={(retry) => { updatePolicy(policy.id, { retry }); }} />
-                  </div>
-                  <div className="flex h-8 items-center gap-1">
-                    <button type="button" className={SECONDARY_BUTTON} disabled={index === 0}
-                      aria-label={t('st.retry.moveUp', { n: index + 1 })} onClick={() => { move(index, -1); }}>
-                      <Icon name="arrowUp" size={14} />
-                    </button>
-                    <button type="button" className={SECONDARY_BUTTON} disabled={index === draft.policies.length - 1}
-                      aria-label={t('st.retry.moveDown', { n: index + 1 })} onClick={() => { move(index, 1); }}>
-                      <Icon name="arrowDown" size={14} />
-                    </button>
-                    <button type="button" className={SECONDARY_BUTTON}
-                      aria-label={t('st.retry.removePolicy', { n: index + 1 })}
-                      onClick={() => { update({ ...draft, policies: draft.policies.filter((entry) => entry.id !== policy.id) }); }}>
-                      <Icon name="close" size={14} />
-                    </button>
-                  </div>
+                  </SettingField>
+                  <SettingField label={t('st.retry.policyAttempts')}>
+                    <div className="flex items-center gap-1.5">
+                      <input className={fieldClass(`attempts-${policy.id}`)} inputMode="numeric" value={policy.maxAttempts}
+                        aria-label={t('st.retry.policyAttempts')} aria-invalid={issue?.key === `attempts-${policy.id}`}
+                        onChange={(event) => { updatePolicy(policy.id, { maxAttempts: event.target.value }); }} />
+                      <Unit>{t('st.retry.attemptsUnit')}</Unit>
+                    </div>
+                  </SettingField>
+                  <SettingField label={t('st.retry.backoff')}>
+                    <div className="flex items-center gap-1.5">
+                      <input className={fieldClass(`backoff-${policy.id}`)} inputMode="numeric" value={policy.backoff}
+                        aria-label={t('st.retry.backoff')} aria-invalid={issue?.key === `backoff-${policy.id}`}
+                        onChange={(event) => { updatePolicy(policy.id, { backoff: event.target.value }); }} />
+                      <Unit>{t('st.residency.msUnit')}</Unit>
+                    </div>
+                  </SettingField>
                   {[`match-${policy.id}`, `attempts-${policy.id}`, `backoff-${policy.id}`].map((key) => (issueFor(key) !== null
-                    ? <p key={key} role="alert" className="text-[12px] text-danger sm:col-span-5">{issueFor(key)}</p>
+                    ? <p key={key} role="alert" className="text-[12px] text-danger">{issueFor(key)}</p>
                     : null))}
                 </li>
               ))}

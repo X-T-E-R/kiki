@@ -62,6 +62,10 @@ async function render(overrides: {
   readonly activeSessionId?: string;
   readonly roomNames?: ReadonlyMap<string, string>;
 } = {}): Promise<Rendered> {
+  // One switcher at a time: a second render first unmounts the earlier roots,
+  // whose portaled panels would otherwise linger in the body.
+  for (const stale of mounted.splice(0)) await act(async () => { stale.unmount(); });
+  document.body.replaceChildren();
   const container = document.createElement('div');
   document.body.append(container);
   const anchor = document.createElement('button');
@@ -84,7 +88,10 @@ async function render(overrides: {
       onClose,
     }))));
   });
-  return { container, onClose, anchor };
+  // The switcher is an anchored popover now: it portals to the body, so the
+  // panel root (not the mounting container) is what the assertions scope to.
+  const panel = document.body.querySelector<HTMLElement>('[data-persona-conversation-switcher]') ?? container;
+  return { container: panel as HTMLDivElement, onClose, anchor };
 }
 
 const menuItems = (container: HTMLElement) => [...container.querySelectorAll<HTMLElement>('[role="menuitem"]')];
@@ -175,8 +182,13 @@ describe('the honest tests', () => {
     });
     expect(document.activeElement).toBe(items[0]);
 
+    // The popover's own Escape handling reports the close and hands focus back
+    // to the anchor; this harness keeps the panel mounted, so the caller's
+    // unmount is the missing half here.
     await act(async () => {
-      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+      rendered.container.querySelector('[role="menu"]')!.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+      );
     });
     expect(rendered.onClose).toHaveBeenCalled();
     expect(document.activeElement).toBe(rendered.anchor);

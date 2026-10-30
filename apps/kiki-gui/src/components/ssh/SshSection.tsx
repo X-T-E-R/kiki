@@ -15,9 +15,8 @@
  */
 
 import { useEffect, useId, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 
-import { pushToast } from '../../lib/toasts';
+import { pushToast, pushUndoToast } from '../../lib/toasts';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
@@ -27,6 +26,7 @@ import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import {
   canWriteBack,
+  NATIVE_SSH_FLAG,
   sshApi,
   sshKeys,
   sshTargetLabel,
@@ -36,6 +36,7 @@ import {
   useSshHosts,
   visibleState,
   type SshHost,
+  type SshHostInput,
   type SshHostStatus,
 } from '../../lib/ssh';
 import { MAIN_SPACE_ID, useSpaces } from '../../lib/spaces';
@@ -44,7 +45,9 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
+import { ExperimentalRow, useExperimentalFlags } from '../settings/ExperimentalRows';
 import { SectionCard } from '../settings/SectionCard';
+import { SettingField, SettingsBox } from '../settings/fields';
 import { useSavedTick } from '../settings/useSavedTick';
 import { SshStateMark } from './SshBits';
 import { SshHostFormDialog, type SshHostFormMode } from './SshHostFormDialog';
@@ -60,23 +63,35 @@ const COPY_BUTTON =
 export function SshSection() {
   const { client } = useConnection();
   const { t } = useI18n();
-  const navigate = useNavigate();
   const flag = useNativeSshEnabled(client);
 
   if (flag.loading) return <SectionCard id="st-card-ssh-hosts" title={t('st.ssh.hostsTitle')}><Hint>{t('st.ssh.loading')}</Hint></SectionCard>;
-  if (flag.enabled !== true) {
-    return (
-      <SectionCard id="st-card-ssh-hosts" title={t('st.ssh.hostsTitle')}>
-        <div data-ssh-flag-off className="space-y-3">
-          <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.ssh.flagOff')}</p>
-          <button type="button" className={SECONDARY_BUTTON} onClick={() => { void navigate('/settings/ssh#st-card-exp-ssh', { replace: true }); }}>
-            {t('st.ssh.openLabs')}
-          </button>
-        </div>
-      </SectionCard>
-    );
-  }
+  if (flag.enabled !== true) return <SshFlagOffCard />;
   return <SshHostsSettings />;
+}
+
+/**
+ * The flag-off fallback: the enable switch lives right here instead of a link
+ * to the page's own experimental row, which only renders when the server
+ * reports the flag and could leave that link scrolling nowhere. It is the
+ * same three-way ExperimentalRow the page would show below.
+ */
+function SshFlagOffCard() {
+  const { t } = useI18n();
+  const { rows, effective, loading } = useExperimentalFlags();
+  const saved = rows.find((row) => row.id === NATIVE_SSH_FLAG);
+  return (
+    <SectionCard id="st-card-ssh-hosts" title={t('st.ssh.hostsTitle')}>
+      <div data-ssh-flag-off className="space-y-3">
+        <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.ssh.flagOff')}</p>
+        {loading ? <Hint>{t('st.ssh.loading')}</Hint> : (
+          <SettingsBox>
+            <ExperimentalRow id={NATIVE_SSH_FLAG} override={saved?.override} effective={effective[NATIVE_SSH_FLAG]} />
+          </SettingsBox>
+        )}
+      </div>
+    </SectionCard>
+  );
 }
 
 function SshHostsSettings() {
@@ -107,10 +122,12 @@ function SshHostsSettings() {
   // The main space's own path is the default home on the other machine, the
   // same one the space directory shows.
   const mainSpacePath = useSpaces(client).data?.find((space) => space.id === MAIN_SPACE_ID)?.path ?? '';
-  const [confirm, setConfirm] = useState<{ kind: 'delete' | 'write-back'; host: SshHost } | null>(null);
+  const [confirm, setConfirm] = useState<{ kind: 'delete'; host: SshHost } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [rowFeedback, setRowFeedback] = useState<{ id: string; feedback: Feedback } | null>(null);
 
+  // Kiki's own hosts come first (they are the editable ones), the system
+  // config's aliases after; one list, one order.
   const kikiHosts = hosts.filter((host) => host.source === 'kiki');
   const configHosts = hosts.filter((host) => host.source === 'ssh-config');
   // Kiki hosts that shadow a discovered alias keep the alias visible as "overridden".
@@ -136,12 +153,46 @@ function SshHostsSettings() {
     }
   };
 
+  // Writing a host back to ~/.ssh/config is reversible with the store the
+  // server keeps: the row holds the pre-write record, so run it at once and
+  // let the toast put that record back instead of asking first. Deleting the
+  // stored host stays a confirm — the record itself is gone there.
+  const writeBack = async (host: SshHost) => {
+    const prior: SshHostInput = {
+      name: host.name,
+      hostname: host.hostname,
+      user: host.user,
+      port: host.port,
+      identityFile: host.identityFile,
+      roots: host.roots,
+      description: host.description,
+      agentAccess: host.agentAccess,
+    };
+    setBusy(host.id);
+    setRowFeedback(null);
+    try {
+      await sshApi(client).writeBack(host.id);
+      await refresh();
+      pushUndoToast({
+        text: t('st.ssh.writtenBack', { alias: host.id }),
+        undoFailedText: t('toast.undoFailed'),
+        undo: async () => {
+          await sshApi(client).upsert(host.id, prior);
+          await refresh();
+        },
+      });
+    } catch (error) {
+      setRowFeedback({ id: host.id, feedback: { tone: 'error', text: errorText(locale, error) } });
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <>
       <SectionCard id="st-card-ssh-hosts" title={t('st.ssh.hostsTitle')}>
         <div className="space-y-5">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <p className="mr-auto max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.ssh.intro')}</p>
+          <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
             <button type="button" data-ssh-add-host className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
               onClick={() => { setForm({ kind: 'create' }); }}>
               <Icon name="plus" size={12} />
@@ -153,18 +204,23 @@ function SshHostsSettings() {
           {hostsQuery.isError ? <InlineError error={hostsQuery.error} /> : null}
 
           {empty ? (
-            <div data-ssh-empty className="rounded-lg border border-dashed border-hairline-strong px-4 py-5">
+            <div data-ssh-empty className="space-y-2">
               <p className="text-[13px] font-medium text-ink">{t('st.ssh.emptyTitle')}</p>
-              <p className="mt-1 max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.ssh.emptyBody')}</p>
+              <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.ssh.emptyBody')}</p>
+              <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+                onClick={() => { setForm({ kind: 'create' }); }}>
+                <Icon name="plus" size={12} />
+                {t('st.ssh.addHost')}
+              </button>
             </div>
           ) : null}
 
-          {kikiHosts.length > 0 ? (
-            <HostGroup
-              id="kiki"
-              label={t('st.ssh.group.kiki')}
-              note={t('st.ssh.group.kikiNote')}
-              hosts={kikiHosts}
+          {hosts.length > 0 ? (
+            // One list: where a host lives is a tag on its row, not a group the
+            // reader has to learn. Kiki's own hosts first (they are the ones the
+            // user can edit), the system config's aliases after.
+            <HostList
+              hosts={hosts}
               statusFor={statusFor}
               busy={busy}
               feedbackFor={(id) => (rowFeedback?.id === id ? rowFeedback.feedback : null)}
@@ -172,21 +228,7 @@ function SshHostsSettings() {
               onEdit={(host) => { setForm({ kind: 'edit', host }); }}
               onRemoteSpace={(host) => { setRemoteSpace({ profileId: host.id }); }}
               onDelete={(host) => { setConfirm({ kind: 'delete', host }); }}
-              onWriteBack={(host) => { setConfirm({ kind: 'write-back', host }); }}
-              onDisconnect={(host) => void run(host, () => sshApi(client).disconnect(host.id), t('st.ssh.disconnected'))}
-            />
-          ) : null}
-
-          {configHosts.length > 0 ? (
-            <HostGroup
-              id="ssh-config"
-              label={t('st.ssh.group.config')}
-              note={t('st.ssh.group.configNote')}
-              hosts={configHosts}
-              statusFor={statusFor}
-              busy={busy}
-              feedbackFor={(id) => (rowFeedback?.id === id ? rowFeedback.feedback : null)}
-              overridden={overridden}
+              onWriteBack={(host) => { void writeBack(host); }}
               onOverride={(host) => { setForm({ kind: 'override', host }); }}
               onDisconnect={(host) => void run(host, () => sshApi(client).disconnect(host.id), t('st.ssh.disconnected'))}
             />
@@ -233,32 +275,14 @@ function SshHostsSettings() {
           void run(host, () => sshApi(client).remove(host.id), t('st.ssh.deleted', { name: host.name }));
         }}
       />
-      <ConfirmDialog
-        open={confirm?.kind === 'write-back'}
-        tone="default"
-        title={t('st.ssh.writeBackTitle', { alias: confirm?.host.id ?? '' })}
-        body={t('st.ssh.writeBackBody')}
-        confirmLabel={t('st.ssh.writeBack')}
-        overlayId="ssh-write-back"
-        busy={busy !== null}
-        onCancel={() => { setConfirm(null); }}
-        onConfirm={() => {
-          const host = confirm!.host;
-          setConfirm(null);
-          void run(host, () => sshApi(client).writeBack(host.id), t('st.ssh.writtenBack', { alias: host.id }));
-        }}
-      />
     </>
   );
 }
 
-function HostGroup({
-  id, label, note, hosts, statusFor, busy, feedbackFor, overridden,
+function HostList({
+  hosts, statusFor, busy, feedbackFor, overridden,
   onEdit, onRemoteSpace, onDelete, onWriteBack, onOverride, onDisconnect,
 }: {
-  id: 'kiki' | 'ssh-config';
-  label: string;
-  note: string;
   hosts: readonly SshHost[];
   statusFor: (id: string) => SshHostStatus | undefined;
   busy: string | null;
@@ -272,30 +296,23 @@ function HostGroup({
   onDisconnect: (host: SshHost) => void;
 }) {
   return (
-    <div data-ssh-group={id}>
-      <p className="flex h-7 items-baseline gap-1.5 text-[12px]">
-        <span className="font-medium text-ink-soft">{label}</span>
-        <span className="text-ink-faint tabular-nums">{hosts.length}</span>
-        <span className="ml-1 truncate text-ink-faint">{note}</span>
-      </p>
-      <div className="mt-0.5 overflow-hidden rounded-lg border border-hairline bg-panel">
-        {hosts.map((host) => (
-          <HostRow
-            key={host.id}
-            host={host}
-            status={statusFor(host.id)}
-            busy={busy === host.id}
-            feedback={feedbackFor(host.id)}
-            overridesConfig={overridden.has(host.id)}
-            onEdit={onEdit}
-            onRemoteSpace={onRemoteSpace}
-            onDelete={onDelete}
-            onWriteBack={onWriteBack}
-            onOverride={onOverride}
-            onDisconnect={onDisconnect}
-          />
-        ))}
-      </div>
+    <div className="overflow-hidden rounded-lg border border-hairline bg-panel">
+      {hosts.map((host) => (
+        <HostRow
+          key={host.id}
+          host={host}
+          status={statusFor(host.id)}
+          busy={busy === host.id}
+          feedback={feedbackFor(host.id)}
+          overridesConfig={overridden.has(host.id)}
+          onEdit={host.source === 'kiki' ? onEdit : undefined}
+          onRemoteSpace={host.source === 'kiki' ? onRemoteSpace : undefined}
+          onDelete={host.source === 'kiki' ? onDelete : undefined}
+          onWriteBack={host.source === 'kiki' ? onWriteBack : undefined}
+          onOverride={host.source === 'ssh-config' ? onOverride : undefined}
+          onDisconnect={onDisconnect}
+        />
+      ))}
     </div>
   );
 }
@@ -321,7 +338,8 @@ function HostRow({
   const state = visibleState(status);
   const target = sshTargetLabel(host);
   const fromConfig = host.source === 'ssh-config';
-  const secondLine = target ?? (fromConfig ? t('st.ssh.row.resolvedBySsh') : t('st.ssh.row.aliasOnly', { alias: host.id }));
+  const secondLine = target ?? (fromConfig ? t('st.ssh.row.fromConfig') : t('st.ssh.row.aliasOnly', { alias: host.id }));
+  const sourceTag = fromConfig && target !== undefined;
   const connected = state === 'ready' || state === 'connecting';
   const writable = canWriteBack(host);
 
@@ -341,6 +359,9 @@ function HostRow({
             {secondLine}
           </span>
         </span>
+        {sourceTag ? (
+          <span className="hidden shrink-0 text-[12px] text-ink-faint sm:inline" data-ssh-source-tag>{t('st.ssh.row.fromConfig')}</span>
+        ) : null}
         {host.agentAccess === 'hidden' ? (
           <span className="hidden shrink-0 text-[12px] text-ink-faint sm:inline">{t('st.ssh.row.hidden')}</span>
         ) : null}
@@ -711,61 +732,53 @@ function ConnectionCard() {
 
   return (
     <SectionCard id="st-card-ssh-connection" title={t('st.ssh.connectionTitle')}>
-      <div className="space-y-4">
-        <div data-settings-field data-ssh-sync data-ssh-sync-source={syncSource ?? 'unknown'} className="space-y-0.5 py-1">
+      <SettingsBox>
+        <div data-ssh-sync data-ssh-sync-source={syncSource ?? 'unknown'}>
           {sync !== undefined ? (
-            <>
-              <div className="flex items-center gap-2">
-                <div className="min-w-0 flex-1">
-                  <Toggle layout="row" label={t('st.ssh.syncToggle')} checked={sync} disabled={saving === 'sync'}
-                    onChange={(checked) => void setSync(checked)} />
-                </div>
-                <SavedTick show={syncSaved} />
-              </div>
-              <Hint>{t('st.ssh.syncHint')}</Hint>
-              {/* Where the stored value comes from, said only when it is not this device's own setting. */}
-              {syncSource === 'base' ? <Hint>{t('st.ssh.syncSourceBase')}</Hint> : null}
-              {syncSource === 'default' ? <Hint>{t('st.ssh.syncSourceDefault')}</Hint> : null}
-            </>
+            <SettingField
+              label={t('st.ssh.syncToggle')}
+              help={t('st.ssh.syncHint')}
+            >
+              <SavedTick show={syncSaved} />
+              <Toggle layout="bare" label={t('st.ssh.syncToggle')} checked={sync} disabled={saving === 'sync'}
+                onChange={(checked) => void setSync(checked)} />
+            </SettingField>
           ) : (
             // The label holds the row's place while the value is unknown — same
             // line height as the switch row, so nothing jumps when it arrives.
-            <p className="flex min-h-7 items-center text-[13px] text-ink">{t('st.ssh.syncToggle')}</p>
-          )}
-          {sync === undefined && syncQuery.isError ? (
-            <div className="space-y-1 py-0.5">
-              <p role="alert" className="max-w-[62ch] text-[12px] leading-snug text-danger">
-                {t('st.ssh.syncReadFailed')}
-              </p>
-              <button type="button" data-ssh-sync-retry className={ROW_ACTION} disabled={syncQuery.isFetching}
-                onClick={() => { void syncQuery.refetch(); }}>
-                {t('common.retry')}
-              </button>
+            <div data-settings-field className="space-y-1">
+              <p className="flex min-h-7 items-center text-[13px] text-ink">{t('st.ssh.syncToggle')}</p>
+              {syncQuery.isError ? (
+                <div className="space-y-1 py-0.5">
+                  <p role="alert" className="max-w-[62ch] text-[12px] leading-snug text-danger">
+                    {t('st.ssh.syncReadFailed')}
+                  </p>
+                  <button type="button" data-ssh-sync-retry className={ROW_ACTION} disabled={syncQuery.isFetching}
+                    onClick={() => { void syncQuery.refetch(); }}>
+                    {t('common.retry')}
+                  </button>
+                </div>
+              ) : (
+                <p className="text-[12px] leading-4 text-ink-faint">{t('st.ssh.syncReading')}</p>
+              )}
             </div>
-          ) : sync === undefined ? (
-            <p className="text-[12px] leading-4 text-ink-faint">{t('st.ssh.syncReading')}</p>
-          ) : null}
+          )}
           <FeedbackLine feedback={syncFeedback} />
         </div>
 
-        <div data-settings-field data-ssh-approval className="space-y-0.5 py-1">
+        <div data-ssh-approval>
           {approvalQuery.isError ? <InlineError error={approvalQuery.error} /> : (
-            <>
-              <div className="flex items-center gap-2">
-                <div className="min-w-0 flex-1">
-                  <Toggle layout="row" label={t('st.ssh.approvalToggle')} checked={skipApproval}
-                    disabled={approvalQuery.data === undefined || saving === 'approval'}
-                    onChange={(checked) => void setSkip(checked)} />
-                </div>
-                <SavedTick show={approvalSaved} />
-              </div>
-              {/* Stated next to the switch on purpose: it decides whether turning it on is safe. */}
-              <Hint>{t('st.ssh.approvalHint')}</Hint>
-            </>
+            // Stated next to the switch on purpose: it decides whether turning it on is safe.
+            <SettingField label={t('st.ssh.approvalToggle')} help={t('st.ssh.approvalHint')}>
+              <SavedTick show={approvalSaved} />
+              <Toggle layout="bare" label={t('st.ssh.approvalToggle')} checked={skipApproval}
+                disabled={approvalQuery.data === undefined || saving === 'approval'}
+                onChange={(checked) => void setSkip(checked)} />
+            </SettingField>
           )}
           <FeedbackLine feedback={approvalFeedback} />
         </div>
-      </div>
+      </SettingsBox>
     </SectionCard>
   );
 }

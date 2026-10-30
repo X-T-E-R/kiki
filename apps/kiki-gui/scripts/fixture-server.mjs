@@ -1105,11 +1105,11 @@ class FixtureServer {
    */
   routeMemory(res, path, query, body, method) {
     if (!path.startsWith('/memory')) return false;
-    const advisor = this.memoryAdvisor ?? {};
+    const advisor = this.memoryAdvisor;
     const settings = () => ({
       ...this.memory, effective_enabled: this.memory.enabled === true,
-      advisor: this.memoryAdvisor?.advisor,
-      advisor_status: this.memoryAdvisor?.advisor_status,
+      advisor: advisor.advisor,
+      advisor_status: advisor.advisor_status,
     });
 
     if (path === '/memory/settings') {
@@ -1117,28 +1117,34 @@ class FixtureServer {
         for (const field of ['enabled', 'approval', 'budget']) {
           if (body?.[field] !== undefined) this.memory[field] = body[field];
         }
+        // Sparse advisor merge: `advisor: null` removes the block, a key set
+        // to `null` clears it, anything omitted stays as saved.
         if (body?.advisor !== undefined) {
-          if (body.advisor === null) {
-            this.memoryAdvisor = { ...advisor, advisor: undefined, advisor_status: { ...advisor.advisor_status, state: 'unconfigured', reason: 'unconfigured' } };
-          } else {
-            this.memoryAdvisor = {
-              ...advisor,
-              advisor: { ...(advisor.advisor ?? {}), ...body.advisor },
-              advisor_status: { ...advisor.advisor_status, state: this.memory.enabled === false ? 'disabled' : 'ready', reason: undefined },
-            };
+          if (body.advisor === null) delete advisor.advisor;
+          else {
+            advisor.advisor ??= {};
+            for (const [field, value] of Object.entries(body.advisor)) {
+              if (value === null) delete advisor.advisor[field];
+              else advisor.advisor[field] = value;
+            }
           }
+          const mode = advisor.advisor?.mode;
+          const configured = mode === 'off' ? 'off'
+            : advisor.advisor?.source === undefined && advisor.advisor?.selector === undefined ? 'unconfigured' : 'ready';
+          advisor.advisor_status.state = this.memory.enabled === true ? configured : 'disabled';
+          advisor.advisor_status.reason = configured === 'unconfigured' ? 'unconfigured' : undefined;
         }
       }
       this.envelope(res, settings());
       return true;
     }
     if (path === '/memory/advisor/probe' && method === 'POST') {
-      const status = advisor.advisor_status ?? { state: 'unconfigured', reason: 'unconfigured', consent_required: false, logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0 };
+      const status = advisor.advisor_status;
       this.envelope(res, { ok: status.state === 'ready', status, duration_ms: 240, usage_known: false });
       return true;
     }
     if (path === '/memory/advisor/status') {
-      this.envelope(res, this.sessions.has(query.get('session_id') ?? '') ? (advisor.advisor_status ?? null) : null);
+      this.envelope(res, this.sessions.has(query.get('session_id') ?? '') ? advisor.advisor_status : null);
       return true;
     }
     const wsMatch = /^\/memory\/workspaces\/([^/]+)\/settings$/.exec(path);
@@ -3185,7 +3191,7 @@ class FixtureServer {
         ? this.effectiveAgentProfiles(workspaceId)
         : query.get('expand') === '1'
           ? this.agentProfilesWithDisabled()
-          : this.mergedAgentProfiles();
+          : this.mergedAgentProfiles(workspaceId);
       // `complete` is required by the wire schema and by callers that treat a
       // partial catalog as "do not trust this list" (e.g. the subagent tool
       // save re-reads the file it just wrote).
@@ -3706,8 +3712,10 @@ class FixtureServer {
         // outranks it, and turning the master back on is also how a plugin
         // installed with "decide later" gets its default back.
         const on = action === 'enable';
+        const defaultOn = typeof body?.defaultEnabled === 'boolean' ? body.defaultEnabled : on;
         this.plugins[index].enabled = on;
-        this.plugins[index].globalEnabled = on;
+        this.plugins[index].defaultEnabled = defaultOn;
+        this.plugins[index].globalEnabled = on && defaultOn;
       }
       return this.envelope(res, { ok: true });
     }

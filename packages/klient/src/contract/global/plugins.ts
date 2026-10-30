@@ -129,6 +129,7 @@ export const pluginSummarySchema = z.object({
   icon: z.string().optional(),
   enabled: z.boolean(),
   globalEnabled: z.boolean(),
+  defaultEnabled: z.boolean().optional(),
   state: pluginStateSchema,
   skillCount: z.number(),
   mcpServerCount: z.number(),
@@ -194,6 +195,7 @@ export const installPluginInputSchema = pluginPreviewRequestSchema.extend({
 export const setPluginEnabledInputSchema = z.object({
   id: z.string(),
   enabled: z.boolean(),
+  defaultEnabled: z.boolean().optional(),
 });
 
 export const setPluginMcpServerEnabledInputSchema = z.object({

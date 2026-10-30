@@ -70,10 +70,12 @@ export function optionalCapabilityState(config: KikiConfigResponse | undefined, 
   return stateOf(config, id);
 }
 
-export function DefaultOnSwitch({ id, state, disabled, onChange }: {
+export function DefaultOnSwitch({ id, state, disabled, labelKey = 'cap.defaultOn', onChange }: {
   id: string;
   state: OptionalCapabilityState | undefined;
   disabled?: boolean;
+  /** The row label; a card whose "on by default" means something narrower names it. */
+  labelKey?: I18nKey;
   onChange: (next: boolean) => void;
 }) {
   const { t } = useI18n();
@@ -81,12 +83,12 @@ export function DefaultOnSwitch({ id, state, disabled, onChange }: {
   const locked = disabled === true || !state.allowed || state.unresolved || state.host_locked;
   return (
     <div className="flex items-center justify-between gap-4" data-capability-default={id}>
-      <span className="text-[13px] text-ink">{t('cap.defaultOn')}</span>
+      <span className="text-[13px] text-ink">{t(labelKey)}</span>
       <span data-capability-default-switch={id}>
         <Toggle
           id={`${id}-default-on`}
           layout="bare"
-          label={t('cap.defaultOn')}
+          label={t(labelKey)}
           checked={state.default_on}
           disabled={locked}
           onChange={onChange}

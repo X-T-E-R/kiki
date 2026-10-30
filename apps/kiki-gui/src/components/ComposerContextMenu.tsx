@@ -22,12 +22,13 @@
  * handler covers it.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useState, type MouseEvent } from 'react';
 
 import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { runToastAction } from '../lib/toasts';
 import { pastedMediaType } from '../lib/pastedFiles';
+import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 
 /** Whether the async Clipboard read API is present (secure context). */
 export function clipboardReadSupported(): boolean {
@@ -69,7 +70,6 @@ export function useComposerContextMenu({
 }) {
   const { t } = useI18n();
   const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
 
   const closeMenu = useCallback(() => { setAnchor(null); }, []);
 
@@ -79,51 +79,18 @@ export function useComposerContextMenu({
     setClipboardOk(clipboardReadSupported());
   }, []);
 
-  // Clamp the menu against the viewport once its real size is known, before
-  // first paint, so an out-of-bounds item can never fall outside the clickable
-  // area and stall the walker / user.
-  useLayoutEffect(() => {
-    if (anchor === null) return;
-    const rect = menuRef.current?.getBoundingClientRect();
-    if (rect === undefined) return;
-    const margin = 8;
-    let left = anchor.x;
-    let top = anchor.y;
-    if (left + rect.width > window.innerWidth - margin) {
-      left = Math.max(margin, window.innerWidth - margin - rect.width);
-    }
-    if (top + rect.height > window.innerHeight - margin) {
-      top = Math.max(margin, window.innerHeight - margin - rect.height);
-    }
-    if (left !== anchor.x || top !== anchor.y) {
-      setAnchor({ ...anchor, x: left, y: top });
-    }
-  }, [anchor]);
-
-  // Dismiss on outside pointer / any key / scroll / resize / window blur.
+  // Right-click on the textarea fires a window blur as focus moves toward the
+  // native menu path; scroll/resize/blur all retire the surface (the shared
+  // MiniContextMenu keeps outside-pointer, Escape and viewport clamp).
   useEffect(() => {
     if (anchor === null) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (target instanceof Node && menuRef.current?.contains(target)) return;
-      closeMenu();
-    };
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      // Escape only dismisses the menu, never a host dialog / abort.
-      if (event.key === 'Escape') event.stopPropagation();
-      closeMenu();
-    };
     const onScroll = () => { closeMenu(); };
     const onResize = () => { closeMenu(); };
     const onBlur = () => { closeMenu(); };
-    window.addEventListener('pointerdown', onPointerDown, true);
-    window.addEventListener('keydown', onKeyDown, true);
     window.addEventListener('scroll', onScroll, true);
     window.addEventListener('resize', onResize);
     window.addEventListener('blur', onBlur);
     return () => {
-      window.removeEventListener('pointerdown', onPointerDown, true);
-      window.removeEventListener('keydown', onKeyDown, true);
       window.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', onResize);
       window.removeEventListener('blur', onBlur);
@@ -303,64 +270,73 @@ export function useComposerContextMenu({
 
   const menu =
     anchor === null ? null : (
-      <div
-        ref={menuRef}
-        role="menu"
-        data-composer-context-menu
-        aria-label={t('composer.contextMenuAria')}
-        onContextMenu={(event) => { event.preventDefault(); }}
-        className="fixed z-[100] min-w-40 select-none overflow-hidden rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
-        style={{ left: anchor.x, top: anchor.y }}
-      >
-        <button
-          type="button"
-          role="menuitem"
-          data-menu-action="cut"
-          disabled={!anchor.hasSelection}
-          onMouseDown={(event) => { event.preventDefault(); }}
-          onClick={handleCut}
-          className={MENU_ITEM_CLASS}
-        >
-          {t('contextMenu.cut')}
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          data-menu-action="copy"
-          disabled={!anchor.hasSelection}
-          onMouseDown={(event) => { event.preventDefault(); }}
-          onClick={handleCopy}
-          className={MENU_ITEM_CLASS}
-        >
-          {t('contextMenu.copy')}
-        </button>
-        <button
-          type="button"
-          role="menuitem"
-          data-menu-action="paste"
-          onMouseDown={(event) => { event.preventDefault(); }}
-          onClick={() => { void handlePaste(); }}
-          className={MENU_ITEM_CLASS}
-        >
-          {t('contextMenu.paste')}
-        </button>
-        <div className="my-1 h-px bg-hairline" />
-        <button
-          type="button"
-          role="menuitem"
-          data-menu-action="select-all"
-          disabled={anchor.length === 0}
-          onMouseDown={(event) => { event.preventDefault(); }}
-          onClick={handleSelectAll}
-          className={MENU_ITEM_CLASS}
-        >
-          {t('contextMenu.selectAll')}
-        </button>
-      </div>
+      <ComposerContextMenuSurface
+        anchor={anchor}
+        cutLabel={t('contextMenu.cut')}
+        copyLabel={t('contextMenu.copy')}
+        pasteLabel={t('contextMenu.paste')}
+        selectAllLabel={t('contextMenu.selectAll')}
+        ariaLabel={t('composer.contextMenuAria')}
+        onCut={handleCut}
+        onCopy={handleCopy}
+        onPaste={() => { void handlePaste(); }}
+        onSelectAll={handleSelectAll}
+        onClose={closeMenu}
+      />
     );
 
   return { onContextMenu, menu };
 }
 
-const MENU_ITEM_CLASS =
-  'flex w-full items-center rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper disabled:pointer-events-none disabled:opacity-45';
+/** The MiniContextMenu frame with the composer's selection-aware entries:
+ * disabled cut/copy are data, and right-click on the menu itself is swallowed
+ * so a second native menu never replaces this one. */
+function ComposerContextMenuSurface({
+  anchor,
+  cutLabel,
+  copyLabel,
+  pasteLabel,
+  selectAllLabel,
+  ariaLabel,
+  onCut,
+  onCopy,
+  onPaste,
+  onSelectAll,
+  onClose,
+}: {
+  anchor: MenuAnchor;
+  cutLabel: string;
+  copyLabel: string;
+  pasteLabel: string;
+  selectAllLabel: string;
+  ariaLabel: string;
+  onCut: () => void;
+  onCopy: () => void;
+  onPaste: () => void;
+  onSelectAll: () => void;
+  onClose: () => void;
+}) {
+  const entries: MiniMenuEntry[] = [
+    { key: 'cut', label: cutLabel, disabled: !anchor.hasSelection, run: onCut },
+    { key: 'copy', label: copyLabel, disabled: !anchor.hasSelection, run: onCopy },
+    { key: 'paste', label: pasteLabel, run: onPaste },
+    { separator: true },
+    { key: 'select-all', label: selectAllLabel, disabled: anchor.length === 0, run: onSelectAll },
+  ];
+  return (
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- swallows the native menu over the menu itself
+    <span onContextMenu={(event) => { event.preventDefault(); }}>
+      <MiniContextMenu
+        x={anchor.x}
+        y={anchor.y}
+        entries={entries}
+        onClose={onClose}
+        ariaLabel={ariaLabel}
+        overlayId="composer-context-menu"
+        dataAttribute="data-composer-context-menu"
+        itemDataAttribute="data-menu-action"
+        autofocus={false}
+      />
+    </span>
+  );
+}

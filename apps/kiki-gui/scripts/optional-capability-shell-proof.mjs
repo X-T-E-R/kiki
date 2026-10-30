@@ -69,11 +69,14 @@ async function dump(name) {
 async function showRail() {
   const rail = page.locator('[data-session-rail]');
   if (await rail.count() === 0 || !(await rail.first().isVisible())) {
-    await page.locator('[data-rail-toggle]').first().click();
+    const toggle = page.locator('[data-rail-toggle]');
+    // Below lg the session header keeps no rail toggle; the routed agent page
+    // carries the rail as its own drawer there, so this walk stays wide.
+    if (await toggle.count() > 0) await toggle.first().click();
   }
   await rail.first().waitFor({ state: 'visible', timeout: 20_000 });
-  const tail = page.locator('[data-inspector-tail]').first();
-  await tail.scrollIntoViewIfNeeded();
+  const capabilities = page.locator('[data-rail-capabilities]').first();
+  await capabilities.scrollIntoViewIfNeeded();
 }
 
 try {
@@ -103,6 +106,13 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-optional-capability="browser"] [data-optional-fact="browser"]')?.textContent?.includes('本会话开启'));
   evidence.checks.push('turning browser on shows the session source and restore action from the server row');
   await page.setViewportSize({ width: 390, height: 844 });
+  // Below lg the session shell has no rail at all; nothing may leak into the
+  // narrow page (same expectation the notes-rail walker pins).
+  const narrowRail = page.locator('[data-session-rail]');
+  assert.equal(await narrowRail.count(), 0, 'the narrow session view still shows the rail');
+  assert.equal(await page.locator('[data-rail-toggle]').count(), 0, 'the narrow session view still offers the rail toggle');
+  evidence.checks.push('narrow shell hides the rail and its toggle');
+  await page.setViewportSize({ width: 1280, height: 900 });
   await showRail();
   const narrowSection = page.locator('[data-rail-capabilities]').first();
   await narrowSection.waitFor({ state: 'visible', timeout: 20_000 });
@@ -113,9 +123,8 @@ try {
   await expectText(narrowBrowser.locator('[data-optional-fact="browser"]'), '本会话开启');
   await narrowBrowser.scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(output, '06-rail-narrow.png') });
-  evidence.checks.push('narrow shell keeps the same switch control and the saved session choice');
+  evidence.checks.push('the rail keeps the same switch control and the saved session choice across a width round trip');
 
-  await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator('[data-nav-settings]').filter({ visible: true }).first().click();
   const memoryLeaf = page.locator('[data-settings-nav-leaf="memory"]');
   await memoryLeaf.waitFor({ timeout: 20_000 });

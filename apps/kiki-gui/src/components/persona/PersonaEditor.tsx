@@ -31,7 +31,7 @@ import { resolveCatalogModel, sortThinkingEffortsForDisplay } from '@kiki/sessio
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
 import { ApiError, PERSONA_ALREADY_EXISTS, PERSONA_REVISION_CONFLICT } from '../../lib/client';
-import { pushToast } from '../../lib/toasts';
+import { pushToast, pushUndoToast } from '../../lib/toasts';
 import { registerOverlay } from '../../lib/uiBusy';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
@@ -589,7 +589,7 @@ function PersonaActions({ snapshot, dirty, onChanged, onClosed, onStartChat }: {
   const host = useHost();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [confirm, setConfirm] = useState<null | { readonly kind: 'archive'; readonly archived: boolean } | { readonly kind: 'delete' }>(null);
+  const [confirm, setConfirm] = useState<null | { readonly kind: 'delete' }>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const { id, name } = snapshot.definition;
   const listed = queryClient.getQueryData<readonly PersonaSummary[]>(['personas', { includeArchived: true }]);
@@ -605,10 +605,11 @@ function PersonaActions({ snapshot, dirty, onChanged, onClosed, onStartChat }: {
     return () => { unregister(); document.removeEventListener('pointerdown', onDown); window.removeEventListener('keydown', onKey, true); };
   }, [open]);
 
-  // The confirmation names what goes with it, from the server's own effects:
-  // archive pauses her scheduled tasks (unarchiving does not restart them);
-  // delete removes her tasks, her rooms' seats and her own conversations, and
-  // leaves ordinary conversation history and project directories alone.
+  // Archive is reversible (the inverse re-flips the flag) so it runs at once
+  // and the undo toast carries the cron consequence; delete stays behind the
+  // one confirmation that names what goes with it: her tasks, her rooms' seats
+  // and her own conversations — ordinary conversation history and project
+  // directories are left alone.
   const fail = (error: unknown) => { pushToast({ tone: 'error', text: t('persona.actionFailed', { detail: errorText(locale, error) }) }); };
   const remove = useMutation({
     mutationFn: () => client.deletePersona(id, snapshot.revision),
@@ -623,11 +624,20 @@ function PersonaActions({ snapshot, dirty, onChanged, onClosed, onStartChat }: {
   const setArchived = useMutation({
     mutationFn: (next: boolean) => client.archivePersona(id, next),
     onSuccess: (_result, next) => {
-      setConfirm(null);
-      pushToast({ tone: 'success', text: t(next ? 'persona.archivedToast' : 'persona.unarchivedToast', { name }) });
+      // Archive is reversible with the same data, so it happens at once and the
+      // undo toast offers the inverse — including the cron consequence, which
+      // the undo does not bring back either.
+      pushUndoToast({
+        text: `${t(next ? 'persona.archivedToast' : 'persona.unarchivedToast', { name })}${next ? ` ${t('persona.archiveCronShort')}` : ''}`,
+        undoFailedText: t('toast.undoFailed'),
+        undo: async () => {
+          await client.archivePersona(id, !next);
+          onChanged();
+        },
+      });
       onChanged();
     },
-    onError: (error: unknown) => { setConfirm(null); fail(error); },
+    onError: (error: unknown) => { fail(error); },
   });
 
   const run = async (action: PersonaAction) => {
@@ -640,7 +650,7 @@ function PersonaActions({ snapshot, dirty, onChanged, onClosed, onStartChat }: {
         onChanged();
         return;
       }
-      if (action === 'archive') { setConfirm({ kind: 'archive', archived }); return; }
+      if (action === 'archive') { setArchived.mutate(!archived); return; }
       if (action === 'delete') { setConfirm({ kind: 'delete' }); return; }
       const format = action.slice('export-'.length) as 'png' | 'json' | 'charx';
       const file = await client.exportPersonaCard(id, format);
@@ -663,7 +673,6 @@ function PersonaActions({ snapshot, dirty, onChanged, onClosed, onStartChat }: {
     { key: 'delete', label: t('persona.delete'), danger: true },
   ];
 
-  const archiving = confirm?.kind === 'archive' ? confirm : null;
   return (
     <div ref={rootRef} className="relative shrink-0">
       <button
@@ -697,19 +706,6 @@ function PersonaActions({ snapshot, dirty, onChanged, onClosed, onStartChat }: {
           ))}
         </div>
       ) : null}
-      <ConfirmDialog
-        open={archiving !== null}
-        title={archiving?.archived === true ? t('persona.archiveTitle', { name }) : t('persona.unarchiveTitle', { name })}
-        consequences={archiving?.archived === true
-          ? [t('persona.archiveCron'), t('persona.archiveNoRestart'), t('persona.archiveKeeps')]
-          : [t('persona.archiveNoRestart'), t('persona.archiveKeeps')]}
-        confirmLabel={archiving?.archived === true ? t('persona.archive') : t('persona.unarchive')}
-        tone="default"
-        busy={setArchived.isPending}
-        overlayId="persona-archive-confirm"
-        onCancel={() => { setConfirm(null); }}
-        onConfirm={() => { setArchived.mutate(archiving?.archived !== true); }}
-      />
       <ConfirmDialog
         open={confirm?.kind === 'delete'}
         title={t('persona.deleteTitle', { name })}

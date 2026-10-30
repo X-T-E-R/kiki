@@ -163,11 +163,6 @@ function SpaceSettingsDetailContext({ target, name, onDetailChange }: SpaceSetti
 
   return (
     <div className="space-y-7" data-space-settings={id}>
-      <div className="space-y-0.5">
-        <h3 className="font-display text-[17px] font-semibold text-ink" data-space-settings-name>{name}</h3>
-        <p className="text-[12px] text-ink-faint">{t('st.spaces.settings')}</p>
-      </div>
-
       <div data-space-groups>{SPACE_GROUP_ORDER.map(groupRow)}</div>
 
       <div className="space-y-0.5" data-space-resource-sources>
@@ -217,7 +212,7 @@ function SpaceSettingsDetailContext({ target, name, onDetailChange }: SpaceSetti
       )}
 
       {ownsAppearance && authority.deviceConflict ? (
-        <div className="space-y-2 border-t border-hairline pt-4" data-space-device-conflict>
+        <div className="space-y-2 pt-4" data-space-device-conflict>
           <p className="text-[13px] font-medium text-ink">{t('st.spaces.device.title')}</p>
           <p className="text-[12px] leading-4 text-ink-soft">{t('st.spaces.device.body')}</p>
           <div className="flex flex-wrap gap-2">

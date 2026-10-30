@@ -5,7 +5,7 @@ import { readDesktopPrefs } from '@kiki/session-core/settings';
 import { useHost } from '../../../host';
 import { useI18n } from '../../../i18n';
 import { FeedbackLine, Hint, SaveStatus, Toggle } from '../../controls';
-import { DependentField, SettingField } from '../fields';
+import { SettingField, SettingsBox } from '../fields';
 import { SectionCard } from '../SectionCard';
 import { CommitInput, SettingsSelect } from '../SettingsPrimitives';
 import { useInstantSave } from '../useInstantSave';
@@ -70,7 +70,8 @@ export function NotificationRulesCard({ global, part = 'all' }: { global: Notifi
 
   return (
     <SectionCard id="st-card-notify-rules" title={t('st.notify.rulesTitle')}>
-      <div className="min-w-0 space-y-2" data-notify-rules>
+      <div className="min-w-0 space-y-3" data-notify-rules>
+        <SettingsBox>
         {part === 'all' ? (
           <SettingField label={t('st.notify.enabled')} htmlFor="notify-enabled" help={t('st.notify.enabledHint')}>
             {status('enabled')}
@@ -78,7 +79,7 @@ export function NotificationRulesCard({ global, part = 'all' }: { global: Notifi
               disabled={save.saving} onChange={(enabled) => { write('enabled', { ...global, enabled }); }} />
           </SettingField>
         ) : null}
-        <DependentField when={global.enabled}>
+        {global.enabled ? (
           <div className="space-y-2">
             <SettingField label={t('st.notify.quiet')} htmlFor="notify-quiet" help={t('st.notify.quietHint')}>
               {status('quiet')}
@@ -90,7 +91,7 @@ export function NotificationRulesCard({ global, part = 'all' }: { global: Notifi
                 }} />
             </SettingField>
             {quiet !== undefined ? (
-              <div className="flex flex-wrap items-start gap-x-4 gap-y-2 pb-1" data-notify-quiet>
+              <div className="flex flex-wrap items-start gap-x-4 gap-y-2 pb-1 pl-3" data-notify-quiet>
                 <label className="flex items-center gap-2 text-[12px] text-ink-soft">
                   {t('st.notify.quietFrom')}
                   <CommitInput dataAttr="data-notify-quiet-start" className="w-[4.5rem] text-center" inputMode="numeric" value={quiet.start}
@@ -115,11 +116,16 @@ export function NotificationRulesCard({ global, part = 'all' }: { global: Notifi
                 {status('quiet-range')}
               </div>
             ) : null}
+          </div>
+        ) : null}
+        {global.enabled ? (
             <SettingField label={t('st.notify.viewing')} htmlFor="notify-viewing" help={t('st.notify.viewingHint')}>
               {status('viewing')}
               <Toggle id="notify-viewing" layout="bare" label={t('st.notify.viewing')} checked={global.suppress_viewing_session}
                 disabled={save.saving} onChange={(suppress_viewing_session) => { write('viewing', { ...global, suppress_viewing_session }); }} />
             </SettingField>
+        ) : null}
+        {global.enabled ? (
             <SettingField label={t('st.notify.minWork')} htmlFor="notify-min-work" help={t('st.notify.minWorkHint')}>
               {status('minWork')}
               <CommitInput id="notify-min-work" dataAttr="data-notify-min-work" className="w-20 text-right" inputMode="numeric"
@@ -128,10 +134,10 @@ export function NotificationRulesCard({ global, part = 'all' }: { global: Notifi
                 onCommit={(text) => { write('minWork', { ...global, min_work_ms: Number(text) * 1000 }); }} />
               <span className="text-[12px] text-ink-faint">{t('st.notify.seconds')}</span>
             </SettingField>
-          </div>
-        </DependentField>
+        ) : null}
+        </SettingsBox>
         {part === 'all' ? <FeedbackLine feedback={save.error} /> : null}
-        <dl className="grid gap-x-6 gap-y-2 border-t border-hairline pt-3 sm:grid-cols-[8rem_minmax(0,1fr)]" data-notify-facts>
+        <dl className="grid gap-x-6 gap-y-2 pt-2 sm:grid-cols-[8rem_minmax(0,1fr)]" data-notify-facts>
           <dt className="text-[12px] text-ink-soft">{t('st.notify.privacyLabel')}</dt>
           <dd><Hint>{t('st.notify.privacy')}</Hint></dd>
           <dt className="text-[12px] text-ink-soft">{t('st.notify.runtimeLabel')}</dt>

@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../../i18n';
 import { DecisionConnectionsCard } from './DecisionConnections';
-import { DecisionJudgesCard } from './DecisionSources';
+import { DecisionJudgeRows } from './DecisionSources';
 import { optionLabels, pickOption } from './testControls';
 
 const { client, navigate } = vi.hoisted(() => ({
@@ -63,7 +63,7 @@ async function render(node: React.ReactNode) {
 
 describe('Who decides', () => {
   it('offers decision services and chat models; the reviewer cannot pick a rerank service', async () => {
-    await render(<DecisionJudgesCard />);
+    await render(<DecisionJudgeRows />);
     const labels = await optionLabels(container.querySelector('#st-decision-reviewer')!);
     expect(labels.some((label) => label.startsWith('typesafe'))).toBe(true);
     expect(labels.some((label) => label.includes('cheap-judge') || label.includes('Cheap'))).toBe(true);
@@ -80,7 +80,7 @@ describe('Who decides', () => {
       enabled: true, approval: 'auto', budget: 2000, workspaces: {}, effective_enabled: true, advisor: { mode: 'off', ...patch.advisor },
       advisor_status: { state: 'off', consent_required: false, logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0 },
     }));
-    await render(<DecisionJudgesCard />);
+    await render(<DecisionJudgeRows />);
     await pickOption(container.querySelector('#st-decision-memory')!, 'typesafe');
     await settle();
     expect(client.patchMemoryAdvisorSettings).toHaveBeenCalledWith({ advisor: { source: { kind: 'connection', connection: 'typesafe' } } }, undefined);
@@ -98,7 +98,7 @@ describe('Who decides', () => {
     client.getConfig.mockResolvedValue({ permission: { reviewer: { backend: 'model', allowThreshold: 0.9, denyThreshold: 0.9, categories: [], hasApiKey: false,
       source: { kind: 'model', model: 'cheap-judge' } } } });
     client.patchConfig.mockRejectedValueOnce(new Error('config is read-only'));
-    await render(<DecisionJudgesCard />);
+    await render(<DecisionJudgeRows />);
     await pickOption(container.querySelector('#st-decision-reviewer')!, 'Not set');
     await settle();
     expect(client.patchConfig).toHaveBeenCalledWith({ permission: { reviewer: { source: null } } });
@@ -114,7 +114,7 @@ describe('Who decides', () => {
       advisor_status: { state: 'off', consent_required: false, logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0 } });
     client.getMemoryAdvisorSettings.mockImplementation(async () => reply());
     client.patchMemoryAdvisorSettings.mockImplementation(async (patch: { advisor: Record<string, unknown> }) => { advisor = { ...advisor, ...patch.advisor }; return reply(); });
-    await render(<DecisionJudgesCard />);
+    await render(<DecisionJudgeRows />);
     const model = () => container.querySelector<HTMLInputElement>('#st-decision-memory-model')!;
     await type(model(), 'jev-fast');
     // Cancel keeps the draft and the source.
@@ -136,7 +136,7 @@ describe('Who decides', () => {
     let reviewer: Record<string, unknown> = { backend: 'jev', allowThreshold: 0.9, denyThreshold: 0.9, categories: [], hasApiKey: true, apiKeySource: 'kiki' };
     client.getConfig.mockImplementation(async () => ({ permission: { reviewer } }));
     client.patchConfig.mockImplementation(async () => { reviewer = { ...reviewer, backend: 'model' }; return { permission: { reviewer } }; });
-    await render(<DecisionJudgesCard />);
+    await render(<DecisionJudgeRows />);
     expect(container.querySelector('[data-decision-judge="reviewer"]')!.textContent).toContain('Using the older Jev key on the Reviewer card.');
     await pickOption(container.querySelector('#st-decision-reviewer')!, 'Not set');
     await settle();
@@ -156,8 +156,8 @@ describe('Who decides', () => {
       advisor = next;
       return reply();
     });
-    await render(<DecisionJudgesCard />);
-    expect(container.querySelector('[data-decision-judge="memory"]')!.textContent).toContain('Using an older setting: cheap-judge.');
+    await render(<DecisionJudgeRows />);
+    expect(container.querySelector('[data-decision-judge="memory"]')!.textContent).toContain('Still using the source saved in the older settings: cheap-judge.');
     await pickOption(container.querySelector('#st-decision-memory')!, 'Not set');
     await settle();
     expect(client.patchMemoryAdvisorSettings).toHaveBeenCalledWith({ advisor: { source: null, selector: null } }, undefined);
@@ -170,7 +170,7 @@ describe('Who decides', () => {
     client.getConfig.mockResolvedValue({ permission: { reviewer: { backend: 'model', allowThreshold: 0.9, denyThreshold: 0.9, categories: [], hasApiKey: false,
       source: { kind: 'connection', connection: 'typesafe' } } } });
     client.listProviders.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
-    await render(<DecisionJudgesCard />);
+    await render(<DecisionJudgeRows />);
     const trigger = () => container.querySelector('#st-decision-reviewer')!.textContent ?? '';
     expect(trigger()).not.toContain('(missing)');
     expect(container.querySelector('[data-decision-judge="reviewer"]')!.getAttribute('data-decision-problem')).toBeNull();
@@ -183,7 +183,7 @@ describe('Who decides', () => {
   it('names a deleted connection and links to adding one', async () => {
     client.getConfig.mockResolvedValue({ permission: { reviewer: { backend: 'model', allowThreshold: 0.9, denyThreshold: 0.9, categories: [], hasApiKey: false,
       source: { kind: 'connection', connection: 'gone' }, source_status: { state: 'unconfigured', connection: 'gone' } } } });
-    await render(<DecisionJudgesCard />);
+    await render(<DecisionJudgeRows />);
     const row = container.querySelector('[data-decision-judge="reviewer"]')!;
     expect(row.getAttribute('data-decision-problem')).toBe('missing_connection');
     expect(row.textContent).toContain('This connection no longer exists.');
@@ -196,7 +196,7 @@ describe('Who decides', () => {
   it('points a missing key at its connection', async () => {
     client.getConfig.mockResolvedValue({ permission: { reviewer: { backend: 'model', allowThreshold: 0.9, denyThreshold: 0.9, categories: [], hasApiKey: false,
       source: { kind: 'connection', connection: 'typesafe' }, source_status: { state: 'auth', connection: 'typesafe', credential_source: 'none' } } } });
-    await render(<DecisionJudgesCard />);
+    await render(<DecisionJudgeRows />);
     const row = container.querySelector('[data-decision-judge="reviewer"]')!;
     expect(row.getAttribute('data-decision-problem')).toBe('auth');
     await act(async () => row.querySelector<HTMLButtonElement>('[data-decision-fix]')!.click());

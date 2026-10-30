@@ -1,16 +1,8 @@
 /**
  * Add a second service instance of a provider the engine already ships.
  *
- * The common path asks for two things a person can answer — which service, and
- * what to call this instance — and takes care of the rest: the credential slot,
- * the environment binding and the activation flags are derived by
- * `createNbSearchProviderInstance`, so a second Tavily account never inherits
- * the first one's key. The environment variable is a normal field, not a
- * prerequisite; it only moves into "Environment variable" and ships with a
- * working suggestion.
- *
- * Keys are not edited here. Once the instance exists it joins the services
- * list, where the same editing surface as every other service manages its keys.
+ * Kept for the S2 draft-semantics tests; no product surface mounts it after
+ * the settings-humane rebuild of the search page.
  */
 
 import { useMemo, useState } from 'react';

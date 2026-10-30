@@ -28,6 +28,26 @@ export default {
   // The development-candidate flag this server refuses to run a browser under:
   // the page's feedback points at its row, which lives on the Developer page.
   experimentalFlags: { native_browser: false },
+  // The local bridge behind the Kimi route: everything in place except the
+  // store extension (a person's action), so the fold says what is left rather
+  // than claiming a failure.
+  browserCapabilities: [
+    {
+      id: 'kimi-webbridge',
+      displayName: 'Kimi WebBridge',
+      description: 'The local bridge the Kimi browser route drives through.',
+      supported: true,
+      state: 'partial',
+      steps: [
+        { id: 'daemon-binary', state: 'ok', detail: 'Bundled with the app' },
+        { id: 'daemon', state: 'ok', detail: 'Running on 127.0.0.1:10086' },
+        { id: 'skill', state: 'ok', detail: 'kimi-webbridge installed' },
+        { id: 'extension', state: 'missing', detail: 'Browser extension is not connected' },
+        { id: 'detect', state: 'missing', detail: 'Not checked until the extension is connected' },
+      ],
+      install: { running: false },
+    },
+  ],
   browser: {
     defaultBrowser: 'research',
     // The wizard's opening state: the Kimi route has everything except the

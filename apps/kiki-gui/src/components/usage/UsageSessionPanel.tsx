@@ -30,7 +30,6 @@ import {
   type UsageResponseWire,
   type UsageWindow,
 } from '../../lib/usageV2';
-import { SidePanel } from '../SidePanel';
 import { ThreadTitle } from '../ThreadTitle';
 import { SECONDARY_BUTTON } from '../ui';
 import { KnownSubtotalMarker, formatPercent } from './usageShared';
@@ -129,14 +128,17 @@ export function UsageSessionPanel({
   }, [first]);
 
   return (
-    <SidePanel
-      overlayId="usage-session-trace"
-      data={{ 'data-usage-session-panel': 'true' }}
-      title={t('usage.sessions.panelTitle')}
-      description={request.label}
-      onClose={onClose}
-      width="lg"
-    >
+    <section aria-label={t('usage.sessions.panelTitle')} data-usage-session-panel="true" className="space-y-4">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="font-display text-[17px] font-semibold text-ink">{t('usage.sessions.panelTitle')}</h3>
+          <p className="mt-0.5 truncate text-[12.5px] text-ink-faint">{request.label}</p>
+        </div>
+        <button type="button" onClick={onClose}
+          className={`${SECONDARY_BUTTON} shrink-0`}>
+          {t('common.close')}
+        </button>
+      </div>
       <div className="space-y-4">
         {request.filter !== undefined ? (
           <p className="text-[12.5px] leading-relaxed text-ink-faint">
@@ -150,26 +152,26 @@ export function UsageSessionPanel({
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2 border-y border-hairline py-3 sm:grid-cols-4">
             <div>
               <dt className="text-[11.5px] text-ink-faint">{t('usage.sources.windowTotal')}</dt>
-              <dd data-usage-trace-total className="font-mono text-[18px] text-ink tabular-nums">
+              <dd data-usage-trace-total className="text-[18px] text-ink tabular-nums">
                 {formatCostUsd(summary.cost_usd_estimated)}
                 {summary.cost_unknown ? <KnownSubtotalMarker /> : null}
               </dd>
             </div>
             <div>
               <dt className="text-[11.5px] text-ink-faint">{t('usage.card.tokens')}</dt>
-              <dd className="font-mono text-[13px] text-ink tabular-nums">
+              <dd className="text-[13px] text-ink tabular-nums">
                 {usageTokenTotalIsUnknown(summary) ? '—' : time.formatTokens(totalTokensOf(summary))}
               </dd>
             </div>
             <div>
               <dt className="text-[11.5px] text-ink-faint">{t('usage.kpi.cacheHit')}</dt>
-              <dd className="font-mono text-[13px] text-ink tabular-nums">
+              <dd className="text-[13px] text-ink tabular-nums">
                 {usageTokenTotalIsUnknown(summary) ? '—' : formatPercent(cacheHitRateOf(summary))}
               </dd>
             </div>
             <div>
               <dt className="text-[11.5px] text-ink-faint">{t('usage.card.sessions')}</dt>
-              <dd className="font-mono text-[13px] text-ink tabular-nums">{first?.sessions.total ?? 0}</dd>
+              <dd className="text-[13px] text-ink tabular-nums">{first?.sessions.total ?? 0}</dd>
             </div>
           </dl>
         ) : null}
@@ -232,7 +234,7 @@ export function UsageSessionPanel({
           </button>
         ) : null}
       </div>
-    </SidePanel>
+    </section>
   );
 }
 
@@ -267,16 +269,16 @@ function SessionTraceRow({
         >
           <ThreadTitle text={item.title ?? t('sidebar.untitled')} />
         </button>
-        <span className="shrink-0 font-mono text-[13px] font-semibold text-ink tabular-nums">
+        <span className="shrink-0 text-[13px] font-semibold text-ink tabular-nums">
           {unknownTotal ? '—' : formatCostUsd(item.usage.cost_usd_estimated)}
         </span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-ink-faint">
         <span className="truncate">{workspaceName(item.workspace_id) ?? item.workspace_id}</span>
-        <span className="font-mono tabular-nums">
+        <span className="tabular-nums">
           {unknownTotal ? '—' : time.formatTokens(totalTokensOf(item.usage))} {t('usage.col.tokens')}
         </span>
-        <span className="font-mono tabular-nums">
+        <span className="tabular-nums">
           {unknownTotal ? '—' : formatPercent(cacheHitRateOf(item.usage))}
         </span>
         <span>{time.relativeTime(new Date(item.updated_at).toISOString())}</span>

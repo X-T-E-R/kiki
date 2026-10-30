@@ -1,5 +1,6 @@
 /**
- * CCv3 card import, two steps: pick a file → read the full preview → import.
+ * CCv3 card import, two steps pushed inside one side panel (overlays/README
+ * tier 4): pick a file → read the full preview → import.
  *
  * The preview never folds the description (design §10): a card's text becomes
  * system prompt, and the only defense against a poisoned card is a person
@@ -19,9 +20,9 @@ import { useI18n } from '../../i18n';
 import { ApiError, PERSONA_ALREADY_EXISTS } from '../../lib/client';
 import { pushToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { Icon } from '../icons';
 import { FieldIssue, FORM_LABEL } from '../settings/SettingsPrimitives';
+import { SidePanel } from '../SidePanel';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { PersonaAvatar } from './PersonaAvatar';
 import { PERSONA_ID_PATTERN } from './personaDraft';
@@ -97,84 +98,83 @@ export function PersonaImportDialog({ takenIds, onClose, onImported }: {
     : { id: definition.id, name: definition.name, avatarUrl: `data:${preview.avatar.mimeType};base64,${preview.avatar.data}` };
 
   return (
-    <Dialog
-      onClose={() => { if (!commit.isPending) onClose(); }}
-      ariaLabel={t('persona.importPreview')}
+    <SidePanel
+      title={t('persona.importPreview')}
       overlayId="persona-import"
-      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.md} flex max-h-[min(88vh,860px)] flex-col !p-0`}
-      overlayData={{ 'data-persona-import-dialog': preview === null ? 'pick' : 'preview' }}
+      width="lg"
+      onClose={() => { if (!commit.isPending) onClose(); }}
+      data={{ 'data-persona-import-dialog': preview === null ? 'pick' : 'preview' }}
+      back={preview === null ? undefined : {
+        label: t('common.back'),
+        onClick: () => { if (!commit.isPending) { setPreview(null); setFile(null); setReadError(null); commit.reset(); } },
+        data: { 'data-persona-import-back': '' },
+      }}
+      stepKey={preview === null ? 'pick' : 'preview'}
+      footer={(
+        <>
+          {preview !== null ? (
+            <>
+              <button type="button" data-persona-import-confirm disabled={commit.isPending || idIssue !== null} onClick={() => { commit.mutate(); }} className={`${PRIMARY_BUTTON} pointer-coarse:min-h-11`}>
+                {commit.isPending ? t('common.saving') : t('persona.importConfirm')}
+              </button>
+              <button type="button" disabled={commit.isPending} onClick={() => { inputRef.current?.click(); }} className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}>
+                {t('persona.importChooseOther')}
+              </button>
+            </>
+          ) : null}
+          <button type="button" onClick={onClose} disabled={commit.isPending} className={`${SECONDARY_BUTTON} ml-auto pointer-coarse:min-h-11`}>{t('common.cancel')}</button>
+        </>
+      )}
     >
-      <div className="flex shrink-0 items-center gap-3 border-b border-hairline px-5 py-3">
-        <h2 className="min-w-0 flex-1 truncate font-display text-[18px] font-semibold text-ink">{t('persona.importPreview')}</h2>
-        <button type="button" onClick={onClose} aria-label={t('common.close')} className="flex h-8 w-8 items-center justify-center rounded-md text-ink-soft hover:bg-ink/[0.05] hover:text-ink pointer-coarse:h-11 pointer-coarse:w-11">
-          <Icon name="close" size={14} />
-        </button>
-      </div>
       <input ref={inputRef} type="file" accept={CARD_ACCEPT} className="sr-only" tabIndex={-1} aria-hidden onChange={(event) => { pick(event.target.files?.[0]); event.target.value = ''; }} />
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        {preview === null || definition === undefined ? (
-          <DropZone
-            busy={read.isPending}
-            error={readError === null ? null : t('persona.importFailed', { detail: readError })}
-            fileName={file?.name}
-            onPick={() => { inputRef.current?.click(); }}
-            onDrop={pick}
-          />
-        ) : (
-          <div data-persona-import-preview className="space-y-5">
-            <div className="flex min-w-0 items-start gap-4">
-              <PersonaAvatar persona={avatar ?? { id: definition.id, name: definition.name }} size={56} decorative />
-              <div className="min-w-0 flex-1">
-                <p className="truncate font-display text-[18px] leading-7 font-semibold text-ink">{definition.name}</p>
-                <p className="truncate text-[13px] text-ink-soft">{[definition.title, definition.job].filter(Boolean).join(' · ') || file?.name}</p>
-                <p className="mt-1 text-[12px] text-ink-faint">
-                  {preview.memoryEntries.length > 0 ? t('persona.importMemories', { count: preview.memoryEntries.length }) : t('persona.importMemoryNone')}
-                </p>
-              </div>
-            </div>
-
-            <p role="note" data-persona-import-warning className="flex items-start gap-2 rounded-lg border border-amber-rule/60 bg-amber-card px-3 py-2 text-[12.5px] leading-relaxed text-amber-ink">
-              <Icon name="warning" size={14} className="mt-0.5 shrink-0" />
-              {t('persona.importWarning')}
-            </p>
-
-            <PreviewBlock label={t('persona.importBody')} text={definition.description} dataAttr="description" />
-            {definition.greeting !== undefined && definition.greeting.trim() !== '' ? (
-              <PreviewBlock label={t('persona.importGreeting')} text={definition.greeting} dataAttr="greeting" />
-            ) : null}
-            {preview.examples !== undefined && preview.examples.trim() !== '' ? (
-              <PreviewBlock label={t('persona.importExamples')} text={preview.examples} dataAttr="examples" />
-            ) : null}
-            {preview.ignoredFields.length > 0 ? (
-              <p data-persona-import-dropped className="text-[12px] leading-relaxed text-ink-faint">
-                {t('persona.importDropped', { fields: preview.ignoredFields.join('、') })}
+      {preview === null || definition === undefined ? (
+        <DropZone
+          busy={read.isPending}
+          error={readError === null ? null : t('persona.importFailed', { detail: readError })}
+          fileName={file?.name}
+          onPick={() => { inputRef.current?.click(); }}
+          onDrop={pick}
+        />
+      ) : (
+        <div data-persona-import-preview className="space-y-5">
+          <div className="flex min-w-0 items-start gap-4">
+            <PersonaAvatar persona={avatar ?? { id: definition.id, name: definition.name }} size={56} decorative />
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-display text-[18px] leading-7 font-semibold text-ink">{definition.name}</p>
+              <p className="truncate text-[13px] text-ink-soft">{[definition.title, definition.job].filter(Boolean).join(' · ') || file?.name}</p>
+              <p className="mt-1 text-[12px] text-ink-faint">
+                {preview.memoryEntries.length > 0 ? t('persona.importMemories', { count: preview.memoryEntries.length }) : t('persona.importMemoryNone')}
               </p>
-            ) : null}
-
-            <div className="space-y-1.5">
-              <label htmlFor={`${formId}-id`} className={FORM_LABEL}>{t('persona.importIdLabel')}</label>
-              <input id={`${formId}-id`} data-persona-import-id value={id} onChange={(event) => { commit.reset(); setId(event.target.value.toLowerCase()); }} aria-invalid={idIssue !== null} aria-describedby={idIssue !== null ? `${formId}-id-issue` : undefined} className={`${INPUT} max-w-xs font-mono`} spellCheck={false} autoComplete="off" />
-              <FieldIssue id={`${formId}-id-issue`} text={idIssue} />
             </div>
           </div>
-        )}
-      </div>
 
-      <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-hairline px-5 py-3">
-        {preview !== null ? (
-          <>
-            <button type="button" data-persona-import-confirm disabled={commit.isPending || idIssue !== null} onClick={() => { commit.mutate(); }} className={`${PRIMARY_BUTTON} pointer-coarse:min-h-11`}>
-              {commit.isPending ? t('common.saving') : t('persona.importConfirm')}
-            </button>
-            <button type="button" disabled={commit.isPending} onClick={() => { inputRef.current?.click(); }} className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}>
-              {t('persona.importChooseOther')}
-            </button>
-          </>
-        ) : null}
-        <button type="button" onClick={onClose} disabled={commit.isPending} className={`${SECONDARY_BUTTON} ml-auto pointer-coarse:min-h-11`}>{t('common.cancel')}</button>
-      </div>
-    </Dialog>
+          <p role="note" data-persona-import-warning className="flex items-start gap-2 rounded-lg border border-amber-rule/60 bg-amber-card px-3 py-2 text-[12.5px] leading-relaxed text-amber-ink">
+            <Icon name="warning" size={14} className="mt-0.5 shrink-0" />
+            {t('persona.importWarning')}
+          </p>
+
+          <PreviewBlock label={t('persona.importBody')} text={definition.description} dataAttr="description" />
+          {definition.greeting !== undefined && definition.greeting.trim() !== '' ? (
+            <PreviewBlock label={t('persona.importGreeting')} text={definition.greeting} dataAttr="greeting" />
+          ) : null}
+          {preview.examples !== undefined && preview.examples.trim() !== '' ? (
+            <PreviewBlock label={t('persona.importExamples')} text={preview.examples} dataAttr="examples" />
+          ) : null}
+          {preview.ignoredFields.length > 0 ? (
+            <p data-persona-import-dropped className="text-[12px] leading-relaxed text-ink-faint">
+              {t('persona.importDropped', { fields: preview.ignoredFields.join('、') })}
+            </p>
+          ) : null}
+
+          <div className="space-y-1.5">
+            <label htmlFor={`${formId}-id`} className={FORM_LABEL}>{t('persona.importIdLabel')}</label>
+            <input id={`${formId}-id`} data-persona-import-id value={id} onChange={(event) => { commit.reset(); setId(event.target.value.toLowerCase()); }} aria-invalid={idIssue !== null} aria-describedby={idIssue !== null ? `${formId}-id-issue` : undefined} className={`${INPUT} max-w-xs font-mono`} spellCheck={false} autoComplete="off" />
+            <FieldIssue id={`${formId}-id-issue`} text={idIssue} />
+          </div>
+        </div>
+      )}
+    </SidePanel>
   );
 }
 

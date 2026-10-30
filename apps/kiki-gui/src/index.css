@@ -358,6 +358,24 @@ body {
   animation: kiki-spin 0.9s linear infinite;
 }
 
+/* In-page detail (components/overlays/DetailSplit.tsx): the pane arrives with
+ * the shared rise; no scrim, no scale. Browsers with View Transitions also
+ * cross-fade the swap (useDetailParam passes viewTransition). */
+.detail-pane-enter {
+  animation: kiki-enter 200ms ease-out both;
+}
+
+/* Undo toast (lib/toasts.ts pushUndoToast): the time left drains as a hairline. */
+.toast-countdown {
+  animation-name: kiki-toast-countdown;
+  animation-timing-function: linear;
+  animation-fill-mode: both;
+}
+@keyframes kiki-toast-countdown {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
 .expand-collapse {
   transition: grid-template-rows 180ms ease-out;
 }
@@ -371,6 +389,10 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .toast-countdown {
+    display: none;
+  }
+  .detail-pane-enter,
   .anim-enter,
   .settings-card-flash,
   .status-dot-busy,

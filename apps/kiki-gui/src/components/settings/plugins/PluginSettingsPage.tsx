@@ -31,26 +31,21 @@ import { isStaleRevision, isStaleScope, scopeOf } from '../../capabilities/plugi
 import { Tag } from '../../capabilities/primitives';
 import { useInstalledPlugins, useInvalidatePlugins, usePluginInfo, usePluginMarketplace } from '../../capabilities/usePlugins';
 import { PluginSettingsPanel, settingsPanelOf } from './PluginSettingsPanel';
+import { ORIGIN_KEYS } from './InstalledPluginsList';
+import { pluginDefaultOn, usePluginContributions } from './pluginState';
 import { FeedbackLine, InlineError, Toggle } from '../../controls';
+import { SettingField } from '../fields';
+import { SectionCard } from '../SectionCard';
 import { Icon } from '../../icons';
 import { SettingsSegmented } from '../SettingsPrimitives';
 import { DANGER_GHOST_BUTTON, SECONDARY_BUTTON } from '../../ui';
-
-const ORIGIN_KEYS = {
-  official: 'cap.origin.official',
-  catalog: 'cap.origin.catalog',
-  local: 'cap.origin.local',
-  git: 'cap.origin.git',
-  zip: 'cap.origin.zip',
-} as const satisfies Record<PluginOrigin, string>;
 
 export function PluginSettingsPage({ pluginId }: { readonly pluginId: string }) {
   const { t } = useI18n();
   const installed = useInstalledPlugins();
   const entries = usePluginMarketplace();
   // The list is the one source of "is it still installed". A deep link to a
-  // plugin that was never installed, or has since been removed, is not an
-  // error to repair here — it is a link that no longer points at anything.
+  // plugin that is not installed reads as a dead link, not as an error.
   const plugin = useMemo(
     () => (installed.data?.plugins ?? []).find((item) => item.id === pluginId),
     [installed.data, pluginId],
@@ -75,7 +70,9 @@ export function PluginSettingsPage({ pluginId }: { readonly pluginId: string }) 
     <div className="space-y-6" data-plugin-settings-page={plugin.id}>
       <PluginHeader plugin={plugin} origin={pluginOrigin(plugin, entries.data?.entries ?? [])} />
       <PluginEffectiveScope plugin={plugin} />
-      <PluginSettingsBody plugin={plugin} />
+      <SectionCard id="st-card-plugin-settings" title={t('cap.settings.title')}>
+        <PluginSettingsBody plugin={plugin} />
+      </SectionCard>
       <PluginManagement plugin={plugin} />
     </div>
   );
@@ -131,6 +128,12 @@ function cachedWorkspaceUsages(queryClient: QueryClient, pluginId: string): read
   return [...found.values()].sort((a, b) => a.response.target.workspace_id.localeCompare(b.response.target.workspace_id));
 }
 
+/**
+ * The plugin's two switches, the same pair every optional system capability
+ * has: 启用 (may it run at all) and 新会话默认开启 (does a session start with it
+ * on). Below them, the workspaces that made their own choice — only those, and
+ * only the ones already known to this page; each can go back to the default.
+ */
 function PluginEffectiveScope({ plugin }: { readonly plugin: PluginSummary }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
@@ -139,16 +142,17 @@ function PluginEffectiveScope({ plugin }: { readonly plugin: PluginSummary }) {
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<unknown>(null);
   const usageCacheToken = useWorkspaceUsageCacheToken(plugin.id);
-  const cachedWorkspaceUsage = useMemo(
+  const exceptions = useMemo(
     () => cachedWorkspaceUsages(queryClient, plugin.id),
     [queryClient, plugin.id, usageCacheToken],
   );
+  const defaultOn = pluginDefaultOn(plugin);
 
-  const enableEverywhere = async () => {
+  const run = async (action: () => Promise<unknown>) => {
     setBusy(true);
     setFailure(null);
     try {
-      await client.setPluginEnabled(plugin.id, true);
+      await action();
       await invalidate();
     } catch (error) {
       setFailure(error);
@@ -157,76 +161,65 @@ function PluginEffectiveScope({ plugin }: { readonly plugin: PluginSummary }) {
     }
   };
 
-  const setWorkspaceOverride = async (entry: CachedWorkspaceUsage, override: 'inherit' | 'on' | 'off') => {
+  const setWorkspaceOverride = (entry: CachedWorkspaceUsage, override: 'inherit' | 'on' | 'off') => run(async () => {
     if (typeof client.setPluginUsage !== 'function') return;
-    const workspaceId = entry.response.target.workspace_id;
-    setBusy(true);
-    setFailure(null);
-    try {
-      const response = await client.setPluginUsage({
-        target: { workspace_id: workspaceId },
-        plugin_id: plugin.id,
-        override,
-      });
-      if (!isStaleScope(response, scopeOf(entry.response))) {
-        const prev = queryClient.getQueryData<PluginUsageResponse>(entry.queryKey);
-        if (prev === undefined || !isStaleRevision(prev.revision, response.revision)) {
-          queryClient.setQueryData(entry.queryKey, response);
-        }
-      }
-      await invalidate();
-    } catch (error) {
-      setFailure(error);
-    } finally {
-      setBusy(false);
+    const response = await client.setPluginUsage({
+      target: { workspace_id: entry.response.target.workspace_id },
+      plugin_id: plugin.id,
+      override,
+    });
+    if (!isStaleScope(response, scopeOf(entry.response))) {
+      const prev = queryClient.getQueryData<PluginUsageResponse>(entry.queryKey);
+      if (prev === undefined || !isStaleRevision(prev.revision, response.revision)) queryClient.setQueryData(entry.queryKey, response);
     }
-  };
+  });
 
   return (
-    <section className="space-y-2 border-t border-hairline pt-4" data-plugin-effective-scope={plugin.id}>
-      <div className="flex flex-wrap items-center justify-between gap-2 text-[12px]">
-        <span className="text-ink-soft" data-plugin-scope-global={plugin.globalEnabled ? 'on' : 'off'}>
-          {plugin.globalEnabled ? t('st.plugins.globalDefaultOn') : t('st.plugins.globalDefaultOff')}
+    <section className="space-y-1" data-plugin-effective-scope={plugin.id} data-plugin-scope-global={plugin.enabled && defaultOn ? 'on' : 'off'}>
+      <SettingField label={t('st.plugins.enable')} htmlFor={`plugin-${plugin.id}-enabled`} help={plugin.enabled ? undefined : t('st.plugins.enableOffHint')}>
+        <span data-plugin-settings-switch>
+          <Toggle id={`plugin-${plugin.id}-enabled`} layout="bare" label={t('st.plugins.enable')} checked={plugin.enabled} disabled={busy}
+            onChange={(checked) => { void run(() => plugin.defaultEnabled === undefined
+              ? client.setPluginEnabled(plugin.id, checked)
+              : client.setPluginState(plugin.id, { enabled: checked, defaultEnabled: plugin.defaultEnabled })); }} />
         </span>
-        <div className="flex flex-wrap items-center gap-3">
-          {plugin.enabled && !plugin.globalEnabled ? (
-            <button
-              type="button"
-              data-plugin-enable-everywhere={plugin.id}
-              disabled={busy}
-              onClick={() => { void enableEverywhere(); }}
-              className="rounded text-[12px] text-ink-soft underline decoration-dotted underline-offset-2 transition-colors hover:text-ink disabled:opacity-50"
-            >
-              {t('st.plugins.enableEverywhere')}
-            </button>
-          ) : null}
-          <Link to={workspacesSettingsPath()} className={LINK_CLASS} data-plugin-scope-workspaces>
-            {t('st.workspaces.title')}
-            <Icon name="arrowRight" size={14} />
-          </Link>
+      </SettingField>
+      <SettingField label={t('cap.defaultOn')} htmlFor={`plugin-${plugin.id}-default-on`} help={t(defaultOn ? 'st.plugins.defaultOnHint' : 'st.plugins.defaultOffHint')}>
+        <span data-plugin-default-switch>
+          <Toggle id={`plugin-${plugin.id}-default-on`} layout="bare" label={t('cap.defaultOn')} checked={plugin.enabled && defaultOn}
+            disabled={busy || !plugin.enabled}
+            onChange={(checked) => { void run(() => client.setPluginState(plugin.id, { enabled: true, defaultEnabled: checked })); }} />
+        </span>
+      </SettingField>
+      {plugin.enabled ? (
+        <div className="pt-2" data-plugin-scope-exceptions>
+          <div className="flex items-center justify-between gap-3 py-1">
+            <span className="text-[12px] text-ink-soft">
+              {exceptions.some((entry) => entry.item.override !== 'inherit') ? t('st.plugins.exceptionsTitle') : t('st.plugins.exceptionsNone')}
+            </span>
+            <Link to={workspacesSettingsPath()} className={LINK_CLASS} data-plugin-scope-workspaces>
+              {t('st.plugins.exceptionsManage')}
+              <Icon name="arrowRight" size={14} />
+            </Link>
+          </div>
+          {exceptions.filter((entry) => entry.item.override !== 'inherit').map((entry) => (
+            <div key={entry.response.target.workspace_id} className="flex flex-wrap items-center justify-between gap-2 py-1 text-[13px]" data-plugin-scope-workspace={entry.response.target.workspace_id}>
+              <span className="min-w-0 truncate text-ink">{entry.response.target.name}</span>
+              <SettingsSegmented
+                choices={[
+                  { value: 'inherit', label: t('st.plugins.followDefault') },
+                  { value: 'on', label: t('cap.state.on') },
+                  { value: 'off', label: t('cap.state.off') },
+                ]}
+                value={entry.item.override}
+                disabled={busy}
+                onChange={(next) => { void setWorkspaceOverride(entry, next); }}
+                ariaLabel={entry.response.target.name}
+                dataAttr="data-plugin-workspace-override"
+              />
+            </div>
+          ))}
         </div>
-      </div>
-      {cachedWorkspaceUsage.map((entry) => (
-        <div key={entry.response.target.workspace_id} className="flex flex-wrap items-center justify-between gap-2 text-[12px]" data-plugin-scope-workspace={entry.response.target.workspace_id}>
-          <span className="text-ink-soft">{entry.response.target.name}</span>
-          <SettingsSegmented
-            choices={[
-              { value: 'inherit', label: t('rail.plugins.restore') },
-              { value: 'on', label: t('cap.state.on') },
-              { value: 'off', label: t('cap.state.off') },
-            ]}
-            value={entry.item.override}
-            disabled={!plugin.enabled || busy}
-            onChange={(next) => { void setWorkspaceOverride(entry, next); }}
-            ariaLabel={entry.response.target.name}
-            dataAttr="data-plugin-workspace-override"
-          />
-        </div>
-      ))}
-      {!plugin.enabled ? (
-        <p className="text-[12px] text-ink-faint" data-plugin-scope-locked>
-          {t('rail.plugins.reason.homeOff')}
-        </p>
       ) : null}
       {failure !== null ? <FeedbackLine feedback={{ tone: 'error', text: errorText(locale, failure) }} /> : null}
     </section>
@@ -289,7 +282,7 @@ function PluginSettingsBody({ plugin }: { readonly plugin: PluginSummary }) {
   );
 }
 
-/** Back to the list, the plugin's own name, and the state it is in now. */
+/** Back to the list, the plugin's own name, where it came from, what it brings. */
 function PluginHeader({ plugin, origin }: {
   readonly plugin: PluginSummary;
   readonly origin: PluginOrigin;
@@ -297,8 +290,9 @@ function PluginHeader({ plugin, origin }: {
   const { t } = useI18n();
   const navigate = useNavigate();
   const broken = plugin.state === 'error' || plugin.hasErrors;
+  const contributions = usePluginContributions(plugin);
   return (
-    <header className="border-t border-hairline pt-6 first:border-t-0 first:pt-0">
+    <header>
       <button
         type="button"
         onClick={() => { void navigate(installedPluginsPath()); }}
@@ -308,70 +302,30 @@ function PluginHeader({ plugin, origin }: {
         <Icon name="arrowLeft" size={14} />
         {t('st.plugins.backToInstalled')}
       </button>
-      <div className="mt-4 flex min-w-0 flex-wrap items-start gap-4">
-        <CapabilityIcon icon={plugin.icon} size="lg" />
+      <div className="mt-4 flex min-w-0 items-center gap-4">
+        <span className={plugin.enabled ? '' : 'opacity-50 grayscale'}><CapabilityIcon icon={plugin.icon} size="lg" /></span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <h2 className="font-display text-[18px] leading-6 text-ink">{plugin.displayName}</h2>
+            <h2 className="font-display text-[20px] leading-7 text-ink">{plugin.displayName}</h2>
             <Tag>{t(ORIGIN_KEYS[origin])}</Tag>
             {broken ? <Tag tone="danger">{t('cap.state.error')}</Tag> : null}
           </div>
-          <p className="mt-1 text-[12px] text-ink-faint">
-            {[plugin.version !== undefined ? `v${plugin.version}` : undefined, plugin.id]
+          <p className="mt-0.5 text-[12px] text-ink-faint" data-plugin-header-facts title={plugin.id}>
+            {[plugin.version !== undefined ? `v${plugin.version}` : undefined, contributions === '' ? undefined : contributions]
               .filter((part) => part !== undefined).join(' · ')}
           </p>
-          {broken ? (
-            <p role="alert" className="mt-2 text-[13px] text-danger" data-plugin-settings-broken>
-              {t('st.plugins.brokenState')}
-            </p>
-          ) : null}
         </div>
-        <PluginSwitch plugin={plugin} />
       </div>
+      {broken ? (
+        <p role="alert" className="mt-3 text-[13px] text-danger" data-plugin-settings-broken>{t('st.plugins.brokenState')}</p>
+      ) : null}
     </header>
   );
 }
 
 /**
- * The on/off switch, beside the plugin's name. Turning a plugin off is a fact
- * about the plugin rather than a setting of it, so it belongs with the identity
- * and not in a block of its own below.
- */
-function PluginSwitch({ plugin }: { readonly plugin: PluginSummary }) {
-  const { t, locale } = useI18n();
-  const { client } = useConnection();
-  const invalidate = useInvalidatePlugins();
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<unknown>(null);
-  return (
-    <div className="shrink-0" data-plugin-settings-switch>
-      <Toggle
-        label={plugin.enabled ? t('cap.state.on') : t('cap.state.off')}
-        checked={plugin.enabled}
-        disabled={busy}
-        onChange={(checked) => {
-          setBusy(true);
-          setFailure(null);
-          void (async () => {
-            try {
-              await client.setPluginEnabled(plugin.id, checked);
-              await invalidate();
-            } catch (error) {
-              setFailure(error);
-            } finally {
-              setBusy(false);
-            }
-          })();
-        }}
-      />
-      {failure !== null ? <FeedbackLine feedback={{ tone: 'error', text: errorText(locale, failure) }} /> : null}
-    </div>
-  );
-}
-
-/**
- * Removing a plugin. It stays a separate, explicit step with the confirmation
- * it has always had, and it never shares a row with anything else.
+ * Taking a plugin back or off the server. Quiet, at the bottom, each behind
+ * the confirmation it has always had; neither shares a row with a setting.
  */
 function PluginManagement({ plugin }: { readonly plugin: PluginSummary }) {
   const { t, locale } = useI18n();
@@ -380,9 +334,9 @@ function PluginManagement({ plugin }: { readonly plugin: PluginSummary }) {
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<unknown>(null);
-  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [confirm, setConfirm] = useState<'remove' | 'rollback' | null>(null);
+  const previous = plugin.rollback === undefined ? undefined : plugin.rollback.version ?? t('cap.detail.previous');
 
-  /** Runs one management action; reports whether the server accepted it. */
   const act = async (action: () => Promise<unknown>): Promise<boolean> => {
     setBusy(true);
     setFailure(null);
@@ -399,42 +353,48 @@ function PluginManagement({ plugin }: { readonly plugin: PluginSummary }) {
   };
 
   return (
-    <div className="border-t border-hairline pt-4">
-      {failure !== null ? (
-        <div className="mb-2"><FeedbackLine feedback={{ tone: 'error', text: errorText(locale, failure) }} /></div>
-      ) : null}
-      <div className="flex flex-wrap items-center justify-end gap-2">
-        <button
-          type="button"
-          className={DANGER_GHOST_BUTTON}
-          disabled={busy}
-          onClick={() => { setConfirmRemove(true); }}
-          data-plugin-remove={plugin.id}
-        >
+    <SectionCard id="st-card-plugin-manage" title={t('st.plugins.manageTitle')}>
+      <div className="flex flex-wrap items-center gap-2">
+        {previous !== undefined ? (
+          <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={() => { setConfirm('rollback'); }} data-plugin-rollback={plugin.id}>
+            {t('cap.action.rollback', { version: previous })}
+          </button>
+        ) : null}
+        <button type="button" className={DANGER_GHOST_BUTTON} disabled={busy} onClick={() => { setConfirm('remove'); }} data-plugin-remove={plugin.id}>
           {t('cap.action.remove')}
         </button>
       </div>
+      {failure !== null ? <div className="mt-2"><FeedbackLine feedback={{ tone: 'error', text: errorText(locale, failure) }} /></div> : null}
       <ConfirmDialog
-        open={confirmRemove}
+        open={confirm === 'remove'}
         overlayId="confirm-plugin-settings-remove"
         title={t('cap.remove.title', { name: plugin.displayName })}
         body={t('cap.remove.body')}
         confirmLabel={t('cap.action.remove')}
         tone="danger"
         busy={busy}
-        onCancel={() => { setConfirmRemove(false); }}
+        onCancel={() => { setConfirm(null); }}
         onConfirm={() => {
-          setConfirmRemove(false);
+          setConfirm(null);
           void act(() => client.removePlugin(plugin.id, { deleteData: false })).then((done) => {
-            // A removal that failed leaves the plugin installed, so the page is
-            // still true and the reader keeps their unsaved draft. One that
-            // succeeded leaves nothing here to look at, so it returns to the
-            // list rather than to this plugin's own now-missing page.
             if (done) void navigate(installedPluginsPath());
           });
         }}
       />
-    </div>
+      <ConfirmDialog
+        open={confirm === 'rollback'}
+        overlayId="confirm-plugin-settings-rollback"
+        title={t('cap.rollback.title', { name: plugin.displayName, version: previous ?? '' })}
+        body={t('cap.rollback.body')}
+        confirmLabel={t('cap.action.rollback', { version: previous ?? '' })}
+        busy={busy}
+        onCancel={() => { setConfirm(null); }}
+        onConfirm={() => {
+          setConfirm(null);
+          void act(() => client.rollbackPlugin(plugin.id));
+        }}
+      />
+    </SectionCard>
   );
 }
 

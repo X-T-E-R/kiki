@@ -78,7 +78,7 @@ describe('ContextStrategySection', () => {
     expect(block.getAttribute('data-strategy-source')).toBe('default');
     expect(container.querySelector('[data-strategy-option="auto"]')?.getAttribute('aria-checked')).toBe('true');
     expect(container.querySelector('[data-strategy-option="summarize"]')?.getAttribute('aria-checked')).toBe('false');
-    expect(container.querySelector('[data-strategy-hint]')?.textContent).toBe('Built-in main-agent default. Starts fresh when the work notes cover the work, otherwise summarizes.');
+    expect(container.querySelector('[data-strategy-hint]')?.textContent).toBe('Recommended. Continues from your work notes when it can, summarises and restarts when it can’t.');
     expect(container.querySelector('[data-strategy-source-trigger]')?.textContent).toContain('Built-in default');
     expect(container.querySelector('[data-strategy-option="auto"]')?.textContent).toBe('Auto');
     expect(strategy.write).not.toHaveBeenCalled();
@@ -108,7 +108,7 @@ describe('ContextStrategySection', () => {
     const overridden = handle(st('fresh', 'session'));
     const next = await render(overridden);
     await click(next.querySelector('[data-strategy-source-trigger]'));
-    await click(next.querySelector('[data-strategy-reset]'));
+    await click(document.querySelector('[data-strategy-reset]'));
     expect(overridden.write).toHaveBeenCalledWith(null);
   });
 
@@ -124,7 +124,7 @@ describe('ContextStrategySection', () => {
     const strategy = handle(st('auto', 'session'));
     const container = await render(strategy);
     await click(container.querySelector('[data-strategy-source-trigger]'));
-    await click(container.querySelector('[data-strategy-save-global]'));
+    await click(document.querySelector('[data-strategy-save-global]'));
     expect(strategy.saveGlobal).toHaveBeenCalledWith('auto');
     expect(getToasts().at(-1)?.text).toBe('Auto is now the global default.');
   });
@@ -161,7 +161,7 @@ describe('ContextStrategySection', () => {
     const strategy = handle(st('auto', 'default'));
     const container = await render(strategy, onCompact);
     await click(container.querySelector('[data-context-compact-with]'));
-    await click(container.querySelector('[data-context-compact-option="fresh"]'));
+    await click(document.querySelector('[data-context-compact-option="fresh"]'));
     expect(strategy.compact).toHaveBeenCalledWith('fresh');
     expect(onCompact).not.toHaveBeenCalled();
     expect(getToasts().at(-1)?.text).toBe('Manual compaction requested.');

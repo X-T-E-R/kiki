@@ -22,8 +22,8 @@ import { useI18n } from '../../i18n';
 import { useGuardedNavigate } from '../dirtyGuard';
 import { ExternalClientsSection } from './ExternalClientsSection';
 import { ExternalConnectionSection } from './ExternalConnectionSection';
-import { HostSkillInstallCard } from './HostSkillInstallCard';
 import { InboundConnectionsSection } from './InboundConnectionsSection';
+import { RemoteConnectionsSection } from './RemoteConnectionsSection';
 import { WebAccessSection } from './WebAccessSection';
 
 export function ConnectionServicesSection() {
@@ -84,12 +84,14 @@ export function ConnectionServicesSection() {
       </div>
       <div id="access-tab-panel" role="tabpanel" aria-labelledby={`access-tab-${tab}`} data-access-panel={tab} className="space-y-6">
         {tab === 'kiki' ? (
-          <InboundConnectionsSection />
-        ) : tab === 'clients' ? (
           <>
-            <ExternalClientsSection />
-            <HostSkillInstallCard />
+            {/* One relationship, two directions on one view: who may connect to
+                this Kiki first (the gate), then the Kikis this one connects to. */}
+            <InboundConnectionsSection />
+            <RemoteConnectionsSection />
           </>
+        ) : tab === 'clients' ? (
+          <ExternalClientsSection />
         ) : (
           <>
             <WebAccessSection />

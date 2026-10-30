@@ -116,6 +116,12 @@ async function clickRow(page, id, action) {
   await control.click({ timeout: 60_000 });
 }
 
+/** The row's verbs live behind its own click; expand before reaching for one. */
+async function expandRow(page, id) {
+  const toggle = page.locator(`[data-cron-task="${id}"] [data-cron-action="expand"]`);
+  if ((await toggle.getAttribute('aria-expanded')) !== 'true') await clickRow(page, id, 'expand');
+}
+
 async function openCron(page) {
   // This machine's cold Vite dev server needs well over a minute to finish
   // the first module graph, and it reloads the page whenever another agent
@@ -149,14 +155,14 @@ async function walk(page, tag) {
   for (const leaked of ['at minute 0 of every hour', 'at 09:00 every day', '(truncated)']) {
     if (listText.includes(leaked)) errors.push(`${tag}: the list still shows internal text "${leaked}"`);
   }
-  // Run now sits on the row's lower line, left of the pause/delete group.
-  const runBox = await page.locator(`[data-cron-task="${HOURLY}"] [data-cron-action="run"]`).boundingBox();
+  // The collapsed row keeps one state control and no others; edit, run now
+  // and delete wait behind the row's own click.
   const pauseBox = await page.locator(`[data-cron-task="${HOURLY}"] [data-cron-action="pause"]`).boundingBox();
-  if (runBox === null || pauseBox === null) {
-    errors.push(`${tag}: a row control is missing`);
-  } else {
-    if (runBox.x > pauseBox.x + 8) errors.push(`${tag}: Run now (x=${runBox.x}) is not left of Pause (x=${pauseBox.x})`);
-    if (runBox.y <= pauseBox.y) errors.push(`${tag}: Run now (y=${runBox.y}) is not below Pause (y=${pauseBox.y})`);
+  if (pauseBox === null) errors.push(`${tag}: the row's pause control is missing`);
+  for (const verb of ['edit', 'run', 'delete']) {
+    if (await page.locator(`[data-cron-task="${HOURLY}"] [data-cron-action="${verb}"]`).count() !== 0) {
+      errors.push(`${tag}: the collapsed row still shows ${verb}`);
+    }
   }
   await shot(page, `list-${tag}`);
 
@@ -205,6 +211,7 @@ async function walk(page, tag) {
   // CR02: a minute frequency is not a schedule the controls can hold. The
   // editor must open on the expression; saving a simplification would turn
   // "every 30 minutes" into "once an hour" without saying so.
+  await expandRow(page, FREQUENCY);
   await clickRow(page, FREQUENCY, 'edit');
   await page.waitForSelector('[data-cron-advanced-input]', { timeout: 30_000 })
     .catch(() => { errors.push(`${tag}: a minute frequency did not open on the expression`); });
@@ -227,6 +234,7 @@ async function walk(page, tag) {
   // CR01: the editor must hold the full prompt, never the list row's
   // preview. This task's prompt is deliberately longer than its preview, so
   // a preview saved over it would be visible on the server.
+  await expandRow(page, HOURLY);
   await clickRow(page, HOURLY, 'edit');
   await page.waitForSelector('[data-cron-prompt]', { timeout: 30_000 });
   await page.waitForFunction(() => {
@@ -253,6 +261,7 @@ async function walk(page, tag) {
 
   // Delivery timing: each of the three is selectable, explained, and reaches
   // the server; an untouched save leaves an explicit timing alone.
+  await expandRow(page, DAILY);
   await clickRow(page, DAILY, 'edit');
   await page.waitForSelector('[data-cron-prompt]', { timeout: 30_000 });
   await page.waitForFunction(() => {
@@ -280,6 +289,16 @@ async function walk(page, tag) {
   }, DAILY, { timeout: 20_000 }).catch(() => { errors.push(`${tag}: the list never settled on the new timing`); });
   await shot(page, `delivery-changed-${tag}`);
 
+  // A rule the localizer cannot name reads as a custom schedule with the raw
+  // expression as the fact under it, never as the bold title and never as the
+  // engine's English.
+  const complexRow = page.locator(`[data-cron-task="${COMPLEX}"]`);
+  const complexSchedule = await scheduleOf(page, COMPLEX);
+  if (complexSchedule === '5,25 9,17 * * *') errors.push(`${tag}: a custom schedule still reads as the raw expression`);
+  if ((await complexRow.innerText()).includes('at ')) errors.push(`${tag}: a custom schedule fell back to the engine's English`);
+  if ((await complexRow.locator('[data-cron-schedule]').innerText()).trim() === '') errors.push(`${tag}: a custom schedule renders no title`);
+  await shot(page, `custom-schedule-${tag}`);
+
   // A task from before timing existed reports no mode. It must read as the
   // default rather than as a mode the server never claimed, and the editor
   // must say the server has none to keep.
@@ -287,6 +306,7 @@ async function walk(page, tag) {
   if (await legacyRow.getAttribute('data-cron-delivery') !== 'idle') {
     errors.push(`${tag}: a task with no recorded timing reads "${await legacyRow.getAttribute('data-cron-delivery')}"`);
   }
+  await expandRow(page, WORKSPACE_TASK);
   await clickRow(page, WORKSPACE_TASK, 'edit');
   await page.waitForSelector('[data-cron-delivery]', { timeout: 30_000 })
     .catch(() => { errors.push(`${tag}: the editor has no delivery timing control`); });
@@ -301,6 +321,7 @@ async function walk(page, tag) {
   // Edit: a complex rule opens on its own text and survives a save.
   // The row is scrolled into view first: an HMR reload from a concurrent
   // editor can otherwise leave the click target outside the viewport.
+  await expandRow(page, COMPLEX);
   await clickRow(page, COMPLEX, "edit");
   await page.waitForSelector('[data-cron-advanced-input]', { timeout: 30_000 })
     .catch(() => { errors.push(`${tag}: a rule with no plain name did not open on the expression`); });
@@ -315,6 +336,7 @@ async function walk(page, tag) {
   if (after.id !== COMPLEX) errors.push(`${tag}: editing replaced the task id`);
 
   // A refused save keeps the draft and the panel, and says what to do.
+  await expandRow(page, DAILY);
   await clickRow(page, DAILY, "edit");
   await page.waitForSelector('[data-cron-prompt]', { timeout: 15_000 });
   await page.locator('[data-cron-prompt]').fill('换一条提示词，看看保存失败时草稿还在不在。');

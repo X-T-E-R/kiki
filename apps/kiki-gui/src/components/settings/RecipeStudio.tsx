@@ -268,7 +268,7 @@ export function RecipeStudio({
   );
 }
 
-const PRIMARY = 'rounded-md bg-accent px-3 py-1.5 text-[12px] font-semibold text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
+const PRIMARY = 'rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
 const SECONDARY = 'rounded-md border border-hairline bg-paper px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50';
 
 /** Detail for whichever row is open, fetched but never written. */
@@ -483,7 +483,7 @@ function RecipeImportForm({ onInstalled, onApply }: {
       </div>
 
       {previewed !== null ? (
-        <div className="space-y-2 border-t border-hairline pt-3" data-recipe-preview>
+        <div className="space-y-2 pt-3" data-recipe-preview>
           <p className="font-display text-[15px] text-ink">{previewed.summary.name}</p>
           <p className="font-mono text-[11px] text-ink-faint">
             {previewed.summary.version} · {recipeRevisionShort(previewed.resolved.revision)}

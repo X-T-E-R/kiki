@@ -81,6 +81,7 @@ const MCP_ENTRY = {
 
 const klient = {
   global: {
+    env: vi.fn(async () => ({ os: 'linux', arch: 'x64', home: '/tmp' })),
     board: { read: vi.fn() },
     mcp: {
       list: vi.fn(async (): Promise<readonly typeof MCP_ENTRY[]> => []),
@@ -95,6 +96,10 @@ const klient = {
 
 const client = {
   getConfig: vi.fn(async () => ({})),
+  getCapability: vi.fn(async () => ({ id: 'kiki-computer', state: 'ready', install: { running: false }, steps: [] })),
+  setBrowserControlEnabled: vi.fn(async () => ({})),
+  setComputerControlEnabled: vi.fn(async () => ({})),
+  installCapability: vi.fn(async () => ({ id: 'kiki-computer', state: 'ready', install: { running: false }, steps: [] })),
   meta: vi.fn(async (): Promise<{ experimental_flags?: Record<string, boolean> }> => ({
     experimental_flags: {
       'tool-select': true,
@@ -150,6 +155,7 @@ const client = {
   listTools: vi.fn(async () => ({ tools: [] })),
   listNamedAgentProfiles: vi.fn(async () => ({ items: [] })),
   getMemorySettings: vi.fn(async () => ({ enabled: true, approval: 'auto', budget: 2000, workspaces: {} as Record<string, boolean> })),
+  memoryAuthority: vi.fn(async (): Promise<unknown> => ({ version: 1, epoch: 0, backend: 'sqlite', mode: 'normal' })),
   patchMemorySettings: vi.fn(async (patch: { enabled?: boolean; approval?: string; budget?: number }) => ({ enabled: true, approval: 'auto', budget: 2000, workspaces: {}, ...patch })),
   getWorkspaceMemorySettings: vi.fn(async (id: string) => ({ workspace_id: id, enabled: null as boolean | null, effective_enabled: true })),
   patchWorkspaceMemorySettings: vi.fn(async (id: string, enabled: boolean | null) => ({ workspace_id: id, enabled, effective_enabled: enabled !== false })),
@@ -247,6 +253,8 @@ beforeEach(() => {
   klient.global.mcp.listStoredOAuthCredentials.mockResolvedValue([]);
   client.listNamedAgentProfiles.mockClear();
   client.getMemorySettings.mockClear();
+  client.memoryAuthority.mockReset();
+  client.memoryAuthority.mockImplementation(async () => ({ version: 1, epoch: 0, backend: 'sqlite', mode: 'normal' }));
   client.patchMemorySettings.mockClear();
   client.getWorkspaceMemorySettings.mockClear();
   client.patchWorkspaceMemorySettings.mockClear();
@@ -372,7 +380,7 @@ describe('SettingsPage panel scopes', () => {
     await click(container.querySelector('[data-workspace-open="ws-beta"]')!);
     await flush();
     expect(title()).toBe('Beta');
-    expect(container.querySelector('[data-workspace-detail-name]')?.getAttribute('value')).toBe('Beta');
+    expect(container.querySelector('[data-workspace-detail-name]')?.textContent).toBe('Beta');
   });
 
   it('names a cold workspace detail breadcrumb from the catalog without waiting for stats', async () => {
@@ -381,10 +389,12 @@ describe('SettingsPage panel scopes', () => {
     expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe('Beta');
     expect(container.querySelector('[data-workspace-detail-stats]')?.textContent).toContain('Loading');
   });
-  it('keeps MCP management on the Capabilities page and only timeouts in settings', async () => {
+  it('manages MCP in place on the settings leaf, next to its timeouts', async () => {
     const container = await renderSettings('/settings/mcp');
-    expect(container.querySelector('#st-card-mcp [data-capability-link-open="mcp"]')?.getAttribute('href')).toBe('/capabilities?tab=mcp');
-    expect(container.querySelector('#st-card-mcp [data-mcp-manager]')).toBeNull();
+    // Batch X: the link card is gone — the manager itself lives on the leaf,
+    // reading the same runtime join the Capabilities page does.
+    expect(container.querySelector('[data-mcp-global]')).not.toBeNull();
+    expect(container.querySelector('#st-card-mcp [data-capability-link-open="mcp"]')).toBeNull();
     expect(container.querySelector('#workspace-mcp-select')).toBeNull();
   });
 
@@ -440,7 +450,7 @@ describe('SettingsPage panel scopes', () => {
 
   it('shows the Extensions & tools page intro on /settings/mcp and keeps the timeouts card title concise', async () => {
     const mcp = await renderSettings('/settings/mcp');
-    expect(mcp.querySelector('[data-settings-intro]')?.textContent).toBe('Manage skills, MCP tool servers, and installed plugins.');
+    expect(mcp.querySelector('[data-settings-intro]')?.textContent).toBe('Manage plugins, skills, and MCP servers.');
     expect(mcp.textContent).not.toContain('Server-wide MCP timeouts.');
     expect(mcp.querySelector('#st-card-mcp-timeouts')).not.toBeNull();
   });
@@ -466,13 +476,17 @@ describe('SettingsPage panel scopes', () => {
     expect(client.createModel).not.toHaveBeenCalled();
   });
 
-  it('shows memory beside sessions and edits global and workspace settings independently', async () => {
+  it('shows memory beside sessions and edits the global settings on the page', async () => {
     const container = await renderSettings('/settings/memory?workspace=ws-beta');
     expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe('Memory');
     expect(container.querySelector('#st-card-memory')).not.toBeNull();
     expect(container.querySelector('#st-card-memory-workspaces')).not.toBeNull();
-    expect(container.querySelector('[data-memory-workspace-select]')?.getAttribute('data-memory-workspace-select')).toBe('ws-beta');
-    expect(client.getWorkspaceMemorySettings).toHaveBeenCalledWith('ws-beta');
+    // A workspace override is written on the workspace's own page, never here:
+    // no selector and no override control lives on this page any more.
+    expect(container.querySelector('[data-memory-workspace-select]')).toBeNull();
+    expect(container.querySelector('[data-memory-workspace-override]')).toBeNull();
+    expect(client.getWorkspaceMemorySettings).not.toHaveBeenCalled();
+    expect(client.patchWorkspaceMemorySettings).not.toHaveBeenCalled();
     // One visible label per row: the switch keeps its name for assistive tech only.
     const toggleRow = container.querySelector('#memory-enabled')!.closest('[data-settings-field]')!;
     expect(toggleRow.querySelector('span.sr-only')?.textContent).toBe('Allow memory');
@@ -495,17 +509,14 @@ describe('SettingsPage panel scopes', () => {
     await flush();
     expect(budget.value).toBe('1735');
     expect(client.patchWorkspaceMemorySettings).not.toHaveBeenCalled();
-
-    await pickOption(container.querySelector('[data-memory-workspace-override]')!, 'Off');
-    expect(client.patchWorkspaceMemorySettings).toHaveBeenCalledWith('ws-beta', false);
   });
 
-  it('re-reads the workspace effective state after the global switch is saved', async () => {
-    // The server computes effective from the global switch and the workspace
-    // override; this workspace has no override, so it follows global exactly.
+  it('turning memory off re-reads the advisor, whose status is on the same page', async () => {
+    // The global switch decides the advisor's `disabled` state too, and the
+    // advisor card shares this page: a save must re-read its status or the
+    // card keeps saying Ready.
     let global = true;
     client.getMemorySettings.mockImplementation(async () => ({ enabled: global, approval: 'auto' as const, budget: 2000, workspaces: {} }));
-    client.getWorkspaceMemorySettings.mockImplementation(async (id: string) => ({ workspace_id: id, enabled: null, effective_enabled: global }));
     client.patchMemorySettings.mockImplementation(async (patch: { enabled?: boolean }) => {
       global = patch.enabled ?? global;
       return { enabled: global, approval: 'auto' as const, budget: 2000, workspaces: {} };
@@ -513,17 +524,31 @@ describe('SettingsPage panel scopes', () => {
 
     const container = await renderSettings('/settings/memory?workspace=ws-beta');
     await flush();
-    expect(container.querySelector('[data-memory-workspace-effective]')?.textContent).toContain('On');
-    const readsBefore = client.getWorkspaceMemorySettings.mock.calls.length;
+    const advisorReads = client.getMemoryAdvisorSettings.mock.calls.length;
 
     await click(container.querySelector('#memory-enabled')!);
     await flush();
     await flush();
 
     expect(client.patchMemorySettings).toHaveBeenCalledWith({ enabled: false });
-    // Without this re-read the row keeps saying the workspace is on.
-    expect(client.getWorkspaceMemorySettings.mock.calls.length).toBeGreaterThan(readsBefore);
-    expect(container.querySelector('[data-memory-workspace-effective]')?.textContent).toContain('Off');
+    expect(client.getMemoryAdvisorSettings.mock.calls.length).toBeGreaterThan(advisorReads);
+    expect(container.querySelector<HTMLInputElement>('#memory-enabled')!.checked).toBe(false);
+  });
+
+  it('shows one upgrade line instead of every card failing while memory is being upgraded', async () => {
+    client.memoryAuthority.mockImplementation(async () => ({
+      version: 1, epoch: 0, backend: 'legacy', mode: 'migrating',
+      migration: { id: '00000000-0000-4000-8000-000000000000', namespaces: [], index: 0, issues: [], phase: 'failed' },
+    }));
+    client.getMemorySettings.mockImplementation(async () => { throw Object.assign(new Error('Memory startup migration failed'), { code: 40001 }); });
+    const container = await renderSettings('/settings/memory');
+    await flush();
+    await flush();
+    expect(container.querySelector('[data-memory-settings-upgrading="failed"]')).not.toBeNull();
+    expect(container.querySelector('[data-memory-settings-open-upgrade]')?.getAttribute('href')).toBe('/memory');
+    expect(container.querySelector('#memory-enabled')).toBeNull();
+    expect(container.textContent).not.toContain('服务器返回了无法识别的数据');
+    expect(container.textContent).not.toContain('could not be read');
   });
 
   it('updates the capability config the allow switch reads, then retries a failed save', async () => {
@@ -576,99 +601,26 @@ describe('SettingsPage panel scopes', () => {
     expect(fallback().disabled).toBe(false);
   });
 
-  it('keeps a workspace override as saved while global memory is off, and applies it when allowed again', async () => {
-    // Effective = global enabled && override !== false. The override is stored
-    // as chosen; global off only changes what is effective.
-    let global = false;
-    const saved: Record<string, boolean> = {};
-    // No capability block: the allow switch reads the memory settings alone.
-    client.getConfig.mockResolvedValue({});
-    client.getMemorySettings.mockImplementation(async () => ({ enabled: global, approval: 'auto' as const, budget: 2000, workspaces: { ...saved } }));
-    client.getWorkspaceMemorySettings.mockImplementation(async (id: string) => ({
-      workspace_id: id, enabled: saved[id] ?? null, effective_enabled: global && saved[id] !== false,
-    }));
-    client.patchWorkspaceMemorySettings.mockImplementation(async (id: string, enabled: boolean | null) => {
-      if (enabled === null) delete saved[id]; else saved[id] = enabled;
-      return { workspace_id: id, enabled, effective_enabled: global && enabled !== false };
-    });
-    client.patchMemorySettings.mockImplementation(async (patch: { enabled?: boolean }) => {
-      global = patch.enabled ?? global;
-      return { enabled: global, approval: 'auto' as const, budget: 2000, workspaces: { ...saved } };
-    });
+  it('lists only the workspaces that differ, as read-only links to their own pages', async () => {
+    client.getMemorySettings.mockResolvedValue({ enabled: true, approval: 'review' as const, budget: 2000, workspaces: { 'ws-alpha': false } });
     const container = await renderSettings('/settings/memory?workspace=ws-beta');
-    await flush();
-    const override = () => container.querySelector<HTMLElement>('[data-memory-workspace-override]')!;
-    const effective = () => container.querySelector('[data-memory-workspace-effective]')?.textContent ?? '';
-    expect(container.querySelector('[data-memory-global-off]')).not.toBeNull();
-    // Nothing is disabled while global is off: the override can be staged.
-    expect(override().hasAttribute('disabled')).toBe(false);
-    await pickOption(override(), 'On');
-    await flush();
-    expect(client.patchWorkspaceMemorySettings).toHaveBeenLastCalledWith('ws-beta', true);
-    expect(effective()).toContain('Off');
-
-    await click(container.querySelector('#memory-enabled')!);
-    await flush();
-    await flush();
-    expect(container.querySelector('[data-memory-global-off]')).toBeNull();
-    expect(effective()).toContain('On');
-
-    await pickOption(override(), 'Follow global');
-    await flush();
-    expect(client.patchWorkspaceMemorySettings).toHaveBeenLastCalledWith('ws-beta', null);
-    expect(effective()).toContain('On');
-
-    await pickOption(override(), 'Off');
-    await flush();
-    expect(client.patchWorkspaceMemorySettings).toHaveBeenLastCalledWith('ws-beta', false);
-    expect(effective()).toContain('Off');
+    const list = container.querySelector('[data-memory-exceptions]')!;
+    // One row per exception: name, state, the way into the workspace's own
+    // memory card. Nothing on this page writes the override.
+    const row = list.querySelector<HTMLAnchorElement>('[data-memory-exception-open="ws-alpha"]')!;
+    expect(row.textContent).toContain('Alpha');
+    expect(row.textContent).toContain('Off');
+    expect(row.getAttribute('href')).toBe('/settings/workspaces?workspace=ws-alpha#st-card-workspace-memory');
+    expect(container.querySelector('[data-memory-workspace-override]')).toBeNull();
+    expect(client.patchWorkspaceMemorySettings).not.toHaveBeenCalled();
+    // The common case — no overrides anywhere — is one quiet line, not a form.
+    expect(container.textContent).not.toContain('Follow global');
   });
 
-  it('keeps an in-flight workspace write with the workspace it was made for', async () => {
-    const saved: Record<string, boolean> = {};
-    client.getMemorySettings.mockImplementation(async () => ({ enabled: true, approval: 'auto' as const, budget: 2000, workspaces: { ...saved } }));
-    client.getWorkspaceMemorySettings.mockImplementation(async (id: string) => ({
-      workspace_id: id, enabled: saved[id] ?? null, effective_enabled: saved[id] !== false,
-    }));
-    let release!: () => void;
-    client.patchWorkspaceMemorySettings.mockImplementation((id: string, enabled: boolean | null) => new Promise((resolve) => {
-      release = () => {
-        if (enabled === null) delete saved[id]; else saved[id] = enabled;
-        resolve({ workspace_id: id, enabled, effective_enabled: enabled !== false });
-      };
-    }));
-    const container = await renderSettings('/settings/memory?workspace=ws-alpha');
-    await flush();
-    const card = () => container.querySelector('[data-memory-workspace-settings]')!;
-    const override = () => container.querySelector<HTMLElement>('[data-memory-workspace-override]')!;
-    const effective = () => container.querySelector('[data-memory-workspace-effective]')?.textContent ?? '';
-    await pickOption(override(), 'Off');
-    expect(client.patchWorkspaceMemorySettings).toHaveBeenLastCalledWith('ws-alpha', false);
-    expect(card().querySelector('[data-save-status="saving"]')).not.toBeNull();
-
-    await pickOption(container.querySelector<HTMLElement>('[data-memory-workspace-select]')!, 'Beta');
-    await flush();
-    // Beta is not the workspace being written: not busy, nothing pending here.
-    expect(override().hasAttribute('disabled')).toBe(false);
-    expect(card().querySelector('[data-save-status="saving"]')).toBeNull();
-    await act(async () => { release(); });
-    await flush();
-    await flush();
-    expect(client.patchWorkspaceMemorySettings).toHaveBeenCalledTimes(1);
-    expect(saved).toEqual({ 'ws-alpha': false });
-    expect(card().querySelector('[data-saved-tick]')).toBeNull();
-    expect(effective()).toContain('On');
-
-    await click(container.querySelector('[data-memory-override-open="ws-alpha"]')!);
-    await flush();
-    await flush();
-    expect(effective()).toContain('Off');
-  });
-
-  it('shows other workspace overrides and refuses an out-of-range budget', async () => {
-    client.getMemorySettings.mockResolvedValueOnce({ enabled: true, approval: 'review', budget: 2000, workspaces: { 'ws-alpha': false } });
+  it('says every workspace follows global when none differs, and refuses an out-of-range budget', async () => {
+    client.getMemorySettings.mockResolvedValueOnce({ enabled: true, approval: 'review', budget: 2000, workspaces: {} });
     const container = await renderSettings('/settings/memory?workspace=ws-beta');
-    expect(container.querySelector('[data-memory-other-overrides]')?.textContent).toContain('Alpha: Off');
+    expect(container.querySelector('[data-memory-exceptions-empty]')?.textContent).toContain('Every workspace follows the global setting.');
     const budget = container.querySelector<HTMLInputElement>('[data-memory-budget]')!;
     expect(budget.value).toBe('2000');
     const writes = client.patchMemorySettings.mock.calls.length;
@@ -689,8 +641,8 @@ describe('SettingsPage memory advisor', () => {
     expect(card(container).querySelector('[data-memory-advisor-status]')?.getAttribute('data-memory-advisor-status')).toBe('unconfigured');
     expect(card(container).textContent).toContain('Needs a source');
     expect(card(container).querySelector('[data-memory-advisor-test]')).toBeNull();
-    // Tuning waits behind Advanced.
-    expect(card(container).querySelector<HTMLDetailsElement>('[data-memory-advisor-advanced]')!.open).toBe(false);
+    // Engine tuning sits in the card's own 高级 fold.
+    expect(card(container).querySelector('[data-memory-advisor-advanced]')).not.toBeNull();
     expect(client.getMemoryAdvisorSettings).toHaveBeenCalledWith('ws-beta');
   });
 
@@ -702,11 +654,16 @@ describe('SettingsPage memory advisor', () => {
     expect(card(container).querySelector('#memory-advisor-model')).toBeNull();
     expect(card(container).querySelector('[data-memory-advisor-endpoint]')).toBeNull();
     expect(card(container).querySelector('[data-decision-summary="memory"] [data-decision-summary-value]')?.textContent).toBe('typesafe · jev-latest');
-    // No sending-out block, OK button or workspace picker; the destination is a diagnostic under Advanced.
+    // No sending-out block, OK button or workspace picker; the destination
+    // diagnostic and the tuning numbers sit in the card's 高级 fold.
     expect(card(container).querySelector('[data-memory-advisor-egress]')).toBeNull();
     expect(card(container).querySelector('[data-memory-advisor-allow]')).toBeNull();
     expect(card(container).querySelector('[data-memory-advisor-workspace]')).toBeNull();
-    expect(card(container).querySelector('[data-memory-advisor-advanced] [data-memory-advisor-destination]')?.textContent).toBe('typesafe@https://api.typesafe.ai');
+    const fold = card(container).querySelector<HTMLDetailsElement>('[data-memory-advisor-advanced]')!;
+    expect(fold).not.toBeNull();
+    fold.open = true;
+    expect(fold.querySelector('[data-memory-advisor-destination]')).not.toBeNull();
+    expect(fold.querySelector('[data-memory-advisor-timeout-ms]')).not.toBeNull();
     expect(card(container).textContent).toContain('Ready');
     expect(advisorFake.patches).toEqual([]);
 
@@ -715,13 +672,13 @@ describe('SettingsPage memory advisor', () => {
     expect(client.probeMemoryAdvisor).toHaveBeenCalledWith('typesafe@https://api.typesafe.ai');
   });
 
-  it('echoes an older model setting as the source in effect and links to Who decides', async () => {
+  it('echoes an older model setting as the source in effect and links to Decision models', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
     const container = await renderSettings('/settings/memory', { guarded: true });
-    expect(card(container).querySelector('[data-decision-summary-value]')?.textContent).toBe('Using an older setting: cheap-judge.');
+    expect(card(container).querySelector('[data-decision-summary-value]')?.textContent).toBe('Still using the source saved in the older settings: cheap-judge.');
     await click(card(container).querySelector('[data-decision-change]')!);
     await flush();
-    expect(container.querySelector('[data-test-location]')?.textContent ?? '').toContain('/settings/ai?tab=defaults');
+    expect(container.querySelector('[data-test-location]')?.textContent ?? '').toContain('/settings/ai?tab=providers#st-card-decision-connections');
   });
   it('turns only the advisor off: the mode alone is written, memory stays on, the model and consent stay', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' }, egress_ack: [{ workspace_id: 'ws-beta', destination: 'openai:https://api.example.test' }] };
@@ -753,16 +710,18 @@ describe('SettingsPage memory advisor', () => {
   it('shows the first-step wait the source uses by default and resets an explicit value without saving the default', async () => {
     advisorFake.advisor = { source: { kind: 'connection', connection: 'judge' } };
     const container = await renderSettings('/settings/memory');
-    const wait = () => card(container).querySelector<HTMLInputElement>('[data-memory-advisor-first-step-wait-ms]')!;
+    const fold = card(container).querySelector<HTMLDetailsElement>('[data-memory-advisor-advanced]')!;
+    fold.open = true;
+    const wait = () => fold.querySelector<HTMLInputElement>('[data-memory-advisor-first-step-wait-ms]')!;
     expect(wait().value).toBe('3000');
-    expect(card(container).querySelector('[data-memory-advisor-wait-default]')).not.toBeNull();
-    expect(card(container).querySelector('[data-memory-advisor-wait-reset]')).toBeNull();
+    expect(fold.querySelector('[data-memory-advisor-wait-default]')).not.toBeNull();
+    expect(fold.querySelector('[data-memory-advisor-wait-reset]')).toBeNull();
     await commitText(wait(), '1500');
     await flush();
     expect(advisorFake.patches.at(-1)).toEqual({ advisor: { first_step_wait_ms: 1500 } });
     expect(wait().value).toBe('1500');
-    expect(card(container).querySelector('[data-memory-advisor-wait-default]')).toBeNull();
-    await click(card(container).querySelector('[data-memory-advisor-wait-reset]')!);
+    expect(fold.querySelector('[data-memory-advisor-wait-default]')).toBeNull();
+    await click(fold.querySelector('[data-memory-advisor-wait-reset]')!);
     await flush();
     expect(advisorFake.patches.at(-1)).toEqual({ advisor: { first_step_wait_ms: null } });
     expect(advisorFake.advisor).not.toHaveProperty('first_step_wait_ms');
@@ -772,39 +731,51 @@ describe('SettingsPage memory advisor', () => {
     expect(card(chat).querySelector<HTMLInputElement>('[data-memory-advisor-first-step-wait-ms]')!.value).toBe('1500');
   });
 
-  it('keeps tuning inside the schema range and removes the whole block only after confirmation', async () => {
+  it('removes the whole block at once and offers Undo with the captured config', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
     const container = await renderSettings('/settings/memory');
-    const timeout = card(container).querySelector<HTMLInputElement>('[data-memory-advisor-timeout-ms]')!;
+    await click(card(container).querySelector('[data-memory-advisor-remove]')!);
+    await flush();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: null });
+    // Reversible with the same data: the toast writes the captured advisor back.
+    const { getToasts } = await import('../lib/toasts');
+    const undo = getToasts().find((toast) => toast.undo !== undefined);
+    expect(undo).toBeDefined();
+    await undo!.undo!.run();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: advisorFake.advisor });
+  });
+
+  it('tunes the advisor numbers in the advisor card’s advanced fold, inside the schema range', async () => {
+    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
+    const container = await renderSettings('/settings/memory');
+    const fold = container.querySelector<HTMLDetailsElement>('[data-memory-advisor-advanced]')!;
+    expect(fold).not.toBeNull();
+    fold.open = true;
+    const tuning = fold.querySelector<HTMLElement>('[data-memory-advisor-tuning]')!;
+    expect(tuning).not.toBeNull();
+    const timeout = tuning.querySelector<HTMLInputElement>('[data-memory-advisor-timeout-ms]')!;
     expect(timeout.value).toBe('6000');
     await commitText(timeout, '99');
     expect(timeout.getAttribute('aria-invalid')).toBe('true');
-    expect(card(container).textContent).toContain('Enter a whole number from 100 to 60000.');
+    expect(tuning.textContent).toContain('Enter a whole number from 100 to 60000.');
     await commitText(timeout, '9000');
     await flush();
     expect(advisorFake.patches.at(-1)).toEqual({ advisor: { timeout_ms: 9000 } });
-    await click(card(container).querySelector('[data-memory-advisor-remove]')!);
-    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { timeout_ms: 9000 } });
-    await click([...document.querySelectorAll('button')].find((button) => button.textContent === 'Remove settings')!);
-    await flush();
-    expect(advisorFake.patches.at(-1)).toEqual({ advisor: null });
+    // The destination diagnostic moved with the numbers.
+    expect(tuning.querySelector('[data-memory-advisor-destination]')?.textContent).toBe('openai:https://api.example.test');
   });
 
-  it('keeps the remove dialog open with its reason when removal fails, and retries from there', async () => {
+  it('reports a failed removal in place and retries from the same button', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
     const container = await renderSettings('/settings/memory');
     client.patchMemoryAdvisorSettings.mockRejectedValueOnce(new Error('config is read-only'));
     await click(card(container).querySelector('[data-memory-advisor-remove]')!);
-    const confirm = () => [...document.querySelectorAll('button')].find((button) => button.textContent === 'Remove settings');
-    await click(confirm()!);
     await flush();
-    expect(confirm()).toBeDefined();
-    expect(document.querySelector('[data-memory-advisor-remove-error]')?.textContent).toContain('config is read-only');
+    expect(document.querySelector('[data-memory-advisor-remove-error], [data-memory-advisor-settings] [role="alert"]')?.textContent).toContain('config is read-only');
     expect(advisorFake.advisor).toBeDefined();
-    await click(confirm()!);
+    await click(card(container).querySelector('[data-memory-advisor-remove]')!);
     await flush();
     expect(advisorFake.patches.at(-1)).toEqual({ advisor: null });
-    expect(confirm()).toBeUndefined();
   });
 
   it('accepts one heading-switch write at a time', async () => {
@@ -848,7 +819,9 @@ describe('SettingsPage memory advisor', () => {
   it('reads a running agent\'s status on request and keeps a cold session distinct', async () => {
     advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
     const container = await renderSettings('/settings/memory?workspace=ws-beta');
-    const runtime = () => card(container).querySelector<HTMLElement>('[data-memory-advisor-runtime]')!;
+    const fold = container.querySelector<HTMLDetailsElement>('[data-memory-advisor-advanced]')!;
+    fold.open = true;
+    const runtime = () => fold.querySelector<HTMLElement>('[data-memory-advisor-runtime]')!;
     expect(client.getMemoryAdvisorStatus).not.toHaveBeenCalled();
     expect(client.listSessions).toHaveBeenCalledWith(expect.objectContaining({ workspace_id: 'ws-beta' }));
     client.getMemoryAdvisorStatus.mockResolvedValueOnce({
@@ -878,12 +851,15 @@ describe('SettingsPage memory advisor', () => {
 });
 
 describe('SettingsPage batch-3 leaves', () => {
-  it('mounts the skills leaf with discovery defaults and a link to the catalog', async () => {
+  it('mounts the skills leaf with discovery defaults and the catalog managed in place', async () => {
     const container = await renderSettings('/settings/skills');
     expect(container.querySelector('#st-card-caps')).not.toBeNull();
     expect(container.querySelector('#st-card-caps [data-settings-panel-scope]')?.textContent).toContain('connected server');
-    expect(container.querySelector('#st-card-skill-catalog [data-capability-link-open="skills"]')?.getAttribute('href')).toBe('/capabilities?tab=skills');
-    expect(container.querySelector('[data-skills-view]')).toBeNull();
+    // Batch X: the catalog is managed on the leaf itself; the Capabilities
+    // page stays one click away as a plain secondary link.
+    expect(container.querySelector('#st-card-skill-catalog [data-skills-view]')).not.toBeNull();
+    expect(container.querySelector('#st-card-skill-catalog [data-skills-browse-link]')?.getAttribute('href')).toBe('/capabilities?tab=skills');
+    expect(container.querySelector('#st-card-skill-catalog [data-capability-link-open="skills"]')).toBeNull();
   });
 
   it('renders and saves the GUI request timeout in seconds', async () => {
@@ -892,7 +868,7 @@ describe('SettingsPage batch-3 leaves', () => {
     const card = container.querySelector('#st-card-conn-timeout')!;
     const input = card.querySelector<HTMLInputElement>('#st-conn-request-timeout')!;
     expect(input.value).toBe('30');
-    expect(card.textContent).toContain('Request timeout (seconds)');
+    expect(card.textContent).toContain('Request timeout');
 
     // The field saves itself on Enter; there is no separate Save button.
     expect(card.querySelector('button:not([data-setting-help])')).toBeNull();
@@ -932,10 +908,9 @@ describe('SettingsPage batch-3 leaves', () => {
     const card = container.querySelector('#st-card-conn-server')!;
     expect(card.querySelector('[data-conn-url]')?.textContent).toBe('http://127.0.0.1:8080');
     expect(card.querySelector('[data-conn-no-token]')).toBeNull();
-    // In a browser the desktop server card is only its title and "desktop only" badge.
-    const ownedCard = container.querySelector('#st-card-conn-owned')!;
-    expect(ownedCard.textContent).toContain('Desktop only');
-    expect(ownedCard.querySelector('button')).toBeNull();
+    // The browser cannot restart the desktop's own server, so the card is
+    // absent there rather than a "desktop only" shell.
+    expect(container.querySelector('#st-card-conn-owned')).toBeNull();
 
     await click(card.querySelector('[data-conn-edit]')!);
     const urlInput = card.querySelector<HTMLInputElement>('#st-conn-url')!;
@@ -963,10 +938,10 @@ describe('SettingsPage batch-3 leaves', () => {
     });
   });
 
-  it('mounts the mcp leaf with a status line and timeouts', async () => {
+  it('mounts the mcp leaf with its manager and timeouts', async () => {
     const container = await renderSettings('/settings/mcp');
-    expect(container.querySelector('#st-card-mcp [data-capability-link="mcp"]')).not.toBeNull();
-    expect(container.querySelector('#st-card-mcp-status')).toBeNull();
+    expect(container.querySelector('[data-mcp-global]')).not.toBeNull();
+    expect(container.querySelector('#st-card-mcp [data-capability-link="mcp"]')).toBeNull();
     expect(container.querySelector('#st-card-mcp-timeouts')).not.toBeNull();
   });
 
@@ -1059,7 +1034,7 @@ describe('SettingsPage batch-3 leaves', () => {
     const container = await renderSettings('/settings/runtime');
     expect(container.querySelector('#st-card-runtime')).toBeNull();
     expect(container.querySelector('#st-card-task-policy')).not.toBeNull();
-    expect(container.querySelector('#st-card-cron')).not.toBeNull();
+    expect(container.querySelector('#st-card-cron')).toBeNull();
     expect(container.querySelector('#st-card-tools')).toBeNull();
   });
 
@@ -1067,7 +1042,7 @@ describe('SettingsPage batch-3 leaves', () => {
     ['/settings/extensions', '#st-card-plugins'],
     ['/settings/environment-tools', '[data-settings-page-title]'],
     ['/settings/remote', '#st-card-conn-server'],
-    ['/settings/system', '#st-card-resource-limits'],
+    ['/settings/system', '#st-card-cron'],
   ] as const)('keeps the retired combined page %s resolving', async (path, cardSelector) => {
     localStorage.setItem('kiki.locale', 'en');
     const container = await renderSettings(path);
@@ -1155,11 +1130,7 @@ describe('SettingsPage batch-3 leaves', () => {
     const tasks = await renderSettings('/settings/tasks');
     expect(tasks.querySelector('#st-card-task-policy')).not.toBeNull();
     expect(tasks.querySelector('#st-card-task-policy')!.textContent).toContain('Maximum running tasks');
-    expect(tasks.querySelector('#st-card-cron [data-settings-diagnostics]')).not.toBeNull();
-    const diagnosticsScope = tasks.querySelector('#st-card-cron [data-settings-panel-scope]');
-    expect(diagnosticsScope?.getAttribute('data-settings-panel-scope')).toBe('readOnly');
-    expect(diagnosticsScope?.textContent).toBe('diagnostic view');
-    expect(tasks.querySelector('#st-card-cron input, #st-card-cron [role="switch"]')).toBeNull();
+    expect(tasks.querySelector('#st-card-cron')).toBeNull();
 
     const sessions = await renderSettings('/settings/communication');
     const messaging = sessions.querySelector('#st-card-agent-messaging')!;
@@ -1168,11 +1139,27 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(messaging.textContent).toContain('Subagents can notify their parent');
     expect(sessions.querySelector('#st-card-token-counting')).toBeNull();
 
+    const runtimeTab = await renderSettings('/settings/sessions?tab=runtime');
+    expect(runtimeTab.querySelector('#st-card-resource-limits')).not.toBeNull();
+    expect(runtimeTab.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle reclamation (s)');
+    expect(runtimeTab.querySelector('#st-card-session-residency')).not.toBeNull();
+
+    const defaultsTab = await renderSettings('/settings/ai?tab=defaults');
+    expect(defaultsTab.querySelector('#st-card-token-counting')).not.toBeNull();
+    expect(defaultsTab.querySelector('#st-card-retry')).not.toBeNull();
+
     const developer = await renderSettings('/settings/advanced');
-    expect(developer.querySelector('#st-card-token-counting')).not.toBeNull();
-    expect(developer.querySelector('#st-card-resource-limits')).not.toBeNull();
-    expect(developer.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle reclamation (s)');
-    expect(developer.querySelector('#st-card-cron')).toBeNull();
+    expect(developer.querySelector('#st-card-token-counting')).toBeNull();
+    expect(developer.querySelector('#st-card-resource-limits')).toBeNull();
+    expect(developer.querySelector('#st-card-retry')).toBeNull();
+    expect(developer.querySelector('#st-card-session-residency')).toBeNull();
+    expect(developer.querySelector('#st-card-memory-advisor-tuning')).toBeNull();
+    // Cron is a read-only readout here, not a form.
+    expect(developer.querySelector('#st-card-cron [data-settings-diagnostics]')).not.toBeNull();
+    const diagnosticsScope = developer.querySelector('#st-card-cron [data-settings-panel-scope]');
+    expect(diagnosticsScope?.getAttribute('data-settings-panel-scope')).toBe('readOnly');
+    expect(diagnosticsScope?.textContent).toBe('diagnostic view');
+    expect(developer.querySelector('#st-card-cron input, #st-card-cron [role="switch"]')).toBeNull();
 
     const agents = await renderSettings('/settings/agents');
     await flush();
@@ -1222,8 +1209,12 @@ describe('SettingsPage batch-3 leaves', () => {
       ['/settings/mcp', ['tool-select', 'external_delegation_mcp']],
       ['/settings/tasks', ['session_idle_eviction', 'task_wait']],
       ['/settings/search?tab=advanced', ['desktop_search']],
+      ['/settings/browser-control', ['native_browser']],
       ['/settings/developer', ['persistence_minidb_readmodel']],
     ];
+    const baseMeta = await client.meta();
+    client.meta.mockResolvedValue({ experimental_flags: { ...baseMeta.experimental_flags, native_browser: true } });
+    client.klient.rest = { connections: { list: async () => [], handshake: async () => ({}) }, browser: { list: async () => ({ connections: [] }) } } as never;
     for (const [path, flags] of homes) {
       const page = await renderSettings(path);
       await flush();
@@ -1237,6 +1228,7 @@ describe('SettingsPage batch-3 leaves', () => {
   });
 
   it('keeps Labs as a read-only index linking every flag to its page', async () => {
+    client.meta.mockResolvedValue({ experimental_flags: { 'tool-select': true, task_wait: true, desktop_search: true, persistence_minidb_readmodel: true, auto_session_title: true, subagent_release_idle: true, 'agent-profile-routes': true, external_delegation_mcp: true, image_format_conversion: false, native_ssh: false, session_idle_eviction: false } });
     const labs = await renderSettings('/settings/labs');
     await flush();
     const card = labs.querySelector('#st-card-labs')!;
@@ -1303,7 +1295,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(container.querySelector('#st-card-exp-extensions [data-experimental-row="external_delegation_mcp"]')).not.toBeNull();
   });
 
-  it('mounts the developer page with limits first and raw JSON after', async () => {
+  it('mounts the developer page with the cron readout first and raw JSON after', async () => {
     const container = await renderSettings('/settings/developer');
     const card = container.querySelector('#st-card-advanced')!;
     expect(card).not.toBeNull();
@@ -1311,7 +1303,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(card.textContent).toContain('Advanced configuration for permissions, loop controls, and background tasks. Validated on save.');
     expect(card.textContent).not.toContain('kap-server');
     const order = [...container.querySelectorAll('[data-settings-card]')].map((node) => node.id);
-    expect(order).toEqual(['st-card-resource-limits', 'st-card-retry', 'st-card-session-residency', 'st-card-token-counting', 'st-card-advanced', 'st-card-labs', 'st-card-exp-developer']);
+    expect(order).toEqual(['st-card-cron', 'st-card-advanced', 'st-card-labs', 'st-card-exp-developer']);
 
     const writes = client.patchConfig.mock.calls.length;
     await setTextarea(card.querySelector('textarea')!, '{');
@@ -1466,20 +1458,22 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(extensions.querySelector('[data-test-location]')?.textContent).toBe('/settings/extensions?tab=mcp');
     expect(extensions.querySelector('#st-card-mcp')).not.toBeNull();
 
+    // Browser & computer renders its halves as switchable tabs; the legacy
+    // computer-control address still resolves to the same section.
+    client.klient.rest = { connections: { list: async () => [], handshake: async () => ({}) }, browser: { list: async () => ({ connections: [] }) } } as never;
     const browser = await renderSettings('/settings/browser-control', { guarded: true });
     await flush();
-    expect(browser.querySelector('[data-browser-control-tab="browser"]')?.getAttribute('aria-selected')).toBe('true');
     expect(browser.querySelector('#st-card-browser-enabled')).not.toBeNull();
+    expect(browser.querySelector('[data-browser-control-tab="computer"]')).not.toBeNull();
 
-    await click(browser.querySelector('[data-browser-control-tab="computer"]')!);
+    const computerTab = await renderSettings('/settings/browser-control?tab=computer', { guarded: true });
     await flush();
-    expect(browser.querySelector('[data-test-location]')?.textContent).toBe('/settings/browser-control?tab=computer');
-    expect(browser.querySelector('#st-card-computer-enabled')).not.toBeNull();
+    expect(computerTab.querySelector('#st-card-computer-enabled')).not.toBeNull();
 
     const legacyComputer = await renderSettings('/settings/computer-control', { guarded: true });
     await flush();
     expect(legacyComputer.querySelector('[data-test-location]')?.textContent).toBe('/settings/browser-control?tab=computer');
-    expect(legacyComputer.querySelector('[data-browser-control-tab="computer"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(legacyComputer.querySelector('#st-card-computer-enabled')).not.toBeNull();
   });
 
   it('switches between Agents & profiles and Dispatch & subagents tabs on Agents', async () => {
@@ -1553,6 +1547,13 @@ describe('SettingsPage search ownership', () => {
     rendered.delete('st-card-subagent-profiles');
     // The board card stays on disk for the direct AgentTaskSettings test. Settings does not mount it.
     rendered.delete('st-card-agent-board');
+    // An open plugin's own page renders its cards only for a chosen plugin;
+    // the search index does not index per-plugin cards.
+    rendered.delete('st-card-plugin-settings');
+    rendered.delete('st-card-plugin-manage');
+    // The flag rows' card mounts only while the server reports a browser-page
+    // flag; this sweep's meta reports none.
+    indexed.delete('st-card-exp-browser-control');
     expect([...rendered].filter((id) => !indexed.has(id))).toEqual([]);
     expect([...indexed].filter((id) => !rendered.has(id))).toEqual([]);
     } finally {
@@ -1708,7 +1709,7 @@ describe('SettingsPage search locating', () => {
     await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 2100); }); });
     expect(scrollIntoView).not.toHaveBeenCalled();
 
-    gate.resolve({ experimental_flags: { native_browser: false } });
+    gate.resolve({ experimental_flags: { persistence_minidb_readmodel: true } });
     await flush();
     await flush();
 
@@ -1726,7 +1727,7 @@ describe('SettingsPage search locating', () => {
     const container = await renderSettings('/settings/developer#st-card-exp-developer');
 
     await act(async () => { window.dispatchEvent(new Event('wheel')); });
-    gate.resolve({ experimental_flags: { native_browser: false } });
+    gate.resolve({ experimental_flags: { persistence_minidb_readmodel: true } });
     await flush();
     await flush();
 
@@ -1791,7 +1792,7 @@ describe('SettingsPage search locating', () => {
     const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
     const container = await renderSettings('/settings/developer#st-card-exp-developer');
 
-    gate.resolve({ experimental_flags: { native_browser: false } });
+    gate.resolve({ experimental_flags: { persistence_minidb_readmodel: true } });
     await flush();
     await flush();
 
@@ -1818,7 +1819,7 @@ describe('SettingsPage search locating', () => {
     const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
     const container = await renderSettings('/settings/developer#st-card-exp-developer');
 
-    gate.resolve({ experimental_flags: { native_browser: false } });
+    gate.resolve({ experimental_flags: { persistence_minidb_readmodel: true } });
     await flush();
     await flush();
 
@@ -1980,7 +1981,7 @@ describe('SettingsPage object links survive an address hash', () => {
   it('opens the workspace a link names when the hash is one of its own cards', async () => {
     const container = await renderSettings('/settings/workspaces?workspace=ws-alpha#st-card-workspace-trust');
     await flush();
-    expect(container.querySelector<HTMLInputElement>('[data-workspace-detail-name]')?.value).toBe('Alpha');
+    expect(container.querySelector('[data-workspace-detail-name]')?.textContent).toBe('Alpha');
     expect(container.querySelector('#st-card-workspaces')).toBeNull();
   });
 

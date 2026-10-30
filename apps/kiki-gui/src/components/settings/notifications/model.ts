@@ -21,7 +21,7 @@ export type TargetField = NotificationProviderDescriptor['target_fields'][number
 export type SlotSpec = Omit<NotificationCredentialSlot, 'configured'>;
 
 /** Providers the add entry never offers, whatever the registry says. */
-const NEVER_ADDABLE = new Set(['script']);
+export const NEVER_ADDABLE: ReadonlySet<string> = new Set(['script']);
 
 const PROVIDER_KEYS: Readonly<Record<string, I18nKey>> = {
   telegram: 'st.notify.provider.telegram',

@@ -10,10 +10,10 @@ import {
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
+import { FeedbackLine, Hint, InlineError, SaveStatus, Toggle, type Feedback } from '../controls';
 import { FORM_LABEL, SettingsDiagnosticRow, SettingsDraftFooter } from './SettingsPrimitives';
 import { SectionCard } from './SectionCard';
-import { AdvancedDetails, SettingField } from './fields';
+import { AdvancedDetails, SettingField, SettingsBox } from './fields';
 import { Group, NumberField } from './runtimeControls';
 import { useSavedTick } from './useSavedTick';
 
@@ -32,6 +32,35 @@ const TASK_DEFAULTS = {
   printWaitCeilingS: '2147483',
   printMaxTurns: '100000',
 } as const;
+
+/** One number draft, in the row's control slot at a fixed width. */
+function DraftNumberRow({ label, id, value, placeholder, detail, unit, disabled, onChange }: {
+  readonly label: string;
+  readonly id: string;
+  readonly value: string;
+  readonly placeholder?: string;
+  readonly detail?: string;
+  readonly unit?: string;
+  readonly disabled: boolean;
+  readonly onChange: (value: string) => void;
+}) {
+  return (
+    <SettingField label={label} htmlFor={id} detail={detail}>
+      <div className="flex items-center gap-1.5">
+        <input
+          id={id}
+          className="h-8 w-24 rounded-md border border-hairline bg-paper px-2 text-right font-mono text-[12.5px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-selected-ink disabled:opacity-60"
+          inputMode="numeric"
+          value={value}
+          placeholder={placeholder}
+          disabled={disabled}
+          onChange={(event) => { onChange(event.target.value); }}
+        />
+        {unit !== undefined ? <span className="text-[12px] text-ink-faint">{unit}</span> : null}
+      </div>
+    </SettingField>
+  );
+}
 
 const PRINT_MODE_ORDER = ['exit', 'drain', 'steer'] as const;
 
@@ -93,14 +122,10 @@ function PrintModePicker({ value, onChange }: {
 }
 
 /**
- * Task and background policy (runtime split): the `task` config domain moved
- * from the retired runtime leaf to the Plan & tasks leaf, next to the plan
- * defaults and the task board it governs. Saves through the narrow
- * task-domain patch so it never rewrites domains owned by other leaves.
- *
- * The card is split by who is asking: everyday background limits stay flat,
- * the non-interactive (`kimi -p`) parameters and the kill grace period sit
- * under Advanced, where a wire-level value is worth seeing.
+ * Task and background policy: the `task` config domain, saved through the
+ * narrow task-domain patch so it never rewrites domains owned by other
+ * leaves. The non-interactive (`kimi -p`) parameters and the kill grace
+ * period sit under Advanced.
  */
 export function TaskPolicyCard() {
   const { client } = useConnection();
@@ -158,26 +183,27 @@ export function TaskPolicyCard() {
   return (
     <SectionCard id="st-card-task-policy" title={t('st.taskPolicy.title')}>
       <div className="space-y-4">
-        <fieldset disabled={saving} className="min-w-0 space-y-4 disabled:opacity-60">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <NumberField
+        <fieldset disabled={saving} className="min-w-0 disabled:opacity-60">
+          <SettingsBox>
+            <DraftNumberRow
               label={t('st.taskPolicy.maxRunningTasks')}
+              id="task-max-running"
               value={draft.maxRunningTasks}
               placeholder={t('st.loopLimits.unlimited')}
-              hint={t('st.taskPolicy.maxRunningTasksHint')}
               detail={t('st.taskPolicy.maxRunningTasksDetail')}
+              disabled={saving}
               onChange={(maxRunningTasks) => { updateTask({ maxRunningTasks }); }}
             />
-            <NumberField
+            <DraftNumberRow
               label={t('st.taskPolicy.bashTimeout')}
+              id="task-bash-timeout"
               value={draft.bashTaskTimeoutS}
               placeholder={TASK_DEFAULTS.bashTaskTimeoutS}
-              hint={t('st.taskPolicy.bashTimeoutHint')}
               detail={t('st.taskPolicy.bashTimeoutDetail', { seconds: TASK_DEFAULTS.bashTaskTimeoutS })}
+              unit={t('st.residency.secondsUnit')}
+              disabled={saving}
               onChange={(bashTaskTimeoutS) => { updateTask({ bashTaskTimeoutS }); }}
             />
-          </div>
-          <div className="space-y-1">
             <SettingField label={t('st.taskPolicy.autoBackground')} help={t('st.taskPolicy.autoBackgroundHelp')}>
               <Toggle layout="bare" label={t('st.taskPolicy.autoBackground')} checked={draft.bashAutoBackgroundOnTimeout} onChange={(bashAutoBackgroundOnTimeout) => { updateTask({ bashAutoBackgroundOnTimeout }); }} />
             </SettingField>
@@ -187,7 +213,7 @@ export function TaskPolicyCard() {
             <SettingField label={t('st.taskPolicy.fileToolHints')} help={t('st.taskPolicy.fileToolHintsHelp')}>
               <Toggle layout="bare" label={t('st.taskPolicy.fileToolHints')} checked={draft.bashFileToolHints} onChange={(bashFileToolHints) => { updateTask({ bashFileToolHints }); }} />
             </SettingField>
-          </div>
+          </SettingsBox>
           <AdvancedDetails summary={t('st.taskPolicy.advanced')} data-task-policy-advanced>
             <div className="space-y-4">
               <Group title={t('st.taskPolicy.cliGroup')} hint={t('st.taskPolicy.cliGroupHint')}>

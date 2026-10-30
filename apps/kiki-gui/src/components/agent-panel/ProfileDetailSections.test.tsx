@@ -20,10 +20,18 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 const { client, klient, panelRead } = vi.hoisted(() => {
   const panelRead = vi.fn();
   const events = { on: vi.fn(() => ({ ready: Promise.resolve(), dispose: vi.fn() })) };
+  // The prompt section also mounts the context-rebuild control, which reads
+  // through the session facade's agent scope; the audit itself stays on the
+  // global agent-panel read.
+  const agentScope = () => ({
+    contextRebuildControl: vi.fn(async () => ({})),
+    setContextRebuildEnabled: vi.fn(async () => ({})),
+    rebuildContext: vi.fn(async () => ({})),
+  });
   const klient = {
     global: { agentPanel: { read: panelRead } },
     events,
-    session: vi.fn(() => ({ events })),
+    session: vi.fn(() => ({ events, agent: agentScope })),
   };
   return {
     client: { listNamedAgentProfiles: vi.fn(), readHostFile: vi.fn() },

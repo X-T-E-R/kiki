@@ -24,7 +24,7 @@
  *   instead of showing a field that would not save.
  */
 
-import { useContext, useEffect, useMemo, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -54,8 +54,8 @@ import {
 } from '../../capabilities/pluginUsage';
 import { FeedbackLine, InlineError, SavedTick, Toggle, type Feedback } from '../../controls';
 import { Icon, Spinner } from '../../icons';
-import { SECONDARY_BUTTON } from '../../ui';
-import { SettingField } from '../fields';
+import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
+import { SettingField, SettingsBox } from '../fields';
 import { SectionCard } from '../SectionCard';
 import { SettingsSelect } from '../SettingsPrimitives';
 import { useSavedTick } from '../useSavedTick';
@@ -136,6 +136,12 @@ export function WorkspaceSettingsPage({ workspaceId }: { readonly workspaceId: s
     return () => { reportDetailName(null); };
   }, [reportDetailName, workspace?.name]);
 
+  // The rename input only exists while renaming: focus it as it appears.
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (name !== null) nameInputRef.current?.select();
+  }, [name !== null]);
+
   if (workspaceQuery.isPending) {
     return <p className="py-3 text-[13px] text-ink-faint" role="status" data-workspace-detail-loading>{t('cap.loading')}</p>;
   }
@@ -178,7 +184,9 @@ export function WorkspaceSettingsPage({ workspaceId }: { readonly workspaceId: s
         <div className="mt-1 text-[12px] text-ink-faint" data-workspace-detail-stats>
           {details.isError ? (
             <div className="flex flex-wrap items-center gap-2">
-              <InlineError error={details.error} />
+              {/* This read is a count, not a conversation: say so, and let the
+                  retry recover it instead of naming a missing session. */}
+              <span>{t('st.workspaces.detail.statsFailed')}</span>
               <button type="button" className={SECONDARY_BUTTON} onClick={() => { void details.refetch(); }}>{t('common.retry')}</button>
             </div>
           ) : (
@@ -187,41 +195,63 @@ export function WorkspaceSettingsPage({ workspaceId }: { readonly workspaceId: s
             </p>
           )}
         </div>
-        <div className="mt-4 space-y-3">
-          <SettingField label={t('st.workspaces.renameTitle')}>
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                data-autofocus
-                data-workspace-detail-name
-                aria-label={t('st.workspaces.renameTitle')}
-                className="min-w-0 max-w-[42ch] flex-1 rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-selected-ink"
-                value={draftName}
-                maxLength={100}
-                onChange={(event) => { setName(event.currentTarget.value); }}
-                onKeyDown={(event) => { if (event.key === 'Enter' && dirty && !rename.isPending) rename.mutate(draftName.trim()); }}
-              />
-              <button
-                type="button"
-                className={SECONDARY_BUTTON}
-                disabled={!dirty || rename.isPending}
-                data-workspace-detail-rename
-                onClick={() => { rename.mutate(draftName.trim()); }}
-              >
-                {rename.isPending ? t('common.saving') : t('common.save')}
-              </button>
-            </div>
-          </SettingField>
-          <SettingField label={t('st.workspaces.pin')} help={t('st.workspaces.detail.pinHelp')}>
+        <div className="mt-4">
+          <SettingsBox>
+          {/* Rename is one interaction everywhere: at rest the name is a fact
+              with a 重命名 verb; the input appears only when the verb is used. */}
+          {name === null ? (
+            <SettingField label={t('st.workspaces.renameTitle')}>
+              <div className="flex flex-wrap items-center gap-2">
+                <span data-workspace-detail-name className="text-[13px] text-ink">{workspace.name}</span>
+                <button type="button" className={SECONDARY_BUTTON} data-workspace-detail-rename
+                  onClick={() => { setName(workspace.name); }}>
+                  {t('st.workspaces.rename')}
+                </button>
+              </div>
+            </SettingField>
+          ) : (
+            <SettingField label={t('st.workspaces.renameTitle')}>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  ref={nameInputRef}
+                  data-workspace-detail-name-input
+                  aria-label={t('st.workspaces.renameTitle')}
+                  className="min-w-0 max-w-[42ch] flex-1 rounded-lg border border-hairline bg-paper px-3 py-2 text-[13px] text-ink outline-none focus:border-selected-ink"
+                  value={draftName}
+                  maxLength={100}
+                  onChange={(event) => { setName(event.currentTarget.value); }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && dirty && !rename.isPending) rename.mutate(draftName.trim());
+                    if (event.key === 'Escape') setName(null);
+                  }}
+                />
+                <button
+                  type="button"
+                  className={PRIMARY_BUTTON}
+                  disabled={!dirty || rename.isPending}
+                  data-workspace-detail-rename-save
+                  onClick={() => { rename.mutate(draftName.trim()); }}
+                >
+                  {rename.isPending ? t('common.saving') : t('common.save')}
+                </button>
+                <button type="button" className={SECONDARY_BUTTON} data-workspace-detail-rename-cancel
+                  disabled={rename.isPending}
+                  onClick={() => { setName(null); }}>
+                  {t('common.cancel')}
+                </button>
+              </div>
+            </SettingField>
+          )}
+          <SettingField label={t('st.workspaces.pin')}>
             <Toggle
-              // The label names what a click would DO, not what is currently
-              // true: an unpinned workspace offers to be pinned, and a pinned
-              // one offers to be unpinned.
+              layout="bare"
               label={workspace.pinned ? t('st.workspaces.unpin') : t('st.workspaces.pin')}
               checked={workspace.pinned}
               disabled={pinned.isPending}
               onChange={(checked) => { pinned.mutate(checked); }}
             />
           </SettingField>
+          </SettingsBox>
         </div>
         {feedback !== null ? <div className="mt-2"><FeedbackLine feedback={feedback} /></div> : null}
       </SectionCard>
@@ -534,26 +564,20 @@ function WorkspaceTrustCard({ workspace, read }: {
           <button type="button" className={SECONDARY_BUTTON} onClick={() => { void read.read.refetch(); }}>{t('common.retry')}</button>
         </div>
       ) : (
-        <>
-          <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft" data-workspace-trust-state>
-            {trusted ? t('st.workspaces.detail.trustOn') : t('st.workspaces.detail.trustOff')}
-          </p>
-          <div className="mt-3">
+        <SettingsBox>
+          <SettingField label={t('st.workspaces.detail.trustToggleLabel')} help={t('st.workspaces.detail.trustHelp')}>
             <Toggle
               id="workspace-trust-toggle"
-              // The label names what a click would DO, the way Pin/Unpin does:
-              // a trusted workspace offers to stop being trusted, and an
-              // untrusted one to become trusted. Trust is only ever granted by
-              // this click — opening the page never grants it.
-              label={trusted
-                ? t('st.workspaces.detail.trustRevoke', { name: workspace.name })
-                : t('st.workspaces.detail.trustGrant', { name: workspace.name })}
+              layout="bare"
+              // Trust is only ever granted by this click — opening the page
+              // never grants it.
+              label={t('st.workspaces.detail.trustToggleLabel')}
               checked={trusted}
               disabled={read.write.isPending}
               onChange={(checked) => { void apply(checked); }}
             />
-          </div>
-        </>
+          </SettingField>
+        </SettingsBox>
       )}
       {feedback !== null ? <div className="mt-2"><FeedbackLine feedback={feedback} /></div> : null}
     </SectionCard>
@@ -635,7 +659,6 @@ function WorkspaceMemoryCard({ workspace, memory }: {
         </SettingField>
       )}
       {feedback !== null ? <div className="mt-2"><FeedbackLine feedback={feedback} /></div> : null}
-      <p className="mt-2 text-[12px] text-ink-faint">{t('st.workspaces.detail.memoryFor', { name: workspace.name })}</p>
     </SectionCard>
   );
 }

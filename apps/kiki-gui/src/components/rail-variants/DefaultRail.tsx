@@ -1,26 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { useParams } from 'react-router-dom';
 import type { SessionController, SessionViewState, TodoItem } from '@kiki/session-core/session';
 import { MAIN_AGENT_ID } from '@kiki/session-core/session';
-import { useOptionalConnection, useOptionalControllerRegistry } from '../../state/connection';
+import { useOptionalControllerRegistry } from '../../state/connection';
 import { useI18n } from '../../i18n';
 import { Icon } from '../icons';
 import { INSPECTOR_HEAD, InspectorChevron } from '../agent-panel/InspectorSection';
 import { FOCUS_RING } from './shell';
 
-const SECTION_BUTTON = `group -ml-1.5 flex h-8 w-[calc(100%+0.375rem)] min-w-0 items-center gap-1.5 rounded-md pr-1 pl-1.5 text-left transition-colors hover:bg-ink/[0.04] ${FOCUS_RING}`;
-const FOLD_DONE_AT = 2;
 const noopSubscribe = (): (() => void) => () => {};
-
-export interface RailTodosProps {
-  sessionId: string;
-  agentId: string;
-  state?: SessionViewState;
-}
-
-export type TodoBaselineStatus = 'ready' | 'loading' | 'partial' | 'error' | 'unknown' | 'confirmed_empty';
-
-const controllerTodosCache = new WeakMap<SessionController, Map<string, readonly TodoItem[]>>();
 
 function useAgentState(sessionId: string, agentId: string): { controller: SessionController | undefined; agentState: SessionViewState | undefined } {
   const registry = useOptionalControllerRegistry();
@@ -48,6 +36,17 @@ function useAgentState(sessionId: string, agentId: string): { controller: Sessio
   return { controller, agentState };
 }
 
+const SECTION_BUTTON = `group -ml-1.5 flex h-8 w-[calc(100%+0.375rem)] min-w-0 items-center gap-1.5 rounded-md pr-1 pl-1.5 text-left transition-colors hover:bg-ink/[0.04] ${FOCUS_RING}`;
+const FOLD_DONE_AT = 2;
+
+export interface RailTodosProps {
+  sessionId: string;
+  agentId: string;
+  state?: SessionViewState;
+}
+
+export type TodoBaselineStatus = 'ready' | 'loading' | 'partial' | 'error' | 'unknown' | 'confirmed_empty';
+
 /**
  * The focused agent's checklist in the right rail.
  * Renders live todos from the session controller, with routed session fallback
@@ -56,17 +55,15 @@ function useAgentState(sessionId: string, agentId: string): { controller: Sessio
 export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
   const { t } = useI18n();
   const { controller, agentState } = useAgentState(sessionId, agentId);
-  const connection = useOptionalConnection();
   const { id: routeSessionId } = useParams<{ id?: string }>();
 
   const isMain = agentId === MAIN_AGENT_ID;
   const routeMatches = routeSessionId === undefined || routeSessionId === sessionId;
   const sessionMatches = state?.session === undefined || state.session.id === sessionId;
-  const canFallback = controller === undefined && isMain && state !== undefined && state.sessionId === sessionId && routeMatches && sessionMatches;
+  const canFallback = agentState === undefined && isMain && state !== undefined && state.sessionId === sessionId && routeMatches && sessionMatches;
   const effectiveState = agentState ?? (canFallback ? state : undefined);
 
   let status: TodoBaselineStatus = 'unknown';
-  let isConfirmedEmpty = false;
   let baselineConfirmed = false;
 
   if (agentState !== undefined) {
@@ -89,7 +86,6 @@ export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
       status = rawTodos.length > 0 ? 'partial' : 'loading';
     } else if (rawTodos.length === 0) {
       status = 'confirmed_empty';
-      isConfirmedEmpty = true;
     } else {
       status = 'ready';
     }
@@ -109,7 +105,6 @@ export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
       status = rawTodos.length > 0 ? 'partial' : 'loading';
     } else if (rawTodos.length === 0) {
       status = 'confirmed_empty';
-      isConfirmedEmpty = true;
     } else {
       status = 'ready';
     }
@@ -123,54 +118,8 @@ export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
     [rawItems],
   );
 
-  const scopeId = connection?.scopeId ?? 'local';
-  const spaceKey = connection?.spaceKey ?? 'local';
-  const identityKey = `${spaceKey}:${scopeId}:${sessionId}:${agentId}`;
-  const fallbackCacheRef = useRef<{ identityKey: string; todos: readonly TodoItem[] } | null>(null);
-
-  useEffect(() => {
-    if (isConfirmedEmpty) {
-      if (controller !== undefined) {
-        controllerTodosCache.get(controller)?.delete(agentId);
-      }
-      if (fallbackCacheRef.current?.identityKey === identityKey) {
-        fallbackCacheRef.current = null;
-      }
-    } else if (activeTodos.length > 0) {
-      if (controller !== undefined) {
-        let map = controllerTodosCache.get(controller);
-        if (map === undefined) {
-          map = new Map();
-          controllerTodosCache.set(controller, map);
-        }
-        map.set(agentId, activeTodos);
-      }
-      fallbackCacheRef.current = { identityKey, todos: activeTodos };
-    }
-  }, [controller, agentId, identityKey, isConfirmedEmpty, activeTodos]);
-
-  let displayedTodos: readonly TodoItem[] = [];
-  if (status === 'confirmed_empty') {
-    displayedTodos = [];
-  } else if (status === 'ready') {
-    displayedTodos = activeTodos;
-  } else if (status === 'partial') {
-    displayedTodos = activeTodos.length > 0 ? activeTodos : (
-      (controller !== undefined ? controllerTodosCache.get(controller)?.get(agentId) : undefined) ??
-      (fallbackCacheRef.current?.identityKey === identityKey ? fallbackCacheRef.current.todos : undefined) ??
-      []
-    );
-  } else if (status === 'loading') {
-    displayedTodos = activeTodos.length > 0 ? activeTodos : (
-      (controller !== undefined ? controllerTodosCache.get(controller)?.get(agentId) : undefined) ??
-      (fallbackCacheRef.current?.identityKey === identityKey ? fallbackCacheRef.current.todos : undefined) ??
-      []
-    );
-  } else if (status === 'error') {
-    displayedTodos = activeTodos;
-  } else {
-    displayedTodos = [];
-  }
+  const displayedTodos: readonly TodoItem[] =
+    status === 'ready' || status === 'partial' || status === 'loading' || status === 'error' ? activeTodos : [];
 
   const [open, setOpen] = useState(true);
   const [showDone, setShowDone] = useState(false);

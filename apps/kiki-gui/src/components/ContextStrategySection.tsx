@@ -8,13 +8,14 @@
  * layer. Subagents and external executors read only.
  */
 
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { useId, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
 
 import type { ContextStrategyStatus } from '@kiki/protocol';
 
 import { useI18n } from '../i18n';
 import { pushToast } from '../lib/toasts';
 import { Icon } from './icons';
+import { AnchoredPopover } from './overlays/AnchoredPopover';
 import type { ContextStrategy, ContextStrategyHandle } from './useContextStrategy';
 
 export const STRATEGY_ORDER = ['summarize', 'fresh', 'auto'] as const satisfies readonly ContextStrategy[];
@@ -55,19 +56,10 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
   const [pending, setPending] = useState(false);
   const [note, setNote] = useState<Note | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const groupRef = useRef<HTMLDivElement | null>(null);
   const titleId = useId();
   const hintId = useId();
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onPointer = (event: PointerEvent) => {
-      if (menuRef.current !== null && !menuRef.current.contains(event.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener('pointerdown', onPointer);
-    return () => { document.removeEventListener('pointerdown', onPointer); };
-  }, [menuOpen]);
 
   // Loading: keep the block's height so the card does not jump on arrival.
   if (status === undefined) {
@@ -126,11 +118,12 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
     <div data-context-strategy data-strategy={status.strategy} data-strategy-source={status.source} className="mt-3 border-t border-hairline pt-3">
       <div className="flex items-center justify-between gap-2">
         <p id={titleId} className="shrink-0 whitespace-nowrap text-[12px] font-medium text-ink-soft">{t('context.strategy.title')}</p>
-        <div ref={menuRef} className="relative min-w-0">
+        <div className="relative min-w-0">
           {readOnly ? (
             <span data-strategy-source-label className="block truncate px-1.5 text-[12px] text-ink-faint">{sourceLabel(status.source)}</span>
           ) : (
             <button
+              ref={menuTriggerRef}
               type="button"
               data-strategy-source-trigger
               aria-haspopup="menu"
@@ -145,8 +138,10 @@ export function ContextStrategySection({ handle, profileName }: ContextStrategyS
               <Icon name="chevron" size={12} className={`shrink-0 text-ink-faint transition-transform ${menuOpen ? '-rotate-90' : 'rotate-90'}`} />
             </button>
           )}
-          {menuOpen ? (
+          {!readOnly ? (
             <StrategySourceMenu
+              open={menuOpen}
+              anchor={menuTriggerRef}
               strategyName={name(status.strategy)}
               canReset={onSession}
               onClose={() => { setMenuOpen(false); }}
@@ -219,12 +214,16 @@ const MENU_ROW =
 
 /** Same surface and keyboard model as the compaction point's save menu. */
 function StrategySourceMenu({
+  open,
+  anchor,
   strategyName,
   canReset,
   onClose,
   onSaveGlobal,
   onReset,
 }: {
+  open: boolean;
+  anchor: RefObject<HTMLButtonElement | null>;
   strategyName: string;
   canReset: boolean;
   onClose: () => void;
@@ -232,27 +231,27 @@ function StrategySourceMenu({
   onReset: () => void;
 }) {
   const { t } = useI18n();
-  const listRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    listRef.current?.querySelector<HTMLButtonElement>('button')?.focus();
-  }, []);
-  const move = (delta: number) => {
-    const rows = [...(listRef.current?.querySelectorAll<HTMLButtonElement>('button') ?? [])];
-    const index = rows.indexOf(document.activeElement as HTMLButtonElement);
-    rows[(index + delta + rows.length) % rows.length]?.focus();
-  };
   return (
-    <div
-      ref={listRef}
+    <AnchoredPopover
+      open={open}
+      onClose={onClose}
+      anchorRef={anchor}
+      id="strategy-source-menu"
+      label={t('context.strategy.menuLabel')}
       role="menu"
-      data-strategy-source-menu
-      aria-label={t('context.strategy.menuLabel')}
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') { event.stopPropagation(); onClose(); }
-        if (event.key === 'ArrowDown') { event.preventDefault(); move(1); }
-        if (event.key === 'ArrowUp') { event.preventDefault(); move(-1); }
+      align="end"
+      widthClassName="w-64"
+      className="p-1"
+      data={{ 'data-strategy-source-menu': '' }}
+      onSurfaceKeyDown={(event) => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return false;
+        const rows = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button')];
+        if (rows.length === 0) return false;
+        const index = rows.indexOf(document.activeElement as HTMLButtonElement);
+        event.preventDefault();
+        rows[(index + (event.key === 'ArrowDown' ? 1 : -1) + rows.length) % rows.length]?.focus();
+        return true;
       }}
-      className="anim-enter absolute right-0 top-full z-40 mt-1 w-64 max-w-[calc(100vw-48px)] rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
     >
       <button type="button" role="menuitem" data-strategy-save-global className={MENU_ROW} onClick={onSaveGlobal}>
         <span>{t('context.strategy.saveGlobal', { strategy: strategyName })}</span>
@@ -265,6 +264,6 @@ function StrategySourceMenu({
           </button>
         </>
       ) : null}
-    </div>
+    </AnchoredPopover>
   );
 }

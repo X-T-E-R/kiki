@@ -21,7 +21,7 @@ export function CloudflareEntry() {
   const ready = plugin?.enabled === true && plugin.state === 'ok' && panels.data?.panels.some((item) => item.pluginId === 'kiki-cloudflare' && item.id === 'cloudflare') === true;
   const destination = cloudflareDestination(plugin !== undefined, catalogued, ready);
   if (destination === undefined) return null;
-  return <div className="flex items-center justify-between gap-4 border-t border-hairline pt-3" data-remote-cloudflare-entry>
+  return <div className="flex items-center justify-between gap-4 pt-3" data-remote-cloudflare-entry>
     <div className="min-w-0"><p className="text-[13px] text-ink">Cloudflare Tunnel</p>
       <p className="text-[12px] text-ink-faint">{t('st.remote.configuresNoHome', { origin: connectionAddress(client.baseUrl) })}</p></div>
     <button type="button" className="shrink-0 text-[12.5px] text-ink-soft underline decoration-hairline-strong underline-offset-2 hover:text-ink"

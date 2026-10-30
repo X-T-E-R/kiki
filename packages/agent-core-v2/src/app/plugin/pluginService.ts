@@ -181,7 +181,7 @@ export class PluginService extends Service implements IPluginService {
 
   setPluginEnabled(input: SetPluginEnabledInput): Promise<void> {
     return this.runNotifiedMutation(async () => {
-      await this.manager.setEnabled(input.id, input.enabled);
+      await this.manager.setEnabled(input.id, input.enabled, input.defaultEnabled);
       const notification = await this.reloadAndNotify({
         mutation: { kind: input.enabled ? 'enable' : 'disable', id: input.id },
       });

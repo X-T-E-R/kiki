@@ -115,18 +115,19 @@ describe('SettingsNav grouped tree', () => {
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
       .toEqual(['device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced']);
     expect(groups.map((group) => group.querySelector('p')?.textContent))
-      .toEqual(['App', 'Models & agents', 'Sessions & work', 'Capabilities', 'Permissions & rules', 'Connection & remote', 'Advanced']);
+      .toEqual(['App', 'Models & agents', 'Sessions & work', 'Capabilities', 'Permissions & security', 'Connection & remote', 'Advanced']);
     for (const group of groups) expect(group.querySelector(':scope > button')).toBeNull();
     const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
     expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts', 'notifications']);
     expect(leaves(1)).toEqual(['ai', 'agents']);
     expect(leaves(2)).toEqual(['sessions', 'workspaces', 'memory']);
-    expect(leaves(3)).toEqual(['extensions', 'search', 'browser-control']);
-    expect(leaves(4)).toEqual(['permissions', 'hooks']);
+    // Hooks are automation: they sit with the agent's capabilities, not rules.
+    expect(leaves(3)).toEqual(['extensions', 'search', 'browser-control', 'hooks']);
+    expect(leaves(4)).toEqual(['permissions']);
     // Spaces and external services sit with the ways of reaching a server;
     // workspaces with the sessions that run in them.
     expect(leaves(5)).toEqual(['connection', 'spaces', 'ssh', 'connection-services']);
-    expect(leaves(6)).toEqual(['developer', 'about']);
+    expect(leaves(6)).toEqual(['about', 'developer']);
   });
 
   it('highlights only the active leaf and navigates on click', async () => {
@@ -171,24 +172,14 @@ describe('SettingsNav grouped tree', () => {
     expect(hits.length).toBe(1);
   });
 
-  it('renders subtabs under Search & retrieval when active="search" and navigates on subtab click', async () => {
-    const visited: string[] = [];
+  it('keeps the tree at two levels: a page\'s tabs and an open plugin never become nav children', async () => {
     const container = await render(
-      <SettingsNav active="search" searchFocusToken={null} onNavigate={(id) => { visited.push(id); }} onSearchHit={noop} />,
+      <SettingsNav active="search" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
     );
-    const subtabsContainer = container.querySelector('[data-settings-nav-subtabs="search"]');
-    expect(subtabsContainer).not.toBeNull();
-    const subtabButtons = [...subtabsContainer!.querySelectorAll('button')];
-    expect(subtabButtons.map((b) => b.textContent)).toEqual([
-      'Overview & source',
-      'Search lanes',
-      'Fetch chain',
-      'Services & credentials',
-      'Advanced & diagnostics',
-    ]);
-
-    await click(subtabButtons[2]!);
-    expect(visited).toEqual(['search?tab=fetch']);
+    expect(container.querySelector('[data-settings-nav-subtabs]')).toBeNull();
+    expect(container.querySelector('[data-settings-nav-plugin]')).toBeNull();
+    // The leaf itself stays the one clickable row and still highlights.
+    expect(container.querySelector('[data-settings-nav-leaf="search"]')?.getAttribute('aria-current')).toBe('page');
   });
 
   it('updates nav error indicators after a background failure, recovery and removal without navigation', async () => {

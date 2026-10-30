@@ -21,16 +21,9 @@ export type EditScope = 'shared' | 'main' | 'independent';
 export const EDIT_SCOPES: readonly EditScope[] = ['shared', 'main', 'independent'] as const;
 
 export const SCOPE_LABEL: Readonly<Record<EditScope, I18nKey>> = {
-  shared: 'st.modelScope.shared',
+  shared: 'st.modelScope.all',
   main: 'st.modelScope.main',
   independent: 'st.modelScope.independent',
-};
-
-/** One sentence per scope: what this layer is, and what it does not change. */
-export const SCOPE_HINT: Readonly<Record<EditScope, I18nKey>> = {
-  shared: 'st.modelScope.sharedHint',
-  main: 'st.modelScope.mainHint',
-  independent: 'st.modelScope.independentHint',
 };
 
 /**
@@ -82,26 +75,4 @@ export const PROMPT_POSITIONS: readonly UsagePosition[] = ['main', 'independent'
 
 export function promptPositionFor(scope: EditScope): UsagePosition | undefined {
   return scope === 'shared' ? undefined : scope;
-}
-
-/**
- * What one identity actually differs on, as a short sentence.
- *
- * Two kinds of difference exist on a model: numeric usage fields, and a prompt
- * group that is either customized or switched off. Counting the numbers and
- * naming the prompt state says the whole thing in one line, and says nothing
- * that is not true.
- */
-export function scopeDifferenceSummary(input: {
-  usageFields: number;
-  promptsCustom: boolean;
-  promptsOff: boolean;
-}): string | undefined {
-  const parts: string[] = [];
-  if (input.usageFields > 0) {
-    parts.push(input.usageFields === 1 ? 'usage: 1 field' : `usage: ${input.usageFields} fields`);
-  }
-  if (input.promptsCustom) parts.push('prompt: custom');
-  if (input.promptsOff) parts.push('prompt: off');
-  return parts.length === 0 ? undefined : parts.join(' · ');
 }

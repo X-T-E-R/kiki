@@ -18,7 +18,7 @@ import { useI18n } from '../../i18n';
 import { API_CODES, ApiError, type HostSkillInstallPreview, type HostSkillName, type HostSkillTarget } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { Hint } from '../controls';
-import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
+import { SidePanel } from '../SidePanel';
 import { Icon, Spinner } from '../icons';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
@@ -135,17 +135,35 @@ export function HostSkillInstallDialog({ host, skill = 'kiki-as-subagent', hostN
   const busy = phase.kind === 'installing';
   const title = t('st.hostSkill.dialogTitle', { host: hostName });
   return (
-    <Dialog
+    <SidePanel
       onClose={() => { if (!busy) onClose(); }}
-      ariaLabel={title}
+      dismissible={!busy}
+      title={title}
+      description={t('st.hostSkill.dialogBody')}
       overlayId="host-skill-install"
-      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm}`}
-      overlayData={{ 'data-host-skill-dialog': phase.kind }}
+      width="md"
+      stepKey={phase.kind}
+      data={{ 'data-host-skill-dialog': phase.kind }}
+      footer={<>
+        <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
+        {phase.kind === 'failed' && (phase.stale || phase.preview === undefined) ? (
+          <button type="button" className={PRIMARY_BUTTON} data-host-skill-repreview onClick={() => { void preview(); }}>
+            {t('st.hostSkill.previewAgain')}
+          </button>
+        ) : (
+          <button
+            type="button"
+            className={PRIMARY_BUTTON}
+            data-host-skill-confirm
+            disabled={shown === undefined || busy}
+            onClick={() => { if (shown !== undefined) void install(shown); }}
+          >
+            {busy ? t('st.hostSkill.installing') : shown?.overwrites === true ? t('st.hostSkill.replace') : t('st.hostSkill.install')}
+          </button>
+        )}
+      </>}
     >
-      <h2 className="font-display text-[18px] leading-6 text-ink">{title}</h2>
-      <p className="mt-1.5 text-[13px] leading-5 text-ink-soft">{t('st.hostSkill.dialogBody')}</p>
-
-      <div className="mt-5 min-h-[88px] text-[13px]">
+      <div className="min-h-[88px] text-[13px]">
         {phase.kind === 'previewing' ? (
           <p className="flex items-center gap-2 text-ink-soft" role="status">
             <Spinner label={t('st.hostSkill.previewing')} />
@@ -174,26 +192,6 @@ export function HostSkillInstallDialog({ host, skill = 'kiki-as-subagent', hostN
           <p role="alert" className="mt-3 text-[13px] leading-5 text-danger" data-host-skill-error={phase.stale ? 'stale' : 'failed'}>{phase.message}</p>
         ) : null}
       </div>
-
-      <div className="mt-6 flex flex-wrap items-center justify-end gap-2">
-        <button type="button" className={SECONDARY_BUTTON} disabled={busy} onClick={onClose}>{t('common.cancel')}</button>
-        {phase.kind === 'failed' && (phase.stale || phase.preview === undefined) ? (
-          <button type="button" className={PRIMARY_BUTTON} data-autofocus data-host-skill-repreview onClick={() => { void preview(); }}>
-            {t('st.hostSkill.previewAgain')}
-          </button>
-        ) : (
-          <button
-            type="button"
-            className={PRIMARY_BUTTON}
-            data-autofocus
-            data-host-skill-confirm
-            disabled={shown === undefined || busy}
-            onClick={() => { if (shown !== undefined) void install(shown); }}
-          >
-            {busy ? t('st.hostSkill.installing') : shown?.overwrites === true ? t('st.hostSkill.replace') : t('st.hostSkill.install')}
-          </button>
-        )}
-      </div>
-    </Dialog>
+    </SidePanel>
   );
 }

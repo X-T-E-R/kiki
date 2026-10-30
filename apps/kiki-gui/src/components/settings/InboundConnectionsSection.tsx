@@ -9,11 +9,11 @@
  * as open.
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
+import type { ConnectionGrant } from '@kiki/protocol';
 import { relativeTime } from '@kiki/session-core/util/time';
 
 import { useHost } from '../../host';
@@ -23,18 +23,117 @@ import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { Icon } from '../icons';
-import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { PRIMARY_BUTTON } from '../ui';
+import { RowFrame } from './RowFrame';
 import { SectionCard } from './SectionCard';
-import { ListEmpty } from './list';
+import { AdvancedDetails } from './fields';
+import { CopyField } from './remote/parts';
+import { SpaceRowMenu, type SpaceMenuItem } from './spaces/SpaceRowMenu';
 import { InviteSourceDialog } from './remote/InviteSourceDialog';
 import { connectionFailureText } from './remote/parts';
+
+const GRANT_STATUS_TONE: Readonly<Record<ConnectionGrant['status'], { dot: string; text: string }>> = {
+  approved: { dot: 'bg-success', text: 'text-ink-soft' },
+  invited: { dot: 'bg-attention', text: 'text-attention' },
+  revoked: { dot: 'bg-hairline-strong', text: 'text-ink-faint' },
+};
+
+/** One peer Kiki: a row whose ⋯ holds its revoke, and whose raw ids fold away. */
+function InboundGrantRow({ grant, onRevoke }: {
+  readonly grant: ConnectionGrant;
+  readonly onRevoke: () => void;
+}) {
+  const { t, locale } = useI18n();
+  const [open, setOpen] = useState(false);
+  const anchorRef = useRef<HTMLButtonElement>(null);
+  const [menuRect, setMenuRect] = useState<DOMRect | null>(null);
+  const tone = GRANT_STATUS_TONE[grant.status];
+  const items: SpaceMenuItem[] = [
+    {
+      key: 'revoke',
+      label: t('st.inbound.revoke'),
+      danger: true,
+      blockedReason: grant.status === 'revoked' ? t('st.inbound.status.revoked') : undefined,
+      run: onRevoke,
+    },
+  ];
+  return (
+    <RowFrame
+      data={{
+        'data-inbound-grant': grant.id,
+        'data-inbound-status': grant.status,
+      }}
+      open={open}
+      onToggle={() => { setOpen((current) => !current); }}
+      bodyId={`inbound-grant-body-${grant.id}`}
+      expandLabel={t('st.browser.menu.openRow', { name: grant.label })}
+      name={grant.label}
+      marks={(
+        <span className={`inline-flex shrink-0 items-center gap-1.5 text-[12px] ${tone.text}`} data-inbound-status-chip={grant.status}>
+          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} />
+          {t(`st.inbound.status.${grant.status}` as I18nKey)}
+        </span>
+      )}
+      subtitle={(
+        <>
+          <span>{t('st.remote.purpose.gui')}</span>
+          <span aria-hidden>·</span>
+          <span data-inbound-activity>
+            {grant.lastConnectedAt === undefined
+              ? t('st.inbound.neverConnected')
+              : t('st.remote.lastConnected', { time: relativeTime(new Date(grant.lastConnectedAt).toISOString(), locale) })}
+            {grant.activeLeases > 0 ? ` · ${t('st.inbound.active', { count: grant.activeLeases })}` : ''}
+          </span>
+        </>
+      )}
+      control={(
+        <>
+          <button
+            ref={anchorRef}
+            type="button"
+            data-inbound-grant-menu={grant.id}
+            aria-label={t('st.browser.menu.open', { name: grant.label })}
+            aria-haspopup="menu"
+            aria-expanded={menuRect !== null}
+            onClick={() => { setMenuRect(anchorRef.current?.getBoundingClientRect() ?? null); }}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink"
+          >
+            <Icon name="more" size={14} />
+          </button>
+          {menuRect !== null ? (
+            <SpaceRowMenu
+              anchor={menuRect}
+              anchorElement={anchorRef.current}
+              items={items}
+              ariaLabel={t('st.browser.menu.open', { name: grant.label })}
+              onClose={() => { setMenuRect(null); }}
+            />
+          ) : null}
+        </>
+      )}
+    >
+      {/* The raw home/host ids are reference, not identity: folded, sans, copyable. */}
+      <AdvancedDetails summary={t('st.inbound.details')} data-inbound-grant-details>
+        <div className="grid gap-x-4 gap-y-2 pt-1 sm:grid-cols-2">
+          <CopyField id={`inbound-home-${grant.id}`} dataAttr={`inbound-home-${grant.id}`}
+            label={t('st.inbound.homeId')}
+            value={fingerprint(grant.source.homeId, 12, 8)}
+            copyLabel={t('st.inbound.copyId')} copiedLabel={t('st.inbound.copiedId')} />
+          <CopyField id={`inbound-host-${grant.id}`} dataAttr={`inbound-host-${grant.id}`}
+            label={t('st.inbound.hostId')}
+            value={fingerprint(grant.source.hostId, 12, 8)}
+            copyLabel={t('st.inbound.copyId')} copiedLabel={t('st.inbound.copiedId')} />
+        </div>
+      </AdvancedDetails>
+    </RowFrame>
+  );
+}
 
 export function InboundConnectionsSection() {
   const host = useHost();
   const { client, localClient } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const control = host.kind === 'tauri' ? localClient : client;
   const status = useInboundStatus(control);
   const api = control === null ? null : connectionsApi(control);
@@ -61,10 +160,11 @@ export function InboundConnectionsSection() {
 
   return (
     <SectionCard id="st-card-inbound-connections" title={t('st.inbound.title')} scope="server" actions={(
-      // The other direction: Kikis this one connects to live on Spaces.
-      <button type="button" data-inbound-outbound-link className="text-[12.5px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink"
-        onClick={() => { void navigate('/settings/spaces#st-card-remote-connections'); }}>
-        {t('st.remote.outboundTitle')}
+      <button type="button" data-inbound-invite className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
+        disabled={!effective || api === null}
+        title={!effective ? t('st.inbound.inviteNeedsGate') : undefined}
+        onClick={() => { setDialog({ kind: 'invite' }); }}>
+        <Icon name="plus" size={12} />{t('st.inbound.invite')}
       </button>
     )}>
       <div className="space-y-4" data-inbound-connections>
@@ -73,72 +173,38 @@ export function InboundConnectionsSection() {
 
         {status.data !== undefined ? (
           <>
-            <div className="rounded-lg border border-hairline bg-paper px-3 py-2.5" data-inbound-gate>
-              <Toggle id="inbound-connections-enabled" layout="row" label={t('st.inbound.gate')}
-                checked={effective}
-                disabled={saving || status.data.unavailableReason === 'dangerous_auth_bypass'}
-                onChange={(next) => { setEnabled(next); }} />
-              <p className="mt-1 max-w-[62ch] text-[12px] leading-snug text-ink-faint">{t('st.inbound.gateHint')}</p>
+            {/* The gate, the header way: one sentence, the switch on the right.
+                No card, no rule — the heading above already names the section. */}
+            <div className="space-y-1.5" data-inbound-gate>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                <p className="mr-auto text-[13px] text-ink">{t('st.inbound.gate')}</p>
+                <Toggle layout="bare" label={t('st.inbound.gate')}
+                  checked={effective}
+                  disabled={saving || status.data.unavailableReason === 'dangerous_auth_bypass'}
+                  dataAttr="data-inbound-gate-switch"
+                  onChange={(next) => { setEnabled(next); }} />
+              </div>
+              <p className="max-w-[62ch] text-[12px] leading-snug text-ink-faint">{t('st.inbound.gateHint')}</p>
               {status.data.unavailableReason === 'dangerous_auth_bypass' ? (
-                <p className="mt-1.5 text-[12px] leading-snug text-amber-ink" data-inbound-dev-runtime>{t('st.inbound.devRuntime')}</p>
+                <p className="text-[12px] leading-snug text-amber-ink" data-inbound-dev-runtime>{t('st.inbound.devRuntime')}</p>
               ) : configured !== effective ? (
-                <p className="mt-1.5 text-[12px] leading-snug text-amber-ink" data-inbound-configured>{t('st.inbound.configuredOnly')}</p>
+                <p className="text-[12px] leading-snug text-amber-ink" data-inbound-configured>{t('st.inbound.configuredOnly')}</p>
               ) : null}
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <p className="text-[12.5px] font-medium text-ink">{t('st.inbound.listTitle')}</p>
-              <button type="button" data-inbound-invite className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
-                disabled={!effective || api === null}
-                onClick={() => { setDialog({ kind: 'invite' }); }}>
-                <Icon name="plus" size={12} />{t('st.inbound.invite')}
-              </button>
-            </div>
-            {!effective ? (
-              <Hint>{t(status.data.unavailableReason === 'dangerous_auth_bypass' ? 'st.inbound.inviteUnavailable' : 'st.inbound.inviteNeedsGate')}</Hint>
-            ) : null}
-
-            {grants.length === 0 ? (
-              <div data-inbound-empty>
-                <ListEmpty kind="none" title={t('st.inbound.emptyTitle')} body={t('st.inbound.emptyBody')} />
-              </div>
-            ) : (
-              <div role="list" aria-label={t('st.inbound.listTitle')} className="space-y-1.5" data-inbound-list>
+            {/* While the gate is shut the empty line has nothing to add: the
+                gate hint above and the disabled invite's title already say the
+                one next step. */}
+            {effective && grants.length === 0 ? (
+              <p className="text-[13px] text-ink-soft" data-inbound-empty>{t('st.inbound.emptyLine')}</p>
+            ) : grants.length > 0 ? (
+              <div aria-label={t('st.inbound.listTitle')} data-inbound-list>
                 {grants.map((grant) => (
-                  <div key={grant.id} role="listitem" data-inbound-grant={grant.id} data-inbound-status={grant.status}
-                    className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg bg-ink/[0.03] px-3 py-2">
-                    <Icon name="gate" size={14} className="shrink-0 text-ink-faint" />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-                        <span className="min-w-0 max-w-full truncate text-[13px] font-medium text-ink" title={grant.label}>{grant.label}</span>
-                        <span className={`shrink-0 rounded-full px-1.5 text-[11px] leading-[18px] ${grant.status === 'approved' ? 'bg-selected text-selected-ink' : grant.status === 'revoked' ? 'bg-ink/[0.06] text-ink-faint' : 'bg-attention-soft text-attention'}`}
-                          data-inbound-status-chip={grant.status}>
-                          {t(`st.inbound.status.${grant.status}` as I18nKey)}
-                        </span>
-                        <span className="shrink-0 text-[11.5px] text-ink-faint">{t('st.remote.purpose.gui')}</span>
-                      </div>
-                      <p className="mt-0.5 truncate font-mono text-[11px] text-ink-faint" data-inbound-source-detail title={grant.source.homeId}>
-                        {t('st.inbound.sourceLine', { home: fingerprint(grant.source.homeId), host: fingerprint(grant.source.hostId) })}
-                      </p>
-                      <p className="mt-0.5 text-[11.5px] text-ink-faint" data-inbound-activity>
-                        {grant.lastConnectedAt === undefined
-                          ? t('st.inbound.neverConnected')
-                          : t('st.remote.lastConnected', { time: relativeTime(new Date(grant.lastConnectedAt).toISOString(), locale) })}
-                        {grant.activeLeases > 0 ? ` · ${t('st.inbound.active', { count: grant.activeLeases })}` : ''}
-                      </p>
-                    </div>
-                    {grant.status !== 'revoked' ? (
-                      <button type="button" data-inbound-revoke={grant.id} className={SECONDARY_BUTTON}
-                        onClick={() => { setDialog({ kind: 'revoke', grantId: grant.id, name: grant.label }); }}>
-                        {t('st.inbound.revoke')}
-                      </button>
-                    ) : null}
-                  </div>
+                  <InboundGrantRow key={grant.id} grant={grant}
+                    onRevoke={() => { setDialog({ kind: 'revoke', grantId: grant.id, name: grant.label }); }} />
                 ))}
               </div>
-            )}
-
-            <Hint>{t('st.inbound.bridgeNote')}</Hint>
+            ) : null}
           </>
         ) : null}
 

@@ -337,60 +337,53 @@ beforeEach(() => {
 });
 
 describe('switching profile while a turn is running', () => {
-  it('keeps the chip browsable mid-run and asks once before recording the switch', async () => {
+  it('keeps the chip browsable mid-run, applies the pick at once, and the undo toast restores the prior controls', async () => {
     const { container } = await mount();
-    const trigger = profileTrigger(container);
-    expect(trigger).not.toBeNull();
-    expect(trigger?.disabled).toBe(false);
-
-    await click(trigger);
+    await click(profileTrigger(container));
     await settle();
     expect(profileRow(container, 'reviewer')).toBeDefined();
     await click(profileRow(container, 'reviewer'));
 
-    // One confirmation, naming the profile and when it lands.
-    const dialog = ui(container).querySelector('[role="alertdialog"]');
-    expect(dialog?.textContent).toContain('Switch to Kiki?');
-    expect(dialog?.textContent).toContain('The reviewer profile supplies Kiki’s prompt, tools and context');
-    expect(dialog?.textContent).toContain('next message');
-    // Mid-run, the dialog also answers the question a running user has.
-    expect(dialog?.textContent).toContain('running now');
-    // Nothing has switched yet, and the running turn was not touched.
+    // No confirmation: the switch is reversible, so it applies immediately and
+    // the running turn is untouched.
+    expect(ui(container).querySelector('[role="alertdialog"]')).toBeNull();
     expect(sendPrompt).not.toHaveBeenCalled();
     expect(abort).not.toHaveBeenCalled();
-    expect(profileTrigger(container)?.textContent).toContain('Kiki');
-
-    await click(dialogButton(container, 'Switch engine'));
     // Pending is shown as pending, in words, not as already-applied.
     expect(profileTrigger(container)?.textContent).toContain('next message');
-    expect(sendPrompt).not.toHaveBeenCalled();
-    expect(abort).not.toHaveBeenCalled();
+
+    // The undo toast restores the live binding's controls.
+    const toast = getToasts().find((entry) => entry.undo !== undefined);
+    expect(toast?.text).toContain('Switched to');
+    await act(async () => { await toast!.undo!.run(); });
+    await settle();
+    expect(profileTrigger(container)?.textContent).not.toContain('next message');
   });
 
-  it('cancelling the confirmation leaves the running binding exactly as it was', async () => {
+  it('re-picking the live profile after an applied switch drops the pending controls', async () => {
     const { container } = await mount();
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, 'reviewer'));
-    await click(dialogButton(container, 'Cancel'));
-
+    // Applied at once, no dialog, toast shown.
     expect(ui(container).querySelector('[role="alertdialog"]')).toBeNull();
+    expect(profileTrigger(container)?.textContent).toContain('next message');
+
+    await click(profileTrigger(container));
+    await settle();
+    await click(profileRow(container, 'agent'));
     expect(profileTrigger(container)?.textContent).toContain('Kiki');
     expect(profileTrigger(container)?.textContent).not.toContain('next message');
 
     await sendNextMessage(container);
     expect(sendPrompt).toHaveBeenCalledTimes(1);
-    // A cancelled switch must leave the submission exactly as an ordinary one:
-    // the resolved profile is undefined, so nothing is sent to bind.
-    expect((sendPrompt.mock.calls[0]?.[0] as { profile?: string }).profile).toBeUndefined();
   });
 
-  it('sends the confirmed profile on the next user message and never into the running turn', async () => {
+  it('sends the applied profile on the next user message and never into the running turn', async () => {
     const { container } = await mount();
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, 'reviewer'));
-    await click(dialogButton(container, 'Switch engine'));
 
     await sendNextMessage(container);
 
@@ -415,7 +408,6 @@ describe('switching profile while a turn is running', () => {
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, 'reviewer'));
-    await click(dialogButton(container, 'Switch engine'));
     await type('continue with the chosen profile', container);
     await act(async () => {
       composerInput(container)?.dispatchEvent(new KeyboardEvent('keydown', {
@@ -439,7 +431,6 @@ describe('switching profile while a turn is running', () => {
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, 'reviewer'));
-    await click(dialogButton(container, 'Switch engine'));
 
     await sendNextMessage(container);
 
@@ -455,7 +446,6 @@ describe('switching profile while a turn is running', () => {
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, 'reviewer'));
-    await click(dialogButton(container, 'Switch engine'));
     await type('continue with the chosen profile', container);
     await act(async () => {
       composerInput(container)?.dispatchEvent(new KeyboardEvent('keydown', {
@@ -479,7 +469,6 @@ describe('switching profile while a turn is running', () => {
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, 'reviewer'));
-    await click(dialogButton(container, 'Switch engine'));
 
     await sendNextMessage(container);
 
@@ -494,7 +483,6 @@ describe('switching profile while a turn is running', () => {
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, 'reviewer'));
-    await click(dialogButton(container, 'Switch engine'));
     expect(profileTrigger(container)?.textContent).toContain('next message');
 
     await click(profileTrigger(container));
@@ -540,7 +528,6 @@ describe('switching profile while a turn is running', () => {
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, 'reviewer'));
-    await click(dialogButton(container, 'Switch engine'));
     await settle();
 
     // Pending switch: the button title names the consequence and the timing
@@ -575,7 +562,6 @@ describe('switching profile while a turn is running', () => {
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, 'reviewer'));
-    await click(dialogButton(container, 'Switch engine'));
     await settle();
     expect(sendButton()?.getAttribute('title')).toBe('Queue this prompt (Enter) — the pending switch applies with this message');
     expect(ui(container).querySelector('[data-composer-send-now-hint]')).toBeNull();
@@ -905,8 +891,6 @@ describe('same-executor model selection across a profile switch', () => {
     await click(profileTrigger(container));
     await settle();
     await click(profileRow(container, name));
-    await settle();
-    await click(dialogButton(container, 'Switch engine'));
     await settle();
   }
 

@@ -192,7 +192,7 @@ describe('the header menu\'s drawer', () => {
     getPersonaSettings.mockResolvedValue(behind);
     const onClose = vi.fn();
     await renderDialog(onClose);
-    await clickOn(document, '[data-persona-settings-close]');
+    await clickOn(document, '[data-persona-settings-dialog] button[aria-label]');
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

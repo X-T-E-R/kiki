@@ -38,7 +38,7 @@ import { FeedbackLine, Hint, InlineError, type Feedback } from '../../controls';
 import { useDirtyGuard, useGuardedNavigate } from '../../dirtyGuard';
 import { Icon } from '../../icons';
 import { SECONDARY_BUTTON } from '../../ui';
-import { AgentProfileEditorDialog } from '../AgentProfileEditorDialog';
+import { AGENT_QUERY_PARAM } from '../UnifiedAgentManager';
 import { AdvancedDetails, SettingField } from '../fields';
 import { SectionCard } from '../SectionCard';
 import { SettingsDetailLayout, SettingsDraftFooter, SettingsSelect } from '../SettingsPrimitives';
@@ -119,7 +119,6 @@ export function SubagentToolSettingsCard() {
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [justSaved, pingSaved] = useSavedTick();
-  const [editorOpen, setEditorOpen] = useState(false);
 
   const configQuery = useQuery({
     queryKey: ['config'],
@@ -301,6 +300,18 @@ export function SubagentToolSettingsCard() {
     setFeedback(null);
   };
 
+  /**
+   * Editing a profile's other fields happens on its own detail (`?agent=`),
+   * never in a second surface here: this card is about tool permissions, and
+   * the detail the team table already owns carries the full editor.
+   */
+  const openProfileEditor = () => {
+    if (profile === undefined) return;
+    const params = new URLSearchParams(window.location.search);
+    params.set(AGENT_QUERY_PARAM, profile.name);
+    void navigate(`/settings/agents?${params.toString()}`);
+  };
+
   /** Browse freely; only a pending draft makes switching a discard decision. */
   const switchObject = (next: string) => {
     const apply = () => {
@@ -360,7 +371,7 @@ export function SubagentToolSettingsCard() {
             onRuleOptIn={toggleRuleOptIn}
             onProfileTool={setProfileTool}
             onProfileOptIn={setProfileOptIn}
-            onEdit={() => { setEditorOpen(true); }}
+            onEdit={openProfileEditor}
             profileName={object === DEFAULT_TOOL_OBJECT ? undefined : profile?.name}
           />
         ))}
@@ -402,7 +413,7 @@ export function SubagentToolSettingsCard() {
           onRuleOptIn={toggleRuleOptIn}
           onProfileTool={setProfileTool}
           onProfileOptIn={setProfileOptIn}
-          onEdit={() => { setEditorOpen(true); }}
+          onEdit={openProfileEditor}
         />
       );
     }
@@ -425,7 +436,7 @@ export function SubagentToolSettingsCard() {
         fields={profileFields}
         editable={profileEditable}
         native={nativeExecutor}
-        onEdit={() => { setEditorOpen(true); }}
+        onEdit={openProfileEditor}
         onNewSession={() => { void navigate(namedAgentSessionHref(profile)); }}
         sessionBlocked={namedAgentNewSessionBlocked(profile)}
       />
@@ -530,26 +541,6 @@ export function SubagentToolSettingsCard() {
           />
         ) : null}
         <FeedbackLine feedback={feedback} />
-        {editorOpen && profile !== undefined ? (
-          <AgentProfileEditorDialog
-            profile={profile}
-            onClose={() => { setEditorOpen(false); }}
-            onSaved={(updated) => {
-              queryClient.setQueryData<ListNamedAgentProfilesResponse | undefined>(
-                ['named-agent-profiles', 'global'],
-                (current) => current === undefined ? current : {
-                  ...current,
-                  items: current.items.map((item) =>
-                    item.name === updated.name && item.source === updated.source && item.source_file === updated.source_file
-                      ? updated
-                      : item),
-                },
-              );
-              void invalidateAgentProfileCatalogs(queryClient);
-              setEditorOpen(false);
-            }}
-          />
-        ) : null}
       </div>
     </SectionCard>
   );

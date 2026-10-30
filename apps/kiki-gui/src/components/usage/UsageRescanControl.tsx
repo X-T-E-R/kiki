@@ -52,7 +52,7 @@ export function UsageRescanControl({ children }: { children?: ReactNode }) {
         </p>
       ) : running ? (
         <div role="status" className="w-48 max-w-full space-y-1 text-ink-faint" title={t('usage.rescan.records', { count: status.scanned_records })}>
-          <p className="text-right font-mono tabular-nums">{t('usage.rescan.progress', { scanned: formatGrouped(status.scanned_sessions), total: formatGrouped(status.total_sessions) })}</p>
+          <p className="text-right tabular-nums">{t('usage.rescan.progress', { scanned: formatGrouped(status.scanned_sessions), total: formatGrouped(status.total_sessions) })}</p>
           <progress
             aria-label={t('usage.rescan.action')}
             value={status.scanned_sessions}

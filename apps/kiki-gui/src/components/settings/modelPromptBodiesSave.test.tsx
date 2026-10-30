@@ -22,7 +22,7 @@ import type { GetModelResponse, ModelCatalogItem, ProviderCatalogItem } from '@k
 import type { ServerConnection } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../../i18n';
-import { DirtyGuardContext } from '../dirtyGuard';
+import { RouterDirtyGuard } from './testDirtyGuard';
 
 const CONNECTION: ServerConnection = { url: 'https://server.example.test/', token: 'test-token' };
 
@@ -209,9 +209,9 @@ async function renderCard(): Promise<HTMLElement> {
       <MemoryRouter>
         <QueryClientProvider client={client}>
           <I18nProvider>
-            <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
+            <RouterDirtyGuard reportDirty={reportDirty}>
               <ProviderModelsHarness />
-            </DirtyGuardContext.Provider>
+            </RouterDirtyGuard>
           </I18nProvider>
         </QueryClientProvider>
       </MemoryRouter>,
@@ -273,6 +273,9 @@ describe('the model editor saves the prompt prose a person typed', () => {
     await act(async () => { scopeButton('main').click(); });
     expect(document.body.querySelector('[data-prompt-identity-inherited]')).not.toBeNull();
     expect(bodyEditor('overlay')!.value).toBe('Shared file body.');
+    // A file-backed slot names its file and nothing else.
+    expect(document.querySelector('[data-prompt-body-origin="overlay"]')?.textContent).toBe('cognition/legacy.md');
+    expect(document.querySelector('[data-prompt-convert-notice]')).toBeNull();
     await pressSave();
     expect(updateModel, 'browsing inherited prose must not create a custom branch').not.toHaveBeenCalled();
 
@@ -302,6 +305,8 @@ describe('the model editor saves the prompt prose a person typed', () => {
     const fields = await openEditor();
     expect([...fields.querySelectorAll('p')].filter((label) => label.textContent === 'Prompt words'),
       'inline overlay has one slot label, not a repeated group heading').toHaveLength(1);
+    // An inline body carries no origin label; only file-backed slots show their path.
+    expect(document.querySelector('[data-prompt-body-origin="overlay"]')).toBeNull();
 
     // Nothing else on the page has changed, so the whole edit is the prose.
     expect(saveButton().disabled, 'Save starts disabled while the page is clean').toBe(true);

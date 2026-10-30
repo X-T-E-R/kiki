@@ -1,9 +1,8 @@
 import { memo, useRef, useState } from 'react';
 import { errorText, LocalizedError, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
-import { Dialog, DIALOG_PANEL_SIZES } from '../Dialog';
-import { Icon } from '../icons';
 import { useThreadTitleResolver } from '../../lib/threadTitles';
+import { SidePanel } from '../SidePanel';
 import type { NewTaskFormData, TaskPriority, BoardWorkspaceOption, BoardSessionOption } from './types';
 
 export interface NewTaskModalProps {
@@ -69,34 +68,35 @@ export const NewTaskModal = memo(function NewTaskModal({
   };
 
   return (
-    <Dialog
-      stacked
+    <SidePanel
+      title={t('taskBoard.new.title')}
       overlayId="task-board-new-card"
-      overlayData={{ 'data-new-task-modal': '' }}
-      ariaLabel={t('taskBoard.new.title')}
+      width="lg"
       onClose={close}
-      overlayClassName="fixed inset-0 z-50 flex items-center justify-center bg-shell/40 backdrop-blur-xs p-4"
-      panelClassName={`flex max-h-[calc(100vh-3rem)] w-[calc(100vw-3rem)] ${DIALOG_PANEL_SIZES.lg} flex-col overflow-hidden rounded-2xl border border-hairline bg-panel shadow-[0_20px_60px_-20px_rgba(28,25,23,0.45)] font-sans text-ink`}
-    >
-      <form onSubmit={(event) => { void handleSubmit(event); }} className="flex min-h-0 flex-col">
-        {/* Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-hairline bg-paper/50 px-6 py-4">
-          <span className="font-mono text-[12px] font-semibold uppercase tracking-wider text-accent">
-            {t('taskBoard.new.title')}
-          </span>
+      data={{ 'data-new-task-modal': '' }}
+      footer={(
+        <>
+          <button
+            type="submit"
+            form="task-board-new-form"
+            disabled={pending}
+            className="rounded-lg bg-accent px-4 py-2 text-[12.5px] font-medium text-panel shadow-xs transition-colors hover:bg-accent-deep"
+          >
+            {t('taskBoard.new.create')}
+          </button>
           <button
             type="button"
             onClick={close}
             disabled={pending}
-            aria-label={t('taskBoard.new.close')}
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-faint transition-colors hover:bg-paper hover:text-ink"
+            className="ml-auto rounded-lg border border-hairline px-3 py-2 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-paper"
           >
-            <Icon name="close" />
+            {t('taskBoard.new.cancel')}
           </button>
-        </div>
-
-        {/* Form Body */}
-        <div inert={pending} className="min-h-0 flex-1 space-y-4 overflow-y-auto p-6 text-[13px]">
+        </>
+      )}
+    >
+      <form id="task-board-new-form" onSubmit={(event) => { void handleSubmit(event); }} className="flex min-h-0 flex-col">
+        <div inert={pending} className="space-y-4 text-[13px]">
           {error ? (
             <div className="rounded-lg border border-danger/20 bg-danger/10 px-3 py-2 text-[12.5px] text-danger">
               {error}
@@ -200,26 +200,7 @@ export const NewTaskModal = memo(function NewTaskModal({
             </select>
           </div>
         </div>
-
-        {/* Footer */}
-        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-hairline bg-paper/40 px-6 py-4">
-          <button
-            type="button"
-            onClick={close}
-            disabled={pending}
-            className="rounded-lg border border-hairline px-3 py-2 text-[12.5px] font-medium text-ink-soft transition-colors hover:bg-paper"
-          >
-            {t('taskBoard.new.cancel')}
-          </button>
-          <button
-            type="submit"
-            disabled={pending}
-            className="rounded-lg bg-accent px-4 py-2 text-[12.5px] font-medium text-panel shadow-xs transition-colors hover:bg-accent-deep"
-          >
-            {t('taskBoard.new.create')}
-          </button>
-        </div>
       </form>
-    </Dialog>
+    </SidePanel>
   );
 });

@@ -71,7 +71,6 @@ export function KikiContextField({ draft, baseline, engine, disabled, onChange }
   const support = hookSupport(draft.executor);
   const hooksOn = on('hooks');
   return <div data-kiki-context className="space-y-3">
-    <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.kikiContext.intro', { engine })}</p>
     <ul className="space-y-3">
       <CapabilityRow id="subagents" label={t('st.profiles.kikiSubagents')} hint={t('st.profiles.kikiSubagentsHint', { engine })}
         tools={DELEGATION_SHOWN} moreTools={kikiDelegationTools().filter((name) => !DELEGATION_SHOWN.includes(name)).length} checked={draft.allowKikiSubagents} disabled={disabled}
@@ -80,7 +79,7 @@ export function KikiContextField({ draft, baseline, engine, disabled, onChange }
         label={t(`st.kikiContext.group.${group}` as I18nKey)} hint={t(`st.kikiContext.hint.${group}` as I18nKey, { engine })}
         tools={kikiGroupTools(group)} checked={on(group)} disabled={disabled} onChange={(value) => flip(group, value)} />)}
     </ul>
-    <div className="border-t border-hairline pt-3">
+    <div className="pt-3">
       <ul>
         <CapabilityRow id="hooks" label={t('st.kikiContext.group.hooks')} hint={t('st.kikiContext.hint.hooks', { engine })}
           checked={hooksOn} disabled={disabled || (support.level === 'unsupported' && !hooksOn)} onChange={(value) => flip('hooks', value)}>
@@ -98,7 +97,7 @@ export function KikiContextField({ draft, baseline, engine, disabled, onChange }
       </ul>
     </div>
     <div data-kiki-context-field={draft.kikiContext === undefined ? 'absent' : draft.kikiContext.length === 0 ? 'empty' : 'list'}
-      className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-t border-hairline pt-2.5">
+      className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 pt-2.5">
       <p className="min-w-0 text-[11.5px] leading-snug text-ink-faint">
         <span className="font-mono text-[11px] text-ink-soft">kiki_context</span>{' '}
         {draft.kikiContext === undefined ? t('st.kikiContext.fieldAbsent')
@@ -111,6 +110,5 @@ export function KikiContextField({ draft, baseline, engine, disabled, onChange }
         {t('st.kikiContext.clear')}
       </button> : null}
     </div>
-    <p className="text-[11.5px] leading-snug text-ink-faint">{t('st.kikiContext.scope')}</p>
   </div>;
 }

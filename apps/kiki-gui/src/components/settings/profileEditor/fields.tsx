@@ -73,8 +73,8 @@ export function EffortPicker({ id, value, onChange, supported, disabled, allowUn
   const { t } = useI18n();
   const levels = sortThinkingEffortsForDisplay(supported !== undefined && supported.length > 0 ? supported : EFFORTS);
   const choices = [...(allowUnset ? [{ value: '', label: unsetLabel ?? t('st.profiles.effortUnset') }] : []),
-    ...levels.map((level) => ({ value: level, label: effortLabel(level) })),
-    ...(value !== '' && !levels.includes(value) ? [{ value, label: effortLabel(value), hint: t('st.profiles.effortUnsupported') }] : [])];
+    ...levels.map((level) => ({ value: level, label: effortLabel(level, t) })),
+    ...(value !== '' && !levels.includes(value) ? [{ value, label: effortLabel(value, t), hint: t('st.profiles.effortUnsupported') }] : [])];
   return <SearchableSelect id={id} value={value} disabled={disabled} options={choices} hideFilter
     triggerLabel={value === '' ? unsetTrigger : undefined}
     ariaLabel={ariaLabel ?? t('st.profiles.effort')} buttonClassName={FORM_SELECT_TRIGGER} onChange={onChange} />;
@@ -121,7 +121,7 @@ export function Section({ title, summary, defaultOpen = false, children, dataSec
 }) {
   const id = useId();
   return <details open={defaultOpen} data-profile-section={dataSection}
-    className="group border-t border-hairline [&[open]>summary_[data-chevron]]:rotate-90">
+    className="group [&[open]>summary_[data-chevron]]:rotate-90">
     <summary aria-controls={id} className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-2 outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/50 [&::-webkit-details-marker]:hidden">
       <span data-chevron className="flex shrink-0 text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none"><Icon name="chevron" size={12} /></span>
       <span className="text-[13px] font-medium text-ink">{title}</span>

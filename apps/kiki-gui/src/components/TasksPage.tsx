@@ -21,6 +21,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 
 import type { Task, TaskStatus } from '@kiki/protocol';
 
+import { errorText } from '@kiki/session-core/i18n';
 import { sortTasks } from '@kiki/session-core/sessions';
 import { useSidebarContext } from './sidebarContext';
 import { useI18n } from '../i18n';
@@ -140,7 +141,7 @@ function TaskDetail({ task }: { task: Task }) {
 
 export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) {
   const { client } = useConnection();
-  const { t, tp, time } = useI18n();
+  const { t, tp, time, locale } = useI18n();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { id: sessionId = '' } = useParams<{ id: string }>();
@@ -236,10 +237,8 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
           ) : tasksQuery.isError ? (
             <div className="rounded-2xl border border-danger/30 bg-danger/5 p-5">
               <p className="text-[13px] font-medium text-danger">{t('tasks.loadFailed')}</p>
-              <p className="mt-1 font-mono text-[12px] text-danger">
-                {tasksQuery.error instanceof Error
-                  ? tasksQuery.error.message
-                  : t('common.unknownError')}
+              <p className="mt-1 text-[12px] text-danger">
+                {errorText(locale, tasksQuery.error)}
               </p>
               <button
                 type="button"

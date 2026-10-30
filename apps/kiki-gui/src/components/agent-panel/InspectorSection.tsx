@@ -64,10 +64,10 @@ export function InspectorSection({
             className="group -mx-1.5 flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
           >
             {label}
-            <InspectorChevron open={open} />
             {!open && summary !== undefined ? (
               <span className="ml-auto min-w-0 truncate pl-2 text-[12px] text-ink-faint">{summary}</span>
-            ) : null}
+            ) : <span className="ml-auto" />}
+            <InspectorChevron open={open} />
           </button>
         ) : (
           <h3 className="flex h-7 min-w-0 flex-1 items-center gap-1.5">{label}</h3>

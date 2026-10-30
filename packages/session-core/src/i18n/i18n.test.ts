@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { en } from './en';
 import { zh } from './zh';
+import { sessionActionErrorText } from '../commands/sessionActions';
 import {
   detectLocale,
   errorText,
@@ -10,6 +11,7 @@ import {
   translatePlural,
   type I18nKey,
 } from './locale';
+import { ApiError } from '../transport';
 import { formatDuration, relativeTime, timeUntil } from '../util/time';
 
 describe('detectLocale', () => {
@@ -141,6 +143,53 @@ describe('LocalizedError / errorText', () => {
   it('passes plain errors and unknown values through', () => {
     expect(errorText('zh', new Error('boom'))).toBe('boom');
     expect(errorText('zh', 'string failure')).toBe('string failure');
+  });
+
+  it('maps known server codes to localized copy, keeping unknown codes raw', () => {
+    const workspaceGone = { code: 40410, message: 'workspace not found: wd_fixture_000000000001 (code 40410)' };
+    expect(errorText('zh', workspaceGone)).toBe('工作区已经不存在了');
+    expect(errorText('en', workspaceGone)).toBe('That workspace no longer exists');
+    const identitySeed = { code: 40426, message: 'no request identity seed (code 40426)' };
+    expect(errorText('zh', identitySeed)).toBe('找不到请求身份；请在「模型与提供商 › 身份」中重新设置');
+    const sessionGone = { code: 40401, message: 'session.not_found (code 40401)' };
+    expect(errorText('zh', sessionGone)).toBe('会话已经不存在了');
+    const unmapped = { code: 40917, message: 'goal objective is empty (code 40917)' };
+    expect(errorText('zh', unmapped)).toBe('goal objective is empty (code 40917)');
+    expect(errorText('zh', new Error('something else (code 42901)'))).toBe('请求太频繁了，请稍后再试');
+  });
+
+  it('keeps validation refusal messages for ApiError objects and legacy suffixes', () => {
+    const refusals = [
+      { code: 40001, message: 'Choose a profile Markdown (.md) file' },
+      { code: 40002, message: 'Malformed request: profile data is missing' },
+    ] as const;
+    for (const locale of ['en', 'zh'] as const) {
+      for (const refusal of refusals) {
+        const error = new ApiError({ code: refusal.code, msg: refusal.message, data: null });
+        expect(errorText(locale, error)).toBe(error.message);
+        const legacy = `${refusal.message} (code${refusal.code})`;
+        expect(errorText(locale, legacy)).toBe(legacy);
+      }
+    }
+  });
+
+  it('keeps session action copy localized and unknown refusal text raw', () => {
+    const undoUnavailable = new ApiError({ code: 40911, msg: 'undo unavailable', data: null });
+    expect(sessionActionErrorText('en', undoUnavailable)).toBe(translate('en', 'error.nothingToUndo'));
+    expect(sessionActionErrorText('zh', undoUnavailable)).toBe(translate('zh', 'error.nothingToUndo'));
+    const refusal = new ApiError({ code: 40001, msg: 'Archive refused: drafts remain', data: null });
+    expect(sessionActionErrorText('en', refusal)).toBe(refusal.message);
+  });
+
+  it('never prints a zod issue array as JSON', () => {
+    const drift = { name: 'ZodError', issues: [{ code: 'invalid_type', path: ['advisor_status'], message: 'Invalid input' }] };
+    expect(errorText('zh', drift)).toBe(translate('zh', 'err.memoryAdvisorData'));
+    expect(errorText('en', drift)).toBe(translate('en', 'err.memoryAdvisorData'));
+    const generic = { name: 'ZodError', issues: [{ code: 'invalid_type', path: ['models'], message: 'Invalid input' }] };
+    expect(errorText('zh', generic)).toBe(translate('zh', 'err.serverData'));
+    // The same drift stringified by an upstream producer is still caught.
+    const stringified = '[ { "expected": "object", "code": "invalid_type", "path": [ "advisor_status" ], "message": "Invalid input" } ]';
+    expect(errorText('zh', stringified)).toBe(translate('zh', 'err.memoryAdvisorData'));
   });
 });
 

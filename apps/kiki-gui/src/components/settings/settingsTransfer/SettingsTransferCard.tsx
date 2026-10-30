@@ -4,8 +4,8 @@ import { SETTINGS_TRANSFER_CATEGORIES, type SettingsTransferCategory } from '@ki
 
 import { useI18n } from '../../../i18n';
 import { SectionCard } from '../SectionCard';
-import { Hint } from '../../controls';
 import { SECONDARY_BUTTON } from '../../ui';
+import { SettingField, SettingsBox } from '../fields';
 import { SettingsTransferPanel } from './SettingsTransferPanel';
 
 export function SettingsTransferCard() {
@@ -16,17 +16,18 @@ export function SettingsTransferCard() {
   return (
     <>
       <SectionCard id="st-card-settings-transfer" title={t('st.settingsTransfer.title')} scope="app">
-        <div className="space-y-3">
-          <Hint>{t('st.settingsTransfer.description')}</Hint>
-          <button
-            type="button"
-            className={SECONDARY_BUTTON}
-            data-settings-transfer-open
-            onClick={() => { setOpen(true); }}
-          >
-            {t('st.settingsTransfer.open')}
-          </button>
-        </div>
+        <SettingsBox>
+          <SettingField label={t('st.settingsTransfer.open')} help={t('st.settingsTransfer.description')}>
+            <button
+              type="button"
+              className={SECONDARY_BUTTON}
+              data-settings-transfer-open
+              onClick={() => { setOpen(true); }}
+            >
+              {t('st.settingsTransfer.open')}
+            </button>
+          </SettingField>
+        </SettingsBox>
       </SectionCard>
       {open ? (
         <SettingsTransferPanel

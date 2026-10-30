@@ -31,6 +31,7 @@ import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { InlineError } from '../controls';
+
 import { RelativeTime } from '../RelativeTime';
 import { DANGER_BUTTON, SECONDARY_BUTTON } from '../ui';
 import { VersionBlock } from '../MemoryHistory';
@@ -205,11 +206,7 @@ export function MemoryGovernancePanel({ target, entry }: { readonly target: Memo
     staleTime: 5_000,
     retry: false,
   });
-  if (!authority.governed) {
-    return authority.kind === 'legacy' ? (
-      <p data-memory-governance="legacy" className="text-[12px] leading-relaxed text-ink-faint">{t('memory.governance.legacy')}</p>
-    ) : null;
-  }
+  if (!authority.governed) return null;
   const data = provenance.data;
   const shared = (data?.relatedObjectIds ?? []).filter((id) => id !== entry.id).length;
   const decisions = [...(data?.adjudications ?? [])].reverse();
@@ -357,11 +354,27 @@ export function MemoryForgetDialog({ target, entry, onClose, onForgotten }: {
   const { writable, kind } = useMemoryAuthority();
   const busy = forget.isPending;
   const failed = forget.isError && !stale ? forget.error : undefined;
+  // Forget is the one irreversible memory action, so it renders through
+  // ConfirmDialog: the exact preview, the acknowledgement and the repreview
+  // escape are its children.
   return (
-    <Dialog onClose={() => { if (!busy) onClose(); }} dismissible={!busy} role="alertdialog" ariaLabel={t('memory.forget.title')} overlayId="memory-forget"
-      panelClassName={`${DIALOG_PANEL_BASE} ${DIALOG_PANEL_SIZES.sm} flex max-h-[85dvh] flex-col max-md:max-w-none`}>
-      <div data-memory-forget={entry.id} className="min-h-0 flex-1 overflow-y-auto">
-        <h3 className="font-display text-[18px] font-semibold text-ink">{t('memory.forget.title')}</h3>
+    <ConfirmDialog
+      open
+      overlayId="memory-forget"
+      title={t('memory.forget.title')}
+      tone="danger"
+      busy={busy}
+      confirmLabel={stale || preview.isError ? t('memory.forget.repreview') : tp('memory.forget.confirm', Math.max(targets.length, 1))}
+      confirmDisabled={stale || preview.isError ? false : !ack || targets.length === 0 || !writable || preview.isPending}
+      confirmData={stale || preview.isError ? { 'data-memory-forget-repreview': '' } : { 'data-memory-forget-confirm': '' }}
+      cancelLabel={t('common.cancel')}
+      onCancel={() => { if (!busy) onClose(); }}
+      onConfirm={() => {
+        if (stale || preview.isError) { repreview(); return; }
+        if (writable) forget.mutate();
+      }}
+    >
+      <div data-memory-forget={entry.id} className="max-h-[55dvh] overflow-y-auto">
         {preview.isPending ? (
           <p role="status" className="mt-3 flex items-center gap-2 text-[13px] text-ink-faint"><span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />{t('memory.forget.previewing')}</p>
         ) : preview.isError ? (
@@ -400,16 +413,6 @@ export function MemoryForgetDialog({ target, entry, onClose, onForgotten }: {
           </>
         )}
       </div>
-      <div className="mt-6 flex shrink-0 flex-wrap justify-end gap-2">
-        <button type="button" data-memory-forget-cancel disabled={busy} onClick={onClose} className={`${SECONDARY_BUTTON} pointer-coarse:py-3`}>{t('common.cancel')}</button>
-        {stale || preview.isError ? (
-          <button type="button" data-memory-forget-repreview onClick={repreview} className={`${SECONDARY_BUTTON} pointer-coarse:py-3`}>{t('memory.forget.repreview')}</button>
-        ) : (
-          <button type="button" data-memory-forget-confirm disabled={!ack || busy || targets.length === 0 || !writable} onClick={() => { if (writable) forget.mutate(); }} className={`${DANGER_BUTTON} pointer-coarse:py-3`}>
-            {tp('memory.forget.confirm', Math.max(targets.length, 1))}
-          </button>
-        )}
-      </div>
-    </Dialog>
+    </ConfirmDialog>
   );
 }

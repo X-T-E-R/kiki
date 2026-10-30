@@ -44,12 +44,16 @@ export default {
       icon: ICON,
       enabled: true,
       skillCount: 1,
+      mcpServerCount: 1,
       originalSource: 'C:/kiki/plugins/kiki-notes',
     }),
     summary('sketchbook', {
       displayName: 'Sketchbook',
       version: '0.9.1',
       enabled: true,
+      // Installed with "decide later": enabled, not on in new sessions.
+      globalEnabled: false,
+      defaultEnabled: false,
       originalSource: 'C:/kiki/plugins/sketchbook',
     }),
     summary('kimi-webbridge', {

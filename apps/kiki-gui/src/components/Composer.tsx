@@ -4073,7 +4073,7 @@ function ModelChip({
                       : 'text-ink-soft hover:text-ink'
                   }`}
                 >
-                  <span className="capitalize">{level}</span>
+                  {t(`composer.effort.${level}` as I18nKey) === `composer.effort.${level}` ? <span className="capitalize">{level}</span> : t(`composer.effort.${level}` as I18nKey)}
                 </button>
               ))}
             </div>
