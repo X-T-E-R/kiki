@@ -283,10 +283,9 @@ export function ExternalEnginesList() {
         <p data-engines-hidden-note className="text-[12px] leading-4 text-ink-faint">{t('st.engines.showAllInListOffHint')}</p>
       ) : null}
       {query.isSuccess && engines.length === 0 ? (
-        <div data-engines-empty className="space-y-1 rounded-lg border border-dashed border-hairline-strong px-4 py-4">
-          <p className="text-[12px] leading-4 text-ink-faint">{t('st.engines.empty')}</p>
-          <p className="max-w-[62ch] text-[12px] leading-4 text-ink-faint">{t('st.engines.intro')}</p>
-        </div>
+        // One quiet line, not a dashed box: an empty list is a state, not an
+        // explanation (#12).
+        <p className="text-[13px] text-ink-soft" data-engines-empty>{t('st.engines.emptyLine')}</p>
       ) : null}
       {query.isLoading ? <Hint>{t('st.engines.loading')}</Hint> : null}
       {query.isError ? <InlineError error={query.error} /> : null}
