@@ -1209,6 +1209,24 @@ export function sessionHasStartedConversation(blocks: readonly Block[]): boolean
   return blocks.some((block) => block.kind === 'user');
 }
 
+/**
+ * Whether a picked engine counts as a pending switch. A pick restored from
+ * the /new draft before the first message is the session's own creation-time
+ * binding: the server resolved it with defaults the draft never named, so an
+ * identity comparison with the live binding would read a false switch (the
+ * chip "… · next message" without the user touching anything). Before the
+ * conversation starts the pick simply is the binding.
+ */
+export function executionPickIsPending(
+  pendingExecution: ExecutionChoice | undefined,
+  boundExecution: ExecutionChoice,
+  conversationStarted: boolean,
+): boolean {
+  if (pendingExecution === undefined) return false;
+  if (!conversationStarted) return false;
+  return !sameExecutionChoice(pendingExecution, boundExecution);
+}
+
 export function sessionAgentProfileWorkspaceId(session: Session | undefined): string | undefined {
   return session?.workspace_id;
 }
@@ -2551,11 +2569,12 @@ export function SessionView({
     () => boundExecutionChoice(executionBinding, state.session?.agent_config.profile),
     [executionBinding, state.session],
   );
+  const conversationStarted = state.loaded && sessionHasStartedConversation(state.blocks);
   const profilePending = pendingProfile !== undefined && pendingProfile !== boundProfile;
   const shownExecution = pendingExecution ?? (profilePending
     ? { ...boundExecution, profile: pendingProfile, profile_file: undefined }
     : boundExecution);
-  const executionPending = profilePending || (pendingExecution !== undefined && !sameExecutionChoice(pendingExecution, boundExecution));
+  const executionPending = profilePending || executionPickIsPending(pendingExecution, boundExecution, conversationStarted);
   // Engine names for the confirmation, from the same catalog the panel reads.
   const executorCatalog = useExecutorCatalog();
   const executorLabels = useMemo(() => ({
@@ -2581,7 +2600,6 @@ export function SessionView({
   });
   const sessionModel = state.model;
   const inheritedDefault = harness === undefined ? serverDefaultModel ?? liveSettings.defaultModel : undefined;
-  const conversationStarted = state.loaded && sessionHasStartedConversation(state.blocks);
   const initialBindingIntentRef = useRef({ model: initialOptionsRef.current.model, thinking: initialOptionsRef.current.thinking });
   const initialBindingPending = initialBindingStillPending({
     expectedModel: initialBindingIntentRef.current.model,

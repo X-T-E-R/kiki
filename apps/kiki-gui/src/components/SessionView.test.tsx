@@ -90,6 +90,7 @@ import {
   resolveProfileSwitchSubmission,
   resolveControlledSkillSubmission,
   executionSwitchName,
+  executionPickIsPending,
   sessionHasStartedConversation,
   withOptimisticUserBlock,
   recoverFailedSubmission,
@@ -1668,6 +1669,36 @@ describe('sessionHasStartedConversation', () => {
     expect(sessionHasStartedConversation([
       { kind: 'user', id: 'user-1', text: 'hello', createdAt: '2026-08-23T00:00:00.000Z' },
     ])).toBe(true);
+  });
+});
+
+describe('executionPickIsPending', () => {
+  // What the /new draft stores: the user's pick exactly as chosen.
+  const draft = { executor: 'native', profile: 'agent', profile_file: undefined, overrides: undefined };
+  // The server's resolved binding merges session defaults the draft never
+  // named (the create path folds permission_mode into the selection's
+  // overrides), so an identity comparison reads a switch that never happened.
+  const boundResolved = {
+    executor: 'native',
+    profile: 'agent',
+    profile_file: undefined,
+    overrides: { permission_mode: 'manual' as const },
+  };
+
+  it('does not read a restored /new draft pick as a switch before the conversation starts', () => {
+    expect(executionPickIsPending(draft, boundResolved, false)).toBe(false);
+    expect(executionPickIsPending({ ...draft, overrides: { model: 'example/model' } },
+      { ...boundResolved, overrides: { permission_mode: 'manual' as const, model: 'example/model' } }, false)).toBe(false);
+  });
+
+  it('treats a differing pick as pending once the conversation has started', () => {
+    expect(executionPickIsPending(draft, boundResolved, true)).toBe(true);
+    expect(executionPickIsPending({ executor: 'claude-acp', profile: undefined, overrides: undefined }, boundResolved, true)).toBe(true);
+  });
+
+  it('never reports pending without a pick', () => {
+    expect(executionPickIsPending(undefined, boundResolved, false)).toBe(false);
+    expect(executionPickIsPending(undefined, boundResolved, true)).toBe(false);
   });
 });
 
