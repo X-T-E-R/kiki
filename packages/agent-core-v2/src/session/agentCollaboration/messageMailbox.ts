@@ -77,6 +77,13 @@ export interface IAgentCollaborationMessageStore {
 export const IAgentCollaborationMessageStore: ServiceIdentifier<IAgentCollaborationMessageStore> =
   createDecorator<IAgentCollaborationMessageStore>('agentCollaborationMessageStore');
 
+/**
+ * Recipient delivery flushes its canonical input, persists a receipt in the session's
+ * `agent-message-receipts/<sourceAgentId>` outbox, then acknowledges the mailbox claim.
+ * Sender transcript projection runs independently, deduplicates by message id and removes
+ * the outbox entry only after its wire flush succeeds. A cold sender is not materialized
+ * for a receipt; attachment recovers its outbox without running model or tool work.
+ */
 export interface IAgentCollaborationMessagingService {
   readonly _serviceBrand: undefined;
 

@@ -91,7 +91,10 @@ import { agentService, createTestAgent, InMemoryWireRecordPersistence } from '..
 import { TurnPrompt, TurnSteer } from '#/agent/loop/turnOps';
 import { PromptEnqueued, PromptLaunchCommitted } from '#/agent/prompt/promptService';
 import { PromptOutcomeCommitted } from '#/agent/prompt/promptReplay';
-import { StorageError, StorageErrors } from '#/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 
 const signal = new AbortController().signal;
 const tempDirs: string[] = [];
@@ -2165,28 +2168,49 @@ describe('agent collaboration safe-boundary delivery', () => {
     },
   );
 
-  it('restores an unloaded registered sender to persist its receipt without running it', async () => {
-    const sender = createTestAgent();
-    const source: IAgentScopeHandle = {
-      id: 'agent-sender', kind: LifecycleScope.Agent,
-      accessor: { get: <T>(id: ServiceIdentifier<T>): T => sender.get(id) }, dispose: () => {},
-    };
+  it('keeps the claim recoverable until its durable receipt outbox is written', async () => {
+    const adapter = mailboxStore(tempDir());
+    const target = agentHandle('agent-target');
+    const service = messagingService(adapter, lifecycleHarness([target.handle]).service, sessionContext(), metadataHarness({ 'agent-target': {} }));
+    const storage = receiptStorage.get(adapter)!;
+    const write = vi.spyOn(storage, 'write').mockRejectedValueOnce(new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'outbox full'));
+    try {
+      const accepted = await service.send(sendInput('canonical first', 'outbox-full'));
+      await target.execution.hooks.onWillRun.run({ signal });
+      expect((await adapter.accept(messageInput('canonical first', 'outbox-full'))).delivery).toBe('queued');
+      expect(target.messages.filter(message => message.id === accepted.message.messageId)).toHaveLength(1);
+      expect(await storage.list(sessionContext().scope('agent-message-receipts/main'))).toHaveLength(0);
+      write.mockRestore();
+      await target.execution.hooks.onWillRun.run({ signal });
+      expect((await adapter.accept(messageInput('canonical first', 'outbox-full'))).delivery).toBe('delivered');
+      expect(target.messages.filter(message => message.id === accepted.message.messageId)).toHaveLength(1);
+      expect(await storage.list(sessionContext().scope('agent-message-receipts/main'))).toHaveLength(1);
+    } finally { await service.dispose(); }
+  });
+
+  it('retains a cold sender receipt until that sender is materialized without restoring or running it', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    const sender = createTestAgent({ persistence });
     const target = agentHandle('agent-target');
     const lifecycle = lifecycleHarness([target.handle]);
-    lifecycle.service.create.mockReturnValue(Promise.resolve(source));
-    const service = messagingService(mailboxStore(tempDir()), lifecycle.service, sessionContext(),
-      metadataHarness({ 'agent-sender': { type: 'sub', parentAgentId: 'agent-parent', forkedFrom: 'agent-original' }, 'agent-target': {} }));
+    lifecycle.service.create.mockImplementation(() => new Promise(() => {}));
+    const adapter = mailboxStore(tempDir());
+    const service = messagingService(adapter, lifecycle.service, sessionContext(),
+      metadataHarness({ 'agent-sender': {}, 'agent-target': {} }));
     try {
-      const accepted = await service.send({ ...sendInput('restore', 'restore-receipt'), sourceAgentId: 'agent-sender' });
-      expect(accepted.delivery).toBe('queued');
-      await target.execution.hooks.onWillRun.run({ signal });
-      expect(lifecycle.service.create).toHaveBeenCalledWith({
-        agentId: 'agent-sender', forkedFrom: 'agent-original', labels: { parentAgentId: 'agent-parent' },
-        delegator: { kind: 'agent', agentId: 'agent-parent' },
-      });
-      const records = [];
-      for await (const record of sender.wire.readJournal()) records.push(record);
-      expect(records).toContainEqual(expect.objectContaining({ type: 'agent_message.delivered', messageId: accepted.message.messageId }));
+      const input = { ...sendInput('restore', 'restore-receipt'), sourceAgentId: 'agent-sender' };
+      const accepted = await service.send(input);
+      const next = vi.fn(async () => {});
+      await target.execution.hooks.onWillRun.run({ signal }, next);
+      await target.handle.accessor.get(IAgentLoopService).hooks.onWillBeginStep.run({ turnId: 1, step: 1, firstStepOfTurn: false, signal }, next);
+      expect(next).toHaveBeenCalledTimes(2);
+      expect(lifecycle.service.create).not.toHaveBeenCalled();
+      expect((await adapter.accept({ ...input, sessionId: 'session-1' })).delivery).toBe('delivered');
+      expect(persistence.records.filter(record => record.type === 'agent_message.delivered')).toHaveLength(0);
+      lifecycle.add(testAgentHandle(sender, 'agent-sender'));
+      await vi.waitFor(() => { expect(persistence.records.filter(record => record.type === 'agent_message.delivered')).toEqual([
+        expect.objectContaining({ messageId: accepted.message.messageId, targetAgentId: 'agent-target' }),
+      ]); });
       expect(sender.llmCalls).toEqual([]);
     } finally {
       await service.dispose();
@@ -2194,41 +2218,57 @@ describe('agent collaboration safe-boundary delivery', () => {
     }
   });
 
-  it('retains a failed cold sender receipt without blocking normal hooks, then recovers once', async () => {
-    const sender = createTestAgent();
-    const source: IAgentScopeHandle = {
-      id: 'agent-sender', kind: LifecycleScope.Agent,
-      accessor: { get: <T>(id: ServiceIdentifier<T>): T => sender.get(id) }, dispose: () => {},
-    };
-    const target = agentHandle('agent-target');
-    const lifecycle = lifecycleHarness([target.handle]);
-    lifecycle.service.create.mockRejectedValueOnce(new Error('restore failed')).mockRejectedValueOnce(new Error('restore failed')).mockResolvedValue(source);
+  it.each(['cold-sender', 'sender-flush', 'receipt-delete'] as const)('releases the recipient and recovers exactly one delivered receipt after restart with %s blocked', async (failure) => {
     const adapter = mailboxStore(tempDir());
-    const ack = vi.spyOn(adapter, 'markDelivered');
-    const log = stubLog();
-    const warn = vi.spyOn(log, 'warn');
-    const input = { ...sendInput('recover', 'recover-cold-receipt'), sourceAgentId: 'agent-sender' };
-    const service = messagingService(adapter, lifecycle.service, sessionContext(), metadataHarness({ 'agent-sender': {}, 'agent-target': {} }), dispatchHarness(), residencyHarness(lifecycle.service).manager, log);
+    const targetPersistence = new InMemoryWireRecordPersistence();
+    const senderPersistence = new InMemoryWireRecordPersistence();
+    let target = createTestAgent({ persistence: targetPersistence });
+    let sender = createTestAgent({ persistence: senderPersistence });
+    const lifecycle = lifecycleHarness(failure === 'cold-sender'
+      ? [testAgentHandle(target, 'agent-target')]
+      : [testAgentHandle(target, 'agent-target'), testAgentHandle(sender, 'main')]);
+    lifecycle.service.create.mockImplementation(() => new Promise(() => {}));
+    let release!: () => void;
+    if (failure === 'sender-flush') vi.spyOn(sender.wire, 'flush').mockImplementation(() => new Promise(resolve => { release = resolve; }));
+    const metadata = metadataHarness({ main: {}, 'agent-target': {} });
+    let service = messagingService(adapter, lifecycle.service, sessionContext(), metadata);
+    const storage = receiptStorage.get(adapter)!;
+    if (failure === 'receipt-delete') vi.spyOn(storage, 'delete').mockRejectedValue(new Error('delete failed'));
     try {
-      const accepted = await service.send(input);
+      const accepted = await service.send(sendInput('durable recipient', `restart-${failure}`));
       const next = vi.fn(async () => {});
-      await target.execution.hooks.onWillRun.run({ signal }, next);
-      await target.handle.accessor.get(IAgentLoopService).hooks.onWillBeginStep.run({ turnId: 1, step: 1, firstStepOfTurn: false, signal }, next);
+      await target.get(IAgentExecutionService).hooks.onWillRun.run({ signal }, next);
+      await target.get(IAgentLoopService).hooks.onWillBeginStep.run({ turnId: 1, step: 1, firstStepOfTurn: false, signal }, next);
       expect(next).toHaveBeenCalledTimes(2);
-      expect(warn).toHaveBeenCalledTimes(2);
-      expect(lifecycle.service.create).toHaveBeenCalledTimes(2);
-      expect(ack).not.toHaveBeenCalled();
-      expect((await adapter.accept({ ...input, sessionId: 'session-1' })).delivery).toBe('queued');
-      await target.handle.accessor.get(IAgentLoopService).hooks.onWillBeginStep.run({ turnId: 1, step: 2, firstStepOfTurn: false, signal }, next);
-      expect(next).toHaveBeenCalledTimes(3);
-      expect(target.messages.filter((message) => message.id === accepted.message.messageId)).toHaveLength(1);
-      expect(ack).toHaveBeenCalledOnce();
-      expect((await adapter.accept({ ...input, sessionId: 'session-1' })).delivery).toBe('delivered');
-      const records = [];
-      for await (const record of sender.wire.readJournal()) records.push(record);
-      expect(records.filter((record) => record.type === 'agent_message.delivered')).toHaveLength(1);
+      expect(targetPersistence.records).toContainEqual(expect.objectContaining({ type: 'context.append_message',
+        message: expect.objectContaining({ id: accepted.message.messageId }) }));
+      expect((await adapter.accept(messageInput('durable recipient', `restart-${failure}`))).delivery).toBe('delivered');
+      expect(lifecycle.service.create).not.toHaveBeenCalled();
+      await vi.waitFor(async () => { expect(await storage.list(sessionContext().scope('agent-message-receipts/main'))).toHaveLength(1); });
+      if (failure !== 'cold-sender') await vi.waitFor(() => {
+        expect(senderPersistence.records.filter(record => record.type === 'agent_message.delivered')).toHaveLength(1);
+      });
+      await service.dispose();
+      if (failure === 'sender-flush') release();
+      vi.restoreAllMocks();
+      await target.dispose();
+      await sender.dispose();
+      target = createTestAgent({ persistence: targetPersistence });
+      target.get(IAgentExecutionService);
+      await target.restorePersisted();
+      sender = createTestAgent({ persistence: senderPersistence });
+      sender.get(IAgentExecutionService);
+      await sender.restorePersisted();
+      service = messagingService(adapter, lifecycleHarness([testAgentHandle(target, 'agent-target'), testAgentHandle(sender, 'main')]).service,
+        sessionContext(), metadata);
+      await vi.waitFor(async () => { expect(await storage.list(sessionContext().scope('agent-message-receipts/main'))).toHaveLength(0); });
+      expect(senderPersistence.records.filter(record => record.type === 'agent_message.delivered')).toHaveLength(1);
+      expect(target.context.get().filter(message => message.id === accepted.message.messageId)).toHaveLength(1);
+      expect(target.llmCalls).toHaveLength(0);
+      expect(sender.llmCalls).toHaveLength(0);
     } finally {
       await service.dispose();
+      await target.dispose();
       await sender.dispose();
     }
   });
@@ -2261,7 +2301,7 @@ describe('agent collaboration safe-boundary delivery', () => {
       const first = target.execution.hooks.onWillRun.run({ signal });
       if (failure === 'mailbox-ack') await expect(first).rejects.toThrow('ack failed');
       else await first;
-      expect((await adapter.accept(messageInput('retry', `retry-receipt-${failure}`))).delivery).toBe('queued');
+      expect((await adapter.accept(messageInput('retry', `retry-receipt-${failure}`))).delivery).toBe(failure === 'mailbox-ack' ? 'queued' : 'delivered');
       await service.dispose();
       service = messagingService(store, lifecycle.service, sessionContext(), metadata);
       await target.execution.hooks.onWillRun.run({ signal });
@@ -3036,7 +3076,10 @@ describe('agent collaboration consumed mailbox recovery', () => {
       expect(dispatch.runOnExisting).toHaveBeenCalledTimes(1);
       expect(targetPersistence.records).toContainEqual(expect.objectContaining({ type: 'prompt.outcome_committed',
         terminal: expect.objectContaining({ promptId: accepted.message.messageId, state: 'completed' }) }));
-      expect((await adapter.accept(messageInput('native wake', 'wake-restart'))).delivery).toBe('queued');
+      expect((await adapter.accept(messageInput('native wake', 'wake-restart'))).delivery).toBe('delivered');
+      await vi.waitFor(async () => {
+        expect(await receiptStorage.get(adapter)!.list(sessionContext().scope('agent-message-receipts/main'))).toHaveLength(1);
+      });
       await service.dispose();
       await target.dispose();
       diskFull = false;
@@ -3229,7 +3272,7 @@ describe('agent collaboration consumed mailbox recovery', () => {
       const attempt = target.get(IAgentExecutionService).hooks.onWillRun.run({ signal });
       if (failure === 'mailbox-ack') await expect(attempt).rejects.toMatchObject({ code: 'storage.disk_full' });
       else await attempt;
-      expect((await adapter.accept(messageInput('already consumed', `consumed-enospc-${failure}`))).delivery).toBe('queued');
+      expect((await adapter.accept(messageInput('already consumed', `consumed-enospc-${failure}`))).delivery).toBe(failure === 'mailbox-ack' ? 'queued' : 'delivered');
       expect(target.context.get().filter(entry => entry.id === message.id)).toHaveLength(0);
       expect(senderPersistence.records.filter(record => record.type === 'agent_message.delivered')).toHaveLength(1);
       diskFull = false;
@@ -3823,6 +3866,8 @@ function residencyHarness(lifecycle: AgentLifecycle) {
   return { manager, acquire, pins: () => pins };
 }
 
+const receiptStorage = new WeakMap<IAgentCollaborationMessageStore, InMemoryStorageService>();
+
 function messagingService(
   store: IAgentCollaborationMessageStore,
   lifecycle: AgentLifecycle,
@@ -3833,6 +3878,13 @@ function messagingService(
   log: ILogService = stubLog(),
 ): AgentCollaborationMessagingService {
   const ix = new TestInstantiationService();
+  let storage = receiptStorage.get(store);
+  if (storage === undefined) {
+    storage = new InMemoryStorageService();
+    receiptStorage.set(store, storage);
+  }
+  ix.set(IFileSystemStorageService, storage);
+  ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
   ix.set(IAgentCollaborationMessageStore, store);
   ix.set(IAgentLifecycleService, lifecycle);
   ix.set(ISessionContext, session);

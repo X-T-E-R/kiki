@@ -22,7 +22,6 @@ import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { IWireService } from '#/wire/wire';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
-import { delegatorRef, labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
 import { COLLABORATION_TASK_NAME_LABEL } from '#/session/agentCollaboration/registry';
 import {
   ISessionDispatchService,
@@ -31,6 +30,7 @@ import {
 import { ISessionMetadata, isExternalClientMain } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { AgentRunRequest } from '#/session/subagent/subagent';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 
 import {
   IAgentCollaborationMessageStore,
@@ -57,6 +57,13 @@ function isRecoverableMailboxRuntimeError(error: unknown): error is HomeRuntimeE
 interface ClaimedAgentMessage {
   readonly queued: QueuedAgentMessage;
   flushed: boolean;
+}
+
+interface PendingDeliveryReceipt {
+  readonly messageId: string;
+  readonly sourceAgentId: string;
+  readonly targetAgentId: string;
+  readonly deliveredAt: string;
 }
 
 interface PreparedExternalDelivery {
@@ -120,6 +127,8 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   private readonly deliveryTails = new Map<string, Promise<void>>();
   private readonly wakeTails = new Map<string, Promise<void>>();
   private readonly receiptTails = new Map<string, Promise<void>>();
+  private readonly receiptFlights = new Set<string>();
+  private readonly receiptRetries = this._register(new DisposableMap<string>());
   private readonly claimed = new Map<string, ClaimedAgentMessage>();
   private readonly acknowledged = new Set<string>();
   private readonly externalPrepared = new Map<string, string>();
@@ -135,6 +144,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     @ISessionDispatchService private readonly dispatch: ISessionDispatchService,
     @ISessionManager private readonly sessions: ISessionManager,
     @ILogService private readonly log: ILogService,
+    @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
   ) {
     super();
     for (const handle of lifecycle.list()) this.attach(handle);
@@ -349,6 +359,10 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
 
   private attach(handle: IAgentScopeHandle): void {
     if (this.subscriptions.has(handle.id)) return;
+    void this.recoverDeliveryReceipts(handle.id).catch((error: unknown) => {
+      this.log.warn('Agent delivery receipt recovery failed', { agentId: handle.id, error });
+      this.retryReceiptRecovery(handle.id);
+    });
     const subscriptions = new DisposableStore();
     const execution = handle.accessor.get(IAgentExecutionService);
     subscriptions.add(execution.hooks.onWillRun.register(
@@ -791,31 +805,70 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     return true;
   }
 
+  private receiptScope(sourceAgentId: string): string {
+    return this.session.scope(`agent-message-receipts/${sourceAgentId}`);
+  }
+
   private async recordDeliveryReceipt(message: AgentMessageAcceptance['message']): Promise<void> {
     if (message.senderKind === 'user') return;
-    await serializeForAgent(this.receiptTails, message.sourceAgentId, async () => {
-      let sender = this.lifecycle.get(message.sourceAgentId);
-      if (sender === undefined) {
-        const meta = (await this.metadata.read()).agents?.[message.sourceAgentId];
-        if (meta === undefined) return;
-        sender = await this.lifecycle.create({
-          agentId: message.sourceAgentId,
-          forkedFrom: meta.forkedFrom,
-          labels: labelsFromAgentMeta(meta),
-          delegator: delegatorRef(meta),
-        });
-      }
+    const scope = this.receiptScope(message.sourceAgentId);
+    const receipt = await this.documents.get<PendingDeliveryReceipt>(scope, message.messageId) ?? {
+      messageId: message.messageId,
+      sourceAgentId: message.sourceAgentId,
+      targetAgentId: message.targetAgentId,
+      deliveredAt: new Date().toISOString(),
+    };
+    await this.documents.set(scope, message.messageId, receipt);
+    this.projectDeliveryReceipt(receipt);
+  }
+
+  private async recoverDeliveryReceipts(sourceAgentId: string): Promise<void> {
+    const scope = this.receiptScope(sourceAgentId);
+    for (const key of await this.documents.list(scope)) {
+      if (this._store.isDisposed) return;
+      const receipt = await this.documents.get<PendingDeliveryReceipt>(scope, key);
+      if (receipt !== undefined) this.projectDeliveryReceipt(receipt);
+    }
+  }
+
+  private retryReceiptRecovery(sourceAgentId: string): void {
+    const key = `source/${sourceAgentId}`;
+    if (this._store.isDisposed || this.receiptRetries.has(key)) return;
+    const timer = setTimeout(() => {
+      void this.receiptRetries.deleteAndDispose(key);
+      void this.recoverDeliveryReceipts(sourceAgentId).catch((error: unknown) => {
+        this.log.warn('Agent delivery receipt recovery failed', { sourceAgentId, error });
+        this.retryReceiptRecovery(sourceAgentId);
+      });
+    }, ACKNOWLEDGEMENT_RETRY_MS);
+    timer.unref?.();
+    this.receiptRetries.set(key, toDisposable(() => { clearTimeout(timer); }));
+  }
+
+  private projectDeliveryReceipt(receipt: PendingDeliveryReceipt): void {
+    if (this._store.isDisposed || this.receiptFlights.has(receipt.messageId) ||
+      this.lifecycle.get(receipt.sourceAgentId) === undefined) return;
+    this.receiptFlights.add(receipt.messageId);
+    void serializeForAgent(this.receiptTails, receipt.sourceAgentId, async () => {
+      if (this._store.isDisposed) return;
+      const sender = this.lifecycle.get(receipt.sourceAgentId);
+      if (sender === undefined) return;
       const receipts = sender.accessor.get(IAgentStateService).get(agentMessageReceiptsKey);
-      if (receipts[message.messageId] !== true) {
+      if (receipts[receipt.messageId] !== true) {
         await sender.accessor.get(IEventDispatcher).dispatch(new AgentMessageDelivered({
-          messageId: message.messageId,
-          targetAgentId: message.targetAgentId,
+          messageId: receipt.messageId,
+          targetAgentId: receipt.targetAgentId,
           status: 'delivered',
-          deliveredAt: new Date().toISOString(),
+          deliveredAt: receipt.deliveredAt,
         }));
       }
+      if (this._store.isDisposed) return;
       await sender.accessor.get(IWireService).flush();
-    });
+      if (!this._store.isDisposed) await this.documents.delete(this.receiptScope(receipt.sourceAgentId), receipt.messageId);
+    }).catch((error: unknown) => {
+      this.log.warn('Agent delivery receipt projection failed; durable receipt retained', { messageId: receipt.messageId, error });
+      this.retryReceiptRecovery(receipt.sourceAgentId);
+    }).finally(() => { this.receiptFlights.delete(receipt.messageId); });
   }
 
   private async prepareExternalDelivery(
