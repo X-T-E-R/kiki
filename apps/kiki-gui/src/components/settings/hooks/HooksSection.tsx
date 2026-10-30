@@ -338,7 +338,9 @@ export function HooksSection() {
           data-hooks-rule={refKey(entry.ref)}
           aria-current={sameRef(selected, entry.ref) ? 'true' : undefined}
           onClick={() => select(entry.ref)}
-          className="row-interactive flex min-w-0 flex-1 flex-col items-start gap-0.5 py-1.5 pr-1 pl-3 text-left"
+          className={`flex min-w-0 flex-1 flex-col items-start gap-0.5 rounded-md py-1.5 pr-1 pl-3 text-left transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink ${
+            sameRef(selected, entry.ref) ? 'bg-ink/[0.06]' : 'hover:bg-ink/[0.04]'
+          }`}
         >
           <span className="flex max-w-full items-center gap-1.5">
             {hasIssue ? <span className="shrink-0 text-[11px] text-danger" role="img" aria-label={t('st.hooks.rowIssue')}>●</span> : null}

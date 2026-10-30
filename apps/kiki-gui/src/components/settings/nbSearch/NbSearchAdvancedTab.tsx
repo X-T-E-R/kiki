@@ -32,7 +32,7 @@ function NumberField({
   return (
     <SettingField label={label} help={invalid ? undefined : hint}>
       <input
-        className={`${INPUT} w-28 font-mono`}
+        className={`${INPUT} w-24 font-mono`}
         inputMode="numeric"
         value={value}
         onChange={(event) => {
@@ -82,7 +82,7 @@ export function NbSearchAdvancedTab({
   const { t } = useI18n();
 
   return (
-    <div className="space-y-4">
+    <>
       {/* Execution budgets card with anchor st-card-search-execution */}
       <SectionCard id="st-card-search-execution" title={t('st.nbSearch.executionTitle')}>
         <div className="space-y-3">
@@ -267,6 +267,6 @@ export function NbSearchAdvancedTab({
           ) : null}
         </div>
       </SectionCard>
-    </div>
+    </>
   );
 }

@@ -111,7 +111,17 @@ export function PermissionRulesSettings() {
     <div className="space-y-3" data-permission-rules>
       <Hint>{t('st.perm.rulesHint')}</Hint>
       {configQuery.isLoading ? <Hint>{t('st.perm.loading')}</Hint> : rules.length === 0
-        ? (editing === null ? <ListEmpty kind="none" title={t('st.perm.rulesEmpty')} /> : null)
+        ? (editing === null ? (
+          <div className="space-y-2 py-2" data-list-empty="none">
+            <p className="text-[13px] text-ink-soft">{t('st.perm.rulesEmpty')}</p>
+            <div>
+              <button type="button" className={SECONDARY_BUTTON} disabled={saving || !configQuery.data}
+                onClick={() => { setEditing({ index: null, draft: { ...NEW_RULE } }); setFeedback(null); }}>
+                {t('st.perm.add')}
+              </button>
+            </div>
+          </div>
+        ) : null)
         : <>
           <ListToolbar view={view} total={ruleItems.length} filters={filters}
             searchLabel={t('st.perm.search')} searchPlaceholder={t('st.perm.searchPlaceholder')} />

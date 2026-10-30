@@ -38,7 +38,7 @@ export function SettingsGroup({
 }) {
   return (
     <div className="space-y-2 pt-5 first:pt-0" data-settings-group>
-      <div className="px-1">
+      <div>
         <p className="text-[13px] font-medium text-ink">{title}</p>
         {help !== undefined ? <Hint>{help}</Hint> : null}
       </div>
