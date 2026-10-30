@@ -19,6 +19,8 @@ export type MiniMenuEntry =
       readonly key: string;
       readonly label: string;
       readonly danger?: boolean;
+      /** Rendered unavailable; activation never fires. */
+      readonly disabled?: boolean;
       readonly run: () => void | Promise<void>;
     }
   | { readonly separator: true };
@@ -31,7 +33,9 @@ export function MiniContextMenu({
   ariaLabel,
   overlayId,
   dataAttribute,
+  itemDataAttribute = 'data-menu-item',
   modalOwnerId,
+  autofocus = true,
 }: {
   readonly x: number;
   readonly y: number;
@@ -40,7 +44,14 @@ export function MiniContextMenu({
   readonly ariaLabel: string;
   readonly overlayId: string;
   readonly dataAttribute: string;
+  /** Per-item hook attribute; a surface with its own legacy key contract
+   * (the composer's `data-menu-action`) passes it instead of forking the menu. */
+  readonly itemDataAttribute?: string;
   readonly modalOwnerId?: string;
+  /** Focus the first item on open. Off where the opener owns the caret: the
+   * composer's clipboard menu pins a textarea selection that a focus move
+   * would drop, and its actions re-pin before they run. */
+  readonly autofocus?: boolean;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   // Whatever held focus when the menu opened — the link/chip/button for a
@@ -57,7 +68,7 @@ export function MiniContextMenu({
     returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const node = menuRef.current;
     if (node !== null) setSize({ width: node.offsetWidth, height: node.offsetHeight });
-    node?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
+    if (autofocus) node?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
   }, []);
 
   const restoreTriggerFocus = () => {
@@ -159,8 +170,9 @@ export function MiniContextMenu({
             key={entry.key}
             type="button"
             role="menuitem"
-            data-menu-item={entry.key}
-            className={`w-full rounded-md px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-paper focus-visible:bg-paper ${
+            {...{ [itemDataAttribute]: entry.key }}
+            disabled={entry.disabled}
+            className={`w-full rounded-md px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-paper focus-visible:bg-paper disabled:pointer-events-none disabled:opacity-45 ${
               entry.danger === true ? 'text-ink hover:text-danger' : 'text-ink'
             }`}
             onClick={() => {

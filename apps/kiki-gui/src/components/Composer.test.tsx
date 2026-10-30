@@ -2414,7 +2414,7 @@ describe('Composer file clipboard policy', () => {
       await dispatchClipboardPaste(textarea, [file]);
     } else {
       await act(async () => { textarea.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
-      await click(container.querySelector('[data-menu-action="paste"]')!);
+      await click(document.querySelector('[data-menu-action="paste"]')!);
       await settle();
       expect(navigator.clipboard.read).not.toHaveBeenCalled();
     }

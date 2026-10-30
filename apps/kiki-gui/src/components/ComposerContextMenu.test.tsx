@@ -9,6 +9,7 @@ import { I18nProvider } from '../i18n';
 import { useComposerContextMenu } from './ComposerContextMenu';
 
 const containers: HTMLDivElement[] = [];
+const roots: ReturnType<typeof createRoot>[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
 };
@@ -17,7 +18,10 @@ beforeAll(() => {
   reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Portaled menus live under <body>: only unmounting the root removes them;
+  // container.remove() would leave a stale panel for the next test to find.
+  await act(async () => { for (const root of roots.splice(0)) root.unmount(); });
   for (const container of containers.splice(0)) container.remove();
   vi.restoreAllMocks();
 });
@@ -71,6 +75,7 @@ async function mount(onPaste?: (text: string) => void, onPasteFiles?: (files: Fi
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
+  roots.push(root);
   await act(async () => {
     root.render(
       <I18nProvider>
@@ -100,7 +105,8 @@ describe('useComposerContextMenu', () => {
     const { container } = await mount();
     await openMenu(container, 3, 3);
 
-    const menu = container.querySelector('[data-composer-context-menu]');
+    // The shared MiniContextMenu portals to <body>.
+    const menu = document.querySelector('[data-composer-context-menu]');
     expect(menu).not.toBeNull();
     const labels = Array.from(menu!.querySelectorAll('[role="menuitem"]')).map((el) => el.textContent);
     expect(labels).toEqual(['Cut', 'Copy', 'Paste', 'Select all']);
@@ -119,12 +125,12 @@ describe('useComposerContextMenu', () => {
     const { container } = await mount();
     await openMenu(container, 6, 11); // "world"
 
-    const copy = container.querySelector('[data-menu-action="copy"]') as HTMLButtonElement;
+    const copy = document.querySelector('[data-menu-action="copy"]') as HTMLButtonElement;
     expect(copy.disabled).toBe(false);
     await act(async () => { copy.click(); await Promise.resolve(); });
 
     expect(written).toEqual(['world']);
-    expect(container.querySelector('[data-composer-context-menu]')).toBeNull();
+    expect(document.querySelector('[data-composer-context-menu]')).toBeNull();
     expect(clipboard.writeText).toHaveBeenCalledWith('world');
   });
 
@@ -147,7 +153,7 @@ describe('useComposerContextMenu clipping behaviours', () => {
     const { container } = await mount();
     await openMenu(container, 0, 5); // "hello"
 
-    const cut = container.querySelector('[data-menu-action="cut"]') as HTMLButtonElement;
+    const cut = document.querySelector('[data-menu-action="cut"]') as HTMLButtonElement;
     await act(async () => { cut.click(); await Promise.resolve(); });
 
     expect(written).toEqual(['hello']);
@@ -159,7 +165,7 @@ describe('useComposerContextMenu clipping behaviours', () => {
     const { container } = await mount();
     await openMenu(container, 6, 11); // select "world"
 
-    const paste = container.querySelector('[data-menu-action="paste"]') as HTMLButtonElement;
+    const paste = document.querySelector('[data-menu-action="paste"]') as HTMLButtonElement;
     await act(async () => { paste.click(); await Promise.resolve(); await Promise.resolve(); });
 
     expect(container.querySelector('textarea')!.value).toBe('hello PASTED');
@@ -178,7 +184,7 @@ describe('useComposerContextMenu clipping behaviours', () => {
     const { container } = await mount(undefined, onPasteFiles);
     await openMenu(container, 11, 11);
 
-    const paste = container.querySelector('[data-menu-action="paste"]') as HTMLButtonElement;
+    const paste = document.querySelector('[data-menu-action="paste"]') as HTMLButtonElement;
     await act(async () => { paste.click(); for (let i = 0; i < 6; i += 1) await Promise.resolve(); });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
@@ -197,7 +203,7 @@ describe('useComposerContextMenu clipping behaviours', () => {
     const onPasteFiles = vi.fn();
     const { container } = await mount(undefined, onPasteFiles);
     await openMenu(container, 6, 11);
-    await act(async () => { (container.querySelector('[data-menu-action="paste"]') as HTMLButtonElement).click(); });
+    await act(async () => { (document.querySelector('[data-menu-action="paste"]') as HTMLButtonElement).click(); });
     expect(onPasteFiles.mock.calls[0]?.[0][0].type).toBe('image/png');
     expect(container.querySelector('textarea')!.value).toBe('hello caption');
   });
@@ -209,7 +215,7 @@ describe('useComposerContextMenu clipping behaviours', () => {
     const onPasteFiles = vi.fn();
     const { container } = await mount(undefined, onPasteFiles);
     await openMenu(container, 6, 11);
-    await act(async () => { (container.querySelector('[data-menu-action="paste"]') as HTMLButtonElement).click(); });
+    await act(async () => { (document.querySelector('[data-menu-action="paste"]') as HTMLButtonElement).click(); });
     expect(getType).not.toHaveBeenCalled();
     expect(onPasteFiles.mock.calls[0]?.[0][0]).toMatchObject({ type: 'application/pdf', size: 0 });
     expect(container.querySelector('textarea')!.value).toBe('hello world');
@@ -222,7 +228,7 @@ describe('useComposerContextMenu clipping behaviours', () => {
     const { container } = await mount(undefined, onPasteFiles);
     await openMenu(container, 0, 5);
 
-    const paste = container.querySelector('[data-menu-action="paste"]') as HTMLButtonElement;
+    const paste = document.querySelector('[data-menu-action="paste"]') as HTMLButtonElement;
     await act(async () => { paste.click(); for (let i = 0; i < 6; i += 1) await Promise.resolve(); });
 
     expect(onPasteFiles).not.toHaveBeenCalled();
@@ -234,7 +240,7 @@ describe('useComposerContextMenu clipping behaviours', () => {
     const { container } = await mount();
     await openMenu(container, 0, 0);
 
-    const selectAll = container.querySelector('[data-menu-action="select-all"]') as HTMLButtonElement;
+    const selectAll = document.querySelector('[data-menu-action="select-all"]') as HTMLButtonElement;
     await act(async () => { selectAll.click(); });
 
     const textarea = container.querySelector('textarea')!;
