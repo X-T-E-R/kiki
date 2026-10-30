@@ -947,6 +947,7 @@ describe('FileSessionIndex (read model)', () => {
     expect((await store.listRecent({ limit: 1 })).items[0]?.id).toBe('new');
     await queryStore.recover!();
     expect((await store.listRecent({ childOf: 'parent' })).items.map((item) => item.id)).toEqual(['c', 'b']);
+    await mirror.drain();
     const manifest = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
     await queryStore.dropCollection(sessionCollection(manifest!.seq));
     await store.reprojectNow();
