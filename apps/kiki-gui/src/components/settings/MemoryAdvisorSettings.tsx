@@ -10,6 +10,7 @@ import {
 } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
+import { pushUndoToast } from '../../lib/toasts';
 import { useConnection } from '../../state/connection';
 import { StatusDot } from '../capabilities/primitives';
 import { FeedbackLine, Hint, SaveStatus, Toggle, type Feedback } from '../controls';
@@ -40,7 +41,6 @@ export function MemoryAdvisorSettingsCard() {
   const advisor = useMemoryAdvisor(workspaceId);
   const [saved, ping] = useSavedTick();
   const [slot, setSlot] = useState<WriteSlot | undefined>();
-  const [confirmRemove, setConfirmRemove] = useState(false);
 
   const data = advisor.data;
   const config = data?.advisor;
@@ -106,32 +106,25 @@ export function MemoryAdvisorSettingsCard() {
                 {probe.isPending ? t('memory.advisor.testing') : t('memory.advisor.test')}
               </button>
             ) : null}
-            {config !== undefined && !confirmRemove ? (
+            {config !== undefined ? (
               <button type="button" data-memory-advisor-remove className={`${LINK} text-danger`} disabled={busy}
-                onClick={() => { setConfirmRemove(true); }}>{t('memory.advisor.remove')}</button>
+                onClick={() => {
+                  // Removal writes only the advisor block, which is in hand, so
+                  // the toast's Undo writes the captured config back.
+                  const before = config;
+                  void write('remove', { advisor: null }).then((ok) => {
+                    if (!ok) return;
+                    pushUndoToast({
+                      text: t('memory.advisor.removedUndo'),
+                      undoFailedText: t('toast.undoFailed'),
+                      undo: async () => { await advisor.save.mutateAsync({ advisor: before }); },
+                    });
+                  });
+                }}>{t('memory.advisor.remove')}</button>
             ) : null}
           </div>
           <ProbeFeedback result={probe.data} error={probe.error} pending={probe.isPending} />
-          {config !== undefined && confirmRemove ? (
-            <div data-memory-advisor-remove-confirm className="space-y-1.5">
-              <p className="max-w-[62ch] text-[12px] leading-snug text-ink-soft">{t('memory.advisor.removeBody')}</p>
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                <button type="button" data-memory-advisor-remove-do className={`${LINK} text-danger`} disabled={advisor.save.isPending}
-                  onClick={() => { void write('remove', { advisor: null }).then((ok) => { if (ok) setConfirmRemove(false); }); }}>
-                  {advisor.save.isPending ? t('common.saving') : t('memory.advisor.removeConfirm')}
-                </button>
-                <button type="button" className={LINK} disabled={advisor.save.isPending}
-                  onClick={() => { setConfirmRemove(false); advisor.save.reset(); }}>{t('common.cancel')}</button>
-              </div>
-              {/* A refused removal stays in place: the reason sits here and
-                  the same button tries again. */}
-              {slot === 'remove' && advisor.save.isError ? (
-                <p data-memory-advisor-remove-error role="alert" className="text-[12px] leading-snug text-danger">
-                  {t('memory.advisor.saveFailed', { detail: errorText(locale, advisor.save.error) })}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
+
         </SettingsGroup>
 
         <FeedbackLine feedback={feedback} />

@@ -63,9 +63,8 @@ import {
   type MemoryTarget,
   type MemoryType,
 } from '../lib/client';
-import { pushToast } from '../lib/toasts';
+import { pushToast, pushUndoToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
-import { ConfirmDialog } from './ConfirmDialog';
 import { PAGE_WIDTH, PageHeader } from './PageChrome';
 import { RelativeTime } from './RelativeTime';
 import { InlineError, Toggle } from './controls';
@@ -974,7 +973,6 @@ function MemoryDetail({
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmForget, setConfirmForget] = useState(false);
   const [openHistory, setOpenHistory] = useState<string | null>(null);
   const { writable, governed } = useMemoryAuthority();
@@ -1019,27 +1017,21 @@ function MemoryDetail({
   const deleteMutation = useMutation({
     mutationFn: () => client.deleteMemory(target, entry.id, entry.revision),
     onSuccess: (result) => {
-      setConfirmDelete(false);
-      const title = entry.title;
-      pushToast({
-        tone: 'success',
-        text: t('memory.deleted', { title }),
-        retry: {
-          label: t('memory.undo'),
-          run: () => {
-            void client.undoMemory(target, result.operation_id)
-              .then(() => {
-                pushToast({ tone: 'success', text: t('memory.undone') });
-                onChanged();
-              })
-              .catch(fail);
-          },
+      // Deleting is journal-backed and undoable with the operation id the
+      // server returned, so it runs at once and the shared undo toast carries
+      // the inverse instead of asking first.
+      pushUndoToast({
+        text: t('memory.deleted', { title: entry.title }),
+        undoFailedText: t('toast.undoFailed'),
+        undo: async () => {
+          await client.undoMemory(target, result.operation_id);
+          onChanged();
         },
       });
       onChanged();
       onClosed();
     },
-    onError: (error: unknown) => { setConfirmDelete(false); fail(error); },
+    onError: fail,
   });
   const undoMutation = useMutation({
     mutationFn: (operationId: string) => client.undoMemory(target, operationId),
@@ -1093,7 +1085,7 @@ function MemoryDetail({
             only offered by the governed store, and only behind its own preview. */}
         {!editing && writable ? (
           <span className="ml-auto flex items-center gap-4">
-            <button type="button" data-memory-delete disabled={deleteMutation.isPending} onClick={() => { setConfirmDelete(true); }}
+            <button type="button" data-memory-delete disabled={deleteMutation.isPending} onClick={() => { deleteMutation.mutate(); }}
               className="rounded-sm text-[12px] text-danger/80 transition-colors hover:text-danger focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink disabled:opacity-60">
               {t('memory.delete')}
             </button>
@@ -1163,18 +1155,6 @@ function MemoryDetail({
         ) : null}
       </section>
 
-      <ConfirmDialog
-        open={confirmDelete}
-        title={t('memory.delete')}
-        body={entry.title}
-        consequences={[t('memory.deleteUndoable')]}
-        confirmLabel={t('memory.delete')}
-        tone="danger"
-        busy={deleteMutation.isPending}
-        overlayId="memory-delete-confirm"
-        onCancel={() => { setConfirmDelete(false); }}
-        onConfirm={() => { deleteMutation.mutate(); }}
-      />
       {confirmForget ? (
         <MemoryForgetDialog
           target={target}
