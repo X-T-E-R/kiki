@@ -260,8 +260,21 @@ export class MemoryDatabase {
       let imported = 0;
       let retained = 0;
       const issues: MemoryImportResult['issues'][number][] = [];
+      const identity = (scope: string, id: string): string => JSON.stringify([scope, id]);
+      const incoming = new Map(batch.flatMap((record) => record.entry === undefined ? [] : [[identity(record.scope, record.entry.id), record.entry] as const]));
+      const rejected = new Set<string>();
+      for (const row of this.db.prepare("SELECT scope,object_id FROM legacy WHERE issue='forgotten_source_rejected' AND payload='' AND object_id IS NOT NULL").all()) {
+        const scope = String(row['scope']);
+        const key = identity(scope, String(row['object_id']));
+        const entry = incoming.get(key);
+        if (entry === undefined || this.legacyEntryBlocked(scope, entry)) rejected.add(key);
+      }
+      for (const record of batch) for (const entry of [record.entry, ...(record.history ?? [])]) {
+        if (entry !== undefined && this.legacyEntryBlocked(record.scope, entry)) rejected.add(identity(record.scope, entry.id));
+      }
+      const blocked = (scope: string, id: string): boolean => this.blocked(scope, id) || rejected.has(identity(scope, id));
       for (const record of batch) {
-        const journal = record.journal?.filter((event) => !this.blocked(record.scope, event.id));
+        const journal = record.journal?.filter((event) => !blocked(record.scope, event.id));
         const payload = journal !== undefined && journal.length !== record.journal!.length ? journal.map((event) => JSON.stringify(event)).join('\n') : record.payload;
         const old = this.db.prepare('SELECT * FROM legacy WHERE scope=? AND key=?').get(record.scope, record.key);
         if (old?.['payload'] === payload && (record.key !== 'journal.jsonl' || old['issue'] === (record.issue ?? null))) {
@@ -273,15 +286,15 @@ export class MemoryDatabase {
         const sourceId = entry === undefined ? undefined : `source-evidence:${fingerprint(JSON.stringify([record.scope, record.key, entry.revision, record.payload]))}`;
         let issue = record.issue;
         if (entry !== undefined && this.legacyEntryBlocked(record.scope, entry)) {
+          if (!this.blocked(record.scope, entry.id)) this.db.prepare("INSERT INTO legacy VALUES(?,?,?,?,?,?) ON CONFLICT(scope,key) DO UPDATE SET payload=excluded.payload,object_id=excluded.object_id,revision=excluded.revision,issue=excluded.issue").run(record.scope, record.key, '', entry.id, entry.revision, 'forgotten_source_rejected');
           issues.push({ scope: record.scope, key: record.key, issue: 'forgotten_source_rejected' }); continue;
         }
-        for (const previous of record.history ?? []) if (!this.blocked(record.scope, previous.id)) this.db.prepare('INSERT OR IGNORE INTO revisions VALUES(?,?,?,?,?)').run(record.scope, previous.id, previous.revision, 0, JSON.stringify(previous));
-        for (const event of record.journal ?? []) {
-          if (this.blocked(record.scope, event.id)) continue;
+        for (const previous of record.history ?? []) if (!blocked(record.scope, previous.id)) this.db.prepare('INSERT OR IGNORE INTO revisions VALUES(?,?,?,?,?)').run(record.scope, previous.id, previous.revision, 0, JSON.stringify(previous));
+        for (const event of journal ?? []) {
           const encoded = JSON.stringify(event);
           if (this.db.prepare('SELECT 1 FROM journal WHERE scope=? AND id=? AND operation_id=? AND payload=?').get(record.scope, event.id, event.operationId, encoded) === undefined) this.db.prepare('INSERT INTO journal(scope,id,operation_id,payload) VALUES(?,?,?,?)').run(record.scope, event.id, event.operationId, encoded);
         }
-        const latest = new Map((record.journal ?? []).map((event) => [event.id, event]));
+        const latest = new Map((journal ?? []).map((event) => [event.id, event]));
         for (const event of latest.values()) {
           if (event.afterRevision !== null || this.blocked(record.scope, event.id) || this.db.prepare('SELECT 1 FROM heads WHERE scope=? AND id=?').get(record.scope, event.id) !== undefined) continue;
           const revision = `legacy-deleted:${event.operationId}`;

@@ -1067,6 +1067,33 @@ describe('single Memory authority and isolated recovery', () => {
     expect((await authority.status()).migrationIssues).not.toContainEqual(expect.objectContaining({ key: 'journal.jsonl', issue: 'forgotten_source_rejected' }));
   });
 
+  it.each(['updated', 'create-only', 'deleted'] as const)('filters signature-rejected legacy history and journal for a new %s object', async (shape) => {
+    const { authority, legacy } = managedMemory();
+    const origin = { writer: 'agent' as const, session: 'signature-history-fixture', turn: 17 };
+    const mutation = { action: 'create' as const, scope: global, type: 'feedback' as const, title: 'Forgotten signature owner', body: 'Forgotten complete instruction; exception 17.', reason: 'Source fixture', source: origin };
+    const forgotten = await legacy.put(mutation);
+    await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${forgotten.entry.id}.md`, payload: JSON.stringify(forgotten.entry), entry: forgotten.entry }]);
+    await store.forget(global, [{ id: forgotten.entry.id, expectedRevision: forgotten.entry.revision }], randomUUID());
+    const replay = await legacy.put({ ...mutation, title: 'New identity with forgotten signature' });
+    if (shape === 'updated') await legacy.put({ ...mutation, action: 'update', id: replay.entry.id, expectedRevision: replay.entry.revision, title: 'Renamed forgotten replay' });
+    if (shape === 'deleted') await legacy.delete(global, replay.entry.id, replay.entry.revision);
+    if (shape === 'create-only') {
+      const entry = replay.entry;
+      expect(await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }])).toMatchObject({ imported: 0, issues: [expect.objectContaining({ issue: 'forgotten_source_rejected' })] });
+      await close(); bind();
+    }
+    const managed = shape === 'create-only' ? managedMemory() : { authority };
+    if (shape === 'create-only') {
+      expect(await ix.get(IMemoryShadowImport).run(global, 'entries/zzzz.md')).toMatchObject({ complete: true });
+      expect(await store.journal(global, replay.entry.id)).toEqual([]);
+    }
+    expect(await managed.authority.prepare()).toMatchObject({ backend: 'sqlite', mode: 'active' });
+    expect(await store.get(global, replay.entry.id)).toBeUndefined();
+    expect(await store.getRevision(global, replay.entry.id, replay.entry.revision)).toBeUndefined();
+    expect(await store.journal(global, replay.entry.id)).toEqual([]);
+    expect((await persistence.legacy('memory/global')).every((record) => !record.payload.includes(replay.entry.id) && !record.payload.includes(mutation.body))).toBe(true);
+  });
+
   it('blocks a persisted whole-journal rejection until the same migration imports its history', async () => {
     const { authority, legacy } = managedMemory();
     const saved = await createManaged(legacy, 'Whole-journal rejection recovery');
