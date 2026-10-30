@@ -1,7 +1,7 @@
+import { useRef } from 'react';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
 import { searchHasUsageHistoryParams } from '../lib/usageV2';
-import { segmentClass } from './WorkspaceScopeControl';
 
 export type UsagePanel = 'history' | 'realtime' | 'quota' | 'export';
 
@@ -26,26 +26,59 @@ const NAV_ITEMS: readonly { id: UsagePanel; labelKey: string }[] = [
   { id: 'export', labelKey: 'usage.export.nav' },
 ];
 
+/**
+ * The page's views as an underline tab strip under the page title — the same
+ * navigation shape every tabbed settings page uses, with arrow/Home/End keys.
+ * `data-usage-panel` + `aria-current="page"` stay: deep links and the existing
+ * tests read the state from them.
+ */
 export function UsageNavigation({ panel, onChange }: { panel: UsagePanel; onChange: (panel: UsagePanel) => void }) {
   const { t } = useI18n();
+  const tabsRef = useRef<HTMLDivElement>(null);
+
+  const select = (next: UsagePanel, focus = false) => {
+    if (focus) tabsRef.current?.querySelector<HTMLButtonElement>(`[data-usage-panel="${next}"]`)?.focus();
+    if (next !== panel) onChange(next);
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent, index: number) => {
+    const last = NAV_ITEMS.length - 1;
+    const target = event.key === 'ArrowRight' ? (index === last ? 0 : index + 1)
+      : event.key === 'ArrowLeft' ? (index === 0 ? last : index - 1)
+      : event.key === 'Home' ? 0
+      : event.key === 'End' ? last
+      : null;
+    if (target === null) return;
+    event.preventDefault();
+    select(NAV_ITEMS[target]!.id, true);
+  };
+
   return (
-    <nav
-      aria-label={t('usage.title')}
-      className="order-last inline-flex w-full overflow-x-auto rounded-[9px] border border-hairline bg-paper p-0.5 sm:order-none sm:w-auto"
-    >
-      {NAV_ITEMS.map(({ id, labelKey }) => (
-        <button
-          key={id}
-          type="button"
-          data-usage-panel={id}
-          data-usage-nav-item={id}
-          aria-current={panel === id ? 'page' : undefined}
-          onClick={() => { onChange(id); }}
-          className={segmentClass(panel === id, 'h-7 flex-1 px-2.5 text-[12px] sm:flex-none pointer-coarse:min-h-11')}
-        >
-          {t(labelKey as I18nKey)}
-        </button>
-      ))}
-    </nav>
+    <div data-usage-nav role="tablist" aria-label={t('usage.title')} className="flex gap-1 overflow-x-auto border-b border-hairline">
+      {NAV_ITEMS.map(({ id, labelKey }, index) => {
+        const active = panel === id;
+        return (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            aria-current={active ? 'page' : undefined}
+            tabIndex={active ? 0 : -1}
+            data-usage-panel={id}
+            data-usage-nav-item={id}
+            onClick={() => { select(id); }}
+            onKeyDown={(event) => { onKeyDown(event, index); }}
+            className={`-mb-px min-h-9 shrink-0 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+              active
+                ? 'border-ink font-medium text-ink'
+                : 'border-transparent text-ink-soft hover:text-ink'
+            }`}
+          >
+            {t(labelKey as I18nKey)}
+          </button>
+        );
+      })}
+    </div>
   );
 }

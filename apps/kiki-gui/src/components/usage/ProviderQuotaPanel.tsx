@@ -101,18 +101,18 @@ export function ProviderQuotaPanel() {
 
   return (
     <div className="space-y-6" data-provider-quota-panel>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-hairline pb-3">
-        <h2 className="text-[14px] font-semibold text-ink">{t('usage.quota.title')}</h2>
+      <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2 className="mr-auto font-display text-[18px] leading-6 text-ink">{t('usage.quota.title')}</h2>
         <div className="flex items-center gap-3">
           {stale ? (
-            <span className="text-[11.5px] text-amber-ink" data-quota-stale>
+            <span className="text-[12px] text-amber-ink" data-quota-stale>
               {t('usage.governance.stale', { time: asOfTime ? time.relativeTime(asOfTime) : '' })}
             </span>
           ) : asOfTime ? (
-            <span className="text-[11.5px] text-ink-faint">{t('usage.quota.asOf', { time: time.relativeTime(asOfTime) })}</span>
+            <span className="text-[12px] text-ink-faint">{t('usage.quota.asOf', { time: time.relativeTime(asOfTime) })}</span>
           ) : null}
           <button type="button" data-quota-refresh-button onClick={() => void handleHeaderRefresh()} disabled={loading || isRefetching || refreshingAll}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-hairline bg-paper px-3 text-[12.5px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] disabled:opacity-50">
+            className="inline-flex min-h-8 items-center gap-1.5 rounded-sm text-[12.5px] text-ink-soft transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-selected-ink disabled:opacity-50 pointer-coarse:min-h-11">
             <Icon name="refresh" size={14} className={isRefetching || refreshingAll ? 'animate-spin' : undefined} />
             {t(isRefetching || refreshingAll ? 'usage.quota.refreshing' : 'usage.quota.refreshAll')}
           </button>
@@ -715,7 +715,7 @@ function QuotaMeterRow({ meter, sourceStatus }: { readonly meter: ProviderQuotaM
           ) : null}
         </span>
         <span className=" flex shrink-0 items-baseline gap-2">
-          <span className="font-mono text-[11.5px] text-ink tabular-nums">{valueText}</span>
+          <span className="text-[11.5px] text-ink tabular-nums">{valueText}</span>
           {resetTime ? <span className="text-[10.5px] text-ink-faint">{t('usage.quota.resets', { time: time.timeUntil(resetTime) })}</span> : null}
         </span>
       </div>

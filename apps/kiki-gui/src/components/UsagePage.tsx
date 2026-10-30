@@ -77,6 +77,7 @@ import {
 } from '../lib/usageV2';
 import { useConnection } from '../state/connection';
 import { Toggle } from './controls';
+import { SettingsSegmented, SettingsSelect } from './settings/SettingsPrimitives';
 import { SECONDARY_BUTTON } from './ui';
 import { PAGE_WIDTH, PageHeader } from './PageChrome';
 import { PricingPanel } from './usage/PricingPanel';
@@ -236,7 +237,7 @@ function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWi
               <span className="min-w-0 max-w-64 truncate text-ink">
                 <ThreadTitle text={current.title.trim() !== '' ? current.title : t('sidebar.untitled')} />
               </span>
-              <span data-usage-strip-current-cost className="shrink-0 font-mono text-ink-soft tabular-nums">
+              <span data-usage-strip-current-cost className="shrink-0 text-ink-soft tabular-nums">
                 {currentUsageError === 'read-failed' || currentCost === undefined ? '—' : formatCostUsd(currentCost)}
                 {currentCostUnknown && currentCost !== undefined ? <KnownSubtotalMarker /> : null}
               </span>
@@ -245,7 +246,7 @@ function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWi
             <span className="text-ink-faint">—</span>
           ))}
           {item(t('usage.strip.today'), today !== undefined ? (
-            <span data-usage-strip-tokens className="font-mono text-ink tabular-nums">
+            <span data-usage-strip-tokens className="text-ink tabular-nums">
               {todayTokenTotalUnknown ? '—' : time.formatTokens(totalTokensOf(today))}
               {' · '}
               {todayTokenTotalUnknown ? '—' : formatCostUsd(today.cost_usd_estimated)}
@@ -255,7 +256,7 @@ function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWi
             <span className="text-ink-faint">…</span>
           ))}
           {item(t('usage.strip.burnRate'), (
-            <span className="font-mono text-ink tabular-nums">
+            <span className="text-ink tabular-nums">
               {rate !== undefined ? t('usage.strip.burnRateValue', { rate: formatGrouped(rate) }) : '…'}
             </span>
           ))}
@@ -322,7 +323,7 @@ function FilterBar({
   // 40001 and the page would degrade to a load failure).
   const [rangeInvalid, setRangeInvalid] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const dateInput = 'h-9 rounded-md border border-hairline bg-paper px-2 font-mono text-[12px] text-ink outline-none focus:border-selected-ink aria-[invalid=true]:border-danger pointer-coarse:min-h-11';
+  const dateInput = 'h-9 rounded-md border border-hairline bg-paper px-2 text-[13px] text-ink tabular-nums outline-none focus:border-selected-ink aria-[invalid=true]:border-danger pointer-coarse:min-h-11';
 
   const chips: { key: string; label: string; clear: () => void }[] = [];
   if (filters.model !== undefined) {
@@ -409,48 +410,44 @@ function FilterBar({
         </div>
       ) : null}
       <label className="flex min-w-0 items-center gap-2">
-        <span className="shrink-0 text-[12px] text-ink-faint">{t('usage.workspace.label')}</span>
-        <span className="relative min-w-0">
-          <select
-            data-usage-workspace
+        <span className="shrink-0 text-[13px] text-ink">{t('usage.workspace.label')}</span>
+        <span className="min-w-0 max-w-44">
+          <SettingsSelect<string>
+            ariaLabel={t('usage.workspace.label')}
             value={filters.workspaceId ?? ''}
-            onChange={(event) => {
-              onChange({ ...filters, workspaceId: event.target.value === '' ? undefined : event.target.value });
-            }}
-            className={`${selectClass} ${filters.workspaceId !== undefined ? 'border-selected-ink text-ink' : 'text-ink-soft'}`}
-          >
-            <option value="">{t('usage.workspace.all')}</option>
-            {workspaces.map((workspace) => (
-              <option key={workspace.id} value={workspace.id}>{workspace.name}</option>
-            ))}
-          </select>
-          <Icon name="chevron" size={12} className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 rotate-90 text-ink-faint" />
+            dataAttr="data-usage-workspace"
+            onChange={(next) => { onChange({ ...filters, workspaceId: next === '' ? undefined : next }); }}
+            choices={[
+              { value: '', label: t('usage.workspace.all') },
+              ...workspaces.map((workspace) => ({ value: workspace.id, label: workspace.name })),
+            ]}
+          />
         </span>
       </label>
-      <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center gap-4">
+      <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center gap-x-4 gap-y-2">
         <button
           type="button"
           data-usage-filters-toggle
           aria-expanded={filtersOpen}
           onClick={() => { setFiltersOpen(!filtersOpen); }}
-          className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-[13px] transition-colors pointer-coarse:min-h-11 ${
-            chips.length > 0 ? 'border-selected-ink text-ink' : 'border-hairline text-ink-soft hover:text-ink'
+          className={`inline-flex min-h-8 items-center gap-1.5 rounded-sm text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+            chips.length > 0 ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
           }`}
         >
           {t('usage.filter.open')}
           {chips.length > 0 ? <span className="text-[12px] tabular-nums">{chips.length}</span> : null}
         </button>
-        <label className="flex min-h-8 items-center gap-2 text-[12.5px] text-ink-soft pointer-coarse:min-h-11">
-          <input
-            type="checkbox"
-            data-usage-compare
+        <span data-usage-compare-wrap className="inline-flex min-h-8 items-center gap-2 text-[12.5px] text-ink-soft pointer-coarse:min-h-11">
+          <Toggle
+            layout="bare"
+            label={t('usage.compare.enable')}
             checked={comparing}
             disabled={!compareAvailable}
-            onChange={(event) => { onCompareChange(event.target.checked); }}
-            className="h-3.5 w-3.5 accent-selected-ink"
+            onChange={onCompareChange}
+            dataAttr="data-usage-compare"
           />
           {compareAvailable ? t('usage.compare.enable') : t('usage.compare.unavailable')}
-        </label>
+        </span>
       </div>
       <div
         data-usage-filters-panel
@@ -521,7 +518,7 @@ function FilterBar({
                   onClick={chip.clear}
                   className="inline-flex min-h-8 items-center gap-1.5 rounded-full border border-selected-ink/40 bg-panel px-2.5 text-[12px] text-ink transition-colors hover:border-selected-ink focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
                 >
-                  <span className="max-w-56 truncate font-mono">{chip.label}</span>
+                  <span className="max-w-56 truncate">{chip.label}</span>
                   <Icon name="close" size={12} />
                 </button>
               </li>
@@ -548,7 +545,7 @@ function Kpi({ label, value, hint, dataValue, children }: {
   return (
     <section className="flex min-w-0 flex-col py-2">
       <p className="text-[11.5px] text-ink-faint">{label}</p>
-      <p {...valueProps} className="mt-2 truncate font-mono text-[26px] leading-none tracking-tight text-ink tabular-nums">
+      <p {...valueProps} className="mt-2 truncate text-[26px] leading-none tracking-tight text-ink tabular-nums">
         {value}
       </p>
       {hint !== undefined ? <div className="mt-2 text-[12px] leading-snug">{hint}</div> : null}
@@ -593,7 +590,7 @@ function KpiRow({
         dataValue="data-usage-summary-tokens"
         value={tokensUnknown ? '—' : time.formatTokens(totalTokensOf(summary))}
         hint={(
-          <span data-usage-summary-input-output className="font-mono text-ink-faint tabular-nums">
+          <span data-usage-summary-input-output className="text-ink-faint tabular-nums">
             {tokensUnknown
               ? '— / —'
               : t('usage.kpi.inputOutput', {
@@ -608,7 +605,7 @@ function KpiRow({
         dataValue="data-usage-summary-cache"
         value={tokensUnknown ? '—' : formatPercent(cacheHit)}
         hint={comparing && prior !== undefined ? (
-          <span className="font-mono text-ink-faint tabular-nums">{t('usage.compare.priorCacheHint')}</span>
+          <span className="text-ink-faint">{t('usage.compare.priorCacheHint')}</span>
         ) : cacheHit === null && !tokensUnknown ? (
           <span className="text-ink-faint">{t('usage.kpi.cacheHitNone')}</span>
         ) : undefined}
@@ -624,7 +621,7 @@ function KpiRow({
               {composition.map((part) => (
                 <li key={part.key} className="inline-flex items-center gap-1">
                   <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${part.fill}`} />
-                  {part.label} <span className="font-mono tabular-nums">{time.formatTokens(part.value)}</span>
+                  {part.label} <span className="tabular-nums">{time.formatTokens(part.value)}</span>
                 </li>
               ))}
             </ul>
@@ -707,7 +704,7 @@ function SessionsTab({
                   onClick={() => void navigate(`/s/${item.id}`)}
                   className={`${grid} w-full rounded-md px-2 py-2.5 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11`}
                 >
-                  <span className={`text-right font-mono text-[12px] tabular-nums ${rank <= 3 ? 'font-semibold text-ink' : 'text-ink-faint'}`}>
+                  <span className={`text-right text-[12px] tabular-nums ${rank <= 3 ? 'font-semibold text-ink' : 'text-ink-faint'}`}>
                     {rank}
                   </span>
                   <span className="min-w-0">
@@ -728,17 +725,17 @@ function SessionsTab({
                   <span className="hidden truncate text-[12px] text-ink-soft sm:block" title={item.workspace_id}>
                     {workspaceName(item.workspace_id) ?? item.workspace_id}
                   </span>
-                  <span data-usage-session-tokens={item.id} className="hidden text-right font-mono text-[12px] text-ink-soft tabular-nums sm:block">
+                  <span data-usage-session-tokens={item.id} className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block">
                     {unknownTotal ? '—' : time.formatTokens(totalTokensOf(item.usage))}
                     {item.usage.tokens_unknown === true && !unknownTotal ? <KnownSubtotalMarker /> : null}
                   </span>
-                  <span className="hidden text-right font-mono text-[12px] text-ink-soft tabular-nums sm:block">
+                  <span className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block">
                     {unknownTotal ? '—' : formatPercent(cacheHitRateOf(item.usage))}
                   </span>
                   <span className="hidden text-right text-[12px] text-ink-faint sm:block">
                     {time.relativeTime(new Date(item.updated_at).toISOString())}
                   </span>
-                  <span data-usage-session-cost={item.id} className="text-right font-mono text-[13px] font-semibold text-ink tabular-nums">
+                  <span data-usage-session-cost={item.id} className="text-right text-[13px] font-semibold text-ink tabular-nums">
                     {formatCostUsd(item.usage.cost_usd_estimated)}
                     {item.usage.cost_unknown ? <KnownSubtotalMarker /> : null}
                   </span>
@@ -808,22 +805,22 @@ function FiveHourTab({
     return <p className="py-8 text-center text-[13px] text-ink-faint">{t('usage.empty')}</p>;
   }
   return (
-    <ol className="space-y-3" data-usage-fivehour>
+    <ol className="divide-y divide-hairline border-t border-hairline" data-usage-fivehour>
       {windows.map((bucket) => (
         <li
           key={bucket.key}
           data-usage-fivehour-window={bucket.key}
-          className="rounded-lg border border-hairline bg-paper/50 px-3 pt-2 pb-1"
+          className="px-1 pt-3 pb-1"
         >
           <header className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-            <h3 className="font-mono text-[12.5px] font-semibold text-ink tabular-nums">
+            <h3 className="text-[13px] font-medium text-ink tabular-nums">
               {bucketLabel(bucket, 'five_hour', locale)}
             </h3>
-            <span className="ml-auto font-mono text-[12px] text-ink-soft tabular-nums">
+            <span className="ml-auto text-[12px] text-ink-soft tabular-nums">
               {time.formatTokens(bucketTokens(bucket))} {t('usage.col.tokens')}
               {bucket.groups.some((group) => group.tokens_unknown === true) ? <KnownSubtotalMarker /> : null}
             </span>
-            <span className="font-mono text-[12.5px] font-semibold text-ink tabular-nums">
+            <span className="text-[13px] font-semibold text-ink tabular-nums">
               {formatCostUsd(bucketCost(bucket))}
             </span>
           </header>
@@ -1193,7 +1190,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
       <PageHeader title={t('usage.title')} onToggleSidebar={onToggleSidebar} width="dashboard">
-        <UsageNavigation panel={panel} onChange={selectPanel} />
+        {/* 模型价格 is a panel over the page, not a view, so it stays a quiet
+            header action; the views themselves are the tab strip below. */}
         <button
           type="button"
           data-usage-pricing-open
@@ -1210,7 +1208,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
         <PricingPanel models={reliability?.unknown_price_models ?? []} onClose={() => { setPricingOpen(false); }} />
       ) : null}
       <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-4 pb-10 lg:px-8">
-        <div className={`mx-auto ${PAGE_WIDTH.dashboard} space-y-4`} data-usage-page>
+        <div className={`mx-auto ${PAGE_WIDTH.dashboard} space-y-6`} data-usage-page>
+          <UsageNavigation panel={panel} onChange={selectPanel} />
           {panel === 'export' ? (
             <UsageExportPanel />
           ) : panel === 'quota' ? (
@@ -1294,12 +1293,12 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                 </div>
               )}
 
-              {firstPage.reliability.complete || trend.length > 0 ? <section data-usage-detail className="border-t border-hairline pt-4">
+              {firstPage.reliability.complete || trend.length > 0 ? <section data-usage-detail>
                 {/* One chapter, one switcher: the views are the chapter's own
                     titles, so the content always sits directly under the tab
                     that chose it and no view leaves an empty shell behind. */}
-                <div className="flex flex-wrap items-baseline gap-x-5 gap-y-2">
-                  <div role="tablist" aria-label={t('usage.sources.title')} className="flex flex-wrap items-baseline gap-x-5 gap-y-1" data-usage-tabs>
+                <div className="flex flex-wrap items-baseline gap-x-5 gap-y-2 border-b border-hairline">
+                  <div role="tablist" aria-label={t('usage.sources.title')} className="flex flex-wrap items-baseline gap-1" data-usage-tabs>
                     {tabs.map(([id, label]) => (
                       <button
                         key={id}
@@ -1308,8 +1307,8 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                         aria-selected={tab === id}
                         data-usage-tab={id}
                         onClick={() => { selectTab(id); }}
-                        className={`min-h-9 border-b-2 pb-1 text-[15px] leading-tight transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
-                          tab === id ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
+                        className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+                          tab === id ? 'border-ink font-medium text-ink' : 'border-transparent text-ink-soft hover:text-ink'
                         }`}
                       >
                         {label}
@@ -1317,10 +1316,10 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
                     ))}
                   </div>
                   {tab === 'sources' ? (
-                    <span data-usage-source-scope className="text-[12.5px] text-ink-soft">{sourceScopeLabel}</span>
+                    <span data-usage-source-scope className="pb-1.5 text-[12px] text-ink-faint">{sourceScopeLabel}</span>
                   ) : null}
                   {tab === 'sources' && selectedBucket !== undefined ? (
-                    <span data-usage-source-subtotal className="ml-auto font-mono text-[15px] font-semibold text-ink tabular-nums">
+                    <span data-usage-source-subtotal className="ml-auto pb-1.5 text-[13px] font-semibold text-ink tabular-nums">
                       {formatCostUsd(sourceSubtotal)}
                     </span>
                   ) : null}

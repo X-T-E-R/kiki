@@ -93,19 +93,13 @@ describe('live request governance', () => {
     connection.client.getRequestGovernance.mockResolvedValue(snapshot);
     const { container, render } = mount('realtime');
     await settle(render);
-    const live = container.querySelector<HTMLDetailsElement>('[data-governance-live]')!;
+    const live = container.querySelector<HTMLElement>('[data-governance-live]')!;
     const rules = container.querySelector('[data-governance-rules]')!;
-    // The detail is what this tab is for, so it starts open.
-    expect(live.open).toBe(true);
+    // The live detail is a section on the page, not a collapsible card: the
+    // request table is what this tab is for, so it is always shown.
     expect(live.compareDocumentPosition(rules) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
     expect(rules.textContent).toContain('Concurrency limits');
-    // Still collapsible, and the headline totals stay while it is.
-    await act(async () => { live.querySelector('summary')!.click(); });
-    expect(live.open).toBe(false);
-    expect(container.querySelector('[data-governance-active]')?.textContent).toBe('3');
-    await act(async () => { live.querySelector('summary')!.click(); });
-    expect(live.open).toBe(true);
     expect(live.querySelector('[data-governance-dimensions]')?.textContent).toContain('provider-example');
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-governance-rule="provider-cap"] button')!.click(); });
     expect(container.querySelector('[data-governance-editor]')).not.toBeNull();
@@ -339,13 +333,12 @@ describe('limit rules editor', () => {
     const { container, render } = mount('realtime');
     await settle(render);
 
-    // Both panels are displayed simultaneously and open by default
-    const requestPanel = container.querySelector<HTMLDetailsElement>('[data-governance-live]')!;
-    const agentPanel = container.querySelector<HTMLDetailsElement>('[data-governance-live-agents]')!;
+    // Both live sections sit on the page at once, always shown.
+    const requestPanel = container.querySelector<HTMLElement>('[data-governance-live]')!;
+    const agentPanel = container.querySelector<HTMLElement>('[data-governance-live-agents]')!;
     expect(requestPanel).not.toBeNull();
-    expect(requestPanel.open).toBe(true);
+    expect(requestPanel.querySelector('[data-governance-dimensions]')).not.toBeNull();
     expect(agentPanel).not.toBeNull();
-    expect(agentPanel.open).toBe(true);
 
     // Headline counts for agents: main, sub, independent, total
     expect(container.querySelector('[data-governance-main-agents]')?.textContent).toBe('1');
@@ -664,18 +657,24 @@ describe('limit rules editor', () => {
     // Initial shows all 2 rules
     expect(container.querySelectorAll('[data-governance-rule]')).toHaveLength(2);
 
-    // Filter by agent_execution
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-axis-value="agent_execution"]')!.click();
-    });
+    // Filter by agent_execution: the resource choice lives in the quiet
+    // select above the list (the wrapper carries the current value).
+    const pick = async (optionValue: string) => {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-axis-select] button')!.click();
+      });
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>(`[role="option"][data-option-value="${optionValue}"]`)!.click();
+      });
+    };
+    await pick('agent_execution');
     expect(container.querySelectorAll('[data-governance-rule]')).toHaveLength(1);
     expect(container.querySelector('[data-governance-rule="agent-cap"]')).not.toBeNull();
     expect(container.querySelector('[data-governance-rule="provider-cap"]')).toBeNull();
+    expect(container.querySelector('[data-axis-select]')?.getAttribute('data-axis-select')).toBe('agent_execution');
 
     // Filter by model_request
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-axis-value="model_request"]')!.click();
-    });
+    await pick('model_request');
     expect(container.querySelectorAll('[data-governance-rule]')).toHaveLength(1);
     expect(container.querySelector('[data-governance-rule="provider-cap"]')).not.toBeNull();
     expect(container.querySelector('[data-governance-rule="agent-cap"]')).toBeNull();

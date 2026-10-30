@@ -1094,7 +1094,7 @@ describe('UsagePage (V2)', () => {
     expect(getUsage.mock.calls.every(([query]) => (query as Record<string, unknown>)['start_at'] === undefined)).toBe(true);
     expect(container.querySelector('[data-usage-compare="delta"]')).toBeNull();
 
-    await act(async () => { container.querySelector<HTMLInputElement>('[data-usage-compare]')!.click(); });
+    await act(async () => { container.querySelector<HTMLElement>('[data-usage-compare]')!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const priorCall = getUsage.mock.calls.find(([query]) => (query as Record<string, unknown>)['start_at'] !== undefined);
     expect(priorCall).toBeDefined();
@@ -1129,7 +1129,7 @@ describe('UsagePage (V2)', () => {
         : usageResponse({ summaryTokens: tokens(2400, 1600), trendTokens: tokens(2400, 1600) }),
     );
     const { container, root } = await renderPage('/usage?range=last_7_days&metric=cache');
-    await act(async () => { container.querySelector<HTMLInputElement>('[data-usage-compare]')!.click(); });
+    await act(async () => { container.querySelector<HTMLElement>('[data-usage-compare]')!.click(); });
     for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
     const points = container.querySelector('[data-usage-compare="delta"]');
@@ -1158,8 +1158,8 @@ describe('UsagePage (V2)', () => {
 
   it('refuses a comparison for unbounded all-history', async () => {
     const { container, root } = await renderPage('/usage?range=all');
-    const toggle = container.querySelector<HTMLInputElement>('[data-usage-compare]')!;
-    expect(toggle.disabled).toBe(true);
+    const toggle = container.querySelector<HTMLElement>('[data-usage-compare]')!;
+    expect(toggle.getAttribute('aria-disabled')).toBe('true');
     expect(container.textContent).toContain('Comparison needs a bounded range');
     await act(async () => { root.unmount(); });
   });
@@ -1694,11 +1694,18 @@ describe('UsagePage (V2)', () => {
 });
 
 describe('UsagePage manual full rescan', () => {
-  it('places panel navigation in PageHeader, KPIs before secondary metadata, granularity in TrendChart, and rescan in the filter panel', async () => {
+  it('places view tabs under the page header, KPIs before secondary metadata, granularity in TrendChart, and rescan in the filter panel', async () => {
     const { container, root } = await renderPage();
     const header = container.querySelector('[data-page-header-inner="dashboard"]')!;
     expect(header).not.toBeNull();
-    expect(header.querySelector('[data-usage-panel="history"]')).not.toBeNull();
+    // The views are an underline tab strip in the content below the header;
+    // the header itself keeps only the quiet pricing action.
+    expect(header.querySelector('[data-usage-panel]')).toBeNull();
+    expect(header.querySelector('[data-usage-pricing-open]')).not.toBeNull();
+    const nav = container.querySelector('[data-usage-nav]')!;
+    expect(nav).not.toBeNull();
+    expect(header.compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(nav.querySelector('[data-usage-panel="history"]')).not.toBeNull();
 
     const kpiCost = container.querySelector('[data-usage-summary-cost]')!;
     const secondaryMeta = container.querySelector('[data-usage-secondary-meta]')!;

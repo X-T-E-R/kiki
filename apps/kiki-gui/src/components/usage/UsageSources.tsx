@@ -34,7 +34,7 @@ import {
   type UsageSourceRow,
   type UsageTrendBucketWire,
 } from '../../lib/usageV2';
-import { segmentClass } from '../WorkspaceScopeControl';
+import { SettingsSegmented } from '../settings/SettingsPrimitives';
 import {
   CompareCell,
   formatPercent,
@@ -137,25 +137,25 @@ export function UsageSources({
             </div>
           </div>
           <div className="hidden items-center gap-2 sm:flex">
-            <ShareBar ratio={share ?? 0} tone="bg-ink-soft" />
-            <span className="w-9 shrink-0 text-right font-mono text-[11px] text-ink-faint tabular-nums">
+            <ShareBar ratio={share ?? 0} tone="bg-ink/45" />
+            <span className="w-9 shrink-0 text-right text-[11px] text-ink-faint tabular-nums">
               {share === null ? '—' : formatPercent(share)}
             </span>
           </div>
           <span
             data-usage-breakdown-tokens={row.key}
-            className="hidden text-right font-mono text-[12px] text-ink-soft tabular-nums sm:block"
+            className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block"
           >
             {unknownTotal ? '—' : time.formatTokens(row.totalTokens)}
             {row.tokensUnknown && row.totalTokens > 0 ? <KnownSubtotalMarker /> : null}
           </span>
-          <span className="hidden text-right font-mono text-[12px] text-ink-soft tabular-nums sm:block">
+          <span className="hidden text-right text-[12px] text-ink-soft tabular-nums sm:block">
             {formatPercent(cacheHit)}
           </span>
           <div className="flex items-center justify-end gap-x-3">
             {prior !== undefined ? (
               <>
-                <span className="hidden w-16 text-right font-mono text-[12px] text-ink-soft tabular-nums lg:block">
+                <span className="hidden w-16 text-right text-[12px] text-ink-soft tabular-nums lg:block">
                   {priorRow === undefined ? '—' : metric === 'cache'
                     ? formatPercent(cacheHitOf(priorRow))
                     : metric === 'tokens'
@@ -169,7 +169,7 @@ export function UsageSources({
             ) : null}
             <span
               data-usage-breakdown-cost={row.key}
-              className="text-right font-mono text-[13px] font-semibold text-ink tabular-nums"
+              className="text-right text-[13px] font-semibold text-ink tabular-nums"
             >
               {unknownTotal ? '—' : formatCostUsd(row.costUsdEstimated)}
               {row.costUnknown ? <span className="ml-1 inline-block align-[-1px] text-amber-ink">*</span> : null}
@@ -177,7 +177,7 @@ export function UsageSources({
           </div>
           {/* 390-wide reading: the name keeps the amount, the second line keeps
               share and tokens — the explanation is not hidden away. */}
-          <p className="col-span-2 -mt-0.5 pl-8 font-mono text-[11px] text-ink-faint tabular-nums sm:hidden">
+          <p className="col-span-2 -mt-0.5 pl-8 text-[11px] text-ink-faint tabular-nums sm:hidden">
             {t('usage.sources.mobileDetail', {
               share: share === null ? '—' : formatPercent(share),
               tokens: unknownTotal ? '—' : time.formatTokens(row.totalTokens),
@@ -187,7 +187,7 @@ export function UsageSources({
         {open ? (
           <div id={`usage-source-details-${row.key}`} className="border-t border-dashed border-hairline px-3 py-2.5">
             <p className="text-[11.5px] text-ink-faint">{t('usage.sources.tokenComposition')}</p>
-            <dl className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[12px] tabular-nums sm:grid-cols-4">
+            <dl className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-1 text-[12px] tabular-nums sm:grid-cols-4">
               <div><dt className="text-ink-faint">{t('usage.composition.fresh')}</dt><dd className="text-ink">{time.formatTokens(row.tokens.input_other)}</dd></div>
               <div><dt className="text-ink-faint">{t('usage.tokens.output')}</dt><dd className="text-ink">{time.formatTokens(row.tokens.output)}</dd></div>
               <div><dt className="text-ink-faint">{t('usage.tokens.cacheRead')}</dt><dd className="text-ink">{time.formatTokens(row.tokens.input_cache_read)}</dd></div>
@@ -226,20 +226,19 @@ export function UsageSources({
   return (
     <section id="usage-source-table" aria-label={t('usage.sources.title')} data-usage-sources={groupBy}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <div role="group" aria-label={t('usage.sources.grouping')} className="flex flex-wrap items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5">
-          {(['model', 'provider', 'profile', 'workspace'] as const).map((candidate) => (
-            <button
-              key={candidate}
-              type="button"
-              data-usage-grouping={candidate}
-              aria-pressed={groupBy === candidate}
-              onClick={() => { onSwitchGrouping(candidate); }}
-              className={`${segmentClass(groupBy === candidate, 'h-8 px-3 text-[12.5px] pointer-coarse:min-h-11')}`}
-            >
-              {t(`usage.sources.grouping.${candidate}`)}
-            </button>
-          ))}
-        </div>
+        <span className="flex items-center gap-2">
+          <span className="shrink-0 text-[13px] text-ink">{t('usage.sources.by')}</span>
+          <SettingsSegmented<UsageGroupBy>
+            ariaLabel={t('usage.sources.grouping')}
+            dataAttr="data-usage-grouping"
+            value={groupBy}
+            onChange={onSwitchGrouping}
+            choices={(['model', 'provider', 'profile', 'workspace'] as const).map((candidate) => ({
+              value: candidate,
+              label: t(`usage.sources.grouping.${candidate}`),
+            }))}
+          />
+        </span>
         <label className="ml-auto flex min-w-0 items-center gap-1.5">
           <span className="sr-only">{t('usage.sources.search')}</span>
           <input

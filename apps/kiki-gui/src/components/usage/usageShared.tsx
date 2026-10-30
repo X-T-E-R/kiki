@@ -1,5 +1,5 @@
 /**
- * Shared building blocks for the /usage dashboard: the section card, the
+ * Shared building blocks for the /usage dashboard: the section heading, the
  * segmented axis control, the per-bucket/per-row derivations the chart and
  * tables share, and the display rules for "unknown" usage (a dash, never a
  * reconstructed zero).
@@ -22,33 +22,37 @@ import {
   type UsageLegacyDimension,
   type UsageTrendBucketWire,
 } from '../../lib/usageV2';
-import { segmentClass } from '../WorkspaceScopeControl';
 
-export function UsageCard({ title, aside, children, className = '', ...rest }: {
-  readonly title?: ReactNode;
-  readonly aside?: ReactNode;
-  readonly children: ReactNode;
-  readonly className?: string;
+/**
+ * One chapter on a usage view: the same heading the settings pages use (a
+ * `SectionCard` title), one muted line under it, then the content. Sections
+ * sit directly on the page — no frame, no fill (the humane-settings rule 15):
+ * a frame stays reserved for real object lists, inputs and popovers.
+ */
+export function UsageSectionHeading({ title, help, actions, ...rest }: {
+  readonly title: string;
+  readonly help?: string;
+  readonly actions?: ReactNode;
   readonly [data: `data-${string}`]: string | boolean | undefined;
 }) {
   return (
-    <section
-      {...rest}
-      className={`rounded-xl border border-hairline bg-panel p-4 sm:p-5 ${className}`}
-    >
-      {title !== undefined || aside !== undefined ? (
-        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
-          {title !== undefined ? (
-            <h2 className="font-display text-[18px] leading-tight font-semibold text-ink">{title}</h2>
-          ) : null}
-          {aside}
-        </div>
-      ) : null}
-      {children}
-    </section>
+    <div {...rest} className="mb-3 space-y-0.5">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h2 className="mr-auto font-display text-[18px] leading-6 text-ink">{title}</h2>
+        {actions !== undefined && actions !== null ? (
+          <div className="flex shrink-0 items-center gap-2 self-center">{actions}</div>
+        ) : null}
+      </div>
+      {help !== undefined ? <p className="text-[12px] text-ink-faint">{help}</p> : null}
+    </div>
   );
 }
 
+/**
+ * A dimension choice (range, granularity, by-model): the settings segmented
+ * look — an unbordered tinted track with a raised paper chip for the chosen
+ * option, the label as plain text on the left.
+ */
 export function AxisGroup<T extends string>({
   label,
   options,
@@ -66,25 +70,32 @@ export function AxisGroup<T extends string>({
 }) {
   return (
     <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
-      <span className="shrink-0 text-[12px] text-ink-faint">{label}</span>
+      <span className="shrink-0 text-[13px] text-ink">{label}</span>
       <div
         role="group"
         aria-label={label}
         data-axis={dataAxis}
-        className="flex min-w-0 max-w-full flex-wrap items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5"
+        className="flex min-w-0 max-w-full flex-wrap items-center gap-0.5 rounded-md bg-ink/[0.04] p-0.5"
       >
-        {options.map((option) => (
-          <button
-            key={option}
-            type="button"
-            data-axis-value={option}
-            onClick={() => { onChange(option); }}
-            aria-pressed={value === option}
-            className={segmentClass(value === option, 'h-7 px-3 text-[12.5px]')}
-          >
-            {labelFor(option)}
-          </button>
-        ))}
+        {options.map((option) => {
+          const selected = value === option;
+          return (
+            <button
+              key={option}
+              type="button"
+              data-axis-value={option}
+              onClick={() => { onChange(option); }}
+              aria-pressed={selected}
+              className={`h-7 rounded-[5px] px-3 text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+                selected
+                  ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                  : 'text-ink-soft hover:text-ink'
+              }`}
+            >
+              {labelFor(option)}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -224,7 +235,7 @@ export function CompareCell({ outcome, points = false }: {
     ? 'text-ink-soft'
     : rounded > 0 ? 'text-amber-ink' : 'text-success';
   return (
-    <span data-usage-compare="delta" className={`font-mono text-[12px] tabular-nums ${tone}`}>
+    <span data-usage-compare="delta" className={`text-[12px] tabular-nums ${tone}`}>
       {flat ? '' : rounded > 0 ? '+' : '−'}{magnitude}
     </span>
   );

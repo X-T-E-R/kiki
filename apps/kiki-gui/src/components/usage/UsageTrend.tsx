@@ -30,7 +30,6 @@ import {
   type UsageMetric,
   type UsageTrendBucketWire,
 } from '../../lib/usageV2';
-import { segmentClass } from '../WorkspaceScopeControl';
 import {
   AxisGroup,
   bucketCacheHit,
@@ -40,15 +39,15 @@ import {
   formatPercent,
 } from './usageShared';
 
-/** Series fills, strongest first, on an ink ladder with one amber step so
- * neighbours stay apart; the accent is kept for "needs you", never a series.
- * The last slot is the "other" remainder. */
-const SERIES_FILLS = ['bg-ink-soft', 'bg-amber-rule', 'bg-ink-faint/55', 'bg-ink/20'] as const;
+/** Series fills on the paper/ink scale, strongest first, with the one accent
+ * step the theme already uses so two neighbouring stacks stay apart. The last
+ * slot is the "other" remainder. */
+const SERIES_FILLS = ['bg-ink/70', 'bg-accent/80', 'bg-ink/35', 'bg-ink/15'] as const;
 const OTHER_FILL = 'bg-hairline';
 const SERIES_LIMIT = SERIES_FILLS.length;
 /** Pointer/touch floor for one selectable bar; the row scrolls instead of
  * squeezing bars below the target size. */
-const MIN_BAR_PX = 44;
+const MIN_BAR_PX = 32;
 
 export function TrendChart({
   trend,
@@ -103,20 +102,27 @@ export function TrendChart({
         <div
           role="group"
           aria-label={t('usage.trend.title')}
-          className="inline-flex rounded-[9px] border border-hairline bg-paper p-0.5"
+          className="inline-flex flex-wrap items-center gap-0.5 rounded-md bg-ink/[0.04] p-0.5"
         >
-          {(['cost', 'tokens', 'cache'] as const).map((candidate) => (
-            <button
-              key={candidate}
-              type="button"
-              data-trend-metric={candidate}
-              onClick={() => { onMetricChange(candidate); }}
-              aria-pressed={metric === candidate}
-              className={`${segmentClass(metric === candidate, 'h-8 px-3 text-[12.5px] pointer-coarse:min-h-11')}`}
-            >
-              {t(`usage.trend.metric.${candidate}`)}
-            </button>
-          ))}
+          {(['cost', 'tokens', 'cache'] as const).map((candidate) => {
+            const selected = metric === candidate;
+            return (
+              <button
+                key={candidate}
+                type="button"
+                data-trend-metric={candidate}
+                onClick={() => { onMetricChange(candidate); }}
+                aria-pressed={selected}
+                className={`h-7 rounded-[5px] px-3 text-[13px] transition-colors focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11 ${
+                  selected
+                    ? 'bg-panel font-medium text-ink shadow-[var(--kiki-sheet-shadow)]'
+                    : 'text-ink-soft hover:text-ink'
+                }`}
+              >
+                {t(`usage.trend.metric.${candidate}`)}
+              </button>
+            );
+          })}
         </div>
         {onGranularityChange !== undefined ? (
           <AxisGroup
@@ -131,20 +137,16 @@ export function TrendChart({
         <span className="ml-auto text-[12px] text-ink-faint">{t('usage.trend.clickHint')}</span>
       </div>
       <div className="overflow-x-auto">
-        <div className="relative" style={chartWidth > 0 ? { minWidth: chartWidth + 56 } : undefined}>
-          {/* Gridlines at 0 / 50 / 100% of the scale, labelled on the right. */}
+        <div className="relative" style={chartWidth > 0 ? { minWidth: chartWidth } : undefined}>
+          {/* Hairline grid at 0 / 50 / 100% of the scale; the axis numbers stay
+              on the bars' own titles so the plot carries no second type. */}
           <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 bottom-0 flex flex-col justify-between">
             {[1, 0.5, 0].map((fraction) => (
-              <div key={fraction} className="flex items-center gap-2">
-                <span className="h-px flex-1 border-t border-dashed border-hairline" />
-                <span className="w-12 text-right font-mono text-[10px] text-ink-faint tabular-nums">
-                  {max > 0 ? formatValue(max * fraction) : ''}
-                </span>
-              </div>
+              <div key={fraction} className="h-px border-t border-hairline/70" />
             ))}
           </div>
           <div
-            className="relative mr-14 flex h-44 items-end justify-center gap-[3px]"
+            className="relative flex h-40 items-end justify-center gap-1.5 px-1"
             role="img"
             aria-label={`${t('usage.trend.title')} · ${peakIndex >= 0 && totals[peakIndex] !== undefined && totals[peakIndex]! > 0 ? t('usage.trend.peak', { value: formatValue(totals[peakIndex]!) }) : t('usage.empty')}`}
             data-usage-trend
@@ -188,14 +190,14 @@ export function TrendChart({
                   onClick={() => { onSelect(selected ? null : bucket.key); }}
                   title={title}
                   style={{ flexBasis: MIN_BAR_PX, minWidth: MIN_BAR_PX }}
-                  className={`group relative flex h-full shrink-0 grow flex-col justify-end rounded-t-[3px] transition-opacity focus-visible:outline-2 focus-visible:outline-selected-ink ${dimmed ? 'opacity-45 hover:opacity-80' : ''}`}
+                  className={`group relative flex h-full shrink-0 grow flex-col justify-end rounded-t-[3px] transition-opacity focus-visible:outline-2 focus-visible:outline-selected-ink ${dimmed ? 'opacity-40 hover:opacity-80' : ''}`}
                 >
                   <span aria-hidden className="absolute inset-0 rounded-[3px] bg-ink/0 transition-colors group-hover:bg-ink/[0.035]" />
                   {total <= 0 ? (
                     <span className="block h-[2px] w-full rounded-full bg-hairline" />
                   ) : metric === 'cache' ? (
                     <span
-                      className={`block w-full rounded-t-[3px] ${selected ? 'bg-success' : 'bg-success/60 group-hover:bg-success/80'}`}
+                      className={`block w-full rounded-t-[3px] ${selected ? 'bg-success/85' : 'bg-success/50 group-hover:bg-success/70'}`}
                       style={{ height: `${heightPct}%` }}
                     />
                   ) : (
@@ -216,10 +218,10 @@ export function TrendChart({
           </div>
         </div>
       </div>
-      <div className="mt-3 overflow-x-auto">
-        <div aria-hidden className="mr-14 flex justify-center gap-[3px]" style={chartWidth > 0 ? { minWidth: chartWidth + 56 } : undefined}>
+      <div className="mt-2 overflow-x-auto">
+        <div aria-hidden className="flex justify-center gap-1.5 px-1" style={chartWidth > 0 ? { minWidth: chartWidth } : undefined}>
           {trend.map((bucket, index) => (
-            <span key={bucket.key} style={{ flexBasis: MIN_BAR_PX, minWidth: MIN_BAR_PX }} className="shrink-0 grow truncate text-center font-mono text-[10px] text-ink-faint tabular-nums">
+            <span key={bucket.key} style={{ flexBasis: MIN_BAR_PX, minWidth: MIN_BAR_PX }} className="shrink-0 grow truncate text-center text-[10px] text-ink-faint tabular-nums">
               {index % labelEvery === 0 || index === trend.length - 1 ? bucketLabel(bucket, filters.granularity, locale) : ''}
             </span>
           ))}
