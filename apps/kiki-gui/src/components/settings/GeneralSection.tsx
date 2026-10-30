@@ -160,7 +160,7 @@ export function GeneralSection() {
       </SectionCard>
 
       <SectionCard id="st-card-sidebar-nav" title={t('st.sidebarNav.title')} scope="app" aside={t('st.sidebarNav.hint')}>
-        <div data-sidebar-nav-toggles className="grid rounded-lg border border-hairline bg-panel px-4 py-1.5 sm:grid-cols-2 sm:gap-x-8">
+        <div data-sidebar-nav-toggles className="grid sm:grid-cols-2 sm:gap-x-8">
           {ALL_SIDEBAR_NAV_KEYS.map((key) => {
             const isPinned = layoutPrefs.pinnedNavItems.includes(key);
             const label = key === 'personas'

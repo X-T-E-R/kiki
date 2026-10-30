@@ -48,10 +48,12 @@ export function SettingsGroup({
 }
 
 /**
- * The container a run of settings lives in: one bordered panel, one row per
- * decision, a hairline between rows. The section heading names the topic; the
- * box makes its rows read as one object instead of loose lines on the page.
- * Lists, tables and long free text stay outside a box.
+ * The run of settings under one section heading: one row per decision, a
+ * hairline between rows, no frame and no fill. The heading names the topic;
+ * the aligned rows and the lines between them make it read as one group
+ * instead of loose label/hint fragments. Not a card: the page background
+ * shows through, and a frame is reserved for real object lists.
+ * Lists, tables and long free text stay outside.
  *
  * Every direct child is a row and gets the row padding, so a `SettingField`,
  * a `DependentField`, a button line or a notice all line up on one edge. A
@@ -66,7 +68,7 @@ export function SettingsBox({ children, className = '', ...rest }: {
     <div
       {...rest}
       data-settings-box
-      className={`rounded-lg border border-hairline bg-panel [&>*]:px-4 [&>*]:py-2.5 [&>:empty]:hidden [&>:not(:empty)~:not(:empty)]:border-t [&>:not(:empty)~:not(:empty)]:border-hairline ${className}`}
+      className={`[&>*]:py-3 [&>:empty]:hidden [&>:not(:empty)~:not(:empty)]:border-t [&>:not(:empty)~:not(:empty)]:border-hairline ${className}`}
     >
       {children}
     </div>
