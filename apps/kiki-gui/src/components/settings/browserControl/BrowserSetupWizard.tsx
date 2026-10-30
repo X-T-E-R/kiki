@@ -44,11 +44,12 @@ import {
   presetAction, presetReadiness, runningStep, warningStep, whenText,
   type BrowserSetupStatus, type PresetReadiness,
 } from '../../../lib/browserRest';
-import { FeedbackLine, Hint, InlineError, type Feedback } from '../../controls';
+import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../../controls';
 import { Icon } from '../../icons';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { AdvancedDetails } from '../fields';
+import { RowFrame } from '../RowFrame';
 import { SettingsFlashContext } from '../SectionCard';
 import { SettingsSelect } from '../SettingsPrimitives';
 import { SOURCE_NAME_KEYS, useBrowserAllowance } from './browserAllowance';
@@ -201,8 +202,9 @@ function BrowserRoute({ preset, flashOpen, children }: {
 
   /**
    * Saves what the route found, then allows it. A refused or unproven save is
-   * reported and leaves the box clear and pressable again; it is never retried
-   * on its own.
+   * reported and leaves the item pressable again; it is never retried on its
+   * own. 全部允许 runs the same save for every found item in turn, so one
+   * press covers the common "allow everything it discovered" case.
    */
   const allowFound = async (item: FoundItem) => {
     setBusy('allow');
@@ -252,9 +254,27 @@ function BrowserRoute({ preset, flashOpen, children }: {
     }
   };
 
+  /** Every found item, one after another; the row offers this, the fold one each. */
+  const allowAllFound = async () => {
+    for (const item of found) {
+      // Sequential, not Promise.all: each save writes the same allowance set,
+      // and a parallel write would race the next one's read of it.
+      // eslint-disable-next-line no-await-in-loop
+      await allowFound(item);
+    }
+  };
+
   /** Set by the forced-off line so its fold opens; the fold owns its state. */
   const [openDiagnostics, setDiagnosticsOpen] = useState(false);
 
+  // A working route with nothing to do stays a row until the reader clicks;
+  // anything the route still offers or is doing — an action, a move, a
+  // blocker, a warning, a failure, an unsaved find — opens by itself so the
+  // next step is already on screen.
+  const [openDetail, setOpenDetail] = useState(false);
+  useEffect(() => {
+    if (flashOpen === true) setOpenDetail(true);
+  }, [flashOpen]);
   const readiness = presetReadiness(preset);
   const tone = READINESS_TONE[readiness];
   const prepare = presetAction(preset, 'prepare');
@@ -408,10 +428,6 @@ function BrowserRoute({ preset, flashOpen, children }: {
   // anything the route still offers or is doing — an action, a move, a
   // blocker, a warning, a failure, an unsaved find — opens by itself so the
   // next step is already on screen.
-  const [openDetail, setOpenDetail] = useState(false);
-  useEffect(() => {
-    if (flashOpen === true) setOpenDetail(true);
-  }, [flashOpen]);
   const hasActions = routeActions && (
     (prepare !== undefined && canPrepare)
     || (connect !== undefined && preset.candidates === undefined)
@@ -422,49 +438,45 @@ function BrowserRoute({ preset, flashOpen, children }: {
     || (sourceEnabled && needsLine);
 
   return (
-    <li
-      data-browser-route={preset.preset}
-      data-browser-route-state={sourceEnabled ? readiness : 'disabled'}
-      data-browser-source-enabled={sourceEnabled ? 'true' : 'false'}
-      className="min-w-0 border-t border-hairline py-3 first:border-t-0 first:pt-1"
-    >
-      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-        {/* The row opens its own setup inline; the switch beside it is the
-            only state change. No chevron, no third fold level. */}
-        <button type="button" data-browser-route-select
-          aria-expanded={expanded}
-          onClick={() => { setOpenDetail((current) => !current); }}
-          className="mr-auto min-w-0 rounded text-left text-[13.5px] font-medium text-ink outline-none transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40">
-          {name}
-        </button>
-        {owned.length === 0 ? null : (
-          <span className="shrink-0 text-[12px] tabular-nums text-ink-faint" data-browser-allowed-count={preset.preset}>
-            {t('st.browser.source.allowedOf', { allowed: sourceEnabled ? ownedAllowed : 0, total: owned.length })}
+    <li>
+      <RowFrame
+        data={{
+          'data-browser-route': preset.preset,
+          'data-browser-route-state': sourceEnabled ? readiness : 'disabled',
+          'data-browser-source-enabled': sourceEnabled ? 'true' : 'false',
+        }}
+        open={expanded}
+        onToggle={() => { setOpenDetail((current) => !current); }}
+        bodyId={`browser-route-body-${preset.preset}`}
+        expandLabel={t('st.browser.menu.openRow', { name })}
+        name={name}
+        marks={(
+          <span className="flex shrink-0 items-center gap-1.5">
+            {owned.length === 0 ? null : (
+              <span className="text-[12px] tabular-nums text-ink-faint" data-browser-allowed-count={preset.preset}>
+                {t('st.browser.source.allowedOf', { allowed: sourceEnabled ? ownedAllowed : 0, total: owned.length })}
+              </span>
+            )}
+            <span className="inline-flex items-center gap-1.5 text-[12px] text-ink-soft" data-browser-route-readiness={readiness}>
+              <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${sourceEnabled ? tone.dot : 'bg-hairline-strong'}`} />
+              {sourceEnabled ? t(tone.text) : t('st.browser.source.disabled')}
+            </span>
           </span>
         )}
-        <span className="inline-flex shrink-0 items-center gap-1.5 text-[12px] text-ink-soft" data-browser-route-readiness={readiness}>
-          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${sourceEnabled ? tone.dot : 'bg-hairline-strong'}`} />
-          {sourceEnabled ? t(tone.text) : t('st.browser.source.disabled')}
-        </span>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={sourceEnabled}
-          aria-label={t('st.browser.source.enable', { name })}
-          data-browser-source-switch={preset.preset}
-          disabled={busy !== null}
-          onClick={() => { void handleToggleSource(!sourceEnabled); }}
-          className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-[var(--kiki-motion-quick)] ${
-            sourceEnabled ? 'bg-selected ring-selected-ink/45' : 'bg-hairline ring-hairline-strong'
-          } ${busy !== null ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
-        >
-          <span
-            className={`inline-block h-3 w-3 transform rounded-full transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
-              sourceEnabled ? 'translate-x-[16px] bg-selected-ink' : 'translate-x-[3px] bg-ink-faint'
-            }`}
+        subtitle={sourceEnabled ? undefined : t('st.browser.source.disabledHint')}
+        control={(
+          <Toggle
+            layout="bare"
+            label={t('st.browser.source.enable', { name })}
+            checked={sourceEnabled}
+            disabled={busy !== null}
+            dataAttr="data-browser-source-switch"
+            dataAttrValue={preset.preset}
+            onChange={(next) => { void handleToggleSource(next); }}
           />
-        </button>
-      </div>
+        )}
+      >
+        <span data-browser-route-select className="sr-only">{name}</span>
 
       {!sourceEnabled ? (
         <>
@@ -475,45 +487,38 @@ function BrowserRoute({ preset, flashOpen, children }: {
         </>
       ) : (
         <>
-          {/* The blurb stands on the row even folded: it is the route's one
-              line of what this is, not setup detail. */}
+          {/* The blurb stands on the open body: it is the route's one line of
+              what this is. */}
           {preset.preset === 'ego-lite' ? (
-            <p className="mt-1 max-w-[62ch] text-[12.5px] leading-5 text-ink-soft" data-browser-route-ego-next>
+            <p className="max-w-[62ch] text-[12.5px] leading-5 text-ink-soft" data-browser-route-ego-next>
               {t(egoNextKey(preset))}
             </p>
           ) : (
-            <p className="mt-1 max-w-[62ch] text-[12.5px] leading-5 text-ink-soft">
+            <p className="max-w-[62ch] text-[12.5px] leading-5 text-ink-soft">
               {t(`st.browser.route.blurb.${preset.preset}`)}
             </p>
           )}
-          {expanded ? (
-            <>
           {found.length > 0 ? (
-            <div className="mt-2.5 space-y-1" data-browser-source-items={preset.preset}>
-              <p className="text-[12px] text-ink-faint">{t('st.browser.found.title')}</p>
-              <ul className="space-y-0.5">
-                {found.map((item) => (
-                  <li key={item.id}>
-                    <label className="flex min-w-0 cursor-pointer items-center gap-2.5 rounded-md px-2 py-1 text-[12px] hover:bg-ink/[0.03]">
-                      <input
-                        type="checkbox"
-                        className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-hairline-strong text-selected-ink focus:ring-0"
-                        data-browser-allow-checkbox={item.id}
-                        aria-label={t('st.browser.found.allow', { name: item.label })}
-                        checked={false}
-                        disabled={busy !== null || allowance.toolPolicyDenied}
-                        onChange={() => { void allowFound(item); }}
-                      />
-                      <span className="min-w-0 flex-1 truncate font-mono text-ink-soft" data-browser-identity={item.browserId} title={item.browserId}>
-                        {item.label}
-                      </span>
-                      <span className="shrink-0 text-[11px] text-ink-faint">{t('st.browser.found.notSaved')}</span>
-                    </label>
-                  </li>
-                ))}
-              </ul>
+            <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-2" data-browser-source-items={preset.preset}>
+              {/* A find is one fact and one action: how many, and allow them.
+                  The individual pipes move into the advanced fold — their raw
+                  ids are not the first thing to read. */}
+              <p className="text-[12.5px] text-ink-soft" data-browser-found-summary>
+                {t('st.browser.found.summary', { count: found.length, name })}
+                {' · '}
+                <span className="text-ink-faint">{t('st.browser.found.notSaved')}</span>
+              </p>
+              <button type="button" className={SECONDARY_BUTTON} data-browser-allow-all
+                disabled={busy !== null || allowance.toolPolicyDenied}
+                onClick={() => { void allowAllFound(); }}>
+                {busy === 'allow' ? t('st.browser.found.allowing') : t('st.browser.found.allowAll')}
+              </button>
             </div>
           ) : null}
+
+          {/* The bridge behind the Kimi route, as a status line in the open
+              body rather than a second fold on the row. */}
+          {children}
 
           {moving ? (
             <p role="status" className="mt-2 flex items-baseline gap-2 text-[12px] text-ink-soft" data-browser-route-progress={running.id}>
@@ -600,8 +605,11 @@ function BrowserRoute({ preset, flashOpen, children }: {
 
           <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-2">
             {!routeActions || prepare === undefined || busy !== null || moving || readiness === 'connected' || !canPrepare ? null : (
+              // An install the page asks for is the one accent move; switching
+              // an existing capability on is not, so featureOnly stays a
+              // secondary button.
               <button type="button"
-                className={openAction !== undefined && readiness === 'ready' ? SECONDARY_BUTTON : PRIMARY_BUTTON}
+                className={featureOnly || (openAction !== undefined && readiness === 'ready') ? SECONDARY_BUTTON : PRIMARY_BUTTON}
                 data-browser-route-prepare
                 disabled={busy !== null}
                 onClick={() => { setConfirming(true); }}>
@@ -669,7 +677,7 @@ function BrowserRoute({ preset, flashOpen, children }: {
           {/* One 高级 fold per route, not two: what it checked, then the rare
               actions (update, shortcut). The detection list leads because a
               reader who opens this fold usually wants the why. */}
-          {(updateAction !== undefined || shortcutAction !== undefined || preset.steps.some((item) => item.detail !== undefined)) ? (
+          {(found.length > 0 || updateAction !== undefined || shortcutAction !== undefined || preset.steps.some((item) => item.detail !== undefined)) ? (
             <div className="mt-2.5">
               {/* One fold; both ids stay so deep links and checks for either
                   old fold keep landing on it. */}
@@ -677,6 +685,31 @@ function BrowserRoute({ preset, flashOpen, children }: {
                 open={openDiagnostics || undefined}
                 onToggle={(event) => { setDiagnosticsOpen((event.currentTarget as HTMLDetailsElement).open); }}>
                 <div className="space-y-2 pt-1">
+                  {found.length === 0 ? null : (
+                    // One pipe on its own: ticking it saves and allows exactly
+                    // that one. 全部允许 on the row is the same save for all.
+                    <ul className="space-y-1" data-browser-found-picks>
+                      {found.map((item) => (
+                        <li key={item.id}>
+                          <label className="flex min-w-0 cursor-pointer items-center gap-2.5 text-[12px]">
+                            <input
+                              type="checkbox"
+                              className="h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-hairline-strong text-selected-ink focus:ring-0"
+                              data-browser-allow-checkbox={item.id}
+                              aria-label={t('st.browser.found.allow', { name: item.label })}
+                              checked={false}
+                              disabled={busy !== null || allowance.toolPolicyDenied}
+                              onChange={() => { void allowFound(item); }}
+                            />
+                            <span className="min-w-0 flex-1 truncate text-ink-soft" data-browser-identity={item.browserId} title={item.browserId}>
+                              {item.label}
+                            </span>
+                            <span className="shrink-0 text-[11px] text-ink-faint">{t('st.browser.found.notSaved')}</span>
+                          </label>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   {preset.steps.every((item) => item.detail === undefined) ? null : (
                     <>
                       <dl className="space-y-1.5" data-browser-route-diagnostics>
@@ -726,12 +759,8 @@ function BrowserRoute({ preset, flashOpen, children }: {
               </AdvancedDetails>
             </div>
           ) : null}
-            </>
-          ) : null}
         </>
       )}
-
-      {children}
 
       <ConfirmDialog open={confirming} overlayId={`confirm-browser-prepare-${preset.preset}`}
         title={t('st.browser.route.confirmTitle', { name })}
@@ -750,6 +779,7 @@ function BrowserRoute({ preset, flashOpen, children }: {
         confirmLabel={t('st.browser.route.prepare')}
         onCancel={() => { setConfirming(false); }}
         onConfirm={() => { void act('prepare'); }} />
+      </RowFrame>
     </li>
   );
 }

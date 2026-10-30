@@ -61,6 +61,8 @@ export function Toggle({
   onChange,
   disabled = false,
   layout = 'inline',
+  dataAttr,
+  dataAttrValue,
 }: {
   id?: string;
   label: string;
@@ -73,6 +75,10 @@ export function Toggle({
    * already prints the label; the label stays for assistive tech only.
    */
   layout?: 'inline' | 'row' | 'bare';
+  /** The data attribute the switch track carries, for deep links and tests. */
+  dataAttr?: string;
+  /** The attribute's value when it names one of several (a preset id). */
+  dataAttrValue?: string;
 }) {
   const text = <span className={layout === 'bare' ? 'sr-only' : 'text-[13px] text-ink'}>{label}</span>;
   // Quiet switch: a tinted track with a solid knob. ON is a choice you made,
@@ -94,6 +100,7 @@ export function Toggle({
         role="switch"
         aria-checked={checked}
         aria-disabled={disabled}
+        {...(dataAttr === undefined ? {} : { [dataAttr]: dataAttrValue ?? '' })}
         className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-[var(--kiki-motion-quick)] peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-selected-ink ${
           checked ? 'bg-selected ring-selected-ink/45' : 'bg-hairline ring-hairline-strong'
         }`}

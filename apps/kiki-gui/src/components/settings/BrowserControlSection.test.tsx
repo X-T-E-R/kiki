@@ -2481,7 +2481,7 @@ describe('BrowserControlSection', () => {
       await openSources();
       await settleUntil('[data-browser-source-items="codex-browser"]');
 
-      const sourceSwitch = query<HTMLButtonElement>('[data-browser-source-switch="codex-browser"]');
+      const sourceSwitch = query<HTMLElement>('[data-browser-source-switch="codex-browser"]');
       expect(sourceSwitch).not.toBeNull();
       expect(sourceSwitch?.getAttribute('aria-checked')).toBe('true');
       expect(query('[data-browser-verdict="allowed"]')?.textContent).toContain('Allowed browsers: 1');

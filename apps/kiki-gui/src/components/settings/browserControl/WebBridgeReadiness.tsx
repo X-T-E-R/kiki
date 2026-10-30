@@ -2,13 +2,11 @@
  * WebBridge readiness — whether the local bridge behind the Kimi route is
  * actually working, and the one action that starts it.
  *
- * It sits inside the Kimi route it serves as a fold, so the page says "Kimi"
- * once and a working bridge costs one quiet line. The fold opens by itself
- * when the bridge needs a person: a read that failed (the state is unknown,
- * never "fine"), a missing or failed runtime, or an install still running.
- * Its old bookmark still lands here (`st-card-webbridge` in
- * `LEGACY_CARD_ALIASES`): the block announces the id the way a settings card
- * does, opens, and flashes when a search hit asks for it.
+ * It renders as one status line inside the Kimi route's open body (name ·
+ * state · what is left, plus its check), not as a second fold on the row: the
+ * route's own 高级 fold already carries the step-by-step detection. Its old
+ * bookmark still lands here (`st-card-webbridge`): the block announces the id
+ * the way a settings card does and flashes when a search hit asks for it.
  */
 
 import { useContext, useEffect, useState } from 'react';
@@ -22,7 +20,6 @@ import type { CapabilityStatus } from '../../../lib/client';
 import { useConnection } from '../../../state/connection';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { FeedbackLine, InlineError, type Feedback } from '../../controls';
-import { Icon } from '../../icons';
 import { SECONDARY_BUTTON } from '../../ui';
 import { SettingsCardMountContext, SettingsFlashContext } from '../SectionCard';
 
@@ -128,46 +125,33 @@ export function WebBridgeReadiness() {
   const runtimeMissing = steps.some((step) => (step.id === 'daemon' || step.id === 'skill') && (step.state === 'missing' || step.state === 'failed'));
   const stepFailed = steps.some((step) => step.state === 'failed');
   const needsSetup = capability !== undefined && capability.state !== 'unsupported' && (capability.state === 'not_installed' || runtimeMissing || stepFailed);
-  const attention = query.isError || needsSetup || capability?.install.running === true || capability?.install.error !== undefined
-    || (capability?.state === 'partial' && blocking.length > 0);
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    if (attention || flashId === 'st-card-webbridge') setOpen(true);
-  }, [attention, flashId]);
   return (
-    <details
+    <div
       id="st-card-webbridge"
       data-settings-card="st-card-webbridge"
       data-webbridge-readiness
-      open={open}
-      onToggle={(event) => { setOpen((event.currentTarget as HTMLDetailsElement).open); }}
-      className={`mt-2.5 scroll-mt-4 text-[12px] ${flashId === 'st-card-webbridge' ? 'settings-card-flash' : ''}`}
+      className={`mt-2.5 scroll-mt-4 space-y-2 text-[12px] ${flashId === 'st-card-webbridge' ? 'settings-card-flash' : ''}`}
     >
-      {/* The shared fold chevron, not the browser's ▶ marker. */}
-      <summary className="-ml-1 inline-flex min-h-7 cursor-pointer list-none select-none items-center gap-1 rounded px-1 font-medium text-ink-soft outline-none transition-colors hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 [&::-webkit-details-marker]:hidden">
-        <Icon name="chevron" size={12} className="shrink-0 text-ink-faint transition-transform duration-[var(--kiki-motion-quick)] ease-out [details[open]>summary>&]:rotate-90 motion-reduce:transition-none" />
-        <span className="font-medium">{t('st.plugins.runtimeTitle')}</span>
-        {capability === undefined || query.isError ? null : (
-          <span className={capability.state === 'ready' ? 'text-ink-soft' : 'text-ink'} data-webbridge-state={capability.state}>
-            {` · ${t(`st.plugins.runtimeState.${capability.state}`)}`}
-          </span>
-        )}
-      </summary>
-      <div className="mt-2 space-y-2">
+      {/* A status line, not a fold: what the bridge is, in the route's own
+          words, with its one check beside it. */}
       {query.isPending ? <BusyHint>{t('st.plugins.loading')}</BusyHint> : query.isError ? (
         <QueryRetry error={query.error} onRetry={() => { void query.refetch(); }} />
       ) : capability !== undefined ? (
-        <>
-          {capability.state === 'partial' && blocking.length > 0 ? (
-            <p className="text-[12px] leading-4 text-ink-soft" data-webbridge-blocking>
-              {t('st.plugins.runtimeState.partialHint', {
-                items: blocking.map((step) => t(WEBBRIDGE_BLOCKER_LABEL_KEYS[step.id] ?? 'st.plugins.runtimeStep.detect')).join('、'),
-              })}
-            </p>
-          ) : null}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <p className="text-ink-soft">
+            <span className="text-ink">{t('st.plugins.runtimeTitle')}</span>
+            <span data-webbridge-state={capability.state}>{` · ${t(`st.plugins.runtimeState.${capability.state}`)}`}</span>
+            {capability.state === 'partial' && blocking.length > 0 ? (
+              <span className="text-ink-faint" data-webbridge-blocking>
+                {` · ${t('st.plugins.runtimeState.partialHint', {
+                  items: blocking.map((step) => t(WEBBRIDGE_BLOCKER_LABEL_KEYS[step.id] ?? 'st.plugins.runtimeStep.detect')).join('、'),
+                })}`}
+              </span>
+            ) : null}
+          </p>
           {capability.install.running ? <BusyHint>{capability.install.step ?? t('st.plugins.runtimeStarted')}</BusyHint> : null}
           {capability.install.error ? <FeedbackLine feedback={{ tone: 'error', text: capability.install.error }} /> : null}
-          <div className="flex flex-wrap items-center gap-2">
+          <span className="flex flex-wrap items-center gap-2">
             <button type="button" className={SECONDARY_BUTTON} onClick={() => { void query.refetch(); }} data-webbridge-check>
               {t('st.plugins.checkHealth')}
             </button>
@@ -185,8 +169,8 @@ export function WebBridgeReadiness() {
                 {t('st.plugins.browserExtension')}
               </ExternalLink>
             ) : null}
-          </div>
-        </>
+          </span>
+        </div>
       ) : null}
       <FeedbackLine feedback={feedback} />
       {confirming?.plan !== undefined ? (
@@ -202,7 +186,6 @@ export function WebBridgeReadiness() {
           onCancel={() => { setConfirming(null); }}
           onConfirm={() => { void prepare(confirming); }} />
       ) : null}
-      </div>
-    </details>
+    </div>
   );
 }

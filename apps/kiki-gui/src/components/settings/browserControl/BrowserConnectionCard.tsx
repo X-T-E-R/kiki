@@ -587,7 +587,7 @@ export function BrowserConnectionCard() {
               )}
               {/* Where the run happens, in plain words — the fact the old id
                   header line carried. */}
-              <span className="min-w-0 break-all font-mono text-[11px] text-ink-faint" data-browser-execution-host>
+              <span className="min-w-0 break-all text-[11px] text-ink-faint" data-browser-execution-host>
                 {draft.type === 'agent-browser-cdp'
                   ? endpointHost(draft.original?.endpointDisplay) ?? t('st.browser.location.unknown')
                   : selectedStatus.executionHost}
