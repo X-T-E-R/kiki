@@ -23,6 +23,9 @@ import {
   type AgentProfileRegistration,
 } from '#/app/agentProfileCatalog/agentProfileRegistry';
 import { projectAgentProfileCatalog } from '@kiki/agent-profiles/profileCatalog';
+import { nativeTargets } from '@kiki/agent-profiles/nativeTarget';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
+import { AGENT_EXECUTORS_SECTION } from '#/app/agentExecutor/configSection';
 import { IConfigService } from '#/app/config/config';
 import {
   DISABLED_NAMED_PROFILES_SECTION,
@@ -81,6 +84,7 @@ export class SessionAgentProfileCatalogService
     @IConfigService private readonly config: IConfigService,
     @ILogService private readonly log: ILogService,
     @IFlagService private readonly flags: IFlagService,
+    @IAgentExecutorRegistry private readonly executors: IAgentExecutorRegistry,
   ) {
     super();
     this.tracksSourceReadiness = this.registry.hasSourceReadiness(this.seed.workspaceKey);
@@ -102,7 +106,7 @@ export class SessionAgentProfileCatalogService
     );
     this._register(
       this.config.onDidSectionChange((change) => {
-        if (change.domain !== DISABLED_NAMED_PROFILES_SECTION) return;
+        if (change.domain !== DISABLED_NAMED_PROFILES_SECTION && change.domain !== AGENT_EXECUTORS_SECTION) return;
         if (this.tracksSourceReadiness && !this.completeValue) return;
         if (this.reproject()) this.onDidChangeEmitter.fire('catalog');
       }),
@@ -329,7 +333,16 @@ export class SessionAgentProfileCatalogService
       this.routes = new Map(projection.routes);
       this.publicRoutes = new Map(projection.publicRoutes);
       this.routeDiagnosticsValue = [...projection.routeDiagnostics];
-      this.snapshotValue = projection.snapshot;
+      for (const target of nativeTargets(this.executors.list())) {
+        if (this.resolvable.has(target.name)) {
+          warnCatalog(this.log, `Duplicate agent profile "${target.name}" conflicts with the reserved native engine target; keeping the registered definition.`);
+          continue;
+        }
+        this.resolvable.set(target.name, target);
+        this.publicProfiles.set(target.name, target);
+      }
+      this.snapshotValue = { ...projection.snapshot,
+        publicProfiles: this.publicProfiles, resolvableProfiles: this.resolvable };
       return true;
     } catch (error) {
       this.log.warn('agent profile catalog reload failed; keeping the last good catalog', {

@@ -18,7 +18,12 @@ import { BUILTIN_AGENT_PROFILE_SOURCE_ID } from '#/app/agentProfileCatalog/built
 import { resolveSubagentDispatch } from '#/app/agentProfileCatalog/subagentDispatch';
 import { AgentProfileRegistryService } from '#/app/agentProfileCatalog/agentProfileRegistryService';
 import { IConfigService } from '#/app/config/config';
-import type { IFlagService } from '#/app/flag/flag';
+import { IFlagService } from '#/app/flag/flag';
+import { IAgentExecutorRegistry, type AgentExecutorDescriptor } from '#/app/agentExecutor/agentExecutor';
+import { IAgentProfileRegistry } from '#/app/agentProfileCatalog/agentProfileRegistry';
+import { ILogService } from '#/_base/log/log';
+import { ISessionAgentProfileCatalogSeed } from '#/session/sessionAgentProfileCatalog/agentProfileCatalogSeed';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { SessionAgentProfileCatalogService } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalogService';
 import { DISABLED_NAMED_PROFILES_SECTION } from '#/workspace/workspaceAgentProfileLoader/configSection';
 import {
@@ -30,6 +35,7 @@ import {
 import { stubLog } from '../../_base/log/stubs';
 
 const WORKSPACE_KEY = 'wd_a';
+const executors = { list: () => [] } as unknown as IAgentExecutorRegistry;
 
 function deferred(): { readonly promise: Promise<void>; resolve(): void } {
   let resolve!: () => void;
@@ -102,6 +108,7 @@ function makeCatalog(
   workspaceKey: string = WORKSPACE_KEY,
   disabledNamed: readonly string[] = [],
   initialRecords: readonly AgentProfileContributionRecord[] = [],
+  descriptors: readonly AgentExecutorDescriptor[] = [],
 ) {
   const container = new InstantiationService(new ServiceCollection(), true);
   const registry = container.createInstance(AgentProfileRegistryService);
@@ -116,13 +123,14 @@ function makeCatalog(
   const warnings: string[] = [];
   const log = stubLog();
   log.warn = (message: string) => warnings.push(message);
-  const catalog = new SessionAgentProfileCatalogService(
-    registry,
-    { _serviceBrand: undefined, workspaceKey },
-    config.service,
-    log,
-    { enabled: () => false } as unknown as IFlagService,
-  );
+  container.provide(IAgentProfileRegistry, registry);
+  container.provide(ISessionAgentProfileCatalogSeed, { _serviceBrand: undefined, workspaceKey });
+  container.provide(IConfigService, config.service);
+  container.provide(ILogService, log);
+  container.provide(IFlagService, { enabled: () => false } as unknown as IFlagService);
+  container.provide(IAgentExecutorRegistry, { list: () => descriptors } as unknown as IAgentExecutorRegistry);
+  container.provide(ISessionAgentProfileCatalog, new SyncDescriptor(SessionAgentProfileCatalogService));
+  const catalog = container.invokeFunction(accessor => accessor.get(ISessionAgentProfileCatalog)) as SessionAgentProfileCatalogService;
   const contribute = (
     sourceId: string,
     profiles: readonly AgentProfile[],
@@ -137,6 +145,33 @@ function makeCatalog(
 }
 
 describe('SessionAgentProfileCatalogService (registry projection)', () => {
+  it('projects stable native targets for all four engines into the effective snapshot', async () => {
+    const ids = ['codex-app-server', 'claude-acp', 'agy-cli', 'grok-acp'];
+    const descriptors = ids.map(id => ({ id, protocol: 'acp' as const, args: [], revision: 'test' }));
+    const stack = makeCatalog(WORKSPACE_KEY, [], [], descriptors);
+    try {
+      await stack.catalog.ready;
+      for (const id of ids) {
+        const target = stack.catalog.get(`engine:${id}`)!;
+        expect(target).toMatchObject({ name: `engine:${id}`, executor: id, configuration: 'native' });
+        expect(target.systemPrompt({})).toBe('');
+        expect(stack.catalog.snapshot().publicProfiles.get(target.name)).toBe(target);
+      }
+      expect(stack.registry.entries()).toEqual([]);
+    } finally { await stack.container.dispose(); }
+  });
+
+  it('preserves a registered profile whose name collides with a native target', async () => {
+    const registered = profile('engine:claude-acp');
+    const stack = makeCatalog(WORKSPACE_KEY, [], [{ sourceId: 'user', contribution: { profiles: [registered] } }],
+      [{ id: 'claude-acp', protocol: 'acp', args: [], revision: 'test' }]);
+    try {
+      await stack.catalog.ready;
+      expect(stack.catalog.get(registered.name)?.configuration).toBeUndefined();
+      expect(stack.catalog.get(registered.name)?.systemPrompt({})).toBe(`prompt:${registered.name}`);
+      expect(stack.warnings).toContainEqual(expect.stringContaining('keeping the registered definition'));
+    } finally { await stack.container.dispose(); }
+  });
   it('waits for all five loader sources before completing the cold catalog projection', async () => {
     const container = new InstantiationService(new ServiceCollection(), true);
     const registry = container.createInstance(AgentProfileRegistryService);
@@ -154,7 +189,7 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
       { _serviceBrand: undefined, workspaceKey: WORKSPACE_KEY },
       config.service,
       stubLog(),
-      { enabled: () => false } as unknown as IFlagService,
+      { enabled: () => false } as unknown as IFlagService, executors,
     );
     const userProfile = profile('user-profile');
     const registration = registry.register({
@@ -195,7 +230,7 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
       { _serviceBrand: undefined, workspaceKey: WORKSPACE_KEY },
       config.service,
       stubLog(),
-      { enabled: () => false } as unknown as IFlagService,
+      { enabled: () => false } as unknown as IFlagService, executors,
     );
     const workspaceProfile = profile('workspace-profile');
     const registration = registry.register({
@@ -314,7 +349,7 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
       { _serviceBrand: undefined, workspaceKey: WORKSPACE_KEY },
       config.service,
       log,
-      { enabled: () => false } as unknown as IFlagService,
+      { enabled: () => false } as unknown as IFlagService, executors,
     ));
     await Promise.all(catalogs.map((catalog) => catalog.ready));
     await Promise.all(catalogs.map((catalog) => catalog.reload()));

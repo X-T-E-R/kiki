@@ -1,5 +1,7 @@
 import type { BindingAdvisory, BindingValueSource } from '@kiki/agent-profiles/bindingAdvisory';
 import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
+import { isNativeTarget } from '@kiki/agent-profiles/nativeTarget';
+import { resolveNativeTargetBinding } from '#/session/subagent/nativeTargetBinding';
 import type { AgentCapabilityReasonCode } from '@kiki/protocol';
 
 import type { AgentProfile, AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -110,6 +112,11 @@ export function projectSubagentCapabilities(
         snapshot: bindingSnapshot,
       }, services.models);
       const profile = target.effectiveProfile;
+      if (isNativeTarget(profile)) {
+        const result = resolveNativeTargetBinding(profile, {}, services.config, services.executors);
+        return { ...identity, defaultsAvailable: true, modelAlias: result.execution.effective.model,
+          thinkingEffort: result.execution.effective.thinking, bindingAdvisories: result.bindingAdvisories };
+      }
       const route = target.selection.route;
       const native = (profile.executor ?? 'native') === 'native';
       const resolver = modelAliasResolverForExecutor(profile.executor, services.models);
