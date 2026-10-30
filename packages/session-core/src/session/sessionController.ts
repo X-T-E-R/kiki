@@ -102,6 +102,8 @@ export function assertSessionWritable(state: Pick<SessionViewState, 'resyncing' 
 
 const RESYNC_BACKOFF_MS = [250, 500, 1000, 2000, 4000];
 const TOOL_DETAIL_PREPARING_RETRY_MS = 80;
+export const OLDER_HISTORY_TIMEOUT_MS = 10_000;
+const OLDER_PREPARING_BATCH_LIMIT = 16;
 const REWRITE_RESET_TIMEOUT_MS = 10_000;
 const HIDDEN_FRAME_FLUSH_INTERVAL_MS = 1000;
 /**
@@ -1671,7 +1673,7 @@ export class SessionController {
     if (this.closed || this.isSuspended) return Promise.resolve({ kind: 'cancelled', changed: false });
     const start = (): Promise<OlderLoadResult> => {
       const resyncGeneration = this.resyncGeneration;
-      return this.olderLoads.request(agentId, (sharedSignal) => this.loadOlderTranscript(agentId, sharedSignal), signal).then((result) => {
+      return this.olderLoads.request(agentId, (sharedSignal) => this.loadOlderWithDeadline(agentId, sharedSignal), signal).then((result) => {
         if (result.kind !== 'cancelled' || signal?.aborted || this.closed || this.isSuspended || resyncGeneration === this.resyncGeneration) return result;
         return this.waitForResyncIdle(signal).then((resyncStatus) => {
           if (resyncStatus === 'cancelled') return { kind: 'cancelled', changed: false };
@@ -1686,6 +1688,26 @@ export class SessionController {
       if (resyncStatus === 'failed') return { kind: 'failed', changed: false };
       return start();
     });
+  }
+
+  private async loadOlderWithDeadline(agentId: string, signal: AbortSignal): Promise<OlderLoadResult> {
+    const deadline = new AbortController();
+    const owned = AbortSignal.any([signal, deadline.signal]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<OlderLoadResult>((resolve) => {
+      timer = setTimeout(() => {
+        deadline.abort();
+        if (signal.aborted || this.closed || this.isSuspended) {
+          resolve({ kind: 'cancelled', changed: false });
+          return;
+        }
+        const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
+        this.publishAgentView(agentId, setOlderError(current, 'Loading earlier messages timed out. Retry to continue.'));
+        resolve({ kind: 'failed', changed: false });
+      }, OLDER_HISTORY_TIMEOUT_MS);
+    });
+    try { return await Promise.race([this.loadOlderTranscript(agentId, owned), expired]); }
+    finally { clearTimeout(timer); }
   }
 
   private async loadOlderTranscript(agentId: string, signal: AbortSignal): Promise<OlderLoadResult> {
@@ -1752,6 +1774,7 @@ export class SessionController {
         this.olderPageCursors.set(agentId, nextCursor);
         this.olderPageTurns.delete(agentId);
       };
+      let preparingBatches = 0;
       for (;;) {
         const read = () => this.readPreparedContent(() => this.view.transcript.page({ agentId, beforeTurn, beforeItem, pageSize: 20 }, { signal }), signal);
         let page = await read();
@@ -1805,6 +1828,7 @@ export class SessionController {
         }
         if (readIsPreparing) {
           rememberContinuationCursor(page.next_cursor);
+          if (++preparingBatches >= OLDER_PREPARING_BATCH_LIMIT) throw new Error('Earlier history is still preparing. Retry to continue.');
           this.publishProjectedAgent(agentId, store, {
             loadingOlder: true,
             fetchedOlder: true,

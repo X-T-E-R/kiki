@@ -1820,7 +1820,7 @@ export class TranscriptService {
   /** Cache a fingerprint-bound page projection and bounded tail turns for immediate continuations. */
   async readColdPageSnapshot(sessionId: string, agentId: string,
     project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot,
-    signal?: AbortSignal, extendOlder = false, spanBytes = FIRST_SCREEN_WINDOW_BYTES, preserveWindow = false, tailFirst = false): Promise<AgentTranscriptSnapshot | undefined> {
+    signal?: AbortSignal, extendOlder = false, spanBytes = FIRST_SCREEN_WINDOW_BYTES, preserveWindow = false, tailFirst = false, boundedPage = false): Promise<AgentTranscriptSnapshot | undefined> {
     signal?.throwIfAborted();
     const location = await this.historyWireLocation(sessionId, agentId);
     if (location === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
@@ -1832,7 +1832,7 @@ export class TranscriptService {
     signal?.throwIfAborted();
     if (info === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
-    if (!tailFirst && info.size <= FIRST_SCREEN_WINDOW_MAX_BYTES) {
+    if (!tailFirst && info.size <= (boundedPage ? FIRST_SCREEN_WINDOW_BYTES : FIRST_SCREEN_WINDOW_MAX_BYTES)) {
       if (this.coldWireWindows.has(wirePath)) {
         this.forgetColdWindow(wirePath);
         this.retainedColdTurns.delete(wirePath);
@@ -1853,7 +1853,7 @@ export class TranscriptService {
     }
     if (extendOlder) {
       const span = spanBytes > 0 ? spanBytes : FIRST_SCREEN_WINDOW_BYTES;
-      const extended = await this.extendColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, opened, undefined, undefined, span);
+      const extended = await this.extendColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, opened, undefined, undefined, span, !tailFirst);
       if (extended === undefined) return undefined;
       return this.publishColdWindow(sessionId, agentId, wirePath, fingerprint, extended, project, opened);
     }
@@ -2056,7 +2056,7 @@ export class TranscriptService {
     const snapshot = this.projectColdRecords(agentId, merged, entire, preserveOpenTurnIds, captureReplayState, entire ? undefined : window);
     const bytes = this.coldWindowBytes(snapshot, merged);
     let extended: ColdWireWindow;
-    if (window.records.length > 0 && bytes > COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES && read.records.length > 0) {
+    if (window.records.length > 0 && bytes > COLD_WIRE_WINDOW_MAX_BYTES && read.records.length > 0) {
       if (read.complete && !coldPrefixAddsItem(window.snapshot.items, snapshot.items)) {
         const skipped: ColdWireWindow = {
           ...window,

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AgentTranscript, applyContentSegment, jsonBytes, transcriptDetailListResponseSchema, type AgentTranscriptSnapshot, type TranscriptStep, type TranscriptTask, type TranscriptTurn } from '@kiki/transcript';
 import { sessionViewTranscriptPageInputSchema } from '@kiki/klient';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
@@ -20,6 +20,42 @@ function canonicalService(snapshot: AgentTranscriptSnapshot): TranscriptService 
 const empty = (): AgentTranscriptSnapshot => ({ items: [], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} });
 
 describe('bounded session-view canonical reads', () => {
+  it('returns an unverified live page without waiting for the whole-wire proof', async () => {
+    const transcript = new AgentTranscript('main');
+    transcript.apply([{ op: 'reset', agentId: 'main', snapshot: { ...empty(), items: [
+      { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, steps: [] },
+      { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [] },
+    ], toolCallCountKnown: true } }]);
+    const ensure = vi.fn(async () => transcript);
+    const verify = vi.fn(() => new Promise<boolean>(() => {}));
+    const service = { forSessionLive: () => ({ agents: () => [] }), ensureAgentHistory: ensure,
+      verifyTranscriptLiveCoverage: verify, isTranscriptLiveCoverageVerified: () => false,
+      getTranscriptCursor: () => ({ epoch: 'pending-proof', seq: 1 }) } as unknown as TranscriptService;
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeTurn: 't1' });
+    expect(page?.items).toMatchObject([{ turnId: 't0' }]);
+    expect(page?.coverage.kind).toBe('unknown');
+    expect(page?.tool_call_count).toBeUndefined();
+    expect(ensure).toHaveBeenCalledWith('fixture-session', 'main', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(verify).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds a stalled server read and aborts its underlying work without changing its input cursor', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const read = vi.fn(async (_session: string, _agent: string, _project: unknown, inputSignal: AbortSignal) => {
+      signal = inputSignal;
+      return new Promise<AgentTranscriptSnapshot>(() => {});
+    });
+    const service = { forSessionLive: () => undefined, readColdPageSnapshot: read } as unknown as TranscriptService;
+    try {
+      const outcome = readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: 'turn:t20' }).catch(error => error);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(await outcome).toMatchObject({ code: 'session.busy', message: 'History page timed out. Retry to continue.' });
+      expect(signal?.aborted).toBe(true);
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
   it('returns a valid item page before extending a window that would evict its anchor', async () => {
     const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
     const ref = { kind: 'taskref' as const, refId: 'window-ref', taskId: 'example-task' };

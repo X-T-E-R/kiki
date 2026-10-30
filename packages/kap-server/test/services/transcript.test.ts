@@ -5428,3 +5428,31 @@ it('does not retain an oversized sole cold window and still advances to older re
     console.log('oversized-window-release', { heapAfterDrop: process.memoryUsage().heapUsed, maxRss: process.resourceUsage().maxRSS * 1024, gc: globalThis.gc !== undefined });
   } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 }, 30_000);
+
+
+it('pages a synthetic long wire to its first record exactly once across bounded cold windows', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-page-complete-'));
+  const wirePath = join(home, 'sessions', 'ws', 's1', 'agents', 'main', 'wire.jsonl');
+  await mkdir(dirname(wirePath), { recursive: true });
+  const count = 1200;
+  const records = Array.from({ length: count }, (_, turnId) => JSON.stringify({ type: 'turn.prompt', turnId,
+    promptId: `history-${turnId}`, input: [{ type: 'text', text: `Record ${turnId} ${'x'.repeat(8192)}` }], origin: { kind: 'user' }, time: 1000 + turnId }));
+  await writeFixtureFile(wirePath, `${records.join('\n')}\n`);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  const pages: string[][] = [];
+  try {
+    let cursor: string | undefined;
+    for (let request = 0; request < count; request++) {
+      const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: cursor, pageSize: 20 });
+      expect(page).toBeDefined();
+      pages.push(page!.items.flatMap(item => item.kind === 'turn' ? [item.turnId] : []));
+      if (!page!.has_more) break;
+      expect(page!.next_cursor).toBeDefined();
+      cursor = page!.next_cursor;
+    }
+    const actual = pages.toReversed().flat();
+    expect(actual).toEqual(Array.from({ length: count }, (_, ordinal) => `t${ordinal}`));
+    expect(new Set(actual).size).toBe(count);
+    expect(service.memoryReport().coldWindowBytes).toBeLessThanOrEqual(8 << 20);
+  } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+}, 60_000);

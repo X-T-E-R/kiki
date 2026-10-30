@@ -698,6 +698,20 @@ describe('transcript authority projection', () => {
     expect(first.attachments.map((attachment) => attachment.attachmentId)).toEqual(['a1', 'a2']);
   });
 
+  it('deduplicates repeated older-page entities without crossing turn, marker, and taskref identities', () => {
+    const sharedId = 'same-entity-name';
+    const turn = { kind: 'turn' as const, turnId: sharedId, ordinal: 2, state: 'completed' as const,
+      origin: { kind: 'user' as const }, steps: [] };
+    const marker = { kind: 'marker' as const, markerId: sharedId, marker: 'message.delivery', at: FIXED_AT };
+    const taskref = { kind: 'taskref' as const, refId: sharedId, taskId: sharedId, at: FIXED_AT_1 };
+    const merged = prependOlderTranscriptSnapshot(emptySnapshot({ items: [turn] }), {
+      items: [turn, turn, marker, marker, taskref, taskref],
+      attachments: [],
+      hasMoreOlder: false,
+    });
+    expect(merged.items).toEqual([turn, marker, taskref]);
+  });
+
   it('restores message-bound model controls without an independent queue item', () => {
     const runtimeControls = { model: 'example/model', thinking: 'max', profile: 'example-profile', execution: { executor: 'native' } };
     const prompt = { promptId: 'bound-message', userMessageId: 'bound-message', status: 'queued' as const, content: [{ type: 'text' as const, text: 'continue' }], createdAt: FIXED_AT, runtimeControls, queuePosition: 0 };

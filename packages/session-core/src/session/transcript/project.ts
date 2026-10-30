@@ -3619,9 +3619,9 @@ export function applyTranscriptShell(
 }
 
 function transcriptItemId(item: TranscriptItem): string {
-  if (item.kind === 'turn') return item.turnId;
-  if (item.kind === 'marker') return item.markerId;
-  return item.refId;
+  if (item.kind === 'turn') return `turn:${item.turnId}`;
+  if (item.kind === 'marker') return `marker:${item.markerId}`;
+  return `taskref:${item.refId}`;
 }
 
 export function prependOlderTranscriptSnapshot(
@@ -3636,8 +3636,12 @@ export function prependOlderTranscriptSnapshot(
     if (pending.length > 0) insertions.set(position, [...insertions.get(position) ?? [], ...pending]);
     pending = [];
   };
+  const seen = new Set<string>();
   for (const item of older.items) {
-    const position = positions.get(transcriptItemId(item));
+    const key = transcriptItemId(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const position = positions.get(key);
     if (position === undefined) pending.push(item);
     else {
       insert(position);
