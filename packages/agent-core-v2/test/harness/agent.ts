@@ -140,6 +140,8 @@ import {
   drainSessionMetadataWrites,
   ISessionDeliveryService,
   IHomeRuntimeService,
+  IThreadCommunicationService,
+  IThreadMailboxStore,
   IAgentTaskService,
   IBlobStore,
   BlobStoreService,
@@ -1984,11 +1986,35 @@ export class AgentTestContext {
   }
 
   private async settleOpenHomeIo(): Promise<void> {
-    const metadataReady = this.session.accessor.get(ISessionMetadata).ready;
-    const deliveryReady = this.session.accessor.get(ISessionDeliveryService).ready;
-    await Promise.all([metadataReady, deliveryReady]);
-    await drainSessionMetadataWrites();
-    await this.root.accessor.get(IHomeRuntimeService).close();
+    const steps = [
+      async () => {
+        const metadataReady = this.session.accessor.get(ISessionMetadata).ready;
+        const deliveryReady = this.session.accessor.get(ISessionDeliveryService).ready;
+        await Promise.all([metadataReady, deliveryReady]);
+      },
+      async () => {
+        if (this.root.instantiation.cascade.stateOf(IThreadCommunicationService) === 'Active') {
+          await this.root.accessor.get(IThreadCommunicationService).shutdown();
+        }
+      },
+      async () => {
+        if (this.root.instantiation.cascade.stateOf(IThreadMailboxStore) === 'Active') {
+          await this.root.accessor.get(IThreadMailboxStore).close();
+        }
+      },
+      drainSessionMetadataWrites,
+      async () => { await this.root.accessor.get(IHomeRuntimeService).close(); },
+    ];
+    const errors: unknown[] = [];
+    for (const step of steps) {
+      try {
+        await step();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, 'Agent test home I/O cleanup failed.');
   }
 
   async dispose(): Promise<void> {

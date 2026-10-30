@@ -1,3 +1,4 @@
+import { existsSync, rmSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -67,7 +68,7 @@ import { IThreadTurnStore, ThreadTurnStore } from '#/app/threadCommunication/thr
 import type { WireRecord } from '#/wire/record';
 import { stubLog } from '../../_base/log/stubs';
 import { Error2, ErrorCodes } from '#/errors';
-import { createTestAgent } from '../../harness';
+import { appServices, createTestAgent, homeDirServices } from '../../harness';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import {
@@ -1451,6 +1452,54 @@ describe('ThreadCommunicationService', () => {
       threads: [{ activities: [{ kind: 'terminal', reason: 'failed' }] }],
     });
   });
+});
+
+describe('agent harness mailbox teardown', () => {
+  it.each([false, true])('closes the mailbox before its runtime and releases its SQLite files when shutdown fails=%s', async (failShutdown) => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'agent-mailbox-close-'));
+    const ctx = createTestAgent(
+      homeDirServices(homeDir),
+      appServices((reg) => { reg.define(IFileSystemStorageService, InMemoryStorageService); }),
+    );
+    const events: string[] = [];
+    const failure = new Error('communication shutdown failed');
+    try {
+      await ctx.ready;
+      const threads = ctx.get(IThreadCommunicationService);
+      const mailbox = ctx.get(IThreadMailboxStore);
+      const runtime = ctx.get(IHomeRuntimeService);
+      await mailbox.setWorkspaceOverride('workspace-example', true);
+      const shutdown = threads.shutdown.bind(threads);
+      const closeMailbox = mailbox.close.bind(mailbox);
+      const closeRuntime = runtime.close.bind(runtime);
+      vi.spyOn(threads, 'shutdown').mockImplementation(async () => {
+        events.push('communication');
+        await shutdown();
+        if (failShutdown) throw failure;
+      });
+      vi.spyOn(mailbox, 'close').mockImplementation(async () => {
+        await closeMailbox();
+        events.push('mailbox');
+      });
+      vi.spyOn(runtime, 'close').mockImplementation(async () => {
+        events.push('runtime');
+        await closeRuntime();
+      });
+      if (failShutdown) {
+        await expect(ctx.dispose()).rejects.toBe(failure);
+      } else {
+        await ctx.dispose();
+      }
+      expect(events).toEqual(['communication', 'mailbox', 'runtime']);
+      await drainQueryStoreDisposals();
+      rmSync(homeDir, { recursive: true, force: true });
+      expect(existsSync(homeDir)).toBe(false);
+    } finally {
+      await ctx.dispose();
+      await drainQueryStoreDisposals();
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 function ref(hostId: string, workspaceId: string, sessionId: string): ThreadRef {
