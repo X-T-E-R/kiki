@@ -85,6 +85,61 @@ describe('SessionMetadata', () => {
     vi.restoreAllMocks();
   });
 
+  it('commits one 50ms agent batch for 100 callers on a 900-agent roster and releases them only after durability', async () => {
+    const store = ix.get(IAtomicDocumentStore);
+    await store.set(META_SCOPE, 'state.json', { id: 's1', version: 2, createdAt: 1, updatedAt: 1,
+      archived: false, custom: {}, isCustomTitle: false,
+      agents: Object.fromEntries(Array.from({ length: 900 }, (_, i) => [`child-${i}`, { labels: { padding: 'x'.repeat(8_000) } }])),
+    });
+    const meta = ix.get(ISessionMetadata);
+    await meta.ready;
+    vi.useFakeTimers();
+    const gate = deferred();
+    const storage = ix.get(IFileSystemStorageService);
+    const original = storage.write.bind(storage);
+    const writes: number[] = [];
+    vi.spyOn(storage, 'write').mockImplementation(async (scope, key, data, options) => {
+      if (key === 'state.json') { writes.push(data.byteLength); await gate.promise; }
+      return original(scope, key, data, options);
+    });
+    let receipts = 0;
+    const pending = Array.from({ length: 100 }, (_, i) => meta.updateAgent(`child-${i}`, (current) => ({
+      ...current, taskId: `task-${i}`,
+    })).then(() => { receipts += 1; }));
+    await vi.advanceTimersByTimeAsync(49);
+    expect(writes).toEqual([]);
+    expect(receipts).toBe(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toBeGreaterThan(7_000_000);
+    expect(receipts).toBe(0);
+    gate.resolve();
+    await Promise.all(pending);
+    expect(receipts).toBe(100);
+    const restored = await createFreshMetadata(ix).read();
+    for (let i = 0; i < 100; i += 1) expect(restored.agents?.[`child-${i}`]?.taskId).toBe(`task-${i}`);
+  });
+
+  it('rejects every caller of a failed batch, rolls it back and commits a later retry', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.registerAgent('a', { model: 'old' });
+    await meta.registerAgent('b', { model: 'old' });
+    vi.useFakeTimers();
+    const store = ix.get(IAtomicDocumentStore);
+    const fail = vi.spyOn(store, 'set').mockRejectedValueOnce(new Error('batch failed'));
+    const a = meta.updateAgent('a', (current) => ({ ...current, model: 'new-a' }));
+    const b = meta.updateAgent('b', (current) => ({ ...current, model: 'new-b' }));
+    const settled = Promise.allSettled([a, b]);
+    await vi.advanceTimersByTimeAsync(50);
+    expect((await settled).map((value) => value.status)).toEqual(['rejected', 'rejected']);
+    expect((await meta.read()).agents).toMatchObject({ a: { model: 'old' }, b: { model: 'old' } });
+    fail.mockRestore();
+    const retry = meta.updateAgent('a', (current) => ({ ...current, model: 'retry' }));
+    await meta.drain();
+    await retry;
+    expect((await createFreshMetadata(ix).read()).agents?.['a']?.model).toBe('retry');
+  });
+
   it('drains only its own canonical work while process shutdown joins a blocked other session', async () => {
     const a = ix.get(ISessionMetadata);
     await a.ready;

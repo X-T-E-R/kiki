@@ -26,6 +26,19 @@ import {
 
 const META_KEY = 'state.json';
 const USAGE_FLUSH_DELAY_MS = 1_000;
+const AGENT_UPDATE_WINDOW_MS = 50;
+
+interface AgentUpdateBatch {
+  readonly mutations: Array<{
+    readonly apply: (agents: Record<string, AgentMeta>) => boolean;
+    readonly touchUpdatedAt: boolean;
+    readonly resolve: () => void;
+    readonly reject: (error: unknown) => void;
+  }>;
+  readonly release: () => void;
+  readonly ready: Promise<void>;
+  timer?: ReturnType<typeof setTimeout>;
+}
 
 const metadataInstances = new Set<SessionMetadata>();
 const pendingActivityPropagation = new Set<Promise<void>>();
@@ -68,6 +81,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   private readonly scope: string;
   private updateQueue: Promise<void> = Promise.resolve();
   private readonly pendingWrites = new Set<Promise<void>>();
+  private agentBatch: AgentUpdateBatch | undefined;
   private createdDocument = false;
   private usageDirty = false;
   private usageTimer: ReturnType<typeof setTimeout> | undefined;
@@ -298,46 +312,87 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     );
   }
 
-  async registerAgent(agentId: string, meta: AgentMeta): Promise<void> {
-    return this.enqueueUpdate(async () => {
-      await this.ready;
-      const existing = this.data.agents?.[agentId];
-      if (existing !== undefined && agentMetaEquals(existing, meta)) return;
-      const agents = { ...this.data.agents, [agentId]: meta };
-      await this.applyUpdate({ agents }, { touchUpdatedAt: false });
+  registerAgent(agentId: string, meta: AgentMeta): Promise<void> {
+    return this.enqueueAgentUpdate((agents) => {
+      const existing = agents[agentId];
+      const next = existing === undefined ? structuredClone(meta) : { ...structuredClone(meta), createdAt: existing.createdAt };
+      if (existing !== undefined && agentMetaEquals(existing, next)) return false;
+      agents[agentId] = next;
+      return true;
     });
   }
 
-  async updateAgent(agentId: string, updater: (current: AgentMeta) => AgentMeta): Promise<void> {
-    return this.enqueueUpdate(async () => {
-      await this.ready;
-      if (this.disposed) return;
-      const agents = this.data.agents;
-      const current = agents?.[agentId];
-      if (current === undefined) return;
-      const next = updater(structuredClone(current));
-      if (agentMetaEquals(current, next)) return;
-      try {
-        await this.applyUpdate({ agents: { ...agents, [agentId]: next } }, { touchUpdatedAt: false });
-      } catch (error) {
-        this.data = { ...this.data, agents };
-        throw error;
-      }
+  updateAgent(agentId: string, updater: (current: AgentMeta) => AgentMeta): Promise<void> {
+    return this.enqueueAgentUpdate((agents) => {
+      const current = agents[agentId];
+      if (current === undefined) return false;
+      const updated = updater(structuredClone(current));
+      const next = { ...updated, createdAt: current.createdAt };
+      if (agentMetaEquals(current, next)) return false;
+      agents[agentId] = next;
+      return true;
     });
   }
 
-  async unregisterAgent(agentId: string): Promise<void> {
-    return this.enqueueUpdate(async () => {
-      await this.ready;
-      if (this.data.agents?.[agentId] === undefined) return;
-      const agents = { ...this.data.agents };
+  unregisterAgent(agentId: string): Promise<void> {
+    return this.enqueueAgentUpdate((agents) => {
+      if (agents[agentId] === undefined) return false;
       delete agents[agentId];
-      await this.applyUpdate({ agents });
-    });
+      return true;
+    }, true);
+  }
+
+  private enqueueAgentUpdate(apply: (agents: Record<string, AgentMeta>) => boolean, touchUpdatedAt = false): Promise<void> {
+    if (this.disposed || this.disposing) return Promise.resolve();
+    if (this.agentBatch === undefined) {
+      let release!: () => void;
+      const ready = new Promise<void>((resolve) => { release = resolve; });
+      const batch: AgentUpdateBatch = { mutations: [], ready, release: () => {
+        if (batch.timer !== undefined) clearTimeout(batch.timer);
+        batch.timer = undefined;
+        if (this.agentBatch === batch) this.agentBatch = undefined;
+        release();
+      } };
+      this.agentBatch = batch;
+      batch.timer = setTimeout(batch.release, AGENT_UPDATE_WINDOW_MS);
+      const run = this.enqueueUpdate(async () => {
+        await batch.ready;
+        await this.ready;
+        const previous = this.data.agents;
+        const previousUpdatedAt = this.data.updatedAt;
+        const agents = { ...previous };
+        let changed = false;
+        let touched = false;
+        for (const mutation of batch.mutations) {
+          try {
+            const applied = mutation.apply(agents);
+            changed ||= applied;
+            touched ||= applied && mutation.touchUpdatedAt;
+          } catch (error) { mutation.reject(error); }
+        }
+        if (!changed || this.disposed) return;
+        this.data = { ...this.data, agents, updatedAt: touched ? Date.now() : previousUpdatedAt };
+        try {
+          await this.persist();
+        } catch (error) {
+          this.data = { ...this.data, agents: previous, updatedAt: previousUpdatedAt };
+          throw error;
+        }
+        this.mirrorToReadModel();
+        this._onDidChangeMetadata.fire({ changed: ['agents'] });
+      }, false);
+      void run.then(
+        () => { for (const mutation of batch.mutations) mutation.resolve(); },
+        (error: unknown) => { for (const mutation of batch.mutations) mutation.reject(error); },
+      );
+    }
+    const batch = this.agentBatch;
+    return new Promise<void>((resolve, reject) => { batch.mutations.push({ apply, touchUpdatedAt, resolve, reject }); });
   }
 
   async drain(): Promise<void> {
     if (this.disposed) return;
+    this.agentBatch?.release();
     await this.ready;
     const results = await Promise.allSettled([...this.pendingWrites, this.flushUsage()]);
     const remaining = await Promise.allSettled(this.pendingWrites);
@@ -354,7 +409,8 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     return run;
   }
 
-  private enqueueUpdate<T>(work: () => Promise<T>): Promise<T> {
+  private enqueueUpdate<T>(work: () => Promise<T>, releaseBatch = true): Promise<T> {
+    if (releaseBatch) this.agentBatch?.release();
     const run = this.updateQueue.then(work, work);
     this.updateQueue = run.then(() => undefined, () => undefined);
     return this.trackWrite(run);
