@@ -57,13 +57,16 @@ export function DetailSplit({ selected, list, rail, detail, label, data }: {
         root.querySelector<HTMLElement>('[data-detail-pane] [data-detail-heading]')?.focus({ preventScroll: true });
         // Bring the whole surface in from its card's title, so the rail and
         // the detail header start together with nothing clipped above them.
-        const target = root.closest<HTMLElement>('[id^="st-card-"]') ?? root;
-        const scroller = target.closest<HTMLElement>('[data-settings-scroll]');
-        if (scroller === null) target.scrollIntoView?.({ block: 'start' });
-        else if (root.getBoundingClientRect().top < scroller.getBoundingClientRect().top) {
-          // The split itself, not its card: a card that starts above the fold
-          // would leave the pane header clipped under a sticky toolbar.
-          scroller.scrollTop += root.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 56;
+        const scroller = root.closest<HTMLElement>('[data-settings-scroll]');
+        if (scroller === null) {
+          const target = root.closest<HTMLElement>('[id^="st-card-"]') ?? root;
+          target.scrollIntoView?.({ block: 'start' });
+        } else {
+          // Always land the pane's header in view, below any sticky toolbar in
+          // the card above it: an opened split can sit far below the fold or
+          // start above it, and the card's own edge answers neither.
+          const delta = root.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+          scroller.scrollTop += delta - 56;
         }
         return;
       }
