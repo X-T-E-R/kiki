@@ -217,9 +217,9 @@ function basenameOf(path: string): string {
  * opaque id (releases/…/d300ab…) names the folder itself instead, truncated,
  * so the list stays scannable. Anything the user or server named reads as-is.
  */
-function workspaceDisplayName(workspace: Workspace): string {
+export function workspaceDisplayName(workspace: Workspace): string {
   const name = workspace.name.trim();
-  const opaque = (value: string): boolean => /^[0-9a-f]{7,}$/i.test(value) || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
+  const opaque = (value: string): boolean => /^[0-9a-f]{7,}$/i.test(value) || (/^[0-9a-f-]{16,}$/i.test(value) && /[0-9]/.test(value));
   if (!opaque(name)) return name;
   // A hash-named folder (an install or release directory) reads by the
   // nearest readable ancestor, e.g. `Kiki · d300ab1…`.

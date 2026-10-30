@@ -15,7 +15,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Workspace, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
-import { WorkspacesSection } from './WorkspacesSection';
+import { WorkspacesSection, workspaceDisplayName } from './WorkspacesSection';
 import { findMcpWorkspace, McpView } from '../capabilities/McpView';
 
 const client = {
@@ -239,5 +239,17 @@ describe('workspace trust consumers', () => {
     expect(client.getWorkspaceTrust).toHaveBeenCalledTimes(2);
     expect(strip.textContent).toContain('Current workspace is trusted.');
     expect(strip.querySelector<HTMLButtonElement>('button')?.textContent?.trim()).toBe('Revoke trust');
+  });
+});
+
+describe('workspaceDisplayName', () => {
+  const ws = (name: string, root: string) => ({ name, root }) as Workspace;
+  it('names hash-named install folders by their readable parent', () => {
+    expect(workspaceDisplayName(ws('d300ab12438ce6eca4cad18e-584b5088878881472890d883', 'C:/Users/me/AppData/Local/Example/Kiki/releases/d300ab12438ce6eca4cad18e-584b5088878881472890d883'))).toBe('Kiki · d300ab1…');
+    expect(workspaceDisplayName(ws('19f77dc7-7a61-43d9-b000-000000000000', '/tmp/19f77dc7-7a61-43d9-b000-000000000000'))).toBe('tmp · 19f77dc…');
+  });
+  it('keeps ordinary names as they are', () => {
+    expect(workspaceDisplayName(ws('Creator', 'E:/Creator'))).toBe('Creator');
+    expect(workspaceDisplayName(ws('feature-branch-design', '/w/feature-branch-design'))).toBe('feature-branch-design');
   });
 });
