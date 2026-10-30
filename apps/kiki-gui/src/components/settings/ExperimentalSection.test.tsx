@@ -79,7 +79,10 @@ describe('ExperimentalRows', () => {
     expect(wait.querySelector('[data-experimental-tag]')?.textContent).toBe('Experimental');
     expect(wait.textContent).toContain('Wait for background tasks');
     expect(wait.querySelector('[data-experimental-effect]')?.textContent).toBe('Applies right away.');
-    expect(wait.querySelector('[data-flag-effective]')?.textContent).toBe('Currently on');
+    // The saved override is selected, so the default option carries no
+    // resolution; the state it would resolve to no longer rides the help line.
+    expect(wait.querySelector('[data-flag-effective]')).toBeNull();
+    expect(wait.querySelector('[data-experimental-choice="default"]')?.textContent).toBe('Default');
     // The saved override is the selected choice; the raw flag id is a title, not visible text.
     expect(wait.querySelector('[data-experimental-choice="on"]')?.getAttribute('aria-pressed')).toBe('true');
     expect(wait.querySelector('[title]')?.getAttribute('title')).toContain('task_wait');

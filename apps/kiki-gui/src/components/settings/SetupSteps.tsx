@@ -14,7 +14,10 @@ export function SetupSteps({ steps, link, data }: {
   if (steps.length === 0 && link === undefined) return null;
   return (
     <div {...data} data-setup-steps className="space-y-1.5">
-      {steps.length > 0 ? (
+      {steps.length === 1 ? (
+        // A one-step "list" reads as a broken enumeration; it is a sentence.
+        <p className="text-[12.5px] leading-5 text-ink-soft">{steps[0]}</p>
+      ) : steps.length > 1 ? (
         <ol className="space-y-1 text-[12.5px] leading-5 text-ink-soft">
           {steps.map((step, index) => (
             <li key={index} className="flex gap-2">

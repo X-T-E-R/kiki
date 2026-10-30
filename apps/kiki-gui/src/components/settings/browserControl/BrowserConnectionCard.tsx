@@ -845,16 +845,9 @@ export function BrowserConnectionCard() {
         {query.isLoading ? <p className="text-[13px] text-ink-faint" role="status">{t('st.browser.loading')}</p> : null}
         {query.isError ? <InlineError error={query.error} /> : null}
         {empty ? (
-          <div data-browser-empty className="space-y-2 py-2">
+          <div data-browser-empty className="space-y-1.5 py-2">
             <p className="text-[13px] text-ink">{t('st.browser.emptyTitle')}</p>
             <Hint>{t('st.browser.emptyBody')}</Hint>
-            <div>
-              <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-browser-empty-add
-                onClick={() => { setAdding(true); }}>
-                <Icon name="plus" size={12} />
-                {t('st.browser.add')}
-              </button>
-            </div>
           </div>
         ) : null}
         {rows.length > 0 ? (

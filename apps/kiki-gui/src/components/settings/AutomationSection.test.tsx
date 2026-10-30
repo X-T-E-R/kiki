@@ -91,8 +91,8 @@ describe('safe automation drafts', () => {
     config.experimental = { desktop_search: false };
     await choose('tool-select', 'on');
     expect(config.experimental).toEqual({ desktop_search: false, 'tool-select': true });
-    // The server still reports it off: an env var outranks the saved choice.
-    expect(rows.querySelector('[data-experimental-row="tool-select"] [data-flag-effective]')?.textContent).toBe('Currently off');
+    // The server still reports it off: an env var outranks the saved choice,
+    // and the row says so instead of the dropped help-line state.
     expect(rows.querySelector('[data-experimental-row="tool-select"] [data-experimental-env]')).not.toBeNull();
     await choose('tool-select', 'default');
     expect(config.experimental).toEqual({ desktop_search: false });

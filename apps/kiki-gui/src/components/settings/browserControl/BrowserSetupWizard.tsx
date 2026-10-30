@@ -494,8 +494,10 @@ function BrowserRoute({ preset, open, onOpenChange, children }: {
           )}
           {/* What this route costs, before its state: 1–3 short steps plus the
               official link where there is one (rule 16). Ego Lite's own lines
-              already sequence it; a connected route teaches nothing. */}
-          {preset.preset !== 'ego-lite' && readiness !== 'connected' ? (
+              already sequence it; a connected route teaches nothing; and the
+              managed route's blocker line below already names its one step,
+              with the action that takes it — no second sentence. */}
+          {preset.preset !== 'ego-lite' && preset.preset !== 'independent-browser' && readiness !== 'connected' ? (
             <ol className="mt-2 max-w-[62ch] list-decimal space-y-0.5 pl-4 text-[12px] leading-[18px] text-ink-soft marker:text-ink-faint" data-browser-route-steps={preset.preset}>
               {preset.preset === 'kimi-webbridge' ? (
                 <>
@@ -507,9 +509,7 @@ function BrowserRoute({ preset, open, onOpenChange, children }: {
                   <li>{t('st.browser.route.steps.codex.1')}</li>
                   <li>{t('st.browser.route.steps.codex.2')}</li>
                 </>
-              ) : (
-                <li>{t('st.browser.route.steps.independent.1')}</li>
-              )}
+              ) : null}
               {offeredInstructions === undefined ? null : (
                 <li>
                   <ExternalLink className="text-selected-ink hover:underline" href={offeredInstructions} data-browser-route-steps-link>

@@ -189,11 +189,11 @@ function BrowserSection() {
 
   return (
     <>
-      {/* The header IS the section heading (name, sentence, switch), so the
-          card carries no title of its own — one "浏览器控制", not two. */}
+      {/* The header is the first row of the tab: the switch's own words, the
+          verdict as its help — so the card carries no title of its own. */}
       <SectionCard id="st-card-browser-enabled" title="">
         <CapabilityHeader
-          title={t('st.browser.title')}
+          title={t('st.browser.enabledLabel')}
           verdict={{ kind: loading ? 'loading' : verdict.kind, tone: loading ? 'unknown' : verdict.tone, text, detail }}
           enabled={isEnabled}
           onEnabledChange={handleToggle}

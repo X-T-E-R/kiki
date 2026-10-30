@@ -433,11 +433,11 @@ export function ComputerControlSection() {
 
   return (
     <div className="space-y-6" data-settings-computer-control>
-      {/* The header IS the section heading (name, sentence, switch), so the
-          card carries no title of its own — one "电脑控制", not two. */}
+      {/* The header is the first row of the tab: the switch's own words, the
+          verdict as its help — so the card carries no title of its own. */}
       <SectionCard id="st-card-computer-enabled" title="">
         <CapabilityHeader
-          title={t('st.computer.title')}
+          title={t('st.computer.enabledLabel')}
           verdict={{ kind: verdict.kind, tone: verdict.tone, text: verdictText, action: verdictAction ?? undefined }}
           enabled={isComputerEnabled}
           onEnabledChange={handleToggleEnabled}

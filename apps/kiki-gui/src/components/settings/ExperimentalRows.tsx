@@ -94,11 +94,9 @@ function ExperimentalRow({ id, override, effective }: { id: string; override: bo
       help={
         <>
           {t(home?.descriptionKey ?? 'st.exp.unknown.desc')}{' '}
+          {/* The segmented's default option already resolves the current
+              state (默认（关闭）), so the help does not repeat it. */}
           <span data-experimental-effect={home?.effect ?? 'now'}>{t(EFFECT_KEY[home?.effect ?? 'now'])}</span>
-          <span aria-hidden className="px-1.5">·</span>
-          <span data-flag-effective={String(effective)}>
-            {t(effective === undefined ? 'st.exp.state.unknown' : effective ? 'st.exp.state.on' : 'st.exp.state.off')}
-          </span>
         </>
       }
     >
