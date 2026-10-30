@@ -279,7 +279,9 @@ describe('ThreadRefChip room menu', () => {
     const menu = await openChipMenu(container);
     await act(async () => { menu.querySelector<HTMLButtonElement>('[data-menu-item="room-with-threads"]')!.click(); });
     expect(document.querySelector('[data-new-thread-room]')).not.toBeNull();
-    const cancel = [...document.querySelectorAll<HTMLButtonElement>('[data-new-thread-room] button')]
+    // The room flow rides a SidePanel (batch overlay-m1): the cancel button
+    // sits in the panel's footer, next to the body form, not inside it.
+    const cancel = [...document.querySelectorAll<HTMLButtonElement>('.kiki-side-panel button')]
       .find((button) => button.textContent === 'Cancel');
     expect(cancel).toBeDefined();
     await act(async () => { cancel!.click(); });
