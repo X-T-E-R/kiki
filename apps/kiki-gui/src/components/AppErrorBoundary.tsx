@@ -55,7 +55,7 @@ class AppErrorBoundaryView extends Component<BoundaryProps, BoundaryState> {
           <button
             type="button"
             onClick={() => { window.location.reload(); }}
-            className="mt-5 rounded-lg bg-accent px-4 py-2 text-[13px] font-semibold text-on-accent transition-colors hover:bg-accent-deep"
+            className="mt-5 rounded-lg bg-accent px-4 py-2 text-[13px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
           >
             {this.props.reloadLabel}
           </button>

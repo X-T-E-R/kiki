@@ -5083,7 +5083,7 @@ export function Transcript({
             <button
               type="button"
               onClick={onRetryLoad}
-              className="mt-3 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-on-accent transition-colors hover:bg-accent-deep"
+              className="mt-3 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
             >
               {t('common.retry')}
             </button>

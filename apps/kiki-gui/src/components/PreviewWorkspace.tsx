@@ -1340,7 +1340,7 @@ function BinaryTabView({ path }: { readonly path: string }) {
               const client = connection?.client;
               if (client !== undefined) void downloadHostFile(host, client, path, name);
             }}
-            className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-semibold text-on-accent transition-colors hover:bg-accent-deep"
+            className="rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
           >
             {t('media.download')}
           </button>

@@ -513,7 +513,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
           look like a model edit.
         */}
         <button type="button" disabled={!dirty || saveDisabled || parseError !== undefined}
-          className="rounded-md bg-accent px-3 py-1.5 text-[12px] font-semibold text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint"
+          className="rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint"
           data-recipe-save-package
           onClick={() => {
             setFailure(null);

@@ -98,7 +98,7 @@ export function TeamView({ rows, models, onOpen, onQuickSave, savingKey, onNew, 
     total: rows.filter((row) => kindOf(row) === id).length,
   })).filter((group) => group.rows.length > 0);
   const newButton = <button type="button" data-profile-new onClick={onNew}
-    className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-accent px-3 text-[12.5px] font-semibold text-on-accent transition-colors hover:bg-accent-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
+    className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-accent px-3 text-[12.5px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink">
     <Icon name="plus" size={12} />{t('st.agentManager.new')}
   </button>;
   return <div className="space-y-3" data-team-view>

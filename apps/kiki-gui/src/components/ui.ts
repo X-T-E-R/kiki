@@ -13,7 +13,7 @@ export const PRIMARY_BUTTON =
   // Disabled is neutral, never a washed-out accent: orange only when pressing does something.
   // `text-on-accent` rather than `text-white`: the lifted dark accent is a
   // light orange, where white lands at 2.5:1.
-  'rounded-md bg-accent px-3 py-1.5 text-[12px] font-semibold text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
+  'rounded-md bg-accent px-3 py-1.5 text-[12px] font-medium text-on-accent transition-colors hover:bg-accent-deep disabled:cursor-not-allowed disabled:bg-hairline disabled:text-ink-faint';
 
 export const SECONDARY_BUTTON =
   'rounded-md border border-hairline bg-paper px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50';

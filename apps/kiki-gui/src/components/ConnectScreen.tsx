@@ -258,7 +258,7 @@ function DesktopFailureCard({
         <button
           type="button"
           onClick={onSwitchLocal ?? onRetry}
-          className="flex-1 rounded-lg bg-accent px-3 py-2 text-[13px] font-semibold text-on-accent transition-colors hover:bg-accent-deep"
+          className="flex-1 rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-on-accent transition-colors hover:bg-accent-deep"
         >
           {t(onSwitchLocal === undefined ? 'connect.desktopRetry' : 'connect.switchLocal')}
         </button>
