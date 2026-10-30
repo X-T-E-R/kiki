@@ -2,18 +2,34 @@ import { createHash, type Hash } from 'node:crypto';
 
 export const WIRE_TRANSCRIPT_RECEIPT_KEY = 'wire.transcript-receipt.json';
 
+/** Number of trailing journal bytes a format-2 sealed receipt binds. */
+export const WIRE_RECEIPT_TAIL_BYTES = 4096;
+
+/**
+ * Sealed journal coordinate. Format 1 carries the SHA-256 of the whole journal; format 2 carries
+ * only the SHA-256 of its last `tailBytes` bytes and relies on the single-writer contract for the prefix.
+ */
+export type WireTranscriptReceiptWire =
+  | { readonly size: number; readonly sha256: string }
+  | { readonly size: number; readonly tailBytes: number; readonly tailSha256: string };
+
 export interface WireTranscriptReceipt {
-  readonly format: 1;
+  readonly format: 1 | 2;
   readonly epoch: string;
   readonly state: 'open' | 'sealed';
   readonly trusted: boolean;
-  readonly wire?: { readonly size: number; readonly sha256: string };
+  readonly wire?: WireTranscriptReceiptWire;
+}
+
+function isSha256Hex(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 }
 
 export function parseWireTranscriptReceipt(value: unknown): WireTranscriptReceipt | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const receipt = value as Record<string, unknown>;
-  if (receipt['format'] !== 1 || typeof receipt['epoch'] !== 'string' || receipt['epoch'].length === 0 ||
+  const format = receipt['format'];
+  if ((format !== 1 && format !== 2) || typeof receipt['epoch'] !== 'string' || receipt['epoch'].length === 0 ||
       (receipt['state'] !== 'open' && receipt['state'] !== 'sealed') || typeof receipt['trusted'] !== 'boolean') {
     return undefined;
   }
@@ -24,9 +40,20 @@ export function parseWireTranscriptReceipt(value: unknown): WireTranscriptReceip
   }
   if (wire === null || typeof wire !== 'object' || Array.isArray(wire)) return undefined;
   const identity = wire as Record<string, unknown>;
-  if (!Number.isSafeInteger(identity['size']) || (identity['size'] as number) < 0 ||
-      typeof identity['sha256'] !== 'string' || !/^[a-f0-9]{64}$/.test(identity['sha256'])) return undefined;
+  const size = identity['size'];
+  if (!Number.isSafeInteger(size) || (size as number) < 0) return undefined;
+  if (format === 1) return isSha256Hex(identity['sha256']) ? receipt as unknown as WireTranscriptReceipt : undefined;
+  const tailBytes = identity['tailBytes'];
+  if (!Number.isSafeInteger(tailBytes) || (tailBytes as number) < 0 ||
+      (tailBytes as number) > Math.min(size as number, WIRE_RECEIPT_TAIL_BYTES) ||
+      ((tailBytes as number) < WIRE_RECEIPT_TAIL_BYTES && tailBytes !== size) ||
+      !isSha256Hex(identity['tailSha256'])) return undefined;
   return receipt as unknown as WireTranscriptReceipt;
+}
+
+/** SHA-256 of a sealed receipt's tail bytes. */
+export function wireTailSha256(tail: Uint8Array): string {
+  return createHash('sha256').update(tail).digest('hex');
 }
 
 /** Resumable digest of a wire byte prefix; `hash` is owned by the state and never finalized. */

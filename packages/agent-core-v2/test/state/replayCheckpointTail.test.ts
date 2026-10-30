@@ -35,6 +35,7 @@ import { EventDispatcherService, REPLAY_CHECKPOINT_GROWTH_BYTES } from '#/state/
 import { IWireService, type WireJournalReadOptions } from '#/wire/wire';
 import { WireService } from '#/wire/wireService';
 import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
+import { WIRE_TRANSCRIPT_RECEIPT_KEY } from '#/wire/transcriptReceipt';
 
 const SCOPE = 'sessions/s/agents/main';
 const CHECKPOINT_SCOPE = `${SCOPE}/replay-checkpoints`;
@@ -380,10 +381,13 @@ describe('replay checkpoint tail', () => {
     expect(texts(restored.state)).toEqual(['prefix-user', 'prefix-assistant']);
   });
 
-  it('uses a trusted sealed digest when an older checkpoint has no prefix hash', async () => {
+  it('uses a legacy full-journal sealed digest when an older checkpoint has no prefix hash', async () => {
     const first = await checkpointed();
-    await first.wire.beginTranscriptEpoch!();
-    await first.wire.sealTranscriptEpoch!();
+    const sealedBytes = Buffer.from(await bytesOf(first.storage));
+    await first.storage.write(SCOPE, WIRE_TRANSCRIPT_RECEIPT_KEY, Buffer.from(JSON.stringify({
+      format: 1, epoch: 'legacy', state: 'sealed', trusted: true,
+      wire: { size: sealedBytes.byteLength, sha256: createHash('sha256').update(sealedBytes).digest('hex') },
+    })));
     const saved = await first.docs.get<{ wire: { prefixSha256?: string } }>(CHECKPOINT_SCOPE, CHECKPOINT_KEY);
     delete saved?.wire.prefixSha256;
     await first.docs.set(CHECKPOINT_SCOPE, CHECKPOINT_KEY, saved);

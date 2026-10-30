@@ -891,12 +891,13 @@ describe('KimiHarness config API', () => {
         const wireDir = join(sessionDir, 'agents', 'main');
         const wire = await readFile(join(wireDir, 'wire.jsonl'));
         const receipt = JSON.parse(await readFile(join(wireDir, 'wire.transcript-receipt.json'), 'utf-8')) as {
-          state: string; trusted: boolean; wire?: { size: number; sha256: string };
+          state: string; trusted: boolean; wire?: { size: number; tailBytes: number; tailSha256: string };
         };
         const { createHash } = await import('node:crypto');
+        const tail = wire.subarray(Math.max(0, wire.byteLength - 4096));
         expect(wire.toString('utf8')).toContain('"type":"turn.ended"');
         expect(receipt).toMatchObject({ state: 'sealed', trusted: true, wire: {
-          size: wire.byteLength, sha256: createHash('sha256').update(wire).digest('hex'),
+          size: wire.byteLength, tailBytes: tail.byteLength, tailSha256: createHash('sha256').update(tail).digest('hex'),
         } });
       }
     }

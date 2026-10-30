@@ -156,7 +156,7 @@ describe('WireService seal', () => {
     const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
       (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
     ).toString('utf8')));
-    expect(sealed).toMatchObject({ state: 'sealed', epoch: open?.epoch, trusted: true, wire: { size: expect.any(Number), sha256: expect.any(String) } });
+    expect(sealed).toMatchObject({ format: 2, state: 'sealed', epoch: open?.epoch, trusted: true, wire: { size: expect.any(Number), tailBytes: expect.any(Number), tailSha256: expect.any(String) } });
     const reopened = registerTestAgentWire(disposables.add(new TestInstantiationService()), scope, {
       log, storage, logger: noopLogger, telemetry: noopTelemetryService,
     });
@@ -277,7 +277,7 @@ describe('WireService seal', () => {
     expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
   });
 
-  it('rehashes every read when storage cannot provide a reliable file identity', async () => {
+  it('re-reads only the epoch appended region on every proof when storage cannot provide a file identity', async () => {
     const originalStat = storage.stat.bind(storage);
     storage.stat = async (...args) => {
       const info = await originalStat(...args);
@@ -295,10 +295,13 @@ describe('WireService seal', () => {
         yield chunk;
       }
     };
+    const base = (await storage.size(scope, AGENT_WIRE_RECORD_KEY))!;
+    expect(base).toBeGreaterThan(8192);
+    wire.appendRecord({ type: 'turn.prompt', turnId: 1 });
     for (let attempt = 0; attempt < 2; attempt++) {
       bytes = 0;
       expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
-      expect(bytes).toBe(await storage.size(scope, AGENT_WIRE_RECORD_KEY));
+      expect(bytes).toBe((await storage.size(scope, AGENT_WIRE_RECORD_KEY))! - (base - 4096));
     }
   });
 
@@ -342,7 +345,7 @@ describe('WireService seal', () => {
     }
   });
 
-  it('revalidates cold segments instead of reusing a physical-file revision for logical bytes', async () => {
+  it('revalidates the epoch tail of cold segments instead of reusing a physical-file revision for logical bytes', async () => {
     await wire.seal();
     wire.appendRecord({ type: 'turn.prompt', turnId: 0, text: 'x'.repeat(16384) });
     await wire.beginTranscriptEpoch!();
@@ -355,12 +358,14 @@ describe('WireService seal', () => {
       return original(...args);
     };
     expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
-    expect(segments).toBe(5);
+    const tailSegments = segments;
+    expect(tailSegments).toBeGreaterThan(0);
+    expect(tailSegments).toBeLessThan(5);
     segments = 0;
     expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
-    expect(segments).toBe(5);
+    expect(segments).toBe(tailSegments);
     const manifest = JSON.parse(Buffer.from((await original(scope, `${AGENT_WIRE_RECORD_KEY}.segments.json`))!).toString('utf8')) as { segments: { key: string }[] };
-    await storage.write(scope, manifest.segments[0]!.key, Buffer.from('invalid compressed bytes'));
+    await storage.write(scope, manifest.segments.at(-1)!.key, Buffer.from('invalid compressed bytes'));
     await expect(wire.verifyTranscriptLiveEpoch!()).rejects.toMatchObject({ code: 'storage.corrupted' });
     expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
   });
@@ -457,8 +462,11 @@ describe('WireService seal', () => {
       const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
         (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
       ).toString('utf8')));
-      const observed = await digestWireBytes(storage.readStream(scope, AGENT_WIRE_RECORD_KEY));
-      expect(sealed).toMatchObject({ state: 'sealed', trusted: false, wire: { size: observed.size, sha256: observed.sha256 } });
+      const observed = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!);
+      const tail = observed.subarray(Math.max(0, observed.byteLength - 4096));
+      expect(sealed).toMatchObject({ state: 'sealed', trusted: false, wire: {
+        size: observed.byteLength, tailBytes: tail.byteLength, tailSha256: createHash('sha256').update(tail).digest('hex'),
+      } });
       expect(Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8')).toBe(changed);
       expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
       expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
@@ -496,7 +504,7 @@ describe('WireService seal', () => {
     ).toString('utf8')));
     expect(Buffer.from(persisted!).toString('utf8')).toContain('"type":"turn.prompt"');
     expect(sealed).toMatchObject({
-      state: 'sealed', trusted: true, wire: { size: persisted!.byteLength, sha256: expect.any(String) },
+      state: 'sealed', trusted: true, wire: { size: persisted!.byteLength, tailSha256: expect.any(String) },
     });
     expect(wireReads).toBeGreaterThan(1);
   });

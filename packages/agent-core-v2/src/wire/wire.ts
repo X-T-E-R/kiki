@@ -38,7 +38,8 @@ export interface IWireService {
    * Closes the open transcript epoch after its durable flush.
    * A flush or receipt-write failure rejects and leaves the epoch open.
    * When the journal does not match accepted events, the epoch still closes
-   * and the receipt records `trusted: false` with the observed digest.
+   * and the receipt records `trusted: false`. The receipt binds the journal size
+   * and the SHA-256 of its last bytes, not a hash of the whole journal.
    */
   sealTranscriptEpoch?(): Promise<void>;
   verifyTranscriptLiveEpoch?(): Promise<boolean>;
