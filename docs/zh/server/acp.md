@@ -83,9 +83,11 @@ ACP 客户端在 `session/new`、`session/load` 或 `session/resume` 中提供 `
 
 会话的能力清单会显示运行中 adapter 报告的认证状态。ACP 明确返回认证要求时，显示本会话**需要认证**；Codex 的账号更新按执行器报告显示，无法识别的认证模式保留为**登录状态未知**。悬停可查看协议来源、工作目录和观察时间。已保存的观察在会话关闭后仍可读取，执行绑定改变时清除；它们与设置中的连接检查分别显示。
 
+原生引擎 child 恢复时会保留已保存的引擎会话合同。Adapter 无法恢复或核验该会话时，Kiki 会报告引擎错误，不会静默新建会话。不同引擎支持的 resume、load 和控制能力各不相同。
+
 在 `[agent_executor_overrides.<executor-id>.defaults]` 下设置 `inject_kiki_mcp`，作为引擎默认值。Profile 的 `inject_kiki_mcp` 优先于引擎默认，会话的 `execution.overrides.inject_kiki_mcp` 再覆盖 Profile。将会话值设为 `null` 即恢复继承。这些选择在下一次绑定生效，也适用于具名外部子 Agent；冷恢复保留已保存的选择。Agent 绑定 `false` 后，现有工具桥凭证也不能继续列出或调用其工具。
 
-各层均未设置时，保留原有行为：兼容的子 Agent 获得其获准的原生工具，原样 main agent 只有请求上下文或委派能力时才获得桥。开启注入不会额外开放工具组；明确的 `kiki_context: []` 和 `allow_kiki_subagents: false` 仍保持这些组关闭。
+各层均未设置时，普通的兼容职责 profile 子 Agent 保留原有行为，只获得它获准的原生工具；原样 main agent 只有请求上下文或委派能力时才获得桥。使用 `profile: engine:<executor-id>` 启动的 child 则是裸目标：默认不发送 Kiki 职责、system prompt 或 profile 正文，仅因为是 child 也不会创建 Kiki 工具桥。显式的每引擎 defaults 仍然生效，明确设置 `inject_kiki_mcp = false` 会关闭工具桥。开启注入不会额外开放工具组；明确的 `kiki_context: []` 和 `allow_kiki_subagents: false` 仍保持这些组关闭。
 
 打开工具桥也不会授予绑定已经拒绝的工具。外部工具同时按厂商名和映射后的原生名检查时，每一份允许列表都须包含其中至少一个名字，拒绝其中任一名字都会阻止这次调用。
 

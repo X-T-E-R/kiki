@@ -44,6 +44,12 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 | `background` | 省略时，调用方是 main 则后台运行，是 subagent 则前台等待；`true` / `false` 分别强制后台与同步等待。 |
 | `model_alias`、`effort` | 省略则沿用已保存值或默认值。 |
 
+每个非原生执行器描述符都会投影出一个保留的原生目标，名称为 `engine:<executor-id>`，例如 `engine:codex-app-server`、`engine:claude-acp`、`engine:agy-cli` 和 `engine:grok-acp`。把这个稳定名称作为 `AgentRun` 的 `profile`，即可用引擎自己的配置启动裸 child；不需要 Markdown role profile。普通的具名职责 profile 保持原有行为。如果已有注册 profile 使用相同的 `engine:<executor-id>` 名称，则保留该注册定义；虚拟投影不会覆盖它。
+
+裸引擎目标的模型顺序是 `AgentRun.model_alias` → `[agent_executor_overrides."<id>".defaults].model_alias` → 厂商默认值，Kiki 不会通过原生 `[models]` 或 provider 设置解析厂商模型。它没有 Kiki 职责、system prompt 或 profile 正文，也不会仅因为是 child 就获得 Kiki MCP 工具桥。显式的每引擎 defaults 仍然生效。
+
+投影这些目标不会放宽显式 `allowed_subagents`；要允许调用，必须加入准确的 `engine:<executor-id>` 名称。模型和 effort 的硬约束仍然生效。如果无法核验厂商默认模型或 effort 是否满足 `allowed_models`、`deny_models` 或 `allowed_efforts` 规则，请显式选择一个获准的 vendor model 或 effort，不要依赖该默认值。
+
 子 Agent 默认在当前会话内运行，继承会话的工作目录和已声明的额外工作区目录。新子 Agent 也可以用 typed `workDir` 和 `additionalDirs` 指定已经准入的独立 writer 目录；这些目录会经所选 runtime 映射，并成为该子 Agent 工具与外部执行器实际使用的根目录。只在 `prompt` 中提到路径不会把它加入工作区。`resume` 不接受 `workDir` 或 `additionalDirs`，会冻结首次派发时的根目录。需要由整个会话拥有独立工作目录或 worktree 时，先配置该会话的工作目录，再派发其子 Agent。
 
 继承工作区提供的是上下文，不会新建目录沙箱。Kiki 不主动添加输入根目录，也不覆盖外部引擎的沙箱；未设置的模型、思考强度和权限选择保留[引擎自己的配置](#外部直连执行)。显式声明的额外目录通过执行器支持的目录接口传递；ACP 执行器未声明支持时，会记录 `additional_directories_dropped`。声明目录不会关闭显式权限规则、已绑定的 worktree 限制或引擎自己的沙箱。
@@ -56,7 +62,7 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 
 恢复前先检查原轮次与已保存改动，再用新提示词唤回同一个子 Agent，要求它完成工作并报告结果。SDK 调用方须使用新的 prompt ID；重复已结束的 ID 只会重放保存的结果。Kiki 不为这两类失败自动重试，也不改写旧任务记录。
 
-新派生按此顺序选模型：具体的 `model_alias` 参数 → 生效 profile / route / caller lease 的 pin → 显式配置的 `[subagent].default_model`；三者都没有则以 `model.not_configured` 失败，不创建子 Agent，未知 alias 同样报错。effort 单独解析，来源可能是工具调用、route、caller lease、profile 或模型自身——[完整顺序见下文](#具名-profile-route-实验功能)。`resume` 时省略 `model_alias` 和 `effort` 会保留已保存绑定，解析到同一规范模型的 alias 不产生变化，换到不同规范模型则需要 `allow_model_change: true`。
+普通职责 profile 的新派生按此顺序选模型：具体的 `model_alias` 参数 → 生效 profile / route / caller lease 的 pin → 显式配置的 `[subagent].default_model`；三者都没有则以 `model.not_configured` 失败，不创建子 Agent，未知 alias 同样报错。引擎目标使用上文的厂商默认顺序。effort 单独解析，来源可能是工具调用、route、caller lease、profile 或模型自身——[完整顺序见下文](#具名-profile-route-实验功能)。`resume` 时省略 `model_alias` 和 `effort` 会保留已保存绑定，解析到同一规范模型的 alias 不产生变化，换到不同规范模型则需要 `allow_model_change: true`。
 
 `preferred_models`、`discouraged_models`、`preferred_efforts` 以及 route / caller lease 的 pin 都是软建议：满足硬规则的覆盖会带着结构化 advisory 继续执行。`allowed_models`、`deny_models`、`allowed_efforts` 在任何作用域都是硬规则。机器级 `[subagent].deny_models`、不受支持的模型能力、route 身份、缺少换模确认以及 executor / thread 限制都是硬错误；外部 executor 无法修改恢复的 thread 绑定时会报错，不会重建 thread 或 executor。
 
@@ -145,6 +151,10 @@ harness 决定实际运行程序，profile 是可选定制，模型则是在该 
 权限模式未设置时，保留引擎自己的 auto、YOLO、manual 等行为；Kiki 原生默认值或父 Agent 继承的模式不算外部覆盖。会话、profile、harness 设置或 Agent 级权限操作明确指定模式时，才应用到引擎。显式 deny 或 ask 规则、有限工具声明与会话已绑定的 worktree 隔离限制仍生效。Kiki 原生可见工具目录不会成为引擎自有工具的白名单。
 
 只改变权限模式会保留远端对话。清除覆盖后回到剩余的 profile 或 harness 设置；都未设置时，ACP 与 Codex 恢复覆盖前保存的引擎策略，重新打开 Kiki 会话后也能恢复。Adapter 无法应用所选模式或恢复已保存策略时会报错，不会悄悄另建对话。
+
+通过 `engine:<executor-id>` 启动的 child 在恢复时保留已保存的原生引擎会话合同。原生会话不可用或无法核验时，Kiki 不会静默改开一个新会话，而是按引擎诊断让恢复失败。不同厂商支持的 resume、load 和控制能力并不相同，因此目标能启动不代表支持所有恢复操作。
+
+普通 resume 未提供模型覆盖时，会保留已有引擎会话。若要请求 fresh context（`new_window`）或单独修改 `effort`，必须先显式选择 vendor model；Kiki 不会从原生或引擎默认绑定中推断模型。
 
 审批怎样送达与采用哪种策略是两件事。Adapter 支持时，ACP 与 Codex 发出的审批请求进入 Kiki 审批交互。无界面的 CLI 如果要求审批，却没有受支持的回复通道，这次请求就无法完成：使用带审批桥的 adapter，或为该任务明确选择受支持的权限模式，不必修改引擎全局默认值。
 
