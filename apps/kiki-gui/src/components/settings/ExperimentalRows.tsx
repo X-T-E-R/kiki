@@ -44,8 +44,12 @@ export function useExperimentalFlags() {
   };
 }
 
-/** One flag: the small tag, what it does, when it takes effect, and a three-way choice. */
-function ExperimentalRow({ id, override, effective }: { id: string; override: boolean | undefined; effective: boolean | undefined }) {
+/**
+ * One flag: the small tag, what it does, when it takes effect, and a three-way
+ * choice. Exported so the page a flag gates can offer the same switch where a
+ * flag-off dead end would otherwise send the reader hunting for it.
+ */
+export function ExperimentalRow({ id, override, effective }: { id: string; override: boolean | undefined; effective: boolean | undefined }) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();

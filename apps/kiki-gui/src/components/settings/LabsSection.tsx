@@ -20,7 +20,7 @@ import { SectionCard } from './SectionCard';
 export function LabsSection() {
   const { t } = useI18n();
   const { search } = useLocation();
-  const { rows, effective, loading, error } = useExperimentalFlags();
+  const { rows, loading, error } = useExperimentalFlags();
   const labels = settingsSectionLabels(t);
   // Keep server/token deep-link params on the jump, like every settings link.
   const query = (() => {
@@ -46,11 +46,11 @@ export function LabsSection() {
           const section = experimentalSectionForFlag(row.id);
           const card = home?.cardId ?? experimentalCardId(section);
           const page = labels[section] ?? section;
-          const state = effective[row.id];
           return (
             <li key={row.id} data-labs-entry={row.id} className="flex min-h-9 items-center gap-x-4 py-1 first:pt-0 last:pb-0">
               {/* A flag this app has no copy for is named by its id: two of them
-                  must stay tellable apart at any width. */}
+                  must stay tellable apart at any width. The live state stays on
+                  the page the link opens, so the row carries no second readout. */}
               {home === undefined ? (
                 <p className="min-w-0 flex-1 truncate font-mono text-[12px] text-ink" data-labs-unknown>{row.id}</p>
               ) : (
@@ -59,9 +59,6 @@ export function LabsSection() {
                   <span className="ml-2 hidden font-mono text-[11px] text-ink-faint sm:inline">{row.id}</span>
                 </p>
               )}
-              <span className={`shrink-0 text-[12px] ${state === true ? 'text-success' : 'text-ink-faint'}`}>
-                {t(state === undefined ? 'st.exp.state.unknown' : state ? 'st.exp.state.on' : 'st.exp.state.off')}
-              </span>
               <Link
                 to={`/settings/${section}${query}#${card}`}
                 data-labs-link={section}

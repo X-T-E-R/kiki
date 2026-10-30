@@ -72,7 +72,8 @@ describe('permission reviewer settings', () => {
     expect(container.querySelector('#reviewer-model')).toBeNull();
     expect(container.querySelector('#reviewer-api-key')).toBeNull();
     expect(container.querySelector('[data-decision-summary-value]')?.textContent).toBe('typesafe · jev-latest');
-    await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '5000');
+    // The field works in seconds (unit right of the input); the wire keeps ms.
+    await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '5');
     await act(async () => button('Save').click());
     await settle();
     expect(client.patchConfig).toHaveBeenCalledWith({ permission: { reviewer: {
@@ -201,9 +202,9 @@ describe('permission reviewer settings', () => {
 
   it('discards tuning changes without writing', async () => {
     await render();
-    await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '6000');
+    await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '6');
     await act(async () => button('Discard changes').click());
-    expect(container.querySelector<HTMLInputElement>('input[type="number"]')?.value).toBe('8000');
+    expect(container.querySelector<HTMLInputElement>('input[type="number"]')?.value).toBe('8');
     expect(client.patchConfig).not.toHaveBeenCalled();
   });
 });

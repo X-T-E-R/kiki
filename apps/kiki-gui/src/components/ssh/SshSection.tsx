@@ -15,7 +15,6 @@
  */
 
 import { useEffect, useId, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 
 import { pushToast, pushUndoToast } from '../../lib/toasts';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -27,6 +26,7 @@ import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import {
   canWriteBack,
+  NATIVE_SSH_FLAG,
   sshApi,
   sshKeys,
   sshTargetLabel,
@@ -45,6 +45,7 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { DisclosureChevron, Icon } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
+import { ExperimentalRow, useExperimentalFlags } from '../settings/ExperimentalRows';
 import { SectionCard } from '../settings/SectionCard';
 import { SettingField, SettingsBox } from '../settings/fields';
 import { useSavedTick } from '../settings/useSavedTick';
@@ -62,23 +63,35 @@ const COPY_BUTTON =
 export function SshSection() {
   const { client } = useConnection();
   const { t } = useI18n();
-  const navigate = useNavigate();
   const flag = useNativeSshEnabled(client);
 
   if (flag.loading) return <SectionCard id="st-card-ssh-hosts" title={t('st.ssh.hostsTitle')}><Hint>{t('st.ssh.loading')}</Hint></SectionCard>;
-  if (flag.enabled !== true) {
-    return (
-      <SectionCard id="st-card-ssh-hosts" title={t('st.ssh.hostsTitle')}>
-        <div data-ssh-flag-off className="space-y-3">
-          <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.ssh.flagOff')}</p>
-          <button type="button" className={SECONDARY_BUTTON} onClick={() => { void navigate('/settings/ssh#st-card-exp-ssh', { replace: true }); }}>
-            {t('st.ssh.openLabs')}
-          </button>
-        </div>
-      </SectionCard>
-    );
-  }
+  if (flag.enabled !== true) return <SshFlagOffCard />;
   return <SshHostsSettings />;
+}
+
+/**
+ * The flag-off fallback: the enable switch lives right here instead of a link
+ * to the page's own experimental row, which only renders when the server
+ * reports the flag and could leave that link scrolling nowhere. It is the
+ * same three-way ExperimentalRow the page would show below.
+ */
+function SshFlagOffCard() {
+  const { t } = useI18n();
+  const { rows, effective, loading } = useExperimentalFlags();
+  const saved = rows.find((row) => row.id === NATIVE_SSH_FLAG);
+  return (
+    <SectionCard id="st-card-ssh-hosts" title={t('st.ssh.hostsTitle')}>
+      <div data-ssh-flag-off className="space-y-3">
+        <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('st.ssh.flagOff')}</p>
+        {loading ? <Hint>{t('st.ssh.loading')}</Hint> : (
+          <SettingsBox>
+            <ExperimentalRow id={NATIVE_SSH_FLAG} override={saved?.override} effective={effective[NATIVE_SSH_FLAG]} />
+          </SettingsBox>
+        )}
+      </div>
+    </SectionCard>
+  );
 }
 
 function SshHostsSettings() {
@@ -325,7 +338,8 @@ function HostRow({
   const state = visibleState(status);
   const target = sshTargetLabel(host);
   const fromConfig = host.source === 'ssh-config';
-  const secondLine = target ?? (fromConfig ? t('st.ssh.row.resolvedBySsh') : t('st.ssh.row.aliasOnly', { alias: host.id }));
+  const secondLine = target ?? (fromConfig ? t('st.ssh.row.fromConfig') : t('st.ssh.row.aliasOnly', { alias: host.id }));
+  const sourceTag = fromConfig && target !== undefined;
   const connected = state === 'ready' || state === 'connecting';
   const writable = canWriteBack(host);
 
@@ -345,7 +359,7 @@ function HostRow({
             {secondLine}
           </span>
         </span>
-        {fromConfig ? (
+        {sourceTag ? (
           <span className="hidden shrink-0 text-[12px] text-ink-faint sm:inline" data-ssh-source-tag>{t('st.ssh.row.fromConfig')}</span>
         ) : null}
         {host.agentAccess === 'hidden' ? (
@@ -723,9 +737,7 @@ function ConnectionCard() {
           {sync !== undefined ? (
             <SettingField
               label={t('st.ssh.syncToggle')}
-              help={syncSource === 'base' ? t('st.ssh.syncSourceBase')
-                : syncSource === 'default' ? t('st.ssh.syncSourceDefault')
-                : t('st.ssh.syncHint')}
+              help={t('st.ssh.syncHint')}
             >
               <SavedTick show={syncSaved} />
               <Toggle layout="bare" label={t('st.ssh.syncToggle')} checked={sync} disabled={saving === 'sync'}

@@ -15,7 +15,15 @@ import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, Toggle, type Feedback } from '../controls';
 import { Icon } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
+import { SettingField, SettingsBox } from './fields';
 import { SectionCard } from './SectionCard';
+
+/** Same rhythm as the settings row actions, sized for a glyph that sits on a text line. */
+const ROW_ACTION =
+  'inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent pointer-coarse:h-10';
+
+const ICON_BUTTON =
+  'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-10 pointer-coarse:w-10';
 
 export function ExternalConnectionSection() {
   const { client } = useConnection();
@@ -263,34 +271,39 @@ export function ExternalConnectionSection() {
           <p className="text-[12.5px] text-ink-soft">{t('st.conn.ext.intro')}</p>
 
           {loading ? (
-            <p className="text-[12px] text-ink-faint">{t('selection.loading')}</p>
+            <Hint>{t('st.spaces.loading')}</Hint>
           ) : readError ? (
-            <div className="space-y-2 rounded-lg border border-hairline bg-paper px-3 py-2.5">
-              <p className="text-[12.5px] text-danger">{readError}</p>
-              <button
-                type="button"
-                onClick={() => { void loadSnapshot(); }}
-                className={SECONDARY_BUTTON}
-              >
-                {t('st.conn.ext.retry')}
-              </button>
+            // A read failure is one quiet line plus its retry, not a standing alert.
+            <div className="space-y-1">
+              <p role="alert" className="max-w-[62ch] text-[12.5px] leading-snug text-danger">{readError}</p>
+              <div>
+                <button
+                  type="button"
+                  onClick={() => { void loadSnapshot(); }}
+                  className={ROW_ACTION}
+                >
+                  {t('st.conn.ext.retry')}
+                </button>
+              </div>
             </div>
           ) : snapshot?.state === 'not-installed' ? (
-            <div className="space-y-3 rounded-lg border border-hairline bg-paper px-3 py-2.5">
-              <p className="text-[12.5px] text-ink-soft">{t('st.conn.ext.notInstalled')}</p>
-              <button
-                type="button"
-                onClick={() => { void handleStartInstall(); }}
-                disabled={busy !== null}
-                className={SECONDARY_BUTTON}
-                data-conn-ext-install
-              >
-                {busy === 'preview' ? t('st.conn.ext.installing') : t('st.conn.ext.installPlugin')}
-              </button>
+            <div className="space-y-2">
+              <p className="max-w-[62ch] text-[12.5px] leading-snug text-ink-soft">{t('st.conn.ext.notInstalled')}</p>
+              <div>
+                <button
+                  type="button"
+                  onClick={() => { void handleStartInstall(); }}
+                  disabled={busy !== null}
+                  className={SECONDARY_BUTTON}
+                  data-conn-ext-install
+                >
+                  {busy === 'preview' ? t('st.conn.ext.installing') : t('st.conn.ext.installPlugin')}
+                </button>
+              </div>
             </div>
           ) : snapshot?.state === 'disabled' || snapshot?.state === 'invalid' ? (
-            <div className="space-y-3 rounded-lg border border-hairline bg-paper px-3 py-2.5">
-              <p className="text-[12.5px] text-ink-soft">{t('st.conn.ext.disabled')}</p>
+            <div className="space-y-2">
+              <p className="max-w-[62ch] text-[12.5px] leading-snug text-ink-soft">{t('st.conn.ext.disabled')}</p>
               {snapshot.errors.length > 0 ? (
                 <ul className="list-disc pl-4 text-[12px] text-danger">
                   {snapshot.errors.map((msg, i) => (
@@ -298,15 +311,17 @@ export function ExternalConnectionSection() {
                   ))}
                 </ul>
               ) : null}
-              <button
-                type="button"
-                onClick={() => { void handleEnable(); }}
-                disabled={busy !== null}
-                className={SECONDARY_BUTTON}
-                data-conn-ext-enable
-              >
-                {t('st.conn.ext.enablePlugin')}
-              </button>
+              <div>
+                <button
+                  type="button"
+                  onClick={() => { void handleEnable(); }}
+                  disabled={busy !== null}
+                  className={SECONDARY_BUTTON}
+                  data-conn-ext-enable
+                >
+                  {t('st.conn.ext.enablePlugin')}
+                </button>
+              </div>
             </div>
           ) : snapshot?.state === 'available' ? (
             <AvailableTunnelContent
@@ -383,10 +398,12 @@ function AvailableTunnelContent({
   const { t } = useI18n();
   const serviceRunning = status.service.state === 'running';
   const depMissing = status.dependency.state === 'missing';
+  const publicUrl = status.configuration.publicUrl;
 
   return (
     <div className="space-y-4" data-conn-ext-available>
-      {/* Dependency check */}
+      {/* The one actionable state keeps its amber row; everything else is one
+          SettingsBox of rows — no frames inside the card. */}
       {depMissing ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-ink/20 bg-amber-ink/[0.04] px-3 py-2 text-[12.5px]">
           <div>
@@ -405,184 +422,157 @@ function AvailableTunnelContent({
         </div>
       ) : null}
 
-      {/* Service status & Controls */}
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-lg border border-hairline bg-paper px-3 py-2 text-[12px]">
-        <dl className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-          <div className="flex items-center gap-1.5">
-            <span
-              aria-hidden
-              className={`inline-block h-2 w-2 rounded-full ${
-                serviceRunning ? 'bg-success' : status.service.state === 'starting' ? 'bg-amber-ink' : 'bg-ink-faint'
-              }`}
-            />
-            <dt className="text-ink-faint">{t('st.conn.ext.service')}</dt>
-            <dd className={`font-medium ${serviceRunning ? 'text-success' : 'text-ink'}`}>
-              {t(`st.conn.ext.state.${status.service.state}` as any) || status.service.state}
-            </dd>
-          </div>
-          {version ? (
-            <div className="flex items-center gap-1.5">
-              <dt className="text-ink-faint">{t('st.conn.version')}</dt>
-              <dd className="font-mono text-ink">{version}</dd>
-            </div>
-          ) : null}
-          {status.service.pid ? (
-            <div className="flex items-center gap-1.5">
-              <dt className="text-ink-faint">PID</dt>
-              <dd className="font-mono text-ink">{status.service.pid}</dd>
-            </div>
-          ) : null}
-        </dl>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => onToggleService(serviceRunning)}
-            disabled={busy !== null || depMissing}
-            className={SECONDARY_BUTTON}
-            data-conn-ext-service-toggle
-          >
-            {busy === 'service'
-              ? serviceRunning ? t('st.conn.ext.stopping') : t('st.conn.ext.starting')
-              : serviceRunning ? t('st.conn.ext.stop') : t('st.conn.ext.start')}
-          </button>
-          <button
-            type="button"
-            onClick={onRefresh}
-            disabled={busy !== null}
-            className={SECONDARY_BUTTON}
-            title={t('st.conn.ext.refresh')}
-          >
-            <Icon name="refresh" size={14} />
-          </button>
-        </div>
-      </div>
-
-      {/* Auto Start */}
-      <div className="flex items-center justify-between gap-4 rounded-lg border border-hairline bg-paper px-3 py-2">
+      <SettingsBox>
         <div>
-          <span className="text-[13px] font-medium text-ink">{t('st.conn.ext.autoStart')}</span>
-          <p className="text-[11.5px] text-ink-soft">{t('st.conn.ext.autoStartHint')}</p>
-        </div>
-        <Toggle
-          label={t('st.conn.ext.autoStart')}
-          checked={status.configuration.autoStart}
-          onChange={() => onToggleAutoStart(status.configuration.autoStart)}
-        />
-      </div>
-
-      {/* Cloudflare Login state */}
-      <div className="space-y-2 rounded-lg border border-hairline bg-paper px-3 py-2.5">
-        <span className="text-[13px] font-medium text-ink">{t('st.conn.ext.loginTitle')}</span>
-        {status.login.state === 'pending' ? (
-          <div className="space-y-2">
-            <p className="text-[12px] text-amber-ink font-medium">{t('st.conn.ext.loginPending')}</p>
-            {status.login.url ? (
-              <a
-                href={status.login.url}
-                target="_blank"
-                rel="noreferrer noopener"
-                className="text-[12px] underline text-ink break-all"
-              >
-                {status.login.url}
-              </a>
-            ) : null}
-            <div>
-              <button
-                type="button"
-                onClick={onCancelLogin}
-                disabled={busy !== null}
-                className={SECONDARY_BUTTON}
-              >
-                {t('st.conn.ext.cancelLogin')}
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[12px] text-ink-soft">
-              {status.account.certificate ? t('st.conn.ext.loggedIn') : t('st.conn.ext.notLoggedIn')}
-            </p>
+          <SettingField label={t('st.conn.ext.service')} help={version !== undefined ? t('st.conn.ext.versionLine', { version }) : undefined}>
+            <span className="inline-flex items-center gap-1.5 text-[13px]">
+              <span
+                aria-hidden
+                className={`inline-block h-2 w-2 rounded-full ${
+                  serviceRunning ? 'bg-success' : status.service.state === 'starting' ? 'bg-amber-ink' : 'bg-ink-faint'
+                }`}
+              />
+              <span className={serviceRunning ? 'font-medium text-success' : 'text-ink'} data-conn-ext-service-state>
+                {t(`st.conn.ext.state.${status.service.state}` as any) || status.service.state}
+              </span>
+            </span>
             <button
               type="button"
-              onClick={onLogin}
+              onClick={() => onToggleService(serviceRunning)}
               disabled={busy !== null || depMissing}
               className={SECONDARY_BUTTON}
-              data-conn-ext-login
+              data-conn-ext-service-toggle
             >
-              {busy === 'login' ? t('st.conn.ext.loggingIn') : t('st.conn.ext.login')}
+              {busy === 'service'
+                ? serviceRunning ? t('st.conn.ext.stopping') : t('st.conn.ext.starting')
+                : serviceRunning ? t('st.conn.ext.stop') : t('st.conn.ext.start')}
             </button>
-          </div>
-        )}
-      </div>
-
-      {/* Public URL (no token, reachability unverified) */}
-      {status.configuration.publicUrl ? (
-        <div className="space-y-1.5 rounded-lg border border-hairline bg-paper px-3 py-2.5" data-conn-ext-url>
-          <span className="text-[13px] font-medium text-ink">{t('st.conn.ext.publicUrl')}</span>
-          <div className="flex items-center gap-2">
-            <input
-              readOnly
-              value={status.configuration.publicUrl}
-              className="flex-1 rounded-md border border-hairline bg-paper px-2 py-1 font-mono text-[12px] text-ink outline-none"
-            />
             <button
               type="button"
-              onClick={() => onCopyUrl(status.configuration.publicUrl)}
-              className={SECONDARY_BUTTON}
+              onClick={onRefresh}
+              disabled={busy !== null}
+              className={ICON_BUTTON}
+              title={t('st.conn.ext.refresh')}
+              aria-label={t('st.conn.ext.refresh')}
+              data-conn-ext-refresh
             >
-              {t('connect.copyLink')}
+              <Icon name="refresh" size={14} />
             </button>
-          </div>
-          <Hint>{t('st.conn.ext.reachUnverified')}</Hint>
+          </SettingField>
         </div>
-      ) : null}
-
-      {/* Tunnels selection */}
-      <div className="space-y-2 rounded-lg border border-hairline bg-paper px-3 py-2.5">
-        <div className="flex items-center justify-between gap-2">
-          <div>
-            <span className="text-[13px] font-medium text-ink">{t('st.conn.ext.selectTunnel')}</span>
-            <p className="text-[11.5px] text-ink-soft">
-              {status.configuration.tunnelId
-                ? `${t('st.conn.ext.currentTunnel')}: ${status.configuration.tunnelId}`
-                : t('st.conn.ext.noTunnelSelected')}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onLoadTunnels}
-            disabled={loadingTunnels}
-            className={SECONDARY_BUTTON}
-          >
-            {loadingTunnels ? t('selection.loading') : t('st.conn.ext.listTunnels')}
-          </button>
+        <div>
+          <SettingField label={t('st.conn.ext.autoStart')} help={t('st.conn.ext.autoStartHint')} htmlFor="conn-ext-auto-start">
+            <Toggle
+              id="conn-ext-auto-start"
+              layout="bare"
+              label={t('st.conn.ext.autoStart')}
+              checked={status.configuration.autoStart}
+              disabled={busy !== null}
+              onChange={() => onToggleAutoStart(status.configuration.autoStart)}
+            />
+          </SettingField>
         </div>
-
-        {tunnelsList && tunnelsList.length > 0 ? (
-          <div className="mt-2 space-y-1 divide-y divide-hairline">
-            {tunnelsList.map((tun) => (
-              <div key={tun.id} className="flex items-center justify-between pt-1.5 text-[12px]">
-                <div className="min-w-0 pr-2">
-                  <p className="font-medium text-ink truncate">{tun.name}</p>
-                  <p className="font-mono text-[11px] text-ink-faint truncate">{tun.id}</p>
+        <div>
+          {status.login.state === 'pending' ? (
+            <SettingField label={t('st.conn.ext.loginTitle')} layout="stack">
+              <div className="space-y-2" data-conn-ext-login-pending>
+                <p className="text-[12px] font-medium text-amber-ink">{t('st.conn.ext.loginPending')}</p>
+                {status.login.url ? (
+                  <a
+                    href={status.login.url}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="block break-all text-[12px] text-ink underline"
+                  >
+                    {status.login.url}
+                  </a>
+                ) : null}
+                <div>
+                  <button
+                    type="button"
+                    onClick={onCancelLogin}
+                    disabled={busy !== null}
+                    className={SECONDARY_BUTTON}
+                  >
+                    {t('st.conn.ext.cancelLogin')}
+                  </button>
                 </div>
+              </div>
+            </SettingField>
+          ) : (
+            <SettingField label={t('st.conn.ext.loginTitle')} help={status.account.certificate ? t('st.conn.ext.loggedIn') : t('st.conn.ext.notLoggedIn')}>
+              <button
+                type="button"
+                onClick={onLogin}
+                disabled={busy !== null || depMissing}
+                className={SECONDARY_BUTTON}
+                data-conn-ext-login
+              >
+                {busy === 'login' ? t('st.conn.ext.loggingIn') : t('st.conn.ext.login')}
+              </button>
+            </SettingField>
+          )}
+        </div>
+        {publicUrl !== undefined && publicUrl !== '' ? (
+          <div>
+            <SettingField label={t('st.conn.ext.publicUrl')} layout="stack">
+              <div className="flex min-w-0 items-center gap-2" data-conn-ext-url>
+                <code className="min-w-0 flex-1 break-all rounded-md bg-ink/[0.04] px-2 py-1.5 font-mono text-[11.5px] leading-[1.55] text-ink-soft">
+                  {publicUrl}
+                </code>
                 <button
                   type="button"
-                  onClick={() => onSelectTunnel(tun.id)}
-                  disabled={busy !== null || tun.id === status.configuration.tunnelId}
+                  onClick={() => onCopyUrl(publicUrl)}
                   className={SECONDARY_BUTTON}
+                  data-conn-ext-copy-url
                 >
-                  {tun.id === status.configuration.tunnelId
-                    ? t('st.conn.ext.selected')
-                    : t('st.conn.ext.useTunnel')}
+                  {t('connect.copyLink')}
                 </button>
               </div>
-            ))}
+            </SettingField>
           </div>
-        ) : tunnelsList && tunnelsList.length === 0 ? (
-          <p className="text-[12px] text-ink-faint">{t('st.conn.ext.tunnelsEmpty')}</p>
         ) : null}
-      </div>
+        <div>
+          <SettingField label={t('st.conn.ext.tunnel')}>
+            <span className="min-w-0 truncate text-[13px] text-ink-soft" data-conn-ext-current-tunnel>
+              {status.configuration.tunnelId ?? t('st.conn.ext.noTunnelSelected')}
+            </span>
+            <button
+              type="button"
+              onClick={onLoadTunnels}
+              disabled={loadingTunnels}
+              className={SECONDARY_BUTTON}
+              data-conn-ext-list-tunnels
+            >
+              {loadingTunnels ? t('selection.loading') : t('st.conn.ext.listTunnels')}
+            </button>
+          </SettingField>
+          {tunnelsList && tunnelsList.length > 0 ? (
+            <div className="mt-1 divide-y divide-hairline" data-conn-ext-tunnels>
+              {tunnelsList.map((tun) => (
+                <div key={tun.id} className="flex items-center justify-between gap-2 py-1.5 text-[12px]">
+                  <div className="min-w-0 pr-2">
+                    <p className="truncate font-medium text-ink">{tun.name}</p>
+                    <p className="truncate font-mono text-[11px] text-ink-faint">{tun.id}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onSelectTunnel(tun.id)}
+                    disabled={busy !== null || tun.id === status.configuration.tunnelId}
+                    className={SECONDARY_BUTTON}
+                  >
+                    {tun.id === status.configuration.tunnelId
+                      ? t('st.conn.ext.selected')
+                      : t('st.conn.ext.useTunnel')}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : tunnelsList && tunnelsList.length === 0 ? (
+            <p className="mt-1 text-[12px] text-ink-faint">{t('st.conn.ext.tunnelsEmpty')}</p>
+          ) : null}
+        </div>
+      </SettingsBox>
     </div>
   );
 }

@@ -19,6 +19,7 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
+import { pushUndoToast } from '../../lib/toasts';
 import {
   epochToIso,
   EXTERNAL_CLIENT_DEFAULT_TOOLS,
@@ -180,7 +181,8 @@ const POLICY_FIELDS = ['workspace', 'mode', 'allowCommands', 'historyScope'] as 
 
 export type PolicyChange = 'pause' | 'access' | 'none';
 
-type PendingConfirm = { readonly kind: Exclude<PolicyChange, 'none'>; readonly action: 'save' | 'pause' };
+/** The one confirm left: saving a policy that narrows what the client may do. */
+type PendingConfirm = { readonly kind: 'access'; readonly action: 'save' };
 
 function sameSet(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((value) => b.includes(value));
@@ -552,8 +554,8 @@ function ConnectionRow({ connection, api, onChanged }: {
       return;
     }
     const change = policyChangeOf(connection, draftToPatch(draft, connection));
-    if (change !== 'none' && !confirmed) {
-      setConfirming({ kind: change, action: 'save' });
+    if (!confirmed && (change === 'pause' || change === 'access')) {
+      setConfirming({ kind: 'access', action: 'save' });
       return;
     }
     setBusy(true);
@@ -571,17 +573,23 @@ function ConnectionRow({ connection, api, onChanged }: {
     }
   };
 
-  const setStatus = async (enabled: boolean, confirmed = false) => {
-    if (!enabled && !confirmed) {
-      setConfirming({ kind: 'pause', action: 'pause' });
-      return;
-    }
+  // Pausing is one click from the row and fully reversible (恢复 sits on the
+  // same row), so it runs at once and the toast offers its inverse — the
+  // paused body line above already says what pausing stops.
+  const setStatus = async (enabled: boolean) => {
     setBusy(true);
     setFeedback(null);
     try {
       await api.update(connection.id, { enabled });
-      setConfirming(null);
-      setFeedback({ tone: 'success', text: t(enabled ? 'st.xc.statusActive' : 'st.xc.statusPaused') });
+      if (enabled) {
+        setFeedback({ tone: 'success', text: t('st.xc.statusActive') });
+      } else {
+        pushUndoToast({
+          text: t('st.xc.pausedToast', { name: connection.name }),
+          undoFailedText: t('toast.undoFailed'),
+          undo: async () => { await api.update(connection.id, { enabled: true }); onChanged(); },
+        });
+      }
       onChanged();
     } catch (error) {
       setFeedback({ tone: 'error', text: t(enabled ? 'st.xc.error.resume' : 'st.xc.error.pause', { reason: errorText(locale, error) }) });
@@ -759,14 +767,11 @@ function ConnectionRow({ connection, api, onChanged }: {
           onConfirm={() => { void revoke(); }} onCancel={() => { setRevoking(false); }} />
         <ConfirmDialog
           open={confirming !== null}
-          title={t(confirming?.kind === 'pause' ? 'st.xc.pauseConfirmTitle' : 'st.xc.policyConfirmTitle')}
-          body={t(confirming?.kind === 'pause' ? 'st.xc.pauseConfirmBody' : 'st.xc.policyConfirmBody', { name: connection.name })}
-          confirmLabel={t(confirming?.kind === 'pause' ? 'st.xc.pause' : 'st.xc.policyConfirm')}
+          title={t('st.xc.policyConfirmTitle', { name: connection.name })}
+          body={t('st.xc.policyConfirmBody', { name: connection.name })}
+          confirmLabel={t('st.xc.policyConfirm')}
           tone="danger" busy={busy}
-          onConfirm={() => {
-            if (confirming?.action === 'pause') void setStatus(false, true);
-            else void save(true);
-          }}
+          onConfirm={() => { void save(true); }}
           onCancel={() => { setConfirming(null); }}
         />
       </div>

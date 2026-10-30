@@ -15,18 +15,22 @@ import { useSavedTick } from './useSavedTick';
 const CATEGORIES = ['policy_compliance', 'no_secret_egress', 'no_irreversible_damage', 'no_outward_effect', 'prompt_injection_absent'] as const;
 type Category = typeof CATEGORIES[number];
 interface ReviewerDraft {
-  timeoutMs: string;
+  // Seconds in the field; the wire keeps milliseconds and converts at save.
+  timeoutS: string;
   allowThreshold: string;
   denyThreshold: string;
   categories: Category[];
 }
 const DEFAULT_DRAFT: ReviewerDraft = {
-  timeoutMs: '8000', allowThreshold: '0.9', denyThreshold: '0.9', categories: [...CATEGORIES],
+  timeoutS: '8', allowThreshold: '0.9', denyThreshold: '0.9', categories: [...CATEGORIES],
 };
+function timeoutMsToSeconds(ms: number): string {
+  return Number.isInteger(ms / 1000) ? String(ms / 1000) : (ms / 1000).toFixed(1);
+}
 type ReviewerEcho = NonNullable<NonNullable<Awaited<ReturnType<import('../../lib/client').KikiClient['getConfig']>>['permission']>['reviewer']>;
 function reviewerFromConfig(reviewer: ReviewerEcho | undefined): ReviewerDraft {
   return {
-    timeoutMs: String(reviewer?.timeoutMs ?? DEFAULT_DRAFT.timeoutMs),
+    timeoutS: reviewer?.timeoutMs === undefined ? DEFAULT_DRAFT.timeoutS : timeoutMsToSeconds(reviewer.timeoutMs),
     allowThreshold: String(reviewer?.allowThreshold ?? DEFAULT_DRAFT.allowThreshold),
     denyThreshold: String(reviewer?.denyThreshold ?? DEFAULT_DRAFT.denyThreshold),
     categories: reviewer?.categories !== undefined
@@ -34,11 +38,17 @@ function reviewerFromConfig(reviewer: ReviewerEcho | undefined): ReviewerDraft {
       : [...CATEGORIES],
   };
 }
+/** The milliseconds value the draft writes, or null while the field is not a number. */
+export function draftTimeoutMs(timeoutS: string): number | null {
+  const seconds = Number(timeoutS);
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  return Math.round(seconds * 1000);
+}
 function valid(draft: ReviewerDraft): boolean {
-  const timeout = Number(draft.timeoutMs);
+  const timeout = draftTimeoutMs(draft.timeoutS);
   const allow = Number(draft.allowThreshold);
   const deny = Number(draft.denyThreshold);
-  return Number.isInteger(timeout) && timeout >= 100 && timeout <= 30_000
+  return timeout !== null && Number.isInteger(timeout) && timeout >= 100 && timeout <= 30_000
     && allow >= 0.5 && allow <= 1 && deny >= 0.5 && deny <= 1
     && draft.categories.length > 0;
 }
@@ -74,7 +84,7 @@ export function ReviewerSettings() {
       // Tuning only: the source, backend and key are left as they are.
       const echoed = await client.patchConfig({
         permission: { reviewer: {
-          timeout_ms: Number(draft.timeoutMs),
+          timeout_ms: draftTimeoutMs(draft.timeoutS)!,
           allow_threshold: Number(draft.allowThreshold), deny_threshold: Number(draft.denyThreshold),
           categories: draft.categories,
         } },
@@ -99,13 +109,23 @@ export function ReviewerSettings() {
       <fieldset disabled={saving || configQuery.isLoading} className="space-y-4 disabled:opacity-60">
         <AdvancedDetails summary={t('st.advanced.disclosure')} data-reviewer-advanced className="space-y-4 text-[13px] text-ink">
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
-          {(['timeoutMs', 'allowThreshold', 'denyThreshold'] as const).map((key) => <label key={key} className="block space-y-1.5">
+          <label className="block space-y-1.5">
+            <span className="block text-[13px] font-medium text-ink">{t('st.reviewer.timeoutS')}</span>
+            <span className="flex items-center gap-1.5">
+              <input type="number" className={`${INPUT} w-full text-[13px] tabular-nums`} value={draft.timeoutS}
+                min={0.1} max={30} step={0.1}
+                onChange={(event) => update({ timeoutS: event.target.value })} />
+              {/* The unit rides the input's right edge, never the label. */}
+              <span className="shrink-0 text-[12px] text-ink-faint">{t('st.reviewer.secondsUnit')}</span>
+            </span>
+          </label>
+          {(['allowThreshold', 'denyThreshold'] as const).map((key) => <label key={key} className="block space-y-1.5">
             <span className="block text-[13px] font-medium text-ink">{t(`st.reviewer.${key}` as I18nKey)}</span>
             <input type="number" className={`${INPUT} text-[13px] tabular-nums`} value={draft[key]}
-              min={key === 'timeoutMs' ? 100 : 0.5} max={key === 'timeoutMs' ? 30_000 : 1}
-              step={key === 'timeoutMs' ? 100 : 0.01}
+              min={0.5} max={1} step={0.01}
               onChange={(event) => update({ [key]: event.target.value })} /></label>)}
         </div>
+        <Hint>{t('st.reviewer.thresholdHint')}</Hint>
         <fieldset className="space-y-1"><legend className="mb-1.5 text-[13px] font-medium text-ink">{t('st.reviewer.categories')}</legend>
           {CATEGORIES.map((category) => <label key={category} className="flex min-h-7 cursor-pointer items-center gap-2 text-[13px] text-ink">
             <input type="checkbox" className="h-4 w-4 accent-[var(--color-selected-ink)]" checked={draft.categories.includes(category)} onChange={(event) => update({

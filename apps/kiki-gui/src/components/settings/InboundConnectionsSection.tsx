@@ -192,10 +192,6 @@ export function InboundConnectionsSection() {
               ) : null}
             </div>
 
-            {status.data.unavailableReason === 'dangerous_auth_bypass' ? (
-              <Hint>{t('st.inbound.inviteUnavailable')}</Hint>
-            ) : null}
-
             {/* While the gate is shut the empty line has nothing to add: the
                 gate hint above and the disabled invite's title already say the
                 one next step. */}
