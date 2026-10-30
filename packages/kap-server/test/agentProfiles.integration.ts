@@ -2645,16 +2645,18 @@ describe('GET /api/agents', () => {
     };
     const created = await post({
       name: 'custom-reviewer', description: 'Review carefully', when_to_use: 'After changes',
-      main: false, pinned_model_alias: 'inherit', tools: ['Read'], prompt: 'Inspect the candidate.',
+      main: false, pinned_model_alias: 'inherit', recipe: 'example', recipe_options: { research: true }, tools: ['Read'], prompt: 'Inspect the candidate.',
     });
     expect(created.code).toBe(0);
     expect(created.data).toMatchObject({
       name: 'custom-reviewer', source: 'user', main: false, prompt: 'Inspect the candidate.',
-      tools: ['Read'], when_to_use: 'After changes',
+      tools: ['Read'], when_to_use: 'After changes', recipe: 'example', recipe_options: { research: true },
     });
     const path = join(home!, 'agents', 'custom-reviewer.md');
     const original = await readFile(path, 'utf8');
     expect(original).toContain('model_alias: "inherit"');
+    expect(original).toContain('recipe: "example"');
+    expect(original).toContain('recipe_options: {"research":true}');
     expect((await post({ name: 'custom-reviewer', description: 'overwrite', prompt: 'No' })).code)
       .toBe(ErrorCode.AGENT_PROFILE_ALREADY_EXISTS);
     expect((await post({ name: '../escape', description: 'invalid', prompt: 'No' })).code)
@@ -2670,16 +2672,21 @@ describe('GET /api/agents', () => {
 
     const patch = await authedFetch(server, base, '/api/agents/custom-reviewer', {
       method: 'PATCH', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ workspace_id: workspaceId, scope: 'user', prompt: 'Revised\nsecond line.' }),
+      body: JSON.stringify({ workspace_id: workspaceId, scope: 'user', recipe: 'updated-example', recipe_options: { research: false }, prompt: 'Revised\nsecond line.' }),
     });
     const patched = (await patch.json()) as Envelope<unknown>;
     expect(patched.code).toBe(0);
-    expect(patched.data).toMatchObject({ prompt: 'Revised\nsecond line.', description: 'Review carefully' });
+    expect(patched.data).toMatchObject({ prompt: 'Revised\nsecond line.', description: 'Review carefully', recipe: 'updated-example', recipe_options: { research: false } });
     const after = await readFile(path, 'utf8');
-    expect(after.slice(0, after.indexOf('---\n\n'))).toBe(original.slice(0, original.indexOf('---\n\n')));
+    expect(after).toContain('description: "Review carefully"');
+    expect(after).toContain('model_alias: "inherit"');
+    expect(after).toContain('recipe: "updated-example"');
+    expect(after).toContain('recipe_options: {"research":false}');
+    expect(after).toContain('tools: ["Read"]');
+    expect(after.trimEnd().endsWith('Revised\nsecond line.')).toBe(true);
     const reread = (await (await authedFetch(server, base, '/api/agents')).json()) as Envelope<unknown>;
     expect(listNamedAgentProfilesResponseSchema.parse(reread.data).items.find((profile) => profile.name === 'custom-reviewer'))
-      .toMatchObject({ prompt: 'Revised\nsecond line.' });
+      .toMatchObject({ prompt: 'Revised\nsecond line.', recipe: 'updated-example', recipe_options: { research: false } });
   });
 
   it('returns field details when the PATCH body requests non-editable fields', async () => {

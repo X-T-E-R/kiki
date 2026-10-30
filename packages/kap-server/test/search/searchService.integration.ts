@@ -14,6 +14,9 @@ import { Event } from '@kiki/agent-core-v2/_base/event';
 import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
 import { TranscriptStore, type TranscriptOperation } from '@kiki/transcript';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { HistoryLocatorStore } from '../../src/services/history/historyLocatorStore';
+import { HistoryNavigationDb } from '../../src/services/history/historyNavigationDb';
+import type { TranscriptService } from '../../src/services/transcript/transcriptService';
 
 import {
   GlobalSearchService,
@@ -323,6 +326,185 @@ describe('GlobalSearchService', () => {
       store.getAgent(agentId)!.apply(ops);
     }
 
+    it('S2 includes readiness in the live deadline and stops cancelled preparation', async () => {
+      const store = makeLiveStore('s1');
+      const service = track(makeService(home!, gettableIndex([summary('s1', '')])));
+      let historyReads = 0;
+      service.setLiveTranscriptSource({
+        forSessionLive: () => store,
+        whenReady: () => new Promise((resolve) => setTimeout(resolve, 75)),
+        ensureAgentHistory: async () => { historyReads += 1; return store.getAgent('main'); },
+      });
+      service.queryDeadlineMs = 1;
+      const started = performance.now();
+      const pages = await Promise.all([service.search({ query: '苹果', container: { sessionId: 's1' } }),
+        service.search({ query: '苹果', container: { sessionId: 's1' } })]);
+      expect(pages.map((page) => page.incomplete)).toEqual(['deadline', 'deadline']);
+      expect(performance.now() - started).toBeLessThan(65);
+      expect(historyReads).toBe(0);
+    });
+
+    it('S2 reuses resident preparation across result pages without requesting full history', async () => {
+      const store = makeLiveStore('s1');
+      const service = track(makeService(home!, gettableIndex([summary('s1', '')])));
+      const calls: LiveSourceCalls = { whenReady: [], ensureAgentHistory: [] };
+      service.setLiveTranscriptSource(fakeLiveSource(new Map([['s1', store]]), calls));
+      const query = { query: '苹果', container: { sessionId: 's1' }, pageSize: 1 };
+      const first = await service.search(query);
+      const second = await service.search({ ...query, pageToken: first.pageToken });
+      expect(first.items).toHaveLength(1);
+      expect(second.items).toHaveLength(1);
+      expect(calls.whenReady).toEqual(['s1']);
+      expect(calls.ensureAgentHistory).toEqual([]);
+    });
+
+    it('S2 binds continuation state to the query and rejects changed resident visibility', async () => {
+      const store = makeLiveStore('s1');
+      const service = track(makeService(home!, gettableIndex([summary('s1', '')])));
+      service.setLiveTranscriptSource(fakeLiveSource(new Map([['s1', store]])));
+      const query = { query: '苹果', mode: 'literal' as const, container: { sessionId: 's1' }, pageSize: 1 };
+      const first = await service.search(query);
+      const other = await service.search({ ...query, query: '果' });
+      const firstCursor = JSON.parse(Buffer.from(first.pageToken!, 'base64url').toString('utf8')) as { id: string };
+      const otherCursor = JSON.parse(Buffer.from(other.pageToken!, 'base64url').toString('utf8')) as { id: string };
+      otherCursor.id = firstCursor.id;
+      await expect(service.search({ ...query, query: '果', pageToken: Buffer.from(JSON.stringify(otherCursor)).toString('base64url') }))
+        .rejects.toMatchObject({ reason: 'invalid_page_token' });
+      store.getAgent('main')!.apply([{ op: 'items.remove', ids: ['t0'] }]);
+      await expect(service.search({ ...query, pageToken: first.pageToken })).rejects.toMatchObject({ reason: 'invalid_page_token' });
+      const cleared = await service.search(query);
+      expect(cleared.items).toEqual([]);
+      expect(cleared.coverage?.complete).toBe(true);
+    });
+
+    it('S2 resumes text-budgeted extraction without repeated readiness and cancels tokenization', async () => {
+      const store = makeLiveStore('s1');
+      const service = track(makeService(home!, gettableIndex([summary('s1', '')])));
+      const calls: LiveSourceCalls = { whenReady: [], ensureAgentHistory: [] };
+      service.setLiveTranscriptSource(fakeLiveSource(new Map([['s1', store]]), calls));
+      service.queryTextBudgetChars = 1;
+      const query = { query: '苹果', container: { sessionId: 's1' }, pageSize: 1 };
+      let page = await service.search(query);
+      expect(page.incomplete).toBe('deadline');
+      expect(page.items).toEqual([]);
+      const hits = [...page.items];
+      for (let pages = 0; page.hasMore && pages < 10; pages += 1) {
+        page = await service.search({ ...query, pageToken: page.pageToken });
+        hits.push(...page.items);
+      }
+      expect(hits).toHaveLength(2);
+      expect(calls.whenReady).toEqual(['s1']);
+      expect(calls.ensureAgentHistory).toEqual([]);
+      let reads = 0;
+      store.getAgent('main')!.getTurn('t0')!.steps[0]!.frames.push(...Array.from({ length: 10_000 }, (_, index) => ({
+        kind: 'text' as const, role: 'assistant' as const, frameId: `t0.1.f${index + 10}`,
+        get text() { reads += 1; return 'needle '.repeat(100); },
+      })));
+      service.queryTextBudgetChars = 16_000_000;
+      const controller = new AbortController();
+      const pending = service.search({ query: 'needle', container: { sessionId: 's1' }, signal: controller.signal });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      controller.abort();
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      expect(reads).toBeGreaterThan(0);
+      expect(reads).toBeLessThan(16);
+      const stoppedAt = reads;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(reads).toBe(stoppedAt);
+    });
+
+    it('S2 propagates cancellation and deadline into navigation preparation', async () => {
+      const store = new TranscriptStore('s1');
+      store.ensureAgent('main', { agentId: 'main', type: 'main' });
+      store.getAgent('main')!.noteOlderHistory();
+      const service = track(makeService(home!, gettableIndex([summary('s1', '')])));
+      const signals: AbortSignal[] = [];
+      let entered!: () => void;
+      let stopped = 0;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      service.setLiveTranscriptSource(fakeLiveSource(new Map([['s1', store]])), {
+        scan: async (_session, _agent, signal, _query, _through, limits) => {
+          expect(limits).toEqual({ maxBytes: 128 << 10, maxRecords: 512, allowOversize: false });
+          signals.push(signal!);
+          entered();
+          return new Promise((_resolve, reject) => signal!.addEventListener('abort', () => {
+            stopped += 1;
+            reject(signal!.reason);
+          }, { once: true }));
+        },
+      });
+      const controller = new AbortController();
+      const pending = service.search({ query: 'needle', container: { sessionId: 's1' }, signal: controller.signal });
+      await started;
+      controller.abort();
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      expect(stopped).toBe(1);
+      service.queryDeadlineMs = 25;
+      const page = await service.search({ query: 'newneedle', container: { sessionId: 's1' } });
+      expect(page.incomplete).toBe('deadline');
+      expect(page.coverage?.complete).toBe(false);
+      expect(stopped).toBe(2);
+      expect(signals.every((signal) => signal.aborted)).toBe(true);
+    });
+
+    it('S2 resumes SQLite preparation once across pages and new queries', async () => {
+      const wirePath = await writeWire(home!, 's1', 'main', Array.from({ length: 8 }, (_, index) =>
+        userLine(`needle ${index} ${'x'.repeat(30_000)}`, T1 + index)));
+      const db = HistoryNavigationDb.lazy(join(home!, 'server', 'history-navigation.sqlite'));
+      const navigation = new HistoryLocatorStore(db, { historyWireLocation: async () => ({ workspaceId: WS, wirePath }) } as unknown as TranscriptService);
+      const implementation = navigation as unknown as { scanSlice(input: unknown): Promise<unknown> };
+      const original = implementation.scanSlice.bind(navigation);
+      let preparations = 0;
+      implementation.scanSlice = async (input) => { preparations += 1; return original(input); };
+      const store = new TranscriptStore('s1');
+      store.ensureAgent('main', { agentId: 'main', type: 'main' });
+      store.getAgent('main')!.noteOlderHistory();
+      const calls: LiveSourceCalls = { whenReady: [], ensureAgentHistory: [] };
+      const service = track(makeService(home!, gettableIndex([summary('s1', '')])));
+      service.setLiveTranscriptSource(fakeLiveSource(new Map([['s1', store]]), calls), navigation);
+      try {
+        const query = { query: 'needle', mode: 'literal' as const, container: { sessionId: 's1', agentId: 'main' }, pageSize: 2 };
+        let page = await service.search(query);
+        expect(page.items).toEqual([]);
+        expect(page.hasMore).toBe(true);
+        expect(page.coverage?.complete).toBe(false);
+        const hits = [...page.items];
+        for (let pages = 0; page.hasMore && pages < 20; pages += 1) {
+          page = await service.search({ ...query, pageToken: page.pageToken });
+          hits.push(...page.items);
+        }
+        expect(page.hasMore).toBe(false);
+        expect(hits.map((hit) => hit.turn)).toEqual([7, 6, 5, 4, 3, 2, 1, 0]);
+        expect(preparations).toBe(2);
+        await service.search({ ...query, query: 'different' });
+        expect(preparations).toBe(2);
+        expect(calls.whenReady).toEqual(['s1', 's1']);
+        expect(calls.ensureAgentHistory).toEqual([]);
+      } finally { await db.close(); }
+    });
+
+    it('S2 reports oversized history as partial without the unbounded record fallback', async () => {
+      const wirePath = await writeWire(home!, 's1', 'main', [userLine(`needle ${'x'.repeat(300_000)}`, T1)]);
+      const db = HistoryNavigationDb.lazy(join(home!, 'server', 'history-navigation.sqlite'));
+      const navigation = new HistoryLocatorStore(db, { historyWireLocation: async () => ({ workspaceId: WS, wirePath }) } as unknown as TranscriptService);
+      const store = new TranscriptStore('s1');
+      store.ensureAgent('main', { agentId: 'main', type: 'main' });
+      store.getAgent('main')!.noteOlderHistory();
+      const service = track(makeService(home!, gettableIndex([summary('s1', '')])));
+      service.setLiveTranscriptSource(fakeLiveSource(new Map([['s1', store]])), navigation);
+      try {
+        const page = await service.search({ query: 'needle', container: { sessionId: 's1', agentId: 'main' } });
+        expect(page.incomplete).toBe('scan_budget');
+        expect(page.coverage?.complete).toBe(false);
+        expect(page.coverage?.scanned.bytes).toBeLessThanOrEqual(128 << 10);
+        expect((await db.ready()).readManifest(`${WS}\0s1\0main`)?.offset).toBe(0);
+        expect(page.items).toEqual([]);
+        const ordinary = await navigation.scan('s1', 'main');
+        expect(ordinary?.complete).toBe(true);
+        expect(ordinary?.bytesRead).toBeGreaterThan(128 << 10);
+      } finally { await db.close(); }
+    });
+
     it('serves container-scoped literal queries from the live transcript store', async () => {
       const s1 = summary('s1', '苹果标题', T1);
       const stores = new Map([['s1', makeLiveStore('s1')]]);
@@ -343,7 +525,7 @@ describe('GlobalSearchService', () => {
         documents: 3,
       });
       expect(calls.whenReady).toEqual(['s1']);
-      expect(calls.ensureAgentHistory).toEqual([['s1', 'main']]);
+      expect(calls.ensureAgentHistory).toEqual([]);
 
       const user = page.items.find((h) => h.role === 'user');
       expect(user).toBeDefined();
@@ -755,7 +937,7 @@ describe('GlobalSearchService', () => {
       });
       expect(page.source).toBe('live');
       expect(calls.whenReady).toEqual(['s1']);
-      expect(calls.ensureAgentHistory).toEqual([['s1', 'sub']]);
+      expect(calls.ensureAgentHistory).toEqual([]);
       expect(page.indexState.documents).toBe(1);
       expect(page.items.length).toBe(1);
       expect(page.items[0]!.agentId).toBe('sub');

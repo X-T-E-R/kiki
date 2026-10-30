@@ -117,6 +117,7 @@ describe('config REST protocol', () => {
     const patch = {
       retry: {
         max_attempts: 5,
+        retry_partial_responses: false,
         policies: [{
           match: '^provider\\.rate_limit$',
           models: ['gemini-4-argon'],
@@ -132,6 +133,7 @@ describe('config REST protocol', () => {
       providers: {},
       retry: {
         maxAttempts: 5,
+        retryPartialResponses: false,
         policies: [{
           match: '^provider\\.rate_limit$',
           models: ['gemini-4-argon'],
@@ -143,6 +145,7 @@ describe('config REST protocol', () => {
       },
     }).retry).toEqual({
       maxAttempts: 5,
+      retryPartialResponses: false,
       policies: [{
         match: '^provider\\.rate_limit$',
         models: ['gemini-4-argon'],

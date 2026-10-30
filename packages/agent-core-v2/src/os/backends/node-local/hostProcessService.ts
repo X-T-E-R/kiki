@@ -2,8 +2,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import type { Readable, Writable } from 'node:stream';
 
 import { BufferedReadable } from '#/_base/execEnv/bufferedReadable';
-import { LifecycleScope } from '#/app/scopes';
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { mergeChildEnv } from '#/_base/execEnv/childEnv';
 
 import {
   HostProcessError,
@@ -19,11 +18,11 @@ import { spawnWindowsProcessTree } from './windowsProcessTree';
 const isWindows: boolean = process.platform === 'win32';
 const TASKKILL_TIMEOUT_MS = 5_000;
 
-function buildSpawnOptions(options: HostProcessOptions): SpawnOptions {
+function buildSpawnOptions(options: HostProcessOptions, defaults: Readonly<Record<string, string>>): SpawnOptions {
   const detached = options.detached ?? !isWindows;
   const spawnOptions: SpawnOptions = {
     cwd: options.cwd,
-    env: buildEnv(options.env, options.envUnset),
+    env: mergeChildEnv(process.env, defaults, options.env, options.envUnset),
     stdio: options.mergeStderr ? ['pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
     detached,
     windowsHide: options.windowsHide ?? true,
@@ -34,22 +33,6 @@ function buildSpawnOptions(options: HostProcessOptions): SpawnOptions {
   }
 
   return spawnOptions;
-}
-
-function buildEnv(overrides: Record<string, string> | undefined, unset: readonly string[] | undefined): Record<string, string> | undefined {
-  if (overrides === undefined && unset === undefined) return undefined;
-  const env = { ...(process.env as Record<string, string>) };
-  const remove = (name: string): void => {
-    for (const key of Object.keys(env)) {
-      if (isWindows ? key.toLowerCase() === name.toLowerCase() : key === name) delete env[key];
-    }
-  };
-  for (const [key, value] of Object.entries(overrides ?? {})) {
-    remove(key);
-    env[key] = value;
-  }
-  for (const key of unset ?? []) remove(key);
-  return env;
 }
 
 function waitForSpawn(child: ChildProcess): Promise<void> {
@@ -200,6 +183,8 @@ export class HostProcessService implements IHostProcessService {
   private closing = false;
   private disposePromise: Promise<void> | undefined;
 
+  constructor(private readonly childDefaults: Readonly<Record<string, string>> = {}) {}
+
   dispose(): Promise<void> {
     this.closing = true;
     if (this.disposePromise === undefined) {
@@ -227,7 +212,7 @@ export class HostProcessService implements IHostProcessService {
     if (ownerLifetime && (!isWindows || options.ownedProcessTree !== true)) {
       throw new HostProcessError(HostProcessErrorCode.SpawnFailed, 'Owner lifetime requires an owned Windows process tree.', { details: { command, phase: 'owner' } });
     }
-    const initialOptions = buildSpawnOptions(options);
+    const initialOptions = buildSpawnOptions(options, this.childDefaults);
     const launch = isWindows ? prepareWindowsSpawn(command, args, initialOptions) : { command, args, options: initialOptions };
     const spawnOptions = launch.options;
     if (isWindows && options.ownedProcessTree === true) {
@@ -263,11 +248,3 @@ export class HostProcessService implements IHostProcessService {
     return processHandle;
   }
 }
-
-registerScopedService(
-  LifecycleScope.App,
-  IHostProcessService,
-  HostProcessService,
-  ScopeActivation.OnScopeCreated,
-  'hostProcess',
-);

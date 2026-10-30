@@ -295,6 +295,7 @@ function modelEntity(
     cognition: record.cognition === undefined ? undefined : cognitionToToml(record.cognition as Record<string, unknown>) as ModelEntity['cognition'],
     prompt_overrides: record.promptOverrides as ModelEntity['prompt_overrides'],
     recipe: record.recipe,
+    recipe_options: record.recipeOptions,
     overrides: shallowSnake(record.overrides),
     protocol: record.protocol,
     effective_protocol: explained?.protocol,
@@ -412,6 +413,7 @@ function applyModelPatch(record: ModelRecord, patch: PatchModelRequest): ModelRe
   setOrClear('protocol', patch.protocol);
   setOrClear('promptOverrides', patch.prompt_overrides);
   setOrClear('recipe', patch.recipe);
+  setOrClear('recipeOptions', patch.recipe_options);
   setOrClear('cognition', patch.cognition === null || patch.cognition === undefined ? patch.cognition : cognitionFromToml(patch.cognition));
   if (patch.steering_sources_patch !== undefined) next['cognition'] = patchModelSteeringSources(next['cognition'] as ModelRecord['cognition'], patch.steering_sources_patch);
   setOrClear('overrides', patch.overrides === null || patch.overrides === undefined ? patch.overrides : transformPlainObject(patch.overrides));
@@ -618,8 +620,18 @@ export class ModelCatalogMutationService
     if (saved.recipe === undefined || saved.recipe === 'off') return saved;
     try {
       if (this.recipes === undefined) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe service is unavailable');
-      const resolved = await this.recipes.resolve(resolveModelRecipeReference(saved.recipe, id, this.config, this.bootstrap));
       const record = effectiveModelsOf(this.config)[id]!;
+      const resolved = await this.recipes.resolve(
+        resolveModelRecipeReference(saved.recipe, id, this.config, this.bootstrap),
+        undefined,
+        record.recipeOptions,
+      );
+      const recipeDiagnostics = (resolved.diagnostics ?? []).map((diagnostic) => ({
+        code: diagnostic.code,
+        severity: 'warning' as const,
+        path: diagnostic.path ?? 'recipe',
+        message: diagnostic.message,
+      }));
       const recipe = composeRecipeLayers([{ surface: 'model', installation_id: saved.recipe, resolved }], record.overrides)!;
       const effective = modelEntity(id, applyRecipeModelSettings(record, recipe.model), effectiveProvidersOf(this.config), defaultProviderOf(this.config), this.config.diagnostics());
       const localSources = Object.fromEntries(Object.entries(resolveGenerationParameters(undefined, { overrides: record.overrides }).sources).map(([key, value]) => [key, value.detail]));
@@ -631,9 +643,9 @@ export class ModelCatalogMutationService
         const origin = path === undefined ? undefined : recipe.model_origins[path];
         return [key, origin === undefined ? source === '[models.*.parameters]' ? localSources[field] ?? source : source : `Recipe ${origin.manifest_id}@${origin.version} (${origin.source})`];
       }));
-      return { ...saved, issues: effective.issues, effective_parameters: effective.effective_parameters, parameter_sources: sources(effective.parameter_sources), usage_effective: effective.usage_effective,
+      return { ...saved, issues: [...effective.issues, ...recipeDiagnostics], effective_parameters: effective.effective_parameters, parameter_sources: sources(effective.parameter_sources), usage_effective: effective.usage_effective,
         usage_sources: effective.usage_sources === undefined ? undefined : { main: sources(effective.usage_sources.main), sub: sources(effective.usage_sources.sub), independent: sources(effective.usage_sources.independent) },
-        recipe_model_binding: { installation_id: saved.recipe, revision: resolved.revision, model: recipe.model, model_origins: recipe.model_origins, references: recipeReferences(recipe) } };
+        recipe_model_binding: { installation_id: saved.recipe, revision: resolved.revision, model: recipe.model, model_origins: recipe.model_origins, options: resolved.options, option_values: resolved.option_values, diagnostics: resolved.diagnostics, references: recipeReferences(recipe) } };
     } catch (error) {
       return { ...saved, issues: [...saved.issues, { code: 'recipe-unavailable', severity: 'error', path: 'recipe', message: error instanceof Error ? error.message : String(error) }] };
     }

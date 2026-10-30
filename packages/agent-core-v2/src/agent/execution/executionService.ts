@@ -157,7 +157,8 @@ export class AgentExecutionService implements IAgentExecutionService {
         await this.agent.accessor.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
         const todos = this.agent.accessor.get(ISessionTodoService);
         hints = [
-          ...externalPromptHints(this.agent.accessor.get(IAgentContextMemoryService).get().map(withoutMemoryWorkset), this.deliveredHints),
+          ...externalPromptHints(this.agent.accessor.get(IAgentContextMemoryService).get().map(withoutMemoryWorkset), this.deliveredHints,
+            resolveExecutorPrompt(binding.executorPrompt, binding.executorId ?? 'native').include.includes('workspace_info')),
           ...externalStateHints({
             todos: todos.getTodos(this.agent.id),
             notes: todos.getNotes(this.agent.id).notes,

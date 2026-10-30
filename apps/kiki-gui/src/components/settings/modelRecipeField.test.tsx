@@ -15,7 +15,7 @@ import { EditorView } from '@codemirror/view';
 import { afterAll, afterEach, assert, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '@kiki/session-core/transport';
-import type { RecipeDetail, RecipePreview } from '@kiki/protocol';
+import type { RecipeDetail, RecipeOption, RecipeOptionValues, RecipePreview } from '@kiki/protocol';
 
 import { I18nProvider } from '../../i18n';
 import { parseRecipeManifest, readDeclaration } from '../../lib/recipeFiles';
@@ -38,6 +38,11 @@ const source = (overrides: Partial<RecipeDetail['summary']> = {}): RecipeDetail[
   health: 'ready',
   ...overrides,
 });
+
+const OPTIONS: readonly RecipeOption[] = [
+  { id: 'hooks', name: 'Install hooks', description: 'Run the package hooks.', default: true },
+  { id: 'strict', name: 'Strict mode', default: false },
+];
 
 const READ_ONLY: RecipeDetail = {
   summary: source(),
@@ -215,6 +220,7 @@ vi.mock('../../state/connection', () => ({
 }));
 
 const { ModelRecipeField } = await import('./ModelRecipeField');
+const { RecipeOptionsField } = await import('./RecipeOptionsField');
 const { mergePublished } = await import('./RecipeAuthorWorkbench');
 
 let container: HTMLElement;
@@ -243,6 +249,42 @@ async function render(appliedId: string | undefined): Promise<void> {
     );
   });
   await settle();
+}
+
+type RecipeOptionsRenderProps = {
+  recipe?: string;
+  sourceFile?: string;
+  values?: RecipeOptionValues;
+  options?: readonly RecipeOption[];
+  disabled?: boolean;
+  onChange?: (values: RecipeOptionValues) => void | Promise<void>;
+};
+
+async function renderOptions(props: RecipeOptionsRenderProps = {}): Promise<HTMLElement> {
+  container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  await act(async () => {
+    root.render(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <I18nProvider>
+            <RecipeOptionsField
+              recipe={props.recipe ?? 'inst-clear-work'}
+              sourceFile={props.sourceFile}
+              values={props.values}
+              options={props.options}
+              disabled={props.disabled}
+              onChange={props.onChange ?? (() => {})}
+            />
+          </I18nProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+  });
+  await settle();
+  return container;
 }
 
 async function settle(): Promise<void> {
@@ -327,6 +369,36 @@ describe('the model page Recipe field', () => {
     if (root !== undefined) act(() => { root.unmount(); });
     container?.remove();
     vi.restoreAllMocks();
+  });
+
+  it('uses package defaults when no explicit option values are stored', async () => {
+    await renderOptions({ options: OPTIONS });
+    expect(container.querySelector<HTMLInputElement>('[data-recipe-option="hooks"] input')!.checked).toBe(true);
+    expect(container.querySelector<HTMLInputElement>('[data-recipe-option="strict"] input')!.checked).toBe(false);
+  });
+
+  it('lets explicit values override defaults and preserves unknown keys on a toggle', async () => {
+    const onChange = vi.fn();
+    await renderOptions({ options: OPTIONS, values: { hooks: false, legacy: true }, onChange });
+    expect(container.querySelector<HTMLInputElement>('[data-recipe-option="hooks"] input')!.checked).toBe(false);
+    expect(container.querySelector<HTMLInputElement>('[data-recipe-option="strict"] input')!.checked).toBe(false);
+
+    await act(async () => {
+      container.querySelector<HTMLInputElement>('[data-recipe-option="strict"] input')!.click();
+      await Promise.resolve();
+    });
+    expect(onChange).toHaveBeenCalledWith({ hooks: false, legacy: true, strict: true });
+  });
+
+  it('disables every recipe option while the field is disabled', async () => {
+    await renderOptions({ options: OPTIONS, disabled: true });
+    expect((container.querySelector('[data-recipe-options]') as HTMLFieldSetElement).disabled).toBe(true);
+    expect([...container.querySelectorAll<HTMLInputElement>('[data-recipe-options] input')].every((input) => input.disabled)).toBe(true);
+  });
+
+  it('does not render an option field when the recipe has no options', async () => {
+    await renderOptions({ options: [] });
+    expect(container.querySelector('[data-recipe-options]')).toBeNull();
   });
 
   it('offers a read-only package as copy or extend rather than an editor', async () => {

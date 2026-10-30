@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import { modelSteeringCadenceSchema, modelSteeringSourcesSchema } from './modelSteering';
 
+export const recipeIdSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]*$/u);
+export const recipeOptionValuesSchema = z.record(recipeIdSchema, z.boolean());
+export const recipeOptionSchema = z.object({ id: recipeIdSchema, name: z.string().min(1), description: z.string().optional(), default: z.boolean() });
+export type RecipeOption = z.infer<typeof recipeOptionSchema>;
+export type RecipeOptionValues = z.infer<typeof recipeOptionValuesSchema>;
+
 export const recipeUpdateModeSchema = z.enum(['follow', 'pinned']);
 export type RecipeUpdateMode = z.infer<typeof recipeUpdateModeSchema>;
 export const recipeSourceSchema = z.object({
@@ -40,13 +46,14 @@ const resolvedRecipeContentSchema = z.object({
   model: z.record(z.string(), z.unknown()).default({}),
   model_origins: z.record(z.string(), recipeValueOriginSchema.omit({ position: true, slot: true })).default({}),
   hooks: z.array(recipeScriptHookSchema).optional(), hooks_fingerprint: z.string().optional(),
+  options: z.array(recipeOptionSchema).optional(), option_values: recipeOptionValuesSchema.optional(), diagnostics: z.array(recipeDiagnosticSchema).optional(),
 });
 export const recipeReferenceSchema = z.object({ surface: z.enum(['model', 'profile']), installation_id: z.string(), revision: z.string() });
 export const recipeResolvedLayerSchema = recipeReferenceSchema.omit({ revision: true }).extend({ resolved: resolvedRecipeContentSchema });
 export const resolvedRecipeSchema = resolvedRecipeContentSchema.extend({ layers: z.array(recipeResolvedLayerSchema).optional() });
 export type RecipeResolvedLayer = z.infer<typeof recipeResolvedLayerSchema>;
 export type ResolvedRecipe = z.infer<typeof resolvedRecipeSchema>;
-export const recipeModelBindingSchema = resolvedRecipeSchema.pick({ revision: true, model: true, model_origins: true }).extend({ installation_id: z.string(), references: z.array(recipeReferenceSchema).readonly().optional() });
+export const recipeModelBindingSchema = resolvedRecipeSchema.pick({ revision: true, model: true, model_origins: true, option_values: true }).extend({ options: z.array(recipeOptionSchema).readonly().optional(), diagnostics: z.array(recipeDiagnosticSchema).readonly().optional(), installation_id: z.string(), references: z.array(recipeReferenceSchema).readonly().optional() });
 export type RecipeModelBinding = z.infer<typeof recipeModelBindingSchema>;
 export const recipeSummarySchema = z.object({
   installation_id: z.string(), manifest_id: z.string(), name: z.string(), version: z.string(), description: z.string().optional(),

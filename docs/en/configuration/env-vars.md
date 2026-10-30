@@ -12,9 +12,17 @@ The separate `KIKI_MODEL_*` family can supply a temporary model and key — see 
 
 ## Core paths
 
+### Current Kiki home
+
+`<home>` means the resolved Kiki home for the current Space on the server host. For a subcommand that supports `--home`, Kiki resolves it in this order: explicit `--home` > `KIKI_HOME` > the OS home default `~/.kiki`. Only subcommands that document `--home` accept that explicit override; the root `kiki` command does not. `KIMI_CODE_HOME` does not select this home — it is reserved for vendor Kimi Code integrations, such as an external Kimi CLI or its OAuth credential directory.
+
+Local child processes inherit the current Space's Kiki home by default. An explicit `KIKI_HOME` supplied in a child environment still overrides that default. SSH and other remote children do not receive the local Kiki home; they resolve their own home on the remote host.
+
+Use `<home>` for current config, sessions, memory, and logs. A base home can supply selected inherited resources, and shared credentials may use that base when configured; this does not mean every file moves to or is shared from the same path. In shell examples, quote paths as `"$KIKI_HOME/..."` when `KIKI_HOME` names the current home.
+
 ### `KIKI_HOME`
 
-Overrides the data root directory; the default is `~/.kiki`. Once set, the config and credentials files, sessions, logs, OAuth credentials, and all other data land under the new path. The desktop app's OAuth credentials follow `KIKI_HOME` too: unset, they default to the compatibility home `~/.kimi-code/` (see [Data locations](./data-locations.md)).
+Selects the runtime home when no supported command-specific `--home` is supplied; the default is `~/.kiki`. Once resolved, config and credentials files, sessions, logs, OAuth credentials, and other runtime data use that home subject to the inheritance and shared-credential rules above. The desktop app's OAuth credentials follow `KIKI_HOME` too: when it is unset, they default to the compatibility home `~/.kimi-code/` (see [Data locations](./data-locations.md)).
 
 ```sh
 export KIKI_HOME="/path/to/custom/kiki"
@@ -144,7 +152,7 @@ Switches that control the behavior of subsystems such as background tasks, the b
 | `KIKI_MCP_TOOL_TIMEOUT_MS` | Global default single tool-call timeout (ms) for all MCP servers; takes higher priority than `[mcp] tool_timeout_ms` in `config.toml`, but a per-server `toolTimeoutMs` in `mcp.json` still wins (default `60000`) | Integer from `1` to `2147483647`; invalid values are ignored |
 | `KIKI_LOOP_MAX_STEPS_PER_TURN` | Maximum Agent steps per turn; takes higher priority than `[loop_control] max_steps_per_turn` in `config.toml` (unset or `0` means unlimited) | Non-negative integer; invalid values are ignored |
 | `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP` | Maximum total attempts for a failing step (including the initial attempt); takes higher priority than `[loop_control] max_attempts_per_step` in `config.toml` (default `5`) | Non-negative integer; invalid values are ignored |
-| `KIKI_INFINITE_RETRY` | Retry failed LLM requests indefinitely, including turn steps, compaction, HTTP 400/404, and quota errors. Waits use exponential backoff (capped at 32 s) and honor `Retry-After`. Does not override cancellation, local admission denials, observed output or tool execution, `retry = false`, or per-request `retry: 'never'`; the one-use [`Continue.` request](./config-files.md#loop-control) is never retried. Context overflow still uses context recovery. Intended for unattended evaluations against temporarily failing endpoints | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
+| `KIKI_INFINITE_RETRY` | Retry failed LLM requests indefinitely, including turn steps, compaction, HTTP 400/404, and quota errors. Waits use exponential backoff (capped at 32 s) and honor `Retry-After`. Connection interruptions in native turns still use the [bounded retry budget](./config-files.md#retry), so this setting does not replay partial responses indefinitely. Does not override cancellation, local admission denials, refusals, provider-hosted tool output, `retry = false`, or per-request `retry: 'never'`; the one-use [`Continue.` request](./config-files.md#loop-control) is never retried. Context overflow still uses context recovery. Intended for unattended evaluations against temporarily failing endpoints | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIKI_TOKEN_COUNTING_STRATEGY` | Which context token count is reported externally (the context-size display); takes higher priority than `[token_counting] strategy` in `config.toml` (default `measured+estimated`) | `measured+estimated`, `measured`, `estimated` (case-insensitive); invalid values are ignored |
 | `NB_SEARCH_CONFIG` | Path to a canonical JSON configuration for the built-in search and retrieval module, loaded before Kiki's `[nb_search]` patch | File path |
 | `NB_SEARCH_HOME` | Data directory for the built-in search and retrieval module | Directory path |

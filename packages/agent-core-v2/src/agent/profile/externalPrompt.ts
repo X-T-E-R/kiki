@@ -2,6 +2,7 @@ import { resolveExecutorPrompt, type ExecutorPrompt } from '@kiki/agent-profiles
 import { renderPromptTemplateResult } from '@kiki/agent-profiles/profileShared';
 import type { AgentProfile, AgentProfileContext } from '@kiki/agent-profiles/agentProfile';
 import type { ResolvedPromptFieldOverrides } from '#/app/promptField/promptFieldRegistry';
+import { renderSpaceContext } from '#/app/bootstrap/spaceIdentity';
 
 export function mergeExecutorPrompt(defaults: ExecutorPrompt | undefined, profile: ExecutorPrompt | undefined, executor: string): ExecutorPrompt | undefined {
   if (defaults === undefined && profile === undefined) return undefined;
@@ -37,7 +38,7 @@ export function renderExternalPromptBlocks(
     agents_md: context.agentsMd,
     memory_snapshot: context.memory,
     skill_catalog: context.skills,
-    workspace_info: [context.cwd, context.cwdListing, context.additionalDirsInfo].filter(Boolean).join('\n'),
+    workspace_info: [context.space === undefined ? undefined : renderSpaceContext(context.space), context.cwd, context.cwdListing, context.additionalDirsInfo].filter(Boolean).join('\n'),
   };
   for (const id of ['agents_md', 'memory_snapshot', 'skill_catalog', 'workspace_info']) {
     if (selected.has(id) && contextBlocks[id]) blocks.push({ id, text: `## ${id}\n\n${contextBlocks[id]}` });

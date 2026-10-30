@@ -1,11 +1,11 @@
 # Data locations
 
-Kiki stores its runtime data — the config files, session history, login credentials, and diagnostic logs — under `~/.kiki/` by default. This page helps you understand where each type of data lives, what it is for, and how to clean up or relocate it when needed.
+Kiki stores its runtime data — the config files, session history, login credentials, and diagnostic logs — under `<home>` on the server host. `<home>` means the current Space's resolved Kiki home; `~/.kiki/` is only the default when no supported explicit `--home` or `KIKI_HOME` selects another path. This page helps you understand where each type of data lives, what it is for, and how to clean up or relocate it when needed.
 
 ::: warning Desktop OAuth credentials have a separate default
-When `KIKI_HOME` is unset, the desktop app keeps its runtime data (config, sessions, `server.token`) in `~/.kiki/`, but its OAuth credentials default to the compatibility home `~/.kimi-code/` (`~/.kimi-code/credentials/`). If you already have a Moonshot `~/.kimi-code/credentials/kimi-code.json`, the desktop app uses that token instead of starting logged out — and deleting `~/.kiki/` does **not** clear it. Running `kiki login` writes the token to `~/.kiki/credentials/`, so a daemon started outside the desktop environment does not see the desktop's credentials.
+When no supported explicit `--home` is selected and `KIKI_HOME` is unset, the desktop app keeps its runtime data (config, sessions, `server.token`) in `~/.kiki/`, but its OAuth credentials default to the compatibility home `~/.kimi-code/` (`~/.kimi-code/credentials/`). If you already have a Moonshot `~/.kimi-code/credentials/kimi-code.json`, the desktop app uses that token instead of starting logged out — and deleting `~/.kiki/` does **not** clear it. Running `kiki login` writes the token to `~/.kiki/credentials/`, so a daemon started outside the desktop environment does not see the desktop's credentials.
 
-Setting `KIKI_HOME` moves both the runtime data and the desktop OAuth credentials to that path. The desktop app also lets you pick the compatibility home in its settings. The kimi-cli-era `~/.kimi` directory is never read and is not imported.
+Setting `KIKI_HOME` moves the runtime data and desktop OAuth credentials selected by that home. The desktop app also lets you pick the compatibility home in its settings. The kimi-cli-era `~/.kimi` directory is never read and is not imported.
 :::
 
 ## Data root directory
@@ -22,11 +22,11 @@ If you need to move the data directory elsewhere (for example, to isolate config
 export KIKI_HOME="$HOME/.config/kiki"
 ```
 
-Once set, **all** Kiki data — config, provider credentials, sessions, logs, OAuth credentials, Kiki-specific user Skills, global `AGENTS.md`, and more — lands under the new path. For the full reference on `KIKI_HOME`, see [Environment variables](./env-vars.md).
+Once resolved, current config, sessions, memory, logs, and other runtime data belong under `<home>`. A base home can supply selected inherited resources, and shared credentials may use that base when configured; this does not mean every Kiki file moves to or is shared from the same path. For shell paths, quote the current home as `"$KIKI_HOME/..."` when that environment variable names `<home>`. For the full reference on `KIKI_HOME`, see [Environment variables](./env-vars.md).
 
 ::: tip Note
 
-**Generic `.agents` resources** stay under the real OS home so they can be shared across tools. For example, user-level generic Skills remain at `~/.agents/skills/`, while Kiki-specific user Skills move with `KIKI_HOME` as `$KIKI_HOME/skills/`.
+**Generic `.agents` resources** stay under the real OS home so they can be shared across tools. For example, user-level generic Skills remain at `~/.agents/skills/`, while Kiki-specific user Skills move with the current home as `"$KIKI_HOME/skills/"` when `KIKI_HOME` names it.
 :::
 
 ## Directory layout
@@ -78,7 +78,7 @@ Each file under the data root serves a specific purpose; most are managed automa
 - **`mcp.json`**: user-level MCP server declarations, merged with the project-local `.kiki/mcp.json` on startup. See [MCP](../server/mcp.md).
 - **`skills/`**: Kiki-specific user-level Skills. This directory moves with `KIKI_HOME`; generic cross-tool Skills can still live under `~/.agents/skills/`. See [Agent Skills](../customization/skills.md).
 - **`cognition/`**: prompt files referenced by `[models."<alias>".cognition]`; paths are relative to the data root. See [Model cognition](./config-files.md#model-cognition).
-- **`hooks/`**: script files referenced by `[[hooks]]` command paths (for example `node ~/.kiki/hooks/check-bash.mjs`). See [Hooks](../customization/hooks.md).
+- **`hooks/`**: script files referenced by `[[hooks]]` command paths (for example `node "$KIKI_HOME/hooks/check-bash.mjs"` for the current home). See [Hooks](../customization/hooks.md).
 - **`plugins/installed.json`**: records installed plugins, each plugin's enabled state, and MCP server capability state changes made via `/plugins` or `/plugins mcp disable|enable`. Files installed from local paths or zip URLs are copied to `plugins/managed/<id>/`. See [Plugins](../customization/plugins.md).
 - **`credentials/`**: restricted credential directory, with requested permissions `0o700` (directory) / `0o600` (files). OAuth logins for managed providers are stored as `credentials/<name>.json`; MCP server credentials are stored under `credentials/mcp/`. On Windows, check the file and parent-directory ACLs yourself before relying on the file to stay private.
 - **`workspaces.json` and `workspaces/`**: the registered workspace catalog and the project directories Kiki creates when a new session has no selected workspace. Each automatically created session receives a distinct directory; these are working files, separate from the session history under `sessions/`.

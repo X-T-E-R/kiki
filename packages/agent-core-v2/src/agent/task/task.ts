@@ -105,6 +105,7 @@ export interface IAgentTaskService {
   allocateTaskId?(idPrefix: string): string;
   registerTask(task: AgentTask, options?: RegisterAgentTaskOptions): string;
   registerMediaRecovery?(handler: (info: MediaTaskInfo) => Promise<AgentTask | undefined>): IDisposable;
+  resumeRestoration?(): Promise<void>;
   commitTaskRegistration?(taskId: string): void;
   rollbackTaskRegistration?(taskId: string, reason?: unknown): Promise<void>;
   getTask(taskId: string): AgentTaskInfo | undefined;

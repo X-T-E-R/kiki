@@ -21,7 +21,9 @@ import {
 } from '@kiki/agent-core-v2';
 import { normalizeLiteral, tokenize } from '@kiki/lexical';
 import type { SearchMessagesResponse } from '../protocol/rest-search';
-import { projectTranscriptUserOrigin, type TranscriptStore } from '@kiki/transcript';
+import type { TranscriptStore } from '@kiki/transcript';
+import { LiveSearch } from './liveSearch';
+import type { HistoryLocatorStore } from '../services/history/historyLocatorStore';
 
 import {
   GlobalSearchError,
@@ -30,18 +32,8 @@ import {
   type GlobalSearchUnavailableReason,
   type GlobalSearchQuery,
 } from './contract';
-import { MAX_DOC_TEXT_CHARS, type MessageDoc, type TitleDoc } from './docs';
 import type { SqliteSessionInput } from './sqlite/index';
-import {
-  boundaryOf,
-  decodePageToken,
-  encodePageToken,
-  matchDocs,
-  paginateRows,
-  type MatchedRow,
-  type NormalizedQuery,
-  type SearchBudgets,
-} from './match';
+import { decodePageToken, type MatchedRow, type NormalizedQuery, type SearchBudgets } from './match';
 import { makeSnippet } from './snippet';
 import { SearchIndexStateChanged } from './events';
 import { planHistoryQuery } from '../services/history/historyQuery';
@@ -124,16 +116,15 @@ export interface IGlobalSearchService {
    * once from the composition root (start.ts) after `TranscriptService` is
    * constructed; until then every search takes the index route.
    */
-  setLiveTranscriptSource(source: LiveTranscriptSource): void;
+  setLiveTranscriptSource(source: LiveTranscriptSource, navigation?: Pick<HistoryLocatorStore, 'scan'>): void;
 }
 
 export const IGlobalSearchService = createDecorator<IGlobalSearchService>('globalSearch');
 
 /**
- * Live-transcript access behind the in-memory (live) search route.
- * Implemented by `TranscriptService` (`src/services/transcript/`); declared
- * here with only the three methods the route needs, so the search module
- * does not import the transcript service's dependency stack.
+ * Structural contract implemented by `TranscriptService` without importing
+ * its dependency stack. Search uses the live store and readiness, never the
+ * source's history materialization method.
  */
 export interface LiveTranscriptSource {
   /** Transcript store of a session live in this process; undefined when not in memory. */
@@ -208,7 +199,7 @@ export class GlobalSearchService implements IGlobalSearchService {
   /** Postings-visit budget per query (test knob, see MAX_POSTINGS_VISITS). */
   postingsVisitBudget = MAX_POSTINGS_VISITS;
 
-  /** Match/confirm wall-clock budget per query (test knob). */
+  /** Query wall-clock budget, including live preparation (test knob). */
   queryDeadlineMs = QUERY_DEADLINE_MS;
 
   /** Literal-confirmation text-volume budget per query (test knob). */
@@ -284,8 +275,13 @@ export class GlobalSearchService implements IGlobalSearchService {
     });
   }
 
-  setLiveTranscriptSource(source: LiveTranscriptSource): void {
+  private readonly liveSearch = new LiveSearch();
+  private liveNavigation?: Pick<HistoryLocatorStore, 'scan'>;
+
+  setLiveTranscriptSource(source: LiveTranscriptSource, navigation?: Pick<HistoryLocatorStore, 'scan'>): void {
     this.liveSource = source;
+    this.liveNavigation = navigation;
+    this.liveSearch.clear();
     this.requestSync();
   }
 
@@ -338,6 +334,7 @@ export class GlobalSearchService implements IGlobalSearchService {
 
   dispose(): void {
     this.disposed = true;
+    this.liveSearch.clear();
     this.resolveSyncStop();
     this.clearSessionIndexStatusWaiter();
     this.sourceWatcher?.close();
@@ -538,12 +535,14 @@ export class GlobalSearchService implements IGlobalSearchService {
 
   /**
    * Route: a container-scoped query on a session that is live in this process
-   * scans the in-memory transcript store unless indexOnly is set, in both terms
-   * and literal mode. Anything else takes the index route. The live route
+   * scans bounded resident text and canonical history unless indexOnly is set,
+   * in both terms and literal mode. Anything else takes the index route. The live route
    * never falls back on error — the store being in hand means the session is
    * alive, so a scan failure is a real error, not a degradation signal.
    */
   async search(input: GlobalSearchQuery): Promise<GlobalSearchPage> {
+    const deadlineAt = Date.now() + this.queryDeadlineMs;
+    input.signal?.throwIfAborted();
     const q = normalizeQuery(input, this.maxQueryTerms);
     if (this.disposed) throw new GlobalSearchError('index_unavailable', 'search service is disposed');
     if (this.sqliteDisabled) return this.unavailablePage('disabled');
@@ -551,7 +550,7 @@ export class GlobalSearchService implements IGlobalSearchService {
     const liveStore = sessionId !== undefined && input.indexOnly !== true
       ? this.liveSource?.forSessionLive(sessionId) : undefined;
     if (liveStore !== undefined && sessionId !== undefined) {
-      return this.searchLive(q, sessionId, liveStore, input.pageToken);
+      return this.searchLive(q, sessionId, liveStore, input.pageToken, deadlineAt, input.signal);
     }
     return this.searchIndex(q, input.pageToken);
   }
@@ -561,149 +560,15 @@ export class GlobalSearchService implements IGlobalSearchService {
     sessionId: string,
     store: TranscriptStore,
     pageToken: string | undefined,
+    deadlineAt: number,
+    signal?: AbortSignal,
   ): Promise<GlobalSearchPage> {
-    const page = decodePageToken(q, 'live', pageToken, undefined);
     const source = this.liveSource;
-    if (source === null) {
-      throw new GlobalSearchError('index_unavailable', 'live transcript source is not wired');
-    }
-    await source.whenReady(sessionId);
-    const agentIds =
-      q.container?.agentId !== undefined
-        ? [q.container.agentId]
-        : store.agents().map((agent) => agent.agentId);
-    const docs = await this.collectLiveDocs(sessionId, source, agentIds, q.includeToolOutput === true || q.role === 'tool');
-    const budget = {
-      deadlineAt: Date.now() + this.queryDeadlineMs,
-      textCharsLeft: this.queryTextBudgetChars,
-    };
-    const boundary = page.kind === 'keyset' ? page.boundary : undefined;
-    const matched =
-      q.mode === 'literal'
-        ? matchDocs(
-            q,
-            docs.map(({ key, value }) => ({ key, value, score: 0 })),
-            boundary,
-            budget,
-          )
-        : matchDocs(q, matchLiveTerms(q.termsQuery ?? [], docs), boundary, budget);
-    const { pageRows, hasMore } = paginateRows(q, page, matched.rows);
-    return {
-      items: pageRows.map((row) => this.projectHit(q, row)),
-      hasMore,
-      pageToken: hasMore
-        ? encodePageToken(q, 'live', boundaryOf(q, pageRows[pageRows.length - 1]!), undefined)
-        : undefined,
-      incomplete: matched.incomplete,
-      indexState: {
-        state: 'ready',
-        indexedSessions: 1,
-        totalSessions: 1,
-        documents: docs.length,
-      },
-      source: 'live',
-    };
-  }
-
-  /**
-   * Flatten the live transcript store into the same document shape the index
-   * route searches (`MessageDoc` / `TitleDoc`), each with a stable synthetic
-   * key for keyset pagination:
-   *   - one user doc per non-empty `turn.prompt` (turn ordinal + turn time);
-   *   - one assistant doc per assistant-role text frame and one tool doc per
-   *     non-empty tool result (turn ordinal + stepId); thinking and notices are skipped;
-   *   - one title doc from the session-index summary, same as the sync path.
-   * Text is trimmed and empty results skipped, mirroring the index side's
-   * `wireExtract`.
-   */
-  private async collectLiveDocs(
-    sessionId: string,
-    source: LiveTranscriptSource,
-    agentIds: readonly string[],
-    includeToolOutput: boolean,
-  ): Promise<{ key: string; value: MessageDoc | TitleDoc }[]> {
-    const summary = await this.sessionIndex.get(sessionId);
-    const workspaceId = summary?.workspaceId ?? '';
-    const sessionTitle = summary?.title ?? '';
-    const fallbackTime = summary?.updatedAt ?? 0;
-    const parseTime = (iso: string | undefined): number => {
-      if (iso === undefined) return fallbackTime;
-      const ms = Date.parse(iso);
-      return Number.isNaN(ms) ? fallbackTime : ms;
-    };
-    const docs: { key: string; value: MessageDoc | TitleDoc }[] = [];
-    for (const agentId of agentIds) {
-      const transcript = await source.ensureAgentHistory(sessionId, agentId, { fullHistory: true });
-      if (transcript === undefined) continue;
-      for (const item of transcript.snapshot().items) {
-        if (item.kind !== 'turn') continue;
-        const turnTime = parseTime(item.startedAt);
-        const prompt = item.prompt?.trim() ?? '';
-        if (prompt.length > 0) {
-          docs.push({
-            key: `${sessionId}/${agentId}/live/u/t${item.ordinal}`,
-            value: {
-              kind: 'message',
-              sessionId,
-              workspaceId,
-              sessionTitle,
-              agentId,
-              role: 'user',
-              text: prompt.length > MAX_DOC_TEXT_CHARS ? prompt.slice(0, MAX_DOC_TEXT_CHARS) : prompt,
-              time: turnTime,
-              turn: item.ordinal,
-              stepId: undefined,
-            },
-          });
-        }
-        for (const step of item.steps) {
-          const stepTime = parseTime(step.endedAt ?? step.startedAt ?? item.startedAt);
-          for (const frame of step.frames) {
-            const role = frame.kind === 'tool' ? 'tool' : frame.kind === 'text'
-              ? frame.role === 'assistant' ? 'assistant' : projectTranscriptUserOrigin(frame.origin) !== undefined ? 'user' : undefined
-              : undefined;
-            if (role === undefined || role === 'tool' && !includeToolOutput) continue;
-            const output = frame.kind === 'tool' ? frame.output : frame.kind === 'text' ? frame.text : undefined;
-            const text = (typeof output === 'string' ? output :
-              Array.isArray(output) ? output.filter((part): part is { type: 'text'; text: string } =>
-                part !== null && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string')
-                .map((part) => part.text).join('') : '').trim();
-            if (text.length === 0) continue;
-            docs.push({
-              key: `${sessionId}/${agentId}/live/${role}/${frame.frameId}`,
-              value: {
-                kind: 'message',
-                sessionId,
-                workspaceId,
-                sessionTitle,
-                agentId,
-                role,
-                text: text.length > MAX_DOC_TEXT_CHARS ? text.slice(0, MAX_DOC_TEXT_CHARS) : text,
-                time: stepTime,
-                turn: item.ordinal,
-                stepId: step.stepId,
-              },
-            });
-          }
-        }
-      }
-    }
-    if (sessionTitle.length > 0) {
-      docs.push({
-        key: `${sessionId}/$title`,
-        value: {
-          kind: 'title',
-          sessionId,
-          workspaceId,
-          sessionTitle,
-          agentId: '',
-          role: 'title',
-          text: sessionTitle,
-          time: fallbackTime,
-        },
-      });
-    }
-    return docs;
+    if (source === null) throw new GlobalSearchError('index_unavailable', 'live transcript source is not wired');
+    return this.liveSearch.search({ query: q, sessionId, store, pageToken, signal, deadlineAt,
+      textBudget: this.queryTextBudgetChars, maxHits: this.maxTextHits,
+      ready: () => source.whenReady(sessionId), summary: () => this.sessionIndex.get(sessionId),
+      navigation: this.liveNavigation });
   }
 
   private budgets(): SearchBudgets {
@@ -907,30 +772,6 @@ async function mapConcurrent<T, R>(
 function compareSessionRecency(left: SessionSummary, right: SessionSummary): number {
   if (left.updatedAt !== right.updatedAt) return left.updatedAt - right.updatedAt;
   return left.id.localeCompare(right.id);
-}
-
-function matchLiveTerms(
-  terms: readonly string[],
-  docs: readonly { key: string; value: MessageDoc | TitleDoc }[],
-): { key: string; value: MessageDoc | TitleDoc; score: number }[] {
-  if (terms.length === 0) return [];
-  const matched: { key: string; value: MessageDoc | TitleDoc; score: number }[] = [];
-  for (const { key, value: doc } of docs) {
-    const counts = new Map<string, number>();
-    for (const token of tokenize(doc.text)) counts.set(token, (counts.get(token) ?? 0) + 1);
-    let score = 0;
-    let hit = true;
-    for (const term of terms) {
-      const tf = counts.get(term) ?? 0;
-      if (tf === 0) {
-        hit = false;
-        break;
-      }
-      score += Math.log(1 + tf);
-    }
-    if (hit) matched.push({ key, value: doc, score });
-  }
-  return matched;
 }
 
 registerScopedService(

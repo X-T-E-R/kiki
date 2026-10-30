@@ -142,6 +142,7 @@
   # home_env: string
   # startup_timeout_ms: integer
   # shutdown_grace_ms: integer
+  # stdin_close_grace_ms: integer
   # model_binding: string
   # model_args: string[]
   # model_config_category: string
@@ -467,7 +468,7 @@ workspaces = {  }
     # model: string
     # endpoint: string
   # source: object | object
-  # first_step_wait_ms: integer (default: 1500)
+  # first_step_wait_ms: integer
   # timeout_ms: integer (default: 6000)
   # max_calls_per_turn: integer (default: 3)
   # candidate_chars: integer (default: 120)
@@ -580,6 +581,7 @@ merge_all_available_skills = true
       # max_per_window: integer
       # window_ms: integer
   # recipe: string
+  # recipe_options: record<string, boolean>
   # cognition: object
     # overlay: object | string | string[]
     # steering: object | string | string[]
@@ -921,6 +923,7 @@ rules = []
 
 [retry]
 # max_attempts: integer
+# retry_partial_responses: boolean
 # policies: object[] — one entry per item:
   # match: string
   # models: string[]

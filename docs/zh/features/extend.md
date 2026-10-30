@@ -36,7 +36,7 @@ title: 插件、Skill、MCP 与搜索
 
 ## MCP 服务器
 
-[Model Context Protocol](/zh/server/mcp)服务器让智能体调用外部进程或服务暴露的工具——数据库、GitHub 工单系统、本地文件系统。Kiki 作为 MCP 客户端支持三种接入方式：**stdio**（Kiki 把服务器作为子进程启动）、**HTTP**（已在运行的端点）和 **SSE**（旧式流式传输；新服务器优先用 HTTP）。在用户级（`~/.kiki/mcp.json`）或项目级（`.kiki/mcp.json`）的 `mcp.json` 里配置，用 `/kiki-ops help me configure MCP` 交互式增删改，用 `/mcp` 查看连接状态。未受信文件夹里的项目级 MCP 服务器，会在信任提示里列出它的接入方式和启动目标——信任文件夹之前先读一遍。
+[Model Context Protocol](/zh/server/mcp)服务器让智能体调用外部进程或服务暴露的工具——数据库、GitHub 工单系统、本地文件系统。Kiki 作为 MCP 客户端支持三种接入方式：**stdio**（Kiki 把服务器作为子进程启动）、**HTTP**（已在运行的端点）和 **SSE**（旧式流式传输；新服务器优先用 HTTP）。在用户级（`$KIKI_HOME/mcp.json`；默认 `~/.kiki/mcp.json`）或项目级（`.kiki/mcp.json`）的 `mcp.json` 里配置，用 `/kiki-ops help me configure MCP` 交互式增删改，用 `/mcp` 查看连接状态。未受信文件夹里的项目级 MCP 服务器，会在信任提示里列出它的接入方式和启动目标——信任文件夹之前先读一遍。
 
 MCP 工具到达智能体时与内置工具完全一样，走同一套审批模型。见 [Model Context Protocol](/zh/server/mcp)。
 

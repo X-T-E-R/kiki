@@ -8,10 +8,25 @@ import type { RecipePackageReader } from './recipes';
 import { Error2, ErrorCodes } from '#/errors';
 import { recipeModelSettingsFromToml, mergeRecipeModelSettings, recipeModelLeaves } from './recipeModelSettings';
 import { recipeHookManifestSchema } from './recipeHooks';
+import { evaluateRecipeOptions, recipePatchSlotPattern, type RecipeOptionDeclaration, type RecipeTextPart, type RecipeTextPatch } from './recipeOptions';
+import { recipeOptionOrder } from './recipeOptionOrder';
 export { recipeDigest, recipeFailure, validateRecipePath } from './recipePrimitives';
 
-const sourceSchema = z.union([z.object({ text: z.string() }).strict(), z.object({ file: z.string().min(1) }).strict()]);
+const idSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]*$/u);
+const plainSourceSchema = z.union([z.object({ text: z.string() }).strict(), z.object({ file: z.string().min(1) }).strict()]);
+const gate = { when: idSchema.optional(), unless: idSchema.optional() };
+const sourceSchema = z.union([z.object({ text: z.string(), ...gate }).strict(), z.object({ file: z.string().min(1), ...gate }).strict()])
+  .refine((value) => value.when === undefined || value.unless === undefined, 'when and unless are mutually exclusive');
 const slotSchema = z.union([sourceSchema, z.array(sourceSchema).min(1).max(64), z.literal('off')]);
+const insertionSlotSchema = z.union([plainSourceSchema, z.array(plainSourceSchema).min(1).max(64)]);
+const insertionContentSchema = z.object({ system: insertionSlotSchema.optional(), steering: insertionSlotSchema.optional(), anchor: insertionSlotSchema.optional(),
+  steering_sources: z.partialRecord(z.enum(modelSteeringSourceIds), insertionSlotSchema).optional() }).strict();
+const insertionSchema = z.object({ common: insertionContentSchema.optional(), main: insertionContentSchema.optional(), independent: insertionContentSchema.optional() }).strict();
+const patchSchema = z.object({ slot: z.string().regex(recipePatchSlotPattern), section: z.string().min(1).optional(), action: z.enum(['prepend', 'append', 'before', 'after', 'replace', 'remove']), content: insertionSlotSchema.optional() }).strict().superRefine((value, ctx) => {
+  if (value.section === undefined && value.action !== 'prepend' && value.action !== 'append') ctx.addIssue({ code: 'custom', path: ['action'], message: 'Without section only prepend and append are allowed' });
+  if ((value.action === 'remove') === (value.content !== undefined)) ctx.addIssue({ code: 'custom', path: ['content'], message: value.action === 'remove' ? 'remove cannot have content' : 'This action requires content' });
+});
+const optionSchema = z.object({ name: z.string().min(1), description: z.string().optional(), default: z.boolean(), prepend: insertionSchema.optional(), append: insertionSchema.optional(), patch: z.array(patchSchema).max(64).optional() }).strict();
 const cadenceSchema = recipeBranchSchema.pick({ steering_on_turn: true, steering_on_input: true, steering_interval_steps: true });
 const contentSchema = cadenceSchema.extend({
   system: slotSchema.optional(), steering: slotSchema.optional(),
@@ -25,11 +40,12 @@ export const recipeManifestSchema = z.object({
   extends: z.object({ source: z.string().min(1), sha256: recipeSourceSchema.shape.sha256, revision: z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional() }).strict().optional(),
   model: z.union([z.literal('off'), z.record(z.string(), z.unknown())]).optional(),
   hooks: z.union([z.literal('off'), z.array(recipeHookManifestSchema).max(64)]).optional(),
+  options: z.record(idSchema, optionSchema).optional(),
   prompts: contentSchema.extend({ main: z.union([z.enum(['off', 'same']), contentSchema]).optional(), independent: z.union([z.enum(['off', 'same']), contentSchema]).optional() }).strict().optional(),
 }).strict();
 export type RecipeManifest = z.infer<typeof recipeManifestSchema>;
 export type Origin = Omit<RecipeValueOrigin, 'position' | 'slot'>;
-export interface TextValue { text: string; origins: Origin[] }
+export interface TextValue { text: string; origins: Origin[]; parts?: RecipeTextPart[] }
 export interface RecipeContent extends z.infer<typeof cadenceSchema> {
   system?: TextValue | 'off'; steering?: TextValue | 'off';
   steering_sources?: ModelSteeringSources<TextValue | 'off'>;
@@ -41,6 +57,8 @@ export interface RecipeDeclaration extends RecipeContent {
   main?: RecipeContent | 'same' | 'off'; independent?: RecipeContent | 'same' | 'off';
   model?: Record<string, unknown> | 'off'; modelOrigins?: Record<string, Origin>;
   hooks?: import('@kiki/protocol').RecipeScriptHook[] | 'off';
+  options?: Record<string, RecipeOptionDeclaration>;
+  optionOrder?: string[];
 }
 export interface RecipeSnapshot { source: RecipeSource; requestedSource: RecipeSource; manifest: RecipeManifest; files: Record<string, string>; declaration: RecipeDeclaration; resolved: ResolvedRecipe }
 
@@ -59,17 +77,17 @@ export async function parseRecipe(reader: RecipePackageReader, registry: IPrompt
   const text = async (slot: z.infer<typeof slotSchema>): Promise<TextValue | 'off'> => {
     if (slot === 'off') return 'off';
     const parts = Array.isArray(slot) ? slot : [slot];
-    const values: string[] = []; const origins: Origin[] = [];
+    const values: RecipeTextPart[] = [];
     for (const part of parts) {
-      if ('text' in part) { values.push(part.text); origins.push(base); }
+      if ('text' in part) values.push({ text: part.text, origins: [base], when: part.when, unless: part.unless });
       else {
         const file = validateRecipePath(part.file);
         if (!/\.md$/iu.test(file)) recipeFailure('Recipe prompt files must be Markdown', reader.source.locator, file);
         const value = files[file] ?? await reader.read(file); files[file] = value;
-        values.push(value); origins.push({ ...base, file });
+        values.push({ text: value, origins: [{ ...base, file }], when: part.when, unless: part.unless });
       }
     }
-    return { text: values.join('\n\n'), origins };
+    return { text: values.map((part) => part.text).join('\n\n'), origins: values.flatMap((part) => part.origins), parts: values.some((part) => part.when !== undefined || part.unless !== undefined) ? values : undefined };
   };
   const content = async (raw: z.infer<typeof contentSchema>): Promise<RecipeContent> => {
     const fields: NonNullable<RecipeContent['fields']> = {};
@@ -107,7 +125,22 @@ export async function parseRecipe(reader: RecipePackageReader, registry: IPrompt
       hooks.push({ event: hook.event, command: hook.command, matcher: hook.matcher, timeout: hook.timeout, files: resources, source: reader.source.locator, manifest_id: manifest.id });
     }
   }
-  return { manifest, files, declaration: { ...await content(raw), model, modelOrigins, hooks,
+  const options: RecipeDeclaration['options'] = manifest.options === undefined ? undefined : {};
+  const optionOrder = manifest.options === undefined ? undefined : recipeOptionOrder(files['recipe.toml']);
+  for (const id of optionOrder ?? []) {
+    const option = manifest.options![id]!;
+    const patch: RecipeTextPatch[] = [];
+    for (const action of ['prepend', 'append'] as const) for (const [branch, slots] of Object.entries(option[action] ?? {})) {
+      for (const slot of ['system', 'steering', 'anchor'] as const) {
+        const source = slots[slot];
+        if (source !== undefined) patch.push({ slot: `${branch}.${slot}`, action, content: await text(source) as TextValue });
+      }
+      for (const [kind, body] of Object.entries(slots.steering_sources ?? {})) patch.push({ slot: `${branch}.steering_sources.${kind}`, action, content: await text(body) as TextValue });
+    }
+    for (const item of option.patch ?? []) patch.push({ ...item, content: item.content === undefined ? undefined : await text(item.content) as TextValue });
+    options![id] = { name: option.name, description: option.description, default: option.default, patch: patch.length === 0 ? undefined : patch };
+  }
+  return { manifest, files, declaration: { ...await content(raw), model, modelOrigins, hooks, options, optionOrder,
     main: typeof raw.main === 'object' ? await content(raw.main) : raw.main, independent: typeof raw.independent === 'object' ? await content(raw.independent) : raw.independent } };
 }
 export function mergeRecipe(parent: RecipeDeclaration, child: RecipeDeclaration): RecipeDeclaration {
@@ -121,9 +154,12 @@ export function mergeRecipe(parent: RecipeDeclaration, child: RecipeDeclaration)
   const model = child.model === undefined ? parent.model : typeof child.model === 'object' && typeof parent.model === 'object' ? mergeRecipeModelSettings(parent.model, child.model) : child.model;
   const modelOrigins = child.model === 'off' ? {} : { ...(parent.model === 'off' ? {} : parent.modelOrigins), ...child.modelOrigins };
   const hooks = child.hooks === 'off' ? 'off' : child.hooks === undefined ? parent.hooks : [...(Array.isArray(parent.hooks) ? parent.hooks : []), ...child.hooks];
-  return { ...content(parent, child), model, modelOrigins, hooks, main: branch(parent.main, child.main), independent: branch(parent.independent, child.independent) };
+  const options = parent.options === undefined && child.options === undefined ? undefined : { ...parent.options, ...child.options };
+  const optionOrder = options === undefined ? undefined : [...new Set([...(parent.optionOrder ?? Object.keys(parent.options ?? {})), ...(child.optionOrder ?? Object.keys(child.options ?? {}))])];
+  return { ...content(parent, child), model, modelOrigins, hooks, options, optionOrder, main: branch(parent.main, child.main), independent: branch(parent.independent, child.independent) };
 }
-export function resolveRecipe(declaration: RecipeDeclaration, dependencies: RecipeLockEntry[]): ResolvedRecipe {
+export function resolveRecipe(input: RecipeDeclaration, dependencies: RecipeLockEntry[], selection?: import('@kiki/protocol').RecipeOptionValues): ResolvedRecipe {
+  const { declaration, options, option_values, diagnostics } = evaluateRecipeOptions(input, selection);
   const origins: RecipeValueOrigin[] = [];
   const resolve = (position: 'main' | 'sub' | 'independent'): ResolvedRecipeBranch => {
     const branch = position === 'sub' ? undefined : declaration[position];
@@ -151,6 +187,6 @@ export function resolveRecipe(declaration: RecipeDeclaration, dependencies: Reci
   const model_origins = declaration.modelOrigins ?? {};
   const hooks = Array.isArray(declaration.hooks) && declaration.hooks.length > 0 ? declaration.hooks : undefined;
   if (hooks !== undefined && (hooks.length > 64 || Buffer.byteLength(JSON.stringify(hooks)) > 4 * 1024 * 1024)) recipeFailure('Resolved Recipe hooks exceed package budget', undefined, 'hooks');
-  const resolved = { branches, dependencies, origins, model, model_origins, hooks };
-  return { revision: recipeDigest(resolved), ...resolved };
+  const resolved = { branches, dependencies, origins, model, model_origins, hooks, options, option_values };
+  return { revision: recipeDigest(resolved), ...resolved, diagnostics };
 }

@@ -31,8 +31,13 @@ const ThreadRefSchema = z
   })
   .strict();
 
+const ModelOutputOptions = {
+  raw: z.boolean().optional().describe('Return the original receipt with all metadata instead of the compact model view. May be combined with cursor.'),
+};
+
 export const ListThreadsToolInputSchema = z
   .object({
+    ...ModelOutputOptions,
     bridge_id: z.string().uuid().optional(),
     connection_id: z.string().uuid().optional(),
     workspace_id: z.string().min(1).max(512).optional(),
@@ -43,6 +48,7 @@ export const ListThreadsToolInputSchema = z
 
 export const ReadThreadToolInputSchema = z
   .object({
+    ...ModelOutputOptions,
     content_ref: bridgeReadSchema.shape.contentRef,
     thread: ThreadRefSchema,
     cursor: z.string().min(1).max(4096).optional(),
@@ -52,11 +58,13 @@ export const ReadThreadToolInputSchema = z
 
 export const SendMessageToThreadToolInputSchema = z.union([
   z.object({
+    ...ModelOutputOptions,
     thread: ThreadRefSchema,
     content: z.string().min(1).max(100_000).describe('Input for the other thread. It arrives as a peer message from this thread.'),
     idempotency_key: z.string().min(1).max(256).describe('Retries this same content. A different message with a used key fails.'),
   }).strict(),
   z.object({
+    ...ModelOutputOptions,
     room: z.string().min(1).max(128).describe('Id of a room this thread belongs to.'),
     content: z.string().min(1).max(20_000).describe('What this thread says in the room. Text written in this thread stays here.'),
     mentions: z.array(z.string().min(1).max(256)).max(6).optional().describe('Member ids to wake: a thread session id or a persona id. A member message wakes only these members. A user message with no mention goes to the room host.'),
@@ -66,6 +74,7 @@ export const SendMessageToThreadToolInputSchema = z.union([
 
 export const WaitThreadsToolInputSchema = z
   .object({
+    ...ModelOutputOptions,
     threads: z
       .array(
         z
@@ -82,6 +91,7 @@ export const WaitThreadsToolInputSchema = z
   .strict();
 
 export const RoomReadToolInputSchema = z.object({
+  ...ModelOutputOptions,
   room: z.string().min(1).max(128),
   after_id: z.string().min(1).max(256).optional(),
   limit: z.number().int().min(1).max(100).optional(),

@@ -230,6 +230,7 @@ export const agentUsageContract = {
 export const agentPlanContract = {
   status: { input: z.tuple([]), output: planDataSchema },
   enter: { input: z.tuple([]), output: noResult },
+  exit: { input: z.tuple([]), output: noResult },
   clear: { input: z.tuple([]), output: noResult },
   cancel: { input: z.tuple([z.string().optional()]), output: noResult },
 } satisfies ServiceContract;

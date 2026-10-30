@@ -36,6 +36,7 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { matchPermissionRule } from '#/agent/permissionRules/matchesRule';
 import { toolApprovalRule } from '#/agent/tools/os/sshToolTarget';
+import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { registerLogServices } from '../../_base/log/stubs';
 import { registerContextMemoryServices } from '../contextMemory/stubs';
 import { runWillBeginStepHooks, stubLoopWithHooks } from '../loop/stubs';
@@ -166,6 +167,20 @@ function textOf(message: ContextMessage): string {
 }
 
 describe('SSH connection gate before tool resolution', () => {
+  it('discloses cached remote platform and shell without connecting', async () => {
+    const f = await fixture();
+    const remote = new FakeRuntime({ workspaceId: 'workspace', runtimeId: 'ssh:dev', generation: '1' },
+      { pathClass: 'win32', environment: { osKind: 'Windows', shellName: 'powershell', shellPath: 'powershell.exe' } });
+    const dispose = vi.fn();
+    f.runtime.acquireFor = () => ({ runtime: remote, track: (resource) => resource, dispose });
+    await f.call('dev');
+    const announcement = await f.announce();
+    if (typeof announcement !== 'object' || announcement === null || !('content' in announcement)) throw new Error('Expected an SSH host disclosure');
+    expect(announcement.content).toContain('platform: Windows, shell: powershell');
+    expect(dispose).toHaveBeenCalledOnce();
+    remote.dispose();
+  });
+
   it('keeps a bare Bash allow in a remote workspace separate from host:local', () => {
     const remote = { identity: { runtimeId: 'ssh:dev' } } as unknown as import('#/runtime/runtime').Runtime;
     const implicit = toolApprovalRule('Bash', 'ls', remote);
@@ -441,7 +456,7 @@ describe('SSH connection gate before tool resolution', () => {
     expect(await f.call('dev')).toBeUndefined();
     expect(await f.announce(undefined, false)).toBeUndefined();
     const added = await f.announce() as { content: string; disclosure: Readonly<Record<string, string>> };
-    expect(added.content).toBe('<ssh_hosts_added>\nhost: "dev" — Development — tester@dev.example.test:22\n</ssh_hosts_added>');
+    expect(added.content).toBe('<ssh_hosts_added>\nhost: "dev" — Development — tester@dev.example.test:22, platform: not yet probed, shell: not yet probed\n</ssh_hosts_added>');
     expect(added.content).not.toContain('Hidden');
     expect(await f.announce(added.disclosure)).toBeUndefined();
     await f.service.setSessionHosts(() => ({}));
@@ -461,7 +476,7 @@ describe('persistent SSH membership and context consumers', () => {
     expect(await f.call('ssh-host-42')).toBeUndefined();
     await f.step();
     expect(textOf(sshInjections(f.context)[0]!)).toContain(
-      'host: "ssh-host-42" — Development — builder@build.example.test:2202, roots: /srv/project · Build workspace');
+      'host: "ssh-host-42" — Development — builder@build.example.test:2202, platform: not yet probed, shell: not yet probed, roots: /srv/project · Build workspace');
     expect(f.runtime.approveSshTarget).toHaveBeenCalledWith('ssh-host-42', f.state.get(sessionSshHostsKey)['ssh-host-42'],
       expect.any(Function), undefined, expect.any(Function));
   });

@@ -12,7 +12,7 @@ The REST and WebSocket APIs described on this page are experimental: interface s
 
 ### Address
 
-The default address is `http://127.0.0.1:58627`. When the port is taken, the server retries with the next port (up to 100 times); use `--port` / `--host` to change the bind. Multiple instances can coexist under the same home directory; running instances register under `~/.kiki/server/instances/`.
+The default address is `http://127.0.0.1:58627`. When the port is taken, the server retries with the next port (up to 100 times); use `--port` / `--host` to change the bind. Multiple instances can coexist under the same home directory; running instances register under `<home>/server/instances/` (default `~/.kiki/server/instances/`).
 
 ### Authentication
 
@@ -267,6 +267,7 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 | Method and path | Description |
 | --- | --- |
 | `POST /api/sessions` | Create a session; omit both `workspace_id` and `metadata.cwd` to allocate a new workspace |
+| `GET /api/sessions/creation/{creation_id}` | Check a creation receipt without creating or resuming a session |
 | `GET /api/sessions` | List sessions; cursor pagination with `busy`, `archived_only` and title/workspace search `q` |
 | `GET /api/sessions/{session_id}` | Read one session |
 | `GET /api/sessions/{session_id}/profile` | Read the session profile |
@@ -298,6 +299,8 @@ For retry-safe creation, generate a UUID once and send it as the optional top-le
 
 Creation identities belong to the connected home: clients must keep separate pending requests for each home and connection. Omitting `creation_id` retains ordinary creation without retry deduplication. Cancelling a client wait does not delete a session the server has created.
 
+After an unconfirmed result, call `GET /api/sessions/creation/{creation_id}`. It returns `{ creation_id, session_id, status, session?, failure? }`; `status` is `missing`, `pending`, `completed`, `failed`, or `unknown`. This read neither joins a pending creation nor starts one. Only `completed` supplies the saved session response; `missing` permits retrying the original ID and body. Keep an unknown outcome when the read fails.
+
 | Creation error code | Recovery |
 | --- | --- |
 | `40948` | The creation identity conflicts. `details.reason` is `body_mismatch` when the same `creation_id` carries a different body, or `session_id_exists` when its mapped session ID is already occupied outside this creation. Keep the pending identity and draft. A collision is not a successful replay; use a new ID only for a deliberately separate creation. |
@@ -316,6 +319,8 @@ Before choosing a file, `POST /api/agent-profiles/file-preview` accepts `{ path,
 Session reads return the committed `agent_config.execution` binding as `{ version: 1, selection, effective, sources, generation }`. Sources are `session`, `profile`, `harness-settings` or `harness-default`; an absent effective model or effort means Kiki has not selected one, not that the harness has none. A reported vendor model is an observation, not a new override. Idle updates can also use `POST /api/sessions/{session_id}/profile` with `agent_config.execution`; while running, submit the selection with the next prompt instead.
 
 On an idle agent, `thinking: null` in `agent_config` clears only the session thinking override, so the lower-priority effort applies again: the profile, then the harness setting, then the engine default when Kiki has not pinned an effort. Leaving `model` out keeps the saved model. An empty thinking string is rejected; omitting `thinking` keeps the current effort. While the agent is running, that profile update is refused. A prompt can carry the same `thinking: null`; Kiki applies it when that prompt launches, and an omitted model stays in place.
+
+Session creation and profile updates accept `agent_config.plan_gate: "free" | "gated"`. A profile update applies it to the live main agent without sending a prompt; live snapshots echo the effective `plan_gate`. This override lasts for the live agent's lifetime; after restoration it uses the configured gate again. Cold snapshots omit the gate. To leave Plan mode on a specific agent through klient, call `klient.session(sessionId).agent(agentId).exitPlan()`; its parent and siblings stay in their current modes.
 
 #### `POST /api/sessions/{session_id}:archive`
 
@@ -425,6 +430,8 @@ To send a new message now, include `delivery_mode: "steer"` in the submission; o
 Sending now adds ordinary selected prompts to the active turn at a safe step boundary. A native prompt carrying a model, effort or context choice applies it after the current model response and tool results have landed, then consumes the same message once. Cancellation or summary failure before commit leaves the binding and context unchanged and does not send the message on the old model. Unsupported external context rebuilds fail instead of silently becoming direct switches. A main agent's foreground child wait can move into the background; the child is not cancelled.
 
 Use `after_model_switch` only for a message intentionally dependent on an existing explicit switch operation. Do not combine it with a new model, effort, profile, execution or context choice: the server rejects mixed selections instead of silently replacing them with the old dependency's binding. Standalone manual compaction reports its own `compaction.started`, `compaction.completed` or `compaction.cancelled` progress; it neither accepts nor executes a pending message's model choice.
+
+Standalone native model switches apply before the next model request without submitting a prompt or interrupting the current request. Their `thinking` input accepts a string for an explicit effort or `null` to clear that selection and resolve the persona pin, target model-profile default, then model default, in that order. Omitting `thinking` keeps the current effort on the same model (including its aliases), but resolves those defaults when changing models. To keep a hand-picked effort across models, send it explicitly.
 
 For an explicit switch operation, an accepted send is not a completed switch. If switching fails or its durable completion is uncertain, the original message remains queued and the switch exposes its recoverable state. Retry the same operation to finish the accepted delivery; a cancelled switch is not revived. Prompts with an unrelated execution selection still require their own turn. After a restart, sending now bypasses the recovery hold only for the selected prompts; other restored prompts still wait for confirmation. Aborting a steered prompt cancels the turn it joined, not a later turn. Ordinary `:abort` returns `40402` for an unknown or already settled prompt; use `?queued_only=true` when removing a queue row.
 
@@ -854,6 +861,8 @@ If an older Feishu thread binding has no reply context, send a new message from 
 
 `POST /api/search` accepts `query` and defaults to user/assistant text plus session titles. Set `include_tool_output: true` to include tool results and Shell output; thinking, tool names and tool inputs remain excluded. `role` can select `user`, `assistant`, `tool` or `title`, with `role: "tool"` explicitly selecting tool results. The same content scope applies to live sessions and existing indexes. Changing it invalidates the old `page_token`; start again without a token.
 
+For a live `container.session_id`, search uses bounded resident text and the shared history-navigation projection. The request deadline and client cancellation cover preparation as well as matching. A live response includes `coverage: { domain: "full_text", complete, gaps, scanned: { bytes, records } }`. `incomplete: "scan_budget"` marks unfinished scanning or skipped history; `incomplete: "deadline"` marks an exhausted time or text budget. An empty partial page is not a no-match result: follow `page_token` when `has_more` is true. Continuations reuse completed preparation and expire after 60 seconds; restart without a token if it becomes invalid. `gaps` also identifies page-local ordering and records that exceeded the scan allowance. Display partial counts as lower bounds, even when no continuation remains.
+
 `POST /api/search/retry` takes no body. When the indexer has stopped after repeated memory pressure, call it to clear the backoff and restart the stopped writer. This applies to the default SQLite backend and to MiniDB. Documents already in the published index stay searchable; the call does not delete or rebuild that index. Success uses the normal envelope with `data.retried` set to `true`. Klient exposes `rest.search.retry()`.
 
 ### Usage source grouping
@@ -866,11 +875,19 @@ Source groups use opaque keys such as `provider:"example-provider"` or `profile:
 
 For a selected period or comparison, send `range=custom&start_at=A&end_at=B` with epoch-millisecond bounds `[A,B)`. Summary, trend groups, and each session's `usage` apply the same record filters and exact window; session totals do not include unrelated profiles or the rest of a time bucket. Cost and token unknown flags remain separate from their recorded numeric subtotals. Page tokens bind the filters, data revision and current prices; changing any of them returns business code `40922`. Discard the token and restart from the first page. The GUI does this automatically.
 
+### Session cumulative usage
+
+Ordinary `GET /api/sessions/{sessionId}` returns the last published `usage.accounting` summary, or saved metadata when no summary is available; it does not scan the session's agents. To refresh cumulative usage, call `GET /api/usage/sessions/{sessionId}/accounting` or `klient.rest.sessionUsageAccounting(sessionId, { signal })`. This route reads the session index without reopening the session and returns the accounting snapshot directly in the normal success envelope. A missing session returns business code `40401`.
+
+The snapshot includes `tokens`, `tokens_unknown`, `cost_usd_estimated`, `cost_unknown`, `covered_at` (epoch milliseconds), `source_revision`, `complete` and `freshness`. `complete` describes source coverage; unknown usage or prices can remain after coverage completes. `freshness` is `current` for the latest verification slice, `stale` after an observed change or ten minutes without verification, and `unverified` when no published summary exists. Older servers may omit it. Keep the known subtotal visible when stale, and do not treat freshness as completeness.
+
+Each refresh advances at most ten seconds, 100,000 wire records and 128 MiB of conversation data. When `complete` is false, repeat the same GET to continue from committed progress; concurrent calls for one session share the work. A client disconnect cancels its wait, not publication of that slice. The GUI refreshes incomplete or stale accounting after 250 ms and complete accounting every 15 seconds while the detail panel is open and the page is visible. It shows "May be out of date" or "Not yet checked" when needed and hides that status for current accounting.
+
 ### Full usage rescan
 
 On the usage page's History tab, **Rescan all usage** scans every indexed session, including archived sessions. It runs only when requested and can take a while. `POST /api/usage/rescan` starts the task without a body; another POST while it is running returns the same task's current progress. Poll `GET /api/usage/rescan` about once per second. Both use the normal success envelope with `data` containing `state` (`idle`, `running`, `completed`, or `failed`), `scanned_sessions`, `total_sessions`, `scanned_records`, `started_at`, `finished_at`, and `error`. Times are epoch milliseconds or `null`; `error` is `null` unless the task failed. `scanned_records` counts newly read wire records, including non-usage records; unchanged checkpoints need no wire reads.
 
-The rescan bypasses ordinary session, record, and time scan budgets and saves incremental source checkpoints; regular queries keep reading committed data while it runs. A regular query has a 10-second deadline, a 500-session cold-recovery limit, and a budget of 200,000 facts to import or recover, including unknown and invalid facts. Non-usage wire records do not consume that fact budget, and querying already indexed facts does not consume it again. Deleted-session and ephemeral ledgers also resume under regular query budgets. A completed rescan does not supply missing provider usage or model prices. Task progress is process-local and resets to `idle` on restart; committed facts, source coverage and import progress survive. Cancellation of the rescan is not supported.
+The rescan bypasses ordinary session, record, and time scan budgets and saves incremental source checkpoints; regular queries keep reading committed data while it runs. A regular query has a 10-second deadline, an inventory allowance of 500 sessions and 2048 agent sources, and a budget of 200,000 facts to import or recover, including unknown and invalid facts. Inventory enumeration and source verification continue on the next query without repeating the completed prefix; an observed session change verifies only that session, with a full inventory repair every ten minutes or when watching is unavailable. Non-usage wire records do not consume that fact budget, and querying already indexed facts does not consume it again. Deleted-session and ephemeral ledgers also resume under regular query budgets. A completed rescan does not supply missing provider usage or model prices. Task progress is process-local and resets to `idle` on restart; committed facts, source coverage and import progress survive. Cancellation of the rescan is not supported.
 
 History and agent totals share lightweight usage facts saved as conversation records are committed. Valid existing usage checkpoints migrate automatically. Without a usable checkpoint, the first query recovers only the uncovered source prefix; `reliability.complete=false` means the displayed subtotal is not yet complete. A later query continues from committed progress, and cancelling a history request stops recovery when no other caller still needs it. Restarting with valid facts or rebuilding their query index does not require reading conversation bodies again.
 

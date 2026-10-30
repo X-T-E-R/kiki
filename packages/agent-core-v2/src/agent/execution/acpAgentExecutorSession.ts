@@ -37,6 +37,7 @@ import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/exec
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 import {
   agentExecutorBindingFingerprint,
   agentExecutorBindingMatches,
@@ -122,6 +123,7 @@ const HANDOFF_BEGIN = '--- BEGIN KIKI PRIOR TRANSCRIPT HANDOFF ---';
 const HANDOFF_END = '--- END KIKI PRIOR TRANSCRIPT HANDOFF ---';
 const MAX_HANDOFF_TURNS = 8;
 const MAX_HANDOFF_BYTES = 32 * 1024;
+const STEER_TOOL_BOUNDARY_MS = 60_000;
 
 export class AcpAgentExecutorSession implements AgentExecutorSession {
   readonly hooks = createHooks<{ onWillRun: { signal: AbortSignal } }, 'onWillRun'>([
@@ -167,6 +169,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           env: executorProcessEnv(context.descriptor),
           startupTimeoutMs: context.descriptor.startupTimeoutMs,
           shutdownGraceMs: context.descriptor.shutdownGraceMs,
+          stdinCloseGraceMs: context.descriptor.stdinCloseGraceMs,
           clientName: 'kiki-agent-core-v2',
         },
         { permissionHandler,
@@ -528,6 +531,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   async steer(message: ContextMessage): Promise<boolean | 'unknown'> {
     const active = this.#active;
     if (active === undefined || active.turn.signal.aborted || this.#client.steer === undefined) return false;
+    const boundary = AbortSignal.any([active.turn.signal, AbortSignal.timeout(STEER_TOOL_BOUNDARY_MS)]);
+    if (!await active.recorder.toolsSettled(boundary) || this.#active !== active) return false;
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
     return this.#client.steer([
       { type: 'text', text },
@@ -696,7 +701,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const servers = this.#harnessMcp !== undefined ? [this.#harnessMcp.server]
       : this.context.descriptor.supportsMcp === false || mcp === undefined ? []
         : acpMcpServers(mcp.connectionManager, roots.workDir,
-          (name) => process.env[name], this.context.descriptor.mcpTransports);
+          (name) => process.env[name], this.context.descriptor.mcpTransports,
+          kikiChildDefaults(this.context.agent.accessor.get(IBootstrapService).homeDir));
     return {
       cwd: roots.workDir,
       additionalDirectories: roots.additionalDirs,

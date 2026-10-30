@@ -1,12 +1,14 @@
 import { stat } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import { IHostTerminalService } from '#/os/interface/terminal';
 import { HostTerminalService } from '#/os/backends/node-local/hostTerminalService';
+import { AppHostTerminalService } from '#/app/bootstrap/hostChildServices';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import {
@@ -21,6 +23,27 @@ describe('native Windows terminal lifecycle', () => {
 
   afterEach(async () => {
     await disposables?.dispose();
+  });
+
+  it.runIf(process.platform === 'win32')('inherits the selected App home in a real PTY without changing ambient env', async () => {
+    disposables = new DisposableStore();
+    const home = 'KIKI_PTY_SELECTED_SPACE';
+    const ix = createServices(disposables, { strict: true, additionalServices: (reg) => {
+      reg.definePartialInstance(IBootstrapService, { homeDir: home });
+      reg.define(IHostTerminalService, AppHostTerminalService);
+    } });
+    vi.stubEnv('KIKI_HOME', 'ambient-main');
+    try {
+      const terminal = await ix.get(IHostTerminalService).spawn({ shell: process.env['ComSpec'] ?? 'C:\\Windows\\System32\\cmd.exe', cwd: process.cwd(), cols: 90, rows: 28 });
+      let output = '';
+      let ready!: () => void;
+      const seen = new Promise<void>((resolveReady) => { ready = resolveReady; });
+      terminal.onProcessData((data) => { output += data; if (output.includes(home)) ready(); });
+      terminal.write('echo %KIKI_HOME%\r');
+      await withTimeout(seen, 5000, () => `missing PTY home: ${output}`);
+      expect(process.env['KIKI_HOME']).toBe('ambient-main');
+      terminal.kill();
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it.runIf(process.platform === 'win32')(

@@ -944,7 +944,15 @@ class FixtureServer {
     // mutate this state and append journal records, so the page's save / delete
     // / undo / inbox paths are all exercisable against the real wire shapes.
     this.memory = structuredClone(data.memory ?? { enabled: true, approval: 'auto', budget: 2_000, workspaces: {} });
-    this.memoryAdvisor = structuredClone(data.memoryAdvisor);
+    // The memory-settings response validates against the full advisor shape,
+    // so a scenario without an advisor seed reports an unconfigured advisor
+    // rather than failing the client's schema read.
+    this.memoryAdvisor = structuredClone(data.memoryAdvisor ?? {
+      advisor_status: {
+        state: 'unconfigured', reason: 'unconfigured', consent_required: false,
+        logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0,
+      },
+    });
     this.memoryEntries = new Map(
       Object.entries(structuredClone(data.memoryEntries ?? {})).map(([scope, entries]) => [scope, entries]),
     );
@@ -1097,13 +1105,11 @@ class FixtureServer {
    */
   routeMemory(res, path, query, body, method) {
     if (!path.startsWith('/memory')) return false;
-    // A seeded `memoryAdvisor` rides the same settings envelope: without it the
-    // response fails the client's `advisor_status` validation and every memory
-    // surface shows the bad-data error instead of the advisor's real state.
+    const advisor = this.memoryAdvisor;
     const settings = () => ({
-      ...this.memory,
-      effective_enabled: this.memory.enabled === true,
-      ...(this.memoryAdvisor === undefined ? {} : structuredClone(this.memoryAdvisor)),
+      ...this.memory, effective_enabled: this.memory.enabled === true,
+      advisor: advisor.advisor,
+      advisor_status: advisor.advisor_status,
     });
 
     if (path === '/memory/settings') {
@@ -1113,29 +1119,32 @@ class FixtureServer {
         }
         // Sparse advisor merge: `advisor: null` removes the block, a key set
         // to `null` clears it, anything omitted stays as saved.
-        if (body?.advisor !== undefined && this.memoryAdvisor !== undefined) {
-          if (body.advisor === null) delete this.memoryAdvisor.advisor;
+        if (body?.advisor !== undefined) {
+          if (body.advisor === null) delete advisor.advisor;
           else {
-            this.memoryAdvisor.advisor ??= {};
+            advisor.advisor ??= {};
             for (const [field, value] of Object.entries(body.advisor)) {
-              if (value === null) delete this.memoryAdvisor.advisor[field];
-              else this.memoryAdvisor.advisor[field] = value;
+              if (value === null) delete advisor.advisor[field];
+              else advisor.advisor[field] = value;
             }
           }
-          const mode = this.memoryAdvisor.advisor?.mode;
+          const mode = advisor.advisor?.mode;
           const configured = mode === 'off' ? 'off'
-            : this.memoryAdvisor.advisor?.source === undefined && this.memoryAdvisor.advisor?.selector === undefined ? 'unconfigured' : 'ready';
-          this.memoryAdvisor.advisor_status.state = this.memory.enabled === true ? configured : 'disabled';
+            : advisor.advisor?.source === undefined && advisor.advisor?.selector === undefined ? 'unconfigured' : 'ready';
+          advisor.advisor_status.state = this.memory.enabled === true ? configured : 'disabled';
+          advisor.advisor_status.reason = configured === 'unconfigured' ? 'unconfigured' : undefined;
         }
       }
       this.envelope(res, settings());
       return true;
     }
-    if (path === '/memory/advisor/probe') {
-      const destination = this.memoryAdvisor?.advisor_status?.destination;
-      this.envelope(res, destination === undefined
-        ? { ok: false, duration_ms: 0, status: { state: 'unconfigured', consent_required: false, reason: 'unconfigured' } }
-        : { ok: true, duration_ms: 42, usage_known: false, status: { state: 'ready', consent_required: false, destination } });
+    if (path === '/memory/advisor/probe' && method === 'POST') {
+      const status = advisor.advisor_status;
+      this.envelope(res, { ok: status.state === 'ready', status, duration_ms: 240, usage_known: false });
+      return true;
+    }
+    if (path === '/memory/advisor/status') {
+      this.envelope(res, this.sessions.has(query.get('session_id') ?? '') ? advisor.advisor_status : null);
       return true;
     }
     const wsMatch = /^\/memory\/workspaces\/([^/]+)\/settings$/.exec(path);

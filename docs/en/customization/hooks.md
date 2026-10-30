@@ -112,7 +112,7 @@ A hook supplements permission rules; it is not an operating-system sandbox and c
 This flashes a notification in the terminal title bar when a background task completes (macOS needs `terminal-notifier` installed):
 
 ```toml
-# Written in ~/.kiki/config.toml
+# Written in <home>/config.toml (default: ~/.kiki/config.toml)
 [[hooks]]
 event = "Notification"           # Trigger: when a background task status changes
 matcher = "task\\.completed"     # Only care about "completed" notifications
@@ -123,7 +123,7 @@ Save the config, start a new session, and a notification will appear the next ti
 
 ## Legacy rule fields
 
-Each legacy rule is one entry in the `[[hooks]]` array in `~/.kiki/config.toml`:
+Each legacy rule is one entry in the `[[hooks]]` array in the current `<home>/config.toml` (default `~/.kiki/config.toml`):
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -221,7 +221,7 @@ The following hook checks the command content before the Agent calls the `Bash` 
 [[hooks]]
 event = "PreToolUse"
 matcher = "Bash"
-command = "node ~/.kiki/hooks/block-dangerous-bash.mjs"
+command = "node \"$KIKI_HOME/hooks/block-dangerous-bash.mjs\""
 timeout = 5
 ```
 

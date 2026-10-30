@@ -109,7 +109,7 @@ See [The daily driver](https://x-t-e-r.github.io/kiki/en/features/daily) and [`k
 
 A goal keeps the target in view across turns instead of restating the task each time.
 
-Memory is what outlives the session: preferences, feedback, verified project facts, and references, kept as global, per workspace, or per persona. You can read every entry, and undo any change one operation at a time — including a delete. Set approval to `review` and proposed writes wait in an inbox instead of applying themselves. See the [memory guide](https://x-t-e-r.github.io/kiki/en/guides/memory).
+Memory is what outlives the session: preferences, feedback, verified project facts, and references, kept as global, per workspace, or per persona. You can read every entry, and undo ordinary changes one operation at a time — including a delete; only an explicit `forget` clears history permanently. Set approval to `review` and proposed writes wait in an inbox instead of applying themselves. Export an entry as Markdown, edit it, and review the diff before it saves, or let a decision service or model you choose recommend which entries fit the current request. See the [memory guide](https://x-t-e-r.github.io/kiki/en/guides/memory).
 
 Each workspace can also add a board (via the optional `kiki-task-board` plugin) where requirements are cards that link to the sessions working on them, and the agent reads and updates it. Scheduled prompts cover the recurring case: a prompt fires on a cron schedule while a Kiki process holds that session open. See [Work that runs long](https://x-t-e-r.github.io/kiki/en/features/long-work).
 

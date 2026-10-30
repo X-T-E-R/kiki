@@ -17,7 +17,7 @@ import { resolveEffectiveModel } from '../settings/settings';
 import type { SessionEventFrame } from '../wire';
 import type { TranscriptEvent } from '@kiki/transcript';
 
-import { assertSessionWritable, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
+import { assertSessionWritable, OLDER_HISTORY_TIMEOUT_MS, RESYNC_PAUSED_ERROR, SessionController } from './sessionController';
 import { mergeSessionQueueRows } from './modelSwitchQueue';
 import { queuedPromptPreviews, type SubagentBlock, type ToolBlock, type UserBlock } from './transcript';
 import { ASSISTANT_FRAME_ID, CHILD_AGENT_ID, emptySnapshot, opsEvent, resetEvent, spawnChildOps, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
@@ -2593,6 +2593,100 @@ describe('SessionController transcript authority', () => {
       expect(client.getAgentTranscript.mock.calls[1]?.[2]).toMatchObject({ beforeItem: 'partial-cursor', beforeTurn: undefined });
       expect(historyTexts(controller)).toEqual(['History 1', 'History 2']);
     } finally { controller.close(); }
+  });
+
+  it('times out a hung transcript page and retries from its original cursor without accepting its late body', async () => {
+    vi.useFakeTimers();
+    const { controller, view } = await openTranscriptController();
+    const held = deferred<AgentTranscriptResponse>();
+    const pageInputs: Array<{ readonly beforeItem?: string; readonly beforeTurn?: string }> = [];
+    view.transcript.page = async (input) => {
+      pageInputs.push(input);
+      if (pageInputs.length === 1) return held.promise as ReturnType<SessionViewFacade['transcript']['page']>;
+      return {
+        agent_id: 'main',
+        items: [historyTurn(0)],
+        has_more: false,
+        coverage: { kind: 'full', hasMoreOlder: false },
+      } as unknown as Awaited<ReturnType<SessionViewFacade['transcript']['page']>>;
+    };
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(1)], olderCursor: 'original-cursor' }), 1, true));
+    const loading = controller.loadOlderHistory();
+    try {
+      await Promise.resolve();
+      expect(pageInputs).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(OLDER_HISTORY_TIMEOUT_MS);
+      await expect(loading).resolves.toEqual({ kind: 'failed', changed: false });
+      expect(controller.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: true });
+      expect(controller.getState().olderError).toContain('timed out');
+
+      await expect(controller.loadOlderHistory()).resolves.toEqual({ kind: 'exhausted', changed: true });
+      expect(pageInputs[1]).toMatchObject({ beforeItem: 'original-cursor', beforeTurn: undefined });
+      expect(historyTexts(controller)).toEqual(['History 0', 'History 1']);
+      expect(controller.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: false, olderError: undefined });
+
+      held.resolve({ agent_id: 'main', items: [historyTurn(99)], has_more: false, coverage: { kind: 'full', hasMoreOlder: false } });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(historyTexts(controller)).toEqual(['History 0', 'History 1']);
+      expect(controller.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: false, olderError: undefined });
+    } finally {
+      held.resolve({ agent_id: 'main', items: [], has_more: false });
+      controller.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails after sixteen empty preparing batches and retries from the advanced cursor', async () => {
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(1)], olderCursor: 'initial-cursor' }), 1, true));
+    for (let index = 0; index < 16; index += 1) {
+      client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [], has_more: true,
+        next_cursor: index === 0 ? 'advanced-cursor' : undefined,
+        read: { source: 'cold', readiness: 'preparing' } });
+    }
+    client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0)], has_more: false,
+      coverage: { kind: 'full', hasMoreOlder: false } });
+    try {
+      await expect(controller.loadOlderHistory()).resolves.toEqual({ kind: 'failed', changed: false });
+      expect(client.getAgentTranscript).toHaveBeenCalledTimes(16);
+      expect(client.getAgentTranscript.mock.calls[0]?.[2]).toMatchObject({ beforeItem: 'initial-cursor', beforeTurn: undefined });
+      expect(controller.getState()).toMatchObject({
+        loadingOlder: false,
+        hasMoreHistory: true,
+        olderError: 'Earlier history is still preparing. Retry to continue.',
+      });
+
+      await expect(controller.loadOlderHistory()).resolves.toEqual({ kind: 'exhausted', changed: true });
+      expect(client.getAgentTranscript.mock.calls[16]?.[2]).toMatchObject({ beforeItem: 'advanced-cursor', beforeTurn: undefined });
+      expect(historyTexts(controller)).toEqual(['History 0', 'History 1']);
+      expect(controller.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: false, olderError: undefined });
+    } finally { controller.close(); }
+  });
+
+  it('deadlines a permanently preparing older page and allows a retry from the original cursor', async () => {
+    vi.useFakeTimers();
+    const { controller, client } = await openTranscriptController();
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(1)], olderCursor: 'original-cursor' }), 1, true));
+    client.getAgentTranscript.mockRejectedValue(new ApiError({ code: 40923, msg: 'Preparing navigation', data: null }));
+    const loading = controller.loadOlderHistory();
+    try {
+      await vi.advanceTimersByTimeAsync(OLDER_HISTORY_TIMEOUT_MS);
+      await expect(loading).resolves.toEqual({ kind: 'failed', changed: false });
+      expect(client.getAgentTranscript).toHaveBeenCalled();
+      expect(controller.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: true });
+      expect(controller.getState().olderError).toContain('timed out');
+
+      client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(0)], has_more: false,
+        coverage: { kind: 'full', hasMoreOlder: false } });
+      await expect(controller.loadOlderHistory()).resolves.toEqual({ kind: 'exhausted', changed: true });
+      expect(client.getAgentTranscript.mock.calls.at(-1)?.[2]).toMatchObject({ beforeItem: 'original-cursor', beforeTurn: undefined });
+      expect(historyTexts(controller)).toEqual(['History 0', 'History 1']);
+      expect(controller.getState()).toMatchObject({ loadingOlder: false, hasMoreHistory: false, olderError: undefined });
+    } finally {
+      controller.close();
+      vi.useRealTimers();
+    }
   });
 
   it('cancels a preparing batch before issuing its next page after suspend', async () => {

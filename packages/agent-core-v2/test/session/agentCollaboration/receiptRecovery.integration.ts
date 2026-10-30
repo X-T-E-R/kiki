@@ -6,6 +6,8 @@ import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { agentMessageMaterializationsKey, agentMessageReceiptsKey } from '#/session/agentCollaboration/messageReceiptState';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
 import { AgentLifecycleService } from '#/session/agentLifecycle/agentLifecycleService';
 import { IAgentCollaborationMessagingService, IAgentCollaborationMessageStore } from '#/session/agentCollaboration/messageMailbox';
@@ -42,8 +44,16 @@ describe('mailbox receipt recovery with real lifecycle', () => {
       await host.ready;
       const lifecycle = host.get(IAgentLifecycleService);
       const messaging = host.get(IAgentCollaborationMessagingService);
+      const registeredBeforeReplay = new Map<string, readonly string[]>();
+      lifecycle.onWillCreate((handle) => {
+        registeredBeforeReplay.set(handle.id, handle.accessor.get(IAgentStateService).replayableKeys().map((key) => key.name));
+      });
       const binding = host.get(IAgentProfileService).data();
       const sender = await lifecycle.create({ agentId: 'sender', binding: { profile: 'explore', model: binding.modelAlias }, delegator: { kind: 'agent', agentId: 'main' } });
+      expect(registeredBeforeReplay.get('sender')).toEqual(expect.arrayContaining([
+        agentMessageReceiptsKey.name, agentMessageMaterializationsKey.name,
+      ]));
+      expect(sender.accessor.get(IAgentStateService).get(agentMessageMaterializationsKey)).toEqual({});
       host.mockNextResponse({ type: 'text', text: 'Sender finished' });
       const senderRun = await sender.accessor.get(IAgentPromptService).enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'Finish work' }], toolCalls: [], origin: { kind: 'user' } } });
       await expect(senderRun.completion).resolves.toMatchObject({ state: 'completed', result: { type: 'completed' } });
@@ -84,6 +94,10 @@ describe('mailbox receipt recovery with real lifecycle', () => {
         }
         await receiver.accessor.get(IAgentLoopService).hooks.onWillBeginStep.run({ turnId: 2, step: 1, firstStepOfTurn: false, signal }, next);
       }
+      expect(registeredBeforeReplay.get('receiver')).toEqual(expect.arrayContaining([
+        agentMessageReceiptsKey.name, agentMessageMaterializationsKey.name,
+      ]));
+      expect(receiver.accessor.get(IAgentStateService).get(agentMessageMaterializationsKey)[accepted.message.messageId]).toBe(true);
       const recipientRecords = [];
       for await (const record of receiver.accessor.get(IWireService).readJournal()) recipientRecords.push(record);
       expect(recipientRecords.filter((record) => record.type === 'context.append_message' && (record['message'] as { id?: string }).id === accepted.message.messageId)).toHaveLength(1);

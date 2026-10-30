@@ -4,6 +4,8 @@ import { BugIndicatingError } from '#/_base/errors/errors';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
+import { ILogService } from '#/_base/log/log';
+import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
 import { type CollectionView } from '#/_base/di/collection';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -23,7 +25,7 @@ import { IEventDispatcher } from './eventDispatcher';
 import { StateError, StateErrors } from './errors';
 import {
   decodeReplayCheckpointGraph,
-  encodeReplayCheckpointGraph,
+  encodeReplayCheckpointGraphAsync,
   type ReplayCheckpointGraph,
 } from './replayCheckpointCodec';
 import {
@@ -145,6 +147,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
 
   private restorePhase: RestorePhase = 'new';
   private checkpointSave: Promise<boolean> | undefined;
+  private savedCheckpoint: { readonly revision: number; readonly wire: ReplayCheckpointEnvelope['wire'] } | undefined;
   private growthCheckpointTimer: ReturnType<typeof setTimeout> | undefined;
   private growthCheckpointBaseline = 0;
   private checkpointGeneration = 0;
@@ -165,6 +168,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     @EventStateContribution view: CollectionView<EventStateContributionRecord>,
     @ref(IAtomicDocumentStore) private readonly docs: LiveRef<IAtomicDocumentStore>,
     @ref(IAgentScopeContext) private readonly scope: LiveRef<IAgentScopeContext>,
+    @ref(ILogService) private readonly log: LiveRef<ILogService>,
   ) {
     super();
     this.folded = this.foldContributions(view);
@@ -186,6 +190,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     this._register(
       this.agentState.onDidWithdrawReplayable((key) => {
         this.metas.delete(key);
+        this.liveRevision += 1;
         this.folded = this.foldContributions(view);
       }),
     );
@@ -233,6 +238,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     }
     this.rollback(key, meta, patchId - 1);
     meta.checkpoints = meta.checkpoints.filter((id) => id < patchId);
+    this.liveRevision += 1;
   }
 
   dispatchDurably(event: Event2<any>): Promise<void> {
@@ -527,6 +533,9 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       phase = 'journal_identity';
       const wire = await this.wire.journalIdentity();
       if (!this.checkpointStable(generation, revision)) return false;
+      const saved = this.savedCheckpoint;
+      if (saved?.revision === revision && saved.wire.size === wire.size &&
+        saved.wire.mtimeMs === wire.mtimeMs && saved.wire.headHash === wire.headHash) return true;
       phase = 'journal_digest';
       const prefixSha256 = this.wire.journalSha256 === undefined
         ? undefined
@@ -538,10 +547,10 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         states: keys.map((key) => ({
           name: key.name,
           value: this.agentState.get(key),
-          meta: structuredClone(this.ensureMeta(key)),
+          meta: this.ensureMeta(key),
         })),
       };
-      const graph = encodeReplayCheckpointGraph(payload);
+      const graph = await encodeReplayCheckpointGraphAsync(payload);
       if (!this.checkpointStable(generation, revision)) return false;
       const coveredAppendedBytes = this.wire.appendedByteCount?.() ?? this.growthCheckpointBaseline;
       const envelope: ReplayCheckpointEnvelope = {
@@ -552,8 +561,9 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         graph,
       };
       phase = 'write';
-      await docs.set(checkpointScope, REPLAY_CHECKPOINT_KEY, envelope);
+      await docs.set(checkpointScope, REPLAY_CHECKPOINT_KEY, envelope, { cooperative: true });
       if (!this.isCheckpointGenerationCurrent(generation)) return this.skipReplayCheckpoint('disposed');
+      this.savedCheckpoint = { revision, wire };
       this.growthCheckpointBaseline = coveredAppendedBytes;
       return true;
     } catch (error) {
@@ -641,25 +651,27 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       );
     }
     this.restorePhase = 'restoring';
+    const context = { agentId: this.scope.current?.agentId };
+    const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(this.log.current, context, name, action);
     try {
-      const checkpointRestored = await this.restoreReplayCheckpoint();
+      const checkpointRestored = await phase('checkpoint_restore', () => this.restoreReplayCheckpoint());
       if (checkpointRestored === undefined) {
-        await this.replayJournal();
+        await phase('journal_replay', () => this.replayJournal());
       } else if (checkpointRestored.tailByte !== undefined) {
         try {
-          await this.replayJournal(checkpointRestored.tailByte);
+          await phase('journal_tail_replay', () => this.replayJournal(checkpointRestored.tailByte));
         } catch (error) {
           if (!(error instanceof JournalTailUnreadableError)) throw error;
           this.resetReplayableState();
-          await this.replayJournal();
+          await phase('journal_replay', () => this.replayJournal());
         }
       }
-      await this.rehydrateStates();
+      await phase('state_rehydrate', () => this.rehydrateStates());
       this.restorePhase = 'ready';
       if (checkpointRestored === undefined || checkpointRestored.tailByte !== undefined) {
         void this.saveReplayCheckpoint().catch(onUnexpectedError);
       }
-      await this.hooks.onDidRestore.run({});
+      await phase('restore_hooks', () => this.hooks.onDidRestore.run({}));
     } catch (error) {
       this.restorePhase = 'failed';
       throw error;

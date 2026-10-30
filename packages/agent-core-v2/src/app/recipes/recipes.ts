@@ -6,9 +6,9 @@ export interface IRecipeService {
   readonly _serviceBrand: undefined;
   readonly onDidChange: Event<void>;
   list(): Promise<RecipeSummary[]>;
-  get(id: string): Promise<RecipeDetail | undefined>;
+  get(id: string, selection?: import('@kiki/protocol').RecipeOptionValues): Promise<RecipeDetail | undefined>;
   export(id: string): Promise<RecipeExport>;
-  resolve(id: string, baseDir?: string): Promise<ResolvedRecipe>;
+  resolve(id: string, baseDir?: string, selection?: import('@kiki/protocol').RecipeOptionValues): Promise<ResolvedRecipe>;
   scriptHooks(recipe: ResolvedRecipe): Promise<readonly import('#/features/externalHooks/internal/types').HookDef[]>;
   preview(input: RecipePreviewInput): Promise<RecipePreview>;
   install(input: RecipeInstallInput): Promise<RecipeSummary>;

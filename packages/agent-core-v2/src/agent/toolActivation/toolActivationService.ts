@@ -26,6 +26,18 @@ import { IAgentToolActivationService } from './toolActivation';
 import { toolGroupForName } from '#/agent/toolRegistry/toolGroups';
 
 const SEND_MESSAGE_TOOL_NAME = 'SendMessage';
+const METER_STATUS_KEYS: ReadonlySet<string> = new Set(['usage', 'contextTokens']);
+
+function isMeterOnlyStatus(event: AgentStatusUpdated | undefined): boolean {
+  if (event === undefined) return false;
+  let meter = false;
+  for (const [key, value] of Object.entries(event)) {
+    if (key === 'type' || key === 'time' || value === undefined) continue;
+    if (!METER_STATUS_KEYS.has(key)) return false;
+    meter = true;
+  }
+  return meter;
+}
 
 export class AgentToolActivationService extends Service implements IAgentToolActivationService {
   declare readonly _serviceBrand: undefined;
@@ -48,7 +60,8 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
   ) {
     super();
     this._register(
-      eventBus.subscribe(AgentStatusUpdated, () => {
+      eventBus.subscribe(AgentStatusUpdated, (event) => {
+        if (isMeterOnlyStatus(event)) return;
         this.refreshConditionalRecords();
       }),
     );

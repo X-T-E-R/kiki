@@ -75,6 +75,7 @@ export const usageAccountingSnapshotSchema = usageAggregateSchema.extend({
   source_revision: z.string().optional(),
   covered_at: z.number().nonnegative(),
   complete: z.boolean(),
+  freshness: z.enum(['current', 'stale', 'unverified']).optional(),
 });
 
 export type UsageAccountingSnapshot = z.infer<typeof usageAccountingSnapshotSchema>;

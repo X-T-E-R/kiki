@@ -878,6 +878,13 @@ describe('QueueStrip model-switch control rows', () => {
     };
   };
 
+  it.each(['pending', 'preparing'] as const)('names a %s effort reset as Default', async state => {
+    const entry = switchEntry({ state, mode: 'direct', toModel: 'example/old' });
+    const { container } = await renderStrip({ items: [], modelSwitches: [{ ...entry, input: { ...entry.input, thinking: null } }] });
+    expect(container.querySelector('[data-queue-model-switch]')?.textContent).toContain('Default');
+    expect(container.querySelector('[data-queue-model-switch]')?.textContent).not.toContain('Switching to');
+  });
+
   it('renders a queued switch in drain order with its mode, and cancels by operation id', async () => {
     const onCancelModelSwitch = vi.fn();
     const { container } = await renderStrip({

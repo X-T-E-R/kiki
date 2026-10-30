@@ -15,7 +15,15 @@ import { SessionRouteView } from './SessionView';
 import { clearToasts, getToasts } from '../lib/toasts';
 import type { QueuedModelSwitch } from '../lib/client';
 
-const { seat, submit, queueStub, fixture } = vi.hoisted(() => ({
+const { seat, submit, queueStub, fixture, updateSessionProfile, switchAgentModel } = vi.hoisted(() => ({
+  updateSessionProfile: vi.fn().mockResolvedValue(undefined),
+  switchAgentModel: vi.fn(async (_sessionId: string, _agentId: string, input: import('../lib/client').ModelSwitchInput) => {
+    const receipt = { operationId: input.operationId, agentId: 'main', state: 'pending' as const,
+      fromModel: fixture.binding?.model ?? '', toModel: input.model, mode: input.mode };
+    queueStub.switches = [...queueStub.switches, { input, receipt, revision: 0,
+      originalBinding: { model: fixture.binding?.model ?? '', thinking: fixture.binding?.thinking ?? '' }, queueIndex: queueStub.switches.length }];
+    return receipt;
+  }),
   fixture: { external: false, loaded: false, realTimeline: false,
     publish: undefined as ((snapshot: AgentTranscriptSnapshot) => void) | undefined,
     initialSnapshot: undefined as AgentTranscriptSnapshot | undefined,
@@ -48,6 +56,8 @@ vi.mock('../state/connection', () => {
     getConfig: () => Promise.resolve({ default_model: 'provider/native-model' }),
     listModels: () => Promise.resolve({ items: [] }),
     listEphemeralSessions: () => new Promise(() => {}),
+    updateSessionProfile,
+    switchAgentModel,
     listAgentModelSwitches: () => Promise.resolve(queueStub.switches),
     cancelAgentModelSwitch: (_sessionId: string, _agentId: string, operationId: string) => {
       queueStub.cancelledSwitches.push(operationId);
@@ -468,12 +478,18 @@ describe('session selection annotations', () => {
       expect(submit.calls.at(-1)?.input?.model).toBe(source === 'explicit' ? 'example/old-model' : undefined);
       expect(submit.calls.at(-1)?.input?.thinking).not.toBe('high');
       await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'restored' }); await sent; });
+      switchAgentModel.mockClear();
       await act(async () => { composerProps().onChangeEffort('high'); });
+      expect(switchAgentModel).toHaveBeenCalledExactlyOnceWith('session-a', 'main', expect.objectContaining({
+        model: 'example/new-model', thinking: 'high', mode: 'direct',
+      }));
       await act(async () => { sent = composerProps().onSend('Use my new effort choice.', []); });
-      expect(submit.calls.at(-1)?.input).toMatchObject({ thinking: 'high' });
+      expect(submit.calls.at(-1)?.input).toMatchObject({ afterModelSwitch: queueStub.switches.at(-1)!.input.operationId });
+      expect(submit.calls.at(-1)?.input?.thinking).toBeUndefined();
       await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'explicit-effort' }); await sent; });
     } finally {
       fixture.binding = undefined;
+      queueStub.switches = [];
       await act(async () => { root.unmount(); });
       queries.clear();
       clearComposerState('session-a');
@@ -530,7 +546,9 @@ describe('session selection annotations', () => {
       expect(submit.calls.at(-1)?.input?.model).toBeUndefined();
       expect(submit.calls.at(-1)?.input?.permissionMode).toBeUndefined();
       await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'first' }); await sent; });
+      updateSessionProfile.mockClear();
       await act(async () => { composerProps().onChangePermissionMode('yolo'); });
+      expect(updateSessionProfile).toHaveBeenCalledExactlyOnceWith('session-a', { agent_config: { permission_mode: 'yolo' } });
       await act(async () => { composerProps().onChangeModel('opus'); });
       await act(async () => { sent = composerProps().onSend('explicit', []); });
       expect(submit.calls.at(-1)?.input?.model).toBe('opus');

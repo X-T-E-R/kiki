@@ -3,13 +3,12 @@ import {
   resolveRealPathAccessPath,
   type WorkspaceConfig,
 } from '#/tool/path-access';
-import { toInputJsonSchema } from '#/tool/input-schema';
 import { matchesPathRuleSubject } from '#/tool/rule-match';
 import { IFileEditService } from '#/app/edit/fileEdit';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { Runtime } from '#/runtime/runtime';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
-import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, hostToolParameters } from '#/agent/tools/os/sshToolTarget';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
@@ -27,7 +26,7 @@ export class EditTool implements IEditTool {
   readonly name = 'Edit' as const;
   readonly description = editDescriptionTemplate;
   get parameters(): Record<string, unknown> {
-    return toolParametersWithHost(toInputJsonSchema(EditInputSchema), this.runtime.nativeSshEnabled?.() === true);
+    return hostToolParameters(EditInputSchema, this.runtime.nativeSshEnabled?.() === true);
   }
 
   constructor(

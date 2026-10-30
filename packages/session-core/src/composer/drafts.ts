@@ -230,6 +230,7 @@ export interface PersistedNewSessionDraft {
   readonly modelFromProfile?: boolean;
   readonly effortFromProfile?: boolean;
   readonly prefillSource?: string;
+  readonly dismissedPersonaSource?: string;
 }
 
 const composerMemory = new Map<string, ComposerSessionState>();
@@ -300,6 +301,7 @@ export function readNewSessionDraft(): PersistedNewSessionDraft {
       modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
       effortFromProfile: typeof record['effortFromProfile'] === 'boolean' ? record['effortFromProfile'] : undefined,
       prefillSource: typeof record['prefillSource'] === 'string' ? record['prefillSource'] : undefined,
+      dismissedPersonaSource: typeof record['dismissedPersonaSource'] === 'string' ? record['dismissedPersonaSource'] : undefined,
     };
   } catch {
     return {};
@@ -329,6 +331,7 @@ export function writeNewSessionDraft(draft: PersistedNewSessionDraft): void {
         modelFromProfile: draft.modelFromProfile,
         effortFromProfile: draft.effortFromProfile,
         prefillSource: draft.prefillSource,
+        dismissedPersonaSource: draft.dismissedPersonaSource,
       }));
     }
   } catch {

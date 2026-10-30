@@ -566,24 +566,36 @@ export default {
     lineage: {},
     checks: {},
   },
-  // The memory advisor rides the same /memory/settings envelope: without this
-  // seed the response fails the client's advisor_status validation and every
-  // memory surface renders the bad-data error instead of the advisor's state.
+  // The memory advisor, ready on the decision connection the defaults tab
+  // also lists: the settings reads (defaults, memory) validate against the
+  // full advisor shape, so the seed carries both the config and its status.
   memoryAdvisor: {
     advisor: {
       mode: 'rank',
-      selector: { protocol: 'chat_json', model: 'fixture/kiki-lite' },
-      first_step_wait_ms: 1500, timeout_ms: 6000, max_calls_per_turn: 3,
-      candidate_chars: 120, catalog_page_items: 40, max_catalog_pages: 2,
-      max_full_units: 8, judge_input_tokens: 12000,
-      apply_to_children: true, egress_ack: [],
+      source: { kind: 'model', model: 'fixture/kiki-lite' },
+      timeout_ms: 6000,
+      max_calls_per_turn: 3,
+      candidate_chars: 120,
+      catalog_page_items: 40,
+      max_catalog_pages: 2,
+      max_full_units: 8,
+      judge_input_tokens: 12000,
+      apply_to_children: true,
+      egress_ack: [],
     },
     advisor_status: {
-      state: 'ready', consent_required: false,
+      state: 'ready',
+      consent_required: false,
       destination: 'fixture:https://api.fixture.test',
       provider: 'fixture', origin: 'https://api.fixture.test',
-      protocol: 'chat_json', model: 'fixture/kiki-lite',
-      logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0,
+      protocol: 'chat_json',
+      model: 'fixture/kiki-lite',
+      source_status: { state: 'ready', protocol: 'chat_json', model: 'fixture/kiki-lite' },
+      logical_calls: 0,
+      requests: 0,
+      retries: 0,
+      displaced_ids: [],
+      unjudged_count: 0,
     },
   },
   workspaces: [

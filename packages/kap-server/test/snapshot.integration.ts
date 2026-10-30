@@ -11,6 +11,8 @@ import {
   IAgentContextMemoryService,
   IAgentScopeContext,
   IAppendLogStore,
+  IAtomicDocumentStore,
+  IAgentTaskService,
   IEventBus,
   IAgentLifecycleService,
   IAgentPermissionModeService,
@@ -44,7 +46,9 @@ import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { resolveSessionBindingFacts } from '../src/routes/sessions';
 import { usageRuntime } from '../src/usage/usageRuntime';
 import * as panelCapabilities from '../src/routes/agentPanelCapabilities';
-import { assembleBrowseSnapshot, assembleBrowseSnapshotSource, assembleSnapshot, registerSnapshotRoutes } from '../src/routes/snapshot';
+import { assembleBrowseSnapshot, assembleBrowseSnapshotSource, assembleSnapshot, readBrowseSnapshotContent, registerSnapshotRoutes } from '../src/routes/snapshot';
+import { sessionAgentRoster } from '../src/routes/sessionAgentRoster';
+import { contentRevision } from '../src/transport/klient/contentRevision';
 import { readColdMainWireProjection } from '../src/services/snapshot/coldSnapshotSource';
 import { applyContentSegment, jsonBytes, type ContentSegment } from '@kiki/transcript';
 import { readContentSegment } from '../src/transport/klient/boundedContent';
@@ -78,6 +82,43 @@ function deferred(): { readonly promise: Promise<void>; resolve(): void } {
 }
 
 describe('server-v2 snapshot route enrichment', () => {
+  it('reads only the selected cold receipt sidecar and keeps roster reads on previews', async () => {
+    const receipt = 'complete receipt '.repeat(512);
+    const sidecar = 'agent-outcomes/1234-abcd.json';
+    const meta = { id: 's1', createdAt: 1, updatedAt: 2, archived: false, agents: {
+      child: { type: 'sub' as const, taskId: 'task-1', status: 'completed' as const, completedAt: 2,
+        resultSummary: receipt.slice(0, 2048), outcomeRef: sidecar },
+      other: { type: 'sub' as const, resultSummary: 'other preview', outcomeRef: 'agent-outcomes/5678-abcd.json' },
+    } };
+    let missing = false;
+    const get = vi.fn(async (_scope: string, key: string) => key === 'state.json' ? meta
+      : missing ? undefined : { version: 1, resultSummary: receipt });
+    const core = { accessor: fakeAccessor([
+      [ISessionManager, { get: () => undefined }],
+      [ISessionIndex, { get: async () => ({ workspaceId: 'ws' }) }],
+      [IAtomicDocumentStore, { get }],
+    ]) };
+    const candidates = sessionAgentRoster('s1', meta);
+    const index = candidates.findIndex((agent) => agent.id === 'child');
+    const ref = { source: { kind: 'snapshot' as const, id: '' }, path: ['subagents', index, 'output_preview'],
+      kind: 'text' as const, offset: 0, total: receipt.length, revision: contentRevision(receipt) };
+    const segment = await readBrowseSnapshotContent(core as never, {} as never, 's1', 'main', ref);
+    expect(segment?.value).toBe(receipt);
+    expect(get.mock.calls.filter(([, key]) => key.startsWith('agent-outcomes/')).map(([, key]) => key)).toEqual([sidecar]);
+    get.mockClear();
+    const rosterRef = { source: ref.source, path: ['subagents'], kind: 'array' as const, offset: 0,
+      total: candidates.length, revision: contentRevision(candidates) };
+    await readBrowseSnapshotContent(core as never, {} as never, 's1', 'main', rosterRef);
+    expect(get.mock.calls.map(([, key]) => key)).toEqual(['state.json']);
+    missing = true;
+    get.mockClear();
+    const preview = receipt.slice(0, 2048);
+    const fallback = await readBrowseSnapshotContent(core as never, {} as never, 's1', 'main', {
+      ...ref, total: preview.length, revision: contentRevision(preview),
+    });
+    expect(fallback?.value).toBe(preview);
+  });
+
   it.each(['failed', 'cancelled'] as const)('session loading timing records live snapshot acquisition %s', async (outcome) => {
     const gate = deferred();
     const entered = deferred();
@@ -2136,7 +2177,8 @@ describe('cold session snapshot', () => {
     void full.catch(() => {});
     const workspaceReads = vi.spyOn(server!.core.accessor.get(IWorkspaceService), 'get');
     try {
-      await vi.waitFor(() => expect(readAccounting).toHaveBeenCalledOnce());
+      expect((await full).usage?.accounting).toMatchObject({ ...accounting, freshness: 'current' });
+      expect(readAccounting).not.toHaveBeenCalled();
       const response = await fetch(`${base}/api/klient/session-view/${sessionId}/snapshot`, {
         headers: authHeaders(server as RunningServer), signal: AbortSignal.timeout(2_000),
       });
@@ -2153,11 +2195,11 @@ describe('cold session snapshot', () => {
       expect(complete.epoch).toBe(preview.epoch);
       expect(complete.agent_counts?.total).toBe(preview.agent_counts?.total);
       expect(workspaceReads).not.toHaveBeenCalled();
-      expect(readAccounting).toHaveBeenCalledOnce();
+      expect(readAccounting).not.toHaveBeenCalled();
       expect(capabilities).not.toHaveBeenCalled();
-      expect(fullResolved).toBe(false);
+      expect(fullResolved).toBe(true);
       gate.resolve();
-      expect((await full).usage?.accounting).toEqual(accounting);
+      expect((await full).usage?.accounting).toMatchObject({ ...accounting, freshness: 'current' });
       expect(getLiveSessionById(server!.core.accessor, sessionId)).toBeUndefined();
     } finally {
       gate.resolve();
@@ -2243,6 +2285,50 @@ describe('cold session snapshot', () => {
     expect(messageShape(cold)).toEqual(messageShape(warm));
     expect(cold.session.message_count).toBe(warm.session.message_count);
     expect(cold.messages.has_more).toBe(warm.messages.has_more);
+  });
+
+  it('reads a full task receipt from a cold session after metadata outcomes are split', async () => {
+    const sessionId = await createSession();
+    const { session, main } = await mainOf(sessionId);
+    const receipt = 'complete receipt '.repeat(512);
+    const tasks = main.accessor.get(IAgentTaskService);
+    const taskId = tasks.registerTask({
+      idPrefix: 'agent', kind: 'agent', description: 'saved result',
+      toInfo: (base) => ({ ...base, kind: 'agent', agentId: 'saved-child' }),
+      start: async (sink) => { sink.setFinalOutput?.(receipt); await sink.settle({ status: 'completed' }); },
+    });
+    await tasks.wait(taskId);
+    const otherId = tasks.registerTask({
+      idPrefix: 'agent', kind: 'agent', description: 'other saved result',
+      toInfo: (base) => ({ ...base, kind: 'agent', agentId: 'other-child' }),
+      start: async (sink) => { sink.setFinalOutput?.('other result'); await sink.settle({ status: 'completed' }); },
+    });
+    await tasks.wait(otherId);
+    await session.accessor.get(ISessionMetadata).registerAgent('saved-child', {
+      type: 'sub', taskId, status: 'completed', resultSummary: receipt,
+    });
+    await closeSessionById(server!.core.accessor, sessionId);
+    const spies = restorationSpies();
+    const docs = server!.core.accessor.get(IAtomicDocumentStore);
+    const reads = vi.spyOn(docs, 'get');
+    const lists = vi.spyOn(docs, 'list');
+    const response = await fetch(`${base}/api/sessions/${sessionId}/tasks/${taskId}?with_output=true&output_bytes=32768`, {
+      headers: authHeaders(server as RunningServer),
+    });
+    const body = await response.json() as { code: number; data: { output_preview: string } };
+    expect(body.code).toBe(0);
+    expect(body.data.output_preview).toBe(receipt);
+    expect(lists).not.toHaveBeenCalled();
+    expect(reads.mock.calls.every(([, key]) => key === `${taskId}.json` || key === 'state.json')).toBe(true);
+    reads.mockClear();
+    const pageResponse = await fetch(`${base}/api/sessions/${sessionId}/tasks?page_size=1`, { headers: authHeaders(server as RunningServer) });
+    const page = await pageResponse.json() as { code: number; data: { items: unknown[]; has_more: boolean; next_offset: number } };
+    expect(page.code).toBe(0);
+    expect(page.data).toMatchObject({ items: [expect.any(Object)], has_more: true, next_offset: 1 });
+    expect(reads.mock.calls.filter(([, key]) => key.endsWith('.json') && key !== 'state.json')).toHaveLength(1);
+    expect(spies.acquire).not.toHaveBeenCalled();
+    expect(spies.resume).not.toHaveBeenCalled();
+    expect(getLiveSessionById(server!.core.accessor, sessionId)).toBeUndefined();
   });
 
   it('reads saved permission, plan, and completed subagent roster without a live handle', async () => {

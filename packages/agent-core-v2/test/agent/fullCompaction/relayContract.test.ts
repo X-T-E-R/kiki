@@ -26,7 +26,7 @@ describe('relay-v1 zero-model contract', () => {
       keptHeadUserMessageCount: live.keptHeadUserMessageCount, strategy: 'relay', shapeVersion: 1 });
     expect(replay).toEqual(live.messages);
     expect(summary).not.toContain('SelectTools with ["HistoryRead", "HistorySearch"] first');
-    expect(summary).toContain('agent_id:"child"');
+    expect(summary).toContain('child/1');
     expect(summary).toContain('Removed history boundary:');
     expect(summary).toContain('step_id:"t3.2"');
     expect(summary).not.toContain('old window t0–t4');
@@ -47,7 +47,7 @@ describe('relay-v1 zero-model contract', () => {
     expect(relay).toContain('m_20260929_89b2ad94e2');
     expect(relay).toContain('## User input since notes');
     expect(relay).toContain('t424 (user): 哦你也可以直接 pin grok 模型');
-    expect(relay).toContain('HistoryRead {session_id:"s1", agent_id:"child", step_id:"t424.1"}');
+    expect(relay).toContain('HistoryRead {step_id:"t424.1"}');
     expect(renderStandingDirectives(handoff)).toContain('直接 pin grok');
     expect(relay).toContain('apply any rule or correction in it unless later revoked');
     expect(relay).toContain('Check these before choosing models, profiles, or irreversible actions.');
@@ -77,7 +77,7 @@ describe('relay-v1 zero-model contract', () => {
     expect(text.indexOf('newer')).toBeLessThan(text.indexOf('older'));
     expect(text).toContain('older');
     expect(text).toContain('HistorySearch');
-    expect(text).toContain('source coordinate unavailable');
+    expect(text).not.toContain('source coordinate unavailable');
     expect(text).not.toContain('x'.repeat(20_000));
   });
 
@@ -91,6 +91,22 @@ describe('relay-v1 zero-model contract', () => {
     expect(summary).toContain('HistoryRead {ref:"h1_real-frame"}');
     expect(summary).toContain('ref:"h1_real-frame"');
     expect(summary).not.toContain('turn:4');
+  });
+
+  it('deduplicates step reads across evidence, conclusion and window without frame coordinates', () => {
+    const source = { turnId: 8, step: 2, stepId: 't8.2', ref: 'long-frame-ref', frameId: 'frame-a', toolCallId: 'read-a' };
+    const calls: ContextMessage = { ...assistant, source, toolCalls: [
+      { id: 'read-a', type: 'function', name: 'Read', arguments: '{}' }, { id: 'read-b', type: 'function', name: 'Read', arguments: '{}' },
+    ], toolCallSources: { 'read-a': source, 'read-b': { ...source, ref: 'another-frame-ref', frameId: 'frame-b', toolCallId: 'read-b' } } };
+    const history: ContextMessage[] = [calls, { role: 'tool', toolCallId: 'read-a', toolCalls: [], source, content: [{ type: 'text', text: 'First result' }] },
+      { role: 'tool', toolCallId: 'read-b', toolCalls: [], source, content: [{ type: 'text', text: 'Second result' }] },
+      { role: 'assistant', toolCalls: [], source, content: [{ type: 'text', text: 'Both results agree.' }] }];
+    const relay = renderRelay({ ...input, history, compactCount: history.length, meta: undefined });
+    expect(relay.match(/HistoryRead \{step_id:"t8\.2"\}/g)).toHaveLength(1);
+    expect(relay.match(/\[source 1\]/g)!.length).toBeGreaterThan(2);
+    expect(relay).not.toContain('frameId');
+    expect(relay).not.toContain('long-frame-ref');
+    expect(relay).not.toContain('tool_call_id');
   });
 
   it('does not retire unreviewed human constraints after a next-only write or two renewals', () => {

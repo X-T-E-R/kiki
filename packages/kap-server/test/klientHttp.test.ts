@@ -718,3 +718,32 @@ describe('klient HTTP stream cancellation', () => {
     },
   );
 });
+
+it('names the failing procedure in unexpected klient HTTP and stream failure logs without their message', async () => {
+  const failure = Object.assign(new Error('example private detail'), { code: 'EXAMPLE_CODE' });
+  const scope = { accessor: { get: <T>() => ({
+    getRequester: () => ({ request: () => ({ [Symbol.asyncIterator]: () => ({ next: async () => { throw failure; } }) }) }),
+    get: () => { throw failure; }, list: () => { throw failure; },
+  }) as T } } as unknown as Scope;
+  const lines: Record<string, unknown>[] = [];
+  const app = Fastify({ logger: { level: 'error', stream: { write: (line: string) => { lines.push(JSON.parse(line) as Record<string, unknown>); } } } });
+  const wss = registerKlientHttp(app, scope);
+  app.server.on('upgrade', (req, socket, head) => { wss.handleUpgrade(req, socket, head, (upgraded) => { wss.emit('connection', upgraded, req); }); });
+  await app.listen({ host: '127.0.0.1', port: 0 });
+  const address = app.server.address();
+  if (typeof address !== 'object' || address === null) throw new Error('missing address');
+  const client = new WebSocket(`ws://127.0.0.1:${address.port}/api/klient/events`);
+  try {
+    await new Promise<void>((resolve, reject) => { client.once('open', () => { resolve(); }); client.once('error', reject); });
+    client.send(JSON.stringify({ type: 'stream', id: 'stream-1', scope: 'core', service: 'modelResolver', method: 'generate', arg: ['example-model', { systemPrompt: '', messages: [] }] }));
+    await vi.waitFor(() => expect(lines.some((line) => line['msg'] === 'klient websocket operation failed')).toBe(true));
+    const stream = lines.find((line) => line['msg'] === 'klient websocket operation failed');
+    expect(stream).toMatchObject({ request_id: 'stream-1', event_type: 'stream_error', scope: 'core', service: 'modelResolver', method: 'generate', error: { name: 'Error', code: 'EXAMPLE_CODE' } });
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/klient/call`, { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ procedure: { scope: 'core', service: 'workspaceService', method: 'list' }, params: [] }) });
+    expect(response.status).toBe(200);
+    const http = lines.find((line) => line['msg'] === 'klient http call failed');
+    expect(http).toMatchObject({ event_type: 'klient_call_failed', scope: 'core', service: 'workspaceService', method: 'list', error: { name: 'Error', code: 'EXAMPLE_CODE' } });
+    expect(JSON.stringify(lines)).not.toContain('example private detail');
+  } finally { client.terminate(); await app.close(); }
+});

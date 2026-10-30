@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computerControlPreference, computerControlPreferencePatch, computerControlConnection, computerControlConnectionPatch, computerControlVerdict, isComputerControlEnabled, computerControlEnabledPatch, isComputerToolPolicyDenied, isComputerToolPolicyPartiallyDenied } from './computerControl';
 import { isBrowserControlEnabled, browserControlEnabledPatch, browserControlVerdict, isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied, isBrowserConnectionEffectiveAllowed, effectiveAllowedBrowserCount, browserSourceOfConnectionType } from './browserControl';
 import { patchConfigRequestSchema } from '@kiki/protocol';
-import { MEMORY_ADVISOR_RANGES, memoryAdvisorEndpointIssue, memoryAdvisorModelBaseUrl, memoryAdvisorModePatch, memoryAdvisorOn, memoryAdvisorSelectorFromDraft, memoryAdvisorView, parseMemoryAdvisorNumber } from './memoryAdvisor';
+import { MEMORY_ADVISOR_RANGES, memoryAdvisorEndpointIssue, memoryAdvisorModelBaseUrl, memoryAdvisorModePatch, memoryAdvisorNumberValue, memoryAdvisorOn, memoryAdvisorSelectorFromDraft, memoryAdvisorView, parseMemoryAdvisorNumber } from './memoryAdvisor';
 
 import {
   DEFAULT_DESKTOP_SETTINGS,
@@ -2310,6 +2310,10 @@ describe('computer-use preference settings', () => {
 });
 
 describe('browser-control settings helpers', () => {
+  it('marks the browser runtime gate as live for existing sessions', () => {
+    expect(experimentalFlagHome('native_browser')?.effect).toBe('now');
+  });
+
   it('reads browser control enabled state from config or experimental flag and creates patch', () => {
     expect(isBrowserControlEnabled({})).toBe(true);
     expect(isBrowserControlEnabled({ browser_control: { enabled: true } })).toBe(true);
@@ -2446,6 +2450,13 @@ describe('memory advisor settings', () => {
     expect(parseMemoryAdvisorNumber('timeout_ms', '99')).toBeNull();
     expect(parseMemoryAdvisorNumber('timeout_ms', '6000')).toBe(6000);
     expect(parseMemoryAdvisorNumber('candidate_chars', '1.5')).toBeNull();
+  });
+
+  it('shows the first-step wait the source protocol uses until the user sets one', () => {
+    expect(memoryAdvisorNumberValue('first_step_wait_ms', config(), status('ready', { first_step_wait_default_ms: 3000 }))).toEqual({ value: 3000, fallback: 3000, explicit: false });
+    expect(memoryAdvisorNumberValue('first_step_wait_ms', config(), status('ready', { protocol: 'chat_json' }))).toEqual({ value: 1500, fallback: 1500, explicit: false });
+    expect(memoryAdvisorNumberValue('first_step_wait_ms', config({ first_step_wait_ms: 1500 }), status('ready', { first_step_wait_default_ms: 3000 }))).toEqual({ value: 1500, fallback: 3000, explicit: true });
+    expect(memoryAdvisorNumberValue('timeout_ms', config(), undefined)).toEqual({ value: 6000, fallback: 6000, explicit: false });
   });
 
   it('switches with the mode alone and treats a missing block as available but waiting', () => {

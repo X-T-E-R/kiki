@@ -3,7 +3,7 @@ import { dirname } from 'pathe';
 import type { HostFileStat, IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
-import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, hostToolParameters } from '#/agent/tools/os/sshToolTarget';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
@@ -17,7 +17,6 @@ import {
   resolveRealPathAccessPath,
   type WorkspaceConfig,
 } from '#/tool/path-access';
-import { toInputJsonSchema } from '#/tool/input-schema';
 import { matchesPathRuleSubject } from '#/tool/rule-match';
 import { IWriteTool, WriteInputSchema, type WriteInput } from './write';
 import WRITE_DESCRIPTION from './write.md?raw';
@@ -27,7 +26,7 @@ export class WriteTool implements IWriteTool {
   readonly name = 'Write' as const;
   readonly description = WRITE_DESCRIPTION;
   get parameters(): Record<string, unknown> {
-    return toolParametersWithHost(toInputJsonSchema(WriteInputSchema), this.runtime.nativeSshEnabled?.() === true);
+    return hostToolParameters(WriteInputSchema, this.runtime.nativeSshEnabled?.() === true);
   }
 
   constructor(

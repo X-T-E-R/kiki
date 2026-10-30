@@ -385,13 +385,11 @@ export function ExecutionSelect({
   }, [onRequireSwitchConfirmation, choice, executorCapabilities, onChange, close]);
 
   const handleSelectEffort = useCallback((effortVal: string | undefined) => {
-    setPickedEffort(effortVal ?? null);
-    // Do not publish an execution choice. Native and external effort are the
-    // composer control: the session sends legacy `thinking` and keeps the
-    // bound executor, profile, and model. An execution selection here confirms
-    // a new context, and for a bare external engine it also clears persona.
+    if (!isNative) setPickedEffort(effortVal ?? null);
+    // Effort keeps the current binding. Publishing an execution choice here
+    // would confirm a new context and can clear a bare external engine's persona.
     onChangeEffort?.(effortVal ?? '');
-  }, [onChangeEffort]);
+  }, [isNative, onChangeEffort]);
 
   // Format trigger label: Model · Effort
   const triggerLabel = useMemo(() => {

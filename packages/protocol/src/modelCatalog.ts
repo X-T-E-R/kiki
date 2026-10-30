@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { decisionProtocolSchema, decisionProtocolForProviderType } from './decision';
-import { recipeModelBindingSchema } from './recipe';
+import { recipeModelBindingSchema, recipeOptionValuesSchema } from './recipe';
 import { modelSteeringCadenceSchema, modelSteeringSourcesSchema } from './modelSteering';
 import { modelBehaviorWireSchema, modelBehaviorPatchSchema } from './questionGuard';
 export * from './questionGuard';
@@ -493,6 +493,7 @@ export const modelEntitySchema = z.object({
   context_budget: z.number().int().min(1).optional(),
   request_params: modelRequestParamsSchema.optional(),
   recipe: z.string().min(1).optional(),
+  recipe_options: recipeOptionValuesSchema.optional(),
   recipe_model_binding: recipeModelBindingSchema.optional(),
   cognition: modelCognitionSchema.optional(),
   cognition_bodies: modelCognitionBodiesSchema.optional(),
@@ -547,6 +548,7 @@ export const patchModelRequestSchema = z
     context_budget: z.number().int().min(1).nullable().optional(),
     request_params: modelRequestParamsSchema.nullable().optional(),
     recipe: z.string().min(1).nullable().optional(),
+    recipe_options: recipeOptionValuesSchema.nullable().optional(),
     cognition: modelCognitionSchema.nullable().optional(),
     steering_sources_patch: modelSteeringSourcesPatchSchema.optional(),
     prompt_overrides: modelPromptOverridesSchema.nullable().optional(),

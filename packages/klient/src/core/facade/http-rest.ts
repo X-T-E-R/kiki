@@ -187,7 +187,13 @@ export interface HttpRestSearchMessagesResponse {
   readonly items: readonly HttpRestSearchMessageHit[];
   readonly has_more: boolean;
   readonly page_token?: string;
-  readonly incomplete?: 'candidate_cap' | 'postings_budget' | 'deadline';
+  readonly incomplete?: 'candidate_cap' | 'postings_budget' | 'deadline' | 'scan_budget';
+  readonly coverage?: {
+    readonly domain: 'full_text';
+    readonly complete: boolean;
+    readonly gaps: readonly string[];
+    readonly scanned: { readonly bytes: number; readonly records: number };
+  };
   readonly index_state: {
     readonly state: 'building' | 'ready' | 'readonly' | 'unavailable';
     readonly indexed_sessions: number;
@@ -359,6 +365,7 @@ export interface HttpRestFacade {
     readonly expires_at: number;
   } | undefined>;
   usage(query: Record<string, string | readonly string[] | number | boolean | undefined>, options?: HttpRestRequestOptions): Promise<UsageResponse>;
+  sessionUsageAccounting(sessionId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').UsageAccountingSnapshot>;
   requestGovernance(): Promise<import('@kiki/protocol').RequestGovernanceSnapshot>;
   agentActivity(): Promise<import('@kiki/protocol').AgentActivitySnapshot>;
   readonly usageRescan: {
@@ -431,6 +438,7 @@ export interface HttpRestFacade {
     list(query?: HttpRestListSessionsQuery, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ListSessionsResponse>;
     listEphemeral(query?: Pick<HttpRestListSessionsQuery, 'before_id' | 'page_size' | 'workspace_id' | 'persona'>): Promise<import('@kiki/protocol').ListEphemeralSessionsResponse>;
     create(body: SessionCreate): Promise<Session>;
+    creationStatus(creationId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').SessionCreationStatus>;
     saveEphemeral(sessionId: string): Promise<Session>;
     endEphemeral(sessionId: string, body?: { readonly worktree?: 'keep' | 'remove' }): Promise<import('@kiki/protocol').EndEphemeralSessionResponse>;
     compact(sessionId: string, body?: { readonly instruction?: string }): Promise<import('@kiki/protocol').CompactSessionResponse>;

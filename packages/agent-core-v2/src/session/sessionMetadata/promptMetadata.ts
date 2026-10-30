@@ -28,7 +28,7 @@ export async function applyPromptMetadataUpdate(
     patch.title = titleFromPromptMetadataText(text);
     patch.titleKind = 'replaceable';
   }
-  await target.metadata.update(patch);
+  await target.metadata.update(patch, { deferPersistence: true });
   target.eventService.publish(
     new SessionMetaUpdated({
       payload: {

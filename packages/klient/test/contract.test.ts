@@ -43,9 +43,10 @@ import { modelConfigSchema } from '../src/contract/global/models.js';
 import { sessionViewSubscribeInputSchema, sessionViewTranscriptPageInputSchema, sessionViewSignalSchema } from '../src/contract/session/view.js';
 
 describe('HTTP config facade contract', () => {
-  it('carries scoped retry selectors through Klient request and response types', () => {
+  it('carries retry settings and scoped selectors through Klient request and response types', () => {
     const patch: HttpRestConfigPatch = {
       retry: {
+        retry_partial_responses: false,
         policies: [{
           match: '^provider\\.rate_limit$',
           models: ['gemini-4-argon'],
@@ -57,6 +58,7 @@ describe('HTTP config facade contract', () => {
     const response: ConfigResponse = {
       providers: {},
       retry: {
+        retryPartialResponses: false,
         policies: [{
           match: '^provider\\.rate_limit$',
           models: ['gemini-4-argon'],
@@ -67,7 +69,9 @@ describe('HTTP config facade contract', () => {
       },
     };
 
+    expect(patch.retry?.retry_partial_responses).toBe(false);
     expect(patch.retry?.policies?.[0]?.providers).toEqual(['google-native']);
+    expect(response.retry?.retryPartialResponses).toBe(false);
     expect(response.retry?.policies?.[0]?.models).toEqual(['gemini-4-argon']);
   });
 });
@@ -171,6 +175,10 @@ const timeoutCases = [
 ]);
 
 describe('session thinking selection contract', () => {
+  it.each(['high', null, undefined])('preserves standalone model-switch effort %s', thinking => {
+    const input = { operationId: 'effort-selection', model: 'example/model', mode: 'direct', thinking };
+    expect(agentPromptContract.switchModel.input.parse([input])).toEqual([input]);
+  });
   it.each([{ thinking: 'high' }, { thinking: null }, { thinking: undefined }])(
     'preserves thinking $thinking when creating a session',
     ({ thinking }) => {

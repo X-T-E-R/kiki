@@ -33,7 +33,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     modelConfigCategory: 'model', thoughtConfigCategory: 'thought_level',
     controlCapabilities: { modelSwitch: 'fresh_binding', thinkingSwitch: 'fresh_binding', manualCompact: 'unsupported' },
     supportsMcp: true, mcpTransports: ['stdio'],
-    startupTimeoutMs: 150_000, shutdownGraceMs: 3_000,
+    startupTimeoutMs: 150_000, shutdownGraceMs: 3_000, stdinCloseGraceMs: 5_000,
     installHint: 'Install the Antigravity CLI (agy). Kiki bridges it with the bundled source-owned adapter; the CLI does not advertise an ACP server.',
     diagnostics: [{ kind: 'message', severity: 'info', message: 'AGY CLI model ids come from `agy models`. The official ACP server remains the separate antigravity-acp executor.' }],
     revision: '2026-10-16.1',

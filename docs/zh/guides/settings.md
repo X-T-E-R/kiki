@@ -231,7 +231,7 @@ Agent 通过[浏览器工具](../reference/tools.md#浏览器类)使用这些连
 
 会话控制仍在 `/settings/sessions`（**会话与工作 → 会话**）。**会话与工作 → 工作区**打开的是工作区，不代替这些地址。
 
-这一页还包含**任务与后台策略**——同时运行几个后台任务、Bash 任务的超时，以及非交互运行遇到未结束的后台任务时怎么做——和 **Cron 运行参数**，即定时任务运行时的只读读数。任务字段保存在 [`background`](../configuration/config-files.md#background) 下。
+这一页还包含**任务与后台策略**——同时运行几个后台任务、Bash 任务的超时，以及非交互运行遇到未结束的后台任务时怎么做。任务字段保存在 [`background`](../configuration/config-files.md#background) 下。定时任务运行时的只读诊断 **Cron 运行参数**位于**高级 → 开发与实验**（`/settings/developer#st-card-cron`），已有 cron 链接也会打开这里的卡片。
 
 **导入历史**（`/settings/sessions/import`）打开 Kiki 内置的导入器，也可从**新会话**进入。内置格式无需安装或启用插件，详见[会话历史导入](../customization/plugins.md#会话历史导入)。
 

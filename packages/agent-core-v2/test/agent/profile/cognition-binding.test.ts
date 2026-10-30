@@ -125,6 +125,41 @@ describe('per-model cognition overlay', () => {
     }
   });
 
+  it('changes the next real system request after recipe option configuration is rebuilt and keeps model/profile selections separate', async () => {
+    const modelFile = join(homeDir, 'model-options.toml'); const profileFile = join(homeDir, 'profile-options.toml');
+    await writeFile(modelFile, stringify({ schema_version: 1, id: 'model-options', name: 'Model options', version: '1.0.0', options: { research: { name: 'Research', default: true } }, prompts: { system: [{ text: 'BASE MODEL' }, { text: 'RESEARCH MODE', when: 'research' }, { text: 'QUICK MODE', unless: 'research' }] } }));
+    await writeFile(profileFile, stringify({ schema_version: 1, id: 'profile-options', name: 'Profile options', version: '1.0.0', options: { research: { name: 'Profile research', default: true } }, prompts: { steering: { text: 'PROFILE RESEARCH', when: 'research' } } }));
+    let observedSystem = '';
+    ctx = createTestAgent({ autoConfigure: false }, homeDirServices(homeDir), appServices((reg) => {
+      reg.define(IRecipeService, RecipeService); reg.define(IRecipeSourceReader, RecipeSourceReader);
+    }), llmGenerateServices(async (_provider, system) => {
+      observedSystem = system;
+      return { id: 'response', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
+    }));
+    const agent = ctx;
+    const configured = agent.kimiConfig.models![MOCK_MODEL]!;
+    agent.kimiConfig = { ...agent.kimiConfig, models: { ...agent.kimiConfig.models, [MOCK_MODEL]: { ...configured, recipe: modelFile, recipeOptions: { research: false } } } };
+    const role = normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, recipe: profileFile, systemPrompt: () => 'ROLE BODY' });
+    vi.spyOn(agent.get(ISessionAgentProfileCatalog), 'get').mockReturnValue(role);
+    const profile = agent.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL, thinking: 'off' });
+    await agent.get(IAgentLLMRequesterService).request({ tools: [] });
+    expect(observedSystem).toContain('QUICK MODE'); expect(observedSystem).not.toContain('RESEARCH MODE');
+    const frozen = structuredClone(await profile.getCognitionBinding());
+    expect(frozen.recipe?.resolved.layers?.map((layer) => layer.resolved.option_values)).toEqual([{ research: false }, { research: true }]);
+    expect(frozen.recipe?.resolved.branches.main.steering).toBe('PROFILE RESEARCH');
+    agent.kimiConfig = { ...agent.kimiConfig, models: { ...agent.kimiConfig.models, [MOCK_MODEL]: { ...configured, recipe: modelFile, recipeOptions: { research: true } } } };
+    const models = agent.get(IModelService);
+    await models.set(MOCK_MODEL, { ...models.get(MOCK_MODEL)!, recipeOptions: { research: true } });
+    expect((await profile.getCognitionBinding()).recipe?.resolved).toEqual(frozen.recipe?.resolved);
+    await profile.rebuildPromptContext();
+    await agent.get(IAgentLLMRequesterService).request({ tools: [] });
+    expect(observedSystem).toContain('RESEARCH MODE'); expect(observedSystem).not.toContain('QUICK MODE');
+    const updated = await profile.getCognitionBinding();
+    expect(updated.recipe?.resolved.layers?.[0]?.resolved.revision).not.toBe(frozen.recipe?.resolved.layers?.[0]?.resolved.revision);
+    expect(updated.recipe?.resolved.layers?.[1]?.resolved.revision).toBe(frozen.recipe?.resolved.layers?.[1]?.resolved.revision);
+    expect(frozen.recipe?.resolved.layers?.[0]?.resolved.option_values).toEqual({ research: false });
+  });
   it('runs consented Recipe scripts through the real prompt and request, cold-freezes them and disables only the removed layer', async () => {
     const persistence = new InMemoryWireRecordPersistence();
     const directory = join(homeDir, 'bundle'); await mkdir(directory);

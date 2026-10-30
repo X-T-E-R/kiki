@@ -1,0 +1,27 @@
+schema_version = 1
+id = "options-sample"
+name = "Options sample"
+version = "0.1.0"
+description = "when/unless gating, whole-slot prepend/append, section patches, and a slot that filters to empty."
+
+[[prompts.system]]
+file = "sub.md"
+
+[[prompts.system]]
+text = "Report blockers early."
+
+[prompts.steering]
+text = "Stay inside the slice."
+
+[prompts.main.system]
+file = "main.md"
+
+[prompts.main.steering]
+text = "Keep the goal in view."
+
+[prompts.independent]
+steering = "off"
+
+[prompts.independent.system]
+file = "independent.md"
+

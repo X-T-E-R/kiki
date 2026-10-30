@@ -95,6 +95,7 @@ export interface McpDefaultTimeouts {
 export interface McpConnectionManagerOptions {
   readonly envLookup?: (name: string) => string | undefined;
   readonly stdioCwd?: string;
+  readonly childDefaults?: Readonly<Record<string, string>>;
   readonly runtimeResolver?: import('#/workspace/workspaceInstance/workspaceInstanceManager').IRuntimeResolver;
   readonly workspaceId?: string;
   readonly runtimeId?: string;
@@ -644,6 +645,7 @@ export class McpConnectionManager implements McpConnectionView {
         startupTimeoutMs,
         toolCallTimeoutMs,
         defaultCwd: this.options.stdioCwd,
+        childDefaults: this.options.childDefaults,
         clientName,
         runtimeResolver,
         workspaceId,

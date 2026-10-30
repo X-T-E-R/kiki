@@ -112,7 +112,7 @@ In **Advanced**, **Rank** places recommendations before keyword matches within t
 
 In the same fold, **In a running session** lets you choose an existing session and agent, then **Read status** for the latest runtime outcome, calls and recommendations. Reads happen only when requested. A cold or absent agent reports **No running status yet** and stays unloaded.
 
-The wait, request deadline, calls per turn, directory pages, full-entry count and input budget are adjustable in the same fold. Only the first step waits, up to the configured limit; later results join at a subsequent step. On a timeout or invalid answer, Kiki uses the existing selection path. If the current storage backend lacks committed snapshots, the advisor reports that it is unsupported and memory continues as before.
+The wait, request deadline, calls per turn, directory pages, full-entry count and input budget are adjustable in the same fold. Only the first step waits, up to the configured limit. Without your own value it waits up to 3000 ms for a System One or Pair score connection and 1500 ms for a chat model, and follows the source when you switch it. A value you enter always wins; **Reset to default** returns to the source default. Later results join at a subsequent step. On a timeout or invalid answer, Kiki uses the existing selection path. If the current storage backend lacks committed snapshots, the advisor reports that it is unsupported and memory continues as before.
 
 ## Turning memory off
 

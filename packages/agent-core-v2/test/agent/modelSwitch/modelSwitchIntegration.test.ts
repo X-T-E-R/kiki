@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { DEFAULT_AGENT_PROFILE_NAME, normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ConfigUpdate, profileKey } from '#/agent/profile/profileOps';
 import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
@@ -78,6 +78,52 @@ afterEach(async () => {
 });
 
 describe('model switch integration with current prompt projections', () => {
+  it.each([
+    { persona: 'low', modelProfile: 'medium', requested: undefined, expected: 'low' },
+    { persona: undefined, modelProfile: 'medium', requested: undefined, expected: 'medium' },
+    { persona: undefined, modelProfile: undefined, requested: undefined, expected: 'high' },
+    { persona: 'low', modelProfile: 'medium', requested: 'high', expected: 'high' },
+  ])('resolves target-model effort with explicit $requested and default $expected', async ({ persona, modelProfile, requested, expected }) => {
+    const { ctx, profile } = await createHost();
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models,
+      [NEW]: { ...ctx.kimiConfig.models![NEW]!, capabilities: ['thinking'], supportEfforts: ['low', 'medium', 'high'], defaultEffort: 'high' },
+    } };
+    await profile.bind({ model: OLD, thinking: 'off',
+      resolvedProfile: normalizeAgentProfile({ name: 'target-effort-defaults', systemPrompt: () => 'Target effort test',
+        modelProfiles: [{ alias: NEW, thinkingEffort: modelProfile }] }),
+      personaSnapshot: { revision: 'target-persona', definition: { id: 'target-persona', name: 'Target persona', description: 'Checks target effort priority.', thinkingEffort: persona } },
+    });
+    expect(await ctx.get(IAgentModelSwitchService).execute({ operationId: 'target-effort', model: NEW, thinking: requested, mode: 'direct' }))
+      .toMatchObject({ state: 'completed', binding: { model: NEW, thinking: expected } });
+  });
+
+  it.each([
+    { persona: 'low', modelProfile: 'medium', expected: 'low' },
+    { persona: undefined, modelProfile: 'medium', expected: 'medium' },
+    { persona: undefined, modelProfile: undefined, expected: 'high' },
+  ])('clears an explicit effort to the default priority $expected', async ({ persona, modelProfile, expected }) => {
+    const { ctx, profile } = await createHost();
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models,
+      [NEW]: { ...ctx.kimiConfig.models![NEW]!, capabilities: ['thinking'], supportEfforts: ['low', 'medium', 'high'], defaultEffort: 'high' },
+    } };
+    await profile.bind({ model: NEW, thinking: 'off',
+      resolvedProfile: normalizeAgentProfile({ name: 'effort-defaults', systemPrompt: () => 'Effort test',
+        modelProfiles: [{ alias: NEW, thinkingEffort: modelProfile }] }),
+      personaSnapshot: { revision: 'persona-defaults', definition: { id: 'effort-persona', name: 'Effort persona', description: 'Checks default effort selection.', thinkingEffort: persona } },
+    });
+    const engine = ctx.get(IAgentModelSwitchService);
+    expect(await engine.execute({ operationId: 'effort-preserved', model: NEW, mode: 'direct' })).toMatchObject({ state: 'completed', binding: { thinking: 'off' } });
+    const input = { operationId: 'effort-cleared', model: NEW, mode: 'direct' as const, thinking: null };
+    expect(await engine.execute(input)).toMatchObject({ state: 'completed', binding: { thinking: expected } });
+    expect(profile.data().personaOverrides?.thinking).toBeUndefined();
+    const saved = await journal(ctx);
+    expect(saved.filter(record => record.type === 'agent.model_switch')).toMatchObject([
+      { input: { operationId: 'effort-preserved' } }, { input: { thinking: null }, thinking: expected },
+    ]);
+    const restored = await createHost();
+    await restored.ctx.restore(saved);
+    expect(restored.profile.getEffectiveThinkingLevel()).toBe(expected);
+  });
   it.each(['model-switch', 'resume'] as const)('prepares %s without runtime mutation and commits all projections with persona intact', async (path) => {
     const { ctx, profile } = await createHost();
     const before = { data: profile.data(), cognition: profile.getCognitionSnapshot(), fields: profile.getPromptFieldSnapshot(), prompt: profile.getSystemPrompt(), diagnostics: await profile.getPromptDiagnostics() };

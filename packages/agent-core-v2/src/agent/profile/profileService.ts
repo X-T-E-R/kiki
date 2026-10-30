@@ -31,6 +31,8 @@ import { assertNativeToolOverride, effectiveToolBinding, mergeToolBindingOverrid
 import { Disposable } from '#/_base/di/lifecycle';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { ILogService } from '#/_base/log/log';
+import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
@@ -113,6 +115,7 @@ import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { IHostClock } from '#/os/interface/hostClock';
 import { IEventBus } from '#/app/event/eventBus';
 import { ContextSpliced } from '#/agent/contextMemory/contextEvents';
+import { projectSpaceIdentity } from '#/app/bootstrap/spaceIdentity';
 import { dynamicPromptKey, ProfileDynamicSnapshot, dynamicPromptContent, promptSectionHash, stablePromptContext, legacyEnvironmentContext } from './dynamicPrompt';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
@@ -350,6 +353,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @IAgentMemorySnapshot private readonly memorySnapshot: IAgentMemorySnapshot,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
     @ref(ISessionActivityView) private readonly sessionActivity: LiveRef<ISessionActivityView>,
+    @ref(ILogService) private readonly log: LiveRef<ILogService>,
     @IPersonaStore private readonly personas?: IPersonaStore,
     @IEventBus eventBus?: IEventBus,
     @IPluginUsageService private readonly pluginUsage?: IPluginUsageService,
@@ -719,7 +723,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
     await this.sessionToolPolicy.ready;
     const renderProfile = { ...profile, ...effectiveToolBinding(profile, toolOverride, profile as BoundProfile) };
-    const context = await this.buildSystemPromptContext(renderProfile, undefined, persona ?? null);
+    const context = input.deferPromptContext === true
+      ? stablePromptContext({
+          osKind: this.hostEnv.osKind,
+          shellName: this.hostEnv.shellName,
+          shellPath: this.hostEnv.shellPath,
+          timeZone: this.clock.timeZone(),
+          skillActive: this.isToolActiveForProfile(renderProfile, 'Skill'),
+          productName: (await this.identity.resolved()).displayName,
+          replyStyleGuide: this.bootstrap.args.replyStyleGuide,
+        })
+      : await this.buildSystemPromptContext(renderProfile, undefined, persona ?? null);
     this.assertRouteBindable(selection.route?.id);
     const requestedThinking = resolveMainThinkingCandidate({
       inputThinking: requestedInputThinking,
@@ -773,7 +787,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       models: this.models,
     });
 
-    await this.assertProfileToolPatterns(renderProfile, input.inheritedUserToolNames, input.unavailableTools);
+    if (input.deferPromptContext !== true) await this.assertProfileToolPatterns(renderProfile, input.inheritedUserToolNames, input.unavailableTools);
     const assembled = await this.assembleBoundSystemPrompt(renderProfile, context, alias, undefined, persona, input.roomPrompt ?? this.profileState.roomPrompt, recipe ?? null);
     const systemPrompt = assembled.text;
     this.cacheAgentsMdWarning(context);
@@ -827,7 +841,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       dispatchDecision: input.dispatchDecision,
       spawnPolicy,
       appliedLease: input.lease,
-      boundProfile: freezeBoundProfile(profile, assembled.promptBase),
+      boundProfile: { ...freezeBoundProfile(profile, assembled.promptBase), promptContextPending: input.deferPromptContext === true ? true : undefined },
     }));
     this.personaSnapshot = persona;
     this.memorySnapshot.configurePersona(this.profileState.memoryReadContext ?? memoryPersonaContext(persona));
@@ -951,7 +965,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       ? await this.resolvePromptFieldSnapshot(role, execution.effective.model ?? '')
       : await this.promptFields.resolve({ global: { surface: 'global', overrides: this.config.get<PromptConfig>(PROMPT_SECTION)?.overrides },
         context: { executor: requested.executor, modelAlias: execution.effective.model, delegationPosition: 'main' } });
-    const renderContext = { ...context, persona: '', promptVariables: this.config.get<PromptConfig>(PROMPT_SECTION)?.variables, promptFields: fields.values };
+    const renderContext = { ...this.states.get(dynamicPromptKey)?.context ?? context, space: projectSpaceIdentity(this.bootstrap), persona: '', promptVariables: this.config.get<PromptConfig>(PROMPT_SECTION)?.variables, promptFields: fields.values };
     const body = role === undefined ? '' : modelPromptLayers(role).reduce((text, layer) => applyMatchedModelProfilePrompt(text,
       layer.entries, execution.effective.model ?? '', (id) => id, 'main'), role.renderSystemPrompt(renderContext).text);
     const systemPrompt = hasPrompt ? renderExternalPrompt({ executor: requested.executor, executorPrompt }, renderContext,
@@ -1523,7 +1537,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     };
   }
 
-  async prepareModelSwitchBinding(alias: string, requestedThinking?: string): Promise<import('./profile').PreparedModelSwitchBinding> {
+  async prepareModelSwitchBinding(alias: string, requestedThinking?: string | null): Promise<import('./profile').PreparedModelSwitchBinding> {
     await this.ensureDelegationPosition();
     if (this.isExternalExecutor) {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Model switching requires an executor-specific binding and context adapter.');
@@ -1533,13 +1547,31 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const recipe = await this.selectedRecipe(model);
     const record = this.resolveUsageModel(model, recipe ?? null);
     if (this.delegationPosition !== 'main') assertSubagentModelNotDenied(this.config, model, this.models);
-    const config = this.resolveConfigPayload({ modelAlias: model, thinkingLevel: requestedThinking,
+    const resetThinking = requestedThinking === null || requestedThinking === undefined && model !== previous.modelAlias;
+    const defaultThinking = resetThinking ? resolveMainThinkingCandidate({
+      personaThinking: this.currentPersona?.definition.thinkingEffort,
+      routeLockedThinking: previous.lockedThinkingEffort,
+      profileThinking: resolveProfileThinkingDefault(previous.boundProfile ?? this.resolveActiveProfile(), model, (id) => this.models.resolveId(id)),
+    }) : undefined;
+    const thinkingLevel = resetThinking
+      ? this.resolveThinkingEffort(defaultThinking, record, true)
+      : requestedThinking ?? undefined;
+    const config = this.resolveConfigPayload({ modelAlias: model, thinkingLevel,
+      thinkingEffortExplicit: requestedThinking === null ? defaultThinking !== undefined : typeof requestedThinking === 'string' ? true : undefined,
+      thinkingEffortAdjusted: resetThinking ? false : undefined,
       personaOverrides: previous.personaId === undefined ? undefined : {
-        ...previous.personaOverrides, model: alias, thinking: requestedThinking ?? previous.personaOverrides?.thinking,
+        ...previous.personaOverrides, model: alias,
+        thinking: requestedThinking === null ? undefined : requestedThinking ?? previous.personaOverrides?.thinking,
       },
     }, record);
+    if (resetThinking && config.execution !== undefined) {
+      config.execution = { ...config.execution,
+        selection: { ...config.execution.selection, overrides: { ...config.execution.selection.overrides, thinking: requestedThinking === null ? null : undefined } },
+        sources: { ...config.execution.sources, thinking: defaultThinking === undefined ? 'harness-default' : 'profile' },
+      };
+    }
     const thinking = config.thinkingEffort ?? this.getEffectiveThinkingLevel();
-    if (requestedThinking !== undefined) this.assertThinkingEffortSupported(requestedThinking, record, model);
+    if (typeof requestedThinking === 'string') this.assertThinkingEffortSupported(requestedThinking, record, model);
     this.assertCurrentBindingConstraints(model, thinking);
     const base = previous.boundProfile?.promptBase;
     let nextFields: ResolvedPromptFieldOverrides | undefined;
@@ -1962,6 +1994,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.publishMemoryProjection(await this.memorySnapshot.get(this.states.get(dynamicPromptKey)?.context.memory));
   }
 
+  async reconcileSpaceSnapshot(): Promise<void> {
+    const previous = this.states.get(dynamicPromptKey);
+    if (previous === undefined && this.profileState.profileName === undefined) return;
+    const space = projectSpaceIdentity(this.bootstrap);
+    if (JSON.stringify(previous?.context.space) === JSON.stringify(space)) return;
+    const context = { ...previous?.context, space };
+    const content = dynamicPromptContent(context);
+    await this.dispatcher.dispatch(new ProfileDynamicSnapshot({ enabled: previous?.enabled ?? false,
+      revision: (previous?.revision ?? 0) + 1, context, content, hash: promptSectionHash(content) }));
+  }
+
   async reconcileMemorySnapshot(): Promise<void> {
     if (this.states.get(dynamicPromptKey)?.enabled !== true) return;
     const memory = await this.memorySnapshot.refreshIfDirty();
@@ -2291,7 +2334,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private async selectedRecipe(alias: string, external = this.isExternalExecutor, profile = this.profileState.boundProfile ?? this.resolveActiveProfile()): Promise<import('@kiki/protocol').ResolvedRecipe | undefined> {
     if (external) return undefined;
     const model = this.models.get(alias);
-    const references = [{ surface: 'model' as const, id: model?.recipe }, { surface: 'profile' as const, id: profile?.recipe }].filter((entry) => entry.id !== undefined && entry.id !== 'off');
+    const references = [{ surface: 'model' as const, id: model?.recipe, options: model?.recipeOptions }, { surface: 'profile' as const, id: profile?.recipe, options: profile?.recipeOptions }].filter((entry) => entry.id !== undefined && entry.id !== 'off');
     if (references.length === 0) return undefined;
     if (this.recipes === undefined) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'Recipe service is unavailable');
     const profileBase = profile?.sourcePath === undefined ? undefined : dirname(profile.sourcePath);
@@ -2302,7 +2345,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       const installation_id = file ? reference.surface === 'profile'
         ? resolveRecipeFileLocator(raw, profileBase) : resolveModelRecipeReference(raw, alias, this.config, this.bootstrap)
         : raw.replace(/^installation:/u, '');
-      layers.push({ surface: reference.surface, installation_id, resolved: await this.recipes.resolve(installation_id) });
+      layers.push({ surface: reference.surface, installation_id, resolved: await this.recipes.resolve(installation_id, undefined, reference.options) });
     }
     return composeRecipeLayers(layers, model?.overrides);
   }
@@ -2491,6 +2534,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         installation_id: this.cognitionBinding.recipe.installation_id, revision: this.cognitionBinding.recipe.resolved.revision,
         model: this.cognitionBinding.recipe.resolved.model, model_origins: this.cognitionBinding.recipe.resolved.model_origins,
         references: recipeReferences(this.cognitionBinding.recipe.resolved),
+        diagnostics: this.cognitionBinding.recipe.resolved.diagnostics,
       },
       channels: promptConfigurationChannels({
         profile, alias, position: this.delegationPosition, cognition: model?.cognition, recipe: this.cognitionBinding?.recipe, fields, resolveId, leaseMode,
@@ -2881,6 +2925,20 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private promptConfigurationSignature: string | undefined;
 
   async preparePromptConfiguration(): Promise<boolean> {
+    return timeRestorePhase(this.log.current, { sessionId: this.sessionContext.sessionId, agentId: this.agentScope.agentId }, 'profile_prepare', () => this.preparePromptConfigurationNow());
+  }
+
+  private async preparePromptConfigurationNow(): Promise<boolean> {
+    if (this.profileState.boundProfile?.promptContextPending === true) {
+      const profile = this.resolveActiveProfile();
+      if (profile === undefined) throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved profile cannot be resolved for first-prompt preparation.');
+      await this.assertProfileToolPatterns(profile);
+      const context = await this.buildSystemPromptContext(profile, undefined, this.currentPersona ?? null);
+      const assembled = await this.assembleBoundSystemPrompt(profile, context, this.modelAlias ?? '', this.profileState.boundProfile.promptBase, this.currentPersona, this.profileState.roomPrompt);
+      await this.dispatcher.dispatch(new ConfigUpdate({ systemPrompt: assembled.text, environmentDisclosure: assembled.environment, promptBase: assembled.promptBase, agentsMdPaths: extractAgentsMdPathsFromSystemPrompt(assembled.text) }));
+      this.seedAgentsMdReminder(assembled.text, context);
+      return true;
+    }
     if (this.profileState.boundProfile !== undefined) {
       await this.restoreCommittedPromptProjections();
       return false;
@@ -3574,6 +3632,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const memory = await this.readMemoryForPersonaOverride(personaOverride);
     const context: SystemPromptContext = {
       ...base,
+      space: projectSpaceIdentity(this.bootstrap),
       agentsMdFiles: base.agentsMdFiles?.map((file) => ({ ...file, runtimeId })),
       cwd: view.workDir,
       osKind: env.osKind,
@@ -3590,7 +3649,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       productName: (await this.identity.resolved()).displayName,
       replyStyleGuide: this.bootstrap.args.replyStyleGuide,
     };
-    const enabled = previous?.enabled === true || this.profileState.renderGeneration === 0 || this.promptLayoutMigrationPending || this.memorySnapshot.workingSet === true;
+    const enabled = previous?.enabled === true || this.profileState.renderGeneration === 0 || this.profileState.boundProfile?.promptContextPending === true || this.promptLayoutMigrationPending || this.memorySnapshot.workingSet === true;
     this.promptLayoutMigrationPending = false;
     const effective = enabled ? context : legacyEnvironmentContext(context, this.profileState.systemPrompt, previous?.context);
     const content = dynamicPromptContent(effective);
@@ -3598,7 +3657,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (previous?.hash !== hash || previous.enabled !== enabled) {
       await this.dispatcher.dispatch(new ProfileDynamicSnapshot({ enabled, revision: (previous?.revision ?? 0) + 1, context: effective, content, hash }));
     }
-    return enabled ? stablePromptContext(effective) : effective;
+    return enabled && (profile?.executor ?? 'native') === 'native' ? stablePromptContext(effective) : effective;
   }
 
   private async readMemoryForPersonaOverride(persona: PersonaSnapshot | null | undefined): Promise<string> {

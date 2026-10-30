@@ -42,8 +42,9 @@ const CALL_TIMEOUT_MS = 10_000;
 const STARTUP_CALL_TIMEOUT_MS = 20_000;
 const THREAD_MAILBOX_TIMEOUT_ENV = 'KIKI_THREAD_MAILBOX_TIMEOUT_MS';
 const MAX_CONFIGURED_TIMEOUT_MS = 10 * 60_000;
-const CALL_RETRY_BACKOFF_MS = 25;
-const CALL_TOTAL_TIMEOUT_MULTIPLIER = 2;
+const CALL_RETRY_BACKOFF_MS = 250;
+const CALL_RETRY_BACKOFF_MAX_MS = 1_000;
+const CALL_TOTAL_TIMEOUT_MULTIPLIER = 6;
 const SYSTEM_PARTITION = 's/thread-mailbox-v3';
 const ACTIVE_BACKEND_KEY = `${SYSTEM_PARTITION}/active-backend`;
 const METHOD_PREFIX = 'threadMailbox.v3';
@@ -603,12 +604,22 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
         throwIfAborted(signal);
         const readyBudgetMs = deadlineAt - Date.now();
         if (readyBudgetMs <= 0) throw deadlineError();
+        let receiptSubscription: IDisposable | undefined;
+        let ownerSettlement: Promise<void> | undefined;
         try {
           phase = 'ready';
           await abortable(this.runtime.ready(), signal);
           const remainingMs = deadlineAt - Date.now();
           if (remainingMs <= 0) throw deadlineError();
-          const epoch = this.runtime.status().epoch;
+          const status = this.runtime.status();
+          const epoch = status.epoch;
+          if (status.role === 'owner') {
+            ownerSettlement = new Promise<void>((resolve) => {
+              receiptSubscription = this.runtime.onDidReceipt((receipt) => {
+                if (receipt.kind === 'call' && receipt.requestId === requestId && receipt.epoch === epoch) resolve();
+              });
+            });
+          }
           phase = 'call';
           attempts++;
           const result = await this.runtime.call(method, payload, {
@@ -626,10 +637,18 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
           const code = (error as HomeRuntimeError).code;
           if (code === 'runtime.timeout') firstTimeoutError ??= error as HomeRuntimeError;
           retries.set(code, (retries.get(code) ?? 0) + 1);
+          if (ownerSettlement !== undefined && (code === 'runtime.timeout' || code === 'runtime.duplicate_request')) {
+            phase = 'owner_settlement';
+            await abortable(ownerSettlement, signal);
+            continue;
+          }
           phase = 'backoff';
-          const backoffMs = Math.min(CALL_RETRY_BACKOFF_MS, deadlineAt - Date.now());
+          const backoffMs = Math.min(CALL_RETRY_BACKOFF_MAX_MS,
+            CALL_RETRY_BACKOFF_MS * 2 ** Math.min(attempts - 1, 2), deadlineAt - Date.now());
           if (backoffMs <= 0) throw deadlineError();
           await abortable(delay(backoffMs), signal);
+        } finally {
+          void receiptSubscription?.dispose();
         }
       }
     } finally {

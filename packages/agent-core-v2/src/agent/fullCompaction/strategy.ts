@@ -113,7 +113,7 @@ export class RuntimeCompactionStrategy implements CompactionStrategy {
   }
 
   private automaticThreshold(model: ProfileModelContext, ratio: number): number {
-    if (this.hasAutoCompact(model)) return resolveAutoCompact(model, model.sessionAutoCompact, this.fixedCost()).tokens;
+    if (this.hasAutoCompact(model)) return resolveAutoCompact(model, model.sessionAutoCompact, this.fixedCost).tokens;
     const maxSize = this.modelWindowSize(model);
     if (maxSize <= 0) return Infinity;
     let threshold = maxSize * ratio;

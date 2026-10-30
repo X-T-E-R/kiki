@@ -15,7 +15,7 @@ Kiki discovers profile files by scope; more specific scopes win on a name collis
 
 | Scope | Location |
 | --- | --- |
-| User (all projects) | `$KIKI_HOME/agents/` (default `~/.kiki/agents/`) and `~/.agents/agents/` |
+| User (all projects) | Current Space `<home>/agents/` (environment form `$KIKI_HOME/agents/`; default `~/.kiki/agents/`) and OS-level `~/.agents/agents/` |
 | Project (nearest `.git` root) | `.kiki/agents/` and `.agents/agents/` |
 | Extra | `extra_agent_dirs` entries in `config.toml` |
 | Built-in copies | installed under `$KIKI_HOME/agents/builtin/`, loaded in the user scope after ordinary user files |

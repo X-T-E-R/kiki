@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { win32 } from 'node:path';
 import { isAbsolute, join, normalize } from 'pathe';
 import type { Readable, Writable } from 'node:stream';
@@ -19,6 +20,14 @@ import { BufferedReadable, decodeTextWithErrors, globPatternToRegex } from './in
 import type { Kaos } from './kaos';
 import type { KaosProcess } from './process';
 import type { StatResult } from './types';
+import { SshWindowsOutput } from './ssh-output';
+
+const POWERSHELL_PREAMBLE = "$ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); [Console]::InputEncoding=[Console]::OutputEncoding; $OutputEncoding=[Console]::OutputEncoding";
+function powershellCommand(script: string): string {
+  const source = `${POWERSHELL_PREAMBLE}; ${script}`;
+  const encoded = Buffer.from(source, 'utf16le').toString('base64');
+  return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
+}
 
 // ── stat mode constants ────────────────────────────────────────────────
 const S_IFMT = 0o170000;
@@ -237,11 +246,20 @@ export class SSHProcess implements KaosProcess {
   private readonly _channel: ClientChannel;
   private _disposed = false;
 
-  constructor(channel: ClientChannel) {
+  constructor(channel: ClientChannel, windowsCodePage?: number) {
     this._channel = channel;
     this.stdin = channel;
-    this.stdout = new BufferedReadable(channel as unknown as Readable);
-    this.stderr = new BufferedReadable(channel.stderr);
+    const stdout = new BufferedReadable(channel as unknown as Readable);
+    const stderr = new BufferedReadable(channel.stderr);
+    const decode = (source: Readable): Readable => {
+      if (windowsCodePage === undefined) return source;
+      const output = new SshWindowsOutput(windowsCodePage);
+      source.on('error', (error) => { output.destroy(error); });
+      output.once('close', () => { source.destroy(); });
+      return source.pipe(output);
+    };
+    this.stdout = decode(stdout);
+    this.stderr = decode(stderr);
 
     this._exitPromise = new Promise<number>((resolve) => {
       // Listen to 'close' on the channel, not 'exit', to ensure all
@@ -480,11 +498,12 @@ export class SSHKaos implements Kaos {
   private readonly _envLayers: readonly Record<string, string>[];
   private readonly _activity: { count: number };
   private _closed = false;
-  private _osEnv: Environment = {
+  private _environmentProbe?: Promise<Environment>;
+  private _osEnv: Environment & { defaultShellName?: string; codePage?: number; tempDir?: string } = {
     osKind: 'POSIX', osArch: 'unknown', osVersion: 'unknown', shellName: 'sh', shellPath: '/bin/sh',
   };
 
-  get osEnv(): Environment {
+  get osEnv(): Environment & { defaultShellName?: string; codePage?: number; tempDir?: string } {
     return this._osEnv;
   }
 
@@ -493,6 +512,8 @@ export class SSHKaos implements Kaos {
     let proc: SSHProcess | undefined;
     try {
       proc = new SSHProcess(await clientExec(this._client, command));
+      proc.stdin.end();
+      proc.stderr.resume();
       const chunks: Buffer[] = [];
       for await (const chunk of proc.stdout) chunks.push(Buffer.from(chunk as Buffer));
       return await proc.wait() === 0 ? Buffer.concat(chunks).toString('utf8').trim() : undefined;
@@ -502,7 +523,15 @@ export class SSHKaos implements Kaos {
     }
   }
 
-  async probeEnvironment(): Promise<Environment> {
+  probeEnvironment(): Promise<Environment> {
+    this._environmentProbe ??= this._probeEnvironment().catch((error: unknown) => {
+      this._environmentProbe = undefined;
+      throw error;
+    });
+    return this._environmentProbe;
+  }
+
+  private async _probeEnvironment(): Promise<Environment> {
     if (this.pathClass() !== 'win32') {
       const output = await this._probe(SSHKaos._buildExecCommand(['/bin/sh', '-c', 'printf "KIKI_SSH_ENV\\n%s\\n%s\\n%s\\n" "$(uname -s)" "$(uname -m)" "$(uname -r)"; printf "%s\\n" "$SHELL"'], ''));
       const [marker, kind, arch, version, shell] = output?.split(/\r?\n/) ?? [];
@@ -516,11 +545,11 @@ export class SSHKaos implements Kaos {
         return this._osEnv;
       }
     }
-    const script = '$ErrorActionPreference="Stop"; $bash=Get-Command bash.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source; if (!$bash) { foreach ($root in @($env:ProgramW6432,$env:ProgramFiles,${env:ProgramFiles(x86)},$env:LOCALAPPDATA)) { if (!$root) { continue }; foreach ($suffix in @("Git/bin/bash.exe","Programs/Git/bin/bash.exe")) { $p=Join-Path $root $suffix; if (Test-Path -LiteralPath $p -PathType Leaf) { $bash=$p; break } }; if ($bash) { break } } }; "KIKI_SSH_WINDOWS"; $env:PROCESSOR_ARCHITECTURE; [Environment]::OSVersion.Version.ToString(); $bash';
-    const output = await this._probe(`powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, 'utf16le').toString('base64')}`);
-    const [marker, arch, version, shell] = output?.split(/\r?\n/) ?? [];
-    if (marker !== 'KIKI_SSH_WINDOWS' || !arch || !version) throw new KaosSSHError('Could not probe the remote SSH platform; neither POSIX nor Windows returned valid environment data');
-    this._osEnv = { osKind: 'Windows', osArch: arch, osVersion: version, shellName: 'bash', shellPath: shell?.replaceAll('\\', '/') ?? '' };
+    const script = `$ErrorActionPreference='Stop'; $default=[Microsoft.Win32.Registry]::GetValue('HKEY_LOCAL_MACHINE\\SOFTWARE\\OpenSSH','DefaultShell','cmd.exe'); 'KIKI_SSH_WINDOWS'; $env:PROCESSOR_ARCHITECTURE; [Environment]::OSVersion.Version.ToString(); (Get-Process -Id $PID).Path; if ($default -match '(?i)(powershell|pwsh)') { 'powershell' } elseif ($default -match '(?i)cmd(\\.exe)?$') { 'cmd' } else { $default }; [System.Text.Encoding]::Default.CodePage; [IO.Path]::GetTempPath()`;
+    const output = await this._probe(powershellCommand(script));
+    const [marker, arch, version, shell, defaultShellName, codePage, tempDir] = output?.split(/\r?\n/) ?? [];
+    if (marker !== 'KIKI_SSH_WINDOWS' || !arch || !version || !shell || !tempDir) throw new KaosSSHError('Could not probe the remote SSH platform; neither POSIX nor Windows returned valid environment data');
+    this._osEnv = { osKind: 'Windows', osArch: arch, osVersion: version, shellName: 'powershell', shellPath: shell.replaceAll('\\', '/'), defaultShellName, codePage: Number(codePage) || 936, tempDir: tempDir.replaceAll('\\', '/') };
     this._home = this._nativePath(this._home);
     this._cwd = this._nativePath(this._cwd);
     return this._osEnv;
@@ -781,12 +810,7 @@ export class SSHKaos implements Kaos {
         yield basePath;
       }
 
-      let entries: SFTPFileEntry[];
-      try {
-        entries = await sftpReaddir(this._sftp, basePath);
-      } catch {
-        return;
-      }
+      const entries = await sftpReaddir(this._sftp, basePath);
 
       for (const entry of entries) {
         if (entry.filename === '.' || entry.filename === '..') continue;
@@ -801,12 +825,7 @@ export class SSHKaos implements Kaos {
     } else {
       const regex = globPatternToRegex(currentPattern ?? '', caseSensitive);
 
-      let entries: SFTPFileEntry[];
-      try {
-        entries = await sftpReaddir(this._sftp, basePath);
-      } catch {
-        return;
-      }
+      const entries = await sftpReaddir(this._sftp, basePath);
 
       for (const entry of entries) {
         if (entry.filename === '.' || entry.filename === '..') continue;
@@ -1093,26 +1112,67 @@ export class SSHKaos implements Kaos {
     return command;
   }
 
-  private static _buildWindowsExecCommand(args: string[], cwd: string, env?: Record<string, string>): string {
+  private static _buildWindowsScript(script: string, cwd: string, env?: Record<string, string>): string {
     const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
-    const statements = ['$ErrorActionPreference="Stop"'];
+    const statements = ["$ErrorActionPreference='Stop'", '$global:LASTEXITCODE=0'];
     if (cwd !== '') statements.push(`Set-Location -LiteralPath ${quote(cwd)}`);
     for (const [key, value] of Object.entries(env ?? {})) {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new KaosValueError(`SSHKaos.execWithEnv(): invalid env variable name ${JSON.stringify(key)}`);
       statements.push(`$env:${key}=${quote(value)}`);
     }
-    statements.push(`& ${args.map(quote).join(' ')}`, 'if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }');
-    return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(statements.join('; '), 'utf16le').toString('base64')}`;
+    statements.push(`& {\n${script}\n}`, '$ok=$?', 'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; if (!$ok) { exit 1 }; exit 0');
+    return `try { ${statements.join('; ')} } catch { [Console]::Error.WriteLine($_.ToString()); exit 1 }`;
   }
 
-  private async _execInternal(args: string[], env?: Record<string, string>): Promise<KaosProcess> {
-    const command = this.pathClass() === 'win32'
-      ? SSHKaos._buildWindowsExecCommand(args, this._cwd, env)
-      : SSHKaos._buildExecCommand(args, this._cwd, env);
+  private static _buildWindowsExecCommand(args: string[], cwd: string, env?: Record<string, string>): string {
+    const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+    return SSHKaos._buildWindowsScript(`& ${args.map(quote).join(' ')}`, cwd, env);
+  }
+
+  execPowerShell(script: string, env?: Record<string, string>): Promise<KaosProcess> {
+    if (this.pathClass() !== 'win32') throw new KaosValueError('PowerShell execution requires a Windows SSH host');
+    return this._execWindowsScript(SSHKaos._buildWindowsScript(script, this._cwd, this._buildExecEnv(env)));
+  }
+
+  private _execInternal(args: string[], env?: Record<string, string>): Promise<KaosProcess> {
+    return this.pathClass() === 'win32'
+      ? this._execWindowsScript(SSHKaos._buildWindowsExecCommand(args, this._cwd, env))
+      : this._execCommand(SSHKaos._buildExecCommand(args, this._cwd, env));
+  }
+
+  private async _execWindowsScript(script: string): Promise<KaosProcess> {
+    const command = powershellCommand(script);
+    if (command.length <= 8191) return this._execCommand(command);
+    const tempDir = this._osEnv.tempDir;
+    if (!tempDir || !win32.isAbsolute(tempDir)) throw new KaosSSHError('Windows SSH host did not provide an absolute TEMP directory for script execution');
+    const path = win32.join(tempDir, `kiki-ssh-${randomUUID()}.ps1`).replaceAll('\\', '/');
+    const quoted = `'${path.replaceAll("'", "''")}'`;
+    let cleanupPromise: Promise<void> | undefined;
+    const cleanup = (): Promise<void> => cleanupPromise ??= this.remove(path).catch((error: unknown) => {
+      if (!(error instanceof KaosFileNotFoundError)) throw new KaosSSHError(`Could not remove temporary SSH script ${path}: ${getErrorMessage(error)}`);
+    });
+    try {
+      await this.writeBytes(path, Buffer.from(`\uFEFF${POWERSHELL_PREAMBLE}; ${script}`, 'utf8'));
+      const process = await this._execCommand(powershellCommand(`try { & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${quoted}; exit $LASTEXITCODE } finally { Remove-Item -LiteralPath ${quoted} -Force -ErrorAction SilentlyContinue }`));
+      const completion = process.wait().then(async (code) => { await cleanup(); return code; });
+      void completion.catch(() => {});
+      return {
+        pid: process.pid, stdin: process.stdin, stdout: process.stdout, stderr: process.stderr,
+        get exitCode() { return process.exitCode; }, wait: () => completion,
+        kill: (signal) => process.kill(signal),
+        dispose: async () => { await process.dispose(); await cleanup(); },
+      };
+    } catch (error) {
+      await cleanup();
+      throw error;
+    }
+  }
+
+  private async _execCommand(command: string): Promise<KaosProcess> {
     this._activity.count += 1;
     try {
       const channel = await clientExec(this._client, command);
-      const process = new SSHProcess(channel);
+      const process = new SSHProcess(channel, this.pathClass() === 'win32' ? this._osEnv.codePage ?? 936 : undefined);
       const release = (): void => { this._activity.count -= 1; };
       void process.wait().then(release, release);
       return process;

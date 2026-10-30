@@ -24,9 +24,8 @@ function turn(b, id, text, messages) {
   return b.prompt({ sessionId: id, prompt: [{ type: 'text', text }] }, { notify: async (_method, event) => messages.push(event) });
 }
 
-void test('advertises no current-turn steering and rejects a concurrent prompt without writing another native turn', async () => {
+void test('rejects a concurrent prompt without writing another native turn', async () => {
   const b = bridge(); const id = await session(b);
-  assert.deepEqual(b.initialize(1)._meta.steering, { supported: false });
   let toolStarted;
   const started = new Promise(done => { toolStarted = done; });
   const pending = b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'tool-hang' }] }, {
@@ -49,6 +48,102 @@ void test('advertises no current-turn steering and rejects a concurrent prompt w
     await b.cancel({ sessionId: id });
     assert.equal((await pending).stopReason, 'cancelled');
   } finally { await b.close(); }
+});
+
+void test('steering enters the running native turn through the owned PostInvocation hook, never as a new user frame', async () => {
+  const { mkdtemp, readFile, rm } = await import('node:fs/promises');
+  const root = await mkdtemp(join(tmpdir(), 'agy-steer-'));
+  const b = bridge();
+  try {
+    assert.deepEqual(b.initialize(1)._meta.steering, { supported: true });
+    const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+    assert.deepEqual(await b.steer({ sessionId: id, prompt: [{ type: 'text', text: 'idle' }] }), { outcome: 'promptRequired', reason: 'noRunningTurn' });
+    let toolDone;
+    const done = new Promise(resolveDone => { toolDone = resolveDone; });
+    const messages = [];
+    const pending = b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'steer-loop' }] }, {
+      notify: async (_method, event) => { messages.push(event); if (event.update?.sessionUpdate === 'tool_call_update') toolDone(); },
+    });
+    await done;
+    const s = b.session(id); const child = s.child;
+    const hooks = JSON.parse(await readFile(join(root, '.agents', 'hooks.json'), 'utf8'));
+    assert.equal(hooks['kiki-agy-steering-bridge'].PostInvocation.length, 1);
+    const writes = [];
+    const write = child.stdin.write.bind(child.stdin);
+    child.stdin.write = (...args) => { writes.push(args[0]); return write(...args); };
+    assert.deepEqual(await b.steer({ sessionId: id, prompt: [{ type: 'text', text: '中途 steer' }] }), { outcome: 'injected' });
+    const result = await pending;
+    assert.equal(result.stopReason, 'end_turn');
+    assert.deepEqual(writes, []);
+    assert.equal(s.child, child);
+    assert.match(messages.map(event => event.update?.content?.text ?? '').join(''), /steered:中途 steer/);
+    assert.deepEqual(await b.steer({ sessionId: id, prompt: [{ type: 'text', text: 'after' }] }), { outcome: 'promptRequired', reason: 'noRunningTurn' });
+  } finally {
+    await b.close();
+    await assert.rejects(readFile(join(root, '.agents', 'hooks.json')), { code: 'ENOENT' });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+void test('a queued steer the turn never drains returns promptRequired instead of claiming delivery', async () => {
+  const b = bridge(); const id = await session(b);
+  let toolStarted;
+  const started = new Promise(done => { toolStarted = done; });
+  const pending = b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'tool-hang' }] }, {
+    notify: async (_method, event) => { if (event.update?.sessionUpdate === 'tool_call') toolStarted(); },
+  });
+  pending.catch(() => {});
+  try {
+    await started;
+    const steered = b.steer({ sessionId: id, prompt: [{ type: 'text', text: 'late' }] });
+    await b.cancel({ sessionId: id });
+    assert.deepEqual(await steered, { outcome: 'promptRequired', reason: 'turnEnded' });
+    assert.equal((await pending).stopReason, 'cancelled');
+  } finally { await b.close(); }
+});
+
+void test('steering audit and owned hook cleanup failures never strand a message, lose the turn result or leave an unhandled rejection', async () => {
+  const unhandled = [];
+  const onUnhandled = reason => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  const b = bridge(); const id = await session(b);
+  const audit = b.audit.bind(b);
+  let failAudit = () => false;
+  b.audit = async (target, type, data) => { if (failAudit(type)) throw Error(`injected ${type} failure`); return audit(target, type, data); };
+  let toolStarted;
+  const started = new Promise(done => { toolStarted = done; });
+  const pending = b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'tool-hang' }] }, {
+    notify: async (_method, event) => { if (event.update?.sessionUpdate === 'tool_call') toolStarted(); },
+  });
+  pending.catch(() => {});
+  try {
+    await started;
+    const s = b.session(id);
+    failAudit = type => type === 'steer_queued';
+    await assert.rejects(b.steer({ sessionId: id, prompt: [{ type: 'text', text: 'not queued' }] }), /injected steer_queued failure/);
+    assert.deepEqual(s.active.steering, []);
+    failAudit = type => type.startsWith('steer_') && type !== 'steer_queued';
+    const steered = b.steer({ sessionId: id, prompt: [{ type: 'text', text: 'delivered once' }] });
+    while (s.active.steering.length === 0) await new Promise(done => setImmediate(done));
+    const poll = await b.pollSteering(s, { type: 'steer_poll', conversationId: s.init.conversation_id, invocationNum: 1 });
+    assert.deepEqual(poll.steering.injectSteps, [{ userMessage: 'delivered once' }]);
+    poll.afterFailure();
+    poll.afterWrite();
+    assert.deepEqual(await steered, { outcome: 'deliveryUnknown' });
+    assert.deepEqual((await b.pollSteering(s, { type: 'steer_poll', conversationId: s.init.conversation_id, invocationNum: 2 })).steering.injectSteps, []);
+    const registration = s.steeringRegistration;
+    const close = registration.close.bind(registration);
+    let closeFails = true;
+    registration.close = async () => { if (closeFails) throw Error('injected hook cleanup failure'); return close(); };
+    await b.cancel({ sessionId: id });
+    assert.equal((await pending).stopReason, 'cancelled');
+    assert.equal(s.steeringRegistration, registration);
+    closeFails = false;
+    await b.closeSteeringHook(s);
+    assert.equal(s.steeringRegistration, undefined);
+    await new Promise(done => setImmediate(done));
+    assert.deepEqual(unhandled, []);
+  } finally { process.off('unhandledRejection', onUnhandled); await b.close(); }
 });
 
 void test('bare launch preserves AGY model, effort, permissions and context settings', () => {
@@ -301,7 +396,7 @@ void test('real ACP transport preserves tool failure, protocol diagnostics and s
   try {
     const initialized = await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
     assert.ok(initialized.result);
-    assert.deepEqual(initialized.result._meta.steering, { supported: false });
+    assert.deepEqual(initialized.result._meta.steering, { supported: true });
     const created = await request('session/new', { cwd, mcpServers: [] });
     const sessionId = created.result.sessionId;
     const completed = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'missing-file' }] });
@@ -1494,6 +1589,52 @@ void test('session stdio MCP uses a native plugin without replacing main, passes
     await b.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+void test('a killed adapter leaves owned keys and plugin; the next session recovers only dead owners and keeps live leases and foreign edits', { timeout: 30000 }, async () => {
+  const { mkdtemp, mkdir, readFile, readdir, writeFile, rm } = await import('node:fs/promises');
+  const { randomUUID } = await import('node:crypto');
+  const { registerProjectHook, AGY_STEERING_HOOK_KEY } = await import('./agy-hook-registration.mjs');
+  const root = await mkdtemp(join(tmpdir(), 'agy-killed-owner-'));
+  const hookPath = join(root, '.agents', 'hooks.json');
+  const handlerPath = fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url));
+  const foreign = '{\n  "foreign": {"PreToolUse": []}\n}\n';
+  try {
+    await mkdir(join(root, '.agents'));
+    await writeFile(hookPath, foreign);
+    const killedSession = randomUUID();
+    const script = `import { registerProjectHook, AGY_STEERING_HOOK_KEY } from ${JSON.stringify(new URL('./agy-hook-registration.mjs', import.meta.url).href)};
+      import { registerProjectMcpPlugin } from ${JSON.stringify(new URL('./agy-mcp-plugin.mjs', import.meta.url).href)};
+      const base = ${JSON.stringify({ cwd: root, nodePath: process.execPath, handlerPath })};
+      await registerProjectHook({ ...base, sessionId: ${JSON.stringify(killedSession)} });
+      await registerProjectHook({ ...base, sessionId: ${JSON.stringify(killedSession)}, key: AGY_STEERING_HOOK_KEY, args: ['--steering'] });
+      const plugin = await registerProjectMcpPlugin({ cwd: base.cwd, sessionId: ${JSON.stringify(killedSession)}, nodePath: base.nodePath, handlerPath: base.handlerPath, servers: [{ name: 'fixture', command: base.nodePath, args: [], env: [] }] });
+      await plugin.beforeLaunch(); await plugin.launched(process.pid);
+      process.stdout.write('READY\\n'); setInterval(() => {}, 1000);`;
+    const killed = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+    await new Promise((done, reject) => { killed.once('error', reject); killed.stdout.once('data', done); });
+    killed.kill('SIGKILL');
+    await new Promise(done => killed.once('close', done));
+    const leftover = JSON.parse(await readFile(hookPath, 'utf8'));
+    assert.ok(leftover['kiki-agy-permission-bridge'] && leftover[AGY_STEERING_HOOK_KEY]);
+    assert.equal((await readdir(join(root, '.agents', 'plugins'))).length, 1);
+    const live = await registerProjectHook({ cwd: root, nodePath: process.execPath, handlerPath, sessionId: 'live-other-session', key: AGY_STEERING_HOOK_KEY, args: ['--steering'] });
+    const auditDir = join(root, 'audit');
+    const b = new AgyBridge({ cliPath: process.execPath, cliPrefix: [fileURLToPath(new URL('./fixture-cli.mjs', import.meta.url))], auditDir });
+    try {
+      const id = (await b.newSession({ cwd: root, mcpServers: [] })).sessionId;
+      const after = JSON.parse(await readFile(hookPath, 'utf8'));
+      assert.equal(Object.hasOwn(after, 'kiki-agy-permission-bridge'), false);
+      assert.ok(after[AGY_STEERING_HOOK_KEY], 'the live session lease keeps the shared steering key');
+      assert.deepEqual(after.foreign, { PreToolUse: [] });
+      await assert.rejects(readFile(join(root, '.agents', '.kiki-agy-hook-ownership.json')), { code: 'ENOENT' });
+      assert.deepEqual(await readdir(join(root, '.agents', 'plugins')), []);
+      const records = (await readFile(join(auditDir, `${id}.ndjson`), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+      assert.ok(records.some(record => record.type === 'owned_recovery'));
+    } finally { await b.close(); }
+    await live.close();
+    assert.equal(await readFile(hookPath, 'utf8'), foreign);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 void test('native MCP plugin ownership preserves conflicts and edits, isolates sessions and recovers only dead leases', async () => {

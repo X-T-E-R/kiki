@@ -15,7 +15,7 @@ const { client, reportDirty, confirmDiscard, navigate } = vi.hoisted(() => ({
     listNamedAgentProfiles: vi.fn(), listShippedAgentProfiles: vi.fn(), listWorkspaceCatalog: vi.fn(), getConfig: vi.fn(),
     updateNamedAgentProfile: vi.fn(), createAgentProfile: vi.fn(), patchConfig: vi.fn(), restoreShippedAgentProfile: vi.fn(),
     readHostFile: vi.fn(), getAgentCapabilities: vi.fn(), listModels: vi.fn(), listExecutors: vi.fn(),
-    previewExecutorPrompt: vi.fn(), createSession: vi.fn(),
+    previewExecutorPrompt: vi.fn(), createSession: vi.fn(), getRecipe: vi.fn(),
     klient: { rest: { agents: { previewModelMenu: vi.fn() } } },
   },
 }));
@@ -245,6 +245,34 @@ describe('profile editor detail', () => {
     await save();
     expect(client.updateNamedAgentProfile).toHaveBeenCalledWith('agent', {
       scope: 'user', workspace_id: 'ws-one', source_file: '/fixture/agent/SYSTEM.md', prompt: 'New instructions',
+    });
+  });
+
+  it('edits recipe options in the run tab and saves them without dropping other values', async () => {
+    const profile = { ...main, recipe: './recipe.toml', recipe_options: { safe: true, legacy: false } };
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile, sub, explore], complete: true });
+    client.getRecipe.mockResolvedValue({ resolved: { options: [
+      { id: 'safe', name: 'Safe mode', default: false },
+      { id: 'fast', name: 'Fast mode', default: false, description: 'Use the shorter prompt.' },
+    ] } });
+    client.updateNamedAgentProfile.mockImplementation(async (_name: string, body: Record<string, unknown>) => ({ ...profile, ...body }));
+    await render();
+    await open('agent');
+    await openTab('run');
+    const options = sheet().querySelector<HTMLElement>('[data-profile-panel="run"] [data-profile-block="runs"] [data-recipe-options]')!;
+    expect(options).not.toBeNull();
+    expect(client.getRecipe).toHaveBeenCalledWith('/fixture/agent/./recipe.toml');
+    const fast = options.querySelector<HTMLInputElement>('[data-recipe-option="fast"] input')!;
+    expect(fast.closest('[data-settings-field]')).not.toBeNull();
+    expect(options.querySelector<HTMLInputElement>('[data-recipe-option="safe"] input')!.checked).toBe(true);
+    await act(async () => { fast.click(); });
+    await settle();
+    expect(sheet().querySelector('[data-profile-tab="run"] [data-profile-tab-dirty]')).not.toBeNull();
+    expect(sheet().querySelector<HTMLButtonElement>('[data-profile-tab="raw"]')!.disabled).toBe(true);
+    await save();
+    expect(client.updateNamedAgentProfile).toHaveBeenCalledExactlyOnceWith('agent', {
+      scope: 'user', workspace_id: 'ws-one', source_file: '/fixture/agent/SYSTEM.md',
+      recipe_options: { safe: true, legacy: false, fast: true },
     });
   });
 

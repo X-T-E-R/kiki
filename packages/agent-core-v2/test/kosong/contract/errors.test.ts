@@ -14,10 +14,12 @@ import {
   APITimeoutError,
   ChatProviderError,
   classifyApiError,
+  classifyBaseApiError,
   createAbortError,
   isAbortError,
   ambiguousRequestDelivery,
   isRetryableGenerateError,
+  isRetryableRequestInterruption,
   normalizeAPIStatusError,
   noteExecutedRequestDelivery,
   requestDeliveryProvenance,
@@ -397,4 +399,18 @@ it('keeps actual observed output non-replayable even when transport delivery is 
   expect(requestDeliveryProvenance(error)).toBe('unknown');
   expect(isRetryableGenerateError(error)).toBe(false);
   expect(isRetryableGenerateError(unwrapErrorCause(error))).toBe(false);
+  expect(isRetryableRequestInterruption(error)).toBe(true);
+  attachErrorDetails(error, { retry: false });
+  expect(isRetryableRequestInterruption(error)).toBe(false);
+});
+
+it.each(['ECONNRESET', 'EPIPE', 'socket hang up', 'unexpected EOF'])('classifies raw %s as a connection interruption', message => {
+  const error = classifyBaseApiError(message);
+  expect(error.code).toBe('provider.connection_error');
+  expect(isRetryableRequestInterruption(error)).toBe(true);
+});
+
+it.each([new APIStatusError(503, 'unavailable'), new APIStatusError(429, 'slow down'), new ChatProviderError('decode failed')])('does not discard observed output for a non-network failure: %s', error => {
+  noteExecutedRequestDelivery(error);
+  expect(isRetryableRequestInterruption(error)).toBe(false);
 });

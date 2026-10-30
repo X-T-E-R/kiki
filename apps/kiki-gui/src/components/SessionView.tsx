@@ -24,6 +24,8 @@ import { ContextBreakdownProvider } from './ContextMeter';
 import { useCompactionProgress } from './useCompactionProgress';
 import { useLastResponseAt } from './composerWorking';
 import { useRequestGovernance } from '../lib/useRequestGovernance';
+import { useProfileFilePreview } from '../lib/profileFilePreview';
+import { profileThinkingDefault } from '../lib/profileThinking';
 import { useContextMeterAutoCompact } from './useContextMeterAutoCompact';
 import {
   useConversationShell,
@@ -137,6 +139,8 @@ import {
   type UserBlock,
 } from '@kiki/session-core/session';
 import { settingsCardRoute, shortCwd } from '@kiki/session-core/sessions';
+import { readFirstSessionMessage, writeFirstSessionMessage, clearFirstSessionMessage, submitFirstSessionMessage, type FirstSessionMessageRecord, type FirstSessionSubmission } from '../lib/newSessionCreation';
+import { spaceStorage } from '../lib/spaceStorage';
 import {
   composerDefaultsForProfile,
   modelSwitchPreferencesToWire,
@@ -997,8 +1001,8 @@ export function sessionAbsenceShouldLeaveRoute(message: string, sessionId: strin
  * Permission/plan pills are controlled by the server-reported store
  * fields (snapshot agent_config + `agent.status.updated`): another client —
  * or the server itself — can move them. The local override is only an
- * optimistic echo: an uncommitted pill click wins until the store reports the
- * same value, then `shouldClearModeOverride` retires it.
+ * optimistic echo: a local pick wins until its save settles and the store
+ * reports the same value, then `shouldClearModeOverride` retires it.
  */
 export function resolveControlledValue<T>(
   override: T | undefined,
@@ -1062,6 +1066,7 @@ export function initialBindingStillPending(input: {
 }
 
 interface SessionCreateHandoff {
+  readonly initialPromptId?: string;
   readonly initialPrompt?: string;
   readonly initialPresentation?: import('@kiki/transcript').TextPresentation;
   readonly initialAttachments?: readonly ComposerAttachment[];
@@ -1110,6 +1115,7 @@ export function parseSessionCreateHandoff(state: unknown): SessionCreateHandoff 
   if (typeof state !== 'object' || state === null) return {};
   const raw = state as SessionCreateHandoff;
   return {
+    initialPromptId: typeof raw.initialPromptId === 'string' ? raw.initialPromptId : undefined,
     initialPrompt: typeof raw.initialPrompt === 'string' ? raw.initialPrompt : undefined,
     initialPresentation: readTextPresentation(raw.initialPresentation),
     initialAttachments: Array.isArray(raw.initialAttachments) ? raw.initialAttachments : undefined,
@@ -1206,8 +1212,7 @@ export function resolvePlanGate(
 /**
  * Send-time resolution for a confirmed profile switch. A switch rides the
  * next prompt as `profile`; model/thinking are withheld so the new profile's
- * own pins apply — unless the user explicitly re-picked them after
- * confirming, in which case those explicit choices win.
+ * own pins apply unless the corresponding control is explicitly selected.
  */
 export function sessionHasStartedConversation(blocks: readonly Block[]): boolean {
   return blocks.some((block) => block.kind === 'user');
@@ -1835,7 +1840,7 @@ export function SessionView({
   const host = useHost();
   const { id } = useParams<{ id: string }>();
   const sessionId = id!;
-  const { client, socket, meta, wsStatus } = useConnection();
+  const { client, socket, meta, wsStatus, scopeId } = useConnection();
   const { slots } = useConversationShell();
   const terminalAvailable = terminalCapabilityAvailable(meta.capabilities);
   const { t, tp, locale } = useI18n();
@@ -1856,7 +1861,8 @@ export function SessionView({
   sessionIdRef.current = sessionId;
   // Throttle for the ambiguous y/n hint (epoch ms of the last toast).
   const lastAmbiguityToastRef = useRef(0);
-  const createHandoff = parseSessionCreateHandoff(location.state);
+  const firstMessageRef = useRef<FirstSessionMessageRecord | undefined>(readFirstSessionMessage(scopeId, sessionId));
+  const createHandoff = parseSessionCreateHandoff(firstMessageRef.current?.message ?? location.state);
   // Deep-link locators: /s/{id}?turn=N (search hits, the /usage drilldown)
   // and ?block={blockId} go through the timeline's one locate entry, which
   // pages older history in, opens folds, and says so when the place is gone.
@@ -1934,17 +1940,16 @@ export function SessionView({
   // rail's owner when the user is looking at an embedded subagent view — the
   // routed agent page (selectedAgentId) owns the rail through AgentWorkspace.
   const [panelFocusAgent, setPanelFocusAgent] = useState<string | undefined>(undefined);
-  // Permission/plan are store-controlled (see resolveControlledValue):
-  // local state is only the optimistic echo of an uncommitted pill click.
   const [permissionOverride, setPermissionOverride] = useState<PermissionMode | undefined>(
     restoredComposer.permissionMode ?? initialOptionsRef.current.permissionMode,
   );
   const [planOverride, setPlanOverride] = useState(
     restoredComposer.planMode ?? initialOptionsRef.current.planMode,
   );
-  // Plan gate: session-scoped pick restored from composer chrome. Unlike the
-  // mode pills there is no server echo to reconcile against (the wire only
-  // takes `plan_gate` per prompt), so the override simply persists.
+  const modeWriteQueue = useRef(Promise.resolve());
+  const modeWriteRevision = useRef({ permission: 0, plan: 0 });
+  const [permissionWriting, setPermissionWriting] = useState(false);
+  const [planWriting, setPlanWriting] = useState(false);
   const [planGateOverride, setPlanGateOverride] = useState<PromptPlanGate | undefined>(
     restoredComposer.planGate,
   );
@@ -1962,7 +1967,7 @@ export function SessionView({
   );
   // Mid-session main-profile switch: the pick waits as `pendingProfile` until
   // the next prompt carries it. Model and effort remember separately whether
-  // the user moved THAT control after confirming — one shared flag made an
+  // the user moved THAT control — one shared flag made an
   // effort pick promote the untouched model id along with it, and a model pick
   // promote the displayed effort (often `off`), which on the execution path is
   // a session override the engine would inherit (see resolveProfileSwitchSubmission).
@@ -2023,6 +2028,7 @@ export function SessionView({
     text: string;
     content: MessageContent[];
     contentKey: string;
+    submissionKey: string;
     createdAt: string;
     slow: boolean;
     preserved: boolean;
@@ -2450,8 +2456,6 @@ export function SessionView({
   // and focused. Other conversations and hidden mounted views stay unread.
   useViewedSession(host, sessionId, state.session?.last_seq);
 
-  // Store-controlled pills: the server-reported value wins unless a local
-  // click is still waiting to be committed with the next prompt.
   const permissionMode = resolveControlledValue(
     permissionOverride,
     state.permissionMode,
@@ -2459,15 +2463,15 @@ export function SessionView({
   );
   const planMode = resolveControlledFlag(planOverride, state.planMode, state.loaded, defaults.defaultPlanMode);
   useEffect(() => {
-    if (shouldClearModeOverride(permissionOverride, state.permissionMode)) {
+    if (!permissionWriting && shouldClearModeOverride(permissionOverride, state.permissionMode)) {
       setPermissionOverride(undefined);
     }
-  }, [permissionOverride, state.permissionMode]);
+  }, [permissionOverride, permissionWriting, state.permissionMode]);
   useEffect(() => {
-    if (state.loaded && shouldClearModeOverride(planOverride, state.planMode)) {
+    if (!planWriting && state.loaded && shouldClearModeOverride(planOverride, state.planMode)) {
       setPlanOverride(undefined);
     }
-  }, [planOverride, state.loaded, state.planMode]);
+  }, [planOverride, planWriting, state.loaded, state.planMode]);
 
   // A session that is definitely gone cannot recover: toast the reason, keep the
   // card visible for a beat, then fall back home (clearing the remembered id
@@ -2518,10 +2522,7 @@ export function SessionView({
   });
   const serverDefaultModel = configQuery.data?.default_model;
 
-  // Effective plan gate for the next prompt: the session pick wins, then the
-  // global `[plan] gate` default, then the engine's built-in 'free'. The agent
-  // never echoes its gate, so nothing clears the override once set.
-  const planGate = resolvePlanGate(planGateOverride, configQuery.data?.plan?.gate);
+  const planGate = resolvePlanGate(planGateOverride, state.session?.agent_config?.plan_gate ?? configQuery.data?.plan?.gate);
 
   const modelsQuery = useQuery({
     queryKey: ['models'],
@@ -2625,17 +2626,25 @@ export function SessionView({
   }, [composerSelection.modelOverride, composerSelection.effortOverride, composerSelection.modelChoice, composerSelection.effortChoice,
     modelOverride, effortOverride, modelChoice, effortChoice, sessionModel, state.thinkingEffort]);
   const effectiveModel = resolveEffectiveModel(composerSelection.modelOverride, sessionModel, inheritedDefault);
-  const catalogItem = harness === undefined
-    ? (modelsQuery.data?.items ?? []).find((item) => item.id === effectiveModel) : undefined;
+  const catalogItem = harness === undefined && effectiveModel !== undefined
+    ? resolveCatalogModel(modelsQuery.data?.items ?? [], effectiveModel) : undefined;
   const supportedEfforts = catalogItem?.support_efforts;
-  const effectiveEffort = composerSelection.effortOverride ?? (harness === undefined ? resolveSelectedEffort(
-    supportedEfforts,
-    effectiveModel === sessionModel ? state.thinkingEffort : undefined,
-    catalogItem?.default_effort,
-  ) : state.thinkingEffort);
   const selectedModelId = effectiveModel === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], effectiveModel)?.id ?? effectiveModel;
   const liveModel = sessionModel || inheritedDefault;
   const boundModelId = liveModel === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], liveModel)?.id ?? liveModel;
+  const fileProfilePreview = useProfileFilePreview(shownExecution.profile_file, agentProfileCatalogMode);
+  const selectedProfile = shownExecution.profile_file === undefined
+    ? agentProfilesQuery.data?.items.find((profile) => profile.name === shownExecution.profile)
+    : fileProfilePreview.data?.profile;
+  const profileEffort = selectedProfile !== undefined && profileExecutor(selectedProfile) === shownExecution.executor
+    ? profileThinkingDefault(selectedProfile, effectiveModel, modelsQuery.data?.items ?? []) : undefined;
+  const selectionChanging = executionPending || selectedModelId !== boundModelId;
+  const inheritedEffort = selectionChanging ? profileEffort : state.thinkingEffort;
+  const manualEffort = effortTouched && composerSelection.effortChoice === effortChoice
+    ? composerSelection.effortOverride : undefined;
+  const effectiveEffort = manualEffort ?? (initialBindingPending ? composerSelection.effortOverride : undefined)
+    ?? inheritedEffort ?? (harness === undefined
+      ? resolveSelectedEffort(supportedEfforts, undefined, catalogItem?.default_effort) : state.thinkingEffort);
   const modelControlPending = modelTouched && composerSelection.modelChoice === modelChoice && composerSelection.modelOverride !== undefined
     && (selectedModelId !== boundModelId || modelSwitchMode === 'fresh' || modelSwitchMode === 'compact');
   const effortControlPending = effortTouched && composerSelection.effortChoice === effortChoice && composerSelection.effortOverride !== undefined
@@ -2672,6 +2681,11 @@ export function SessionView({
     [modelsQuery.data],
   );
   const currentBoundModel = boundModelId;
+  const effortSourceSwitch = modelSwitches.dependency ?? modelSwitches.switches.findLast(entry =>
+    entry.receipt.state === 'completed' && canonicalModel(entry.receipt.toModel) === currentBoundModel);
+  const switchEffortChoice = manualEffort ?? (effortSourceSwitch !== undefined ? effortSourceSwitch.input.thinking
+    : executionBinding?.sources['thinking'] === 'session' ? boundExecution.overrides?.thinking : undefined);
+  const modelSwitchThinking = typeof switchEffortChoice === 'string' && switchEffortChoice !== '' ? switchEffortChoice : undefined;
   const submitModelSwitch = useCallback(async (choice: {
     readonly fromModel: string;
     readonly toModel: string;
@@ -2687,14 +2701,17 @@ export function SessionView({
           operationId: choice.editingOperationId,
           model: choice.toModel,
           mode: choice.mode,
+          thinking: modelSwitches.switches.find(entry => entry.input.operationId === choice.editingOperationId)?.input.thinking,
           selectedFromModel: choice.fromModel,
         }, choice.editingRevision);
         modelSwitches.refresh();
       } else {
-        setModelOverride(choice.toModel);
-        setModelChoice({ model: sessionModel, thinking: state.thinkingEffort });
-        setModelTouched(true);
-        setModelSwitchMode(choice.mode);
+        const receipt = await client.switchAgentModel(sessionId, MAIN_AGENT_ID, {
+          operationId: crypto.randomUUID(), model: choice.toModel, mode: choice.mode,
+          thinking: modelSwitchThinking, selectedFromModel: choice.fromModel,
+        });
+        if (receipt.state === 'failed') throw new Error(receipt.error?.message ?? t('modelSwitch.listFailed'));
+        modelSwitches.refresh();
       }
       setModelSwitchDialog(undefined);
     } catch (error) {
@@ -2728,7 +2745,7 @@ export function SessionView({
         }),
       });
     }
-  }, [client, modelSwitchPrefs, modelSwitches, queryClient, sessionId, sessionModel, state.thinkingEffort, t]);
+  }, [client, modelSwitchPrefs, modelSwitches, modelSwitchThinking, queryClient, sessionId, t]);
   // Opens the confirm panel per the effective preference, or accepts straight
   // away when the rule/default says not to ask. `explicitMode` is the user's
   // own choice (the same-model fresh entry), which outranks rule matching.
@@ -2842,20 +2859,78 @@ export function SessionView({
       );
     },
   }), [canonicalModel, client, modelSwitchActionPending, modelSwitches.switches, runModelSwitchAction, sessionId]);
+  const persistModeChange = useCallback((
+    patch: { permission_mode?: PermissionMode; plan_mode?: boolean; plan_gate?: PromptPlanGate },
+    onFailure: () => void,
+    onSettled: () => void,
+  ) => {
+    modeWriteQueue.current = modeWriteQueue.current.then(async () => {
+      await client.updateSessionProfile(sessionId, { agent_config: patch });
+    }).catch((error: unknown) => {
+      onFailure();
+      pushToast({ tone: 'error', text: t('sv.modeUpdateFailed', {
+        detail: error instanceof Error ? error.message : String(error),
+      }) });
+    }).finally(onSettled);
+  }, [client, sessionId, t]);
   const handlePermissionChange = useCallback((mode: PermissionMode | undefined) => {
-    // Clicking the mode back to what the session already had is still a
-    // deliberate choice to approve in this mode, so it counts as touched.
     permissionTouchedRef.current = true;
     setPermissionOverride(mode);
-  }, []);
+    if (mode === undefined) return;
+    const revision = ++modeWriteRevision.current.permission;
+    setPermissionWriting(true);
+    persistModeChange({ permission_mode: mode }, () => {
+      if (revision !== modeWriteRevision.current.permission) return;
+      permissionTouchedRef.current = false;
+      setPermissionOverride(undefined);
+    }, () => {
+      if (revision === modeWriteRevision.current.permission) setPermissionWriting(false);
+    });
+  }, [persistModeChange]);
+  const handlePlanChange = useCallback((enabled: boolean) => {
+    setPlanOverride(enabled);
+    const revision = ++modeWriteRevision.current.plan;
+    setPlanWriting(true);
+    persistModeChange({ plan_mode: enabled }, () => {
+      if (revision === modeWriteRevision.current.plan) setPlanOverride(undefined);
+    }, () => {
+      if (revision === modeWriteRevision.current.plan) setPlanWriting(false);
+    });
+  }, [persistModeChange]);
+  const confirmedPlanGate = useRef<PromptPlanGate | undefined>(undefined);
+  const planGateRevision = useRef(0);
+  const handlePlanGateChange = useCallback((gate: PromptPlanGate) => {
+    const revision = ++planGateRevision.current;
+    setPlanGateOverride(gate);
+    modeWriteQueue.current = modeWriteQueue.current.then(async () => {
+      await client.updateSessionProfile(sessionId, { agent_config: { plan_gate: gate } });
+      confirmedPlanGate.current = gate;
+    }).catch((error: unknown) => {
+      if (revision === planGateRevision.current) setPlanGateOverride(confirmedPlanGate.current);
+      pushToast({ tone: 'error', text: t('sv.modeUpdateFailed', {
+        detail: error instanceof Error ? error.message : String(error),
+      }) });
+    });
+  }, [client, sessionId, t]);
   const handleEffortChange = useCallback((effort: string | undefined) => {
-    setEffortOverride(effort);
-    setEffortChoice({ model: sessionModel, thinking: state.thinkingEffort });
-    // Only the effort was moved. Marking the model as touched here is what
-    // promoted the untouched model id into an override, so a pick in one
-    // control must never speak for the other.
-    setEffortTouched(true);
-  }, [sessionModel, state.thinkingEffort]);
+    if (pendingProfile !== undefined || executionPending || initialBindingPending || harness !== undefined || currentBoundModel === undefined) {
+      setEffortOverride(effort);
+      setEffortChoice({ model: sessionModel, thinking: state.thinkingEffort });
+      setEffortTouched(true);
+      return;
+    }
+    void client.switchAgentModel(sessionId, MAIN_AGENT_ID, {
+      operationId: crypto.randomUUID(), model: modelSwitches.dependency?.input.model ?? currentBoundModel,
+      thinking: effort === '' ? null : effort ?? null, mode: 'direct',
+    }).then(receipt => {
+      if (receipt.state === 'failed') throw new Error(receipt.error?.message ?? t('modelSwitch.listFailed'));
+      modelSwitches.refresh();
+    }).catch((error: unknown) => {
+      pushToast({ tone: 'error', text: t('subagent.effortChangeFailed', {
+        detail: error instanceof Error ? error.message : String(error),
+      }) });
+    });
+  }, [client, currentBoundModel, executionPending, harness, initialBindingPending, modelSwitches, pendingProfile, sessionId, sessionModel, state.thinkingEffort, t]);
   // Applying an incoming binding's pins is that binding taking ownership, not
   // the user moving a control, so both flags drop together. Kept as one helper
   // because the two flags are only ever cleared as a pair.
@@ -2885,7 +2960,7 @@ export function SessionView({
       setModelChoice(undefined);
       setModelSwitchMode(undefined);
     }
-    if (defaults.thinking !== undefined || !effortTouched) {
+    if (!effortTouched) {
       setEffortOverride(defaults.thinking);
       setEffortTouched(false);
       setEffortChoice(undefined);
@@ -2924,8 +2999,8 @@ export function SessionView({
   // Engine pick. A live session that has already spoken asks once, because the
   // next message starts a fresh remote generation; an untouched session applies
   // immediately, as a profile pick does. Reverting to the live binding only
-  // drops the pending pick. A new profile brings that profile's own model and
-  // effort pins, but a user who re-picked them after confirming keeps theirs.
+  // drops the pending pick. A new profile brings its model pin and effort
+  // defaults; a manually selected effort keeps priority.
   const applyPendingExecution = useCallback((next: ExecutionChoice) => {
     const profile = next.profile;
     const selected = agentProfilesQuery.data?.items.find((item) => item.name === profile);
@@ -2942,7 +3017,7 @@ export function SessionView({
       setModelChoice(undefined);
       setModelSwitchMode(undefined);
     }
-    if (defaults.thinking !== undefined || !sameExecutor || !effortTouched) {
+    if (!effortTouched) {
       setEffortOverride(defaults.thinking);
       setEffortTouched(false);
       setEffortChoice(undefined);
@@ -3129,7 +3204,7 @@ export function SessionView({
   const actions = useMemo(() => {
     if (controller === null) return null;
     return {
-      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string; readonly now?: boolean; readonly personaGreetingReply?: boolean; readonly appendTiming?: DeferredAppendTiming; readonly presentation?: import('@kiki/transcript').TextPresentation }) => {
+      send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string; readonly now?: boolean; readonly personaGreetingReply?: boolean; readonly appendTiming?: DeferredAppendTiming; readonly presentation?: import('@kiki/transcript').TextPresentation; readonly firstMessage?: FirstSessionMessageRecord }) => {
         // Selection carry-overs ride the prompt text as plain-text prefixes —
         // annotations first (blockquote + comment per segment), then the plain
         // quote as a Markdown blockquote — exactly what the transcript renders
@@ -3137,7 +3212,7 @@ export function SessionView({
         const carry = selectionCarryoverPresentation(annotations, quotes);
         const quotedText = `${carry.prefix}${text}`;
         const presentation = { spans: [...carry.presentation.spans, ...(options?.presentation?.spans ?? []).map((span) => ({ ...span, start: span.start + carry.prefix.length, end: span.end + carry.prefix.length }))] };
-        const content = buildPromptContent(quotedText, composerAttachments, presentation.spans.length === 0 ? undefined : presentation);
+        const content = options?.firstMessage?.submission?.content ?? buildPromptContent(quotedText, composerAttachments, presentation.spans.length === 0 ? undefined : presentation);
         if (content === null || pendingSendRef.current) return;
         const textPart = content.find((part) => part.type === 'text');
         // Local echo shows the mention-folded text; a media-only message
@@ -3173,7 +3248,7 @@ export function SessionView({
         // of its own; the local cause lets the queue notice name it.
         const ownTurnReason: SendNowOwnTurnReason | undefined = rebindsAgent
           ? 'binding'
-          : modelControlTouched && modelSwitchMode !== undefined ? 'model' : undefined;
+          : modelControlTouched && modelSwitchMode !== undefined || modelSwitches.dependency !== undefined ? 'model' : undefined;
         const requiresOwnTurn = ownTurnReason !== undefined;
         const completeControls = () => completeSkillControlSelection({
           controlled: { content, profile: profileSwitch.profile, execution: profileSwitch.execution,
@@ -3307,11 +3382,36 @@ export function SessionView({
             });
         }
         const contentKey = JSON.stringify(content);
+        const firstMessage = options?.firstMessage;
+        const frozen = firstMessage?.message;
+        const submissionBody = {
+          text: echoText, content,
+          profile: firstMessage === undefined ? profileSwitch.profile : undefined,
+          execution: firstMessage === undefined ? profileSwitch.execution : undefined,
+          model: firstMessage === undefined ? profileSwitch.model : frozen?.model,
+          thinking: firstMessage === undefined ? profileSwitch.thinking : frozen?.thinking,
+          modelSwitchMode: firstMessage === undefined && modelControlTouched && !rebindsAgent ? modelSwitchMode : undefined,
+          afterModelSwitch: firstMessage === undefined && !rebindsAgent ? modelSwitches.dependency?.input.operationId : undefined,
+          permissionMode: firstMessage === undefined ? profileSwitch.permissionMode : frozen?.permissionMode,
+          planMode: firstMessage === undefined ? planMode : frozen?.planMode,
+          planGate: firstMessage === undefined ? planGate : undefined,
+          goalObjective: firstMessage === undefined ? promptGoalObjective(options) : frozen?.goalObjective,
+          appendTiming: frozen?.appendTiming ?? options?.appendTiming ?? liveSettings.defaultAppendTiming,
+          personaGreetingReply: options?.personaGreetingReply,
+          skills: frozen?.initialSkill === undefined ? undefined : [{ name: frozen.initialSkill.name, args: frozen.initialSkill.args === '' ? undefined : frozen.initialSkill.args }],
+        };
+        const submissionKey = JSON.stringify(submissionBody);
         const retryablePending = pendingSubmissionRef.current;
         const retryableStatus = retryablePending?.status === 'offline';
-        const submissionId = retryableStatus && retryablePending.text === echoText && retryablePending.contentKey === contentKey
+        const submissionId = frozen?.initialPromptId ?? (retryableStatus && retryablePending.submissionKey === submissionKey
           ? retryablePending.id
-          : crypto.randomUUID();
+          : crypto.randomUUID());
+        const retainedFirst = firstMessageRef.current;
+        if (firstMessage === undefined && retainedFirst?.status === 'submitted' && retainedFirst.submission?.promptId === submissionId) {
+          pendingSendRef.current = false;
+          pendingRetryRef.current?.run();
+          return;
+        }
         // The captured payload, notes and identity belong to X, not whatever
         // the user composes after a failure toast appears.
         const sentAnnotations = annotations;
@@ -3338,21 +3438,20 @@ export function SessionView({
         // Returned to the composer: it holds its send latch until this round
         // settles, which is what blocks a rapid duplicate send (and releases
         // for a retry when the submit fails).
-        const submission = {
-          promptId: submissionId,
-          text: echoText,
-          content,
-          profile: profileSwitch.profile,
-          execution: profileSwitch.execution,
-          model: profileSwitch.model,
-          thinking: profileSwitch.thinking,
-          modelSwitchMode: modelControlTouched && !rebindsAgent ? modelSwitchMode : undefined,
-          permissionMode: profileSwitch.permissionMode,
-          planMode,
-          planGate,
-          goalObjective: promptGoalObjective(options),
-          appendTiming: options?.appendTiming ?? liveSettings.defaultAppendTiming,
-          personaGreetingReply: options?.personaGreetingReply,
+        const submission: FirstSessionSubmission = firstMessage?.submission ?? { ...submissionBody, promptId: submissionId };
+        const firstStorage = spaceStorage.capture();
+        let firstRecord: FirstSessionMessageRecord | undefined = firstMessage === undefined ? undefined : { ...firstMessage, submission };
+        const saveFirstRecord = (record: FirstSessionMessageRecord) => {
+          firstRecord = record;
+          firstMessageRef.current = record;
+          writeFirstSessionMessage(scopeId, sessionId, record, firstStorage);
+        };
+        if (firstRecord !== undefined) saveFirstRecord(firstRecord);
+        const clearFirstRecord = () => {
+          if (firstRecord === undefined) return;
+          clearFirstSessionMessage(scopeId, sessionId, firstStorage);
+          if (firstMessageRef.current?.message.initialPromptId === submissionId) firstMessageRef.current = undefined;
+          firstRecord = undefined;
         };
         let accepted = false;
         const submitCaptured = (first = false): Promise<void> | undefined => {
@@ -3388,32 +3487,48 @@ export function SessionView({
             text: echoText,
             content,
             contentKey,
+            submissionKey,
             createdAt: new Date().toISOString(),
             slow: false,
             preserved: currentPending?.id === submissionId ? currentPending.preserved : false,
             retryable: false,
             status: 'sending',
           });
+          const send = (captured: FirstSessionSubmission) => controller.sendPrompt({
+            ...captured,
+            onPreservation: (persisted: boolean) => {
+              setPendingSubmission((current) => current?.id === submissionId ? { ...current, preserved: persisted } : current);
+              if (persisted) releaseComposition(first && firstMessage === undefined);
+              else pushToast({ tone: 'info', text: t('sv.submissionRecovery.degraded') });
+            },
+            onAcknowledged: () => releaseComposition(),
+          });
           const request = resume
             ? controller.resumeDurableIngress(submissionId, {
-              admission: 'durable', content: submission.content, prompt_id: submission.promptId,
+              admission: 'durable', content: submission.content!, prompt_id: submission.promptId,
               profile: submission.profile, execution: submission.execution, model: submission.model,
               thinking: submission.thinking, permission_mode: submission.permissionMode,
               plan_mode: submission.planMode, plan_gate: submission.planGate,
               goal_objective: submission.goalObjective, append_timing: submission.appendTiming,
-              persona_greeting_reply: submission.personaGreetingReply,
+              persona_greeting_reply: submission.personaGreetingReply, skills: submission.skills,
             })
-            : controller.sendPrompt({
-              ...submission,
-              onPreservation: (persisted) => {
-                setPendingSubmission((current) => current?.id === submissionId ? { ...current, preserved: persisted } : current);
-                if (persisted) releaseComposition(first);
-                else pushToast({ tone: 'info', text: t('sv.submissionRecovery.degraded') });
+            : firstRecord === undefined ? send(submission) : submitFirstSessionMessage({
+              record: firstRecord, save: saveFirstRecord, submit: send, retryMissing: !first,
+              read: async (promptId) => {
+                if (client.sessions.getDurableIngress === undefined) throw new Error('Durable prompt recovery is unavailable on this transport');
+                try {
+                  const receipt = await client.sessions.getDurableIngress(sessionId, promptId);
+                  void controller.refreshDurableIngress();
+                  return receipt;
+                } catch (cause) {
+                  if (cause instanceof ApiError && cause.code === API_CODES.PROMPT_NOT_FOUND) return undefined;
+                  throw cause;
+                }
               },
-              onAcknowledged: () => releaseComposition(),
             });
           return request
           .then((result) => {
+            clearFirstRecord();
             const admissionRejected = result.admission === 'failed' || result.admission === 'cancelled';
             if (admissionRejected) {
               restoreCapturedSubmission();
@@ -4421,65 +4536,39 @@ boundExecution,
   }, []);
 
 
-  // Submit the prompt or skill that was drafted on /new, now that the live
-  // controller is subscribed and will receive the stream.
   useEffect(() => {
-    if (
-      controller === null ||
-      actions === null ||
-      !sessionSendReady
-    ) {
-      return;
-    }
-    const submission = resolveSessionCreateSubmission({
+    if (controller === null || actions === null) return;
+    const handoff = {
       ...initialOptionsRef.current,
       initialPrompt: initialPromptRef.current,
       initialSkill: initialSkillRef.current,
-    });
+    };
+    const submission = resolveSessionCreateSubmission(handoff);
     if (submission === undefined) return;
+    const record = firstMessageRef.current ?? {
+      message: { ...handoff, initialPromptId: handoff.initialPromptId ?? `new-session:${sessionId}` },
+      status: 'ready' as const,
+    };
+    firstMessageRef.current = record;
+    writeFirstSessionMessage(scopeId, sessionId, record);
     initialSkillRef.current = undefined;
     initialPromptRef.current = undefined;
     initialOptionsRef.current = {};
-    // Fire-and-forget: strip the one-shot nav state from history so a refresh
-    // doesn't resend the drafted prompt or re-activate the skill.
     void navigate(location.pathname, { replace: true });
-    if (submission.kind === 'skill') {
-      const recovery = submission.userInput ?? `/${submission.name}${submission.args === '' ? '' : ` ${submission.args}`}`;
-      updateDraft(recovery);
+    const text = submission.kind === 'skill'
+      ? submission.userInput ?? `/${submission.name}${submission.args === '' ? '' : ` ${submission.args}`}`
+      : submission.text;
+    if (draftRef.current === '') {
+      updateDraft(stripThreadRefContext(text));
       updateAttachments(submission.attachments);
-      void actions.activateSkill(
-        submission.name,
-        submission.args,
-        submission.attachments,
-        submission.goalObjective,
-        recovery,
-      );
-      return;
     }
-    // Seed the session draft first: if this send fails, the text stays
-    // recoverable in the composer (and in localStorage across reloads).
-    updateDraft(stripThreadRefContext(submission.text));
-    updateAttachments(submission.attachments);
-    void actions.send(
-      submission.text,
-      submission.attachments,
-      submission.goalObjective === undefined && submission.personaGreetingReply !== true && submission.presentation === undefined
-        ? undefined
-        : {
-            goalObjective: submission.goalObjective,
-            personaGreetingReply: submission.personaGreetingReply,
-            presentation: submission.presentation,
-          },
-    );
-  }, [
-    controller,
-    actions,
-    sessionSendReady,
-    location.pathname,
-    navigate,
-    updateDraft,
-    updateAttachments,
-  ]);
+    void actions.send(text, submission.attachments, {
+      firstMessage: record,
+      goalObjective: submission.goalObjective,
+      personaGreetingReply: record.message.personaGreetingReply,
+      presentation: submission.kind === 'prompt' ? submission.presentation : undefined,
+    });
+  }, [controller, actions, scopeId, sessionId, location.pathname, navigate, updateDraft, updateAttachments]);
 
   // Away notifications from the live stream: the open session reports a new
   // approval / question or a turn that failed without waiting for the
@@ -4949,8 +5038,8 @@ boundExecution,
             onChangeExecution={handleExecutionChange}
             onRebuildContext={handleContextRebuild}
             onChangePermissionMode={handlePermissionChange}
-            onChangePlanMode={setPlanOverride}
-            onChangePlanGate={setPlanGateOverride}
+            onChangePlanMode={handlePlanChange}
+            onChangePlanGate={handlePlanGateChange}
             onChangeGoalMode={setGoalMode}
             onChangeEffort={handleEffortChange}
             onSend={handleComposerSend}

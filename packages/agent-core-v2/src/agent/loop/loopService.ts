@@ -1463,7 +1463,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           toolCallId: toolResult.toolCallId,
           isError: result.isError,
         });
-        if (result.stopTurn === true) stopTurn = true;
+        if (result.stopTurn === true &&
+          (toolResult.toolName !== 'SendMessage' || response.message.toolCalls.length === 1)) stopTurn = true;
       }
     }
     finishReason = stopTurn ? 'completed' : 'tool_calls';
@@ -1671,7 +1672,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             beginResponseEvent();
             if (isVacuousContentPart(part) && partialContent.at(-1)?.part.type === 'text') return;
             const partId = accumulate(part);
-            if (part.hidden === true) return;
+            if (part.hidden === true || part.think.length === 0) return;
             void this.dispatcher.dispatch(
               new ThinkingDelta({ turnId, step, stepId, partId, delta: part.think, responseInstanceId }),
             );

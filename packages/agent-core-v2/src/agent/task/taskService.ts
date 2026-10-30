@@ -9,6 +9,7 @@ import type { ContentPart } from '#/kosong/contract/message';
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import type { MediaTaskInfo } from './types';
 import { ILogService } from '#/_base/log/log';
+import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
 import { defineState } from '#/state/state';
 import {
   abortable,
@@ -75,6 +76,7 @@ import {
   taskKey,
   TaskNotified,
   TaskSettlementReady,
+  TaskRestorationSettled,
   TaskStarted,
   TaskTerminated,
   TaskWaitDelivered,
@@ -294,6 +296,9 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private readonly persistence: AgentTaskPersistence;
   private notificationRestoreQueue: Promise<void> = Promise.resolve();
   private mediaRecovery?: (info: MediaTaskInfo) => Promise<AgentTask | undefined>;
+  private restoreRecovery: Promise<void> | undefined;
+  private restoreDisposed = false;
+  private restorePending = false;
 
   registerMediaRecovery(handler: (info: MediaTaskInfo) => Promise<AgentTask | undefined>) {
     if (this.mediaRecovery !== undefined) throw new Error('Media task recovery is already registered');
@@ -407,8 +412,23 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   private async restoreAfterReplay(): Promise<void> {
     this.restoreGhostsFromWire();
-    await this.loadFromDisk({ replace: false });
-    await this.reconcile();
+    this.restorePending = true;
+  }
+
+  resumeRestoration(): Promise<void> {
+    if (this.restoreRecovery !== undefined) return this.restoreRecovery;
+    this.restoreRecovery = (async () => {
+      await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+      if (this.restoreDisposed) return;
+      const context = { agentId: this.scopeContext.agentId };
+      await timeRestorePhase(this.log, context, 'task_load', () => this.loadFromDisk({ replace: false }));
+      if (this.restoreDisposed) return;
+      await timeRestorePhase(this.log, context, 'task_reconcile', () => this.reconcile());
+    })().finally(() => {
+      this.restorePending = false;
+      if (!this.restoreDisposed) this.eventBus.publish(new TaskRestorationSettled({}));
+    });
+    return this.restoreRecovery;
   }
 
   private activeBackgroundTaskReminder(): string | undefined {
@@ -697,6 +717,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   hasUnfinishedWork(): boolean {
+    if (this.restorePending) return true;
     for (const entry of this.tasks.values()) {
       if (entry.options.lifetime === 'service') continue;
       if (!TERMINAL_STATUSES.has(entry.status)) return true;
@@ -745,6 +766,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       }
     }
     const tasks = await persistence.listTasks();
+    if (this.restoreDisposed) return;
     for (const task of tasks) {
       if (this.localTaskIds.has(task.taskId)) continue;
       const existing = this.ghosts.get(task.taskId);
@@ -759,9 +781,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   async reconcile(): Promise<readonly AgentTaskInfo[]> {
     const lostTasks = await this.markLoadedTasksLost();
     for (const info of lostTasks) {
+      if (this.restoreDisposed) return lostTasks;
       this.recordTaskTerminated(info);
     }
-    await this.restoreAgentTaskNotifications();
+    if (!this.restoreDisposed) await timeRestorePhase(this.log, { agentId: this.scopeContext.agentId }, 'task_notifications', () => this.restoreAgentTaskNotifications());
     return lostTasks;
   }
 
@@ -1133,6 +1156,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   override dispose(): void | Promise<void> {
+    this.restoreDisposed = true;
     this.exitSuppressionArmed = true;
     for (const pending of this.pendingWaitDeliveries.values()) pending.cleanup();
     this.pendingWaitDeliveries.clear();
@@ -1276,7 +1300,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     }
     const outcomes = outcomeRead?.ok === true ? outcomeRead.outcomes : undefined;
     for (const [taskId, info] of this.ghosts) {
-      if (TERMINAL_STATUSES.has(info.status)) continue;
+      if (this.restoreDisposed) break;
+      if (TERMINAL_STATUSES.has(info.status) || this.localTaskIds.has(taskId)) continue;
       if (info.kind === 'media' && this.mediaRecovery !== undefined) {
         const recovered = await this.mediaRecovery(info);
         if (recovered !== undefined) {
@@ -1683,20 +1708,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private notificationAdmission(info: AgentTaskInfo): StepRequestAdmission {
     const goal = this.currentGoal();
     const lastEnded = this.states.has(turnKey) ? this.states.get(turnKey).lastEnded : undefined;
-    if (this.loop.status().lastTurnResult === 'cancelled' || lastEnded?.reason === 'cancelled') {
+    if (lastEnded?.reason === 'cancelled' && info.ownerTurnId === lastEnded.turnId) {
       return 'activeOrNextTurn';
     }
-    if (goal?.status === 'active') return 'activeOrNewTurn';
-    if (goal !== null &&
-      ((goal.status === 'blocked' && info.goalId === goal.goalId) ||
-        (goal.status === 'paused' && goal.statusActor === 'runtime' &&
-          (info.goalId === undefined || info.goalId === goal.goalId))) &&
-      (goal.budgetLimits.tokenBudget === undefined || goal.tokensUsed < goal.budgetLimits.tokenBudget) &&
-      (goal.budgetLimits.turnBudget === undefined || goal.turnsUsed < goal.budgetLimits.turnBudget) &&
-      (goal.budgetLimits.wallClockBudgetMs === undefined || goal.wallClockMs < goal.budgetLimits.wallClockBudgetMs)) {
-      return 'activeOrNewTurn';
+    if (goal !== null && goal.status !== 'complete' &&
+      ((goal.status === 'paused' && goal.statusActor === 'user' && info.goalId === goal.goalId) ||
+        (goal.budgetLimits.tokenBudget !== undefined && goal.tokensUsed >= goal.budgetLimits.tokenBudget) ||
+        (goal.budgetLimits.turnBudget !== undefined && goal.turnsUsed >= goal.budgetLimits.turnBudget) ||
+        (goal.budgetLimits.wallClockBudgetMs !== undefined && goal.wallClockMs >= goal.budgetLimits.wallClockBudgetMs))) {
+      return 'activeOrNextTurn';
     }
-    return goal !== null || info.goalId !== undefined ? 'activeOrNextTurn' : 'activeOrNewTurn';
+    return 'activeOrNewTurn';
   }
 
   private async commitMaterializedNotifications(signal: AbortSignal): Promise<void> {
@@ -1743,9 +1765,16 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   private async restoreAgentTaskNotification(info: AgentTaskInfo, delivery: object): Promise<void> {
+    if (this.restoreDisposed || this.exitSuppressionArmed) return;
+    if (this.restorePending) return this.notifyAgentTask(info);
     const context = await this.buildAgentTaskNotificationContext(info);
     if (context === undefined) return;
-    if (await this.isExternalClientMain()) {
+    const externalMain = await this.isExternalClientMain();
+    if (this.restoreDisposed || this.isTerminalNotificationSuppressed(info.taskId)) {
+      this.scheduledNotificationKeys.delete(notificationKey(context.origin));
+      return;
+    }
+    if (externalMain) {
       this.markDeliveredNotification(context.origin);
       this.fireNotificationHook(context.notification);
       return;

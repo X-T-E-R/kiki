@@ -34,6 +34,7 @@ import {
 } from './profileDraft';
 import { RawPanel } from './RawPanel';
 import { SubagentsField } from './SubagentsField';
+import { RecipeOptionsField } from '../RecipeOptionsField';
 import { useSavedTick } from '../useSavedTick';
 import { PromptIdentityEditor, PromptOverridesContentEditor } from '../PromptIdentityEditor';
 import { promptIdentityProblem, promptOverridesBody, promptOverridesProblem } from '../promptIdentityDraft';
@@ -52,7 +53,7 @@ const TAB_LABEL: Record<Tab, I18nKey> = {
 /** Which tab owns each draft field, so a tab can show that it holds unsaved edits. */
 const FIELD_TAB: Record<keyof ProfileDraft, Exclude<Tab, 'raw'>> = {
   description: 'identity', whenToUse: 'identity', prompt: 'identity', main: 'identity',
-  executor: 'run', allowKikiSubagents: 'run', kikiContext: 'run', modelAlias: 'run', effort: 'run',
+  executor: 'run', allowKikiSubagents: 'run', kikiContext: 'run', modelAlias: 'run', effort: 'run', recipeOptions: 'run',
   restrictModelsToMenu: 'run', preferredModels: 'run', discouragedModels: 'run', preferredEfforts: 'run',
   allowedModels: 'run', denyModels: 'run', allowedEfforts: 'run', modelProfiles: 'run', executorPrompt: 'run',
   subagentPolicy: 'dispatch', spawnConstraints: 'dispatch',
@@ -293,6 +294,8 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
             onChange={(value) => set('effort', value)} />
         </Field>
       </div>
+      <RecipeOptionsField recipe={profile.recipe} sourceFile={profile.source_file} values={draft.recipeOptions}
+        disabled={disabled || external} onChange={(values) => set('recipeOptions', values)} />
       {external && ignoredFields.length > 0 ? <details data-profile-section="ignored-fields" className="text-[12px]">
         <summary className="cursor-pointer select-none text-ink-soft hover:text-ink">{t('st.profiles.ignoredTitle', { engine })} · {ignoredFields.length}</summary>
         <ul className="mt-2 space-y-2 pl-3">

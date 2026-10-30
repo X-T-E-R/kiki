@@ -33,6 +33,9 @@ import {
   IHostProcessService,
 } from '#/os/interface/hostProcess';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
+import { AppHostProcessService } from '#/app/bootstrap/hostChildServices';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { SyncDescriptor } from '#/_base/di/descriptors';
 import { StdioMcpClient } from '#/mcpCore/client-stdio';
 import { LocalRuntime } from '#/runtime/localRuntime';
 
@@ -61,6 +64,39 @@ describe('HostProcessService', () => {
 
   afterEach(async () => {
     await disposables.dispose();
+  });
+
+  it('resolves the App process service with the selected bootstrap home', async () => {
+    ix.stub(IBootstrapService, { homeDir: 'selected-space' });
+    ix.set(IHostProcessService, new SyncDescriptor(AppHostProcessService));
+    const child = await ix.get(IHostProcessService).spawn(process.execPath, ['-e', 'process.stdout.write(process.env.KIKI_HOME??"")']);
+    expect(await collect(child.stdout)).toBe('selected-space');
+    expect(await child.wait()).toBe(0);
+  });
+
+  it('keeps per-App home defaults between ambient env and explicit overrides', async () => {
+    vi.stubEnv('KIKI_HOME', 'ambient-main');
+    vi.stubEnv('KIMI_CODE_HOME', 'vendor-kimi');
+    const first = new HostProcessService({ KIKI_HOME: 'space A' });
+    const second = new HostProcessService({ KIKI_HOME: 'space B' });
+    const read = async (service: HostProcessService, options = {}) => {
+      const child = await service.spawn(process.execPath, ['-e', 'process.stdout.write(JSON.stringify({home:process.env.KIKI_HOME??null,vendor:process.env.KIMI_CODE_HOME}))'], options);
+      const value = JSON.parse(await collect(child.stdout));
+      expect(await child.wait()).toBe(0);
+      return value;
+    };
+    try {
+      expect(await read(first)).toEqual({ home: 'space A', vendor: 'vendor-kimi' });
+      expect(await read(second)).toEqual({ home: 'space B', vendor: 'vendor-kimi' });
+      expect(await read(first, { env: { KIKI_HOME: 'explicit' } })).toEqual({ home: 'explicit', vendor: 'vendor-kimi' });
+      expect(await read(first, { envUnset: ['KIKI_HOME'] })).toEqual({ home: null, vendor: 'vendor-kimi' });
+      if (process.platform === 'win32') expect(await read(first, { env: { kiki_home: 'case override' } })).toEqual({ home: 'case override', vendor: 'vendor-kimi' });
+      expect(process.env['KIKI_HOME']).toBe('ambient-main');
+    } finally {
+      vi.unstubAllEnvs();
+      await first.dispose();
+      await second.dispose();
+    }
   });
 
   it('spawns a process and captures stdout + exit code', async () => {
@@ -495,7 +531,7 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
         let child: IHostProcess | undefined;
         try {
           await client.connect();
-          expect((await client.listTools()).map((tool) => tool.name)).toEqual(['get_cwd']);
+          expect((await client.listTools()).map((tool) => tool.name)).toEqual(['get_cwd', 'get_home']);
           expect((await client.callTool('get_cwd', {})).content).toEqual([{ type: 'text', text: directory }]);
           child = await spawn.mock.results.at(-1)!.value;
           expect(alive(child!.pid)).toBe(true);

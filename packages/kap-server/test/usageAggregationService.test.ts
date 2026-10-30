@@ -56,10 +56,13 @@ afterEach(async () => {
 });
 
 interface Fixture {
+  readonly core: Scope;
   readonly service: UsageAggregationService;
   readonly model: IUsageReadModel;
   readonly facts: IUsageFactStore;
   readonly reads: Map<string, number>;
+  readonly agentLists: Map<string, number>;
+  readonly sourceProbes: Map<string, number>;
   readonly readBytes: Map<string, number>;
   readonly readOffsets: number[];
   readonly readRanges: { readonly start: number; readonly end: number }[];
@@ -155,6 +158,8 @@ function fixture(
   ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
   const queryStore = ix.get(IQueryStore);
   const reads = new Map<string, number>();
+  const agentLists = new Map<string, number>();
+  const sourceProbes = new Map<string, number>();
   const readBytes = new Map<string, number>();
   const readOffsets: number[] = [];
   const readRanges: { start: number; end: number }[] = [];
@@ -196,6 +201,7 @@ function fixture(
     get(target, property, receiver) {
       if (property === 'list') return async (storageScope: string, prefix?: string) => {
         if (!storageScope.endsWith('/agents')) return target.list(storageScope, prefix);
+        agentLists.set(storageScope, (agentLists.get(storageScope) ?? 0) + 1);
         await beforeMetadataRead();
         return prefix === undefined ? agentIds : agentIds.filter((id) => id.startsWith(prefix));
       };
@@ -206,6 +212,7 @@ function fixture(
       };
       if (property === 'mtime') return async (storageScope: string, key: string) => {
         if (key !== 'wire.jsonl') return target.mtime(storageScope, key);
+        sourceProbes.set(storageScope, (sourceProbes.get(storageScope) ?? 0) + 1);
         await beforeMetadataRead();
         return wireMtimes.get(storageScope);
       };
@@ -350,10 +357,13 @@ function fixture(
     },
   } as unknown as Scope;
   return {
+    core,
     service: new UsageAggregationService(core, now, limits, sourceChanges),
     model,
     facts,
     reads,
+    agentLists,
+    sourceProbes,
     readBytes,
     readOffsets,
     readRanges,
@@ -852,6 +862,48 @@ describe('UsageAggregationService accounting evidence', () => {
 });
 
 describe('UsageAggregationService cache budgets', () => {
+  it('resumes a source-budgeted inventory without listing or probing the verified prefix again', async () => {
+    const ids = Array.from({ length: 7 }, (_, i) => `agent-${i}`);
+    const f = fixture([summary('s', 'w')], {}, () => 0, { sourceScanLimit: 2 });
+    f.setAgentIds(ids);
+    let result = await query(f.service);
+    expect(result.reliability).toMatchObject({ complete: false, incomplete_reason: 'record_budget' });
+    expect([...f.sourceProbes.values()].reduce((a, b) => a + b, 0)).toBe(2);
+    for (let page = 0; page < 3; page++) result = await query(f.service);
+    expect(result.reliability.complete).toBe(true);
+    expect([...f.agentLists]).toEqual([['sessions/w/s/agents', 1]]);
+    expect([...f.sourceProbes.values()]).toEqual(ids.map(() => 1));
+  });
+
+  it('applies the session cap to inventory and continues at the next session without a watcher', async () => {
+    const sessions = Array.from({ length: 3 }, (_, i) => summary(`s${i}`, 'w'));
+    const f = fixture(sessions, {}, () => 0, { sessionScanLimit: 1 });
+    expect((await query(f.service)).reliability).toMatchObject({ complete: false, incomplete_reason: 'session_cap' });
+    expect([...f.agentLists.keys()]).toEqual(['sessions/w/s0/agents']);
+    expect((await query(f.service)).reliability.complete).toBe(false);
+    expect((await query(f.service)).reliability.complete).toBe(true);
+    expect([...f.agentLists.values()]).toEqual([1, 1, 1]);
+    expect([...f.sourceProbes.values()]).toEqual([1, 1, 1]);
+  });
+
+  it('invalidates published accounting when fallback inventory removes an agent and on a later watch event', async () => {
+    let listener: (key?: string) => void = () => {};
+    const changes = { ready: true, onDidChange: (callback: typeof listener) => { listener = callback; return { dispose: () => {} }; } };
+    const f = fixture([summary('s', 'w')], {
+      [scope('w', 's')]: [usageRecord(1)], 'sessions/w/s/agents/child': [usageRecord(1)],
+    }, () => 100, {}, undefined, undefined, undefined, undefined, undefined, changes);
+    f.setAgentIds(['main', 'child']);
+    expect(await f.service.readSessionAccounting('w', 's')).toMatchObject({ complete: true, freshness: 'current', tokens: { output: 2 } });
+    await query(f.service);
+    changes.ready = false;
+    f.setAgentIds(['main']);
+    await query(f.service);
+    expect(f.service.readSessionAccountingSnapshot('w', 's')).toMatchObject({ complete: true, freshness: 'stale', tokens: { output: 2 } });
+    expect(await f.service.readSessionAccounting('w', 's')).toMatchObject({ complete: true, freshness: 'current', tokens: { output: 1 } });
+    listener('w\0s');
+    expect(f.service.readSessionAccountingSnapshot('w', 's').freshness).toBe('stale');
+  });
+
   it('skips warmed fleet probes and refreshes only signalled sources, with a periodic missed-event repair', async () => {
     const day = Date.UTC(2026, 9, 6);
     let now = day;
@@ -873,9 +925,14 @@ describe('UsageAggregationService cache budgets', () => {
     f.setWire(scope('w', 's'), [usageRecord(day - 9 * 86_400_000), usageRecord(day), usageRecord(day + 1)]);
     listener('w\0s');
     const beforeSignalledReads = [...f.readBytes.values()].reduce((sum, bytes) => sum + bytes, 0);
+    f.agentLists.clear();
+    f.sourceProbes.clear();
     expect((await query(f.service, input)).summary.tokens.output).toBe(3);
+    expect([...f.agentLists]).toEqual([['sessions/w/s/agents', 1]]);
+    expect([...f.sourceProbes]).toEqual([[scope('w', 's'), 1]]);
     expect([...f.readBytes.values()].reduce((sum, bytes) => sum + bytes, 0)).toBeGreaterThan(beforeSignalledReads);
     const afterAppend = metadataReads;
+    expect(afterAppend - baseline).toBe(6);
     await query(f.service, input);
     expect(metadataReads).toBe(afterAppend);
     f.setWire(scope('w', 's'), [usageRecord(day + 2)]);
@@ -1601,9 +1658,13 @@ describe('UsageAggregationService full rescan', () => {
     try { response = await query(restarted); }
     finally { vi.useRealTimers(); }
     expect(response.summary.session_count).toBe(505);
-    expect(response.reliability).toMatchObject({ complete: true, incomplete_reason: null });
+    expect(response.reliability).toMatchObject({ complete: false, incomplete_reason: 'session_cap' });
     expect(response.summary.tokens.input_other).toBe(1010);
     const reads = [...f.reads.values()].reduce((sum, count) => sum + count, 0);
+    const verified = new UsageAggregationService(f.core, () => clock, { sessionScanLimit: 1000, wireRecordBudget: 1 });
+    expect((await query(verified)).reliability).toMatchObject({ complete: true, incomplete_reason: null });
+    verified.dispose();
+    expect([...f.reads.values()].reduce((sum, count) => sum + count, 0)).toBe(reads);
     restarted.startFullRescan();
     expect((await finishRescan(restarted)).scanned_records).toBe(0);
     expect([...f.reads.values()].reduce((sum, count) => sum + count, 0)).toBe(reads);

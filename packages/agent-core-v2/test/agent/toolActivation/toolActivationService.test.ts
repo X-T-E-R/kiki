@@ -15,6 +15,7 @@ import {
 } from '#/_base/di/scope';
 import { createServices } from '#/_base/di/test';
 import { IEventBus } from '#/app/event/eventBus';
+import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { IConfigService, type ConfigSectionChangedEvent } from '#/app/config/config';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
@@ -625,6 +626,31 @@ describe('AgentToolActivationService', () => {
     profileData.allowParentNotify = true;
     publishStatusUpdated();
     expect(registry.resolve('AgentNotify')).toBeDefined();
+  });
+
+  it('skips tool reconciliation for usage and context meter status updates', async () => {
+    let evaluations = 0;
+    registerAgentToolService(IAlphaTool, AlphaTool, {
+      name: 'Alpha',
+      when: () => {
+        evaluations += 1;
+        return notifyParent;
+      },
+    });
+    const ix = createActivationHost();
+    const registry = ix.get(IAgentToolRegistryService);
+    await ix.get(IAgentToolActivationService).activate();
+    const publish = publishStatusUpdated as (event?: AgentStatusUpdated) => void;
+    const baseline = evaluations;
+
+    publish(new AgentStatusUpdated({ contextTokens: 10 }));
+    publish(new AgentStatusUpdated({ usage: { contextTokens: 10 } as unknown as AgentStatusUpdated['usage'] }));
+    expect(evaluations).toBe(baseline);
+
+    notifyParent = false;
+    publish(new AgentStatusUpdated({ model: 'm', contextTokens: 10 }));
+    expect(evaluations).toBeGreaterThan(baseline);
+    expect(registry.resolve('Alpha')).toBeUndefined();
   });
 
   it('reconciles conditional tool exposure when configuration changes', async () => {

@@ -24,7 +24,7 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { CycleError, EventDispatcherService } from '#/state/eventDispatcherService';
 import { defineState, type PatchEntry } from '#/state/state';
-import { decodeReplayCheckpointGraph, encodeReplayCheckpointGraph, type ReplayCheckpointGraph } from '#/state/replayCheckpointCodec';
+import { decodeReplayCheckpointGraph, encodeReplayCheckpointGraph, encodeReplayCheckpointGraphAsync, type ReplayCheckpointGraph } from '#/state/replayCheckpointCodec';
 import { IWireService } from '#/wire/wire';
 import type { WireRecord } from '#/wire/record';
 
@@ -187,6 +187,23 @@ beforeEach(() => {
 afterEach(() => disposables.dispose());
 
 describe('EventDispatcherService', () => {
+  it('keeps graph identity, undo payload types and cycles in cooperative checkpoint encoding', async () => {
+    const shared = { text: 'saved value', optional: undefined, counter: 42n };
+    const payload = { shared, aliases: [shared, shared], map: new Map<unknown, unknown>([[shared, new Set([shared])]]),
+      bytes: new Uint8Array(100_000).fill(251), date: new Date('2026-01-01T00:00:00Z'), self: undefined as unknown };
+    payload.self = payload;
+    const graph = await encodeReplayCheckpointGraphAsync(payload);
+    expect(graph).toEqual(encodeReplayCheckpointGraph(payload));
+    const restored = decodeReplayCheckpointGraph(graph) as typeof payload;
+    expect(restored.self).toBe(restored);
+    expect(restored.aliases[0]).toBe(restored.shared);
+    expect(restored.map.has(restored.shared)).toBe(true);
+    expect(restored.shared.counter).toBe(42n);
+    expect(restored.bytes).toEqual(payload.bytes);
+    expect(restored.date).toEqual(payload.date);
+    expect(Object.hasOwn(restored.shared, 'optional')).toBe(true);
+  });
+
   it('folds a durable event into state and appends the serialized record', async () => {
     await dispatcher.dispatch(new CounterAdd({ by: 3 }));
 
@@ -557,6 +574,7 @@ describe('EventDispatcherService', () => {
     persisted.graph = encodeReplayCheckpointGraph(payload);
     documents.set('sessions/ws/s1/agents/main/replay-checkpoints/engine-v1', persisted);
     failSet = true;
+    await first.dispatcher.dispatch(new PingEvent({}));
     await expect(first.dispatcher.saveReplayCheckpoint?.()).rejects.toThrow('replay checkpoint write failed: checkpoint write interrupted');
     expect(documents.get('sessions/ws/s1/agents/main/replay-checkpoints/engine-v1')).toEqual(persisted);
     failSet = false;

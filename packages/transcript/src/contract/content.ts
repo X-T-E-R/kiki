@@ -44,20 +44,52 @@ export interface ContentWindow {
 
 /** UTF-8 and JSON escaping are counted before a value enters a response. */
 export function jsonBytes(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+  const text = JSON.stringify(value) as string | undefined;
+  return text === undefined ? 0 : utf8ByteLength(text);
+}
+
+function utf8ByteLength(text: string): number {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const unit = text.charCodeAt(index);
+    if (unit < 0x80) bytes += 1;
+    else if (unit < 0x800) bytes += 2;
+    else if (unit >= 0xd800 && unit <= 0xdbff && index + 1 < text.length) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else bytes += 3;
+    } else bytes += 3;
+  }
+  return bytes;
 }
 
 /** Select a prefix without splitting a Unicode code point, under a decoded JSON budget. */
 export function jsonTextPrefix(text: string, offset: number, maxBytes: number): string {
-  let low = offset;
-  let high = Math.min(text.length, offset + maxBytes);
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (jsonBytes(text.slice(offset, middle)) <= maxBytes) low = middle;
-    else high = middle - 1;
+  const limit = Math.min(text.length, offset + maxBytes);
+  let bytes = 2;
+  let end = offset;
+  while (end < limit) {
+    const unit = text.charCodeAt(end);
+    const pair = unit >= 0xd800 && unit <= 0xdbff && end + 1 < limit &&
+      text.charCodeAt(end + 1) >= 0xdc00 && text.charCodeAt(end + 1) <= 0xdfff;
+    const cost = pair ? 4 : jsonUnitBytes(unit);
+    if (bytes + cost > maxBytes) break;
+    bytes += cost;
+    end += pair ? 2 : 1;
   }
-  if (low < text.length && low > offset && /[\uD800-\uDBFF]/u.test(text[low - 1]!)) low -= 1;
-  return text.slice(offset, low);
+  if (end < text.length && end > offset && /[\uD800-\uDBFF]/u.test(text[end - 1]!)) end -= 1;
+  return text.slice(offset, end);
+}
+
+function jsonUnitBytes(unit: number): number {
+  if (unit === 0x22 || unit === 0x5c || unit === 0x08 || unit === 0x0c || unit === 0x0a || unit === 0x0d || unit === 0x09) return 2;
+  if (unit < 0x20) return 6;
+  if (unit < 0x80) return 1;
+  if (unit < 0x800) return 2;
+  if (unit >= 0xd800 && unit <= 0xdfff) return 6;
+  return 3;
 }
 
 /** Apply one explicit segment immutably; offsets prevent duplicate or out-of-order concatenation. */
@@ -209,6 +241,19 @@ export function mergeContentPreview<T extends ContentWindow>(current: T, preview
     for (const [path, revision] of versions ?? []) if (ref.path.every((part, index) => (JSON.parse(path) as ContentRef['path'])[index] === part)) retained.set(path, revision);
   }
   if (result !== preview) hydratedVersions.set(result as object, retained);
+  return result;
+}
+
+/** Replace one stale field and its continuation references with a fresh preview's field, forgetting hydration under that path. */
+export function adoptContentPreviewField<T extends ContentWindow>(current: T, preview: ContentWindow, path: readonly (string | number)[]): T {
+  const value = contentPathValue(preview, path);
+  if (value === undefined) throw new Error('content path unavailable');
+  const under = (candidate: ContentRef) => path.every((part, index) => candidate.path[index] === part);
+  const root = clonePath(current, path, () => value) as T;
+  const result = { ...root, contentRefs: [...(current.contentRefs ?? []).filter((candidate) => !under(candidate)), ...(preview.contentRefs ?? []).filter(under)] };
+  const versions = new Map(hydratedVersions.get(current as object));
+  for (const key of versions.keys()) if (under({ path: JSON.parse(key) } as ContentRef)) versions.delete(key);
+  hydratedVersions.set(result, versions);
   return result;
 }
 

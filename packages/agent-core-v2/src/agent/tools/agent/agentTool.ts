@@ -768,6 +768,7 @@ export function bindingResultLines(handle: SubagentHandle): string[] {
   const bindingAdvisories = handle.bindingAdvisories ?? [];
   return [
     `actual_profile: ${handle.profileName}`,
+    ...(handle.model === undefined ? [] : [`actual_model: ${handle.model}`]),
     ...(handle.profileSource === 'profile-file' ? ['profile_source: profile_file'] : []),
     ...(handle.dispatchDecision === undefined ? [] : [
       `dispatch_policy: ${handle.dispatchDecision.policyMode}`,

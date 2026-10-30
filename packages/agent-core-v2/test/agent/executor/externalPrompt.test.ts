@@ -21,9 +21,16 @@ const fields = {
 const context = {
   agentsMd: 'Workspace instructions', memory: 'Saved memory',
   skills: 'Skill list', cwd: 'C:/workspace', cwdListing: 'src/',
+  space: { id: 'design-space', name: 'Design', kind: 'space' as const, homeDir: 'C:/spaces/design' },
 };
 
 describe('external prompt blocks', () => {
+  it('uses the resolved Space home only when workspace_info is selected', () => {
+    const selected = renderExternalPrompt(profile({ include: ['workspace_info'] }), context, fields, 'Body');
+    expect(selected).toContain('## Space');
+    expect(selected).toContain('Kiki home (server host): "C:/spaces/design"');
+    expect(renderExternalPrompt(profile({ include: [] }), context, fields, 'Body')).not.toContain('C:/spaces/design');
+  });
   it('defaults to the already-rendered profile body without shared blocks', () => {
     expect(renderExternalPrompt(profile(), context, fields, 'Route body')).toBe('Route body');
   });

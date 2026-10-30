@@ -76,6 +76,7 @@ import { ModelEditScopeSwitch } from './ModelEditScopeSwitch';
 import { ModelProtocolField } from './ModelProtocolField';
 import { protocolChoiceFrom, protocolCreateField, protocolPatchField, type ModelProtocolChoice } from './modelProtocolDraft';
 import { ModelRecipeField } from './ModelRecipeField';
+import { RecipeOptionsField } from './RecipeOptionsField';
 import { ModelPromptBodies } from './ModelPromptBodies';
 import { branchSelectionFor, modelPromptsDraft, modelPromptsEqual, modelPromptsPatch, type ModelPromptsDraft } from './modelPromptsDraft';
 import { ModelSteerSources } from './ModelSteerSources';
@@ -1453,7 +1454,7 @@ function ModelCatalogRowEditor({
     setUsageIssue(null);
   };
 
-  const save = async (recipeReference?: string | null) => {
+  const save = async (recipeReference?: string | null, recipeOptions?: import('@kiki/protocol').RecipeOptionValues) => {
     const refuse = (text: string) => {
       setFeedback({ tone: 'error', text });
       if (recipeReference !== undefined) throw new Error(text);
@@ -1562,6 +1563,7 @@ function ModelCatalogRowEditor({
       };
       if (bodySavesDirty) patch.cognition = cognition;
       if (recipeReference !== undefined) patch.recipe = recipeReference;
+      if (recipeOptions !== undefined) patch.recipe_options = recipeOptions;
       // The source declarations travel in the same transaction and under the
       // same revision, as their own field rather than folded into `cognition`:
       // the server merges a source entry field by field, so a whole-object
@@ -1964,6 +1966,8 @@ function ModelCatalogRowEditor({
           disabled={saving}
           onDraftChange={setRecipeDraftDirty}
         />
+        <RecipeOptionsField recipe={entity.recipe} values={entity.recipe_options} options={entity.recipe_model_binding?.options}
+          disabled={saving} onChange={(values) => save(entity.recipe, values)} />
       </div>
       <div id={panelId('advanced')} role="tabpanel" aria-labelledby={tabId('advanced')} hidden={activeEditorTab !== 'advanced'}
         className="space-y-1" data-model-advanced-groups>

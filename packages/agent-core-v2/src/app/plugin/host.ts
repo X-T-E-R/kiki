@@ -2,6 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mergeChildEnv } from '#/_base/execEnv/childEnv';
+import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 
 import { PLUGIN_IM_COMPLETE_LIMITS, PLUGIN_IM_DIAGNOSTIC_LIMITS, pluginImDiagnosticReportSchema, sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, pluginImHistoryRequestSchema, pluginImHistoryPageSchema, type ImInboundDiagnostic, type PluginImAdapterDefinition, type PluginImEvent, type PluginMessagesApi, type MediaProviderDefinition, type PluginMediaApi, type SessionSourceDefinition } from '@kiki/protocol';
 import { parsePluginImEvent, pluginImDeliverySchema, pluginImIdentitySchema, type PluginImConnection } from './imAdapter';
@@ -344,7 +346,7 @@ export class PluginHost {
       const child = spawn(process.execPath, args, {
         cwd: path.dirname(this.entry),
         env: {
-          ...process.env,
+          ...mergeChildEnv(process.env, kikiChildDefaults(this.kikiHome)),
           ELECTRON_RUN_AS_NODE: process.versions['electron'] === undefined ? undefined : '1',
           KIKI_CACHE_DIR: process.env['KIKI_CACHE_DIR'],
           KIKI_PLUGIN_ROOT: path.dirname(this.entry),

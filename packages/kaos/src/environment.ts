@@ -24,7 +24,7 @@ import { KaosShellNotFoundError } from './errors';
 // falls back to the raw `process.platform` string for unknown ones (e.g.
 // 'freebsd'). Typed as `string` so the union isn't inhabited-by-string.
 export type OsKind = string;
-export type ShellName = 'bash' | 'sh';
+export type ShellName = 'bash' | 'sh' | 'powershell' | 'cmd';
 
 export interface Environment {
   readonly osKind: OsKind;

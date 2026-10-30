@@ -12,6 +12,7 @@ import { LoopLimitsCard } from './LoopLimitsCard';
 import { RetryPolicyCard } from './RetryPolicyCard';
 import { SessionResidencyCard } from './SessionResidencyCard';
 import { CronRuntimeCard, TaskPolicyCard } from './TaskRuntimeSettings';
+import { TasksSection } from './TasksSection';
 import { WorktreePolicy } from './WorktreePolicy';
 import { commitText, pickValue, selectText } from './testControls';
 
@@ -116,7 +117,7 @@ describe('config gap cards', () => {
     expect(attempts.placeholder).toBe('5');
     await commitText(attempts, '9');
     await click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
-    expect(patchConfig).toHaveBeenLastCalledWith({ retry: { max_attempts: 9 }, replace_domains: ['retry'] });
+    expect(patchConfig).toHaveBeenLastCalledWith({ retry: { max_attempts: 9, retry_partial_responses: true }, replace_domains: ['retry'] });
   });
 
   it('sends bash_file_tool_hints with the task policy draft', async () => {
@@ -236,6 +237,12 @@ describe('config gap cards', () => {
     expect(save.hasAttribute('disabled')).toBe(false);
   });
 
+  it('keeps background limits on Tasks without duplicating developer cron diagnostics', async () => {
+    const container = await render(<TasksSection />);
+    expect(container.querySelector('#st-card-task-policy')).not.toBeNull();
+    expect(container.querySelector('#st-card-cron')).toBeNull();
+  });
+
   it('shows cron diagnostics as on/off in readable units and never as controls', async () => {
     getConfig.mockResolvedValue({
       ...CONFIG,
@@ -279,9 +286,60 @@ describe('config gap cards', () => {
     await type(backoff!, '1000');
     await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
     expect(patchConfig).toHaveBeenCalledWith({
-      retry: { policies: [{ match: '^provider\\.rate_limit$', max_attempts: 6, backoff: 1000, retry: true }] },
+      retry: {
+        retry_partial_responses: true,
+        policies: [{ match: '^provider\\.rate_limit$', max_attempts: 6, backoff: 1000, retry: true }],
+      },
       replace_domains: ['retry'],
     });
+  });
+
+  it('reads partial-response retries as on by default and preserves the choice when saving the retry domain', async () => {
+    getConfig.mockResolvedValue({
+      ...CONFIG,
+      retry: {
+        maxAttempts: 7,
+        retryPartialResponses: false,
+        policies: [{
+          match: '^provider\\.rate_limit$',
+          models: ['example-model'],
+          providers: ['example-provider'],
+          maxAttempts: 6,
+          backoff: 1000,
+          retry: true,
+        }],
+      },
+    });
+    const container = await render(<RetryPolicyCard />);
+    const card = container.querySelector('#st-card-retry')!;
+    const partial = [...card.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+      .find((input) => input.closest('label')?.textContent?.includes('partial responses'))!;
+    expect(partial.checked).toBe(false);
+    await click(partial);
+    await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Save')!);
+    expect(patchConfig).toHaveBeenLastCalledWith({
+      retry: {
+        max_attempts: 7,
+        retry_partial_responses: true,
+        policies: [{
+          match: '^provider\\.rate_limit$',
+          models: ['example-model'],
+          providers: ['example-provider'],
+          max_attempts: 6,
+          backoff: 1000,
+          retry: true,
+        }],
+      },
+      replace_domains: ['retry'],
+    });
+  });
+
+  it('uses the default partial-response retry behavior when the server omits the field', async () => {
+    const container = await render(<RetryPolicyCard />);
+    const card = container.querySelector('#st-card-retry')!;
+    const partial = [...card.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
+      .find((input) => input.closest('label')?.textContent?.includes('partial responses'))!;
+    expect(partial.checked).toBe(true);
   });
 
   it('saves worktree policy fields one at a time and validates the branch prefix', async () => {

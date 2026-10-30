@@ -119,6 +119,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     }),
 
     usage: (query, options) => transport.json('/usage', { query, signal: options?.signal }),
+    sessionUsageAccounting: (sessionId, options) => transport.json(`/usage/sessions/${encodeURIComponent(sessionId)}/accounting`, { signal: options?.signal }),
     requestGovernance: () => transport.json('/usage/realtime'),
     agentActivity: () => transport.json('/usage/realtime/agents'),
     usageRescan: {
@@ -225,6 +226,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
       }),
       listEphemeral: (query = {}) => transport.json<import('@kiki/protocol').ListEphemeralSessionsResponse>('/sessions/ephemeral', { query: { ...query, page_size: query.page_size ?? 50 } }),
       create: (body: SessionCreate) => transport.json<Session>('/sessions', { method: 'POST', body }),
+      creationStatus: (creationId, options) => transport.json(`/sessions/creation/${encodeURIComponent(creationId)}`, { signal: options?.signal, timeoutMs: options?.timeoutMs }),
       saveEphemeral: (sessionId: string) => transport.json<Session>(`/sessions/${encodeURIComponent(sessionId)}/ephemeral/save`, { method: 'POST', body: {} }),
       endEphemeral: (sessionId: string, body = {}) => transport.json<import('@kiki/protocol').EndEphemeralSessionResponse>(`/sessions/${encodeURIComponent(sessionId)}/ephemeral/end`, { method: 'POST', body }),
       compact: (sessionId: string, body = {}) => transport.json(

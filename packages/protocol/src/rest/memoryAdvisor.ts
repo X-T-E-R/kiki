@@ -13,7 +13,7 @@ export const memoryAdvisorConfigSchema = z
     mode: z.enum(['off', 'rank', 'select']).default('rank'),
     selector: memoryAdvisorSelectorSchema.optional(),
     source: decisionSourceSchema.optional(),
-    first_step_wait_ms: z.number().int().min(0).max(5_000).default(1_500),
+    first_step_wait_ms: z.number().int().min(0).max(5_000).optional(),
     timeout_ms: z.number().int().min(100).max(60_000).default(6_000),
     max_calls_per_turn: z.number().int().min(1).max(10).default(3),
     candidate_chars: z.number().int().min(0).max(500).default(120),
@@ -32,7 +32,7 @@ export const memoryAdvisorPatchSchema = z
     mode: memoryAdvisorConfigSchema.shape.mode.unwrap().optional(),
     selector: memoryAdvisorSelectorSchema.nullable().optional(),
     source: decisionSourceSchema.nullable().optional(),
-    first_step_wait_ms: memoryAdvisorConfigSchema.shape.first_step_wait_ms.unwrap().optional(),
+    first_step_wait_ms: memoryAdvisorConfigSchema.shape.first_step_wait_ms.unwrap().nullable().optional(),
     timeout_ms: memoryAdvisorConfigSchema.shape.timeout_ms.unwrap().optional(),
     max_calls_per_turn: memoryAdvisorConfigSchema.shape.max_calls_per_turn.unwrap().optional(),
     candidate_chars: memoryAdvisorConfigSchema.shape.candidate_chars.unwrap().optional(),
@@ -87,6 +87,8 @@ export const memoryAdvisorStatusSchema = z.object({
   origin: z.string().optional(),
   protocol: z.enum(['chat_json', 'system_one', 'pair_score']).optional(),
   model: z.string().optional(),
+  first_step_wait_ms: z.number().int().optional(),
+  first_step_wait_default_ms: z.number().int().optional(),
   consent_required: z.boolean(),
   enumeration: z.enum(['complete', 'partial']).optional(),
   applicability: z.enum(['full_units', 'rank_only']).optional(),
@@ -118,6 +120,20 @@ export const memorySettingsResponseSchema = z.object({
   advisor_status: memoryAdvisorStatusSchema,
 });
 export type MemoryAdvisorConfig = z.infer<typeof memoryAdvisorConfigSchema>;
+export type MemoryAdvisorProtocol = MemoryAdvisorSelector['protocol'];
+/** First-step wait used when `first_step_wait_ms` is not set: decision services answer within about 1.5 s, chat models need longer than the wait can cover. */
+export const MEMORY_ADVISOR_FIRST_STEP_WAIT_DEFAULTS: Readonly<Record<MemoryAdvisorProtocol, number>> = {
+  chat_json: 1_500,
+  system_one: 3_000,
+  pair_score: 3_000,
+};
+/** The first-step wait in effect: an explicit value wins; otherwise the default of the resolved protocol, or the chat default when it is unknown. */
+export function memoryAdvisorFirstStepWaitMs(
+  config: Pick<MemoryAdvisorConfig, 'first_step_wait_ms'> | undefined,
+  protocol: MemoryAdvisorProtocol | undefined,
+): number {
+  return config?.first_step_wait_ms ?? MEMORY_ADVISOR_FIRST_STEP_WAIT_DEFAULTS[protocol ?? 'chat_json'];
+}
 export type MemoryAdvisorSelector = z.infer<typeof memoryAdvisorSelectorSchema>;
 export type MemoryAdvisorPatch = z.infer<typeof memoryAdvisorPatchSchema>;
 export type MemoryAdvisorStatus = z.infer<typeof memoryAdvisorStatusSchema>;

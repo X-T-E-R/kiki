@@ -489,6 +489,31 @@ describe('thinking-only continuation', () => {
     }
   });
 
+  it('echoes one trailing empty thinking signature on the next provider request', async () => {
+    const stream = async function* () {
+      yield { type: 'message_start', message: { id: 'answer-signed', usage: { input_tokens: 4, output_tokens: 0 } } };
+      yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'Answer' } };
+      yield { type: 'content_block_stop', index: 0 };
+      yield { type: 'content_block_start', index: 1, content_block: { type: 'thinking', thinking: '' } };
+      yield { type: 'content_block_delta', index: 1, delta: { type: 'signature_delta', signature: SIGNATURE } };
+      yield { type: 'content_block_stop', index: 1 };
+      yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } };
+      yield { type: 'message_stop' };
+    };
+    const create = scriptedCreate([stream, textStream('Next answer')]);
+    const local = anthropicAgent(create);
+    try {
+      await (await prompt(local)).completion;
+      expect(storedThinking(local)).toEqual([{ type: 'think', think: '', encrypted: SIGNATURE }]);
+      expect(local.allEvents.filter((event) => event.event === 'thinking.delta')).toEqual([]);
+      await (await prompt(local, 'Next request')).completion;
+      expect(thinkingOf(create.mock.calls[1]?.[0])).toEqual([{ thinking: '', signature: SIGNATURE }]);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
   it('does not treat a signature without real thinking as a continuation candidate', async () => {
     const stream = async function* () {
       yield { type: 'message_start', message: { id: 'signature-only', usage: { input_tokens: 4, output_tokens: 0 } } };

@@ -89,8 +89,8 @@ describe('memory maintenance guidance', () => {
     const types = { type: 'string', enum: ['user', 'feedback', 'project', 'reference'] };
     const expected = [
       [write, ['action', 'reason'], ['action', 'scope', 'id', 'expected_revision', 'type', 'title', 'body', 'reason', 'basis', 'validity', 'covered_by']],
-      [search, undefined, ['mode', 'query', 'scope', 'type', 'statuses', 'include_superseded', 'page_size', 'cursor']],
-      [read, undefined, ['id', 'ids', 'scope', 'include_pending']],
+      [search, undefined, ['raw', 'mode', 'query', 'scope', 'type', 'statuses', 'include_superseded', 'page_size', 'cursor']],
+      [read, undefined, ['raw', 'id', 'ids', 'scope', 'include_pending']],
     ] as const;
     for (const [schema, required, properties] of expected) {
       expect(schema['required']).toEqual(required);

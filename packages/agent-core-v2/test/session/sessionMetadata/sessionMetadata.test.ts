@@ -12,6 +12,8 @@ import {
 } from '#/app/sessionIndex/sessionIndex';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { applyPromptMetadataUpdate } from '#/session/sessionMetadata/promptMetadata';
+import { readCommittedAgentRunOutcomes } from '#/agent/task/agentOutcome';
 import {
   drainSessionMetadataWrites,
   SessionMetadata,
@@ -81,6 +83,80 @@ describe('SessionMetadata', () => {
     await disposables.dispose();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it('coalesces recency and prompt metadata on an eight MiB registry without awaiting disk', async () => {
+    const store = ix.get(IAtomicDocumentStore);
+    const agents = Object.fromEntries(Array.from({ length: 822 }, (_, index) => [String(index), {
+      taskId: `task-${index}`, status: 'completed', resultSummary: 'r'.repeat(10_240),
+    }]));
+    await store.set(META_SCOPE, 'state.json', { id: 's1', version: 2, createdAt: 1, updatedAt: 1,
+      archived: false, agents, custom: {}, isCustomTitle: false });
+    const meta = ix.get(ISessionMetadata);
+    await meta.ready;
+    const original = store.set.bind(store);
+    const writes = vi.spyOn(store, 'set');
+    for (let at = 10; at < 50; at += 1) {
+      await meta.update({ activityUpdatedAt: at }, { touchUpdatedAt: false, deferPersistence: true });
+    }
+    expect(writes).not.toHaveBeenCalled();
+    const gate = deferred();
+    writes.mockImplementation(async (...args) => { await gate.promise; return original(...args); });
+    const flushing = drainSessionMetadataWrites(false);
+    await ticks();
+    let admitted = false;
+    const admission = applyPromptMetadataUpdate({ metadata: meta, sessionId: 's1', eventService: { publish: () => {} } as never },
+      'new prompt').then(() => { admitted = true; });
+    await ticks();
+    expect(admitted).toBe(true);
+    gate.resolve();
+    await admission;
+    await flushing;
+    expect((await createFreshMetadata(ix).read())).toMatchObject({ activityUpdatedAt: 49, lastPrompt: 'new prompt' });
+    expect(writes.mock.calls.filter(([, key]) => key === 'state.json').length).toBeLessThanOrEqual(2);
+  });
+
+  it('writes long outcomes separately and restores their full receipt after a restart', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.ready;
+    const store = ix.get(IAtomicDocumentStore);
+    const receipt = 'complete receipt '.repeat(1024);
+    await meta.registerAgent('child', { taskId: 'task-1', status: 'completed', resultSummary: receipt });
+    const raw = await store.get<{ agents: Record<string, { resultSummary: string; outcomeRef: string }> }>(META_SCOPE, 'state.json');
+    expect(raw?.agents['child']?.resultSummary).toHaveLength(2048);
+    expect(raw?.agents['child']?.outcomeRef).toBeTruthy();
+    expect((await createFreshMetadata(ix).read()).agents?.['child']?.resultSummary).toBe(receipt);
+    const writes = vi.spyOn(store, 'set');
+    await meta.updateAgent('child', (current) => ({ ...current, userLabel: 'renamed' }));
+    expect(writes.mock.calls.map(([, key]) => key)).toEqual(['state.json']);
+    await store.delete(META_SCOPE, raw!.agents['child']!.outcomeRef);
+    const restored = createFreshMetadata(ix);
+    expect((await restored.read()).agents?.['child']).toMatchObject({
+      taskId: 'task-1', status: 'completed', resultSummary: receipt.slice(0, 2048),
+    });
+    const outcomes = await readCommittedAgentRunOutcomes(restored);
+    expect(outcomes.ok).toBe(true);
+    if (outcomes.ok) expect(outcomes.outcomes.get('task-1')).toMatchObject({ status: 'completed', finalOutput: receipt.slice(0, 2048) });
+  });
+
+  it('preserves the committed outcome when a sidecar write fails', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.registerAgent('child', { taskId: 'old-task', status: 'completed', resultSummary: 'old receipt' });
+    const store = ix.get(IAtomicDocumentStore);
+    const write = store.set.bind(store);
+    const fail = vi.spyOn(store, 'set').mockImplementation(async (...args) => {
+      if (args[1] !== 'state.json') throw new Error('sidecar unavailable');
+      return write(...args);
+    });
+    await meta.updateAgent('child', (current) => ({ ...current, taskId: 'new-task', resultSummary: 'r'.repeat(8192) }));
+    const restored = createFreshMetadata(ix);
+    expect((await restored.read()).agents?.['child']).toMatchObject({ taskId: 'new-task', resultSummary: 'r'.repeat(8192) });
+    const outcomes = await readCommittedAgentRunOutcomes(restored);
+    expect(outcomes.ok).toBe(true);
+    if (outcomes.ok) expect(outcomes.outcomes.get('new-task')).toMatchObject({ status: 'completed', finalOutput: 'r'.repeat(8192) });
+    fail.mockRestore();
+    await meta.updateAgent('child', (current) => ({ ...current, userLabel: 'retry sidecar' }));
+    expect((await createFreshMetadata(ix).read()).agents?.['child']?.resultSummary).toHaveLength(8192);
   });
 
   it('creates an initial document on first read', async () => {

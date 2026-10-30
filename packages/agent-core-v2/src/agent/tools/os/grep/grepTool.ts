@@ -8,6 +8,7 @@ import {
 } from '#/tool/toolContract';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { kikiDefinitionReadRoots } from '#/app/bootstrap/definitionReadRoots';
 import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
@@ -16,7 +17,7 @@ import type { IHostProcessService } from '#/os/interface/hostProcess';
 import { SshHostProcessService } from '#/os/backends/ssh/sshHostServices';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
-import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, hostToolParameters } from '#/agent/tools/os/sshToolTarget';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -29,7 +30,6 @@ import {
   SENSITIVE_DOT_VARIANT_SUFFIXES,
   type WorkspaceConfig,
 } from '#/tool/path-access';
-import { toInputJsonSchema } from '#/tool/input-schema';
 import { matchesStringRuleSubject } from '#/tool/rule-match';
 import {
   ensureRgPath,
@@ -74,7 +74,7 @@ export class GrepTool implements IGrepTool {
   readonly name = 'Grep' as const;
   readonly description = GREP_DESCRIPTION;
   get parameters(): Record<string, unknown> {
-    return toolParametersWithHost(toInputJsonSchema(GrepInputSchema), this.runtime.nativeSshEnabled?.() === true);
+    return hostToolParameters(GrepInputSchema, this.runtime.nativeSshEnabled?.() === true);
   }
   constructor(
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
@@ -105,7 +105,8 @@ export class GrepTool implements IGrepTool {
     const view = new RuntimeWorkspaceView(inspected, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const roots = inspected.identity.runtimeId.startsWith('ssh:') ? [] : this.skillCatalog?.catalog.getSkillRoots() ?? [];
-    const workspace = withDefinitionReadRoots(this.workspace(view), roots, env.homeDir);
+    const workspace = withDefinitionReadRoots(this.workspace(view), roots, env.homeDir,
+      inspected.identity.runtimeId === 'local' ? kikiDefinitionReadRoots(this.bootstrap) : []);
     const pathOptions = { env, workspace, operation: 'search' as const, shellPathBridge: runtimeShellPathBridge(inspected) };
     let path: string | undefined;
     let implicitExternal = false;
@@ -227,7 +228,7 @@ export class GrepTool implements IGrepTool {
     const { exitCode, stderrText, bufferTruncated, stderrTruncated, timedOut } = runResult;
     let { stdoutText } = runResult;
 
-    if (exitCode !== 0 && exitCode !== 1 && !timedOut) {
+    if (!timedOut && (exitCode !== 0 && exitCode !== 1 || exitCode === 1 && stderrText.trim() !== '')) {
       return {
         isError: true,
         output: formatRipgrepError(exitCode, stderrText, stderrTruncated),

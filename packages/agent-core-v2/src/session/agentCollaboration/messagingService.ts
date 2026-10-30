@@ -1,4 +1,4 @@
-import { Disposable, DisposableMap, DisposableStore } from '#/_base/di/lifecycle';
+import { Disposable, DisposableMap, DisposableStore, toDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { abortable } from '#/_base/utils/abort';
@@ -44,6 +44,15 @@ import { AgentMessageDelivered } from './messageEvents';
 const DELIVERY_HOOK_ID = 'agent-collaboration-message-delivery';
 const MISSING_TARGET_REASON = 'target agent is not registered in the session';
 const AGENT_SEND_BLOCKED_TRIGGER = 'agent_send_blocked';
+const ACKNOWLEDGEMENT_RETRY_MS = 30_000;
+const MAILBOX_RECOVERY_DELAYS_MS = [250, 1_000, 4_000, 16_000, 30_000, 30_000, 30_000] as const;
+
+function isRecoverableMailboxRuntimeError(error: unknown): error is HomeRuntimeError {
+  return error instanceof HomeRuntimeError && [
+    'runtime.timeout', 'runtime.owner_gone', 'runtime.connection_failed', 'runtime.detached',
+    'runtime.epoch_stale', 'runtime.epoch_future', 'runtime.duplicate_request',
+  ].includes(error.code);
+}
 
 interface ClaimedAgentMessage {
   readonly queued: QueuedAgentMessage;
@@ -107,6 +116,7 @@ function continuationBlocked(error: Error2, messageId: string, targetAgentId: st
 export class AgentCollaborationMessagingService extends Disposable implements IAgentCollaborationMessagingService {
   declare readonly _serviceBrand: undefined;
   private readonly subscriptions = this._register(new DisposableMap<string>());
+  private readonly acknowledgementRetries = this._register(new DisposableMap<string>());
   private readonly deliveryTails = new Map<string, Promise<void>>();
   private readonly wakeTails = new Map<string, Promise<void>>();
   private readonly receiptTails = new Map<string, Promise<void>>();
@@ -134,6 +144,8 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     this._register(lifecycle.onDidDispose((agentId) => {
       const result = this.subscriptions.deleteAndDispose(agentId);
       if (isPromiseLike(result)) result.catch(onUnexpectedError);
+      const retry = this.acknowledgementRetries.deleteAndDispose(agentId);
+      if (isPromiseLike(retry)) retry.catch(onUnexpectedError);
     }));
     this.discardUnregisteredTargetMessages().catch(onUnexpectedError);
   }
@@ -389,6 +401,17 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     ));
     const result = this.subscriptions.set(handle.id, subscriptions);
     if (isPromiseLike(result)) result.catch(onUnexpectedError);
+    if (this.kikiMailEnabled(handle) && Object.keys(handle.accessor.get(IAgentStateService).get(agentMessageMaterializationsKey)).length > 0) {
+      void this.serializeDelivery(handle.id, async () => {
+        await this.recoverAppliedClaims(handle);
+        if (!this.claimed.has(handle.id) && (await this.store.listPendingAgents(this.session.sessionId)).includes(handle.id)) {
+          this.retryAcknowledgement(handle);
+        }
+      }).catch((error: unknown) => {
+        this.log.warn('Agent message acknowledgement recovery failed; durable message retained', { agentId: handle.id, error });
+        this.retryAcknowledgement(handle, error);
+      });
+    }
   }
 
   private async deliverOrWake(
@@ -408,7 +431,10 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         await loop.recoverPersistence({ throwOnFailure: true });
         if (loop.status().state === 'idle') await handle.accessor.get(IAgentExecutionService).settled();
       }
-      const steered = await this.serializeDelivery(handle.id, () => this.deliverRunning(handle));
+      const steered = await this.serializeDelivery(handle.id, async () => {
+        if (!await this.recoverAppliedClaims(handle)) return 'stopped' as const;
+        return this.deliverRunning(handle);
+      });
       if (steered === 'unknown') return observedStart;
       if (this.messageLanded(handle, message.messageId) || idleWake === undefined) return observedStart;
       if (this.isStarting(handle)) {
@@ -538,6 +564,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         }
         const started = await run.started;
         void started.completion.catch(() => {});
+        await this.serializeDelivery(handle.id, () => this.recoverAppliedClaims(handle));
         return this.messageLanded(handle, message.messageId) ? 'landed' : 'other';
       } catch (error) {
         if (!isError2(error)) throw error;
@@ -693,13 +720,47 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     return pending;
   }
 
+  private async recoverAppliedClaims(handle: IAgentScopeHandle): Promise<boolean> {
+    if (!this.kikiMailEnabled(handle)) return true;
+    if (!this.claimed.has(handle.id) && Object.keys(handle.accessor.get(IAgentStateService).get(agentMessageMaterializationsKey)).length === 0) return true;
+    for (;;) {
+      const pending = await this.claimNext(handle);
+      if (pending === undefined || !this.hasAppliedMessage(handle, pending)) return true;
+      if (!await this.completeClaim(handle, pending)) return false;
+    }
+  }
+
+  private retryAcknowledgement(handle: IAgentScopeHandle, error?: unknown): void {
+    if (error !== undefined && !isRecoverableMailboxRuntimeError(error) &&
+      (!isError2(error) || !['storage.disk_full', 'storage.io_failed', 'storage.locked'].includes(error.code))) return;
+    if (this._store.isDisposed || !this.subscriptions.has(handle.id) || this.acknowledgementRetries.has(handle.id)) return;
+    const timer = setTimeout(() => {
+      const disposed = this.acknowledgementRetries.deleteAndDispose(handle.id);
+      if (isPromiseLike(disposed)) disposed.catch(onUnexpectedError);
+      void this.serializeDelivery(handle.id, () => {
+        if (this._store.isDisposed || this.lifecycle.get(handle.id) !== handle) return Promise.resolve(true);
+        return this.recoverAppliedClaims(handle);
+      }).catch((error: unknown) => {
+        this.log.warn('Agent message acknowledgement recovery failed; durable message retained', { agentId: handle.id, error });
+        this.retryAcknowledgement(handle, error);
+      });
+    }, ACKNOWLEDGEMENT_RETRY_MS);
+    const replaced = this.acknowledgementRetries.set(handle.id, toDisposable(() => { clearTimeout(timer); }));
+    if (isPromiseLike(replaced)) replaced.catch(onUnexpectedError);
+  }
+
   private async completeClaim(
     handle: IAgentScopeHandle,
     pending: ClaimedAgentMessage,
   ): Promise<boolean> {
     if (!pending.flushed) {
-      await handle.accessor.get(IWireService).flush();
-      pending.flushed = true;
+      try {
+        await handle.accessor.get(IWireService).flush();
+        pending.flushed = true;
+      } catch (error) {
+        this.retryAcknowledgement(handle, error);
+        throw error;
+      }
     }
     try {
       await this.recordDeliveryReceipt(pending.queued.message);
@@ -710,11 +771,23 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         targetAgentId: handle.id,
         error,
       });
+      this.retryAcknowledgement(handle, error);
       return false;
     }
-    await this.store.markDelivered(pending.queued.claim);
+    try {
+      if (!await this.store.markDelivered(pending.queued.claim)) {
+        if (this.claimed.get(handle.id) === pending) this.claimed.delete(handle.id);
+        this.retryAcknowledgement(handle);
+        return false;
+      }
+    } catch (error) {
+      this.retryAcknowledgement(handle, error);
+      throw error;
+    }
     this.acknowledged.add(pending.queued.message.messageId);
     if (this.claimed.get(handle.id) === pending) this.claimed.delete(handle.id);
+    const retry = this.acknowledgementRetries.deleteAndDispose(handle.id);
+    if (isPromiseLike(retry)) retry.catch(onUnexpectedError);
     return true;
   }
 
@@ -801,21 +874,19 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         return await run();
       } catch (error) {
         signal?.throwIfAborted();
-        if (!(error instanceof HomeRuntimeError) || ![
-          'runtime.timeout', 'runtime.owner_gone', 'runtime.connection_failed', 'runtime.detached',
-          'runtime.epoch_stale', 'runtime.epoch_future', 'runtime.duplicate_request',
-        ].includes(error.code)) throw error;
+        if (!isRecoverableMailboxRuntimeError(error)) throw error;
         this.log.warn('Agent mailbox delivery interrupted; durable message retained for recovery', {
           agentId, attempt: attempt + 1, error,
         });
-        if (attempt >= 2) {
+        const delayMs = MAILBOX_RECOVERY_DELAYS_MS[attempt];
+        if (delayMs === undefined) {
           throw new HomeRuntimeError(error.code,
-            `Agent mailbox delivery is temporarily unavailable after 3 recovery attempts. Messages and delivery receipts are retained. Inspect preserved work, then resume the same agent; do not repeat unconfirmed external actions. Last failure: ${error.message}`,
+            `Agent mailbox delivery is temporarily unavailable after ${attempt + 1} recovery attempts. Messages and delivery receipts are retained. Inspect preserved work, then resume the same agent; do not repeat unconfirmed external actions. Last failure: ${error.message}`,
             { cause: error });
         }
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          const wait = new Promise<void>((resolve) => { timer = setTimeout(resolve, attempt === 0 ? 250 : 1_000); });
+          const wait = new Promise<void>((resolve) => { timer = setTimeout(resolve, delayMs); });
           await (signal === undefined ? wait : abortable(wait, signal));
         } finally {
           if (timer !== undefined) clearTimeout(timer);

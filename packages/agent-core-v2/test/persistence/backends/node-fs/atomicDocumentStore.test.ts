@@ -39,6 +39,20 @@ describe('JsonAtomicDocumentStore', () => {
     expect(await config.get<State>('session', 'state.json')).toEqual({ title: 'hello', count: 1 });
   });
 
+  it('cooperatively encodes large plain JSON with identical bytes and yields before writing', async () => {
+    const text = `${'x'.repeat(16_383)}😀\uD800"\\\n中文`.repeat(128);
+    const value = { text, array: [undefined, null, Number.NaN, Number.POSITIVE_INFINITY, -0], absent: undefined,
+      nested: { ['__proto__']: 'data', constructor: 'kept' } };
+    await config.set('session', 'ordinary.json', value);
+    let heartbeat = false;
+    const pending = new Promise<void>((resolve) => setImmediate(() => { heartbeat = true; resolve(); }));
+    await config.set('session', 'cooperative.json', value, { cooperative: true });
+    expect(heartbeat).toBe(true);
+    await pending;
+    expect(await storage.read('session', 'cooperative.json')).toEqual(await storage.read('session', 'ordinary.json'));
+    expect(await config.get('session', 'cooperative.json')).toEqual(JSON.parse(JSON.stringify(value)));
+  });
+
   it('set atomically replaces the previous value', async () => {
     await config.set<State>('session', 'state.json', { title: 'old' });
     await config.set<State>('session', 'state.json', { title: 'new', count: 2 });

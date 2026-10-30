@@ -128,6 +128,18 @@ describe('default subagent target card', () => {
     expect(container.querySelector('[data-subagent-default-status="disabled"]')?.textContent).toContain('"paused"');
   });
 
+  it('reads the missing engine fallback as a neutral note, not an error', async () => {
+    // The catalog loads without `general`: an unset `[subagent].default_profile`
+    // means the engine's built-in fallback, whose absence is a notice, while a
+    // user-picked missing name is the error case tested above.
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [explore, mainAgent] });
+    await render();
+    const status = container.querySelector('[data-subagent-default-status="unresolvable"]')!;
+    expect(status).not.toBeNull();
+    expect(status.textContent).toContain('"general"');
+    expect(status.querySelector('[role="alert"], [data-feedback-tone="error"]')).toBeNull();
+  });
+
   it('reports a save failure without changing the selected value', async () => {
     client.patchConfig.mockRejectedValue(new Error('fixture save failure'));
     await render();

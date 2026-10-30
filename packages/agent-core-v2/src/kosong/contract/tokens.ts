@@ -2,6 +2,7 @@ import type { ContentPart, Message } from './message';
 import type { Tool } from './tool';
 
 const messageTokenEstimateCache = new WeakMap<Message, number>();
+const parameterTokenEstimateCache = new WeakMap<object, number>();
 
 export function estimateTokens(text: string): number {
   let asciiCount = 0;
@@ -43,9 +44,17 @@ export function estimateTokensForTools(tools: readonly Tool[]): number {
   for (const tool of tools) {
     total += estimateTokens(tool.name);
     total += estimateTokens(tool.description);
-    total += estimateTokens(JSON.stringify(tool.parameters));
+    total += estimateParameterTokens(tool.parameters);
   }
   return total;
+}
+
+function estimateParameterTokens(parameters: Tool['parameters']): number {
+  const cached = parameterTokenEstimateCache.get(parameters);
+  if (cached !== undefined) return cached;
+  const tokens = estimateTokens(JSON.stringify(parameters));
+  parameterTokenEstimateCache.set(parameters, tokens);
+  return tokens;
 }
 
 export function estimateTokensForMessage(message: Message): number {

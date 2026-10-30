@@ -201,7 +201,13 @@ export interface SearchMessagesResponse {
   items: SearchMessageHit[];
   has_more: boolean;
   page_token?: string;
-  incomplete?: 'candidate_cap' | 'postings_budget' | 'deadline';
+  incomplete?: 'candidate_cap' | 'postings_budget' | 'deadline' | 'scan_budget';
+  coverage?: {
+    domain: 'full_text';
+    complete: boolean;
+    gaps: readonly string[];
+    scanned: { readonly bytes: number; readonly records: number };
+  };
   index_state: {
     state: 'building' | 'ready' | 'readonly' | 'unavailable';
     indexed_sessions: number;
@@ -313,8 +319,11 @@ export interface RuntimeConfigProjection {
   };
   readonly retry?: {
     readonly maxAttempts?: number;
+    readonly retryPartialResponses?: boolean;
     readonly policies?: ReadonlyArray<{
       readonly match: string;
+      readonly models?: ReadonlyArray<string>;
+      readonly providers?: ReadonlyArray<string>;
       readonly maxAttempts?: number;
       readonly backoff?: number;
       readonly retry?: boolean;
@@ -437,8 +446,11 @@ export interface RuntimeConfigPatch {
   };
   readonly retry?: {
     readonly max_attempts?: number;
+    readonly retry_partial_responses?: boolean;
     readonly policies?: ReadonlyArray<{
       readonly match: string;
+      readonly models?: ReadonlyArray<string>;
+      readonly providers?: ReadonlyArray<string>;
       readonly max_attempts?: number;
       readonly backoff?: number;
       readonly retry?: boolean;
@@ -1424,6 +1436,10 @@ export class KikiClient {
 
   createSession(body: SessionCreate): Promise<Session> {
     return this.run(() => this.rest.sessions.create(body));
+  }
+
+  getSessionCreation(creationId: string, signal?: AbortSignal): Promise<import('@kiki/protocol').SessionCreationStatus> {
+    return this.run(() => this.rest.sessions.creationStatus(creationId, { signal }));
   }
 
   saveEphemeralSession(sessionId: string): Promise<Session> {
@@ -2444,8 +2460,8 @@ export class KikiClient {
     return this.run(this.klient.global.recipes.list());
   }
 
-  getRecipe(installationId: string): Promise<RecipeDetail | undefined> {
-    return this.run(this.klient.global.recipes.get(installationId));
+  getRecipe(installationId: string, selection?: import('@kiki/protocol').RecipeOptionValues): Promise<RecipeDetail | undefined> {
+    return this.run(this.klient.global.recipes.get(installationId, selection));
   }
 
   previewRecipe(input: RecipePreviewInput): Promise<RecipePreview> {

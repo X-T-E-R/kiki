@@ -87,7 +87,11 @@ import { Error2, ErrorCodes } from '#/errors';
 import type { AgentRunRequest, RunAgentOptions } from '#/session/subagent/subagent';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService, type IWireService as Wire } from '#/wire/wire';
-import { agentService, createTestAgent } from '../../harness';
+import { agentService, createTestAgent, InMemoryWireRecordPersistence } from '../../harness';
+import { TurnPrompt, TurnSteer } from '#/agent/loop/turnOps';
+import { PromptEnqueued, PromptLaunchCommitted } from '#/agent/prompt/promptService';
+import { PromptOutcomeCommitted } from '#/agent/prompt/promptReplay';
+import { StorageError, StorageErrors } from '#/persistence/interface/storage';
 
 const signal = new AbortController().signal;
 const tempDirs: string[] = [];
@@ -2421,7 +2425,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     } finally { gate.restore(); thread.claimNext = original; await service.dispose(); }
   });
 
-  it('bounds unavailable mailbox recovery and preserves a manual-resume diagnostic', async () => {
+  it.each([false, true])('waits through nearly two minutes of mailbox saturation and preserves a bounded diagnostic, recovered=%s', async (recovered) => {
     const adapter = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
     const timeout = new HomeRuntimeError('runtime.timeout', 'ownerPhase=claim_read');
@@ -2429,16 +2433,27 @@ describe('agent collaboration safe-boundary delivery', () => {
     vi.spyOn(adapter, 'listPendingAgents').mockResolvedValue([]);
     const service = messagingService(adapter, lifecycleHarness([target.handle]).service, sessionContext(), metadataHarness({ 'agent-target': {} }));
     const next = vi.fn(async () => {});
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
-      await expect(target.execution.hooks.onWillRun.run({ signal }, next)).rejects.toMatchObject({
-        code: 'runtime.timeout', cause: timeout, message: expect.stringContaining('resume the same agent'),
+      const run = target.execution.hooks.onWillRun.run({ signal }, next);
+      const settled = vi.fn();
+      void run.then(settled, settled);
+      const result = recovered ? expect(run).resolves.toBeUndefined() : expect(run).rejects.toMatchObject({
+        code: 'runtime.timeout', cause: timeout, message: expect.stringContaining('after 8 recovery attempts'),
       });
-      expect(claim).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(111_249);
+      expect(claim).toHaveBeenCalledTimes(7);
+      expect(settled).not.toHaveBeenCalled();
       expect(next).not.toHaveBeenCalled();
-    } finally { await service.dispose(); }
+      if (recovered) claim.mockResolvedValue(undefined);
+      await vi.advanceTimersByTimeAsync(1);
+      await result;
+      expect(claim).toHaveBeenCalledTimes(8);
+      expect(next).toHaveBeenCalledTimes(recovered ? 1 : 0);
+    } finally { vi.useRealTimers(); await service.dispose(); }
   });
 
-  it('cancels recovery backoff and does not retry permanent mailbox failures', async () => {
+  it.each([0, 81_250])('cancels recovery backoff at %sms and does not retry permanent mailbox failures', async (elapsed) => {
     const adapter = mailboxStore(tempDir());
     const target = agentHandle('agent-target');
     const log = stubLog();
@@ -2449,18 +2464,22 @@ describe('agent collaboration safe-boundary delivery', () => {
       metadataHarness({ 'agent-target': {} }), dispatchHarness(), undefined, log);
     const controller = new AbortController();
     const cancellation = new Error('cancel recovery');
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       const run = target.execution.hooks.onWillRun.run({ signal: controller.signal });
       const rejected = expect(run).rejects.toBe(cancellation);
-      await vi.waitFor(() => expect(warn).toHaveBeenCalledOnce());
+      await vi.advanceTimersByTimeAsync(elapsed);
+      const attempts = elapsed === 0 ? 1 : 7;
+      expect(warn).toHaveBeenCalledTimes(attempts);
       controller.abort(cancellation);
       await rejected;
-      expect(claim).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(claim).toHaveBeenCalledTimes(attempts);
       const invalid = new HomeRuntimeError('runtime.invalid_request', 'invalid payload');
       claim.mockRejectedValue(invalid);
       await expect(target.execution.hooks.onWillRun.run({ signal })).rejects.toBe(invalid);
-      expect(claim).toHaveBeenCalledTimes(2);
-    } finally { await service.dispose(); }
+      expect(claim).toHaveBeenCalledTimes(attempts + 1);
+    } finally { vi.useRealTimers(); await service.dispose(); }
   });
 
   it('keeps a cancelling child queued until cancellation settles, then continues it once', async () => {
@@ -2884,6 +2903,367 @@ describe('agent collaboration safe-boundary delivery', () => {
     await service.dispose();
   });
 });
+
+describe('agent collaboration consumed mailbox recovery', () => {
+  it('materializes a first native mailbox run exactly once without an earlier delivery hook', async () => {
+    const ctx = createTestAgent();
+    const message = recoveredMailboxMessage('first-mailbox-message');
+    try {
+      ctx.mockNextResponse({ type: 'text', text: 'handled' });
+      const run = await ctx.get(IAgentExecutionService).run({ kind: 'mailbox', prompt: 'first', message }, { signal });
+      await run.completion;
+      await ctx.wire.flush();
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect(ctx.context.get().filter(entry => entry.id === message.id)).toEqual([expect.objectContaining(message)]);
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
+  it.each(['missing', 'same-message', 'other-sender'] as const)('materializes a hook-blocked mailbox input from actual context identity: %s', async (existing) => {
+    const ctx = createTestAgent();
+    const message = recoveredMailboxMessage('blocked-mailbox');
+    if (existing !== 'missing') {
+      ctx.context.appendObservable({ ...message, origin: existing === 'same-message' ? message.origin : {
+        kind: 'agent_message', messageId: message.id!, senderAgentId: 'other-agent', senderTaskName: 'other-task',
+      } });
+    }
+    ctx.get(IAgentPromptService).hooks.onBeforeSubmitPrompt.register('block-mailbox', async (context, next) => { context.block = true; await next(); });
+    try {
+      const prompt = await ctx.get(IAgentPromptService).enqueue({ message, alreadyMaterialized: true });
+      expect((await prompt.completion).state).toBe('blocked');
+      expect(ctx.context.get().filter(entry => entry.origin?.kind === 'agent_message' && entry.origin.senderAgentId === 'main' && entry.id === message.id))
+        .toEqual([expect.objectContaining(message)]);
+      expect(ctx.llmCalls).toHaveLength(0);
+    } finally {
+      await ctx.dispose();
+    }
+  });
+
+  it.each([false, true])('retains an unconsumed durable mailbox prompt until explicit recovery, cancelled=%s', async (cancelled) => {
+    const adapter = mailboxStore(tempDir());
+    const accepted = await adapter.accept(messageInput('unconsumed message', `unconsumed-${cancelled}`));
+    const ctx = createTestAgent();
+    ctx.get(IAgentExecutionService);
+    const message = recoveredMailboxMessage(accepted.message.messageId, 'Message from agent "root" (main):\n\nunconsumed message');
+    const events = [new PromptEnqueued({ schemaVersion: 1, promptId: message.id!, userMessageId: message.id!,
+      createdAt: new Date(0).toISOString(), message, alreadyMaterialized: true, appendTiming: 'agent_idle', revision: 0, queueIndex: 0 }).serialize()];
+    if (cancelled) events.push(new PromptOutcomeCommitted({ terminal: { promptId: message.id!, state: 'cancelled' } }).serialize());
+    await ctx.restore(events);
+    const handle = testAgentHandle(ctx, 'agent-target');
+    const dispatch = dispatchHarness();
+    const service = messagingService(adapter, lifecycleHarness([handle]).service, sessionContext(), metadataHarness({ 'agent-target': {} }), dispatch);
+    try {
+      await drain(100);
+      expect((await adapter.accept(messageInput('unconsumed message', `unconsumed-${cancelled}`))).delivery).toBe('queued');
+      expect(ctx.get(IAgentStateService).get(agentMessageMaterializationsKey)[message.id!]).toBeUndefined();
+      expect(ctx.context.get().filter(entry => entry.id === message.id)).toHaveLength(0);
+      expect(ctx.llmCalls).toHaveLength(0);
+      expect(dispatch.runOnExisting).not.toHaveBeenCalled();
+      ctx.mockNextResponse({ type: 'text', text: 'recovered once' });
+      if (cancelled) {
+        await (await ctx.get(IAgentPromptService).enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'independent new run' }], toolCalls: [], origin: { kind: 'user' } } })).completion;
+      } else {
+        ctx.get(IAgentPromptService).resumeRecoveredQueue();
+        await vi.waitFor(() => { expect(ctx.llmCalls).toHaveLength(1); });
+        await ctx.get(IAgentLoopService).settled();
+      }
+      expect(ctx.context.get().filter(entry => entry.id === message.id)).toEqual([expect.objectContaining(message)]);
+      expect((await adapter.accept(messageInput('unconsumed message', `unconsumed-${cancelled}`))).delivery).toBe('delivered');
+      expect(ctx.llmCalls).toHaveLength(1);
+    } finally {
+      await service.dispose();
+      await ctx.dispose();
+    }
+  });
+
+  it.each(['pending', 'launch-committed', 'cancelled-unlaunched', 'failed-unlaunched', 'turn-prompt', 'turn-steer', 'completed', 'cancelled-turn'] as const)(
+    'restores only consumed agent message evidence from %s', async (phase) => {
+      const ctx = createTestAgent();
+      const message = recoveredMailboxMessage('restore-evidence');
+      const enqueued = new PromptEnqueued({ schemaVersion: 1, promptId: message.id!, userMessageId: message.id!,
+        createdAt: new Date(0).toISOString(), message, alreadyMaterialized: true,
+        appendTiming: 'agent_idle', revision: 0, queueIndex: 0 });
+      const launched = ['turn-prompt', 'turn-steer', 'completed', 'cancelled-turn'].includes(phase);
+      const events = [enqueued.serialize()];
+      if (phase === 'launch-committed') events.push(new PromptLaunchCommitted({ launchId: 'launch', promptId: message.id!, revision: 0, committedAt: new Date(0).toISOString() }).serialize());
+      if (launched) {
+        const TurnInput = phase === 'turn-steer' ? TurnSteer : TurnPrompt;
+        events.push(new TurnInput({ promptId: message.id, turnId: 3, input: message.content, origin: message.origin! }).serialize());
+      }
+      if (phase === 'completed' || phase === 'cancelled-turn' || phase === 'cancelled-unlaunched' || phase === 'failed-unlaunched') {
+        events.push(new PromptOutcomeCommitted({ terminal: { promptId: message.id!,
+          turnId: launched ? 3 : undefined,
+          state: phase === 'completed' ? 'completed' : phase === 'failed-unlaunched' ? 'failed' : 'cancelled' } }).serialize());
+      }
+      try {
+        await ctx.restore(events);
+        expect(ctx.get(IAgentStateService).get(agentMessageMaterializationsKey)[message.id!]).toBe(launched ? true : undefined);
+        expect(ctx.context.get().filter(entry => entry.id === message.id)).toHaveLength(0);
+        expect(ctx.llmCalls).toHaveLength(0);
+      } finally {
+        await ctx.dispose();
+      }
+    },
+  );
+
+  it('completes a real native mailbox wake once, then recovers its failed receipt across restart without another run', async () => {
+    const { adapter, thread } = rawMailbox(tempDir());
+    const claimNext = thread.claimNext.bind(thread);
+    vi.spyOn(thread, 'claimNext').mockImplementation((input, options) => claimNext({ ...input, leaseMs: 1 }, options));
+    const targetPersistence = new InMemoryWireRecordPersistence();
+    const senderPersistence = new InMemoryWireRecordPersistence();
+    let target = createTestAgent({ persistence: targetPersistence });
+    let sender = createTestAgent({ persistence: senderPersistence });
+    let diskFull = true;
+    const flush = sender.wire.flush.bind(sender.wire);
+    vi.spyOn(sender.wire, 'flush').mockImplementation(async () => {
+      await flush();
+      if (diskFull) throw new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'simulated receipt ENOSPC');
+    });
+    const dispatch = dispatchHarness(async (child, request, options) => ({ child, request: request as DispatchRun['request'],
+      started: child.agent.accessor.get(IAgentExecutionService).run(request as DispatchRun['request'], { signal: options.signal }) }));
+    const metadata = metadataHarness({ main: {}, 'agent-target': {} });
+    let service = messagingService(adapter, lifecycleHarness([testAgentHandle(sender, 'main'), testAgentHandle(target, 'agent-target')]).service,
+      sessionContext(), metadata, dispatch);
+    try {
+      target.mockNextResponse({ type: 'text', text: 'mailbox wake completed' });
+      const accepted = await service.send({ ...sendInput('native wake', 'wake-restart'), idleWake: 'owned-child', waitForRunningDelivery: true });
+      await target.get(IAgentExecutionService).settled();
+      await target.wire.flush();
+      expect(target.llmCalls).toHaveLength(1);
+      expect(target.context.get().filter(entry => entry.id === accepted.message.messageId)).toHaveLength(1);
+      expect(dispatch.runOnExisting).toHaveBeenCalledTimes(1);
+      expect(targetPersistence.records).toContainEqual(expect.objectContaining({ type: 'prompt.outcome_committed',
+        terminal: expect.objectContaining({ promptId: accepted.message.messageId, state: 'completed' }) }));
+      expect((await adapter.accept(messageInput('native wake', 'wake-restart'))).delivery).toBe('queued');
+      await service.dispose();
+      await target.dispose();
+      diskFull = false;
+      await sender.dispose();
+      target = createTestAgent({ persistence: targetPersistence });
+      target.get(IAgentExecutionService);
+      await target.restorePersisted();
+      sender = createTestAgent({ persistence: senderPersistence });
+      sender.get(IAgentExecutionService);
+      await sender.restorePersisted();
+      service = messagingService(adapter, lifecycleHarness([testAgentHandle(sender, 'main'), testAgentHandle(target, 'agent-target')]).service,
+        sessionContext(), metadata, dispatch);
+      await vi.waitFor(async () => { expect((await adapter.accept(messageInput('native wake', 'wake-restart'))).delivery).toBe('delivered'); });
+      expect(target.context.get().filter(entry => entry.id === accepted.message.messageId)).toHaveLength(1);
+      expect(target.llmCalls).toHaveLength(0);
+      expect(sender.llmCalls).toHaveLength(0);
+      expect(dispatch.runOnExisting).toHaveBeenCalledTimes(1);
+      expect(senderPersistence.records.filter(record => record.type === 'agent_message.delivered')).toHaveLength(1);
+    } finally {
+      diskFull = false;
+      await service.dispose();
+      await target.dispose();
+      await sender.dispose();
+    }
+  });
+
+  it('acknowledges an old consumed claim after durable run completion and restart without appending or waking', async () => {
+    const { adapter, thread } = rawMailbox(tempDir());
+    const claimNext = thread.claimNext.bind(thread);
+    vi.spyOn(thread, 'claimNext').mockImplementation((input, options) => claimNext({ ...input, leaseMs: 1 }, options));
+    const accepted = await adapter.accept(messageInput('handled before restart', 'consumed-before-restart'));
+    await adapter.nextQueued('session-1', 'agent-target');
+    const persistence = new InMemoryWireRecordPersistence();
+    let target = createTestAgent({ persistence });
+    const message = recoveredMailboxMessage(accepted.message.messageId, 'handled before restart');
+    const dispatcher = target.get(IEventDispatcher);
+    await dispatcher.dispatch(new PromptEnqueued({ schemaVersion: 1, promptId: message.id!, userMessageId: message.id!,
+      createdAt: new Date(0).toISOString(), message, alreadyMaterialized: true, appendTiming: 'agent_idle', revision: 0, queueIndex: 0 }));
+    await dispatcher.dispatch(new TurnPrompt({ turnId: 3, promptId: message.id, input: message.content, origin: message.origin! }));
+    await dispatcher.dispatch(new PromptOutcomeCommitted({ terminal: { promptId: message.id!, turnId: 3, state: 'completed', result: { type: 'completed', steps: 1, truncated: false } } }));
+    await target.wire.flush();
+    expect(persistence.records.some(record => record.type === 'prompt.outcome_committed')).toBe(true);
+    expect(persistence.records.filter(record => record.type === 'context.append_message' && (record['message'] as ContextMessage)?.id === message.id)).toHaveLength(0);
+    await target.dispose();
+    target = createTestAgent({ persistence });
+    target.get(IAgentExecutionService);
+    await target.restorePersisted();
+    const sender = createTestAgent();
+    const dispatch = dispatchHarness();
+    const lifecycle = lifecycleHarness([testAgentHandle(sender, 'main'), testAgentHandle(target, 'agent-target')]);
+    const service = messagingService(adapter, lifecycle.service, sessionContext(), metadataHarness({ main: {}, 'agent-target': {} }), dispatch);
+    try {
+      await vi.waitFor(async () => {
+        expect((await adapter.accept(messageInput('handled before restart', 'consumed-before-restart'))).delivery).toBe('delivered');
+      });
+      const retry = await service.send({ ...sendInput('handled before restart', 'consumed-before-restart'), idleWake: 'owned-child', waitForRunningDelivery: true });
+      expect(retry).toMatchObject({ delivery: 'delivered', deduplicated: true });
+      expect(dispatch.runOnExisting).not.toHaveBeenCalled();
+      expect(target.llmCalls).toHaveLength(0);
+      expect(sender.llmCalls).toHaveLength(0);
+      expect(target.context.get().filter(entry => entry.id === message.id)).toHaveLength(0);
+      const receipts = [];
+      for await (const record of sender.wire.readJournal()) if (record.type === 'agent_message.delivered') receipts.push(record);
+      expect(receipts).toEqual([expect.objectContaining({ messageId: message.id, targetAgentId: 'agent-target' })]);
+      target.mockNextResponse({ type: 'text', text: 'unrelated new run' });
+      await (await target.get(IAgentPromptService).enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'new request' }], toolCalls: [], origin: { kind: 'user' } } })).completion;
+      expect(target.llmCalls).toHaveLength(1);
+      expect(target.context.get().filter(entry => entry.id === message.id)).toHaveLength(0);
+    } finally {
+      await service.dispose();
+      await target.dispose();
+      await sender.dispose();
+    }
+  });
+
+  it.each(['leased', 'stale-fence'] as const)('recovers an old consumed claim after %s clears without trusting a stale acknowledgement', async (failure) => {
+    const adapter = mailboxStore(tempDir());
+    const accepted = await adapter.accept(messageInput('consumed', `old-claim-${failure}`));
+    const queued = await adapter.nextQueued('session-1', 'agent-target');
+    if (queued === undefined) throw new Error('missing test claim');
+    const senderPersistence = new InMemoryWireRecordPersistence();
+    const sender = createTestAgent({ persistence: senderPersistence });
+    const target = createTestAgent();
+    const message = recoveredMailboxMessage(accepted.message.messageId);
+    await target.get(IEventDispatcher).dispatch(new TurnPrompt({ turnId: 2, input: message.content, origin: message.origin! }));
+    await target.wire.flush();
+    let leased = failure === 'leased';
+    let delivered = false;
+    const nextQueued = vi.fn(async () => delivered || leased ? undefined : queued);
+    const markDelivered = vi.fn(async () => {
+      if (failure === 'stale-fence' && markDelivered.mock.calls.length === 1) return false;
+      delivered = true;
+      return true;
+    });
+    const store = wrapStore(adapter, { nextQueued, markDelivered, listPendingAgents: async () => delivered ? [] : ['agent-target'] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const service = messagingService(store, lifecycleHarness([testAgentHandle(sender, 'main'), testAgentHandle(target, 'agent-target')]).service,
+      sessionContext(), metadataHarness({ main: {}, 'agent-target': {} }));
+    try {
+      await drain(100);
+      expect(delivered).toBe(false);
+      leased = false;
+      await vi.advanceTimersByTimeAsync(30_000);
+      await drain(100);
+      expect(delivered).toBe(true);
+      expect(markDelivered).toHaveBeenCalledTimes(failure === 'leased' ? 1 : 2);
+      expect(senderPersistence.records.filter(record => record.type === 'agent_message.delivered')).toHaveLength(1);
+      expect(target.context.get().filter(entry => entry.id === message.id)).toHaveLength(0);
+      expect(target.llmCalls).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+      await service.dispose();
+      await sender.dispose();
+      await target.dispose();
+    }
+  });
+
+  it.each([
+    { disposed: false, failure: 'storage' },
+    { disposed: true, failure: 'storage' },
+    { disposed: false, failure: 'runtime' },
+    { disposed: true, failure: 'runtime' },
+  ])('retries only the consumed acknowledgement after $failure recovery and stops on disposal=$disposed', async ({ disposed, failure }) => {
+    const adapter = mailboxStore(tempDir());
+    const accepted = await adapter.accept(messageInput('consumed', `ack-timer-${failure}-${disposed}`));
+    const queued = await adapter.nextQueued('session-1', 'agent-target');
+    if (queued === undefined) throw new Error('missing test claim');
+    const senderPersistence = new InMemoryWireRecordPersistence();
+    const sender = createTestAgent({ persistence: senderPersistence });
+    const target = createTestAgent();
+    const message = recoveredMailboxMessage(accepted.message.messageId);
+    await target.get(IEventDispatcher).dispatch(new TurnPrompt({ turnId: 2, input: message.content, origin: message.origin! }));
+    await target.wire.flush();
+    let unavailable = true;
+    let delivered = false;
+    const markDelivered = vi.fn(async () => {
+      if (unavailable) throw failure === 'runtime'
+        ? new HomeRuntimeError('runtime.timeout', 'ownerPhase=acknowledge')
+        : new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'simulated ENOSPC');
+      delivered = true;
+      return true;
+    });
+    const store = wrapStore(adapter, { nextQueued: async () => delivered ? undefined : queued, markDelivered });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const service = messagingService(store, lifecycleHarness([testAgentHandle(sender, 'main'), testAgentHandle(target, 'agent-target')]).service,
+      sessionContext(), metadataHarness({ main: {}, 'agent-target': {} }));
+    try {
+      await drain(100);
+      expect(markDelivered).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(markDelivered).toHaveBeenCalledTimes(1);
+      unavailable = false;
+      if (disposed) await service.dispose();
+      await vi.advanceTimersByTimeAsync(1);
+      await drain(100);
+      expect(delivered).toBe(!disposed);
+      expect(markDelivered).toHaveBeenCalledTimes(disposed ? 1 : 2);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(markDelivered).toHaveBeenCalledTimes(disposed ? 1 : 2);
+      expect(senderPersistence.records.filter(record => record.type === 'agent_message.delivered')).toHaveLength(1);
+      expect(target.context.get().filter(entry => entry.id === message.id)).toHaveLength(0);
+      expect(target.llmCalls).toHaveLength(0);
+      expect(sender.llmCalls).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+      await service.dispose();
+      await sender.dispose();
+      await target.dispose();
+    }
+  });
+
+  it.each(['sender-flush', 'mailbox-ack'] as const)('recovers a consumed claim after ENOSPC at %s with one receipt and no body or model replay', async (failure) => {
+    const adapter = mailboxStore(tempDir());
+    const accepted = await adapter.accept(messageInput('already consumed', `consumed-enospc-${failure}`));
+    const target = createTestAgent();
+    const senderPersistence = new InMemoryWireRecordPersistence();
+    let sender = createTestAgent({ persistence: senderPersistence });
+    const message = recoveredMailboxMessage(accepted.message.messageId);
+    await target.get(IEventDispatcher).dispatch(new TurnPrompt({ turnId: 7, promptId: message.id, input: message.content, origin: message.origin! }));
+    await target.wire.flush();
+    let diskFull = true;
+    const error = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'simulated ENOSPC', { details: { committed: true } });
+    const flush = sender.wire.flush.bind(sender.wire);
+    vi.spyOn(sender.wire, 'flush').mockImplementation(async () => { await flush(); if (failure === 'sender-flush' && diskFull) throw error; });
+    const store = wrapStore(adapter, { markDelivered: async claim => { if (failure === 'mailbox-ack' && diskFull) throw error; return adapter.markDelivered(claim); } });
+    let service = messagingService(store, lifecycleHarness([testAgentHandle(sender, 'main'), testAgentHandle(target, 'agent-target')]).service,
+      sessionContext(), metadataHarness({ main: {}, 'agent-target': {} }));
+    try {
+      await drain(100);
+      const attempt = target.get(IAgentExecutionService).hooks.onWillRun.run({ signal });
+      if (failure === 'mailbox-ack') await expect(attempt).rejects.toMatchObject({ code: 'storage.disk_full' });
+      else await attempt;
+      expect((await adapter.accept(messageInput('already consumed', `consumed-enospc-${failure}`))).delivery).toBe('queued');
+      expect(target.context.get().filter(entry => entry.id === message.id)).toHaveLength(0);
+      expect(senderPersistence.records.filter(record => record.type === 'agent_message.delivered')).toHaveLength(1);
+      diskFull = false;
+      await target.get(IAgentExecutionService).hooks.onWillRun.run({ signal });
+      await service.dispose();
+      await sender.dispose();
+      sender = createTestAgent({ persistence: senderPersistence });
+      sender.get(IAgentExecutionService);
+      await sender.restorePersisted();
+      service = messagingService(store, lifecycleHarness([testAgentHandle(sender, 'main'), testAgentHandle(target, 'agent-target')]).service,
+        sessionContext(), metadataHarness({ main: {}, 'agent-target': {} }));
+      await target.get(IAgentExecutionService).hooks.onWillRun.run({ signal });
+      expect((await adapter.accept(messageInput('already consumed', `consumed-enospc-${failure}`))).delivery).toBe('delivered');
+      expect(senderPersistence.records.filter(record => record.type === 'agent_message.delivered')).toHaveLength(1);
+      expect(target.context.get().filter(entry => entry.id === message.id)).toHaveLength(0);
+      expect(target.llmCalls).toHaveLength(0);
+      expect(sender.llmCalls).toHaveLength(0);
+    } finally {
+      diskFull = false;
+      await service.dispose();
+      await target.dispose();
+      await sender.dispose();
+    }
+  });
+});
+
+function testAgentHandle(ctx: ReturnType<typeof createTestAgent>, id: string): IAgentScopeHandle {
+  return { id, kind: LifecycleScope.Agent, accessor: { get: <T>(key: ServiceIdentifier<T>): T => ctx.get(key) }, dispose: () => {} };
+}
+
+function recoveredMailboxMessage(id: string, text = 'saved mailbox message'): ContextMessage {
+  return { id, role: 'user', content: [{ type: 'text', text }], toolCalls: [],
+    origin: { kind: 'agent_message', messageId: id, senderAgentId: 'main', senderTaskName: 'root' } };
+}
 
 describe('agent collaboration mailbox restart durability', () => {
   it('delivers queued messages FIFO after the service and store are rebuilt on the same home', async () => {

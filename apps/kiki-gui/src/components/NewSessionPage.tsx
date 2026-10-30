@@ -550,14 +550,19 @@ function NewSessionPageContent({
           {state.workspaceId !== '' && state.workspaceId !== AUTO_WORKSPACE_ID && cwd === '' && !state.workspacesLoading && state.workspacesError === null && state.effectiveWorkspace === undefined ? (
             <p role="alert" className="mt-2 text-[12px] text-danger">{t('selection.workspaceInvalid', { value: state.workspaceId })}</p>
           ) : null}
-          {state.creationNotice !== null ? (
-            <div role="status" className="mt-2 text-[13px] leading-relaxed text-ink-soft">
+          {state.creationNotice !== null || state.hasCreationIntent ? (
+            <div role="status" data-new-creation-recovery className="mt-3 text-[13px] leading-relaxed text-ink-soft">
               <p>{state.creationNotice}</p>
-              {state.createdSessionId !== undefined && !state.creationPending ? (
-                <button type="button" onClick={state.openCreatedSession} className="mt-1 rounded px-1 py-0.5 font-medium text-ink underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('new.openCreatedSession')}</button>
+              {!state.creationPending ? (
+                <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                  <button type="button" disabled={state.checkingCreation} onClick={() => { void state.retryCreation(); }} className="rounded py-1 font-medium text-ink underline underline-offset-2 disabled:opacity-50">{t('new.recoverCreation')}</button>
+                  {state.createdSessionId !== undefined ? <button type="button" disabled={state.checkingCreation} onClick={() => { void state.openCreatedSession(); }} className="rounded py-1 font-medium text-ink underline underline-offset-2">{t('new.openCreatedSession')}</button> : null}
+                  <button type="button" disabled={state.checkingCreation} onClick={state.startNewCreation} className="rounded py-1 text-ink-soft underline underline-offset-2">{t('new.startAnotherCreation')}</button>
+                </div>
               ) : null}
             </div>
           ) : null}
+          {state.hasPreviousCreation && !state.creationPending ? <button type="button" disabled={state.checkingCreation} onClick={state.restorePreviousCreation} className="mt-2 rounded py-1 text-[13px] text-ink-soft underline underline-offset-2">{t('new.restorePreviousCreation')}</button> : null}
         </div>
       </div>
 

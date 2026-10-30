@@ -210,6 +210,7 @@ describe('agent_config read and write shapes', () => {
       'model',
       'permission_mode',
       'persona',
+      'plan_gate',
       'plan_mode',
       'profile',
     ]);
@@ -222,6 +223,15 @@ describe('agent_config read and write shapes', () => {
   it.each(NEVER_APPLIED)('no longer accepts %s on either write path', (key) => {
     expect(sessionAgentConfigPartialSchema.safeParse({ [key]: 'x' }).success).toBe(false);
     expect(sessionAgentConfigCreateSchema.safeParse({ [key]: 'x' }).success).toBe(false);
+  });
+
+  it('accepts both plan gates on read, create and update while rejecting unknown gates', () => {
+    for (const schema of [sessionAgentConfigSchema, sessionAgentConfigCreateSchema, sessionAgentConfigPartialSchema]) {
+      for (const plan_gate of ['free', 'gated']) {
+        expect(schema.parse({ model: 'example-model', plan_gate })).toEqual({ model: 'example-model', plan_gate });
+      }
+      expect(schema.safeParse({ model: 'example-model', plan_gate: 'unknown' }).success).toBe(false);
+    }
   });
 
   it('accepts the goal controls on update but not on create', () => {

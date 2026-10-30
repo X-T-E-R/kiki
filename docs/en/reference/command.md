@@ -461,7 +461,7 @@ kiki web --no-open       # do not open the browser
 kiki web --port 58628    # specify a custom port
 ```
 
-Multiple instances can run concurrently under the same home: each registers itself in `~/.kiki/server/instances/`, and port collisions increment automatically (58628, 58629, etc.).
+Multiple instances can run concurrently under the same home: each registers itself in `<home>/server/instances/` (default `~/.kiki/server/instances/`), and port collisions increment automatically (58628, 58629, etc.).
 
 | Option | Description |
 | --- | --- |
@@ -506,7 +506,7 @@ kiki export [sessionId] [options]
 | `--yes` | `-y` | Skip confirmation when exporting the default session |
 | `--no-include-global-log` | | Exclude the global diagnostic log. Included by default |
 
-The export includes all files in the target session directory. The global diagnostic log (`~/.kiki/logs/kimi-code.log`) is included by default because it may contain events from other sessions or projects; add `--no-include-global-log` if you do not want to share it.
+The export includes all files in the target session directory. The global diagnostic log (`<home>/logs/kimi-code.log`; default `~/.kiki/logs/kimi-code.log`) is included by default because it may contain events from other sessions or projects; add `--no-include-global-log` if you do not want to share it.
 
 ```sh
 # Export the most recent session in the current directory, skipping confirmation

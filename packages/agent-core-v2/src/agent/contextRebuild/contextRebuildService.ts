@@ -123,7 +123,8 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
 
   private canRebuildAfterClear(): boolean {
     const status = this.loop.status();
-    return status.state === 'idle' && status.hasPendingRequests !== true && !this.compaction.isCompacting();
+    return status.state === 'idle' && status.pendingTurnIds.length === 0
+      && status.finalizing !== true && !this.compaction.isCompacting();
   }
 
   private rebuildAfterBoundary(trigger: Exclude<ContextRebuildTrigger, 'manual'>, signal?: AbortSignal): Promise<void> {
@@ -150,7 +151,7 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
       if (this.scope.agentId !== MAIN_AGENT_ID) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'Context rebuild is only available for the main agent.');
       }
-      const quiescence = this.loop.tryAcquireQuiescence();
+      const quiescence = this.loop.tryAcquireQuiescence({ pendingSteps: 'preserve' });
       if (quiescence === undefined) {
         throw new Error2(
           ErrorCodes.REQUEST_INVALID,

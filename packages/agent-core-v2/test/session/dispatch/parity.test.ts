@@ -2625,6 +2625,22 @@ describe('AgentRun and dispatch parity golden', () => {
     }
   });
 
+  it('reports the bound model so the caller sees model constraints met at the binding layer', () => {
+    const bound = fieldMap(bindingResultLines({
+      agentId: 'agent_child_1',
+      profileName: 'reviewer',
+      model: 'provider/review-model',
+      completion: Promise.resolve({ result: '' }),
+    }).join('\n'));
+    expect(bound['actual_model']).toBe('provider/review-model');
+    const unbound = fieldMap(bindingResultLines({
+      agentId: 'agent_child_1',
+      profileName: 'reviewer',
+      completion: Promise.resolve({ result: '' }),
+    }).join('\n'));
+    expect(unbound['actual_model']).toBeUndefined();
+  });
+
   it('C-2 converts a foreground timeout detach into the background receipt path', async () => {
     const internal = createLane(disposables, 'internal');
     internal.taskRelease = 'timeout_detached';
@@ -2662,6 +2678,7 @@ describe('AgentRun and dispatch parity golden', () => {
       'task_id: task_1',
       'agent_id: agent_child_1',
       'actual_profile: coder',
+      'actual_model: parity-model',
       'dispatch_policy: fixed',
       'selection_kind: profile',
       'selection_origin: explicit',

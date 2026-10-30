@@ -78,6 +78,25 @@ export async function registerProjectMcpPlugin({ cwd, sessionId, namespace, node
   };
 }
 
+/**
+ * Recovers every dead owned plugin under one workspace's `.agents/plugins`. Each receipt is
+ * handled by the per-session recovery rules, so live owners, unconfirmed launches, edited
+ * files and foreign entries stay in place; a directory without a valid receipt is ignored.
+ */
+export async function recoverDeadProjectMcpPlugins({ cwd }) {
+  let names;
+  try { names = await readdir(resolve(cwd, '.agents', 'plugins')); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  const results = [];
+  for (const name of names) {
+    let state;
+    try { state = JSON.parse(await optional(resolve(cwd, '.agents', 'plugins', name, RECEIPT)) ?? 'null'); } catch { continue; }
+    if (!state || typeof state.sessionId !== 'string') continue;
+    try { results.push({ name, ...await recoverProjectMcpPlugin({ cwd, sessionId: state.sessionId }) }); }
+    catch (error) { results.push({ name, status: 'preserved', reason: error instanceof Error ? error.message : String(error) }); }
+  }
+  return results;
+}
+
 export async function recoverProjectMcpPlugin({ cwd, sessionId }) {
   const paths = [pluginName(sessionId), `kiki-acp-${sessionId}`].map(name => resolve(cwd, '.agents', 'plugins', name));
   const registrations = (await Promise.all(paths.map(async path => ({ path, receipt: await optional(resolve(path, RECEIPT)) })))).filter(entry => entry.receipt !== undefined);

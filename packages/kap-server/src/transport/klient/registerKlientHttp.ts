@@ -35,6 +35,24 @@ export interface RegisterKlientHttpOptions extends SessionViewHttpOptions {
   readonly enableTerminals?: boolean;
 }
 
+interface KlientFailureTarget {
+  readonly scope?: string;
+  readonly service?: string;
+  readonly method?: string;
+  readonly event?: string;
+}
+
+function frameTarget(frame: KlientFrame): KlientFailureTarget {
+  const text = (value: unknown): string | undefined => typeof value === 'string' && value.length <= 256 ? value : undefined;
+  return { scope: text(frame.scope), service: text(frame.service), method: text(frame.method), event: text(frame.event) };
+}
+
+function failureIdentity(error: unknown): { readonly name?: string; readonly code?: string } {
+  if (error === null || typeof error !== 'object') return {};
+  const record = error as { name?: unknown; code?: unknown };
+  return { name: typeof record.name === 'string' ? record.name : undefined, code: typeof record.code === 'string' ? record.code : undefined };
+}
+
 interface ActiveStream {
   readonly iterator: AsyncIterator<unknown>;
   readonly signal: AbortSignal;
@@ -55,8 +73,10 @@ export function registerKlientHttp(
       if (!reply.raw.writableEnded) controller.abort();
     };
     reply.raw.once('close', abort);
+    let target: KlientFailureTarget | undefined;
     try {
       const { procedure, params } = parseKlientCallRequest(req.body);
+      target = { scope: procedure.scope, service: procedure.service, method: procedure.method };
       if ((peerAudience(req) !== undefined && !isPeerProcedureAllowed(procedure)) || (webPrincipal(req) !== undefined && !isWebProcedureAllowed(procedure))) throw new RPCError(40301, 'local_owner_required');
       const data = await dispatcher.call(
         scopeRefFromProcedure(procedure),
@@ -68,7 +88,7 @@ export function registerKlientHttp(
       return await reply.send(okEnvelope(data, req.id));
     } catch (error) {
       if (!(error instanceof RPCError)) {
-        req.log.error({ request_id: req.id, event_type: 'klient_call_failed' }, 'klient http call failed');
+        req.log.error({ request_id: req.id, event_type: 'klient_call_failed', ...target, error: failureIdentity(error) }, 'klient http call failed');
       }
       return await reply.send(errorEnvelope(error, req.id));
     } finally {
@@ -183,7 +203,7 @@ class KlientHttpConnection {
           if (this.subscriptions.get(id) !== subscription) return;
           this.subscriptions.delete(id);
           subscription.dispose();
-          this.sendError('error', id, error);
+          this.sendError('error', id, error, frameTarget(frame));
         },
         () => {
           if (this.subscriptions.get(id) === subscription) this.send({ type: 'subscribed', id });
@@ -191,7 +211,7 @@ class KlientHttpConnection {
       );
       this.subscriptions.set(id, subscription);
     } catch (error) {
-      this.sendError('error', id, error);
+      this.sendError('error', id, error, frameTarget(frame));
     }
   }
 
@@ -220,7 +240,7 @@ class KlientHttpConnection {
       const iterable = this.dispatcher.stream(scope, frame.service, frame.method, args);
       iterator = iterable[Symbol.asyncIterator]();
     } catch (error) {
-      this.sendError('stream_error', id, error);
+      this.sendError('stream_error', id, error, frameTarget(frame));
       return;
     }
     const controller = new AbortController();
@@ -256,7 +276,7 @@ class KlientHttpConnection {
         }
       } catch (error) {
         if (!active.signal.aborted && !this.closed) {
-          this.sendError('stream_error', id, error);
+          this.sendError('stream_error', id, error, frameTarget(frame));
         }
       } finally {
         if (this.streams.get(id) === active) this.streams.delete(id);
@@ -271,9 +291,9 @@ class KlientHttpConnection {
     active.cancel();
   }
 
-  private sendError(type: 'error' | 'stream_error' | 'view_error', id: string, error: unknown): void {
+  private sendError(type: 'error' | 'stream_error' | 'view_error', id: string, error: unknown, target?: KlientFailureTarget): void {
     if (!(error instanceof RPCError)) {
-      this.app.log.error({ request_id: id, event_type: type }, 'klient websocket operation failed');
+      this.app.log.error({ request_id: id, event_type: type, ...target, error: failureIdentity(error) }, 'klient websocket operation failed');
     }
     const payload = errorPayload(error);
     this.send({ type, id, ...payload });

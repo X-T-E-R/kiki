@@ -10,7 +10,7 @@ import { sessionCreateSchema, ErrorCode, type SessionCreate } from '@kiki/protoc
 import { translate } from '@kiki/session-core/i18n';
 import { I18nProvider } from '../i18n';
 import { ApiError, type NamedAgentProfile } from '../lib/client';
-import { buildAgentProfileOptions, resolveSelectedEffort } from './Composer';
+import { Composer, buildAgentProfileOptions, resolveSelectedEffort } from './Composer';
 import {
   AUTO_WORKSPACE_ID,
   buildNewSessionCreate,
@@ -32,9 +32,14 @@ const { client, navigate, scope } = vi.hoisted(() => ({
     klient: { rest: { agents: { previewFile: vi.fn() }, workspaces: { inspect: vi.fn() }, ssh: { addSessionHost: vi.fn() } } },
     getConfig: vi.fn(),
     listModels: vi.fn(),
+    listExecutors: vi.fn(async () => ({ items: [{ id: 'native', label: 'Kiki', protocol: 'native', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' }] })),
+    listDraftSkills: vi.fn(async () => ({ skills: [] })),
+    listPersonas: vi.fn(async () => []),
+    meta: vi.fn(async () => ({ experimental_flags: { native_ssh: false } })),
     listNamedAgentProfiles: vi.fn(),
     getAuth: vi.fn(),
     createSession: vi.fn(),
+    getSessionCreation: vi.fn(),
     getPersona: vi.fn(),
     setPluginUsage: vi.fn(),
     setSessionOptionalCapability: vi.fn(),
@@ -45,6 +50,7 @@ const { client, navigate, scope } = vi.hoisted(() => ({
 
 vi.mock('../state/connection', () => ({
   useConnection: () => ({ client, scopeId: scope.id, spaceKey: scope.spaceKey, connectionId: scope.connectionId, sshLabel: scope.label }),
+  useOptionalConnection: () => undefined,
 }));
 vi.mock('../host', () => ({
   useHost: () => ({ kind: 'browser' }),
@@ -85,6 +91,11 @@ beforeEach(() => {
   client.listNamedAgentProfiles.mockReset().mockResolvedValue({ items: [] });
   client.getAuth.mockReset().mockResolvedValue({ ready: true });
   client.createSession.mockReset().mockResolvedValue({ id: 'session-new' });
+  client.getSessionCreation.mockReset().mockImplementation(async (creationId: string) => ({
+    creation_id: creationId,
+    session_id: `session_${creationId}`,
+    status: 'pending',
+  }));
   client.getPersona.mockReset();
   client.setPluginUsage.mockReset().mockResolvedValue({});
   client.setSessionOptionalCapability.mockReset().mockResolvedValue({});
@@ -100,13 +111,26 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-function DraftHarness(props: { initialWorkspaceId?: string; initialProfile?: string; initialPersona?: string; isDailyDraft?: boolean; prefillNavigationKey?: string }) {
-  latestDraftState = useNewSessionDraft(props);
-  return null;
+function DraftHarness(props: { initialWorkspaceId?: string; initialProfile?: string; initialPersona?: string; isDailyDraft?: boolean; prefillNavigationKey?: string; composer?: boolean }) {
+  const state = useNewSessionDraft(props);
+  latestDraftState = state;
+  if (!props.composer) return null;
+  return createElement(MemoryRouter, null, createElement(Composer, {
+    busy: state.busy, disabled: state.busy, value: state.draft, onChange: state.updateDraft,
+    model: state.modelOverride, defaultModel: undefined, serverDefaultModel: state.inheritedDefault,
+    modelSource: state.modelSource, agentProfile: state.agentProfile, onChangeAgentProfile: state.setAgentProfile,
+    execution: state.execution, onChangeExecution: state.setExecution,
+    personaPick: { value: state.persona?.definition, onChange: state.selectPersona },
+    permissionMode: state.permissionMode, planMode: state.planMode, goalObjective: state.goalObjective,
+    efforts: state.supportedEfforts, effort: state.effectiveEffort, agentProfileCatalogMode: state.agentProfileCatalogMode,
+    attachments: state.attachments, onChangeAttachments: state.setAttachments, onChangeModel: state.setModelOverride,
+    onChangePermissionMode: state.setPermissionMode, onChangePlanMode: state.setPlanMode,
+    onChangeGoalObjective: state.setGoalObjective, onChangeEffort: state.setEffortOverride, onSend: state.send,
+  }));
 }
 
 async function renderDraft(
-  props: { initialWorkspaceId?: string; initialProfile?: string; initialPersona?: string; isDailyDraft?: boolean; prefillNavigationKey?: string } = {},
+  props: { initialWorkspaceId?: string; initialProfile?: string; initialPersona?: string; isDailyDraft?: boolean; prefillNavigationKey?: string; composer?: boolean } = {},
 ): Promise<QueryClient> {
   const container = document.createElement('div');
   document.body.append(container);
@@ -792,7 +816,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = latestDraftState!;
     if (code === 40001) expect(state.error).toBe(translate('en', 'err.serverData'));
     else expect(state.error).toContain(`code ${code}`);
-    expect(state.creationNotice).toBe(code < 0 ? 'Creation could not be confirmed. Your draft is kept. Check the session list before trying again to avoid creating a second session.' : null);
+    expect(state.creationNotice).toBe(code < 0 ? 'Creation is not confirmed yet. Check the result to continue with the same session. Starting another conversation keeps this attempt for later.' : null);
     expect(state.busy).toBe(false);
     expect(state.creationPending).toBe(false);
     expect(state.workspaceId).toBe('wd_selected');
@@ -802,7 +826,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it('makes cancellation visible until late acceptance and opens the accepted session even after choices change without a second create', async () => {
+  it('releases pending state on cancellation, ignores late navigation, and opens the frozen accepted handoff explicitly', async () => {
     client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
     const creation = deferred<{ id: string }>();
     client.createSession.mockReturnValue(creation.promise);
@@ -812,27 +836,29 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = latestDraftState!;
     let submission: Promise<unknown> | undefined;
     await act(async () => { submission = state.send(state.draft, []); });
+    const firstBody = client.createSession.mock.calls[0]![0] as SessionCreate;
+    const firstPromptId = `new-session:${firstBody.creation_id}`;
     state = latestDraftState!;
     await act(async () => { state.cancelCreation(); state.setCwd('/workspace/other'); });
     state = latestDraftState!;
-    expect(state.creationPending).toBe(true);
+    expect(state.creationPending).toBe(false);
     expect(state.busy).toBe(false);
-    expect(state.creationNotice).toContain('Waiting for the creation result');
+    expect(state.creationNotice).toContain('Stopped waiting');
     await act(async () => { await state.send('Must not re-create while waiting', []); });
     expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(client.getSessionCreation).toHaveBeenCalledWith(firstBody.creation_id);
     await act(async () => { creation.resolve({ id: 'session-accepted' }); await submission; });
-    state = await settleDraft((value) => value.selectionReady && !value.creationPending);
-    expect(state.createdSessionId).toBe('session-accepted');
+    state = await settleDraft((value) => value.createdSessionId === 'session-accepted' && !value.creationPending);
     expect(state.creationNotice).toContain('The session was created');
-    await act(async () => { await state.send(state.draft, []); });
-    expect(client.createSession).toHaveBeenCalledTimes(1);
     expect(navigate).not.toHaveBeenCalled();
-    await act(async () => { state.openCreatedSession(); });
-    expect(navigate).toHaveBeenCalledExactlyOnceWith('/s/session-accepted');
+    await act(async () => { await state.openCreatedSession(); });
+    expect(navigate).toHaveBeenCalledExactlyOnceWith('/s/session-accepted', expect.objectContaining({
+      state: expect.objectContaining({ initialPrompt: 'Preserve me', initialPromptId: firstPromptId }),
+    }), expect.any(Function));
     expect(latestDraftState?.draft).toBe('Preserve me');
   });
 
-  it.each(['prompt', 'skill'] as const)('cancels the first %s before handoff, keeps its draft and selections, and reuses the real created session on retry', async (kind) => {
+  it.each(['prompt', 'skill'] as const)('cancels the first %s before handoff, keeps its draft and selections, and reuses the frozen first handoff on retry', async (kind) => {
     client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent')] });
     client.listModels.mockResolvedValue({ items: [model('fixture/manual', 'high')] });
     const creation = deferred<{ id: string }>();
@@ -856,6 +882,8 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(client.createSession).toHaveBeenCalledTimes(1);
     state = latestDraftState!;
     await act(async () => { state.cancelCreation(); state.updateDraft(`${text}\nMore context`); });
+    expect(latestDraftState?.creationPending).toBe(false);
+    expect(latestDraftState?.busy).toBe(false);
     await act(async () => { creation.resolve({ id: 'session-created-once' }); await submission; });
     expect(navigate).not.toHaveBeenCalled();
     state = latestDraftState!;
@@ -867,8 +895,9 @@ describe('useNewSessionDraft agent profile scope', () => {
     await act(async () => { await state.send(state.draft, state.attachments); });
     expect(client.createSession).toHaveBeenCalledTimes(1);
     expect(navigate).toHaveBeenCalledWith('/s/session-created-once', expect.objectContaining({
-      state: expect.objectContaining({ initialPrompt: `${text}\nMore context`, initialAttachments: attachments,
-        model: 'fixture/manual', thinking: 'high' }),
+      state: expect.objectContaining(kind === 'prompt'
+        ? { initialPrompt: text, initialAttachments: attachments, model: 'fixture/manual', thinking: 'high' }
+        : { initialSkill: { name: 'review', args: '--fix', attachments, userInput: text }, model: 'fixture/manual', thinking: 'high' }),
     }), expect.any(Function));
   });
 
@@ -1831,6 +1860,226 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(client.createSession).not.toHaveBeenCalled();
   });
 
+  it.each(['none', 'model', 'effort', 'both'])('keeps controls picked while the selected persona profile is loading (%s)', async (picked) => {
+    const persona = deferred<Awaited<ReturnType<typeof client.getPersona>>>();
+    client.getPersona.mockReturnValue(persona.promise);
+    client.getConfig.mockResolvedValue({ default_model: 'fixture/default-model' });
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), profile('assistant-profile', 'fixture/default-model', 'high')] });
+    client.listModels.mockResolvedValue({ items: ['fixture/default-model', 'fixture/selected-model'].map((id) => ({
+      ...model(id, 'high'), support_efforts: ['low', 'high'],
+    })) });
+    await renderDraft({ initialPersona: 'assistant-persona', composer: true });
+    await settleDraft((value) => value.personaPending && !value.agentProfileCatalogPending);
+    const container = containers.at(-1)!;
+    const click = async (selector: string) => {
+      const element = container.querySelector(selector);
+      expect(element, selector).not.toBeNull();
+      await act(async () => { element!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    };
+    const modelPicked = picked === 'model' || picked === 'both';
+    const effortPicked = picked === 'effort' || picked === 'both';
+    if (modelPicked) {
+      await click('#composer-execution-select');
+      await click('[data-execution-model="fixture/selected-model"]');
+    }
+    if (effortPicked) {
+      await click('#composer-execution-select');
+      await click('[data-execution-effort="low"]');
+    }
+    persona.resolve({ definition: { id: 'assistant-persona', name: 'Assistant', profile: 'assistant-profile' }, systemPrompt: 'Help the user.' });
+    const state = await settleDraft((value) => !value.personaPending && value.persona !== undefined);
+    expect(state.modelOverride).toBe(modelPicked ? 'fixture/selected-model' : 'fixture/default-model');
+    expect(state.effectiveEffort).toBe(effortPicked ? 'low' : 'high');
+    const body = await sentBody(state);
+    expect(body.agent_config?.model).toBe(modelPicked ? 'fixture/selected-model' : undefined);
+    expect(body.agent_config?.thinking).toBe(effortPicked ? 'low' : undefined);
+    expect(navigate.mock.calls[0]?.[1].state).toMatchObject({
+      model: modelPicked ? 'fixture/selected-model' : undefined, thinking: effortPicked ? 'low' : undefined,
+    });
+  });
+
+  it.each([false, true])('keeps a named profile chosen after selecting a persona (loaded=%s)', async (loaded) => {
+    const persona = deferred<Awaited<ReturnType<typeof client.getPersona>>>();
+    client.getPersona.mockReturnValue(persona.promise);
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'),
+      profile('persona-profile', 'fixture/persona-model', 'high'),
+      profile('selected-profile', 'fixture/selected-model', 'low'),
+    ] });
+    client.listModels.mockResolvedValue({ items: [model('fixture/persona-model', 'high'), model('fixture/selected-model', 'low')] });
+    await renderDraft({ initialPersona: 'assistant-persona', composer: true });
+    await settleDraft((value) => value.personaPending && !value.agentProfileCatalogPending);
+    const resolvePersona = () => persona.resolve({ definition: {
+      id: 'assistant-persona', name: 'Assistant', profile: 'persona-profile',
+    }, systemPrompt: 'Help the user.' });
+    if (loaded) {
+      resolvePersona();
+      await settleDraft((value) => !value.personaPending && value.persona !== undefined);
+    }
+    const container = containers.at(-1)!;
+    const click = async (selector: string) => {
+      const element = container.querySelector(selector);
+      expect(element, selector).not.toBeNull();
+      await act(async () => { element!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    };
+    await click('#composer-profile-select');
+    await click('[data-execution-profile="selected-profile"]');
+    if (!loaded) await act(async () => { resolvePersona(); });
+    let state = await settleDraft((value) => !value.personaPending);
+    expect(state.selectedPersonaId).toBeUndefined();
+    expect(state.persona).toBeUndefined();
+    expect(state.agentProfile).toBe('selected-profile');
+    expect(state.modelOverride).toBe('fixture/selected-model');
+    expect(state.effectiveEffort).toBe('low');
+    await unmountDraft();
+    await renderDraft({ initialPersona: 'assistant-persona' });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending && value.selectionReady);
+    expect(client.getPersona).toHaveBeenCalledTimes(1);
+    expect(state.agentProfile).toBe('selected-profile');
+    expect(state.modelOverride).toBe('fixture/selected-model');
+    expect(state.effectiveEffort).toBe('low');
+    client.createSession.mockRejectedValueOnce(new ApiError({ code: -2, msg: 'Request timed out', data: null }));
+    const body = await sentBody(state);
+    expect(body.persona).toBeUndefined();
+    expect(body.agent_config).toMatchObject({ profile: 'selected-profile', model: 'fixture/selected-model', thinking: 'low' });
+    await settleDraft((value) => !value.creationPending);
+    await unmountDraft();
+    await renderDraft({ initialPersona: 'assistant-persona' });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending && value.selectionReady);
+    client.getSessionCreation.mockResolvedValueOnce({ creation_id: body.creation_id!, session_id: `session_${body.creation_id}`, status: 'missing' });
+    await act(async () => { await state.retryCreation(); });
+    expect(client.createSession.mock.calls[1]![0]).toEqual(body);
+    expect(navigate.mock.calls[0]?.[1].state).toMatchObject({ model: 'fixture/selected-model', thinking: 'low' });
+    expect(client.getPersona).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['local', 'remote', 'daily'])('restores a profile choice but applies a new persona entry (%s)', async (kind) => {
+    if (kind === 'remote') { scope.id = 'ssh:example'; scope.label = 'Example'; }
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), profile('persona-profile', 'fixture/persona-model', 'high'), profile('selected-profile', 'fixture/selected-model', 'low')] });
+    client.listModels.mockResolvedValue({ items: [model('fixture/persona-model', 'high'), model('fixture/selected-model', 'low')] });
+    client.getPersona.mockResolvedValue({ definition: { id: 'assistant-persona', name: 'Assistant', profile: 'persona-profile' } });
+    const props = { initialPersona: 'assistant-persona', prefillNavigationKey: 'entry-one', isDailyDraft: kind === 'daily' };
+    await renderDraft(props);
+    let state = await settleDraft((value) => !value.personaPending && value.persona !== undefined && !value.agentProfileCatalogPending);
+    await act(async () => { state.setAgentProfile('selected-profile'); });
+    await unmountDraft();
+    await renderDraft(props);
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(state.selectedPersonaId).toBeUndefined();
+    expect(state.personaPending).toBe(false);
+    expect(state.agentProfile).toBe('selected-profile');
+    expect(state.modelOverride).toBe('fixture/selected-model');
+    expect(client.getPersona).toHaveBeenCalledTimes(1);
+    await unmountDraft();
+    await renderDraft({ ...props, prefillNavigationKey: 'entry-two' });
+    state = await settleDraft((value) => !value.personaPending && value.persona !== undefined);
+    expect(client.getPersona).toHaveBeenCalledTimes(2);
+    expect(state.agentProfile).toBe('persona-profile');
+    expect(state.modelOverride).toBe('fixture/persona-model');
+  });
+
+  it.each([false, true])('resolves per-model effort defaults and preserves manual effort across profile, persona and restore (manual=%s)', async (manual) => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), {
+      ...profile('assistant-profile', 'fixture/default-model', 'high'),
+      model_profiles: [{ alias: 'selected-model', thinking_effort: 'low' }],
+    }, { ...profile('next-profile', 'fixture/default-model', 'low'),
+      model_profiles: [{ alias: 'selected-model', thinking_effort: 'high' }],
+    }] });
+    client.listModels.mockResolvedValue({ items: ['fixture/default-model', 'fixture/selected-model'].map((id) => ({
+      ...model(id, 'high'), support_efforts: ['low', 'medium', 'high'],
+    })) });
+    client.getPersona.mockResolvedValue({ definition: { id: 'assistant-persona', name: 'Assistant', profile: 'assistant-profile' } });
+    await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => { state.setAgentProfile('assistant-profile'); });
+    state = latestDraftState!;
+    await act(async () => { if (manual) state.setEffortOverride('medium'); state.setModelOverride('fixture/selected-model'); });
+    state = await settleDraft((value) => value.modelOverride === 'fixture/selected-model');
+    expect(state.effectiveEffort).toBe(manual ? 'medium' : 'low');
+    await act(async () => { state.setAgentProfile('next-profile'); });
+    state = latestDraftState!;
+    await act(async () => { state.setModelOverride('fixture/selected-model'); });
+    state = latestDraftState!;
+    expect(state.effectiveEffort).toBe(manual ? 'medium' : 'high');
+    await unmountDraft();
+    await renderDraft();
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(state.effectiveEffort).toBe(manual ? 'medium' : 'high');
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    await renderDraft({ initialProfile: 'assistant-profile', prefillNavigationKey: 'new-profile-entry' });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    expect(state.effectiveEffort).toBe(manual ? 'medium' : 'high');
+    await act(async () => { state.selectPersona('assistant-persona'); });
+    state = await settleDraft((value) => !value.personaPending && value.persona !== undefined);
+    await act(async () => { state.setModelOverride('fixture/selected-model'); });
+    state = latestDraftState!;
+    expect(state.effectiveEffort).toBe(manual ? 'medium' : 'low');
+    const body = await sentBody(state);
+    expect(body.agent_config?.model).toBe('fixture/selected-model');
+    expect(body.agent_config?.thinking).toBe(manual ? 'medium' : undefined);
+  });
+
+  it.each([false, true])('applies persona effort pins below manual effort and above model-profile defaults after restore (manual=%s)', async (manual) => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), {
+      ...profile('assistant-profile', 'fixture/default-model', 'low'),
+      model_profiles: [{ alias: 'fixture/selected-model', thinking_effort: 'low' }],
+    }] });
+    client.listModels.mockResolvedValue({ items: ['fixture/default-model', 'fixture/selected-model'].map((id) => ({
+      ...model(id, 'medium'), support_efforts: ['low', 'medium', 'high'],
+    })) });
+    client.getPersona.mockResolvedValue({ definition: {
+      id: 'assistant-persona', name: 'Assistant', profile: 'assistant-profile', thinkingEffort: 'high',
+    } });
+    await renderDraft();
+    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => { if (manual) state.setEffortOverride('medium'); state.setModelOverride('fixture/selected-model'); });
+    state = latestDraftState!;
+    await act(async () => { state.selectPersona('assistant-persona'); });
+    state = await settleDraft((value) => !value.personaPending && value.persona !== undefined);
+    expect(state.modelOverride).toBe('fixture/default-model');
+    expect(state.effectiveEffort).toBe(manual ? 'medium' : 'high');
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    await renderDraft({ initialPersona: 'assistant-persona' });
+    state = await settleDraft((value) => !value.personaPending && value.persona !== undefined && !value.agentProfileCatalogPending);
+    await act(async () => { state.setModelOverride('fixture/selected-model'); });
+    state = latestDraftState!;
+    expect(state.effectiveEffort).toBe(manual ? 'medium' : 'high');
+    const body = await sentBody(state);
+    expect(body.agent_config?.model).toBe('fixture/selected-model');
+    expect(body.agent_config?.thinking).toBe(manual ? 'medium' : undefined);
+  });
+
+  it('keeps a real GUI model picker choice after selecting a profile with a model menu', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile('agent'), {
+      ...profile('assistant-profile', 'fixture/default-model', 'high'),
+      preferred_models: ['fixture/default-model', 'fixture/selected-model'],
+      model_profiles: [{ alias: 'fixture/selected-model', thinking_effort: 'high', when: 'Use for an explicitly selected task.' }],
+    }] });
+    client.listModels.mockResolvedValue({ items: [model('fixture/default-model', 'high'), model('fixture/selected-model', 'high')] });
+    await renderDraft({ composer: true });
+    await settleDraft((value) => !value.agentProfileCatalogPending);
+    const container = containers.at(-1)!;
+    const click = async (selector: string) => {
+      const element = container.querySelector(selector);
+      expect(element, selector).not.toBeNull();
+      await act(async () => { element!.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    };
+    await click('#composer-profile-select');
+    await click('[data-execution-profile="assistant-profile"]');
+    await settleDraft((value) => value.modelOverride === 'fixture/default-model');
+    await click('#composer-execution-select');
+    await click('[data-execution-model="fixture/selected-model"]');
+    const state = await settleDraft((value) => value.modelOverride === 'fixture/selected-model');
+    expect(state.agentProfile).toBe('assistant-profile');
+    await act(async () => { state.updateDraft('Keep the model I selected.'); });
+    await click('button[aria-label="Send message"]');
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({ agent_config: expect.objectContaining({
+      profile: 'assistant-profile', model: 'fixture/selected-model',
+    }) }));
+    expect(navigate.mock.calls[0]?.[1].state).toMatchObject({ model: 'fixture/selected-model' });
+  });
+
   it('keeps an explicit Sol pick through the profile pin, the parked overrides, and both create hops', async () => {
     client.listNamedAgentProfiles.mockResolvedValue({
       items: [profile('agent', 'kimi-code/kimi-for-coding', 'high')],
@@ -1959,7 +2208,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     state = latestDraftState!;
     expect(state.agentProfile).toBe('no-pin-profile');
     expect(state.modelOverride).toBe('fixture/pinned-model');
-    expect(state.effectiveEffort).toBe('high');
+    expect(state.effectiveEffort).toBe('low');
     await act(async () => {
       await state.send('Keep the model the previous pin left selected', []);
     });
@@ -1967,7 +2216,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(kept.agent_config).toMatchObject({
       profile: 'no-pin-profile',
       model: 'fixture/pinned-model',
-      thinking: 'high',
+      thinking: 'low',
     });
 
     await act(async () => {
@@ -2203,9 +2452,10 @@ describe('new-session SSH creation handoff', () => {
     expect(client.klient.rest.ssh.addSessionHost).toHaveBeenCalledWith('session-new', 'example-host');
     expect(navigate).not.toHaveBeenCalled();
     await act(async () => { join.resolve({}); await sending; });
-    // The join is a session fact; the message itself carries no host.
+    // The join is a session fact, while the frozen handoff carries it only as
+    // session setup metadata; it must not become first-message content.
     const carried = navigate.mock.calls[0]![1]!.state as Record<string, unknown>;
-    expect(JSON.stringify(carried)).not.toContain('example-host');
+    expect(carried['sshHosts']).toEqual(hosts);
     expect(navigate).toHaveBeenCalledWith('/s/session-new', expect.objectContaining({ state: expect.objectContaining(kind === 'prompt'
       ? { initialAttachments: [], initialPrompt: 'Inspect' } : { initialSkill: { name: 'inspect', args: '--new\nKeep this line.', attachments: [], userInput: '/inspect --new\nKeep this line.' } }) }), expect.any(Function));
   });
@@ -2648,7 +2898,7 @@ describe('new-session idempotent creation_id intent and error recovery', () => {
     expect(localStorage.getItem('kiki.draft.new.intent.local')).toBeNull();
   });
 
-  it('preserves draft, shows unknown notice, and reuses identical creation_id on retry after timeout or 50006', async () => {
+  it('preserves the unknown intent and only GETs while the receipt is pending', async () => {
     client.createSession.mockRejectedValueOnce(new ApiError({
       code: ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN,
       msg: 'Creation outcome unknown',
@@ -2666,52 +2916,139 @@ describe('new-session idempotent creation_id intent and error recovery', () => {
     expect(state.busy).toBe(false);
     expect(state.creationPending).toBe(false);
     expect(state.draft).toBe('Recover after unknown outcome');
-    expect(state.creationNotice).toBe('Creation could not be confirmed. Your draft is kept. Check the session list before trying again to avoid creating a second session.');
+    expect(state.creationNotice).toBe('Creation is not confirmed yet. Check the result to continue with the same session. Starting another conversation keeps this attempt for later.');
     expect(client.createSession).toHaveBeenCalledTimes(1);
     const firstCreationId = client.createSession.mock.calls[0]![0].creation_id;
     expect(state.createdSessionId).toBe(`session_${firstCreationId}`);
 
-    // Retry sending with same body reuses identical creation_id
-    client.createSession.mockResolvedValueOnce({ id: `session_${firstCreationId}` });
-    await act(async () => { await state.send(state.draft, []); });
-    expect(client.createSession).toHaveBeenCalledTimes(2);
-    expect(client.createSession.mock.calls[1]![0].creation_id).toBe(firstCreationId);
-    expect(navigate).toHaveBeenCalledWith(`/s/session_${firstCreationId}`, expect.anything(), expect.any(Function));
+    client.getSessionCreation.mockResolvedValueOnce({
+      creation_id: firstCreationId,
+      session_id: `session_${firstCreationId}`,
+      status: 'pending',
+    });
+    await act(async () => { await state.retryCreation(); });
+    expect(client.getSessionCreation).toHaveBeenCalledExactlyOnceWith(firstCreationId);
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
   });
 
-  it('survives refresh after timeout or 50006 and provides openCreatedSession without duplicate create', async () => {
+  it('retries a receipt the server says is missing with the original id and body', async () => {
+    client.createSession.mockRejectedValueOnce(new ApiError({
+      code: ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN,
+      msg: 'Creation outcome unknown',
+      data: null,
+      details: { evidence: 'session_absent' },
+    }));
+
+    await renderDraft();
+    let state = await settleDraft((value) => value.selectionReady);
+    await act(async () => {
+      state.updateDraft('Retry after authoritative missing');
+      state.setPermissionMode('review');
+      state.setPlanMode(true);
+    });
+    state = latestDraftState!;
+    await act(async () => { await state.send(state.draft, []); });
+    state = latestDraftState!;
+    const firstBody = client.createSession.mock.calls[0]![0] as SessionCreate;
+    const creationId = firstBody.creation_id!;
+
+    await act(async () => {
+      state.updateDraft('Edited before recovery');
+      state.setPermissionMode('yolo');
+      state.setPlanMode(false);
+    });
+    state = latestDraftState!;
+    client.getSessionCreation.mockResolvedValueOnce({
+      creation_id: creationId,
+      session_id: `session_${creationId}`,
+      status: 'missing',
+    });
+    client.createSession.mockResolvedValueOnce({ id: `session_${creationId}` });
+    await act(async () => { await state.retryCreation(); });
+    expect(client.getSessionCreation).toHaveBeenCalledExactlyOnceWith(creationId);
+    expect(client.createSession).toHaveBeenCalledTimes(2);
+    expect(client.createSession.mock.calls[1]![0]).toEqual(firstBody);
+    expect(navigate).toHaveBeenCalledWith(`/s/session_${creationId}`, expect.anything(), expect.any(Function));
+  });
+
+  it.each(['open', 'retry'] as const)('survives refresh with frozen body, handoff, and prompt id, then %s after a completed GET', async (action) => {
     client.createSession.mockRejectedValueOnce(new ApiError({
       code: -2,
       msg: 'Request timed out',
       data: null,
     }));
 
+    const attachment = { kind: 'file' as const, path: '/workspace/input.txt', name: 'input.txt', isDir: false };
+    const presentation = { spans: [{ start: 0, end: 8, kind: 'selection' as const, quote: 'Preserve' }] };
     await renderDraft();
     let state = await settleDraft((value) => value.selectionReady);
-    await act(async () => { state.updateDraft('Preserve through reload'); });
-    state = latestDraftState!;
+    await act(async () => {
+      state.setCwd('/workspace/original');
+      state.updateDraft('Preserve through reload');
+      state.setAttachments([attachment]);
+      state.setPermissionMode('review');
+      state.setPlanMode(true);
+    });
+    state = await settleDraft((value) => value.cwd === '/workspace/original' && value.draft === 'Preserve through reload');
 
-    await act(async () => { await state.send(state.draft, []); });
+    await act(async () => { await state.send(state.draft, state.attachments, { presentation }); });
     state = latestDraftState!;
-    const creationId = client.createSession.mock.calls[0]![0].creation_id;
-    expect(state.creationNotice).toContain('Creation could not be confirmed');
+    const firstBody = client.createSession.mock.calls[0]![0] as SessionCreate;
+    const creationId = firstBody.creation_id!;
+    const initialPromptId = `new-session:${creationId}`;
+    expect(state.creationNotice).toContain('Creation is not confirmed yet');
+    const persisted = JSON.parse(localStorage.getItem('kiki.draft.new.intent.local') ?? 'null') as Record<string, unknown>;
+    expect(persisted['body']).toEqual(firstBody);
+    expect(persisted['handoff']).toMatchObject({
+      initialPrompt: 'Preserve through reload',
+      initialAttachments: [attachment],
+      initialPresentation: presentation,
+      initialPromptId,
+      permissionMode: 'review',
+      planMode: true,
+    });
 
-    // Simulate page refresh / remounting /new
     await unmountDraft();
     await renderDraft();
     state = await settleDraft((value) => value.selectionReady);
-
     expect(state.draft).toBe('Preserve through reload');
-    expect(state.creationNotice).toContain('Creation could not be confirmed');
+    expect(state.creationNotice).toContain('Creation is not confirmed yet');
     expect(state.createdSessionId).toBe(`session_${creationId}`);
 
-    // Opening created session navigates to the exact session without creating again
-    await act(async () => { state.openCreatedSession(); });
-    expect(navigate).toHaveBeenCalledWith(`/s/session_${creationId}`);
+    await act(async () => {
+      state.updateDraft('Edited after reload');
+      state.setCwd('/workspace/changed');
+      state.setPermissionMode('yolo');
+      state.setPlanMode(false);
+    });
+    state = latestDraftState!;
+    client.getSessionCreation.mockResolvedValueOnce({
+      creation_id: creationId,
+      session_id: `session_${creationId}`,
+      status: 'completed',
+      session: { id: `session_${creationId}` },
+    });
+    await act(async () => {
+      if (action === 'open') await state.openCreatedSession();
+      else await state.retryCreation();
+    });
+    expect(client.getSessionCreation).toHaveBeenCalledExactlyOnceWith(creationId);
     expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith(`/s/session_${creationId}`, expect.objectContaining({
+      state: expect.objectContaining({
+        initialPrompt: 'Preserve through reload',
+        initialAttachments: [attachment],
+        initialPresentation: presentation,
+        initialPromptId,
+        permissionMode: 'review',
+        planMode: true,
+      }),
+    }), expect.any(Function));
+    expect(state.draft).toBe('Edited after reload');
   });
 
-  it('blocks creating a duplicate session when user changes body under an unconfirmed intent', async () => {
+  it('checks an unconfirmed intent instead of creating a duplicate when the current body changes', async () => {
     client.createSession.mockRejectedValueOnce(new ApiError({
       code: ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN,
       msg: 'Outcome unknown',
@@ -2726,6 +3063,7 @@ describe('new-session idempotent creation_id intent and error recovery', () => {
 
     await act(async () => { await state.send(state.draft, []); });
     expect(client.createSession).toHaveBeenCalledTimes(1);
+    const creationId = client.createSession.mock.calls[0]![0].creation_id;
 
     // Modify draft and cwd to change the body
     await act(async () => {
@@ -2734,10 +3072,11 @@ describe('new-session idempotent creation_id intent and error recovery', () => {
     });
     state = latestDraftState!;
 
-    // Send attempt is blocked to prevent silently generating a new ID or duplicate session
+    // A changed body only checks the persisted intent; it cannot silently POST a new request.
     await act(async () => { await state.send(state.draft, []); });
+    expect(client.getSessionCreation).toHaveBeenCalledWith(creationId);
     expect(client.createSession).toHaveBeenCalledTimes(1);
-    expect(state.creationNotice).toContain('Creation could not be confirmed');
+    expect(state.creationNotice).toContain('Creation is not confirmed yet');
     expect(state.draft).toBe('Changed draft');
   });
 
@@ -2775,7 +3114,7 @@ describe('new-session creation recovery at the component boundary', () => {
     creationId: string; sessionId: string; bodyKey: string; status: string; evidence?: string; reason?: string;
   } | null;
 
-  it('remounts while POST is still held, restores the exact pending identity and body, and only replays on an explicit send', async () => {
+  it('remounts while POST is still held, restores the exact pending identity, and only replays after a missing receipt', async () => {
     const gate = deferred<{ id: string }>();
     client.createSession.mockReturnValueOnce(gate.promise);
     await renderDraft();
@@ -2795,14 +3134,23 @@ describe('new-session creation recovery at the component boundary', () => {
     await renderDraft();
     state = await ready();
     expect(state.createdSessionId).toBe(sessionId);
-    expect(state.creationNotice).toContain('Creation could not be confirmed');
+    expect(state.creationNotice).toContain('Creation is not confirmed yet');
     expect(state.creationPending).toBe(false);
     expect(state.draft).toBe('Keep the in-flight draft');
     expect(state.cwd).toBe('/workspace/original');
     expect(client.createSession).toHaveBeenCalledTimes(1);
     expect(navigate).not.toHaveBeenCalled();
-    client.createSession.mockResolvedValueOnce({ id: sessionId });
+
     await act(async () => { await state.send(state.draft, []); });
+    expect(client.getSessionCreation).toHaveBeenCalledExactlyOnceWith(firstBody.creation_id);
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+
+    client.getSessionCreation.mockResolvedValueOnce({
+      creation_id: firstBody.creation_id!, session_id: sessionId, status: 'missing',
+    });
+    client.createSession.mockResolvedValueOnce({ id: sessionId });
+    await act(async () => { await state.retryCreation(); });
     expect(client.createSession.mock.calls[1]![0]).toEqual(firstBody);
     expect(navigate).toHaveBeenCalledTimes(1);
     await act(async () => { gate.resolve({ id: sessionId }); await original; });
@@ -2818,7 +3166,7 @@ describe('new-session creation recovery at the component boundary', () => {
     'session_read_error',
     'receipt_read_error',
     'future_diagnostic_evidence',
-  ])('keeps timeout/50006 evidence %s unknown and replays exactly the same create body', async (evidence) => {
+  ])('keeps timeout/50006 evidence %s unknown and only retries after the receipt says missing', async (evidence) => {
     client.createSession.mockRejectedValueOnce(new ApiError({
       code: evidence === undefined ? -2 : ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN,
       msg: 'Unconfirmed creation', data: null, details: { evidence },
@@ -2830,13 +3178,28 @@ describe('new-session creation recovery at the component boundary', () => {
     await act(async () => { await state.send(state.draft, []); });
     state = latestDraftState!;
     const firstBody = client.createSession.mock.calls[0]![0] as SessionCreate;
-    expect(state.creationNotice).toContain('Creation could not be confirmed');
+    const creationId = firstBody.creation_id!;
+    expect(state.creationNotice).toContain('Creation is not confirmed yet');
     expect(storedIntent()?.status).toBe('unknown');
     expect(storedIntent()?.evidence).toBe(evidence);
     expect(navigate).not.toHaveBeenCalled();
-    client.createSession.mockResolvedValueOnce({ id: `session_${firstBody.creation_id}` });
-    await act(async () => { await state.send(state.draft, []); });
-    expect(client.createSession.mock.calls[1]![0]).toEqual(firstBody);
+
+    const missing = evidence === 'session_absent';
+    client.getSessionCreation.mockResolvedValueOnce({
+      creation_id: creationId,
+      session_id: `session_${creationId}`,
+      status: missing ? 'missing' : 'pending',
+    });
+    if (missing) client.createSession.mockResolvedValueOnce({ id: `session_${creationId}` });
+    await act(async () => { await state.retryCreation(); });
+    expect(client.getSessionCreation).toHaveBeenCalledExactlyOnceWith(creationId);
+    if (missing) {
+      expect(client.createSession).toHaveBeenCalledTimes(2);
+      expect(client.createSession.mock.calls[1]![0]).toEqual(firstBody);
+    } else {
+      expect(client.createSession).toHaveBeenCalledTimes(1);
+      expect(navigate).not.toHaveBeenCalled();
+    }
   });
 
   it.each(['unknown', 'body_mismatch', 'session_id_exists'])('does not turn a cancelled %s result or a later body change into acceptance', async (result) => {
@@ -2858,13 +3221,16 @@ describe('new-session creation recovery at the component boundary', () => {
       await sending;
     });
     state = latestDraftState!;
-    if (result === 'unknown') expect(state.creationNotice).toContain('Creation could not be confirmed');
+    if (result === 'unknown') expect(state.creationNotice).toContain('Creation is not confirmed yet');
     else expect(state.creationNotice).toBeNull();
     expect(state.creationNotice ?? '').not.toContain('The session was created');
     expect(storedIntent()).toMatchObject({ status: result === 'unknown' ? 'unknown' : 'conflict' });
     if (result !== 'unknown') expect(storedIntent()?.reason).toBe(result);
     await act(async () => { state.setCwd('/workspace/changed'); state.updateDraft('Keep the edited draft'); });
     state = await ready();
+    if (result !== 'unknown') {
+      client.getSessionCreation.mockRejectedValueOnce(new ApiError({ code: ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT, msg: 'Creation receipt unavailable', data: null }));
+    }
     await act(async () => { await state.send(state.draft, []); });
     state = latestDraftState!;
     expect(client.createSession).toHaveBeenCalledTimes(1);
@@ -2879,9 +3245,75 @@ describe('new-session creation recovery at the component boundary', () => {
     if (result !== 'unknown') {
       expect(state.error).toContain('40948');
       expect(state.createdSessionId).toBeUndefined();
-      await act(async () => { state.openCreatedSession(); });
+      await act(async () => { await state.openCreatedSession(); });
       expect(navigate).not.toHaveBeenCalled();
     }
+  });
+
+  it('does not let a late response from a cancelled attempt affect a new attempt', async () => {
+    const oldCreation = deferred<{ id: string }>();
+    const newCreation = deferred<{ id: string }>();
+    client.createSession.mockReturnValueOnce(oldCreation.promise).mockReturnValueOnce(newCreation.promise);
+    await renderDraft();
+    let state = await ready();
+    await act(async () => { state.updateDraft('Old attempt'); });
+    state = latestDraftState!;
+    let oldSubmission: Promise<unknown> | undefined;
+    await act(async () => { oldSubmission = state.send(state.draft, []); });
+    const oldBody = client.createSession.mock.calls[0]![0] as SessionCreate;
+    await act(async () => { latestDraftState!.cancelCreation(); });
+    expect(latestDraftState?.creationPending).toBe(false);
+    expect(latestDraftState?.busy).toBe(false);
+
+    await act(async () => { latestDraftState!.startNewCreation(); });
+    state = latestDraftState!;
+    expect(state.hasCreationIntent).toBe(false);
+    expect(state.createdSessionId).toBeUndefined();
+    await act(async () => { state.updateDraft('New attempt'); });
+    state = latestDraftState!;
+    let newSubmission: Promise<unknown> | undefined;
+    await act(async () => { newSubmission = state.send(state.draft, []); });
+    const newBody = client.createSession.mock.calls[1]![0] as SessionCreate;
+    expect(newBody.creation_id).not.toBe(oldBody.creation_id);
+    expect(latestDraftState?.creationPending).toBe(true);
+    expect(latestDraftState?.busy).toBe(true);
+
+    await act(async () => { oldCreation.resolve({ id: `session_${oldBody.creation_id}` }); await oldSubmission; });
+    state = latestDraftState!;
+    expect(state.createdSessionId).toBeUndefined();
+    expect(state.creationPending).toBe(true);
+    expect(state.busy).toBe(true);
+    expect(navigate).not.toHaveBeenCalled();
+    expect(storedIntent()).toMatchObject({ creationId: newBody.creation_id, status: 'pending' });
+
+    await act(async () => { newCreation.resolve({ id: `session_${newBody.creation_id}` }); await newSubmission; });
+    expect(navigate).toHaveBeenCalledWith(`/s/session_${newBody.creation_id}`, expect.anything(), expect.any(Function));
+    expect(navigate).not.toHaveBeenCalledWith(`/s/session_${oldBody.creation_id}`, expect.anything(), expect.anything());
+  });
+
+  it('can recover the previous attempt after starting another conversation and refreshing', async () => {
+    const oldCreation = deferred<{ id: string }>();
+    client.createSession.mockReturnValueOnce(oldCreation.promise);
+    await renderDraft();
+    let state = await ready();
+    await act(async () => { state.updateDraft('Original frozen message'); });
+    let sending: Promise<void> | undefined;
+    await act(async () => { sending = latestDraftState!.send('Original frozen message', []); });
+    const oldBody = client.createSession.mock.calls[0]![0] as SessionCreate;
+    await act(async () => { latestDraftState!.cancelCreation(); latestDraftState!.startNewCreation(); });
+    await act(async () => { oldCreation.resolve({ id: `session_${oldBody.creation_id}` }); await sending; });
+    expect(navigate).not.toHaveBeenCalled();
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    await renderDraft();
+    state = await ready();
+    expect(state.hasPreviousCreation).toBe(true);
+    await act(async () => { state.restorePreviousCreation(); });
+    state = latestDraftState!;
+    expect(state.createdSessionId).toBe(`session_${oldBody.creation_id}`);
+    await act(async () => { await state.openCreatedSession(); });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith(`/s/session_${oldBody.creation_id}`, expect.objectContaining({ state: expect.objectContaining({ initialPrompt: 'Original frozen message', initialPromptId: `new-session:${oldBody.creation_id}` }) }), expect.any(Function));
   });
 
   it('clears a definite create failure instead of recovering it as an unknown pending request on reload', async () => {

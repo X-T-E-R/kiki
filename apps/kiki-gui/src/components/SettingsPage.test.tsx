@@ -43,7 +43,7 @@ type AdvisorFake = { advisor?: Record<string, unknown>; status: Record<string, u
 const advisorFake: AdvisorFake = { status: {}, patches: [], memoryEnabled: true };
 function advisorResponse(workspaceId?: string) {
   const advisor: Record<string, unknown> | undefined = advisorFake.advisor === undefined ? undefined : {
-    mode: 'rank', first_step_wait_ms: 1500, timeout_ms: 6000, max_calls_per_turn: 3, candidate_chars: 120,
+    mode: 'rank', timeout_ms: 6000, max_calls_per_turn: 3, candidate_chars: 120,
     catalog_page_items: 40, max_catalog_pages: 2, max_full_units: 8, judge_input_tokens: 12000, apply_to_children: true, egress_ack: [],
     ...advisorFake.advisor,
   };
@@ -64,6 +64,7 @@ function advisorResponse(workspaceId?: string) {
       state, consent_required: false, reason: state === 'unconfigured' ? 'unconfigured' : undefined,
       destination, origin: destination === undefined ? undefined : source?.kind === 'connection' ? 'https://api.typesafe.ai' : 'https://api.example.test',
       protocol: selector?.protocol, model: selector?.model,
+      first_step_wait_default_ms: selector === undefined ? undefined : selector.protocol === 'chat_json' ? 1500 : 3000,
       source_status: source === undefined ? undefined : { state: 'ready', connection: source.connection, model: selector?.model, protocol: selector?.protocol, destination },
       logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0, ...advisorFake.status,
     },
@@ -164,6 +165,7 @@ const client = {
     else if (patch.advisor !== undefined) {
       const next = { ...advisorFake.advisor, ...patch.advisor };
       if (patch.advisor['selector'] === null) delete next['selector'];
+      if (patch.advisor['first_step_wait_ms'] === null) delete next['first_step_wait_ms'];
       advisorFake.advisor = next;
     }
     return advisorResponse(workspaceId);
@@ -684,6 +686,30 @@ describe('SettingsPage memory advisor', () => {
     await flush();
     expect(card(container).querySelector('[role="alert"]')?.textContent).toContain('Could not save Memory Advisor settings: config is read-only');
     expect(container.querySelector<HTMLInputElement>('#memory-advisor-enabled')!.checked).toBe(true);
+  });
+
+  it('shows the first-step wait the source uses by default and resets an explicit value without saving the default', async () => {
+    advisorFake.advisor = { source: { kind: 'connection', connection: 'judge' } };
+    const container = await renderSettings('/settings/memory');
+    const fold = card(container).querySelector<HTMLDetailsElement>('[data-memory-advisor-advanced]')!;
+    fold.open = true;
+    const wait = () => fold.querySelector<HTMLInputElement>('[data-memory-advisor-first-step-wait-ms]')!;
+    expect(wait().value).toBe('3000');
+    expect(fold.querySelector('[data-memory-advisor-wait-default]')).not.toBeNull();
+    expect(fold.querySelector('[data-memory-advisor-wait-reset]')).toBeNull();
+    await commitText(wait(), '1500');
+    await flush();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { first_step_wait_ms: 1500 } });
+    expect(wait().value).toBe('1500');
+    expect(fold.querySelector('[data-memory-advisor-wait-default]')).toBeNull();
+    await click(fold.querySelector('[data-memory-advisor-wait-reset]')!);
+    await flush();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { first_step_wait_ms: null } });
+    expect(advisorFake.advisor).not.toHaveProperty('first_step_wait_ms');
+    expect(wait().value).toBe('3000');
+    advisorFake.advisor = { source: { kind: 'model', model: 'cheap-judge' } };
+    const chat = await renderSettings('/settings/memory');
+    expect(card(chat).querySelector<HTMLInputElement>('[data-memory-advisor-first-step-wait-ms]')!.value).toBe('1500');
   });
 
   it('removes the whole block at once and offers Undo with the captured config', async () => {

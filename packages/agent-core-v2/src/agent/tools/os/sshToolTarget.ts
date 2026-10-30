@@ -2,8 +2,27 @@ import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import type { Runtime, RuntimeCapability, RuntimeLease } from '#/runtime/runtime';
 import type { ExecutableToolResult } from '#/tool/toolContract';
 import { literalRulePattern } from '#/tool/rule-match';
+import { toInputJsonSchema } from '#/tool/input-schema';
+import type { z } from 'zod';
 
 const HOST_DESCRIPTION = 'SSH host name. Omit for the session workspace; use "local" for this machine when the workspace is remote. Paths are on the selected host.';
+
+const hostToolParameterCache = new WeakMap<z.ZodType, { local?: Record<string, unknown>; ssh?: Record<string, unknown> }>();
+
+/** Returns the input JSON Schema for a host-aware tool, reusing one stable object per schema and SSH state. */
+export function hostToolParameters(schema: z.ZodType, enabled: boolean): Record<string, unknown> {
+  let entry = hostToolParameterCache.get(schema);
+  if (entry === undefined) {
+    entry = {};
+    hostToolParameterCache.set(schema, entry);
+  }
+  const key = enabled ? 'ssh' : 'local';
+  const cached = entry[key];
+  if (cached !== undefined) return cached;
+  const parameters = toolParametersWithHost(toInputJsonSchema(schema), enabled);
+  entry[key] = parameters;
+  return parameters;
+}
 
 export function toolParametersWithHost(parameters: Record<string, unknown>, enabled: boolean): Record<string, unknown> {
   const properties = parameters['properties'] as Record<string, unknown> | undefined;
@@ -44,7 +63,9 @@ export function toolApprovalRule(name: string, subject: string, runtime: Runtime
 export function tagSshResult(result: ExecutableToolResult, runtime: Runtime | string): ExecutableToolResult {
   const id = typeof runtime === 'string' ? runtime === 'local' ? 'local' : `ssh:${runtime}` : runtime.identity.runtimeId;
   if (!id.startsWith('ssh:')) return result;
+  const environment = typeof runtime === 'string' ? '' : `\nplatform: ${runtime.environment.osKind}\nshell: ${runtime.environment.shellName}`;
+  const header = `host: ${id.slice(4)}${environment}`;
   return typeof result.output === 'string'
-    ? { ...result, output: `host: ${id.slice(4)}\n${result.output}` }
-    : { ...result, note: `${result.note ?? ''}<system>host: ${id.slice(4)}</system>` };
+    ? { ...result, output: `${header}\n${result.output}` }
+    : { ...result, note: `${result.note ?? ''}<system>${header}</system>` };
 }

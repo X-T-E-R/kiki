@@ -77,7 +77,16 @@ export interface AgentProfileSummaryPolicy {
   readonly retries: number;
 }
 
+export interface KikiSpaceContext {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: 'main' | 'space' | 'unavailable';
+  readonly homeDir: string;
+  readonly baseHomeDir?: string;
+}
+
 export interface AgentProfileContext {
+  readonly space?: KikiSpaceContext;
   readonly cwd?: string;
   readonly cwdListing?: string;
   readonly agentsMd?: string;
@@ -158,6 +167,7 @@ export function captureProfileModelMenu<T extends Pick<AgentProfile,
 
 export interface AgentProfile extends AgentModelParameters, AgentModelConstraints {
   readonly recipe?: string;
+  readonly recipeOptions?: Readonly<Record<string, boolean>>;
   readonly restrictModelsToMenu?: boolean;
   readonly modelMenuConstraint?: ProfileModelMenuConstraint;
   readonly effectiveModelAliases?: readonly string[];

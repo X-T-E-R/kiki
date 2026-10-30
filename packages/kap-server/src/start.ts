@@ -9,6 +9,7 @@ import {
   IAppendLogStore,
   IConfigService,
   IEventService,
+  ILogService,
   IMcpOAuthService,
   ISessionIndex,
   ISessionIndexMirror,
@@ -57,6 +58,7 @@ import { installErrorHandler } from './error-handler';
 import { createInstanceRegistry, loadOrCreateServerHomeId, type InstanceRegistration } from './instanceRegistry';
 import { transformOpenApiDocument } from './openapi/transforms';
 import { registerRequestLogging } from './requestLogging';
+import { registerEventLoopDiagnostics } from './services/eventLoopDiagnostics';
 import { resolveRequestId } from './request-id';
 import { registerApiV1Routes } from './routes/registerApiV1Routes';
 import { registerWebAssetRoutes } from './routes/webAssets';
@@ -598,6 +600,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   }
   app.server.requestTimeout = 0;
   registerRequestLogging(app);
+  registerEventLoopDiagnostics(app, core.accessor.get(ILogService));
   app.setValidatorCompiler(() => () => true);
   app.setSerializerCompiler(() => (data) => JSON.stringify(data));
   installErrorHandler(app);
@@ -1270,7 +1273,7 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   remoteConnections.start();
   usageExport.start();
   try {
-    core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService);
+    core.accessor.get(IGlobalSearchService).setLiveTranscriptSource(transcriptService, navigation());
   } catch (error) {
     logger.warn(
       { err: error instanceof Error ? error.message : String(error) },

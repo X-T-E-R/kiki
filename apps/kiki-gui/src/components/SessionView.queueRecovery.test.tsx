@@ -8,7 +8,7 @@ import { I18nProvider } from '../i18n';
 import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 import { SubmissionRecovery } from './SubmissionRecovery';
-import { preserveSubmission, readUnconfirmedSubmissions, readDraft, writeDraft, resetDraftMemoryForTests, readComposerState, writeComposerState, createQuote, selectionCarryoverPresentation } from '@kiki/session-core/composer';
+import { preserveSubmission, readUnconfirmedSubmissions, readDraft, writeDraft, resetDraftMemoryForTests, resetComposerMemoryForTests, readComposerState, writeComposerState, createQuote, selectionCarryoverPresentation } from '@kiki/session-core/composer';
 import { createViewState, type UserBlock } from '@kiki/session-core/session';
 import { emptySessionUsage, type PromptItem, type SessionPendingInteraction } from '@kiki/protocol';
 import { ApiError } from '@kiki/session-core/transport';
@@ -17,7 +17,7 @@ const contentRead = {
   beginContentRead() { return { release() {}, retry() {} }; },
   isContentRange() { return false; },
 };
-const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, dependencies: undefined as Promise<void> | undefined, queued: true, partialPrompts: false, structureUnread: false, durableIngress: undefined as readonly PromptItem[] | undefined, acquires: 0, releases: 0, persistenceHints: [] as unknown[], loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true), readMedia: vi.fn(), readPreview: vi.fn(), pushToast: vi.fn() }));
+const fixture = vi.hoisted(() => ({ controller: undefined as object | undefined, autoCompact: true, dependencies: undefined as Promise<void> | undefined, queued: true, partialPrompts: false, structureUnread: false, durableIngress: undefined as readonly PromptItem[] | undefined, acquires: 0, releases: 0, persistenceHints: [] as unknown[], loadEntities: vi.fn(async () => true), loadContent: vi.fn(async () => true), readMedia: vi.fn(), readPreview: vi.fn(), pushToast: vi.fn(), updateSessionProfile: vi.fn(), live: false }));
 vi.mock('../lib/toasts', () => ({ pushToast: fixture.pushToast }));
 /** A snapshot field the header shows, cut in the window — the composer's remainder. */
 const STRUCTURE_REF = { source: { kind: 'snapshot' as const, id: '' }, revision: 'rev-1', path: ['session', 'title'], kind: 'text' as const, offset: 12, total: 40 };
@@ -25,6 +25,7 @@ vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../state/connection', () => {
   const client = {
     sessionView: () => ({}), getConfig: async () => ({}),
+    updateSessionProfile: fixture.updateSessionProfile,
     listNamedAgentProfiles: async () => { await fixture.dependencies; return { items: [{ name: 'agent', source: 'builtin', main: true, disabled: false, routes: [] }] }; },
     getSessionGoal: async () => null,
     getAgentCapabilities: async () => ({ context: 'live', available: false, targets: [] }),
@@ -57,6 +58,7 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     readonly subscribeAgent = () => () => {};
     readonly state = {
       ...actual.createViewState('session-example'), loaded: true, transcriptReady: true,
+      busy: fixture.live, permissionMode: 'manual' as const, planMode: false,
       session: { id: 'session-example', title: 'Queue recovery example', workspace_id: 'workspace-example', metadata: { cwd: '/example' }, agent_config: { profile: 'agent' }, profile: 'agent', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' },
       blocks: fixture.queued ? [{ kind: 'user' as const, id: 'queued-example', promptId: 'queued-example', promptStatus: 'queued' as const, text: 'retain this queued message', createdAt: '2026-01-01T00:00:00Z' }] : [],
       queuedPromptIds: fixture.queued ? ['queued-example'] : [],
@@ -119,9 +121,12 @@ beforeEach(() => {
   fixture.readMedia.mockReset();
   fixture.readPreview.mockReset();
   fixture.pushToast.mockClear();
+  fixture.updateSessionProfile.mockReset().mockResolvedValue({});
+  fixture.live = false;
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   localStorage.clear();
   resetDraftMemoryForTests();
+  resetComposerMemoryForTests();
   localStorage.setItem('kiki.locale', 'en');
   vi.stubGlobal('matchMedia', () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
   container = document.createElement('div'); document.body.append(container);
@@ -998,5 +1003,93 @@ describe('the session announcer', () => {
     // The agent-workspace branch mounts the same component from its own early
     // return, so the two can never coexist; mounting that branch needs the full
     // workspace surface and is left to the GUI slot rather than jsdom.
+  });
+});
+
+describe('live composer mode controls', () => {
+  async function mountLiveComposer() {
+    fixture.live = true;
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes>
+          <Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route>
+        </Routes></MemoryRouter></I18nProvider>
+      </QueryClientProvider>));
+  }
+
+  async function click(selector: string) {
+    const button = container.querySelector<HTMLButtonElement>(selector);
+    expect(button, selector).not.toBeNull();
+    await act(async () => button!.click());
+  }
+
+  it('writes a permission pick immediately while the current turn is busy', async () => {
+    await mountLiveComposer();
+    await click('button[aria-label="Approvals"]');
+    await click('[data-permission-mode="auto"]');
+    expect(fixture.updateSessionProfile).toHaveBeenCalledExactlyOnceWith('session-example', { agent_config: { permission_mode: 'auto' } });
+    expect(container.querySelector('button[aria-label="Approvals"]')?.textContent).toContain('Auto');
+    expect(container.querySelector('textarea[data-composer]')?.textContent).toBe('');
+  });
+
+  it('writes plan entry and exit without sending a prompt', async () => {
+    await mountLiveComposer();
+    await click('[data-add-menu-trigger]');
+    await click('[data-add-menu-mode]');
+    await click('[data-mode-switch="plan"]');
+    expect(fixture.updateSessionProfile).toHaveBeenNthCalledWith(1, 'session-example', { agent_config: { plan_mode: true } });
+    expect(container.querySelector('[data-mode-switch="plan"]')?.getAttribute('aria-checked')).toBe('true');
+    await click('[data-mode-switch="normal"]');
+    expect(fixture.updateSessionProfile).toHaveBeenNthCalledWith(2, 'session-example', { agent_config: { plan_mode: false } });
+    expect(container.querySelector('[data-mode-switch="normal"]')?.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('rolls back a failed permission write and reports the failure', async () => {
+    fixture.updateSessionProfile.mockRejectedValue(new Error('mode write failed'));
+    await mountLiveComposer();
+    await click('button[aria-label="Approvals"]');
+    await click('[data-permission-mode="auto"]');
+    expect(container.querySelector('button[aria-label="Approvals"]')?.textContent).toContain('Ask every time');
+    expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error', text: expect.stringContaining('mode write failed') }));
+  });
+
+  it('serializes rapid picks and keeps a later choice when the earlier write fails', async () => {
+    let rejectFirst!: (error: Error) => void;
+    fixture.updateSessionProfile.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }));
+    await mountLiveComposer();
+    await click('button[aria-label="Approvals"]');
+    await click('[data-permission-mode="auto"]');
+    await click('button[aria-label="Approvals"]');
+    await click('[data-permission-mode="yolo"]');
+    expect(fixture.updateSessionProfile).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('button[aria-label="Approvals"]')?.textContent).toContain('Full access');
+    await act(async () => { rejectFirst(new Error('first write failed')); });
+    expect(fixture.updateSessionProfile).toHaveBeenNthCalledWith(2, 'session-example', { agent_config: { permission_mode: 'yolo' } });
+    expect(container.querySelector('button[aria-label="Approvals"]')?.textContent).toContain('Full access');
+  });
+
+  it('saves the plan gate immediately and rolls a failed change back', async () => {
+    await mountLiveComposer();
+    await click('[data-add-menu-trigger]');
+    await click('[data-add-menu-mode]');
+    await click('[data-mode-switch="plan"]');
+    await click('[data-mode-switch="planGate"]');
+    expect(fixture.updateSessionProfile).toHaveBeenLastCalledWith('session-example', { agent_config: { plan_gate: 'gated' } });
+    expect(container.querySelector('[data-mode-switch="planGate"]')?.getAttribute('aria-checked')).toBe('false');
+    fixture.updateSessionProfile.mockRejectedValueOnce(new Error('gate write failed'));
+    await click('[data-mode-switch="planGate"]');
+    expect(container.querySelector('[data-mode-switch="planGate"]')?.getAttribute('aria-checked')).toBe('false');
+    expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error', text: expect.stringContaining('gate write failed') }));
+  });
+
+  it('rolls back a failed plan entry', async () => {
+    fixture.updateSessionProfile.mockRejectedValue(new Error('plan write failed'));
+    await mountLiveComposer();
+    await click('[data-add-menu-trigger]');
+    await click('[data-add-menu-mode]');
+    await click('[data-mode-switch="plan"]');
+    expect(container.querySelector('[data-mode-switch="normal"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(fixture.pushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: 'error', text: expect.stringContaining('plan write failed') }));
   });
 });

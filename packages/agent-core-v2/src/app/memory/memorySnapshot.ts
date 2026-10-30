@@ -29,6 +29,7 @@ export interface IAgentMemorySnapshot {
   setAdvice?(advice: MemoryAdvice | undefined): void;
   get(lastKnown?: string): Promise<string>;
   refreshIfDirty(request?: string): Promise<string | undefined>;
+  refreshView?(): Promise<void>;
   getSessionEntries(): Promise<readonly string[]>;
   liveSessionEntries(): Promise<readonly MemoryEntry[]>;
   resolveReferences(text: string): Promise<readonly string[]>;
@@ -52,6 +53,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
   private inbound = '';
   private settingsKey = '';
   private refreshing?: Promise<string | undefined>;
+  private unpublished = false;
   private advice?: MemoryAdvice;
   get advisorRequest(): string { return this.request; }
   advisorRequestIdentity?: string;
@@ -90,7 +92,19 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     return this.frozen;
   }
 
-  refreshIfDirty(inbound?: string): Promise<string | undefined> {
+  async refreshView(): Promise<void> {
+    if (await this.refresh() !== undefined) this.unpublished = true;
+  }
+
+  async refreshIfDirty(inbound?: string): Promise<string | undefined> {
+    const refreshed = await this.refresh(inbound);
+    if (refreshed !== undefined) { this.unpublished = false; return refreshed; }
+    if (!this.unpublished || this.frozen === undefined) return undefined;
+    this.unpublished = false;
+    return this.frozen;
+  }
+
+  private refresh(inbound?: string): Promise<string | undefined> {
     if (this.refreshing !== undefined) return this.refreshing;
     this.refreshing = (async () => {
       await this.frozen;

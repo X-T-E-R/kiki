@@ -126,7 +126,8 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
       const current = settings();
       const advisor = patch.advisor === null ? undefined : patch.advisor === undefined ? current.advisor : { ...current.advisor, ...patch.advisor,
         source: patch.advisor.source === null ? undefined : patch.advisor.source ?? current.advisor?.source,
-        selector: patch.advisor.source === null || patch.advisor.selector === null ? undefined : patch.advisor.selector ?? current.advisor?.selector };
+        selector: patch.advisor.source === null || patch.advisor.selector === null ? undefined : patch.advisor.selector ?? current.advisor?.selector,
+        first_step_wait_ms: patch.advisor.first_step_wait_ms === null ? undefined : patch.advisor.first_step_wait_ms ?? current.advisor?.first_step_wait_ms };
       const next = MemoryConfigSchema.parse({ ...current, ...patch, advisor });
       await config.replace(MEMORY_SECTION, next);
       return settingsResponse(req.query.workspace_id);

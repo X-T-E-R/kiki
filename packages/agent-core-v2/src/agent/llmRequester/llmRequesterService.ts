@@ -23,6 +23,8 @@ import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentMediaResolverService } from '#/agent/media/mediaResolver';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
+import { LOOP_CONTROL_SECTION, type LoopControl } from '#/agent/loop/configSection';
+import { TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
 import { findRetryPolicy } from '#/agent/stepRetry/retryPolicy';
 import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
@@ -46,8 +48,9 @@ import {
   isImageFormatError,
   isRecoverableRequestStructureError,
   isRetryableGenerateError,
+  isRetryableRequestInterruption,
 } from '#/kosong/contract/errors';
-import { isToolCall, type Message, type StreamedMessagePart } from '#/kosong/contract/message';
+import { isContentPart, isVacuousContentPart, isToolCall, type Message, type StreamedMessagePart } from '#/kosong/contract/message';
 import { readGenerateFailureUsage } from '#/kosong/contract/generate';
 import type { ResponsesRequestTransport } from '#/kosong/contract/responsesTransport';
 import { type ThinkingEffort } from '#/kosong/contract/provider';
@@ -145,8 +148,9 @@ import {
 } from './llmRequestOps';
 import { isAbortError } from '#/_base/utils/abort';
 import { parseBooleanEnv } from '#/_base/utils/env';
-import { ErrorCodes, Error2, readAttachedErrorDetails, unwrapErrorCause } from '#/errors';
+import { ErrorCodes, Error2, attachErrorDetails, readAttachedErrorDetails, unwrapErrorCause } from '#/errors';
 import {
+  DEFAULT_MAX_RETRY_ATTEMPTS,
   readRetryAfterMs,
   retryBackoffDelay,
   retryErrorFields,
@@ -561,10 +565,16 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       this.markMediaStrippedRecoveryTurn(snapshot, request.source);
       return { strip: snapshot };
     };
+    let attemptObservedOutput = false;
+    let attemptStartedAt = Date.now();
+    let attemptTraceId: string | undefined;
     const run = async (
       policy: ProjectionPolicy | undefined,
       params: ModelRequestParams,
     ): Promise<AgentLLMRequestFinish> => {
+      attemptObservedOutput = false;
+      attemptStartedAt = Date.now();
+      attemptTraceId = undefined;
       onRequestTrace(undefined);
       const projection = projectionNameOf(policy);
       const fields =
@@ -605,10 +615,12 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       let usage: TokenUsage | undefined;
       let timing: ModelRequestTiming | undefined;
       let finish: Extract<ModelRequestEvent, { type: 'finish' }> | undefined;
+      let handlingPart = false;
       let toolCallIds = this.toolCallIdNormalizer.beginResponse();
 
       const setTraceId = (traceId: string | null | undefined): void => {
         const normalized = traceId ?? undefined;
+        attemptTraceId = normalized;
         onRequestTrace(normalized);
       };
 
@@ -635,7 +647,10 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
               onAttemptRetry?.();
               break;
             case 'part':
+              attemptObservedOutput ||= !isContentPart(event.part) || !isVacuousContentPart(event.part);
+              handlingPart = true;
               await onPart(this.normalizeStreamPart(toolCallIds, event.part), event.responseInstanceId);
+              handlingPart = false;
               signal?.throwIfAborted();
               break;
             case 'usage':
@@ -676,6 +691,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         }
       } catch (error) {
         toolCallIds.rollback();
+        if (handlingPart || finish !== undefined) attachErrorDetails(error, { retry: false });
         const failureUsage = readGenerateFailureUsage(error);
         if (failureUsage !== undefined) {
           this.usage.record(request.modelAlias, failureUsage, request.source, {
@@ -714,6 +730,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       };
     };
 
+    let interruptionAttempt = 1;
     let infiniteRetryAttempt = 0;
     let params = request.params;
     const refreshIdentityParams = async (): Promise<void> => {
@@ -736,11 +753,48 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
         if (this.retryAttribution?.value === attribution) this.retryAttribution = undefined;
         return result;
       } catch (error) {
-        const retryPolicy = findRetryPolicy(this.config.get<RetryConfig>(RETRY_SECTION)?.policies, unwrapErrorCause(error), {
+        const retryConfig = this.config.get<RetryConfig>(RETRY_SECTION);
+        const raw = unwrapErrorCause(error);
+        const retryPolicy = findRetryPolicy(retryConfig?.policies, raw, {
           model: request.model.id, provider: request.model.providerName,
         });
         if (retry === 'never' || retryPolicy?.retry === false || hasExplicitRetryVeto(error) ||
-          (requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error)) ||
+          isAbortError(error) || signal?.aborted === true) throw error;
+        if (source?.type === 'turn' && isRetryableRequestInterruption(error)) {
+          const discardedPartialOutput = attemptObservedOutput || !isRetryableGenerateError(error);
+          if (discardedPartialOutput && (retryConfig?.retryPartialResponses === false || onAttemptRetry === undefined)) throw error;
+          const maxAttempts = Math.min(DEFAULT_MAX_RETRY_ATTEMPTS, Math.max(retryPolicy?.maxAttempts ?? retryConfig?.maxAttempts ??
+            this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.maxAttemptsPerStep ?? DEFAULT_MAX_RETRY_ATTEMPTS, 1));
+          onAttemptRetry?.();
+          if (interruptionAttempt >= maxAttempts) {
+            const details = { retry: false, retry_exhausted: true, retry_attempts: interruptionAttempt };
+            attachErrorDetails(error, details);
+            attachErrorDetails(raw, details);
+            this.log.warn('upstream interruption retry exhausted', {
+              ...request.logFields, model: request.modelAlias, attempt: interruptionAttempt,
+              maxAttempts, discardedPartialOutput, ...retryErrorFields(raw),
+            });
+            throw error;
+          }
+          this.trackApiError(error, attemptStartedAt, signal, source, attemptTraceId);
+          const delayMs = readRetryAfterMs(raw) ?? retryPolicy?.backoff ?? retryBackoffDelay(interruptionAttempt - 1, 2_000);
+          const fields = retryErrorFields(raw);
+          const errorMessage = `Upstream interrupted; retrying and discarding partial output. ${fields.errorMessage}`;
+          this.log.warn('upstream interrupted; retrying and discarding partial output', {
+            ...request.logFields, model: request.modelAlias, attempt: interruptionAttempt,
+            maxAttempts, delayMs, discardedPartialOutput, ...fields,
+          });
+          void this.dispatcher.dispatch(new TurnStepRetrying({
+            turnId: source.turnId, step: source.step ?? 1,
+            failedAttempt: interruptionAttempt, nextAttempt: interruptionAttempt + 1,
+            maxAttempts, delayMs, ...fields, errorMessage,
+          }));
+          interruptionAttempt++;
+          await sleepForRetry(delayMs, signal);
+          await refreshIdentityParams();
+          continue;
+        }
+        if ((requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error)) ||
           readProviderEventErrorCode(error) === 'antigravity_thinking_only') throw error;
         const nextPolicy = this.nextProjectionPolicyForError(
           error,
@@ -755,13 +809,10 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           policy = nextPolicy;
           continue;
         }
-        const raw = unwrapErrorCause(error);
         if (
           (requestDeliveryProvenance(error) !== undefined && !isRetryableGenerateError(error)) ||
           !this.infiniteRetryEnabled ||
           isRequestGovernanceError(error) ||
-          isAbortError(error) ||
-          signal?.aborted === true ||
           raw instanceof APIContextOverflowError
         ) {
           throw error;

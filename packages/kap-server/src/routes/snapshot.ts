@@ -24,6 +24,7 @@ import {
 import { z } from 'zod';
 
 import { sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
+import { readAgentOutcome } from '@kiki/agent-core-v2/session/sessionMetadata/agentOutcomeStore';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
@@ -477,6 +478,24 @@ export async function readBrowseSnapshotContent(
       timing.signal?.throwIfAborted();
       if (field === 'subagents') {
         const candidates = sessionAgentRoster(sessionId, meta);
+        const index = ref.path[1];
+        const receiptField = ref.path[2];
+        if (typeof index === 'number' && (receiptField === 'output_preview' || receiptField === 'stop_reason')) {
+          try {
+            return readContentSegment({ subagents: candidates }, ref);
+          } catch (error) {
+            if (!(error instanceof ContentChangedError)) throw error;
+          }
+          const candidate = candidates[index];
+          const saved = candidate === undefined ? undefined : meta.agents?.[candidate.id];
+          if (candidate !== undefined && saved !== undefined) {
+            const outcome = await readAgentOutcome(core.accessor.get(IAtomicDocumentStore),
+              `sessions/${summary.workspaceId}/${sessionId}`, saved);
+            timing.signal?.throwIfAborted();
+            candidates[index] = { ...candidate, output_preview: outcome.resultSummary ?? candidate.output_preview,
+              stop_reason: outcome.error ?? candidate.stop_reason };
+          }
+        }
         return readContentSegment({ subagents: ref.source.id === 'legacy'
           ? enrichSnapshotSubagents(candidates, meta.agents, broadcaster.getMaterializedTranscriptToolCallCounts(sessionId, candidates.map((agent) => agent.id)))
           : candidates }, ref);

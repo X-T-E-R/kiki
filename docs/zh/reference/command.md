@@ -461,7 +461,7 @@ kiki web --no-open       # 不打开浏览器
 kiki web --port 58628    # 指定绑定端口
 ```
 
-同一 home 目录下可以同时运行多个实例：每个实例注册到 `~/.kiki/server/instances/`，端口被占用时自动 +1 重试（58628、58629……）。
+同一 home 目录下可以同时运行多个实例：每个实例注册到当前 `<home>/server/instances/`（默认 `~/.kiki/server/instances/`），端口被占用时自动 +1 重试（58628、58629……）。
 
 | 选项 | 说明 |
 | --- | --- |
@@ -506,7 +506,7 @@ kiki export [sessionId] [options]
 | `--yes` | `-y` | 跳过默认会话的确认提示，直接导出 |
 | `--no-include-global-log` | | 不打包全局诊断日志。默认包含 |
 
-导出包含目标会话目录内的所有文件。全局诊断日志（`~/.kiki/logs/kimi-code.log`）默认包含，因为它可能含有其他会话或项目的事件；不想分享时加 `--no-include-global-log`。
+导出包含目标会话目录内的所有文件。全局诊断日志（当前 `<home>/logs/kimi-code.log`；默认 `~/.kiki/logs/kimi-code.log`）默认包含，因为它可能含有其他会话或项目的事件；不想分享时加 `--no-include-global-log`。
 
 ```sh
 # 导出当前工作目录最近一次会话，跳过确认

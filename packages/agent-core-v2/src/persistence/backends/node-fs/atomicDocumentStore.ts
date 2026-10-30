@@ -12,6 +12,8 @@ import {
   type DocumentCodec,
 } from '#/persistence/interface/atomicDocumentStore';
 
+import { encodeCooperativeJson } from './cooperativeJson';
+
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const exactTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
@@ -88,9 +90,13 @@ class AtomicDocumentStoreBase implements IAtomicDocumentStore {
     return operation();
   }
 
-  async set<T>(scope: string, key: string, value: T): Promise<void> {
-    await this.enqueue(scope, key, () => this.withWriteLock(scope, key,
-      () => this.storage.write(scope, key, this.codec.encode(value), { atomic: true })));
+  async set<T>(scope: string, key: string, value: T, options?: { readonly cooperative?: boolean }): Promise<void> {
+    await this.enqueue(scope, key, () => this.withWriteLock(scope, key, async () => {
+      const bytes = options?.cooperative === true && this.codec === jsonDocumentCodec
+        ? await encodeCooperativeJson(value)
+        : this.codec.encode(value);
+      await this.storage.write(scope, key, bytes, { atomic: true });
+    }));
   }
 
   async update<T>(

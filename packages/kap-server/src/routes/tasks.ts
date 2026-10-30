@@ -1,4 +1,13 @@
+import { join } from 'node:path';
+
 import {
+  AgentTaskPersistence,
+  IAtomicDocumentStore,
+  IFileSystemStorageService,
+  IBootstrapService,
+  agentScopeOf,
+  sessionScopeOf,
+  workspacePersistenceScope,
   IAgentLifecycleService,
   IAgentTaskService,
   ISessionIndex,
@@ -108,6 +117,15 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
       const query = req.query as { status?: TaskStatus; page_size?: number; offset?: number };
       const pageSize = query.page_size ?? 100;
       const offset = query.offset ?? 0;
+      if (resolved.persisted !== undefined) {
+        const page = await resolved.persisted.list(pageSize, offset);
+        reply.send(okEnvelope({
+          items: page.items.map((info) => toWireTask(session_id, info)).filter((task) => query.status === undefined || task.status === query.status),
+          has_more: page.hasMore,
+          next_offset: page.hasMore ? page.nextOffset : undefined,
+        }, req.id));
+        return;
+      }
       const all = resolved.tasks?.list(false, query.status === undefined ? offset + pageSize + 1 : undefined) ?? [];
       const matching = query.status === undefined ? all : all.filter((task) => task.status === query.status);
       const page = matching.slice(offset, offset + pageSize);
@@ -155,17 +173,19 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
         return;
       }
 
-      const found = await resolved.tasks?.getTaskSnapshot(task_id);
+      const found = resolved.persisted === undefined ? await resolved.tasks?.getTaskSnapshot(task_id)
+        : await resolved.persisted.read(task_id);
       if (found === undefined) {
         reply.send(taskNotFound(session_id, task_id, req.id));
         return;
       }
 
       let output: { preview: string; bytes: number } | undefined;
-      if (query.with_output === true && resolved.tasks !== undefined && found.receiptVerification !== 'invalid') {
+      if (query.with_output === true && found.receiptVerification !== 'invalid') {
         const tailBytes = query.output_bytes ?? DEFAULT_TASK_OUTPUT_PREVIEW_BYTES;
         try {
-          const preview = await resolved.tasks.readOutput(task_id, tailBytes);
+          const preview = resolved.persisted === undefined ? await resolved.tasks!.readOutput(task_id, tailBytes)
+            : (await resolved.persisted.persistence.readTaskOutputSnapshot(task_id, tailBytes))?.preview ?? '';
           if (preview.length > 0) {
             output = { preview, bytes: Buffer.byteLength(preview, 'utf-8') };
           }
@@ -253,10 +273,46 @@ export function registerTasksRoutes(app: TasksRouteHost, core: Scope): void {
   app.post(cancelRoute.path, cancelRoute.options, cancelRoute.handler as Parameters<TasksRouteHost['post']>[2]);
 }
 
+const VALID_TASK_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-z]{8}$/;
+
+class PersistedTasksReader {
+  constructor(
+    readonly persistence: AgentTaskPersistence,
+    private readonly docs: IAtomicDocumentStore,
+    private readonly scopes: readonly string[],
+    private readonly ownerId: string,
+  ) {}
+
+  async read(taskId: string): Promise<AgentTaskInfo | undefined> {
+    if (!VALID_TASK_ID.test(taskId)) return undefined;
+    const task = await this.persistence.readTask(taskId);
+    return task?.ownerAgentId !== undefined && task.ownerAgentId !== this.ownerId ? undefined : task;
+  }
+
+  async list(limit: number, offset: number): Promise<{ readonly items: readonly AgentTaskInfo[]; readonly hasMore: boolean; readonly nextOffset: number }> {
+    const ids = new Set<string>();
+    for (const scope of this.scopes) {
+      for (const key of await this.docs.list(`${scope}/tasks`)) {
+        if (key.endsWith('.json') && VALID_TASK_ID.test(key.slice(0, -5))) ids.add(key.slice(0, -5));
+      }
+    }
+    const ordered = [...ids].toSorted();
+    const end = Math.min(ordered.length, offset + limit);
+    const items: AgentTaskInfo[] = [];
+    for (const id of ordered.slice(offset, end)) {
+      try {
+        const task = await this.read(id);
+        if (task !== undefined) items.push(task);
+      } catch {}
+    }
+    return { items, hasMore: end < ordered.length, nextOffset: end };
+  }
+}
+
 type ResolvedTasks =
   | { readonly kind: 'session_not_found' }
   | { readonly kind: 'agent_not_found'; readonly agentId: string }
-  | { readonly kind: 'resolved'; readonly tasks: IAgentTaskService | undefined };
+  | { readonly kind: 'resolved'; readonly tasks: IAgentTaskService | undefined; readonly persisted?: PersistedTasksReader };
 
 async function resolveSessionTasks(
   core: Scope,
@@ -267,7 +323,21 @@ async function resolveSessionTasks(
   if (summary === undefined) return { kind: 'session_not_found' };
 
   const session = getLiveSessionById(core.accessor, sid);
-  if (session === undefined) return { kind: 'resolved', tasks: undefined };
+  if (session === undefined) {
+    const ownerId = agentId ?? MAIN_AGENT_ID;
+    if (ownerId === '.' || ownerId === '..' || /[/\\\0]/.test(ownerId) || ownerId.length === 0) {
+      return { kind: 'agent_not_found', agentId: ownerId };
+    }
+    const bootstrap = core.accessor.get(IBootstrapService);
+    const scope = sessionScopeOf(workspacePersistenceScope(bootstrap.scope('sessions'), summary.workspaceId), sid);
+    const ownerScope = agentScopeOf(scope, ownerId);
+    const docs = core.accessor.get(IAtomicDocumentStore);
+    const fallback = ownerId === MAIN_AGENT_ID ? { dir: join(bootstrap.homeDir, scope), scope } : undefined;
+    const persistence = new AgentTaskPersistence(join(bootstrap.homeDir, ownerScope), ownerScope, docs,
+      core.accessor.get(IFileSystemStorageService), fallback);
+    const persisted = new PersistedTasksReader(persistence, docs, fallback === undefined ? [ownerScope] : [ownerScope, scope], ownerId);
+    return { kind: 'resolved', tasks: undefined, persisted };
+  }
   if (agentId !== undefined && agentId !== MAIN_AGENT_ID) {
     const agent = session.accessor.get(IAgentLifecycleService).get(agentId);
     if (agent === undefined) return { kind: 'agent_not_found', agentId };

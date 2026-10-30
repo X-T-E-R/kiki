@@ -980,6 +980,22 @@ export function AddMenu({
   const trimmed = query.trim();
   const needle = trimmed.toLowerCase();
   const searching = view === 'root' && trimmed !== '';
+  // The view the panel actually draws. A data-driven sub-view whose source has
+  // gone away (an SSH availability flag briefly resolving undefined mid-add,
+  // a timing/mode row that disappeared) must not paint an empty shell or fall
+  // through to an unrelated panel: it falls back to the root until the source
+  // returns, keeping the open menu populated and the declared view intact.
+  const sourceAvailable =
+    view === 'ssh' ? ssh !== undefined
+    : view === 'timing' ? timing !== undefined
+    : view === 'mode' ? runMode !== undefined
+    : view === 'skills' ? skills !== undefined
+    : view === 'plugins' ? plugins !== undefined
+    : view === 'mcp' ? mcp !== undefined
+    : view === 'optional' ? optional !== undefined
+    : view === 'mention' ? files !== undefined
+    : true;
+  const resolvedView: AddMenuView = sourceAvailable ? view : 'root';
   const fileQuery = useDebounced(trimmed, FILE_DEBOUNCE_MS);
   const fileCurrent = fileQuery === trimmed;
   // The first page is the only automatic read. Later pages wait for the
@@ -1470,17 +1486,17 @@ export function AddMenu({
       </button>
       {open ? (
         <div
-          data-add-panel={view}
-          role={view === 'mode' ? 'dialog' : 'menu'}
+          data-add-panel={resolvedView}
+          role={resolvedView === 'mode' ? 'dialog' : 'menu'}
           aria-label={
-            view === 'ssh' ? t('composer.ssh.heading')
-              : view === 'mode' ? t('composer.runModeHeading')
-              : view === 'timing' ? t('composer.sendTimingAria')
-              : view === 'skills' ? t('composer.addMenu.skills')
-              : view === 'plugins' ? t('composer.addMenu.plugins')
-              : view === 'optional' ? t('composer.addMenu.optional')
-              : view === 'mcp' ? t('composer.addMenu.mcp')
-              : view === 'mention' ? t('composer.addMenu.mention')
+            resolvedView === 'ssh' ? t('composer.ssh.heading')
+              : resolvedView === 'mode' ? t('composer.runModeHeading')
+              : resolvedView === 'timing' ? t('composer.sendTimingAria')
+              : resolvedView === 'skills' ? t('composer.addMenu.skills')
+              : resolvedView === 'plugins' ? t('composer.addMenu.plugins')
+              : resolvedView === 'optional' ? t('composer.addMenu.optional')
+              : resolvedView === 'mcp' ? t('composer.addMenu.mcp')
+              : resolvedView === 'mention' ? t('composer.addMenu.mention')
               : t('composer.addMenuAria')
           }
           // Bounded by the room above the card (`--cp-max-h`) and laid out as
@@ -1490,27 +1506,27 @@ export function AddMenu({
           // over the last row instead of the list shrinking under it.
           className={`anim-enter ${COMPOSER_PANEL_START} flex max-h-[var(--cp-max-h,none)] w-80 flex-col overflow-hidden p-1 ${POPOVER_SURFACE_CLASS}`}
         >
-          {view === 'root' ? (
+          {resolvedView === 'root' ? (
             <>
               {searchable ? searchField(t('composer.addMenu.search')) : null}
               {rootBody}
             </>
-          ) : view === 'skills' ? (
+          ) : resolvedView === 'skills' ? (
             skillsBody
-          ) : view === 'plugins' ? (
+          ) : resolvedView === 'plugins' ? (
             pluginsBody
-          ) : view === 'optional' ? (
+          ) : resolvedView === 'optional' ? (
             optionalBody
-          ) : view === 'mcp' ? (
+          ) : resolvedView === 'mcp' ? (
             mcpBody
-          ) : view === 'mention' ? (
+          ) : resolvedView === 'mention' ? (
             mentionBody
-          ) : view === 'ssh' && ssh !== undefined ? (
+          ) : resolvedView === 'ssh' && ssh !== undefined ? (
             <>
               {backRow(t('composer.addMenu.ssh'))}
               {ssh.renderPanel(close)}
             </>
-          ) : view === 'timing' && timing !== undefined ? (
+          ) : resolvedView === 'timing' && timing !== undefined ? (
             <>
               {backRow(t('composer.addMenu.timing'))}
               <SendTimingRows

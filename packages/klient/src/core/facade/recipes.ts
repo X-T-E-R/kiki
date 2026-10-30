@@ -3,7 +3,7 @@ import type { Caller } from './global.js';
 
 export interface GlobalRecipesFacade {
   list(): Promise<RecipeSummary[]>;
-  get(installation_id: string): Promise<RecipeDetail | undefined>;
+  get(installation_id: string, selection?: import('@kiki/protocol').RecipeOptionValues): Promise<RecipeDetail | undefined>;
   export(installation_id: string): Promise<RecipeExport>;
   preview(input: RecipePreviewInput): Promise<RecipePreview>;
   install(input: RecipeInstallInput): Promise<RecipeSummary>;
@@ -22,7 +22,7 @@ export interface GlobalRecipesFacade {
 export function createGlobalRecipes(call: Caller): GlobalRecipesFacade {
   return {
     list: () => call('recipeService', 'list', []) as Promise<RecipeSummary[]>,
-    get: (id) => call('recipeService', 'get', [id]) as Promise<RecipeDetail | undefined>,
+    get: (id, selection) => call('recipeService', 'get', selection === undefined ? [id] : [id, selection]) as Promise<RecipeDetail | undefined>,
     export: (id) => call('recipeService', 'export', [id]) as Promise<RecipeExport>,
     preview: (input) => call('recipeService', 'preview', [input]) as Promise<RecipePreview>,
     install: (input) => call('recipeService', 'install', [input]) as Promise<RecipeSummary>,

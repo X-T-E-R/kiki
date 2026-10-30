@@ -12,9 +12,17 @@ Kiki 自有运行时开关统一使用 `KIKI_*` 前缀。`KIMI_API_KEY` 和 `KIM
 
 ## 核心路径
 
+### 当前 Kiki home
+
+`<home>` 指服务器主机上当前 Space 解析出的 Kiki home。对于支持 `--home` 的子命令，解析顺序为：显式 `--home` > `KIKI_HOME` > OS home 下的默认 `~/.kiki`。只有文档明确支持 `--home` 的子命令可用该显式覆盖；根命令 `kiki` 不提供全局 `--home`。`KIMI_CODE_HOME` 不选择这个 home——它仅供 vendor Kimi Code 集成使用，例如外部 Kimi CLI 或其 OAuth 凭证目录。
+
+本地子进程默认继承当前 Space 的 Kiki home；子进程环境里显式提供的 `KIKI_HOME` 仍然覆盖这个默认值。SSH 和其他远端子进程不会收到本地 Kiki home，而是在远端主机上解析自己的 home。
+
+当前配置、会话、memory 和日志使用 `<home>`。base home 可以提供选定的继承资源，启用共享凭证时凭证也可能从 base 读取；这不表示所有文件都会搬到同一路径，或从同一路径共享。Shell 示例中，若 `KIKI_HOME` 指向当前 home，请把路径写成 `"$KIKI_HOME/..."`。
+
 ### `KIKI_HOME`
 
-覆盖数据根目录，默认 `~/.kiki`。设置后，配置与凭证文件、会话、日志、OAuth 凭据等全部数据都落到新路径下。桌面应用的 OAuth 凭据也跟随 `KIKI_HOME`：未设置时默认在兼容家目录 `~/.kimi-code/`（见[数据路径](./data-locations.md)）。
+在没有受支持的子命令级 `--home` 时选择运行时 home，默认是 `~/.kiki`。解析完成后，配置与凭证文件、会话、日志、OAuth 凭据和其他运行时数据会使用这个 home，但仍受上面的继承与共享凭证规则约束。桌面应用的 OAuth 凭据也跟随 `KIKI_HOME`：未设置时默认在兼容家目录 `~/.kimi-code/`（见[数据路径](./data-locations.md)）。
 
 ```sh
 export KIKI_HOME="/path/to/custom/kiki"
@@ -144,7 +152,7 @@ kiki
 | `KIKI_MCP_TOOL_TIMEOUT_MS` | 所有 MCP server 的全局默认单次工具调用超时（毫秒）；优先级高于 `config.toml` 的 `[mcp] tool_timeout_ms`，但低于 `mcp.json` 中单个 server 的 `toolTimeoutMs`（默认 `60000`） | `1` 到 `2147483647` 的整数；非法值被忽略 |
 | `KIKI_LOOP_MAX_STEPS_PER_TURN` | Agent 单轮最大步数；优先级高于 `config.toml` 的 `[loop_control] max_steps_per_turn`（不设或 `0` 表示无上限） | 非负整数；非法值被忽略 |
 | `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP` | 单步失败后的最大总尝试次数（含首次尝试）；优先级高于 `config.toml` 的 `[loop_control] max_attempts_per_step`（默认 `5`） | 非负整数；非法值被忽略 |
-| `KIKI_INFINITE_RETRY` | 无限重试失败的 LLM 请求，涵盖轮次内步骤、compaction、HTTP 400/404 和额度错误。等待按指数退避（32 秒封顶）并尊重 `Retry-After`。取消、本地准入拒绝、已观察到的输出或工具执行、`retry = false`、单次请求的 `retry: 'never'` 仍阻止重试；一次性 [`Continue.` 请求](./config-files.md#loop-control)也不会重试。上下文溢出仍走上下文恢复。适用于端点可能短暂故障的长时间无人值守评测 | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
+| `KIKI_INFINITE_RETRY` | 无限重试失败的 LLM 请求，涵盖轮次内步骤、compaction、HTTP 400/404 和额度错误。等待按指数退避（32 秒封顶）并尊重 `Retry-After`。原生轮次的连接中断仍受[有界重试预算](./config-files.md#retry)约束，不会因此无限重发部分响应。取消、本地准入拒绝、安全拒绝、供应商托管工具输出、`retry = false` 和单次请求的 `retry: 'never'` 仍阻止重试；一次性 [`Continue.` 请求](./config-files.md#loop-control)也不会重试。上下文溢出仍走上下文恢复。适用于端点可能短暂故障的长时间无人值守评测 | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
 | `KIKI_TOKEN_COUNTING_STRATEGY` | 对外上报的上下文 token 计数（上下文大小显示）；优先级高于 `config.toml` 的 `[token_counting] strategy`（默认 `measured+estimated`） | `measured+estimated`、`measured`、`estimated`（不区分大小写）；非法值被忽略 |
 | `NB_SEARCH_CONFIG` | 内置搜索与抓取模块的 canonical JSON 配置路径；Kiki 的 `[nb_search]` patch 在它之后应用 | 文件路径 |
 | `NB_SEARCH_HOME` | 内置搜索与抓取模块的数据目录 | 目录路径 |

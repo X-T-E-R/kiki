@@ -41,6 +41,7 @@ const PERSISTENCE_SCOPE = 'cache/usage-aggregation-v1';
 const BOUNDARY_BYTES = 4 * 1024;
 const DEFAULT_LIMITS: UsageAggregationLimits = {
   sessionScanLimit: 500,
+  sourceScanLimit: 2048,
   wireRecordBudget: Infinity,
   usageFactBudget: 200_000,
   deadlineMs: 10_000,
@@ -55,6 +56,7 @@ const DEFAULT_LIMITS: UsageAggregationLimits = {
 
 export interface UsageAggregationLimits {
   readonly sessionScanLimit: number;
+  readonly sourceScanLimit: number;
   readonly wireRecordBudget: number;
   readonly usageFactBudget: number;
   readonly deadlineMs: number;
@@ -104,6 +106,31 @@ interface SourceReadOptions extends AgentUsageReadOptions {
   readonly factBudget?: UsageFactReadBudget;
   readonly recoveryBudget?: { remainingRecords: number; remainingBytes: number };
   readonly onScannedRecord?: () => void;
+}
+
+interface UsageInventorySession {
+  readonly summary: SessionSummary;
+  readonly version: number | undefined;
+  readonly agents: readonly string[];
+  readonly sources: { source: string; workspaceId: string; sessionId: string }[];
+  nextAgent: number;
+  pending?: { source: string; agentId: string; generation: string; size: number; mtimeMs: number; aligned: boolean }[];
+}
+
+interface UsageInventory {
+  readonly full: boolean;
+  readonly revision: number;
+  readonly startAt: number;
+  readonly summaries: Map<string, SessionSummary>;
+  readonly sources: Map<string, { source: string; workspaceId: string; sessionId: string }>;
+  readonly dirtyKeys: readonly string[];
+  readonly prepared: Map<string, { agents: readonly string[]; version?: number }>;
+  readonly heads: Map<string, Awaited<ReturnType<IUsageReadModel['source']>>>;
+  page: readonly SessionSummary[];
+  nextSession: number;
+  before?: string;
+  exhausted: boolean;
+  current?: UsageInventorySession;
 }
 
 interface ScanBudget {
@@ -205,8 +232,10 @@ export class UsageAggregationService {
     private readonly recovery: UsageRecoveryPool = usageRecoveryPool(core),
   ) {
     this.limits = { ...DEFAULT_LIMITS, ...limits };
-    this.sourceSubscription = sourceChanges?.onDidChange(() => {
+    this.sourceSubscription = sourceChanges?.onDidChange((key) => {
       this.replayEpoch++;
+      if (key === undefined) this.inventoryRevision++;
+      else { this.dirtySessions.set(key, this.replayEpoch); this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1); }
       this.modelReady = false;
     });
   }
@@ -227,49 +256,85 @@ export class UsageAggregationService {
     return { entries: 0, records: 0 };
   }
 
+  private readonly sessionVersions = new Map<string, number>();
+  private readonly sessionAccounting = new Map<string, {
+    version: string; agents?: readonly string[]; rows: Record<string, AgentUsageProjection>; revisions: Map<string, string>;
+    snapshot?: UsageAccountingSnapshot; snapshotVersion?: string; pricingReady: boolean; flight?: Promise<UsageAccountingSnapshot>;
+  }>();
+
+  private sessionVersion(key: string): string { return `${this.inventoryRevision}:${this.sessionVersions.get(key) ?? 0}`; }
+
+  readSessionAccountingSnapshot(workspaceId: string, sessionId: string, fallback?: UsageAccountingSnapshot): UsageAccountingSnapshot {
+    const key = `${workspaceId}\0${sessionId}`;
+    const saved = this.sessionAccounting.get(key);
+    const snapshot = saved?.snapshot;
+    if (saved === undefined || snapshot === undefined) return { ...(fallback ?? { version: 2, subject: { session_id: sessionId, scope: 'session' }, covered_at: 0, complete: false, tokens: { input_other: 0, output: 0, input_cache_read: 0, input_cache_creation: 0 }, tokens_unknown: false, cost_usd_estimated: 0, cost_unknown: true }), freshness: fallback === undefined ? 'unverified' : 'stale' };
+    const freshness = saved.snapshotVersion === this.sessionVersion(key) && this.now() - snapshot.covered_at < SOURCE_RECHECK_MS ? 'current' : 'stale';
+    return { ...snapshot, freshness };
+  }
+
   async readSessionAccounting(workspaceId: string, sessionId: string, signal?: AbortSignal): Promise<UsageAccountingSnapshot> {
     signal?.throwIfAborted();
-    const deadlineAt = this.now() + this.limits.deadlineMs;
-    const deadline = new AbortController();
-    const timer = setTimeout(() => { deadline.abort(new DOMException('Session usage deadline', 'TimeoutError')); }, this.limits.deadlineMs);
-    timer.unref();
-    const readSignal = AbortSignal.any([this.modelController.signal, deadline.signal, ...(signal === undefined ? [] : [signal])]);
-    const rows: Record<string, AgentUsageProjection> = {};
-    const revisions = new Map<string, string>();
-    let agents: readonly string[] = [];
-    let inventoryComplete = false;
-    let pricingReady = false;
+    void this.sourceChanges?.ready;
+    const key = `${workspaceId}\0${sessionId}`;
+    let saved = this.sessionAccounting.get(key);
+    if (saved?.flight !== undefined) return waitForSource(saved.flight, signal);
+    const version = this.sessionVersion(key);
+    if (saved === undefined || saved.version !== version || saved.snapshot !== undefined && this.now() - saved.snapshot.covered_at >= SOURCE_RECHECK_MS) {
+      saved = { version, rows: {}, revisions: new Map(), pricingReady: false, snapshot: saved?.snapshot };
+      this.sessionAccounting.set(key, saved);
+    }
+    if (saved.snapshot?.complete && saved.snapshotVersion === version) {
+      saved.snapshot = { ...saved.snapshot, ...this.sessionAccountingTotals(Object.values(saved.rows), saved.pricingReady) };
+      return this.readSessionAccountingSnapshot(workspaceId, sessionId);
+    }
+    const state = saved;
+    const flight = (async () => {
+      const deadlineAt = this.now() + this.limits.deadlineMs;
+      const deadline = new AbortController();
+      const timer = setTimeout(() => { deadline.abort(new DOMException('Session usage deadline', 'TimeoutError')); }, this.limits.deadlineMs);
+      timer.unref();
+      const readSignal = AbortSignal.any([this.modelController.signal, deadline.signal]);
+      const pricing = this.core.accessor.get(IModelPricingService);
+      const preparation = pricing.ready.then(() => { state.pricingReady = true; });
+      void preparation.catch(() => undefined);
+      try {
+        const scope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
+        state.agents ??= await waitForSource(this.core.accessor.get(IFileSystemStorageService).list(`${scope}/agents`), readSignal);
+        const pending = state.agents.filter((agent) => !state.rows[agent]?.complete).slice(0, this.limits.sourceScanLimit);
+        await waitForSource(this.readAgentUsageSources(workspaceId, sessionId, pending, { signal: readSignal, factSignal: readSignal, summaryOnly: true, deadlineAt, factBudget: { remainingRecords: this.limits.usageFactBudget }, recoveryBudget: { remainingRecords: Math.min(100_000, this.limits.wireRecordBudget), remainingBytes: 128 * 1024 * 1024 } }, state.rows, state.revisions), readSignal);
+        await waitForSource(preparation, readSignal);
+      } catch (error) {
+        this.modelController.signal.throwIfAborted();
+        if (!deadline.signal.aborted) throw error;
+      } finally { clearTimeout(timer); }
+      const agents = state.agents ?? [];
+      state.snapshot = { version: 2, subject: { session_id: sessionId, scope: 'session' }, source_revision: agents.map((agent) => state.revisions.get(agent) ?? `${agent}:unread`).join('|'), covered_at: this.now(), complete: state.agents !== undefined && agents.every((agent) => state.rows[agent]?.complete) && state.version === this.sessionVersion(key), ...this.sessionAccountingTotals(Object.values(state.rows), state.pricingReady) };
+      state.snapshotVersion = state.version;
+      return this.readSessionAccountingSnapshot(workspaceId, sessionId);
+    })().finally(() => { state.flight = undefined; });
+    state.flight = flight;
+    void flight.catch(() => undefined);
+    return waitForSource(flight, signal);
+  }
+
+  private sessionAccountingTotals(rows: readonly AgentUsageProjection[], pricingReady: boolean): Pick<UsageAccountingSnapshot, 'tokens' | 'tokens_unknown' | 'cost_usd_estimated' | 'cost_unknown'> {
+    const totals = summarizeUsageFacts([]);
     const pricing = this.core.accessor.get(IModelPricingService);
-    const preparation = pricing.ready.then(() => { pricingReady = true; });
-    void preparation.catch(() => undefined);
-    try {
-      const scope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
-      agents = await waitForSource(this.core.accessor.get(IFileSystemStorageService).list(`${scope}/agents`), readSignal);
-      inventoryComplete = true;
-      await waitForSource(this.readAgentUsageSources(workspaceId, sessionId, agents, { signal: readSignal, factSignal: readSignal, summaryOnly: true, deadlineAt, factBudget: { remainingRecords: this.limits.usageFactBudget }, recoveryBudget: { remainingRecords: Infinity, remainingBytes: Infinity } }, rows, revisions), readSignal);
-      await waitForSource(preparation, readSignal);
-    } catch (error) {
-      signal?.throwIfAborted();
-      this.modelController.signal.throwIfAborted();
-      if (!deadline.signal.aborted) throw error;
-    } finally { clearTimeout(timer); }
-    let totals = summarizeUsageFacts([]);
-    let complete = inventoryComplete;
+    let partial = false;
     let cost = 0;
     let costUnknown = !pricingReady;
-    for (const agent of agents) {
-      const row = rows[agent];
-      complete &&= row?.complete === true;
-      const summary = row?.totals ?? summarizeUsageFacts(row?.records ?? []);
+    for (const row of rows) {
+      const summary = row.totals ?? summarizeUsageFacts(row.records);
       for (const key of ['inputOther', 'output', 'inputCacheRead', 'inputCacheCreation'] as const) totals.usage[key] += summary.usage[key];
-      totals = { ...totals, records: totals.records + summary.records, knownUsageRecords: totals.knownUsageRecords + summary.knownUsageRecords, partial: totals.partial || summary.partial };
+      partial ||= summary.partial;
       if (pricingReady) for (const [model, masks] of Object.entries(summary.byModelMask ?? {})) for (const value of Object.values(masks)) {
         const quoted = pricing.calculate(model, value);
         if (quoted === undefined || !Number.isFinite(cost + quoted)) costUnknown = true; else cost += quoted;
       }
       if (summary.byModelMask === undefined && summary.knownUsageRecords > 0) costUnknown = true;
     }
-    return { version: 2, subject: { session_id: sessionId, scope: 'session' }, source_revision: agents.map((agent) => revisions.get(agent) ?? `${agent}:unread`).join('|'), covered_at: this.now(), complete, tokens: { input_other: totals.usage.inputOther, output: totals.usage.output, input_cache_read: totals.usage.inputCacheRead, input_cache_creation: totals.usage.inputCacheCreation }, tokens_unknown: totals.partial, cost_usd_estimated: cost, cost_unknown: costUnknown || totals.partial };
+    return { tokens: { input_other: totals.usage.inputOther, output: totals.usage.output, input_cache_read: totals.usage.inputCacheRead, input_cache_creation: totals.usage.inputCacheCreation }, tokens_unknown: partial, cost_usd_estimated: cost, cost_unknown: costUnknown || partial };
   }
 
   async readAgentUsage(
@@ -532,6 +597,13 @@ export class UsageAggregationService {
     } finally { if (--this.preparationWaiters === 0 && this.modelPreparing !== undefined) this.preparationController?.abort(requestSignal.reason); }
   }
 
+  private inventory?: UsageInventory;
+  private inventoryRevision = 0;
+  private verifiedInventoryRevision = -1;
+  private readonly dirtySessions = new Map<string, number>();
+  private knownSessions = new Map<string, SessionSummary>();
+  private knownSources = new Map<string, { source: string; workspaceId: string; sessionId: string }>();
+
   private startReadModelPreparation(full = false, startAt?: number): Promise<void> {
     if (this.modelPreparing !== undefined) return this.modelPreparing;
     const epoch = this.replayEpoch;
@@ -541,67 +613,138 @@ export class UsageAggregationService {
     const deadlineAt = full ? Infinity : this.now() + this.limits.deadlineMs;
     this.modelIncompleteReason = null;
     this.modelReady = false;
-    this.modelRangeStart = full ? -Infinity : startAt ?? -Infinity;
-    this.modelExcludedSources.clear();
+    const rangeStart = full ? -Infinity : startAt ?? -Infinity;
+    if (full || this.inventory !== undefined && rangeStart < this.inventory.startAt) this.inventory = undefined;
     const work = (async () => {
       const index = this.core.accessor.get(ISessionIndex);
       const storage = this.core.accessor.get(IFileSystemStorageService);
       const logs = this.core.accessor.get(IAppendLogStore);
       const model = this.core.accessor.get(IUsageReadModel);
-      const heads = new Map((await model.sources(signal)).map((row) => [row.source, row.head]));
-      const summaries: SessionSummary[] = [];
-      let before: string | undefined;
-      do {
-        signal.throwIfAborted();
-        const page = await index.listRecent({ includeArchived: true, limit: INDEX_PAGE_SIZE, before });
-        summaries.push(...page.items); before = page.nextCursor;
-      } while (before !== undefined);
-      const sources: { source: string; workspaceId: string; sessionId: string }[] = [];
-      const changed: { summary: SessionSummary; agentId: string; source: string; generation: string; size: number; mtimeMs: number }[] = [];
-      for (let start = 0; start < summaries.length; start += 32) {
-        signal.throwIfAborted();
-        const inventories = await Promise.all(summaries.slice(start, start + 32).map(async (summary) => {
-          const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
-          const agents = await storage.list(`${session}/agents`);
-          return agents.map((agentId) => ({ summary, agentId, source: agentScopeOf(session, agentId) }));
-        }));
-        const jobs = inventories.flat();
-        for (let offset = 0; offset < jobs.length; offset += 32) await Promise.all(jobs.slice(offset, offset + 32).map(async ({ summary, agentId, source }) => {
-          signal.throwIfAborted();
-          sources.push({ source, workspaceId: summary.workspaceId, sessionId: summary.id });
-          const [generation, size, mtime] = await Promise.all([logs.generation(source, AGENT_WIRE_RECORD_KEY), storage.size(source, AGENT_WIRE_RECORD_KEY), storage.mtime(source, AGENT_WIRE_RECORD_KEY)]);
-          signal.throwIfAborted();
-          const checkpoint = heads.get(source)?.checkpoint;
-          if (!full && checkpoint?.generation === generation && checkpoint.offset === (size ?? 0) && checkpoint.size === (size ?? 0) && checkpoint.mtimeMs === (mtime ?? 0)) return;
-          if (!full && startAt !== undefined && mtime !== undefined && mtime >= 1_000_000_000_000 && mtime < startAt) { this.modelExcludedSources.add(source); return; }
-          changed.push({ summary, agentId, source, generation, size: size ?? 0, mtimeMs: mtime ?? 0 });
-        }));
-      }
-      await model.catalog(summaries.map((summary) => ({ ...summary, deleted: false })), sources, true);
-      if (full) this.rescan = { ...this.rescan, total_sessions: summaries.length };
-      const scannedSessions = new Set<string>();
-      for (const source of changed) {
-        if (this.now() >= deadlineAt) { this.modelIncompleteReason = 'deadline'; return; }
-        if (factBudget.remainingRecords <= 0 || recoveryBudget.remainingRecords <= 0) { this.modelIncompleteReason = 'record_budget'; return; }
-        const key = sessionKey(source.summary);
-        if (!full && !scannedSessions.has(key) && scannedSessions.size >= this.limits.sessionScanLimit) { this.modelIncompleteReason = 'session_cap'; return; }
-        if (!await this.synchronizeSource(source, signal, { factBudget, recoveryBudget, deadlineAt, onScannedRecord: full ? () => { this.rescan = { ...this.rescan, scanned_records: this.rescan.scanned_records + 1 }; } : undefined })) { this.modelIncompleteReason = this.now() >= deadlineAt ? 'deadline' : 'record_budget'; return; }
-        scannedSessions.add(key);
-        if (full) {
-          this.rescan = { ...this.rescan, scanned_sessions: scannedSessions.size };
-          if ((await model.source(source.source, signal))?.checkpoint?.valid !== true) throw new Error(`Usage checkpoint is incomplete for session ${source.summary.id}`);
+      if (this.inventory === undefined) {
+        const verifyAll = full || this.verifiedInventoryRevision !== this.inventoryRevision || !this.sourceChanges?.ready || this.now() - this.modelVerifiedAt >= SOURCE_RECHECK_MS || rangeStart < this.modelRangeStart;
+        const heads = new Map(verifyAll ? (await waitForSource(model.sources(signal), signal)).map((row) => [row.source, row.head]) : []);
+        if (verifyAll) {
+          this.modelExcludedSources.clear();
+          this.modelRangeStart = rangeStart;
         }
+        this.inventory = { full: verifyAll, revision: this.inventoryRevision, startAt: this.modelRangeStart, summaries: verifyAll ? new Map() : new Map(this.knownSessions), sources: verifyAll ? new Map() : new Map(this.knownSources), dirtyKeys: [...this.dirtySessions.keys()], prepared: new Map(), heads, page: [], nextSession: 0, exhausted: false };
       }
-      if (full) this.rescan = { ...this.rescan, scanned_sessions: summaries.length };
+      const inventory = this.inventory;
+      if (inventory.current !== undefined && inventory.current.version !== this.dirtySessions.get(sessionKey(inventory.current.summary))) {
+        inventory.prepared.delete(sessionKey(inventory.current.summary));
+        inventory.current = undefined;
+      }
+      let scannedSessions = 0;
+      let scannedSources = 0;
+      const fullScannedSessions = new Set<string>();
+      const stop = (): boolean => {
+        signal.throwIfAborted();
+        if (this.now() >= deadlineAt) { this.modelIncompleteReason = 'deadline'; return true; }
+        if (factBudget.remainingRecords <= 0 || recoveryBudget.remainingRecords <= 0 || !full && scannedSources >= this.limits.sourceScanLimit) { this.modelIncompleteReason = 'record_budget'; return true; }
+        return false;
+      };
+      while (true) {
+        if (inventory.current === undefined) {
+          const done = inventory.full ? inventory.nextSession >= inventory.page.length && inventory.exhausted : inventory.nextSession >= inventory.dirtyKeys.length;
+          if (done) break;
+          if (stop()) return;
+          if (!full && scannedSessions >= this.limits.sessionScanLimit) { this.modelIncompleteReason = 'session_cap'; return; }
+          if (inventory.full && inventory.nextSession >= inventory.page.length) {
+            const page = await waitForSource(index.listRecent({ includeArchived: true, limit: Math.min(INDEX_PAGE_SIZE, full ? INDEX_PAGE_SIZE : this.limits.sessionScanLimit), before: inventory.before }), signal);
+            const prepared = await waitForSource(Promise.all(page.items.map(async (summary) => {
+              const key = sessionKey(summary);
+              const version = this.dirtySessions.get(key);
+              const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
+              const agents = await storage.list(`${session}/agents`);
+              return { key, summary, agents, version, sources: agents.map((agentId) => ({ source: agentScopeOf(session, agentId), workspaceId: summary.workspaceId, sessionId: summary.id })) };
+            })), signal);
+            await model.catalog(page.items.map((summary) => ({ ...summary, deleted: false })), prepared.flatMap((item) => item.sources));
+            for (const item of prepared) {
+              inventory.prepared.set(item.key, { agents: item.agents, version: item.version });
+              inventory.summaries.set(item.key, item.summary);
+              for (const source of item.sources) inventory.sources.set(source.source, source);
+            }
+            inventory.page = page.items;
+            inventory.nextSession = 0;
+            inventory.before = page.nextCursor;
+            inventory.exhausted = page.nextCursor === undefined;
+            if (full) this.rescan = { ...this.rescan, total_sessions: inventory.summaries.size };
+            continue;
+          }
+          const dirtyKey = inventory.full ? undefined : inventory.dirtyKeys[inventory.nextSession];
+          const version = dirtyKey === undefined ? undefined : this.dirtySessions.get(dirtyKey);
+          const summary = inventory.full ? inventory.page[inventory.nextSession] : await waitForSource(index.get(dirtyKey!.split('\0')[1]!), signal);
+          if (summary === undefined) {
+            inventory.summaries.delete(dirtyKey!);
+            for (const [key, value] of inventory.sources) if (`${value.workspaceId}\0${value.sessionId}` === dirtyKey) inventory.sources.delete(key);
+            if (this.dirtySessions.get(dirtyKey!) === version) this.dirtySessions.delete(dirtyKey!);
+            inventory.nextSession++;
+            scannedSessions++;
+            continue;
+          }
+          const key = sessionKey(summary);
+          const prepared = inventory.prepared.get(key);
+          const observedVersion = inventory.full ? prepared === undefined ? this.dirtySessions.get(key) : prepared.version : version;
+          const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
+          const agents = prepared?.agents ?? await waitForSource(storage.list(`${session}/agents`), signal);
+          const accountedAgents = this.sessionAccounting.get(key)?.agents;
+          if (accountedAgents !== undefined && (accountedAgents.length !== agents.length || accountedAgents.some((agent) => !agents.includes(agent)))) this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
+          const sources = agents.map((agentId) => ({ source: agentScopeOf(session, agentId), workspaceId: summary.workspaceId, sessionId: summary.id }));
+          inventory.current = { summary, version: observedVersion, agents, sources, nextAgent: 0 };
+          inventory.summaries.set(key, summary);
+          for (const [source, value] of inventory.sources) if (value.workspaceId === summary.workspaceId && value.sessionId === summary.id) inventory.sources.delete(source);
+          for (const source of sources) inventory.sources.set(source.source, source);
+          if (prepared === undefined) await model.catalog([{ ...summary, deleted: false }], sources);
+        }
+        const current = inventory.current;
+        while (current.nextAgent < current.agents.length) {
+          if (stop()) return;
+          if (current.pending === undefined || current.pending.length === 0) {
+            const count = full ? 32 : Math.min(32, this.limits.sourceScanLimit - scannedSources);
+            current.pending = await waitForSource(Promise.all(current.sources.slice(current.nextAgent, current.nextAgent + count).map(async ({ source }, offset) => {
+              const [generation, size, mtime, head] = await Promise.all([logs.generation(source, AGENT_WIRE_RECORD_KEY), storage.size(source, AGENT_WIRE_RECORD_KEY), storage.mtime(source, AGENT_WIRE_RECORD_KEY), inventory.full ? inventory.heads.get(source) : model.source(source, signal)]);
+              const checkpoint = head?.checkpoint;
+              return { source, agentId: current.agents[current.nextAgent + offset]!, generation, size: size ?? 0, mtimeMs: mtime ?? 0, aligned: !full && checkpoint?.generation === generation && checkpoint.offset === (size ?? 0) && checkpoint.size === (size ?? 0) && checkpoint.mtimeMs === (mtime ?? 0) };
+            })), signal);
+          }
+          const source = current.pending[0]!;
+          const excluded = !full && source.mtimeMs >= 1_000_000_000_000 && source.mtimeMs < inventory.startAt;
+          if (!source.aligned && excluded) this.modelExcludedSources.add(source.source);
+          else {
+            const key = sessionKey(current.summary);
+            if (!source.aligned && this.sessionAccounting.has(key)) this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
+            this.modelExcludedSources.delete(source.source);
+            if (!source.aligned && !await this.synchronizeSource(source, signal, { factBudget, recoveryBudget, deadlineAt, onScannedRecord: full ? () => { this.rescan = { ...this.rescan, scanned_records: this.rescan.scanned_records + 1 }; } : undefined })) { this.modelIncompleteReason = this.now() >= deadlineAt ? 'deadline' : 'record_budget'; return; }
+            if (full && (await model.source(source.source, signal))?.checkpoint?.valid !== true) {
+              fullScannedSessions.add(sessionKey(current.summary));
+              this.rescan = { ...this.rescan, scanned_sessions: fullScannedSessions.size };
+              throw new Error(`Usage checkpoint is incomplete for session ${current.summary.id}`);
+            }
+          }
+          current.pending.shift();
+          current.nextAgent++;
+          scannedSources++;
+        }
+        const key = sessionKey(current.summary);
+        if (this.dirtySessions.get(key) === current.version) this.dirtySessions.delete(key);
+        inventory.current = undefined;
+        inventory.nextSession++;
+        scannedSessions++;
+        if (full) { fullScannedSessions.add(key); this.rescan = { ...this.rescan, scanned_sessions: fullScannedSessions.size }; }
+        await yieldToEventLoop(undefined, { signal });
+      }
+      await model.catalog([...inventory.summaries.values()].map((summary) => ({ ...summary, deleted: false })), [...inventory.sources.values()], true);
+      this.knownSessions = inventory.summaries;
+      this.knownSources = inventory.sources;
       const retained = this.core.accessor.get(IRetainedUsageService);
       if (retained.prepareReadModel !== undefined) {
         const progress = await retained.prepareReadModel({ deadlineAt, recordLimit: factBudget.remainingRecords, signal });
         if (!progress.complete) { this.modelIncompleteReason = progress.incompleteReason ?? null; return; }
       }
-      await model.catalog(summaries.map((summary) => ({ ...summary, deleted: false })), sources, true);
       signal.throwIfAborted();
-      this.modelReady = epoch === this.replayEpoch;
-      this.modelVerifiedAt = this.now();
+      if (inventory.full) { this.modelVerifiedAt = this.now(); this.verifiedInventoryRevision = inventory.revision; }
+      this.inventory = undefined;
+      this.modelReady = epoch === this.replayEpoch && this.dirtySessions.size === 0 && this.verifiedInventoryRevision === this.inventoryRevision;
       this.modelFailure = undefined;
     })();
     this.modelPreparing = work;

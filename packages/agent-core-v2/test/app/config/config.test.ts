@@ -427,10 +427,10 @@ describe('Agent config', () => {
       [emit] prompt.completed            { "time": "<time>", "promptId": "<msg-1>", "finishedAt": "<time>", "reason": "completed" }
       [emit] prompt.outcome_committed    { "time": "<time>", "terminal": { "promptId": "<msg-1>", "turnId": 0, "state": "completed", "result": { "type": "completed", "steps": 2, "truncated": false } } }
       [wire] prompt.completed            { "promptId": "<msg-1>", "finishedAt": "<time>", "reason": "completed", "time": "<time>" }
-      [wire] prompt.outcome_committed    { "terminal": { "promptId": "<msg-1>", "turnId": 0, "state": "completed", "result": { "type": "completed", "steps": 2, "truncated": false } }, "time": "<time>" }
       [wire] prompt.accepted             { "promptId": "<msg-2>", "time": "<time>" }
       [emit] prompt.enqueued             { "time": "<time>", "schemaVersion": 1, "promptId": "<msg-2>", "userMessageId": "<msg-2>", "createdAt": "<time>", "message": { "role": "user", "content": [ { "type": "text", "text": "Start a fresh turn" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-2>" }, "alreadyMaterialized": false, "appendTiming": "agent_idle", "revision": 0, "queueIndex": 0, "retryStatus": "running" }
       [emit] prompt.submitted            { "time": "<time>", "agentId": "main", "promptId": "<msg-2>", "userMessageId": "<msg-2>", "status": "running", "content": [ { "type": "text", "text": "Start a fresh turn" } ], "createdAt": "<time>", "appendTiming": "agent_idle", "revision": 0 }
+      [wire] prompt.outcome_committed    { "terminal": { "promptId": "<msg-1>", "turnId": 0, "state": "completed", "result": { "type": "completed", "steps": 2, "truncated": false } }, "time": "<time>" }
       [wire] prompt.enqueued             { "schemaVersion": 1, "promptId": "<msg-2>", "userMessageId": "<msg-2>", "createdAt": "<time>", "message": { "role": "user", "content": [ { "type": "text", "text": "Start a fresh turn" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-2>" }, "alreadyMaterialized": false, "appendTiming": "agent_idle", "revision": 0, "queueIndex": 0, "retryStatus": "running", "time": "<time>" }
       [wire] prompt.launch_committed     { "launchId": "<uuid-9>", "promptId": "<msg-2>", "revision": 0, "committedAt": "<time>", "time": "<time>" }
       [wire] turn.prompt                 { "turnId": 1, "promptId": "<msg-2>", "input": [ { "type": "text", "text": "Start a fresh turn" } ], "origin": { "kind": "user" }, "managed": true, "time": "<time>" }
@@ -1632,13 +1632,14 @@ describe('retry config section', () => {
 
   it('loads policy entries written with snake_case keys', async () => {
     const { config, disposables } = await createConfig(
-      '[retry]\nmax_attempts = 3\n\n[[retry.policies]]\nmatch = "provider.rate_limit"\n' +
+      '[retry]\nmax_attempts = 3\nretry_partial_responses = false\n\n[[retry.policies]]\nmatch = "provider.rate_limit"\n' +
         'models = ["gemini-4-argon"]\nproviders = ["google-native"]\n' +
         'max_attempts = 2\nbackoff = 1500\nretry = false\n',
     );
 
     expect(config.get<RetryConfig>(RETRY_SECTION)).toEqual({
       maxAttempts: 3,
+      retryPartialResponses: false,
       policies: [{
         match: 'provider.rate_limit',
         models: ['gemini-4-argon'],
@@ -1721,6 +1722,7 @@ describe('retry config section', () => {
     const { config, disposables, readText } = await createConfig('[retry]\nmax_attempts = 2\n');
 
     await config.set(RETRY_SECTION, {
+      retryPartialResponses: false,
       policies: [{
         match: 'APIConnectionError',
         models: ['gemini-4-argon'],
@@ -1737,7 +1739,11 @@ describe('retry config section', () => {
     expect(onDisk).toContain('providers = [ "google-native" ]');
     expect(onDisk).toContain('max_attempts = 3');
     expect(onDisk).toContain('backoff = 200');
+    expect(onDisk).toContain('retry_partial_responses = false');
     expect(onDisk).not.toContain('maxAttempts');
+    const reloaded = await createConfig(onDisk);
+    expect(reloaded.config.get<RetryConfig>(RETRY_SECTION)?.retryPartialResponses).toBe(false);
+    await reloaded.disposables.dispose();
 
     await disposables.dispose();
   });
@@ -4199,6 +4205,23 @@ describe('space config layers', () => {
       expect(f.config.get('raw')).toMatchObject({ flags: { a: 1, b: 4 } });
       expect(await f.baseStore.getText('', 'config.toml')).toContain('b = 2');
       expect(await f.homeStore.getText('', 'config.toml')).toContain('b = 4');
+    } finally { await f.disposables.dispose(); }
+  });
+
+  it('reuses unchanged origin maps and recomputes them after env or layer changes', async () => {
+    const env: Record<string, string> = {};
+    const f = await fixture('[raw.flags]\na = 1\nb = 2\n', 'builtin_product_skills = false\n[raw.flags]\nb = 3\n', env);
+    try {
+      const first = f.config.origins('raw');
+      expect(f.config.origins('raw')).toBe(first);
+      expect(f.config.origins(BUILTIN_PRODUCT_SKILLS_SECTION)).toEqual({ '': 'home' });
+      env['KIKI_BUILTIN_PRODUCT_SKILLS'] = 'on';
+      expect(f.config.origins(BUILTIN_PRODUCT_SKILLS_SECTION)).toEqual({ '': 'env' });
+      delete env['KIKI_BUILTIN_PRODUCT_SKILLS'];
+      expect(f.config.origins(BUILTIN_PRODUCT_SKILLS_SECTION)).toEqual({ '': 'home' });
+      await f.config.removeOverride('raw', ['flags', 'b']);
+      expect(f.config.origins('raw')).not.toBe(first);
+      expect(f.config.origins('raw')['flags.b']).toBe('base');
     } finally { await f.disposables.dispose(); }
   });
 

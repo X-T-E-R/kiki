@@ -13,6 +13,7 @@ import { ToolAccesses, type AgentTool, type ToolExecution, type ExecutableToolEr
 const AgentIdSchema = z.string().regex(/^[A-Za-z0-9._-]{1,128}$/).refine((id) => id !== '.' && id !== '..');
 
 export const HistorySearchInputSchema = z.object({
+  raw: z.boolean().optional().describe('Return the original receipt with all metadata instead of the compact model view. May be combined with cursor.'),
   query: z.string().trim().min(1).max(1024).optional().describe('Distinctive words or a phrase; required on the first page. Omit when continuing with cursor.'),
   mode: z.enum(['auto', 'all', 'any', 'literal', 'terms']).optional().describe('Defaults to auto: matching complete phrases, without requiring every phrase. all requires every phrase; any allows one; literal is contiguous; terms preserves the legacy token-AND behavior.'),
   scope: z.enum(['session', 'this_session', 'workspace', 'peer']).optional().describe('Defaults to session (this session, this agent). workspace searches other sessions; peer searches only cross-thread messages in this workspace, optionally narrowed by session_id, newest-first. this_session is the locked-current-session legacy alias.'),
@@ -33,6 +34,7 @@ export const HistorySearchInputSchema = z.object({
 });
 
 export const HistoryReadInputSchema = z.object({
+  raw: z.boolean().optional().describe('Return the original receipt with all metadata instead of the compact model view. May be combined with cursor.'),
   session_id: z.string().min(1).max(256).optional().describe('Session to read; defaults to this session. Omit workspace_id to use its indexed workspace. A cursor or ref supplies its original session.'),
   workspace_id: z.string().min(1).max(512).optional().describe('Workspace for the session or ref. Omit to use the indexed workspace. Another workspace requires explicit access approval.'),
   agent_id: AgentIdSchema.optional().describe('Exact agent ID; defaults to this agent here or main in another session.'),
@@ -359,7 +361,7 @@ export class HistorySearchTool extends HistoryToolBase implements AgentTool<Sear
   async resolveExecution(input: SearchInput): Promise<ToolExecution> {
     const cursor = input.cursor === undefined ? undefined : input.query === undefined
       ? decodeSearchCursor(input.cursor) : (() => { try { return decodeSearchCursor(input.cursor); } catch { return undefined; } })();
-    const supplied = { ...input, cursor: undefined };
+    const supplied = { ...input, cursor: undefined, raw: undefined };
     const prior = cursor?.request;
     const mismatch = cursor !== undefined && Object.entries(supplied).some(
       ([key, value]) => value !== undefined && value !== prior?.[key as keyof SearchInput],

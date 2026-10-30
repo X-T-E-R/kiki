@@ -2,7 +2,7 @@
 
 ## 安装版本与入口
 
-版本匹配的文档在服务器主机的 `<KIKI_HOME>/docs/zh/customization/personas.md`，未设置 KIKI_HOME 时为 `~/.kiki`。保存或导入前读这份文档；API 连接方式见同一文档目录下的 `server/rest-api.md`。GUI「角色」页可创建、编辑、上传头像，以及预览、导入和导出 Character Card V3 的 JSON、PNG、CHARX 卡片。已有客户端可使用原生 persona API，不需要用户手工搬运字段。
+版本匹配的文档在服务器主机当前 Space 的 `<home>/docs/zh/customization/personas.md`。优先读取 Space 段给出的已解析 Product docs 路径；如果该路径未暴露或不可用，不要猜 `~/.kiki`，而应报告文档不可用。`~/.kiki` 仅是默认位置说明。保存或导入前读这份文档；API 连接方式见同一文档目录下的 `server/rest-api.md`。GUI「角色」页可创建、编辑、上传头像，以及预览、导入和导出 Character Card V3 的 JSON、PNG、CHARX 卡片。已有客户端可使用原生 persona API，不需要用户手工搬运字段。
 
 CLI 的 `kiki --persona <id>` 和 TUI 的 `/persona list`、`/persona switch <id>` 用于选择；不是创建或校验命令。
 

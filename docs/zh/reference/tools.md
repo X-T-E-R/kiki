@@ -6,26 +6,30 @@
 
 结果提示 `Tool output formatting failed after execution` 时，先用 `Read` 或 `Grep` 查看其中的 `output_path`，再决定是否重新执行工具。工具已经执行过，保存的文本和附带的媒体仍可读取。结果会说明保存的是完整文本，还是保留上限以内的开头部分。
 
+历史、线程、房间、子 Agent、任务、记忆和工作笔记回执默认向模型展示紧凑视图：原文先于翻页信息，时间使用运行环境的本地时区并标明 UTC 偏移，部分覆盖和截断会附上续读指引。复制回执给出的调用即可读取下一页或下一段。`HistoryRead` 的字符范围按 UTF-16 代码单元计数，任务日志偏移按 UTF-8 字节计数。压缩交接中，重复来源共用一个带编号的 `HistoryRead` 调用；`t42.3` 表示第 42 轮、第 3 步。
+
+需要完整原始回执时，可在 `HistoryList`、`HistoryRead`、`HistorySearch`、`ThreadList`、`ThreadRead`、`ThreadWait`、`ThreadSend`、`RoomRead`、`AgentList`、`TaskList`、`TaskOutput`、`MemorySearch`、`MemoryRead` 或 `TodoList` 中加入 `raw: true`。续读时可与 cursor 同传，不改变查询条件。raw 模式只改变展示，仍会执行所请求的操作；不要仅为检查元数据而重发消息或重写笔记。GUI 和 SDK 消费的结构化结果保持不变，下文的字段名描述这份原始数据。
+
 ## 文件类
 
-文件类工具负责读取、写入、搜索本地文件系统，是代码分析和修改任务的基础工具。
+文件类工具负责读取、写入和搜索文件，是代码分析和修改任务的基础工具。启用原生 SSH 后，`Read`、`Write`、`Edit`、`Grep`、`Glob` 和 `ReadMediaFile` 还支持 `host` 参数或 `ssh://host/path` 地址。路径属于所选主机；Windows SSH 主机使用 `E:/project` 这样的原生 Windows 路径。结果会标明主机、平台和执行 Shell。
 
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
 | `Read` | 自动放行 | 读取文本文件内容 |
 | `Write` | 受信任工作区内自动放行；工作区外拦截或需审批 | 创建或覆盖文件 |
 | `Edit` | 受信任工作区内自动放行；工作区外拦截或需审批 | 精确字符串替换 |
-| `Grep` | 自动放行 | 基于 ripgrep 的全文搜索 |
+| `Grep` | 自动放行 | 搜索文件内容 |
 | `Glob` | 自动放行 | 按 glob 模式查找文件 |
 | `ReadMediaFile` | 自动放行 | 读取图片或视频文件 |
 
-**`Read`** 接受文件路径（`path`）以及可选的 `line_offset`（起始行号，支持负数从末尾倒数）和 `n_lines`（读取行数上限）。单次最多返回 1000 行或 100 KB，超出部分会附带截断提示。支持 UTF-8 和 UTF-16 文本，UTF-16 会转换后展示。结果附有行号和原始行尾信息；纯 CRLF 文件在 `Read` 中显示为 LF，`Edit` 按该视图替换时仍保留 CRLF；混合行尾需要精确匹配展示出的 `\r` 字符。如果文件是图片或视频，工具会提示改用 `ReadMediaFile`。显式绝对路径可读取工作区外文件，但敏感目标仍需按权限模式处理。已登记的用户 Skill / Agent 定义根（包括符号链接安装）默认可读；普通工作区中指向外部目标的链接仍需审批。`~/.kiki` 中只有 `agents`、`skills`、`commands`、`docs` 是定义或文档读取根；其余文件须指定明确路径，并遵守敏感文件规则。
+**`Read`** 接受文件路径（`path`）以及可选的 `line_offset`（起始行号，支持负数从末尾倒数）和 `n_lines`（读取行数上限）。单次最多返回 1000 行或 100 KB，超出部分会附带截断提示。支持 UTF-8 和 UTF-16 文本，UTF-16 会转换后展示。结果附有行号和原始行尾信息；纯 CRLF 文件在 `Read` 中显示为 LF，`Edit` 按该视图替换时仍保留 CRLF；混合行尾需要精确匹配展示出的 `\r` 字符。如果文件是图片或视频，工具会提示改用 `ReadMediaFile`。显式绝对路径可读取工作区外文件，但敏感目标仍需按权限模式处理。已登记的用户 Skill / Agent 定义根（包括符号链接安装）默认可读；普通工作区中指向外部目标的链接仍需审批。当前 Space 的 `<home>`（默认 `~/.kiki`）中，只有 `agents`、`skills`、`commands`、`docs` 是定义或文档读取根；继承的 Agent 根和已登记的 Skill 根也可读取，通用 `~/.agents` 根仍属于 OS 用户目录。其余文件须指定明确路径，并遵守敏感文件规则。本地 home 路径不会套用到 SSH 运行环境。
 
 **`Write`** 接受 `path`、`content` 和可选的 `mode`（`overwrite` 或 `append`，默认覆盖）。缺失的父目录会自动创建；`append` 模式将内容追加到文件末尾，不自动添加换行。
 
 **`Edit`** 接受 `path`、`old_string`（要替换的精确文本）和 `new_string`（替换后的文本）。默认只替换唯一一处匹配，若文件中存在多处相同内容会报错并提示使用 `replace_all: true`。`old_string` 与 `new_string` 不能相同。`Write` 与 `Edit` 在审批前解析符号链接：链接位于 Skill 目录不等于已获准写入其目标。审批后若目标发生变化，请重新检查目标并重试调用。
 
-**`Grep`** 调用 ripgrep 搜索文件内容，支持正则表达式（`pattern`）、搜索路径（`path`）、文件类型过滤（`type`，如 `ts`、`py`）、glob 过滤（`glob`）和输出模式（`output_mode`：`files_with_matches` / `content` / `count_matches`，默认 `files_with_matches`）。`content` 模式支持上下文行（`-A`、`-B`、`-C`）、忽略大小写（`-i`）、行号（`-n`，默认 true）、跨行匹配（`multiline`）。所有模式支持 `offset` + `head_limit` 分页，`head_limit` 默认 250、传 0 表示不限。`.env`、私钥等敏感文件会被自动过滤；`include_ignored=true` 可搜索被 `.gitignore` 忽略的文件，但敏感文件仍保持过滤。
+**`Grep`** 使用 ripgrep 搜索文件内容，在 Windows SSH 主机上则使用 PowerShell。它支持正则表达式（`pattern`）、搜索路径（`path`）、文件类型过滤（`type`，如 `ts`、`py`）、glob 过滤（`glob`）和输出模式（`output_mode`：`files_with_matches` / `content` / `count_matches`，默认 `files_with_matches`）。`content` 模式支持上下文行（`-A`、`-B`、`-C`）、忽略大小写（`-i`）、行号（`-n`，默认 true）、跨行匹配（`multiline`）。Windows SSH 使用 .NET 正则表达式；表达式无效或文件类型不受支持时会报错，类型不可用时可改用 `glob`。所有模式支持 `offset` + `head_limit` 分页，`head_limit` 默认 250、传 0 表示不限。`.env`、私钥等敏感文件会被自动过滤；`include_ignored=true` 可搜索被 `.gitignore` 忽略的文件，但敏感文件仍保持过滤。
 
 **`Glob`** 按 glob 模式（`pattern`）在指定目录（`path`，默认工作目录）中匹配文件，结果按修改时间倒序排列，默认返回 100 条。默认尊重 `.gitignore`、`.ignore` 和 `.rgignore`；设置 `include_ignored=true` 可包含构建产物等被忽略的文件，但敏感文件仍会被过滤。支持 `*.{ts,tsx}` 这类花括号模式，也允许宽泛通配符模式。
 
@@ -50,7 +54,7 @@
 
 如果命令只是在读文件、搜索文件或写文本文件，`Bash` 仍照常执行，但结果末尾可能附一行提示，指向 `Read`、`Grep`/`Glob` 或 `Write`/`Edit`。每类提示在一个会话中最多出现三次；在 [`[background]`](../configuration/config-files.md#background) 下设置 `bash_file_tool_hints = false` 可关闭提示，不改变执行与审批行为。
 
-前台模式会阻塞当前轮次，直到命令结束或超时；命令运行期间，TUI 会把 stdout 和 stderr 流式显示在正在运行的 `Bash` 工具卡片中。前台命令超时后默认不会被终止，而是转为后台任务继续运行（受 600 秒默认后台超时约束，即超时转入后台的命令会重新获得最多 600 秒的运行时间）；如需恢复超时即终止的行为，将 `[background]` 的 [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) 设为 `false`。600 秒的默认后台超时可通过 [`bash_task_timeout_s`](../configuration/config-files.md#background) 配置（`0` = 无超时），且在 print 模式（`kiki -p`）下默认无超时。后台模式立即返回任务 ID，任务结束时自动通知 Agent。stdin 始终被关闭，交互式命令会立即收到 EOF。任务被停止或后台超时时采用两阶段终止策略（SIGTERM → 5 秒宽限期 → SIGKILL），确保进程可靠结束。Windows 平台默认使用 Git Bash。
+前台模式会阻塞当前轮次，直到命令结束或超时；命令运行期间，TUI 会把 stdout 和 stderr 流式显示在正在运行的 `Bash` 工具卡片中。前台命令超时后默认不会被终止，而是转为后台任务继续运行（受 600 秒默认后台超时约束，即超时转入后台的命令会重新获得最多 600 秒的运行时间）；如需恢复超时即终止的行为，将 `[background]` 的 [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) 设为 `false`。600 秒的默认后台超时可通过 [`bash_task_timeout_s`](../configuration/config-files.md#background) 配置（`0` = 无超时），且在 print 模式（`kiki -p`）下默认无超时。后台模式立即返回任务 ID，任务结束时自动通知 Agent。stdin 始终被关闭，交互式命令会立即收到 EOF。任务被停止或后台超时时采用两阶段终止策略（SIGTERM → 5 秒宽限期 → SIGKILL），确保进程可靠结束。本地 Windows 命令默认使用 Git Bash。启用原生 SSH 后，传入 `host` 可在 SSH 主机上执行；Windows SSH 命令使用 PowerShell 语法和原生 Windows 路径，无需在远端安装 Git Bash。首次连接后，结果和已加入主机的公告会标明远端平台与 Shell。
 
 在 Windows 上，本地 `Bash` 命令结束后，它拉起的进程还可以继续跑。这些进程归启动它们的那个 Kiki 后端。[仅退出桌面](../getting-started/desktop-app.md#窗口、托盘与打开文件)时它们继续运行。该后端停止或异常退出时，会清掉这些命令各自的进程树，机器上的其他程序留在原地。
 
@@ -97,6 +101,16 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 显式使用 `source: "platform"` 会调用适配器可选的历史 API，要求显式话题或群级绑定，不支持本地的关键词、发送者或时间筛选，也不支持 `message_id` 精确读取。未实现的适配器返回 `status: "unsupported"`；成功页会给出自己的顺序、覆盖范围与末尾状态。短页或空页不代表历史耗尽，`coverage` 和 `end` 都可能为 `unknown`。平台读取不会自动同步本地时间线。
 
 静默收集与自动背景遵循绑定的[群策略](../server/rest-api.md#im-账号与信道绑定)。消费背景只推进独立水位，接收时间线仍保留。所有结果、发送者名称、@ 信息和引用正文均为不可信外部数据，不是指令，也不授予权限。
+
+## 消息投递
+
+`SendMessage` 向线程已启用的绑定输出、房间或另一个 Bot 投递一条完整的用户可见消息，或按顺序投递 `messages` 批次。单条消息使用顶层 `text` / `attachments` / `reply_to` 字段，批量发送使用 `messages`，两种形式不能混用；省略 `channel` / `channels` 会发送到所有已绑定且启用的输出，也可以指定明确的输出信道 ID。附件可以不带正文；发送图片、音频、语音或视频时明确设置 `kind`，遇到不确定的投递先检查信道收据，再决定如何恢复。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| 顶层 `end_turn` | `boolean` | `false` | 仅最终答复设为 `true`；进度消息不要设置此字段。只有在 `end_turn: true`、所有面向用户的投递都成功，且该 step 仅包含一个 `SendMessage` 工具调用时，引擎才会省略工具 continuation。部分或失败的投递、审批未通过，或同一步还有其他工具调用时，都会保留 continuation。goal、排队输入、steer 输入和任务通知的既有 `afterStep` 处理仍会执行。 |
+
+普通最终回复会完整投递为兜底内容，不要再次发送。不要把一条消息拆成多个句子，也不要把它作为普通文本重复输出。进度消息不设置 `end_turn`，以便继续执行所需工具和待处理工作。
 
 ## 网络类
 
@@ -313,7 +327,7 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 | `background` | 省略时 main 默认后台、subagent 默认前台；显式 `false` 同步等待 |
 | `name` | 会话内唯一的句柄，只含小写字母、数字和下划线，`root` 保留 |
 | `route` | 用 profile route 代替具名 profile |
-| `model_alias` | 子 Agent 使用的模型，完整解析顺序见[模型选择](./model-vocabulary.md#绑定规则) |
+| `model_alias` | 子 Agent 使用的模型，完整解析顺序见[模型选择](./model-vocabulary.md#绑定规则)。回执中的 `actual_model` 行给出实际绑定的模型 |
 | `effort` | 该子 Agent 的思考强度 |
 | `allow_model_change` | 在 `resume` 时把已有子 Agent 换到另一个模型需要显式传它 |
 | `tools` | 替换本次绑定已解析出的工具选择。只写 `*`，或写 `["*", ThreadRead]`，会保留普通工具并额外加入该 opt-in；有限名单仍然有限 |
@@ -341,7 +355,9 @@ Native Agent 最终保存失败时，GUI 会显示失败状态和保存错误，
 
 **`AgentSend`** 把非空的 `message` 发给直属子 Agent。`target` 可以是 `AgentRun` 当时传入的 `name`，也可以是 agent id。子 Agent 以 native 方式运行时，消息会在下一个 step 边界进入当前工作；Codex 和支持 steer 的 ACP 子 Agent 可以在运行期间收到。已经停止的子 Agent，包括运行在消息进入上下文之前结束的情况，会沿用原来的模型、profile、工具和上下文继续。外部子 Agent 已保存的消息按到达顺序进入这同一个绑定，一封接一封，不需要另一次 resume。调度容量已满时，这次继续会等到一个正在运行的子 Agent 结束，不会超出上限再开一跑。如果没有运行会释放容量，或者外部 resume 打不开原来的会话，这条消息仍留在原来的 `message_id` 下。发送方随后会收到原因、error code、目标和这个 id。用 AgentRun 继续同一个子 Agent：`resume` 设为该 agent id，`prompt` 设为空字符串，`description` 设为简短标签。不要再次调用 AgentSend，不要在 `prompt` 里重复这条已保存的消息，也不要设置 `new_window`。这次失败不会另开一个新的远端会话。这次继续是普通的子任务，完成时父 Agent 照常收到通知。匹配到多个直属子 Agent、或一个都匹配不到时调用失败——先用 `AgentList` 再换成不含糊的值重试。邮箱满了说明未读排队消息太多，等子 Agent 消化一些再发。
 
-返回结果包含 `message_id` 和 `queued` 或 `delivered` 状态。`queued` 表示邮箱已受理，不表示已经有一次运行在进行。投递可以并发完成，所以它并不说明这条消息此刻一定还没进上下文。`delivered` 只表示消息已送达收件方上下文，不代表子 Agent 已按它采取行动。`resumed: true` 表示确实观测到一次新运行启动；没有观测到运行启动时该字段会被省略，所以看不到它并不等于否定答案。收件方上下文持久化且邮箱确认投递后，发送者的 transcript 会记录投递回执，GUI 的「待送达」标记随之清除，即使没有打开子 Agent 的 transcript。回执在页面重载和历史回放后仍然有效。邮箱领取或确认消息遇到暂态故障时，会在同一安全执行边界内最多进行三次有界、可取消的恢复尝试，保留请求身份与投递回执，不重放外部动作。恢复仍失败时，诊断会说明消息已保留及如何恢复同一 Agent；永久错误和取消不重试。
+返回结果包含 `message_id` 和 `queued` 或 `delivered` 状态。`queued` 表示邮箱已受理，不表示已经有一次运行在进行。投递可以并发完成，所以它并不说明这条消息此刻一定还没进上下文。`delivered` 确认消息已进入收件方持久保存的上下文或轮次输入；子 Agent 可能仍在处理它。`resumed: true` 表示确实观测到一次新运行启动；没有观测到运行启动时该字段会被省略，所以看不到它并不等于否定答案。发送者的 transcript 会记录投递回执，GUI 的「待送达」标记随之清除，即使没有打开子 Agent 的 transcript。回执在页面重载和历史回放后仍然有效。
+
+重启后，已进入轮次的消息会补齐投递确认，不再追加正文或启动新一轮运行。磁盘满、暂态存储故障或邮箱传输故障导致回执或投递确认保存失败时，只要 Agent 仍处于加载状态，Kiki 就会每 30 秒重试这次保存。应恢复存储可写或等待 runtime 恢复；原消息会一直保留。邮箱传输遇到暂态故障时，会在同一安全执行边界内最多进行八次有界、可取消的恢复尝试，逐步延长的退避等待合计约两分钟，另加调用耗时。恢复保留请求身份与投递回执，不重放外部动作。恢复仍失败时，诊断会说明消息已保留及如何恢复同一 Agent；永久错误和取消不重试。
 
 **`AskUserQuestion`** 以结构化多选题的形式向用户提问，适用于需要消歧或选择方案的场景。`questions` 参数接受 1–4 道题，每道题需提供 `question`（以 `?` 结尾）、`options`（2–4 个选项，每项含 `label` 和 `description`）以及可选的 `header`（最多 12 字符）和 `multi_select`（默认 false）。系统自动附加"其他"选项。`background` 为 true 时启动后台问题任务并立即返回任务 ID。宿主未实现交互式提问能力时返回失败提示，Agent 应改为在文本回复中直接提问。
 

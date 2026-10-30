@@ -6,6 +6,8 @@ import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { kikiChildDefaults } from '#/app/bootstrap/childEnvironment';
 
 import { ErrorCodes, Error2 } from '#/errors';
 import { McpConnectionManager } from '#/mcpCore/connection-manager';
@@ -77,6 +79,7 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
     @IWorkspaceInstanceManager private readonly workspaceInstances: IWorkspaceInstanceManager,
     @IHostEnvironment private readonly hostEnvironment: IHostEnvironment,
     @IHostProcessService private readonly hostProcess: IHostProcessService,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @ILogService private readonly log: ILogService,
   ) {
     super();
@@ -249,6 +252,7 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
       }
     }
     const manager = new McpConnectionManager({
+      childDefaults: kikiChildDefaults(this.bootstrap.homeDir),
       log: this.log,
       stdioCwd,
       runtimeResolver,
@@ -504,6 +508,7 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
       if (Object.keys(probeConfigs).length > 0) {
         const section = this.config.get<McpSection | undefined>(MCP_SECTION);
         manager = new McpConnectionManager({
+          childDefaults: kikiChildDefaults(this.bootstrap.homeDir),
           log: this.log,
           oauthService: this.oauth,
           resolveClientName: () => this.identity.current().slug,

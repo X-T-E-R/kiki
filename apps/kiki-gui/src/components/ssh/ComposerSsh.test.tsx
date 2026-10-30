@@ -42,6 +42,7 @@ const ssh = {
   })),
   addSessionHost: vi.fn(async (sessionId: string, hostId: string) => ({ ok: true })),
   removeSessionHost: vi.fn(async (sessionId: string, hostId: string) => ({ ok: true })),
+  upsert: vi.fn(async (id: string, input: unknown): Promise<{ host: SshHost }> => ({ host: { id, name: id, source: 'kiki' } })),
   status: vi.fn(async (hostId: string): Promise<SshHostStatus> => ({
     hostId,
     state: hostId === 'h1' ? 'ready' : 'idle',
@@ -77,6 +78,7 @@ beforeEach(() => {
   ssh.sessionHosts.mockResolvedValue({ hosts: [] });
   ssh.addSessionHost.mockResolvedValue({ ok: true });
   ssh.removeSessionHost.mockResolvedValue({ ok: true });
+  ssh.upsert.mockImplementation(async (id: string): Promise<{ host: SshHost }> => ({ host: { id, name: id, source: 'kiki' } }));
 });
 
 afterEach(() => {
@@ -98,10 +100,12 @@ async function flush(): Promise<void> {
 function TestConsumer({
   sessionId,
   enabled = true,
+  withDialog = false,
   onHookReady,
 }: {
   sessionId?: string;
   enabled?: boolean;
+  withDialog?: boolean;
   onHookReady?: (hook: ReturnType<typeof useComposerSsh>) => void;
 }) {
   const hook = useComposerSsh(sessionId, enabled);
@@ -110,11 +114,12 @@ function TestConsumer({
     <div>
       <div data-testid="resident">{hook.resident}</div>
       <div data-testid="panel">{hook.renderPanel(() => {})}</div>
+      {withDialog ? hook.dialog : null}
     </div>
   );
 }
 
-async function renderHook(sessionId?: string, enabled = true) {
+async function renderHook(sessionId?: string, enabled = true, withDialog = false) {
   let hookValue: ReturnType<typeof useComposerSsh> | undefined;
   const container = document.createElement('div');
   document.body.append(container);
@@ -131,6 +136,7 @@ async function renderHook(sessionId?: string, enabled = true) {
             <TestConsumer
               sessionId={sessionId}
               enabled={enabled}
+              withDialog={withDialog}
               onHookReady={(val) => { hookValue = val; }}
             />
           </MemoryRouter>
@@ -348,5 +354,65 @@ describe('ComposerSsh', () => {
 
     expect(getHook().snapshot).toEqual([{ kind: 'ssh', id: 'h1', name: 'Host One' }]);
     expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(1);
+  });
+
+  it('adding a host from an existing session keeps the panel populated and joins the new host', async () => {
+    ssh.sessionHosts.mockResolvedValue({
+      hosts: [{ host: HOSTS[0]!, status: idleStatus('h1') }],
+    });
+    const newHost: SshHost = { id: 'newhost', name: 'newhost', hostname: 'newhost.example.com', source: 'kiki' };
+    ssh.upsert.mockResolvedValue({ host: newHost });
+    ssh.list.mockResolvedValue({ hosts: [...HOSTS, newHost] });
+    ssh.sessionHosts.mockImplementation(async () => ({
+      hosts: [
+        { host: HOSTS[0]!, status: idleStatus('h1') },
+        { host: newHost, status: idleStatus('newhost') },
+      ],
+    }));
+
+    const { container } = await renderHook('sess-1', true, true);
+    const panel = container.querySelector('[data-composer-ssh-panel]');
+    expect(panel).not.toBeNull();
+
+    // Open the create form from the panel's new-host row.
+    const newBtn = panel?.querySelector('[data-composer-ssh-new]') as HTMLButtonElement;
+    expect(newBtn).not.toBeNull();
+    await act(async () => { newBtn.click(); });
+    await flush();
+
+    // The form dialog is mounted outside the popover, into document.body.
+    const form = document.body.querySelector('[data-ssh-host-form="create"]') as HTMLFormElement | null;
+    expect(form).not.toBeNull();
+
+    // Fill the alias (only required field) and submit.
+    const aliasInput = form!.querySelector('input') as HTMLInputElement;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(aliasInput, 'newhost');
+      aliasInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await flush();
+
+    await act(async () => {
+      form!.requestSubmit();
+    });
+    await flush();
+    await flush();
+
+    // After save, the dialog closes and the new host is joined.
+    expect(ssh.upsert).toHaveBeenCalledWith('newhost', expect.objectContaining({ name: 'newhost' }));
+    expect(ssh.addSessionHost).toHaveBeenCalledWith('sess-1', 'newhost');
+    expect(document.body.querySelector('[data-ssh-host-form="create"]')).toBeNull();
+
+    // The panel must not be blank: it lists both the previously joined host and
+    // the newly added one (the reported failure was a blank panel right here).
+    const panelAfter = container.querySelector('[data-composer-ssh-panel]');
+    expect(panelAfter).not.toBeNull();
+    expect(panelAfter!.querySelector('[data-composer-ssh-host="h1"]')).not.toBeNull();
+    expect(panelAfter!.querySelector('[data-composer-ssh-host="newhost"]')).not.toBeNull();
+    expect(panelAfter!.textContent?.trim()).not.toBe('');
+
+    // The resident strip keeps showing both chips (SSH 2), not a blank card.
+    expect(container.querySelectorAll('[data-composer-ssh-chip]').length).toBe(2);
   });
 });

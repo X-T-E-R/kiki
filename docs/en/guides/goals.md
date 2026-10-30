@@ -80,9 +80,11 @@ A goal can stop in three ways:
 
 Describe completion conditions in the objective. Goals have no hard budget by default. To cap a goal's turns, output tokens, or active time, set a budget manually in the web goal editor; limits written in chat do not configure a budget.
 
-Pausing a goal stops its current goal-driven turn and automatic follow-up turns without deleting the objective. Background tasks already launched continue; their results wait for your next message. You can send ordinary messages while the goal is paused. Reopening a session after a restart pauses an active goal; a goal you already paused or cancelled stays stopped until you explicitly resume or create one.
+Pausing a goal yourself stops its current goal-driven turn and automatic follow-up turns without deleting the objective. Background tasks already launched for that goal continue, but their results do not wake an idle main agent; they are delivered when it next runs. Tasks outside that goal can still wake it. You can send ordinary messages while the goal is paused. Reopening a session after a restart pauses an active goal; a goal you already paused or cancelled stays stopped until you explicitly resume or create one.
 
-A blocked goal does not cancel work it already started. When a task launched for it finishes, the result wakes the main agent to process that one completion; the goal itself stays blocked until you resume it. If you cancel the goal or its budget runs out, that result waits for your next message.
+A blocked goal does not cancel work it already started. Unless its budget is exhausted, a finished task wakes the idle main agent to process that completion. A goal paused by a runtime error can receive results the same way; receiving them leaves the goal blocked or paused. Completing, removing, or replacing a goal does not stop later task completions from waking the main agent.
+
+Cancelling a turn prevents tasks launched by that turn from waking the idle main agent; tasks started after the cancellation can still wake it. An exhausted current goal budget also prevents completion results from waking it. Held results are delivered when the main agent next runs, such as when you send another message.
 
 While a goal is active, each finished background task is delivered when the main agent is idle, including when another task is still running. That delivery does not wait for the other tasks, and it is not the goal's follow-up turn. The goal follows up on its own timing.
 

@@ -115,6 +115,7 @@ const RETAINED_COLD_TURN_ENTRY_BYTES = 8 << 20;
 const COLD_SNAPSHOT_CACHE_MAX_ENTRIES = 32;
 const FIRST_SCREEN_WINDOW_BYTES = 1 << 20;
 const FIRST_SCREEN_WINDOW_MAX_BYTES = 8 << 20;
+const LIVE_EPOCH_VERIFY_WAIT_MS = 1_500;
 const COLD_WIRE_WINDOW_MAX_BYTES = FIRST_SCREEN_WINDOW_MAX_BYTES;
 const COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES = 32 << 20;
 const COLD_WIRE_WINDOWS_MAX_ENTRIES = 4;
@@ -694,6 +695,10 @@ export class TranscriptService {
     return wire?.verifyTranscriptLiveEpoch === undefined || wire.isTranscriptLiveEpochVerified?.() === true;
   }
 
+  /**
+   * Proves the live epoch against durable wire. A proof that has not settled within
+   * a short bound reports unverified while the shared verification continues.
+   */
   async verifyTranscriptLiveCoverage(sessionId: string, agentId: string): Promise<boolean> {
     const wire = this.live.get(sessionId)?.agentWires.get(agentId);
     return wire?.verifyTranscriptLiveEpoch === undefined || await this.hasVerifiedLiveEpoch(sessionId, agentId);
@@ -1815,7 +1820,7 @@ export class TranscriptService {
   /** Cache a fingerprint-bound page projection and bounded tail turns for immediate continuations. */
   async readColdPageSnapshot(sessionId: string, agentId: string,
     project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot,
-    signal?: AbortSignal, extendOlder = false, spanBytes = FIRST_SCREEN_WINDOW_BYTES, preserveWindow = false, tailFirst = false): Promise<AgentTranscriptSnapshot | undefined> {
+    signal?: AbortSignal, extendOlder = false, spanBytes = FIRST_SCREEN_WINDOW_BYTES, preserveWindow = false, tailFirst = false, boundedPage = false): Promise<AgentTranscriptSnapshot | undefined> {
     signal?.throwIfAborted();
     const location = await this.historyWireLocation(sessionId, agentId);
     if (location === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
@@ -1827,7 +1832,7 @@ export class TranscriptService {
     signal?.throwIfAborted();
     if (info === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
-    if (!tailFirst && info.size <= FIRST_SCREEN_WINDOW_MAX_BYTES) {
+    if (!tailFirst && info.size <= (boundedPage ? FIRST_SCREEN_WINDOW_BYTES : FIRST_SCREEN_WINDOW_MAX_BYTES)) {
       if (this.coldWireWindows.has(wirePath)) {
         this.forgetColdWindow(wirePath);
         this.retainedColdTurns.delete(wirePath);
@@ -1848,7 +1853,7 @@ export class TranscriptService {
     }
     if (extendOlder) {
       const span = spanBytes > 0 ? spanBytes : FIRST_SCREEN_WINDOW_BYTES;
-      const extended = await this.extendColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, opened, undefined, undefined, span);
+      const extended = await this.extendColdWireWindow(sessionId, agentId, wirePath, info, fingerprint, opened, undefined, undefined, span, !tailFirst);
       if (extended === undefined) return undefined;
       return this.publishColdWindow(sessionId, agentId, wirePath, fingerprint, extended, project, opened);
     }
@@ -2051,7 +2056,7 @@ export class TranscriptService {
     const snapshot = this.projectColdRecords(agentId, merged, entire, preserveOpenTurnIds, captureReplayState, entire ? undefined : window);
     const bytes = this.coldWindowBytes(snapshot, merged);
     let extended: ColdWireWindow;
-    if (window.records.length > 0 && bytes > COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES && read.records.length > 0) {
+    if (window.records.length > 0 && bytes > COLD_WIRE_WINDOW_MAX_BYTES && read.records.length > 0) {
       if (read.complete && !coldPrefixAddsItem(window.snapshot.items, snapshot.items)) {
         const skipped: ColdWireWindow = {
           ...window,
@@ -2688,12 +2693,16 @@ export class TranscriptService {
     const session = getLiveSessionById(this.deps.core.accessor, sessionId);
     const agent = session?.accessor.get(IAgentLifecycleService).get(agentId);
     if (agent === undefined) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const verified = await wire.verifyTranscriptLiveEpoch();
+      const expired = new Promise<false>((resolve) => { timer = setTimeout(() => { resolve(false); }, LIVE_EPOCH_VERIFY_WAIT_MS); });
+      const verified = await Promise.race([wire.verifyTranscriptLiveEpoch(), expired]);
       return verified && this.live.get(sessionId) === entry &&
         session?.accessor.get(IAgentLifecycleService).get(agentId) === agent;
     } catch {
       return false;
+    } finally {
+      clearTimeout(timer);
     }
   }
 

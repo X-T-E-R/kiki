@@ -55,6 +55,7 @@ export const SendMessageToolInputSchema = z.object({
   mention_ids: z.array(z.string().min(1).max(1024)).max(1000).optional(),
   attachments: z.array(AttachmentSchema).max(32).optional(),
   messages: z.array(MessageBatchItemSchema).min(1).max(32).optional(),
+  end_turn: z.boolean().optional().describe('Set true for the final answer when the request is complete and no work remains; omit for progress updates. Skips the tool continuation only after full user delivery and when this is the step’s only tool call. Pending messages and goal work still run.'),
 }).strict().superRefine((input, ctx) => {
   const hasBatch = input.messages !== undefined;
   const hasLegacyContent = input.text !== undefined || input.attachments !== undefined || input.reply_to !== undefined || input.mention_ids !== undefined;
@@ -89,7 +90,7 @@ type SendMessageItemInput = {
 export class SendMessageTool implements ISendMessageTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'SendMessage';
-  readonly description = 'Send one complete message or an ordered messages batch to this thread’s enabled bound outputs, a room, or another Bot. Use either the legacy text/attachments/reply_to fields or messages items, never both. Omit channel/channels for bound-output fan-out, or name explicit channel IDs; unbound channels require the borrowing policy. Attachments may be sent without text; set each attachment kind explicitly for image, audio, voice, or video delivery. Channel receipts identify unsupported media and uncertain sends; never downgrade voice or automatically resend an unknown outcome. Do not split one message into sentences or repeat it in ordinary text. A final ordinary reply is delivered in full as a fallback; do not resend it. After successful delivery to the user, if the request is complete and no work remains, end the turn without a closing SendMessage or confirmation. Progress messages do not end ongoing work; continue any required tools or pending work.';
+  readonly description = 'Send one complete message or an ordered messages batch to this thread’s enabled bound outputs, a room, or another Bot. Use either the legacy text/attachments/reply_to fields or messages items, never both. Omit channel/channels for bound-output fan-out, or name explicit channel IDs; unbound channels require the borrowing policy. Attachments may be sent without text; set each attachment kind explicitly for image, audio, voice, or video delivery. Channel receipts identify unsupported media and uncertain sends; never downgrade voice or automatically resend an unknown outcome. Do not split one message into sentences or repeat it in ordinary text. A final ordinary reply is delivered in full as a fallback; do not resend it. For the final answer, if the request is complete and no work remains, set end_turn=true. It skips the tool continuation only after full user delivery and when this is the step’s only tool call; goal work and queued messages still run. Omit end_turn for progress messages and continue any required tools or pending work. Do not send a closing SendMessage or ordinary-text confirmation.';
   readonly parameters = toInputJsonSchema(SendMessageToolInputSchema);
 
   constructor(
@@ -121,19 +122,25 @@ export class SendMessageTool implements ISendMessageTool {
     };
   }
 
-  private async singleResult(input: SendMessageItemInput, ctx: ExecutableToolContext): Promise<{ output: string; note?: string }> {
+  private async singleResult(input: SendMessageToolInput, ctx: ExecutableToolContext): Promise<{ output: string; note?: string; stopTurn?: boolean }> {
     const receipt = await this.sendOne(input, ctx);
     const notes = notesForReceipt(receipt);
-    return { output: JSON.stringify(toWireReceipt(receipt), null, 2), note: notes.length > 0 ? `<system>${notes.join(' ')}</system>` : undefined };
+    return {
+      output: JSON.stringify(toWireReceipt(receipt), null, 2),
+      note: notes.length > 0 ? `<system>${notes.join(' ')}</system>` : undefined,
+      stopTurn: input.end_turn === true && fullyDeliveredToUser(receipt) ? true : undefined,
+    };
   }
 
-  private async batchResult(input: SendMessageToolInput, ctx: ExecutableToolContext): Promise<{ output: string; note?: string }> {
+  private async batchResult(input: SendMessageToolInput, ctx: ExecutableToolContext): Promise<{ output: string; note?: string; stopTurn?: boolean }> {
     const messages: Record<string, unknown>[] = [];
     const notes = new Set<string>();
     const batch = input.messages!;
+    let fullyDelivered = batch.length > 0;
     for (let index = 0; index < batch.length; index++) {
       const itemCallId = `${ctx.toolCallId}:item:${index}`;
       if (ctx.signal.aborted) {
+        fullyDelivered = false;
         for (let cancelled = index; cancelled < batch.length; cancelled++) {
           messages.push(stoppedWireReceipt(cancelled, `${ctx.toolCallId}:item:${cancelled}`, 'cancelled', 'Message batch cancelled before this item was sent.'));
         }
@@ -152,8 +159,10 @@ export class SendMessageTool implements ISendMessageTool {
       try {
         const receipt = await this.sendOne(itemInput, { ...ctx, toolCallId: itemCallId });
         messages.push({ index, ...toWireReceipt(receipt) });
+        fullyDelivered = fullyDelivered && fullyDeliveredToUser(receipt);
         for (const note of notesForReceipt(receipt)) notes.add(note);
       } catch (error) {
+        fullyDelivered = false;
         const cancelled = ctx.signal.aborted || isAbortError(error);
         messages.push(stoppedWireReceipt(index, itemCallId, cancelled ? 'cancelled' : 'not_sent', errorMessage(error)));
         const detail = cancelled ? 'Message batch cancelled before this item was sent.' : 'Message batch stopped after a previous item was not sent.';
@@ -163,7 +172,11 @@ export class SendMessageTool implements ISendMessageTool {
         break;
       }
     }
-    return { output: JSON.stringify({ messages }, null, 2), note: notes.size > 0 ? `<system>${[...notes].join(' ')}</system>` : undefined };
+    return {
+      output: JSON.stringify({ messages }, null, 2),
+      note: notes.size > 0 ? `<system>${[...notes].join(' ')}</system>` : undefined,
+      stopTurn: input.end_turn === true && fullyDelivered ? true : undefined,
+    };
   }
 
   private async sendOne(input: SendMessageItemInput, ctx: { readonly toolCallId: string; readonly signal: AbortSignal }): Promise<SendMessageReceipt> {
@@ -265,6 +278,12 @@ export class SendMessageTool implements ISendMessageTool {
     }
     return roots;
   }
+}
+
+function fullyDeliveredToUser(receipt: SendMessageReceipt): boolean {
+  return receipt.deliveredTo.includes('user') &&
+    (receipt.delivery === undefined || receipt.delivery === 'delivered') &&
+    (receipt.channels === undefined || receipt.channels.every((channel) => channel.status === 'delivered'));
 }
 
 function notesForReceipt(receipt: SendMessageReceipt): readonly string[] {

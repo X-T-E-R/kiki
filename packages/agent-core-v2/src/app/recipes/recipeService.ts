@@ -20,6 +20,7 @@ import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { Error2, ErrorCodes } from '#/errors';
 import { hookExecution, recipeHookFingerprint, recipeHookPreview } from './recipeHooks';
+import { recipeOptionEntries } from './recipeOptions';
 
 interface Installation { summary: RecipeSummary; history: string[]; editable: boolean; checked_at?: number; trustedHooks?: string[] }
 interface Candidate { preview: RecipePreview; snapshot: RecipeSnapshot; expires: number; installation_id?: string; expected_revision?: string }
@@ -71,30 +72,43 @@ export class RecipeService extends Disposable implements IRecipeService {
   }
   private usedBy(id: string): string[] { return Object.entries(this.models.list()).filter(([, model]) => model.recipe?.trim().replace(/^installation:/u, '') === id).map(([alias]) => alias); }
   async list(): Promise<RecipeSummary[]> { this.enabled(); return Object.values(await this.records()).map((value) => value.summary); }
-  async get(id: string): Promise<RecipeDetail | undefined> {
-    this.enabled(); const record = (await this.records())[id]; if (record === undefined) return undefined;
+  async get(id: string, selection?: import('@kiki/protocol').RecipeOptionValues): Promise<RecipeDetail | undefined> {
+    this.enabled();
+    if (isRecipeFileReference(id)) {
+      const absolute = resolveRecipeFileLocator(id);
+      const snapshot = await this.prepare({ locator: absolute }, [], undefined, undefined, recipePackageDirectory(absolute), false);
+      return { summary: this.summary(snapshot, absolute, 'follow'), resolved: this.selectOptions(snapshot, selection), files: snapshot.files, history: [], editable: false, used_by: [] };
+    }
+    id = id.replace(/^installation:/u, '');
+    const record = (await this.records())[id]; if (record === undefined) return undefined;
     const snapshot = await this.snapshot(record.summary.revision);
-    return { summary: record.summary, resolved: snapshot.resolved, files: snapshot.files, history: record.history, editable: record.editable && (await this.localRecords())[id] !== undefined, used_by: this.usedBy(id) };
+    return { summary: record.summary, resolved: this.selectOptions(snapshot, selection), files: snapshot.files, history: record.history, editable: record.editable && (await this.localRecords())[id] !== undefined, used_by: this.usedBy(id) };
+  }
+  private selectOptions(snapshot: RecipeSnapshot, selection?: import('@kiki/protocol').RecipeOptionValues): ResolvedRecipe {
+    if (selection === undefined) return structuredClone(snapshot.resolved);
+    const resolved = resolveRecipe(snapshot.declaration, snapshot.resolved.dependencies, selection);
+    const changed = JSON.stringify(resolved.option_values) !== JSON.stringify(snapshot.resolved.option_values);
+    return { ...resolved, revision: changed ? recipeDigest({ package_revision: snapshot.resolved.revision, option_values: resolved.option_values }) : snapshot.resolved.revision };
   }
   private consentFailure(): never {
     throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Confirm installation to authorize new Recipe scripts', { details: { code: 'recipe-hook-consent-required', path: 'hooks' } });
   }
-  async resolve(id: string, baseDir?: string): Promise<ResolvedRecipe> {
+  async resolve(id: string, baseDir?: string, selection?: import('@kiki/protocol').RecipeOptionValues): Promise<ResolvedRecipe> {
     this.enabled();
     const raw = id.trim();
-    if (isRecipeFileReference(raw)) return this.resolveFile(raw, baseDir);
+    if (isRecipeFileReference(raw)) return this.resolveFile(raw, baseDir, selection);
     const record = await this.record(raw.replace(/^installation:/u, ''));
-    const resolved = structuredClone((await this.snapshot(record.summary.revision)).resolved);
-    const fingerprint = recipeHookFingerprint(resolved.hooks);
+    const snapshot = await this.snapshot(record.summary.revision);
+    const fingerprint = recipeHookFingerprint(snapshot.resolved.hooks);
     if (fingerprint !== undefined && !record.trustedHooks?.includes(fingerprint)) this.consentFailure();
-    return { ...resolved, hooks_fingerprint: fingerprint };
+    return { ...this.selectOptions(snapshot, selection), hooks_fingerprint: fingerprint };
   }
-  private async resolveFile(locator: string, baseDir?: string): Promise<ResolvedRecipe> {
+  private async resolveFile(locator: string, baseDir?: string, selection?: import('@kiki/protocol').RecipeOptionValues): Promise<ResolvedRecipe> {
     const absolute = resolveRecipeFileLocator(locator, baseDir);
     const snapshot = await this.prepare({ locator: absolute }, [], undefined, undefined, recipePackageDirectory(absolute), false);
     const fingerprint = recipeHookFingerprint(snapshot.resolved.hooks);
     if (fingerprint !== undefined) this.consentFailure();
-    return { ...structuredClone(snapshot.resolved), hooks_fingerprint: fingerprint };
+    return { ...this.selectOptions(snapshot, selection), hooks_fingerprint: fingerprint };
   }
   async scriptHooks(recipe: ResolvedRecipe): Promise<readonly import('#/features/externalHooks/internal/types').HookDef[]> {
     this.enabled(); const hooks: NonNullable<ResolvedRecipe['hooks']> = [];
@@ -237,8 +251,11 @@ export class RecipeService extends Disposable implements IRecipeService {
     return { name: `${snapshot.manifest.id}-${snapshot.manifest.version}.zip`, revision: record.summary.revision, files: this.copyFiles(snapshot, snapshot.manifest) };
   }
   private copyFiles(snapshot: RecipeSnapshot, identity: { id: string; name: string; version: string; description?: string }): Record<string, string> {
-    const prompts = Object.fromEntries(Object.entries(snapshot.resolved.branches).filter(([position]) => position !== 'sub').map(([position, branch]) => [position, this.branchManifest(branch)]));
-    const common = this.branchManifest(snapshot.resolved.branches.sub);
+    const declaration = snapshot.declaration;
+    const options = declaration.options === undefined ? undefined : recipeOptionEntries(declaration).map(([id, option]) => stringify({ options: { [id]: { ...option, patch: option.patch?.map((patch) => ({ ...patch, content: this.textManifest(patch.content) })) } } })).join('\n');
+    const prompts = options === undefined ? Object.fromEntries(Object.entries(snapshot.resolved.branches).filter(([position]) => position !== 'sub').map(([position, branch]) => [position, this.branchManifest(branch)]))
+      : Object.fromEntries((['main', 'independent'] as const).map((position) => [position, typeof declaration[position] === 'object' ? this.declarationManifest(declaration[position]) : declaration[position]]));
+    const common = options === undefined ? this.branchManifest(snapshot.resolved.branches.sub) : this.declarationManifest(declaration);
     const files: Record<string, string> = {};
     const hooks = snapshot.resolved.hooks?.map((hook, index) => {
       const root = `hooks/${index}`;
@@ -246,7 +263,18 @@ export class RecipeService extends Disposable implements IRecipeService {
       return { event: hook.event, command: hook.command, matcher: hook.matcher, timeout: hook.timeout, root, files: Object.keys(hook.files) };
     });
     return { ...files, 'recipe.toml': stringify({ schema_version: 1, id: identity.id, name: identity.name, version: identity.version, description: identity.description, hooks,
-      prompts: { ...common, ...prompts }, model: (modelsToToml({ recipe: snapshot.resolved.model }, {}) as Record<string, unknown>)['recipe'] }) };
+      prompts: { ...common, ...prompts }, model: (modelsToToml({ recipe: snapshot.resolved.model }, {}) as Record<string, unknown>)['recipe'] }) + (options === undefined ? '' : `\n${options || '[options]\n'}`) };
+  }
+  private textManifest(value: import('./recipeParser').TextValue | 'off' | undefined): unknown {
+    if (value === undefined || value === 'off') return value;
+    return value.parts === undefined ? { text: value.text } : value.parts.map((part) => ({ text: part.text, when: part.when, unless: part.unless }));
+  }
+  private declarationManifest(branch: import('./recipeParser').RecipeContent): Record<string, unknown> {
+    return { system: this.textManifest(branch.system), steering: this.textManifest(branch.steering),
+      anchor: typeof branch.anchor === 'object' ? { ...branch.anchor, content: this.textManifest(branch.anchor.content) } : branch.anchor,
+      fields: Object.fromEntries(Object.entries(branch.fields ?? {}).map(([id, value]) => [id, value.value])),
+      steering_on_turn: branch.steering_on_turn, steering_on_input: branch.steering_on_input, steering_interval_steps: branch.steering_interval_steps,
+      steering_sources: branch.steering_sources === undefined ? undefined : Object.fromEntries(Object.entries(branch.steering_sources).map(([id, setting]) => [id, { ...setting, custom: setting.custom === undefined ? undefined : { ...setting.custom, steering: this.textManifest(setting.custom.steering) } }])) };
   }
   async fork(input: RecipeForkInput): Promise<RecipeDetail> {
     this.enabled(); const old = await this.record(input.installation_id); const snapshot = await this.snapshot(old.summary.revision);

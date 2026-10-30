@@ -330,11 +330,11 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
 
   getAutoCompact(): ResolvedAutoCompact {
     const resolved = this.resolveModelContextWithEffectiveMax();
-    return resolveAutoCompact(resolved, resolved.sessionAutoCompact, this.requestTokens([]));
+    return resolveAutoCompact(resolved, resolved.sessionAutoCompact, () => this.requestTokens([]));
   }
 
   getDefaultAutoCompact(): ResolvedAutoCompact {
-    return resolveAutoCompact(this.resolveModelContextWithEffectiveMax(), undefined, this.requestTokens([]));
+    return resolveAutoCompact(this.resolveModelContextWithEffectiveMax(), undefined, () => this.requestTokens([]));
   }
 
   setAutoCompactOverride(tokens: number | null): void {

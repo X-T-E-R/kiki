@@ -71,6 +71,7 @@ import {
 } from '../lib/agentProfileCatalog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { runNewSessionHandoff } from '../lib/newSessionHandoff';
+import { readFirstSessionMessage, writeFirstSessionMessage, type FirstSessionMessage } from '../lib/newSessionCreation';
 import { spaceStorage, type SpaceStorage } from '../lib/spaceStorage';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
@@ -81,6 +82,7 @@ import { useConnection } from '../state/connection';
 import { sshApi } from '../lib/ssh';
 import { ApiError } from '../lib/client';
 import { useProfileFilePreview } from '../lib/profileFilePreview';
+import { profileThinkingDefault } from '../lib/profileThinking';
 
 const DRAFT_KEY = 'new';
 const remoteDraftStorageKey = (scopeId: string) => `kiki.draft.new.${scopeId}`;
@@ -105,6 +107,7 @@ function readDailyDraftSettings(storageKey: string): PersistedNewSessionDraft {
       modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
       effortFromProfile: typeof record['effortFromProfile'] === 'boolean' ? record['effortFromProfile'] : undefined,
       prefillSource: typeof record['prefillSource'] === 'string' ? record['prefillSource'] : undefined,
+      dismissedPersonaSource: typeof record['dismissedPersonaSource'] === 'string' ? record['dismissedPersonaSource'] : undefined,
     };
   } catch {
     return {};
@@ -136,6 +139,7 @@ function readScopedNewSessionDraft(scopeId: string): PersistedNewSessionDraft {
       modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
       effortFromProfile: typeof record['effortFromProfile'] === 'boolean' ? record['effortFromProfile'] : undefined,
       prefillSource: typeof record['prefillSource'] === 'string' ? record['prefillSource'] : undefined,
+      dismissedPersonaSource: typeof record['dismissedPersonaSource'] === 'string' ? record['dismissedPersonaSource'] : undefined,
     };
   } catch {
     return {};
@@ -156,6 +160,9 @@ export interface PersistedCreationIntent {
   readonly creationId: string;
   readonly sessionId: string;
   readonly bodyKey: string;
+  readonly body?: SessionCreate;
+  readonly handoff?: FirstSessionMessage;
+  readonly sshHosts?: readonly SshHostAttachment[];
   readonly status: 'pending' | 'accepted' | 'unknown' | 'conflict';
   readonly evidence?: string;
   readonly reason?: string;
@@ -190,6 +197,9 @@ export function readPersistedCreationIntent(scopeKey: string, storage: SpaceStor
       creationId,
       sessionId,
       bodyKey,
+      body: typeof record['body'] === 'object' && record['body'] !== null ? record['body'] as SessionCreate : undefined,
+      handoff: typeof record['handoff'] === 'object' && record['handoff'] !== null ? record['handoff'] as FirstSessionMessage : undefined,
+      sshHosts: Array.isArray(record['sshHosts']) ? record['sshHosts'] as SshHostAttachment[] : undefined,
       status,
       evidence: typeof record['evidence'] === 'string' ? record['evidence'] : undefined,
       reason: typeof record['reason'] === 'string' ? record['reason'] : undefined,
@@ -529,15 +539,18 @@ export function useNewSessionDraft({
   );
   // The persona bound at creation. Kept for this window only (like the
   // temporary choice); `?persona=` prefills it from the Personas page.
-  const [selectedPersonaId, setSelectedPersonaId] = useState<string | undefined>(initialPersona);
+  const personaPrefillSource = initialPersona === undefined ? undefined : JSON.stringify([initialPersona, prefillNavigationKey ?? null]);
+  const restoredPersona = personaPrefillSource !== undefined && initialRestoredDraft.dismissedPersonaSource === personaPrefillSource ? undefined : initialPersona;
+  const [dismissedPersonaSource, setDismissedPersonaSource] = useState(initialRestoredDraft.dismissedPersonaSource);
+  const [selectedPersonaId, setSelectedPersonaId] = useState<string | undefined>(restoredPersona);
   const [persona, setPersonaState] = useState<PersonaSnapshot | undefined>(undefined);
-  const [personaPending, setPersonaPending] = useState(initialPersona !== undefined);
+  const [personaPending, setPersonaPending] = useState(restoredPersona !== undefined);
   const [selectionRevision, setSelectionRevision] = useState(0);
   const [profileCatalogTransitionPending, setProfileCatalogTransitionPending] = useState(false);
   const profileCatalogTransitionRef = useRef(false);
   const hasNewProfilePrefill = applyPrefill && initialProfile !== undefined;
   const modelOverrideFromProfile = useRef(hasNewProfilePrefill || (initialRestoredDraft.modelFromProfile ?? initialRestoredDraft.profile === undefined));
-  const effortOverrideFromProfile = useRef(hasNewProfilePrefill || (initialRestoredDraft.effortFromProfile ?? initialRestoredDraft.profile === undefined));
+  const effortOverrideFromProfile = useRef(initialRestoredDraft.effortFromProfile ?? initialRestoredDraft.profile === undefined);
   const modelOverrideFromPersona = useRef(false);
   const effortOverrideFromPersona = useRef(false);
   // Which controls the *user* moved on this draft, as distinct from the values
@@ -545,6 +558,8 @@ export function useNewSessionDraft({
   // only a touched control is sent — see `buildNewSessionCreate`.
   const modelTouched = useRef(!modelOverrideFromProfile.current && initialRestoredDraft.modelOverride !== undefined);
   const effortTouched = useRef(!effortOverrideFromProfile.current && initialRestoredDraft.effortOverride !== undefined);
+  const modelChoiceRevision = useRef(0);
+  const effortChoiceRevision = useRef(0);
   const permissionTouched = useRef(false);
 
   // Shares App's metadata catalog without waiting for session counts or Git.
@@ -645,11 +660,12 @@ export function useNewSessionDraft({
   const modelProjectionState = projectedProfileModelState(selectedProfile, modelsQuery.data?.items ?? [], effectiveModel, 'main');
   const catalogItem = effectiveModel === undefined ? undefined : resolveCatalogModel(modelsQuery.data?.items ?? [], effectiveModel);
   const supportedEfforts = catalogItem?.support_efforts;
-  const effectiveEffort = effortOverride ?? resolveSelectedEffort(
-    supportedEfforts,
-    undefined,
-    catalogItem?.default_effort,
-  );
+  const profileEffort = selectedProfile !== undefined && profileExecutor(selectedProfile) === execution.executor
+    ? profileThinkingDefault(selectedProfile, effectiveModel, modelsQuery.data?.items ?? []) : undefined;
+  const inheritedEffort = persona?.definition.thinkingEffort ?? profileEffort
+    ?? (selectedProfile === undefined ? effortOverride : undefined)
+    ?? resolveSelectedEffort(supportedEfforts, undefined, catalogItem?.default_effort);
+  const effectiveEffort = effortTouched.current ? effortOverride ?? inheritedEffort : inheritedEffort;
 
   useEffect(() => {
     setDraft(readDraft(draftKey));
@@ -660,6 +676,7 @@ export function useNewSessionDraft({
     modelOverrideFromPersona.current = false;
     modelOverrideFromProfile.current = false;
     modelTouched.current = true;
+    modelChoiceRevision.current += 1;
     setModelOverrideState(model);
     setSelectionRevision((value) => value + 1);
   }, []);
@@ -667,6 +684,7 @@ export function useNewSessionDraft({
     effortOverrideFromPersona.current = false;
     effortOverrideFromProfile.current = false;
     effortTouched.current = true;
+    effortChoiceRevision.current += 1;
     setEffortOverrideState(thinking);
     setSelectionRevision((value) => value + 1);
   }, []);
@@ -696,14 +714,9 @@ export function useNewSessionDraft({
     } else {
       modelOverrideFromProfile.current = false;
     }
-    if (isTargetExecutor && defaults.thinking !== undefined) {
+    if (!effortTouched.current) {
       effortOverrideFromProfile.current = true;
-      setEffortOverrideState(defaults.thinking);
-    } else if (!sameExecutor) {
-      effortOverrideFromProfile.current = false;
-      setEffortOverrideState(undefined);
-    } else {
-      effortOverrideFromProfile.current = false;
+      setEffortOverrideState(isTargetExecutor ? defaults.thinking : undefined);
     }
     setSelectionRevision((value) => value + 1);
   }, [execution.executor]);
@@ -742,10 +755,11 @@ export function useNewSessionDraft({
         cwd,
         profile: agentProfile,
         modelOverride: modelOverrideFromPersona.current ? undefined : modelOverride,
-        effortOverride: effortOverrideFromPersona.current ? undefined : effortOverride,
+        effortOverride: effortOverrideFromPersona.current ? undefined : effectiveEffort,
         modelFromProfile: modelOverrideFromProfile.current || modelOverrideFromPersona.current,
-        effortFromProfile: effortOverrideFromProfile.current || effortOverrideFromPersona.current,
+        effortFromProfile: !effortTouched.current,
         prefillSource,
+        dismissedPersonaSource,
       });
       return;
     }
@@ -755,12 +769,13 @@ export function useNewSessionDraft({
       cwd,
       profile: agentProfile,
       modelOverride: modelOverrideFromPersona.current ? undefined : modelOverride,
-      effortOverride: effortOverrideFromPersona.current ? undefined : effortOverride,
+      effortOverride: effortOverrideFromPersona.current ? undefined : effectiveEffort,
       modelFromProfile: modelOverrideFromProfile.current || modelOverrideFromPersona.current,
-      effortFromProfile: effortOverrideFromProfile.current || effortOverrideFromPersona.current,
+      effortFromProfile: !effortTouched.current,
       prefillSource,
+      dismissedPersonaSource,
     });
-  }, [dailySettingsKey, draftScopeId, workspaceId, effectiveWorkspace?.id, cwd, agentProfile, execution, modelOverride, effortOverride, selectionRevision, prefillSource]);
+  }, [dailySettingsKey, draftScopeId, workspaceId, effectiveWorkspace?.id, cwd, agentProfile, execution, modelOverride, effectiveEffort, selectionRevision, prefillSource, dismissedPersonaSource]);
 
   // A daily draft starts in the persona's own workspace when the persona names
   // one and the user has not already chosen for this draft. A directory the
@@ -809,7 +824,7 @@ export function useNewSessionDraft({
     || (nativeExecution && !(fromFile && execution.executor !== NATIVE_EXECUTOR) && (
       modelProjectionState === 'blocked'
       || (modelsQuery.isSuccess && effectiveModel !== undefined && catalogItem === undefined)
-      || (effortOverride !== undefined && catalogItem !== undefined && !supportedEfforts?.includes(effortOverride))
+      || (effectiveEffort !== undefined && catalogItem !== undefined && !supportedEfforts?.includes(effectiveEffort))
     ));
 
   const unresolvedPersona = selectedPersonaId !== undefined && persona?.definition.id !== selectedPersonaId;
@@ -865,6 +880,7 @@ export function useNewSessionDraft({
     intent?.status === 'accepted' ? t('new.creationAccepted')
       : intent?.status === 'unknown' ? t('new.creationUnknown') : null, [t]);
   const [creationNotice, setCreationNotice] = useState<string | null>(() => noticeForIntent(initialIntent));
+  const [hasPreviousCreation, setHasPreviousCreation] = useState(() => readPersistedCreationIntent(`${scopeIntentKey}:previous`, intentScope.storage) !== undefined);
   const creationIntent = useRef<CreationWait | undefined>(undefined);
   const draftRef = useRef(draft);
   draftRef.current = draft;
@@ -889,20 +905,48 @@ export function useNewSessionDraft({
     setCreatedSessionId(saved?.status === 'accepted' || saved?.status === 'unknown' ? saved.sessionId : undefined);
     setCreationNotice(noticeForIntent(saved));
     setError(saved?.error ?? null);
+    setHasPreviousCreation(readPersistedCreationIntent(`${scopeIntentKey}:previous`, intentScope.storage) !== undefined);
   }, [scopeIntentKey, intentScope, noticeForIntent]);
 
   const cancelCreation = useCallback(() => {
     if (creationIntent.current === undefined) return;
     creationIntent.current.cancelled = true;
+    creationIntent.current.stopWaiting?.();
+    creationIntent.current = undefined;
     setBusy(false);
+    setCreationPending(false);
     setCreationNotice(t('new.creationWaiting'));
   }, [t]);
-  const openCreatedSession = useCallback(() => {
-    const accepted = createdForRetry.current;
-    if (accepted === undefined || accepted.status === 'conflict' || creationIntent.current !== undefined) return;
-    if (accepted.status === 'accepted') queryClient.setQueryData(['space-view-target', scopeId, 'session', accepted.sessionId], true);
-    void navigate(`/s/${accepted.sessionId}`);
-  }, [navigate, queryClient, scopeId]);
+  const [checkingCreation, setCheckingCreation] = useState(false);
+  const checkCreation = useCallback(async () => {
+    const pending = createdForRetry.current;
+    if (pending === undefined || checkingCreation || creationIntent.current !== undefined) return;
+    setCheckingCreation(true);
+    try {
+      const receipt = await client.getSessionCreation(pending.creationId);
+      if (!intentScope.active || createdForRetry.current?.creationId !== pending.creationId) return;
+      const next: PersistedCreationIntent = {
+        ...pending,
+        status: receipt.status === 'completed' ? 'accepted' : pending.status === 'conflict' ? 'conflict' : 'unknown',
+        evidence: receipt.status,
+        sessionId: receipt.session?.id ?? receipt.session_id,
+        error: receipt.failure?.message,
+      };
+      createdForRetry.current = next;
+      writePersistedCreationIntent(scopeIntentKey, next, intentScope.storage);
+      setCreatedSessionId(next.status === 'accepted' ? next.sessionId : undefined);
+      setCreationNotice(noticeForIntent(next));
+      setError(next.error ?? null);
+      return next;
+    } catch (cause) {
+      if (intentScope.active) setError(errorText(locale, cause));
+    } finally { if (intentScope.active) setCheckingCreation(false); }
+  }, [checkingCreation, client, intentScope, locale, noticeForIntent, scopeIntentKey]);
+  const creationActions = useRef<{ resume(openOnly?: boolean): void | Promise<void> }>({ resume: () => {} });
+  const openCreatedSession = useCallback(async () => {
+    if (createdForRetry.current?.status !== 'accepted') await checkCreation();
+    if (intentScope.active && createdForRetry.current?.status === 'accepted') return creationActions.current.resume(true);
+  }, [checkCreation, intentScope]);
   const createThenNavigate = useCallback((handoff: {
     initialPrompt?: string;
     initialPresentation?: import('@kiki/transcript').TextPresentation;
@@ -920,17 +964,17 @@ export function useNewSessionDraft({
      * handoff below.
      */
     goalObjectiveOverride?: string;
-  }) => {
+  }, recovery?: { openOnly?: boolean }) => {
     const context = sendContextRef.current;
     if (creationIntent.current !== undefined) return;
     const trimmedCwd = context.cwd.trim();
     // A free-text cwd must be an absolute path — a relative one would be
     // resolved against the server's own cwd and silently land elsewhere.
-    if (trimmedCwd !== '' && (sshLabel === null ? !isAbsoluteCwdPath(trimmedCwd) : !isAbsoluteRemoteCwdPath(trimmedCwd))) {
+    if (recovery === undefined && trimmedCwd !== '' && (sshLabel === null ? !isAbsoluteCwdPath(trimmedCwd) : !isAbsoluteRemoteCwdPath(trimmedCwd))) {
       setError(sshLabel === null ? t('new.cwdInvalid') : t('connect.sshCwdInvalid'));
       return;
     }
-    if (context.busy || profileCatalogTransitionRef.current) return;
+    if (recovery === undefined && (context.busy || profileCatalogTransitionRef.current)) return;
     const bodyWithoutCreation = buildNewSessionCreate({
       cwd: trimmedCwd,
       workspaceId: (context.workspaceId !== '' && context.workspaceId !== AUTO_WORKSPACE_ID) ? context.workspaceId : context.effectiveWorkspace?.id,
@@ -954,19 +998,35 @@ export function useNewSessionDraft({
     // releases the latch for retry.
     const bodyKey = JSON.stringify([draftScopeId, bodyWithoutCreation]);
     const retry = createdForRetry.current;
-    if (retry !== undefined && retry.bodyKey !== bodyKey) {
+    if (retry !== undefined && recovery === undefined && (retry.bodyKey !== bodyKey || retry.status !== 'accepted')) {
       setCreationNotice(noticeForIntent(retry));
-      return;
+      return checkCreation().then(() => undefined);
     }
+    if (retry?.status === 'conflict') return;
 
     const creationId = retry?.creationId ?? crypto.randomUUID().toLowerCase();
     const targetSessionId = retry?.sessionId ?? `session_${creationId}`;
-    const body: SessionCreate = {
+    const body: SessionCreate = retry?.body ?? {
       ...bodyWithoutCreation,
       creation_id: creationId,
     };
+    const frozenHandoff: FirstSessionMessage = retry?.handoff ?? {
+      ...handoff,
+      initialPromptId: `new-session:${creationId}`,
+      model: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
+      thinking: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) && context.effectiveEffort !== '' ? context.effectiveEffort : undefined,
+      permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
+      planMode: context.planMode,
+      goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
+      appendTiming: readSettings().defaultAppendTiming,
+      ephemeral: context.ephemeral,
+      personaGreetingReply: handoff.initialPrompt !== undefined && hasGreeting(context.persona) ? true : undefined,
+      execution: context.execution,
+    };
+    handoff = { ...frozenHandoff, sshHosts: retry?.sshHosts ?? handoff.sshHosts };
 
     const intent: CreationWait = { cancelled: false };
+    const stoppedWaiting = new Promise<void>((resolve) => { intent.stopWaiting = resolve; });
     creationIntent.current = intent;
     const submittedDraft = draftRef.current;
     if (trimmedCwd === '') {
@@ -977,14 +1037,18 @@ export function useNewSessionDraft({
     setCreationPending(true);
     setCreationNotice(null);
     setError(null);
-    let outcome: PersistedCreationIntent | undefined = retry?.status === 'accepted' ? retry : {
-      creationId, sessionId: targetSessionId, bodyKey, status: 'unknown',
+    let outcome: PersistedCreationIntent | undefined = {
+      ...retry, creationId, sessionId: targetSessionId, bodyKey: retry?.bodyKey ?? bodyKey, body, handoff: frozenHandoff,
+      sshHosts: handoff.sshHosts, status: retry?.status === 'accepted' ? 'accepted' : 'unknown',
     };
     const saveOutcome = () => {
-      if (!intentScope.active) {
-        const saved = readPersistedCreationIntent(scopeIntentKey, intentScope.storage);
-        if (saved?.creationId !== creationId || (saved.status === 'accepted' && outcome?.status !== 'accepted')) return;
+      if (intentScope.active && createdForRetry.current?.creationId !== creationId) {
+        if (outcome !== undefined) writePersistedCreationIntent(`${scopeIntentKey}:previous:${creationId}`, outcome, intentScope.storage);
+        return;
       }
+      const saved = readPersistedCreationIntent(scopeIntentKey, intentScope.storage);
+      if (saved !== undefined && (saved.creationId !== creationId || (saved.status === 'accepted' && outcome?.status !== 'accepted'))) return;
+      if (!intentScope.active && saved?.creationId !== creationId) return;
       if (outcome === undefined) clearPersistedCreationIntent(scopeIntentKey, intentScope.storage);
       else writePersistedCreationIntent(scopeIntentKey, outcome, intentScope.storage);
       if (intentScope.active) createdForRetry.current = outcome;
@@ -999,13 +1063,13 @@ export function useNewSessionDraft({
     const creation = (retry !== undefined && retry.status === 'accepted')
       ? Promise.resolve({ id: retry.sessionId })
       : client.createSession(body);
-    return creation
+    const operation = creation
       .then(async (session) => {
-        outcome = { bodyKey, sessionId: session.id, creationId, status: 'accepted' };
+        outcome = { ...outcome!, sessionId: session.id, status: 'accepted' };
         saveOutcome();
         void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
         void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-        if (!intentScope.active) return;
+        if (!intentScope.active || createdForRetry.current?.creationId !== creationId) return;
         setCreatedSessionId(session.id);
         if (intent.cancelled) {
           setCreationNotice(noticeForIntent(outcome));
@@ -1045,15 +1109,17 @@ export function useNewSessionDraft({
         writeComposerState(session.id, {
           attachments: effectiveAttachments ?? [],
           annotations: [],
-          permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
-          planMode: context.planMode,
+          permissionMode: frozenHandoff.permissionMode,
+          planMode: frozenHandoff.planMode,
           planGate: undefined,
-          goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
-          modelOverride: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
-          effortOverride: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) && context.effectiveEffort !== ''
-            ? context.effectiveEffort : undefined,
-          execution: context.execution,
+          goalObjective: frozenHandoff.goalObjective,
+          modelOverride: frozenHandoff.model,
+          effortOverride: frozenHandoff.thinking,
+          execution: frozenHandoff.execution,
         });
+        if (readFirstSessionMessage(scopeId, session.id) === undefined) {
+          writeFirstSessionMessage(scopeId, session.id, { message: frozenHandoff, status: 'ready' }, intentScope.storage);
+        }
 
         // Creation already confirmed this target in this connection scope.
         // Let the route mount immediately while its guard revalidates it.
@@ -1062,26 +1128,7 @@ export function useNewSessionDraft({
         const navigateToSession = (onCancel: () => void) => navigate(targetPath, {
           state: {
             createdSession: { id: session.id, scopeId },
-            initialPrompt: handoff.initialPrompt,
-            initialPresentation: handoff.initialPresentation,
-            initialAttachments: handoff.initialAttachments,
-            initialSkill: handoff.initialSkill,
-            // The first message of a bare external engine must reach the
-            // session with the same emptiness as the create did: these ride
-            // the handoff into SessionView's own send path, so a displayed
-            // default re-sent here would re-introduce the very override the
-            // create body just declined to send.
-            model: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
-            thinking: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) && context.effectiveEffort !== ''
-              ? context.effectiveEffort : undefined,
-            permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
-            planMode: context.planMode,
-            goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
-            ephemeral: context.ephemeral,
-            // The greeting was the last thing on screen and this is the first
-            // message: the engine materializes it as history from the frozen
-            // persona (the client never sends the greeting text itself).
-            personaGreetingReply: handoff.initialPrompt !== undefined && hasGreeting(context.persona) ? true : undefined,
+            ...frozenHandoff,
           },
           replace: false,
         }, onCancel);
@@ -1138,11 +1185,11 @@ export function useNewSessionDraft({
           outcome = { ...outcome, error: message };
         } else if (isConflictCreationError(cause)) {
           const details = cause instanceof ApiError ? (cause.details as { reason?: string } | undefined) : undefined;
-          outcome = { creationId, sessionId: targetSessionId, bodyKey, status: 'conflict', reason: details?.reason, error: message };
+          outcome = { ...outcome!, status: 'conflict', reason: details?.reason, error: message };
         } else if (isUnknownCreationError(cause)) {
           const details = cause instanceof ApiError ? (cause.details as { session_id?: string; evidence?: string } | undefined) : undefined;
           outcome = {
-            creationId, sessionId: details?.session_id ?? targetSessionId, bodyKey,
+            ...outcome!, sessionId: details?.session_id ?? targetSessionId,
             status: 'unknown', evidence: details?.evidence, error: message,
           };
         } else {
@@ -1150,7 +1197,7 @@ export function useNewSessionDraft({
           outcome = retry === undefined ? undefined : { ...retry, error: message };
         }
         saveOutcome();
-        if (!intentScope.active) return;
+        if (!intentScope.active || (createdForRetry.current !== undefined && createdForRetry.current.creationId !== creationId)) return;
         setBusy(false);
         setError(message);
         setCreatedSessionId(outcome?.status === 'accepted' || outcome?.status === 'unknown' ? outcome.sessionId : undefined);
@@ -1160,9 +1207,52 @@ export function useNewSessionDraft({
         if (!intentScope.active || creationIntent.current !== intent) return;
         creationIntent.current = undefined;
         setCreationPending(false);
+        setBusy(false);
         if (intent.cancelled) setCreationNotice(noticeForIntent(createdForRetry.current));
       });
-  }, [client, connectionId, draftKey, draftScopeId, intentScope, locale, router, scopeId, scopeIntentKey, spaceKey, sshLabel, navigate, noticeForIntent, queryClient, t]);
+    return Promise.race([operation, stoppedWaiting]);
+  }, [checkCreation, client, connectionId, draftKey, draftScopeId, intentScope, locale, router, scopeId, scopeIntentKey, spaceKey, sshLabel, navigate, noticeForIntent, queryClient, t]);
+  creationActions.current.resume = (openOnly) => {
+    const retry = createdForRetry.current;
+    if (retry === undefined) return;
+    return createThenNavigate({ ...retry.handoff, sshHosts: retry.sshHosts }, { openOnly });
+  };
+  const retryCreation = useCallback(async () => {
+    const pending = createdForRetry.current;
+    if (pending === undefined) return;
+    const receipt = pending.status === 'accepted' ? pending : await checkCreation();
+    if (!intentScope.active || receipt === undefined) return;
+    if (receipt.status === 'accepted' || receipt.evidence === 'missing') return creationActions.current.resume();
+  }, [checkCreation, intentScope]);
+  const startNewCreation = useCallback(() => {
+    if (creationIntent.current !== undefined) return;
+    const previous = createdForRetry.current;
+    if (previous !== undefined) {
+      writePersistedCreationIntent(`${scopeIntentKey}:previous:${previous.creationId}`, previous, intentScope.storage);
+      writePersistedCreationIntent(`${scopeIntentKey}:previous`, previous, intentScope.storage);
+      setHasPreviousCreation(true);
+    }
+    clearPersistedCreationIntent(scopeIntentKey, intentScope.storage);
+    createdForRetry.current = undefined;
+    setCreatedSessionId(undefined);
+    setCreationNotice(null);
+    setError(null);
+  }, [intentScope, scopeIntentKey]);
+  const restorePreviousCreation = useCallback(() => {
+    if (creationIntent.current !== undefined) return;
+    const archived = readPersistedCreationIntent(`${scopeIntentKey}:previous`, intentScope.storage);
+    if (archived === undefined) return;
+    const previous = readPersistedCreationIntent(`${scopeIntentKey}:previous:${archived.creationId}`, intentScope.storage) ?? archived;
+    const current = createdForRetry.current;
+    if (current !== undefined) writePersistedCreationIntent(`${scopeIntentKey}:previous`, current, intentScope.storage);
+    else clearPersistedCreationIntent(`${scopeIntentKey}:previous`, intentScope.storage);
+    writePersistedCreationIntent(scopeIntentKey, previous, intentScope.storage);
+    createdForRetry.current = previous;
+    setHasPreviousCreation(current !== undefined);
+    setCreatedSessionId(previous.status === 'accepted' || previous.status === 'unknown' ? previous.sessionId : undefined);
+    setCreationNotice(noticeForIntent(previous));
+    setError(previous.error ?? null);
+  }, [intentScope, noticeForIntent, scopeIntentKey]);
 
   const send = useCallback((
     text: string,
@@ -1226,13 +1316,26 @@ export function useNewSessionDraft({
     }
   }, [beginProfileCatalogTransition, host]);
 
+  const personaSelectionRef = useRef(0);
+  const clearPersonaSelection = useCallback(() => {
+    personaSelectionRef.current += 1;
+    setSelectedPersonaId(undefined);
+    setPersonaState(undefined);
+    setPersonaPending(false);
+    modelOverrideFromPersona.current = false;
+    effortOverrideFromPersona.current = false;
+    setDismissedPersonaSource(personaPrefillSource);
+    setError(null);
+  }, [personaPrefillSource]);
+
   const setAgentProfile = useCallback((name: string) => {
     const items = agentProfilesQuery.data?.items;
     if (items === undefined) return;
     const profile = items.find((item) => item.name === name && item.main === true && !item.disabled);
     if (profile === undefined) return;
+    clearPersonaSelection();
     applyAgentProfile(items, profile.name);
-  }, [agentProfilesQuery.data, applyAgentProfile]);
+  }, [agentProfilesQuery.data, applyAgentProfile, clearPersonaSelection]);
 
   /**
    * The draft's engine. A bare external engine keeps its own model, effort and
@@ -1241,21 +1344,19 @@ export function useNewSessionDraft({
    * profile brings that profile's own pins.
    */
   const setExecution = useCallback((next: ExecutionChoice) => {
+    clearPersonaSelection();
     setExecutionState(next);
-    const profileChanged = next.profile !== agentProfile;
+    const profileChanged = next.profile !== agentProfile || selectedPersonaId !== undefined;
     if (next.profile === undefined) {
-      personaSelectionRef.current += 1;
-      setSelectedPersonaId(undefined);
-      setPersonaState(undefined);
-      setPersonaPending(false);
       if (next.executor !== execution.executor) {
         setModelOverrideState(undefined);
-        setEffortOverrideState(undefined);
+        if (next.profile_file === undefined || !effortTouched.current) setEffortOverrideState(undefined);
+        if (next.profile_file === undefined) effortTouched.current = false;
       }
       modelOverrideFromPersona.current = false;
       effortOverrideFromPersona.current = false;
       modelOverrideFromProfile.current = next.profile_file !== undefined;
-      effortOverrideFromProfile.current = next.profile_file !== undefined;
+      effortOverrideFromProfile.current = !effortTouched.current && next.profile_file !== undefined;
     } else if (profileChanged) {
       applyAgentProfile(agentProfilesQuery.data?.items ?? [], next.profile, next.executor);
     } else {
@@ -1275,7 +1376,7 @@ export function useNewSessionDraft({
     }
     setAgentProfileState(next.profile ?? DEFAULT_AGENT_PROFILE);
     setSelectionRevision((value) => value + 1);
-  }, [agentProfilesQuery.data, agentProfile, applyAgentProfile, execution.executor]);
+  }, [agentProfilesQuery.data, agentProfile, applyAgentProfile, clearPersonaSelection, execution.executor, selectedPersonaId]);
 
   /**
    * Bind (or clear) a persona. Its profile becomes the draft's profile so the
@@ -1283,7 +1384,7 @@ export function useNewSessionDraft({
    * and effort pins replace the composer's model and effort, exactly like
    * picking a pinned profile. Clearing drops back to the default profile.
    */
-  const applyPersona = useCallback((snapshot: PersonaSnapshot | undefined) => {
+  const applyPersona = useCallback((snapshot: PersonaSnapshot | undefined, choices?: { model: number; effort: number }) => {
     const items = agentProfilesQuery.data?.items ?? [];
     setPersonaState(snapshot);
     if (snapshot === undefined) {
@@ -1297,41 +1398,46 @@ export function useNewSessionDraft({
     setAgentProfileState(profile);
     // Persona pins preview the effective values without becoming explicit
     // request overrides. Unpinned values continue following the profile.
-    modelOverrideFromPersona.current = definition.modelAlias !== undefined;
-    effortOverrideFromPersona.current = definition.thinkingEffort !== undefined;
-    modelOverrideFromProfile.current = definition.modelAlias === undefined;
-    effortOverrideFromProfile.current = definition.thinkingEffort === undefined;
-    setModelOverrideState(definition.modelAlias ?? defaults.model);
-    setEffortOverrideState(definition.thinkingEffort ?? defaults.thinking);
+    if (choices === undefined || choices.model === modelChoiceRevision.current) {
+      modelOverrideFromPersona.current = definition.modelAlias !== undefined;
+      modelOverrideFromProfile.current = definition.modelAlias === undefined;
+      setModelOverrideState(definition.modelAlias ?? defaults.model);
+    }
+    if (!effortTouched.current && (choices === undefined || choices.effort === effortChoiceRevision.current)) {
+      effortOverrideFromPersona.current = definition.thinkingEffort !== undefined;
+      effortOverrideFromProfile.current = definition.thinkingEffort === undefined;
+      setEffortOverrideState(definition.thinkingEffort ?? defaults.thinking);
+    }
     setSelectionRevision((value) => value + 1);
   }, [agentProfilesQuery.data, applyAgentProfile]);
 
   // A persona read that lands after a newer pick has committed must not speak
   // for the newer pick: two slower/faster round trips are not a user's order.
-  const personaSelectionRef = useRef(0);
   const selectPersona = useCallback((id: string | undefined) => {
+    if (id === undefined) {
+      clearPersonaSelection();
+      applyPersona(undefined);
+      return;
+    }
+    setDismissedPersonaSource(undefined);
     setSelectedPersonaId(id);
     const token = personaSelectionRef.current + 1;
     personaSelectionRef.current = token;
-    if (id === undefined) {
-      applyPersona(undefined);
-      setError(null);
-      return;
-    }
+    const choices = { model: modelChoiceRevision.current, effort: effortChoiceRevision.current };
     setPersonaPending(true);
     setError(null);
     void client.getPersona(id)
-      .then((snapshot) => { if (personaSelectionRef.current === token) applyPersona(snapshot); })
+      .then((snapshot) => { if (personaSelectionRef.current === token) applyPersona(snapshot, choices); })
       .catch((cause: unknown) => {
         if (personaSelectionRef.current !== token) return;
         setPersonaState(undefined);
         setError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => { if (personaSelectionRef.current === token) setPersonaPending(false); });
-  }, [applyPersona, client]);
+  }, [applyPersona, clearPersonaSelection, client]);
 
   // `?persona=` from the Personas page's "Start a chat" — applied immediately by ID
-  const initialPersonaRef = useRef(initialPersona);
+  const initialPersonaRef = useRef(restoredPersona);
   useEffect(() => {
     const id = initialPersonaRef.current;
     if (id === undefined) return;
@@ -1355,6 +1461,13 @@ export function useNewSessionDraft({
     creationNotice,
     createdSessionId,
     openCreatedSession,
+    checkCreation,
+    checkingCreation,
+    retryCreation,
+    startNewCreation,
+    hasPreviousCreation,
+    restorePreviousCreation,
+    hasCreationIntent: createdForRetry.current !== undefined,
     cancelCreation,
     selectionReady,
     targetReady,

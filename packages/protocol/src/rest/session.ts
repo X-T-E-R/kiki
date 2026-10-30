@@ -35,6 +35,15 @@ export type CreateSessionRequest = z.infer<typeof createSessionRequestSchema>;
 export const createSessionResponseSchema = sessionSchema;
 export type CreateSessionResponse = z.infer<typeof createSessionResponseSchema>;
 
+export const sessionCreationStatusSchema = z.object({
+  creation_id: z.string().uuid(),
+  session_id: z.string().min(1),
+  status: z.enum(['missing', 'pending', 'completed', 'failed', 'unknown']),
+  session: sessionSchema.optional(),
+  failure: z.object({ code: z.number().int(), message: z.string(), details: z.unknown().optional() }).optional(),
+});
+export type SessionCreationStatus = z.infer<typeof sessionCreationStatusSchema>;
+
 export const listSessionsResponseSchema = pageResponseSchema(sessionSchema).extend({
   next_cursor: z.string().optional(),
   /** Space-wide live activity count, independent of this list's filters or page. */

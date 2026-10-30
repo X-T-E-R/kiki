@@ -2,10 +2,10 @@ import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, readFile, open, unlink } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
-import { registerProjectMcpPlugin, recoverProjectMcpPlugin } from './agy-mcp-plugin.mjs';
+import { registerProjectMcpPlugin, recoverProjectMcpPlugin, recoverDeadProjectMcpPlugins } from './agy-mcp-plugin.mjs';
 import { resolve, isAbsolute } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { registerProjectHook, recoverProjectHook } from './agy-hook-registration.mjs';
+import { registerProjectHook, recoverProjectHook, AGY_STEERING_HOOK_KEY } from './agy-hook-registration.mjs';
 import { Readable, Writable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { openPermissionChannel, permissionChannelIdentity, requestHookPermission } from './agy-permission-hook.mjs';
@@ -217,7 +217,7 @@ export class AgyBridge {
     return { protocolVersion: version, agentInfo: { name: 'agy-cli-acp', version: '0.1.0' },
       agentCapabilities: { loadSession: Boolean(this.auditDir), promptCapabilities: { image: false, audio: false, embeddedContext: false },
         mcpCapabilities: { http: false, sse: false }, sessionCapabilities: { additionalDirectories: {} } },
-      authMethods: [], _meta: { steering: { supported: false } } };
+      authMethods: [], _meta: { steering: { supported: true } } };
   }
 
   async requestPermission(session, input) {
@@ -284,6 +284,7 @@ export class AgyBridge {
     this.permissionSnapshot(session, params._meta?.['kiki.permission']);
     this.sessions.set(session.id, session);
     try {
+      await this.recoverDeadOwnedResources(session);
       if (session.hostGate && session.permission.override && typeof session.permission.requestId === 'string' && session.permission.requestId.length > 0) {
         await this.syncPermissionHook(session);
         session.permissionReceipt = { version: 1, sessionId: session.id, openMode: event === 'session_new' ? 'new' : 'load',
@@ -294,6 +295,7 @@ export class AgyBridge {
     } catch (error) {
       await session.permissionChannel?.close();
       await session.permissionRegistration?.close();
+      await this.closeSteeringHook(session).catch(() => {});
       this.sessions.delete(session.id);
       throw error;
     }
@@ -429,7 +431,8 @@ export class AgyBridge {
    */
   async syncPermissionHook(session) {
     session.permissionChannel ??= await openPermissionChannel(input => ['mcp_bootstrap', 'mcp_ready'].includes(input?.type)
-      ? this.bindMcpBootstrap(session, input) : this.requestPermission(session, input), session.permissionIdentity);
+      ? this.bindMcpBootstrap(session, input) : input?.type === 'steer_poll' ? this.pollSteering(session, input)
+        : this.requestPermission(session, input), session.permissionIdentity);
     if (!session.hostGate) {
       await session.permissionRegistration?.close();
       session.permissionRegistration = undefined;
@@ -460,6 +463,97 @@ export class AgyBridge {
     return { decision: 'allow' };
   }
 
+  /**
+   * A previous adapter killed before its close ran can leave its owned hook keys and MCP
+   * plugin in this workspace. Before this session registers its own, recover only those
+   * whose every recorded owner process has exited; live leases, edited files and foreign
+   * entries are preserved and reported in the audit instead of failing the session.
+   */
+  async recoverDeadOwnedResources(session) {
+    if (session.ownedRecoveryDone) return;
+    session.ownedRecoveryDone = true;
+    const results = {};
+    try {
+      results.hooks = (await recoverProjectHook({ cwd: session.cwd, nodePath: process.execPath,
+        handlerPath: fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url)) })).status;
+    } catch (error) { results.hooks = { status: 'preserved', reason: error instanceof Error ? error.message : String(error) }; }
+    try { results.plugins = await recoverDeadProjectMcpPlugins({ cwd: session.cwd }); }
+    catch (error) { results.plugins = { status: 'preserved', reason: error instanceof Error ? error.message : String(error) }; }
+    if (results.hooks !== 'no-owned-registration' || results.plugins.length) this.auditQuietly(session, 'owned_recovery', results);
+  }
+
+  async registerSteeringHook(session) {
+    session.steeringRegistration ??= await registerProjectHook({ cwd: session.cwd, nodePath: process.execPath,
+      handlerPath: fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url)), sessionId: session.id,
+      key: AGY_STEERING_HOOK_KEY, args: ['--steering'] });
+  }
+
+  /**
+   * Removes this turn's owned PostInvocation key. A failed removal keeps the registration
+   * on the session so the next turn end, cancel or close retries it; the turn result is
+   * never replaced by the cleanup error.
+   */
+  async closeSteeringHook(session) {
+    const registration = session.steeringRegistration;
+    if (!registration) return;
+    try {
+      await registration.close();
+      if (session.steeringRegistration === registration) session.steeringRegistration = undefined;
+    } catch (error) {
+      this.auditQuietly(session, 'steering_hook_close_failed', { error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  }
+
+  auditQuietly(session, type, data) {
+    this.audit(session, type, data).catch(() => {});
+  }
+
+  /**
+   * Accepts one steering message for the running native turn. The text waits in this
+   * session until AGY's next PostInvocation hook drains it into the same invocation loop.
+   * An idle session returns `promptRequired` so the host submits a normal prompt instead.
+   */
+  async steer(params) {
+    const session = this.session(params.sessionId);
+    const active = session.active;
+    if (!active || session.broken || !session.steeringRegistration) return { outcome: 'promptRequired', reason: 'noRunningTurn' };
+    const text = promptText(params.prompt);
+    const id = randomUUID();
+    await this.audit(session, 'steer_queued', { steerId: id, sha256: createHash('sha256').update(text).digest('hex') });
+    if (session.active !== active || session.broken || !session.steeringRegistration) {
+      this.auditQuietly(session, 'steer_not_delivered', { steerIds: [id] });
+      return { outcome: 'promptRequired', reason: 'turnEnded' };
+    }
+    return new Promise(resolveSteer => active.steering.push({ id, text, resolve: resolveSteer }));
+  }
+
+  releaseSteering(session, active) {
+    const pending = active.steering.splice(0);
+    if (pending.length) this.auditQuietly(session, 'steer_not_delivered', { steerIds: pending.map(item => item.id) });
+    for (const item of pending) item.resolve({ outcome: 'promptRequired', reason: 'turnEnded' });
+  }
+
+  async pollSteering(session, input) {
+    const active = session.active;
+    if (!active || session.broken || !session.init || input.conversationId !== session.init.conversation_id) {
+      return { decision: 'deny', reason: 'AGY steering poll does not belong to the running turn' };
+    }
+    if (active.steering.length === 0) return { decision: 'allow', steering: { injectSteps: [] } };
+    const batch = active.steering.splice(0);
+    this.auditQuietly(session, 'steer_delivering', { steerIds: batch.map(item => item.id), invocationNum: input.invocationNum });
+    let settled = false;
+    const settle = (outcome, type) => {
+      if (settled) return;
+      settled = true;
+      this.auditQuietly(session, type, { steerIds: batch.map(item => item.id) });
+      for (const item of batch) item.resolve({ outcome });
+    };
+    return { decision: 'allow', steering: { injectSteps: batch.map(item => ({ userMessage: item.text })) },
+      afterWrite: () => settle('injected', 'steer_delivered'),
+      afterFailure: () => settle('deliveryUnknown', 'steer_delivery_unknown') };
+  }
+
   async start(session) {
     await this.registerMcpPlugin(session);
     const args = [...this.cliPrefix, ...launchArgs(session)];
@@ -473,6 +567,7 @@ export class AgyBridge {
     } catch (error) {
       await session.permissionChannel?.close();
       await session.permissionRegistration?.close();
+      await this.closeSteeringHook(session).catch(() => {});
       await session.mcpPlugin?.close();
       throw error;
     }
@@ -536,6 +631,7 @@ export class AgyBridge {
           for (const controller of session.permissionRequests) controller.abort(new Error('AGY process ended'));
           await session.permissionChannel?.close();
           await session.permissionRegistration?.close();
+          await this.closeSteeringHook(session).catch(() => {});
           await session.mcpPlugin?.close();
           await session.releaseResume?.();
         }
@@ -682,12 +778,19 @@ export class AgyBridge {
     if (session.broken) throw new Error(session.failure ?? 'AGY process ended; create a fresh session (no implicit resume/history handoff)');
     if (session.active) throw new Error('AGY session already has an active turn');
     const content = promptText(params.prompt);
-    const promise = new Promise((resolveTurn, reject) => { session.active = { resolve: resolveTurn, reject, client, text: '' }; });
+    const promise = new Promise((resolveTurn, rejectTurn) => {
+      const active = { client, text: '', steering: [],
+        resolve: value => { this.releaseSteering(session, active); this.closeSteeringHook(session).catch(() => {}).then(() => resolveTurn(value)); },
+        reject: error => { this.releaseSteering(session, active); this.closeSteeringHook(session).catch(() => {}).then(() => rejectTurn(error)); } };
+      session.active = active;
+    });
     promise.catch(() => {});
     try {
       if (Object.hasOwn(params._meta ?? {}, 'kiki.permission')) this.permissionSnapshot(session, params._meta['kiki.permission']);
       session.preparing = (async () => {
+        await this.recoverDeadOwnedResources(session);
         await this.syncPermissionHook(session);
+        await this.registerSteeringHook(session);
         if (!session.broken && !session.child) await this.start(session);
       })();
       try { await session.preparing; } finally { session.preparing = undefined; }
@@ -704,7 +807,8 @@ export class AgyBridge {
         frameSha256: createHash('sha256').update(frame).digest('hex'), delivery: 'unchanged_user_text' });
       return await promise;
     } catch (error) {
-      if (session.active) { session.active = undefined; }
+      if (session.active) { this.releaseSteering(session, session.active); session.active = undefined; }
+      await this.closeSteeringHook(session).catch(() => {});
       throw error;
     }
   }
@@ -721,6 +825,7 @@ export class AgyBridge {
     await this.stopProcess(session.child);
     await session.cleanup;
     await session.permissionRegistration?.close();
+    await this.closeSteeringHook(session).catch(() => {});
     await session.mcpPlugin?.close();
     await this.audit(session, 'cancel', { pid: session.child?.pid, processEnded: true, resumeSupported: false });
     active?.resolve({ stopReason: 'cancelled' });
@@ -743,6 +848,7 @@ export class AgyBridge {
         }
         await session.cleanup;
         await session.permissionRegistration?.close();
+        await this.closeSteeringHook(session).catch(() => {});
         await session.mcpPlugin?.close();
         await session.releaseResume?.();
         await this.audit(session, 'close', { pid: session.child?.pid, processEnded: true });
@@ -842,6 +948,7 @@ export async function runBridge({ sdkPath, cliPath, cliPrefix = [], auditDir, mo
     .onRequest('session/load', sessionRequest(ctx => bridge.loadSession(ctx.params)))
     .onRequest('session/set_config_option', ctx => bridge.setConfig(ctx.params))
     .onRequest('session/prompt', sessionRequest(ctx => bridge.prompt(ctx.params, ctx.client)))
+    .onRequest('_session/steering', params => params, sessionRequest(ctx => bridge.steer(ctx.params)))
     .onNotification('session/cancel', ctx => bridge.cancel(ctx.params))
     .connect(acp.ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin)));
   let shuttingDown = false;

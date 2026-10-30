@@ -95,6 +95,7 @@ import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { publishedInlineMediaReader } from '../services/publishedMedia';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import { acquireSessionOperation, withSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
+import { timeRestorePhase } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
 import { defineRoute } from '../middleware/defineRoute';
 import { ensureMainAgent, MAIN_AGENT_ID } from '../transport/mainAgent';
 import { readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
@@ -432,7 +433,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
   app.get(switchList.path, switchList.options, switchList.handler as Parameters<PromptRouteHost['get']>[2]);
   const switchSubmit = defineRoute({ method: 'POST', path: switchPath, params: switchParams, body: modelSwitchInputSchema,
     success: { data: modelSwitchReceiptSchema }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.VALIDATION_FAILED]: {} },
-    description: 'Queue a model and context switch at the agent idle boundary', tags: ['prompts'], operationId: 'switchModel' }, async (req, reply) => {
+    description: 'Queue a native model and context switch before the next model request', tags: ['prompts'], operationId: 'switchModel' }, async (req, reply) => {
     try {
       await withSessionOperation(core, req.params.session_id, async (handle) => {
         const resolved = await resolvePromptFromSession(core, requireSession(handle, req.params.session_id), req.params.agent_id);
@@ -565,6 +566,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
       let lease: SessionOperationLease | undefined;
       let enqueued = false;
       let retryContentRanges: readonly import('@kiki/agent-core-v2').PromptContentRange[] | undefined;
+      const phase = <T>(name: string, action: () => Promise<T>) => timeRestorePhase(core.accessor.get(ILogService), { sessionId: session_id, agentId: req.body.agent_id ?? 'main', promptId: req.body.prompt_id, requestId: req.id }, name, action);
       const sendResult = (result: z.input<typeof promptSubmitResultSchema> & Pick<PromptIngressResult, 'resolved_parts'>) => {
         const resolved_parts = result.resolved_parts ?? (retryContentRanges ?? preparedMedia?.sourceRanges)?.map(({ index, start, end }) => ({ index, content: result.content.slice(start, end) }));
         const data = req.query.receipt === 'true' ? promptSubmitReceiptSchema.parse({ ...result, resolved_parts })
@@ -577,7 +579,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           sendResult(await ingress.submit(session_id, body, promptPayloadFingerprint(body), steerTarget));
           return;
         }
-        lease = await acquireSessionOperation(core, session_id, 'operation', signal);
+        lease = await phase('prompt_acquire', () => acquireSessionOperation(core, session_id, 'operation', signal));
         const session = requireSession(lease.handle, session_id);
         if (req.body.prompt_id === undefined && req.body.skills !== undefined) {
           await assertActivatableSkills(session.accessor.get(ISessionSkillCatalog), req.body.skills);
@@ -586,7 +588,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           await assertPromptFileRefs(req.body.content, ingressExecution?.files ?? core.accessor.get(IFileService));
         }
         const restoring = resolvePromptFromSession(core, session, req.body.agent_id);
-        const resolved = await (signal === undefined ? restoring : abortable(restoring, signal));
+        const resolved = await phase('prompt_ensure_main', () => signal === undefined ? restoring : abortable(restoring, signal));
         const retryPromptId = req.body.prompt_id;
         signal?.throwIfAborted();
         const retryFingerprint = retryPromptId === undefined ? undefined : ingressExecution?.fingerprint ?? promptPayloadFingerprint(req.body);
@@ -746,7 +748,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         }
         };
         const submitAndDeliver = async () => {
-          const result = await submit();
+          const result = await phase('prompt_admission', submit);
           if (req.body.delivery_mode !== 'steer') return result;
           if (!resolved.prompt.list().pending.some(item => item.id === result.prompt_id)) {
             return { ...result, delivery_reason: 'prompt_no_longer_pending' as const };

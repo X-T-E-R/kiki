@@ -64,7 +64,7 @@
 //     activityView.lastTurn                           src/agent/activityView/activityViewService.ts
 //     activityView.lifecycle                          src/agent/activityView/activityViewService.ts
 //     activityView.turn                               src/agent/activityView/activityViewService.ts
-//     agentCollaboration.materializedMessages         src/session/agentCollaboration/messageReceiptState.ts
+//     agentCollaboration.materializedMessages.v2      src/session/agentCollaboration/messageReceiptState.ts
 //     agentCollaboration.messageReceipts              src/session/agentCollaboration/messageReceiptState.ts
 //     agentPlugin.sessionStartRefreshPending          src/agent/plugin/agentPluginService.ts
 //     agentsMdReminder.cwd                            src/agent/agentsMdReminder/agentsMdReminderService.ts
@@ -2975,6 +2975,21 @@ export interface AgentStateSnapshot {
             timeout?: number;
           }[];
           hooks_fingerprint?: string;
+          options?: readonly {
+            id: string;
+            name: string;
+            default: boolean;
+            description?: string;
+          }[];
+          option_values?: {
+            [key: string]: boolean;
+          };
+          diagnostics?: readonly {
+            code: string;
+            message: string;
+            source?: string;
+            path?: string;
+          }[];
           layers?: readonly {
             surface: 'profile' | 'model';
             installation_id: string;
@@ -3316,6 +3331,21 @@ export interface AgentStateSnapshot {
                 timeout?: number;
               }[];
               hooks_fingerprint?: string;
+              options?: readonly {
+                id: string;
+                name: string;
+                default: boolean;
+                description?: string;
+              }[];
+              option_values?: {
+                [key: string]: boolean;
+              };
+              diagnostics?: readonly {
+                code: string;
+                message: string;
+                source?: string;
+                path?: string;
+              }[];
             };
           }[];
         };
@@ -3568,7 +3598,7 @@ export interface AgentStateSnapshot {
       readonly operationId: string;
       readonly model: string;
       readonly mode: /* ModelSwitchMode — packages/agent-core-v2/src/agent/modelSwitch/modelSwitch.ts */ 'direct' | 'compact' | 'fresh';
-      readonly thinking?: string;
+      readonly thinking?: string | null;
       readonly selectedFromModel?: string;
     };
     readonly receipt: /* ModelSwitchReceipt — packages/agent-core-v2/src/agent/modelSwitch/modelSwitch.ts */ {
@@ -3662,6 +3692,13 @@ export interface AgentStateSnapshot {
         readonly scope: string;
         readonly runtimeId: string;
       }[];
+      readonly space?: /* KikiSpaceContext — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly id: string;
+        readonly name: string;
+        readonly kind: 'main' | 'space' | 'unavailable';
+        readonly homeDir: string;
+        readonly baseHomeDir?: string;
+      };
       readonly cwd?: string;
       readonly cwdListing?: string;
       readonly agentsMd?: string;
@@ -4168,6 +4205,7 @@ export interface AgentStateSnapshot {
         };
       }) => Promise<string>;
       readonly recipe?: string;
+      readonly recipeOptions?: Readonly<Record<string, boolean>>;
       readonly restrictModelsToMenu?: boolean;
       readonly modelMenuConstraint?: /* ProfileModelMenuConstraint — packages/agent-profiles/src/agentProfile.ts */ {
         readonly source: string;
@@ -4220,6 +4258,7 @@ export interface AgentStateSnapshot {
       readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
       readonly fileDefinition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
         readonly recipe?: string;
+        readonly recipeOptions?: Readonly<Record<string, boolean>>;
         readonly autoCompact?: number;
         readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly contextBudget?: number;
@@ -4843,6 +4882,13 @@ export interface AgentStateSnapshot {
       }[];
       readonly systemPromptMode?: 'replace' | 'append' | 'prepend' | 'inherit';
       readonly systemPrompt: (context: /* AgentProfileContext — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly space?: /* KikiSpaceContext — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly id: string;
+          readonly name: string;
+          readonly kind: 'main' | 'space' | 'unavailable';
+          readonly homeDir: string;
+          readonly baseHomeDir?: string;
+        };
         readonly cwd?: string;
         readonly cwdListing?: string;
         readonly agentsMd?: string;
@@ -4864,6 +4910,13 @@ export interface AgentStateSnapshot {
         [key: string]: unknown;
       }) => string;
       readonly renderSystemPrompt: (context: /* AgentProfileContext — packages/agent-profiles/src/agentProfile.ts */ {
+        readonly space?: /* KikiSpaceContext — packages/agent-profiles/src/agentProfile.ts */ {
+          readonly id: string;
+          readonly name: string;
+          readonly kind: 'main' | 'space' | 'unavailable';
+          readonly homeDir: string;
+          readonly baseHomeDir?: string;
+        };
         readonly cwd?: string;
         readonly cwdListing?: string;
         readonly agentsMd?: string;
@@ -4914,6 +4967,7 @@ export interface AgentStateSnapshot {
       readonly fileSources?: /* FrozenProfileFileSources — packages/agent-core-v2/src/session/dispatch/profileFile.ts */ {
         readonly root: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly recipe?: string;
+          readonly recipeOptions?: Readonly<Record<string, boolean>>;
           readonly autoCompact?: number;
           readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly contextBudget?: number;
@@ -5711,6 +5765,7 @@ export interface AgentStateSnapshot {
           readonly sourceDefinitionId?: string;
           readonly definition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
             readonly recipe?: string;
+            readonly recipeOptions?: Readonly<Record<string, boolean>>;
             readonly autoCompact?: number;
             readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
             readonly contextBudget?: number;
@@ -5979,6 +6034,7 @@ export interface AgentStateSnapshot {
         }>>>>;
         readonly sourceDefinitions: Readonly<Record<string, /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly recipe?: string;
+          readonly recipeOptions?: Readonly<Record<string, boolean>>;
           readonly autoCompact?: number;
           readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly contextBudget?: number;
@@ -6313,6 +6369,19 @@ export interface AgentStateSnapshot {
               file?: string;
             }>;
             installation_id: string;
+            option_values?: Record<string, boolean>;
+            options?: readonly {
+              id: string;
+              name: string;
+              default: boolean;
+              description?: string;
+            }[];
+            diagnostics?: readonly {
+              code: string;
+              message: string;
+              source?: string;
+              path?: string;
+            }[];
             references?: readonly {
               surface: 'profile' | 'model';
               installation_id: string;
@@ -6741,6 +6810,21 @@ export interface AgentStateSnapshot {
                   timeout?: number;
                 }[];
                 hooks_fingerprint?: string;
+                options?: readonly {
+                  id: string;
+                  name: string;
+                  default: boolean;
+                  description?: string;
+                }[];
+                option_values?: {
+                  [key: string]: boolean;
+                };
+                diagnostics?: readonly {
+                  code: string;
+                  message: string;
+                  source?: string;
+                  path?: string;
+                }[];
                 layers?: readonly {
                   surface: 'profile' | 'model';
                   installation_id: string;
@@ -7082,6 +7166,21 @@ export interface AgentStateSnapshot {
                       timeout?: number;
                     }[];
                     hooks_fingerprint?: string;
+                    options?: readonly {
+                      id: string;
+                      name: string;
+                      default: boolean;
+                      description?: string;
+                    }[];
+                    option_values?: {
+                      [key: string]: boolean;
+                    };
+                    diagnostics?: readonly {
+                      code: string;
+                      message: string;
+                      source?: string;
+                      path?: string;
+                    }[];
                   };
                 }[];
               };
@@ -7107,6 +7206,7 @@ export interface AgentStateSnapshot {
           readonly revision: string;
         };
       };
+      readonly promptContextPending?: boolean;
     };
     readonly toolAllowPolicies?: readonly (readonly string[])[];
   };
@@ -7125,7 +7225,7 @@ export interface AgentStateSnapshot {
       readonly operationId: string;
       readonly model: string;
       readonly mode: /* ModelSwitchMode — packages/agent-core-v2/src/agent/modelSwitch/modelSwitch.ts */ 'direct' | 'compact' | 'fresh';
-      readonly thinking?: string;
+      readonly thinking?: string | null;
       readonly selectedFromModel?: string;
     };
     readonly receipt: /* ModelSwitchReceipt — packages/agent-core-v2/src/agent/modelSwitch/modelSwitch.ts */ {
@@ -8071,8 +8171,8 @@ export interface AgentStateSnapshot {
   // replayable · durable — folds: StaleGuardRecorded, StaleGuardCleared
   'staleGuard': /* StaleGuardModelState — packages/agent-core-v2/src/features/staleGuard/staleGuardOps.ts */ Map<string, number>;
   // src/session/agentCollaboration/messageReceiptState.ts
-  // replayable · durable — folds: ContextAppendMessage
-  'agentCollaboration.materializedMessages': Record<string, true>;
+  // replayable · durable — folds: ContextAppendMessage, TurnPrompt, TurnSteer
+  'agentCollaboration.materializedMessages.v2': Record<string, true>;
   // replayable · durable — folds: AgentMessageDelivered
   'agentCollaboration.messageReceipts': Record<string, true>;
   // src/session/cron/cronOps.ts

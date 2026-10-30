@@ -28,7 +28,7 @@ export interface ModelSwitchDialogProps {
    * accepting a new one; confirm then reads as saving the change.
    */
   readonly editing?: boolean;
-  /** A running turn: the switch queues for the idle boundary. */
+  /** A running turn: native switches apply before the next model request. */
   readonly busy?: boolean;
   /** Disable every control while the accept/update request is in flight. */
   readonly submitting?: boolean;

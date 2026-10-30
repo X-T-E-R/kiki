@@ -62,7 +62,10 @@ export async function openPermissionChannel(handle, identity = permissionChannel
         } catch (error) {
           response = denied(error instanceof Error ? error.message : 'AGY permission request failed');
         }
-        if (!socket.destroyed && !closed) socket.end(JSON.stringify(response) + '\n');
+        if (socket.destroyed || closed) { response?.afterFailure?.(); return; }
+        let failed = false;
+        socket.once('error', () => { failed = true; response?.afterFailure?.(); });
+        socket.end(JSON.stringify(response) + '\n', () => { if (!failed) response?.afterWrite?.(); });
       })();
     });
   });
@@ -112,7 +115,31 @@ export async function requestHookPermission(input, env = process.env, timeoutMs)
   });
 }
 
-if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+/**
+ * PostInvocation hook body: asks the owning adapter for steering messages queued for this
+ * exact conversation and returns them as AGY `injectSteps`, forcing one more invocation so
+ * the model reads them inside the running turn. Without an owned channel it injects nothing.
+ */
+export async function steeringHookOutput(input, env = process.env) {
+  if (!env.KIKI_AGY_PERMISSION_ENDPOINT && !env.KIKI_AGY_PERMISSION_TOKEN) return {};
+  if (!input || typeof input.conversationId !== 'string') return {};
+  const response = await requestHookPermission({ type: 'steer_poll', conversationId: input.conversationId,
+    invocationNum: input.invocationNum }, env, 10_000);
+  const steps = response?.steering?.injectSteps;
+  if (response.decision !== 'allow' || !Array.isArray(steps) || steps.length === 0) return {};
+  return { injectSteps: steps, terminationBehavior: 'force_continue' };
+}
+
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url && process.argv[2] === '--steering') {
+  let input = '';
+  process.stdin.setEncoding('utf8');
+  let output = {};
+  try {
+    for await (const chunk of process.stdin) input += chunk;
+    output = await steeringHookOutput(JSON.parse(input));
+  } catch { output = {}; }
+  process.stdout.write(JSON.stringify(output) + '\n');
+} else if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const owned = process.env.KIKI_AGY_PERMISSION_ENDPOINT || process.env.KIKI_AGY_PERMISSION_TOKEN;
   let input = '';
   process.stdin.setEncoding('utf8');

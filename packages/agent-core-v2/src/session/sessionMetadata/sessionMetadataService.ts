@@ -13,6 +13,7 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionStateService } from '#/session/state/sessionState';
 
+import { AgentOutcomeDocuments } from './agentOutcomeStore';
 import {
   ISessionMetadata,
   SESSION_META_VERSION,
@@ -32,6 +33,7 @@ const pendingUsageFlushes = new Set<() => Promise<void>>();
 
 /** Pass false while holding a session lifecycle lock; propagation may be queued behind that lock. */
 export async function drainSessionMetadataWrites(includeActivityPropagation = true): Promise<void> {
+  await Promise.allSettled(pendingWrites);
   const flushResults = await Promise.allSettled([...pendingUsageFlushes].map((flush) => flush()));
   const pendingResults = await Promise.allSettled(
     includeActivityPropagation
@@ -97,20 +99,38 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     void this.flushUsage().catch(() => {});
   };
 
+  private readonly deferredChanges = new Set<keyof SessionMeta>();
+  private readonly outcomes: AgentOutcomeDocuments;
+
+  private async persist(): Promise<void> {
+    await this.store.set(this.scope, META_KEY, encodeSessionMeta(await this.outcomes.project(this.data)));
+  }
+
+  private deferChanges(changed: readonly (keyof SessionMeta)[]): void {
+    for (const key of changed) this.deferredChanges.add(key);
+    this.usageDirty = true;
+    if (this.usageTimer !== undefined) return;
+    this.usageTimer = setTimeout(this.onUsageTimer, USAGE_FLUSH_DELAY_MS);
+    this.usageTimer.unref?.();
+  }
+
   private async flushUsageNow(): Promise<void> {
     while (!this.disposed && this.usageDirty) {
       this.usageDirty = false;
+      const changed = [...this.deferredChanges];
+      this.deferredChanges.clear();
       try {
         await this.enqueueUpdate(async () => {
           if (this.disposed) return;
-          await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
-          if (this.usageDirty || this.disposed) return;
+          await this.persist();
+          if (this.disposed) return;
           this.mirrorToReadModel();
-          this._onDidChangeMetadata.fire({ changed: ['usage'] });
+          this._onDidChangeMetadata.fire({ changed });
         });
       } catch (error) {
         this.usageDirty = true;
-        this.log.warn('session usage metadata write failed', {
+        for (const key of changed) this.deferredChanges.add(key);
+        this.log.warn('session deferred metadata write failed', {
           sessionId: this.ctx.sessionId,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -138,6 +158,11 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     pendingUsageFlushes.add(this.flushUsage);
     this.states.contributeState(sessionMetadataDataKey);
     this.scope = ctx.metaScope;
+    this.outcomes = new AgentOutcomeDocuments(store, this.scope, (agentId, error) => {
+      this.log.warn('agent outcome sidecar write failed; retaining the complete inline receipt', {
+        sessionId: this.ctx.sessionId, agentId, error: error instanceof Error ? error.message : String(error),
+      });
+    });
     this.onDidChangeMetadata = this._onDidChangeMetadata.event;
     this.ready = this.load().then(() => { this.initialized = true; });
   }
@@ -206,27 +231,31 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   recordUsage(model: string, usage: TokenUsage, usageKnown?: boolean): void {
     if (this.disposed || this.disposing) return;
     this.data = { ...this.data, usage: addSessionUsage(this.data.usage, model, usage, usageKnown) };
-    this.usageDirty = true;
-    if (this.usageTimer !== undefined) return;
-    this.usageTimer = setTimeout(this.onUsageTimer, USAGE_FLUSH_DELAY_MS);
-    this.usageTimer.unref?.();
+    this.deferChanges(['usage']);
   }
 
   async update(
     patch: SessionMetaPatch,
-    opts?: { readonly touchUpdatedAt?: boolean },
+    opts?: { readonly touchUpdatedAt?: boolean; readonly deferPersistence?: boolean },
   ): Promise<void> {
+    if (opts?.deferPersistence === true) {
+      const work = this.ready.then(() => {
+        if (this.disposed || this.disposing) return;
+        if (patch.agents !== undefined) throw new BugIndicatingError('Agent metadata requires an immediate durable update');
+        this.mergePatch(patch, opts);
+        this.deferChanges(Object.keys(patch) as (keyof SessionMeta)[]);
+      });
+      const tracked = work.then(() => undefined, () => undefined);
+      pendingWrites.add(tracked);
+      void tracked.finally(() => pendingWrites.delete(tracked));
+      return work;
+    }
     return this.enqueueUpdate(async () => {
       await this.applyUpdate(patch, opts);
     });
   }
 
-  private async applyUpdate(
-    patch: SessionMetaPatch,
-    opts?: { readonly touchUpdatedAt?: boolean },
-  ): Promise<boolean> {
-    await this.ready;
-    if (this.disposed) return false;
+  private mergePatch(patch: SessionMetaPatch, opts?: { readonly touchUpdatedAt?: boolean }): void {
     const updatedAt =
       patch.updatedAt ?? (opts?.touchUpdatedAt === false ? this.data.updatedAt : Date.now());
     const activityUpdatedAt = patch.activityUpdatedAt === undefined ? this.data.activityUpdatedAt
@@ -234,11 +263,17 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     const agents = patch.agents === undefined ? this.data.agents : Object.fromEntries(
       Object.entries(patch.agents).map(([agentId, meta]) => {
         const existing = this.data.agents?.[agentId];
-        return [agentId, existing === undefined ? meta : { ...meta, createdAt: existing.createdAt }];
+        return [agentId, existing === undefined || existing.createdAt === meta.createdAt ? meta : { ...meta, createdAt: existing.createdAt }];
       }),
     );
     this.data = { ...this.data, ...patch, agents, updatedAt, activityUpdatedAt };
-    await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
+  }
+
+  private async applyUpdate(patch: SessionMetaPatch, opts?: { readonly touchUpdatedAt?: boolean }): Promise<boolean> {
+    await this.ready;
+    if (this.disposed) return false;
+    this.mergePatch(patch, opts);
+    await this.persist();
     if (this.disposed) return false;
     this.mirrorToReadModel();
     this._onDidChangeMetadata.fire({
@@ -353,7 +388,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   private async load(): Promise<void> {
     const existing = await this.store.get<SessionMeta>(this.scope, META_KEY);
     if (existing !== undefined) {
-      this.data = normalizeSessionMeta(existing, this.ctx.sessionId);
+      this.data = await this.outcomes.hydrate(normalizeSessionMeta(existing, this.ctx.sessionId));
       if (
         this.data.agents === undefined ||
         this.data.custom === undefined ||
@@ -367,7 +402,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
           agents: this.data.agents ?? {},
           custom: this.data.custom ?? {},
         };
-        await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
+        await this.persist();
       }
       return;
     }
@@ -383,7 +418,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
       agents: {},
       custom: {},
     };
-    await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
+    await this.persist();
     this.createdDocument = true;
     this.mirrorToReadModel();
     this.log.debug('session metadata created', { sessionId: this.ctx.sessionId });

@@ -8,6 +8,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { Event } from '#/_base/event';
 import { IMemoryStore } from '#/app/memory/memoryStore';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { IThreadCommunicationService } from '#/app/threadCommunication/threadCommunication';
 import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
@@ -396,6 +397,32 @@ describe('AgentProfileService.bind', () => {
     ctx = createTestAgent(hostEnvironmentServices(homeDir, hostPathClass));
     return { ctx, profile: ctx.get(IAgentProfileService) };
   }
+
+  it('admits a frozen native binding without preparing Memory and propagates first-prompt preparation failure', async () => {
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(resumeProfile())));
+    const service = ctx.get(IAgentProfileService);
+    let release!: (value: string) => void;
+    const held = new Promise<string>((resolve) => { release = resolve; });
+    const read = vi.spyOn(ctx.get(IAgentMemorySnapshot), 'get').mockReturnValue(held);
+    await service.bind({ profile: 'resume-profile', model: RESUME_OLD_MODEL, thinking: 'high', deferPromptContext: true });
+    expect(read).not.toHaveBeenCalled();
+    expect(service.data()).toMatchObject({ profileName: 'resume-profile', modelAlias: RESUME_OLD_MODEL, thinkingLevel: 'high',
+      boundProfile: { promptContextPending: true } });
+    expect(service.data().systemPrompt).toContain('resume profile');
+    let settled = false;
+    const preparation = service.preparePromptConfiguration().then(() => { settled = true; });
+    await vi.waitFor(() => expect(read).toHaveBeenCalled());
+    expect(settled).toBe(false);
+    release('SAVED_MEMORY_FIXTURE');
+    await preparation;
+    expect(service.data().boundProfile?.promptContextPending).toBeUndefined();
+    expect(service.data().systemPrompt).toContain('resume profile');
+    await service.bind({ profile: 'resume-profile', model: RESUME_OLD_MODEL, thinking: 'high', deferPromptContext: true });
+    read.mockRejectedValueOnce(new Error('memory projection unavailable'));
+    await expect(service.preparePromptConfiguration()).rejects.toThrow('memory projection unavailable');
+    expect(service.data().boundProfile?.promptContextPending).toBe(true);
+  });
 
   it.each(['', 'main: false\n'])('binds an explicit profile file without main curation (%s)', async (main) => {
     const path = join(homeDir, 'selected.md');
@@ -962,6 +989,9 @@ describe('AgentProfileService.bind', () => {
     expect(service.data().executorPrompt).toEqual({ body: 'HARNESS_BODY', append: 'HARNESS_APPEND', delivery: 'preamble', include: include ?? ['workspace_info'] });
     expect(service.data().systemPrompt.startsWith('HARNESS_BODY\n\nHARNESS_APPEND')).toBe(true);
     expect(service.data().systemPrompt.includes('## workspace_info')).toBe(include === undefined);
+    expect(service.data().systemPrompt.includes('## Space')).toBe(include === undefined);
+    expect(service.data().systemPrompt.includes(`Kiki home (server host): ${JSON.stringify(ctx.get(IBootstrapService).homeDir)}`)).toBe(include === undefined);
+    expect(service.data().systemPrompt).not.toContain('See runtime snapshot');
     expect(service.data().execution?.sources).toMatchObject({ 'executor_prompt.body': 'harness-settings',
       'executor_prompt.append': 'harness-settings', 'executor_prompt.delivery': 'profile', 'executor_prompt.include': include === undefined ? 'harness-settings' : 'profile' });
     const before = service.data();

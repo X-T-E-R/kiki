@@ -3,9 +3,11 @@ import { basename, dirname } from 'pathe';
 import { instructionVersion } from '#/agent/agentsMdReminder/instructionCoverage';
 import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
-import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
+import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, hostToolParameters } from '#/agent/tools/os/sshToolTarget';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { kikiDefinitionReadRoots } from '#/app/bootstrap/definitionReadRoots';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import {
   ToolAccesses,
@@ -20,7 +22,6 @@ import {
   type WorkspaceConfig,
 } from '#/tool/path-access';
 import { MEDIA_SNIFF_BYTES, detectFileType } from '#/agent/media/file-type';
-import { toInputJsonSchema } from '#/tool/input-schema';
 import { matchesPathRuleSubject } from '#/tool/rule-match';
 import { makeCarriageReturnsVisible, splitLinesKeepingTerminator, type LineEndingStyle } from '#/_base/text/line-endings';
 import { decodeUtfText, detectTextEncoding, type UtfTextEncoding } from '#/_base/text/encoding';
@@ -212,13 +213,14 @@ export class ReadTool implements IReadTool {
   readonly name = 'Read' as const;
   readonly description = READ_DESCRIPTION;
   get parameters(): Record<string, unknown> {
-    return toolParametersWithHost(toInputJsonSchema(ReadInputSchema), this.runtime.nativeSshEnabled?.() === true);
+    return hostToolParameters(ReadInputSchema, this.runtime.nativeSshEnabled?.() === true);
   }
   constructor(
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
     @ISessionWorkspaceContext private readonly workspaceCtx: ISessionWorkspaceContext,
     @ISessionSkillCatalog private readonly skillCatalog: ISessionSkillCatalog,
     @IAgentToolResultTruncationService private readonly resultTruncation: IAgentToolResultTruncationService,
+    @IBootstrapService private readonly bootstrap?: IBootstrapService,
   ) {}
 
   private workspaceConfig(view: RuntimeWorkspaceView): WorkspaceConfig {
@@ -233,7 +235,8 @@ export class ReadTool implements IReadTool {
     const view = new RuntimeWorkspaceView(inspected, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const roots = inspected.identity.runtimeId.startsWith('ssh:') ? [] : this.skillCatalog.catalog.getSkillRoots();
-    const workspace = withDefinitionReadRoots(this.workspaceConfig(view), roots, env.homeDir);
+    const workspace = withDefinitionReadRoots(this.workspaceConfig(view), roots, env.homeDir,
+      inspected.identity.runtimeId === 'local' ? kikiDefinitionReadRoots(this.bootstrap) : []);
     const pathOptions = { env, workspace, operation: 'read' as const, shellPathBridge: runtimeShellPathBridge(inspected) };
     const preparation = acquireToolRuntime(this.runtime, target.host, ['fs']);
     let path: string;

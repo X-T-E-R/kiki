@@ -38,6 +38,18 @@ describe('auto_compact resolution', () => {
     expect(resolveAutoCompact(context(300_000, { profileAutoCompact: 1_000 }), undefined, 80_000).tokens).toBe(112_000);
   });
 
+  it('measures the system and tool cost only when an explicit target needs its floor', () => {
+    let measured = 0;
+    const cost = () => {
+      measured += 1;
+      return 80_000;
+    };
+    expect(resolveAutoCompact(context(300_000), undefined, cost).source).toBe('legacy');
+    expect(measured).toBe(0);
+    expect(resolveAutoCompact(context(300_000, { profileAutoCompact: 1_000 }), undefined, cost).tokens).toBe(112_000);
+    expect(measured).toBe(1);
+  });
+
   it('allows a 358.6k session to reach 95% without changing inherited targets or the reserve', () => {
     const model = context(358_600);
     expect(resolveAutoCompact(model, 340_670)).toMatchObject({

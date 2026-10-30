@@ -874,6 +874,26 @@ describe('Responses fallback native history preservation', () => {
 });
 
 describe('advertised Responses state expiry', () => {
+  it('replaces a socket at 55 minutes before sending the next request', async () => {
+    const longCapabilities = JSON.stringify({ ...JSON.parse(capabilities), connection_lifetime_seconds: 3600 });
+    const gateway = await createGateway((_body, socket) => { sendCompleted(socket, 'resp_rotating', 'answer'); }, longCapabilities);
+    const transport = new ResponsesWebSocketTransport();
+    const input = [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'question' }] }];
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'hrtime', 'Date'] });
+    try {
+      const openai = client(gateway.baseUrl);
+      await collect(await transport.create(openai, { model: 'synthetic', input }));
+      await vi.advanceTimersByTimeAsync(55 * 60_000 - 1);
+      await collect(await transport.create(openai, { model: 'synthetic', input }));
+      expect(gateway.frames.map(frame => frame.connection)).toEqual([0, 0]);
+      await vi.advanceTimersByTimeAsync(1);
+      await collect(await transport.create(openai, { model: 'synthetic', input }));
+      expect(gateway.frames.map(frame => frame.connection)).toEqual([0, 0, 1]);
+      expect(gateway.frames[2]?.body).toMatchObject({ input });
+      expect(gateway.frames[2]?.body).not.toHaveProperty('previous_response_id');
+    } finally { transport.dispose(); vi.useRealTimers(); }
+  });
+
   it('full-rebases after the advertised TTL and reconnects after the advertised lifetime', async () => {
     const shortCapabilities = JSON.stringify({ ...JSON.parse(capabilities), state_ttl_seconds: 1, connection_lifetime_seconds: 3 });
     const gateway = await createGateway((_body, socket) => sendCompleted(socket, 'resp_timed', 'answer'), shortCapabilities);

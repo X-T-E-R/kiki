@@ -1,4 +1,5 @@
-import { MAIN_AGENT_ID } from '@kiki/agent-core-v2';
+import { Error2, ErrorCodes, MAIN_AGENT_ID } from '@kiki/agent-core-v2';
+import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 import {
   AgentTranscript,
   compareTurnIds,
@@ -25,7 +26,7 @@ import {
 } from '@kiki/transcript';
 
 import type { TranscriptService } from '../../services/transcript/transcriptService';
-import { boundedEntity, readContentSegment } from './boundedContent';
+import { boundedEntity, ContentChangedError, readContentSegment } from './boundedContent';
 import { boundedAttachment, boundedTranscriptOps, boundedTranscriptResponse, boundedTranscriptSnapshot, boundedTranscriptPageSource, historyAnchorMatches, historyDigestAnchor, itemKey, TRANSCRIPT_WINDOW_BYTES } from './boundedTranscript';
 
 const DETAIL_PAGE_BYTES = 48 * 1024;
@@ -35,8 +36,25 @@ export async function readSessionViewTranscriptContent(
   service: TranscriptService, sessionId: string,
   input: { readonly agentId: string; readonly ref: ContentRef; readonly range?: boolean; readonly signal?: AbortSignal },
 ): Promise<ContentSegment | undefined> {
+  const resident = residentTimelineEntity(service, sessionId, input.agentId, input.ref.source);
+  if (resident !== undefined) {
+    input.signal?.throwIfAborted();
+    try {
+      return readContentSegment(resident, input.ref, input.range, input.agentId, DETAIL_PAGE_BYTES);
+    } catch (error) {
+      if (!(error instanceof ContentChangedError)) throw error;
+    }
+  }
   const entity = await readSessionViewCanonicalEntity(service, sessionId, input);
   return entity === undefined ? undefined : readContentSegment(entity, input.ref, input.range, input.agentId, DETAIL_PAGE_BYTES);
+}
+
+function residentTimelineEntity(service: TranscriptService, sessionId: string, agentId: string, source: ContentRef['source']): object | undefined {
+  if (source.kind !== 'turn' && source.kind !== 'frame') return undefined;
+  if (typeof service.forSessionLive !== 'function') return undefined;
+  const turn = service.forSessionLive(sessionId)?.getAgent(agentId)?.getTurn(source.kind === 'turn' ? source.id : source.turnId ?? '');
+  if (turn === undefined || source.kind === 'turn') return turn;
+  return turn.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
 }
 
 export async function readSessionViewCanonicalEntity(
@@ -78,7 +96,22 @@ export async function readSessionViewCanonicalEntity(
   return entity;
 }
 
+export const TRANSCRIPT_PAGE_TIMEOUT_MS = 5_000;
+
 export async function readSessionViewTranscriptPage(
+  service: TranscriptService,
+  sessionId: string,
+  input: Parameters<typeof readSessionViewTranscriptPageRaw>[2],
+): Promise<TranscriptResponse | undefined> {
+  input.signal?.throwIfAborted();
+  const deadline = new AbortController();
+  const signal = input.signal === undefined ? deadline.signal : AbortSignal.any([input.signal, deadline.signal]);
+  const timer = setTimeout(() => { deadline.abort(new Error2(ErrorCodes.SESSION_BUSY, 'History page timed out. Retry to continue.')); }, TRANSCRIPT_PAGE_TIMEOUT_MS);
+  try { return await abortable(readSessionViewTranscriptPageWithinBudget(service, sessionId, { ...input, signal }), signal); }
+  finally { clearTimeout(timer); }
+}
+
+async function readSessionViewTranscriptPageWithinBudget(
   ...args: Parameters<typeof readSessionViewTranscriptPageRaw>
 ): Promise<TranscriptResponse | undefined> {
   try {
@@ -255,7 +288,8 @@ async function readSessionViewTranscriptPageRaw(
   if (store !== undefined) {
     const transcript = await transcriptService.ensureAgentHistory(sessionId, input.agentId, { signal: input.signal });
     if (transcript === undefined) return undefined;
-    const liveVerified = await transcriptService.verifyTranscriptLiveCoverage(sessionId, input.agentId);
+    const liveVerified = transcriptService.isTranscriptLiveCoverageVerified(sessionId, input.agentId);
+    if (!liveVerified) void transcriptService.verifyTranscriptLiveCoverage(sessionId, input.agentId).catch(() => {});
     if (transcript.hasMoreOlder && (anchored || !transcript.getItems().some(item => item.kind === 'turn'))) {
       const loaded = await readColdTranscriptPage(transcriptService, sessionId, input, sourceDirection, 'derived');
       if (loaded === undefined) return undefined;
@@ -623,7 +657,7 @@ async function readColdTranscriptPage(
   const boundary = () => typeof transcriptService.coldWindowBoundary === 'function' ? transcriptService.coldWindowBoundary(sessionId, input.agentId) : undefined;
   const initialBoundary = await boundary();
   const anchored = input.beforeTurn !== undefined || input.beforeItem !== undefined || input.afterTurn !== undefined || input.afterItem !== undefined;
-  const initialSnapshot = await transcriptService.readColdPageSnapshot(sessionId, input.agentId, project, input.signal, false, undefined, anchored);
+  const initialSnapshot = await transcriptService.readColdPageSnapshot(sessionId, input.agentId, project, input.signal, false, undefined, anchored, false, true);
   if (initialSnapshot === undefined) return undefined;
   let snapshot: AgentTranscriptSnapshot = initialSnapshot;
   const anchor = requestedAnchor(input);
@@ -731,9 +765,7 @@ async function extendColdPage(
 ): Promise<{ snapshot: AgentTranscriptSnapshot; progressed: boolean; prefixMaterialized: boolean } | undefined> {
   const boundary = typeof transcriptService.coldWindowBoundary === 'function'
     ? await transcriptService.coldWindowBoundary(sessionId, agentId) : undefined;
-  const next = wide
-    ? await transcriptService.readColdPageSnapshot(sessionId, agentId, project, signal, true, 8 << 20)
-    : await transcriptService.readColdPageSnapshot(sessionId, agentId, project, signal, true);
+  const next = await transcriptService.readColdPageSnapshot(sessionId, agentId, project, signal, true, wide ? 8 << 20 : undefined, true, false, true);
   if (next === undefined) return undefined;
   const nextBoundary = typeof transcriptService.coldWindowBoundary === 'function'
     ? await transcriptService.coldWindowBoundary(sessionId, agentId) : undefined;

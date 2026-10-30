@@ -25,6 +25,9 @@ import type { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCa
 import type { IAgentToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncation';
 import type { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { ToolExecution, ExecutableToolContext } from '#/tool/toolContract';
+import { sshTestTools } from './stubs';
+
+const openTools: ReturnType<typeof sshTestTools>[] = [];
 
 const openServers: NetServer[] = [];
 const openManagers: SshConnectionManager[] = [];
@@ -32,7 +35,9 @@ const tempHomes: string[] = [];
 
 const attrs = (mode: number, size = 0) => ({ mode, size, uid: 1000, gid: 1000, atime: 0, mtime: 1 });
 
-async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'C:/Program Files/Git/bin/bash.exe') {
+async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'powershell') {
+  const response = { stdout: Buffer.from('hello from SSH\n'), stderr: Buffer.alloc(0), exitCode: 0 };
+  const failures = new Set<string>();
   const remoteHome = platform === 'win32' ? 'C:/Users/tester' : '/home/tester';
   const commands: string[] = [];
   const home = await mkdtemp(join(tmpdir(), 'kiki-ssh-tools-'));
@@ -52,14 +57,50 @@ async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'C:/Progra
       session.on('exec', (acceptExec, _reject, info) => {
         const channel = acceptExec();
         const encoded = /-EncodedCommand ([A-Za-z0-9+/=]+)$/.exec(info.command);
-        const command = encoded ? Buffer.from(encoded[1]!, 'base64').toString('utf16le') : info.command;
+        let command = encoded ? Buffer.from(encoded[1]!, 'base64').toString('utf16le') : info.command;
+        expect(info.command.length).toBeLessThanOrEqual(8191);
+        const scriptFile = /-File '([^']+)'/.exec(command);
+        if (scriptFile) command = files.get(scriptFile[1]!)!.toString('utf8').replace(/^\uFEFF/, '');
         commands.push(command);
-        if (command.includes('KIKI_SSH_WINDOWS')) channel.write(`KIKI_SSH_WINDOWS\nAMD64\n10.0.26100\n${shell}\n`);
+        if (command.includes('function EmitFile')) {
+          const encodedConfig = /FromBase64String\('([A-Za-z0-9+/=]+)'\)/.exec(command)!;
+          const config = JSON.parse(Buffer.from(encodedConfig[1]!, 'base64').toString('utf8')) as { paths: string[]; noIgnore: boolean; filters: { source: string; basename: boolean; exclude: boolean }[] };
+          const encode = (text: string) => Buffer.from(text).toString('base64');
+          for (const root of config.paths) {
+            if (failures.has(root)) { channel.write(`e\t${encode(root)}\t${encode('readdir permission denied')}\n`); continue; }
+            for (const [path, content] of files) {
+              if (!path.startsWith(`${root}/`) && path !== root) continue;
+              if (path.split('/').some((part) => ['.git', '.svn'].includes(part))) continue;
+              const name = path.slice(path.lastIndexOf('/') + 1);
+              if (!config.noIgnore && ['.gitignore', '.ignore', '.rgignore'].includes(name)) channel.write(`i\t${encode(path.slice(0, path.lastIndexOf('/')))}\t${encode(content.toString())}\n`);
+            }
+            for (const [path] of files) {
+              if (!path.startsWith(`${root}/`) && path !== root) continue;
+              if (path.split('/').some((part) => ['.git', '.svn'].includes(part))) continue;
+              const included = config.filters.every((filter) => {
+                const re = new RegExp(filter.source, 'i');
+                const matched = re.test(filter.basename ? path.slice(path.lastIndexOf('/') + 1) : path.slice(root.length + 1)) || re.test(path);
+                return filter.exclude ? !matched : matched;
+              });
+              if (included) channel.write(`f\t1000\t${encode(path)}\n`);
+            }
+          }
+          channel.exit(0); channel.end(); return;
+        }
+        if (command.includes('$regex=')) {
+          channel.write(response.stdout); channel.stderr.write(response.stderr);
+          channel.exit(response.exitCode); channel.end(); return;
+        }
+        if (command.includes('KIKI_SSH_WINDOWS')) channel.write(`KIKI_SSH_WINDOWS\nAMD64\n10.0.26100\npowershell.exe\n${shell || 'cmd'}\n936\nC:/Users/tester/Temp/\n`);
         else if (info.command.includes('KIKI_SSH_ENV')) channel.write('KIKI_SSH_ENV\nLinux\nx86_64\n6.8.0\n/bin/sh\n');
+        else if (response.exitCode !== 0 || platform === 'win32') {
+          channel.write(response.stdout);
+          channel.stderr.write(response.stderr);
+        }
         else if (info.command.includes('--files')) channel.write('./test.txt\n');
         else if (info.command.includes('rg ')) channel.write('/home/tester/test.txt\0');
-        else channel.write('hello from SSH\n');
-        channel.exit(0);
+        else channel.write(response.stdout);
+        channel.exit(command.includes('KIKI_SSH_') ? 0 : response.exitCode);
         channel.end();
       });
       session.on('sftp', (acceptSftp) => {
@@ -94,7 +135,10 @@ async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'C:/Progra
           handle(request, path);
         });
         const delivered = new Set<number>();
-        channel.on('OPENDIR', (request, path) => handle(request, path));
+        channel.on('OPENDIR', (request, path) => {
+          if (failures.has(path)) return channel.status(request, utils.sftp.STATUS_CODE.PERMISSION_DENIED);
+          handle(request, path);
+        });
         channel.on('READDIR', (request, buffer) => {
           const id = buffer.readUInt32BE(0);
           const path = handles.get(id);
@@ -102,8 +146,10 @@ async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'C:/Progra
           if (delivered.has(id)) return channel.status(request, utils.sftp.STATUS_CODE.EOF);
           delivered.add(id);
           const children = [...files].filter(([name]) => name.startsWith(`${path}/`) && !name.slice(path.length + 1).includes('/'));
-          if (children.length === 0) return channel.status(request, utils.sftp.STATUS_CODE.EOF);
-          channel.name(request, children.map(([name, value]) => ({ filename: name.slice(path.length + 1), longname: name, attrs: attrs(0o100644, value.length) })));
+          const dirs = [...directories].filter((name) => name.startsWith(`${path}/`) && !name.slice(path.length + 1).includes('/'));
+          if (children.length + dirs.length === 0) return channel.status(request, utils.sftp.STATUS_CODE.EOF);
+          channel.name(request, [...children.map(([name, value]) => ({ filename: name.slice(path.length + 1), longname: name, attrs: attrs(0o100644, value.length) })),
+            ...dirs.map((name) => ({ filename: name.slice(path.length + 1), longname: name, attrs: attrs(0o040755) }))]);
         });
         channel.on('WRITE', (request, buffer, offset, data) => {
           const path = handles.get(buffer.readUInt32BE(0));
@@ -174,7 +220,9 @@ async function fixture(platform: 'posix' | 'win32' = 'posix', shell = 'C:/Progra
   const catalog = { catalog: { getSkillRoots: () => [] } } as unknown as ISessionSkillCatalog;
   const truncation = { isSpillFilePath: () => false } as unknown as IAgentToolResultTruncationService;
   const telemetry = { track2: () => undefined } as unknown as ITelemetryService;
-  return { home, files, commands, manager, remote, localFs, runtime, workspace, catalog, truncation, telemetry };
+  const tools = sshTestTools({ runtime, workspace, localFs, catalog, truncation, telemetry });
+  openTools.push(tools);
+  return { home, files, directories, failures, response, commands, manager, remote, localFs, runtime, workspace, catalog, truncation, telemetry, tools };
 }
 
 async function execute(execution: ToolExecution) {
@@ -184,6 +232,7 @@ async function execute(execution: ToolExecution) {
 }
 
 afterEach(async () => {
+  await Promise.all(openTools.splice(0).map((tools) => tools.dispose()));
   await Promise.all(openManagers.splice(0).map((manager) => manager.dispose()));
   await Promise.all(openServers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
   await Promise.all(tempHomes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
@@ -191,13 +240,117 @@ afterEach(async () => {
 });
 
 describe('SSH tools over a real ssh2 transport', () => {
-  it('keeps Windows SFTP file tools available without a remote shell', async () => {
-    const f = await fixture('win32', '');
-    const read = new ReadTool(f.runtime, f.workspace, f.catalog, f.truncation);
-    f.files.set('C:/Users/tester/file.txt', Buffer.from('SFTP only\n'));
-    expect((await execute(await read.resolveExecution({ host: 'dev', path: 'file.txt' }))).output).toContain('SFTP only');
-    expect(f.remote.environment.shellPath).toBe('');
-    await expect(f.remote.process.spawn(f.remote.environment.shellPath, ['-c', 'echo hello'])).rejects.toThrow('Install Git for Windows');
+  it('runs Bash as PowerShell with native cwd and marks the result platform and shell', async () => {
+    const f = await fixture('win32');
+    const command = "Get-ChildItem -LiteralPath 'E:\\scratch' | ForEach-Object { $_.FullName }; '中文' > $null";
+    const result = await execute(await f.tools.bash.resolveExecution({ host: 'dev', cwd: 'E:/scratch', command }));
+    expect(result.isError).not.toBe(true);
+    expect(result.output).toContain('platform: Windows\nshell: powershell');
+    expect(f.commands.at(-1)).toContain("Set-Location -LiteralPath 'E:/scratch'");
+    expect(f.commands.at(-1)).toContain(command);
+    expect(f.commands.at(-1)).not.toContain('/e/');
+    expect(f.commands.at(-1)).not.toContain('bash');
+    expect(f.tools.bash.description).toContain('PowerShell syntax');
+    f.remote.dispose();
+  });
+
+  it('searches Windows trees in one PowerShell traversal with braces, ignores, pagination and explicit failures', async () => {
+    const f = await fixture('win32');
+    f.directories.add('E:/scratch/sub'); f.directories.add('E:/scratch/.git');
+    for (const path of ['a.md', 'b.stl', 'hidden.md', '.env', '.git/private.md', 'sub/c.md']) f.files.set(`E:/scratch/${path}`, Buffer.from('word\n'));
+    f.files.set('E:/scratch/.gitignore', Buffer.from('hidden.md\n'));
+    const result = await execute(await f.tools.glob.resolveExecution({ host: 'dev', path: 'E:/scratch', pattern: '**/*.{md,stl}', head_limit: 2 }));
+    expect(result.output).toContain('E:/scratch/a.md'); expect(result.output).toContain('E:/scratch/b.stl');
+    expect(result.output).toContain('offset=2'); expect(result.output).not.toContain('hidden.md'); expect(result.output).not.toContain('private.md');
+    const all = await execute(await f.tools.glob.resolveExecution({ host: 'dev', path: 'E:/scratch', pattern: '*.md', include_ignored: true, head_limit: 0 }));
+    expect(all.output).toContain('hidden.md'); expect(all.output).toContain('sub/c.md'); expect(all.output).not.toContain('private.md');
+    f.failures.add('E:/scratch');
+    const failed = await execute(await f.tools.glob.resolveExecution({ host: 'dev', path: 'E:/scratch', pattern: '*' }));
+    expect(failed.isError).toBe(true); expect(failed.output).toContain('readdir'); expect(failed.output).not.toContain('No matches found');
+    f.remote.dispose();
+  });
+
+  it('preserves long Windows Grep patterns through TEMP scripts and propagates failures', async () => {
+    const f = await fixture('win32');
+    f.files.set('E:/scratch/a.md', Buffer.from('word\n'));
+    f.response.stdout = Buffer.from('E:/scratch/a.md\0' + '1:word\n');
+    const pattern = String.raw`word|世界|\$_|\\path|`.repeat(600);
+    const result = await execute(await f.tools.grep.resolveExecution({ host: 'dev', path: 'E:/scratch', pattern, output_mode: 'content' }));
+    expect(result.isError).not.toBe(true); expect(result.output).toContain('E:/scratch/a.md:1:word');
+    const script = f.commands.at(-1)!;
+    expect(script).toContain('foreach ($path in $c.paths)');
+    const config = /FromBase64String\('([A-Za-z0-9+/=]+)'\)/.exec(script)!;
+    expect(JSON.parse(Buffer.from(config[1]!, 'base64').toString('utf8'))).toMatchObject({ pattern });
+    expect([...f.files.keys()].filter((path) => /kiki-ssh-.*\.ps1$/.test(path))).toEqual([]);
+    f.response.stdout = Buffer.alloc(0); f.response.stderr = Buffer.from('script failed\n'); f.response.exitCode = 1;
+    const failed = await execute(await f.tools.grep.resolveExecution({ host: 'dev', path: 'E:/scratch', pattern: 'word' }));
+    expect(failed.isError).toBe(true); expect(failed.output).toContain('script failed'); expect(failed.output).not.toContain('No matches');
+    f.remote.dispose();
+  });
+
+  it('uploads long scripts to TEMP and removes them after a nonzero exit', async () => {
+    const f = await fixture('win32');
+    const ssh = await f.remote.connect();
+    f.response.exitCode = 7;
+    const script = "$value='世界 $_ \\path';\n".repeat(400);
+    const process = await ssh.execPowerShell(script);
+    process.stdin.end();
+    process.stdout.resume(); process.stderr.resume();
+    expect(await process.wait()).toBe(7);
+    expect(f.commands.at(-1)).toContain(script);
+    await process.dispose();
+    expect([...f.files.keys()].filter((path) => /kiki-ssh-.*\.ps1$/.test(path))).toEqual([]);
+    f.remote.dispose();
+  });
+
+  it.each(['powershell', 'cmd'])('detects Windows %s and chooses native PowerShell without Git Bash', async (shell) => {
+    const f = await fixture('win32', shell);
+    await f.remote.connect();
+    expect(f.remote.environment.shellName).toBe('powershell');
+    expect(f.remote.environment.shellPath).toBe('powershell.exe');
+    expect((await f.remote.connect()).osEnv).toMatchObject({ defaultShellName: shell });
+    expect(f.commands).toHaveLength(1);
+    f.remote.dispose();
+  });
+
+  it('decodes GBK output, strips progress CLIXML, preserves errors and nonzero status', async () => {
+    const f = await fixture('win32');
+    await f.remote.connect();
+    f.response.stdout = Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0x0a]);
+    f.response.stderr = Buffer.from('#< CLIXML\r\n<Objs><Obj S="progress"><MS>noise</MS></Obj><S S="Error">错误_x000D__x000A_</S></Objs>');
+    f.response.exitCode = 7;
+    const proc = await f.remote.process.spawn('powershell.exe', ['-c', 'Get-ChildItem $_.FullName']);
+    const [stdout, stderr] = await Promise.all([text(proc.stdout), text(proc.stderr)]);
+    expect(stdout).toBe('中文\n');
+    expect(stderr).toBe('错误\r\n');
+    expect(await proc.wait()).toBe(7);
+    expect(f.commands.at(-1)).toContain("$ProgressPreference='SilentlyContinue'");
+    expect(f.commands.at(-1)).toContain('[Console]::OutputEncoding');
+    expect(f.commands.at(-1)).toContain('$OutputEncoding');
+    await proc.dispose();
+    f.remote.dispose();
+  });
+
+  it('propagates SFTP traversal failures instead of reporting no glob matches', async () => {
+    const f = await fixture('win32');
+    const ssh = await f.remote.connect();
+    f.failures.add('E:/scratch');
+    await expect((async () => { for await (const _path of ssh.glob('E:/scratch', '**/*')) { } })()).rejects.toThrow('readdir');
+    f.remote.dispose();
+  });
+
+  it('does not mistake a Linux remote command failure with exit 1 for no search matches', async () => {
+    const f = await fixture();
+    f.response.stdout = Buffer.alloc(0);
+    f.response.stderr = Buffer.from('remote command not supported\n');
+    f.response.exitCode = 1;
+    const { glob, grep } = f.tools;
+    for (const result of [await execute(await glob.resolveExecution({ host: 'dev', pattern: '*' })),
+      await execute(await grep.resolveExecution({ host: 'dev', pattern: 'word' }))]) {
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('remote command not supported');
+      expect(result.output).not.toContain('No matches');
+    }
     f.remote.dispose();
   });
 
@@ -244,6 +397,7 @@ describe('SSH tools over a real ssh2 transport', () => {
     const initial = Buffer.from(schemas());
     for (const tool of tools) {
       expect((tool.parameters['properties'] as Record<string, unknown>)['host']).toBeDefined();
+      expect(tool.parameters).toBe(tool.parameters);
     }
     await f.remote.connect();
     expect(Buffer.from(schemas()).equals(initial)).toBe(true);
@@ -259,8 +413,7 @@ describe('SSH tools over a real ssh2 transport', () => {
     const read = new ReadTool(f.runtime, f.workspace, f.catalog, f.truncation);
     const write = new WriteTool(f.runtime, f.workspace);
     const edit = new EditTool(new FileEditService(f.localFs), f.runtime, f.workspace);
-    const glob = new GlobTool(f.runtime, f.workspace, f.telemetry);
-    const grep = new GrepTool(f.runtime, f.workspace, f.telemetry);
+    const { glob, grep } = f.tools;
     expect((await execute(await write.resolveExecution({ host: 'dev', path: '/home/tester/test.txt', content: 'alpha\n' }))).output).toContain('host: dev');
     expect((await execute(await read.resolveExecution({ path: 'ssh://dev/home/tester/test.txt' }))).output).toContain('1\talpha');
     expect((await execute(await edit.resolveExecution({ host: 'dev', path: '/home/tester/test.txt', old_string: 'alpha', new_string: 'beta' }))).output).toContain('host: dev');
@@ -304,4 +457,10 @@ describe('SSH tools over a real ssh2 transport', () => {
 
 function filesText(buffer: Buffer | undefined): string {
   return buffer?.toString() ?? '';
+}
+
+async function text(stream: import('node:stream').Readable): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk as Buffer));
+  return Buffer.concat(chunks).toString('utf8');
 }

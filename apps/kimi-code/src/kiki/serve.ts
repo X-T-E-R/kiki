@@ -318,7 +318,7 @@ function spawnDetachedServer(options: {
     '--json',
   ];
   if (options.port !== undefined) args.push('--port', String(options.port));
-  const env = { ...process.env };
+  const env: NodeJS.ProcessEnv = { ...process.env, KIKI_HOME: options.homeDir };
   for (const name of [
     'KIKI_EXTERNAL_PRINCIPAL_ID',
     'KIKI_EXTERNAL_SESSION_ID',

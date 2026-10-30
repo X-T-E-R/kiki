@@ -53,6 +53,7 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { applyPromptMetadataUpdate } from '#/session/sessionMetadata/promptMetadata';
 import { ISessionHistoryMutationService } from '#/session/historyMutation/historyMutation';
 import { KeyReservationRegistry } from '#/session/dispatch/reservation';
+import { hasMailboxMessageInContext } from '#/session/agentCollaboration/messageIdentity';
 import type { PartsTransformer, WireRecord } from '#/wire/record';
 import { IWireService } from '#/wire/wire';
 import { IBlobStore } from '#/persistence/interface/blobStore';
@@ -891,8 +892,26 @@ export class AgentPromptService implements IAgentPromptService {
     if (this.getModelSwitch(input.operationId)?.state === 'preparing' && !this.queueOrder.includes(modelSwitchQueueId(input.operationId))) {
       return this.recoverModelSwitch(input.operationId, 'retry');
     }
-    await this.startNext();
+    if (!this.scheduleLiveModelSwitch(input.operationId)) await this.startNext();
     return this.getModelSwitch(input.operationId)!;
+  }
+
+  private readonly liveSwitchBoundaries = new Map<string, { prompts: Record[]; promise: Promise<void> }>();
+
+  private scheduleLiveModelSwitch(operationId: string): boolean {
+    if ((this.profile.data().executorId ?? 'native') !== 'native' || this.loop.status().state !== 'running') return false;
+    if (this.liveSwitchBoundaries.has(operationId)) return true;
+    const live = { prompts: [] as Record[], promise: Promise.resolve() };
+    this.liveSwitchBoundaries.set(operationId, live);
+    live.promise = this.loop.atStepBoundary(async boundary => {
+      if (this.getModelSwitch(operationId)?.state !== 'pending' || this.isQueueSlotEditHeld(modelSwitchQueueId(operationId))) return;
+      if (live.prompts.length > 0) await this.runSwitchBoundary(live.prompts, boundary);
+      else await this.runModelSwitch(operationId, boundary);
+    }).catch(onUnexpectedError).finally(() => {
+      this.liveSwitchBoundaries.delete(operationId);
+      for (const item of live.prompts) this.boundaryPromptIds.delete(item.id);
+    });
+    return true;
   }
 
   async updateModelSwitch(input: ModelSwitchInput, expectedRevision?: number): Promise<ModelSwitchReceipt> {
@@ -905,7 +924,7 @@ export class AgentPromptService implements IAgentPromptService {
     const receipt = { ...entry.receipt, toModel: input.model, mode: input.mode };
     await this.dispatcher.dispatch(new ModelSwitchQueued({ entry: { ...entry, input: { ...input }, receipt, revision: entry.revision + 1 }, queueIndex: this.queueOrder.indexOf(modelSwitchQueueId(input.operationId)) }));
     await this.wire.flush();
-    void this.startNext();
+    if (!this.scheduleLiveModelSwitch(input.operationId)) void this.startNext();
     return receipt;
   }
 
@@ -984,7 +1003,7 @@ export class AgentPromptService implements IAgentPromptService {
       return this.getModelSwitch(operationId)!;
     }
     if (joinFlight) return this.runModelSwitch(operationId);
-    await this.startNext();
+    if (!this.scheduleLiveModelSwitch(operationId)) await this.startNext();
     return this.getModelSwitch(operationId)!;
   }
 
@@ -1844,70 +1863,78 @@ export class AgentPromptService implements IAgentPromptService {
     const fresh = selected.filter(item => !this.boundaryPromptIds.has(item.id));
     if (fresh.length === 0) return Promise.resolve();
     for (const item of fresh) this.boundaryPromptIds.add(item.id);
-    return this.loop.atStepBoundary(async boundary => {
-      try {
-        for (const item of fresh) {
-          if (!this.pending.includes(item)) continue;
-          const operationId = item.execution?.afterModelSwitch;
-          const index = operationId === undefined ? -1 : this.queueOrder.indexOf(modelSwitchQueueId(operationId));
-          const operations = operationId === undefined ? [] : index < 0 ? [operationId] : this.queueOrder.slice(0, index + 1)
-            .filter(id => id.startsWith(MODEL_SWITCH_QUEUE_PREFIX)).map(id => id.slice(MODEL_SWITCH_QUEUE_PREFIX.length));
-          for (const id of operations) {
-            const receipt = this.getModelSwitch(id);
-            if (receipt?.state === 'cancelled') return;
-            if (receipt?.state !== 'completed' && (await this.runModelSwitch(id, boundary)).state !== 'completed') return;
-          }
-          if (!this.isDependencyReady(item.execution)) return;
-          const execution = this.resolveExecutionBinding(item.execution);
-          if (execution !== undefined && this.hasExecutionBindingChange({ ...execution, afterModelSwitch: undefined, model: undefined, thinking: undefined, modelSwitchMode: undefined })) {
-            this.immediatePromptIds.add(item.id);
-            void this.startNext();
-            continue;
-          }
-          if (this.hasExecutionBindingChange(execution, item.id)) {
-            const lease = this.loop.tryAcquireQuiescence({ pendingSteps: 'preserve', boundary });
-            if (lease === undefined) return;
-            const shared = new RefCountedDisposable(lease);
-            try {
-              const changed = this.instantiation.invokeFunction(accessor => readPromptRuntimeControlChanges(accessor, execution));
-              if (await changed()) return;
-              const { message: rerouted } = this.extractCompressionCaptions(mergeSteerMessages([item]));
-              await this.materializeDaemonRefs(rerouted);
-              if (!this.pending.includes(item)) continue;
-              let bindingCommitted = false;
-              const assertCurrent = () => {
-                if (bindingCommitted) return;
-                if (!this.pending.includes(item)) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, `prompt ${item.id} was cancelled before binding commit`);
-                bindingCommitted = true;
-              };
-              try { await this.applyPromptExecutionBinding(item, execution, shared, assertCurrent); }
-              catch (error) {
-                if (!bindingCommitted && !this.pending.includes(item)) continue;
-                if (item.execution?.modelSwitchMode === undefined) throw error;
-                this.pending.splice(this.pending.indexOf(item), 1);
-                item.state = 'failed'; item.error = toErrorPayload(error);
-                item.launchedDeferred.resolve(undefined);
-                item.completionDeferred.resolve({ promptId: item.id, result: { type: 'failed', steps: 0, error }, state: 'failed' });
-                this.publishCompleted(item, 'failed');
-                continue;
-              }
-              this.instantiation.invokeFunction(accessor => accessor.get(IAgentLLMRequesterService)).invalidatePromptSnapshots();
-            } finally { await shared.release(); }
-          }
-          const pending = fresh.filter(candidate => this.pending.includes(candidate) &&
-            candidate.execution?.afterModelSwitch === operationId && !this.hasExecutionBindingChange(candidate.execution, candidate.id));
-          for (const candidate of pending) this.boundarySteeringIds.add(candidate.id);
-          try { if (pending.length > 0) await this.steer(pending.map(candidate => candidate.id)); }
-          finally { for (const candidate of pending) this.boundarySteeringIds.delete(candidate.id); }
-          const remaining = fresh.filter(candidate => this.pending.includes(candidate) && !pending.includes(candidate));
-          queueMicrotask(() => { this.scheduleSwitchBoundary(remaining).catch(onUnexpectedError); });
-          return;
-        }
-      } finally { for (const item of fresh) this.boundaryPromptIds.delete(item.id); }
-    }).catch(error => {
+    const operationId = fresh[0]?.execution?.afterModelSwitch;
+    const live = operationId === undefined ? undefined : this.liveSwitchBoundaries.get(operationId);
+    if (live !== undefined) {
+      live.prompts.push(...fresh);
+      return live.promise;
+    }
+    return this.loop.atStepBoundary(boundary => this.runSwitchBoundary(fresh, boundary)).catch(error => {
       for (const item of fresh) this.boundaryPromptIds.delete(item.id);
       onUnexpectedError(error);
     });
+  }
+
+  private async runSwitchBoundary(fresh: readonly Record[], boundary: import('#/agent/loop/loop').StepBoundary | undefined): Promise<void> {
+    try {
+      for (const item of fresh) {
+        if (!this.pending.includes(item)) continue;
+        const operationId = item.execution?.afterModelSwitch;
+        const index = operationId === undefined ? -1 : this.queueOrder.indexOf(modelSwitchQueueId(operationId));
+        const operations = operationId === undefined ? [] : index < 0 ? [operationId] : this.queueOrder.slice(0, index + 1)
+          .filter(id => id.startsWith(MODEL_SWITCH_QUEUE_PREFIX)).map(id => id.slice(MODEL_SWITCH_QUEUE_PREFIX.length));
+        for (const id of operations) {
+          const receipt = this.getModelSwitch(id);
+          if (receipt?.state === 'cancelled') return;
+          if (receipt?.state !== 'completed' && (await this.runModelSwitch(id, boundary)).state !== 'completed') return;
+        }
+        if (!this.isDependencyReady(item.execution)) return;
+        const execution = this.resolveExecutionBinding(item.execution);
+        if (execution !== undefined && this.hasExecutionBindingChange({ ...execution, afterModelSwitch: undefined, model: undefined, thinking: undefined, modelSwitchMode: undefined })) {
+          this.immediatePromptIds.add(item.id);
+          void this.startNext();
+          continue;
+        }
+        if (this.hasExecutionBindingChange(execution, item.id)) {
+          const lease = this.loop.tryAcquireQuiescence({ pendingSteps: 'preserve', boundary });
+          if (lease === undefined) return;
+          const shared = new RefCountedDisposable(lease);
+          try {
+            const changed = this.instantiation.invokeFunction(accessor => readPromptRuntimeControlChanges(accessor, execution));
+            if (await changed()) return;
+            const { message: rerouted } = this.extractCompressionCaptions(mergeSteerMessages([item]));
+            await this.materializeDaemonRefs(rerouted);
+            if (!this.pending.includes(item)) continue;
+            let bindingCommitted = false;
+            const assertCurrent = () => {
+              if (bindingCommitted) return;
+              if (!this.pending.includes(item)) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, `prompt ${item.id} was cancelled before binding commit`);
+              bindingCommitted = true;
+            };
+            try { await this.applyPromptExecutionBinding(item, execution, shared, assertCurrent); }
+            catch (error) {
+              if (!bindingCommitted && !this.pending.includes(item)) continue;
+              if (item.execution?.modelSwitchMode === undefined) throw error;
+              this.pending.splice(this.pending.indexOf(item), 1);
+              item.state = 'failed'; item.error = toErrorPayload(error);
+              item.launchedDeferred.resolve(undefined);
+              item.completionDeferred.resolve({ promptId: item.id, result: { type: 'failed', steps: 0, error }, state: 'failed' });
+              this.publishCompleted(item, 'failed');
+              continue;
+            }
+            this.instantiation.invokeFunction(accessor => accessor.get(IAgentLLMRequesterService)).invalidatePromptSnapshots();
+          } finally { await shared.release(); }
+        }
+        const pending = fresh.filter(candidate => this.pending.includes(candidate) &&
+          candidate.execution?.afterModelSwitch === operationId && !this.hasExecutionBindingChange(candidate.execution, candidate.id));
+        for (const candidate of pending) this.boundarySteeringIds.add(candidate.id);
+        try { if (pending.length > 0) await this.steer(pending.map(candidate => candidate.id)); }
+        finally { for (const candidate of pending) this.boundarySteeringIds.delete(candidate.id); }
+        const remaining = fresh.filter(candidate => this.pending.includes(candidate) && !pending.includes(candidate));
+        queueMicrotask(() => { this.scheduleSwitchBoundary(remaining).catch(onUnexpectedError); });
+        return;
+      }
+    } finally { for (const item of fresh) this.boundaryPromptIds.delete(item.id); }
   }
 
   private readonly steerBatches = new Map<number, {
@@ -2451,7 +2478,9 @@ export class AgentPromptService implements IAgentPromptService {
         candidate.message = { ...candidate.message, content: this.repairKnownTruncatedImages(candidate.id, candidate.message.content) };
       }
       const batch = selected.map(candidate => ({ ...this.extractCompressionCaptions(candidate.message),
-        alreadyMaterialized: candidate.alreadyMaterialized,
+        alreadyMaterialized: candidate.message.origin?.kind === 'agent_message'
+          ? hasMailboxMessageInContext(this.context.get(), candidate.message)
+          : candidate.alreadyMaterialized,
       }));
       const message = selected.length === 1 ? batch[0]!.message : mergeSteerMessages(batch);
       const captions = batch[0]!.captions;
@@ -2469,7 +2498,7 @@ export class AgentPromptService implements IAgentPromptService {
           const candidate = selected[index]!;
           if (candidate !== item) this.pending.splice(this.pending.indexOf(candidate), 1);
           const materialized = batch[index]!;
-          if (!candidate.alreadyMaterialized) this.appendPrompt(materialized.message, materialized.captions);
+          if (!materialized.alreadyMaterialized) this.appendPrompt(materialized.message, materialized.captions);
           candidate.state = 'blocked'; candidate.launchedDeferred.resolve(undefined);
           candidate.completionDeferred.resolve({ promptId: candidate.id, result: undefined, state: 'blocked' });
           this.publishCompleted(candidate, 'blocked');
@@ -2511,7 +2540,7 @@ export class AgentPromptService implements IAgentPromptService {
       let turn: Turn | undefined;
       if ((this.profile.data().executorId ?? 'native') === 'native') {
         const receipt = this.loop.enqueue(
-          new PromptStepRequest(deliveredMessage, captions, this.reminders, this.providerType(), item.alreadyMaterialized, recovered ? 'recovery' : undefined, item.id, deliverableBatch,
+          new PromptStepRequest(deliveredMessage, captions, this.reminders, this.providerType(), deliverableBatch[0]?.alreadyMaterialized === true, recovered ? 'recovery' : undefined, item.id, deliverableBatch,
             deliverable.length > 1 ? () => {
               void this.dispatcher.dispatch(new PromptSteered({ activePromptId: item.id,
                 promptIds: deliverable.slice(1).map(candidate => candidate.id),

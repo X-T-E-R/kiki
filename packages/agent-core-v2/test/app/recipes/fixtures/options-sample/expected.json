@@ -1,0 +1,77 @@
+{
+  "defaults": {
+    "recipe_options": {},
+    "values": {
+      "brief": true,
+      "review": false,
+      "quiet": false
+    },
+    "slots": {
+      "prompts.system": "Keep replies short.\n\n# Sample Subagent\n\nFinish the assigned slice.\n\n\nReport blockers early.",
+      "prompts.steering": "Stay inside the slice.",
+      "prompts.main.system": "# Sample Main\n\nOwn the user's goal.\n\n## Workflow\n\nRead first, then change.\n\n```md\n# Not a heading: inside a fenced block\n```\n\n## Tone\n\nPlain and direct.\n",
+      "prompts.main.steering": "Keep the goal in view.\n\nStay brief.",
+      "prompts.independent.system": "# Sample Independent\n\nWork alone on a self-contained task.\n",
+      "prompts.independent.steering": null
+    }
+  },
+  "all-on": {
+    "recipe_options": {
+      "brief": true,
+      "review": true,
+      "quiet": true
+    },
+    "values": {
+      "brief": true,
+      "review": true,
+      "quiet": true
+    },
+    "slots": {
+      "prompts.system": "Keep replies short.\n\n# Sample Subagent\n\nFinish the assigned slice.\n",
+      "prompts.steering": "",
+      "prompts.main.system": "# Sample Main\n\nOwn the user's goal.\n\n## Workflow\n\nRead first, then change.\n\n```md\n# Not a heading: inside a fenced block\n```\n\nFinish with a self-review.\n\n## Review\n\nCheck every change against the request before reporting.\n\n## Tone\n\nPlain and direct.\n",
+      "prompts.main.steering": "Keep the goal in view.\n\nCite file:line for findings.\n\nStay brief.",
+      "prompts.independent.system": "# Sample Independent\n\nWork alone on a self-contained task.\n",
+      "prompts.independent.steering": null
+    }
+  },
+  "all-off": {
+    "recipe_options": {
+      "brief": false,
+      "review": false,
+      "quiet": false
+    },
+    "values": {
+      "brief": false,
+      "review": false,
+      "quiet": false
+    },
+    "slots": {
+      "prompts.system": "# Sample Subagent\n\nFinish the assigned slice.\n\n\nReport blockers early.",
+      "prompts.steering": "Stay inside the slice.",
+      "prompts.main.system": "# Sample Main\n\nOwn the user's goal.\n\n## Workflow\n\nRead first, then change.\n\n```md\n# Not a heading: inside a fenced block\n```\n\n## Tone\n\nPlain and direct.\n",
+      "prompts.main.steering": "Keep the goal in view.",
+      "prompts.independent.system": "# Sample Independent\n\nWork alone on a self-contained task.\n",
+      "prompts.independent.steering": null
+    }
+  },
+  "review-only": {
+    "recipe_options": {
+      "brief": false,
+      "review": true
+    },
+    "values": {
+      "brief": false,
+      "review": true,
+      "quiet": false
+    },
+    "slots": {
+      "prompts.system": "# Sample Subagent\n\nFinish the assigned slice.\n\n\nReport blockers early.",
+      "prompts.steering": "Stay inside the slice.",
+      "prompts.main.system": "# Sample Main\n\nOwn the user's goal.\n\n## Workflow\n\nRead first, then change.\n\n```md\n# Not a heading: inside a fenced block\n```\n\nFinish with a self-review.\n\n## Review\n\nCheck every change against the request before reporting.\n\n## Tone\n\nPlain and direct.\n",
+      "prompts.main.steering": "Keep the goal in view.\n\nCite file:line for findings.",
+      "prompts.independent.system": "# Sample Independent\n\nWork alone on a self-contained task.\n",
+      "prompts.independent.steering": null
+    }
+  }
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyContentSegment, contentRefSchema, contentSegmentSchema, sameContentRef, type ContentRef } from '#/contract/content';
+import { applyContentSegment, contentRefSchema, contentSegmentSchema, jsonBytes, jsonTextPrefix, sameContentRef, type ContentRef } from '#/contract/content';
 import { AgentTranscript } from '#/store/agentTranscript';
 
 import {
@@ -120,4 +120,28 @@ it('uses actual suffix offsets for indexed appends when the byte budget shrinks 
   expect(store.apply([{ ...append, target: { ...append.target, frameId: 'frame-39' }, frameIndex: 39, offset: 3, text: 'd' }]).gap).toBeUndefined();
   expect(store.getTurn('turn')?.steps[0]?.frames[0]).toMatchObject({ text: 'abcd' });
   expect(store.apply([{ ...append, target: { ...append.target, frameId: 'frame-40' }, frameIndex: 40 }]).gap).toBeDefined();
+});
+
+describe('JSON byte budgets', () => {
+  const encoded = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
+
+  it('counts escaped UTF-8 JSON bytes exactly', () => {
+    for (const value of ['plain', 'quote " slash \\ line\n', '\u0001', 'é中😀', '\ud800x', '\udc00', { a: ['中', 1, null] }, 42]) {
+      expect(jsonBytes(value)).toBe(encoded(value));
+    }
+  });
+
+  it('selects the longest JSON text prefix within the budget without splitting a pair', () => {
+    expect(jsonTextPrefix('Z 😀😀', 0, 11)).toBe('Z 😀');
+    expect(jsonTextPrefix('ab😀', 0, 7)).toBe('ab');
+    expect(jsonTextPrefix('a"b', 1, 5)).toBe('"b');
+    const text = '中文 "q" 😀\n'.repeat(50);
+    for (let max = 2; max < 80; max += 1) {
+      const prefix = jsonTextPrefix(text, 3, max);
+      expect(encoded(prefix)).toBeLessThanOrEqual(max);
+      expect(text.startsWith(prefix, 3)).toBe(true);
+      const next = text.codePointAt(3 + prefix.length)!;
+      expect(encoded(prefix + String.fromCodePoint(next))).toBeGreaterThan(max);
+    }
+  });
 });

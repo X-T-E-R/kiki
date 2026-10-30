@@ -791,4 +791,49 @@ describe('the model page owns every Recipe reference commit', () => {
     expect(fields.querySelector<HTMLTextAreaElement>('[data-model-engine="cognition"]')!.value).toBe('{ invalid');
     expect(document.body.querySelector('[data-recipe-state-bound]')).toBeNull();
   });
+
+  it('saves recipe options with pending model edits without dropping the binding or other values', async () => {
+    const initial = structuredClone(ENTITY);
+    initial.recipe = 'inst-imported';
+    initial.recipe_options = { safe: true, fast: false, legacy: true };
+    initial.parameters = { temperature: 0.4 };
+    initial.recipe_model_binding = {
+      installation_id: 'inst-imported',
+      revision: 'sha256:accepted',
+      model: { temperature: 0.4 },
+      model_origins: {},
+      option_values: { safe: true, fast: false },
+      options: [
+        { id: 'safe', name: 'Safe mode', default: false },
+        { id: 'fast', name: 'Fast mode', default: false },
+      ],
+    };
+    const stored = modelWriteStore(initial);
+    await renderCard();
+    const fields = await openEditor();
+    await act(async () => { typeIn(bodyEditor('overlay')!, 'Body saved with recipe options.\n'); });
+
+    const fast = document.body.querySelector<HTMLInputElement>('[data-recipe-option="fast"] input');
+    expect(fast, 'the model binding options should be mounted in the recipe section').not.toBeNull();
+    expect(fast!.checked).toBe(false);
+    await act(async () => {
+      fast!.click();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+
+    expect(updateModel).toHaveBeenCalledTimes(1);
+    const patch = updateModel.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(patch).toMatchObject({
+      recipe: 'inst-imported',
+      recipe_options: { safe: true, fast: true, legacy: true },
+      cognition: { overlay: { text: 'Body saved with recipe options.\n' } },
+      base_revision: 'rev-7',
+    });
+    expect(stored().recipe).toBe('inst-imported');
+    expect(stored().recipe_options).toEqual({ safe: true, fast: true, legacy: true });
+    expect(stored().parameters).toEqual(initial.parameters);
+    expect(stored().prompt_overrides).toEqual(ENTITY.prompt_overrides);
+    expect(stored().recipe_model_binding).toEqual(initial.recipe_model_binding);
+    expect((stored().cognition as Record<string, unknown>)['overlay']).toEqual({ text: 'Body saved with recipe options.\n' });
+  });
 });

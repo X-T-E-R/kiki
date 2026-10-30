@@ -14,6 +14,7 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
 import { AsyncEmitter, Emitter } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IMcpOAuthService } from '#/app/mcpConfig/oauthService';
 import { IPluginService } from '#/app/plugin/plugin';
 import type { PluginReloadEvent } from '#/app/plugin/types';
@@ -125,6 +126,7 @@ describe('WorkspaceMcpService', () => {
     const ix = createServices(disposables, {
       strict: true,
       additionalServices: (reg) => {
+        reg.definePartialInstance(IBootstrapService, { homeDir: cwd });
         reg.definePartialInstance(IPluginService, {
           enabledMcpServers: async () => ({}),
           mcpServerEntries: async () => [],

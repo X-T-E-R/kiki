@@ -5,6 +5,7 @@ import { decodeTextWithErrors } from '#/_base/execEnv/decodeText';
 import { splitLinesKeepingTerminator } from '#/_base/text/line-endings';
 import type { HostFileStat, IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { HostProcessOptions, IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
+import { spawnWindowsSearch } from '#/os/backends/ssh/windowsSearch';
 
 type Connect = () => Promise<SSHKaos>;
 
@@ -113,10 +114,13 @@ export class SshHostProcessService implements IHostProcessService {
   spawn(command: string, args: readonly string[] = [], options: HostProcessOptions = {}): Promise<IHostProcess> {
     if (options.detached === true) throw new Error('Detached SSH processes are not supported');
     return withConnection(this.connect, async (ssh) => {
-      if (!command) throw new Error('No shell was found on the remote SSH host. Install Git for Windows there to use Bash; SFTP file tools remain available.');
-      const process = await ssh.withCwd(options.cwd ?? ssh.getcwd()).execWithEnv(
-        [command, ...args], options.env,
-      );
+      if (!command) throw new Error('No executable shell was found on the remote SSH host');
+      const scoped = ssh.withCwd(options.cwd ?? ssh.getcwd());
+      if (command === 'rg' && ssh.osEnv.osKind === 'Windows') return spawnWindowsSearch(scoped, args);
+      const process = ssh.osEnv.shellName === 'powershell' && command === ssh.osEnv.shellPath &&
+        (args[0]?.toLowerCase() === '-command' || args[0]?.toLowerCase() === '-c') && args.length === 2
+        ? await scoped.execPowerShell(args[1]!, options.env)
+        : await scoped.execWithEnv([command, ...args], options.env);
       return {
         _serviceBrand: undefined,
         pid: process.pid,

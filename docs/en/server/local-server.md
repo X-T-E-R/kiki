@@ -30,7 +30,7 @@ kiki web --no-open       # run the server only, don't open the browser
 kiki web --port 58628    # pick a specific bind port
 ```
 
-The server binds to `127.0.0.1:58627` by default (loopback only). If the port is taken it automatically retries with the next one, so multiple instances can coexist on the same machine; each instance registers under `~/.kiki/server/instances/`. The startup banner prints the access URL and the plaintext token:
+The server binds to `127.0.0.1:58627` by default (loopback only). If the port is taken it automatically retries with the next one, so multiple instances can coexist on the same machine; each instance registers under the current `<home>/server/instances/` (default `~/.kiki/server/instances/`). The startup banner prints the access URL and the plaintext token:
 
 ```text
 Local:   http://127.0.0.1:58627/#token=...

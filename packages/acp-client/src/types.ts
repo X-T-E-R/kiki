@@ -48,6 +48,11 @@ export interface AcpProcessDescriptor {
   readonly startupTimeoutMs?: number;
   readonly cancelGraceMs?: number;
   readonly shutdownGraceMs?: number;
+  /**
+   * When positive, shutdown first ends the agent's stdin and waits this long for a
+   * self-cleaning exit before the platform termination and `shutdownGraceMs` escalation.
+   */
+  readonly stdinCloseGraceMs?: number;
   readonly stderrMaxBytes?: number;
   readonly clientName?: string;
 }

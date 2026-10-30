@@ -29,7 +29,7 @@ export interface InProcessAgentScript {
   readonly modeConfigUpdate?: { readonly value: string; readonly sessionId?: string };
   readonly sessionResponseMeta?: Record<string, unknown>;
   readonly initializeMeta?: Record<string, unknown>;
-  readonly steeringOutcome?: 'injected' | 'promptRequired' | 'startedNewTurn' | 'unknown' | 'reject' | 'abort' | 'hang';
+  readonly steeringOutcome?: 'injected' | 'promptRequired' | 'startedNewTurn' | 'deliveryUnknown' | 'unknown' | 'reject' | 'abort' | 'hang';
 }
 
 export interface InProcessAgentHistory {

@@ -8,7 +8,7 @@ import type { ModelSwitchInput } from './modelSwitch';
 const modelSwitchSchema = z.object({
   operationId: z.string().min(1),
   input: z.object({ operationId: z.string().min(1), model: z.string().min(1), mode: z.enum(['direct', 'compact', 'fresh']),
-    thinking: z.string().optional(), selectedFromModel: z.string().optional() }).readonly() satisfies z.ZodType<ModelSwitchInput>,
+    thinking: z.string().nullable().optional(), selectedFromModel: z.string().optional() }).readonly() satisfies z.ZodType<ModelSwitchInput>,
   agentId: z.string(),
   fromModel: z.string(),
   toModel: z.string(),

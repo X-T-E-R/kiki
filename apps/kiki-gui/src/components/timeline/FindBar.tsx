@@ -175,8 +175,10 @@ function useOutsideHits(input: {
         include_tool_output: input.includeToolOutput,
       }, controller.signal).then(
         (response) => {
+          if (controller.signal.aborted) return;
           const usable = response.index_state.state !== 'unavailable';
-          setPage({ key, hits: usable ? response.items : [], more: response.has_more, failed: !usable });
+          setPage({ key, hits: usable ? response.items : [],
+            more: response.has_more || response.incomplete !== undefined || response.coverage?.complete === false, failed: !usable });
         },
         () => { if (!controller.signal.aborted) setPage({ key, hits: [], more: false, failed: true }); },
       );
@@ -216,7 +218,7 @@ export function FindBar({
   const showProcessNote = processMatches.length > 0 && onOpenProcessView !== undefined;
   const detailController = useTranscriptController();
   const incompleteTurns = useMemo(() => detailController?.incompleteTurnOrdinals(agentId) ?? new Set<number>(), [detailController, agentId, items]);
-  const outside = useOutsideHits({ query: deferredQuery, pattern, sessionId, agentId, loadedTurns, incompleteTurns, hasMoreHistory, includeToolOutput: options.includeToolOutput === true });
+  const outside = useOutsideHits({ query, pattern, sessionId, agentId, loadedTurns, incompleteTurns, hasMoreHistory, includeToolOutput: options.includeToolOutput === true });
   const [currentKey, setCurrentKey] = useState<string | undefined>(undefined);
   const [lookingBack, setLookingBack] = useState(false);
   const [readFailed, setReadFailed] = useState(false);
@@ -376,9 +378,9 @@ export function FindBar({
   const total = matches.length;
   const status = !hasQuery
     ? ''
-    : total === 0
+    : total === 0 && !outside.more
       ? t('find.noResults')
-      : t('find.count', { current: index === -1 ? '–' : String(index + 1), total: String(total) });
+      : t('find.count', { current: index === -1 ? '–' : String(index + 1), total: `${total}${outside.more ? '+' : ''}` });
   const earlierCount = outside.earlier;
   const canLookBack = hasQuery && (rangeHit?.key !== readKey || readFailed) && (hasMoreHistory || outside.nearestTurn !== undefined && incompleteTurns.has(outside.nearestTurn)) && (earlierCount > 0 || !outside.known || (total === 0 && outside.more));
   const plus = outside.more ? '+' : '';

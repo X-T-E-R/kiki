@@ -5,7 +5,7 @@
  * disconnect, session join/leave). Nothing here reads or sends a credential.
  */
 
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 
 import type { SshHost, SshHostInput, SshHostStatus, SshSessionHostsResponse } from '@kiki/protocol';
 
@@ -88,9 +88,14 @@ export function visibleState(status: SshHostStatus | undefined): SshVisibleState
   return status.state;
 }
 
-/** Flag read from `/meta`; the same query key the settings pages share. */
+/**
+ * Flag read from `/meta`; the same query key the settings pages share. The
+ * previous answer is held through a refetch (`placeholderData`) so an
+ * availability consumer keyed on `enabled === true` does not flip off and back
+ * while `/meta` reloads — only a fresh answer changes what it shows.
+ */
 export function useNativeSshEnabled(client: KikiClient): { enabled: boolean | undefined; loading: boolean } {
-  const meta = useQuery({ queryKey: ['meta'], queryFn: () => client.meta(), staleTime: 15_000 });
+  const meta = useQuery({ queryKey: ['meta'], queryFn: () => client.meta(), staleTime: 15_000, placeholderData: keepPreviousData });
   return {
     enabled: meta.data === undefined ? undefined : meta.data.experimental_flags?.[NATIVE_SSH_FLAG] === true,
     loading: meta.isLoading,

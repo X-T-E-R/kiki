@@ -12,7 +12,7 @@
 
 ### 地址
 
-默认地址 `http://127.0.0.1:58627`；端口被占用时自动 +1 重试（至多 100 次），可用 `--port` / `--host` 修改。同一 home 目录可并存多个实例，运行中的实例登记在 `~/.kiki/server/instances/`。
+默认地址 `http://127.0.0.1:58627`；端口被占用时自动 +1 重试（至多 100 次），可用 `--port` / `--host` 修改。同一 home 目录可并存多个实例，运行中的实例登记在当前 `<home>/server/instances/`（默认 `~/.kiki/server/instances/`）。
 
 ### 鉴权
 
@@ -267,6 +267,7 @@ Claude ACP、Codex ACP 与 Codex app-server 提供独立的本机历史目录。
 | 方法与路径 | 说明 |
 | --- | --- |
 | `POST /api/sessions` | 创建会话；同时省略 `workspace_id` 与 `metadata.cwd` 时自动分配新工作区 |
+| `GET /api/sessions/creation/{creation_id}` | 查询创建回执，不创建或恢复会话 |
 | `GET /api/sessions` | 列出会话，游标分页，支持 `busy` / `archived_only` 和标题、工作区搜索 `q` |
 | `GET /api/sessions/{session_id}` | 读取单个会话 |
 | `GET /api/sessions/{session_id}/profile` | 读取会话档案 |
@@ -298,6 +299,8 @@ Agent 的持久元数据若未保存创建时间，就省略 `created_at`；客�
 
 创建身份归属于当前连接的 home，客户端须为不同 home 和连接分别保存待确认请求。不传 `creation_id` 时保留普通创建行为，不对重试去重。取消客户端等待不会删除服务端已经创建的会话。
 
+结果未确认时，调用 `GET /api/sessions/creation/{creation_id}`。响应为 `{ creation_id, session_id, status, session?, failure? }`；`status` 取 `missing`、`pending`、`completed`、`failed` 或 `unknown`。该查询既不等待正在进行的创建，也不发起创建。只有 `completed` 包含已保存的会话响应；`missing` 时可用原 ID 和原请求体重试。查询失败时继续保留未知状态。
+
 | 创建错误码 | 恢复方式 |
 | --- | --- |
 | `40948` | 创建身份发生冲突。`details.reason` 为 `body_mismatch` 时，同一个 `creation_id` 携带了不同请求体；为 `session_id_exists` 时，映射出的会话 ID 已被本次创建之外的调用占用。保留待确认身份和草稿，不把冲突当成幂等成功；只有明确要另建会话时才使用新 ID。 |
@@ -316,6 +319,8 @@ Agent 的持久元数据若未保存创建时间，就省略 `created_at`；客�
 读取会话时，已提交的 `agent_config.execution` 绑定为 `{ version: 1, selection, effective, sources, generation }`。来源取 `session`、`profile`、`harness-settings`、`harness-default`；有效模型或档位未设置表示 Kiki 没有指定，而不是 harness 没有使用模型。厂商报告的模型是观测值，不会变成新的覆盖。空闲时也可通过 `POST /api/sessions/{session_id}/profile` 的 `agent_config.execution` 修改；运行中请随下一条提示词提交选择。
 
 Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的思考强度覆盖，更低优先级的强度因此重新生效：先是 profile，然后是 harness 设置；Kiki 没有钉住强度时，才回到引擎默认。不带 `model` 会保留已保存的模型。空的思考强度字符串会被拒绝；省略 `thinking` 则保持当前强度。Agent 仍在运行时，这次 profile 更新会被拒绝。提示词可以携带同样的 `thinking: null`，Kiki 在该提示词启动时应用它，省略的 `model` 仍保留。
+
+创建会话和更新 profile 均接受 `agent_config.plan_gate: "free" | "gated"`。profile 更新直接应用到 live main agent，无需发送提示词；live 快照返回生效的 `plan_gate`。该覆盖只持续到当前 Agent 实例关闭，恢复后重新使用配置中的 gate；冷快照省略此字段。要通过 klient 让指定 Agent 退出 Plan 模式，调用 `klient.session(sessionId).agent(agentId).exitPlan()`；它的父 Agent 和同级 Agent 保持各自的模式。
 
 #### `POST /api/sessions/{session_id}:archive`
 
@@ -425,6 +430,8 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 立即发送会在安全步骤边界把普通选中提示词追加到活跃轮次。原生提示词携带模型、思考强度或上下文选择时，会在当前模型响应与工具结果完整落入历史后应用选择，随后消费同一条消息一次。绑定提交前取消或摘要失败不会改变绑定与上下文，也不会用旧模型发送该消息。不支持的外部上下文重建会失败，不会悄悄变成直接切换。main agent 的前台子任务等待可以转入后台，子任务不会被取消。
 
 仅当消息明确依赖已有的显式切换操作时，使用 `after_model_switch`。不要同时携带新的模型、思考强度、profile、execution 或上下文选择：服务端会拒绝混合选择，不会静默换成旧依赖的绑定。独立的手动压缩通过 `compaction.started`、`compaction.completed` 或 `compaction.cancelled` 报告自身进度；它不会受理或执行待发送消息的模型选择。
+
+独立的原生模型切换会在下一次模型请求前应用，无需提交提示词，也不会中断当前请求。其 `thinking` 输入可用字符串显式指定力度，用 `null` 清除手选值，并按 persona 固定值、目标 model-profile 默认值、模型默认值的顺序解析。省略 `thinking` 时，同一模型（包括其别名）保留当前力度，换模型则重新解析上述默认值。要跨模型保留手选力度，须显式发送该值。
 
 对于显式切换操作，受理发送不表示切换已完成。切换失败或持久化完成状态不确定时，原消息仍保留在队列中，切换显示可恢复的状态；按同一操作重试即可继续已受理的投递，已取消的切换不会被重新启用。与模型切换无关的 execution 选择仍须独立启动轮次。重启后，立即发送只让选中项绕过恢复确认，其他恢复的提示词仍等待确认。中止已追加的提示词会取消它所加入的轮次，不会取消后续轮次。普通 `:abort` 对不存在或已经结束的提示词返回 `40402`；从队列移除条目时使用 `?queued_only=true`。
 
@@ -850,6 +857,8 @@ PATCH 原位修改绑定。扩大范围与其他已启用入站绑定重叠时�
 
 `POST /api/search` 接受 `query`，默认搜索用户与 Assistant 正文及会话标题。设置 `include_tool_output: true` 才纳入工具结果和 Shell 输出，思考块、工具名称和工具输入始终排除。`role` 可选 `user`、`assistant`、`tool` 或 `title`，其中 `role: "tool"` 显式选择工具结果。相同内容范围适用于在线会话与已有索引；改变范围会使旧 `page_token` 失效，应去掉令牌重新查询。
 
+`container.session_id` 指向在线会话时，搜索使用有界的驻留正文与共享历史导航投影。请求截止时间和客户端取消同时覆盖准备与匹配阶段。在线响应包含 `coverage: { domain: "full_text", complete, gaps, scanned: { bytes, records } }`。`incomplete: "scan_budget"` 表示扫描未完成或有历史被跳过，`incomplete: "deadline"` 表示时间或文本预算已用尽。部分页为空不等于没有匹配；`has_more` 为真时，使用 `page_token` 继续。续页复用已完成的准备，令牌在 60 秒后过期；令牌失效时应去掉它重新查询。`gaps` 也会说明页内排序和超出扫描额度的记录。部分结果的计数应显示为下限，即使已经没有可继续的令牌。
+
 `POST /api/search/retry` 不需要请求体。索引器因连续内存压力停止后，调用它清除退避并重新启动已停止的索引写入。默认 SQLite 后端和 MiniDB 后端都适用。已发布索引中的文档仍可搜索；这次调用不删除、也不重建该索引。成功时沿用普通信封，`data.retried` 为 `true`。Klient 方法为 `rest.search.retry()`。
 
 ### 用量来源分组
@@ -862,11 +871,19 @@ PATCH 原位修改绑定。扩大范围与其他已启用入站绑定重叠时�
 
 查询所选时段或比较窗口时，发送 `range=custom&start_at=A&end_at=B`，边界为 epoch 毫秒的 `[A,B)`。概要、趋势分组与各会话的 `usage` 使用相同的记录筛选和精确窗口；会话金额不混入其他智能体档或时间桶余下部分。费用与 Token 的未知标记仍与已记录数字小计分别表达。分页令牌绑定筛选、数据版本和当前价格；任一项变化时返回业务码 `40922`。丢弃令牌并从第一页重新读取；GUI 会自动恢复。
 
+### 会话累计用量
+
+普通 `GET /api/sessions/{sessionId}` 返回上次发布的 `usage.accounting` 摘要；没有摘要时使用已保存的元数据，不扫描会话内的 Agent。刷新累计用量时，调用 `GET /api/usage/sessions/{sessionId}/accounting` 或 `klient.rest.sessionUsageAccounting(sessionId, { signal })`。该接口通过会话索引点读定位，不重新打开会话，并在普通成功信封的 `data` 中直接返回核算快照。会话不存在时返回业务码 `40401`。
+
+快照包含 `tokens`、`tokens_unknown`、`cost_usd_estimated`、`cost_unknown`、`covered_at`（epoch 毫秒）、`source_revision`、`complete` 和 `freshness`。`complete` 表示来源覆盖完整；覆盖完成后，用量或价格仍可能未知。`freshness` 为 `current` 时表示最新一次核对分片，观察到变化或超过十分钟未核对后为 `stale`，没有已发布摘要时为 `unverified`；旧服务器可能省略此字段。摘要过期时仍可显示已知小计，不要把新鲜度当成完整性。
+
+每次刷新最多推进十秒、100,000 条 wire 记录和 128 MiB 对话数据。`complete` 为假时，重复同一 GET 从已提交进度继续；同一会话的并发请求共享核算。客户端断开只取消本次等待，不中断该分片的发布。详情面板打开且页面可见时，GUI 对未完成或过期摘要每 250 毫秒续读，完整摘要每 15 秒刷新；需要时显示 "可能已过期" 或 "尚未核对"，摘要最新时不显示这行状态。
+
 ### 全量重扫用量统计
 
 在用量页的历史区点击 **全量重扫用量统计**，扫描所有已索引会话，包括已归档会话。任务仅手动触发，可能耗时较久。`POST /api/usage/rescan` 无需请求体；运行中再次 POST 会返回同一个任务的当前进度。建议每秒轮询 `GET /api/usage/rescan`。两者沿用普通成功信封，`data` 包含 `state`（`idle`、`running`、`completed`、`failed`）、`scanned_sessions`、`total_sessions`、`scanned_records`、`started_at`、`finished_at` 和 `error`。时间为 epoch 毫秒或 `null`；未失败时 `error` 为 `null`。`scanned_records` 计入新读取的所有 wire 记录，包括非用量记录；检查点未变化时无需读取 wire。
 
-任务绕过常规会话、记录和时间扫描预算，保存增量来源检查点；运行中常规查询继续读取已提交数据。常规查询的截止预算为 10 秒，冷恢复会话上限为 500，导入或恢复用量事实的预算为 200,000 条，包括未知和无效事实。非用量 wire 记录不占用这项事实预算，查询已索引事实也不会再次消耗它。已删除会话与临时用量账本同样按常规查询预算接续。重扫完成不会补造供应商未返回的用量或缺失模型价格。任务进度仅在当前进程内保留，重启后回到 `idle`；已提交事实、来源覆盖和导入进度跨重启保留。暂不支持取消重扫任务。
+任务绕过常规会话、记录和时间扫描预算，保存增量来源检查点；运行中常规查询继续读取已提交数据。常规查询的截止预算为 10 秒，清单枚举额度为 500 个会话、2048 个 Agent 来源，导入或恢复用量事实的预算为 200,000 条，包括未知和无效事实。下一次查询继续未完成的清单枚举与来源核对，不重复已完成的前缀；观察到单个会话变化时只核对该会话，每十分钟或监听不可用时通过完整清单修复遗漏。非用量 wire 记录不占用这项事实预算，查询已索引事实也不会再次消耗它。已删除会话与临时用量账本同样按常规查询预算接续。重扫完成不会补造供应商未返回的用量或缺失模型价格。任务进度仅在当前进程内保留，重启后回到 `idle`；已提交事实、来源覆盖和导入进度跨重启保留。暂不支持取消重扫任务。
 
 历史统计与智能体累计用量共用轻量用量事实，随对话记录提交保存；已有有效用量检查点会自动迁移。没有可用检查点时，首次查询只恢复尚未覆盖的源记录；`reliability.complete=false` 表示当前小计尚未统计完整。后续查询从已提交进度继续；取消历史请求后，若没有其他调用方仍在等待，该次恢复会停止。有效用量事实仍在时，进程重启或重建其查询索引无需重新读取对话正文。
 

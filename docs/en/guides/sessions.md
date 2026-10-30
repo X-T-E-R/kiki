@@ -32,6 +32,8 @@ Do not manually edit files inside the `sessions/` directory — doing so may pre
 
 In the desktop and browser GUI, the model, effort, workspace, working directory and profile (the agent's configuration file) you pick for a new session can be remembered across navigation and refresh. Turn that on with **Composer → Persist composer drafts** in Settings; turning it off clears what was saved. Drafts in the page you currently have open survive the switch, but the next refresh starts with nothing restored. This is separate from the session files above, which is why the two behave differently.
 
+Before you choose an effort manually, changing the model or profile uses the profile's effort default for the selected model, including matching [`model_profiles` entries](../customization/agent-profiles.md), then the model's own default. A new persona draft uses the persona's own effort pin first. A manual effort choice stays with the draft through model, profile and persona changes and is remembered on refresh.
+
 An existing conversation reopens on its committed model and effort. Old composer display values do not undo a later model switch. A confirmed model choice and its direct, compact or fresh mode stay in the draft through binding refreshes and are applied by the next submitted message; they do not switch the conversation before that message is accepted. A completed model switch remains completed after recovery and needs no retry.
 
 ## Task board
@@ -70,7 +72,9 @@ Opening a saved session reads its history without waking an inactive session's a
 
 A subagent resumed with the same model reads **Resumed · continuing with…**, not **Switched to…**. Actual model changes, thinking-effort updates and context rebuilds keep their own labels.
 
-The GUI opens with a small window of the latest messages. Scrolling up loads the next earlier page automatically; staying in the conversation does not load its entire history in the background. When earlier pages remain, **Load earlier messages** is available even if the current window has no visible messages. Visible messages and expanded entries load the details they need. Jumping to an older message or returning to a saved reading position continues loading until that place is found; scrolling yourself cancels the old jump. Older message previews may be fetched again as you scroll to keep the reading cache small. Leaving the conversation cancels its pending reads, not the agent's work. A real read failure keeps the messages already loaded and offers a retry; [Reading timeout](./settings.md#timeouts) controls how long a read may wait.
+The GUI opens with a small window of the latest messages. Scrolling up loads the next earlier page automatically; staying in the conversation does not load its entire history in the background. When earlier pages remain, **Load earlier messages** is available even if the current window has no visible messages. Loading status stays at the top of the history. If a page fails or loading reaches ten seconds, choose **Retry** to continue from the saved page boundary without losing loaded messages. This limit also applies when [Reading timeout](./settings.md#timeouts) is disabled.
+
+Visible messages and expanded entries load the details they need. Jumping to an older message or returning to a saved reading position continues loading until that place is found; scrolling yourself cancels the old jump. Older message previews may be fetched again as you scroll to keep the reading cache small. Leaving the conversation cancels its pending reads, not the agent's work.
 
 If only part of the message records has loaded, the bottom-right status area shows **More message records**, even when no loaded message is queued. Open it and choose **Continue loading** to read one more page; a failed read offers **Try again** without removing existing queue rows. The progress counts message records, including completed ones, not just messages waiting to send. An empty queue does not leave a blank bar above the composer.
 
@@ -202,7 +206,7 @@ Omitting `sessionId` exports the most recent session in the current directory (w
 kiki export <sessionId> -o ~/Desktop/my-session.zip
 ```
 
-The export includes everything in the session directory, diagnostic logs included, plus the global log at `~/.kiki/logs/kimi-code.log` (the name is inherited from the project's earlier naming). Add `--no-include-global-log` to leave that one out.
+The export includes everything in the session directory, diagnostic logs included, plus the current home's global log at `<home>/logs/kimi-code.log` (default `~/.kiki/logs/kimi-code.log`; the name is inherited from the project's earlier naming). Add `--no-include-global-log` to leave that one out.
 
 You can also export from inside the TUI without leaving the interactive session:
 

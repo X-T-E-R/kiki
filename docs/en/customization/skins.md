@@ -54,7 +54,7 @@ After adding a file, press **Reload skins** in Appearance. No restart needed.
 ::: warning Which machine's folder?
 The themes folder is read on the machine running the Kiki server, since that is the only filesystem it can see.
 
-- **Desktop app** — your own `~/.kiki/themes/`.
+- **Desktop app** — the current Space's `<home>/themes/` (default `~/.kiki/themes/`).
 - **Browser connected to a remote server** — the folder belongs to that server, not to the device you are browsing from. Built-in skins work either way, because they ship inside the app.
 :::
 

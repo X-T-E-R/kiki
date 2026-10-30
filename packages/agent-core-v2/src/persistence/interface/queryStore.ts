@@ -155,3 +155,16 @@ export interface IQueryStore {
 }
 
 export const IQueryStore: ServiceIdentifier<IQueryStore> = createDecorator<IQueryStore>('queryStore');
+
+/** The store rejected a request because its bounded queue is full; the data is intact and a later request can succeed. */
+export class QueryStoreBusyError extends Error {
+  readonly code = 'query_store.busy';
+  constructor() {
+    super('Query store queue full');
+    this.name = 'QueryStoreBusyError';
+  }
+}
+
+export function isQueryStoreBusy(error: unknown): boolean {
+  return error instanceof QueryStoreBusyError || (error as { code?: unknown } | null)?.code === 'query_store.busy';
+}

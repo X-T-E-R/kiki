@@ -1,5 +1,5 @@
-import { IRequestGovernance, type Scope } from '@kiki/agent-core-v2';
-import { agentActivitySnapshotSchema, requestGovernanceSnapshotSchema, usageQuerySchema, usageResponseSchema, usagePricingQuerySchema, usagePricingResponseSchema, usagePricingUpdateSchema, usageRescanStatusSchema } from '@kiki/protocol';
+import { IRequestGovernance, ISessionIndex, type Scope } from '@kiki/agent-core-v2';
+import { agentActivitySnapshotSchema, requestGovernanceSnapshotSchema, usageAccountingSnapshotSchema, usageQuerySchema, usageResponseSchema, usagePricingQuerySchema, usagePricingResponseSchema, usagePricingUpdateSchema, usageRescanStatusSchema } from '@kiki/protocol';
 
 import { IModelPricingService } from '../../pricing/modelPricingService';
 import { z } from 'zod';
@@ -56,6 +56,23 @@ export function registerV2UsageRoutes(app: V2UsageRouteHost, core: Scope): void 
   });
   app.get(agents.path, agents.options, agents.handler as Parameters<V2UsageRouteHost['get']>[2]);
   const { service } = usageRuntime(core);
+  const accounting = defineRoute({
+    method: 'GET', path: '/usage/sessions/:sessionId/accounting',
+    params: z.object({ sessionId: z.string().min(1) }), success: { data: usageAccountingSnapshotSchema },
+    errors: { [ErrorCode.SESSION_NOT_FOUND]: {} }, operationId: 'getSessionUsageAccounting', tags: ['usage'],
+  }, async (req, reply) => {
+    const summary = await core.accessor.get(ISessionIndex).get(req.params.sessionId);
+    if (summary === undefined) {
+      reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id));
+      return;
+    }
+    const result = await withReplyCloseSignal(
+      reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+      (signal) => service.readSessionAccounting(summary.workspaceId, summary.id, signal), req,
+    );
+    reply.send(okEnvelope(result, req.id));
+  });
+  app.get(accounting.path, accounting.options, accounting.handler as Parameters<V2UsageRouteHost['get']>[2]);
   const rescanStatus = defineRoute({
     method: 'GET', path: '/usage/rescan', success: { data: usageRescanStatusSchema },
     operationId: 'getUsageRescan', tags: ['usage'],

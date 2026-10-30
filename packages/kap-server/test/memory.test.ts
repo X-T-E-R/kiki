@@ -75,6 +75,18 @@ describe('memory REST', () => {
     expect(api.getSettings().advisor).toBeUndefined();
     expect((await api.request('get', '/memory/advisor/status', { query: { session_id: 'cold', agent_id: 'main' } })).data).toBeNull();
   });
+  it('keeps an unset first-step wait unset, saves an explicit one, and clears it with null', async () => {
+    const api = setup();
+    await api.request('patch', '/memory/settings', { body: { enabled: true, advisor: { source: { kind: 'connection', connection: 'judge' } } } });
+    expect(api.getSettings().advisor?.first_step_wait_ms).toBeUndefined();
+    await api.request('patch', '/memory/settings', { body: { advisor: { first_step_wait_ms: 1500 } } });
+    expect(api.getSettings().advisor?.first_step_wait_ms).toBe(1500);
+    await api.request('patch', '/memory/settings', { body: { advisor: { timeout_ms: 2000 } } });
+    expect(api.getSettings().advisor?.first_step_wait_ms).toBe(1500);
+    await api.request('patch', '/memory/settings', { body: { advisor: { first_step_wait_ms: null } } });
+    expect(api.getSettings().advisor?.first_step_wait_ms).toBeUndefined();
+    expect(api.getSettings().advisor).toMatchObject({ timeout_ms: 2000, source: { connection: 'judge' } });
+  });
   it('reads and writes global and workspace switches without enabling workspace memory when global is off', async () => {
     const api = setup();
     const id = 'wd_example_0123456789ab';

@@ -424,6 +424,11 @@ export function ContextMeter({
                 </p>
                 <span className="text-[12px] text-ink-faint">{t('context.sessionUsageHint')}</span>
               </div>
+              {!hasCanonicalIdentity && sessionAccounting?.freshness !== undefined && sessionAccounting.freshness !== 'current' ? (
+                <p role="status" data-context-usage-freshness={sessionAccounting.freshness} className="text-[12px] text-ink-faint">
+                  {t(sessionAccounting.freshness === 'stale' ? 'context.usageStale' : 'context.usageUnverified')}
+                </p>
+              ) : null}
               {canonicalUsageLoading ? (
                 <p role="status" data-context-usage-loading className="text-[12px] text-ink-faint">{t('diagnostics.loading')}</p>
               ) : null}

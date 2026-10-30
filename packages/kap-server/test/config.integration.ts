@@ -1242,6 +1242,7 @@ timeout = 600
     const patched = await patchConfig({
       retry: {
         max_attempts: 5,
+        retry_partial_responses: false,
         policies: [{
           match: '^provider\\.rate_limit$',
           models: ['gemini-4-argon'],
@@ -1254,6 +1255,7 @@ timeout = 600
 
     expect(patched.retry).toEqual({
       maxAttempts: 5,
+      retryPartialResponses: false,
       policies: [{
         match: '^provider\\.rate_limit$',
         models: ['gemini-4-argon'],
@@ -1266,7 +1268,11 @@ timeout = 600
     const saved = await readFile(join(home as string, 'config.toml'), 'utf-8');
     expect(saved).toContain('models = [ "gemini-4-argon" ]');
     expect(saved).toContain('providers = [ "google-native" ]');
+    expect(saved).toContain('retry_partial_responses = false');
     expect((await getConfig()).retry).toEqual(patched.retry);
+    await restartServer();
+    expect((await getConfig()).retry).toEqual(patched.retry);
+    expect((await patchConfig({ retry: { retry_partial_responses: true } })).retry?.retryPartialResponses).toBe(true);
   });
 
   it('rejects unknown retry keys without persisting them', async () => {

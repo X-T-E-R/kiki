@@ -77,6 +77,7 @@ import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProce
 import { IWireService } from '#/wire/wire';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
+import { agentMessageMaterializationsKey, agentMessageReceiptsKey } from '#/session/agentCollaboration/messageReceiptState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { createFakeProcessRunner } from '../tools/fixtures/fake-exec';
 import { StubConfigService } from '../kosong/stubs';
@@ -402,6 +403,8 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
           let state = stateByAgentId.get(agentId);
           if (state === undefined) {
             state = new AgentStateService();
+            state.contributeState(agentMessageReceiptsKey);
+            state.contributeState(agentMessageMaterializationsKey);
             stateByAgentId.set(agentId, state);
           }
           return state as never;
@@ -1231,6 +1234,10 @@ describe('AgentRun tool description', () => {
     expect(description).toContain('otherwise omit model_alias to use the target default');
     expect(description).not.toContain('Set model_alias to inherit explicitly');
     expect(description).toContain('do not assume they copy your model or effort');
+    expect(description).toContain('not by repeating them in `prompt`');
+    const properties = agentParameters()['properties'] as Record<string, { description?: string }>;
+    expect(properties['model_alias']?.description).toContain('the receipt reports actual_model');
+    expect(properties['prompt']?.description).toContain('not model, route or tool choices');
   });
 
   function agentParameters(): Record<string, unknown> {
@@ -3103,12 +3110,13 @@ describe('AgentRun tool execution contract', () => {
     expect(taskId).toBeDefined();
     expect(result.output).toContain('agent_id: agent-child');
     expect(result.output).toContain('actual_profile: general');
+    expect(result.output).toMatch(/^actual_model: \S+$/m);
     expect(result.output).toContain('status: running');
     expect(result.output).toContain('automatic_notification: true');
     expect(result.output).toContain('parent_notify: enabled');
     expect(result.output).not.toContain('next_step:');
     expect(result.output).not.toContain('resume_hint:');
-    expect(result.output.split('\n')).toHaveLength(7);
+    expect(result.output.split('\n')).toHaveLength(8);
     completion.resolve({ summary: 'finished later' });
   });
 
@@ -3783,9 +3791,9 @@ describe('Agent tools', () => {
         [emit] prompt.outcome_committed     { "time": "<time>", "terminal": { "promptId": "<msg-1>", "turnId": 0, "state": "completed", "result": { "type": "completed", "steps": 2, "truncated": false } } }
         [wire] prompt.completed             { "promptId": "<msg-1>", "finishedAt": "<time>", "reason": "completed", "time": "<time>" }
         [wire] prompt.outcome_committed     { "terminal": { "promptId": "<msg-1>", "turnId": 0, "state": "completed", "result": { "type": "completed", "steps": 2, "truncated": false } }, "time": "<time>" }
-        [wire] prompt.accepted              { "promptId": "<msg-3>", "time": "<time>" }
         [emit] prompt.enqueued              { "time": "<time>", "schemaVersion": 1, "promptId": "<msg-3>", "userMessageId": "<msg-3>", "createdAt": "<time>", "message": { "role": "user", "content": [ { "type": "text", "text": "Can you still use Lookup?" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-3>" }, "alreadyMaterialized": false, "appendTiming": "agent_idle", "revision": 0, "queueIndex": 0, "retryStatus": "running" }
         [emit] prompt.submitted             { "time": "<time>", "agentId": "main", "promptId": "<msg-3>", "userMessageId": "<msg-3>", "status": "running", "content": [ { "type": "text", "text": "Can you still use Lookup?" } ], "createdAt": "<time>", "appendTiming": "agent_idle", "revision": 0 }
+        [wire] prompt.accepted              { "promptId": "<msg-3>", "time": "<time>" }
         [wire] prompt.enqueued              { "schemaVersion": 1, "promptId": "<msg-3>", "userMessageId": "<msg-3>", "createdAt": "<time>", "message": { "role": "user", "content": [ { "type": "text", "text": "Can you still use Lookup?" } ], "toolCalls": [], "origin": { "kind": "user" }, "id": "<msg-3>" }, "alreadyMaterialized": false, "appendTiming": "agent_idle", "revision": 0, "queueIndex": 0, "retryStatus": "running", "time": "<time>" }
         [wire] prompt.launch_committed      { "launchId": "<uuid-9>", "promptId": "<msg-3>", "revision": 0, "committedAt": "<time>", "time": "<time>" }
         [wire] turn.prompt                  { "turnId": 1, "promptId": "<msg-3>", "input": [ { "type": "text", "text": "Can you still use Lookup?" } ], "origin": { "kind": "user" }, "managed": true, "time": "<time>" }

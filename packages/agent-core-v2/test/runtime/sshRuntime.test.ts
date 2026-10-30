@@ -297,7 +297,7 @@ describe('approved SSH tool preparation', () => {
       expect(f.registry.current('ssh:dev')).toBeUndefined();
       const result = await f.bash();
       expect(result.isError).not.toBe(true);
-      expect(result.output).toContain('host: dev\nexample-host');
+      expect(result.output).toContain('host: dev\nplatform: POSIX\nshell: sh\nexample-host');
       expect(f.exec).toHaveBeenCalledWith(['/bin/sh', '-c', "cd '/home/tester' && hostname"], expect.any(Object));
       expect(f.registry.current('ssh:dev')).toBeDefined();
       expect(f.binding.runtimeId).toBe('local');

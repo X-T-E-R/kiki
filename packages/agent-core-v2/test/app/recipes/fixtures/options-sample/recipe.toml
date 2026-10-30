@@ -1,0 +1,48 @@
+# Sample package exercising every option form recipe-switch and Kiki agreed on.
+# Expected texts for each selection are in expected.json (main/sub/independent system + steering).
+schema_version = 1
+id = "options-sample"
+name = "Options sample"
+version = "0.1.0"
+description = "when/unless gating, whole-slot prepend/append, section patches, and a slot that filters to empty."
+
+[options.brief]
+name = "Brief replies"
+description = "Prepends a brevity rule to every system prompt and appends a reminder to Main steering."
+default = true
+prepend.common.system = { text = "Keep replies short." }
+append.main.steering = { text = "Stay brief." }
+
+[options.review]
+name = "Review section"
+description = "Inserts a Review section before Tone in Main and appends a line inside Workflow."
+default = false
+
+[[options.review.patch]]
+slot = "main.system"
+section = "Tone"
+action = "before"
+content = { file = "review.md" }
+
+[[options.review.patch]]
+slot = "main.system"
+section = "Workflow"
+action = "append"
+content = { text = "Finish with a self-review." }
+
+[options.quiet]
+name = "Quiet subagents"
+description = "Turns subagent steering off entirely (the slot becomes declared-but-empty)."
+default = false
+
+[prompts]
+system = [{ file = "sub.md" }, { text = "Report blockers early.", unless = "quiet" }]
+steering = { text = "Stay inside the slice.", unless = "quiet" }
+
+[prompts.main]
+system = { file = "main.md" }
+steering = [{ text = "Keep the goal in view." }, { text = "Cite file:line for findings.", when = "review" }]
+
+[prompts.independent]
+system = { file = "independent.md" }
+steering = "off"

@@ -1,6 +1,6 @@
 # Hooks 制作参考
 
-版本匹配的完整文档在服务器主机的 `<KIKI_HOME>/docs/zh/customization/hooks.md`（未设置 KIKI_HOME 时为 `~/.kiki`）。先读该文档，再扩展下面的最小示例。
+版本匹配的完整文档在服务器主机当前 Space 的 `<home>/docs/zh/customization/hooks.md`。先读取 Space 段给出的已解析 Product docs 路径；如果该路径未暴露或不可用，报告文档不可用，不要猜 `~/.kiki`；`~/.kiki` 仅是默认位置说明。再扩展下面的最小示例。
 
 ## 声明式 v2 A：指导与观察
 

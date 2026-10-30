@@ -286,7 +286,8 @@ export class HistoryLocatorStore {
   }
 
   async scan(session: string, agent: string, signal?: AbortSignal,
-    search?: HistoryNavSearch, through?: number): Promise<HistoryNavScan | undefined> {
+    search?: HistoryNavSearch, through?: number,
+    limits?: { readonly maxBytes?: number; readonly maxRecords?: number; readonly allowOversize?: boolean }): Promise<HistoryNavScan | undefined> {
     const location = await this.transcript.historyWireLocation(session, agent);
     if (location === undefined) return undefined;
     const { wirePath, workspaceId: workspace } = location;
@@ -310,11 +311,12 @@ export class HistoryLocatorStore {
         await (scanSignal === undefined ? previous : abortable(previous, scanSignal));
         entered = true;
         scanSignal?.throwIfAborted();
-        const input = { workspace, session, agent, wirePath, incarnation, key, signal: scanSignal };
+        const input = { workspace, session, agent, wirePath, incarnation, key, signal: scanSignal, limits };
         if (search?.sort !== undefined && 'ready' in this.store) {
           return await searchSortedHistory({ ...input, search,
             db: await (this.store as LazyHistoryNavigationDb).ready(),
-            maxBytes: HISTORY_NAV_SCAN_BYTES, maxRecords: HISTORY_NAV_SCAN_RECORDS,
+            maxBytes: limits?.maxBytes ?? HISTORY_NAV_SCAN_BYTES,
+            maxRecords: limits?.maxRecords ?? HISTORY_NAV_SCAN_RECORDS,
             prepare: (asOf) => this.scanSlice({ ...input, stopAt: asOf }),
             textOf: originalText, refOf: (row, focus) => this.ref(row, focus) });
         }
@@ -468,7 +470,8 @@ export class HistoryLocatorStore {
 
   private async scanSlice(input: { workspace: string; session: string; agent: string; wirePath: string;
     incarnation: string; key: string; signal?: AbortSignal; search?: HistoryNavSearch;
-    stopAt?: number; startAt?: number }): Promise<HistoryNavScan> {
+    stopAt?: number; startAt?: number;
+    limits?: { readonly maxBytes?: number; readonly maxRecords?: number; readonly allowOversize?: boolean } }): Promise<HistoryNavScan> {
     const directoryWindow = this.directoryWindow;
     const tailWindow = directoryWindow !== undefined && directoryWindow.mode !== 'prefix';
     const guard = tailWindow ? historyDirectoryWindowGuard() : undefined;
@@ -537,10 +540,13 @@ export class HistoryLocatorStore {
     let pendingBytes = 0;
     const readOptions: AwaitedWireRecordsStreamOptions = {
       startByteOffset: scanner.offset, startRecordOrdinal: scanner.ordinal,
-      maxBytes: tailWindow ? HISTORY_NAV_SCAN_BYTES / 2 : HISTORY_NAV_SCAN_BYTES,
+      maxBytes: input.limits?.maxBytes ?? (tailWindow ? HISTORY_NAV_SCAN_BYTES / 2 : HISTORY_NAV_SCAN_BYTES),
       endByteOffset: through,
-      maxRecords: HISTORY_NAV_SCAN_RECORDS,
-      maxLineBytes: HISTORY_NAV_MAX_LINE_BYTES, chunkBytes: HISTORY_NAV_CHUNK_BYTES,
+      maxRecords: input.limits?.maxRecords ?? HISTORY_NAV_SCAN_RECORDS,
+      maxLineBytes: input.limits?.allowOversize === false
+        ? Math.min(input.limits.maxBytes ?? HISTORY_NAV_SCAN_BYTES, HISTORY_NAV_MAX_LINE_BYTES)
+        : HISTORY_NAV_MAX_LINE_BYTES,
+      chunkBytes: HISTORY_NAV_CHUNK_BYTES,
       signal: input.signal, includeRawRecord: true,
       onRecord: async (record, span, raw) => {
         if (input.stopAt !== undefined && span.endByteOffset > input.stopAt) throw new Error('stale_scan_cursor');
@@ -610,7 +616,7 @@ export class HistoryLocatorStore {
       },
     };
     let read = await streamLogicalWireRecordsAwaited(input.wirePath, readOptions);
-    if (input.search === undefined && !tailWindow && read.recordCount === 0 &&
+    if (input.limits?.allowOversize !== false && input.search === undefined && !tailWindow && read.recordCount === 0 &&
         (read.incompleteReason === 'byte_budget' || read.incompleteReason === 'line_budget') && read.nextByteOffset === scanner.offset) {
       const attemptedBytes = read.bytesRead;
       read = await streamLogicalWireRecordsAwaited(input.wirePath, {

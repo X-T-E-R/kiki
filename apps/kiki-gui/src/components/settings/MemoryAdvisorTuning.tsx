@@ -13,6 +13,7 @@ import {
   MEMORY_ADVISOR_DEFAULTS,
   MEMORY_ADVISOR_NUMBER_FIELDS,
   MEMORY_ADVISOR_RANGES,
+  memoryAdvisorNumberValue,
   parseMemoryAdvisorNumber,
   type MemoryAdvisorNumberField,
 } from '@kiki/session-core/settings';
@@ -86,14 +87,26 @@ export function MemoryAdvisorTuning({ workspaceId, advisor }: {
       {MEMORY_ADVISOR_NUMBER_FIELDS.map((field) => {
         const range = MEMORY_ADVISOR_RANGES[field];
         const unit = FIELD_UNIT[field];
+        const shown = memoryAdvisorNumberValue(field, config, status);
+        const followsSource = field === 'first_step_wait_ms';
         return (
           <SettingField key={field} label={t(`memory.advisor.field.${field}` as I18nKey)} htmlFor={`memory-advisor-${field}`}
-            detail={t('memory.advisor.fieldDefault', { value: range.fallback })}>
+            detail={t('memory.advisor.fieldDefault', { value: shown.fallback })}>
             {statusFor(field)}
+            {followsSource && !shown.explicit ? (
+              <span data-memory-advisor-wait-default className="text-[12px] text-ink-faint">{t('agentPanel.default')}</span>
+            ) : null}
+            {followsSource && shown.explicit && config !== undefined ? (
+              <button type="button" data-memory-advisor-wait-reset disabled={busy}
+                className="text-[12px] font-medium text-ink-soft underline-offset-2 hover:text-ink hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => { write(field, { advisor: { first_step_wait_ms: null } }); }}>
+                {t('composer.modelResetDefault')}
+              </button>
+            ) : null}
             <div className="flex items-center gap-1.5">
               <CommitInput id={`memory-advisor-${field}`} dataAttr={`data-memory-advisor-${field.replaceAll('_', '-')}`}
                 className="w-24 text-right" inputMode="numeric" disabled={busy}
-                value={String(config?.[field] ?? range.fallback)}
+                value={String(shown.value)}
                 validate={(text) => (parseMemoryAdvisorNumber(field, text) === null ? t('memory.advisor.fieldInvalid', { min: range.min, max: range.max }) : null)}
                 onCommit={(text) => { write(field, { advisor: { [field]: Number(text) } }); }} />
               {unit !== undefined ? <span className="text-[12px] text-ink-faint">{t(`st.residency.${unit === 'ms' ? 'msUnit' : unit === 'tokens' ? 'tokensUnit' : 'charsUnit'}` as I18nKey)}</span> : null}

@@ -81,6 +81,7 @@ function fixture(
   options: {
     mode?: 'rank' | 'select' | 'off';
     advisorHook?: boolean;
+    publishRefreshOnly?: boolean;
     unconfigured?: boolean;
     child?: boolean;
     allowedModels?: string[];
@@ -115,7 +116,7 @@ function fixture(
           mode: options.mode ?? 'rank',
           selector: { protocol: options.protocol ?? 'chat_json', model: 'chosen' },
           source: options.source,
-          first_step_wait_ms: options.wait ?? 0,
+          first_step_wait_ms: 'wait' in options ? options.wait : 0,
           timeout_ms: options.timeout ?? 1000,
           max_calls_per_turn: options.maxCalls ?? 3,
         },
@@ -232,8 +233,9 @@ function fixture(
   ix.set(IAgentMemorySnapshot, new SyncDescriptor(AgentMemorySnapshot));
   const snapshot = ix.get(IAgentMemorySnapshot);
   before.register('context-injector', async (_context, next) => {
-    await snapshot.refreshIfDirty();
-    published = await snapshot.get();
+    const refreshed = await snapshot.refreshIfDirty();
+    if (options.publishRefreshOnly) published = refreshed ?? published;
+    else published = await snapshot.get();
     await next();
   });
   ix.set(IAgentMemoryAdvisor, new SyncDescriptor(AgentMemoryAdvisor));
@@ -347,6 +349,28 @@ describe('Memory Advisor lifecycle and snapshot publication', () => {
     expect(f.calls).toHaveBeenCalledTimes(2);
     await f.step(1, false);
     expect(f.calls).toHaveBeenCalledTimes(2);
+  });
+  it('hands the refreshed projection to the prompt publisher after the Advisor reads the request', async () => {
+    const gate = deferred<Awaited<ReturnType<IMemorySelector['call']>>>();
+    const pending = fixture({ publishRefreshOnly: true, call: async () => gate.promise });
+    const baseline = fixture({ publishRefreshOnly: true, advisorHook: false });
+    await pending.step();
+    await baseline.step();
+    expect(pending.calls).toHaveBeenCalledOnce();
+    expect(pending.published()).toContain('[m_lexical]');
+    expect(pending.published()).toBe(baseline.published());
+    const f = fixture({ wait: 100, publishRefreshOnly: true });
+    await f.step();
+    expect(f.calls).toHaveBeenCalledTimes(2);
+    expect(f.published()).toContain('use=history');
+    expect(f.published()).toContain('Exception: this must only be used as history.');
+    const disabled = fixture({ mode: 'off', publishRefreshOnly: true });
+    const disabledBaseline = fixture({ mode: 'off', publishRefreshOnly: true, advisorHook: false });
+    await disabled.step();
+    await disabledBaseline.step();
+    expect(disabled.published()).toBe(disabledBaseline.published());
+    expect(disabled.published()).toContain('<memory-workset');
+    gate.resolve([]);
   });
   it('cancels in-flight work and clears advice on hot disable; a selector ignoring abort cannot publish late results', async () => {
     const gate = deferred<Awaited<ReturnType<IMemorySelector['call']>>>();
@@ -617,6 +641,48 @@ describe('Memory Advisor lifecycle and snapshot publication', () => {
     await flush();
     expect(f.published()).not.toContain('use=');
   });
+  it.each([
+    { protocol: 'system_one' as const, wait: undefined, expected: 3_000 },
+    { protocol: 'pair_score' as const, wait: undefined, expected: 3_000 },
+    { protocol: 'chat_json' as const, wait: undefined, expected: 1_500 },
+    { protocol: 'system_one' as const, wait: 1_500, expected: 1_500 },
+  ])('waits $expected ms on the first step for $protocol with first_step_wait_ms=$wait', async ({ protocol, wait, expected }) => {
+    vi.useFakeTimers();
+    const gate = deferred<Awaited<ReturnType<IMemorySelector['call']>>>();
+    const f = fixture({ protocol, wait, timeout: 10_000, call: async () => gate.promise, selector: {
+      _serviceBrand: undefined,
+      describe: (config) => advisorStatus('ready', { destination, protocol: config?.selector?.protocol, applicability: 'full_units' }),
+      call: async () => gate.promise,
+      probe: async () => { throw new Error('unused'); },
+    } });
+    expect(f.settings().advisor?.first_step_wait_ms).toBe(wait);
+    let done = false;
+    const step = f.step().then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(expected - 1);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await step;
+    expect(done).toBe(true);
+    gate.resolve([]);
+  });
+  it('lets the default first-step wait follow a source switch without saving it', async () => {
+    vi.useFakeTimers();
+    const gate = deferred<Awaited<ReturnType<IMemorySelector['call']>>>();
+    const f = fixture({ protocol: 'system_one', wait: undefined, timeout: 10_000, call: async () => gate.promise, selector: {
+      _serviceBrand: undefined,
+      describe: (config) => advisorStatus('ready', { destination, protocol: config?.selector?.protocol, applicability: 'full_units' }),
+      call: async () => gate.promise,
+      probe: async () => { throw new Error('unused'); },
+    } });
+    f.configure({ advisor: { ...f.settings().advisor, selector: { protocol: 'chat_json', model: 'chosen' } } });
+    expect(f.settings().advisor?.first_step_wait_ms).toBeUndefined();
+    let done = false;
+    const step = f.step().then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(1_500);
+    await step;
+    expect(done).toBe(true);
+    gate.resolve([]);
+  });
   it('cancels an in-flight request when permissions are revoked', async () => {
     const gate = deferred<Awaited<ReturnType<IMemorySelector['call']>>>();
     const f = fixture({ call: async () => gate.promise });
@@ -835,15 +901,26 @@ describe('Advisor governed protocols', () => {
     expect(record.mock.calls.map((args) => args[2])).toEqual([false, true]);
     expect(f.request.mock.calls[0]![2].attribution).toBe(attribution);
   });
+  it('asks chat discovery to list only full reads and leaves room for a whole catalog page', async () => {
+    const f = selector();
+    const call = { ...input('chat_json'), stage: 'discover' as const, units: Array.from({ length: 40 }, (_, index) => ({ handle: `c${index}`, text: `Entry ${index}` })) };
+    f.request.mockImplementationOnce(async function* () {
+      yield { type: 'finish' as const, message: { role: 'assistant' as const, content: [{ type: 'text' as const, text: '{"answers":[{"handle":"c7","use":"read"}]}' }], toolCalls: [] } };
+    });
+    expect(await f.service.call(call)).toEqual([{ handle: 'c7', use: 'read' }]);
+    const [request, , params] = f.request.mock.calls[0]!;
+    const payload = JSON.parse(request.messages[0]!.content[0]!.text);
+    expect(payload.contract).toContain('omitted entries are skipped');
+    expect(payload.contract).not.toContain('read|skip');
+    expect(params.maxCompletionTokens).toBe(5_696);
+  });
   it('uses System One criteria and probability answers, admission, provider credentials and real usage fields', async () => {
     const f = selector();
     const http = vi.fn(async (_url, init) => {
       const body = JSON.parse(init.body);
-      expect(body.questions.c0.criteria).toEqual({
-        apply: 'apply',
-        history: 'history',
-        skip: 'skip',
-      });
+      expect(Object.keys(body.questions.c0.criteria)).toEqual(['apply', 'history', 'skip']);
+      expect(body.questions.c0.criteria.apply).toContain('current premise');
+      expect(body.questions.c0.criteria.history).toContain('without current authority');
       expect(new Headers(init.headers).get('authorization')).toBe('Bearer synthetic-key');
       return Response.json({
         model: 'arbitrary-remote-name',
@@ -870,6 +947,30 @@ describe('Advisor governed protocols', () => {
       expect.objectContaining({ inputOther: 17, output: 4 }),
       true,
     );
+  });
+  it('reports the effective first-step wait and the default of the resolved source protocol', () => {
+    const decision = selector('system_one');
+    const config = input('system_one').config;
+    expect(config.first_step_wait_ms).toBeUndefined();
+    expect(decision.service.describe(config, workspace)).toMatchObject({ first_step_wait_ms: 3_000, first_step_wait_default_ms: 3_000 });
+    expect(decision.service.describe({ ...config, first_step_wait_ms: 1_500 }, workspace)).toMatchObject({ first_step_wait_ms: 1_500, first_step_wait_default_ms: 3_000 });
+    const chat = selector().service.describe(input('chat_json').config, workspace);
+    expect(chat).toMatchObject({ protocol: 'chat_json', first_step_wait_ms: 1_500, first_step_wait_default_ms: 1_500 });
+  });
+  it('describes System One choices so discovery reads defaults and exceptions the answer depends on', async () => {
+    const f = selector();
+    const http = vi.fn(async (_url, init) => {
+      const criteria = JSON.parse(init.body).questions.c0.criteria;
+      expect(Object.keys(criteria)).toEqual(['read', 'skip']);
+      expect(criteria.read).toContain('default, exception');
+      expect(criteria.skip).not.toBe('skip');
+      return Response.json({
+        answers: { c0: { type: 'choice', choice: 'read', confidence: 0.4, probabilities: { read: 0.7, skip: 0.3 } } },
+      });
+    });
+    vi.stubGlobal('fetch', http);
+    expect(await f.service.call({ ...input('system_one'), stage: 'discover' })).toEqual([{ handle: 'c0', use: 'read' }]);
+    expect(http).toHaveBeenCalledOnce();
   });
   it('uses standard rerank index/score output without manufacturing applicability and rejects select mode', async () => {
     const f = selector();

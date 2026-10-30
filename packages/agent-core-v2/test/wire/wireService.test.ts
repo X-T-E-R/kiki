@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import { mkdtemp, open, rm, stat, utimes } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -11,6 +14,7 @@ import { IAgentBlobService } from '#/agent/blob/agentBlobService';
 import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
 import type { ContentPart } from '#/kosong/contract/message';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
@@ -205,6 +209,175 @@ describe('WireService seal', () => {
     expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
     expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
     expect(reads).toBe(3);
+  });
+
+  it('extends a live epoch proof from the verified prefix instead of rehashing the journal', async () => {
+    await wire.seal();
+    for (let turnId = 0; turnId < 64; turnId++) wire.appendRecord({ type: 'turn.prompt', turnId, text: 'x'.repeat(4096) });
+    await wire.flush();
+    await wire.beginTranscriptEpoch!();
+    const scope = testWireScope(SCOPE, KEY);
+    const original = storage.readStream.bind(storage);
+    let bytes = 0;
+    storage.readStream = async function* (...args: Parameters<typeof original>) {
+      for await (const chunk of original(...args)) {
+        if (args[1] === AGENT_WIRE_RECORD_KEY) bytes += chunk.byteLength;
+        yield chunk;
+      }
+    };
+    expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+    const journalSize = (await storage.size(scope, AGENT_WIRE_RECORD_KEY))!;
+    expect(bytes).toBeLessThan(16_384);
+    for (let turnId = 64; turnId < 72; turnId++) {
+      bytes = 0;
+      const record = { type: 'turn.prompt', turnId };
+      wire.appendRecord(record);
+      expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+      expect(bytes).toBeLessThan(4096 + 2 * Buffer.byteLength(`${JSON.stringify(record)}\n`) + 1);
+    }
+    expect(journalSize).toBeGreaterThan(64 * 4096);
+    const tail = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!);
+    tail[tail.byteLength - 10] = '0'.charCodeAt(0) === tail[tail.byteLength - 10] ? '1'.charCodeAt(0) : '0'.charCodeAt(0);
+    await storage.write(scope, AGENT_WIRE_RECORD_KEY, tail);
+    wire.appendRecord({ type: 'turn.prompt', turnId: 73 });
+    expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
+  });
+
+  it.each(['verify', 'seal'] as const)('rejects a rewritten prefix outside the cached boundary during %s', async (operation) => {
+    await wire.seal();
+    wire.appendRecord({ type: 'turn.prompt', turnId: 0, text: `original-prefix${'x'.repeat(8192)}` });
+    await wire.flush();
+    await wire.beginTranscriptEpoch!();
+    const scope = testWireScope(SCOPE, KEY);
+    const original = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8');
+    await storage.write(scope, AGENT_WIRE_RECORD_KEY, Buffer.from(original.replace('original-prefix', 'modified-prefix')));
+    if (operation === 'verify') {
+      expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
+    } else {
+      const unexpected: unknown[] = [];
+      setUnexpectedErrorHandler((error) => unexpected.push(error));
+      try {
+        await wire.sealTranscriptEpoch!();
+        const receipt = parseWireTranscriptReceipt(JSON.parse(Buffer.from((await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!).toString('utf8')));
+        expect(receipt).toMatchObject({ state: 'sealed', trusted: false });
+        expect(unexpected).toHaveLength(1);
+      } finally { resetUnexpectedErrorHandler(); }
+    }
+  });
+
+  it('detects an external prefix rewrite before a managed append can mask its metadata change', async () => {
+    await wire.seal();
+    wire.appendRecord({ type: 'turn.prompt', turnId: 0, text: `original-prefix${'x'.repeat(8192)}` });
+    await wire.beginTranscriptEpoch!();
+    const scope = testWireScope(SCOPE, KEY);
+    const original = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8');
+    await storage.write(scope, AGENT_WIRE_RECORD_KEY, Buffer.from(original.replace('original-prefix', 'modified-prefix')));
+    wire.appendRecord({ type: 'turn.prompt', turnId: 1 });
+    expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
+    expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
+  });
+
+  it('rehashes every read when storage cannot provide a reliable file identity', async () => {
+    const originalStat = storage.stat.bind(storage);
+    storage.stat = async (...args) => {
+      const info = await originalStat(...args);
+      return info === undefined ? undefined : { ...info, identity: undefined };
+    };
+    await wire.seal();
+    wire.appendRecord({ type: 'turn.prompt', turnId: 0, text: 'x'.repeat(8192) });
+    await wire.beginTranscriptEpoch!();
+    const scope = testWireScope(SCOPE, KEY);
+    const original = storage.readStream.bind(storage);
+    let bytes = 0;
+    storage.readStream = async function* (...args: Parameters<typeof original>) {
+      for await (const chunk of original(...args)) {
+        if (args[1] === AGENT_WIRE_RECORD_KEY) bytes += chunk.byteLength;
+        yield chunk;
+      }
+    };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      bytes = 0;
+      expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+      expect(bytes).toBe(await storage.size(scope, AGENT_WIRE_RECORD_KEY));
+    }
+  });
+
+  it.each(['in-place', 'then-append', 'replace', 'shrink'] as const)('invalidates a real file proof after %s changes with restored mtime', async (change) => {
+    const base = await mkdtemp(join(tmpdir(), 'wire-source-revision-'));
+    const host = new DisposableStore();
+    try {
+      const fileStorage = new FileStorageService(base);
+      const fileIx = host.add(new TestInstantiationService());
+      fileIx.stub(IFileSystemStorageService, fileStorage);
+      fileIx.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+      const fileLog = fileIx.get(IAppendLogStore);
+      const fileWire = registerTestAgentWire(fileIx, 'main', { log: fileLog, storage: fileStorage, logger: noopLogger, telemetry: noopTelemetryService });
+      await fileWire.seal();
+      fileWire.appendRecord({ type: 'turn.prompt', turnId: 0, text: `${'x'.repeat(8192)}original-prefix${'y'.repeat(8192)}` });
+      await fileWire.flush();
+      const path = fileStorage.pathFor('main', AGENT_WIRE_RECORD_KEY);
+      const fixedTime = 1_700_000_000;
+      await utimes(path, fixedTime, fixedTime);
+      await fileWire.beginTranscriptEpoch!();
+      expect(await fileWire.verifyTranscriptLiveEpoch!()).toBe(true);
+      const before = await fileStorage.stat('main', AGENT_WIRE_RECORD_KEY);
+      const original = Buffer.from((await fileStorage.read('main', AGENT_WIRE_RECORD_KEY))!).toString('utf8');
+      const changed = Buffer.from(original.replace('original-prefix', 'modified-prefix'));
+      if (change === 'replace') await fileStorage.write('main', AGENT_WIRE_RECORD_KEY, changed);
+      else {
+        const handle = await open(path, 'r+');
+        try {
+          if (change === 'shrink') await handle.truncate(changed.byteLength - 300);
+          else await handle.write(changed, 0, changed.byteLength, 0);
+        } finally { await handle.close(); }
+      }
+      await utimes(path, fixedTime, fixedTime);
+      expect((await stat(path)).mtimeMs).toBe(fixedTime * 1000);
+      expect(await fileStorage.stat('main', AGENT_WIRE_RECORD_KEY)).not.toEqual(before);
+      if (change === 'then-append') fileWire.appendRecord({ type: 'turn.prompt', turnId: 1 });
+      expect(await fileWire.verifyTranscriptLiveEpoch!()).toBe(false);
+    } finally {
+      await host.dispose();
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('revalidates cold segments instead of reusing a physical-file revision for logical bytes', async () => {
+    await wire.seal();
+    wire.appendRecord({ type: 'turn.prompt', turnId: 0, text: 'x'.repeat(16384) });
+    await wire.beginTranscriptEpoch!();
+    const scope = testWireScope(SCOPE, KEY);
+    await log.sealCold(scope, AGENT_WIRE_RECORD_KEY, (await storage.size(scope, AGENT_WIRE_RECORD_KEY))!, { segmentBytes: 4096 });
+    const original = storage.read.bind(storage);
+    let segments = 0;
+    storage.read = async (...args) => {
+      if (args[1].endsWith('.deflate')) segments++;
+      return original(...args);
+    };
+    expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+    expect(segments).toBe(5);
+    segments = 0;
+    expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+    expect(segments).toBe(5);
+    const manifest = JSON.parse(Buffer.from((await original(scope, `${AGENT_WIRE_RECORD_KEY}.segments.json`))!).toString('utf8')) as { segments: { key: string }[] };
+    await storage.write(scope, manifest.segments[0]!.key, Buffer.from('invalid compressed bytes'));
+    await expect(wire.verifyTranscriptLiveEpoch!()).rejects.toMatchObject({ code: 'storage.corrupted' });
+    expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
+  });
+
+  it('rejects a proof when an external rewrite occurs during the boundary read', async () => {
+    await wire.seal();
+    wire.appendRecord({ type: 'turn.prompt', turnId: 0, text: `original-prefix${'x'.repeat(8192)}` });
+    await wire.beginTranscriptEpoch!();
+    const scope = testWireScope(SCOPE, KEY);
+    const before = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8');
+    const original = storage.readStream.bind(storage);
+    storage.readStream = async function* (...args: Parameters<typeof original>) {
+      yield* original(...args);
+      if (args[1] === AGENT_WIRE_RECORD_KEY) await storage.write(scope, AGENT_WIRE_RECORD_KEY, Buffer.from(before.replace('original-prefix', 'modified-prefix')));
+    };
+    expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
+    expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
   });
 
   it('does not share live epoch proofs across an append or discard a newer accepted fence', async () => {

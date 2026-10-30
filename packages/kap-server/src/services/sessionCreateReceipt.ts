@@ -100,6 +100,20 @@ export class SessionCreateReceiptStore {
     return this.startOrJoin(receiptKey, connectionScope, body, fingerprint, operation, mapError, probe, signal);
   }
 
+  async status(connectionScope: string, creationId: string): Promise<import('@kiki/protocol').SessionCreationStatus> {
+    const receipt = await this.read(connectionScope, creationId);
+    if (receipt !== undefined && receipt.scope !== this.identity(connectionScope)) {
+      throw new SessionCreateReceiptError(ErrorCode.PERSISTENCE_FAILURE, 'The session creation receipt belongs to another scope.');
+    }
+    return {
+      creation_id: creationId,
+      session_id: receipt?.session_id ?? `session_${creationId}`,
+      status: receipt?.status ?? 'missing',
+      session: receipt?.status === 'completed' ? receipt.result : undefined,
+      failure: receipt?.failure,
+    };
+  }
+
   private async startOrJoin(
     receiptKey: string,
     connectionScope: string,

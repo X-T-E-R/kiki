@@ -287,6 +287,18 @@ describe('session accounting from typed source totals', () => {
     return new UsageAggregationService(priced, Date.now, limits);
   }
 
+  it('serves the ordinary session accounting snapshot without enumerating or synchronizing agents', async () => {
+    const fixture = persistedFixture([record('model', usage(10, 0), true)], undefined, { agentIds: Array.from({ length: 822 }, (_, i) => `agent-${i}`) });
+    const reader = service(fixture.core, tokenPricing({}));
+    try {
+      const sync = vi.spyOn(reader, 'readAgentUsage');
+      expect(reader.readSessionAccountingSnapshot('workspace', 'session')).toMatchObject({ complete: false, freshness: 'unverified' });
+      expect(fixture.lists()).toBe(0);
+      expect(fixture.reads()).toBe(0);
+      expect(sync).not.toHaveBeenCalled();
+    } finally { reader.dispose(); }
+  });
+
   it('keeps each fully priced mask subtotal and reprices the same complete session without rereading wire', async () => {
     const fixture = persistedFixture([record('model', usage(10, 0), true), record('model', usage(0, 1), true)]);
     const prices = { model: { inputOther: 0.1, output: undefined as number | undefined } };
@@ -299,9 +311,33 @@ describe('session accounting from typed source totals', () => {
       const reads = fixture.reads();
       expect(reads).toBe(1);
       prices.model.output = 0.2;
+      expect(reader.readSessionAccountingSnapshot('workspace', 'session')).toMatchObject({ complete: true, freshness: 'current', cost_usd_estimated: 1, cost_unknown: true });
       expect(await reader.readSessionAccounting('workspace', 'session')).toMatchObject({ complete: true, cost_usd_estimated: 1.2, cost_unknown: false });
       expect(fixture.reads()).toBe(reads);
     } finally { reader.dispose(); }
+  });
+
+  it('shares detached session accounting slices and skips completed agents on continuation', async () => {
+    const gate = deferred();
+    const fixture = persistedFixture([record('model', usage(10, 0), true)], undefined, {
+      agentIds: ['main', 'child-1', 'child-2', 'child-3', 'child-4'], beforeRead: () => gate.promise,
+    });
+    const reader = service(fixture.core, tokenPricing({ model: { inputOther: 0.1 } }), { sourceScanLimit: 2 });
+    const controller = new AbortController();
+    try {
+      const first = reader.readSessionAccounting('workspace', 'session', controller.signal);
+      await vi.waitFor(() => expect(fixture.reads()).toBe(1));
+      controller.abort(new Error('Leave session'));
+      await expect(first).rejects.toThrow('Leave session');
+      const shared = reader.readSessionAccounting('workspace', 'session');
+      gate.resolve();
+      expect(await shared).toMatchObject({ complete: false, freshness: 'current', tokens: { input_other: 20 } });
+      expect(fixture.reads()).toBe(2);
+      expect(await reader.readSessionAccounting('workspace', 'session')).toMatchObject({ complete: false, tokens: { input_other: 40 } });
+      expect(await reader.readSessionAccounting('workspace', 'session')).toMatchObject({ complete: true, tokens: { input_other: 50 } });
+      expect(fixture.lists()).toBe(1);
+      expect(fixture.scopes()).toEqual(['main', 'child-1', 'child-2', 'child-3', 'child-4'].map((agent) => `sessions/workspace/session/agents/${agent}`));
+    } finally { gate.resolve(); reader.dispose(); }
   });
 
   it('counts all session agents while preserving explicitly unknown nonzero usage outside the known subtotal', async () => {
@@ -544,7 +580,7 @@ describe('persisted agent panel metrics provenance', () => {
     expect(fixture.reads()).toBe(0);
   });
 
-  it('cancels a complete scan without publishing and can resume on the next explicit read', async () => {
+  it('keeps a bounded settle flight after disconnect and shares its progress with the next read', async () => {
     const gate = deferred();
     const fixture = persistedFixture([
       record('known-model', usage(2, 3), true),
@@ -562,13 +598,11 @@ describe('persisted agent panel metrics provenance', () => {
     expect(fixture.reads()).toBe(1);
     const during = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'refresh', { settle: false });
     expect(during['main']).toMatchObject({ totalTokens: null, usagePartial: true });
+    const next = persisted(fixture.core, pricing({ 'known-model': 2 }), 'refresh', { settle: true, complete: true });
     gate.resolve();
-    await new Promise((resolve) => { setImmediate(resolve); });
-    const header = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'refresh', { settle: false });
-    expect(header['main']).toMatchObject({ totalTokens: null, usagePartial: true });
-    const resumed = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'refresh', { settle: true, complete: true });
+    const resumed = await next;
     expect(resumed['main']).toMatchObject({ totalTokens: 14, usagePartial: false });
-    expect(fixture.reads()).toBe(2);
+    expect(fixture.reads()).toBe(1);
   });
 
   it('does not cache a capped usage prefix for a later header read', async () => {
@@ -577,7 +611,7 @@ describe('persisted agent panel metrics provenance', () => {
       record('known-model', usage(4, 5), true),
     ]);
     const capped = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', {
-      settle: true,
+      settle: true, complete: true,
       limits: { maxRecords: 1 },
     });
     expect(capped['main']).toMatchObject({ totalTokens: 5, usagePartial: true, usageSource: 'persisted' });
@@ -587,7 +621,7 @@ describe('persisted agent panel metrics provenance', () => {
     expect(header['main']).toMatchObject({ totalTokens: null, usagePartial: true, usageSource: 'persisted' });
     expect(fixture.reads()).toBe(readsAfterCapped);
     const again = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', {
-      settle: true,
+      settle: true, complete: true,
       limits: { maxRecords: 1 },
     });
     expect(again['main']).toMatchObject({ totalTokens: 14, usagePartial: false });

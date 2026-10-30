@@ -302,7 +302,7 @@ function applyConfigUpdate(s: import('immer').Draft<ProfileModelState>, e: Confi
     if (e.execution !== undefined) s.execution = castDraft(e.execution);
     if (e.toolOverride !== undefined) s.toolOverride = castDraft(e.toolOverride);
     if (e.personaOverrides !== undefined) s.personaOverrides = e.personaOverrides;
-    if (e.promptBase !== undefined && s.boundProfile !== undefined) s.boundProfile = { ...s.boundProfile, promptBase: castDraft(e.promptBase) };
+    if (e.promptBase !== undefined && s.boundProfile !== undefined) s.boundProfile = { ...s.boundProfile, promptBase: castDraft(e.promptBase), promptContextPending: undefined };
     if (e.modelAlias !== undefined && e.modelAlias !== s.modelAlias) {
       s.modelAlias = e.modelAlias;
     }

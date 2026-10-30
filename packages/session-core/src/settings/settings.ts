@@ -2481,7 +2481,7 @@ export const EXPERIMENTAL_FLAG_HOMES: readonly ExperimentalFlagHome[] = [
   { id: 'native_ssh', section: 'ssh', labelKey: 'st.exp.nativeSsh.name', descriptionKey: 'st.exp.nativeSsh.desc', effect: 'restart' },
   // Home is the 浏览器 tab: the flag gates the browser tools a session gets,
   // so its switch sits with the rest of the browser controls.
-  { id: 'native_browser', section: 'browser-control', labelKey: 'st.exp.nativeBrowser.name', descriptionKey: 'st.exp.nativeBrowser.desc', effect: 'newSessions' },
+  { id: 'native_browser', section: 'browser-control', labelKey: 'st.exp.nativeBrowser.name', descriptionKey: 'st.exp.nativeBrowser.desc', effect: 'now' },
   { id: 'persistence_minidb_readmodel', section: 'developer', labelKey: 'st.exp.readModel.name', descriptionKey: 'st.exp.readModel.desc', effect: 'now' },
   { id: 'local_session_resume', section: 'sessions', labelKey: 'st.exp.localSessionResume.name', descriptionKey: 'st.exp.localSessionResume.desc', effect: 'now' },
   { id: 'recipes', section: 'ai', labelKey: 'st.exp.recipes.name', descriptionKey: 'st.exp.recipes.desc', effect: 'now' },
@@ -2594,7 +2594,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'ai', tab: 'defaults', cardId: 'st-card-token-counting', titleKey: 'st.communication.tokenCountingTitle', keywordKeys: ['st.communication.tokenCounting', 'st.dev.tokenHint'], synonyms: ['token counting', 'token 计数'] },
   { section: 'general', cardId: 'st-card-append-timing', titleKey: 'st.communication.appendTimingTitle', keywordKeys: ['st.communication.appendTimingHint', 'st.communication.appendTiming'], synonyms: ['append timing', 'queue timing', '排队时机', '追加时机'] },
   { section: 'general', cardId: 'st-card-sidebar-nav', titleKey: 'st.sidebarNav.title', keywordKeys: ['st.sidebarNav.hint'], synonyms: ['sidebar tools', 'sidebar nav', 'pinned nav', '侧栏', '导航', '常用工具'] },
-  { section: 'ai', tab: 'defaults', cardId: 'st-card-retry', titleKey: 'st.retry.title', keywordKeys: ['st.retry.maxAttempts', 'st.retry.policies', 'st.retry.backoff'], synonyms: ['retry', 'backoff', 'rate limit', '限流', '重试策略'] },
+  { section: 'ai', tab: 'defaults', cardId: 'st-card-retry', titleKey: 'st.retry.title', keywordKeys: ['st.retry.maxAttempts', 'st.retry.partialResponses', 'st.retry.partialResponsesHint', 'st.retry.policies', 'st.retry.backoff'], synonyms: ['retry', 'partial output', 'extra charges', 'backoff', 'rate limit', '限流', '部分输出', '额外计费', '重试策略'] },
   { section: 'sessions', tab: 'runtime', cardId: 'st-card-session-residency', titleKey: 'st.residency.title', keywordKeys: ['st.residency.maxLive', 'st.residency.idleTtl', 'st.residency.concurrentRestores'], synonyms: ['session_residency', 'eviction', 'unload', '卸载', '常驻'] },
   { section: 'sessions', tab: 'runtime', cardId: 'st-card-resource-limits', titleKey: 'st.resourceLimits.title', keywordKeys: ['st.resourceLimits.workspaceIdle', 'st.resourceLimits.imageMaxEdge', 'st.resourceLimits.imageBudget'], synonyms: ['image budget', '图片限制', 'idle ttl', '资源限制'] },
   { section: 'agents', tab: 'profiles', cardId: 'st-card-agent-runtime', titleKey: 'st.agentIdentity.title', keywordKeys: ['st.agentIdentity.identityName', 'st.agentIdentity.extraAgentDirs', 'st.agentIdentity.disabledProfiles', 'st.agentIdentity.skipBuiltin'], synonyms: ['identity', '身份', 'agent dirs', 'disabled profiles', '禁用 profile'] },

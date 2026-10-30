@@ -270,6 +270,7 @@ export interface BindingConstraintInput {
 }
 
 export interface BindAgentInput {
+  readonly deferPromptContext?: boolean;
   readonly driver?: 'external' | 'local';
   readonly execution?: import('@kiki/protocol').ExecutionSelection;
   readonly toolOverride?: ToolBindingOverride;
@@ -309,7 +310,7 @@ export interface IAgentProfileService {
   applyPersonaSettings(restoreDefaults?: boolean): Promise<void>;
   /** Runs the optional guard synchronously before committing a prepared model; throwing prevents the commit. */
   setModel(model: string, assertCurrent?: () => void): Promise<ProfileSetModelResult>;
-  prepareModelSwitchBinding(model: string, thinking?: string): Promise<PreparedModelSwitchBinding>;
+  prepareModelSwitchBinding(model: string, thinking?: string | null): Promise<PreparedModelSwitchBinding>;
   setEffort(level: string): ProfileSetEffortResult;
   setThinking(level: string): void;
   /** Drops a user effort pin and stores the profile or model default. An execution binding clears through that binding instead. */
@@ -335,6 +336,7 @@ export interface IAgentProfileService {
   refreshSystemPrompt(): Promise<void>;
   refreshMemorySnapshot(): Promise<void>;
   reconcileMemorySnapshot(): Promise<void>;
+  reconcileSpaceSnapshot?(): Promise<void>;
   reconcilePluginUsage?(): Promise<void>;
   rebuildPromptContext(): Promise<void>;
   preparePromptConfiguration(): Promise<boolean>;

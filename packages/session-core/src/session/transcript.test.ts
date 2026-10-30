@@ -698,6 +698,20 @@ describe('transcript authority projection', () => {
     expect(first.attachments.map((attachment) => attachment.attachmentId)).toEqual(['a1', 'a2']);
   });
 
+  it('deduplicates repeated older-page entities without crossing turn, marker, and taskref identities', () => {
+    const sharedId = 'same-entity-name';
+    const turn = { kind: 'turn' as const, turnId: sharedId, ordinal: 2, state: 'completed' as const,
+      origin: { kind: 'user' as const }, steps: [] };
+    const marker = { kind: 'marker' as const, markerId: sharedId, marker: 'message.delivery', at: FIXED_AT };
+    const taskref = { kind: 'taskref' as const, refId: sharedId, taskId: sharedId, at: FIXED_AT_1 };
+    const merged = prependOlderTranscriptSnapshot(emptySnapshot({ items: [turn] }), {
+      items: [turn, turn, marker, marker, taskref, taskref],
+      attachments: [],
+      hasMoreOlder: false,
+    });
+    expect(merged.items).toEqual([turn, marker, taskref]);
+  });
+
   it('restores message-bound model controls without an independent queue item', () => {
     const runtimeControls = { model: 'example/model', thinking: 'max', profile: 'example-profile', execution: { executor: 'native' } };
     const prompt = { promptId: 'bound-message', userMessageId: 'bound-message', status: 'queued' as const, content: [{ type: 'text' as const, text: 'continue' }], createdAt: FIXED_AT, runtimeControls, queuePosition: 0 };
@@ -2940,6 +2954,42 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(coldBlocks[0]).toMatchObject({ id: firstId, streaming: false });
     const folded = foldHistory([...coldBlocks, { kind: 'shell', id: 'quiet-shell', commandId: 'quiet-shell', turnId: 't0', command: 'true', output: '', done: true, isError: false }], undefined);
     expect(folded[0]).toMatchObject({ kind: 'history-fold', thoughts: 2 });
+  });
+
+  it('does not project empty thinking frames but keeps their live append target', () => {
+    const snapshot = emptySnapshot({
+      items: [{
+        kind: 'turn', turnId: 't-thinking-display', ordinal: 1, state: 'completed', origin: { kind: 'user' },
+        steps: [{
+          kind: 'step', stepId: 's-thinking-display', turnId: 't-thinking-display', ordinal: 1, state: 'completed',
+          frames: [
+            { kind: 'thinking', frameId: 'think-empty', text: '' },
+            { kind: 'thinking', frameId: 'think-whitespace', text: '  \n  ' },
+            { kind: 'thinking', frameId: 'think-ref', text: '', contentRefs: [{ source: { kind: 'frame', id: 'think-ref' }, revision: 'r1', path: ['text'], kind: 'text', offset: 0, total: 4 }] },
+            { kind: 'thinking', frameId: 'think-text', text: ' useful thought ' },
+          ],
+        }],
+      }],
+    });
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    expect(projected.blocks.filter((block) => block.kind === 'thinking').map((block) => block.frameId)).toEqual(['think-ref', 'think-text']);
+
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't-live-thinking', ordinal: 1, state: 'running', origin: { kind: 'user' } } },
+      { op: 'step.upsert', turnId: 't-live-thinking', step: { kind: 'step', stepId: 's-live-thinking', turnId: 't-live-thinking', ordinal: 1, state: 'running' } },
+      { op: 'frame.upsert', turnId: 't-live-thinking', stepId: 's-live-thinking', frame: { kind: 'thinking', frameId: 'think-live', text: '' } },
+    ]);
+    const liveBlocks = () => agentTranscriptToBlocks({ ...tx.snapshot(), agent_id: 'main' });
+    const beforeProjection = structuredClone(tx.snapshot());
+    expect(liveBlocks().filter((block) => block.kind === 'thinking')).toEqual([]);
+    expect(tx.snapshot()).toEqual(beforeProjection);
+    tx.apply([{ op: 'append', target: { type: 'frame', turnId: 't-live-thinking', stepId: 's-live-thinking', frameId: 'think-live' }, offset: 0, text: 'Later thought' }]);
+    expect(liveBlocks()).toEqual([expect.objectContaining({ kind: 'thinking', frameId: 'think-live', text: 'Later thought', streaming: true })]);
+    const liveTurn = tx.snapshot().items.find((item) => item.kind === 'turn');
+    expect(liveTurn?.kind === 'turn' ? liveTurn.steps.flatMap((step) => step.frames) : []).toEqual([
+      expect.objectContaining({ kind: 'thinking', frameId: 'think-live', text: 'Later thought' }),
+    ]);
   });
 
   it('does not project an empty assistant text frame between same-turn process rows', () => {

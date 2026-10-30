@@ -1,8 +1,7 @@
 import type { IPty } from 'node-pty';
 
 import { Service } from '#/_base/di/service';
-import { LifecycleScope } from '#/app/scopes';
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { mergeChildEnv } from '#/_base/execEnv/childEnv';
 
 import { IHostTerminalService, type TerminalProcess, type TerminalSpawnOptions } from '#/os/interface/terminal';
 
@@ -11,6 +10,8 @@ export class HostTerminalService extends Service implements IHostTerminalService
 
   private readonly processes = new Set<TerminalProcess>();
 
+  constructor(private readonly childDefaults: Readonly<Record<string, string>> = {}) { super(); }
+
   async spawn(options: TerminalSpawnOptions): Promise<TerminalProcess> {
     const pty = await import('node-pty');
     const proc: IPty = pty.spawn(options.shell, [], {
@@ -18,7 +19,7 @@ export class HostTerminalService extends Service implements IHostTerminalService
       cwd: options.cwd,
       cols: options.cols,
       rows: options.rows,
-      env: globalThis.process.env,
+      env: mergeChildEnv(globalThis.process.env, this.childDefaults),
     });
     const terminalProcess: TerminalProcess = {
       onProcessData: (listener) => proc.onData(listener),
@@ -42,11 +43,3 @@ export class HostTerminalService extends Service implements IHostTerminalService
     return super.dispose();
   }
 }
-
-registerScopedService(
-  LifecycleScope.App,
-  IHostTerminalService,
-  HostTerminalService,
-  ScopeActivation.OnScopeCreated,
-  'terminal',
-);

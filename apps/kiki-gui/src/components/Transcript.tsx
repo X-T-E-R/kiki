@@ -3360,7 +3360,7 @@ function TopEdge({ state, onLoadOlder }: {
 
   if (state.loadingOlder) {
     return (
-      <div className="flex items-center justify-center gap-2 pb-2 text-[12px] text-ink-faint">
+      <div role="status" aria-live="polite" data-top-edge="loading" className="flex items-center justify-center gap-2 text-[12px] text-ink-soft">
         <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-ink-soft" />
         {t('transcript.loadingEarlier')}
       </div>
@@ -3368,7 +3368,7 @@ function TopEdge({ state, onLoadOlder }: {
   }
   if (state.olderError !== undefined) {
     return (
-      <div className="flex flex-col items-center justify-center gap-1.5 pb-2 text-center">
+      <div role="alert" data-top-edge="error" className="flex flex-col items-center justify-center gap-1.5 text-center">
         <p className="text-[12px] text-danger">{t('transcript.olderFailed')}</p>
         <p className="max-w-[360px] font-mono text-[11px] text-danger/80">{state.olderError}</p>
         <button
@@ -3383,7 +3383,7 @@ function TopEdge({ state, onLoadOlder }: {
   }
   if (!state.hasMoreHistory && state.fetchedOlder) {
     return (
-      <div className="flex items-center gap-3 pb-1">
+      <div role="status" data-top-edge="beginning" className="flex items-center gap-3 pb-1">
         <span className="h-px flex-1 bg-hairline" />
         <span className="text-[12px] text-ink-faint">{t('transcript.beginning')}</span>
         <span className="h-px flex-1 bg-hairline" />
@@ -4239,6 +4239,20 @@ export function Transcript({
     }
     return loaded;
   }, []);
+  const requestOlderAtReadingAnchor = useCallback(async () => {
+    if (olderInflightRef.current) return false;
+    olderIntentRef.current = false;
+    olderInflightRef.current = true;
+    const request = new AbortController();
+    olderRequestRef.current = request;
+    try { return await loadOlderAtReadingAnchor(request.signal); }
+    finally {
+      if (olderRequestRef.current === request) {
+        olderRequestRef.current = null;
+        olderInflightRef.current = false;
+      }
+    }
+  }, [loadOlderAtReadingAnchor]);
   useEffect(() => {
     const element = scrollRef.current;
     if (element === null) return;
@@ -4269,15 +4283,7 @@ export function Transcript({
       if (olderInflightRef.current || state.loadingOlder ||
           (!state.hasMoreHistory && state.olderError === undefined) ||
           element.scrollTop > Math.min(192, element.clientHeight / 3)) return;
-      olderIntentRef.current = false;
-      olderInflightRef.current = true;
-      const request = new AbortController();
-      olderRequestRef.current = request;
-      void loadOlderAtReadingAnchor(request.signal).finally(() => {
-        if (olderRequestRef.current !== request) return;
-        olderRequestRef.current = null;
-        olderInflightRef.current = false;
-      });
+      void requestOlderAtReadingAnchor();
     };
     const onWheel = (event: WheelEvent) => {
       recordIntent(event.deltaY < 0);
@@ -4326,7 +4332,7 @@ export function Transcript({
       element.removeEventListener('pointerup', onPointerUp);
       element.removeEventListener('scroll', loadAtTop);
     };
-  }, [state.loadingOlder, state.hasMoreHistory, state.olderError, loaded, loadError, visible, loadOlderAtReadingAnchor]);
+  }, [state.loadingOlder, state.hasMoreHistory, state.olderError, loaded, loadError, visible, requestOlderAtReadingAnchor]);
   const viewportAnchorRef = useRef<TranscriptViewportAnchor>({
     atEnd: true,
     key: undefined,
@@ -5139,6 +5145,11 @@ export function Transcript({
         {onRetryLoad !== undefined ? <button type="button" className="shrink-0 rounded-lg border border-danger/30 px-3 py-1.5 font-semibold" onClick={onRetryLoad}>{t('common.retry')}</button> : null}
       </div> : null}
       <div className="relative min-h-0 flex-1">
+      {state.loadingOlder || state.olderError !== undefined ? (
+        <div data-history-feedback className="absolute left-1/2 top-2 z-20 max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-xl border border-hairline bg-paper px-4 py-2 shadow-sm">
+          <TopEdge state={state} onLoadOlder={requestOlderAtReadingAnchor} />
+        </div>
+      ) : null}
       {readingRestoreFailed ? (
         <button type="button" data-reading-restore-retry onClick={reading.retryRestore}
           className="absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded-full border border-hairline bg-paper px-3 py-1 text-[12px] text-ink-soft">
@@ -5186,7 +5197,7 @@ export function Transcript({
                 className="absolute left-0 w-full"
               >
                 <div className={`mx-auto flex max-w-[var(--kiki-chat-content-width,760px)] flex-col gap-4 px-6 ${spacing}`}>
-                  {first ? <TopEdge state={state} onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : onLoadOlder} /> : null}
+                  {first && !state.loadingOlder && state.olderError === undefined ? <TopEdge state={state} onLoadOlder={readingRestoreFailed ? async () => { reading.retryRestore(); return false; } : requestOlderAtReadingAnchor} /> : null}
                   {visible && turnTailId !== undefined ? <HistoryPreviewReader agentId={agentId} turnId={turnTailId} state={state} /> : null}
                   {node === undefined ? null : view === 'message' && isMessageViewOwnRow(node) ? (
                     <div data-transcript-lane="agent" className={AGENT_LANE}>

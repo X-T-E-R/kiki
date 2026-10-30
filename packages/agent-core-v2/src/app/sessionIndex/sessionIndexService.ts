@@ -12,6 +12,7 @@ import { IFlagService } from '#/app/flag/flag';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import {
   IQueryStore,
+  isQueryStoreBusy,
   type Checkpoint,
   type ColumnBounds,
   type Page,
@@ -660,6 +661,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     try {
       manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
     } catch (error) {
+      if (isQueryStoreBusy(error)) return legacy();
       this.markDegraded('read model read failed', error);
       this.kickPrepare();
       return legacy();
@@ -674,6 +676,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       return await op(manifest.seq);
     } catch (error) {
       if (error instanceof AuthoritativeReadFailure) throw error.cause;
+      if (isQueryStoreBusy(error)) return legacy();
       this.markDegraded('read model read failed', error);
       this.kickPrepare();
       return legacy();
@@ -698,6 +701,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     try {
       manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
     } catch (error) {
+      if (isQueryStoreBusy(error)) throw new SessionIndexBuildingError();
       this.markDegraded('read model read failed', error);
       this.kickPrepare();
       throw new SessionIndexBuildingError();
@@ -728,6 +732,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         return await op(generation);
       } catch (error) {
         if (error instanceof AuthoritativeReadFailure) throw error.cause;
+        if (isQueryStoreBusy(error)) throw new SessionIndexBuildingError();
         this.markDegraded('read model read failed', error);
         this.kickPrepare();
         throw new SessionIndexBuildingError();

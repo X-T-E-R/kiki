@@ -54,6 +54,7 @@ import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import {
   IQueryStore,
+  QueryStoreBusyError,
   type Checkpoint,
   type ColumnPageQuery,
   type IQuery,
@@ -1226,6 +1227,31 @@ describe('FileSessionIndex (read model)', () => {
       scan.mockRestore();
       checkpoint.mockRestore();
       recover.mockRestore();
+    }
+  });
+
+  it('keeps a ready read model when its query queue is momentarily full', async () => {
+    await seedSession('existing', { createdAt: 1, updatedAt: 2 });
+    const store = build();
+    await store.prepare();
+    const recover = vi.spyOn(queryStore, 'recover');
+    const originalGet = queryStore.get.bind(queryStore);
+    let busy = 2;
+    vi.spyOn(queryStore, 'get').mockImplementation(async (collection, key) => {
+      if (busy > 0) {
+        busy -= 1;
+        throw new QueryStoreBusyError();
+      }
+      return originalGet(collection, key);
+    });
+    try {
+      expect(await store.get('existing', workspaceId)).toMatchObject({ id: 'existing' });
+      await expect(store.listRecent({ workspaceIds: [workspaceId] })).rejects.toBeInstanceOf(SessionIndexBuildingError);
+      expect(store.status()).toMatchObject({ state: 'ready', generation: 1, degradedCount: 0 });
+      expect((await store.listRecent({ workspaceIds: [workspaceId] })).items.map((item) => item.id)).toEqual(['existing']);
+      expect(recover).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
     }
   });
 

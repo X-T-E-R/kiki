@@ -26,6 +26,10 @@ Long tool output and other large fields arrive in stages. **Continue loading** p
 
 The input box accepts free-form text. `Enter` sends; `Shift-Enter` / `Ctrl-J` insert a newline. You can paste images and video from the clipboard, as long as the current model accepts them — [Interaction and input](/en/guides/interaction) covers the details.
 
+In an existing conversation, changing **Approvals**, switching between **Normal** and **Plan**, or changing the Plan gate saves immediately, without sending a message. With native execution, the next tool approval uses the new permission mode, Plan mode's restrictions apply to subsequent tool calls in the running turn, and the gate controls the next plan submission. A request already waiting for approval still needs your decision. If saving fails, the control returns to the session's reported setting and shows the error.
+
+Changing a native model or thinking effort also needs no message: the current request finishes, and the new binding applies before the next model request. The pending indicator names the change; open the queue to cancel it before preparation starts. A failed switch keeps the current binding and shows the error. **Default** clears the manual effort and restores the persona's pinned effort, then the selected model's profile default, then the model default. A profile or engine change remains attached to your next message.
+
 `↑` and `↓` move the caret inside the draft, including on a wrapped line. They browse earlier prompts only from the start of the text (`↑`) or the end (`↓`): this conversation keeps its own list, and the new-session page keeps one for that workspace. A text selection, `Shift`, an IME composition, or an open `/` or `@` menu keeps the key. `Esc`, or `↓` past the newest entry, restores the draft from before that browse.
 
 Select a passage in the conversation and choose **Quote** to add it above the input box. You can add several passages and remove each one separately. Sending includes those passages; references added while a send is awaiting confirmation stay in the draft. Type `@` to find workspace files, then choose **Load more** or scroll to the end of the matches to load another page.
@@ -44,13 +48,15 @@ To pick the timing for a message you submit, hover the send button or focus it a
 
 With the native executor, compatible queued messages ready at the same safe step are sent together as one model input. Steering and submit hooks run once for that batch; each original message keeps its own history entry and result. A message added after that step has begun stays in a later batch.
 
-A profile or engine change needs a separate turn even with **Send now**. Messages with different execution settings are not batched together. For external engines, the handshake determines whether sending into the current turn is available. AGY CLI currently does not support it; Kiki keeps messages queued for the next turn. If delivery is unconfirmed, the queue pauses: check the timeline before deciding whether to resume it.
+A profile or engine change needs a separate turn even with **Send now**. Messages with different execution settings are not batched together. For external engines, the handshake determines whether sending into the current turn is available. AGY CLI delivers the message at its next model call in the same turn; if the turn ends first, Kiki keeps the message queued for the next turn. For any external engine, Kiki waits up to 60 seconds for a running tool call to finish before sending; otherwise the message stays queued. If delivery is unconfirmed, the queue pauses: check the timeline before deciding whether to resume it.
 
 When the main agent is blocked waiting on a foreground `AgentRun`, **Send now** moves that wait to the background without stopping the child, which still reports back when it completes; plain queueing does not.
 
 Stop the main agent before it has replied or called a tool and the interrupted prompt goes back into the session draft with its attachments, next to any edits you had not sent. A prompt the agent already answered or was steered by is not restored, and recovered attachments need the full prompt in the loaded transcript and stay in memory until you restart the app.
 
 After a restart, queued messages come back held until you decide. **Send now** on one message sends only that one; **Resume queue** releases the rest. **Later** just hides the explanation — the resume button remains, and anything you submit meanwhile keeps queuing until you resume.
+
+A native subagent's **Approvals** and **Plan** controls apply immediately to that agent alone; its permission ceiling still applies. External subagents show an explanation instead of these controls because their executor owns those modes.
 
 In a subagent's input box the stop button is disabled while the stop request is in flight. If it fails, the notice says why and the button comes back so you can retry. Stopping one run leaves the subagent's other queued messages alone.
 

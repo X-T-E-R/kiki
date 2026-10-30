@@ -8,6 +8,7 @@ import { createKlient } from '@kiki/klient/http';
 import { SearchIndexStateChanged } from '../../src/search/events';
 import { IGlobalSearchService } from '../../src/search/searchService';
 import { Event } from '@kiki/agent-core-v2/_base/event';
+import { TranscriptStore } from '@kiki/transcript';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { type RunningServer, startServer } from '../../src/start';
@@ -147,6 +148,45 @@ describe('server-v2 /api/search', () => {
     });
     return (await res.json()) as Envelope<SearchPageWire>;
   }
+
+  it('S2 forwards klient abort through REST into live preparation and serializes partial coverage', async () => {
+    const store = new TranscriptStore('s1');
+    store.ensureAgent('main', { agentId: 'main', type: 'main' });
+    store.getAgent('main')!.noteOlderHistory();
+    let enter!: () => void;
+    let stop!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const stopped = new Promise<void>((resolve) => { stop = resolve; });
+    let preparing = true;
+    server!.core.accessor.get(IGlobalSearchService).setLiveTranscriptSource({
+      forSessionLive: () => store,
+      whenReady: async () => {},
+      ensureAgentHistory: async () => { throw new Error('full history must not be requested'); },
+    }, {
+      scan: async (_session, _agent, signal) => {
+        if (!preparing) return { complete: false, nextByteOffset: 0, ordinal: 0, bytesRead: 128,
+          recordsRead: 0, incarnation: 'example', gaps: ['record_exceeds_page_budget'], hits: [] };
+        enter();
+        return new Promise((_resolve, reject) => signal!.addEventListener('abort', () => {
+          stop(); reject(signal!.reason);
+        }, { once: true }));
+      },
+    });
+    const client = createKlient({ endpoint: base, token: server!.localOwnerToken });
+    try {
+      const controller = new AbortController();
+      const pending = client.rest!.search.messages({ query: 'needle', container: { session_id: 's1', agent_id: 'main' } }, { signal: controller.signal });
+      await entered;
+      controller.abort();
+      await expect(pending).rejects.toBeInstanceOf(Error);
+      await stopped;
+      preparing = false;
+      const partial = await client.rest!.search.messages({ query: 'newneedle', container: { session_id: 's1', agent_id: 'main' } });
+      expect(partial.incomplete).toBe('scan_budget');
+      expect(partial.coverage).toEqual({ domain: 'full_text', complete: false,
+        gaps: ['record_exceeds_page_budget', 'history_partial', 'page_local_order'], scanned: { bytes: 128, records: 0 } });
+    } finally { await client.close(); }
+  });
 
   it('SQ2-R2 preserves invalid_page_token through the real SQLite worker, service and REST envelope', async () => {
     const search = server!.core.accessor.get(IGlobalSearchService);

@@ -36,7 +36,7 @@ A custom theme can override any token below. The `dark` and `light` columns are 
 
 ## Let the skill write it
 
-You do not have to write the JSON by hand. Run `/kiki-ops` and describe the theme you want — the skill picks the colors, writes the file under `~/.kiki/themes/`, checks the hex values, and tells you how to apply it.
+You do not have to write the JSON by hand. Run `/kiki-ops` and describe the theme you want — the skill picks the colors, writes the file under the current `<home>/themes/` (default `~/.kiki/themes/`), checks the hex values, and tells you how to apply it.
 
 - `/kiki-ops Create a warm dark theme with amber accents.`
 - `/kiki-ops Make a light theme based on Solarized, but keep errors easy to see.`

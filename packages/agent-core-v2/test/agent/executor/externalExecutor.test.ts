@@ -1219,6 +1219,59 @@ describe('ACP external executor', () => {
     expect(observed.filter((event) => event.type === 'tool.result')).toHaveLength(1);
   });
 
+  it('holds a steering boundary until running external tools settle and releases it as unsettled when the turn ends', async () => {
+    const dispatcher = { _serviceBrand: undefined, dispatch: async () => {} } as unknown as IEventDispatcher;
+    const contextMemory = {
+      _serviceBrand: undefined,
+      get: () => [],
+      append: () => {},
+      appendManaged: () => {},
+      appendLoopEvent: () => {},
+    } as unknown as IAgentContextMemoryService;
+    const wire = { _serviceBrand: undefined, flush: async () => {} } as unknown as IWireService;
+    const usage = {
+      _serviceBrand: undefined,
+      record: () => {},
+      status: () => ({}),
+      onDidRecord: () => ({ dispose: () => {} }),
+    } as IAgentUsageService;
+    const services = new Map<unknown, unknown>([
+      [IEventDispatcher, dispatcher], [IWireService, wire],
+      [IAgentContextMemoryService, contextMemory], [IAgentUsageService, usage],
+    ]);
+    const recorder = new ExternalTurnRecorder(
+      { id: 'steer-agent', accessor: { get: (id) => services.get(id) as never } },
+      1,
+      'steer-session',
+      { executorId: 'example-acp', protocol: 'acp-v1', model: 'model', resumeMode: 'new', profileDelivery: 'native' },
+    );
+    await recorder.begin('work', { kind: 'user' });
+    const signal = new AbortController().signal;
+    await expect(recorder.toolsSettled(signal)).resolves.toBe(true);
+    await recorder.record({ type: 'tool.call', toolCallId: 'running-tool', title: 'Running tool', status: 'in_progress' });
+    let settled: boolean | undefined;
+    const boundary = recorder.toolsSettled(signal).then((value) => { settled = value; return value; });
+    await Promise.resolve();
+    expect(settled).toBeUndefined();
+    await recorder.record({
+      type: 'tool.update',
+      toolCallId: 'running-tool',
+      status: 'completed',
+      content: [{ type: 'content', content: { type: 'text', text: 'done' } }],
+    });
+    await expect(boundary).resolves.toBe(true);
+
+    await recorder.record({ type: 'tool.call', toolCallId: 'second-tool', title: 'Second tool', status: 'in_progress' });
+    const aborted = new AbortController();
+    const abortedBoundary = recorder.toolsSettled(aborted.signal);
+    aborted.abort();
+    await expect(abortedBoundary).resolves.toBe(false);
+    const ended = recorder.toolsSettled(signal);
+    await recorder.complete('end_turn');
+    await expect(ended).resolves.toBe(false);
+    await expect(recorder.toolsSettled(signal)).resolves.toBe(false);
+  });
+
   it('places a pinned argv model before the harness subcommand', async () => {
     const fixture = createTestAgent();
     try {

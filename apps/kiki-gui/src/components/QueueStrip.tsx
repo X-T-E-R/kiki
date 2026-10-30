@@ -499,8 +499,9 @@ export function QueueStrip({
         originalThinking: entry.originalBinding.thinking,
         targetThinking: entry.input.thinking,
       });
+      const effort = entry.input.thinking === null ? t('composer.execution.defaultEffort') : entry.input.thinking ?? '';
       const pendingLabel = t(change === 'model' ? 'modelSwitch.pendingLine' : `modelSwitch.pendingLine.${change}` as I18nKey,
-        { model: entry.receipt.toModel, effort: entry.input.thinking ?? '', mode: t(`modelSwitch.modeName.${entry.input.mode}` as I18nKey) });
+        { model: entry.receipt.toModel, effort, mode: t(`modelSwitch.modeName.${entry.input.mode}` as I18nKey) });
       rowNodes.push(
         <li
           key={`switch-${row.operationId}`}
@@ -519,7 +520,7 @@ export function QueueStrip({
           <Icon name="arrowRight" size={12} className="shrink-0 text-ink-faint" />
           <span className="min-w-0 flex-1 truncate text-[13px] text-ink-soft" title={entry.input.model}>
             {entry.receipt.state === 'preparing'
-              ? change === 'effort' ? t('modelSwitch.preparingEffort', { effort: entry.input.thinking ?? '' }) : t(
+              ? change === 'effort' ? t('modelSwitch.preparingEffort', { effort }) : t(
                 change === 'binding' ? 'transcript.modelSwitch.preparing.binding' : entry.input.mode === 'compact' ? 'transcript.modelSwitch.preparing.compact' : entry.input.mode === 'fresh'
                   ? 'transcript.modelSwitch.preparing.fresh'
                   : 'transcript.modelSwitch.preparing.direct',

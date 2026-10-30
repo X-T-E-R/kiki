@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { Message } from '#/kosong/contract/message';
 import {
@@ -97,5 +97,18 @@ describe('estimateTokensForTools', () => {
       estimateTokens('Read a file') +
       estimateTokens(JSON.stringify({ type: 'object' }));
     expect(estimateTokensForTools([tool])).toBe(expected);
+  });
+
+  it('serializes one parameters object once across repeated estimates', () => {
+    const parameters = { type: 'object', properties: { path: { type: 'string' } } };
+    const stringify = vi.spyOn(JSON, 'stringify');
+    try {
+      const first = estimateTokensForTools([{ name: 'read', description: 'Read', parameters }]);
+      const second = estimateTokensForTools([{ name: 'read', description: 'Read', parameters }]);
+      expect(second).toBe(first);
+      expect(stringify.mock.calls.filter(([value]) => value === parameters)).toHaveLength(1);
+    } finally {
+      stringify.mockRestore();
+    }
   });
 });
