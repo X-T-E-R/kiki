@@ -493,6 +493,12 @@ describe('RightRail terminate-all subagents', () => {
   it('hides the bulk stop button when no stopper is provided', async () => {
     const container = await renderRail(railStateWith([subTask]), forest);
     expect(container.querySelector('[data-terminate-all-subagents]')).toBeNull();
+    // The regrouped rail folds the roster to its summary after the first
+    // settled effect; opening the chapter is how a reader reaches the rows.
+    const chapterHead = container.querySelector<HTMLButtonElement>('[data-inspector-agents] button[aria-expanded]')!;
+    if (chapterHead.getAttribute('aria-expanded') === 'false') {
+      await act(async () => { chapterHead.click(); });
+    }
     expect(container.querySelector('[data-agent-tree] [data-agent-id="agent-1"]')).not.toBeNull();
   });
 
