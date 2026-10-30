@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { IBotService, IConfigService, ISessionIndex, ISessionInteractionService, ISessionManager, ISessionQuestionService, type Scope } from '@kiki/agent-core-v2';
 import { IPluginHostService } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
 import { FEISHU_TEXT_UTF8_BYTES, splitFeishuText, type SessionAdapter, type SessionInbound, type SessionOutbound, type SessionPlatformId, type SessionReceipt, type SessionSink } from '@nb-im/core';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { NotificationService } from '../../../src/services/notifications/notificationService';
 import type { ImProviderKind } from '@kiki/protocol';
@@ -405,13 +405,21 @@ describe('long replies', () => {
     const harness = bridgeWith({ providerKind: kind, create: () => new HubSessionAdapter(raw) }, kind);
     const framed = harness as typeof harness & { setFrames: (next: ImVisibleReply[]) => void };
     framed.setFrames(frames);
-    await harness.bridge.paste({ text: paste });
-    await harness.bridge.setListening('inst', true);
-    await admit(raw, platform, 'hello');
-    await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'persona', persona_id: 'ada' }, reply: 'edit' });
-    await admit(raw, platform, 'go', { event_key: 'e:go' });
-    await harness.bridge.close();
-    return raw.sent;
+    try {
+      await harness.bridge.paste({ text: paste });
+      await harness.bridge.setListening('inst', true);
+      await admit(raw, platform, 'hello');
+      await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'persona', persona_id: 'ada' }, reply: 'edit' });
+      await admit(raw, platform, 'go', { event_key: 'e:go' });
+      await vi.waitFor(() => {
+        const saved = JSON.parse(harness.stored()) as { replies: { open: boolean }[] };
+        expect(saved.replies).toHaveLength(1);
+        expect(saved.replies[0]?.open).toBe(false);
+      });
+      return raw.sent;
+    } finally {
+      await harness.bridge.close();
+    }
   }
 
   it('keeps every accepted Feishu part and retries when a surplus edit fails', async () => {
