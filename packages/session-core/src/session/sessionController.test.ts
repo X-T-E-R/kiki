@@ -282,6 +282,7 @@ interface Harness {
     listMessages: ReturnType<typeof vi.fn>;
     submitPrompt: ReturnType<typeof vi.fn>;
     listDurableIngress?: ReturnType<typeof vi.fn>;
+    getDurableIngress?: ReturnType<typeof vi.fn>;
     replacePrompt: ReturnType<typeof vi.fn>;
     abortPrompt: ReturnType<typeof vi.fn>;
     movePrompt: ReturnType<typeof vi.fn>;
