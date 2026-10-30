@@ -13,6 +13,7 @@ import { sealColdSegments } from '#/persistence/coldSegmentLog';
 import { readWireContextProjection } from '#/persistence/wireContextRead';
 import type { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import type { WireRecord } from '#/wire/record';
+import type { FileLineRangeOperation } from '#/app/cpuWorker/tasks';
 
 const pools: CpuWorkerPool[] = [];
 const dirs: string[] = [];
@@ -174,5 +175,71 @@ describe('CPU wire projection', () => {
     const result = await runCpuStream<ArrayBuffer>(workers.request.bind(workers), { type: 'wire.context', scope: 'test', key: 'wire' },
       async function* () { yield Buffer.from(JSON.stringify(message('replacement'))); });
     expect((deserialize(Buffer.from(result)) as WireContextProjection).transcript.entries).toHaveLength(1);
+  }, 15_000);
+});
+
+describe('CPU file line ranges', () => {
+  async function fixture(name: string, bytes: string | Buffer): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'cpu-file-range-'));
+    dirs.push(dir);
+    const path = join(dir, name);
+    await writeFile(path, bytes);
+    return path;
+  }
+
+  function read(workers: CpuWorkerPool, path: string, options: FileLineRangeOperation['options']): Promise<string[]> {
+    return workers.request<string[]>({ type: 'file.lineRange', path, options } satisfies FileLineRangeOperation);
+  }
+
+  it('uses sparse checkpoints for repeated high-offset windows and invalidates them after a rewrite', async () => {
+    const workers = productionPool();
+    const lines = Array.from({ length: 6000 }, (_, index) => `${index}: ${'数据'.repeat(180)}\r\n`);
+    const path = await fixture('large.txt', lines.join(''));
+    for (const startLine of [4300, 5500, 4300]) {
+      expect(await read(workers, path, { startLine, maxLines: 4 })).toEqual(lines.slice(startLine - 1, startLine + 3));
+    }
+    const changed = lines.map((line) => `rewritten ${line}`);
+    await writeFile(path, changed.join(''));
+    expect(await read(workers, path, { startLine: 4300, maxLines: 4 })).toEqual(changed.slice(4299, 4303));
+    expect(await read(workers, path, { startLine: 8000, maxLines: 4 })).toEqual([]);
+  });
+
+  it('scans newline bytes without decoding skipped prefixes and preserves window terminators and BOMs', async () => {
+    const workers = productionPool();
+    const path = await fixture('window.txt', Buffer.concat([Buffer.alloc(2 * 1024 * 1024, 0xff), Buffer.from('\r\n\uFEFF窗口\r\nlast')]));
+    expect(await read(workers, path, { startLine: 2, maxLines: 2, errors: 'strict' })).toEqual(['\uFEFF窗口\r\n', 'last']);
+    expect(await read(workers, path, { startLine: 2, maxLines: 0 })).toEqual([]);
+    const utf16 = await fixture('utf16.txt', Buffer.from('\uFEFFfirst\r\n第二\nlast', 'utf16le'));
+    expect(await read(workers, utf16, { startLine: 2, maxLines: 2, encoding: 'utf16le' })).toEqual(['第二\n', 'last']);
+  });
+
+  it('preserves decoder modes and coded filesystem failures across the worker boundary', async () => {
+    const workers = productionPool();
+    const path = await fixture('invalid.txt', Buffer.from([0x61, 0xff, 0x0a]));
+    expect(await read(workers, path, { startLine: 1, maxLines: 1, errors: 'replace' })).toEqual(['a\uFFFD\n']);
+    expect(await read(workers, path, { startLine: 1, maxLines: 1, errors: 'ignore' })).toEqual(['a\n']);
+    await expect(read(workers, path, { startLine: 1, maxLines: 1, errors: 'strict' })).rejects.toMatchObject({ code: 'os.fs.unknown' });
+    const missing = `${path}.missing`;
+    await expect(read(workers, missing, { startLine: 1, maxLines: 1 })).rejects.toMatchObject({
+      code: 'os.fs.not_found', details: { path: missing, op: 'read', errno: 'ENOENT' },
+    });
+  });
+
+  it('keeps signal host-side, cancels active file work and serves the next request on a replacement', async () => {
+    const workers = productionPool();
+    const path = await fixture('cancel.txt', 'first\nsecond\n');
+    const operation: FileLineRangeOperation = { type: 'file.lineRange', path, options: { startLine: 2, maxLines: 1 } };
+    const aborted = new AbortController();
+    const reason = new Error('cancel file range');
+    aborted.abort(reason);
+    await expect(workers.request(operation, { signal: aborted.signal })).rejects.toBe(reason);
+    await read(workers, path, operation.options);
+    const controller = new AbortController();
+    const pending = workers.request(operation, { signal: controller.signal });
+    const failure = expect(pending).rejects.toBe(reason);
+    controller.abort(reason);
+    await failure;
+    expect(await read(workers, path, operation.options)).toEqual(['second\n']);
+    expect(operation.options).not.toHaveProperty('signal');
   }, 15_000);
 });

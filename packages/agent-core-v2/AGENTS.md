@@ -20,6 +20,8 @@ Register built-in operations in `src/app/cpuWorker/tasks.ts` (`CpuOperation` and
 
 Image decode and cold main-wire context projection use the pool. `persistence/wireContextRead.ts` flushes the journal and owns its logical-byte reader, including sealed segments; `runCpuStream` sends at most one 1 MiB chunk per worker pull. UTF-8 decoding, JSON parsing and transcript/permission/plan folding stay in the worker. Keep caller cancellation linked to both the worker request and the byte source.
 
+`file.lineRange` accepts `{ path, options: { startLine, maxLines, encoding?, errors? } }` and returns `string[]`, preserving line terminators. Pass `signal` in the request options, not the operation payload. The worker reads the path directly through `os/backends/node-local/lineReader.ts`; `HostFileSystem` delegates to that same backend. Keep its size/mtime/ctime/ino cache identity, sparse checkpoints and 1 MiB newline-only prefix scan together when changing line reads.
+
 ## Units and contribution points (L3)
 
 The DI kernel (`src/_base/di/`) owns the unit layer on top of the scoped registry:

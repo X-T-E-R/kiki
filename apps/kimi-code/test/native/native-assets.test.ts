@@ -448,6 +448,11 @@ describe('native assets', () => {
         const [response] = await projected as [{ result: ArrayBuffer }];
         expect(deserialize(Buffer.from(response.result))).toMatchObject({ permissionMode: 'auto', planActive: false,
           transcript: { entries: [{ role: 'user', content: [{ type: 'text', text: 'bundled projection' }] }] } });
+        const path = join(dir, 'range.txt');
+        writeFileSync(path, 'first\r\n第二\r\nlast');
+        const ranged = once(worker, 'message');
+        worker.postMessage({ id: 3, operation: { type: 'file.lineRange', path, options: { startLine: 2, maxLines: 2 } } });
+        expect((await ranged)[0]).toEqual({ id: 3, result: ['第二\r\n', 'last'] });
       } finally { input.port1.close(); input.port2.close(); await worker.terminate(); }
     } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   }, 60_000);

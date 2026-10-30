@@ -95,6 +95,28 @@ describe('HostFileSystem readLineRange', () => {
     await expect(collect(path, 2, 2)).resolves.toEqual(['\uFEFFb\n', 'c\n']);
   });
 
+  it('preserves the reason for a pre-aborted read', async () => {
+    const path = join(dir, 'pre-abort.txt');
+    await writeFile(path, 'line\n', 'utf-8');
+    const controller = new AbortController();
+    const reason = new Error('pre-abort');
+    controller.abort(reason);
+
+    await expect(fs.readLines(path, { signal: controller.signal }).next()).rejects.toBe(reason);
+  });
+
+  it('preserves the reason when aborted after yielding a line', async () => {
+    const path = join(dir, 'abort-after-line.txt');
+    await writeFile(path, 'first\nsecond\n', 'utf-8');
+    const controller = new AbortController();
+    const reason = new Error('abort-after-line');
+    const lines = fs.readLines(path, { signal: controller.signal });
+
+    await expect(lines.next()).resolves.toEqual({ value: 'first\n', done: false });
+    controller.abort(reason);
+    await expect(lines.next()).rejects.toBe(reason);
+  });
+
   it('invalidates sparse line checkpoints after a rewrite', async () => {
     const path = join(dir, 'rewrite.txt');
     await writeFile(
