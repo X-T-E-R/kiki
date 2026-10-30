@@ -25,10 +25,11 @@ import {
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
+import { FeedbackLine, InlineError, Toggle, type Feedback } from '../controls';
 import { Icon } from '../icons';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingField, SettingsBox } from './fields';
 import { FORM_LABEL, SettingsDraftFooter, SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
 
 const MODE_ORDER = ['direct', 'compact', 'fresh'] as const satisfies readonly ModelSwitchMode[];
@@ -225,9 +226,8 @@ export function ModelSwitchCard() {
   return (
     <SectionCard id="st-card-model-switch" title={t('st.modelSwitch.title')}>
       <div className="space-y-4">
-        <div>
-          <p className={FORM_LABEL}>{t('st.modelSwitch.defaultMode')}</p>
-          <div className="mt-1.5">
+        <SettingsBox>
+          <SettingField label={t('st.modelSwitch.defaultMode')} help={t('st.modelSwitch.defaultModeHint')}>
             <SettingsSegmented<ModelSwitchMode>
               ariaLabel={t('st.modelSwitch.defaultMode')}
               value={serverPrefs.defaultMode}
@@ -235,19 +235,17 @@ export function ModelSwitchCard() {
               choices={MODE_ORDER.map((mode) => ({ value: mode, label: t(MODE_LABEL_KEY[mode]) }))}
               onChange={(mode) => { saveDefaultMode(mode); }}
             />
-          </div>
-          <Hint>{t('st.modelSwitch.defaultModeHint')}</Hint>
-        </div>
-        <div>
-          <Toggle
-            layout="row"
-            label={t('st.modelSwitch.confirm')}
-            checked={serverPrefs.confirm}
-            onChange={(checked) => { saveConfirm(checked); }}
-          />
-          <Hint>{t('st.modelSwitch.confirmHint')}</Hint>
-        </div>
-        <div className="pt-3">
+          </SettingField>
+          <SettingField label={t('st.modelSwitch.confirm')} help={t('st.modelSwitch.confirmHint')}>
+            <Toggle
+              layout="bare"
+              label={t('st.modelSwitch.confirm')}
+              checked={serverPrefs.confirm}
+              onChange={(checked) => { saveConfirm(checked); }}
+            />
+          </SettingField>
+        </SettingsBox>
+        <div className="pt-1">
           <div className="flex items-center justify-between gap-2">
             <p className="text-[12px] font-medium text-ink-soft">{t('st.modelSwitch.rulesTitle')}</p>
             <button type="button" data-model-switch-rule-add className={`${SECONDARY_BUTTON} h-7 px-2 text-[12px]`} onClick={addRule}>

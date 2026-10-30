@@ -5,7 +5,7 @@ import type { KikiConfigPatch } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SaveStatus } from '../controls';
 import { SectionCard } from './SectionCard';
-import { SettingField } from './fields';
+import { SettingField, SettingsBox } from './fields';
 import { CommitInput, SettingsSelect } from './SettingsPrimitives';
 import { useInstantSave } from './useInstantSave';
 
@@ -63,7 +63,7 @@ export function LoopLimitsCard() {
 
   return (
     <SectionCard id="st-card-loop-limits" title={t('st.loopLimits.title')} effect="newSessions">
-      <div className="space-y-1">
+      <SettingsBox>
         <SettingField label={t('st.loopLimits.maxSteps')} help={t('st.loopLimits.maxStepsHelp')}>
           <SaveStatus saving={steps.saving} saved={steps.saved} />
           <CommitInput
@@ -97,7 +97,7 @@ export function LoopLimitsCard() {
           />
         </SettingField>
         <FeedbackLine feedback={strategy.error} />
-      </div>
+      </SettingsBox>
     </SectionCard>
   );
 }
