@@ -222,6 +222,14 @@ remain distinct from deadlines. A timeout does not establish whether a mutation
 committed: inspect the session or operation before retrying; this transport does
 not retry automatically.
 
+## Seat procedure calls
+
+`createSeatKlient` from `@kiki/klient/procedures` calls delegation procedures with a seat token. Ordinary calls have a 30-second deadline from invocation through response-body decoding. Set `timeoutMs` when creating the client, or pass `{ signal, timeoutMs }` as the second argument to any convenience method. A per-call `timeoutMs: 0` disables the deadline; cancellation and `close()` still release the request.
+
+`wait({ timeoutMs })` keeps the server's long-poll budget plus a 10-second transport margin, independently of the ordinary default. Omitting the server budget means 30 seconds plus the margin. Its second argument can explicitly override that transport budget. Aborting a wait or the `host-attach` watcher stops observation, not the remote child.
+
+A deadline rejects with `SeatKlientError` code `50001` and `SeatTimeoutDetails` in `details`, including `reason: "transport.timeout"`, the procedure, phase, budget, and original dispatch or idempotency identity. `outcome: "unknown"` means the request may already have been accepted. Inspect `list`, `status`, or `result` using the original identity before attempting recovery; do not create a fresh dispatch or continuation to replace an unconfirmed write. The client does not retry automatically. `outcome: "not_sent"` means the deadline expired before dispatch.
+
 ## GUI entry contracts
 
 These HTTP-only capabilities use `klient.rest` and the authenticated `/api` REST envelope. They do not promise memory/IPC parity.

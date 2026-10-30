@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
 import { isSea } from 'node:sea';
 import { resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { createSeatKlient, type SeatKlient } from '@kiki/klient/procedures';
 import type { Command } from 'commander';
@@ -22,10 +23,13 @@ export async function watchDispatchEvents(
   dispatchId: string,
   cursor: number,
   emit: (line: string) => void,
-  pause: () => Promise<void> = () => new Promise((done) => setTimeout(done, 1000)),
+  pause: (signal?: AbortSignal) => Promise<void> = (signal) => delay(1000, undefined, { signal }),
+  signal?: AbortSignal,
 ): Promise<number> {
   for (;;) {
-    const page = await klient.events({ dispatchId, cursor, limit: 100 });
+    signal?.throwIfAborted();
+    const page = await klient.events({ dispatchId, cursor, limit: 100 }, { signal });
+    signal?.throwIfAborted();
     if (page.truncated_before_seq !== undefined && cursor < page.truncated_before_seq - 1) {
       emit(`GAP ${dispatchId} ${page.truncated_before_seq}`);
       cursor = page.truncated_before_seq - 1;
@@ -35,13 +39,14 @@ export async function watchDispatchEvents(
       if (!('type' in event)) continue;
       if (event.type === 'agent_notify') emit(`NOTIFY ${dispatchId} ${cursor} ${oneLine(event.message ?? '')}`);
       if (TERMINAL.has(event.type)) {
-        const page = await klient.result({ dispatchId, limit: 4096 });
+        const page = await klient.result({ dispatchId, limit: 4096 }, { signal });
+        signal?.throwIfAborted();
         emit(`DONE ${dispatchId} ${cursor} ${event.type} ${oneLine(page.text)}`);
         return event.type === 'completed' ? 0 : 1;
       }
     }
     if (page.nextCursor !== undefined) continue;
-    await pause();
+    await pause(signal);
   }
 }
 
@@ -77,9 +82,19 @@ export function registerHostAttachCommand(program: Command): void {
       const connection = await ensureServer({ homeDir: resolveKikiHome(options.home), workspace });
       const seat = await createSeatOnConnection(connection, { workspace, principal: mcpPrincipal(workspace) });
       const klient = createSeatKlient({ endpoint: connection.url, token: seat.delegationToken });
+      const controller = new AbortController();
+      const interrupt = (): void => { process.exitCode = 130; controller.abort(); };
+      const terminate = (): void => { process.exitCode = 143; controller.abort(); };
+      process.once('SIGINT', interrupt);
+      process.once('SIGTERM', terminate);
       try {
-        process.exitCode = await watchDispatchEvents(klient, options.dispatch, options.cursor, (line) => process.stdout.write(`${line}\n`));
+        process.exitCode = await watchDispatchEvents(klient, options.dispatch, options.cursor,
+          (line) => process.stdout.write(`${line}\n`), undefined, controller.signal);
+      } catch (error) {
+        if (!controller.signal.aborted) throw error;
       } finally {
+        process.off('SIGINT', interrupt);
+        process.off('SIGTERM', terminate);
         await klient.close();
       }
     });

@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Command } from 'commander';
+import { createSeatKlient } from '@kiki/klient/procedures';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { watchDispatchEvents } from '../../src/kiki/host-attach';
@@ -34,6 +35,41 @@ describe('external host wake adapters (mock seat and queue)', () => {
       `NOTIFY ${dispatchId} 2 checkpoint`,
       `DONE ${dispatchId} 3 completed completed summary`,
     ]);
+  });
+
+  it.each(['events', 'result'] as const)('cancels an attachment stalled in %s without polling again or cancelling the child', async phase => {
+    const cancel = vi.fn();
+    const fetchMock = vi.fn<typeof fetch>(async input => {
+      if (phase === 'result' && String(input).endsWith('/events')) return Response.json({ code: 0, msg: 'ok',
+        data: { items: [event(1, 'completed')] } });
+      return new Response(new ReadableStream({ cancel }));
+    });
+    const klient = createSeatKlient({ endpoint: 'http://example.test', token: 'SEAT_TOKEN', fetch: fetchMock });
+    const source = new AbortController();
+    const emit = vi.fn();
+    const watching = watchDispatchEvents(klient, dispatchId, 0, emit, undefined, source.signal);
+    const rejected = expect(watching).rejects.toThrow('attachment stopped');
+    await vi.waitFor(() => { expect(fetchMock).toHaveBeenCalledTimes(phase === 'result' ? 2 : 1); });
+    source.abort(new Error('attachment stopped'));
+    await rejected;
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(emit).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual(phase === 'result'
+      ? ['http://example.test/api/klient/delegation/events', 'http://example.test/api/klient/delegation/result']
+      : ['http://example.test/api/klient/delegation/events']);
+    await klient.close();
+  });
+
+  it('cancels the idle attachment pause without issuing another events query', async () => {
+    const source = new AbortController();
+    const klient = { events: vi.fn(async () => ({ items: [] })), result: vi.fn() };
+    const watching = watchDispatchEvents(klient, dispatchId, 0, vi.fn(), undefined, source.signal);
+    const rejected = expect(watching).rejects.toMatchObject({ name: 'AbortError' });
+    await Promise.resolve();
+    source.abort();
+    await rejected;
+    expect(klient.events).toHaveBeenCalledExactlyOnceWith({ dispatchId, cursor: 0, limit: 100 }, { signal: source.signal });
+    expect(klient.result).not.toHaveBeenCalled();
   });
 
   it('Claude consumes one notification at a time and exits cleanly without repeat wake', async () => {

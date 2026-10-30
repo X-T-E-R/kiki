@@ -10,13 +10,14 @@ import type {
   ExternalSendRequest,
   ExternalTranscriptLookup,
 } from '@kiki/agent-core-v2';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
   createSeatKlient,
   delegationProcedureTable,
   type DelegationProcedureInputs,
+  type SeatKlient,
 } from '../src/procedures/index';
 
 type WithoutAuthority<T> = T extends unknown ? Omit<T, 'authority' | 'signal'> : never;
@@ -238,5 +239,190 @@ describe('external delegation procedures', () => {
     }).success).toBe(false);
     expect(schema.safeParse({ cursor: 0, items: [{ kind: 'turn' }] }).success).toBe(false);
     expect(schema.safeParse({ cursor: 0, items: [{ kind: 'unknown' }] }).success).toBe(false);
+  });
+});
+
+
+describe('seat call lifetime', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('does not dispatch a write whose input preparation exhausts the entry budget', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const fetchMock = vi.fn<typeof fetch>();
+    const klient = createSeatKlient({ endpoint: 'http://example.test', token: 'SEAT_TOKEN', fetch: fetchMock, timeoutMs: 100 });
+    await expect(klient.dispatch({ target: 'main', dispatchKey: 'original-key',
+      get message() { vi.setSystemTime(101); return 'inspect'; } })).rejects.toMatchObject({ details: {
+      outcome: 'not_sent', phase: 'headers', dispatchKey: 'original-key', timeoutMs: 100,
+    } });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    await klient.close();
+  });
+
+  it('allows a disabled deadline while retaining cancellation and independent calls', async () => {
+    vi.useFakeTimers();
+    const source = new AbortController();
+    let requestSignal!: AbortSignal;
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      requestSignal = init!.signal!;
+      return new Response(new ReadableStream());
+    });
+    const klient = createSeatKlient({ endpoint: 'http://example.test', token: 'SEAT_TOKEN', fetch: fetchMock, timeoutMs: 10 });
+    const rejected = expect(klient.events({ dispatchId: 'dispatch-1' }, { timeoutMs: 0, signal: source.signal })).rejects.toThrow('stop only this call');
+    await vi.advanceTimersByTimeAsync(1_000_000);
+    expect(requestSignal.aborted).toBe(false);
+    source.abort(new Error('stop only this call'));
+    await rejected;
+    fetchMock.mockResolvedValueOnce(Response.json({ code: 0, msg: 'ok', data: { items: [] } }));
+    await expect(klient.events({ dispatchId: 'dispatch-1' })).resolves.toEqual({ items: [] });
+    expect(vi.getTimerCount()).toBe(0);
+    await klient.close();
+  });
+
+  it.each(['headers', 'body', 'trickle'] as const)('bounds %s by a single entry deadline', async phase => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const fetchMock = vi.fn<typeof fetch>(async () => phase === 'headers'
+      ? new Promise<Response>(() => {})
+      : new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; }, cancel })));
+    const klient = createSeatKlient({ endpoint: 'http://example.test', token: 'SEAT_TOKEN', fetch: fetchMock, timeoutMs: 100 });
+    const rejected = expect(klient.events({ dispatchId: 'dispatch-1' })).rejects.toMatchObject({
+      code: 50001, details: { reason: 'transport.timeout', phase: phase === 'headers' ? 'headers' : 'body', outcome: 'unknown', timeoutMs: 100 },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    if (phase === 'trickle') {
+      for (let index = 0; index < 4; index++) {
+        stream.enqueue(new TextEncoder().encode(index === 0 ? '{' : ' '));
+        await vi.advanceTimersByTimeAsync(20);
+      }
+    }
+    await vi.advanceTimersByTimeAsync(phase === 'trickle' ? 20 : 100);
+    await rejected;
+    if (phase !== 'headers') expect(cancel).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    await klient.close();
+  });
+
+  it('uses the 30s default through response body consumption', async () => {
+    vi.useFakeTimers();
+    const cancel = vi.fn();
+    const klient = createSeatKlient({ endpoint: 'http://example.test', token: 'SEAT_TOKEN',
+      fetch: async () => new Response(new ReadableStream({ cancel })) });
+    let settled = false;
+    const call = klient.status({ dispatchId: 'dispatch-1' });
+    void call.then(() => { settled = true; }, () => { settled = true; });
+    const rejected = expect(call).rejects.toMatchObject({ details: { timeoutMs: 30_000, phase: 'body' } });
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(cancel).toHaveBeenCalledOnce();
+    await klient.close();
+  });
+
+  it.each(['abort', 'close'] as const)('settles a stalled body on %s and cancels its reader', async reason => {
+    const source = new AbortController();
+    const cancel = vi.fn();
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(new ReadableStream({ cancel })));
+    const klient = createSeatKlient({ endpoint: 'http://example.test', token: 'SEAT_TOKEN', fetch: fetchMock });
+    const call = klient.events({ dispatchId: 'dispatch-1' }, { signal: source.signal });
+    const rejected = expect(call).rejects.toBeDefined();
+    await Promise.resolve();
+    if (reason === 'abort') source.abort(new Error('stop watching'));
+    else await klient.close();
+    await rejected;
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    await klient.close();
+  });
+
+  it('cancels a late response after timing out an uncooperative fetch', async () => {
+    vi.useFakeTimers();
+    let release!: (response: Response) => void;
+    const fetchMock = vi.fn<typeof fetch>(() => new Promise(resolve => { release = resolve; }));
+    const klient = createSeatKlient({ endpoint: 'http://example.test', token: 'SEAT_TOKEN', fetch: fetchMock, timeoutMs: 10 });
+    const rejected = expect(klient.list()).rejects.toMatchObject({ details: { phase: 'headers' } });
+    await vi.advanceTimersByTimeAsync(10);
+    await rejected;
+    const cancel = vi.fn();
+    release(new Response(new ReadableStream({ cancel })));
+    await Promise.resolve();
+    expect(cancel).toHaveBeenCalledOnce();
+    await klient.close();
+  });
+
+  it.each(['dispatch', 'continue', 'send'] as const)('retains an unknown %s identity without retrying the write', async name => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(new ReadableStream()));
+    const klient = createSeatKlient({ endpoint: 'http://example.test', token: 'SEAT_TOKEN', fetch: fetchMock });
+    const call = name === 'dispatch'
+      ? klient.dispatch({ target: 'main', message: 'inspect', dispatchKey: 'original-key' }, { timeoutMs: 10 })
+      : name === 'continue'
+        ? klient.continue({ dispatchId: 'dispatch-1', message: 'inspect', dispatchKey: 'original-key' }, { timeoutMs: 10 })
+        : klient.send({ taskName: 'helper', message: 'inspect', idempotencyKey: 'original-key' }, { timeoutMs: 10 });
+    const rejected = expect(call).rejects.toMatchObject({ details: { procedure: name, outcome: 'unknown',
+      ...(name === 'send' ? { idempotencyKey: 'original-key' } : { dispatchKey: 'original-key' }) } });
+    await vi.advanceTimersByTimeAsync(10);
+    await rejected;
+    await vi.advanceTimersByTimeAsync(100_000);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(JSON.parse(fetchMock.mock.calls[0]![1]!.body as string)).toMatchObject(name === 'send'
+      ? { idempotencyKey: 'original-key' } : { dispatchKey: 'original-key' });
+    await klient.close();
+  });
+
+  it('preserves an explicit ten-minute server wait independently of the ordinary default', async () => {
+    vi.useFakeTimers();
+    let release!: (response: Response) => void;
+    let requestSignal!: AbortSignal;
+    const fetchMock = vi.fn<typeof fetch>((_input, init) => {
+      requestSignal = init!.signal!;
+      return new Promise(resolve => { release = resolve; });
+    });
+    const klient = createSeatKlient({ endpoint: 'http://example.test', token: 'SEAT_TOKEN', fetch: fetchMock, timeoutMs: 10 });
+    const waiting = klient.wait({ dispatchId: 'dispatch-1', timeoutMs: 600_000 });
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(requestSignal.aborted).toBe(false);
+    release(Response.json({ code: 0, msg: 'ok', data: { waitStatus: 'timed_out', waitedMs: 600_000, completedDuringWait: [], interactions: [] } }));
+    await expect(waiting).resolves.toMatchObject({ waitStatus: 'timed_out', waitedMs: 600_000 });
+    expect(vi.getTimerCount()).toBe(0);
+    await klient.close();
+  });
+
+  it('applies a finite wait margin and honors a deliberate transport override', async () => {
+    vi.useFakeTimers();
+    const klient = createSeatKlient({ endpoint: 'http://example.test', token: 'SEAT_TOKEN', fetch: async () => new Promise(() => {}) });
+    const first = expect(klient.wait({ timeoutMs: 60_000 })).rejects.toMatchObject({ details: { timeoutMs: 70_000 } });
+    await vi.advanceTimersByTimeAsync(70_000);
+    await first;
+    const second = expect(klient.wait({ timeoutMs: 60_000 }, { timeoutMs: 5 })).rejects.toMatchObject({ details: { timeoutMs: 5 } });
+    await vi.advanceTimersByTimeAsync(5);
+    await second;
+    await klient.close();
+  });
+
+  it('forwards a signal through all convenience wrappers without sending pre-aborted calls', async () => {
+    const source = new AbortController();
+    source.abort(new Error('already stopped'));
+    const fetchMock = vi.fn<typeof fetch>();
+    const klient = createSeatKlient({ endpoint: 'http://example.test', token: 'SEAT_TOKEN', fetch: fetchMock });
+    const options = { signal: source.signal };
+    const calls: Array<(client: SeatKlient) => Promise<unknown>> = [
+      client => client.profiles({}, options), client => client.list({}, options),
+      client => client.dispatch({ target: 'main', message: 'inspect' }, options),
+      client => client.continue({ dispatchId: 'dispatch-1', message: 'inspect' }, options),
+      client => client.send({ taskName: 'helper', message: 'inspect', idempotencyKey: 'key' }, options),
+      client => client.interactions({}, options),
+      client => client.respond({ interactionId: 'interaction-1', kind: 'question', response: null }, options),
+      client => client.status({ dispatchId: 'dispatch-1' }, options), client => client.wait({}, options),
+      client => client.result({ dispatchId: 'dispatch-1' }, options), client => client.events({ dispatchId: 'dispatch-1' }, options),
+      client => client.transcript({ dispatchId: 'dispatch-1' }, options), client => client.cancel({ dispatchId: 'dispatch-1' }, options),
+    ];
+    for (const call of calls) await expect(call(klient)).rejects.toThrow('already stopped');
+    expect(fetchMock).not.toHaveBeenCalled();
+    await klient.close();
   });
 });
