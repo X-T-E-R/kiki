@@ -4733,6 +4733,7 @@ export const en = {
   'st.nbSearch.custom.reference.routeRule': 'the routing rule “{id}”',
   'st.nbSearch.composer.methodsTitle': 'Search methods',
   'st.nbSearch.operation.search': 'search',
+  'st.nbSearch.operation.documents': 'docs',
   'st.nbSearch.role.fetchShort': 'fetch',
   'st.nbSearch.role.service': 'service',
   'st.nbSearch.providerFallback': 'unknown service',

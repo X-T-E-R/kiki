@@ -4691,6 +4691,7 @@ export const zh = {
   'st.nbSearch.custom.reference.routeRule': '路由规则「{id}」',
   'st.nbSearch.composer.methodsTitle': '搜索方式（方法）',
   'st.nbSearch.operation.search': '搜索',
+  'st.nbSearch.operation.documents': '文档',
   'st.nbSearch.role.fetchShort': '抓取',
   'st.nbSearch.role.service': '服务',
   'st.nbSearch.providerFallback': '未知服务',
