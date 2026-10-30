@@ -25,6 +25,7 @@ import { IMemoryShadowImport, MemoryShadowImport } from '#/app/memory/memoryShad
 import { IMemoryPersistence, type MemoryCommit } from '#/persistence/interface/memoryPersistence';
 import { SqliteMemoryPersistence } from '#/persistence/backends/sqliteMemory/sqliteMemoryPersistence';
 import { MemoryDatabase } from '#/persistence/backends/sqliteMemory/database';
+import { MemoryDatabase as Schema3MemoryDatabase } from '../../fixtures/memoryDatabaseSchema3';
 import { memoryObjectSourceUnitId, memorySourceUnitId } from '#/app/memory/memorySourceIdentity';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -459,7 +460,7 @@ describe('Memory shadow import and replay barriers', () => {
     await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }]);
     await close();
     const db = new DatabaseSync(join(home, 'store', 'memory-sqlite-v1', 'memory.sqlite'));
-    try { db.exec("DROP TABLE source_links; DROP TABLE source_barriers; DELETE FROM sources WHERE id LIKE 'source-unit:%'; PRAGMA user_version=1;"); }
+    try { db.exec("DROP TABLE source_links; DROP TABLE source_barriers; DELETE FROM sources WHERE id LIKE 'source-unit:%'; DELETE FROM metadata WHERE key='source_evidence_version'; PRAGMA user_version=1;"); }
     finally { db.close(); }
     bind();
     const corrected = await update(entry, 'Current corrected schema source.');
@@ -492,7 +493,7 @@ describe('Memory shadow import and replay barriers', () => {
       const decision = { id: 'legacy-evidence-decision', scope: 'memory/global', objectId: first.id, revision: second.revision, kind: 'correction', reason: 'Retain attributed evidence', sourceIds: [signature] };
       db.prepare('INSERT INTO adjudications VALUES(?,?,?,?,?,?)').run(decision.id, decision.scope, decision.objectId, decision.revision, 0, JSON.stringify(decision));
       if (forgotten) db.prepare('INSERT INTO source_barriers VALUES(?,?,?,?)').run('memory/global', signature, '2026-01-02', 0);
-      db.exec(`PRAGMA user_version=${version}`);
+      db.exec(`DELETE FROM metadata WHERE key='source_evidence_version'; PRAGMA user_version=${version}`);
     } finally { db.close(); }
     bind();
     const payloads = [JSON.stringify(first), JSON.stringify(second)].toSorted();
@@ -512,6 +513,73 @@ describe('Memory shadow import and replay barriers', () => {
     const evidence = reopened.sources.find((source) => source.payload === JSON.stringify(second))!;
     expect(reopened.adjudications.find((decision) => decision.id === 'legacy-evidence-decision')?.sourceIds).toEqual([evidence.id]);
     expect(await persistence.source('memory/global', evidence.id)).toMatchObject({ state: 'registered', source: { objectId: first.id, payload: JSON.stringify(second), learnedAt: second.created } });
+  });
+
+  it.each([3, 4])('keeps upgraded schema %s databases and new backups readable and writable by the actual schema-3 module', async (version) => {
+    const scope = 'memory/global';
+    const path = join(home, 'schema-compat.sqlite');
+    const seed: MemoryEntry = { ...(await save('Reader compatibility fixture')).entry, id: 'm_compat_old', revision: 'compat:old', body: 'Original instruction; exception 17.' };
+    const append = (database: MemoryDatabase | Schema3MemoryDatabase, entry: MemoryEntry, before: MemoryEntry | null, operationId: string) => database.commit({ operationId, request: operationId, expectedGeneration: database.read([scope]).generation,
+      edits: [{ scope, id: entry.id, expectedRevision: before?.revision ?? null, revision: entry.revision, entry }],
+      sources: [{ id: `source:${operationId}`, scope, objectId: entry.id, payload: JSON.stringify(entry), learnedAt: entry.created }],
+      journal: [{ scope, id: entry.id, operationId, action: before === null ? 'create' : 'update', before: before === null ? null : JSON.stringify(before), beforeRevision: before?.revision ?? null, afterRevision: entry.revision, at: entry.updated, writer: entry.source.writer }], result: { entry } });
+    const original = new Schema3MemoryDatabase(path);
+    try { append(original, seed, null, 'compat-original'); } finally { original.close(); }
+    if (version === 4) { const raw = new DatabaseSync(path); try { raw.exec('PRAGMA user_version=4'); } finally { raw.close(); } }
+    const corrected = { ...seed, revision: 'compat:new-write', body: 'Newly saved correction; exceptions 17 and 19.' };
+    const forgotten = { ...seed, id: 'm_compat_forgotten', revision: 'compat:forgotten', title: 'Forgotten compatibility object', body: 'Remove this separate rule.', source: { writer: 'agent' as const, session: 'compat-forgotten', turn: 17 } };
+    const imported: MemoryEntry = { ...seed, id: 'm_compat_imported', revision: 'compat:imported', body: 'Imported evidence saved after the upgrade.', source: { writer: 'import', session: 'compat-import', turn: 19 } };
+    const upgraded = new MemoryDatabase(path);
+    const backup = join(home, 'postupgrade-backup.sqlite');
+    let receipt;
+    let view;
+    let journal;
+    let provenance;
+    let evidence;
+    let legacy;
+    try {
+      receipt = append(upgraded, corrected, seed, 'compat-new-write');
+      upgraded.importLegacy([{ scope, key: `entries/${imported.id}.md`, payload: JSON.stringify(imported), entry: imported }]);
+      const sourceId = upgraded.provenance(scope, imported.id).sources[0]!.id;
+      expect(sourceId).toMatch(/^source-evidence:/);
+      upgraded.commit({ operationId: 'compat-decision', request: 'compat-decision', expectedGeneration: upgraded.read([scope]).generation, edits: [], adjudications: [{ id: 'compat-decision', scope, objectId: imported.id, kind: 'correction', revision: imported.revision, reason: 'Owner confirmed the imported evidence', sourceIds: [sourceId] }], result: { confirmed: true } });
+      append(upgraded, forgotten, null, 'compat-forget-target');
+      upgraded.commit({ operationId: 'compat-forget', request: 'compat-forget', expectedGeneration: upgraded.read([scope]).generation, edits: [], barriers: [{ scope, objectId: forgotten.id, at: '2026-01-02' }], result: { forgotten: true } });
+      view = upgraded.read([scope]); journal = upgraded.journal(scope, seed.id); provenance = upgraded.provenance(scope, seed.id);
+      evidence = upgraded.provenance(scope, imported.id); legacy = upgraded.legacy(scope);
+      await upgraded.backup(backup);
+    } finally { upgraded.close(); }
+    for (const target of [path, backup]) {
+      const raw = new DatabaseSync(target);
+      try {
+        expect(raw.prepare('PRAGMA user_version').get()?.['user_version']).toBe(3);
+        expect(raw.prepare("SELECT value FROM metadata WHERE key='source_evidence_version'").get()?.['value']).toBe(1);
+      } finally { raw.close(); }
+      const old = new Schema3MemoryDatabase(target);
+      const returned = { ...corrected, revision: 'compat:old-reader-write', body: 'Saved while running the previous release.' };
+      try {
+        expect(old.read([scope])).toEqual(view);
+        expect(old.read([scope], 1).objects).toEqual([{ scope, id: seed.id, revision: seed.revision, entry: JSON.parse(JSON.stringify(seed)) }]);
+        expect(old.revision(scope, seed.id, seed.revision)).toEqual(JSON.parse(JSON.stringify(seed)));
+        expect(old.revision(scope, seed.id, corrected.revision)).toEqual(JSON.parse(JSON.stringify(corrected)));
+        expect(old.journal(scope, seed.id)).toEqual(journal);
+        expect(old.provenance(scope, seed.id)).toEqual(provenance);
+        expect(old.provenance(scope, imported.id)).toEqual(evidence);
+        expect(old.legacy(scope)).toEqual(legacy);
+        expect(old.receipt('compat-new-write', 'compat-new-write')).toEqual(receipt);
+        expect(old.revision(scope, forgotten.id, forgotten.revision)).toBeUndefined();
+        const replay = { ...forgotten, id: 'm_compat_replay', revision: 'compat:replay' };
+        expect(() => append(old, replay, null, 'compat-replay')).toThrow('source has a forget barrier');
+        append(old, returned, corrected, 'compat-old-reader-write');
+      } finally { old.close(); }
+      const current = new MemoryDatabase(target);
+      try {
+        expect(current.read([scope]).objects.find((object) => object.id === seed.id)?.entry).toEqual(JSON.parse(JSON.stringify(returned)));
+        expect(current.receipt('compat-old-reader-write')).toMatchObject({ result: { entry: JSON.parse(JSON.stringify(returned)) } });
+        expect(current.provenance(scope, imported.id)).toEqual(evidence);
+        expect(current.revision(scope, forgotten.id, forgotten.revision)).toBeUndefined();
+      } finally { current.close(); }
+    }
   });
 
   it('applies imported-source correction and forget to a changed legacy ID and real lorebook reimport', async () => {

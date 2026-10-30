@@ -58,10 +58,14 @@ export class MemoryDatabase {
           this.db.prepare('INSERT OR IGNORE INTO sources VALUES(?,?,?,?,?,?)').run(memoryObjectSourceUnitId(scope, entry.id, entry.body), scope, entry.id, String(row['payload']), entry.basis?.refs?.[0] ?? null, entry.created);
         }
       }
-      if (version < 4) this.separateSourceSignatures();
+      const evidenceVersion = Number(this.db.prepare("SELECT value FROM metadata WHERE key='source_evidence_version'").get()?.['value'] ?? 0);
+      if (evidenceVersion < 1) {
+        this.separateSourceSignatures();
+        this.db.prepare("INSERT INTO metadata VALUES('source_evidence_version',1) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+      }
       this.db.exec('INSERT OR IGNORE INTO source_links SELECT scope,id,object_id FROM sources');
       if (version < 3) this.linkLegacyLineages();
-      this.db.exec('PRAGMA user_version=4');
+      this.db.exec('PRAGMA user_version=3');
     });
   }
   private separateSourceSignatures(): void {
