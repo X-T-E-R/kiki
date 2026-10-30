@@ -94,7 +94,7 @@ If the upgrade stops, the [Memory API](/en/server/rest-api#backend-migration-and
 
 Upgrade other installations sharing the home as well; the backend marker governs compatible writers, not binaries released before that protocol.
 
-The upgrade keeps the database compatible with the previous schema-3 SQLite reader. Rolling back to that build keeps post-upgrade edits and history; no older snapshot or file directory needs to be restored. Returning to the current build rechecks forgotten-source barriers and rebuilds missing source evidence from the old writer's saved revisions.
+The upgrade keeps the database compatible with the previous schema-3 SQLite reader. Rolling back to that build keeps post-upgrade edits and history; no older snapshot or file directory needs to be restored. Returning to the current build checks changes made by the old writer against forgotten-source barriers and fills missing source evidence. Completed checks are saved, so subsequent starts do not scan the full history again.
 
 The API can also save a governed recovery package and switch SQLite to read-only mode. Current entries stay readable, including corrections made after migration; editing resumes only with the current recovery ID and epoch returned by the API. Keep the full database backup: Markdown exports current entries and pending proposals, while the database also retains immutable revisions, correction records and forget barriers. Do not restore an old file directory over newer governed memory.
 
