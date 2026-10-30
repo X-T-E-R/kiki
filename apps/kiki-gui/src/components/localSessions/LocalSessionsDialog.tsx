@@ -172,7 +172,7 @@ function Preview({
   return (
     <div data-local-preview={summary.id} className="flex flex-col">
       <div className="shrink-0 space-y-1 border-b border-hairline px-1 pt-1 pb-3">
-        <h3 data-detail-heading tabIndex={-1} className="truncate text-[14px] font-medium text-ink outline-none" title={localSessionName(summary)}>{localSessionName(summary)}</h3>
+        <h3 data-detail-heading tabIndex={-1} className="sr-only">{localSessionName(summary)}</h3>
         {summary.cwd !== undefined ? <p className="truncate text-[11px] text-ink-faint" title={summary.cwd}>{summary.cwd}</p> : null}
         {partial || warnings.length > 0 ? (
           // One quiet line: what an excerpt means, the specific codes as quiet
