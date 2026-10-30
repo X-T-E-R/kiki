@@ -64,6 +64,7 @@ export class PromptStepRequest extends UserMessageStepRequest {
     batch?: readonly PromptBatchMessage[],
     private readonly recordBatch?: () => void,
     private readonly hookMessages: readonly ContextMessage[] = [],
+    private readonly parentReceiptManaged?: boolean,
   ) {
     super(message, captions, reminders, { admission: 'newTurn', deliveryOrigin }, batch);
   }
@@ -73,6 +74,7 @@ export class PromptStepRequest extends UserMessageStepRequest {
       input: this.message.content,
       origin: this.message.origin ?? { kind: 'unknown' },
       promptId: this.promptId ?? this.message.id,
+      parentReceiptManaged: this.parentReceiptManaged,
     };
   }
 
@@ -126,12 +128,12 @@ export class SteerStepRequest extends UserMessageStepRequest {
 export class RetryStepRequest extends StepRequest {
   readonly kind = 'retry';
 
-  constructor() {
+  constructor(private readonly parentReceiptManaged?: boolean) {
     super({ admission: 'newTurn' });
   }
 
   override get turnSeed(): TurnSeed {
-    return { input: [], origin: { kind: 'retry' } };
+    return { input: [], origin: { kind: 'retry' }, parentReceiptManaged: this.parentReceiptManaged };
   }
 
   resolveContextMessages(): readonly ContextMessage[] {

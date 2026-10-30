@@ -60,6 +60,7 @@ export interface PromptContentRange {
 }
 
 export interface PromptInput {
+  readonly parentReceiptManaged?: boolean;
   readonly id?: string;
   readonly userMessageId?: string;
   readonly retryFingerprint?: string;
@@ -281,7 +282,7 @@ export interface IAgentPromptService {
    */
   drain(reason: Error, mode?: 'cancel' | 'preserve-pending'): Promise<void>;
   inject(message: ContextMessage, options?: PromptInjectOptions): Promise<Turn | undefined>;
-  retry(): Promise<Turn | undefined>;
+  retry(options?: { readonly parentReceiptManaged?: boolean }): Promise<Turn | undefined>;
   clear(): Promise<void>;
   readonly hooks: Hooks<{ onBeforeSubmitPrompt: PromptSubmitContext }>;
 }

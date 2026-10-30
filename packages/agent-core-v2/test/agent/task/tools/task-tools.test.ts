@@ -192,6 +192,10 @@ class FakeTaskService implements IAgentTaskService {
     throw new Error('registerTask is not implemented in FakeTaskService.');
   }
 
+  async recordCompletedTask(): Promise<void> {
+    throw new Error('recordCompletedTask is not implemented in FakeTaskService.');
+  }
+
   getTask(taskId: string): AgentTaskInfo | undefined {
     return this.entries.get(taskId)?.info;
   }

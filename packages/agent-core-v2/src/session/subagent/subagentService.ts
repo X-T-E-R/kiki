@@ -1,4 +1,5 @@
 import { Service } from '#/_base/di/service';
+import { observeAutonomousReceipts } from './autonomousReceipt';
 import { Error2, ErrorCodes } from '#/errors';
 import { LifecycleScope } from '#/app/scopes';
 import {
@@ -7,7 +8,7 @@ import {
   registerScopedService,
 } from '#/_base/di/scope';
 import { Emitter } from '#/_base/event';
-import { toDisposable } from '#/_base/di/lifecycle';
+import { DisposableMap, toDisposable } from '#/_base/di/lifecycle';
 import { ILogService } from '#/_base/log/log';
 import type { AgentProfileSummaryPolicy } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { resolveSnapshotProfileDefinition } from '#/app/agentProfileCatalog/subagentDispatch';
@@ -49,6 +50,8 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
   private readonly onDidStopAgentTaskEmitter = this._register(
     new Emitter<AgentTaskStopHookContext>(),
   );
+  private readonly receiptObservers = this._register(new DisposableMap<string>());
+  private readonly pendingReceipts = new WeakMap<IAgentScopeHandle, number>();
   private readonly pendingReleases = new Map<string, ReturnType<typeof setTimeout>>();
   private stopped = false;
 
@@ -68,8 +71,25 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     super();
     this.releaseGraceMs = resolveReleaseGraceMs((name) => bootstrap.getEnv(name));
     this._register(agentLifecycle.onDidCreate((handle) => {
+      if (handle.id !== MAIN_AGENT_ID) {
+        void this.receiptObservers.set(handle.id, observeAutonomousReceipts(handle, (delivery) => {
+          this.pendingReceipts.set(handle, (this.pendingReceipts.get(handle) ?? 0) + 1);
+          void delivery.catch((error: unknown) => {
+            this.log.error('autonomous subagent receipt delivery failed', { agentId: handle.id, error });
+          }).finally(() => {
+            this.pendingReceipts.set(handle, (this.pendingReceipts.get(handle) ?? 1) - 1);
+            if (this.agentLifecycle.get(handle.id) === handle) this.scheduleRelease(handle.id);
+          });
+        }));
+      }
       if (!this.pendingReleases.has(handle.id)) this.scheduleRelease(handle.id, false);
     }));
+    if (agentLifecycle.onDidDispose !== undefined) {
+      this._register(agentLifecycle.onDidDispose((agentId) => {
+        void this.receiptObservers.deleteAndDispose(agentId);
+        this.cancelRelease(agentId);
+      }));
+    }
     this._register(
       toDisposable(() => {
         this.stopped = true;
@@ -150,7 +170,7 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     if (this.stopped || !this.flags.enabled(SUBAGENT_RELEASE_IDLE_FLAG)) return;
     const handle = this.agentLifecycle.get(agentId);
     if (handle === undefined) return;
-    if (!isReleasable(handle)) {
+    if ((this.pendingReceipts.get(handle) ?? 0) > 0 || !isReleasable(handle)) {
       this.scheduleRelease(agentId, false);
       return;
     }

@@ -35,7 +35,7 @@ export async function runAgentTurn(
 ): Promise<AgentRunHandle> {
   options.signal.throwIfAborted();
   const promptService = target.accessor.get(IAgentPromptService);
-  const promptInput: PromptInput | undefined = request.kind === 'prompt' ? { id: request.promptId, message: {
+  const promptInput: PromptInput | undefined = request.kind === 'prompt' ? { parentReceiptManaged: true, id: request.promptId, message: {
     role: 'user', content: [{ type: 'text', text: request.prompt }], toolCalls: [],
     origin: request.origin ?? AGENT_RUN_PROMPT_ORIGIN,
   }, signal: options.signal } : undefined;
@@ -70,11 +70,12 @@ export async function runAgentTurn(
       ? await (await promptService.enqueue(promptInput)).launched
       : request.kind === 'mailbox'
         ? await (await promptService.enqueue({
+            parentReceiptManaged: true,
             message: request.message,
             alreadyMaterialized: hasMailboxMessageInContext(target.accessor.get(IAgentContextMemoryService).get(), request.message),
             signal: options.signal,
           })).launched
-        : await promptService.retry();
+        : await promptService.retry({ parentReceiptManaged: true });
   } catch (error) {
     options.signal.throwIfAborted();
     throw error;
@@ -168,7 +169,7 @@ async function distillSummary(
 
   const promptService = target.accessor.get(IAgentPromptService);
   for (let attempt = 0; attempt < policy.retries; attempt++) {
-    const turn = await (await promptService.enqueue({ message: {
+    const turn = await (await promptService.enqueue({ parentReceiptManaged: true, message: {
       role: 'user',
       content: [{ type: 'text', text: policy.continuationPrompt }],
       toolCalls: [],
@@ -227,7 +228,7 @@ function providerRateLimitErrorFromPayload(error: KimiErrorPayload): APIProvider
   return new APIProviderRateLimitError(error.message, requestId);
 }
 
-function latestAssistantText(messages: readonly ContextMessage[]): string {
+export function latestAssistantText(messages: readonly ContextMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]!;
     if (message.role !== 'assistant') continue;

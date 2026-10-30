@@ -104,6 +104,8 @@ export interface IAgentTaskService {
   track(handle: ITaskHandle, options: AgentTaskTrackOptions): IAgentTaskEntry;
   allocateTaskId?(idPrefix: string): string;
   registerTask(task: AgentTask, options?: RegisterAgentTaskOptions): string;
+  /** Persist and notify an already completed result without admitting new background work. */
+  recordCompletedTask(info: AgentTaskInfo & { readonly status: 'completed' }, finalOutput: string): Promise<void>;
   registerMediaRecovery?(handler: (info: MediaTaskInfo) => Promise<AgentTask | undefined>): IDisposable;
   resumeRestoration?(): Promise<void>;
   commitTaskRegistration?(taskId: string): void;

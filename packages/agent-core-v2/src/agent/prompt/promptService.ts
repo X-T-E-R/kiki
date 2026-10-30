@@ -556,6 +556,7 @@ export const promptIdentityKey = defineState('prompt.identity', (): Map<string, 
 
 interface Deferred<T> { readonly promise: Promise<T>; resolve(value: T): void; reject(reason: unknown): void }
 interface Record extends PromptSnapshot {
+  readonly parentReceiptManaged?: boolean;
   state: PromptState;
   deliveryReason?: PromptHandle['deliveryReason'];
   error?: ErrorPayload;
@@ -1303,6 +1304,7 @@ export class AgentPromptService implements IAgentPromptService {
       revision: 0,
       deferredDisabledTools: input.deferredDisabledTools,
       alreadyMaterialized: input.alreadyMaterialized === true,
+      parentReceiptManaged: input.parentReceiptManaged,
       historyMutationLease: input.historyMutationLease,
       launchedDeferred,
       completionDeferred,
@@ -2394,7 +2396,9 @@ export class AgentPromptService implements IAgentPromptService {
     return (await this.loop.enqueue(request).assigned).turn;
   }
 
-  async retry(): Promise<Turn | undefined> { return (await this.loop.enqueue(new RetryStepRequest()).assigned).turn; }
+  async retry(options?: { readonly parentReceiptManaged?: boolean }): Promise<Turn | undefined> {
+    return (await this.loop.enqueue(new RetryStepRequest(options?.parentReceiptManaged)).assigned).turn;
+  }
 
   async clear(): Promise<void> {
     for (const item of this.pending.slice()) this.abort(item.id);
@@ -2540,7 +2544,7 @@ export class AgentPromptService implements IAgentPromptService {
                 promptIds: deliverable.slice(1).map(candidate => candidate.id),
                 content: deliverable.slice(1).flatMap(candidate => stripBundledSkillBlocks(candidate.message)),
                 steeredAt: new Date().toISOString() }));
-            } : undefined, hookMessages),
+            } : undefined, hookMessages, item.parentReceiptManaged),
           { at: 'head' },
         );
         launching.receipt = receipt;

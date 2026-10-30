@@ -491,6 +491,9 @@ function createFakeTaskService(
     track(): never {
       throw new Error('fake IAgentTaskService.track is not implemented');
     },
+    async recordCompletedTask(): Promise<void> {
+      throw new Error('fake IAgentTaskService.recordCompletedTask is not implemented');
+    },
 
     registerTask(task: AgentTask, registerOptions: RegisterAgentTaskOptions = {}): string {
       const detached = registerOptions.detached ?? true;

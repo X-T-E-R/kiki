@@ -538,6 +538,22 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return entry.taskId;
   }
 
+  async recordCompletedTask(info: AgentTaskInfo & { readonly status: 'completed' }, finalOutput: string): Promise<void> {
+    const terminal = { ...info, detached: true,
+      terminalNotificationSuppressed: info.terminalNotificationSuppressed || this.exitSuppressionArmed || undefined };
+    const receipt = await this.persistence.commitTerminalTask(terminal, finalOutput);
+    const committed = { ...terminal, receipt, receiptVerification: 'verified' as const };
+    this.ghosts.set(info.taskId, committed);
+    this.localTaskIds.add(info.taskId);
+    this.recordTaskTerminated(committed, Buffer.from(finalOutput, 'utf-8').subarray(-TERMINAL_OUTPUT_TAIL_BYTES).toString('utf-8'));
+    try {
+      await this.dispatcher.flush();
+      await this.notifyAgentTask(committed);
+    } finally {
+      this.eventBus.publish(new TaskSettlementReady({ info: committed }));
+    }
+  }
+
   allocateTaskId(idPrefix: string): string {
     return generateTaskId(idPrefix);
   }

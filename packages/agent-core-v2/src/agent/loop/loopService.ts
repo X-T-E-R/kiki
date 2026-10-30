@@ -602,6 +602,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     this.activeTurnJob = job;
     void this.dispatcher.dispatch(
       new TurnStarted({
+        parentReceiptManaged: job.seed.parentReceiptManaged,
         turnId: job.turn.id,
         origin,
         prompt: isDisplayablePromptOrigin(origin) ? turnPromptText(job.seed.input, origin) : undefined,

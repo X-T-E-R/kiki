@@ -19,6 +19,7 @@ export type TurnInterruptReason =
   | 'blocked';
 
 export interface TurnStartedPayload {
+  readonly parentReceiptManaged?: boolean;
   readonly turnId: number;
   readonly origin: PromptOrigin;
   readonly source?: 'native' | 'external';

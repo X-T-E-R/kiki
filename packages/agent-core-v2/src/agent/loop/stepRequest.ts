@@ -13,6 +13,7 @@ export type StepRequestAdmission =
   | 'activeTurnOnly';
 
 export interface TurnSeed {
+  readonly parentReceiptManaged?: boolean;
   readonly input: readonly ContentPart[];
   readonly origin: PromptOrigin;
   readonly promptId?: string;

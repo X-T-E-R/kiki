@@ -206,7 +206,7 @@ export function emitAgentRunSpawned(
 
 export async function mirrorAgentRun(
   requester: IAgentScopeHandle,
-  run: AgentRunHandle,
+  run: Pick<AgentRunHandle, 'agentId' | 'completion'> & Partial<Pick<AgentRunHandle, 'turn'>>,
   options: MirrorAgentRunOptions,
 ): Promise<{ summary: string; usage?: TokenUsage }> {
   const dispatcher = requester.accessor.get(IEventDispatcher);

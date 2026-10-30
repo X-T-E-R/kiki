@@ -12,6 +12,7 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentTaskService } from '#/agent/task/task';
+import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
@@ -61,6 +62,7 @@ function fakeAgent(id: string): FakeAgent {
   });
   let promptRuns = 0;
   const services = new Map<unknown, unknown>([
+    [IAgentScopeContext, makeAgentScopeContext({ agentId: id, agentScope: `agents/${id}` })],
     [IAgentExecutionService, {
       run,
       status: () => ({ state: promptRuns > 0 ? 'running' : agent.executionState }),

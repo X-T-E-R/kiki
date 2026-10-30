@@ -5,6 +5,16 @@ import { Readable } from 'node:stream';
 import { createControlledPromise } from '@antfu/utils';
 import type { IHostProcess } from '#/os/interface/hostProcess';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
+import { Emitter, Event } from '#/_base/event';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionSubagentService, type AgentRunRequest } from '#/session/subagent/subagent';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { AgentTaskPersistence } from '#/agent/task/persist';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
+import { IAgentCollaborationMessageStore } from '#/session/agentCollaboration/messageMailbox';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLLMRequesterService, type AgentLLMRequestFinish } from '#/agent/llmRequester/llmRequester';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -58,6 +68,282 @@ function agentTask(
 function notifiedCount(ctx: TestAgentContext): number {
   return ctx.allEvents.filter((e) => e.type === '[rpc]' && e.event === 'task.notified').length;
 }
+
+async function receiptPair(maxRunningTasks?: number) {
+  const created = new Emitter<IAgentScopeHandle>();
+  const handles = new Map<string, IAgentScopeHandle>();
+  const mailbox = sessionService(IAgentCollaborationMessageStore, {
+    _serviceBrand: undefined,
+    listPendingAgents: async () => [], nextQueued: async () => undefined,
+    accept: async () => { throw new Error('Mailbox writes are unused in this fixture'); },
+    markDelivered: async () => true,
+    discardPending: async () => ({ discarded: 0 }),
+  });
+  const parent = createTestAgent(mailbox, sessionService(IAgentLifecycleService, {
+    _serviceBrand: undefined,
+    onWillCreate: Event.None as Event<IAgentScopeHandle>,
+    onDidCreate: created.event,
+    onDidDispose: Event.None as Event<string>,
+    get: (id: string) => handles.get(id),
+    list: () => [...handles.values()],
+    create: async () => { throw new Error('Agent creation is unused in this fixture'); },
+    commitCreate: () => {}, discard: async () => {},
+    fork: async () => { throw new Error('Agent forks are unused in this fixture'); },
+    broadcastPermissionMode: () => {}, countPendingBackgroundTasks: () => 0,
+    drainBackgroundTasks: async () => {}, remove: async () => {},
+  }));
+  if (maxRunningTasks !== undefined) {
+    const config = parent.get(IConfigService);
+    const get = config.get.bind(config);
+    vi.spyOn(config, 'get').mockImplementation(((domain: string) => domain === 'task' ? { maxRunningTasks } : get(domain)) as IConfigService['get']);
+  }
+  const metadata = parent.get(ISessionMetadata);
+  const child = createTestAgent(
+    mailbox,
+    sessionService(ISessionMetadata, metadata),
+    sessionService(ISessionSubagentService, parent.get(ISessionSubagentService)),
+    sessionService(IAgentLifecycleService, parent.get(IAgentLifecycleService)),
+    agentService(IAgentScopeContext, makeAgentScopeContext({
+      agentId: 'agent-child', parentAgentId: 'main', agentScope: 'agents/agent-child',
+    })),
+  );
+  const parentHandle: IAgentScopeHandle = { kind: 'agent', id: 'main', accessor: { get: (id) => parent.get(id) }, dispose: () => {} };
+  const childHandle: IAgentScopeHandle = { kind: 'agent', id: 'agent-child', accessor: { get: (id) => child.get(id) }, dispose: () => {} };
+  handles.set('main', parentHandle);
+  handles.set('agent-child', childHandle);
+  await metadata.registerAgent('agent-child', { type: 'sub', parentAgentId: 'main', labels: { profileName: 'example-worker' } });
+  created.fire(childHandle);
+  return {
+    parent, child, metadata, handles, parentHandle, childHandle,
+    dispose: async () => {
+      created.dispose();
+      handles.clear();
+      await child.dispose();
+      await parent.dispose();
+    },
+  };
+}
+
+describe('autonomous child receipt return', () => {
+  it('returns a final receipt after a failed parent task and a child-owned bash wakeup', async () => {
+    const { parent, child, metadata, dispose } = await receiptPair();
+    const processExit = createControlledPromise<number>();
+    const output = new Readable({ read() {} });
+    const proc = {
+      _serviceBrand: undefined, pid: 61001, exitCode: null,
+      stdout: output, stderr: Readable.from([]), stdin: { write: vi.fn(), end: vi.fn() },
+      wait: () => processExit, kill: async () => {}, dispose: async () => {},
+    } as unknown as IHostProcess;
+    try {
+      parent.mockNextResponse({ type: 'text', text: 'Waiting for the preserved child.' });
+      const failed = createControlledPromise<{ result: string }>();
+      const tasks = parent.get(IAgentTaskService) as TaskServiceTestManager;
+      const failedId = tasks.registerTask(agentTask(failed, 'Original review'));
+      failed.reject(new Error('example provider connection failed'));
+      await tasks.wait(failedId);
+      await vi.waitFor(() => expect(notifiedCount(parent)).toBe(1));
+      await parent.get(IAgentLoopService).settled();
+      await metadata.updateAgent('agent-child', (meta) => ({ ...meta, taskId: failedId, status: 'failed', error: 'example provider connection failed' }));
+      const bashId = child.get(IAgentTaskService).registerTask(new ProcessTask(proc, 'example-command', 'background review check'), { detached: true });
+      child.mockNextResponse({ type: 'text', text: 'Reject: preserved report contains a P1 finding.' });
+      parent.mockNextResponse({ type: 'text', text: 'Received the continued review.' });
+      const ended = child.untilTurnEnd();
+      output.push('check finished');
+      output.push(null);
+      processExit.resolve(0);
+      await ended;
+      await child.get(IAgentLoopService).settled();
+      expect(child.context.get().some((message) => message.role === 'assistant' && JSON.stringify(message.content).includes('P1 finding'))).toBe(true);
+      await vi.waitFor(() => expect(notifiedCount(parent)).toBe(2));
+      await parent.get(IAgentLoopService).settled();
+      const continued = tasks.list(false).find((info) => info.kind === 'agent' && info.taskId !== failedId);
+      expect(continued).toMatchObject({ kind: 'agent', agentId: 'agent-child', status: 'completed' });
+      expect(tasks.getTask(failedId)?.status).toBe('failed');
+      const notification = parent.context.get().find((message) => message.origin?.kind === 'task' && message.origin.taskId === continued!.taskId);
+      expect(JSON.stringify(notification)).toContain('Reject: preserved report contains a P1 finding.');
+      expect(JSON.stringify(notification)).toContain('output.log');
+      expect(JSON.stringify(notification)).toContain(failedId);
+      expect(JSON.stringify(child.contextData())).toContain(bashId);
+      expect((await metadata.read()).agents?.['agent-child']).toMatchObject({ status: 'completed', taskId: continued!.taskId });
+    } finally {
+      output.push(null);
+      processExit.resolve(0);
+      await dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('returns cron receipts without a prior task and keeps separate turns separate', async () => {
+    const { parent, child, dispose } = await receiptPair();
+    try {
+      const tasks = parent.get(IAgentTaskService);
+      for (const text of ['first scheduled result', 'second scheduled result']) {
+        child.mockNextResponse({ type: 'text', text });
+        parent.mockNextResponse({ type: 'text', text: 'Received scheduled result.' });
+        const handle = await child.get(IAgentPromptService).enqueueCron({
+          origin: { kind: 'cron_job', jobId: 'example-job', cron: '* * * * *', recurring: true, coalescedCount: 1, stale: false },
+          prompt: 'Run the scheduled review.',
+        });
+        expect((await handle.completion).state).toBe('completed');
+        await vi.waitFor(() => expect(tasks.list(false).filter((task) => task.status === 'completed')).toHaveLength(text.startsWith('first') ? 1 : 2));
+        await parent.get(IAgentLoopService).settled();
+      }
+      const results = tasks.list(false);
+      expect(new Set(results.map((task) => task.taskId)).size).toBe(2);
+      expect(notifiedCount(parent)).toBe(2);
+      for (const task of results) {
+        const output = await tasks.getOutputSnapshot(task.taskId, 4096);
+        expect(output.preview).toMatch(/^(first|second) scheduled result$/);
+        expect(output.outputPath).toContain('output.log');
+      }
+    } finally {
+      await dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('delivers a completed receipt even when the parent has no free background-task slots', async () => {
+    const { parent, child, dispose } = await receiptPair(1);
+    const pending = createControlledPromise<{ result: string }>();
+    try {
+      const tasks = parent.get(IAgentTaskService);
+      const runningId = tasks.registerTask(agentTask(pending, 'Unrelated running task'));
+      expect(() => tasks.registerTask(agentTask(pending, 'Rejected extra work'))).toThrow('Too many background tasks');
+      child.mockNextResponse({ type: 'text', text: 'Completed result uses no execution slot.' });
+      parent.mockNextResponse({ type: 'text', text: 'Received completed result.' });
+      const handle = await child.get(IAgentPromptService).enqueue({ message: {
+        role: 'user', content: [{ type: 'text', text: 'Finish the result.' }], toolCalls: [],
+        origin: { kind: 'system_trigger', name: 'example-wakeup' },
+      } });
+      expect((await handle.completion).state).toBe('completed');
+      await vi.waitFor(() => { expect(notifiedCount(parent)).toBe(1); });
+      await parent.get(IAgentLoopService).settled();
+      const completed = tasks.list(false).find((task) => task.taskId !== runningId)!;
+      expect(completed.status).toBe('completed');
+      expect(await tasks.readOutput(completed.taskId)).toBe('Completed result uses no execution slot.');
+      expect(tasks.getTask(runningId)?.status).toBe('running');
+    } finally {
+      await parent.get(IAgentTaskService).suppressAllTerminalNotifications();
+      pending.resolve({ result: 'cleanup' });
+      await dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each(['missing parent', 'archived session'] as const)('preserves an orphan receipt for a %s', async (orphan) => {
+    const { parent, child, metadata, handles, dispose } = await receiptPair();
+    try {
+      if (orphan === 'missing parent') handles.delete('main');
+      else await metadata.setArchived(true);
+      child.mockNextResponse({ type: 'text', text: 'Preserved orphan review result.' });
+      const handle = await child.get(IAgentPromptService).enqueue({ message: {
+        role: 'user', content: [{ type: 'text', text: 'Finish the review.' }], toolCalls: [],
+        origin: { kind: 'system_trigger', name: 'example-wakeup' },
+      } });
+      expect((await handle.completion).state).toBe('completed');
+      await vi.waitFor(async () => expect((await metadata.read()).agents?.['agent-child']?.taskId).toBeDefined());
+      const taskId = (await metadata.read()).agents!['agent-child']!.taskId!;
+      const session = child.get(ISessionContext);
+      const persistence = new AgentTaskPersistence(
+        join(session.sessionDir, 'agents/main'), session.scope('agents/main'),
+        child.get(IAtomicDocumentStore), child.get(IFileSystemStorageService),
+      );
+      await vi.waitFor(async () => expect(await persistence.readTask(taskId)).toMatchObject({
+        taskId, ownerAgentId: 'main', agentId: 'agent-child', status: 'completed',
+        receipt: { contentState: 'final', path: `tasks/${taskId}/output.log` },
+      }));
+      expect((await persistence.readTaskOutputSnapshot(taskId, 4096))?.preview).toBe('Preserved orphan review result.');
+      expect(notifiedCount(parent)).toBe(0);
+      expect(parent.get(IAgentTaskService).list(false)).toHaveLength(0);
+    } finally {
+      await dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each(['prompt', 'mailbox', 'retry', 'summary continuation'] as const)('does not duplicate a managed %s receipt', async (kind) => {
+    const { parent, child, parentHandle, childHandle, dispose } = await receiptPair();
+    try {
+      const tasks = parent.get(IAgentTaskService);
+      child.mockNextResponse({ type: 'text', text: kind === 'summary continuation' ? 'Short.' : 'Managed final receipt.' });
+      if (kind === 'summary continuation') child.mockNextResponse({ type: 'text', text: 'Adequate continued final receipt.' });
+      if (kind === 'retry') child.context.append({ role: 'user', content: [{ type: 'text', text: 'Retry the review.' }], toolCalls: [] });
+      const message = { role: 'user' as const, content: [{ type: 'text' as const, text: 'Saved follow-up message.' }], toolCalls: [],
+        origin: { kind: 'system_trigger' as const, name: 'agent-message' } };
+      const request: AgentRunRequest = kind === 'mailbox' ? { kind: 'mailbox', prompt: 'Saved follow-up message.', message }
+        : kind === 'retry' ? { kind: 'retry' } : { kind: 'prompt', prompt: 'Finish the review.' };
+      const run = await runAgentTurn(childHandle, request, {
+        signal: new AbortController().signal,
+        summaryPolicy: kind === 'summary continuation' ? { minChars: 20, retries: 1, continuationPrompt: 'Finish the summary.' } : undefined,
+      });
+      const taskId = tasks.registerTask(new SubagentTask({ agentId: childHandle.id, profileName: 'example-worker',
+        completion: mirrorAgentRun(parentHandle, run, { profileName: 'example-worker', signal: new AbortController().signal })
+          .then((result) => ({ result: result.summary })),
+      }, 'Managed review', new AbortController()));
+      parent.mockNextResponse({ type: 'text', text: 'Received managed result.' });
+      await tasks.wait(taskId);
+      await vi.waitFor(() => expect(notifiedCount(parent)).toBe(1));
+      await parent.get(IAgentLoopService).settled();
+      expect(tasks.list(false)).toHaveLength(1);
+      expect(await tasks.readOutput(taskId)).toContain(kind === 'summary continuation' ? 'Adequate continued final receipt.' : 'Managed final receipt.');
+    } finally {
+      await dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('keeps in-flight message steering on the original managed receipt', async () => {
+    const { parent, child, parentHandle, dispose } = await receiptPair();
+    const entered = createControlledPromise<void>();
+    const release = createControlledPromise<void>();
+    const hook = child.get(IAgentLoopService).hooks.onWillBeginStep.register('test.receipt-steer', async (_step, next) => {
+      await hook.dispose();
+      entered.resolve();
+      await release;
+      await next();
+    });
+    try {
+      child.mockNextResponse({ type: 'text', text: 'Review in progress.' });
+      child.mockNextResponse({ type: 'text', text: 'Final receipt incorporates the in-flight message.' });
+      const running = parent.get(ISessionSubagentService).run('agent-child', { kind: 'prompt', prompt: 'Review the change.' }, { signal: new AbortController().signal });
+      await entered;
+      const run = await running;
+      const tasks = parent.get(IAgentTaskService);
+      const taskId = tasks.registerTask(new SubagentTask({ agentId: 'agent-child', profileName: 'example-worker',
+        completion: mirrorAgentRun(parentHandle, run, { profileName: 'example-worker', signal: new AbortController().signal })
+          .then((result) => ({ result: result.summary })),
+      }, 'Steered review', new AbortController()));
+      const delivered = child.get(IAgentExecutionService).steer!({ role: 'user', content: [{ type: 'text', text: 'In-flight message.' }], toolCalls: [],
+        origin: { kind: 'system_trigger', name: 'agent-message' } });
+      parent.mockNextResponse({ type: 'text', text: 'Received steered result.' });
+      release.resolve();
+      expect(await delivered).toBe(true);
+      await tasks.wait(taskId);
+      await vi.waitFor(() => expect(notifiedCount(parent)).toBe(1));
+      await parent.get(IAgentLoopService).settled();
+      expect(tasks.list(false)).toHaveLength(1);
+      expect(await tasks.readOutput(taskId)).toBe('Final receipt incorporates the in-flight message.');
+      expect(JSON.stringify(child.contextData())).toContain('In-flight message.');
+    } finally {
+      release.resolve();
+      await hook.dispose();
+      await dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('does not reuse an older receipt when this turn ends without text', async () => {
+    const { parent, child, dispose } = await receiptPair();
+    try {
+      child.appendAssistantTurn(0, 'Previous receipt must not be redelivered.');
+      child.mockNextResponse({ type: 'text', text: '' });
+      const handle = await child.get(IAgentPromptService).enqueue({ message: {
+        role: 'user', content: [{ type: 'text', text: 'Inspect without a reply.' }], toolCalls: [],
+        origin: { kind: 'system_trigger', name: 'example-wakeup' },
+      } });
+      expect((await handle.completion).state).toBe('completed');
+      await child.get(IAgentLoopService).settled();
+      expect(parent.get(IAgentTaskService).list(false)).toHaveLength(0);
+      expect(notifiedCount(parent)).toBe(0);
+    } finally {
+      await dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+});
 
 describe('task notification dispatch capacity', () => {
   it.each([false, true])('shares ordinary previews across a real merged step (overflow=%s), not question answers', async (overflow) => {
