@@ -274,7 +274,6 @@ function RosterSummaryChapter({
         >
           <span className={INSPECTOR_HEAD}>{t('rail.group.agents')}</span>
           <span className="shrink-0 text-[12px] text-ink-faint tabular-nums">{rosterCount}</span>
-          <DisclosureChevron open={open} />
         </button>
         {!open ? (
           <RosterSummary
@@ -283,7 +282,16 @@ function RosterSummaryChapter({
             onFilter={(bucket) => { setOpenFilter(bucket); }}
           />
         ) : null}
-        {actions !== undefined ? <span className="ml-auto">{actions}</span> : null}
+        {actions !== undefined ? <span className="ml-auto">{actions}</span> : <span className="ml-auto" />}
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-label={t(open ? 'inspector.collapseAgent' : 'inspector.expandAgent', { name: t('rail.group.agents') })}
+          onClick={() => { setOpenFilter(open ? null : 'all'); }}
+          className="-mr-1.5 flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+        >
+          <DisclosureChevron open={open} />
+        </button>
       </div>
       {open ? (
         <div className="pt-1">
@@ -667,18 +675,13 @@ export function Rail({
     <div className="space-y-3">
       <RailSection title={t('rail.group.session')} data-rail-group="session">
         <div className="space-y-3">
-          <RailSection
-            title={t('inspector.sessionInfo')}
-            summary={residentDirName(session.metadata.cwd) ?? t('rail.sessionNoName')}
-            defaultOpen={false}
-            data-inspector-session=""
-          >
-            <dl>
-              <InspectorRow label={t('rail.directory')} title={session.metadata.cwd} mono>{session.metadata.cwd}</InspectorRow>
-              {session.message_count > 0 ? <InspectorRow label={t('rail.messages')}>{String(session.message_count)}</InspectorRow> : null}
-              <InspectorRow label={t('rail.updatedRow')}><RelativeTime at={session.updated_at} /></InspectorRow>
-            </dl>
-          </RailSection>
+          {/* The session's facts are plain label/value lines here — no fold
+              inside the chapter's fold. */}
+          <dl data-inspector-session="">
+            <InspectorRow label={t('rail.directory')} title={session.metadata.cwd} mono>{session.metadata.cwd}</InspectorRow>
+            {session.message_count > 0 ? <InspectorRow label={t('rail.messages')}>{String(session.message_count)}</InspectorRow> : null}
+            <InspectorRow label={t('rail.updatedRow')}><RelativeTime at={session.updated_at} /></InspectorRow>
+          </dl>
           <div className="empty:hidden">
             <PersonaSettingsUpdate sessionId={state.sessionId} />
           </div>
