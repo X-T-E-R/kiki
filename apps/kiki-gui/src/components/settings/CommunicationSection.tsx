@@ -21,7 +21,7 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { SectionCard } from './SectionCard';
-import { SettingField } from './fields';
+import { SettingField, SettingsBox } from './fields';
 import { SettingsSegmented, SettingsSelect } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
@@ -117,48 +117,54 @@ export function AgentMessagingCard() {
       {loading ? (
         thread.configQuery.isError ? <InlineError error={thread.configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>
       ) : (
-        <div className="space-y-1">
-          <div data-settings-field data-agent-messaging="thread" className="space-y-0.5 py-1">
-            <Toggle layout="row" label={t('st.communication.threadCommunication')} checked={thread.value === true}
-              disabled={thread.saving} onChange={(checked) => { void thread.apply(checked); }} />
-            <Hint>{t('st.sessions.threadHint')}</Hint>
-            <DefaultOnSwitch
-              id="thread"
-              state={optionalCapabilityState(thread.configQuery.data, 'thread')}
-              disabled={threadDefault.saving}
-              onChange={(next) => { void threadDefault.apply(next); }}
-            />
-            <FeedbackLine feedback={thread.error} />
-          </div>
-          <div data-settings-field data-agent-messaging="notify" className="space-y-0.5 py-1">
-            <Toggle layout="row" label={t('st.communication.notifyParent')} checked={notify.value === true}
-              disabled={notify.saving} onChange={(checked) => { void notify.apply(checked); }} />
-            <Hint>{t('st.sessions.notifyHint')}</Hint>
-            <FeedbackLine feedback={notify.error} />
-          </div>
-          <div data-settings-field data-agent-messaging="delegation-sub" className="space-y-0.5 py-1">
-            <Toggle layout="row" label={t('st.sessions.delegationSub')} checked={delegateSub.value === true}
-              disabled={delegateSub.saving} onChange={(checked) => { void delegateSub.apply(checked); }} />
-            <Hint>{t('st.sessions.delegationSubHint')}</Hint>
-            <FeedbackLine feedback={delegateSub.error} />
-          </div>
-          <div data-settings-field data-agent-messaging="delegation-independent" className="space-y-0.5 py-1">
-            <Toggle layout="row" label={t('st.sessions.delegationIndependent')} checked={delegateIndependent.value === true}
-              disabled={delegateIndependent.saving} onChange={(checked) => { void delegateIndependent.apply(checked); }} />
-            <Hint>{t('st.sessions.delegationIndependentHint')}</Hint>
-            <FeedbackLine feedback={delegateIndependent.error} />
-          </div>
+        <>
+          <SettingsBox>
+            <div data-agent-messaging="thread">
+              <SettingField label={t('st.communication.threadCommunication')} help={t('st.sessions.threadHint')}>
+                <Toggle layout="bare" label={t('st.communication.threadCommunication')} checked={thread.value === true}
+                  disabled={thread.saving} onChange={(checked) => { void thread.apply(checked); }} />
+              </SettingField>
+              <DefaultOnSwitch
+                id="thread"
+                state={optionalCapabilityState(thread.configQuery.data, 'thread')}
+                disabled={threadDefault.saving}
+                onChange={(next) => { void threadDefault.apply(next); }}
+              />
+              <FeedbackLine feedback={thread.error} />
+            </div>
+            <div data-agent-messaging="notify">
+              <SettingField label={t('st.communication.notifyParent')} help={t('st.sessions.notifyHint')}>
+                <Toggle layout="bare" label={t('st.communication.notifyParent')} checked={notify.value === true}
+                  disabled={notify.saving} onChange={(checked) => { void notify.apply(checked); }} />
+              </SettingField>
+              <FeedbackLine feedback={notify.error} />
+            </div>
+            <div data-agent-messaging="delegation-sub">
+              <SettingField label={t('st.sessions.delegationSub')} help={t('st.sessions.delegationSubHint')}>
+                <Toggle layout="bare" label={t('st.sessions.delegationSub')} checked={delegateSub.value === true}
+                  disabled={delegateSub.saving} onChange={(checked) => { void delegateSub.apply(checked); }} />
+              </SettingField>
+              <FeedbackLine feedback={delegateSub.error} />
+            </div>
+            <div data-agent-messaging="delegation-independent">
+              <SettingField label={t('st.sessions.delegationIndependent')} help={t('st.sessions.delegationIndependentHint')}>
+                <Toggle layout="bare" label={t('st.sessions.delegationIndependent')} checked={delegateIndependent.value === true}
+                  disabled={delegateIndependent.saving} onChange={(checked) => { void delegateIndependent.apply(checked); }} />
+              </SettingField>
+              <FeedbackLine feedback={delegateIndependent.error} />
+            </div>
+          </SettingsBox>
           <SavedTick show={thread.saved || notify.saved || delegateSub.saved || delegateIndependent.saved} />
-        </div>
+        </>
       )}
     </SectionCard>
   );
 }
 
 /**
- * Developer → Token counting: a reporting detail, applied on change. The
- * labels say what each strategy reports; the stored value stays visible in the
- * option's mono caption for config files.
+ * Models → Defaults → Token counting: a reporting detail, applied on change.
+ * The labels say what each strategy reports; the stored value stays visible
+ * in the option's mono caption for config files.
  */
 export function TokenCountingCard() {
   const { t } = useI18n();

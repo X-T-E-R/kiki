@@ -59,6 +59,8 @@ import { effortLabel } from './profileEditor/profileDraft';
 import { SettingField } from './fields';
 import { useInstantSave } from './useInstantSave';
 import { LoopLimitsCard } from './LoopLimitsCard';
+import { RetryPolicyCard } from './RetryPolicyCard';
+import { TokenCountingCard } from './CommunicationSection';
 import { ModelSwitchCard } from './ModelSwitchCard';
 import {
   ModelEngineFieldError,
@@ -1041,6 +1043,8 @@ export function DefaultsTab() {
       <ThinkingCard />
       <GlobalCompactionCard />
       <LoopLimitsCard />
+      <RetryPolicyCard />
+      <TokenCountingCard />
     </div>
   );
 }

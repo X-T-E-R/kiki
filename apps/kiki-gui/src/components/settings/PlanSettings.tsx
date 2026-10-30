@@ -4,9 +4,9 @@ import { writeSettings } from '@kiki/session-core/settings';
 import type { KikiConfigResponse } from '../../lib/client';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, SaveStatus, Toggle } from '../controls';
+import { FeedbackLine, InlineError, SaveStatus, Toggle } from '../controls';
 import { SectionCard } from './SectionCard';
-import { DependentField, SettingField } from './fields';
+import { DependentField, SettingField, SettingsBox } from './fields';
 import { CommitInput } from './SettingsPrimitives';
 import { mergeConfigEcho } from './configEcho';
 import { useInstantSave } from './useInstantSave';
@@ -57,28 +57,16 @@ export function PlanSettings() {
   const locked = save.saving || configQuery.isPending || configQuery.isError;
   return (
     <SectionCard id="st-card-defaults" title={t('st.plan.title')} effect="newSessions">
-      <div data-plan-settings className="space-y-1">
-        <fieldset disabled={locked} className="min-w-0 space-y-1 disabled:opacity-60">
-          <div data-settings-field className="space-y-0.5 py-1">
-            <Toggle
-              layout="row"
-              label={t('st.defaults.planMode')}
-              checked={defaultPlanMode}
-              disabled={locked}
-              onChange={(checked) => void applyDefaultPlanMode(checked)}
-            />
-            <Hint>{t('st.defaults.planModeHint')}</Hint>
-          </div>
-          <div data-settings-field className="space-y-0.5 py-1">
-            <Toggle
-              layout="row"
-              label={t('st.defaults.planGate')}
-              checked={gated}
-              disabled={locked}
-              onChange={(checked) => void patch({ plan: { gate: checked ? 'gated' : 'free' } })}
-            />
-            <Hint>{t('st.defaults.planGateHint')}</Hint>
-          </div>
+      <div data-plan-settings className="space-y-2">
+        <SettingsBox>
+          <SettingField label={t('st.defaults.planMode')} help={t('st.defaults.planModeHint')}>
+            <Toggle layout="bare" label={t('st.defaults.planMode')} checked={defaultPlanMode} disabled={locked}
+              onChange={(checked) => void applyDefaultPlanMode(checked)} />
+          </SettingField>
+          <SettingField label={t('st.defaults.planGate')} help={t('st.defaults.planGateHint')}>
+            <Toggle layout="bare" label={t('st.defaults.planGate')} checked={gated} disabled={locked}
+              onChange={(checked) => void patch({ plan: { gate: checked ? 'gated' : 'free' } })} />
+          </SettingField>
           {/* The timeout only means something while approval is required. */}
           <DependentField when={gated}>
             <SettingField label={t('st.defaults.planGateTimeout')} htmlFor="plan-gate-timeout" help={t('st.defaults.planGateTimeoutHint')}>
@@ -93,7 +81,7 @@ export function PlanSettings() {
               />
             </SettingField>
           </DependentField>
-        </fieldset>
+        </SettingsBox>
         <SaveStatus saving={save.saving} saved={save.saved} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
         <FeedbackLine feedback={save.error} />

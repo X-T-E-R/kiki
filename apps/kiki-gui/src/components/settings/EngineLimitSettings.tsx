@@ -11,8 +11,8 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { SectionCard } from './SectionCard';
+import { SettingField, SettingsBox } from './fields';
 import { SettingsDraftFooter } from './SettingsPrimitives';
-import { NumberField } from './runtimeControls';
 import { useSavedTick } from './useSavedTick';
 
 type ResourceLimitDraft = Pick<RuntimeConfigDraft, 'workspaceIdleTtlMs' | 'imageMaxEdgePx' | 'imageReadByteBudget'>;
@@ -45,12 +45,37 @@ function secondsTextAsMilliseconds(value: string): string {
   return Number.isFinite(seconds) ? String(Math.round(seconds * 1000)) : value;
 }
 
+/** One ceiling, edited in place. The detail carries the engine default. */
+function LimitRow({ label, id, detail, unit, value, disabled, onChange }: {
+  readonly label: string;
+  readonly id: string;
+  readonly detail?: string;
+  readonly unit?: string;
+  readonly value: string;
+  readonly disabled: boolean;
+  readonly onChange: (value: string) => void;
+}) {
+  return (
+    <SettingField label={label} htmlFor={id} detail={detail}>
+      <div className="flex items-center gap-1.5">
+        <input
+          id={id}
+          className="h-8 w-24 rounded-md border border-hairline bg-paper px-2 text-right font-mono text-[12.5px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-selected-ink"
+          inputMode="numeric"
+          value={value}
+          disabled={disabled}
+          onChange={(event) => { onChange(event.target.value); }}
+        />
+        {unit !== undefined ? <span className="text-[12px] text-ink-faint">{unit}</span> : null}
+      </div>
+    </SettingField>
+  );
+}
+
 /**
- * Workspace and image resource ceilings (runtime split): engine-internal
- * limits rather than everyday workspace management, so they live under
- * Advanced. Optional numbers left empty delete the saved value and restore
- * the engine default. The workspace TTL reclaims the resident workspace
- * instance; it never removes the directory.
+ * Workspace and image resource ceilings. Optional numbers left empty delete
+ * the saved value and restore the engine default. The workspace TTL reclaims
+ * the resident workspace instance; it never removes the directory.
  */
 export function ResourceLimitsCard() {
   const { client } = useConnection();
@@ -66,7 +91,7 @@ export function ResourceLimitsCard() {
   const [justSaved, pingSaved] = useSavedTick();
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
 
-  const dirty = draft !== null && baseline !== null && (
+  const dirtyNow = draft !== null && baseline !== null && (
     draft.workspaceIdleTtlMs !== baseline.workspaceIdleTtlMs
     || draft.imageMaxEdgePx !== baseline.imageMaxEdgePx
     || draft.imageReadByteBudget !== baseline.imageReadByteBudget);
@@ -84,13 +109,13 @@ export function ResourceLimitsCard() {
   // has nothing to lose: an unsaved draft is never overwritten by a background
   // refresh. Saving and discarding both land here with the server's own echo.
   useEffect(() => {
-    if (configQuery.data === undefined || dirty) return;
+    if (configQuery.data === undefined || dirtyNow) return;
     const next = project(configQuery.data);
     setDraft(next);
     setBaseline(next);
     // `project` is rebuilt each render; the config read is what may change here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configQuery.data, dirty]);
+  }, [configQuery.data, dirtyNow]);
 
   if (draft === null || baseline === null) {
     return (
@@ -131,34 +156,37 @@ export function ResourceLimitsCard() {
 
   return (
     <SectionCard id="st-card-resource-limits" title={t('st.resourceLimits.title')}>
-      <div className="space-y-4">
-        <Hint>{t('st.resourceLimits.hint')} <span className="text-ink-soft">{t('st.resourceLimits.emptyRule')}</span></Hint>
-        <fieldset disabled={saving} className="min-w-0 space-y-4 disabled:opacity-60">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <NumberField
-              label={t('st.resourceLimits.workspaceIdle')}
-              value={millisecondsAsSecondsText(draft.workspaceIdleTtlMs)}
-              detail={t('st.resourceLimits.workspaceIdleDetail', { seconds: RESOURCE_DEFAULTS.workspaceIdleTtlS })}
-              onChange={(seconds) => { setDraft({ ...draft, workspaceIdleTtlMs: secondsTextAsMilliseconds(seconds) }); }}
-            />
-            <NumberField
-              label={t('st.resourceLimits.imageMaxEdge')}
-              value={draft.imageMaxEdgePx}
-              detail={t('st.resourceLimits.imageMaxEdgeDetail', { px: RESOURCE_DEFAULTS.imageMaxEdgePx })}
-              onChange={(imageMaxEdgePx) => { setDraft({ ...draft, imageMaxEdgePx }); }}
-            />
-            <NumberField
-              label={t('st.resourceLimits.imageBudget')}
-              value={draft.imageReadByteBudget}
-              detail={t('st.resourceLimits.imageBudgetDetail', { bytes: RESOURCE_DEFAULTS.imageReadByteBudget })}
-              onChange={(imageReadByteBudget) => { setDraft({ ...draft, imageReadByteBudget }); }}
-            />
-            {/* MCP startup/tool timeouts live on Settings → MCP
-                (st-card-mcp-timeouts) since the batch-3 split; these drafts
-                and patches never carry the mcp domain. */}
-          </div>
-        </fieldset>
-        <SettingsDraftFooter saved={justSaved} id="resource-limits" dirty={dirty} saving={saving} onSave={() => void save()}
+      <div className="space-y-3">
+        <SettingsBox>
+          <LimitRow
+            label={t('st.resourceLimits.workspaceIdle')}
+            id="resource-limits-workspace-idle"
+            detail={t('st.resourceLimits.workspaceIdleDetail', { seconds: RESOURCE_DEFAULTS.workspaceIdleTtlS })}
+            unit={t('st.residency.secondsUnit')}
+            value={millisecondsAsSecondsText(draft.workspaceIdleTtlMs)}
+            disabled={saving}
+            onChange={(seconds) => { setDraft({ ...draft, workspaceIdleTtlMs: secondsTextAsMilliseconds(seconds) }); }}
+          />
+          <LimitRow
+            label={t('st.resourceLimits.imageMaxEdge')}
+            id="resource-limits-image-max-edge"
+            detail={t('st.resourceLimits.imageMaxEdgeDetail', { px: RESOURCE_DEFAULTS.imageMaxEdgePx })}
+            unit={t('st.resourceLimits.pxUnit')}
+            value={draft.imageMaxEdgePx}
+            disabled={saving}
+            onChange={(imageMaxEdgePx) => { setDraft({ ...draft, imageMaxEdgePx }); }}
+          />
+          <LimitRow
+            label={t('st.resourceLimits.imageBudget')}
+            id="resource-limits-image-budget"
+            detail={t('st.resourceLimits.imageBudgetDetail', { bytes: RESOURCE_DEFAULTS.imageReadByteBudget })}
+            unit={t('st.resourceLimits.bytesUnit')}
+            value={draft.imageReadByteBudget}
+            disabled={saving}
+            onChange={(imageReadByteBudget) => { setDraft({ ...draft, imageReadByteBudget }); }}
+          />
+        </SettingsBox>
+        <SettingsDraftFooter saved={justSaved} id="resource-limits" dirty={dirtyNow} saving={saving} onSave={() => void save()}
           onDiscard={() => {
             if (configQuery.data !== undefined) { const next = project(configQuery.data); setDraft(next); setBaseline(next); }
             setFeedback(null);

@@ -96,6 +96,9 @@ const klient = {
 const client = {
   getConfig: vi.fn(async () => ({})),
   getCapability: vi.fn(async () => ({ id: 'kiki-computer', state: 'ready', install: { running: false }, steps: [] })),
+  setBrowserControlEnabled: vi.fn(async () => ({})),
+  setComputerControlEnabled: vi.fn(async () => ({})),
+  installCapability: vi.fn(async () => ({ id: 'kiki-computer', state: 'ready', install: { running: false }, steps: [] })),
   meta: vi.fn(async (): Promise<{ experimental_flags?: Record<string, boolean> }> => ({
     experimental_flags: {
       'tool-select': true,
@@ -1180,8 +1183,7 @@ describe('SettingsPage batch-3 leaves', () => {
   });
 
   it('keeps Labs as a read-only index linking every flag to its page', async () => {
-    const baseMeta = { experimental_flags: { 'tool-select': true, task_wait: true, desktop_search: true, persistence_minidb_readmodel: true, auto_session_title: true, subagent_release_idle: true, 'agent-profile-routes': true, external_delegation_mcp: true, image_format_conversion: false, native_ssh: false, session_idle_eviction: false } };
-    client.meta.mockResolvedValue(baseMeta);
+    client.meta.mockResolvedValue({ experimental_flags: { 'tool-select': true, task_wait: true, desktop_search: true, persistence_minidb_readmodel: true, auto_session_title: true, subagent_release_idle: true, 'agent-profile-routes': true, external_delegation_mcp: true, image_format_conversion: false, native_ssh: false, session_idle_eviction: false } });
     const labs = await renderSettings('/settings/labs');
     await flush();
     const card = labs.querySelector('#st-card-labs')!;
@@ -1472,7 +1474,6 @@ describe('SettingsPage search ownership', () => {
     const ssh = await renderSettings('/settings/ssh');
     const plugins = await renderSettings('/settings/plugins');
     const spaces = await renderSettings('/settings/spaces');
-    const browserControl = await renderSettings('/settings/browser-control');
     const connectionServices = await renderSettings('/settings/connection-services?tab=web');
     const accessKiki = await renderSettings('/settings/connection-services?tab=kiki');
     const accessClients = await renderSettings('/settings/connection-services?tab=clients');
@@ -1492,7 +1493,7 @@ describe('SettingsPage search ownership', () => {
         ])
         .map((match) => match[1]!),
     );
-    for (const page of [general, agents, subagents, mcp, sessions, permissions, tasks, developer, labs, defaults, searchAdvanced, ssh, plugins, spaces, browserControl, connectionServices, accessKiki, accessClients]) {
+    for (const page of [general, agents, subagents, mcp, sessions, permissions, tasks, developer, labs, defaults, searchAdvanced, ssh, plugins, spaces, connectionServices, accessKiki, accessClients]) {
       for (const card of page.querySelectorAll('[id^="st-card-"]')) rendered.add(card.id);
     }
     expect(rendered.size).toBeGreaterThan(10);
@@ -1505,6 +1506,9 @@ describe('SettingsPage search ownership', () => {
     // the search index does not index per-plugin cards.
     rendered.delete('st-card-plugin-settings');
     rendered.delete('st-card-plugin-manage');
+    // The flag rows' card mounts only while the server reports a browser-page
+    // flag; this sweep's meta reports none.
+    indexed.delete('st-card-exp-browser-control');
     expect([...rendered].filter((id) => !indexed.has(id))).toEqual([]);
     expect([...indexed].filter((id) => !rendered.has(id))).toEqual([]);
     } finally {

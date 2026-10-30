@@ -55,7 +55,7 @@ import {
 import { FeedbackLine, InlineError, SavedTick, Toggle, type Feedback } from '../../controls';
 import { Icon, Spinner } from '../../icons';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
-import { SettingField } from '../fields';
+import { SettingField, SettingsBox } from '../fields';
 import { SectionCard } from '../SectionCard';
 import { SettingsSelect } from '../SettingsPrimitives';
 import { useSavedTick } from '../useSavedTick';
@@ -193,7 +193,8 @@ export function WorkspaceSettingsPage({ workspaceId }: { readonly workspaceId: s
             </p>
           )}
         </div>
-        <div className="mt-4 space-y-3">
+        <div className="mt-4">
+          <SettingsBox>
           {/* Rename is one interaction everywhere: at rest the name is a fact
               with a 重命名 verb; the input appears only when the verb is used. */}
           {name === null ? (
@@ -239,17 +240,16 @@ export function WorkspaceSettingsPage({ workspaceId }: { readonly workspaceId: s
               </div>
             </SettingField>
           )}
-          <SettingField label={t('st.workspaces.pin')} help={t('st.workspaces.detail.pinHelp')}>
+          <SettingField label={t('st.workspaces.pin')}>
             <Toggle
-              // The label names what a click would DO, not what is currently
-              // true: an unpinned workspace offers to be pinned, and a pinned
-              // one offers to be unpinned.
+              layout="bare"
               label={workspace.pinned ? t('st.workspaces.unpin') : t('st.workspaces.pin')}
               checked={workspace.pinned}
               disabled={pinned.isPending}
               onChange={(checked) => { pinned.mutate(checked); }}
             />
           </SettingField>
+          </SettingsBox>
         </div>
         {feedback !== null ? <div className="mt-2"><FeedbackLine feedback={feedback} /></div> : null}
       </SectionCard>
@@ -562,26 +562,20 @@ function WorkspaceTrustCard({ workspace, read }: {
           <button type="button" className={SECONDARY_BUTTON} onClick={() => { void read.read.refetch(); }}>{t('common.retry')}</button>
         </div>
       ) : (
-        <>
-          <p className="max-w-[62ch] text-[13px] leading-5 text-ink-soft" data-workspace-trust-state>
-            {trusted ? t('st.workspaces.detail.trustOn') : t('st.workspaces.detail.trustOff')}
-          </p>
-          <div className="mt-3">
+        <SettingsBox>
+          <SettingField label={t('st.workspaces.detail.trustToggleLabel')} help={t('st.workspaces.detail.trustHelp')}>
             <Toggle
               id="workspace-trust-toggle"
-              // The label names what a click would DO, the way Pin/Unpin does:
-              // a trusted workspace offers to stop being trusted, and an
-              // untrusted one to become trusted. Trust is only ever granted by
-              // this click — opening the page never grants it.
-              label={trusted
-                ? t('st.workspaces.detail.trustRevoke', { name: workspace.name })
-                : t('st.workspaces.detail.trustGrant', { name: workspace.name })}
+              layout="bare"
+              // Trust is only ever granted by this click — opening the page
+              // never grants it.
+              label={t('st.workspaces.detail.trustToggleLabel')}
               checked={trusted}
               disabled={read.write.isPending}
               onChange={(checked) => { void apply(checked); }}
             />
-          </div>
-        </>
+          </SettingField>
+        </SettingsBox>
       )}
       {feedback !== null ? <div className="mt-2"><FeedbackLine feedback={feedback} /></div> : null}
     </SectionCard>
@@ -663,7 +657,6 @@ function WorkspaceMemoryCard({ workspace, memory }: {
         </SettingField>
       )}
       {feedback !== null ? <div className="mt-2"><FeedbackLine feedback={feedback} /></div> : null}
-      <p className="mt-2 text-[12px] text-ink-faint">{t('st.workspaces.detail.memoryFor', { name: workspace.name })}</p>
     </SectionCard>
   );
 }

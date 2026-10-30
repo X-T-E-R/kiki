@@ -14,7 +14,7 @@ import { SECONDARY_BUTTON } from '../ui';
 import { Icon } from '../icons';
 import { invalidateMemoryAdvisorReads } from '../memory/useMemoryAdvisor';
 import { SectionCard } from './SectionCard';
-import { AdvancedDetails, SettingField } from './fields';
+import { AdvancedDetails, SettingField, SettingsBox } from './fields';
 import { CommitInput, SettingsSelect } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
@@ -94,61 +94,65 @@ export function MemorySettingsCard() {
       </button>
     )}>
       <div className="min-w-0 space-y-2" data-memory-settings>
-        <SettingField label={t('memory.toggle')} htmlFor="memory-enabled" help={t('st.memory.hint')}>
-          {status('enabled')}
-          <Toggle
-            id="memory-enabled"
-            layout="bare"
-            label={t('memory.toggle')}
-            checked={memoryCapability?.allowed ?? settingsQuery.data?.enabled === true}
-            disabled={busy || memoryCapability?.host_locked === true}
-            onChange={(enabled) => { update.mutate({ enabled }); }}
-          />
-        </SettingField>
-        <DefaultOnSwitch
-          id="memory"
-          state={memoryCapability}
-          disabled={busy}
-          onChange={(next) => {
-            setDefaultError(undefined);
-            void client.patchConfig({ optional_capabilities: { defaults: { memory: next } } }).then((echoed) => {
-              queryClient.setQueryData(['config', 'memory-default'], echoed);
-              ping();
-            }).catch((cause: unknown) => { setDefaultError(cause); });
-          }}
-        />
-        <SettingField label={t('st.memory.approval')} labelId="memory-approval-label">
-          {status('approval')}
-          <SettingsSelect<MemoryApproval>
-            id="memory-approval"
-            dataAttr="data-memory-approval"
-            ariaLabel={t('st.memory.approval')}
-            value={settingsQuery.data?.approval ?? 'auto'}
-            disabled={busy}
-            onChange={(approval) => { update.mutate({ approval }); }}
-            choices={[
-              { value: 'auto', label: t('st.memory.approval.auto'), hint: t('st.memory.approvalHint.auto') },
-              { value: 'review', label: t('st.memory.approval.review'), hint: t('st.memory.approvalHint.review') },
-              { value: 'off', label: t('st.memory.approval.off'), hint: t('st.memory.approvalHint.off') },
-            ]}
-          />
-        </SettingField>
-        {/* The text budget keeps its system default; it waits behind Advanced. */}
-        <AdvancedDetails summary={t('st.memory.advanced')} data-memory-advanced>
-        <SettingField label={t('st.memory.budget')} htmlFor="memory-budget" help={t('st.memory.budgetHint')}>
-          {status('budget')}
-          <CommitInput
-            id="memory-budget"
-            dataAttr="data-memory-budget"
-            className="w-24 text-right"
-            inputMode="numeric"
-            value={settingsQuery.data === undefined ? '' : String(settingsQuery.data.budget)}
-            disabled={busy}
-            validate={(text) => (/^\d+$/.test(text) && Number(text) <= 4_000 ? null : t('st.memory.budgetInvalid'))}
-            onCommit={(text) => { update.mutate({ budget: Number(text) }); }}
-          />
-        </SettingField>
-        </AdvancedDetails>
+        <SettingsBox>
+          <div>
+            <SettingField label={t('memory.toggle')} htmlFor="memory-enabled" help={t('st.memory.hint')}>
+              {status('enabled')}
+              <Toggle
+                id="memory-enabled"
+                layout="bare"
+                label={t('memory.toggle')}
+                checked={memoryCapability?.allowed ?? settingsQuery.data?.enabled === true}
+                disabled={busy || memoryCapability?.host_locked === true}
+                onChange={(enabled) => { update.mutate({ enabled }); }}
+              />
+            </SettingField>
+            <DefaultOnSwitch
+              id="memory"
+              state={memoryCapability}
+              disabled={busy}
+              onChange={(next) => {
+                setDefaultError(undefined);
+                void client.patchConfig({ optional_capabilities: { defaults: { memory: next } } }).then((echoed) => {
+                  queryClient.setQueryData(['config', 'memory-default'], echoed);
+                  ping();
+                }).catch((cause: unknown) => { setDefaultError(cause); });
+              }}
+            />
+          </div>
+          <SettingField label={t('st.memory.approval')} labelId="memory-approval-label">
+            {status('approval')}
+            <SettingsSelect<MemoryApproval>
+              id="memory-approval"
+              dataAttr="data-memory-approval"
+              ariaLabel={t('st.memory.approval')}
+              value={settingsQuery.data?.approval ?? 'auto'}
+              disabled={busy}
+              onChange={(approval) => { update.mutate({ approval }); }}
+              choices={[
+                { value: 'auto', label: t('st.memory.approval.auto'), hint: t('st.memory.approvalHint.auto') },
+                { value: 'review', label: t('st.memory.approval.review'), hint: t('st.memory.approvalHint.review') },
+                { value: 'off', label: t('st.memory.approval.off'), hint: t('st.memory.approvalHint.off') },
+              ]}
+            />
+          </SettingField>
+          {/* The text budget keeps its system default; it waits behind Advanced. */}
+          <AdvancedDetails summary={t('st.memory.advanced')} data-memory-advanced>
+          <SettingField label={t('st.memory.budget')} htmlFor="memory-budget" help={t('st.memory.budgetHint')}>
+            {status('budget')}
+            <CommitInput
+              id="memory-budget"
+              dataAttr="data-memory-budget"
+              className="w-24 text-right"
+              inputMode="numeric"
+              value={settingsQuery.data === undefined ? '' : String(settingsQuery.data.budget)}
+              disabled={busy}
+              validate={(text) => (/^\d+$/.test(text) && Number(text) <= 4_000 ? null : t('st.memory.budgetInvalid'))}
+              onCommit={(text) => { update.mutate({ budget: Number(text) }); }}
+            />
+          </SettingField>
+          </AdvancedDetails>
+        </SettingsBox>
         <FeedbackLine feedback={feedback} />
       </div>
     </SectionCard>

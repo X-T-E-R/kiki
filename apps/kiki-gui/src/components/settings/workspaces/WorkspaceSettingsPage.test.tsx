@@ -465,13 +465,12 @@ describe('WorkspaceSettingsPage', () => {
   it('describes trust as what actually reads it, and names the action', async () => {
     await renderPage();
     const trust = container.querySelector('#st-card-workspace-trust')!;
-    expect(trust.textContent).toContain('Its own config file, MCP servers and hooks are skipped');
+    // One row: the switch and the line that says what trusting loads.
+    expect(trust.textContent).toContain('config file, MCP servers and hooks are loaded');
     // Not a claim about every tool: the record gates project layers, and the
     // copy names them rather than promising a boundary it does not draw.
     expect(trust.textContent).not.toContain('ask');
-    // The switch says what a click would do, so a granted workspace offers to
-    // stop being trusted instead of repeating the state it is already in.
-    expect(trust.querySelector('label')!.textContent).toContain('Trust Alpha');
+    expect(trust.textContent).toContain('Trust this workspace');
   });
 
   it('reads a home-scoped app service as shared, in the rail’s own words', async () => {

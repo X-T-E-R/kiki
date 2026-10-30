@@ -16,8 +16,9 @@ import { StatusDot } from '../capabilities/primitives';
 import { FeedbackLine, Hint, SaveStatus, Toggle, type Feedback } from '../controls';
 import { useMemoryAdvisor } from '../memory/useMemoryAdvisor';
 import { DecisionSourceSummary } from './DecisionSources';
+import { MemoryAdvisorTuning } from './MemoryAdvisorTuning';
 import { SectionCard } from './SectionCard';
-import { SettingsGroup } from './fields';
+import { AdvancedDetails, SettingsGroup } from './fields';
 import { useSavedTick } from './useSavedTick';
 
 /** Which write a save status belongs to, so only that row says "Saved". */
@@ -30,7 +31,8 @@ const LINK = 'text-[12px] font-medium text-accent-ink hover:underline focus-visi
  * Memory Advisor: what it is for in one line, the on switch, and which
  * service picks (shown here, chosen in Who decides). Choosing a source and
  * switching the advisor on is the decision to use that service; there is no
- * second OK. Engine tuning lives under Developer & labs.
+ * second OK. Engine tuning (mode, inheritance, the timing numbers, the live
+ * read) sits in the card's own 高级 fold.
  */
 export function MemoryAdvisorSettingsCard() {
   const { client } = useConnection();
@@ -126,6 +128,10 @@ export function MemoryAdvisorSettingsCard() {
           <ProbeFeedback result={probe.data} error={probe.error} pending={probe.isPending} />
 
         </SettingsGroup>
+
+        <AdvancedDetails summary={t('memory.advisor.advanced')} data-memory-advisor-advanced>
+          <MemoryAdvisorTuning workspaceId={workspaceId} advisor={advisor} />
+        </AdvancedDetails>
 
         <FeedbackLine feedback={feedback} />
       </div>

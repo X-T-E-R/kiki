@@ -139,7 +139,7 @@ function WorkspacesList() {
             kind="none"
             title={t('st.workspaces.emptyTitle')}
             body={t('st.workspaces.emptyBody')}
-            action={<button type="button" className={SECONDARY_BUTTON} onClick={() => { void navigate('/new'); }}>{t('st.workspaces.newSession')}</button>}
+            action={<button type="button" className={SECONDARY_BUTTON} onClick={() => { void navigate('/new?workspace=new'); }}>{t('st.workspaces.emptyAction')}</button>}
           />
         ) : null}
         {query.isLoading ? <Hint>{t('st.workspaces.loading')}</Hint> : null}

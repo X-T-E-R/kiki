@@ -23,7 +23,8 @@ import { buildCatalogModelOptions } from '../modelSelectOptions';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
 import { AgentMessagingCard } from './CommunicationSection';
 import { mergeConfigEcho } from './configEcho';
-import { DependentField, SettingField, SettingsGroup } from './fields';
+import { ResourceLimitsCard } from './EngineLimitSettings';
+import { DependentField, SettingField, SettingsBox, SettingsGroup } from './fields';
 import { PlanSettings } from './PlanSettings';
 import { QuestionGuardFields, rangeTextFor } from './QuestionGuardFields';
 import { useGuardedNavigate } from '../dirtyGuard';
@@ -31,6 +32,7 @@ import { SectionCard, SettingsCardMountContext, SettingsFlashContext } from './S
 import { SessionTitlePromptField } from './SessionTitlePromptField';
 import { SettingHelp } from './SettingHelp';
 import { SETTINGS_SELECT_TRIGGER, SettingsSegmented } from './SettingsPrimitives';
+import { SessionResidencyCard } from './SessionResidencyCard';
 import { TaskPolicyCard } from './TaskRuntimeSettings';
 import {
   EMPTY_GUARD_DRAFT,
@@ -134,20 +136,22 @@ function QuestionsCard() {
   const guardEffectiveNow = guardEffective(stored, guard);
   return (
     <SectionCard id="st-card-questions" title={t('st.sessions.questionsTitle')}>
-      <div data-question-behavior className="space-y-1">
-        <SettingField label={t('st.sessions.questionsLabel')} labelId="question-behavior-label" detail={t('st.sessions.questionsHint')}>
-          <SettingsSegmented<QuestionBehavior>
-            ariaLabelledBy="question-behavior-label"
-            value={value}
-            disabled={saving || configQuery.data === undefined}
-            onChange={(choice) => void apply(choice)}
-            choices={[
-              { value: 'background', label: t('st.composer.questionsDontBlock') },
-              { value: 'blocking', label: t('st.composer.questionsBlock') },
-            ]}
-          />
-          <SavedTick show={saved} />
-        </SettingField>
+      <div data-question-behavior>
+        <SettingsBox>
+          <SettingField label={t('st.sessions.questionsLabel')} labelId="question-behavior-label" detail={t('st.sessions.questionsHint')}>
+            <SettingsSegmented<QuestionBehavior>
+              ariaLabelledBy="question-behavior-label"
+              value={value}
+              disabled={saving || configQuery.data === undefined}
+              onChange={(choice) => void apply(choice)}
+              choices={[
+                { value: 'background', label: t('st.composer.questionsDontBlock') },
+                { value: 'blocking', label: t('st.composer.questionsBlock') },
+              ]}
+            />
+            <SavedTick show={saved} />
+          </SettingField>
+        </SettingsBox>
         <FeedbackLine feedback={feedback} />
         {configQuery.isError ? <InlineError error={configQuery.error} /> : null}
       </div>
@@ -320,8 +324,10 @@ function SessionTitlesCard() {
               {!configured ? <Hint>{t('st.sessionTitleModel.unconfigured')}</Hint> : null}
             </div>
             <div data-settings-field className="space-y-0.5 py-1">
-              <Toggle layout="row" label={t('st.sessions.titlesToggle')} checked={enabled} disabled={saving}
-                onChange={(checked) => void setEnabled(checked)} />
+              <SettingField label={t('st.sessions.titlesToggle')}>
+                <Toggle layout="bare" label={t('st.sessions.titlesToggle')} checked={enabled} disabled={saving}
+                  onChange={(checked) => void setEnabled(checked)} />
+              </SettingField>
               {forcedOff ? <p className="max-w-[62ch] text-[12px] leading-snug text-amber-ink" data-session-titles-forced>{t('st.sessions.titlesServerOff')}</p> : null}
             </div>
             <DependentField when={enabled}>
@@ -352,10 +358,10 @@ function SessionTitlesCard() {
                 </div>
               </fieldset>
             </DependentField>
-            {/* Its own step under a rule: the rows above decide whether and
-                when a title is written, this one decides what it says. The
-                field reads the same config the rows above do, so it sits
-                inside the loaded branch rather than gating itself twice. */}
+            {/* Its own step: the rows above decide whether and when a title is
+                written, this one decides what it says. The field reads the same
+                config the rows above do, so it sits inside the loaded branch
+                rather than gating itself twice. */}
             <div className="mt-4">
               <SessionTitlePromptField disabled={saving} />
             </div>
@@ -411,7 +417,7 @@ function ConversationHistoryCard() {
   const navigate = useNavigate();
   return (
     <SectionCard id="st-card-archived" title={t('st.sessions.historyTitle')}>
-      <div className="space-y-1">
+      <SettingsBox>
         <SettingField label={t('st.sessions.archivedRow')} help={t('st.sessions.archivedRowHint')}>
           <button type="button" data-settings-open-archived className={ENTRY_BUTTON}
             onClick={() => { void navigate('/archived'); }}>
@@ -420,7 +426,7 @@ function ConversationHistoryCard() {
           </button>
         </SettingField>
         <ImportHistoryRow />
-      </div>
+      </SettingsBox>
     </SectionCard>
   );
 }
@@ -497,7 +503,11 @@ export function SessionsSection() {
             <AgentMessagingCard />
           </>
         ) : tab === 'runtime' ? (
-          <TaskPolicyCard />
+          <>
+            <TaskPolicyCard />
+            <SessionResidencyCard />
+            <ResourceLimitsCard />
+          </>
         ) : (
           <>
             <ConversationHistoryCard />
