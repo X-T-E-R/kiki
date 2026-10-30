@@ -70,6 +70,7 @@ interface Fixture {
   readonly dispose: ReturnType<typeof vi.fn>;
   readonly closed: SessionClosedEvent[];
   readonly terminals: { live: number };
+  readonly metadata: { hold(): void; release(): void };
   readonly mirror: { hold(): void; release(): void };
   readonly activity: { busy: boolean; mainTurnActive: boolean; pendingInteraction: string };
   readonly drainRetirements: { fail: boolean };
@@ -89,6 +90,18 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
   const closed: SessionClosedEvent[] = [];
   const activity: Fixture['activity'] = { busy: false, mainTurnActive: false, pendingInteraction: 'none' };
   const dispose = vi.fn<() => Promise<void>>(() => Promise.resolve());
+  let releaseMetadata: () => void = () => {};
+  const metadata = {
+    gate: Promise.resolve(),
+    hold(): void {
+      metadata.gate = new Promise<void>((resolve) => {
+        releaseMetadata = resolve;
+      });
+    },
+    release(): void {
+      releaseMetadata();
+    },
+  };
   let releaseMirror: () => void = () => {};
   const mirror = {
     gate: Promise.resolve(),
@@ -115,7 +128,7 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
       },
     }],
     [ISessionTerminalService, terminalService ?? { countLiveTerminals: () => terminals.live }],
-    [ISessionMetadata, { usage: () => undefined, update: async () => {}, setArchived: async () => {} }],
+    [ISessionMetadata, { drain: () => metadata.gate, read: async () => ({ agents: {} }), usage: () => undefined, update: async () => {}, setArchived: async () => {} }],
   ]);
   const handle = {
     id: 'session-1',
@@ -168,7 +181,7 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
   service.onDidCloseSession((event) => closed.push(event));
   const sessions = (service as unknown as { sessions: Map<string, ISessionScopeHandle> }).sessions;
   sessions.set(handle.id, handle);
-  return { service, handle, dispose, closed, terminals, mirror, activity, drainRetirements, cleanupStages };
+  return { service, handle, dispose, closed, terminals, metadata, mirror, activity, drainRetirements, cleanupStages };
 }
 
 describe('SessionLifecycleService create persistence ownership', () => {
@@ -249,6 +262,7 @@ describe('SessionLifecycleService create persistence ownership', () => {
       accessor: accessor([
         [ISessionContext, { sessionDir: '/home/failed-session' }],
         [IAgentLifecycleService, { list: () => [] }],
+        [ISessionMetadata, { drain: async () => {} }],
       ]),
     } as unknown as ISessionScopeHandle;
     const owner = fx.service as unknown as {
@@ -309,6 +323,7 @@ describe('SessionLifecycleService factory ownership', () => {
                 ? Promise.reject(failure) : Promise.resolve();
             },
             usage: () => undefined,
+            drain: async () => {},
             update: async () => {},
             list: () => [],
             countPendingBackgroundTasks: () => 0,
@@ -481,19 +496,20 @@ describe('SessionLifecycleService unload', () => {
     internals.sessionLocks.set('session-1', { release });
     const receipts: unknown[] = [];
     fx.service.onDidCleanup!((receipt) => receipts.push(receipt));
+    fx.metadata.hold();
     fx.mirror.hold();
     let settled = false;
     const closing = fx.service.close('session-1').then(() => { settled = true; });
     try {
       await drainMicrotasks();
       expect(remove).toHaveBeenCalledOnce();
-      expect(fx.cleanupStages.at(-1)?.stage).toBe('index_mirror');
+      expect(fx.cleanupStages.at(-1)?.stage).toBe('metadata_writes');
       expect(fx.dispose).not.toHaveBeenCalled();
       expect(release).not.toHaveBeenCalled();
       expect(settled).toBe(false);
       expect(fx.closed).toEqual([]);
       expect(receipts).toEqual([]);
-      fx.mirror.release();
+      fx.metadata.release();
       await drainMicrotasks();
       expect(fx.cleanupStages.at(-1)?.stage).toBe('session_scope');
       expect(fx.dispose).toHaveBeenCalledOnce();
@@ -512,11 +528,12 @@ describe('SessionLifecycleService unload', () => {
       expect(fx.cleanupStages.map((entry) => entry.stage)).toEqual([
         'will_close', 'replay_checkpoints', 'checkpoint_scheduling', 'usage_snapshot',
         'agents', 'usage_persistence', 'append_retirements', 'metadata_writes',
-        'index_mirror', 'session_scope', 'log_closes', 'session_lock',
+        'session_scope', 'log_closes', 'session_lock',
       ]);
       expect(receipts).toContainEqual(expect.objectContaining({ operationId, callerOutcome: 'resolved', resourcesAfter: 0 }));
       expect(fx.closed).toEqual([{ sessionId: 'session-1', reason: 'exit' }]);
     } finally {
+      fx.metadata.release();
       fx.mirror.release();
       releaseScope();
       releaseLock();
@@ -676,9 +693,9 @@ describe('SessionLifecycleService unload', () => {
     await fx.service.dispose();
   });
 
-  it('rejects the original durable agent failure after session disposal and lock release', async () => {
+  it('retains the session and writer lock on canonical failure and closes after recovery', async () => {
     const durableFailure = new Error2(ErrorCodes.STORAGE_DISK_FULL, 'no space left on device');
-    const remove = vi.fn(async () => { throw durableFailure; });
+    const remove = vi.fn<() => Promise<void>>().mockRejectedValueOnce(durableFailure).mockResolvedValue(undefined);
     const agentAccessor = Object.assign(accessor([
       [IEventDispatcher, { saveReplayCheckpoint: async () => true }],
     ]), { remove });
@@ -694,12 +711,17 @@ describe('SessionLifecycleService unload', () => {
     await expect(fx.service.close('session-1')).rejects.toBe(durableFailure);
 
     expect(remove).toHaveBeenCalledOnce();
-    expect(fx.dispose).toHaveBeenCalledOnce();
-    expect(release).toHaveBeenCalledOnce();
+    expect(fx.dispose).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    expect(fx.service.get('session-1')).toBe(fx.handle);
     expect(receipts).toContainEqual(expect.objectContaining({
       sessionId: 'session-1', callerOutcome: 'rejected', cleanupOutcome: 'cleanup_failed',
-      failureDomain: 'persistence', errorCode: 'storage.disk_full', resourcesAfter: 0,
+      failureDomain: 'persistence', errorCode: 'storage.disk_full', resourcesAfter: 1,
     }));
+    await fx.service.close('session-1');
+    expect(fx.dispose).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledOnce();
+    await fx.service.dispose();
   });
 
   it.each(['close', 'archive', 'delete'] as const)('preserves durable pending only for normal exit, not %s cancellation', async (operation) => {
@@ -767,16 +789,23 @@ describe('SessionLifecycleService unload', () => {
 
   it('rechecks the terminal blocker before commit', async () => {
     const fx = fixture();
+    fx.metadata.hold();
     fx.mirror.hold();
     const unload = fx.service.unload('session-1');
-    await drainMicrotasks();
-    fx.terminals.live = 1;
-    fx.mirror.release();
+    try {
+      await drainMicrotasks();
+      fx.terminals.live = 1;
+      fx.metadata.release();
 
-    await expect(unload).resolves.toBe(false);
+      await expect(unload).resolves.toBe(false);
 
-    expect(fx.dispose).not.toHaveBeenCalled();
-    expect(fx.service.get('session-1')).toBe(fx.handle);
+      expect(fx.dispose).not.toHaveBeenCalled();
+      expect(fx.service.get('session-1')).toBe(fx.handle);
+    } finally {
+      fx.metadata.release();
+      fx.mirror.release();
+      await fx.service.dispose();
+    }
   });
 
   it('keeps the session and its terminals live when preparation fails', async () => {
@@ -835,14 +864,19 @@ it('rechecks queued prompts after asynchronous preparation before disposing the 
     [IEventDispatcher, { saveReplayCheckpoint: async () => true }],
   ]));
   try {
+    fx.metadata.hold();
     fx.mirror.hold();
     const unloading = fx.service.unload('session-1');
     await drainMicrotasks();
     pending = [{ id: 'arrived-during-save' }];
-    fx.mirror.release();
+    fx.metadata.release();
     expect(await unloading).toBe(false);
     expect(fx.dispose).not.toHaveBeenCalled();
-  } finally { fx.mirror.release(); await fx.service.dispose(); }
+  } finally {
+    fx.metadata.release();
+    fx.mirror.release();
+    await fx.service.dispose();
+  }
 });
 
 it('keeps a durable recovered prompt through an unload attempt and resumes its own message', async () => {
@@ -952,7 +986,7 @@ describe('SessionLifecycleService fork cron ownership', () => {
       dispose: vi.fn(),
       accessor: accessor([
         [ISessionContext, { sessionId: 'external-fork' }],
-        [ISessionMetadata, { update }],
+        [ISessionMetadata, { drain: async () => {}, update }],
         [IAgentLifecycleService, { list: () => [], create: createAgent }],
       ]),
     } as unknown as ISessionScopeHandle;
@@ -964,6 +998,7 @@ describe('SessionLifecycleService fork cron ownership', () => {
       ...fx.handle,
       accessor: accessor([
         [ISessionMetadata, {
+          drain: async () => {},
           read: async () => ({
             title: 'External source',
             agents: { main: { type: 'main' }, child: { type: 'sub', parentAgentId: 'main' } },
@@ -1035,14 +1070,14 @@ describe('SessionLifecycleService fork cron ownership', () => {
       dispose: vi.fn(),
       accessor: accessor([
         [ISessionContext, { sessionId: 'new-fork' }],
-        [ISessionMetadata, { update }],
+        [ISessionMetadata, { drain: async () => {}, update }],
         [IAgentLifecycleService, { list: () => [], create: createAgent }],
       ]),
     } as unknown as ISessionScopeHandle;
     const source = {
       ...fx.handle,
       accessor: accessor([
-        [ISessionMetadata, { read: async () => ({ title: 'Source', agents: { main: {} } }) }],
+        [ISessionMetadata, { drain: async () => {}, read: async () => ({ title: 'Source', agents: { main: {} } }) }],
         [IAgentLifecycleService, { list: () => [], get: () => undefined }],
       ]),
     };
@@ -1137,6 +1172,7 @@ describe('SessionLifecycleService archive transcript certification', () => {
         }],
         [ISessionTerminalService, { countLiveTerminals: () => 0 }],
         [ISessionMetadata, {
+          drain: async () => { order.push('metadata'); },
           usage: () => undefined,
           update: async () => {},
           setArchived: async (value: boolean) => { archived.value = value; order.push('meta'); },
@@ -1169,7 +1205,7 @@ describe('SessionLifecycleService archive transcript certification', () => {
     try {
       await fx.service.archive('session-1');
       expect(installed.archived.value).toBe(true);
-      expect(installed.order).toEqual(['drain', 'meta', 'event.session.archived', 'index', 'dispose', 'lock']);
+      expect(installed.order).toEqual(['drain', 'meta', 'event.session.archived', 'metadata', 'dispose', 'lock']);
       expect(fx.service.get('session-1')).toBeUndefined();
       expect(installed.release).toHaveBeenCalledOnce();
       expect(archivedIds).toEqual(['session-1']);

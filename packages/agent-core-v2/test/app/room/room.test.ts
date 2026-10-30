@@ -110,6 +110,7 @@ function fakeMeta(id: string): ISessionMetadata {
     ready: Promise.resolve(),
     onDidChangeMetadata: Event.None as Event<SessionMetadataChangedEvent>,
     read: async () => value,
+    drain: async () => {},
     snapshot: () => structuredClone(value),
     getAgentExecutor: async (agentId: string) => value.agents?.[agentId]?.executor,
     usage: () => undefined,

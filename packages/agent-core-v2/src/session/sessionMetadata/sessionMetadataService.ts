@@ -27,21 +27,17 @@ import {
 const META_KEY = 'state.json';
 const USAGE_FLUSH_DELAY_MS = 1_000;
 
-const pendingWrites = new Set<Promise<void>>();
+const metadataInstances = new Set<SessionMetadata>();
 const pendingActivityPropagation = new Set<Promise<void>>();
-const pendingUsageFlushes = new Set<() => Promise<void>>();
 
-/** Pass false while holding a session lifecycle lock; propagation may be queued behind that lock. */
+/** Drains every session at process shutdown; session lifecycle operations use their own metadata.drain(). */
 export async function drainSessionMetadataWrites(includeActivityPropagation = true): Promise<void> {
-  await Promise.allSettled(pendingWrites);
-  const flushResults = await Promise.allSettled([...pendingUsageFlushes].map((flush) => flush()));
-  const pendingResults = await Promise.allSettled(
-    includeActivityPropagation
-      ? [...pendingWrites, ...pendingActivityPropagation]
-      : [...pendingWrites],
-  );
-  const failures = [...flushResults, ...pendingResults]
-    .flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+  const results = await Promise.allSettled([...metadataInstances].map((metadata) => metadata.drain()));
+  if (includeActivityPropagation) {
+    await Promise.allSettled(pendingActivityPropagation);
+    results.push(...await Promise.allSettled([...metadataInstances].map((metadata) => metadata.drain())));
+  }
+  const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) throw new AggregateError(failures, 'Session metadata writes failed');
 }
@@ -71,6 +67,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   );
   private readonly scope: string;
   private updateQueue: Promise<void> = Promise.resolve();
+  private readonly pendingWrites = new Set<Promise<void>>();
   private createdDocument = false;
   private usageDirty = false;
   private usageTimer: ReturnType<typeof setTimeout> | undefined;
@@ -115,7 +112,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   }
 
   private async flushUsageNow(): Promise<void> {
-    while (!this.disposed && this.usageDirty) {
+    if (!this.disposed && this.usageDirty) {
       this.usageDirty = false;
       const changed = [...this.deferredChanges];
       this.deferredChanges.clear();
@@ -150,12 +147,12 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     this._register({
       dispose: () => {
         this.disposed = true;
-        pendingUsageFlushes.delete(this.flushUsage);
+        metadataInstances.delete(this);
         if (this.usageTimer !== undefined) clearTimeout(this.usageTimer);
         this.usageTimer = undefined;
       },
     });
-    pendingUsageFlushes.add(this.flushUsage);
+    metadataInstances.add(this);
     this.states.contributeState(sessionMetadataDataKey);
     this.scope = ctx.metaScope;
     this.outcomes = new AgentOutcomeDocuments(store, this.scope, (agentId, error) => {
@@ -173,13 +170,13 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     let flushError: unknown;
     let flushFailed = false;
     try {
-      await this.flushUsage();
+      await this.drain();
     } catch (error) {
       flushFailed = true;
       flushError = error;
     }
     this.disposed = true;
-    pendingUsageFlushes.delete(this.flushUsage);
+    metadataInstances.delete(this);
     if (this.usageTimer !== undefined) clearTimeout(this.usageTimer);
     this.usageTimer = undefined;
     let disposeError: unknown;
@@ -245,10 +242,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
         this.mergePatch(patch, opts);
         this.deferChanges(Object.keys(patch) as (keyof SessionMeta)[]);
       });
-      const tracked = work.then(() => undefined, () => undefined);
-      pendingWrites.add(tracked);
-      void tracked.finally(() => pendingWrites.delete(tracked));
-      return work;
+      return this.trackWrite(work);
     }
     return this.enqueueUpdate(async () => {
       await this.applyUpdate(patch, opts);
@@ -342,16 +336,28 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     });
   }
 
+  async drain(): Promise<void> {
+    if (this.disposed) return;
+    await this.ready;
+    const results = await Promise.allSettled([...this.pendingWrites, this.flushUsage()]);
+    const remaining = await Promise.allSettled(this.pendingWrites);
+    const failures = [...new Set([...results, ...remaining].flatMap((result) => result.status === 'rejected' ? [result.reason] : []))];
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Session metadata drain failed');
+    if (this.usageDirty) await this.flushUsage();
+  }
+
+  private trackWrite<T>(run: Promise<T>): Promise<T> {
+    const tracked = run.then(() => undefined);
+    this.pendingWrites.add(tracked);
+    void tracked.then(() => this.pendingWrites.delete(tracked), () => this.pendingWrites.delete(tracked));
+    return run;
+  }
+
   private enqueueUpdate<T>(work: () => Promise<T>): Promise<T> {
     const run = this.updateQueue.then(work, work);
-    const tracked: Promise<void> = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    this.updateQueue = tracked;
-    pendingWrites.add(tracked);
-    void tracked.finally(() => pendingWrites.delete(tracked));
-    return run;
+    this.updateQueue = run.then(() => undefined, () => undefined);
+    return this.trackWrite(run);
   }
 
   private mirrorToReadModel(): void {

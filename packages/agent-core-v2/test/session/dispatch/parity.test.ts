@@ -1014,6 +1014,7 @@ function createLane(
     ready: Promise.resolve(),
     onDidChangeMetadata: Event.None,
     read: async () => readMetadata(),
+    drain: async () => {},
     snapshot: () => structuredClone(readMetadata()),
     getAgentExecutor: async (agentId: string) => metadataAgents[agentId]?.executor,
     usage: () => undefined,

@@ -560,6 +560,7 @@ function sessionMetadataStub(agents: Readonly<Record<string, AgentMeta>>): ISess
     ready: Promise.resolve(),
     onDidChangeMetadata: Event.None as ISessionMetadata['onDidChangeMetadata'],
     read: async () => readMetadata(),
+    drain: async () => {},
     snapshot: () => structuredClone(readMetadata()),
     getAgentExecutor: async (agentId: string) => agents[agentId]?.executor,
     usage: () => undefined,

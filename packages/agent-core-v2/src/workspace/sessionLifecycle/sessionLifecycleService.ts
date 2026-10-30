@@ -67,7 +67,7 @@ import { ISessionContextSourceReloader } from '#/session/contextRebuild/contextS
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceInfo } from '#/session/workspaceInfo/workspaceInfo';
 import { ISessionHookWorkspace } from '#/features/externalHooks/session/hookRules';
-import { drainSessionMetadataWrites, toEpochMs } from '#/session/sessionMetadata/sessionMetadataService';
+import { toEpochMs } from '#/session/sessionMetadata/sessionMetadataService';
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionTerminalService } from '#/session/terminal/terminalService';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -773,7 +773,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await collect('checkpoint_scheduling', () => this.disposeCheckpointScheduling(sessionId), 'cleanup');
       let usageFallback: SessionUsageSummary | undefined;
       await collect('usage_snapshot', () => { usageFallback = aggregateSessionUsage(handle); }, 'cleanup');
-      this.sessions.delete(sessionId);
       await collect('agents', () => this.drainAgents(handle, mode), undefined);
       if (failures.length > 0 && failures.at(-1)?.domain === undefined) {
         const failure = failures.at(-1)!;
@@ -784,8 +783,13 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       }
       await collect('usage_persistence', () => this.persistUsage(handle, usageFallback), 'persistence');
       await collect('append_retirements', () => this.appendLogStore.drainRetirements(), 'persistence');
-      await collect('metadata_writes', () => drainSessionMetadataWrites(false), 'persistence');
-      await collect('index_mirror', () => this.indexMirror.drain(), 'persistence');
+      await collect('metadata_writes', () => handle.accessor.get(ISessionMetadata).drain(), 'persistence');
+      const persistenceFailure = failures.find((failure) => failure.domain === 'persistence');
+      if (persistenceFailure !== undefined) {
+        failureDomain = 'persistence';
+        throw persistenceFailure.error;
+      }
+      this.sessions.delete(sessionId);
       await collect('session_scope', async () => {
         await handle.dispose();
         sessionDisposed = true;
@@ -837,8 +841,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const usageFallback = aggregateSessionUsage(handle);
     await this.persistUsage(handle, usageFallback);
     await this.appendLogStore.drainRetirements();
-    await drainSessionMetadataWrites(false);
-    await this.indexMirror.drain();
+    await handle.accessor.get(ISessionMetadata).drain();
     if (!canCommit()) return false;
     const finalActivity = handle.accessor.get(ISessionActivityView).state();
     if (finalActivity.busy || finalActivity.pendingInteraction !== 'none') return false;
@@ -879,9 +882,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await meta.setArchived(true);
     this.event.publish(new SessionArchived({ payload: { sessionId } }));
     await this.announceWillClose({ sessionId, handle, reason: 'archive' });
+    await meta.drain();
     this.sessions.delete(sessionId);
-    await drainSessionMetadataWrites(false);
-    await this.indexMirror.drain();
     await handle.dispose();
     await drainLogCloses();
     await this.releaseSessionLock(sessionId);
@@ -1048,10 +1050,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         cleanupErrors.push(cleanupError);
       }
     }
-    try {
-      await drainSessionMetadataWrites(false);
-    } catch (cleanupError) {
-      cleanupErrors.push(cleanupError);
+    if (handle !== undefined) {
+      try {
+        await handle.accessor.get(ISessionMetadata).drain();
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
     }
     if (handle !== undefined) {
       try {
@@ -1123,7 +1127,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     let target: ISessionScopeHandle | undefined;
     let targetSessionDir: string | undefined;
     try {
-      await drainSessionMetadataWrites(false);
+      if (sourceHandle !== undefined) await sourceHandle.accessor.get(ISessionMetadata).drain();
       const sourceMeta =
         sourceHandle !== undefined
           ? await sourceHandle.accessor.get(ISessionMetadata).read()

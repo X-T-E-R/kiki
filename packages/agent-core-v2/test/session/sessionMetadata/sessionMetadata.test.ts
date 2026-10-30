@@ -85,6 +85,40 @@ describe('SessionMetadata', () => {
     vi.restoreAllMocks();
   });
 
+  it('drains only its own canonical work while process shutdown joins a blocked other session', async () => {
+    const a = ix.get(ISessionMetadata);
+    await a.ready;
+    const context = makeSessionContext({ sessionId: 's2', workspaceId: 'wd_test', sessionDir: '/tmp/s2',
+      sessionScope: 'sessions/wd_test/s2', metaScope: 'sessions/wd_test/s2', cwd: '/tmp/s2' });
+    const child = disposables.add(ix.createChild(new ServiceCollection(
+      [ISessionStateService, new SessionStateService()], [ISessionContext, context],
+      [ISessionMetadata, new SyncDescriptor(SessionMetadata)],
+    )));
+    const b = child.get(ISessionMetadata);
+    await b.ready;
+    const store = ix.get(IAtomicDocumentStore);
+    const original = store.set.bind(store);
+    const entered = deferred();
+    const gate = deferred();
+    vi.spyOn(store, 'set').mockImplementation(async (...args) => {
+      if (args[0] === context.metaScope) { entered.resolve(); await gate.promise; }
+      return original(...args);
+    });
+    const writing = b.setTitle('blocked-b');
+    await entered.promise;
+    await a.update({ lastPrompt: 'durable-a' }, { deferPersistence: true });
+    await a.drain();
+    expect((await store.get<{ lastPrompt: string }>(META_SCOPE, 'state.json'))?.lastPrompt).toBe('durable-a');
+    let closed = false;
+    const shutdown = drainSessionMetadataWrites(false).then(() => { closed = true; });
+    await ticks();
+    expect(closed).toBe(false);
+    gate.resolve();
+    await writing;
+    await shutdown;
+    expect(closed).toBe(true);
+  });
+
   it('coalesces recency and prompt metadata on an eight MiB registry without awaiting disk', async () => {
     const store = ix.get(IAtomicDocumentStore);
     const agents = Object.fromEntries(Array.from({ length: 822 }, (_, index) => [String(index), {

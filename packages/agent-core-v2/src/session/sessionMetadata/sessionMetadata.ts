@@ -107,6 +107,8 @@ export interface ISessionMetadata {
   readonly ready: Promise<void>;
   readonly onDidChangeMetadata: Event<SessionMetadataChangedEvent>;
   read(): Promise<SessionMeta>;
+  /** Commits this session's accepted writes and deferred metadata without waiting for other sessions or derived mirrors. */
+  drain(): Promise<void>;
   /** Returns a detached metadata value synchronously after `ready` resolves. */
   snapshot(): SessionMeta;
   getAgentExecutor(agentId: string): Promise<string | undefined>;
