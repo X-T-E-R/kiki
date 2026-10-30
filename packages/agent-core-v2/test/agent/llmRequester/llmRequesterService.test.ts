@@ -377,7 +377,7 @@ function createService(
     }) as IConfigService['get'],
     onDidSectionChange: options.sectionChanges?.event,
   };
-  const log = { info: () => undefined, warn: () => undefined };
+  const log = { info: () => undefined, warn: vi.fn() };
   const telemetryRecords: TelemetryRecord[] = [];
   const telemetry = recordingTelemetry(telemetryRecords);
   const toolSelect: Partial<IAgentToolSelectService> = {
@@ -508,6 +508,7 @@ function createService(
 
   return {
     identityCatalog: catalog,
+    log,
     service: ix.get(IAgentLLMRequesterService),
     dispatcher: ix.get(IEventDispatcher),
     records,
@@ -2835,7 +2836,82 @@ describe.each(['openai', 'anthropic', 'google-genai'] as const)('%s clean SSE EO
   });
 });
 
-it.each(['1012', 'direct-1012', 'empty-message-1012', 'empty-reasoning-1012', 'thinking-1012', 'partial-close-1012', 'tool-close-1012', 'refusal-close-1012', 'hosted-tool-close-1012', '1000', '1001', '1006', '1013', '1002', '1008', 'connection-limit', 'sdk-limit', 'reused-limit', 'partial-limit', 'tool-limit', 'terminal-output-limit', 'terminal-tool-limit', 'safety-lookalike'] as const)('classifies WebSocket %s before deciding whether to replay', async mode => {
+describe.each(['response.failed', 'error'] as const)('Responses SSE upstream connection limit: %s', ending => {
+  it.each(['empty', 'thinking', 'partial-text', 'exhaust', 'disabled', 'unrelated-code'] as const)('recovers at the existing request boundary after %s', async mode => {
+    const bodies: string[] = [];
+    const limitMessage = 'Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.';
+    const code = mode === 'unrelated-code' ? 'invalid_request' : 'websocket_connection_limit_reached';
+    const server = createServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        bodies.push(body);
+        const recover = bodies.length > 1 && mode !== 'exhaust';
+        const events: Record<string, unknown>[] = [{ type: 'response.created', response: { id: 'resp_fixture', status: 'in_progress', output: [] } }];
+        if (recover) events.push({ type: 'response.completed', response: { id: 'resp_recovered', status: 'completed', output: [
+          { type: 'message', id: 'msg_recovered', role: 'assistant', content: [{ type: 'output_text', text: 'recovered', annotations: [] }] },
+        ] } });
+        else {
+          if (mode === 'thinking') events.push({ type: 'response.reasoning_summary_text.delta', delta: 'discarded thought' });
+          if (mode === 'partial-text') events.push({ type: 'response.output_text.delta', delta: 'discarded text' });
+          events.push(ending === 'error' ? { type: 'error', code, message: limitMessage }
+            : { type: 'response.failed', response: { id: 'resp_fixture', status: 'failed', output: [], error: { code, message: limitMessage, type: 'invalid_request_error' } } });
+        }
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(events.map(event => `event: ${String(event['type'])}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const model = { ...createRequester({ value: 0 }, null).model, protocol: 'openai_responses' as const, baseUrl,
+      authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) } };
+    const provider = new OpenAIResponsesChatProvider({ model: model.name, baseUrl, apiKey: 'YOUR_API_KEY' });
+    const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+    const failures: unknown[] = [];
+    const request = requester.request.bind(requester);
+    requester.request = async function* (input, signal, params) {
+      try { yield* request(input, signal, params); }
+      catch (error) { failures.push(error); throw error; }
+    };
+    const { service, log, events } = createService(requester, undefined, { retryConfig: { policies: [{ match: 'APIConnectionError', retry: mode !== 'disabled', backoff: 1 }] } });
+    const parts: StreamedMessagePart[] = [];
+    const discarded: StreamedMessagePart[][] = [];
+    const onAttemptRetry = vi.fn(() => { discarded.push(parts.splice(0)); });
+    try {
+      const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry }, part => { parts.push(part); }, AbortSignal.timeout(3000));
+      if (mode === 'exhaust' || mode === 'disabled' || mode === 'unrelated-code') {
+        await expect(pending).rejects.toMatchObject({ code: mode === 'unrelated-code' ? 'provider.api_error' : 'provider.connection_error' });
+        expect(bodies).toHaveLength(mode === 'exhaust' ? 5 : 1);
+      } else {
+        expect((await pending).message.content).toEqual([{ type: 'text', text: 'recovered' }]);
+        expect(bodies).toHaveLength(2);
+        expect(parts).toEqual([{ type: 'text', text: 'recovered' }]);
+      }
+      expect(onAttemptRetry).toHaveBeenCalledTimes(mode === 'exhaust' ? 5 : bodies.length - 1);
+      expect(events.filter(event => event.type === 'turn.step.retrying')).toHaveLength(bodies.length - 1);
+      expect(bodies.every(body => body === bodies[0])).toBe(true);
+      expect(toErrorPayload(failures[0])).toMatchObject({
+        code: mode === 'unrelated-code' ? 'provider.api_error' : 'provider.connection_error',
+        name: mode === 'unrelated-code' ? 'ChatProviderError' : 'APIConnectionError',
+        details: { errorSource: 'provider_event', upstreamErrorCode: code,
+          responsesTransport: { transport: 'sse', webSocketCapabilities: false, webSocketCapabilityVersion: null, webSocketConnectionAgeMs: null } },
+      });
+      expect(log.warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+        transport: 'sse', webSocketCapabilities: false, webSocketCapabilityVersion: null, webSocketConnectionAgeMs: null,
+      }));
+      if (mode === 'thinking' || mode === 'partial-text') {
+        expect(discarded[0]).toEqual([mode === 'thinking' ? { type: 'think', think: 'discarded thought' } : { type: 'text', text: 'discarded text' }]);
+        expect(toErrorPayload(failures[0]).details).toMatchObject({ request_delivery: 'executed', request_output: 'observed' });
+      }
+    } finally {
+      await (service as AgentLLMRequesterService).dispose();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => { resolve(); }));
+    }
+  });
+});
+
+it.each(['1012', 'direct-1012', 'empty-message-1012', 'empty-reasoning-1012', 'thinking-1012', 'partial-close-1012', 'tool-close-1012', 'refusal-close-1012', 'hosted-tool-close-1012', '1000', '1001', '1006', '1013', '1002', '1008', 'connection-limit', 'sdk-limit', 'not-executed-limit', 'in-progress-limit', 'reused-limit', 'partial-limit', 'tool-limit', 'terminal-output-limit', 'terminal-tool-limit', 'safety-lookalike'] as const)('classifies WebSocket %s before deciding whether to replay', async mode => {
   const handshake = readFileSync(new URL('../../kosong/provider/fixtures/responses-ws-capabilities.json', import.meta.url), 'utf8').trim();
   const server = createServer();
   const webSockets = new WebSocketServer({ server });
@@ -2891,7 +2967,11 @@ it.each(['1012', 'direct-1012', 'empty-message-1012', 'empty-reasoning-1012', 't
           else socket.close(mode.endsWith('1012') ? 1012 : Number(mode), 'fixture close');
         } else if (mode === 'sdk-limit') {
           socket.send(JSON.stringify({ type: 'error', code, message: 'Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.' }));
+        } else if (mode === 'not-executed-limit') {
+          socket.send(JSON.stringify({ type: 'error', status: 400, execution: 'not_executed',
+            error: { type: 'invalid_request_error', code, message: 'Create a new websocket connection to continue.' } }));
         } else {
+          if (mode === 'in-progress-limit') socket.send(JSON.stringify({ type: 'response.created', response: { id: 'resp_pending', status: 'in_progress', output: [] } }));
           if (mode === 'partial-limit') socket.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'partial answer' }));
           if (mode === 'tool-limit') socket.send(JSON.stringify({ type: 'response.output_item.added', output_index: 0,
             item: { type: 'function_call', id: 'fc_fixture', call_id: 'call_fixture', name: 'Lookup', arguments: '{}' } }));
@@ -2923,7 +3003,7 @@ it.each(['1012', 'direct-1012', 'empty-message-1012', 'empty-reasoning-1012', 't
     try { yield* request(input, signal, params); }
     catch (error) { failures.push(error); throw error; }
   };
-  const { service } = createService(requester, undefined, { retryConfig: { policies: [{ match: '.*', retry: true, backoff: 1 }] } });
+  const { service, log } = createService(requester, undefined, { retryConfig: { policies: [{ match: '.*', retry: true, backoff: 1 }] } });
   const parts: StreamedMessagePart[] = [];
   const discarded: StreamedMessagePart[][] = [];
   const onAttemptRetry = vi.fn(() => { discarded.push(parts.splice(0)); });
@@ -2989,6 +3069,16 @@ it.each(['1012', 'direct-1012', 'empty-message-1012', 'empty-reasoning-1012', 't
       expect(parts).toEqual([{ type: 'text', text: 'recovered' }]);
     }
     expect(failures).toHaveLength(1);
+    const transportDiagnostics = toErrorPayload(failures[0]).details?.['responsesTransport'] ??
+      toErrorPayload(unwrapErrorCause(failures[0])).details?.['responsesTransport'];
+    expect(transportDiagnostics).toMatchObject({
+      transport: 'ws', webSocketCapabilities: true, webSocketCapabilityVersion: 1, webSocketConnectionAgeMs: expect.any(Number),
+    });
+    expect(log.warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      transport: 'ws', webSocketCapabilities: true, webSocketCapabilityVersion: 1, webSocketConnectionAgeMs: expect.any(Number),
+    }));
+    if (mode === 'not-executed-limit') expect(toErrorPayload(failures[0]).details).toMatchObject({ execution: 'not_executed' });
+    if (mode === 'sdk-limit') expect(toErrorPayload(failures[0]).details).not.toHaveProperty('execution', 'not_executed');
     expect(isRetryableGenerateError(failures[0])).toBe(!hasOutput && mode !== '1002' && mode !== '1008' && mode !== 'safety-lookalike' && mode !== 'refusal-close-1012' && mode !== 'hosted-tool-close-1012');
     expect(readGenerateFailureFacts(failures[0])).toBeUndefined();
     if (mode === 'connection-limit' || mode === 'reused-limit' || mode === 'partial-limit' || mode === 'tool-limit' || mode === 'terminal-output-limit' || mode === 'terminal-tool-limit') {

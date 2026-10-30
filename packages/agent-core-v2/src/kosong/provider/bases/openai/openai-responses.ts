@@ -37,7 +37,7 @@ import type {
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import type { RequestCompression } from '#/kosong/contract/requestCompression';
-import type { ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransport';
+import type { ResponsesTransportDiagnostics, ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransport';
 import { ResponsesWebSocketError } from './responses-websocket';
 import { createRequestCompressionFetch, withRequestCompressionDelivery } from '../request-compression';
 import { guardRequestDelivery } from '../request-delivery';
@@ -98,6 +98,11 @@ function normalizeResponsesFinishReason(
 }
 
 type RawObject = Record<string, unknown>;
+
+function sseTransportDiagnostics(): ResponsesTransportDiagnostics {
+  return { transport: 'sse', webSocketCapabilities: false, webSocketCapabilityVersion: null, webSocketConnectionAgeMs: null };
+}
+
 const OPENAI_RESPONSES_TOOL_CALL_ID_POLICY: ToolCallIdPolicy = {
   normalize: (id) => sanitizeOpenAIResponsesCallId(id, 64),
   maxLength: 64,
@@ -133,12 +138,15 @@ function asRawObject(value: unknown): RawObject | null {
 }
 
 function transportStatusError(error: unknown): ChatProviderError | undefined {
-  if (!(error instanceof ResponsesWebSocketError)) return undefined;
-  if (error.code === 'websocket_connection_limit_reached') {
+  if ((error instanceof ResponsesWebSocketError || error instanceof OpenAIAPIError) &&
+    error.code === 'websocket_connection_limit_reached') {
     return attachErrorDetails(new APIConnectionError(error.message), {
-      errorSource: 'provider_event', nativeCode: error.code, upstreamErrorCode: error.code, execution: 'not_executed',
+      ...providerStreamErrorDetails(error instanceof OpenAIAPIError ? error.error : undefined),
+      errorSource: 'provider_event', nativeCode: error.code, upstreamErrorCode: error.code,
+      execution: error instanceof ResponsesWebSocketError ? error.execution : undefined,
     });
   }
+  if (!(error instanceof ResponsesWebSocketError)) return undefined;
   if (error.status === undefined || error.status < 400 || error.status > 599) return undefined;
   return attachErrorDetails(new APIStatusError(error.status, error.message), {
     errorSource: 'provider_event', nativeCode: error.code, execution: error.execution,
@@ -301,7 +309,6 @@ function errorFromOpenAIResponsesEvent(
   param: string | null,
   options?: {
     readonly rawEvent?: unknown;
-    readonly webSocket?: boolean;
     readonly convertErrorHook?: (error: unknown) => ChatProviderError | undefined;
   },
 ): ChatProviderError {
@@ -319,7 +326,7 @@ function errorFromOpenAIResponsesEvent(
     ...Object.fromEntries(Object.entries(safeProviderFailureDetails(error.details)).filter(([, value]) => value !== null)),
     errorSource: 'provider_event',
   });
-  if (options?.webSocket === true && code === 'websocket_connection_limit_reached') {
+  if (code === 'websocket_connection_limit_reached') {
     return withEventDetails(new APIConnectionError(fullMessage));
   }
   const hooked = options?.convertErrorHook?.(options.rawEvent ?? { code, message, param });
@@ -816,7 +823,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
       | ((error: unknown) => ChatProviderError | undefined)
       | undefined,
     private readonly _commitMessage?: (responseId: string, message: Message) => void,
-    private readonly _webSocket = false,
+    private readonly _transportDiagnostics: () => ResponsesTransportDiagnostics = sseTransportDiagnostics,
   ) {
     if (isStream) {
       this._controller = (response as { controller?: AbortController }).controller;
@@ -917,7 +924,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
     if (!['message', 'reasoning', 'function_call'].includes(String(item['type'])) || item['status'] === 'incomplete') {
       this._continuationBlocked = true;
     }
-    if ((readObjectArrayField(item, 'content') ?? []).some(part => part['type'] === 'refusal')) {
+    if ((readObjectArrayField(item, 'content') ?? []).some(part => part['type'] === 'refusal' && (readStringField(part, 'refusal')?.length ?? 0) > 0)) {
       this._continuationBlocked = true;
     }
   }
@@ -1205,7 +1212,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
           case 'response.content_part.added':
           case 'response.content_part.done': {
             const part = requireObjectField(chunk, 'part', type);
-            if (part['type'] === 'refusal') this._continuationBlocked = true;
+            if (part['type'] === 'refusal' && (readStringField(part, 'refusal')?.length ?? 0) > 0) this._continuationBlocked = true;
             if (part['type'] === 'output_text') {
               yield* yieldFinalTextSuffix(
                 requireStringField(part, 'text', type),
@@ -1288,7 +1295,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             break;
           case 'response.refusal.delta':
           case 'response.refusal.done':
-            this._continuationBlocked = true;
+            this._continuationBlocked ||= (readStringField(chunk, type === 'response.refusal.delta' ? 'delta' : 'refusal')?.length ?? 0) > 0;
             break;
           case 'response.completed':
           case 'response.incomplete': {
@@ -1318,7 +1325,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
               readNullableStringField(chunk, 'code') ?? null,
               message,
               readNullableStringField(chunk, 'param') ?? null,
-              { rawEvent: chunk, webSocket: this._webSocket, convertErrorHook: this._convertErrorHook },
+              { rawEvent: chunk, convertErrorHook: this._convertErrorHook },
             );
           }
           case 'response.failed': {
@@ -1337,7 +1344,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
               ), { ...providerStreamErrorDetails({ type, code: null }), errorSource: 'provider_event' })
               : errorFromOpenAIResponsesEvent(
                 'OpenAI Responses response.failed', error.code, error.message, null,
-                { rawEvent: chunk, webSocket: this._webSocket, convertErrorHook: this._convertErrorHook },
+                { rawEvent: chunk, convertErrorHook: this._convertErrorHook },
               );
             throw failure;
           }
@@ -1360,6 +1367,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
         !(error instanceof OpenAIAPIError && error.error !== undefined)) return;
       if (diagnostics.endSource !== 'event_error' && diagnostics.endSource !== 'eof') diagnostics.endSource = readingEvent ? 'sdk_error' : 'local_error';
       const failure = attachStreamDiagnostics(transportStatusError(error) ?? transportClosureError(error) ?? transportLocalError(error) ?? convertOpenAIError(error, this._convertErrorHook), diagnostics);
+      attachErrorDetails(failure, { responsesTransport: this._transportDiagnostics() });
       if (this._observedOutput) noteExecutedRequestDelivery(failure);
       if (this._continuationBlocked) attachErrorDetails(failure, { retry: false });
       throw failure;
@@ -1510,6 +1518,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
       );
     }
 
+    let transportDiagnostics = sseTransportDiagnostics;
     try {
       const client = this._createClient(
         mergeProviderRequestAuth(options?.auth, options?.headers),
@@ -1565,6 +1574,9 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
         const auth = mergeProviderRequestAuth(options?.auth, options?.headers);
         const headers = finalizeProviderRequestHeaders(mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers), auth);
         let fullInput: readonly unknown[] | undefined;
+        transportDiagnostics = () => transport.diagnostics?.() ?? {
+          transport: 'ws', webSocketCapabilities: null, webSocketCapabilityVersion: null, webSocketConnectionAgeMs: null,
+        };
         try {
           options?.onRequestSent?.();
           const response = await transport.request(createParams, {
@@ -1576,7 +1588,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
             onFullInput: (input) => { fullInput = input; },
           });
           return guardRequestDelivery(new OpenAIResponsesStreamedMessage(response, true, this._convertErrorHook,
-            (id, message) => transport.commitResponse(id, convertMessage(message, this._model, this._toolMessageConversion)), true), true);
+            (id, message) => transport.commitResponse(id, convertMessage(message, this._model, this._toolMessageConversion)), transportDiagnostics), true);
         } catch (error) {
           if (isAbortError(error)) throw error;
           if (!(error instanceof ResponsesWebSocketError && error.safeHttpFallback)) {
@@ -1585,6 +1597,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
           if (fullInput !== undefined) createParams['input'] = fullInput;
         }
       }
+      transportDiagnostics = sseTransportDiagnostics;
       options?.onRequestSent?.();
       const response = await withRequestCompressionDelivery(options?.signal, async () => {
         const responsePromise = (
@@ -1609,7 +1622,9 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
         endSource: isAbortError(error) ? 'cancelled' : error instanceof OpenAIError ? 'sdk_error' : 'local_error',
       } : undefined;
       if (isAbortError(error)) throw attachStreamDiagnostics(createAbortError(), diagnostics);
-      throw attachStreamDiagnostics(convertOpenAIError(error, this._convertErrorHook), diagnostics);
+      throw attachErrorDetails(attachStreamDiagnostics(transportStatusError(error) ?? convertOpenAIError(error, this._convertErrorHook), diagnostics), {
+        responsesTransport: transportDiagnostics(),
+      });
     }
   }
 

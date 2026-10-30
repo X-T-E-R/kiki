@@ -7,7 +7,15 @@ export interface ResponsesOutputProjection {
   readonly incremental: boolean;
 }
 
+export interface ResponsesTransportDiagnostics {
+  readonly transport: 'ws' | 'sse';
+  readonly webSocketCapabilities: boolean | null;
+  readonly webSocketCapabilityVersion: 1 | 2 | null;
+  readonly webSocketConnectionAgeMs: number | null;
+}
+
 export interface ResponsesRequestTransport {
+  diagnostics?(): ResponsesTransportDiagnostics;
   request(params: Record<string, unknown>, options: {
     baseUrl: string;
     apiKey: string;

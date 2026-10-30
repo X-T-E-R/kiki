@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { OpenAIResponsesChatProvider, OpenAIResponsesStreamedMessage } from '#/kosong/provider/bases/openai/openai-responses';
 import { generate } from '#/kosong/contract/generate';
+import { toErrorPayload } from '#/_base/errors/serialize';
 import { ConfigRegistry } from '#/app/config/configService';
 import {
   ProvidersSectionSchema,
@@ -494,6 +495,9 @@ describe('ResponsesWebSocketTransport', () => {
       }),
     ).rejects.toMatchObject({ code: 'responses_ws_capabilities_unsupported', safeHttpFallback: true });
     expect(missingGateway.frames).toHaveLength(0);
+    expect(missingTransport.diagnostics()).toEqual({
+      transport: 'ws', webSocketCapabilities: false, webSocketCapabilityVersion: null, webSocketConnectionAgeMs: expect.any(Number),
+    });
     missingTransport.close();
 
     const unsupportedGateway = await createGateway((_body, socket) => sendUnsupportedUpstream(socket));
@@ -874,6 +878,73 @@ describe('Responses fallback native history preservation', () => {
 });
 
 describe('advertised Responses state expiry', () => {
+  it('retires a socket that expires during generation and retains its actual connection age', async () => {
+    let held!: WebSocket;
+    let notifySent!: () => void;
+    const sent = new Promise<void>(resolve => { notifySent = resolve; });
+    const gateway = await createGateway((_body, socket) => {
+      if (gateway.frames.length === 2) {
+        held = socket;
+        sendCreated(socket, 'resp_pending');
+        notifySent();
+      } else sendCompleted(socket, 'resp_kept', 'answer');
+    });
+    const transport = new ResponsesWebSocketTransport();
+    let clock = 0n;
+    const hrtime = vi.spyOn(process.hrtime, 'bigint').mockImplementation(() => clock);
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const history = [user('question')];
+      const first = await generate(provider, '', [], history, undefined, { responsesTransport: transport });
+      history.push(first.message, user('next'));
+      clock = 54n * 60n * 1_000_000_000n;
+      const pending = generate(provider, '', [], history, undefined, { responsesTransport: transport }).catch((error: unknown) => error);
+      await sent;
+      clock = 60n * 60n * 1_000_000_000n;
+      held.send(JSON.stringify({ type: 'response.failed', response: { id: 'resp_pending', status: 'failed', output: [],
+        error: { code: 'websocket_connection_limit_reached', message: 'Create a new websocket connection to continue.' } } }));
+      expect(toErrorPayload(await pending)).toMatchObject({ code: 'provider.connection_error', details: { responsesTransport: {
+        transport: 'ws', webSocketCapabilities: true, webSocketCapabilityVersion: 1, webSocketConnectionAgeMs: 3_600_000,
+      } } });
+      expect(transport.capabilities).toBeUndefined();
+      const recovered = await generate(provider, '', [], history, undefined, { responsesTransport: transport });
+      expect(recovered.message.content).toEqual([{ type: 'text', text: 'answer' }]);
+      expect(gateway.frames.map(frame => frame.connection)).toEqual([0, 0, 1]);
+      expect(gateway.frames[2]?.body).not.toHaveProperty('previous_response_id');
+      expect(gateway.frames[2]?.body['input']).toHaveLength(3);
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); hrtime.mockRestore(); }
+  });
+
+  it.each([
+    { version: 1, idleMinutes: 55 }, { version: 1, idleMinutes: 60 },
+    { version: 2, idleMinutes: 55 }, { version: 2, idleMinutes: 60 },
+  ])('rotates the production provider socket after $idleMinutes minutes with v$version capabilities', async ({ version, idleMinutes }) => {
+    const header = version === 1
+      ? JSON.stringify({ ...JSON.parse(capabilities) as RawObject, connection_lifetime_seconds: 3600 })
+      : v2Capabilities({ admission_lifetime_seconds: 3600, active_turn_timeout_seconds: 600, connection_lifetime_seconds: 4215 });
+    const gateway = await createGateway((_body, socket) => { sendCompleted(socket, 'resp_rotating', 'answer'); }, header);
+    const transport = new ResponsesWebSocketTransport();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'hrtime', 'Date'] });
+    try {
+      const provider = productionProvider(gateway.baseUrl);
+      const history = [user('question')];
+      const first = await generate(provider, '', [], history, undefined, { responsesTransport: transport });
+      history.push(first.message, user('next'));
+      await vi.advanceTimersByTimeAsync(idleMinutes * 60_000);
+      const second = await generate(provider, '', [], history, undefined, { responsesTransport: transport });
+      expect(second.message.content).toEqual([{ type: 'text', text: 'answer' }]);
+      expect(gateway.frames.map(frame => frame.connection)).toEqual([0, 1]);
+      expect(gateway.frames[1]?.body).not.toHaveProperty('previous_response_id');
+      const fullInput = gateway.frames[1]?.body['input'] as RawObject[];
+      expect(fullInput).toHaveLength(3);
+      expect(fullInput[0]).toEqual((gateway.frames[0]?.body['input'] as unknown[])[0]);
+      expect(fullInput[1]).toMatchObject({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'answer' }] });
+      expect(fullInput[2]).toMatchObject({ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'next' }] });
+      expect(gateway.httpRequests).toHaveLength(0);
+    } finally { transport.dispose(); vi.useRealTimers(); }
+  });
+
   it('replaces a socket at 55 minutes before sending the next request', async () => {
     const longCapabilities = JSON.stringify({ ...JSON.parse(capabilities), connection_lifetime_seconds: 3600 });
     const gateway = await createGateway((_body, socket) => { sendCompleted(socket, 'resp_rotating', 'answer'); }, longCapabilities);

@@ -15,6 +15,7 @@ import {
   createAbortError,
   isRetryableGenerateError,
 } from '#/kosong/contract/errors';
+import { safeProviderFailureDetails, safeResponsesTransportDiagnostics } from '#/kosong/contract/streamDiagnostics';
 import type { ProtocolAdapterConfig } from '#/kosong/protocol/protocol';
 import { traitConvertError, type TraitContext } from '#/kosong/protocol/protocolTrait';
 import { convertAnthropicError } from '#/kosong/provider/bases/anthropic/anthropic';
@@ -521,13 +522,23 @@ describe('OpenAI Responses quota-exhausted conversion', () => {
 });
 
 describe('Responses native WebSocket failure boundaries', () => {
-  it.each([false, true])('classifies connection-limit by active transport rather than its message (webSocket=%s)', async webSocket => {
+  it('projects only bounded transport diagnostics without connection identity or headers', () => {
+    const diagnostics = { transport: 'ws', webSocketCapabilities: true, webSocketCapabilityVersion: 2, webSocketConnectionAgeMs: 3_600_000 };
+    expect(safeProviderFailureDetails({ responsesTransport: { ...diagnostics, url: 'https://example.test/private', headers: { authorization: 'secret' } } }))
+      .toEqual({ responsesTransport: diagnostics });
+    for (const invalid of [{ ...diagnostics, webSocketConnectionAgeMs: -1 }, { ...diagnostics, webSocketCapabilityVersion: 3 }, { ...diagnostics, transport: 'other' }]) {
+      expect(safeResponsesTransportDiagnostics(invalid)).toBeUndefined();
+    }
+  });
+  it.each(['ws', 'sse'] as const)('classifies the exact upstream connection-limit code over %s', async transport => {
     const stream = new OpenAIResponsesStreamedMessage(streamEvents([{ type: 'response.failed', response: {
       id: 'failed', status: 'failed', output: [], error: { code: 'websocket_connection_limit_reached', message: 'native connection limit' },
-    } }]), true, undefined, undefined, webSocket);
+    } }]), true, undefined, undefined, () => ({
+      transport, webSocketCapabilities: transport === 'ws', webSocketCapabilityVersion: transport === 'ws' ? 1 : null, webSocketConnectionAgeMs: transport === 'ws' ? 3600000 : null,
+    }));
     const failure = await consume(stream).catch((error: unknown) => error);
-    expect(toErrorPayload(failure)).toMatchObject({ code: webSocket ? 'provider.connection_error' : 'provider.api_error', details: {
-      errorSource: 'provider_event', upstreamErrorCode: 'websocket_connection_limit_reached',
+    expect(toErrorPayload(failure)).toMatchObject({ code: 'provider.connection_error', details: {
+      errorSource: 'provider_event', upstreamErrorCode: 'websocket_connection_limit_reached', responsesTransport: { transport },
     } });
   });
 
@@ -539,7 +550,7 @@ describe('Responses native WebSocket failure boundaries', () => {
   ])('keeps actual failed-terminal output from being replayed: $type', async item => {
     const stream = new OpenAIResponsesStreamedMessage(streamEvents([{ type: 'response.failed', response: {
       id: 'failed', status: 'failed', output: [item], error: { code: 'websocket_connection_limit_reached', message: 'native limit' },
-    } }]), true, undefined, undefined, true);
+    } }]), true);
     const failure = await consume(stream).catch((error: unknown) => error);
     expect(isRetryableGenerateError(failure)).toBe(false);
     expect(toErrorPayload(failure).details).toMatchObject({ request_delivery: 'executed', request_output: 'observed' });
@@ -576,7 +587,7 @@ describe.each(['failed', 'event_error', 'close'] as const)('Responses non-yielde
       if (ending === 'event_error') yield { type: 'error', code: 'websocket_connection_limit_reached', message: 'native limit' };
       else yield { type: 'response.failed', response: { id: 'failed', status: 'failed', output: [], error: { code: 'websocket_connection_limit_reached', message: 'native limit' } } };
     })();
-    const stream = new OpenAIResponsesStreamedMessage(events, true, undefined, undefined, true);
+    const stream = new OpenAIResponsesStreamedMessage(events, true);
     const failure = await generate({ name: 'fixture', modelName: 'fixture', thinkingEffort: null,
       generate: async () => guardRequestDelivery(stream, true) }, '', [], []).catch((error: unknown) => error);
     expect(isRetryableGenerateError(failure)).toBe(!observed);

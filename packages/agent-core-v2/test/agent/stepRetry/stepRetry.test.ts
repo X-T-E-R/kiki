@@ -956,7 +956,7 @@ describe('stepRetry plugin', () => {
             yield { type: 'response.failed', response: { id: 'resp_limit', status: 'failed', output: [], error: {
               code: 'websocket_connection_limit_reached', message: 'Create a new websocket connection to continue.',
             } } };
-          })(), true, undefined, undefined, true));
+          })(), true));
           throw failure;
         }
         return { id: 'recovered', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };

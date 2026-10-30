@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { ResponsesWS } from 'openai/resources/responses/ws';
 import { getWebSocketEventPayload } from 'openai/resources/responses/ws-base';
-import type { ResponsesOutputProjection } from '#/kosong/contract/responsesTransport';
+import type { ResponsesOutputProjection, ResponsesTransportDiagnostics } from '#/kosong/contract/responsesTransport';
 
 import { createAbortError } from '#/kosong/contract/errors';
 
@@ -631,9 +631,22 @@ export class ResponsesWebSocketTransport {
   private readonly _nativeOutput = new WeakMap<object, readonly unknown[]>();
   private readonly _expiredSockets = new WeakSet<ResponsesWS>();
   private _interruptionGeneration = 0;
+  private _capabilitiesAdvertised = false;
+  private _closedDiagnostics: ResponsesTransportDiagnostics | undefined;
 
   get capabilities(): ResponsesWebSocketCapabilities | undefined {
     return this._capabilities;
+  }
+
+  diagnostics(): ResponsesTransportDiagnostics {
+    if (this._socket === null && this._closedDiagnostics !== undefined) return this._closedDiagnostics;
+    return {
+      transport: 'ws',
+      webSocketCapabilities: this._capabilitiesAdvertised,
+      webSocketCapabilityVersion: this._capabilities?.version ?? null,
+      webSocketConnectionAgeMs: this._connectedAt === undefined ? null
+        : Math.min(Number.MAX_SAFE_INTEGER, Number((process.hrtime.bigint() - this._connectedAt) / 1_000_000n)),
+    };
   }
 
   close(): void {
@@ -858,6 +871,8 @@ export class ResponsesWebSocketTransport {
     this._socket = socket;
     this._socketKey = connectionKey;
     this._capabilities = undefined;
+    this._capabilitiesAdvertised = false;
+    this._closedDiagnostics = undefined;
     let upgradeHeaders: unknown;
     const platformSocket = socket.socket.platformSocket as unknown as {
       on?: (event: string, listener: (response: unknown) => void) => void;
@@ -902,13 +917,13 @@ export class ResponsesWebSocketTransport {
         }
         if (record.type !== 'open') continue;
 
-        const capabilities = parseCapabilities(
-          readHeaderValue(upgradeHeaders, CAPABILITIES_HEADER) ??
-            readHeaderValue(handshakeHeaders(socket), CAPABILITIES_HEADER),
-        );
+        const capabilityHeader = readHeaderValue(upgradeHeaders, CAPABILITIES_HEADER) ??
+          readHeaderValue(handshakeHeaders(socket), CAPABILITIES_HEADER);
+        this._connectedAt = process.hrtime.bigint();
+        this._capabilitiesAdvertised = capabilityHeader !== undefined && capabilityHeader.trim().length > 0;
+        const capabilities = parseCapabilities(capabilityHeader);
         this._capabilities = capabilities;
         this._socketKey = connectionKey;
-        this._connectedAt = process.hrtime.bigint();
         this._armConnectionLifetime(socket, capabilities);
         return { socket, stream, interruptionGeneration: this._interruptionGeneration };
       }
@@ -1242,6 +1257,7 @@ export class ResponsesWebSocketTransport {
   private _closeCurrent(expected?: ResponsesWS): void {
     const socket = this._socket;
     if (socket === null || (expected !== undefined && socket !== expected)) return;
+    this._closedDiagnostics = this.diagnostics();
     this._socket = null;
     this._socketKey = undefined;
     this._connectedAt = undefined;

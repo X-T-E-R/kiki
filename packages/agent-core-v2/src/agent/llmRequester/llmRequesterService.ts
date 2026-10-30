@@ -52,7 +52,8 @@ import {
 } from '#/kosong/contract/errors';
 import { isContentPart, isVacuousContentPart, isToolCall, type Message, type StreamedMessagePart } from '#/kosong/contract/message';
 import { readGenerateFailureUsage } from '#/kosong/contract/generate';
-import type { ResponsesRequestTransport } from '#/kosong/contract/responsesTransport';
+import type { ResponsesRequestTransport, ResponsesTransportDiagnostics } from '#/kosong/contract/responsesTransport';
+import { safeResponsesTransportDiagnostics } from '#/kosong/contract/streamDiagnostics';
 import { type ThinkingEffort } from '#/kosong/contract/provider';
 import { type Tool } from '#/kosong/contract/tool';
 import { emptyUsage, inputTotal, type TokenUsage } from '#/kosong/contract/usage';
@@ -176,6 +177,20 @@ function hasExplicitRetryVeto(error: unknown): boolean {
     current = current instanceof Error ? current.cause : undefined;
   }
   return false;
+}
+
+function responseTransportLogFields(error: unknown): Partial<ResponsesTransportDiagnostics> {
+  const visited = new Set<object>();
+  let current = error;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    const details = readAttachedErrorDetails(current)?.['responsesTransport'] ??
+      (current instanceof Error2 ? current.details?.['responsesTransport'] : undefined);
+    const diagnostics = safeResponsesTransportDiagnostics(details);
+    if (diagnostics !== undefined) return diagnostics;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return {};
 }
 
 interface RequestIdentityAttemptContext {
@@ -485,6 +500,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       ...logFieldsForSource(overrides.source),
       model: this.profile.data().modelAlias ?? 'unknown',
       ...retryErrorFields(error),
+      ...responseTransportLogFields(error),
     };
     this.log.warn('llm request failed', payload);
   }
@@ -772,7 +788,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
             attachErrorDetails(raw, details);
             this.log.warn('upstream interruption retry exhausted', {
               ...request.logFields, model: request.modelAlias, attempt: interruptionAttempt,
-              maxAttempts, discardedPartialOutput, ...retryErrorFields(raw),
+              maxAttempts, discardedPartialOutput, ...retryErrorFields(raw), ...responseTransportLogFields(error),
             });
             throw error;
           }
@@ -782,7 +798,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           const errorMessage = `Upstream interrupted; retrying and discarding partial output. ${fields.errorMessage}`;
           this.log.warn('upstream interrupted; retrying and discarding partial output', {
             ...request.logFields, model: request.modelAlias, attempt: interruptionAttempt,
-            maxAttempts, delayMs, discardedPartialOutput, ...fields,
+            maxAttempts, delayMs, discardedPartialOutput, ...fields, ...responseTransportLogFields(error),
           });
           void this.dispatcher.dispatch(new TurnStepRetrying({
             turnId: source.turnId, step: source.step ?? 1,
@@ -827,6 +843,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
           attempt: infiniteRetryAttempt,
           delayMs,
           ...retryErrorFields(error),
+          ...responseTransportLogFields(error),
         });
         onAttemptRetry?.();
         await refreshIdentityParams();

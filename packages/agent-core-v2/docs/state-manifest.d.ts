@@ -2539,6 +2539,12 @@ export interface AgentStateSnapshot {
         readonly onResponseHeaders?: (headers: Headers) => void;
       };
       readonly responsesTransport?: /* ResponsesRequestTransport — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
+        diagnostics?: () => /* ResponsesTransportDiagnostics — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
+          readonly transport: 'ws' | 'sse';
+          readonly webSocketCapabilities: boolean | null;
+          readonly webSocketCapabilityVersion: 2 | 1 | null;
+          readonly webSocketConnectionAgeMs: number | null;
+        };
         request: (params: Record<string, unknown>, options: {
           baseUrl: string;
           apiKey: string;

@@ -1,5 +1,6 @@
 import { attachErrorDetails } from '#/_base/errors/errors';
 import { readProviderErrorIdentifier } from './errors';
+import type { ResponsesTransportDiagnostics } from './responsesTransport';
 
 export type StreamEndSource = 'in_progress' | 'terminal' | 'event_error' | 'sdk_error' | 'local_error' | 'cancelled' | 'eof';
 
@@ -71,6 +72,20 @@ export function safeStreamDiagnostics(value: unknown): StreamDiagnostics | undef
   };
 }
 
+export function safeResponsesTransportDiagnostics(value: unknown): ResponsesTransportDiagnostics | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const source = value as Record<string, unknown>;
+  const transport = source['transport'];
+  const capabilities = source['webSocketCapabilities'];
+  const version = source['webSocketCapabilityVersion'];
+  const age = source['webSocketConnectionAgeMs'];
+  if (transport !== 'ws' && transport !== 'sse') return undefined;
+  if (capabilities !== null && typeof capabilities !== 'boolean') return undefined;
+  if (version !== null && version !== 1 && version !== 2) return undefined;
+  if (age !== null && !isCount(age)) return undefined;
+  return { transport, webSocketCapabilities: capabilities, webSocketCapabilityVersion: version, webSocketConnectionAgeMs: age };
+}
+
 /** Projects provider failure metadata for consumers such as room wake records. Input is ErrorPayload.details. */
 export function safeProviderFailureDetails(value: unknown): Readonly<Record<string, unknown>> {
   if (typeof value !== 'object' || value === null) return {};
@@ -86,6 +101,8 @@ export function safeProviderFailureDetails(value: unknown): Readonly<Record<stri
   }
   const diagnostics = safeStreamDiagnostics(source['streamDiagnostics']);
   if (diagnostics !== undefined) result['streamDiagnostics'] = diagnostics;
+  const transport = safeResponsesTransportDiagnostics(source['responsesTransport']);
+  if (transport !== undefined) result['responsesTransport'] = transport;
   return result;
 }
 
