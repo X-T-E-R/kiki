@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { TurnStepStarted } from '#/agent/loop/turnEvents';
+import { TaskRestorationSettled } from '#/agent/task/taskOps';
 
 import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
@@ -291,7 +293,7 @@ describe('ISessionActivityView (Session scope aggregate of agent activity + inte
     expect(view.state().lastTurnReason).toBeUndefined();
   });
 
-  it('fires background when live background work changes without a turn', () => {
+  it('fires background when live background work changes without a turn', async () => {
     const main = lifecycle.addAgent(MAIN_AGENT_ID);
     const { changes } = viewWithChanges();
 
@@ -300,6 +302,7 @@ describe('ISessionActivityView (Session scope aggregate of agent activity + inte
       background: [{ kind: 'task', id: 't1', since: 0 }],
     };
     main.emitActivity();
+    await Promise.resolve();
 
     expect(changes).toEqual([
       {
@@ -461,5 +464,59 @@ describe('ISessionActivityView (Session scope aggregate of agent activity + inte
     main.emitActivity();
     expect(view.state().busy).toBe(false);
     expect(changes.filter((change) => !change.state.busy)).toHaveLength(1);
+  });
+
+  it('coalesces a task and step burst across 900 live agents without rescanning the roster', async () => {
+    const taskReads = vi.fn(() => false);
+    const taskList = vi.fn(() => []);
+    const handles = Array.from({ length: 900 }, (_, index) => lifecycle.addAgent(`burst-${index}`, new Map([
+      [IAgentTaskService, { hasUnfinishedWork: taskReads, list: taskList }],
+    ])));
+    const { view } = viewWithChanges();
+    await Promise.resolve();
+    const roster = vi.spyOn(lifecycle, 'list');
+    const aggregates = vi.spyOn(SessionActivityView.prototype as unknown as { aggregate(): unknown }, 'aggregate');
+    taskReads.mockClear();
+    taskList.mockClear();
+    const started = performance.now();
+    for (const handle of handles) {
+      handle.bus.publish(new TurnStepStarted({ turnId: 1, step: 1 }));
+      handle.bus.publish(new TaskRestorationSettled({}));
+    }
+    await Promise.resolve();
+    const elapsed = performance.now() - started;
+    console.log(JSON.stringify({ agents: 900, events: 1800, rosterScans: roster.mock.calls.length,
+      aggregates: aggregates.mock.calls.length, taskReads: taskReads.mock.calls.length, taskLists: taskList.mock.calls.length, elapsedMs: elapsed }));
+    expect(view.state().busy).toBe(false);
+    expect(roster).not.toHaveBeenCalled();
+    expect(aggregates).toHaveBeenCalledTimes(1);
+    expect(taskReads).toHaveBeenCalledTimes(900);
+    expect(taskList).toHaveBeenCalledTimes(900);
+    aggregates.mockRestore();
+  });
+
+  it('refreshes only the dirty agent before a read and ignores its queued invalidation after removal', async () => {
+    const changed = disposables.add(new Emitter<void>());
+    let unfinished = false;
+    const tasks = { hasUnfinishedWork: vi.fn(() => unfinished), list: vi.fn(() => []), onDidChangeWork: changed.event };
+    lifecycle.addAgent('delivery', new Map([[IAgentTaskService, tasks]]));
+    const { view } = viewWithChanges();
+    const roster = vi.spyOn(lifecycle, 'list');
+    tasks.hasUnfinishedWork.mockClear();
+    unfinished = true;
+    for (let event = 0; event < 100; event++) changed.fire();
+    expect(view.state().busy).toBe(true);
+    expect(tasks.hasUnfinishedWork).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    expect(tasks.hasUnfinishedWork).toHaveBeenCalledTimes(1);
+    unfinished = false;
+    changed.fire();
+    expect(view.state().busy).toBe(false);
+    unfinished = true;
+    changed.fire();
+    lifecycle.removeAgent('delivery');
+    await Promise.resolve();
+    expect(view.state().busy).toBe(false);
+    expect(roster).not.toHaveBeenCalled();
   });
 });

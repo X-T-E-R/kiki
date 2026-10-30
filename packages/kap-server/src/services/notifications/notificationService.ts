@@ -2,9 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import {
   ConfigTarget, IConfigService, ISessionManager, ISessionActivityView,
-  ISessionInteractionService, IAgentLifecycleService, IAgentPromptService,
-  IInstantiationService, IAgentTaskService, IAgentLoopService, IAgentActivityView, IEventBus, IAgentExecutionService, IAgentGoalService,
-  type Scope, type ISessionScopeHandle, type IAgentScopeHandle, type UserMessageChannel, type UserMessageInput,
+  ISessionInteractionService, IInstantiationService,
+  type Scope, type ISessionScopeHandle, type UserMessageChannel, type UserMessageInput,
   type PluginImCapabilities, type PluginImRoute, type PluginImSendReceipt, type PluginImSendRequest,
 } from '@kiki/agent-core-v2';
 import {
@@ -31,8 +30,7 @@ type Watched = {
   questions: Map<string, { timer: ReturnType<typeof setTimeout>; deliveries: string[] }>;
   completion?: ReturnType<typeof setTimeout>;
   completed?: { session_id: string; episode_id: string; completed_at: number };
-  agents: Set<string>;
-  reconcileQueued?: boolean;
+  activity: ISessionActivityView;
 };
 
 const fields = (id: string): NotificationProviderDescriptor['instance_fields'] => {
@@ -432,7 +430,7 @@ export class NotificationService {
     const activity = session.accessor.get(ISessionActivityView);
     const interactions = session.accessor.get(ISessionInteractionService);
     const state: Watched = { session, subscriptions: [], startedAt: activity.state().mainTurnActive ? Date.now() : undefined,
-      cycle: randomUUID(), questions: new Map(), agents: new Set() };
+      cycle: randomUUID(), questions: new Map(), activity };
     this.watched.set(session.id, state);
     state.subscriptions.push(session.accessor.get(IInstantiationService).onWillDispose(() => {
       this.retired.add(session);
@@ -441,56 +439,12 @@ export class NotificationService {
     state.subscriptions.push(activity.onDidChange(() => { this.reconcileSession(state); }));
     state.subscriptions.push(interactions.onDidChangePending(() => { this.reconcileSession(state); }));
     state.subscriptions.push(interactions.onDidResolve(({ id }) => { this.cancelQuestion(state, id); }));
-    const agents = session.accessor.get(IAgentLifecycleService);
-    const attach = (agent: IAgentScopeHandle) => {
-      if (state.agents.has(agent.id)) return;
-      state.agents.add(agent.id);
-      state.subscriptions.push(agent.accessor.get(IEventBus).subscribe((event) => {
-        if (!/^(turn\.|task\.|prompt\.|compaction\.|goal\.)/u.test(event.type)) return;
-        this.queueReconcile(state);
-        if (event.type === 'turn.ended') void Promise.all([
-          agent.accessor.get(IAgentLoopService).settled(),
-          agent.accessor.get(IAgentExecutionService).settled(),
-        ]).then(() => { this.queueReconcile(state); }, this.onError);
-      }));
-    };
-    for (const agent of agents.list()) attach(agent);
-    state.subscriptions.push(agents.onDidCreate(attach));
-    state.subscriptions.push(agents.onDidDispose((id) => {
-      state.agents.delete(id);
-      this.queueReconcile(state);
-    }));
     this.reconcileSession(state);
   }
-  private queueReconcile(state: Watched): void {
-    if (state.reconcileQueued) return;
-    state.reconcileQueued = true;
-    queueMicrotask(() => {
-      state.reconcileQueued = false;
-      if (this.watched.get(state.session.id) === state && !this.stopped) this.reconcileSession(state);
-    });
-  }
-  private workPending(state: Watched): boolean {
-    for (const agent of state.session.accessor.get(IAgentLifecycleService).list()) {
-      const loop = agent.accessor.get(IAgentLoopService).status();
-      const prompt = agent.accessor.get(IAgentPromptService);
-      const queue = prompt.list();
-      const activity = agent.accessor.get(IAgentActivityView).state();
-      const execution = agent.accessor.get(IAgentExecutionService).status();
-      if (execution.state === 'starting' || execution.state === 'running' || execution.state === 'cancelling' ||
-        loop.state === 'running' || loop.finalizing || loop.persistenceFailure || loop.hasPendingRequests ||
-        loop.pendingTurnIds.length > 0 || prompt.hasReadyPending() || queue.active !== undefined ||
-        queue.launching !== undefined || queue.pending.length > 0 ||
-        activity.turn !== undefined || activity.background.some((item) => item.kind === 'compaction') ||
-        agent.accessor.get(IAgentTaskService).hasUnfinishedWork() ||
-        (agent.id === 'main' && agent.accessor.get(IAgentGoalService).getGoal().goal?.status === 'active')) return true;
-    }
-    return false;
-  }
   private completeReady(state: Watched): boolean {
-    const activity = state.session.accessor.get(ISessionActivityView).state();
-    return !activity.mainTurnActive && activity.pendingInteraction === 'none' &&
-      activity.lastTurnReason === 'completed' && !this.workPending(state);
+    const activity = state.activity.state();
+    return !activity.busy && !activity.mainTurnActive && activity.pendingInteraction === 'none' &&
+      activity.lastTurnReason === 'completed';
   }
   listCompletions(): readonly { session_id: string; episode_id: string; completed_at: number }[] {
     return [...this.watched.values()].flatMap((state) => state.completed !== undefined &&
@@ -509,7 +463,7 @@ export class NotificationService {
     for (const state of this.watched.values()) this.reconcileSession(state);
   }
   private reconcileSession(state: Watched): void {
-    const activity = state.session.accessor.get(ISessionActivityView).state();
+    const activity = state.activity.state();
     const interaction = state.session.accessor.get(ISessionInteractionService);
     const pending = interaction.listPending('question');
     for (const question of pending) if (!state.questions.has(question.id)) {

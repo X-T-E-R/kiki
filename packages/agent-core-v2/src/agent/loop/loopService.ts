@@ -130,6 +130,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
   private readonly persistenceChanged = this._register(new Emitter<void>());
   readonly onDidChangePersistence = this.persistenceChanged.event;
+  private readonly workChanged = this._register(new Emitter<void>());
+  readonly onDidChangeWork = this.workChanged.event;
 
   private readonly standaloneStepQueue = new StepRequestQueue();
   private readonly pendingAssignments = new Map<StepRequest, ReturnType<typeof createControlledPromise<import('./loop').StepAssignment>>>();
@@ -241,9 +243,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     } else {
       this.admit(request, options);
     }
+    this.workChanged.fire();
     return {
       assigned: assignment,
-      abort: (reason) => this.abortRequest(request, reason),
+      abort: (reason) => {
+        const aborted = this.abortRequest(request, reason);
+        this.workChanged.fire();
+        return aborted;
+      },
     };
   }
 

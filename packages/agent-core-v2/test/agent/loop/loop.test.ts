@@ -86,6 +86,19 @@ describe('Agent loop', () => {
     expect(settled).toBe(true);
   });
 
+  it('invalidates work after standalone admission and cancellation without a turn event', () => {
+    const snapshots: boolean[] = [];
+    const subscription = loop.onDidChangeWork!(() => snapshots.push(loop.status().hasPendingRequests));
+    try {
+      const receipt = loop.enqueue(new MessageStepRequest({ role: 'user', content: [], toolCalls: [] }));
+      expect(snapshots).toEqual([true]);
+      receipt.abort();
+      expect(snapshots).toEqual([true, false]);
+    } finally {
+      subscription.dispose();
+    }
+  });
+
   it('preserves standalone steps for a prepared turn without relaxing history quiescence', async () => {
     ctx.mockNextResponse({ type: 'text', text: 'prepared turn' });
     ctx.mockNextResponse({ type: 'text', text: 'standalone step' });

@@ -3,6 +3,7 @@ import type { Hooks } from '#/hooks';
 import type { TaskOrigin } from '#/agent/contextMemory/types';
 import type { ITaskHandle } from '#/app/task/task';
 import type { IDisposable } from '#/_base/di/lifecycle';
+import type { Event } from '#/_base/event';
 import type { MediaTaskInfo } from './types';
 import type {
   AgentTask,
@@ -100,6 +101,8 @@ export interface AgentTaskNotificationDeliveryContext {
 export interface IAgentTaskService {
   readonly _serviceBrand: undefined;
   readonly hooks: Hooks<{ onWillConsumeNotification: AgentTaskNotificationDeliveryContext }>;
+  /** Invalidates work facts after task execution, restoration or terminal-delivery state changes. */
+  readonly onDidChangeWork?: Event<void>;
 
   track(handle: ITaskHandle, options: AgentTaskTrackOptions): IAgentTaskEntry;
   allocateTaskId?(idPrefix: string): string;

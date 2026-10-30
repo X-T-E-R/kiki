@@ -74,21 +74,15 @@ describe('notification coordinator', () => {
     let heldPrompt = false;
     let executionState = 'idle';
     let goalActive = false;
-    const main = { id: 'main', accessor: { get: (key: unknown) => {
-      if (key === IEventBus) return { subscribe: events.on };
-      if (key === IAgentLoopService) return { status: () => loop, settled: async () => {} };
-      if (key === IAgentExecutionService) return { status: () => ({ state: executionState }), settled: async () => {} };
-      if (key === IAgentPromptService) return { hasReadyPending: () => readyPrompt, list: () => ({ pending: heldPrompt ? [{}] : [] }) };
-      if (key === IAgentTaskService) return { hasUnfinishedWork: () => unfinished };
-      if (key === IAgentGoalService) return { getGoal: () => ({ goal: goalActive ? { status: 'active' } : null }) };
-      if (key === IAgentActivityView) return { state: () => ({ background: [] }) };
-      throw new Error('unexpected_agent_service');
-    } } };
+    const roster = vi.fn(() => { throw new Error('notification_roster_scan'); });
+    const activityView = { state: () => ({ ...activity, busy: activity.busy || unfinished || readyPrompt || heldPrompt ||
+      loop.state === 'running' || loop.finalizing || loop.hasPendingRequests || executionState === 'running' || goalActive }), onDidChange: work.on };
+    events.on(() => { work.fire({}); });
     const session = { id: 'work-chain', accessor: { get: (key: unknown) => {
       if (key === IInstantiationService) return { onWillDispose: noEvent.on };
-      if (key === ISessionActivityView) return { state: () => activity, onDidChange: work.on };
+      if (key === ISessionActivityView) return activityView;
       if (key === ISessionInteractionService) return { listPending: () => [], onDidChangePending: noEvent.on, onDidResolve: noEvent.on };
-      if (key === IAgentLifecycleService) return { list: () => [main], onDidCreate: noEvent.on, onDidDispose: noEvent.on };
+      if (key === IAgentLifecycleService) return { list: roster };
       throw new Error('unexpected_session_service');
     } } };
     const core = { accessor: { get: (key: unknown) => {
@@ -172,8 +166,13 @@ describe('notification coordinator', () => {
       expect(service.listCompletions()).toEqual([]);
       goalActive = false;
       events.fire({ type: 'goal.updated' });
-      activity.busy = true;
+      activity.busy = false;
       await vi.advanceTimersByTimeAsync(120);
+      for (let poll = 0; poll < 100; poll++) {
+        const response = await app.inject({ method: 'GET', url: '/notifications/completions' });
+        expect(response.json().data).toHaveLength(1);
+      }
+      expect(roster).not.toHaveBeenCalled();
       expect(service.listCompletions()).toHaveLength(1);
       expect(service.listDeliveries()).toHaveLength(1);
       expect(service.listDeliveries()[0]?.channel_id).toBe('enabled');

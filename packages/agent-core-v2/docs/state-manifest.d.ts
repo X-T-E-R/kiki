@@ -539,6 +539,7 @@ export interface SessionStateSnapshot {
   'sessionActivity.folds': Map<string, /* AgentWorkFold — packages/agent-core-v2/src/session/sessionActivity/sessionActivityService.ts */ {
     turnActive: boolean;
     background: number;
+    compacting: boolean;
     lastTurnReason?: 'completed' | 'cancelled' | 'failed';
   }>;
   // src/session/sessionLog/sessionLogService.ts

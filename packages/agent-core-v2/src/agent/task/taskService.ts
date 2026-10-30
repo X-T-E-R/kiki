@@ -7,6 +7,7 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import type { ContentPart } from '#/kosong/contract/message';
 
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
+import { Emitter } from '#/_base/event';
 import type { MediaTaskInfo } from './types';
 import { ILogService } from '#/_base/log/log';
 import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
@@ -279,6 +280,8 @@ export const taskActiveTaskReminderPendingKey = defineState<boolean>(
 export class AgentTaskService extends Disposable implements IAgentTaskService {
   declare readonly _serviceBrand: undefined;
   readonly hooks = { onWillConsumeNotification: new OrderedHookSlot<AgentTaskNotificationDeliveryContext>() };
+  private readonly _onDidChangeWork = this._register(new Emitter<void>());
+  readonly onDidChangeWork = this._onDidChangeWork.event;
 
   private readonly tasks = new Map<string, ManagedTask>();
   private readonly localTaskIds = new Set<string>();
@@ -299,6 +302,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private restoreRecovery: Promise<void> | undefined;
   private restoreDisposed = false;
   private restorePending = false;
+
+  private fireWorkChange(): void {
+    this._onDidChangeWork.fire();
+  }
 
   registerMediaRecovery(handler: (info: MediaTaskInfo) => Promise<AgentTask | undefined>) {
     if (this.mediaRecovery !== undefined) throw new Error('Media task recovery is already registered');
@@ -352,9 +359,14 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     );
     this._register(
       this.dispatcher.hooks.onDidRestore.register('task', async (_ctx, next) => {
+        let rebuilt = false;
         for (const key of this.states.get(taskNotificationDeliveryKey)) {
-          this.deliveredNotificationKeys.add(taskIdFromNotificationKey(key));
+          const taskId = taskIdFromNotificationKey(key);
+          if (this.deliveredNotificationKeys.has(taskId)) continue;
+          this.deliveredNotificationKeys.add(taskId);
+          rebuilt = true;
         }
+        if (rebuilt) this.fireWorkChange();
         await this.restoreAfterReplay();
         await next();
       }),
@@ -376,6 +388,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       if (pending !== undefined) {
         this.pendingWaitDeliveries.delete(toolCallId);
         pending.cleanup();
+        this.fireWorkChange();
         if (isError !== true) {
           await this.dispatcher.flush();
           await this.deliverTasksViaWait(pending.tasks);
@@ -413,6 +426,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private async restoreAfterReplay(): Promise<void> {
     this.restoreGhostsFromWire();
     this.restorePending = true;
+    this.fireWorkChange();
   }
 
   resumeRestoration(): Promise<void> {
@@ -426,6 +440,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       await timeRestorePhase(this.log, context, 'task_reconcile', () => this.reconcile());
     })().finally(() => {
       this.restorePending = false;
+      this.fireWorkChange();
       if (!this.restoreDisposed) this.eventBus.publish(new TaskRestorationSettled({}));
     });
     return this.restoreRecovery;
@@ -489,6 +504,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     this.localTaskIds.add(entry.taskId);
     this.cachedOutputs.delete(entry.taskId);
     this.ghosts.delete(entry.taskId);
+    this.fireWorkChange();
 
     if (timeoutMs !== undefined && timeoutMs > 0) {
       this.armManagerTimeout(entry, timeoutMs);
@@ -562,6 +578,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const entry = this.tasks.get(taskId);
     if (entry === undefined || entry.visible) return;
     entry.visible = true;
+    this.fireWorkChange();
     if (this.isDetached(entry)) {
       this.startOutputPersist(entry);
       if (!TERMINAL_STATUSES.has(entry.status)) void this.persistLive(entry);
@@ -580,10 +597,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   async rollbackTaskRegistration(taskId: string, reason?: unknown): Promise<void> {
     const entry = this.tasks.get(taskId);
     const cached = this.cachedOutputs.get(taskId);
-    this.localTaskIds.delete(taskId);
+    const removedLocal = this.localTaskIds.delete(taskId);
     this.cachedOutputs.delete(taskId);
-    this.tasks.delete(taskId);
-    this.ghosts.delete(taskId);
+    const removedTask = this.tasks.delete(taskId);
+    const removedGhost = this.ghosts.delete(taskId);
+    if (removedLocal || removedTask || removedGhost) this.fireWorkChange();
     if (entry !== undefined) {
       entry.status = 'killed';
       entry.endedAt = Date.now();
@@ -650,6 +668,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     this.localTaskIds.add(taskId);
     this.cachedOutputs.delete(taskId);
     this.ghosts.delete(taskId);
+    this.fireWorkChange();
 
     if (timeoutMs !== undefined && timeoutMs > 0) {
       this.armManagerTimeout(entry, timeoutMs);
@@ -751,6 +770,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private async reconcileNotificationDeliveryAfterUndo(): Promise<void> {
     this.notificationUndoGeneration += 1;
     this.buildingNotificationKeys.clear();
+    this.fireWorkChange();
     const restoredKeys = new Set(this.states.get(taskNotificationDeliveryKey).map(taskIdFromNotificationKey));
     for (const [key, request] of this.pendingNotificationRequests) {
       if (request.aborted || restoredKeys.has(key)) {
@@ -760,6 +780,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     }
     this.deliveredNotificationKeys.clear();
     for (const key of restoredKeys) this.deliveredNotificationKeys.add(key);
+    this.fireWorkChange();
     for (const key of this.scheduledNotificationKeys) {
       if (restoredKeys.has(key) || !this.pendingNotificationRequests.has(key)) {
         this.scheduledNotificationKeys.delete(key);
@@ -776,22 +797,32 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   async loadFromDisk(options: AgentTaskLoadOptions = {}): Promise<void> {
     const persistence = this.persistence;
+    let changed = false;
     if (options.replace !== false) {
       for (const taskId of this.ghosts.keys()) {
-        if (!this.localTaskIds.has(taskId)) this.ghosts.delete(taskId);
+        if (!this.localTaskIds.has(taskId) && this.ghosts.delete(taskId)) changed = true;
       }
     }
     const tasks = await persistence.listTasks();
-    if (this.restoreDisposed) return;
+    if (this.restoreDisposed) {
+      if (changed) this.fireWorkChange();
+      return;
+    }
     for (const task of tasks) {
       if (this.localTaskIds.has(task.taskId)) continue;
       const existing = this.ghosts.get(task.taskId);
       if (existing !== undefined) {
-        this.ghosts.set(task.taskId, newerRestoredTask(existing, task));
+        const restored = newerRestoredTask(existing, task);
+        if (restored !== existing) {
+          this.ghosts.set(task.taskId, restored);
+          changed = true;
+        }
         continue;
       }
       this.ghosts.set(task.taskId, task);
+      changed = true;
     }
+    if (changed) this.fireWorkChange();
   }
 
   async reconcile(): Promise<readonly AgentTaskInfo[]> {
@@ -895,6 +926,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (entry !== undefined) {
       if (entry.terminalNotificationSuppressed === true) return;
       entry.terminalNotificationSuppressed = true;
+      this.fireWorkChange();
       await this.persistLive(entry);
       return;
     }
@@ -903,6 +935,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (!this.localTaskIds.has(taskId) || ghost === undefined || ghost.terminalNotificationSuppressed === true) return;
     const updated = { ...ghost, terminalNotificationSuppressed: true };
     this.ghosts.set(taskId, updated);
+    this.fireWorkChange();
     await this.persistence.writeTask(updated).catch(() => {});
   }
 
@@ -911,6 +944,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     for (const request of Array.from(this.pendingNotificationRequests.values())) {
       request.abort();
     }
+    this.fireWorkChange();
   }
 
   markTasksDeliveredViaWait(tasks: readonly AgentTaskWaitDelivery[], toolCallId?: string, signal?: AbortSignal): void {
@@ -922,11 +956,15 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (toolCallId !== undefined) {
       if (signal?.aborted) return;
       this.pendingWaitDeliveries.get(toolCallId)?.cleanup();
-      const onAbort = (): void => { this.pendingWaitDeliveries.delete(toolCallId); };
+      const onAbort = (): void => {
+        if (!this.pendingWaitDeliveries.delete(toolCallId)) return;
+        this.fireWorkChange();
+      };
       signal?.addEventListener('abort', onAbort, { once: true });
       this.pendingWaitDeliveries.set(toolCallId, {
         tasks, cleanup: () => signal?.removeEventListener('abort', onAbort),
       });
+      this.fireWorkChange();
       return;
     }
     for (const { taskId, status } of tasks) {
@@ -962,6 +1000,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (foregroundRelease === undefined) return this.toInfo(entry);
 
     entry.foregroundRelease = undefined;
+    this.fireWorkChange();
     entry.foregroundSignalCleanup?.();
     entry.foregroundSignalCleanup = undefined;
     this.applyDetachTimeout(entry);
@@ -1174,8 +1213,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   override dispose(): void | Promise<void> {
     this.restoreDisposed = true;
     this.exitSuppressionArmed = true;
+    const hadPendingWaitDeliveries = this.pendingWaitDeliveries.size > 0;
     for (const pending of this.pendingWaitDeliveries.values()) pending.cleanup();
     this.pendingWaitDeliveries.clear();
+    if (hadPendingWaitDeliveries) this.fireWorkChange();
     if (!this.keepAliveOnExit()) {
       for (const entry of this.tasks.values()) {
         if (TERMINAL_STATUSES.has(entry.status)) continue;
@@ -1305,6 +1346,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   private async markLoadedTasksLost(): Promise<readonly AgentTaskInfo[]> {
     const lostTasks: AgentTaskInfo[] = [];
+    let changed = false;
     const persistence = this.persistence;
     const needsOutcome = [...this.ghosts.values()].some((info) =>
       !TERMINAL_STATUSES.has(info.status) && info.kind === 'agent' && info.agentId !== undefined);
@@ -1322,6 +1364,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         const recovered = await this.mediaRecovery(info);
         if (recovered !== undefined) {
           this.registerTask(recovered, { taskId, detached: true });
+          changed = true;
           continue;
         }
       }
@@ -1339,10 +1382,12 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
             const receipt = await persistence.commitTerminalTask(updated, known.finalOutput);
             const committed = { ...updated, receipt, receiptVerification: 'verified' as const };
             this.ghosts.set(taskId, committed);
+            changed = true;
             lostTasks.push(committed);
           } catch (error) {
             this.log.error('known agent outcome receipt persistence failed', { taskId, error });
             this.ghosts.set(taskId, updated);
+            changed = true;
             await persistence.writeTask(updated);
             lostTasks.push(updated);
           }
@@ -1365,14 +1410,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         const receipt = await persistence.commitTerminalTask(updated);
         const committed = { ...updated, receipt, receiptVerification: 'verified' as const };
         this.ghosts.set(taskId, committed);
+        changed = true;
         lostTasks.push(committed);
       } catch (error) {
         this.log.error('lost task receipt persistence failed', { taskId, error });
         this.ghosts.set(taskId, updated);
+        changed = true;
         await persistence.writeTask(updated);
         lostTasks.push(updated);
       }
     }
+    if (changed) this.fireWorkChange();
     return lostTasks;
   }
 
@@ -1554,6 +1602,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       });
     }
     this.tasks.delete(entry.taskId);
+    this.fireWorkChange();
     this.scheduleOutputCacheTrim();
   }
 
@@ -1590,6 +1639,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       settlement.stopReason ?? (settlement.status === 'killed' ? entry.stopReason : undefined);
     entry.foregroundSignalCleanup?.();
     entry.foregroundSignalCleanup = undefined;
+    this.fireWorkChange();
     await entry.handleSubscription?.dispose();
     entry.handleSubscription = undefined;
     if (entry.timeoutHandle !== undefined) {
@@ -1599,6 +1649,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const foregroundRelease = entry.foregroundRelease;
     if (this.marksTerminalNotificationSuppressed(entry)) {
       entry.terminalNotificationSuppressed = true;
+      this.fireWorkChange();
     }
     if (entry.visible && (this.isDetached(entry) || entry.outputPersistStarted ||
       (entry.finalOutput !== undefined && Buffer.byteLength(entry.finalOutput, 'utf-8') > MAX_OUTPUT_BYTES))) {
@@ -1691,6 +1742,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       () => this.notificationAdmission(info),
     );
     this.pendingNotificationRequests.set(key, request);
+    this.fireWorkChange();
     try {
       const receipt = this.loop.enqueue(request);
       void receipt.assigned
@@ -1751,6 +1803,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       this.pendingNotificationRequests.delete(key);
       this.scheduledNotificationKeys.delete(key);
       this.deliveredNotificationKeys.add(key);
+      this.fireWorkChange();
       request.deliverAfterCommit();
     }
   }
@@ -1832,6 +1885,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (this.deliveredNotificationKeys.has(key)) return undefined;
     if (this.hasDeliveredNotification(key)) return undefined;
     this.buildingNotificationKeys.add(key);
+    this.fireWorkChange();
     try {
       let output = emptyOutputSnapshot();
       try {
@@ -1870,7 +1924,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       };
       return { content: renderContent({}), renderContent, origin, notification };
     } finally {
-      if (generation === this.notificationUndoGeneration) this.buildingNotificationKeys.delete(key);
+      if (generation === this.notificationUndoGeneration) {
+        this.buildingNotificationKeys.delete(key);
+        this.fireWorkChange();
+      }
     }
   }
 
@@ -1911,6 +1968,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     this.scheduledNotificationKeys.delete(key);
     this.pendingNotificationRequests.delete(key);
     this.deliveredNotificationKeys.add(key);
+    this.fireWorkChange();
   }
 
   private clearPendingNotification(key: string, request: TaskNotificationStepRequest): void {
@@ -1919,6 +1977,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (!this.deliveredNotificationKeys.has(key) && !this.hasDeliveredNotification(key)) {
       this.scheduledNotificationKeys.delete(key);
     }
+    this.fireWorkChange();
   }
 
   private hasDeliveredNotification(key: string): boolean {

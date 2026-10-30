@@ -190,6 +190,8 @@ describe('AgentTaskService', () => {
 
   it('unfinished work excludes resident services but includes terminal results until delivered', async () => {
     const svc = ix.get(IAgentTaskService);
+    const workStates: boolean[] = [];
+    svc.onDidChangeWork?.(() => workStates.push(svc.hasUnfinishedWork()));
     let settle!: Parameters<AgentTask['start']>[0]['settle'];
     const finite = svc.registerTask({ ...fakeProcessTask(), start: (sink) => { settle = sink.settle; } });
     const resident = svc.registerTask(fakeProcessTask(), { lifetime: 'service' });
@@ -197,6 +199,7 @@ describe('AgentTaskService', () => {
     expect(svc.hasUnfinishedWork()).toBe(true);
     await settle({ status: 'completed' });
     expect(svc.hasUnfinishedWork()).toBe(true);
+    expect(workStates.at(-1)).toBe(true);
     const loop = ix.get(IAgentLoopService) as StubLoop;
     await vi.waitFor(() => { expect(loop.queue.hasPendingRequests()).toBe(true); });
     loop.drainNextBatch(ix.get(IAgentContextMemoryService));
@@ -204,8 +207,33 @@ describe('AgentTaskService', () => {
     await ix.get(IEventDispatcher).flush();
     expect(svc.getTask(finite)?.status).toBe('completed');
     expect(svc.hasUnfinishedWork()).toBe(false);
+    expect(workStates.at(-1)).toBe(false);
     await svc.suppressTerminalNotification(resident);
     await svc.stop(resident);
+  });
+
+  it('invalidates work after foreground and invisible registration, and after rollback', async () => {
+    const svc = ix.get(IAgentTaskService);
+    const snapshots: Array<{ taskIds: string[]; unfinished: boolean }> = [];
+    disposables.add(svc.onDidChangeWork!(() => snapshots.push({
+      taskIds: svc.list(false).map((info) => info.taskId),
+      unfinished: svc.hasUnfinishedWork(),
+    })));
+
+    const foregroundId = svc.registerTask(fakeProcessTask(), { detached: false });
+    expect(snapshots.at(-1)).toEqual({ taskIds: [foregroundId], unfinished: true });
+
+    const invisibleId = svc.registerTask(fakeProcessTask(), { deferVisibility: true });
+    expect(svc.getTask(invisibleId)).toBeUndefined();
+    expect(snapshots.at(-1)).toEqual({ taskIds: [foregroundId], unfinished: true });
+
+    await svc.rollbackTaskRegistration!(invisibleId);
+    expect(snapshots.at(-1)).toEqual({ taskIds: [foregroundId], unfinished: true });
+
+    const eventCount = snapshots.length;
+    svc.commitTaskRegistration!(foregroundId);
+    expect(snapshots).toHaveLength(eventCount);
+    await svc.stop(foregroundId);
   });
 
   it('registerTask / list / readOutput / stop', async () => {
@@ -1004,6 +1032,8 @@ describe('AgentTaskService', () => {
 
   it('does not mark a TaskWait delivery until its tool result is appended and flushed', async () => {
     const svc = ix.get(IAgentTaskService);
+    const workStates: boolean[] = [];
+    svc.onDidChangeWork?.(() => workStates.push(svc.hasUnfinishedWork()));
     const taskId = svc.registerTask(outputtingTask('report'));
     await svc.wait(taskId);
     const loop = stubLoop();
@@ -1014,14 +1044,18 @@ describe('AgentTaskService', () => {
     expect(loop.hasPendingRequests()).toBe(true);
     await loop.hooks.onDidAppendToolResult.run({ toolCallId: 'tool-call-1', isError: true });
     expect(ix.get(IAgentStateService).get(taskNotificationDeliveryKey)).not.toContain(deliveryKey);
+    expect(workStates.at(-1)).toBe(true);
     svc.markTasksDeliveredViaWait([{ taskId, status: 'completed' }], 'tool-call-2');
     await loop.hooks.onDidAppendToolResult.run({ toolCallId: 'tool-call-2', isError: false });
     expect(ix.get(IAgentStateService).get(taskNotificationDeliveryKey)).toContain(deliveryKey);
     expect(loop.hasPendingRequests()).toBe(false);
+    expect(workStates.at(-1)).toBe(false);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('markTasksDeliveredViaWait suppresses the automatic terminal notification', async () => {
     const svc = ix.get(IAgentTaskService);
+    const workStates: boolean[] = [];
+    svc.onDidChangeWork?.(() => workStates.push(svc.hasUnfinishedWork()));
     const taskId = svc.registerTask(outputtingTask('done\n'));
     svc.markTasksDeliveredViaWait([{ taskId, status: 'completed' }]);
 
@@ -1037,6 +1071,7 @@ describe('AgentTaskService', () => {
     const states = ix.get(IAgentStateService);
     await waitForCondition(() => states.get(taskNotificationDeliveryKey).length > 0);
     expect(states.get(taskNotificationDeliveryKey)).toContain(deliveryKey);
+    expect(workStates.at(-1)).toBe(false);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('aborts an already-enqueued terminal notification when the task is marked delivered via wait', async () => {
@@ -1081,6 +1116,24 @@ describe('AgentTaskService', () => {
     const delivered = context.messages.filter((message) => message.origin?.kind === 'task');
     expect(delivered.map((message) => (message.origin as TaskOrigin).taskId)).toEqual([taskB]);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('invalidates work after undo rebuilds delivered notification keys', async () => {
+    const svc = ix.get(IAgentTaskService);
+    const taskId = svc.registerTask(outputtingTask('done\n'));
+    await svc.wait(taskId, 1000);
+
+    ix.get(IAgentStateService).set(taskNotificationDeliveryKey, [taskId]);
+    const workStates: boolean[] = [];
+    svc.onDidChangeWork?.(() => workStates.push(svc.hasUnfinishedWork()));
+    expect(svc.hasUnfinishedWork()).toBe(true);
+
+    await (svc as unknown as {
+      reconcileNotificationDeliveryAfterUndo(): Promise<void>;
+    }).reconcileNotificationDeliveryAfterUndo();
+
+    expect(workStates.at(-1)).toBe(false);
+    expect(svc.hasUnfinishedWork()).toBe(false);
+  });
 
   function waitContext(toolCallId: string, args: TaskWaitInput) {
     return { turnId: 0, toolCallId, args, signal: new AbortController().signal };
@@ -1664,6 +1717,8 @@ describe('AgentTaskService', () => {
     const list = vi.spyOn(docs, 'list').mockReturnValue(gate);
     const ix = buildWiredAgentIx('main', docs, new InMemoryStorageService(), stubContextMemory());
     const tasks = ix.get(IAgentTaskService);
+    const workStates: boolean[] = [];
+    tasks.onDidChangeWork?.(() => workStates.push(tasks.hasUnfinishedWork()));
     await ix.get(IEventDispatcher).restore();
     expect(list).not.toHaveBeenCalled();
     expect(tasks.hasUnfinishedWork()).toBe(true);
@@ -1678,6 +1733,7 @@ describe('AgentTaskService', () => {
     release([]);
     await recovery;
     expect(tasks.hasUnfinishedWork()).toBe(false);
+    expect(workStates.at(-1)).toBe(false);
   });
 
   it('rebuilds wait-delivered keys on restore and wakes an idle main once for an undelivered completion', async () => {
@@ -1698,6 +1754,8 @@ describe('AgentTaskService', () => {
     const context2 = stubContextMemory();
     const two = buildWiredAgentIx('main', docs, bytes, context2);
     const restoredTasks = two.get(IAgentTaskService);
+    const workStates: boolean[] = [];
+    restoredTasks.onDidChangeWork?.(() => workStates.push(restoredTasks.hasUnfinishedWork()));
     await two.get(IEventDispatcher).restore();
     await restoredTasks.resumeRestoration?.();
     const restoredLoop = two.get(IAgentLoopService) as StubLoop;
@@ -1712,6 +1770,7 @@ describe('AgentTaskService', () => {
     expect(two.get(IAgentStateService).get(taskNotificationDeliveryKey)).toContain(keyA);
     const redelivered = context2.messages.filter((message) => message.origin?.kind === 'task');
     expect(redelivered.map((message) => (message.origin as TaskOrigin).taskId)).toEqual([taskB]);
+    expect(workStates.at(-1)).toBe(false);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('restore touches only the agent own task records', async () => {

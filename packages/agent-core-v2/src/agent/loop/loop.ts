@@ -174,6 +174,8 @@ export interface IAgentLoopService {
 
   status(): AgentLoopStatus;
   readonly onDidChangePersistence?: Event<void>;
+  /** Invalidates work facts after admission or cancellation changes pending requests. */
+  readonly onDidChangeWork?: Event<void>;
 
   /** Retries the original completion event, never the model turn. Explicit callers can request the original turn's save error instead of a false result. Admission stays held until durable success. */
   recoverPersistence(options?: { readonly throwOnFailure?: boolean }): Promise<boolean>;
