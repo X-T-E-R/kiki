@@ -30,7 +30,6 @@ import {
   type UsageResponseWire,
   type UsageWindow,
 } from '../../lib/usageV2';
-import { SidePanel } from '../SidePanel';
 import { ThreadTitle } from '../ThreadTitle';
 import { SECONDARY_BUTTON } from '../ui';
 import { KnownSubtotalMarker, formatPercent } from './usageShared';
@@ -129,14 +128,17 @@ export function UsageSessionPanel({
   }, [first]);
 
   return (
-    <SidePanel
-      overlayId="usage-session-trace"
-      data={{ 'data-usage-session-panel': 'true' }}
-      title={t('usage.sessions.panelTitle')}
-      description={request.label}
-      onClose={onClose}
-      width="lg"
-    >
+    <section aria-label={t('usage.sessions.panelTitle')} data-usage-session-panel="true" className="space-y-4">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="font-display text-[17px] font-semibold text-ink">{t('usage.sessions.panelTitle')}</h3>
+          <p className="mt-0.5 truncate text-[12.5px] text-ink-faint">{request.label}</p>
+        </div>
+        <button type="button" onClick={onClose}
+          className={`${SECONDARY_BUTTON} shrink-0`}>
+          {t('common.close')}
+        </button>
+      </div>
       <div className="space-y-4">
         {request.filter !== undefined ? (
           <p className="text-[12.5px] leading-relaxed text-ink-faint">
@@ -232,7 +234,7 @@ export function UsageSessionPanel({
           </button>
         ) : null}
       </div>
-    </SidePanel>
+    </section>
   );
 }
 

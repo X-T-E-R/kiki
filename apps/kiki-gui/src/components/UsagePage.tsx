@@ -890,7 +890,22 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   ) !== null;
   const bucketParam = searchParams.get('bucket');
   const [selectedBucketKey, setSelectedBucketKey] = useState<string | null>(bucketParam);
-  const [trace, setTrace] = useState<UsageSessionTraceRequest | undefined>(undefined);
+  const traceParam = searchParams.get('trace');
+  const trace: UsageSessionTraceRequest | undefined = useMemo(() => {
+    if (traceParam === null) return undefined;
+    try {
+      const parsed = JSON.parse(traceParam) as UsageSessionTraceRequest;
+      return parsed;
+    } catch {
+      return undefined;
+    }
+  }, [traceParam]);
+  const setTrace = (next: UsageSessionTraceRequest | undefined) => {
+    const params = new URLSearchParams(location.search);
+    if (next === undefined) params.delete('trace');
+    else params.set('trace', JSON.stringify(next));
+    setSearchParams(params, { replace: true });
+  };
   const sessionParam = searchParams.get('session') ?? undefined;
   const [dismissedLocator, setDismissedLocator] = useState<string | null>(null);
   const sessionLocator = panel === 'history' && sessionParam !== undefined && sessionParam !== dismissedLocator
@@ -1151,12 +1166,18 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
             endAt: Math.min(selectedBucket.end_at, rangeWindow.endAt),
           };
     if (window === null) return;
-    setTrace({
+    // A trace is the same sessions list narrowed to its provenance, so it
+    // opens as the sessions tab's own detail, not as a panel over the page.
+    const request: UsageSessionTraceRequest = {
       window,
       filter: row?.filter ?? undefined,
       label: row === undefined ? sourceScopeLabel : sourceRowLabel(row, groupBy, sourceLookups),
       groupBy,
-    });
+    };
+    const params = new URLSearchParams(location.search);
+    params.set('view', 'sessions');
+    params.set('trace', JSON.stringify(request));
+    setSearchParams(params, { replace: false });
   };
 
   const legacyDimension = filters.advancedDimension;
@@ -1398,13 +1419,15 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
             </>
           ) : null}
           {trace !== undefined ? (
-            <UsageSessionPanel
-              request={trace}
-              baseFilters={filters}
-              timezoneOffsetMinutes={timezoneOffsetMinutes}
-              workspaceName={workspaceName}
-              onClose={() => { setTrace(undefined); }}
-            />
+            <div className="mt-3" data-usage-trace-detail>
+              <UsageSessionPanel
+                request={trace}
+                baseFilters={filters}
+                timezoneOffsetMinutes={timezoneOffsetMinutes}
+                workspaceName={workspaceName}
+                onClose={() => { setTrace(undefined); }}
+              />
+            </div>
           ) : null}
           </>}
         </div>
