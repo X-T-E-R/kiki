@@ -5,6 +5,8 @@ import { backup, DatabaseSync } from 'node:sqlite';
 import type { MemoryEntry, MemoryJournalRecord } from '../../../app/memory/memoryStore.ts';
 // oxlint-disable-next-line import/extensions
 import { memoryObjectSourceUnitId, memorySourceUnitId } from '../../../app/memory/memorySourceIdentity.ts';
+// oxlint-disable-next-line import/extensions
+import { MemoryReconciliation } from './reconciliation.ts';
 import type { MemoryCommit, MemoryCommitReceipt, MemoryImportResult, MemoryLegacyPayload, MemoryReadView, MemorySourceState, MemoryProvenance, MemoryAdjudication } from '../../interface/memoryPersistence.ts';
 
 function conflict(message: string): never { throw Object.assign(new Error(message), { code: 'revision_conflict', committed: false }); }
@@ -12,6 +14,7 @@ function fingerprint(request: string): string { return createHash('sha256').upda
 
 export class MemoryDatabase {
   private readonly db: DatabaseSync;
+  private reconciliation!: MemoryReconciliation;
   constructor(readonly path: string) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
@@ -57,10 +60,16 @@ export class MemoryDatabase {
         this.separateSourceSignatures();
         this.db.prepare("INSERT INTO metadata VALUES('source_evidence_version',1) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
       }
-      this.db.exec('INSERT OR IGNORE INTO source_links SELECT scope,id,object_id FROM sources');
+      this.reconciliation = new MemoryReconciliation(this.db);
+      if (this.reconciliation.baseline || evidenceVersion < 1 || version < 3) this.db.exec('INSERT OR IGNORE INTO source_links SELECT scope,id,object_id FROM sources');
       if (version < 3) this.linkLegacyLineages();
-      this.reconcileForgottenHistory();
-      this.reconcileLegacyEvidence();
+      if (this.reconciliation.baseline || this.reconciliation.pending()) {
+        if (!this.reconciliation.baseline) for (const row of this.reconciliation.rows()) this.reconciliation.note(String(row['scope']), JSON.parse(String(row['entry'])) as MemoryEntry);
+        this.reconcileForgottenHistory();
+        this.reconcileLegacyEvidence();
+        this.reconciliation.acknowledge();
+      }
+      this.reconciliation.active(false);
       this.db.exec('PRAGMA user_version=3');
     });
   }
@@ -79,11 +88,12 @@ export class MemoryDatabase {
     }
   }
   private reconcileForgottenHistory(): void {
+    if (this.db.prepare('SELECT 1 FROM source_barriers LIMIT 1').get() === undefined && this.db.prepare('SELECT 1 FROM barriers LIMIT 1').get() === undefined) return;
     const rejected = new Map<string, { scope: string; id: string; revisions: Set<string>; payloads: Set<string> }>();
-    for (const row of this.db.prepare('SELECT scope,entry FROM revisions WHERE entry IS NOT NULL').all()) {
+    for (const row of this.reconciliation.rows()) {
       const scope = String(row['scope']);
       const entry = JSON.parse(String(row['entry'])) as MemoryEntry;
-      if (!this.legacyEntryBlocked(scope, entry)) continue;
+      if (!this.legacyEntryBlocked(scope, entry) || !this.provenForgotten(scope, entry)) continue;
       const key = JSON.stringify([scope, entry.id]);
       const target = rejected.get(key) ?? { scope, id: entry.id, revisions: new Set<string>(), payloads: new Set<string>() };
       target.revisions.add(entry.revision); target.payloads.add(String(row['entry'])); rejected.set(key, target);
@@ -124,7 +134,7 @@ export class MemoryDatabase {
     this.db.prepare('INSERT INTO source_links VALUES(?,?,?)').run(scope, id, entry.id);
   }
   private reconcileLegacyEvidence(): void {
-    for (const row of this.db.prepare('SELECT r.scope,r.entry,l.key,l.payload FROM revisions r LEFT JOIN legacy l ON l.scope=r.scope AND l.object_id=r.id AND l.revision=r.revision WHERE r.entry IS NOT NULL AND EXISTS(SELECT 1 FROM commit_views c WHERE c.scope=r.scope AND c.id=r.id AND c.revision=r.revision) AND NOT EXISTS(SELECT 1 FROM operation_objects o JOIN operations p ON p.id=o.operation_id WHERE o.scope=r.scope AND o.id=r.id AND p.generation=r.generation)').all()) {
+    for (const row of this.reconciliation.evidenceRows()) {
       const scope = String(row['scope']);
       const encoded = String(row['entry']);
       const entry = JSON.parse(encoded) as MemoryEntry;
@@ -137,7 +147,18 @@ export class MemoryDatabase {
   private transaction<T>(fn: () => T): T {
     this.db.exec('BEGIN IMMEDIATE');
     let committed = false;
-    try { const value = fn(); this.db.exec('COMMIT'); committed = true; return value; }
+    try {
+      this.reconciliation?.active(true);
+      if (this.reconciliation?.pending()) {
+        if (!this.reconciliation.baseline) for (const row of this.reconciliation.rows()) this.reconciliation.note(String(row['scope']), JSON.parse(String(row['entry'])) as MemoryEntry);
+        this.reconcileForgottenHistory();
+        this.reconcileLegacyEvidence();
+        this.reconciliation.acknowledge();
+      }
+      const value = fn();
+      this.reconciliation?.active(false);
+      this.db.exec('COMMIT'); committed = true; return value;
+    }
     catch (error) { if (!committed) { try { this.db.exec('ROLLBACK'); } catch {} } throw error; }
   }
   read(scopes: readonly string[], generation?: number): MemoryReadView {
@@ -165,7 +186,8 @@ export class MemoryDatabase {
     const row = this.db.prepare('SELECT * FROM operations WHERE id=?').get(operationId);
     if (row === undefined) return undefined;
     if (request !== undefined && row['request'] !== fingerprint(request)) conflict('Memory operation ID was already used for another request');
-    return { operationId, generation: Number(row['generation']), result: JSON.parse(String(row['result'])), saved: true, index: 'lexical' };
+    const hidden = this.db.prepare('SELECT r.scope,r.entry FROM operation_objects o JOIN revisions r ON r.scope=o.scope AND r.id=o.id AND r.generation=? WHERE o.operation_id=? AND r.entry IS NOT NULL').all(Number(row['generation']), operationId).some((revision) => this.legacyEntryBlocked(String(revision['scope']), JSON.parse(String(revision['entry'])) as MemoryEntry));
+    return { operationId, generation: Number(row['generation']), result: hidden ? { forgotten: true } : JSON.parse(String(row['result'])), saved: true, index: 'lexical' };
   }
   commit(input: MemoryCommit): MemoryCommitReceipt {
     if (!input.operationId || !input.request || input.edits.length > 1000) throw new Error('Invalid Memory transaction');
@@ -270,24 +292,33 @@ export class MemoryDatabase {
   }
   journal(scope: string, id?: string): readonly MemoryJournalRecord[] {
     const rows = id === undefined ? this.db.prepare('SELECT payload FROM journal WHERE scope=? ORDER BY ordinal').all(scope) : this.db.prepare('SELECT payload FROM journal WHERE scope=? AND id=? ORDER BY ordinal').all(scope, id);
-    return rows.map((row) => JSON.parse(String(row['payload'])) as MemoryJournalRecord);
+    return rows.map((row) => JSON.parse(String(row['payload'])) as MemoryJournalRecord).filter((event) => !this.journalBlocked(scope, event));
+  }
+  private journalBlocked(scope: string, event: MemoryJournalRecord): boolean {
+    if (this.blocked(scope, event.id)) return true;
+    return [event.beforeRevision, event.afterRevision].some((revision) => {
+      if (revision === null) return false;
+      const row = this.db.prepare('SELECT entry FROM revisions WHERE scope=? AND id=? AND revision=?').get(scope, event.id, revision);
+      return row?.['entry'] !== undefined && row['entry'] !== null && this.legacyEntryBlocked(scope, JSON.parse(String(row['entry'])) as MemoryEntry);
+    });
   }
   source(scope: string, id: string): MemorySourceState {
     if (this.db.prepare('SELECT 1 FROM source_barriers WHERE scope=? AND id=?').get(scope, id) !== undefined) return { state: 'forgotten', id, scope };
     const row = this.db.prepare('SELECT * FROM sources WHERE scope=? AND id=?').get(scope, id) ?? this.db.prepare('SELECT s.* FROM source_links a JOIN source_links l ON l.scope=a.scope AND l.object_id=a.object_id JOIN sources s ON s.scope=l.scope AND s.id=l.source_id WHERE a.scope=? AND a.source_id=? ORDER BY s.learned_at,s.id LIMIT 1').get(scope, id);
+    if (row !== undefined) {
+      const payload = String(row['payload']);
+      for (const revision of this.db.prepare('SELECT entry,revision FROM revisions WHERE scope=? AND id=? AND entry IS NOT NULL').all(scope, String(row['object_id']))) if ((revision['entry'] === payload || revision['revision'] === fingerprint(payload)) && this.legacyEntryBlocked(scope, JSON.parse(String(revision['entry'])) as MemoryEntry)) return { state: 'forgotten', id, scope };
+    }
     return row === undefined ? { state: 'missing' } : { state: 'registered', source: { id: String(row['id']), scope, objectId: String(row['object_id']), payload: String(row['payload']), locator: row['locator'] === null ? undefined : String(row['locator']), learnedAt: String(row['learned_at']) }, objectIds: this.relatedObjects(scope, String(row['object_id'])) };
   }
   private signatureBlocked(scope: string, signature: string, objectId: string): boolean {
     const barrier = this.db.prepare('SELECT generation FROM source_barriers WHERE scope=? AND id=?').get(scope, signature);
     if (barrier === undefined) return false;
-    if (this.db.prepare('SELECT 1 FROM source_signatures WHERE scope=? AND source_id=? AND object_id=?').get(scope, signature, objectId) === undefined) return true;
-    for (const id of this.relatedObjects(scope, objectId)) for (const row of this.db.prepare('SELECT r.entry FROM commit_views c JOIN revisions r ON r.scope=c.scope AND r.id=c.id AND r.revision=c.revision WHERE c.scope=? AND c.id=? AND c.generation<=? AND r.entry IS NOT NULL').all(scope, id, Number(barrier['generation']))) {
-      const entry = JSON.parse(String(row['entry'])) as MemoryEntry;
-      if (memorySourceUnitId(scope, entry.source, entry.body, entry.basis?.refs) === signature) return false;
-    }
+    for (const id of this.relatedObjects(scope, objectId)) if (this.db.prepare('SELECT 1 FROM memory_admissions WHERE scope=? AND signature=? AND id=? AND generation<=? LIMIT 1').get(scope, signature, id, Number(barrier['generation'])) !== undefined) return false;
     return true;
   }
   private linkEntrySource(scope: string, entry: MemoryEntry): void {
+    this.reconciliation?.note(scope, entry);
     this.db.prepare('INSERT OR IGNORE INTO source_links VALUES(?,?,?)').run(scope, memoryObjectSourceUnitId(scope, entry.id, entry.body), entry.id);
     const signature = memorySourceUnitId(scope, entry.source, entry.body, entry.basis?.refs);
     if (signature !== undefined) this.db.prepare('INSERT OR IGNORE INTO source_signatures VALUES(?,?,?)').run(scope, signature, entry.id);
@@ -316,7 +347,16 @@ export class MemoryDatabase {
   }
   private legacyEntryBlocked(scope: string, entry: MemoryEntry): boolean {
     const signature = memorySourceUnitId(scope, entry.source, entry.body, entry.basis?.refs);
-    return this.blocked(scope, entry.id) || this.source(scope, memoryObjectSourceUnitId(scope, entry.id, entry.body)).state === 'forgotten' || signature !== undefined && this.signatureBlocked(scope, signature, entry.id);
+    return this.blocked(scope, entry.id) || this.db.prepare('SELECT 1 FROM source_barriers WHERE scope=? AND id=?').get(scope, memoryObjectSourceUnitId(scope, entry.id, entry.body)) !== undefined || signature !== undefined && this.signatureBlocked(scope, signature, entry.id);
+  }
+  private provenForgotten(scope: string, entry: MemoryEntry): boolean {
+    if (this.blocked(scope, entry.id)) return true;
+    const alias = memoryObjectSourceUnitId(scope, entry.id, entry.body);
+    if (this.db.prepare('SELECT 1 FROM source_barriers WHERE scope=? AND id=?').get(scope, alias) !== undefined) return true;
+    const signature = memorySourceUnitId(scope, entry.source, entry.body, entry.basis?.refs);
+    const barrier = signature === undefined ? undefined : this.db.prepare('SELECT generation FROM source_barriers WHERE scope=? AND id=?').get(scope, signature);
+    const admitted = this.reconciliation.admission(scope, entry.id, entry.revision);
+    return barrier !== undefined && admitted !== undefined && admitted > Number(barrier['generation']);
   }
   rejectedLegacyIds(scope: string, entries: readonly MemoryEntry[]): readonly string[] {
     return entries.filter((entry) => this.legacyEntryBlocked(scope, entry)).map((entry) => entry.id);
@@ -348,7 +388,7 @@ export class MemoryDatabase {
         const entry = record.entry;
         let issue = record.issue;
         if (entry !== undefined && this.legacyEntryBlocked(record.scope, entry)) {
-          if (!this.blocked(record.scope, entry.id)) this.db.prepare("INSERT INTO legacy VALUES(?,?,?,?,?,?) ON CONFLICT(scope,key) DO UPDATE SET payload=excluded.payload,object_id=excluded.object_id,revision=excluded.revision,issue=excluded.issue").run(record.scope, record.key, '', entry.id, entry.revision, 'forgotten_source_rejected');
+          if (!this.blocked(record.scope, entry.id)) this.db.prepare('INSERT INTO legacy VALUES(?,?,?,?,?,?) ON CONFLICT(scope,key) DO NOTHING').run(record.scope, record.key, '', entry.id, entry.revision, 'forgotten_source_rejected');
           issues.push({ scope: record.scope, key: record.key, issue: 'forgotten_source_rejected' }); continue;
         }
         if (old?.['payload'] === payload && (record.key !== 'journal.jsonl' || old['issue'] === (record.issue ?? null))) {
@@ -357,7 +397,10 @@ export class MemoryDatabase {
           if (old['issue'] !== null) issues.push({ scope: record.scope, key: record.key, issue: String(old['issue']) });
           continue;
         }
-        for (const previous of record.history ?? []) if (!blocked(record.scope, previous.id)) this.db.prepare('INSERT OR IGNORE INTO revisions VALUES(?,?,?,?,?)').run(record.scope, previous.id, previous.revision, 0, JSON.stringify(previous));
+        for (const previous of record.history ?? []) if (!blocked(record.scope, previous.id)) {
+          this.db.prepare('INSERT OR IGNORE INTO revisions VALUES(?,?,?,?,?)').run(record.scope, previous.id, previous.revision, 0, JSON.stringify(previous));
+          this.reconciliation.note(record.scope, previous);
+        }
         for (const event of journal ?? []) {
           const encoded = JSON.stringify(event);
           if (this.db.prepare('SELECT 1 FROM journal WHERE scope=? AND id=? AND operation_id=? AND payload=?').get(record.scope, event.id, event.operationId, encoded) === undefined) this.db.prepare('INSERT INTO journal(scope,id,operation_id,payload) VALUES(?,?,?,?)').run(record.scope, event.id, event.operationId, encoded);
@@ -393,7 +436,17 @@ export class MemoryDatabase {
     });
   }
   legacy(scope: string): readonly MemoryLegacyPayload[] {
-    return this.db.prepare('SELECT * FROM legacy WHERE scope=? ORDER BY key').all(scope).map((row) => ({ scope, key: String(row['key']), payload: String(row['payload']), issue: row['issue'] === null ? undefined : String(row['issue']) }));
+    return this.db.prepare('SELECT * FROM legacy WHERE scope=? ORDER BY key').all(scope).map((row) => {
+      const key = String(row['key']);
+      let payload = String(row['payload']);
+      let issue = row['issue'] === null ? undefined : String(row['issue']);
+      if (key === 'journal.jsonl') payload = payload.split('\n').filter((line) => { try { return !this.journalBlocked(scope, JSON.parse(line) as MemoryJournalRecord); } catch { return true; } }).join('\n');
+      else if (row['object_id'] !== null && row['revision'] !== null) {
+        const revision = this.db.prepare('SELECT entry FROM revisions WHERE scope=? AND id=? AND revision=?').get(scope, row['object_id']!, row['revision']!);
+        if (this.blocked(scope, String(row['object_id'])) || revision?.['entry'] !== undefined && revision['entry'] !== null && this.legacyEntryBlocked(scope, JSON.parse(String(revision['entry'])) as MemoryEntry)) { payload = ''; issue = 'forgotten_source_rejected'; }
+      }
+      return { scope, key, payload, issue };
+    });
   }
   namespaces(): readonly string[] {
     return this.db.prepare('SELECT scope FROM heads UNION SELECT scope FROM barriers UNION SELECT scope FROM source_barriers UNION SELECT scope FROM legacy ORDER BY scope').all().map((row) => String(row['scope']));

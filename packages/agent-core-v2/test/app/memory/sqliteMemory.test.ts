@@ -47,6 +47,10 @@ function toolText(output: unknown): string {
   if (typeof output !== 'string') throw new Error('Expected a complete serialized Memory tool result');
   return output;
 }
+function removeMemoryReconciliation(db: DatabaseSync): void {
+  for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'memory_%'").all()) db.exec(`DROP TRIGGER "${String(row['name']).replaceAll('"', '""')}"`);
+  db.exec("DROP TABLE memory_admissions; DROP TABLE memory_changes; DELETE FROM metadata WHERE key IN('memory_reconcile_version','memory_reconcile_sequence','memory_writer_active');");
+}
 const global: MemoryScope = { kind: 'global' };
 const workspace = { kind: 'workspace', workspaceId: 'wd_example_0123456789ab' } as const;
 const source = { writer: 'user' as const };
@@ -627,6 +631,82 @@ describe('Memory shadow import and replay barriers', () => {
     } finally { current.close(); }
   });
 
+  it('retains uncertain pre-admission history bytes behind the read barrier across old provenance and replay', async () => {
+    const scope = 'memory/global';
+    const path = join(home, 'uncertain-history.sqlite');
+    const seed = { ...(await save('Uncertain history fixture')).entry, id: 'm_uncertain_forgotten', revision: 'uncertain:forgotten', source: { writer: 'agent' as const, session: 'uncertain-history', turn: 17 } };
+    const replay = { ...seed, id: 'm_uncertain_neighbor', revision: 'uncertain:neighbor' };
+    const record = (entry: MemoryEntry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    let current = new MemoryDatabase(path);
+    try {
+      current.importLegacy([record(seed)]);
+      current.commit({ operationId: 'forget-uncertain-peer', request: 'forget-uncertain-peer', expectedGeneration: current.read([scope]).generation, edits: [], barriers: [{ scope, objectId: seed.id, at: '2026-01-02' }], result: {} });
+    } finally { current.close(); }
+    const event = { id: replay.id, operationId: 'uncertain-update', action: 'update', before: JSON.stringify(replay), beforeRevision: replay.revision, afterRevision: null, at: replay.updated, writer: replay.source.writer };
+    const raw = new DatabaseSync(path);
+    try {
+      removeMemoryReconciliation(raw);
+      raw.prepare('INSERT INTO revisions VALUES(?,?,?,?,?)').run(scope, replay.id, replay.revision, 0, JSON.stringify(replay));
+      raw.prepare('INSERT INTO journal(scope,id,operation_id,payload) VALUES(?,?,?,?)').run(scope, replay.id, event.operationId, JSON.stringify(event));
+      raw.prepare('INSERT INTO legacy VALUES(?,?,?,?,?,NULL)').run(scope, `entries/${replay.id}.md`, JSON.stringify(replay), replay.id, replay.revision);
+      raw.prepare('INSERT INTO legacy VALUES(?,?,?,NULL,NULL,NULL)').run(scope, 'journal.jsonl', JSON.stringify(event));
+    } finally { raw.close(); }
+    for (let pass = 0; pass < 2; pass++) {
+      current = new MemoryDatabase(path);
+      try {
+        expect(current.revision(scope, replay.id, replay.revision)).toBeUndefined();
+        expect(current.journal(scope, replay.id)).toEqual([]);
+        expect(current.legacy(scope).every((item) => !item.payload.includes(replay.body))).toBe(true);
+        expect(current.provenance(scope, replay.id).sources).toEqual([]);
+        expect(current.importLegacy([record(replay)]).imported).toBe(0);
+        expect(current.read([scope]).objects).toEqual([]);
+      } finally { current.close(); }
+      const raw = new DatabaseSync(path);
+      try {
+        expect(raw.prepare('SELECT entry FROM revisions WHERE scope=? AND id=?').get(scope, replay.id)?.['entry']).toBe(JSON.stringify(replay));
+        expect(raw.prepare('SELECT COUNT(*) AS n FROM journal WHERE scope=? AND id=?').get(scope, replay.id)?.['n']).toBe(1);
+        expect(raw.prepare('SELECT payload FROM legacy WHERE scope=? AND key=?').get(scope, `entries/${replay.id}.md`)?.['payload']).toBe(JSON.stringify(replay));
+        expect(raw.prepare('SELECT generation FROM memory_admissions WHERE scope=? AND id=? AND revision=?').get(scope, replay.id, replay.revision)?.['generation']).toBeNull();
+      } finally { raw.close(); }
+      if (pass === 0) {
+        const old = new Schema3MemoryDatabase(path);
+        try { old.provenance(scope, replay.id); expect(old.importLegacy([{ ...record(replay), key: `inbox/${replay.id}.md` }]).imported).toBe(1); } finally { old.close(); }
+      }
+    }
+  });
+
+  it('checkpoints only old-writer deltas and never revisits untouched admissions on reopening', async () => {
+    const scope = 'memory/global';
+    const path = join(home, 'incremental-evidence.sqlite');
+    const seed = { ...(await save('Incremental evidence fixture')).entry, id: 'm_incremental_owner', revision: 'incremental:r1' };
+    const untouched = { ...seed, id: 'm_incremental_untouched' };
+    const record = (entry: MemoryEntry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    let current = new MemoryDatabase(path);
+    try { current.importLegacy([record(seed), record(untouched)]); } finally { current.close(); }
+    const raw = new DatabaseSync(path);
+    try {
+      raw.exec("CREATE TRIGGER fail_untouched_reconciliation BEFORE UPDATE ON memory_admissions WHEN OLD.id='m_incremental_untouched' BEGIN SELECT RAISE(ABORT,'untouched object was scanned'); END;");
+      expect(raw.prepare('SELECT COUNT(*) AS n FROM memory_changes').get()?.['n']).toBe(0);
+    } finally { raw.close(); }
+    const later = [2, 3].map((index) => ({ ...seed, revision: `incremental:r${index}`, source: { writer: 'agent' as const, session: `incremental-${index}`, turn: 17 } }));
+    const old = new Schema3MemoryDatabase(path);
+    try { for (const entry of later) old.importLegacy([record(entry)]); } finally { old.close(); }
+    let checkpoint = 0;
+    for (let pass = 0; pass < 2; pass++) {
+      current = new MemoryDatabase(path);
+      try { expect(current.provenance(scope, seed.id).sources.map((source) => source.payload).toSorted()).toEqual([seed, ...later].map((entry) => JSON.stringify(entry)).toSorted()); } finally { current.close(); }
+      const raw = new DatabaseSync(path);
+      try {
+        const next = Number(raw.prepare("SELECT value FROM metadata WHERE key='memory_reconcile_sequence'").get()?.['value']);
+        expect(next).toBeGreaterThan(0);
+        if (pass === 1) expect(next).toBe(checkpoint);
+        checkpoint = next;
+        expect(raw.prepare('SELECT COUNT(*) AS n FROM memory_changes').get()?.['n']).toBe(0);
+        expect(raw.prepare("SELECT value FROM metadata WHERE key='memory_writer_active'").get()?.['value']).toBe(0);
+      } finally { raw.close(); }
+    }
+  });
+
   it.each([2, 3])('recovers all %s old-writer source revisions after returning to the current backend', async (count) => {
     const scope = 'memory/global';
     const path = join(home, 'old-writer-evidence.sqlite');
@@ -1181,6 +1261,33 @@ describe('single Memory authority and isolated recovery', () => {
     expect((await createManaged(memory, 'Write after retained issues')).outcome).toBe('applied');
     await close(); bind();
     expect(await managedMemory().authority.status()).toEqual(state);
+  });
+
+  it.each([false, true])('preserves migrated same-signature preimages and Undo after forgetting only their independent peer (pre-admission database: %s)', async (baseline) => {
+    const managed = managedMemory();
+    const origin = { writer: 'agent' as const, session: 'admitted-legacy-history', turn: 17 };
+    const mutation = { action: 'create' as const, scope: global, type: 'feedback' as const, title: 'Independent legacy rule', body: 'Original equal instruction; exception 17.', reason: 'Owner instruction', source: origin };
+    const forgotten = await managed.legacy.put(mutation);
+    const original = await managed.legacy.put({ ...mutation, title: 'Retained independent rule' });
+    const changed = await managed.legacy.put({ ...mutation, action: 'update', id: original.entry.id, expectedRevision: original.entry.revision, body: 'Corrected independent rule; exceptions 17 and 19.' });
+    expect(await managed.authority.prepare()).toMatchObject({ backend: 'sqlite', mode: 'active' });
+    const journal = await store.journal(global, original.entry.id);
+    expect(journal).toHaveLength(2);
+    expect(await store.getRevision(global, original.entry.id, original.entry.revision)).toEqual(original.entry);
+    await store.forget(global, [{ id: forgotten.entry.id, expectedRevision: forgotten.entry.revision }], 'forget-admitted-history-peer');
+    expect(await store.getRevision(global, original.entry.id, original.entry.revision)).toEqual(original.entry);
+    await close();
+    if (baseline) {
+      const raw = new DatabaseSync(join(home, 'store/memory-sqlite-v1/memory.sqlite'));
+      try { removeMemoryReconciliation(raw); } finally { raw.close(); }
+    }
+    bind();
+    expect(await store.get(global, original.entry.id)).toEqual(changed.entry);
+    expect(await store.getRevision(global, original.entry.id, original.entry.revision)).toEqual(original.entry);
+    expect(await store.journal(global, original.entry.id)).toEqual(journal);
+    expect((await store.undo(global, changed.operationId))?.body).toBe(original.entry.body);
+    expect(await store.get(global, forgotten.entry.id)).toBeUndefined();
+    expect(await store.getRevision(global, forgotten.entry.id, forgotten.entry.revision)).toBeUndefined();
   });
 
   it('imports retained journal history and Undo beside a forgotten object', async () => {
