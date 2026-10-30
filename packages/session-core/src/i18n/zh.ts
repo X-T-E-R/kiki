@@ -4237,6 +4237,8 @@ export const zh = {
   'st.plugins.runtimeStepState.failed': '检查失败',
   'st.plugins.browserExtension': '添加浏览器扩展',
   'st.plugins.checkHealth': '重新检查',
+  'st.webbridge.approvalExpired': '浏览器扩展的授权已过期。',
+  'st.webbridge.reconnect': '重新连接',
   'st.plugins.prepareRuntime': '设置 WebBridge…',
   'st.plugins.retryRuntime': '重新设置…',
   'st.plugins.runtimeStarted': '正在已连接的服务器上准备。中断后可重新检查并重试。',

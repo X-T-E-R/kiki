@@ -4278,6 +4278,8 @@ export const en = {
   'st.plugins.runtimeStepState.failed': 'Check failed',
   'st.plugins.browserExtension': 'Add the browser extension',
   'st.plugins.checkHealth': 'Check again',
+  'st.webbridge.approvalExpired': 'The browser extension’s approval expired.',
+  'st.webbridge.reconnect': 'Reconnect',
   'st.plugins.prepareRuntime': 'Set up WebBridge…',
   'st.plugins.retryRuntime': 'Try setup again…',
   'st.plugins.runtimeStarted': 'Preparing on the connected server. Check again to retry after an interruption.',
