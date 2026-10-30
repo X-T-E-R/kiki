@@ -20,6 +20,8 @@ import { IWireService } from '#/wire/wire';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ContextApplyCompaction } from '#/agent/contextMemory/contextEvents';
 import { SessionMetadata } from '#/session/sessionMetadata/sessionMetadataService';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
 import { appService, createTestAgent, sessionService } from '../../harness';
@@ -27,7 +29,7 @@ import { appService, createTestAgent, sessionService } from '../../harness';
 const signal = new AbortController().signal;
 
 describe('mailbox receipt recovery with real lifecycle', () => {
-  it.each(['normal', 'ack-failure', 'compaction', 'cold-compaction'] as const)('restores a completed released sender and allows the receiver next step after %s', async (mode) => {
+  it.each(['normal', 'ack-failure', 'compaction', 'cold-compaction'] as const)('lets the receiver continue with a released sender and recovers its receipt once on later restoration after %s', async (mode) => {
     const host = createTestAgent(
       appService(IRuntimeResolver, {
         _serviceBrand: undefined,
@@ -63,14 +65,18 @@ describe('mailbox receipt recovery with real lifecycle', () => {
       expect(lifecycle.get('sender')).toBeUndefined();
       let receiver = await lifecycle.create({ agentId: 'receiver', binding: { profile: 'explore', model: binding.modelAlias }, delegator: { kind: 'agent', agentId: 'main' } });
       const compacting = mode === 'compaction' || mode === 'cold-compaction';
-      if (compacting) vi.spyOn(lifecycle, 'create').mockRejectedValueOnce(new Error('sender restore failed')).mockRejectedValueOnce(new Error('sender restore failed'));
+      const create = lifecycle.create.bind(lifecycle);
+      const senderRestore = vi.spyOn(lifecycle, 'create').mockImplementation((options) =>
+        compacting && options?.agentId === 'sender' ? Promise.reject(new Error('sender restore failed')) : create(options));
+      const documents = host.get(IAtomicDocumentStore);
+      const receiptScope = host.get(ISessionContext).scope('agent-message-receipts/sender');
       const accepted = await messaging.send({ sourceAgentId: 'sender', sourceTaskName: 'source', targetAgentId: 'receiver', targetTaskName: 'target', content: 'Result ready', idempotencyKey: 'cold-receipt', waitForRunningDelivery: true });
       const next = vi.fn(async () => {});
       if (mode === 'ack-failure') {
         vi.spyOn(host.get(IAgentCollaborationMessageStore), 'markDelivered').mockRejectedValueOnce(new Error('ack failed'));
         await expect(receiver.accessor.get(IAgentExecutionService).hooks.onWillRun.run({ signal }, next)).rejects.toThrow('ack failed');
         expect(next).not.toHaveBeenCalled();
-        await lifecycle.remove('sender');
+        expect(lifecycle.get('sender')).toBeUndefined();
       } else {
         await receiver.accessor.get(IAgentExecutionService).hooks.onWillRun.run({ signal }, next);
         expect(next).toHaveBeenCalledOnce();
@@ -101,12 +107,21 @@ describe('mailbox receipt recovery with real lifecycle', () => {
       const recipientRecords = [];
       for await (const record of receiver.accessor.get(IWireService).readJournal()) recipientRecords.push(record);
       expect(recipientRecords.filter((record) => record.type === 'context.append_message' && (record['message'] as { id?: string }).id === accepted.message.messageId)).toHaveLength(1);
-      const restored = lifecycle.get('sender')!;
+      expect(lifecycle.get('sender')).toBeUndefined();
+      expect(senderRestore.mock.calls.some(([options]) => options?.agentId === 'sender')).toBe(false);
+      expect(await documents.list(receiptScope)).toEqual([accepted.message.messageId]);
+      senderRestore.mockRestore();
+      const restored = await lifecycle.create({ agentId: 'sender', delegator: { kind: 'agent', agentId: 'main' } });
+      await vi.waitFor(async () => { expect(await documents.list(receiptScope)).toEqual([]); });
       expect(restored.accessor.get(IAgentExecutionService).status().state).toBe('idle');
       expect(restored.accessor.get(IAgentProfileService).data().modelAlias).toBe(binding.modelAlias);
+      await lifecycle.remove('sender');
+      const replayed = await lifecycle.create({ agentId: 'sender', delegator: { kind: 'agent', agentId: 'main' } });
+      expect(replayed.accessor.get(IAgentStateService).get(agentMessageReceiptsKey)[accepted.message.messageId]).toBe(true);
       const records = [];
-      for await (const record of restored.accessor.get(IWireService).readJournal()) records.push(record);
+      for await (const record of replayed.accessor.get(IWireService).readJournal()) records.push(record);
       expect(records.filter((record) => record.type === 'agent_message.delivered')).toEqual([expect.objectContaining({ messageId: accepted.message.messageId })]);
+      expect(host.llmCalls).toHaveLength(2);
       expect((await host.get(ISessionMetadata).read()).agents?.['sender']).toMatchObject({ status: 'completed', resultSummary: 'Finished work', completedAt: 1 });
     } finally {
       await host.dispose();
