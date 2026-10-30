@@ -280,6 +280,32 @@ describe('GlobTool', () => {
     expect(tool.description).not.toContain(WINDOWS_PATH_HINT);
   });
 
+  it.each(['*', '/*'])('bounds a root listing (%s) to one directory level', async (pattern) => {
+    const { tool, exec } = makeTool(workspace);
+
+    await execute(tool, { pattern });
+
+    const args = execArgs(exec);
+    expect(args.slice(args.indexOf('--max-depth'), args.indexOf('--max-depth') + 2)).toEqual(['--max-depth', '1']);
+  });
+
+  it.each(['src/*.ts', '/src/*.ts', '{src,test}/*.ts'])('bounds an anchored nonrecursive pattern (%s)', async (pattern) => {
+    const { tool, exec } = makeTool(workspace);
+
+    await execute(tool, { pattern });
+
+    const args = execArgs(exec);
+    expect(args.slice(args.indexOf('--max-depth'), args.indexOf('--max-depth') + 2)).toEqual(['--max-depth', '2']);
+  });
+
+  it.each(['**/*', '*.ts', 'src/**/*.ts'])('preserves recursive searches (%s)', async (pattern) => {
+    const { tool, exec } = makeTool(workspace);
+
+    await execute(tool, { pattern });
+
+    expect(execArgs(exec)).not.toContain('--max-depth');
+  });
+
   it('requests reverse modified sort and preserves the rg output order', async () => {
     const exec = execReturning('/workspace/src/new.ts\n/workspace/src/old.ts\n');
     const { tool, withCwd } = makeTool(workspace, { exec });

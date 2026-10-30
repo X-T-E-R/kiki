@@ -411,6 +411,10 @@ function buildRgArgs(rgPath: string, args: GlobInput, singleThreaded = false): s
   const cmd: string[] = [rgPath];
   if (singleThreaded) cmd.push('-j', '1');
   cmd.push('--files', '--hidden', '--sortr=modified');
+  const pattern = args.pattern.replace(/^\//, '');
+  if (!pattern.includes('**') && (pattern === '*' || pattern.includes('/'))) {
+    cmd.push('--max-depth', String(pattern.split('/').length));
+  }
   for (const dir of VCS_DIRECTORIES_TO_EXCLUDE) {
     cmd.push('--glob', `!${dir}`);
   }
