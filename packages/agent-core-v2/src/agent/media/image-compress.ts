@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { ContentPart } from '#/kosong/contract/message';
 
 import { sniffImageDimensions, sniffMediaFromMagic } from './file-type';
@@ -305,6 +307,33 @@ const DECODABLE_IMAGE_MIMES = new Set([
   'image/bmp',
 ]);
 
+const DECODE_VERDICT_LIMIT = 1024;
+const decodeVerdicts = new Map<string, boolean>();
+
+async function decodesAsImage(bytes: Buffer, mimeType: string): Promise<boolean> {
+  const key = `${mimeType}:${createHash('sha256').update(bytes).digest('base64')}`;
+  const known = decodeVerdicts.get(key);
+  if (known !== undefined) {
+    decodeVerdicts.delete(key);
+    decodeVerdicts.set(key, known);
+    return known;
+  }
+  let verdict: boolean;
+  try {
+    await decodeToJimp(bytes, mimeType);
+    verdict = true;
+  } catch {
+    verdict = false;
+  }
+  decodeVerdicts.set(key, verdict);
+  if (decodeVerdicts.size > DECODE_VERDICT_LIMIT) {
+    decodeVerdicts.delete(decodeVerdicts.keys().next().value!);
+  }
+  return verdict;
+}
+
+/** Proves a complete image data URL decodes as an image. The decode verdict is remembered by
+ *  content digest, so history images revalidated on every model step decode once per process. */
 export async function validateImageDataUrl(url: string): Promise<ValidatedImageDataUrl | null> {
   const parsed = parseCompleteImageDataUrl(url);
   if (parsed === null) return null;
@@ -312,11 +341,7 @@ export async function validateImageDataUrl(url: string): Promise<ValidatedImageD
   if (bytes.length === 0) return null;
   const mimeType = normalizeImageMime(parsed.mimeType);
   if (DECODABLE_IMAGE_MIMES.has(mimeType)) {
-    try {
-      await decodeToJimp(bytes, mimeType);
-    } catch {
-      return null;
-    }
+    if (!(await decodesAsImage(bytes, mimeType))) return null;
   } else if (sniffMediaFromMagic(bytes)?.kind !== 'image') {
     return null;
   }

@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 
 import { Jimp, ResizeStrategy } from 'jimp';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildImageCompressionCaption,
@@ -19,6 +19,7 @@ import {
   setConfiguredMaxImageEdgePx,
   setConfiguredReadImageByteBudget,
   type ImageCompressionTelemetryClient,
+  validateImageDataUrl,
 } from '#/agent/media/image-compress';
 import { sniffImageDimensions } from '#/agent/media/file-type';
 import {
@@ -516,6 +517,26 @@ describe('compressImageForModel — performance', () => {
   it('exposes a sane default budget', () => {
     expect(IMAGE_BYTE_BUDGET).toBeGreaterThan(0);
     expect(MAX_IMAGE_EDGE_PX).toBe(2000);
+  });
+
+  it('decodes a revalidated data URL once and keeps rejecting corrupt bytes', async () => {
+    const png = await noisePng(64, 48);
+    const url = `data:image/png;base64,${Buffer.from(png).toString('base64')}`;
+    const corrupt = Buffer.from(png);
+    corrupt.fill(0, 40);
+    const corruptUrl = `data:image/png;base64,${corrupt.toString('base64')}`;
+    const decode = vi.spyOn(Jimp, 'fromBuffer');
+    try {
+      for (let i = 0; i < 20; i += 1) {
+        const validated = await validateImageDataUrl(url);
+        expect(validated?.mimeType).toBe('image/png');
+        expect(validated?.bytes.equals(Buffer.from(png))).toBe(true);
+        expect(await validateImageDataUrl(corruptUrl)).toBeNull();
+      }
+      expect(decode).toHaveBeenCalledTimes(2);
+    } finally {
+      decode.mockRestore();
+    }
   });
 });
 
