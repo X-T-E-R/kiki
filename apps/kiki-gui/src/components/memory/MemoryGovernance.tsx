@@ -206,11 +206,7 @@ export function MemoryGovernancePanel({ target, entry }: { readonly target: Memo
     staleTime: 5_000,
     retry: false,
   });
-  if (!authority.governed) {
-    return authority.kind === 'legacy' ? (
-      <p data-memory-governance="legacy" className="text-[12px] leading-relaxed text-ink-faint">{t('memory.governance.legacy')}</p>
-    ) : null;
-  }
+  if (!authority.governed) return null;
   const data = provenance.data;
   const shared = (data?.relatedObjectIds ?? []).filter((id) => id !== entry.id).length;
   const decisions = [...(data?.adjudications ?? [])].reverse();

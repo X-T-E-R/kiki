@@ -153,7 +153,6 @@ function WorkspacesList() {
           overlayId="confirm-workspace-remove"
           title={t('st.workspaces.removeTitle', { name: removing.name })}
           body={t('st.workspaces.removeBody')}
-          consequences={[t('st.workspaces.removeNoNewSessions')]}
           confirmLabel={t('st.workspaces.remove')}
           tone="danger"
           onCancel={() => setRemoving(null)}
@@ -176,7 +175,6 @@ function WorkspacesList() {
           overlayId="confirm-workspace-bulk-remove"
           title={t('st.workspaces.bulkRemoveTitle', { count: bulkRemoving.length })}
           body={t('st.workspaces.bulkRemoveBody')}
-          consequences={[t('st.workspaces.removeNoNewSessions')]}
           confirmLabel={t('st.workspaces.bulkRemoveConfirm', { count: bulkRemoving.length })}
           tone="danger"
           onCancel={() => setBulkRemoving(null)}
@@ -206,6 +204,26 @@ function WorkspacesList() {
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const byRecent = (a: Workspace, b: Workspace) => Date.parse(b.last_opened_at) - Date.parse(a.last_opened_at);
+
+/** The last path segment, across separators, without a trailing slash. */
+function basenameOf(path: string): string {
+  const cleaned = path.replaceAll('\\', '/').replace(/\/+$/, '');
+  const index = cleaned.lastIndexOf('/');
+  return index === -1 ? cleaned : cleaned.slice(index + 1);
+}
+
+/**
+ * The name a row leads with. A folder whose registered name reads as an
+ * opaque id (releases/…/d300ab…) names the folder itself instead, truncated,
+ * so the list stays scannable. Anything the user or server named reads as-is.
+ */
+function workspaceDisplayName(workspace: Workspace): string {
+  const name = workspace.name.trim();
+  const opaque = /^[0-9a-f]{7,}$/i.test(name) || /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(name);
+  if (!opaque) return name;
+  const base = basenameOf(workspace.root);
+  return base === '' || base === name ? name : base;
+}
 
 /**
  * The registered-workspace list on the shared list pattern: search by name
@@ -325,16 +343,17 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
   const { t, time } = useI18n();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
-  // Trust is read-only here: the tag answers "what kind of workspace is this",
-  // and the only place trust changes is the workspace's own page. A failed
-  // read shows nothing on the row — one page-level line covers every failure.
+  // Trust is read-only here; the only place it changes is the workspace's own
+  // page. Only a trusted row carries the tag, and one page-level line covers
+  // every failed read, which also marks its own row 未知.
   const trustQuery = useQuery({
     queryKey: ['workspace-trust', workspace.id],
     queryFn: () => client.getWorkspaceTrust(workspace.id),
     staleTime: 30_000,
   });
 
-  const isTrusted = trustQuery.data?.trusted ?? false;
+  const isTrusted = trustQuery.data?.trusted === true;
+  const displayName = workspaceDisplayName(workspace);
 
   const compact = density === 'compact';
   const facts = t('st.workspaces.lastOpened', { time: time.relativeTime(workspace.last_opened_at) });
@@ -343,7 +362,7 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
       style={{ minHeight: LIST_ROW_HEIGHT[density] }}
       className={`group/row transition-colors ${checked ? 'bg-ink/[0.035]' : 'hover:bg-ink/[0.02]'}`}>
     <div className="flex h-full items-center gap-1 pr-1.5 pl-1">
-      <RowCheck quiet={!selecting} checked={checked} onChange={onCheck} label={t('st.list.selectRow', { name: workspace.name })} />
+      <RowCheck quiet={!selecting} checked={checked} onChange={onCheck} label={t('st.list.selectRow', { name: displayName })} />
       <div className="min-w-0 flex-1 py-1">
         <div className="flex min-w-0 items-baseline gap-2">
           {/* The name is the way into the workspace's own page: one move,
@@ -352,23 +371,31 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
           <button
             type="button"
             data-workspace-open={workspace.id}
-            aria-label={t('st.workspaces.detail.open', { name: workspace.name })}
+            aria-label={t('st.workspaces.detail.open', { name: displayName })}
+            title={workspace.root}
             onClick={onOpenDetail}
             className="min-w-0 shrink truncate rounded text-left text-[13px] font-medium text-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
           >
-            {workspace.name}
+            {displayName}
           </button>
-          {trustQuery.data !== undefined ? (
+          {/* Trust is the exception here: an untrusted row is the common case
+              and says nothing, a trusted row carries the one tag that matters,
+              and a read that failed says 未知 rather than guessing a state. */}
+          {isTrusted ? (
             <span
               data-workspace-trust-badge={workspace.id}
-              className={`inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10.5px] font-medium leading-none ${
-                isTrusted
-                  ? 'bg-ink/[0.08] text-ink'
-                  : 'border border-hairline text-ink-faint'
-              }`}
+              className="inline-flex shrink-0 items-center rounded bg-ink/[0.08] px-1.5 py-0.5 text-[10.5px] font-medium leading-none text-ink"
               title={t('st.workspaces.trustHint')}
             >
-              {isTrusted ? t('st.workspaces.trusted') : t('st.workspaces.untrusted')}
+              {t('st.workspaces.trusted')}
+            </span>
+          ) : trustQuery.isError ? (
+            <span
+              data-workspace-trust-unknown={workspace.id}
+              className="inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10.5px] font-medium leading-none text-ink-faint"
+              title={t('st.workspaces.trustReadFailed')}
+            >
+              {t('st.workspaces.trustUnknown')}
             </span>
           ) : null}
           {compact ? (

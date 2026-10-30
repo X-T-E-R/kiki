@@ -211,13 +211,13 @@ function clockTimes(parsed: ParsedCron, t: CronTranslate): string | undefined {
   const minutes = [...parsed.minutes.values].toSorted((a, b) => a - b);
   const hours = [...parsed.hours.values].toSorted((a, b) => a - b);
   if (minutes.length === 0 || hours.length === 0) return undefined;
-  if (hours.length === 1) {
-    const hour = hours[0]!;
-    return minutes.map((minute) => `${pad(hour)}:${pad(minute)}`).join(t('cron.schedule.times'));
+  const times: string[] = [];
+  for (const hour of hours) {
+    for (const minute of minutes) {
+      times.push(`${pad(hour)}:${pad(minute)}`);
+    }
   }
-  if (minutes.length !== 1) return undefined;
-  const minute = minutes[0]!;
-  return hours.map((hour) => `${pad(hour)}:${pad(minute)}`).join(t('cron.schedule.times'));
+  return times.join(t('cron.schedule.times'));
 }
 
 const WEEKDAYS_SET = new Set([1, 2, 3, 4, 5]);
@@ -314,6 +314,11 @@ export function cronScheduleLabel(
   t: CronTranslate = (key, params) => translate(locale, key, params),
 ): string {
   return localizedCronSchedule(locale, raw, t) ?? fallback;
+}
+
+/** Whether the localizer has no friendly name for this expression. */
+export function isCustomCronSchedule(locale: Locale, raw: string, t: CronTranslate = (key, params) => translate(locale, key, params)): boolean {
+  return localizedCronSchedule(locale, raw, t) === undefined;
 }
 
 export type CronFormRead =

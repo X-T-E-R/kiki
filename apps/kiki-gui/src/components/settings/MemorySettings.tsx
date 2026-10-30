@@ -107,18 +107,6 @@ export function MemorySettingsCard() {
                 onChange={(enabled) => { update.mutate({ enabled }); }}
               />
             </SettingField>
-            <DefaultOnSwitch
-              id="memory"
-              state={memoryCapability}
-              disabled={busy}
-              onChange={(next) => {
-                setDefaultError(undefined);
-                void client.patchConfig({ optional_capabilities: { defaults: { memory: next } } }).then((echoed) => {
-                  queryClient.setQueryData(['config', 'memory-default'], echoed);
-                  ping();
-                }).catch((cause: unknown) => { setDefaultError(cause); });
-              }}
-            />
           </div>
           <SettingField label={t('st.memory.approval')} labelId="memory-approval-label">
             {status('approval')}
@@ -136,8 +124,24 @@ export function MemorySettingsCard() {
               ]}
             />
           </SettingField>
-          {/* The text budget keeps its system default; it waits behind Advanced. */}
+          {/* The text budget and the new-workspace default keep their system
+              defaults; they wait behind Advanced. The default-on switch is not
+              a second master: it is the default new sessions in a workspace
+              that never chose inherit from. */}
           <AdvancedDetails summary={t('st.memory.advanced')} data-memory-advanced>
+          <DefaultOnSwitch
+            id="memory"
+            state={memoryCapability}
+            disabled={busy}
+            labelKey="cap.defaultOn.newWorkspaces"
+            onChange={(next) => {
+              setDefaultError(undefined);
+              void client.patchConfig({ optional_capabilities: { defaults: { memory: next } } }).then((echoed) => {
+                queryClient.setQueryData(['config', 'memory-default'], echoed);
+                ping();
+              }).catch((cause: unknown) => { setDefaultError(cause); });
+            }}
+          />
           <SettingField label={t('st.memory.budget')} htmlFor="memory-budget" help={t('st.memory.budgetHint')}>
             {status('budget')}
             <CommitInput

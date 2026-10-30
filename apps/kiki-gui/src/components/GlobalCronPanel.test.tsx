@@ -211,6 +211,15 @@ async function openPanel(): Promise<HTMLElement> {
   return page!;
 }
 
+/** Open a row if it is not already open, so its detail footer is in the DOM. */
+async function expandRow(page: HTMLElement, id: string): Promise<void> {
+  const toggle = page.querySelector<HTMLButtonElement>(`[data-cron-task="${id}"] [data-cron-action="expand"]`)!;
+  if (toggle.getAttribute('aria-expanded') !== 'true') {
+    await act(async () => { toggle.click(); });
+    await flush();
+  }
+}
+
 describe('CronPage', () => {
   it('loads subsequent scheduled-task pages on demand', async () => {
     seedTasks(Array.from({ length: 101 }, (_, index) => makeCronTask({ id: `task-${index}` })));
@@ -324,6 +333,7 @@ describe('CronPage', () => {
     seedTasks([makeCronTask({ id: 'task-1' })]);
     await mount();
     const dialog = await openPanel();
+    await expandRow(dialog, 'task-1');
 
     const run = dialog.querySelector<HTMLButtonElement>('[data-cron-task="task-1"] [data-cron-action="run"]');
     await act(async () => { run!.click(); });
@@ -339,6 +349,7 @@ describe('CronPage', () => {
     seedTasks([makeCronTask({ id: 'task-1' }), makeCronTask({ id: 'task-2', session_id: null })]);
     await mount();
     const dialog = await openPanel();
+    await expandRow(dialog, 'task-2');
 
     const del = dialog.querySelector<HTMLButtonElement>('[data-cron-task="task-2"] [data-cron-action="delete"]');
     await act(async () => { del!.click(); });
@@ -362,6 +373,7 @@ describe('CronPage', () => {
     seedTasks([makeCronTask({ id: 'task-1' })]);
     await mount();
     const dialog = await openPanel();
+    await expandRow(dialog, 'task-1');
 
     const del = dialog.querySelector<HTMLButtonElement>('[data-cron-task="task-1"] [data-cron-action="delete"]');
     await act(async () => { del!.click(); });
@@ -479,6 +491,7 @@ describe('CronPage', () => {
     ]);
     await mount();
     const page = await openPanel();
+    await expandRow(page, 'task-complex');
 
     // A rule the controls cannot hold opens on the expression, verbatim.
     await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-task="task-complex"] [data-cron-action="edit"]')!.click(); });
@@ -500,6 +513,7 @@ describe('CronPage', () => {
     updateCronTask.mockRejectedValueOnce(new ApiError({ code: 40001, msg: 'cron expression is invalid', data: null }));
     await mount();
     const page = await openPanel();
+    await expandRow(page, 'task-1');
 
     await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-task="task-1"] [data-cron-action="edit"]')!.click(); });
     await flush();
@@ -532,6 +546,7 @@ describe('CronPage', () => {
       seedWithDistinctPrompt();
       await mount();
       const page = await openPanel();
+      await expandRow(page, 'task-1');
 
       await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-task="task-1"] [data-cron-action="edit"]')!.click(); });
       await flush();
@@ -560,6 +575,7 @@ describe('CronPage', () => {
       seedWithDistinctPrompt();
       await mount();
       const page = await openPanel();
+      await expandRow(page, 'task-1');
 
       await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-task="task-1"] [data-cron-action="edit"]')!.click(); });
       await flush();
@@ -586,6 +602,7 @@ describe('CronPage', () => {
       seedWithDistinctPrompt();
       await mount();
       const page = await openPanel();
+      await expandRow(page, 'task-1');
 
       await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-task="task-1"] [data-cron-action="edit"]')!.click(); });
       await flush();
@@ -611,6 +628,7 @@ describe('CronPage', () => {
       seedWithDistinctPrompt();
       await mount();
       const page = await openPanel();
+      await expandRow(page, 'task-1');
 
       await act(async () => { page.querySelector<HTMLButtonElement>('[data-cron-task="task-1"] [data-cron-action="edit"]')!.click(); });
       await flush();
@@ -739,6 +757,7 @@ describe('scheduled-task delivery timing', () => {
   const queueHint = dictionary['cron.delivery.hint.queue']!;
 
   const openEditor = async (page: HTMLElement, id: string): Promise<void> => {
+    await expandRow(page, id);
     await act(async () => { page.querySelector<HTMLButtonElement>(`[data-cron-task="${id}"] [data-cron-action="edit"]`)!.click(); });
     await flush();
   };

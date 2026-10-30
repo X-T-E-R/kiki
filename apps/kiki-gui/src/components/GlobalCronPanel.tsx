@@ -33,7 +33,7 @@ import { useSearchParams } from 'react-router-dom';
 import type { To } from 'react-router-dom';
 
 import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
-import { cronScheduleLabel } from '@kiki/session-core/util';
+import { cronScheduleLabel, localizedCronSchedule } from '@kiki/session-core/util';
 
 import { useI18n } from '../i18n';
 import {
@@ -50,7 +50,7 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { CronTaskEditor } from './CronTaskEditor';
 import { PAGE_WIDTH, PageHeader, useWorkspaceScope } from './PageChrome';
 import { useNow } from './RelativeTime';
-import { DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
+import { PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 import { WorkspaceScopeControl } from './WorkspaceScopeControl';
 
 export const CRON_TASKS_QUERY_KEY = ['cron-tasks'] as const;
@@ -162,6 +162,10 @@ interface CronDetailProps {
   readonly task: CronTask;
   readonly sessionTitle: string | undefined;
   readonly workspaceName: string | undefined;
+  readonly pending: boolean;
+  readonly onEdit: () => void;
+  readonly onRun: (task: CronTask) => void;
+  readonly onDelete: (task: CronTask) => void;
   readonly onOpenSession: (sessionId: string) => void;
 }
 
@@ -169,9 +173,11 @@ interface CronDetailProps {
  * The row opened. It shows the two things the collapsed row cannot: the
  * prompt in full, and the expression behind the schedule. The full prompt is
  * read from the server on open, because the list row only ever carries a
- * truncated preview.
+ * truncated preview. The row's remaining verbs (edit, run now, delete) live
+ * in this footer's quiet line, so the collapsed row carries only the one
+ * state control a schedule is managed by.
  */
-function CronDetail({ task, sessionTitle, workspaceName, onOpenSession }: CronDetailProps) {
+function CronDetail({ task, sessionTitle, workspaceName, pending, onEdit, onRun, onDelete, onOpenSession }: CronDetailProps) {
   const { t, time } = useI18n();
   return (
     <div
@@ -227,6 +233,35 @@ function CronDetail({ task, sessionTitle, workspaceName, onOpenSession }: CronDe
         <Fact label={t('cron.detail.workspace')}>{workspaceName ?? task.workspace_id}</Fact>
         <Fact label={t('cron.detail.created')}>{time.absoluteTime(task.created_at)}</Fact>
       </dl>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 pt-1">
+        <button
+          type="button"
+          data-cron-action="edit"
+          disabled={pending}
+          onClick={onEdit}
+          className="text-[12.5px] font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline disabled:opacity-50"
+        >
+          {t('cron.action.edit')}
+        </button>
+        <button
+          type="button"
+          data-cron-action="run"
+          disabled={pending}
+          onClick={() => { onRun(task); }}
+          className="text-[12.5px] font-medium text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline disabled:opacity-50"
+        >
+          {t('cron.action.run')}
+        </button>
+        <button
+          type="button"
+          data-cron-action="delete"
+          disabled={pending}
+          onClick={() => { onDelete(task); }}
+          className="text-[12.5px] text-danger/80 underline-offset-2 transition-colors hover:text-danger hover:underline disabled:opacity-50"
+        >
+          {t('cron.action.delete')}
+        </button>
+      </div>
     </div>
   );
 }
@@ -236,6 +271,8 @@ interface CronTaskRowProps {
   readonly sessionTitle: string | undefined;
   readonly workspaceName: string | undefined;
   readonly schedule: string;
+  /** The localizer had no friendly shape for this rule; the raw expression is the fact. */
+  readonly customSchedule: boolean;
   readonly pending: boolean;
   readonly expanded: boolean;
   readonly onToggleDetail: () => void;
@@ -251,6 +288,7 @@ function CronTaskRow({
   sessionTitle,
   workspaceName,
   schedule,
+  customSchedule,
   pending,
   expanded,
   onToggleDetail,
@@ -289,11 +327,22 @@ function CronTaskRow({
 
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-1.5">
-            {/* The schedule, in the reader's language. The expression that
-                produced it is one click away, not in their way. */}
-            <span data-cron-schedule className="min-w-0 text-[14px] font-medium text-ink">
-              {schedule}
-            </span>
+            {/* The schedule, in the reader's language; clicking it opens the
+                row, the row's one click target. Pause/resume stays the only
+                control that changes state from the collapsed row. */}
+            <button
+              type="button"
+              data-cron-action="expand"
+              aria-expanded={expanded}
+              aria-label={t(expanded ? 'cron.action.collapseAria' : 'cron.action.expandAria', { schedule })}
+              onClick={onToggleDetail}
+              className="inline-flex min-w-0 items-center gap-1.5 rounded text-left transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+            >
+              <Chevron open={expanded} />
+              <span data-cron-schedule className="min-w-0 text-[14px] font-medium text-ink">
+                {schedule}
+              </span>
+            </button>
             {task.next_fire_at !== null ? <StatusChip task={task} /> : null}
             <span className={`${CHIP_BASE} border-hairline bg-paper text-ink-faint`}>
               {task.recurring ? t('cron.kind.recurring') : t('cron.kind.oneShot')}
@@ -310,6 +359,11 @@ function CronTaskRow({
               </span>
             ) : null}
           </div>
+          {/* A rule the localizer cannot name reads as a custom schedule with
+              the raw expression as the fact under it, never as the bold title. */}
+          {customSchedule ? (
+            <p className="mt-0.5 font-mono text-[11.5px] text-ink-faint" title={task.cron}>{task.cron}</p>
+          ) : null}
           <p className="mt-1 line-clamp-2 text-[13px] leading-relaxed text-ink-soft">
             {task.prompt_preview.replace('…(truncated)', '…')}
           </p>
@@ -337,43 +391,22 @@ function CronTaskRow({
             ) : null}
           </div>
 
-          {/* The row's own controls: read the detail, or change the rule. */}
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              data-cron-action="expand"
-              aria-expanded={expanded}
-              aria-label={t(expanded ? 'cron.action.collapseAria' : 'cron.action.expandAria', { schedule })}
-              onClick={onToggleDetail}
-              className={`inline-flex h-6 items-center gap-1 rounded px-1.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink ${expanded ? 'text-ink' : ''}`}
-            >
-              <Chevron open={expanded} />
-              {t(expanded ? 'cron.action.collapse' : 'cron.action.expand')}
-            </button>
-            <button
-              type="button"
-              data-cron-action="edit"
-              aria-label={t('cron.action.editAria', { schedule })}
-              onClick={onEdit}
-              className="inline-flex h-6 items-center gap-1 rounded px-1.5 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink"
-            >
-              {t('cron.action.edit')}
-            </button>
-          </div>
-
           {expanded ? (
             <CronDetail
               task={task}
               sessionTitle={sessionTitle}
               workspaceName={workspaceName}
+              pending={pending}
+              onEdit={onEdit}
+              onRun={onRun}
+              onDelete={onDelete}
               onOpenSession={onOpenSession}
             />
           ) : null}
         </div>
 
-        {/* Run now sits at the bottom left of the row: it is the one
-            action that runs work, so it is the one a person reaches for
-            last and least often. Pause and delete stay apart from it. */}
+        {/* The collapsed row's one state control; every other verb lives in
+            the opened detail. */}
         <div className="flex flex-wrap items-start justify-start gap-1.5 lg:justify-end">
           <button
             type="button"
@@ -384,32 +417,7 @@ function CronTaskRow({
           >
             {task.paused ? t('cron.action.resume') : t('cron.action.pause')}
           </button>
-          <button
-            type="button"
-            data-cron-action="delete"
-            disabled={pending}
-            onClick={() => { onDelete(task); }}
-            className={DANGER_GHOST_BUTTON}
-          >
-            {t('cron.action.delete')}
-          </button>
         </div>
-      </div>
-      {/* Run now sits on the row's own lower line, at the left edge under
-          the "when" column. It is the one action that runs work, so it is
-          the one a person reaches for last and least often; pause and
-          delete stay in their own group at the far end. */}
-      <div className="mt-3 flex justify-start lg:pl-[9.5rem]">
-        <button
-          type="button"
-          data-cron-action="run"
-          aria-label={t('cron.action.runAria', { schedule })}
-          disabled={pending}
-          onClick={() => { onRun(task); }}
-          className={SECONDARY_BUTTON}
-        >
-          {t('cron.action.run')}
-        </button>
       </div>
     </li>
   );
@@ -650,13 +658,17 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
     const key = `${task.workspace_id}:${task.id}`;
     const isOpen = expanded.has(key);
     const sessionTitle = task.session_id === null ? undefined : sessionsById.get(task.session_id)?.title;
+    // A rule the localizer cannot name reads as a custom schedule with the raw
+    // expression under it; it never falls back to the engine's English string.
+    const friendly = localizedCronSchedule(locale, task.cron, t);
     return (
       <CronTaskRow
         key={key}
         task={task}
         sessionTitle={sessionTitle}
         workspaceName={workspacesById.get(task.workspace_id)?.name}
-        schedule={cronScheduleLabel(locale, task.cron, task.human_schedule, t)}
+        schedule={friendly ?? t('cron.schedule.custom')}
+        customSchedule={friendly === undefined}
         pending={busyTaskId === task.id}
         expanded={isOpen}
         onToggleDetail={() => { toggleDetail(task); }}
@@ -696,15 +708,6 @@ export function CronPage({ sessions, workspaceOptions, onNavigate, onToggleSideb
           className="h-8 rounded-md border border-hairline px-3 text-[13px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
         >
           {t('cron.panel.create')}
-        </button>
-        <button
-          type="button"
-          data-cron-refresh
-          disabled={tasksQuery.isFetching}
-          onClick={() => { void tasksQuery.refetch(); }}
-          className="h-8 rounded-md border border-hairline px-3 text-[13px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {t('cron.panel.refresh')}
         </button>
       </PageHeader>
       <div className="shrink-0 border-b border-hairline px-4 py-2 lg:px-6">

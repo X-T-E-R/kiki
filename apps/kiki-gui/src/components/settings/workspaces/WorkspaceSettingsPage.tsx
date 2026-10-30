@@ -184,7 +184,9 @@ export function WorkspaceSettingsPage({ workspaceId }: { readonly workspaceId: s
         <div className="mt-1 text-[12px] text-ink-faint" data-workspace-detail-stats>
           {details.isError ? (
             <div className="flex flex-wrap items-center gap-2">
-              <InlineError error={details.error} />
+              {/* This read is a count, not a conversation: say so, and let the
+                  retry recover it instead of naming a missing session. */}
+              <span>{t('st.workspaces.detail.statsFailed')}</span>
               <button type="button" className={SECONDARY_BUTTON} onClick={() => { void details.refetch(); }}>{t('common.retry')}</button>
             </div>
           ) : (
