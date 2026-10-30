@@ -29,7 +29,7 @@ import { nbSearchServiceCards, operationWord, providerLabelKey, serviceTitle, ty
 import type { KeyDraft } from './NbSearchMultiKeyEditor';
 import { NbSearchServiceCard } from './NbSearchServiceCard';
 import { NbSearchLaneComposer } from './NbSearchLaneComposer';
-import { DEFAULT_FETCH_PAIR, addLaneService, addPipelineService, chainPipelines, clearDefaultLane, engineLaneProfiles, makeDefaultLane, removeService } from './serviceCards';
+import { addLaneService, addPipelineService, clearDefaultLane, engineLaneProfiles, makeDefaultLane, removeService } from './serviceCards';
 import type { NbSearchAdvancedBinding } from './advancedSupport';
 
 type ReadCredential = (instanceId: string, reveal: boolean) => Promise<import('@kiki/protocol').NbSearchManagedCredentialView>;
@@ -185,15 +185,20 @@ export function NbSearchLanesTab({
     const cards: ServiceCard[] = [];
     const cardFor = (instanceId: string, providerId: string) => {
       const descriptor = capabilities.providers.descriptors.find((candidate) => candidate.provider_id === providerId);
-      // A saved instance that only fetches belongs to the fetch tab's chain;
-      // the search tab lists it only when it sits on no chain either —
-      // otherwise the key the user saved for it would be unreachable.
-      const fetches = (descriptor?.fetch_operations.length ?? 0) > 0
-        || capabilities.fetch.pipelines.some((pipeline) => pipeline.stages[0]?.id === providerId);
-      const onChain = capabilities.fetch.pipelines.some((pipeline) =>
-        pipeline.stages[0]?.id === providerId
-        && chainPipelines(capabilities, draft, DEFAULT_FETCH_PAIR.inputKind, DEFAULT_FETCH_PAIR.representation).pipelines.includes(pipeline.id));
-      if (fetches && onChain) return;
+      // A saved instance that only fetches belongs to 网页抓取, never to
+      // this list — its key is set on the fetch tab's chain card.
+      const pipelineProfiles = engineLaneProfiles(capabilities);
+      const pipelineOf = capabilities.fetch.pipelines.find((pipeline) => {
+        const profile = pipelineProfiles[pipeline.id];
+        const profileProvider = profile === undefined ? undefined
+          : capabilities.providers.descriptors.some((candidate) => candidate.provider_id === profile.provider_id)
+            ? profile.provider_id
+            : undefined;
+        const pipelineProvider = profileProvider ?? pipeline.stages[0]?.id;
+        return pipelineProvider === providerId;
+      });
+      const fetches = (descriptor?.fetch_operations.length ?? 0) > 0 || pipelineOf !== undefined;
+      if (fetches) return;
       const searches = (descriptor?.query_operations.length ?? 0) > 0;
       const word = searches ? t('st.nbSearch.operation.search') : t('st.nbSearch.role.service');
       cards.push({
