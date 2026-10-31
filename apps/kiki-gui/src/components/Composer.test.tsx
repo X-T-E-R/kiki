@@ -4550,7 +4550,7 @@ describe('Composer projected profile model menu', () => {
     const props = { agentProfile: 'agent', model: 'fixture/kiki-pro', value: 'hello', onChangeModel, onSend, onChangeAgentProfile: vi.fn(), execution: NATIVE_AGENT, onChangeExecution: vi.fn() };
     const { container, rerender } = await renderComposer(props);
     expect(container.querySelector('[data-model-menu-blocked]')).toBeNull();
-    expect(container.querySelector('[data-model-menu-warning]')).toBeNull();
+    expect(container.querySelector('[data-model-domain-note]')).toBeNull();
     await act(async () => (container.querySelector<HTMLButtonElement>('#composer-model-select') ?? container.querySelector<HTMLButtonElement>('#composer-execution-select'))!.click());
     const outside = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.includes('fixture/outside'))!;
     expect(outside.getAttribute('aria-disabled')).not.toBe('true');
@@ -4560,7 +4560,8 @@ describe('Composer projected profile model menu', () => {
     if (applyBtn) await act(async () => applyBtn.click());
     expect(onChangeModel).toHaveBeenCalledWith('fixture/outside');
     await rerender({ ...props, model: 'fixture/outside' });
-    expect(container.querySelector('[data-model-menu-warning]')?.textContent).toContain('profile:agent.restrict_models_to_menu');
+    expect(container.querySelector('[data-model-domain-note]')?.textContent).toContain('profile:agent.restrict_models_to_menu');
+    expect(container.querySelector('[data-model-menu-warning]')).toBeNull();
     await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     expect(onSend).toHaveBeenCalledWith('hello', []);
     await act(async () => (container.querySelector<HTMLButtonElement>('#composer-profile-select') ?? container.querySelector<HTMLButtonElement>('#composer-execution-select'))!.click());
@@ -4571,7 +4572,7 @@ describe('Composer projected profile model menu', () => {
       model_constraints_active: false, preferred_models: ['fixture/kiki-pro'] }] });
     const onSend = vi.fn();
     const { container } = await renderComposer({ agentProfile: 'agent', model: 'fixture/outside', value: 'hello', onSend });
-    expect(container.querySelector('[data-model-menu-warning]')).toBeNull();
+    expect(container.querySelector('[data-model-domain-note]')).toBeNull();
     expect(container.querySelector('[data-model-menu-blocked]')).toBeNull();
     await act(async () => container.querySelector<HTMLButtonElement>('#composer-model-select')!.click());
     const outside = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((node) => node.textContent?.includes('fixture/outside'))!;
@@ -4594,7 +4595,7 @@ describe('Composer projected profile model menu', () => {
       deny_models: ['fixture/outside'] }] });
     const onSend = vi.fn();
     const { container } = await renderComposer({ agentProfile: 'agent', model: 'fixture/outside', value: 'hello', onSend });
-    expect(container.querySelector('[data-model-menu-warning]')?.textContent).toContain('profile:agent');
+    expect(container.querySelector('[data-model-domain-note]')?.textContent).toContain('profile:agent');
     await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     expect(onSend).toHaveBeenCalledWith('hello', []);
   });

@@ -95,6 +95,8 @@ export interface ExecutionSelectProps {
   readonly executorRefreshFailed?: boolean;
   readonly onRefreshExecutorModels?: () => void;
   readonly onRequireSwitchConfirmation?: (toModel: string) => void;
+  /** Why the bound model sits outside the profile's menu; shown as a dot with the reason in the tooltip. */
+  readonly domainNote?: string;
 }
 
 export function ExecutionSelect({
@@ -121,6 +123,7 @@ export function ExecutionSelect({
   executorRefreshFailed = false,
   onRefreshExecutorModels,
   onRequireSwitchConfirmation,
+  domainNote,
 }: ExecutionSelectProps) {
   const { t } = useI18n();
   const now = useNow();
@@ -438,11 +441,11 @@ export function ExecutionSelect({
         data-execution-pending={pending ? 'true' : undefined}
         data-composer-engine-model={isNative ? undefined : engineLabel}
         disabled={disabled}
-        title={pending
+        title={[pending
           ? t('composer.execution.pendingTitle')
           : busy
             ? t('composer.execution.busyTitle')
-            : externalDiagnosticTitle ?? t('composer.execution.title', { engine: engineLabel })}
+            : externalDiagnosticTitle ?? t('composer.execution.title', { engine: engineLabel }), domainNote].filter(Boolean).join('\n')}
         onClick={() => {
           if (open) close();
           else setOpen(true);
@@ -460,6 +463,11 @@ export function ExecutionSelect({
               and cancel, and names only the model and effort. */}
           {triggerLabel}
         </span>
+        {domainNote !== undefined ? (
+          <span data-model-domain-note className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-rule">
+            <span className="sr-only">{domainNote}</span>
+          </span>
+        ) : null}
       </button>
 
       {pending && onCancelPending !== undefined ? (
