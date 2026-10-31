@@ -80,6 +80,7 @@ const MATRIX = {
   'settings-ia': ['theme', 'width'],
   skins: ['theme'],
   steer: ['width'],
+  'durable-admission': ['theme'],
   'notes-rail': ['width'],
   'annotation-bubbles': ['width'],
   worktrees: ['theme', 'width'],
@@ -778,6 +779,77 @@ async function scenarioPromptDedupe() {
   console.log(`[check] prompt dedupe user blocks: ${userCount}`);
   if (userCount !== 1) throw new Error(`expected exactly one user block, saw ${userCount}`);
   await shot('prompt-dedupe');
+}
+
+/**
+ * Durable admission on the message (fixtures/durable-admission.scenario.mjs):
+ * a fast send never shows more than the bubble's sending state; a slow restore
+ * gets one quiet line under the bubble after the threshold, with cancel on
+ * hover; held and failed copies keep retry / send separately / cancel there.
+ * No dock panel, phase name or ticking timer appears in any of them.
+ */
+async function scenarioDurableAdmission() {
+  const noPanel = async (where) => {
+    if (await page.locator('[data-restore-admission]').count() !== 0) throw new Error(`${where}: the old admission panel rendered`);
+    const text = await page.locator('[role="log"]').first().innerText();
+    if (/prompt_acquire|prompt_queue|restore_queue|\d+s/.test(text)) throw new Error(`${where}: internal phase or timer leaked: ${text}`);
+  };
+  await selectSession('Fixture: durable admission');
+  // Ordinary send: sample every frame for an admission line until the reply lands.
+  await page.evaluate(() => {
+    window.__admission = { seen: 0, stop: false };
+    const tick = () => {
+      if (document.querySelector('[data-admission]') !== null) window.__admission.seen += 1;
+      if (!window.__admission.stop) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+  await sendPrompt('Rename the helper.', 'queue');
+  await page.locator('[data-optimistic-status]').waitFor({ timeout: 5000 });
+  await page.waitForTimeout(150);
+  await shot('durable-admission-fast-sending');
+  await waitForText('Done. Nothing else needed.');
+  await page.waitForSelector('[data-header-working]', { state: 'detached', timeout: 20_000 });
+  const fast = await page.evaluate(() => { window.__admission.stop = true; return window.__admission.seen; });
+  if (fast !== 0) throw new Error(`fast send showed an admission line in ${fast} frames`);
+  console.log('[check] fast durable send: no admission line in any frame');
+  await noPanel('fast send');
+  await shot('durable-admission-fast-done');
+
+  // Slow restore: nothing extra until the threshold, then one line.
+  await sendPrompt('Pick up where we left off.', 'queue');
+  await page.locator('[data-optimistic-status]').waitFor({ timeout: 5000 });
+  await page.waitForTimeout(1500);
+  if (await page.locator('[data-admission]').count() !== 0) throw new Error('slow restore showed its line before the threshold');
+  const line = page.locator('[data-admission="queued"]');
+  await line.waitFor({ timeout: 8000 });
+  await noPanel('slow restore');
+  const cancel = line.locator('[data-admission-cancel]');
+  const hiddenOpacity = await cancel.evaluate((el) => getComputedStyle(el.parentElement).opacity);
+  if (hiddenOpacity !== '0') throw new Error(`slow restore cancel visible without hover (opacity ${hiddenOpacity})`);
+  await page.mouse.move(0, 0);
+  await shot('durable-admission-slow');
+  await page.locator('[role="log"] [data-block-id^="user-"]', { hasText: 'Pick up where we left off.' }).hover();
+  await page.waitForTimeout(250);
+  await shot('durable-admission-slow-hover');
+  await waitForText('Done. Nothing else needed.');
+  await page.locator('[data-admission]').waitFor({ state: 'detached', timeout: 15_000 });
+  console.log('[check] slow restore: line after threshold, gone on admission');
+
+  // Held and failed copies opened from history.
+  await selectSession('Fixture: held admission');
+  await page.locator('[data-admission="failed"]').waitFor({ timeout: 10_000 });
+  await page.locator('[data-admission="duplicate"]').waitFor({ timeout: 10_000 });
+  await noPanel('held');
+  if (await page.locator('[data-admission="failed"] [data-admission-retry]').count() !== 1) throw new Error('failed copy lost its retry');
+  if (await page.locator('[data-admission="duplicate"] [data-admission-retry]').count() !== 1) throw new Error('duplicate lost send separately');
+  await page.mouse.move(0, 0);
+  await shot('durable-admission-held');
+  await page.locator('[data-admission="duplicate"] [data-admission-cancel]').click();
+  await page.locator('[data-admission="duplicate"]').waitFor({ state: 'detached', timeout: 10_000 });
+  await page.locator('[data-admission="failed"] [data-admission-retry]').click();
+  await page.locator('[data-admission="failed"]').waitFor({ state: 'detached', timeout: 10_000 });
+  console.log('[check] held/failed: cancel removes the copy, retry resumes the saved message');
 }
 
 async function scenarioSubagentInvocations() {
@@ -6480,6 +6552,7 @@ const ENTRY_EXTRA = {
 const BODIES = [
   ['basic-stream', scenarioBasicStream],
   ['prompt-dedupe', scenarioPromptDedupe],
+  ['durable-admission', scenarioDurableAdmission],
   ['queue', scenarioQueue],
   ['send-timing', scenarioSendTiming],
   ['steer', scenarioSteer],

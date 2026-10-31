@@ -175,6 +175,7 @@ import {
   usePromptOutcomeActions,
   type PromptOutcomeActions,
 } from './timeline/PromptOutcome';
+import { AdmissionLine, useAdmissionView } from './timeline/AdmissionLine';
 import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
 import { RenderedImageScope, useRenderedImageTargets } from './markdown/renderedImages';
@@ -502,10 +503,11 @@ const UserMessage = memo(function UserMessage({
     (segment: string) => <ThreadRefText text={segment} projectSegment={projectUserText} />,
     [],
   );
+  const admission = useAdmissionView(block.promptId);
   const optimisticStatusLabel = block.optimisticStatus === 'offline'
     ? t('transcript.sendUnconfirmed')
     : block.optimisticStatus === 'server'
-      ? block.optimisticRetryable ? t('transcript.serverHeld') : t('transcript.serverSyncing')
+      ? block.optimisticRetryable ? t('transcript.serverHeld') : t('transcript.sending')
       : t('transcript.sending');
   const optimisticStatusTitle = block.optimisticStatus === 'sending'
     ? block.optimisticSlow
@@ -513,7 +515,7 @@ const UserMessage = memo(function UserMessage({
       : undefined
     : block.optimisticStatus === 'offline'
       ? t(block.optimisticPreserved ? 'transcript.sendUnconfirmedTitle' : 'transcript.sendUnconfirmedNoBackupTitle')
-      : block.optimisticRetryable ? t('transcript.serverHeldTitle') : t('transcript.serverSyncingTitle');
+      : block.optimisticRetryable ? t('transcript.serverHeldTitle') : undefined;
   const optimisticStatusIcon = block.optimisticStatus === 'offline'
     ? <Icon name="warning" size={12} />
     : block.optimisticStatus === 'server' && block.optimisticRetryable
@@ -736,7 +738,7 @@ const UserMessage = memo(function UserMessage({
         />
       ) : null}
 
-      {block.optimisticStatus !== undefined ? (
+      {admission !== undefined ? <AdmissionLine view={admission} /> : block.optimisticStatus !== undefined ? (
         <span
           role="status"
           data-optimistic-status={block.optimisticStatus}

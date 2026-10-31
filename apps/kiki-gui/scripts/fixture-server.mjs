@@ -190,6 +190,7 @@ import { createWorktreeForSession, handleWorktrees, loadWorktrees } from './fixt
 import { handleSsh } from './fixture-ssh.mjs';
 import { antigravityCheck, antigravityLogin, handleAntigravity } from './fixture-antigravity.mjs';
 import { handleGuiEntries } from './fixture-gui-entries.mjs';
+import { handleDurableAdmission } from './fixture-admission.mjs';
 import { handleSpaces, spaceConfig, spaceConfigWrite, spaceCurrentHome, spacesControl } from './fixture-spaces.mjs';
 import { handleNotifications, resetNotifications, revealNotificationCredential } from './fixture-notifications.mjs';
 import { handleImSessions, resetImSessions } from './fixture-im-sessions.mjs';
@@ -1889,6 +1890,12 @@ class FixtureServer {
     if (steps !== null) {
       void this.runScript(session.record.id, bindPrompt(bind(steps, session.record.id), item.prompt_id));
     }
+  }
+
+  /** Run an admitted durable prompt through the ordinary submit path. */
+  admitDurablePrompt(session, body) {
+    const sink = { writeHead() {}, end() {} };
+    this.route(sink, `/sessions/${session.record.id}/prompts`, new URLSearchParams(), body, 'POST');
   }
 
   debug(...args) {
@@ -4102,6 +4109,8 @@ class FixtureServer {
       }
       return found;
     };
+    // Durable admission (scripts/fixture-admission.mjs), only for scenarios that declare it.
+    if (handleDurableAdmission(this, res, session, tail, query, body, method)) return;
     if (tail === '' ) return this.envelope(res, session.record);
     if (tail === '/profile' && body !== undefined) {
       if (typeof body.title === 'string') session.record.title = body.title;
