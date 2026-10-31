@@ -143,7 +143,7 @@ export function InspectorComms({ sessionId }: { readonly sessionId: string }) {
 
   const visible = showAll ? groups : groups.slice(0, PEER_PREVIEW);
   return (
-    <InspectorSection title={t('comms.title')} count={total} data-inspector-comms="">
+    <InspectorSection title={t('comms.title')} count={total} defaultOpen={false} data-inspector-comms="">
       {query.historyIncomplete ? <HistoryNote state={query.history?.state === 'error' ? 'error' : 'preparing'} /> : null}
       {total === 0 ? (
         query.historyIncomplete ? null : <p className="text-[12.5px] text-ink-faint">{t('comms.scanning')}</p>

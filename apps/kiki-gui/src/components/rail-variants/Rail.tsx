@@ -568,7 +568,7 @@ export function Rail({
   // conversation's settings. One hairline above the group, then one folded
   // row each, side by side — never a fold inside another fold.
   const tailSection = (
-    <div data-inspector-tail className={`${SECTION} space-y-0.5`}>
+    <div data-inspector-tail className={`${SECTION} space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden`}>
       <CapabilitiesBlock sessionId={state.sessionId} agentId={focusedAgentId} workspaceId={session?.workspace_id} cwd={session?.metadata.cwd} />
       <ActivityFeed blocks={state.blocks} forest={forest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
       {memory !== undefined ? (
@@ -597,8 +597,9 @@ export function Rail({
           summary={residentDirName(session.metadata.cwd) ?? t('rail.sessionNoName')}
           defaultOpen={false}
           data-rail-group="session"
+          data-inspector-session=""
         >
-          <dl data-inspector-session="">
+          <dl>
             <InspectorRow label={t('rail.directory')} title={session.metadata.cwd}><span className="truncate" style={{ direction: 'rtl', unicodeBidi: 'plaintext' }}>{session.metadata.cwd}</span></InspectorRow>
             {session.message_count > 0 ? <InspectorRow label={t('rail.messages')}>{String(session.message_count)}</InspectorRow> : null}
             <InspectorRow label={t('rail.updatedRow')}><RelativeTime at={session.updated_at} /></InspectorRow>

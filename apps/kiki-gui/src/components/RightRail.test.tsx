@@ -617,13 +617,31 @@ describe('RightRail shared chapters', () => {
     expect(shallow.querySelector('[data-inspect-parent]')).toBeNull();
   });
 
-  it('leads with the profile head and folds only the session row', async () => {
-    const rail = await renderRail();
+  it('leads with the profile head and folds the session row without a fold inside it', async () => {
+    const rail = await renderRail({
+      subagent: context,
+      stateOverrides: {
+        session: {
+          id: 'sess-1',
+          workspace_id: 'ws-1',
+          metadata: { cwd: 'C:/work/workshop' },
+          agent_config: {},
+          message_count: 3,
+          updated_at: '2026-01-01T00:00:00.000Z',
+        } as NonNullable<SessionViewState['session']>,
+      },
+    });
     const page = rail.querySelector('[data-rail-pinned] .rail-page')!;
     expect(page.firstElementChild?.hasAttribute('data-rail-profile-head')).toBe(true);
     expect(rail.querySelector('[data-inspector-setup]')).toBeNull();
-    const session = rail.querySelector('[data-inspector-session]');
-    expect(session === null || session.querySelector('[aria-expanded="false"]') !== null).toBe(true);
+    const session = rail.querySelector('[data-inspector-session]')!;
+    expect(session).not.toBeNull();
+    const button = session.querySelector<HTMLButtonElement>(':scope > div > button[aria-expanded="false"]')!;
+    expect(button.textContent).toContain('Session');
+    expect(button.textContent).toContain('workshop');
+    await act(async () => { button.click(); });
+    expect(session.querySelectorAll('[aria-expanded]')).toHaveLength(1);
+    expect(session.querySelector('dl')?.textContent).toContain('C:/work/workshop');
   });
 
   it('keeps the resident overview in every state, idle and empty included', async () => {
