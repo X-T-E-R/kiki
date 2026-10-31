@@ -668,6 +668,7 @@ export interface SessionStateSnapshot {
         readonly executor: string;
         readonly configuration: 'profile' | 'native';
         readonly label: string;
+        readonly engine_label?: string;
       }>>;
       readonly usage?: /* TokenUsage — packages/agent-core-v2/src/kosong/contract/usage.ts */ {
         inputOther: number;
@@ -1163,6 +1164,7 @@ export interface AgentStateSnapshot {
           readonly executor: string;
           readonly configuration: 'profile' | 'native';
           readonly label: string;
+          readonly engine_label?: string;
         }[];
         readonly agentRefContext?: {
           readonly partIndex: number;
@@ -1511,6 +1513,7 @@ export interface AgentStateSnapshot {
         readonly executor: string;
         readonly configuration: 'profile' | 'native';
         readonly label: string;
+        readonly engine_label?: string;
       }[];
       readonly agentRefContext?: {
         readonly partIndex: number;
@@ -1787,6 +1790,7 @@ export interface AgentStateSnapshot {
           readonly executor: string;
           readonly configuration: 'profile' | 'native';
           readonly label: string;
+          readonly engine_label?: string;
         }[];
         readonly agentRefContext?: {
           readonly partIndex: number;
@@ -2187,6 +2191,7 @@ export interface AgentStateSnapshot {
         readonly executor: string;
         readonly configuration: 'profile' | 'native';
         readonly label: string;
+        readonly engine_label?: string;
       }[];
       readonly agentRefContext?: {
         readonly partIndex: number;
@@ -7576,6 +7581,7 @@ export interface AgentStateSnapshot {
             readonly executor: string;
             readonly configuration: 'profile' | 'native';
             readonly label: string;
+            readonly engine_label?: string;
           }[];
           readonly agentRefContext?: {
             readonly partIndex: number;
@@ -7888,6 +7894,7 @@ export interface AgentStateSnapshot {
       readonly executor: string;
       readonly configuration: 'profile' | 'native';
       readonly label: string;
+      readonly engine_label?: string;
     };
     readonly agentId?: string;
     readonly profile?: string;
@@ -8020,6 +8027,7 @@ export interface AgentStateSnapshot {
       readonly executor: string;
       readonly configuration: 'profile' | 'native';
       readonly label: string;
+      readonly engine_label?: string;
     };
     readonly agentId?: string;
     readonly profile?: string;

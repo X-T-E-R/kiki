@@ -4,6 +4,7 @@ import type { ServicesAccessor } from '#/_base/di/instantiation';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { resolveSubagentTarget } from '#/app/agentProfileCatalog/subagentDispatch';
 import { IModelService } from '#/kosong/model/model';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
@@ -29,8 +30,10 @@ export function prepareAgentReferences(message: ContextMessage, messageId: strin
   const refs: AgentReference[] = requested.map(profile => {
     const target = resolveSubagentTarget(catalog, caller, { profileName: profile }, models);
     const resolved = target.selection.baseProfile;
+    const executor = resolved.executor ?? 'native';
+    const engineLabel = executor === 'native' ? 'Kiki' : accessor.get(IAgentExecutorRegistry).get(executor)?.label ?? executor;
     return { refId: `ar:${encodeURIComponent(messageId)}:${encodeURIComponent(profile)}`, profile,
-      executor: resolved.executor ?? 'native', configuration: isNativeTarget(resolved) ? 'native' : 'profile', label: profile };
+      executor, configuration: isNativeTarget(resolved) ? 'native' : 'profile', label: profile, engine_label: engineLabel };
   });
   const block = `\n\n${agentRefsContext(refs, delegationAvailable)}`;
   let partIndex = content.findLastIndex(part => part.type === 'text');
