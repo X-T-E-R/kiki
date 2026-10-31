@@ -160,10 +160,12 @@ describe('Composer agent mentions', () => {
     expect(labels.some((text) => text.includes('claude-code'))).toBe(true);
     const codex = options(container).find((node) => (node.textContent ?? '').includes('codex'))!;
     expect(codex.getAttribute('aria-disabled')).toBe('true');
-    expect(codex.textContent).toContain('Codex is not installed');
+    // A known reason code localizes on the client (en dictionary here).
+    expect(codex.textContent).toContain('This engine is not installed');
     // Group headers for both engines appear.
-    expect(container.textContent).toContain('Agents — Kiki');
-    expect(container.textContent).toContain('Agents — Codex');
+    // Group headers name what the group is; each row shows its own engine.
+    expect(container.textContent).toContain('Kiki agents');
+    expect(container.textContent).toContain('External engines');
   });
 
   it('accepts an agent with the keyboard: the draft gains the verbatim link and a tinted token', async () => {
@@ -174,7 +176,20 @@ describe('Composer agent mentions', () => {
     await act(async () => { node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
     await settle();
     expect(node.value).toContain('kiki://agents/claude-code');
+    // The backdrop marks the link's range as a tinted token (transparent marks
+    // can only tint; a readable label would need an overlay — see the receipt).
     expect(container.querySelector('[data-thread-ref-token][data-ref-kind="agent"]')?.textContent).toContain('kiki://agents/claude-code');
+  });
+
+  it('falls back to the server reason text for a code it does not know', async () => {
+    referenceCandidates.mockResolvedValue({
+      delegation_available: true,
+      items: [{ ...CANDIDATES.items[1]!, unavailable_reason: 'Codex needs an update', unavailable_reason_code: 'future_code_xyz' }],
+    });
+    const container = await render({ sessionId: 'session_current', fsSearch: vi.fn().mockResolvedValue([]) });
+    await typeAndSettle(container, '@');
+    const codex = options(container).find((node) => (node.textContent ?? '').includes('codex'))!;
+    expect(codex.textContent).toContain('Codex needs an update');
   });
 
   it('never selects the unavailable target with mouse or keyboard', async () => {
@@ -252,8 +267,7 @@ describe('Composer agent mentions', () => {
     referenceCandidates.mockRejectedValue(new Error('boom'));
     const container = await render({ sessionId: 'session_current', fsSearch: vi.fn().mockResolvedValue([]) });
     await typeAndSettle(container, '@');
-    // The file feed is empty and the agent query failed: the menu shows its
-    // empty message rather than a crash.
-    expect(container.textContent).toContain('No files or agents to reference.');
+    // The candidate query failed: the menu names the failure, not a crash.
+    expect(container.textContent).toContain('Could not load agent targets.');
   });
 });

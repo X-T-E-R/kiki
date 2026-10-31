@@ -94,6 +94,7 @@ import {
 import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
 import { isExecutorActionAvailable, mapExecutorCapabilities } from '../lib/executorCapabilities';
 import {
+  agentUnavailableReason,
   filterAgentCandidates,
   groupAgentCandidates,
   type AgentCandidateGroup,
@@ -1224,8 +1225,8 @@ export function Composer({
     retry: false,
   });
   const agentCandidateList = useMemo(
-    () => (agentReferencesQuery.data === undefined ? { groups: [], delegationAvailable: true } : groupAgentCandidates(agentReferencesQuery.data)),
-    [agentReferencesQuery.data],
+    () => (agentReferencesQuery.data === undefined ? { groups: [], delegationAvailable: true } : groupAgentCandidates(agentReferencesQuery.data, t)),
+    [agentReferencesQuery.data, t],
   );
   const filteredAgentGroups = useMemo(
     () => (menu?.kind === 'mention' ? filterAgentCandidates(agentCandidateList.groups, menu.query) : []),
@@ -1325,11 +1326,14 @@ export function Composer({
   const conversationRefs = useMemo(() => findConversationRefs(text), [text]);
   const agentRefs = useMemo(() => findAgentRefs(text), [text]);
   // Both link kinds tint as tokens in the backdrop: one merged, ordered list so
-  // a draft mixing thread and agent links highlights every range in place.
+  // a draft mixing thread and agent links highlights every range in place. The
+  // backdrop's marks are transparent (the textarea's dark text paints over
+  // them), so a token can only tint, never show a readable label — see the
+  // receipt for the overlay/short-link options that would change that.
   const backdropTokens = useMemo(
     () => [
-      ...conversationRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: ref.kind as string })),
-      ...agentRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: 'agent' as string })),
+      ...conversationRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: ref.kind as string, profile: undefined as string | undefined })),
+      ...agentRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: 'agent' as string, profile: ref.profile as string | undefined })),
     ].sort((a, b) => a.start - b.start || a.end - b.end),
     [conversationRefs, agentRefs],
   );
@@ -3195,6 +3199,7 @@ export function Composer({
                   <MentionMenuBody
                     items={mentionItems}
                     agentGroups={filteredAgentGroups}
+                    agentsFailed={agentReferencesQuery.isError}
                     delegationAvailable={agentCandidateList.delegationAvailable}
                     delegationReason={agentCandidateList.unavailableReason}
                     activeIndex={activeIndex}
@@ -3223,7 +3228,12 @@ export function Composer({
                 {backdropTokens.map((ref, index) => (
                   <span key={ref.start}>
                     {text.slice(index === 0 ? 0 : backdropTokens[index - 1]!.end, ref.start)}
-                    <mark data-thread-ref-token data-ref-kind={ref.kind} className="rounded-[3px] bg-accent/[0.14] text-transparent shadow-[0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.14)]">{ref.raw}</mark>
+                    <mark
+                      data-thread-ref-token
+                      data-ref-kind={ref.kind}
+                      title={ref.kind === 'agent' ? ref.raw : undefined}
+                      className="rounded-[3px] bg-accent/[0.14] text-transparent shadow-[0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.14)]"
+                    >{ref.raw}</mark>
                   </span>
                 ))}
                 {text.slice(backdropTokens.at(-1)!.end)}
@@ -3837,6 +3847,7 @@ function SkillPreviewCard({ item }: { item: SlashItem }) {
 function MentionMenuBody({
   items,
   agentGroups,
+  agentsFailed,
   delegationAvailable,
   delegationReason,
   activeIndex,
@@ -3848,6 +3859,8 @@ function MentionMenuBody({
 }: {
   items: readonly FsSearchHit[];
   agentGroups: readonly AgentCandidateGroup[];
+  /** The agent candidate load failed; files may still list. */
+  agentsFailed: boolean;
   delegationAvailable: boolean;
   delegationReason?: string;
   activeIndex: number;
@@ -3864,8 +3877,11 @@ function MentionMenuBody({
   return (
     <>
       {feed.failed ? <p className="px-3 py-2 text-[12px] text-danger">{t('composer.filesFailed')}</p> : null}
-      {loading || (bothEmpty && feed.exhausted && !feed.failed) ? (
-        <p className="px-3 py-2 text-[12px] text-ink-faint">
+      {/* The agent candidate load failing is its own line, independent of the
+          file list beside it — files may still list while agents are gone. */}
+      {agentsFailed ? <p className="px-3 py-2 text-[12px] text-ink-faint" data-agent-mention-failed>{t('composer.agentsFailed')}</p> : null}
+      {loading || (bothEmpty && feed.exhausted && !feed.failed && !agentsFailed) ? (
+        <p className="px-3 py-2 text-[12px] text-ink-faint" data-mention-empty>
           {loading ? t('composer.filesSearching') : query === '' ? t('composer.mentionEmpty') : t('composer.mentionNoMatch', { query })}
         </p>
       ) : null}
@@ -3907,7 +3923,7 @@ function MentionMenuBody({
       {agentGroups.map((group) => (
         <div key={group.group}>
           <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
-            {t('composer.agentsHeader', { engine: group.label })}
+            {group.label}
           </p>
           {group.candidates.map((candidate) => {
             const index = items.length + agentGroups
@@ -3915,7 +3931,7 @@ function MentionMenuBody({
               .reduce((total, g) => total + g.candidates.length, 0) + group.candidates.indexOf(candidate);
             const active = index === activeIndex;
             const disabled = !candidate.available;
-            const reason = candidate.unavailable_reason ?? t('composer.agentsUnavailable');
+            const reason = agentUnavailableReason(candidate, t);
             return (
               <button
                 key={candidate.profile}
@@ -3935,6 +3951,9 @@ function MentionMenuBody({
                 </span>
                 <span className={`shrink-0 text-[12.5px] font-medium ${active && !disabled ? 'text-selected-ink' : 'text-ink'}`}>
                   {candidate.label}
+                </span>
+                <span className="shrink-0 rounded-full border border-hairline px-1.5 py-px text-[10.5px] text-ink-faint">
+                  {candidate.engine_label}
                 </span>
                 <span className="min-w-0 flex-1 truncate text-[11px] text-ink-faint">
                   {disabled ? reason : candidate.description ?? ''}
