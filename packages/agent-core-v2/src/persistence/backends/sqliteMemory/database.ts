@@ -187,27 +187,45 @@ export class MemoryDatabase {
     const saved = JSON.parse(String(row['payload'])) as { generation: number; entry: string };
     const entry = JSON.parse(saved.entry) as MemoryEntry;
     if (this.legacyEntryBlocked(scope, entry)) return;
+    const consume = (kind: string, key: string): void => {
+      const deleted = this.db.prepare('DELETE FROM memory_quarantine WHERE kind=? AND scope=? AND id=? AND key=?').run(kind, scope, id, key);
+      if (deleted.changes !== 1 || this.db.prepare('SELECT 1 FROM memory_quarantine WHERE kind=? AND scope=? AND id=? AND key=?').get(kind, scope, id, key) !== undefined) throw new Error('Memory quarantine consumption was not confirmed');
+    };
     const restore = (): void => {
       if (this.legacyEntryBlocked(scope, entry)) return;
-      this.db.prepare('INSERT OR IGNORE INTO revisions VALUES(?,?,?,?,?)').run(scope, id, revision, saved.generation, saved.entry);
+      this.db.prepare('INSERT INTO revisions VALUES(?,?,?,?,?) ON CONFLICT(scope,id,revision) DO UPDATE SET entry=excluded.entry WHERE revisions.entry IS NULL AND revisions.generation=excluded.generation').run(scope, id, revision, saved.generation, saved.entry);
+      const restored = this.db.prepare('SELECT entry FROM revisions WHERE scope=? AND id=? AND revision=?').get(scope, id, revision);
+      if (restored?.['entry'] !== saved.entry || this.legacyEntryBlocked(scope, entry)) throw new Error('Memory quarantine revision restoration was not confirmed');
       this.linkEntrySource(scope, entry);
-      this.db.prepare("DELETE FROM memory_quarantine WHERE kind='revisions' AND scope=? AND id=? AND key=?").run(scope, id, revision);
+      consume('revisions', revision);
       const columns = { sources: ['id', 'scope', 'object_id', 'payload', 'locator', 'learned_at'], adjudications: ['id', 'scope', 'object_id', 'revision', 'generation', 'payload'], journal: ['ordinal', 'scope', 'id', 'operation_id', 'payload'], commit_views: ['scope', 'id', 'generation', 'revision'], heads: ['scope', 'id', 'revision'], legacy: ['scope', 'key', 'payload', 'object_id', 'revision', 'issue'] };
-      for (const [table, fields] of Object.entries(columns)) for (const item of this.db.prepare('SELECT key,payload FROM memory_quarantine WHERE kind=? AND scope=? AND id=? AND revision=?').iterate(table, scope, id, revision)) {
+      const keys: Record<string, readonly string[]> = { sources: ['id'], adjudications: ['id'], journal: ['ordinal'], commit_views: ['scope', 'id', 'generation'], heads: ['scope', 'id'], legacy: ['scope', 'key'] };
+      for (const [table, fields] of Object.entries(columns)) for (const item of this.db.prepare('SELECT key,payload FROM memory_quarantine WHERE kind=? AND scope=? AND id=? AND (? OR revision=?)').iterate(table, scope, id, Number(table === 'journal'), revision)) {
         if (table === 'journal' && this.journalBlocked(scope, JSON.parse((JSON.parse(String(item['payload'])) as { payload: string }).payload) as MemoryJournalRecord)) continue;
-        const restored = this.db.prepare(`INSERT OR IGNORE INTO ${table}(${fields.join(',')}) SELECT ${fields.map((field) => `json_extract(payload,'$.${field}')`).join(',')} FROM memory_quarantine WHERE kind=? AND scope=? AND id=? AND key=?`).run(table, scope, id, item['key']!);
-        if (restored.changes !== 0) this.db.prepare('DELETE FROM memory_quarantine WHERE kind=? AND scope=? AND id=? AND key=?').run(table, scope, id, item['key']!);
+        const where = (names: readonly string[]): string => names.map((field) => `t.${field} IS json_extract(q.payload,'$.${field}')`).join(' AND ');
+        const query = (names: readonly string[]) => this.db.prepare(`SELECT 1 FROM ${table} t JOIN memory_quarantine q ON q.kind=? AND q.scope=? AND q.id=? AND q.key=? WHERE ${where(names)}`).get(table, scope, id, item['key']!);
+        if (query(fields) === undefined) {
+          if (query(keys[table]!) !== undefined) continue;
+          this.db.prepare(`INSERT INTO ${table}(${fields.join(',')}) SELECT ${fields.map((field) => `json_extract(payload,'$.${field}')`).join(',')} FROM memory_quarantine WHERE kind=? AND scope=? AND id=? AND key=?`).run(table, scope, id, item['key']!);
+          if (query(fields) === undefined) throw new Error(`Memory quarantine ${table} restoration was not confirmed`);
+        }
+        consume(table, String(item['key']));
       }
       this.db.prepare('INSERT OR IGNORE INTO source_links SELECT scope,id,object_id FROM sources WHERE scope=? AND object_id=?').run(scope, id);
-      for (const item of this.db.prepare("SELECT key,payload FROM memory_quarantine WHERE kind='journal_payload' AND scope=? AND id=? AND revision=?").iterate(scope, id, revision)) {
+      for (const item of this.db.prepare("SELECT key,payload FROM memory_quarantine WHERE kind='journal_payload' AND scope=? AND id=?").iterate(scope, id)) {
         const line = (JSON.parse(String(item['payload'])) as { payload: string }).payload;
         if (this.journalBlocked(scope, JSON.parse(line) as MemoryJournalRecord)) continue;
         this.db.prepare("INSERT INTO legacy VALUES(?,'journal.jsonl',?,NULL,NULL,NULL) ON CONFLICT(scope,key) DO UPDATE SET payload=CASE WHEN legacy.payload='' THEN excluded.payload ELSE legacy.payload||char(10)||excluded.payload END WHERE instr(char(10)||legacy.payload||char(10),char(10)||excluded.payload||char(10))=0").run(scope, line);
-        this.db.prepare("DELETE FROM memory_quarantine WHERE kind='journal_payload' AND scope=? AND id=? AND key=?").run(scope, id, item['key']!);
+        if (this.db.prepare("SELECT 1 FROM legacy WHERE scope=? AND key='journal.jsonl' AND instr(char(10)||payload||char(10),char(10)||?||char(10))>0").get(scope, line) === undefined) throw new Error('Memory quarantine journal payload restoration was not confirmed');
+        consume('journal_payload', String(item['key']));
       }
-      for (const item of this.db.prepare("SELECT key FROM memory_quarantine WHERE kind='operations' AND scope=? AND id=? AND revision=?").iterate(scope, id, revision)) if (this.db.prepare("SELECT 1 FROM operation_objects o LEFT JOIN barriers b ON b.scope=o.scope AND b.id=o.id LEFT JOIN memory_quarantine q ON q.scope=o.scope AND q.id=o.id AND q.kind='revisions' WHERE o.operation_id=? AND (b.id IS NOT NULL OR q.key IS NOT NULL) LIMIT 1").get(item['key']!) === undefined) {
-        this.db.prepare("UPDATE operations SET result=(SELECT json_extract(payload,'$.result') FROM memory_quarantine WHERE kind='operations' AND scope=? AND id=? AND key=?) WHERE id=? AND result=?").run(scope, id, item['key']!, item['key']!, JSON.stringify({ forgotten: true }));
-        this.db.prepare("DELETE FROM memory_quarantine WHERE kind='operations' AND scope=? AND id=? AND key=?").run(scope, id, item['key']!);
+      for (const item of this.db.prepare("SELECT key,payload FROM memory_quarantine WHERE kind='operations' AND scope=? AND id=?").iterate(scope, id)) if (this.db.prepare("SELECT 1 FROM operation_objects o LEFT JOIN barriers b ON b.scope=o.scope AND b.id=o.id LEFT JOIN memory_quarantine q ON q.scope=o.scope AND q.id=o.id AND q.kind='revisions' WHERE o.operation_id=? AND (b.id IS NOT NULL OR q.key IS NOT NULL) LIMIT 1").get(item['key']!) === undefined) {
+        const result = (JSON.parse(String(item['payload'])) as { result: string }).result;
+        const current = this.db.prepare('SELECT result FROM operations WHERE id=?').get(item['key']!);
+        if (current === undefined || current['result'] !== result && current['result'] !== JSON.stringify({ forgotten: true })) continue;
+        this.db.prepare('UPDATE operations SET result=? WHERE id=? AND result=?').run(result, item['key']!, JSON.stringify({ forgotten: true }));
+        if (this.db.prepare('SELECT result FROM operations WHERE id=?').get(item['key']!)?.['result'] !== result) throw new Error('Memory quarantine operation restoration was not confirmed');
+        consume('operations', String(item['key']));
       }
     };
     if (this.db.isTransaction) restore(); else this.transaction(restore);

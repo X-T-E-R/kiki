@@ -689,6 +689,108 @@ describe('Memory shadow import and replay barriers', () => {
     } finally { current.close(); }
   });
 
+  function quarantinedHistoryFixture(name: string, partial = true) {
+    const scope = 'memory/global';
+    const path = join(home, `quarantine-${name}.sqlite`);
+    const seed: MemoryEntry = { id: 'm_quarantine_a', revision: 'quarantine:a', type: 'feedback', title: 'Original source', body: 'Original instruction; exception 17.', status: 'active', pinned: false, created: '2026-01-01', updated: '2026-01-01', source: { writer: 'agent', session: 'quarantine-source', turn: 17 }, reason: 'Fixture' };
+    const legal = { ...seed, id: 'm_quarantine_c', revision: 'quarantine:c' };
+    const hidden = { ...seed, id: 'm_quarantine_b', revision: 'quarantine:preimage' };
+    const head = { ...hidden, revision: 'quarantine:current', body: 'Independent corrected instruction; exception 19.', source: { writer: 'user' as const } };
+    const record = (entry: MemoryEntry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    const events = [
+      { id: hidden.id, operationId: 'quarantine-create', action: 'create' as const, before: null, beforeRevision: null, afterRevision: hidden.revision, at: hidden.created, writer: hidden.source.writer },
+      { id: hidden.id, operationId: 'quarantine-update', action: 'update' as const, before: JSON.stringify(hidden), beforeRevision: hidden.revision, afterRevision: partial ? head.revision : null, at: hidden.updated, writer: hidden.source.writer },
+    ];
+    const old = new Schema3MemoryDatabase(path);
+    try {
+      old.importLegacy([record(seed), record(legal)]);
+      old.commit({ operationId: 'quarantine-forget-a', request: 'quarantine-forget-a', expectedGeneration: old.read([scope]).generation, edits: [], barriers: [{ scope, objectId: seed.id, at: '2026-01-02' }], result: {} });
+      if (partial) old.importLegacy([{ ...record(head), history: [hidden], journal: events }]);
+    } finally { old.close(); }
+    const raw = new DatabaseSync(path);
+    try {
+      if (!partial) {
+        raw.prepare('INSERT INTO revisions VALUES(?,?,?,?,?)').run(scope, hidden.id, hidden.revision, 0, JSON.stringify(hidden));
+        for (const event of events) raw.prepare('INSERT INTO journal(scope,id,operation_id,payload) VALUES(?,?,?,?)').run(scope, hidden.id, event.operationId, JSON.stringify(event));
+      }
+      raw.prepare("INSERT INTO legacy VALUES(?,'journal.jsonl',?,NULL,NULL,NULL)").run(scope, events.map((event) => JSON.stringify(event)).join('\n'));
+    } finally { raw.close(); }
+    const current = new MemoryDatabase(path);
+    try { expect(current.revision(scope, hidden.id, hidden.revision)).toBeUndefined(); } finally { current.close(); }
+    return { scope, path, seed, legal, hidden, head, events, record };
+  }
+
+  it.each([false, true])('restores admitted quarantined history before consuming its bytes (retained head: %s)', (partial) => {
+    const { scope, path, hidden, head, events } = quarantinedHistoryFixture(`restore-${partial}`, partial);
+    const proof = new DatabaseSync(path);
+    try {
+      expect(proof.prepare("SELECT COUNT(*) AS n FROM memory_quarantine WHERE kind='revisions' AND scope=? AND id=?").get(scope, hidden.id)?.['n']).toBe(1);
+      expect(proof.prepare('SELECT entry FROM revisions WHERE scope=? AND id=? AND revision=?').get(scope, hidden.id, hidden.revision)?.['entry']).toBe(partial ? null : undefined);
+      proof.prepare('UPDATE memory_admissions SET generation=1 WHERE scope=? AND id=? AND revision=?').run(scope, hidden.id, hidden.revision);
+    } finally { proof.close(); }
+    for (let pass = 0; pass < 2; pass++) {
+      const current = new MemoryDatabase(path);
+      try {
+        expect(current.revision(scope, hidden.id, hidden.revision)).toEqual(hidden);
+        expect(current.journal(scope, hidden.id)).toEqual(events);
+        if (partial) expect(current.read([scope]).objects.find((object) => object.id === head.id)?.entry).toEqual(head);
+      } finally { current.close(); }
+    }
+    const restored = new DatabaseSync(path);
+    try { expect(restored.prepare("SELECT COUNT(*) AS n FROM memory_quarantine WHERE kind='revisions' AND scope=? AND id=?").get(scope, hidden.id)?.['n']).toBe(0); } finally { restored.close(); }
+  });
+
+  it('restores a quarantined preimage after a normal source-lineage transfer without replacing its new proposal head', () => {
+    const { scope, path, hidden, head, legal } = quarantinedHistoryFixture('lineage');
+    const current = new MemoryDatabase(path);
+    try {
+      const proposal = { ...head, revision: 'quarantine:proposal', status: 'pending' as const, supersedes: legal.id, supersedes_revision: legal.revision };
+      current.commit({ operationId: 'quarantine-link-proposal', request: 'quarantine-link-proposal', expectedGeneration: current.read([scope]).generation, edits: [{ scope, id: head.id, expectedRevision: head.revision, revision: proposal.revision, entry: proposal }], sourceTransfers: [{ scope, from: legal.id, to: head.id }], result: {} });
+      expect(current.provenance(scope, hidden.id).relatedObjectIds).toContain(legal.id);
+      expect(current.revision(scope, hidden.id, hidden.revision)).toEqual(hidden);
+      expect(current.read([scope]).objects.find((object) => object.id === head.id)?.entry).toEqual(proposal);
+    } finally { current.close(); }
+  });
+
+  it.each(['revision-ignore', 'revision-readback', 'journal-ignore', 'journal-payload-ignore', 'operation-ignore', 'quarantine-delete'])('rolls back every quarantine restoration byte after %s and retries idempotently', (fault) => {
+    const { scope, path, hidden, events } = quarantinedHistoryFixture(`restore-fault-${fault}`);
+    const raw = new DatabaseSync(path);
+    const tables = ['revisions', 'heads', 'journal', 'legacy', 'operations', 'source_links', 'source_signatures', 'memory_quarantine', 'memory_admissions'];
+    const snapshot = (db: DatabaseSync) => tables.map((table) => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    let before;
+    try {
+      raw.prepare('UPDATE memory_admissions SET generation=1 WHERE scope=? AND id=? AND revision=?').run(scope, hidden.id, hidden.revision);
+      const operation = { id: 'quarantine-receipt', request: 'fixture', generation: 0, result: JSON.stringify({ entry: hidden }) };
+      raw.prepare('INSERT INTO operations VALUES(?,?,?,?)').run(operation.id, operation.request, operation.generation, JSON.stringify({ forgotten: true }));
+      raw.prepare('INSERT INTO operation_objects VALUES(?,?,?)').run(operation.id, scope, hidden.id);
+      raw.prepare("INSERT INTO memory_quarantine VALUES('operations',?,?,?,?,?)").run(scope, hidden.id, hidden.revision, operation.id, JSON.stringify(operation));
+      before = snapshot(raw);
+      const sql: Record<string, string> = {
+        'revision-ignore': "BEFORE UPDATE OF entry ON revisions WHEN NEW.revision='quarantine:preimage' BEGIN SELECT RAISE(IGNORE); END",
+        'revision-readback': "AFTER UPDATE OF entry ON revisions WHEN NEW.revision='quarantine:preimage' AND NEW.entry IS NOT NULL BEGIN UPDATE revisions SET entry=NULL WHERE scope=NEW.scope AND id=NEW.id AND revision=NEW.revision; END",
+        'journal-ignore': 'BEFORE INSERT ON journal BEGIN SELECT RAISE(IGNORE); END',
+        'journal-payload-ignore': "BEFORE UPDATE OF payload ON legacy WHEN NEW.key='journal.jsonl' BEGIN SELECT RAISE(IGNORE); END",
+        'operation-ignore': "BEFORE UPDATE OF result ON operations WHEN NEW.id='quarantine-receipt' BEGIN SELECT RAISE(IGNORE); END",
+        'quarantine-delete': "BEFORE DELETE ON memory_quarantine WHEN OLD.kind='journal' BEGIN SELECT RAISE(ABORT,'quarantine delete interrupted'); END",
+      };
+      raw.exec(`CREATE TRIGGER quarantine_restore_fault ${sql[fault]}`);
+    } finally { raw.close(); }
+    const current = new MemoryDatabase(path);
+    try { expect(() => current.revision(scope, hidden.id, hidden.revision)).toThrow(/restoration was not confirmed|quarantine delete interrupted/); } finally { current.close(); }
+    const retry = new DatabaseSync(path);
+    try { expect(snapshot(retry)).toEqual(before); retry.exec('DROP TRIGGER quarantine_restore_fault'); } finally { retry.close(); }
+    for (let pass = 0; pass < 2; pass++) {
+      const restored = new MemoryDatabase(path);
+      try {
+        expect(restored.revision(scope, hidden.id, hidden.revision)).toEqual(hidden);
+        expect(restored.journal(scope, hidden.id)).toEqual(events);
+        expect(restored.receipt('quarantine-receipt')?.result).toEqual({ entry: hidden });
+      } finally { restored.close(); }
+    }
+    const consumed = new DatabaseSync(path);
+    try { expect(consumed.prepare('SELECT COUNT(*) AS n FROM memory_quarantine WHERE scope=? AND id=?').get(scope, hidden.id)?.['n']).toBe(0); } finally { consumed.close(); }
+  });
+
   it('streams admission and evidence reconciliation without materializing revision bodies', async () => {
     const scope = 'memory/global';
     const path = join(home, 'streaming-reconciliation.sqlite');
