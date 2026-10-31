@@ -396,7 +396,11 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   async drain(): Promise<void> {
     if (this.disposed) return;
     this.agentBatch?.release();
-    await this.ready;
+    await this.ready.catch(() => undefined);
+    if (!this.initialized) {
+      await Promise.allSettled(this.pendingWrites);
+      return;
+    }
     const results = await Promise.allSettled([...this.pendingWrites, this.flushUsage()]);
     const remaining = await Promise.allSettled(this.pendingWrites);
     const failures = [...new Set([...results, ...remaining].flatMap((result) => result.status === 'rejected' ? [result.reason] : []))];

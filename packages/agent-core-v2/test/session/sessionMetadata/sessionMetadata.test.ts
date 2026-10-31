@@ -85,6 +85,47 @@ describe('SessionMetadata', () => {
     vi.restoreAllMocks();
   });
 
+  it.each(['read', 'create', 'migration'] as const)('keeps an initial %s failure with its callers while drains and disposal join cleanly', async (phase) => {
+    const store = ix.get(IAtomicDocumentStore);
+    if (phase === 'migration') {
+      await store.set(META_SCOPE, 'state.json', { id: 's1', createdAt: 1, updatedAt: 1, archived: false, agents: {} });
+    }
+    const entered = deferred();
+    const gate = deferred();
+    const failure = new Error(`initial metadata ${phase} failed`);
+    let attempts = 0;
+    const fail = async () => {
+      attempts += 1;
+      entered.resolve();
+      await gate.promise;
+      throw failure;
+    };
+    if (phase === 'read') vi.spyOn(store, 'get').mockImplementation(fail);
+    else vi.spyOn(store, 'set').mockImplementation(fail);
+    const meta = ix.get(ISessionMetadata);
+    const owners = [meta.ready, meta.read(), meta.setTitle('not committed'),
+      meta.update({ lastPrompt: 'not committed' }, { deferPersistence: true }), meta.registerAgent('child', {})]
+      .map((pending) => expect(pending).rejects.toBe(failure));
+    let drained = false;
+    let shutdown = false;
+    const draining = meta.drain().then(() => { drained = true; });
+    const closing = drainSessionMetadataWrites().then(() => { shutdown = true; });
+    await entered.promise;
+    await ticks();
+    expect(drained).toBe(false);
+    expect(shutdown).toBe(false);
+    gate.resolve();
+    await Promise.all([...owners, draining, closing]);
+    expect(drained).toBe(true);
+    expect(shutdown).toBe(true);
+    expect(attempts).toBe(1);
+    expect(mirror.recorded).toEqual([]);
+    await expect((meta as SessionMetadata).dispose()).resolves.toBeUndefined();
+    await expect(meta.ready).rejects.toBe(failure);
+    expect(failure.message).toBe(`initial metadata ${phase} failed`);
+    await expect(drainSessionMetadataWrites()).resolves.toBeUndefined();
+  });
+
   it('commits one 50ms agent batch for 100 callers on a 900-agent roster and releases them only after durability', async () => {
     const store = ix.get(IAtomicDocumentStore);
     await store.set(META_SCOPE, 'state.json', { id: 's1', version: 2, createdAt: 1, updatedAt: 1,

@@ -9,7 +9,6 @@ import { SessionManager } from '#/app/sessionManager/sessionManagerService';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
-import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { noopLogger, registerTestAgentWire, testWireScope } from '../../wire/stubs';
 
 import { createDecorator, type IInstantiationService, type ServiceIdentifier, type ServicesAccessor } from '#/_base/di/instantiation';
@@ -34,7 +33,14 @@ import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity'
 import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
-import { drainSessionMetadataWrites, trackSessionMetadataWork } from '#/session/sessionMetadata/sessionMetadataService';
+import { drainSessionMetadataWrites, SessionMetadata, trackSessionMetadataWork } from '#/session/sessionMetadata/sessionMetadataService';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { ISessionIndex, ISessionIndexMirror } from '#/app/sessionIndex/sessionIndex';
+import { ILogService } from '#/_base/log/log';
+import { stubLog } from '../../_base/log/stubs';
+import { stubSessionIndexMirror } from '../../app/sessionIndex/stubs';
 import { ISessionTerminalService, SessionTerminalService } from '#/session/terminal/terminalService';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import type { SessionClosedEvent, SessionCreatedEvent } from '#/workspace/sessionLifecycle/sessionLifecycle';
@@ -324,6 +330,50 @@ describe('SessionLifecycleService create persistence ownership', () => {
 });
 
 describe('SessionLifecycleService factory ownership', () => {
+  it.each([false, true])('preserves the initial metadata failure and releases ownership during rollback=%s', async (rollback) => {
+    const failure = new Error('initial metadata write failed');
+    const parent = new InstantiationService();
+    const createChild = parent.createChild.bind(parent);
+    const childSpy = vi.spyOn(parent, 'createChild').mockImplementation((collection, store) => {
+      collection.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
+      collection.set(ISessionStateService, new SyncDescriptor(SessionStateService));
+      collection.set(ILogService, stubLog());
+      collection.set(ISessionIndexMirror, stubSessionIndexMirror());
+      collection.set(IAtomicDocumentStore, { _serviceBrand: undefined,
+        get: async () => undefined, set: async () => { throw failure; }, update: async () => undefined,
+        delete: async () => {}, list: async () => [], watch: () => Event.None as Event<void>, acquire: () => ({ dispose: () => {} }),
+      });
+      for (const entry of getScopedServiceDescriptors('session')) {
+        if (collection.get(entry.id) !== undefined) continue;
+        collection.set(entry.id, { ready: Promise.resolve(), list: () => [],
+          countPendingBackgroundTasks: () => 0, countLiveTerminals: () => 0,
+          state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' }), onDidChange: Event.None,
+        });
+      }
+      return createChild(collection, store);
+    });
+    const releaseLock = vi.fn(async () => {});
+    const releaseWorkspace = vi.fn();
+    const fx = fixture(undefined, undefined, { instantiation: parent,
+      acquireLock: async () => ({ release: releaseLock }), acquireWorkspaceReference: () => ({ dispose: releaseWorkspace }),
+    });
+    try {
+      const operation = (fx.service as unknown as {
+        materializeSession(opts: { sessionId: string; workDir: string; rollbackOnMaterializationFailure: boolean }): Promise<ISessionScopeHandle>;
+      }).materializeSession({ sessionId: 'failed-initial-write', workDir: '/workspace', rollbackOnMaterializationFailure: rollback });
+      await expect(operation).rejects.toBe(failure);
+      expect(failure.message).toBe('initial metadata write failed');
+      expect(fx.service.get('failed-initial-write')).toBeUndefined();
+      expect(releaseLock).toHaveBeenCalledOnce();
+      expect(releaseWorkspace).toHaveBeenCalledOnce();
+      await expect(drainSessionMetadataWrites()).resolves.toBeUndefined();
+    } finally {
+      childSpy.mockRestore();
+      await fx.service.dispose();
+      await parent.dispose();
+    }
+  });
+
   it.each(['close', 'unload', 'materialization-error', 'rollback', 'factory-error'] as const)(
     'awaits contributed cleanup and asynchronous lock release during %s', async (phase) => {
       let releaseCleanup!: () => void;

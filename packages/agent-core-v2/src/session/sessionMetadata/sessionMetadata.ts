@@ -107,7 +107,10 @@ export interface ISessionMetadata {
   readonly ready: Promise<void>;
   readonly onDidChangeMetadata: Event<SessionMetadataChangedEvent>;
   read(): Promise<SessionMeta>;
-  /** Commits this session's accepted writes and deferred metadata without waiting for other sessions or derived mirrors. */
+  /**
+   * Commits this session's accepted writes and deferred metadata without waiting for other sessions or derived mirrors.
+   * Waits for initialization to settle; initialization errors belong to `ready` and are not reported again during cleanup.
+   */
   drain(): Promise<void>;
   /**
    * Returns a detached metadata value synchronously after `ready` resolves.
