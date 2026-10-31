@@ -768,6 +768,88 @@ describe('Memory shadow import and replay barriers', () => {
     try { expect(current.provenance(scope, entries[0]!.id).sources).toHaveLength(count); } finally { current.close(); }
   });
 
+  it.each(['live', 'missing', 'changed'])('reconciles legitimate old-writer revisions before reads with %s tracking triggers', async (mode) => {
+    const scope = 'memory/global';
+    const path = join(home, `read-reconciliation-${mode}.sqlite`);
+    const first = { ...(await save('Read reconciliation fixture')).entry, id: 'm_read_owner', revision: 'read:r1', source: { writer: 'agent' as const, session: 'read-first', turn: 17 } };
+    const second = { ...first, revision: 'read:r2', source: { ...first.source, session: 'read-second' } };
+    const peer = { ...second, id: 'm_read_peer', revision: 'read:peer' };
+    const record = (entry: MemoryEntry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    let current = new MemoryDatabase(path);
+    current.importLegacy([record(first)]);
+    if (mode !== 'live') {
+      current.close();
+      const raw = new DatabaseSync(path);
+      try {
+        for (const [table, event] of [['revisions', 'insert'], ['legacy', 'insert'], ['legacy', 'update']]) {
+          const name = `memory_track_${table}_${event}`;
+          raw.exec(`DROP TRIGGER ${name}`);
+          if (mode === 'changed') raw.exec(`CREATE TRIGGER ${name} AFTER ${event} ON ${table} BEGIN SELECT 1; END`);
+        }
+      } finally { raw.close(); }
+    }
+    const old = new Schema3MemoryDatabase(path);
+    try {
+      old.importLegacy([record(second), record(peer)]);
+      old.commit({ operationId: 'forget-read-peer', request: 'forget-read-peer', expectedGeneration: old.read([scope]).generation, edits: [], barriers: [{ scope, objectId: peer.id, at: '2026-01-02' }], result: {} });
+      expect(old.revision(scope, first.id, second.revision)?.body).toBe(second.body);
+    } finally { old.close(); }
+    if (mode !== 'live') current = new MemoryDatabase(path);
+    try {
+      expect(current.read([scope]).objects).toEqual([{ scope, id: first.id, revision: second.revision, entry: JSON.parse(JSON.stringify(second)) }]);
+      expect(current.revision(scope, first.id, second.revision)).toEqual(JSON.parse(JSON.stringify(second)));
+      expect(current.provenance(scope, first.id).sources.map((item) => item.payload).toSorted()).toEqual([first, second].map((entry) => JSON.stringify(entry)).toSorted());
+      expect(current.revision(scope, peer.id, peer.revision)).toBeUndefined();
+      expect(current.importLegacy([record({ ...peer, id: 'm_read_replay' })]).imported).toBe(0);
+    } finally { current.close(); }
+    current = new MemoryDatabase(path);
+    try { expect(current.provenance(scope, first.id).sources).toHaveLength(2); } finally { current.close(); }
+    const raw = new DatabaseSync(path);
+    try {
+      expect(raw.prepare('SELECT COUNT(*) AS n FROM memory_changes').get()?.['n']).toBe(0);
+      expect(raw.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='memory_track_revisions_insert'").get()?.['sql']).toContain('INSERT INTO memory_changes');
+    } finally { raw.close(); }
+  });
+
+  it.each(['memory_track_revisions_insert', 'memory_track_legacy_insert', 'memory_track_legacy_update', 'memory_admit_revision', 'memory_track_forget', 'memory_track_object_forget'])('publishes repaired %s only after full alignment commits', async (name) => {
+    const scope = 'memory/global';
+    const path = join(home, `trigger-integrity-${name}.sqlite`);
+    const first = { ...(await save('Trigger integrity fixture')).entry, id: 'm_trigger_owner', revision: 'trigger:r1' };
+    const second = { ...first, revision: 'trigger:r2', source: { ...first.source, session: 'trigger-second' } };
+    const record = (entry: MemoryEntry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    let current = new MemoryDatabase(path);
+    try { current.importLegacy([record(first)]); } finally { current.close(); }
+    const raw = new DatabaseSync(path);
+    let expected: string;
+    try {
+      expected = String(raw.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?").get(name)?.['sql']);
+      raw.exec(`DROP TRIGGER ${name}`);
+    } finally { raw.close(); }
+    const old = new Schema3MemoryDatabase(path);
+    try { old.importLegacy([record(second)]); } finally { old.close(); }
+    const interrupted = new DatabaseSync(path);
+    const tables = ['metadata', 'memory_admissions', 'memory_changes', 'sources', 'revisions'];
+    const snapshot = (db: DatabaseSync) => tables.map((table) => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    let before;
+    try {
+      before = snapshot(interrupted);
+      interrupted.exec("CREATE TRIGGER fail_full_alignment BEFORE UPDATE OF signature ON memory_admissions BEGIN SELECT RAISE(ABORT,'interrupted full alignment'); END");
+    } finally { interrupted.close(); }
+    expect(() => new MemoryDatabase(path)).toThrow('interrupted full alignment');
+    const retry = new DatabaseSync(path);
+    try {
+      expect(retry.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?").get(name)).toBeUndefined();
+      expect(snapshot(retry)).toEqual(before);
+      retry.exec('DROP TRIGGER fail_full_alignment');
+    } finally { retry.close(); }
+    for (let pass = 0; pass < 2; pass++) {
+      current = new MemoryDatabase(path);
+      try { expect(current.provenance(scope, first.id).sources).toHaveLength(2); } finally { current.close(); }
+    }
+    const repaired = new DatabaseSync(path);
+    try { expect(repaired.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?").get(name)?.['sql']).toBe(expected); } finally { repaired.close(); }
+  });
+
   it('applies imported-source correction and forget to a changed legacy ID and real lorebook reimport', async () => {
     const original: MemoryEntry = { ...((await save('Seed')).entry), id: 'm_source_original', title: 'Address source', body: 'Address A', source: { writer: 'import', session: 'example-source', turn: 2 }, basis: { kind: 'observed', note: 'Exact source fact', refs: ['fixture://source/original'] } };
     const importEntry = (entry: MemoryEntry) => persistence.importLegacy([{ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }]);

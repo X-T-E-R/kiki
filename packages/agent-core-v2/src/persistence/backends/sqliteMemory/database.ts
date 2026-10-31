@@ -21,6 +21,9 @@ export class MemoryDatabase {
     this.db.exec(`PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA temp_store=FILE;`);
     const version = Number(this.db.prepare('PRAGMA user_version').get()?.['user_version']);
     if (![0, 1, 2, 3, 4].includes(version)) { this.db.close(); throw new Error('Unsupported Memory database schema'); }
+    try { this.initialize(version); } catch (error) { this.db.close(); throw error; }
+  }
+  private initialize(version: number): void {
     this.transaction(() => {
       this.db.exec(`
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value INTEGER NOT NULL);
@@ -244,7 +247,11 @@ export class MemoryDatabase {
     }
     catch (error) { if (!committed) { try { this.db.exec('ROLLBACK'); } catch {} } throw error; }
   }
+  private reconcileBeforeRead(): void {
+    if (!this.db.isTransaction && this.reconciliation.pending()) this.transaction(() => {});
+  }
   read(scopes: readonly string[], generation?: number): MemoryReadView {
+    this.reconcileBeforeRead();
     this.db.exec('BEGIN');
     try {
       const current = this.generation();
@@ -261,12 +268,14 @@ export class MemoryDatabase {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   revision(scope: string, id: string, revision: string): MemoryEntry | undefined {
+    this.reconcileBeforeRead();
     this.restoreRevision(scope, id, revision);
     const row = this.db.prepare('SELECT entry FROM revisions WHERE scope=? AND id=? AND revision=? AND NOT EXISTS(SELECT 1 FROM barriers WHERE scope=? AND id=?)').get(scope, id, revision, scope, id);
     const entry = row === undefined || row['entry'] === null ? undefined : JSON.parse(String(row['entry'])) as MemoryEntry;
     return entry === undefined || this.legacyEntryBlocked(scope, entry) ? undefined : entry;
   }
   receipt(operationId: string, request?: string): MemoryCommitReceipt | undefined {
+    this.reconcileBeforeRead();
     const row = this.db.prepare('SELECT * FROM operations WHERE id=?').get(operationId);
     if (row === undefined) return undefined;
     if (request !== undefined && row['request'] !== fingerprint(request)) conflict('Memory operation ID was already used for another request');
@@ -375,6 +384,7 @@ export class MemoryDatabase {
     });
   }
   journal(scope: string, id?: string): readonly MemoryJournalRecord[] {
+    this.reconcileBeforeRead();
     const rows = id === undefined ? this.db.prepare('SELECT payload FROM journal WHERE scope=? ORDER BY ordinal').all(scope) : this.db.prepare('SELECT payload FROM journal WHERE scope=? AND id=? ORDER BY ordinal').all(scope, id);
     return rows.map((row) => JSON.parse(String(row['payload'])) as MemoryJournalRecord).filter((event) => !this.journalBlocked(scope, event));
   }
@@ -388,6 +398,7 @@ export class MemoryDatabase {
     });
   }
   source(scope: string, id: string): MemorySourceState {
+    this.reconcileBeforeRead();
     if (this.db.prepare('SELECT 1 FROM source_barriers WHERE scope=? AND id=?').get(scope, id) !== undefined) return { state: 'forgotten', id, scope };
     const row = this.db.prepare('SELECT * FROM sources WHERE scope=? AND id=?').get(scope, id) ?? this.db.prepare('SELECT s.* FROM source_links a JOIN source_links l ON l.scope=a.scope AND l.object_id=a.object_id JOIN sources s ON s.scope=l.scope AND s.id=l.source_id WHERE a.scope=? AND a.source_id=? ORDER BY s.learned_at,s.id LIMIT 1').get(scope, id);
     if (row !== undefined) {
@@ -419,6 +430,7 @@ export class MemoryDatabase {
       INSERT OR IGNORE INTO source_links SELECT r.scope,l.source_id,target.id FROM revisions r JOIN source_links l ON l.scope=r.scope AND l.object_id=r.id JOIN heads target ON target.scope=r.scope AND target.id=json_extract(r.entry,'$.superseded_by') WHERE r.entry IS NOT NULL;`);
   }
   provenance(scope: string, id: string): MemoryProvenance {
+    this.reconcileBeforeRead();
     this.linkHistoricalSources(scope, id);
     const sources = this.db.prepare('SELECT s.id FROM sources s JOIN source_links l ON l.scope=s.scope AND l.source_id=s.id WHERE l.scope=? AND l.object_id=? ORDER BY s.learned_at,s.id').all(scope, id).flatMap((row) => {
       const source = this.source(scope, String(row['id']));
@@ -435,6 +447,7 @@ export class MemoryDatabase {
     return this.blocked(scope, entry.id) || this.db.prepare('SELECT 1 FROM source_barriers WHERE scope=? AND id=?').get(scope, memoryObjectSourceUnitId(scope, entry.id, entry.body)) !== undefined || signature !== undefined && this.signatureBlocked(scope, signature, entry.id);
   }
   rejectedLegacyIds(scope: string, entries: readonly MemoryEntry[]): readonly string[] {
+    this.reconcileBeforeRead();
     return entries.filter((entry) => this.legacyEntryBlocked(scope, entry)).map((entry) => entry.id);
   }
   importLegacy(batch: readonly MemoryLegacyPayload[]): MemoryImportResult {
@@ -512,6 +525,7 @@ export class MemoryDatabase {
     });
   }
   legacy(scope: string): readonly MemoryLegacyPayload[] {
+    this.reconcileBeforeRead();
     return this.db.prepare('SELECT * FROM legacy WHERE scope=? ORDER BY key').all(scope).map((row) => {
       const key = String(row['key']);
       let payload = String(row['payload']);
@@ -525,9 +539,11 @@ export class MemoryDatabase {
     });
   }
   namespaces(): readonly string[] {
+    this.reconcileBeforeRead();
     return this.db.prepare('SELECT scope FROM heads UNION SELECT scope FROM barriers UNION SELECT scope FROM source_barriers UNION SELECT scope FROM legacy ORDER BY scope').all().map((row) => String(row['scope']));
   }
   async backup(destination: string): Promise<number> {
+    this.reconcileBeforeRead();
     mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
     await backup(this.db, destination);
     return this.generation();

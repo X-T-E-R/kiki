@@ -3,8 +3,24 @@ import type { MemoryEntry } from '../../../app/memory/memoryStore.ts';
 // oxlint-disable-next-line import/extensions
 import { memorySourceUnitId } from '../../../app/memory/memorySourceIdentity.ts';
 
+const triggers = new Map<string, string>([
+  ...([['revisions', 'INSERT', 'id'], ['legacy', 'INSERT', 'object_id'], ['legacy', 'UPDATE', 'object_id']] as const).map(([table, event, object]): [string, string] => {
+    const name = `memory_track_${table}_${event.toLowerCase()}`;
+    return [name, `CREATE TRIGGER ${name} AFTER ${event} ON ${table} WHEN NEW.${object} IS NOT NULL AND (SELECT value FROM metadata WHERE key='memory_writer_active')=0 BEGIN INSERT INTO memory_changes(scope,id,revision) VALUES(NEW.scope,NEW.${object},NEW.revision); END`];
+  }),
+  ['memory_admit_revision', `CREATE TRIGGER memory_admit_revision AFTER INSERT ON revisions WHEN NEW.entry IS NOT NULL BEGIN
+    INSERT OR IGNORE INTO memory_admissions VALUES(NEW.scope,NEW.id,NEW.revision,MAX(NEW.generation,(SELECT value+1 FROM metadata WHERE key='generation')),NULL);
+    END`],
+  ['memory_track_forget', `CREATE TRIGGER memory_track_forget AFTER INSERT ON source_barriers WHEN (SELECT value FROM metadata WHERE key='memory_writer_active')=0 BEGIN
+    INSERT INTO memory_changes(scope,id) SELECT scope,id FROM memory_admissions WHERE scope=NEW.scope AND signature=NEW.id GROUP BY scope,id;
+    END`],
+  ['memory_track_object_forget', "CREATE TRIGGER memory_track_object_forget AFTER INSERT ON barriers WHEN (SELECT value FROM metadata WHERE key='memory_writer_active')=0 BEGIN INSERT INTO memory_changes(scope,id) VALUES(NEW.scope,NEW.id); END"],
+]);
+function normalizeSql(value: string): string { return value.replaceAll(/\s+/g, ' ').trim().replace(/;$/, ''); }
+
 export class MemoryReconciliation {
   baseline: boolean;
+  private readonly invalidTriggers: readonly [string, string][];
   constructor(private readonly db: DatabaseSync) {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS memory_sources_object ON sources(scope,object_id);
@@ -20,7 +36,9 @@ export class MemoryReconciliation {
       INSERT OR IGNORE INTO metadata VALUES('memory_reconcile_sequence',0);
       INSERT OR IGNORE INTO metadata VALUES('memory_writer_active',0);
     `);
-    this.baseline = this.db.prepare("SELECT value FROM metadata WHERE key='memory_reconcile_version'").get() === undefined || this.db.prepare("SELECT value FROM metadata WHERE key='memory_quarantine_version'").get() === undefined;
+    const trigger = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?");
+    this.invalidTriggers = [...triggers].filter(([name, sql]) => normalizeSql(String(trigger.get(name)?.['sql'] ?? '')) !== normalizeSql(sql));
+    this.baseline = this.invalidTriggers.length > 0 || this.db.prepare("SELECT value FROM metadata WHERE key='memory_reconcile_version'").get() === undefined || this.db.prepare("SELECT value FROM metadata WHERE key='memory_quarantine_version'").get() === undefined;
     this.db.exec("UPDATE metadata SET value=1 WHERE key='memory_writer_active'");
     if (this.baseline) {
       const insert = this.db.prepare('INSERT INTO memory_admissions VALUES(?,?,?,?,?) ON CONFLICT(scope,id,revision) DO UPDATE SET signature=excluded.signature');
@@ -31,16 +49,6 @@ export class MemoryReconciliation {
       }
       this.recoverPreimages();
     }
-    for (const [table, events, object] of [['revisions', ['INSERT'], 'id'], ['legacy', ['INSERT', 'UPDATE'], 'object_id']] as const) for (const event of events) {
-      this.db.exec(`CREATE TRIGGER IF NOT EXISTS memory_track_${table}_${event.toLowerCase()} AFTER ${event} ON ${table} WHEN NEW.${object} IS NOT NULL AND (SELECT value FROM metadata WHERE key='memory_writer_active')=0 BEGIN INSERT INTO memory_changes(scope,id,revision) VALUES(NEW.scope,NEW.${object},NEW.revision); END;`);
-    }
-    this.db.exec(`CREATE TRIGGER IF NOT EXISTS memory_admit_revision AFTER INSERT ON revisions WHEN NEW.entry IS NOT NULL BEGIN
-      INSERT OR IGNORE INTO memory_admissions VALUES(NEW.scope,NEW.id,NEW.revision,MAX(NEW.generation,(SELECT value+1 FROM metadata WHERE key='generation')),NULL);
-      END;
-      CREATE TRIGGER IF NOT EXISTS memory_track_forget AFTER INSERT ON source_barriers WHEN (SELECT value FROM metadata WHERE key='memory_writer_active')=0 BEGIN
-        INSERT INTO memory_changes(scope,id) SELECT scope,id FROM memory_admissions WHERE scope=NEW.scope AND signature=NEW.id GROUP BY scope,id;
-      END;
-      CREATE TRIGGER IF NOT EXISTS memory_track_object_forget AFTER INSERT ON barriers WHEN (SELECT value FROM metadata WHERE key='memory_writer_active')=0 BEGIN INSERT INTO memory_changes(scope,id) VALUES(NEW.scope,NEW.id); END;`);
   }
   private recoverPreimages(): void {
     this.db.exec(`CREATE TEMP TABLE memory_preimages(scope TEXT,id TEXT,revision TEXT,generation INTEGER,PRIMARY KEY(scope,id,revision));
@@ -68,6 +76,7 @@ export class MemoryReconciliation {
   }
   pending(): boolean { return this.db.prepare("SELECT 1 FROM memory_changes WHERE sequence>(SELECT value FROM metadata WHERE key='memory_reconcile_sequence') LIMIT 1").get() !== undefined; }
   acknowledge(): void {
+    if (this.baseline) for (const [name, sql] of this.invalidTriggers) this.db.exec(`DROP TRIGGER IF EXISTS ${name}; ${sql};`);
     this.db.exec("UPDATE metadata SET value=COALESCE((SELECT seq FROM sqlite_sequence WHERE name='memory_changes'),0) WHERE key='memory_reconcile_sequence'; DELETE FROM memory_changes; INSERT INTO metadata VALUES('memory_reconcile_version',1) ON CONFLICT(key) DO UPDATE SET value=1;");
     this.db.exec("INSERT OR IGNORE INTO metadata VALUES('memory_quarantine_version',1)");
     this.baseline = false;
