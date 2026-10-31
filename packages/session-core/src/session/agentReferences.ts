@@ -8,6 +8,7 @@
  */
 
 import type { Task } from '@kiki/protocol';
+import { findAgentRefs } from '@kiki/protocol';
 import type { AgentReference } from '@kiki/transcript';
 import { agentReferenceSchema, projectTranscriptUserOrigin } from '@kiki/transcript';
 
@@ -27,32 +28,72 @@ export function agentRefsOfBlock(block: Pick<UserBlock, 'sourceOrigin'>): readon
   return parsed.success && parsed.data.length > 0 ? parsed.data : [];
 }
 
+/**
+ * One run a reference produced: the child it opened and the task that records
+ * it, so a chip can jump to the run and say how many there are.
+ */
+export interface AgentRefRun {
+  readonly agentId: string;
+  readonly taskId: string;
+  /** Task start time (ISO); a run with none sorts as the oldest. */
+  readonly startedAt?: string;
+}
+
 /** What the client knows about one reference's delegation outcome. */
 export type AgentRefDelegation =
-  | { readonly status: 'delegated'; readonly agentId: string; readonly taskId: string }
+  | { readonly status: 'delegated'; readonly agentId: string; readonly taskId: string; readonly runs: readonly AgentRefRun[] }
   | { readonly status: 'pending' }
   | { readonly status: 'rejected' };
+
+/** Newest first; a run without a start time is treated as older than any dated one. */
+function byMostRecent(a: AgentRefRun, b: AgentRefRun): number {
+  const at = a.startedAt === undefined ? Number.NEGATIVE_INFINITY : Date.parse(a.startedAt);
+  const bt = b.startedAt === undefined ? Number.NEGATIVE_INFINITY : Date.parse(b.startedAt);
+  return bt - at;
+}
 
 /**
  * The delegation outcome of one reference, read off the session's task list.
  * A task whose `source_ref` names the same `refId` (and message, when the
- * message id is known) is the delegation that reference produced; its
- * `agent_id` is the child the chip opens. With no matching task the reference
- * is still just a mention — "not delegated yet" — unless the engine reported
- * the rejection as a failed, source-less task on the same message.
+ * message id is known) is a delegation that reference produced. One reference
+ * can run several children over time: the chip jumps to the most recent and
+ * reads the rest as "N runs". With no matching task the reference is still
+ * just a mention — "not delegated yet" — unless the engine reported the
+ * rejection as a failed, child-less task on the same message.
  */
 export function agentRefDelegation(
   ref: AgentReference,
   tasks: readonly Task[],
   messageId?: string,
 ): AgentRefDelegation {
-  const candidates = tasks.filter((task) => task.source_ref?.refId === ref.refId);
-  const match = messageId === undefined
-    ? candidates[0]
-    : candidates.find((task) => task.source_ref?.messageId === messageId) ?? candidates[0];
-  if (match === undefined) return { status: 'pending' };
-  if (match.agent_id === undefined || match.status === 'failed' || match.status === 'cancelled') {
-    return { status: 'rejected' };
+  const named = tasks.filter((task) => task.source_ref?.refId === ref.refId);
+  const candidates = messageId === undefined
+    ? named
+    : named.filter((task) => task.source_ref?.messageId === messageId);
+  const pool = candidates.length > 0 ? candidates : named;
+  if (pool.length === 0) return { status: 'pending' };
+  const runs = pool
+    .filter((task) => task.agent_id !== undefined && task.status !== 'failed' && task.status !== 'cancelled')
+    .map((task) => ({ agentId: task.agent_id!, taskId: task.id, startedAt: task.started_at }))
+    .sort(byMostRecent);
+  if (runs.length === 0) return { status: 'rejected' };
+  const latest = runs[0]!;
+  return { status: 'delegated', agentId: latest.agentId, taskId: latest.taskId, runs };
+}
+
+/**
+ * Plain-text form of the references in `text`: each `kiki://agents/<profile>`
+ * link becomes `@<profile>`, so a one-line summary stays readable without the
+ * raw URL. The engine name the link carries is the readable label.
+ */
+export function replaceAgentRefs(text: string): string {
+  const matches = findAgentRefs(text);
+  if (matches.length === 0) return text;
+  let out = '';
+  let cursor = 0;
+  for (const match of matches) {
+    out += text.slice(cursor, match.start) + `@${match.profile}`;
+    cursor = match.end;
   }
-  return { status: 'delegated', agentId: match.agent_id, taskId: match.id };
+  return out + text.slice(cursor);
 }
