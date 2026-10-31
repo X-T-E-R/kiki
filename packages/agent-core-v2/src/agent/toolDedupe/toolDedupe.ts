@@ -17,6 +17,8 @@ export type ToolDedupeResult = ToolDedupeSuccessResult | ToolDedupeErrorResult;
 
 export interface IAgentToolDedupeService {
   readonly _serviceBrand: undefined;
+  /** Releases step-scoped state after an externally owned execution finishes. */
+  clearStep(): void;
 }
 
 export const IAgentToolDedupeService: ServiceIdentifier<IAgentToolDedupeService> =

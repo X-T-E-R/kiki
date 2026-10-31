@@ -153,6 +153,7 @@ import {
 import { ExternalClientHost } from './externalClients/host';
 import { NativeExternalClientListenerManager } from './externalClients/listenerManager';
 import { registerExternalClientRoutes } from './externalClients/routes';
+import { authorizeExternalClientToolRequest, isExternalClientToolRequest, registerExternalClientToolRoutes } from './externalClients/toolRoutes';
 import { EXTERNAL_CLIENT_FLAG_ID } from './externalClients/flag';
 import { UsageExportRuntime } from './usage/export/runtime';
 import { registerUsageExportRoutes } from './routes/usageExport';
@@ -635,6 +636,8 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
       }
     },
     authorizeRequest: async (token, request, reply) => {
+      const path = decodeURIComponent(request.url.split('?', 1)[0]!);
+      if (isExternalClientToolRequest(request.method, path)) return authorizeExternalClientToolRequest(externalClients, token, request, reply);
       if (isSpaceThreadBridgeDataRequest(request)) {
         if (threadBridge === undefined) { await reply.code(503).send({ code: 40101, msg: 'bridge_unavailable' }); return false; }
         return authorizeSpaceThreadBridgeRequest(threadBridge, token, request, reply);
@@ -1015,8 +1018,12 @@ async function startServerRuntime(opts: ServerStartOptions, continuation?: { rea
   }
 
   await registerOpenApi();
-  await app.register(async api => registerExternalClientRoutes(api, externalClients, externalClientListener,
-    () => core.accessor.get(IFlagService).enabled(EXTERNAL_CLIENT_FLAG_ID), transcriptService), { prefix: '/api' });
+  await app.register(async api => {
+    registerExternalClientRoutes(api, externalClients, externalClientListener,
+      () => core.accessor.get(IFlagService).enabled(EXTERNAL_CLIENT_FLAG_ID), transcriptService);
+    registerExternalClientToolRoutes(api, externalClients,
+      () => core.accessor.get(IFlagService).enabled(EXTERNAL_CLIENT_FLAG_ID));
+  }, { prefix: '/api' });
 
   await registerApiV1Routes(app, core, {
     serverVersion,

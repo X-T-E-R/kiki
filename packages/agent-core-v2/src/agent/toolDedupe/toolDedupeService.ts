@@ -289,6 +289,17 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
     this.states.set(toolDedupeTurnRepeatCountKey, value);
   }
 
+  clearStep(): void {
+    for (const deferred of this.stepDeferreds.values()) {
+      deferred.resolve({ output: 'Tool call deduplicated but original result was lost', isError: true });
+    }
+    this.stepDeferreds.clear();
+    this.stepCalls = [];
+    this.originalCallIndex.clear();
+    this.syntheticCallIds.clear();
+    this.callKeyByCallId.clear();
+  }
+
   private clearTurnRecords(): void {
     this.turnCallRecords.clear();
     this.turnRepeatCount = 0;
@@ -306,17 +317,7 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
       this.activeStep = step;
     }
 
-    for (const deferred of this.stepDeferreds.values()) {
-      deferred.resolve({
-        output: 'Tool call deduplicated but original result was lost',
-        isError: true,
-      });
-    }
-    this.stepDeferreds.clear();
-    this.stepCalls = [];
-    this.originalCallIndex.clear();
-    this.syntheticCallIds.clear();
-    this.callKeyByCallId.clear();
+    this.clearStep();
   }
 
   private endStep(): void {

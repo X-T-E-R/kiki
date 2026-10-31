@@ -35,13 +35,35 @@ export interface ExternalClientMaterialsPreview {
   readonly knownTotal?:number;
   readonly coverage:{readonly complete:boolean;readonly bytesRead:number;readonly recordsRead:number;readonly reason?:string};
 }
+export interface ExternalClientTool {
+  readonly name:string;readonly description?:string;readonly inputSchema:Record<string,unknown>;
+  readonly annotations?:Readonly<Record<string,unknown>>;
+}
+export interface ExternalClientToolCall {
+  readonly arguments:Record<string,unknown>;readonly session_ref?:string;readonly idempotency_key?:string;
+}
+export interface ExternalClientToolResult {
+  readonly content:readonly ({readonly type:'text';readonly text:string}|{readonly type:'resource';readonly resource:{readonly uri:string;readonly mimeType?:string;readonly blob?:string;readonly text?:string}}|{readonly type:'image'|'audio';readonly data:string;readonly mimeType:string})[];
+  readonly structuredContent?:Record<string,unknown>;readonly isError?:boolean;
+}
+export interface ExternalClientResultRange {readonly part?:number;readonly artifact?:number;readonly offset?:number;readonly limit?:number;}
+export interface ExternalClientToolGroup {
+  readonly pluginId: string;
+  readonly displayName: string;
+  readonly tools: readonly { readonly name: string; readonly requiresCommands: boolean }[];
+}
 export interface ExternalClientsFacade {
-  list(options?:HttpRestRequestOptions):Promise<{connections:ExternalClientConnection[];listener:ExternalClientListener}>;
+  tools(options?:HttpRestRequestOptions):Promise<{tools:ExternalClientTool[]}>;
+  callTool(name:string,body:ExternalClientToolCall,options?:HttpRestRequestOptions):Promise<ExternalClientToolResult>;
+  job(id:string,options?:HttpRestRequestOptions):Promise<ExternalClientToolResult>;
+  result(id:string,query?:ExternalClientResultRange,options?:HttpRestRequestOptions):Promise<ExternalClientToolResult>;
+  list(options?:HttpRestRequestOptions):Promise<{connections:ExternalClientConnection[];listener:ExternalClientListener;toolCatalog?:readonly ExternalClientToolGroup[]}>;
   create(body:ExternalClientConnectionInput,options?:HttpRestRequestOptions):Promise<{connection:ExternalClientConnection;stdio:{command:string;args:string[]}}>;
   update(id:string,body:Partial<ExternalClientConnectionInput>&{enabled?:boolean},options?:HttpRestRequestOptions):Promise<{connection:ExternalClientConnection}>;
   revoke(id:string,options?:HttpRestRequestOptions):Promise<{connection:ExternalClientConnection}>;
   sessions(id:string,options?:HttpRestRequestOptions):Promise<{sessions:ExternalClientSession[]}>;
   stdio(id:string,options?:HttpRestRequestOptions):Promise<{command:string;args:string[]}>;
+  credential(id:string,options?:HttpRestRequestOptions):Promise<{token:string;mcpUrl:string;expiresAt?:number}>;
   listener(options?:HttpRestRequestOptions):Promise<ExternalClientListener>;
   configureListener(body:ExternalClientListenerInput,options?:HttpRestRequestOptions):Promise<ExternalClientListener>;
   authorizations(options?:HttpRestRequestOptions):Promise<{authorizations:ExternalClientAuthorization[]}>;

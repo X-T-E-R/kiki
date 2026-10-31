@@ -1436,7 +1436,7 @@ class FixtureServer {
     const rest = path.slice('/external-clients'.length) || '/';
 
     if (rest === '/' && method === 'GET') {
-      return this.envelope(res, { connections, listener });
+      return this.envelope(res, { connections: this.currentExternalConnections(connections), listener, toolCatalog: data.toolCatalog ?? [] });
     }
     if (rest === '/' && method === 'POST') {
       const created = {

@@ -13,6 +13,9 @@ import { ISessionApprovalService } from '@kiki/agent-core-v2/session/approval/ap
 import { IMemoryStore } from '@kiki/agent-core-v2/app/memory/memoryStore';
 import { IAgentToolResultTruncationService } from '@kiki/agent-core-v2/agent/toolResultTruncation/toolResultTruncation';
 import { IAgentBlobService } from '@kiki/agent-core-v2/agent/blob/agentBlobService';
+import { IAgentStateService } from '@kiki/agent-core-v2/agent/state/agentState';
+import { IAgentToolDedupeService } from '@kiki/agent-core-v2/agent/toolDedupe/toolDedupe';
+import { toolDedupeStepCallsKey } from '@kiki/agent-core-v2/agent/toolDedupe/toolDedupeService';
 import { startServer,type RunningServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authedFetch } from './helpers/auth';
@@ -36,6 +39,21 @@ async function terminal(client:Client,result:any){for(let attempt=0;attempt<100&
 async function waiting(client:Client,result:any){for(let attempt=0;attempt<100&&['accepted','running'].includes(result.state);attempt++){
   await new Promise(resolve=>setTimeout(resolve,20));result=await call(client,'kiki_operation',{operation_id:result.operation_id});}return result;}
 describe('native external clients',()=>{
+  it('releases MCP dedupe state after every operation in a long-lived session',async()=>{
+    const {connection}=await owner('',{name:'Repeated MCP reads',workspace,mode:'yolo',tools:['Read']});
+    const {client}=await connect(connection.id);
+    const external=await call(client,'kiki_session',{action:'new',_kiki:{idempotency_key:'repeat-session'}});
+    const session=server.core.accessor.get(ISessionManager).get(external.sessionId)!;
+    const main=session.accessor.get(IAgentLifecycleService).list().find(agent=>agent.id==='main')!;
+    const path=join(workspace,'source.txt');
+    for(let index=0;index<12;index++){
+      const content=`version-${index}`;await writeFile(path,content);
+      const result=await terminal(client,await call(client,'Read',{path,_kiki:{session_ref:external.session_ref}}));
+      expect(result).toMatchObject({state:'completed',result:{output:expect.stringContaining(content)}});
+      expect(main.accessor.get(IAgentStateService).get(toolDedupeStepCallsKey)).toHaveLength(0);
+      expect(Reflect.get(main.accessor.get(IAgentToolDedupeService),'stepDeferreds').size).toBe(0);
+    }
+  });
   it('boots the actual CLI from the generated home-scoped stdio config without copying credentials', { timeout: 60_000 }, async () => {
     const created = await owner('', { name: 'Stdio client', workspace, mode: 'yolo', tools: ['Read'] });
     const config = await owner(`/${created.connection.id}/stdio`, {});
