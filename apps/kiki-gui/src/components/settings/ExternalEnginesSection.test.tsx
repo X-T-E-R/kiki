@@ -569,7 +569,7 @@ describe('external engines connection kind', () => {
       { id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', installed: false, status: 'missing',
         checked_at: '2026-10-12T00:00:00.000Z', reason: 'The claude CLI dependency is not installed.',
         components: [
-          { id: 'claude', label: 'Claude Code CLI', role: 'dependency', installed: false, reason: 'claude was not found on PATH.' },
+          { id: 'claude', label: 'Claude Code CLI', role: 'dependency', installed: false, reason: 'code:not_on_path:claude' },
           { id: 'claude-acp', label: 'claude-agent-acp', role: 'program', installed: true, path: 'C:/kiki/tools/index.js', version: '0.84.0' },
         ] },
       { id: 'agy-cli', label: 'AGY', protocol: 'acp-v1', installed: false, status: 'missing',
@@ -582,7 +582,6 @@ describe('external engines connection kind', () => {
     await until(() => container.querySelector('[data-engine-row="codex-app-server"]')?.getAttribute('data-engine-discovery') === 'installed');
     expect(container.querySelector('[data-engine-row="claude-acp"]')?.getAttribute('data-engine-discovery')).toBe('missing');
     expect(container.querySelector('[data-engine-row="codex-app-server"] [data-engine-summary]')?.textContent).toContain('0.158.0');
-    expect(container.querySelector('[data-engine-row="claude-acp"] [data-engine-summary]')?.textContent).toContain('Version unknown');
 
     const panel = await openEngine('claude-acp');
     const banner = panel.querySelector('[data-engine-discovery-banner="missing"]')!;
@@ -598,7 +597,13 @@ describe('external engines connection kind', () => {
     const adapterLine = banner.querySelector('[data-engine-discovery-component="claude-acp"]')!;
     expect(adapterLine.getAttribute('data-component-installed')).toBe('true');
     expect(adapterLine.textContent).toContain('0.84.0');
+    // The adapter's version is labeled by what it is, not "program".
+    expect(adapterLine.textContent).toContain('adapter');
+    // A coded reason localizes; free text passes through as sent.
+    expect(cliLine.textContent).toContain('claude was not found on PATH');
     expect(banner.querySelector('[data-engine-discovery-next-step]')?.textContent).toContain('then click Re-detect');
+    // The header subtitle drops its bare version when discovery reports.
+    expect(panel.closest('div')?.parentElement?.querySelector('[data-detail-heading]')?.nextElementSibling?.textContent).not.toContain('0.84.0');
     expect(panel.querySelector('[data-engine-fact="program"]')).toBeNull();
     expect(panel.querySelector('[data-engine-fact="version"]')).toBeNull();
   });

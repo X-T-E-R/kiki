@@ -6,7 +6,7 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
-import type { ExecutorDiscoveryResponse, ExecutorDiscoveryStatus, ExecutorCheckResult } from '../../lib/client';
+import type { ExecutorDiscoveryReasonCode, ExecutorDiscoveryResponse, ExecutorDiscoveryStatus, ExecutorCheckResult } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { localSessionEngine } from '../../lib/localSessions';
 import { LocalSessionsEntry } from '../localSessions/LocalSessionsEntry';
@@ -72,6 +72,44 @@ const DISCOVERY_STATUS_KEY: Record<ExecutorDiscoveryStatus['status'], I18nKey> =
 /** The first component that is not installed, when the engine is missing. */
 function missingComponent(status: ExecutorDiscoveryStatus): ExecutorDiscoveryStatus['components'][number] | undefined {
   return status.components.find((component) => !component.installed);
+}
+
+/**
+ * A component's reason in the reader's language. Discovery returns a code
+ * for the states it can name (mapped in the dictionaries); anything else is
+ * the server's own sentence and renders as sent, English by wire convention.
+ */
+function discoveryReasonText(
+  component: ExecutorDiscoveryStatus['components'][number],
+  t: ReturnType<typeof useI18n>['t'],
+): string | undefined {
+  const reason = component.reason;
+  if (reason === undefined) return undefined;
+  if (reason.startsWith('code:')) {
+    const [code, detail] = reason.slice('code:'.length).split(':', 2);
+    const key = `st.engines.discovery.reasonCode.${code}` as I18nKey;
+    const detailParams = {
+      command: detail ?? component.label,
+      path: detail ?? component.path ?? '',
+      name: detail ?? '',
+      pattern: detail ?? '',
+    };
+    const text = t(key, detailParams);
+    return text === key ? reason.slice('code:'.length) : text;
+  }
+  return reason;
+}
+
+/**
+ * What a component is, beside its version. Discovery follows the check API's
+ * roles: `program` is the adapter Kiki launches (the ACP bridge, often
+ * Kiki-managed), `dependency` is the engine's own binary it runs through.
+ */
+function componentRoleLabel(
+  component: ExecutorDiscoveryStatus['components'][number],
+  t: ReturnType<typeof useI18n>['t'],
+): string {
+  return component.role === 'program' ? t('st.engines.discovery.adapterLabel') : t('st.engines.discovery.role.dependency');
 }
 
 /** The reason a discovery status is not installed, naming the component when one is missing. */
@@ -1076,10 +1114,12 @@ function EngineDetailPane({ item, overrides, display, discovery, onClose, onFaul
   // "copy this command" guide would show a sentence as a command.
   const antigravity = item.id === ANTIGRAVITY_ID;
   const savedDefaults = engineDefaultsOf(config?.raw, item.id);
+  // With discovery the banner's component lines own versions and roles; the
+  // subtitle drops its bare version rather than attach it to the wrong part.
   const summaryFacts = [
     t('st.engines.kind'),
     protocolLabel(item.protocol),
-    version,
+    discovery === undefined ? version : undefined,
     health === 'missing' ? undefined : credentialKey === undefined ? t(`st.engines.login.${login}`) : t(credentialKey),
   ].filter((part): part is string => part !== undefined);
 
@@ -1178,9 +1218,12 @@ function EngineDetailPane({ item, overrides, display, discovery, onClose, onFaul
                             <span className="shrink-0 text-ink-faint">({t('st.engines.discovery.managedNote')})</span>
                           ) : null}
                           {component.installed && component.version !== undefined ? (
-                            <span className="shrink-0 text-ink-faint">{t(`st.engines.discovery.role.${component.role}`)}</span>
+                            <span className="shrink-0 text-ink-faint">{componentRoleLabel(component, t)}</span>
                           ) : null}
-                          {component.reason !== undefined ? <span className="min-w-0 text-ink-faint">— {component.reason}</span> : null}
+                          {(() => {
+                            const reasonText = discoveryReasonText(component, t);
+                            return reasonText === undefined ? null : <span className="min-w-0 text-ink-faint">— {reasonText}</span>;
+                          })()}
                         </li>
                       ))}
                     </ul>

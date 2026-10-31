@@ -41,7 +41,9 @@ function discoveryItems(agyInstalled) {
       reason: 'The claude CLI dependency is not installed.',
       components: [
         component('claude', 'Claude Code CLI', 'dependency', false, {
-          reason: 'claude was not found on PATH.',
+          // Coded reason: the client localizes known codes and falls back to
+          // the server text for anything else.
+          reason: 'code:not_on_path:claude',
         }),
         component('claude-acp', 'claude-agent-acp', 'program', true, {
           path: 'C:/Users/fixture/.kiki/tools/claude-agent-acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js', version: '0.84.0',
