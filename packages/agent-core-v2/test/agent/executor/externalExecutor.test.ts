@@ -19,6 +19,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { coldPromptFixture } from './coldPromptFixture';
 import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
+import { freezeBoundProfile } from '#/agent/profile/boundProfile';
+import { nativeTargets } from '@kiki/agent-profiles/nativeTarget';
 import { attachExternalMailboxHarness } from './mailboxHarness';
 import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 
@@ -796,8 +798,10 @@ describe('ACP external executor', () => {
     const harness = createHarness({ executorId, parentAgentId: 'main', supportsMcp: true,
       unpinModel: true, thinkingEffort: 'off', mcpServers: { relay: { transport: 'stdio', command: 'node' } } });
     const execution = resolveExecutionBinding({ executor: executorId }, undefined, undefined, undefined);
+    const target = nativeTargets([harness.executorContext.descriptor])[0]!;
     const session = harness.createSession({ ...harness.executorContext, binding: { ...harness.executorContext.binding,
-      execution, systemPrompt: '', modelAlias: undefined, kikiContext: [], allowKikiSubagents: false } });
+      execution, profileName: target.name, boundProfile: freezeBoundProfile(target),
+      systemPrompt: '', modelAlias: undefined, kikiContext: [], allowKikiSubagents: false } });
     try {
       const run = await session.run({ kind: 'prompt', prompt: 'ONLY_ASSIGNED_TASK' }, { signal: new AbortController().signal });
       await run.completion;

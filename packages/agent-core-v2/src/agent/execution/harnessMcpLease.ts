@@ -1,3 +1,4 @@
+import { isNativeTarget } from '@kiki/agent-profiles/nativeTarget';
 import { harnessCapabilities, kikiMcpSupport, IHarnessMcpService, type HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
 import { Error2, ErrorCodes } from '#/errors';
@@ -17,7 +18,8 @@ export async function acquireHarnessMcp(context: AgentExecutorContext, cwd: stri
   const injection = explicitKikiMcpInjection(context.binding);
   const compatible = context.descriptor.supportsMcp !== false &&
     (context.descriptor.mcpTransports === undefined || context.descriptor.mcpTransports.includes('stdio'));
-  if (injection === false || (context.binding.execution !== undefined && injection !== true && !requested)) return undefined;
+  const bareTarget = context.binding.boundProfile !== undefined && isNativeTarget(context.binding.boundProfile);
+  if (injection === false || (bareTarget && injection !== true && !requested)) return undefined;
   if (!compatible) {
     if (injection === true || requested) throw new Error2(ErrorCodes.CONFIG_INVALID, 'This harness cannot receive the Kiki stdio MCP bridge');
     return undefined;

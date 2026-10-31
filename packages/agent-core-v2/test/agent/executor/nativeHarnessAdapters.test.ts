@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 
 import { AcpClientError, AcpClientErrorCode, type AcpElicitationRequest } from '@kiki/acp-client';
 import type { AgentProfile } from '@kiki/agent-profiles/agentProfile';
+import { nativeTargets } from '@kiki/agent-profiles/nativeTarget';
+import { freezeBoundProfile } from '#/agent/profile/boundProfile';
 import type { HostProcessServiceLike } from '@kiki/codex-client';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -171,7 +173,7 @@ describe('external native harness adapters', () => {
     await expect(acquireHarnessMcp({ ...context, agent: { ...context.agent, id: 'child' }, binding: { ...context.binding, allowKikiSubagents: true } }, '/workspace')).rejects.toThrow('stdio MCP');
   });
 
-  it.each(['claude-acp', 'grok-acp'])('keeps %s native children bare until bridge injection is explicitly enabled', async (executorId) => {
+  it.each(['claude-acp', 'grok-acp'])('automatically leases %s native child tools without selecting a vendor agent', async (executorId) => {
     const acquire = vi.fn(async () => ({ server: { name: 'kiki-harness' }, dispose() {} }));
     const execution = resolveExecutionBinding({ executor: executorId }, undefined, undefined, undefined);
     const context = { agent: { id: 'child', accessor: { get: (id: unknown) =>
@@ -179,10 +181,28 @@ describe('external native harness adapters', () => {
         : String(id) === 'sessionContext' ? { sessionId: 'session-fixture' } : { acquire } } },
       binding: { execution }, descriptor: { id: executorId, ...BUILTIN_AGENT_EXECUTORS[executorId]! } } as unknown as AgentExecutorContext;
     expect(execution.effective.native_agent).toBeUndefined();
+    expect(await acquireHarnessMcp(context, '/workspace')).toBeDefined();
+    expect(acquire).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'session-fixture', agentId: 'child', nativeTools: true, executorId,
+    }));
+    const off = resolveExecutionBinding({ executor: executorId, overrides: { inject_kiki_mcp: false } }, undefined, undefined, execution);
+    expect(await acquireHarnessMcp({ ...context, binding: { ...context.binding, execution: off } }, '/workspace')).toBeUndefined();
+    expect(acquire).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['claude-acp', 'grok-acp'])('keeps %s engine targets bare until bridge injection is explicitly enabled', async (executorId) => {
+    const acquire = vi.fn(async () => ({ server: { name: 'kiki-harness' }, dispose() {} }));
+    const descriptor = { id: executorId, ...BUILTIN_AGENT_EXECUTORS[executorId]! };
+    const target = nativeTargets([descriptor])[0]!;
+    const execution = resolveExecutionBinding({ executor: executorId }, undefined, undefined, undefined);
+    const context = { agent: { id: 'child', accessor: { get: (id: unknown) =>
+      String(id) === 'agentScopeContext' ? { parentAgentId: 'parent-fixture' }
+        : String(id) === 'sessionContext' ? { sessionId: 'session-fixture' } : { acquire } } },
+      binding: { execution, profileName: target.name, boundProfile: freezeBoundProfile(target) }, descriptor } as unknown as AgentExecutorContext;
+    expect(execution.effective.native_agent).toBeUndefined();
     expect(await acquireHarnessMcp(context, '/workspace')).toBeUndefined();
     expect(acquire).not.toHaveBeenCalled();
     const on = resolveExecutionBinding({ executor: executorId, overrides: { inject_kiki_mcp: true } }, undefined, undefined, execution);
-    expect(on.effective.native_agent).toBeUndefined();
     expect(await acquireHarnessMcp({ ...context, binding: { ...context.binding, execution: on } }, '/workspace')).toBeDefined();
     expect(acquire).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'session-fixture', agentId: 'child', nativeTools: true, executorId,
