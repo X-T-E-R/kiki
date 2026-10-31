@@ -64,6 +64,7 @@ export class MemoryDatabase {
         this.db.prepare("INSERT INTO metadata VALUES('source_evidence_version',1) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
       }
       this.reconciliation = new MemoryReconciliation(this.db);
+      this.reconciliation.clearForgottenQuarantine();
       if (this.reconciliation.baseline || evidenceVersion < 1 || version < 3) this.db.exec('INSERT OR IGNORE INTO source_links SELECT scope,id,object_id FROM sources');
       if (version < 3) this.linkLegacyLineages();
       if (this.reconciliation.baseline || this.reconciliation.pending()) {
@@ -91,6 +92,7 @@ export class MemoryDatabase {
     }
   }
   private reconcileForgottenHistory(): void {
+    this.reconciliation.clearForgottenQuarantine();
     if (this.db.prepare('SELECT 1 FROM source_barriers LIMIT 1').get() === undefined && this.db.prepare('SELECT 1 FROM barriers LIMIT 1').get() === undefined) return;
     this.db.exec('CREATE TEMP TABLE memory_rejected(scope TEXT,id TEXT,revision TEXT,payload TEXT,PRIMARY KEY(scope,id,revision)); CREATE TEMP TABLE memory_rejected_payloads(scope TEXT,id TEXT,payload TEXT,PRIMARY KEY(scope,id,payload));');
     for (const row of this.reconciliation.rows()) {
@@ -391,10 +393,11 @@ export class MemoryDatabase {
         this.db.prepare('INSERT OR IGNORE INTO barriers VALUES(?,?,?,?)').run(barrier.scope, barrier.objectId, barrier.at, generation);
         for (const table of ['source_links', 'source_signatures']) this.db.prepare(`INSERT OR IGNORE INTO source_barriers SELECT scope,source_id,?,? FROM ${table} WHERE scope=? AND object_id=?`).run(barrier.at, generation, barrier.scope, barrier.objectId);
         this.db.prepare('UPDATE operations SET result=? WHERE id IN(SELECT operation_id FROM operation_objects WHERE scope=? AND id=?)').run(JSON.stringify({ forgotten: true }), barrier.scope, barrier.objectId);
-        for (const table of ['heads', 'revisions', 'commit_views', 'sources', 'adjudications', 'journal', 'memory_quarantine']) {
+        for (const table of ['heads', 'revisions', 'commit_views', 'sources', 'adjudications', 'journal']) {
           const column = table === 'sources' || table === 'adjudications' ? 'object_id' : 'id';
           this.db.prepare(`DELETE FROM ${table} WHERE scope=? AND ${column}=?`).run(barrier.scope, barrier.objectId);
         }
+        this.reconciliation.purgeQuarantine(barrier.scope, barrier.objectId);
         this.db.prepare('DELETE FROM legacy WHERE scope=? AND (object_id=? OR key IN(?,?,?))').run(barrier.scope, barrier.objectId, 'journal.jsonl', `entries/${barrier.objectId}.md`, `inbox/${barrier.objectId}.md`);
       }
       this.db.prepare("UPDATE metadata SET value=? WHERE key='generation'").run(generation);

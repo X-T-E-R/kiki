@@ -791,6 +791,75 @@ describe('Memory shadow import and replay barriers', () => {
     try { expect(consumed.prepare('SELECT COUNT(*) AS n FROM memory_quarantine WHERE scope=? AND id=?').get(scope, hidden.id)?.['n']).toBe(0); } finally { consumed.close(); }
   });
 
+  it.each(['old-open', 'old-live', 'already-acknowledged', 'current'])('clears forgotten quarantine bytes through %s and keeps independent history', (mode) => {
+    const { scope, path, hidden, legal } = quarantinedHistoryFixture(`forget-${mode}`);
+    const before = new DatabaseSync(path);
+    try { expect(before.prepare('SELECT COUNT(*) AS n FROM memory_quarantine WHERE scope=? AND id=?').get(scope, hidden.id)?.['n']).toBe(5); } finally { before.close(); }
+    let current = mode === 'old-live' ? new MemoryDatabase(path) : undefined;
+    const writer = mode === 'current' ? new MemoryDatabase(path) : new Schema3MemoryDatabase(path);
+    try { writer.commit({ operationId: 'quarantine-forget-b', request: 'quarantine-forget-b', expectedGeneration: writer.read([scope]).generation, edits: [], barriers: [{ scope, objectId: hidden.id, at: '2026-02-01' }], result: {} }); } finally { writer.close(); }
+    if (mode === 'already-acknowledged') {
+      const raw = new DatabaseSync(path);
+      try { raw.exec("UPDATE metadata SET value=COALESCE((SELECT seq FROM sqlite_sequence WHERE name='memory_changes'),0) WHERE key='memory_reconcile_sequence'; DELETE FROM memory_changes; DELETE FROM metadata WHERE key='memory_quarantine_forget_version'"); } finally { raw.close(); }
+    }
+    for (let pass = 0; pass < 2; pass++) {
+      current ??= new MemoryDatabase(path);
+      try {
+        expect(current.revision(scope, hidden.id, hidden.revision)).toBeUndefined();
+        expect(current.revision(scope, legal.id, legal.revision)).toEqual(legal);
+      } finally { current.close(); current = undefined; }
+      const raw = new DatabaseSync(path);
+      try {
+        expect(raw.prepare('SELECT COUNT(*) AS n FROM memory_quarantine WHERE scope=? AND id=?').get(scope, hidden.id)?.['n']).toBe(0);
+        expect(raw.prepare('SELECT COUNT(*) AS n FROM memory_quarantine WHERE instr(payload,?)>0').get(hidden.id)?.['n']).toBe(0);
+      } finally { raw.close(); }
+    }
+  });
+
+  it.each(['incremental', 'checkpointed'])('rolls back interrupted bounded quarantine cleanup and resumes %s forgets', (mode) => {
+    const { scope, path, hidden, legal } = quarantinedHistoryFixture(`forget-batches-${mode}`);
+    const raw = new DatabaseSync(path);
+    try {
+      const insert = raw.prepare("INSERT INTO memory_quarantine VALUES('journal_payload',?,?,?,?,?)");
+      for (let index = 0; index < 700; index++) insert.run(scope, hidden.id, hidden.revision, `bulk:${index}`, JSON.stringify({ payload: hidden.body }));
+      insert.run(scope, legal.id, legal.revision, 'independent-quarantine', JSON.stringify({ payload: legal.body }));
+      raw.exec("CREATE TRIGGER keep_independent_quarantine BEFORE DELETE ON memory_quarantine WHEN OLD.id='m_quarantine_c' BEGIN SELECT RAISE(ABORT,'independent quarantine touched'); END");
+    } finally { raw.close(); }
+    const old = new Schema3MemoryDatabase(path);
+    try { old.commit({ operationId: 'quarantine-batched-forget', request: 'quarantine-batched-forget', expectedGeneration: old.read([scope]).generation, edits: [], barriers: [{ scope, objectId: hidden.id, at: '2026-02-01' }], result: {} }); } finally { old.close(); }
+    const interrupted = new DatabaseSync(path);
+    const snapshot = (db: DatabaseSync) => ['metadata', 'memory_changes', 'sqlite_sequence', 'memory_quarantine'].map((table) => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    let before;
+    try {
+      if (mode === 'checkpointed') interrupted.exec("UPDATE metadata SET value=COALESCE((SELECT seq FROM sqlite_sequence WHERE name='memory_changes'),0) WHERE key='memory_reconcile_sequence'; DELETE FROM memory_changes; DELETE FROM metadata WHERE key='memory_quarantine_forget_version'");
+      before = snapshot(interrupted);
+      interrupted.exec("CREATE TRIGGER fail_quarantine_second_batch BEFORE DELETE ON memory_quarantine WHEN OLD.key='bulk:300' BEGIN SELECT RAISE(ABORT,'second quarantine batch interrupted'); END");
+    } finally { interrupted.close(); }
+    expect(() => new MemoryDatabase(path)).toThrow('second quarantine batch interrupted');
+    const retry = new DatabaseSync(path);
+    try { expect(snapshot(retry)).toEqual(before); retry.exec('DROP TRIGGER fail_quarantine_second_batch'); } finally { retry.close(); }
+    const prepare = DatabaseSync.prototype.prepare;
+    let pages = 0;
+    const spy = vi.spyOn(DatabaseSync.prototype, 'prepare').mockImplementation(function(this: DatabaseSync, sql: string) {
+      if (sql.startsWith('DELETE FROM memory_quarantine')) { expect(sql).toContain('LIMIT 256'); pages++; }
+      return prepare.call(this, sql);
+    });
+    try {
+      for (let pass = 0; pass < 2; pass++) {
+        const current = new MemoryDatabase(path);
+        try { expect(current.revision(scope, hidden.id, hidden.revision)).toBeUndefined(); } finally { current.close(); }
+      }
+    } finally { spy.mockRestore(); }
+    expect(pages).toBeGreaterThan(0);
+    const complete = new DatabaseSync(path);
+    try {
+      expect(complete.prepare('SELECT COUNT(*) AS n FROM memory_quarantine WHERE scope=? AND id=?').get(scope, hidden.id)?.['n']).toBe(0);
+      expect(complete.prepare('SELECT COUNT(*) AS n FROM memory_quarantine WHERE scope=? AND id=?').get(scope, legal.id)?.['n']).toBe(1);
+      expect(complete.prepare('SELECT COUNT(*) AS n FROM memory_changes').get()?.['n']).toBe(0);
+      expect(complete.prepare("SELECT value FROM metadata WHERE key='memory_quarantine_forget_version'").get()?.['value']).toBe(1);
+    } finally { complete.close(); }
+  });
+
   it('streams admission and evidence reconciliation without materializing revision bodies', async () => {
     const scope = 'memory/global';
     const path = join(home, 'streaming-reconciliation.sqlite');
