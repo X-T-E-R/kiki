@@ -1850,7 +1850,7 @@ export class TranscriptService {
     signal?.throwIfAborted();
     if (info === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
-    if (!tailFirst && info.size <= (boundedPage ? FIRST_SCREEN_WINDOW_BYTES : FIRST_SCREEN_WINDOW_MAX_BYTES)) {
+    if (info.size <= (tailFirst || boundedPage ? FIRST_SCREEN_WINDOW_BYTES : FIRST_SCREEN_WINDOW_MAX_BYTES)) {
       if (this.coldWireWindows.has(wirePath)) {
         this.forgetColdWindow(wirePath);
         this.retainedColdTurns.delete(wirePath);
@@ -1923,7 +1923,7 @@ export class TranscriptService {
     signal?.throwIfAborted();
     if (info === undefined) return this.readColdSnapshot(sessionId, agentId, preserveOpenTurnIds, signal, captureReplayState);
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
-    if (!tailFirst && info.size <= FIRST_SCREEN_WINDOW_MAX_BYTES) {
+    if (info.size <= (tailFirst ? FIRST_SCREEN_WINDOW_BYTES : FIRST_SCREEN_WINDOW_MAX_BYTES)) {
       return this.readColdSnapshot(sessionId, agentId, preserveOpenTurnIds, signal, captureReplayState);
     }
     const opened = signal ?? new AbortController().signal;
