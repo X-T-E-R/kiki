@@ -171,7 +171,7 @@ describe('external native harness adapters', () => {
     await expect(acquireHarnessMcp({ ...context, agent: { ...context.agent, id: 'child' }, binding: { ...context.binding, allowKikiSubagents: true } }, '/workspace')).rejects.toThrow('stdio MCP');
   });
 
-  it.each(['claude-acp', 'grok-acp'])('automatically leases %s native child tools without selecting a vendor agent', async (executorId) => {
+  it.each(['claude-acp', 'grok-acp'])('keeps %s native children bare until bridge injection is explicitly enabled', async (executorId) => {
     const acquire = vi.fn(async () => ({ server: { name: 'kiki-harness' }, dispose() {} }));
     const execution = resolveExecutionBinding({ executor: executorId }, undefined, undefined, undefined);
     const context = { agent: { id: 'child', accessor: { get: (id: unknown) =>
@@ -179,11 +179,15 @@ describe('external native harness adapters', () => {
         : String(id) === 'sessionContext' ? { sessionId: 'session-fixture' } : { acquire } } },
       binding: { execution }, descriptor: { id: executorId, ...BUILTIN_AGENT_EXECUTORS[executorId]! } } as unknown as AgentExecutorContext;
     expect(execution.effective.native_agent).toBeUndefined();
-    expect(await acquireHarnessMcp(context, '/workspace')).toBeDefined();
+    expect(await acquireHarnessMcp(context, '/workspace')).toBeUndefined();
+    expect(acquire).not.toHaveBeenCalled();
+    const on = resolveExecutionBinding({ executor: executorId, overrides: { inject_kiki_mcp: true } }, undefined, undefined, execution);
+    expect(on.effective.native_agent).toBeUndefined();
+    expect(await acquireHarnessMcp({ ...context, binding: { ...context.binding, execution: on } }, '/workspace')).toBeDefined();
     expect(acquire).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'session-fixture', agentId: 'child', nativeTools: true, executorId,
     }));
-    const off = resolveExecutionBinding({ executor: executorId, overrides: { inject_kiki_mcp: false } }, undefined, undefined, execution);
+    const off = resolveExecutionBinding({ executor: executorId, overrides: { inject_kiki_mcp: false } }, undefined, undefined, on);
     expect(await acquireHarnessMcp({ ...context, binding: { ...context.binding, execution: off } }, '/workspace')).toBeUndefined();
     expect(acquire).toHaveBeenCalledTimes(1);
   });
