@@ -9,6 +9,10 @@ import type { ReadQuery, StoreOperation, StoreRequest, StoreResponse } from './p
 // oxlint-disable-next-line import/extensions
 import { getPath, matches, scalarKey, sortValue } from './querySemantics.ts';
 
+import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
+import { warnIfWorkerHeapLimit } from '#/_base/node/workerHeapPolicy';
+
+warnIfWorkerHeapLimit(RESOURCE_DEFAULTS.workerHeapMb);
 const port = parentPort;
 if (port === null) throw new Error('Query store requires a worker');
 const database = (workerData as { database: string }).database;

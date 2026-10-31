@@ -2,6 +2,10 @@ import { parentPort } from 'node:worker_threads';
 import { UsageReadAllowance, UsageWireFramer } from '@kiki/agent-core-v2/agent/usage/usageWireFramer';
 import type { UsageWorkerRequest, UsageWorkerResponse } from './protocol';
 
+import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
+import { warnIfWorkerHeapLimit } from '@kiki/agent-core-v2/_base/node/workerHeapPolicy';
+
+warnIfWorkerHeapLimit(RESOURCE_DEFAULTS.workerHeapMb);
 if (parentPort === null) throw new Error('Usage parser requires a worker port');
 const port = parentPort;
 let framer: UsageWireFramer | undefined;

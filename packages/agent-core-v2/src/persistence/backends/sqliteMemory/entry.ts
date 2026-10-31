@@ -3,6 +3,10 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { MemoryDatabase } from './database.ts';
 import type { MemoryOperation, MemoryRequest, MemoryResponse } from './protocol.ts';
 
+import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
+import { warnIfWorkerHeapLimit } from '#/_base/node/workerHeapPolicy';
+
+warnIfWorkerHeapLimit(RESOURCE_DEFAULTS.workerHeapMb);
 const database = new MemoryDatabase((workerData as { database: string }).database);
 function execute(operation: MemoryOperation): unknown {
   switch (operation.type) {

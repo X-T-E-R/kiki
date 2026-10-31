@@ -34,9 +34,28 @@ Reloading a file and applying a setting have different timing:
 | --- | --- |
 | [`request_governance`](#request-governance) | Re-evaluates waiting requests and agent admissions as soon as the edit is loaded; active work finishes normally |
 | [`cpu_workers`](#cpu-workers) | Next process start; the pool reads the section when the App service is created |
+| [`session_residency`](#session-residency) | The next restore or eviction decision; changing restore limits wakes queued restores, but does not interrupt an active restore. The sweep timer interval is set when the service starts |
+| [`transcript_memory`](#transcript-memory) | The next cache admission, eviction, or residency-maintenance pass; an in-progress read is not canceled |
 | Session defaults such as `default_model`, `default_permission_mode`, and `default_plan_mode` | New sessions; an existing session keeps its own choices |
 | [`identity`](#identity) | Next process start |
 | [`tui.toml`](#tui-toml) | Next start, or `/reload-tui` in the TUI |
+
+The resource formulas below are resolved from the host hardware when the process starts. Explicit values from `config.toml` or an environment variable override the formula exactly; they are not rewritten to the old upper bounds.
+
+## Hardware-scaled resource defaults
+
+When a resource field is omitted, Kiki derives it from the host instead of using one fixed machine size. Let `C = os.availableParallelism()`, `M = floor(totalmem / MiB)`, `H = max(512, floor(M / 64))` MiB, and `W = max(1, min(C - 1, floor(M / 4 / H)))`. The `C - 1` term leaves one parallelism slot for the host, while the minimums keep small machines usable.
+
+| Area | Adaptive default | What remains configurable or unchanged |
+| --- | --- | --- |
+| CPU workers | `max_workers = W`; `max_queue = max(128, 16W)`; `max_queued_bytes = max(64, floor(M / 128))` MiB | `KIKI_CPU_MAX_WORKERS`, `KIKI_CPU_MAX_QUEUE`, `KIKI_CPU_MAX_QUEUED_BYTES`, and `KIKI_CPU_TIMEOUT_MS` still override the matching fields. `timeout_ms` remains 30 seconds. The actual pool size is still capped at `C - 1` |
+| Session residency | `max_live_sessions = max(16, floor(M / 128))`; `max_concurrent_restores = W`; `max_queued_restores = max(128, 16C)`; `max_resident_heap_bytes = min(max(256, floor(M / 8)) MiB, 60% of the effective V8 heap)` | Idle and sweep timers remain 10 minutes, 1 minute, and 30 seconds. Explicit session values remain overrides |
+| Worker-backed storage and parsing | SQLite query, mailbox, memory, usage, and kap parser workers use `H` MiB; storage-worker waiting queues default to `max(128, 16C)` | SQLite keeps a single writer; parser backpressure is unchanged |
+| Search | The one query worker uses `H` MiB, keeps 8 active slots, and queues `max(128, 16C)` requests. The indexer child uses `H` MiB with soft RSS `2H + 256` MiB and hard RSS `3H + 256` MiB | Explicit indexer options still win over `KIKI_SEARCH_INDEXER_SOFT_MB` / `KIKI_SEARCH_INDEXER_HARD_MB`, which win over these defaults. Search keeps one writer |
+| Transcript detail | The single-detail cache defaults to `H` MiB | `tail_turns = 20` and `max_agent_bytes = 16` MiB remain unchanged; each single-page read is still independently bounded |
+| Request governance | `max_queue_size = max(1024, 4 × max(128, 16C))` | `rules = []` and the 300-second wait budget remain unchanged. User rules and an explicitly configured queue size still win; this local queue is not a provider rate limit |
+
+The resource values in the sections below are explicit override examples, not the hardware defaults. The desktop launcher gives a sidecar an explicit target heap of `max(8192, floor(totalmem / MiB / 4))` MiB. Native SEA profiles use no CLI heap flag and let `NODE_OPTIONS` remain the user's authoritative override. Foreground `serve`, non-login `acp`, and in-process prompt runs (`-p`, `--prompt`, or `--prompt-file`) re-exec at most once when the current heap is below 90% of that target and the user has not supplied a heap override. Default interactive `kiki`, resume/continue, `web`, and `serve --ensure/--query/--stop` are daemon clients and do not auto-restart; newly spawned daemons receive their target before launch. Short-lived commands such as `--version`, tool calls, and completion do not restart. Do not assume one fixed V8 heap size across machines.
 
 `/reload` remains available in the TUI to explicitly reload `config.toml` and `tui.toml`. Settings with a turn or session snapshot use the timing documented in their own section; automatic file reload does not replace an in-progress request.
 
@@ -642,8 +661,15 @@ Session restoration uses a process-wide queue, shared across workspaces. Empty s
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `max_concurrent_restores` | integer, 1–4 | `4` | Concurrent cold-session restores. Raising it takes effect without restarting and immediately wakes queued restores. Lowering it leaves current restores running. |
-| `max_queued_restores` | integer, 0–64 | `8` | Maximum waiting restores; additional requests fail with a queue-full error. |
+| `idle_ttl_ms` | integer, 0–2147483647 | `600000` (10 minutes) | Minimum idle age before the periodic sweep can unload a session when the live-session capacity is not under pressure |
+| `max_live_sessions` | positive integer | `max(16, floor(M / 128))` | Live-session capacity. When the process is at or above this capacity, idle sessions use `min_idle_ms` as the quicker reclamation threshold |
+| `min_idle_ms` | integer, 0–2147483647 | `60000` (1 minute) | Minimum idle age used while live-session capacity or heap pressure requires reclamation |
+| `sweep_interval_ms` | integer, 1000–2147483647 | `30000` (30 seconds) | Periodic eviction check interval |
+| `max_concurrent_restores` | positive integer | `W` | Concurrent cold-session restores. Raising it takes effect without restarting and immediately wakes queued restores. Lowering it leaves current restores running |
+| `max_queued_restores` | non-negative integer | `max(128, 16C)` | Maximum waiting restores; additional requests fail with a queue-full error |
+| `max_resident_heap_bytes` | non-negative integer | `min(max(256, floor(M / 8)) MiB, 60% of the effective V8 heap)` | Heap-pressure threshold for idle-session reclamation. `0` disables this heap trigger, but capacity and idle-time rules still apply |
+
+The timer fields use Node's maximum timer delay of `2147483647` milliseconds. Explicit values are not capped at the former `64`-session, `4`-restore, or `64`-queued-restore schema limits.
 
 Each restore has a 60-second deadline, including its queue wait. A timed-out restore releases its slot; a saved message remains available for retry or cancellation. See [durable prompt recovery](../server/rest-api.md#prompts) for message state and GUI recovery actions.
 
@@ -655,9 +681,9 @@ Each restore has a 60-second deadline, including its queue wait. A timed-out res
 | --- | --- | --- | --- |
 | `tail_turns` | positive integer | `20` | How many finished turns stay resident per agent |
 | `max_agent_bytes` | positive integer | `16777216` (16 MiB) | Per-agent resident byte budget — what stays in memory. Older turns are read from disk on demand |
-| `max_detail_cache_bytes` | non-negative safe integer | `268435456` (256 MiB) | Largest single full-detail read cached at once. `0` turns that extra slot off, leaving the content to be read without being held in that cache. A changed value takes effect at the next cache admission or eviction; lowering it evicts what no longer fits, and does not cancel a read already in progress |
+| `max_detail_cache_bytes` | non-negative safe integer | `H` MiB | Largest single full-detail read cached at once. `0` turns that extra slot off, leaving the content to be read without being held in that cache. A changed value takes effect at the next cache admission or eviction; lowering it evicts what no longer fits, and does not cancel a read already in progress |
 
-These are server-side memory budgets, not read limits. Lowering them reduces memory use and may mean reading the same content from disk again.
+`H` is the hardware-derived worker heap from [hardware-scaled resource defaults](#hardware-scaled-resource-defaults). These are server-side memory budgets, not read limits. Lowering them reduces memory use and may mean reading the same content from disk again.
 
 ## `token_counting`
 
@@ -831,6 +857,8 @@ Which image formats reach the model depends on the provider the request resolves
 
 `cpu_workers` controls the App-scoped pool for CPU-bound work. Its first landed consumer is the initial image decode used to validate image data; it does not change the image size or format limits in [`image`](#image). The pool creates worker threads lazily on the first request and closes them during App teardown.
 
+The values below are an explicit override example, not the defaults:
+
 ```toml
 [cpu_workers]
 max_workers = 4
@@ -841,12 +869,12 @@ timeout_ms = 30000
 
 | Field | Type | Default | Environment variable | Description |
 | --- | --- | --- | --- | --- |
-| `max_workers` | `integer` | `4` | `KIKI_CPU_MAX_WORKERS` | Accepts `1`–`64`; the actual worker count is `max(1, min(os.availableParallelism() - 1, max_workers))` |
-| `max_queue` | `integer` | `64` | `KIKI_CPU_MAX_QUEUE` | Accepts `1`–`1024`; maximum number of requests waiting for a worker, not counting active requests |
-| `max_queued_bytes` | `integer` | `67108864` (64 MiB) | `KIKI_CPU_MAX_QUEUED_BYTES` | Positive integer; maximum total bytes declared by queued requests |
-| `timeout_ms` | `integer` | `30000` (30 seconds) | `KIKI_CPU_TIMEOUT_MS` | Accepts `1`–`2147483647`; request timeout in milliseconds, including time spent waiting in the queue |
+| `max_workers` | positive integer | `W` | `KIKI_CPU_MAX_WORKERS` | The pool size is `max(1, min(os.availableParallelism() - 1, max_workers))`; the schema no longer imposes a `64` upper bound |
+| `max_queue` | positive integer | `max(128, 16W)` | `KIKI_CPU_MAX_QUEUE` | Maximum number of requests waiting for a worker, not counting active requests; the schema no longer imposes a `1024` upper bound |
+| `max_queued_bytes` | positive integer | `max(64, floor(M / 128))` MiB | `KIKI_CPU_MAX_QUEUED_BYTES` | Maximum total bytes declared by queued requests |
+| `timeout_ms` | positive integer, up to `2147483647` | `30000` (30 seconds) | `KIKI_CPU_TIMEOUT_MS` | Request timeout in milliseconds, including time spent waiting in the queue |
 
-Environment variables take precedence over `config.toml` and are read at startup. The queue is bounded by both `max_queue` and `max_queued_bytes`; when either limit is reached, new requests are rejected with `CPU_QUEUE_FULL` rather than waiting. If an active request is canceled or times out, its worker is terminated and the next request starts on a replacement; the failed work is not replayed.
+`C`, `M`, `W`, and `H` are defined in [hardware-scaled resource defaults](#hardware-scaled-resource-defaults). Environment variables take precedence over `config.toml` and are read at startup. The queue is bounded by both `max_queue` and `max_queued_bytes`; when either limit is reached, new requests are rejected with `CPU_QUEUE_FULL` rather than waiting. If an active request is canceled or times out, its worker is terminated and the next request starts on a replacement; the failed work is not replayed.
 
 ## `session_title`
 
@@ -916,6 +944,8 @@ Computer tools from the recognized cua-driver MCP default to the main agent of e
 `nb_search` configures Kiki's built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools. The module is part of the product: it ships with Kiki and needs no separate installation, and its provider instances, credential slots, lanes, and default fetch chain are built in.
 
 The default `WebSearch` lane is `duckduckgo.search`, which searches the general web without registration, credentials or configuration. Its public HTML endpoint may issue a challenge or rate limit; wait before retrying, or explicitly choose another configured source. These failures are errors, not empty results, and never trigger a silent switch to a paid provider. Configured defaults and explicit lane selections take precedence. For repository search or library documentation, choose `github.repositories` or `context7.docs` explicitly; the latter returns typed context and cannot be combined with result lanes. Field names and merge behavior follow the module's canonical configuration contract, shared with the standalone nb-search CLI, so an existing nb-search configuration file applies without translation.
+
+Search memory and queue defaults follow the same hardware formula: the single query worker uses `H` MiB, keeps 8 active slots, and queues `max(128, 16C)` requests. The indexer child uses `H` MiB, with soft RSS `2H + 256` MiB and hard RSS `3H + 256` MiB. Explicit host options override `KIKI_SEARCH_INDEXER_SOFT_MB` and `KIKI_SEARCH_INDEXER_HARD_MB`, which override these defaults; writer election remains single-writer. These are local resource budgets, not provider rate limits.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1177,7 +1207,7 @@ A `global` rule shares capacity across sessions in the same Kiki service process
 
 Model-request rules count provider generation attempts, including compaction and OAuth replay. External harness requests are unmanaged, not zero. Agent-execution rules cover both Kiki and external executors launched through Kiki, including main agents, subagents, and externally delegated independent agents. One agent holds one slot throughout its execution, including tool work, approval waits, cancellation cleanup, and finalization. Idle agents, background shell tasks, and child task receipts do not add agent slots. External model identities remain unknown when the harness has not supplied a binding; Kiki never substitutes its native default model.
 
-For example, cap all models using one provider at two simultaneous requests across sessions. Replace `example-provider` with the exact key from `[providers]`:
+For example, cap all models using one provider at two simultaneous requests across sessions. Replace `example-provider` with the exact key from `[providers]`. The `max_queue_size = 1024` line is an explicit override example; when omitted, the hardware-scaled default is `max(1024, 4 × max(128, 16C))`.
 
 ```toml
 [request_governance]
@@ -1224,7 +1254,7 @@ overflow = "queue"
 | --- | --- | --- | --- |
 | `schema_version` | `integer` | `1` | Configuration version; only `1` is accepted |
 | `max_wait_ms` | `integer` | `300000` | Positive local waiting budget in milliseconds; cumulative across model-request retries, or per agent admission |
-| `max_queue_size` | `integer` | `1024` | Positive maximum number of pending admissions across both resources |
+| `max_queue_size` | positive integer | `max(1024, 4 × max(128, 16C))` | Positive maximum number of pending admissions across both resources; an explicit value remains an override |
 | `rules` | `array<table>` | `[]` | Concurrency rules, written as `[[request_governance.rules]]` |
 | Rule `id` | `string` | Required | Nonempty, unique rule identifier |
 | Rule `resource` | `string` | `model_request` | `model_request` or `agent_execution`; counts requests or agents, respectively |

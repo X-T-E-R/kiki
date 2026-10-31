@@ -7,6 +7,10 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type { LegacyDeliveryCursor, MailboxOperation, MailboxOwner, MailboxRequest, MailboxResponse, MailboxRow } from './protocol.ts';
 
+import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
+import { warnIfWorkerHeapLimit } from '#/_base/node/workerHeapPolicy';
+
+warnIfWorkerHeapLimit(RESOURCE_DEFAULTS.workerHeapMb);
 const port = parentPort;
 if (port === null) throw new Error('Canonical mailbox requires a worker');
 const configuration = workerData as { readonly database: string; readonly create: boolean; readonly readOnly?: boolean };

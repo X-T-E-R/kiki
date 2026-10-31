@@ -3,6 +3,10 @@ import { toErrorPayload, isCodedError } from '#/_base/errors/serialize';
 import type { CpuRequest, CpuResponse } from './protocol';
 import { executeCpuOperation, type CpuOperation } from './tasks';
 
+import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
+import { warnIfWorkerHeapLimit } from '#/_base/node/workerHeapPolicy';
+
+warnIfWorkerHeapLimit(RESOURCE_DEFAULTS.workerHeapMb);
 const port = parentPort;
 if (port === null) throw new Error('CPU worker requires a parent port');
 

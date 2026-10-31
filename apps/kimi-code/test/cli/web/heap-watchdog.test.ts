@@ -50,7 +50,7 @@ describe('resolveHeapWatchdogPolicy', () => {
     expect(resolveHeapWatchdogPolicy({}, 4096 * MB, 16_384 * MB)).toBeUndefined();
   });
 
-  it('computes bundled defaults with clamped RSS and the external RSS floor', () => {
+  it('computes hardware-sized bundled defaults with RSS and external floors', () => {
     const lowMemory = resolveHeapWatchdogPolicy(
       { [DESKTOP_BUNDLED_ENV]: '1' },
       8192 * MB,
@@ -79,7 +79,8 @@ describe('resolveHeapWatchdogPolicy', () => {
       8192 * MB,
       32_768 * MB,
     );
-    expect(highMemory?.rssThresholdBytes).toBe(5120 * MB);
+    expect(highMemory?.rssThresholdBytes).toBe(Math.floor(32_768 * MB * 0.35));
+    expect(highMemory?.externalThresholdBytes).toBe(2048 * MB);
 
     const emptyHeapOverride = resolveHeapWatchdogPolicy(
       { [DESKTOP_BUNDLED_ENV]: '1', [HEAP_RESTART_ENV]: '' },

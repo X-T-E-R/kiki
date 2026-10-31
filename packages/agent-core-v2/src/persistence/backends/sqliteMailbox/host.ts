@@ -1,10 +1,11 @@
 import { statSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
 
 import { MAILBOX_QUEUE_FULL, mailboxWorkerEntry, type MailboxOperation, type MailboxRequest, type MailboxResponse } from './protocol';
 
-const MAILBOX_MAX_WAITING = 128;
+const MAILBOX_MAX_WAITING = RESOURCE_DEFAULTS.workerQueue;
 
 interface Pending {
   readonly operation: MailboxOperation;
@@ -30,7 +31,7 @@ export class MailboxWorker {
     this.worker = new Worker(entry, {
       name: 'kiki-canonical-mailbox', workerData: { database, create, readOnly },
       execArgv: entry.pathname.endsWith('.ts') ? ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'] : [],
-      resourceLimits: { maxOldGenerationSizeMb: 256 },
+      resourceLimits: { maxOldGenerationSizeMb: RESOURCE_DEFAULTS.workerHeapMb },
     });
     this.worker.unref();
     this.exited = new Promise((resolve) => { this.worker.once('exit', () => resolve()); });

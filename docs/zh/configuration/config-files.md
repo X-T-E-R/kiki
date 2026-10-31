@@ -34,9 +34,28 @@ Kiki 在运行时监听 `config.toml` 和 `credentials/credentials.toml`。保�
 | --- | --- |
 | [`request_governance`](#request-governance) | 修改加载后立即重新判断等待中的请求和 Agent 启动；在飞工作正常结束 |
 | [`cpu_workers`](#cpu-workers) | 下次启动进程；创建 App 服务时读取本节配置 |
+| [`session_residency`](#session-residency) | 下一次恢复或回收决策；修改恢复限额会唤醒排队中的恢复，但不会中断正在恢复的会话。回收 sweep 的定时器间隔在服务启动时设置 |
+| [`transcript_memory`](#transcript-memory) | 下一次缓存准入、淘汰或驻留维护；不会取消已经开始的读取 |
 | `default_model`、`default_permission_mode`、`default_plan_mode` 等会话默认值 | 新会话；已有会话保留自己的选择 |
 | [`identity`](#identity) | 下次启动进程 |
 | [`tui.toml`](#tui-toml) | 下次启动，或在 TUI 执行 `/reload-tui` |
+
+省略资源字段时，Kiki 会在进程启动时根据主机硬件计算下面的公式。`config.toml` 或环境变量中的显式值会原样覆盖公式，不会再受旧的上限约束。
+
+## 硬件自适应的资源默认值
+
+资源字段省略时，Kiki 不再使用固定的单机值。设 `C = os.availableParallelism()`、`M = floor(totalmem / MiB)`、`H = max(512, floor(M / 64))` MiB，`W = max(1, min(C - 1, floor(M / 4 / H)))`。其中 `C - 1` 为主机留出一个并行度槽位，最小值则保证小型机器仍可工作。
+
+| 范围 | 自适应默认值 | 仍可配置或保持不变的内容 |
+| --- | --- | --- |
+| CPU worker | `max_workers = W`；`max_queue = max(128, 16W)`；`max_queued_bytes = max(64, floor(M / 128))` MiB | `KIKI_CPU_MAX_WORKERS`、`KIKI_CPU_MAX_QUEUE`、`KIKI_CPU_MAX_QUEUED_BYTES` 和 `KIKI_CPU_TIMEOUT_MS` 仍分别覆盖对应字段。`timeout_ms` 仍为 30 秒；实际 worker 数仍受 `C - 1` 封顶 |
+| 会话驻留 | `max_live_sessions = max(16, floor(M / 128))`；`max_concurrent_restores = W`；`max_queued_restores = max(128, 16C)`；`max_resident_heap_bytes = min(max(256, floor(M / 8)) MiB, 60% of effective V8 heap)` | 空闲和 sweep 定时器仍为 10 分钟、1 分钟和 30 秒。显式会话值仍然优先 |
+| worker 后端存储与解析 | SQLite query、mailbox、memory、usage 和 kap parser worker 使用 `H` MiB；存储 worker 的等待队列默认 `max(128, 16C)` | SQLite 仍保持单写者，解析器的背压机制不变 |
+| 搜索 | 单个 query worker 使用 `H` MiB，仍有 8 个 active slot，队列为 `max(128, 16C)`。indexer 子进程使用 `H` MiB，soft RSS 为 `2H + 256` MiB，hard RSS 为 `3H + 256` MiB | 显式 indexer 选项优先于 `KIKI_SEARCH_INDEXER_SOFT_MB` / `KIKI_SEARCH_INDEXER_HARD_MB`，后者优先于这些默认值。搜索仍保持单写者 |
+| Transcript detail | 单次 detail cache 默认 `H` MiB | `tail_turns = 20`、`max_agent_bytes = 16` MiB 和每次单独分页读取的限制不变 |
+| Request governance | `max_queue_size = max(1024, 4 × max(128, 16C))` | `rules = []` 和 300 秒等待预算不变；用户规则和显式 queue 值仍优先，这不是 provider 限流 |
+
+以下各节中涉及资源的旧数值示例都是显式 override 示例，不是硬件默认值。桌面 launcher 会为 sidecar 注入 `max(8192, floor(totalmem / MiB / 4))` MiB 的显式目标 heap。Native SEA profile 不设置 CLI heap flag，`NODE_OPTIONS` 保留为用户的权威覆盖。前台 `serve`、非登录用途的 `acp` 和进程内执行的提示词（`-p`、`--prompt` 或 `--prompt-file`）仅在当前堆低于目标的 90%、且用户没有显式堆覆盖时最多重新启动一次。默认交互入口 `kiki`、恢复/继续会话、`web` 和 `serve --ensure/--query/--stop` 都是 daemon 客户端，不会自动重启；新建 daemon 在启动前收到目标堆参数。`--version`、工具调用和补全等短命令不会重启。不要假定所有机器都使用同一个 V8 heap 大小。
 
 TUI 的 `/reload` 仍可手动重载 `config.toml` 和 `tui.toml`。按轮次或会话保存快照的设置遵循各节说明的时机；文件自动重载不会替换正在执行的请求。
 
@@ -628,8 +647,15 @@ backoff = 15000
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `max_concurrent_restores` | 整数，1–4 | `4` | 同时恢复的冷会话数。调高无需重启，并会立即唤醒排队中的恢复；调低不会中断已经开始的恢复。 |
-| `max_queued_restores` | 整数，0–64 | `8` | 排队等待的恢复数量上限；超出时返回队列已满错误。 |
+| `idle_ttl_ms` | 整数，0–2147483647 | `600000`（10 分钟） | live session 未处于压力时，周期 sweep 可卸载会话前所需的最小空闲时长 |
+| `max_live_sessions` | 正整数 | `max(16, floor(M / 128))` | live session 容量。达到或超过该容量时，空闲会话改用更快的 `min_idle_ms` 回收阈值 |
+| `min_idle_ms` | 整数，0–2147483647 | `60000`（1 分钟） | live session 容量或 heap 压力需要回收时使用的最小空闲时长 |
+| `sweep_interval_ms` | 整数，1000–2147483647 | `30000`（30 秒） | 周期回收检查的间隔 |
+| `max_concurrent_restores` | 正整数 | `W` | 同时恢复的冷会话数。调高无需重启，并会立即唤醒排队中的恢复；调低不会中断已经开始的恢复 |
+| `max_queued_restores` | 非负整数 | `max(128, 16C)` | 排队等待的恢复数量上限；超出时返回队列已满错误 |
+| `max_resident_heap_bytes` | 非负整数 | `min(max(256, floor(M / 8)) MiB, 60% of effective V8 heap)` | 触发空闲会话 heap 回收的阈值。设为 `0` 可关闭 heap 触发，但容量和空闲时长规则仍有效 |
+
+定时器字段使用 Node 的最大定时器延迟 `2147483647` 毫秒。显式值不再受原来 `64` 个 session、`4` 个 restore 或 `64` 个排队 restore 的 schema 上限限制。
 
 每次恢复有 60 秒截止时间，包含排队等待。超时后释放恢复槽位，已保存的消息仍可重试或取消。消息状态和 GUI 恢复操作见 [持久消息恢复](../server/rest-api.md#提示词)。
 
@@ -641,9 +667,9 @@ backoff = 15000
 | --- | --- | --- | --- |
 | `tail_turns` | 正整数 | `20` | 每个 agent 常驻保留多少个已结束的 turn |
 | `max_agent_bytes` | 正整数 | `16777216`（16 MiB） | 每个 agent 的常驻字节预算，即留在内存里的量。更早的 turn 会按需从磁盘读取 |
-| `max_detail_cache_bytes` | 非负安全整数 | `268435456`（256 MiB） | 单次完整正文读取的最大缓存量。`0` 关掉这个额外缓存槽，内容照样读取，只是不留在该缓存里。改动后的值在下一次缓存准入或淘汰时生效；调低会淘汰放不下的内容，不会取消正在进行中的读取 |
+| `max_detail_cache_bytes` | 非负安全整数 | `H` MiB | 单次完整正文读取的最大缓存量。`0` 关掉这个额外缓存槽，内容照样读取，只是不留在该缓存里。改动后的值在下一次缓存准入或淘汰时生效；调低会淘汰放不下的内容，不会取消正在进行中的读取 |
 
-这些是服务端内存预算，不是读取上限。调低它们会减少内存占用，可能增加从磁盘重复读取的次数。
+`H` 是[硬件自适应资源默认值](#硬件自适应的资源默认值)中的 worker heap。这里是服务端内存预算，不是读取上限。调低它们会减少内存占用，可能增加从磁盘重复读取的次数。
 
 ## `token_counting`
 
@@ -817,6 +843,8 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 
 `cpu_workers` 控制 App 级 CPU 密集型工作的 worker 池。当前首个落地用途是图片数据校验时的首次解码（decode）；它不会改变 [`image`](#image) 中的图片尺寸或格式限制。worker 会在首次请求时按需创建，并在 App teardown 时关闭。
 
+下面的数值是显式 override 示例，不是默认值：
+
 ```toml
 [cpu_workers]
 max_workers = 4
@@ -827,12 +855,12 @@ timeout_ms = 30000
 
 | 字段 | 类型 | 默认值 | 环境变量 | 说明 |
 | --- | --- | --- | --- | --- |
-| `max_workers` | `integer` | `4` | `KIKI_CPU_MAX_WORKERS` | 接受 `1`–`64`；实际 worker 数为 `max(1, min(os.availableParallelism() - 1, max_workers))` |
-| `max_queue` | `integer` | `64` | `KIKI_CPU_MAX_QUEUE` | 接受 `1`–`1024`；等待 worker 的请求数上限，不计入正在执行的请求 |
-| `max_queued_bytes` | `integer` | `67108864`（64 MiB） | `KIKI_CPU_MAX_QUEUED_BYTES` | 正整数；等待请求声明的总字节数上限 |
-| `timeout_ms` | `integer` | `30000`（30 秒） | `KIKI_CPU_TIMEOUT_MS` | 接受 `1`–`2147483647`；单位为毫秒，包含请求在队列中的等待时间 |
+| `max_workers` | 正整数 | `W` | `KIKI_CPU_MAX_WORKERS` | 实际 worker 数为 `max(1, min(os.availableParallelism() - 1, max_workers))`；schema 不再设置 `64` 上限 |
+| `max_queue` | 正整数 | `max(128, 16W)` | `KIKI_CPU_MAX_QUEUE` | 等待 worker 的请求数上限，不计入正在执行的请求；schema 不再设置 `1024` 上限 |
+| `max_queued_bytes` | 正整数 | `max(64, floor(M / 128))` MiB | `KIKI_CPU_MAX_QUEUED_BYTES` | 等待请求声明的总字节数上限 |
+| `timeout_ms` | 正整数，最大 `2147483647` | `30000`（30 秒） | `KIKI_CPU_TIMEOUT_MS` | 单次请求超时（毫秒），包含在队列中等待的时间 |
 
-环境变量优先于 `config.toml`，并在启动时读取。队列同时受 `max_queue` 和 `max_queued_bytes` 限制；任一上限达到后，新请求会以 `CPU_QUEUE_FULL` 拒绝，而不是继续等待。正在执行的请求被取消或超时时，其 worker 会终止，下一项请求在重新打开的 worker 上执行；失败的工作不会重放。
+`C`、`M`、`W` 和 `H` 的定义见[硬件自适应的资源默认值](#硬件自适应的资源默认值)。环境变量优先于 `config.toml`，并在启动时读取。队列同时受 `max_queue` 和 `max_queued_bytes` 限制；任一上限达到后，新请求会以 `CPU_QUEUE_FULL` 拒绝，而不是继续等待。正在执行的请求被取消或超时时，其 worker 会终止，下一项请求在重新打开的 worker 上执行；失败的工作不会重放。
 
 ## `session_title`
 
@@ -902,6 +930,8 @@ usage_preference = "avoid"
 `nb_search` 配置 Kiki 内置的搜索与抓取模块，也就是 `WebSearch` 和 `FetchURL` 工具背后的能力。该模块是 Kiki 的一部分：随产品一起安装，不需要额外的安装步骤；其中的 provider 实例、凭证槽、lane 和默认 fetch chain 都已经内置。
 
 默认的 `WebSearch` lane 是 `duckduckgo.search`，无需注册、凭证或配置即可检索通用网页。公共 HTML 端点可能触发验证或限流；等待后再试，或显式选择其他已配置的来源。这些失败会报告错误，不会伪装为空结果，也不会静默切换到收费 provider。已配置的默认值和显式 lane 选择优先。仓库检索或代码库文档可显式选择 `github.repositories`、`context7.docs`；后者返回 typed 文档上下文，不能与结果型 lane 组合。字段名与合并行为遵循该模块的规范配置约定，与独立的 nb-search CLI 共用同一份 schema，因此已有的 nb-search 配置文件可以直接沿用。
+
+搜索的内存和队列默认值使用同一套硬件公式：单个 query worker 使用 `H` MiB，保持 8 个 active slot，队列为 `max(128, 16C)`。indexer 子进程使用 `H` MiB，soft RSS 为 `2H + 256` MiB，hard RSS 为 `3H + 256` MiB。显式宿主选项优先于 `KIKI_SEARCH_INDEXER_SOFT_MB` 和 `KIKI_SEARCH_INDEXER_HARD_MB`，后者优先于这些默认值；写者选举仍保持单写者。这些是本地资源预算，不是 provider 限流。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -1163,7 +1193,7 @@ prompt_overrides:
 
 模型请求规则计数供应商生成尝试，包括压缩与 OAuth 重放。外部 harness 的模型请求仍未纳管，不是零请求。Agent 执行规则覆盖通过 Kiki 启动的原生和外部执行器，包括 main、subagent 与外部委派的 independent Agent。每个 Agent 在执行期间只占一个名额，工具阶段、等待审批、取消清理和收尾均占用；idle Agent、后台 Shell 任务和子 Agent 的任务回执不额外计数。外部 harness 未提供模型绑定时，模型身份保持未知，不用 Kiki 的原生默认模型填充。
 
-例如，让某个供应商下的所有模型跨会话合计最多同时发出两条请求。把 `example-provider` 换成 `[providers]` 中的精确表键：
+例如，让某个供应商下的所有模型跨会话合计最多同时发出两条请求。把 `example-provider` 换成 `[providers]` 中的精确表键。`max_queue_size = 1024` 是显式 override 示例；省略时使用硬件自适应默认值 `max(1024, 4 × max(128, 16C))`。
 
 ```toml
 [request_governance]
@@ -1210,7 +1240,7 @@ overflow = "queue"
 | --- | --- | --- | --- |
 | `schema_version` | `integer` | `1` | 配置版本，只接受 `1` |
 | `max_wait_ms` | `integer` | `300000` | 本地等待预算，单位毫秒，须为正数；模型请求跨重试累计，Agent 按每次启动计 |
-| `max_queue_size` | `integer` | `1024` | 两种资源合计的等待准入数上限，须为正数 |
+| `max_queue_size` | 正整数 | `max(1024, 4 × max(128, 16C))` | 两种资源合计的等待准入数上限；显式值仍然是 override |
 | `rules` | `array<table>` | `[]` | 并发规则，用 `[[request_governance.rules]]` 编写 |
 | 规则 `id` | `string` | 必填 | 非空且唯一的规则标识 |
 | 规则 `resource` | `string` | `model_request` | `model_request` 计请求，`agent_execution` 计 Agent |

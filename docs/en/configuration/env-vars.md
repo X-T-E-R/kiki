@@ -172,6 +172,28 @@ Switches that control the behavior of subsystems such as background tasks, the b
 | `KIKI_MODEL_THINKING_KEEP` | Preserved-thinking passthrough; on `kimi` sent as `thinking.keep`, on `anthropic` (Claude and Kimi's Anthropic-compatible mode) sent as a `context_management` `clear_thinking_20251015` edit (enabling keep routes Anthropic requests to the beta Messages API); overrides `[thinking] keep` (which defaults to `"all"`); only injected while Thinking is on | A value the API accepts, e.g. `all`; an off-value (`false`/`0`/`no`/`off`/`none`/`null`) disables it |
 | `KIKI_DISABLE_CRON` | Disable the scheduled-task tool (a `Cron` call with `action: "create"` is refused; existing tasks do not fire) | `1` to disable |
 
+## Resource overrides
+
+The hardware-scaled defaults are described in [configuration files](./config-files.md#hardware-scaled-resource-defaults). The variables below override only the named resource; they do not rewrite `config.toml`.
+
+| Variable | Purpose | Valid values and timing |
+| --- | --- | --- |
+| `KIKI_CPU_MAX_WORKERS` | Override `[cpu_workers].max_workers` | Positive integer; read when the App service starts. The effective pool still caps at `C - 1` |
+| `KIKI_CPU_MAX_QUEUE` | Override `[cpu_workers].max_queue` | Positive integer; read when the App service starts |
+| `KIKI_CPU_MAX_QUEUED_BYTES` | Override `[cpu_workers].max_queued_bytes` | Positive integer bytes; read when the App service starts |
+| `KIKI_CPU_TIMEOUT_MS` | Override `[cpu_workers].timeout_ms` | Positive integer up to `2147483647`; read when the App service starts |
+| `KIKI_SEARCH_INDEXER_SOFT_MB` / `KIKI_SEARCH_INDEXER_HARD_MB` | Override the search indexer's soft or hard RSS budget | Positive integer MiB. An explicit search-host option wins, then the environment variable, then the hardware default `2H + 256` / `3H + 256` MiB |
+| `KIKI_DESKTOP_BUNDLED` | Mark the process as the bundled desktop sidecar for watchdog defaults | `1` enables bundled defaults; unset or another value leaves defaults off unless a threshold override is set |
+| `KIKI_SERVER_HEAP_RESTART_MB` | Override the desktop sidecar heap watchdog threshold | Positive integer MiB; `0` disables the heap metric. The default is 75% of the effective V8 heap |
+| `KIKI_SERVER_RSS_RESTART_MB` | Override the desktop sidecar RSS watchdog threshold | Positive integer MiB; `0` disables the RSS metric. The default is `max(3 GiB, 35% of total memory)` |
+| `KIKI_SERVER_EXTERNAL_RESTART_MB` | Override the desktop sidecar external-memory watchdog threshold | Positive integer MiB; `0` disables the external metric. The default is `max(1.5 GiB, total memory / 16)` and it remains eligible only when RSS is at least 3 GiB |
+
+The desktop watchdog samples every 30 seconds. Its defaults apply to the bundled desktop sidecar; explicit variables apply on any host. The desktop launcher injects a sidecar target of `max(8192, floor(totalmem / MiB / 4))` MiB. Native SEA profiles use `execArgv=[]` and `execArgvExtension="env"`, so the user's `NODE_OPTIONS` remains authoritative. Foreground `serve`, non-login `acp`, and in-process prompt runs (`-p`, `--prompt`, or `--prompt-file`) re-exec at most once when the current heap is below 90% of the target and no user heap override exists. The default interactive `kiki`, resume/continue, `web`, and `serve --ensure/--query/--stop` are daemon clients and do not auto-restart. A newly spawned daemon receives its target before launch. `--version`, tool calls, and completion do not restart.
+
+The CLI accepts legacy `--node-options` only for heap-related flags; other flags produce an error rather than being discarded. Put other supported Node flags in `NODE_OPTIONS`. Entrypoints preserve the user's original `NODE_OPTIONS` and remove only Kiki's one-time heap override before spawning child processes.
+
+Kiki-owned CLI/SEA entries enable independent worker heaps once before creating workers. SDK imports do not change process-wide flags. If an SDK host starts Node with `--max-old-space-size` or its percentage form, that global setting can override `Worker.resourceLimits`. To opt in to independent limits, call `enableIndependentWorkerHeaps` from `@kiki/node-sdk/worker-heap-policy` before creating workers. This changes the V8 default for all later isolates in the host process, not just Kiki workers, and depends on Node/V8 behavior; set the main heap at process startup. Workers warn if their observed heap limit differs substantially from the requested budget.
+
 Subagent concurrency has no environment-variable override. Configure [`[subagent]`](./config-files.md#subagent) with `max_direct_children` and `max_total_subagents`; their defaults are `16` and `0` (unlimited), respectively.
 
 `[subagent].default_model` supplies a model only when dispatch parameters and effective pins do not. It never inherits the caller's model, and neither it nor a forced environment value can bypass a profile's hard model rules. `[subagent].default_effort` was removed and is no longer read — startup warns about it; set an effort pin on the profile, route, or caller lease, or let the selected model use its own default.
