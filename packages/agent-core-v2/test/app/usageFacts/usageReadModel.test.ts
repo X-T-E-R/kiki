@@ -1,6 +1,9 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
@@ -52,6 +55,33 @@ describe('Usage source read model', () => {
   }
   beforeEach(async () => { home = await mkdtemp(join(tmpdir(), 'usage-read-model-')); storage = new InMemoryStorageService(); open(); });
   afterEach(async () => { await model.close(); await ix.dispose(); await drainQueryStoreDisposals(); await rm(home, { recursive: true, force: true, maxRetries: 5 }); });
+
+  it('keeps the shutdown worker referenced until exit after its close acknowledgement', async () => {
+    const workerEntry = join(home, 'delayed-close.mjs');
+    const clientEntry = join(home, 'close-client.mts');
+    await writeFile(workerEntry, `
+      import { parentPort } from 'node:worker_threads';
+      parentPort.on('message', ({ id, operation }) => {
+        parentPort.postMessage({ id, result: undefined });
+        if (operation.type === 'close') setTimeout(() => parentPort.close(), 200);
+      });
+    `);
+    await writeFile(clientEntry, `
+      import { UsageReadModelWorker } from ${JSON.stringify(new URL('../../../src/persistence/backends/sqlite/usageHost.ts', import.meta.url).href)};
+      import { configureUsageReadModelWorkerRuntime } from ${JSON.stringify(new URL('../../../src/persistence/backends/sqlite/usageProtocol.ts', import.meta.url).href)};
+      configureUsageReadModelWorkerRuntime(${JSON.stringify(workerEntry)});
+      const worker = new UsageReadModelWorker('unused', false);
+      await worker.request({ type: 'source', source: '' });
+      await worker.close();
+      console.log('worker closed');
+    `);
+    const result = await promisify(execFile)(process.execPath, ['--import', import.meta.resolve('tsx'), clientEntry], {
+      env: { ...process.env, TSX_TSCONFIG_PATH: fileURLToPath(new URL('../../../tsconfig.json', import.meta.url)) },
+      timeout: 10_000,
+    });
+    expect(result.stdout.trim()).toBe('worker closed');
+    expect(result.stderr).not.toContain('unsettled top-level await');
+  });
 
   it('projects canonical commits, preserves duplicate ordinals and backdated appends, and reprices without wire reads', async () => {
     logs.append(SCOPE, 'wire.jsonl', record(2));

@@ -72,7 +72,7 @@ export class UsageReadModelWorker {
   private pump(): void {
     if (this.stopped || this.active !== undefined) return;
     const pending = this.waiting.shift();
-    if (pending === undefined) { this.worker.unref(); return; }
+    if (pending === undefined) { if (this.closing === undefined) this.worker.unref(); return; }
     this.active = pending;
     this.worker.ref();
     try { this.worker.postMessage({ id: ++this.serial, operation: pending.operation, cancellation: pending.cancellation?.buffer as SharedArrayBuffer | undefined } satisfies UsageStoreRequest); }
