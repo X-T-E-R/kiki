@@ -319,7 +319,7 @@ describe('profile editor detail', () => {
     await openTab('run');
     const options = sheet().querySelector<HTMLElement>('[data-profile-panel="run"] [data-profile-block="runs"] [data-recipe-options]')!;
     expect(options).not.toBeNull();
-    expect(client.getRecipe).toHaveBeenCalledWith('/fixture/agent/./recipe.toml');
+    expect(client.getRecipe).toHaveBeenCalledWith('/fixture/agent/./recipe.toml', { safe: true, legacy: false });
     const fast = options.querySelector<HTMLInputElement>('[data-recipe-option="fast"] input')!;
     expect(fast.closest('[data-settings-field]')).not.toBeNull();
     expect(options.querySelector<HTMLInputElement>('[data-recipe-option="safe"] input')!.checked).toBe(true);
@@ -332,6 +332,18 @@ describe('profile editor detail', () => {
       scope: 'user', workspace_id: 'ws-one', source_file: '/fixture/agent/SYSTEM.md',
       recipe_options: { safe: true, legacy: false, fast: true },
     });
+  });
+
+  it('shows an unavailable profile recipe in the run tab instead of hiding it', async () => {
+    const profile = { ...main, recipe: 'installation:missing-profile-recipe' };
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [profile, sub, explore], complete: true });
+    client.getRecipe.mockResolvedValue(undefined);
+    await render();
+    await open('agent');
+    await openTab('run');
+    const alert = sheet().querySelector('[data-profile-panel="run"] [role="alert"]');
+    expect(alert?.textContent).toContain('installation:missing-profile-recipe');
+    expect(alert?.textContent).toContain('The linked Recipe is gone.');
   });
 
   it('edits the subagent whitelist and a lease pin, keeping untouched entries bare', async () => {

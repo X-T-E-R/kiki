@@ -76,6 +76,7 @@ type SaveInput = { installation_id: string; expected_revision: string; files: Re
 const saveCalls: SaveInput[] = [];
 const saveAttempts: SaveInput[] = [];
 const readCalls: string[] = [];
+const selectionCalls: { id: string; selection?: RecipeOptionValues }[] = [];
 let acceptedFiles: Record<string, string> | null = null;
 let deferredSave = false;
 let deferredPreview = false;
@@ -103,8 +104,9 @@ vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     client: {
       listRecipes: () => Promise.resolve([...packages.values()].map((entry) => entry.summary)),
-      getRecipe: (id: string) => {
+      getRecipe: (id: string, selection?: RecipeOptionValues) => {
         readCalls.push(id);
+        selectionCalls.push({ id, selection });
         // One read held open, so a person can be typing across it. What is under
         // test is what happens to those words when it finally answers.
         if (deferredReads > 0) {
@@ -346,6 +348,7 @@ describe('the model page Recipe field', () => {
     saveCalls.length = 0;
     saveAttempts.length = 0;
     readCalls.length = 0;
+    selectionCalls.length = 0;
     acceptedFiles = null;
     deferredSave = false;
     deferredPreview = false;
@@ -399,6 +402,42 @@ describe('the model page Recipe field', () => {
   it('does not render an option field when the recipe has no options', async () => {
     await renderOptions({ options: [] });
     expect(container.querySelector('[data-recipe-options]')).toBeNull();
+  });
+
+  it('passes the current selection, keeps unknown keys, and shows resolved diagnostics', async () => {
+    const recipe = 'inst-options';
+    packages.set(recipe, {
+      ...READ_ONLY,
+      summary: source({ installation_id: recipe }),
+      resolved: {
+        ...READ_ONLY.resolved,
+        options: [...OPTIONS],
+        diagnostics: [{ code: 'unknown-option', message: 'Unknown option is ignored.', path: 'legacy' }],
+      },
+    });
+    const values = { hooks: false, legacy: true };
+    await renderOptions({ recipe, values });
+
+    expect(selectionCalls).toContainEqual({ id: recipe, selection: values });
+    expect(container.querySelector<HTMLInputElement>('[data-recipe-option="hooks"] input')!.checked).toBe(false);
+    expect(container.querySelector('[data-recipe-options-diagnostics]')?.textContent).toContain('inst-options');
+    expect(container.querySelector('[data-recipe-options-diagnostics]')?.textContent).toContain('legacy: Unknown option is ignored.');
+  });
+
+  it('shows a dangling recipe reference instead of hiding the profile field', async () => {
+    missingReads = 1;
+    await renderOptions({ recipe: 'missing-recipe' });
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('missing-recipe');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('The linked Recipe is gone.');
+  });
+
+  it('adds the recipe reference to a recipe read failure', async () => {
+    readFailures.push(true);
+    await renderOptions({ recipe: 'broken-recipe' });
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('broken-recipe');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('The recipe could not be read right now.');
   });
 
   it('offers a read-only package as copy or extend rather than an editor', async () => {
