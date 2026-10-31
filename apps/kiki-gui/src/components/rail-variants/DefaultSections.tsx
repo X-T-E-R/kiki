@@ -410,7 +410,7 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
  * What the focused agent can use, as one fold: the observation tabs (tools,
  * skills, dispatch targets) sit directly beside the session's own switches
  * (plugins, system capabilities, MCP servers), because the reader's question
- * — "它能用什么" — covers both. Plugin and MCP tools remain in the tools
+ * — "能力" — covers both. Plugin and MCP tools remain in the tools
  * inventory because they are still part of the observed, complete tool list.
  */
 export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { sessionId: string; agentId: string; workspaceId?: string; cwd?: string }) {

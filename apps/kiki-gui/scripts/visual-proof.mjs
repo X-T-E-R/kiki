@@ -1340,9 +1340,7 @@ async function scenarioQuestionCard() {
 async function scenarioBusyRail() {
   await selectSession('Fixture: busy rail');
   await openInspector();
-  // The pinned 现在 block carries the one-line background summary; the row
-  // itself lives in the record chapter.
-  await page.locator('[data-rail-background]').waitFor({ timeout: 20_000 });
+  await page.locator('[data-rail-section="tasks"] [data-tasks-scroll]').waitFor({ timeout: 20_000 });
   await page.waitForTimeout(500);
   await shot('busy-rail');
 }
@@ -1396,9 +1394,8 @@ async function scenarioNotesRail() {
   await page.waitForTimeout(200);
   await shot('notes-rail-1024');
   await resizeViewport(1440);
-  // The subagent's rail page: its own notes, never main's. The roster
-  // chapter unfolds from its summary line before its rows exist.
-  await rail.locator('[data-inspector-agents] > div > button').first().click();
+  // The subagent's rail page: its own notes, never main's. The roster is
+  // open from the start, so its rows are directly clickable.
   await rail.locator('[data-agent-id="agent-scout"]').first().click();
   // The preview tab strip keeps a panel for the opened agent; its presence
   // is what retargets the shared rail.
@@ -1454,8 +1451,6 @@ async function scenarioRailScale() {
   // unfolds onto the capability tabs.
   const rail = page.locator('[data-session-rail]');
   await rail.locator('[data-rail-profile-head]').waitFor({ timeout: 10_000 });
-  // The roster chapter unfolds from its summary line before its rows exist.
-  await rail.locator('[data-inspector-agents] > div > button').first().click();
   const capabilities = rail.locator('[data-rail-capabilities]');
   await capabilities.evaluate((node) => { node.scrollIntoView({ block: 'center' }); });
   await capabilities.locator('button').first().click();

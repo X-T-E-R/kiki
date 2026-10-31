@@ -1,22 +1,26 @@
 /**
  * The right rail: one page per agent, the same component for the main agent
- * and every subagent. Standard mode is two layers:
+ * and every subagent. Top to bottom in standard mode:
  *
- *   head       who this page is about, the 标准 / 驾驶舱 switch, close  fixed
- *   现在        profile head, what it is doing, 等你处理, usage figures,
- *               background-task one-liner                              pinned
- *   按需区      four folded chapters named after the reader's question:
- *               智能体 · 它能用什么 · 它记录和安排 · 这个会话         scrolling
+ *   head       who this page is about, the 标准 / 驾驶舱 switch, close  pinned
+ *   现在        profile head, what it is doing, 等你处理               pinned
+ *   概览        context, cost, tokens, cache                         scrolls
+ *   待办        checklist, notes, hooks, plan                        open
+ *   后台任务    running work, each with its stop                     open
+ *   智能体      the team under this agent                            open
+ *   定时任务    what this conversation scheduled                     open
+ *   tail       能力 · 动态 · 记忆 · 通信 · 频道 · 角色 · 会话, one
+ *               folded row each, never a fold inside a fold          folded
  *
- * The pinned block answers now / what waits / what it cost and never folds.
- * Everything else — checklist, notes, roster, cron, channels, session info —
- * lives inside one of the four chapters, default-closed.
+ * What the reader checks most — who runs, what waits, how far, what it cost —
+ * reads without a click; configuration sits at the end. Sections part with
+ * one hairline each, no cards.
  *
  * The cockpit reorders the same sections: its subject is the whole session,
- * so the execution graph comes first, then what waits on the reader, then the
- * shared agent roster, then the same four chapters. Every section is the same
- * component it is in standard mode, so the roster keeps its filtering and its
- * actions and loses nothing when the mode changes.
+ * so the execution graph comes first, then the shared agent roster, then the
+ * same work sections and tail. Every section is the same component it is in
+ * standard mode, so the roster keeps its filtering and its actions and loses
+ * nothing when the mode changes.
  *
  * Cockpit temporarily widens this rail into the preview's space. Standard
  * mode restores the original layout. `railVisibility` owns the differences
@@ -46,20 +50,18 @@ import { pushToast } from '../../lib/toasts';
 import { usageSessionDeepLink } from '../../lib/usageV2';
 import { AgentPanelContainer } from '../AgentPanelContainer';
 import { InspectorComms } from '../comms/InspectorComms';
-import { AgentRoster, RAIL_MARK, RailCrumbs, RosterSummary } from '../agent-panel/InspectorAgents';
-import { buildRoster } from '../agent-panel/agentRoster';
+import { AgentRoster, RAIL_MARK, RailCrumbs } from '../agent-panel/InspectorAgents';
 import { InspectorNow, NowAction, pendingBlocks } from '../agent-panel/InspectorNow';
 import { Icon } from '../icons';
 import { LifeMark } from '../LifeMark';
 import { INSPECTOR_HEAD, INSPECTOR_LINK, InspectorRow, InspectorSection } from '../agent-panel/InspectorSection';
-import { DisclosureChevron } from '../icons';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { useInspectorPeek } from '../inspectorFocus';
 import { RelativeTime } from '../RelativeTime';
 import { TaskDetailModal } from '../TaskDetailModal';
 import { useMediaPreview } from '../mediaPreviewContext';
 import { descendantIds, railVisibility, waitingAgentIds as pendingOrigins } from './model';
-import { FOCUS_RING, ModeSwitch, useMediaQuery, useRailMode, type RailMode } from './shell';
+import { FOCUS_RING, ModeSwitch, useMediaQuery, useRailMode } from './shell';
 import type { RailProps } from './types';
 import { readExternalClientMark } from '../../lib/externalClients';
 import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead } from './DefaultSections';
@@ -68,8 +70,11 @@ import { SessionCronSection } from './SessionCronSection';
 import { SessionChannelsRail } from '../im/SessionChannelsRail';
 import { PersonaSettingsUpdate } from '../persona/PersonaSettingsUpdate';
 
-/** Chapters separate by space alone (PRINCIPLES 12); no hairlines, no cards. */
-const SECTION = 'pt-5 first:pt-3';
+/**
+ * One section of the scrolling page: a hairline above it, no card. The page
+ * pulls up one pixel so its first rule lands on the pinned block's own.
+ */
+const SECTION = 'border-t border-hairline py-3';
 /** The context meter stays neutral until the overview calls it near; near is amber, never the "needs you" accent. */
 const OVERVIEW_METER = '[&_[data-overview-context]_[role=meter]>div]:!bg-ink-soft/70 [&_[data-overview-context=warn]_[role=meter]>div]:!bg-amber-rule [&_[data-overview-context=danger]_[role=meter]>div]:!bg-amber-rule [&_[data-overview-context]_span.text-danger]:!text-amber-ink';
 /** Cost, tokens and cache as mono figures on one measured row. */
@@ -229,76 +234,6 @@ const TasksSection = memo(function TasksSection({
   );
 });
 
-/**
- * Standard mode's roster chapter: closed it is the bucket summary alone —
- * 智能体 65, then the waiting / running / ended chips — so a 65-agent fleet
- * costs one line. Pressing the chips unfolds the full roster filtered to that
- * bucket; pressing the heading does the same unfiltered. The cockpit keeps
- * the ordinary fixed chapter instead.
- */
-function RosterSummaryChapter({
-  forest,
-  rootId,
-  waitingAgentIds,
-  rosterCount,
-  actions,
-  children,
-}: {
-  forest: Parameters<typeof buildRoster>[0]['forest'];
-  rootId: string;
-  waitingAgentIds: ReadonlySet<string>;
-  rosterCount: number;
-  actions?: React.ReactNode;
-  children: (openFilter: Parameters<typeof buildRoster>[0]['filter'] | 'all') => React.ReactNode;
-}) {
-  const { t } = useI18n();
-  const [expanded] = useState<ReadonlySet<string>>(() => new Set());
-  // Server rendering and the first client paint keep the full roster: a
-  // static read (SSR markup, a printed page) is never summary-only. The
-  // summary line takes over after hydration, when the fold is a real toggle.
-  const [openFilter, setOpenFilter] = useState<Parameters<typeof buildRoster>[0]['filter'] | 'all' | null>('all');
-  useEffect(() => { setOpenFilter(null); }, [rootId]);
-  const model = useMemo(
-    () => buildRoster({ forest, rootId, waiting: waitingAgentIds, expanded, filter: 'all', query: '', doneOpen: false }),
-    [forest, rootId, waitingAgentIds, expanded],
-  );
-  const open = openFilter !== null;
-  return (
-    <section data-inspector-agents="">
-      {/* The head row stays one line (name, count, chevron far right); the
-          summary chips live on their own line below it. */}
-      <div className="flex min-h-7 items-center gap-1">
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => { setOpenFilter(open ? null : 'all'); }}
-          className="group -mx-1.5 flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-        >
-          <span className={INSPECTOR_HEAD}>{t('rail.group.agents')}</span>
-          <span className="shrink-0 text-[12px] text-ink-faint tabular-nums">{rosterCount}</span>
-          <span className="ml-auto" />
-          <DisclosureChevron open={open} />
-        </button>
-        {actions}
-      </div>
-      {!open ? (
-        <div className="pt-0.5">
-          <RosterSummary
-            counts={model.counts}
-            filter="all"
-            onFilter={(bucket) => { setOpenFilter(bucket); }}
-          />
-        </div>
-      ) : null}
-      {open ? (
-        <div className="pt-1">
-          {children(openFilter)}
-        </div>
-      ) : null}
-    </section>
-  );
-}
-
 /** Mounts its children only once the slot scrolls into the rail's view. */
 function useLazyPanelSlot() {
   const slotRef = useRef<HTMLDivElement>(null);
@@ -397,10 +332,9 @@ export function Rail({
     : nodeStatusKnown ? (focusedNode?.busy ?? false) : (focusedNode?.busy === true || sessionBusy);
   const taskOwner = taskOwnerAgentId ?? show.taskOwner;
   // Choosing cockpit lifts its overview into view when it sits outside the
-  // rail's scroll viewport; the standard mode never scrolls. The cockpit
-  // overview mounts with the mode (the pinned head keeps the standard one, so
-  // the slot remounts), so the lift runs in a layout effect once the fresh
-  // node has landed rather than against the node that is leaving.
+  // rail's scroll viewport; the standard mode never scrolls. The lift runs in
+  // a layout effect, once the cockpit body has replaced the standard figures
+  // and the block has its new height.
   const liftIntoView = (slot: HTMLElement | null) => {
     if (slot === null || typeof slot.scrollIntoView !== 'function') return;
     const view = slot.closest('[data-agent-panel-scroll]')?.getBoundingClientRect();
@@ -410,11 +344,6 @@ export function Rail({
     if (rect.top < viewTop || rect.bottom > viewBottom) {
       slot.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
-  };
-  const chooseOverviewMode = (next: RailMode) => {
-    chooseMode(next);
-    if (next !== 'cockpit') return;
-    liftIntoView(panelSlot.slotRef.current);
   };
 
   useLayoutEffect(() => {
@@ -569,55 +498,41 @@ export function Rail({
     </>
   );
 
-  // Background tasks are session work, so they sit with the record chapter
-  // (checklist, notes, cron, feed) instead of a chapter of their own.
-  const backgroundTasksSection = backgroundTasks.length > 0 ? (
-    <div>
-      <h4 className="flex min-h-6 items-center gap-1.5 pb-0.5">
-        <span className={INSPECTOR_HEAD}>{t('rail.tasksLine')}</span>
-        <span className="text-[12px] text-ink-faint tabular-nums">{backgroundTasks.length}</span>
-      </h4>
-      <TasksSection
-        tasks={backgroundTasks}
-        sessionId={session?.id}
-        ownerAgentId={taskOwner}
-        onCancel={onCancelTask}
-        onOpenTask={setDetailTask}
-      />
-    </div>
-  ) : null;
-  // The chapters the two modes share, assembled once and ordered differently.
-  // Every one of these is the same component standard mode renders, so the
-  // shared roster keeps its selection, its filter and its actions.
-  // Checklist, notes, hooks and plan all belong to "它记录和安排".
-  const recordSection = (
-    <div
-      id="rail-todos"
-      className={`space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [&_[data-agent-notes-state=empty]]:hidden [&_[data-agent-panel-part=work]:has([data-agent-notes-state=empty]):not(:has([data-agent-hooks-section],[data-agent-plan],[data-agent-plan-error]))]:hidden [&_[data-agent-todo-section]]:hidden [&_[data-agent-todos-status]]:hidden`}
-    >
-      <RailSection title={t('rail.group.record')} data-rail-group="record">
-        <RailTodos sessionId={state.sessionId} agentId={focusedAgentId} state={state} />
-        <AgentPanelContainer key={`work:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} part="work" />
-        {backgroundTasksSection}
-        <div className="empty:hidden">
-          <SessionCronSection sessionId={state.sessionId} />
-        </div>
-        <ActivityFeed blocks={state.blocks} forest={forest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
-        {memory !== undefined ? (
-          <RailSection title={memory.title} count={memory.count} data-inspector-memory="">
-            {memory.content}
-          </RailSection>
-        ) : null}
+  // Running work behind the conversation, each row with its own stop. Open
+  // and near the top: a long build or a stuck job is checked as often as the
+  // checklist.
+  const tasksSection = showTasks ? (
+    <div className={SECTION} data-rail-section="tasks">
+      <RailSection title={t('rail.tasks')} collapsible={false} count={backgroundTasks.length}>
+        <TasksSection
+          tasks={backgroundTasks}
+          sessionId={session?.id}
+          ownerAgentId={taskOwner}
+          onCancel={onCancelTask}
+          onOpenTask={setDetailTask}
+        />
       </RailSection>
     </div>
+  ) : null;
+  // The focused agent's checklist, notes, hooks and plan. The section hides
+  // when every part of it is empty, so a fresh session shows no blank rule.
+  const todosSection = (
+    <div
+      id="rail-todos"
+      data-rail-section="todos"
+      className={`${SECTION} space-y-3 empty:hidden [&:not(:has(>:not(:empty)))]:hidden [&_[data-agent-notes-state=empty]]:hidden [&_[data-agent-panel-part=work]:has([data-agent-notes-state=empty]):not(:has([data-agent-hooks-section],[data-agent-plan],[data-agent-plan-error]))]:hidden [&:has([data-agent-notes-state=empty]):not(:has([data-rail-todos],[data-agent-hooks-section],[data-agent-plan],[data-agent-plan-error]))]:hidden [&_[data-agent-todo-section]]:hidden [&_[data-agent-todos-status]]:hidden`}
+    >
+      <RailTodos sessionId={state.sessionId} agentId={focusedAgentId} state={state} />
+      <AgentPanelContainer key={`work:${agentPanelKey}`} state={state} forest={forest} agentId={focusedAgentId} part="work" />
+    </div>
   );
-  // What the focused agent may use: observation tabs beside the session's own
-  // plugin / system / MCP switches (see the merged fold in DefaultSections).
-  const capabilitySection = (
-    <CapabilitiesBlock sessionId={state.sessionId} agentId={focusedAgentId} workspaceId={session?.workspace_id} cwd={session?.metadata.cwd} />
+  // One entry for this conversation's schedule; it renders nothing when the
+  // conversation has none.
+  const cronSection = (
+    <div className={`${SECTION} empty:hidden`} data-rail-section="cron">
+      <SessionCronSection sessionId={state.sessionId} />
+    </div>
   );
-  // Who is on the team. Standard mode opens to a one-line bucket summary and
-  // unfolds the full roster on demand; the cockpit keeps it open.
   const terminateAllAction = showTerminateAll ? (
     <button
       type="button"
@@ -628,76 +543,73 @@ export function Rail({
       {t('rail.terminateAll')}
     </button>
   ) : undefined;
+  // Who is on the team, open in both modes: the status chips filter in place,
+  // waiting and running agents lead, settled ones fold into their own group.
   const agentsSection = showRoster ? (
-    <div className={ROSTER_QUIET_WAITING}>
-      {mode === 'cockpit' ? (
-        <RailSection
-          title={t('rail.group.agents')}
-          count={rosterCount}
-          collapsible={false}
-          data-inspector-agents=""
-          actions={terminateAllAction}
-        >
-          <AgentRoster
-            forest={forest}
-            rootId={focusedAgentId}
-            peekAgentId={peekAgentId}
-            waitingAgentIds={waitingAgentIds}
-            onSelect={onOpenSubagent}
-          />
-        </RailSection>
-      ) : (
-        <RosterSummaryChapter
+    <div className={`${SECTION} ${ROSTER_QUIET_WAITING}`} data-rail-section="agents">
+      <RailSection
+        title={t('rail.group.agents')}
+        count={rosterCount}
+        collapsible={false}
+        data-inspector-agents=""
+        actions={terminateAllAction}
+      >
+        <AgentRoster
           forest={forest}
           rootId={focusedAgentId}
+          peekAgentId={peekAgentId}
           waitingAgentIds={waitingAgentIds}
-          rosterCount={rosterCount}
-          actions={terminateAllAction}
-        >
-          {(openFilter) => (
-            <AgentRoster
-              forest={forest}
-              rootId={focusedAgentId}
-              peekAgentId={peekAgentId}
-              waitingAgentIds={waitingAgentIds}
-              initialFilter={openFilter}
-              onSelect={onOpenSubagent}
-            />
-          )}
-        </RosterSummaryChapter>
-      )}
+          onSelect={onOpenSubagent}
+        />
+      </RailSection>
     </div>
   ) : null;
-  const sessionSection = session !== undefined ? (
-    <div className="space-y-3">
-      <RailSection title={t('rail.group.session')} data-rail-group="session">
-        <div className="space-y-3">
-          {/* The session's facts are plain label/value lines here — no fold
-              inside the chapter's fold. */}
-          <dl data-inspector-session="">
+  // The low-frequency tail: what the agent can use, what happened, and this
+  // conversation's settings. One hairline above the group, then one folded
+  // row each, side by side — never a fold inside another fold.
+  const tailSection = (
+    <div data-inspector-tail className={`${SECTION} space-y-0.5 empty:hidden [&:not(:has(>:not(:empty)))]:hidden`}>
+      <CapabilitiesBlock sessionId={state.sessionId} agentId={focusedAgentId} workspaceId={session?.workspace_id} cwd={session?.metadata.cwd} />
+      <ActivityFeed blocks={state.blocks} forest={forest} onOpenFile={onOpenFile} onOpenAgent={onOpenSubagent} />
+      {memory !== undefined ? (
+        <RailSection title={memory.title} count={memory.count} defaultOpen={false} data-inspector-memory="">
+          {memory.content}
+        </RailSection>
+      ) : null}
+      {show.comms && session !== undefined ? <InspectorComms sessionId={session.id} /> : null}
+      {session !== undefined ? (
+        <div className="empty:hidden">
+          <SessionChannelsRail
+            sessionId={state.sessionId}
+            sessionTitle={session.title}
+            personaId={session.agent_config?.persona?.name ? session.agent_config.profile : undefined}
+            personaName={session.agent_config?.persona?.name}
+            onOpenSettings={() => { void navigate('/settings/notifications'); }}
+          />
+        </div>
+      ) : null}
+      <div className="empty:hidden">
+        <PersonaSettingsUpdate sessionId={state.sessionId} />
+      </div>
+      {session !== undefined ? (
+        <RailSection
+          title={t('rail.group.session')}
+          summary={residentDirName(session.metadata.cwd) ?? t('rail.sessionNoName')}
+          defaultOpen={false}
+          data-rail-group="session"
+          data-inspector-session=""
+        >
+          <dl>
             <InspectorRow label={t('rail.directory')} title={session.metadata.cwd}><span className="truncate" style={{ direction: 'rtl', unicodeBidi: 'plaintext' }}>{session.metadata.cwd}</span></InspectorRow>
             {session.message_count > 0 ? <InspectorRow label={t('rail.messages')}>{String(session.message_count)}</InspectorRow> : null}
             <InspectorRow label={t('rail.updatedRow')}><RelativeTime at={session.updated_at} /></InspectorRow>
           </dl>
-          <div className="empty:hidden">
-            <PersonaSettingsUpdate sessionId={state.sessionId} />
-          </div>
-          {show.comms ? <InspectorComms sessionId={session.id} /> : null}
-          <div className="empty:hidden">
-            <SessionChannelsRail
-              sessionId={state.sessionId}
-              sessionTitle={session?.title}
-              personaId={session.agent_config?.persona?.name ? session.agent_config.profile : undefined}
-              personaName={session.agent_config?.persona?.name}
-              onOpenSettings={() => { void navigate('/settings/notifications'); }}
-            />
-          </div>
-        </div>
-      </RailSection>
+        </RailSection>
+      ) : null}
     </div>
-  ) : null;
+  );
   const needsYouSection = sessionPending !== undefined && sessionPending.length > 0 ? (
-    <div className="pt-3">
+    <div className="pt-1">
       <NeedsYouList
         items={sessionPending}
         forest={forest}
@@ -707,15 +619,17 @@ export function Rail({
       />
     </div>
   ) : null;
+  // The overview scrolls with the page in both modes: the pinned block keeps
+  // only who and what waits, so a tall figure block never squeezes the list.
   const overviewSection = (
     <section
       ref={panelSlot.slotRef}
       data-rail-agent-panel-slot
       data-rail-switchable={mode}
       aria-labelledby="rail-overview-title"
-      className={`min-h-px ${OVERVIEW_METER} ${OVERVIEW_FIGURES} ${mode === 'cockpit' ? SECTION : ''}`}
+      className={`min-h-px ${SECTION} ${OVERVIEW_METER} ${OVERVIEW_FIGURES}`}
     >
-      <div data-rail-overview-well className={mode === 'cockpit' ? 'pt-1 pb-3' : 'pt-1'}>
+      <div data-rail-overview-well>
         {panelSlot.mounted ? (
           <AgentPanelContainer
             key={`overview:${agentPanelKey}`}
@@ -737,38 +651,24 @@ export function Rail({
       </div>
     </section>
   );
-  // What is running behind the conversation joins the pinned "现在" block as
-  // one compact line; the full list stays in 它记录和安排.
-  const latestTask = backgroundTasks[0];
-  const latestTaskText = lastLine(latestTask?.output_preview ?? latestTask?.command) ?? latestTask?.description;
-  const backgroundLine = latestTask !== undefined ? (
-    <p data-rail-background className="flex min-w-0 items-baseline gap-1.5 text-[12px] leading-[18px] text-ink-faint">
-      <span aria-hidden className="status-dot-busy h-1.5 w-1.5 shrink-0 self-center rounded-full bg-ink-soft" />
-      <span className="shrink-0">
-        {backgroundTasks.length > 1 ? t('rail.backgroundMany', { count: backgroundTasks.length }) : t('rail.backgroundOne')}
-      </span>
-      {latestTaskText !== undefined ? (
-        <span data-rail-background-preview className="min-w-0 truncate font-mono text-[11.5px]" title={latestTaskText}>
-          · {latestTaskText}
-        </span>
-      ) : null}
-    </p>
-  ) : null;
-  // The four folded chapters, named after the reader's question. Standard mode
-  // leads with nothing but the pinned "现在" block; the cockpit leads with the
-  // session execution graph, then what waits on the reader.
+  // Standard reads figures, then the work in hand, then the team; the cockpit
+  // leads with the session graph and the team it draws.
   const orderedSections = (mode === 'cockpit'
     ? [
+      ['overview', overviewSection],
       ['agents', agentsSection],
-      ['capabilities', capabilitySection],
-      ['record', recordSection],
-      ['session', sessionSection],
+      ['todos', todosSection],
+      ['tasks', tasksSection],
+      ['cron', cronSection],
+      ['tail', tailSection],
     ] as const
     : [
+      ['overview', overviewSection],
+      ['todos', todosSection],
+      ['tasks', tasksSection],
       ['agents', agentsSection],
-      ['capabilities', capabilitySection],
-      ['record', recordSection],
-      ['session', sessionSection],
+      ['cron', cronSection],
+      ['tail', tailSection],
     ] as const
   ).filter(([, section]) => section !== null);
   return (
@@ -807,7 +707,7 @@ export function Rail({
         onSelect={selectAgent}
         close={(
           <span className="flex shrink-0 items-center gap-1.5">
-            {narrow ? null : <ModeSwitch mode={mode} onChoose={chooseOverviewMode} />}
+            {narrow ? null : <ModeSwitch mode={mode} onChoose={chooseMode} />}
             {onClose === undefined ? null : (
               <button type="button" onClick={mode === 'cockpit' ? () => { chooseMode('default'); } : onClose} data-rail-close
                 title={t(mode === 'cockpit' ? 'rail.cockpit.close' : 'sv.hidePanel')} aria-label={t(mode === 'cockpit' ? 'rail.cockpit.close' : 'sv.hidePanel')}
@@ -857,18 +757,14 @@ export function Rail({
         )}
       />
       {needsYouSection}
-      {mode === 'default' ? overviewSection : null}
-      {backgroundLine}
       </div>
       </div>
 
       {/* One page per agent: switching agents raises the new page into place.
-          The pinned "现在" block above never folds; the four chapters below
-          answer one question each and start closed. The cockpit leads with the
-          session execution graph inside the same page transition — same slot
-          node, no remount, so an agent switch keeps its scroll. */}
-      <div key={focusedAgentId} className="rail-page">
-      {mode === 'cockpit' ? overviewSection : null}
+          The overview leads the page in both modes from the same slot node,
+          so a mode switch never remounts it. The page pulls up one pixel so
+          its first hairline lies under the pinned block's own. */}
+      <div key={focusedAgentId} className="rail-page -mt-px">
       {orderedSections.map(([key, section]) => (
         <Fragment key={key}>{section}</Fragment>
       ))}
