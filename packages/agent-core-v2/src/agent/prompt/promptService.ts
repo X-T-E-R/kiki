@@ -1,5 +1,6 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import { randomUUID } from 'node:crypto';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { z } from 'zod';
 import { castDraft } from 'immer';
 
@@ -816,7 +817,13 @@ export class AgentPromptService implements IAgentPromptService {
     @IWireService private readonly wire: IWireService,
     @IBlobStore private readonly blobs: IBlobStore,
     @ILogService private readonly log: ILogService,
+    @ISessionExecutionControl private readonly executionControl: ISessionExecutionControl,
   ) {
+    const executionSubscription = executionControl.onDidChange(() => {
+      if (!executionControl.isHeld()) this.resumeRecoveredQueue();
+      if (!executionControl.isHeld()) void this.startNext();
+    });
+    instantiation.onWillDispose(() => { executionSubscription.dispose(); });
     this.states.contributeState(promptLaunchingKey);
     this.states.contributeState(promptAdmissionKey);
     this.states.contributeState(promptRetryReceiptKey);
@@ -2381,6 +2388,12 @@ export class AgentPromptService implements IAgentPromptService {
 
   async drain(reason: Error, mode: 'cancel' | 'preserve-pending' = 'cancel'): Promise<void> {
     this.closing = mode;
+    if (mode === 'preserve-pending' && this.active !== undefined && this.loop.preservePausedForExit?.()) {
+      const active = this.active;
+      active.detachedForClose = true;
+      this.active = undefined;
+      active.completionDeferred.resolve({ promptId: active.id, result: undefined, state: 'cancelled' });
+    }
     for (const controller of this.promptSwitchControllers.values()) controller.abort(reason);
     this.releaseEditHold();
     for (const flight of this.steeringFlights.values()) {
@@ -2401,7 +2414,11 @@ export class AgentPromptService implements IAgentPromptService {
     await launching?.settled;
     const active = this.active;
     if (active !== undefined) {
-      this.abort(active.id, reason);
+      if (mode === 'preserve-pending' && this.loop.preservePausedForExit?.()) {
+        active.detachedForClose = true;
+        this.active = undefined;
+        active.completionDeferred.resolve({ promptId: active.id, result: undefined, state: 'cancelled' });
+      } else this.abort(active.id, reason);
       await active.turn.result;
     }
     await this.recoveryFlight;
@@ -2467,6 +2484,8 @@ export class AgentPromptService implements IAgentPromptService {
   }
 
   private async startNext(): Promise<void> {
+    await this.executionControl.ready();
+    if (this.executionControl.isHeld()) return;
     if (this.closing || this.active !== undefined || this.launching || this.switchFlight !== undefined || this.waitingForLoop || this.steering > 0) return;
     if (this.fullCompaction.compacting !== null && this.loop.status().state !== 'running') return;
     const candidateId = this.nextReadyQueueId();
@@ -2673,6 +2692,21 @@ export class AgentPromptService implements IAgentPromptService {
         if (this.active === undefined) void this.startNext();
       }
     }
+  }
+
+  attachPausedTurn(turn: Turn): void {
+    this.whenTurnDurable(turn, result => {
+      if (this.executionControl.isParked(this.scopeContext.agentId)) return;
+      for (const identity of this.states.get(promptIdentityKey).values()) {
+        if (identity.phase !== 'launched' || identity.turnId !== turn.id) continue;
+        const terminal: PromptTerminalResult = {
+          promptId: identity.promptId, turnId: turn.id, state: result.type,
+          result: result.type === 'failed' ? { ...result, error: toErrorPayload(result.error) }
+            : result.type === 'cancelled' ? { ...result, reason: toErrorPayload(result.reason) } : result,
+        };
+        void this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal }));
+      }
+    });
   }
 
   private whenTurnDurable(turn: Turn, complete: (result: TurnResult) => void): void {

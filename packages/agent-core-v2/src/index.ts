@@ -1,3 +1,5 @@
+export * from './session/executionControl/executionControl';
+import './session/executionControl/executionControlService';
 export * from './app/cpuWorker/cpuWorkerService';
 export * from './app/cpuWorker/configSection';
 export * from './app/settingsTransfer/settingsTransfer';

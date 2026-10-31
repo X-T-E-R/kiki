@@ -369,6 +369,64 @@ On an idle agent, `thinking: null` in `agent_config` clears only the session thi
 
 Session creation and profile updates accept `agent_config.plan_gate: "free" | "gated"`. A profile update applies it to the live main agent without sending a prompt; live snapshots echo the effective `plan_gate`. This override lasts for the live agent's lifetime; after restoration it uses the configured gate again. Cold snapshots omit the gate. To leave Plan mode on a specific agent through klient, call `klient.session(sessionId).agent(agentId).exitPlan()`; its parent and siblings stay in their current modes.
 
+#### Pause and resume execution through Klient
+
+Pause and resume are session-scoped Klient procedures, not additional REST
+session actions. Use the existing `POST /api/klient/call` contract, or the
+typed `klient.session(sessionId).execution` facade. For example, pause a
+session with:
+
+```json
+{
+  "procedure": {
+    "scope": "session",
+    "sessionId": "session_example",
+    "service": "sessionExecutionControl",
+    "method": "pause"
+  },
+  "params": [{ "operationId": "pause-1" }]
+}
+```
+
+The `read` call uses `method: "read"` and `params: []`. Resume uses
+`method: "resume"` and `params: [{ "operationId": "resume-1", "pauseOperationId": "pause-1" }]`.
+The execution state is returned in the usual response envelope's `data`.
+Subscribe to `execution.changed` through `session.events` over the authenticated
+`/api/klient/events` socket, and use `read` to reconcile after reconnecting;
+this is not a new `/api/sessions/{session_id}:pause` route or a legacy
+`/api/ws` event.
+
+The returned `phase` is `running`, `pausing`, `paused`, `resuming`, or `failed`.
+`pause` atomically persists the hold intent before settling the session's
+`main` and native child agents. A native model or tool step that has already
+started finishes with its real result, then the hold takes effect before the
+next step. External execution, process, and media work is not forcibly
+cancelled, so the session can remain `pausing` until that work settles. Each
+`agents` entry reports `settling`, `paused`, `idle`, or `unknown`, plus whether
+it is `resumable`. A `failed` state may include an `error` string. If `phase` is
+`failed`, read `error` and `agents` to inspect the failure; the hold remains in
+place, and an `unknown` result from a cold session does not authorize automatic
+resume.
+
+After the state becomes `paused`, normal close preserves the turn, tasks, queue,
+and binding. A restart keeps the hold; call `resume` explicitly with the
+current `pauseOperationId`, and do not automatically replay work whose
+external result is unknown. `operationId` and `pauseOperationId` must be
+non-empty strings of at most 256 characters. Start each new `pause` or `resume`
+cycle with a new `operationId`; reuse the stable ID only when retrying that same
+action. Retrying the same action with the same ID returns the operation's saved
+receipt or latest saved state, while reusing an ID for a different action is
+rejected. Ordinary sends remain accepted and queued while a hold is active. A
+user-requested pause is independent of Goal handling; Goal work does not resume
+it implicitly. `execution.resume` also does not reopen a Goal that the user
+paused.
+
+Session list and cold reads do not activate a cold session. `GET /api/sessions`
+and `GET /api/sessions/{session_id}` may include the optional read-only
+`execution_phase` fact; `GET /api/sessions/query` exposes the same projection as
+`meta.execution_phase`. This field is not an input to session profile updates or
+Klient `session.update`.
+
 #### `POST /api/sessions/{session_id}:archive`
 
 An empty body keeps the single-session behavior. Send `{ "include_attached": true, "exclude_session_ids": ["independent-thread-id"] }` to archive the attached family. The server reads persisted metadata across all workspaces, not the client's loaded page. `created_by_session_id` records a created thread; `parent_session_id` counts only with `child_session_kind: "child"`, so ordinary forks are not included. Each excluded thread cuts its whole subtree; excluding the requested root does not exclude that root.

@@ -58,8 +58,8 @@ http │ ipc │ memory
     `config.*`, `providers.*`, `models.*`, `catalog.*`, `auth.*`, `flags.*`,
     `plugins.*`, `hostFs.*`, `files.*`, `env()`.
   - `klient.session(id).*` — `get/setTitle/update/status/close/archive/
-    restore/fork/createChild`, `approvals.*`, `questions.*`,
-    `interactions.*`, `agents()`.
+    restore/fork/createChild`, `execution.read/pause/resume`, `approvals.*`,
+    `questions.*`, `interactions.*`, `agents()`.
   - `session.agent(id).*` — `prompt/steer/cancel/shutdownExecution/runShellCommand/
     cancelShellCommand/getModel/setModel/setPermission/getUsage/getContext/
     getPlan*/getTasks*/stopTask/getTaskOutput`.
@@ -73,9 +73,10 @@ http │ ipc │ memory
   serialization the wire already pays.
 - **Events** — `klient.events.on(...)` for the global bus
   (`config.changed`, `kosong.models.changed`, `session.archived`, …),
-  `session(id).events.on('metadata.changed' | 'interactions.changed' |
-  'interactions.resolved')`, and `agent(id).events.on('turn.started' |
-  'assistant.delta' | 'tool.call.started' | 'prompt.completed' | …)`.
+  `session(id).events.on('execution.changed' | 'metadata.changed' |
+  'interactions.changed' | 'interactions.resolved')`, and
+  `agent(id).events.on('turn.started' | 'assistant.delta' |
+  'tool.call.started' | 'prompt.completed' | …)`.
   `events.on` returns a disposable with a `ready` promise for initial source
   attachment. Await it before triggering work whose output you need to capture.
   Delivery remains best-effort, not replay; later disconnects and invalid payloads
@@ -98,6 +99,63 @@ http │ ipc │ memory
 `session.status()` reads one authoritative session activity snapshot. Pending
 approvals or questions take precedence over running work; failed calls reject
 rather than reporting the session as idle.
+
+## Pause and resume session execution
+
+`session(id).execution` controls the session's `main` agent and native child
+agents as one session-scoped hold. It exposes `read()`,
+`pause({ operationId })`, and `resume({ operationId, pauseOperationId })`.
+The pause intent is persisted atomically before the agents settle.
+
+```ts
+const session = klient.session(sessionId);
+const execution = session.execution;
+const changes = session.events.on('execution.changed', (state) => {
+  console.log(state.phase, state.agents);
+});
+await changes.ready;
+
+const pauseOperationId = 'pause-1'; // keep this ID stable when retrying
+await execution.pause({ operationId: pauseOperationId });
+// Reconcile with execution.read() or execution.changed until phase is "paused".
+```
+
+After `paused` is observed, resume with a new stable operation ID:
+
+```ts
+const resumeOperationId = 'resume-1'; // keep this ID stable when retrying
+await execution.resume({ operationId: resumeOperationId, pauseOperationId });
+```
+
+`phase` is `running`, `pausing`, `paused`, `resuming`, or `failed`. A native
+model or tool step that has already started finishes with its real result, then
+the hold takes effect before the next step. External execution, process, and
+media work is not forcibly cancelled, so `pausing` can last until that work
+settles. Each `agents` entry reports `settling`, `paused`, `idle`, or `unknown`
+and whether it is `resumable`. A `failed` state may include an `error` string.
+If `phase` is `failed`, read `error` and `agents` to inspect the failure; the
+hold remains in place, and an `unknown` result from a cold session does not
+authorize automatic resume.
+
+After the state becomes `paused`, normal `session.close()` keeps the turn,
+tasks, queue, and binding. A restart keeps the hold; call `resume` explicitly
+with the current `pauseOperationId`. An external operation with an unknown
+result is not replayed automatically. `operationId` and `pauseOperationId` must
+be non-empty strings of at most 256 characters. Start each new `pause` or
+`resume` cycle with a new `operationId`; reuse the stable ID only when retrying
+that same action. Retrying the same action with the same ID returns the
+operation's saved receipt or latest saved state, while reusing an ID for a
+different action is rejected. Ordinary sends remain accepted and queued while a
+hold is active. A user-requested pause is independent of Goal handling; Goal
+work does not resume it implicitly. `execution.resume` also does not reopen a
+Goal that the user paused.
+
+The HTTP transport carries the same calls through `POST /api/klient/call` with
+`scope: "session"` and `service: "sessionExecutionControl"`; the
+`execution.changed` subscription uses `/api/klient/events`. Session metadata
+and list summaries may include optional read-only `executionPhase`; cold reads
+and list reads do not activate a cold session, and `executionPhase` is not a
+field for `session.update`.
 
 ## Ordered session views
 

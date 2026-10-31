@@ -29,6 +29,7 @@ import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle'
 import { IAgentCollaborationRegistry } from '#/session/agentCollaboration/registry';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { SessionSubagentService } from '#/session/subagent/subagentService';
 import { ISessionDispatchService, type DispatchChild, type DispatchRunOptions } from '#/session/dispatch/dispatch';
@@ -262,6 +263,28 @@ describe('dispatch resume through model switch and real native run', () => {
     expect(ctx.get(IAgentProfileService).getEffectiveThinkingLevel()).toBe('high');
     const { dispatch, child } = dispatchFor(ctx);
     await expect(dispatch.runOnExisting(child, 'Bad effort', options('bad-effort', { thinkingEffort: 'unknown' }))).rejects.toThrow(/not supported/);
+  });
+
+  it('keeps an explicit native resume behind the durable session execution hold', async () => {
+    const ctx = await host();
+    const control = ctx.get(ISessionExecutionControl);
+    await control.pause({ operationId: 'pause-session' });
+    await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused' }));
+    const { dispatch, child } = dispatchFor(ctx);
+    const execution = ctx.get(IAgentExecutionService);
+    const entered = vi.spyOn(execution, 'run');
+    const controller = new AbortController();
+    ctx.mockNextResponse({ type: 'text', text: 'Explicit result after session resume.' });
+    const run = await dispatch.runOnExisting(child, 'Wait for the session control.', { ...options('held-native'), signal: controller.signal });
+    try {
+      await vi.waitFor(() => expect(entered).toHaveBeenCalledTimes(1));
+      expect(ctx.llmCalls).toHaveLength(0);
+      expect(await control.read()).toMatchObject({ phase: 'paused' });
+      await control.resume({ operationId: 'resume-session', pauseOperationId: 'pause-session' });
+      await (await run.started).completion;
+      await execution.settled();
+      expect(ctx.llmCalls).toHaveLength(1);
+    } finally { controller.abort(); }
   });
 
   it.each(['fresh', 'same'] as const)('launches only the %s explicit resume across a restored recovery hold', async (identity) => {
@@ -1322,7 +1345,8 @@ describe('dispatch resume after cancellation with deferred task notifications', 
         args: { include_finished: true }, signal: new AbortController().signal, turnId: 1, toolCallId: 'roster',
       });
       expect(result.isError).toBe(false);
-      return (JSON.parse(String(result.output)) as AgentListOutput).agents.find((agent) => agent.agent_id === CHILD)?.status;
+      if (typeof result.output !== 'string') throw new Error('AgentList must return its JSON receipt');
+      return (JSON.parse(result.output) as AgentListOutput).agents.find((agent) => agent.agent_id === CHILD)?.status;
     };
     const input = { sourceAgentId: CHILD, sourceTaskName: 'sender', targetAgentId: CHILD, targetTaskName: 'saved_child',
       content: 'Use the preserved update.', idempotencyKey: 'held-mailbox', waitForRunningDelivery: true, idleWake: 'owned-child' as const };

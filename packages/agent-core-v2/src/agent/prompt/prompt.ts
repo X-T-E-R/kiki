@@ -227,6 +227,7 @@ export interface IAgentPromptService {
   cancelModelSwitch(operationId: string): Promise<import('#/agent/modelSwitch/modelSwitch').ModelSwitchReceipt>;
   recoverModelSwitch(operationId: string, action: 'retry' | 'keep_original', mode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode): Promise<import('#/agent/modelSwitch/modelSwitch').ModelSwitchReceipt>;
   lookup(promptId: string, input?: PromptInput): import('./promptReplay').PromptLookup | undefined;
+  attachPausedTurn?(turn: Turn): void;
   enqueue(input: PromptInput): Promise<PromptHandle>;
   enqueueCron(input: { readonly origin: import('#/agent/contextMemory/types').CronJobOrigin; readonly prompt: string }): Promise<PromptHandle>;
   submit(payload: PromptPayload): Promise<PromptLaunchResult | undefined>;

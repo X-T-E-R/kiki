@@ -21,6 +21,7 @@ import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessi
 import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/mainAgent';
 import { readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
+import { readPersistedExecutionControl } from '@kiki/agent-core-v2/session/executionControl/readExecutionControl';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { IEventBus } from '@kiki/agent-core-v2/app/event/eventBus';
 import { ISessionMetadata, type SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
@@ -276,6 +277,28 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
   return {
     async call(scope, service, method, args, options) {
       options?.signal?.throwIfAborted();
+      if (service === 'sessionExecutionControl' && scope.sessionId !== undefined && scope.agentId === undefined && scope.workspaceId === undefined) {
+        const live = getLiveSessionById(root.accessor, scope.sessionId);
+        if (method === 'read' && live === undefined) {
+          const summary = await root.accessor.get(ISessionIndex).get(scope.sessionId);
+          if (summary === undefined) throw new RPCError(NOT_FOUND, `session not found: ${scope.sessionId}`);
+          return wireClone(await readPersistedExecutionControl(root.accessor.get(IAtomicDocumentStore), `sessions/${summary.workspaceId}/${scope.sessionId}`));
+        }
+        const manager = root.accessor.get(ISessionManager);
+        const lease = await manager.acquire?.(scope.sessionId, 'execution-control', undefined, options?.signal);
+        if (manager.acquire === undefined && live === undefined) await manager.resume(scope.sessionId);
+        try {
+          const resolved = await resolveScope(scope);
+          const instance = resolveService(resolved, service);
+          const member = instance[method];
+          if (typeof member !== 'function') throw new RPCError(REQUEST_INVALID, `method not found: ${service}.${method}`);
+          return wireClone(await (member as (...values: unknown[]) => unknown).apply(instance, args.map(wireClone)));
+        } catch (error) {
+          throw toRPCError(error);
+        } finally {
+          await lease?.dispose();
+        }
+      }
       const bindingAction = service === 'agentProfileService' && ['setModel', 'setEffort', 'setThinking'].includes(method)
         || service === 'agentPromptService' && ['switchModel', 'updateModelSwitch', 'cancelModelSwitch', 'recoverModelSwitch'].includes(method);
       if (bindingAction && scope.sessionId !== undefined && scope.agentId !== undefined && scope.workspaceId === undefined) {
@@ -545,6 +568,32 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
     },
 
     listen(scope, source, handler, onError, onReady) {
+      if (scope.sessionId !== undefined && scope.agentId === undefined && scope.workspaceId === undefined &&
+        source.kind === 'emitter' && source.service === 'sessionExecutionControl') {
+        const manager = root.accessor.get(ISessionManager);
+        let inner: IDisposable | undefined;
+        let disposed = false;
+        const attach = (session: ScopeLike) => {
+          if (disposed) return;
+          inner?.dispose();
+          inner = subscribeSource({ kind: 'session', like: session }, source, handler);
+        };
+        const created = manager.onDidCreateSession?.(event => {
+          if (event.sessionId === scope.sessionId) attach(event.handle);
+        });
+        const closed = manager.onDidCloseSession?.(event => {
+          if (event.sessionId !== scope.sessionId) return;
+          inner?.dispose(); inner = undefined;
+        });
+        try {
+          const live = getLiveSessionById(root.accessor, scope.sessionId);
+          if (live !== undefined) attach(live);
+          queueMicrotask(() => { if (!disposed) onReady?.(); });
+        } catch (error) {
+          onError?.(error instanceof Error ? error : new Error(String(error)));
+        }
+        return { dispose: () => { disposed = true; created?.dispose(); closed?.dispose(); inner?.dispose(); } };
+      }
       if (scope.sessionId !== undefined && scope.agentId === 'main' && scope.workspaceId === undefined) {
         const session = getLiveSessionById(root.accessor, scope.sessionId);
         const lifecycle = session?.accessor.get(IAgentLifecycleService);

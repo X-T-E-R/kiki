@@ -149,6 +149,7 @@ export interface AgentLoopStatus {
   readonly activeTurnId?: number;
   readonly lastTurnResult?: TurnResult['type'];
   readonly finalizing?: boolean;
+  readonly executionPaused?: boolean;
   readonly persistenceFailure?: { readonly executionOutcome: TurnResult['type']; readonly message: string };
   readonly pendingTurnIds: readonly number[];
   readonly hasPendingRequests: boolean;
@@ -183,6 +184,8 @@ export interface IAgentLoopService {
   cancel(turnId?: number, reason?: unknown): boolean;
 
   cancelFromUser(turnId?: number): void;
+
+  preservePausedForExit?(): boolean;
 
   /**
    * A new turn may preserve standalone steps for its own admission; history mutations require the default empty queue.

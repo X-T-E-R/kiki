@@ -32,7 +32,7 @@ export interface ExecutionControlState {
 
 export interface ExecutionPauseParticipant {
   pause(): Promise<ExecutionResumePoint | undefined>;
-  resume(point?: ExecutionResumePoint): Promise<void>;
+  resume(point?: ExecutionResumePoint): Promise<import('#/agent/loop/loop').Turn | undefined>;
 }
 
 export interface ISessionExecutionControl {
@@ -44,6 +44,10 @@ export interface ISessionExecutionControl {
   register(agentId: string, participant: ExecutionPauseParticipant): IDisposable;
   ready(): Promise<void>;
   isHeld(): boolean;
+  resumePoint(agentId: string): ExecutionResumePoint | undefined;
+  park(agentId: string): void;
+  isParked(agentId: string): boolean;
+  invalidate(agentId: string, turnId: number): Promise<void>;
 }
 
 export const ISessionExecutionControl = createDecorator<ISessionExecutionControl>('sessionExecutionControl');

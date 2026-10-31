@@ -48,6 +48,7 @@ import { renderNotificationXml } from './notificationXml';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IConfigService } from '#/app/config/config';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { ISessionMetadata, isExternalClientMain } from '#/session/sessionMetadata/sessionMetadata';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -332,6 +333,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     undoParticipants: IAgentConversationUndoParticipantRegistry,
     @ILogService private readonly log: ILogService,
     @IAgentStateService private readonly states: IAgentStateService,
+    @ISessionExecutionControl private readonly executionControl: ISessionExecutionControl,
   ) {
     super();
     this.states.contributeState(taskKey);
@@ -473,6 +475,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       signal: detached ? undefined : options.signal,
     };
     this.assertCanRegister(detached);
+    const prior = options.taskId === undefined ? undefined : this.ghosts.get(options.taskId);
+    const restored = prior?.status === 'running' && prior.kind === task.kind ? prior : undefined;
     const entry: ManagedTask = {
       taskId: options.taskId ?? generateTaskId(task.idPrefix),
       task,
@@ -483,9 +487,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       outputLimitTripped: false,
       status: 'running',
       options: entryOptions,
-      startedAt: Date.now(),
-      ownerTurnId: this.loop.status().activeTurnId,
-      goalId: this.currentGoal()?.goalId,
+      startedAt: restored?.startedAt ?? Date.now(),
+      ownerTurnId: restored === undefined ? this.loop.status().activeTurnId : restored.ownerTurnId,
+      goalId: restored === undefined ? this.currentGoal()?.goalId : restored.goalId,
+      terminalNotificationSuppressed: restored?.terminalNotificationSuppressed,
       endedAt: null,
       foregroundRelease: detached ? undefined : createForegroundRelease(),
       abortController: new AbortController(),
@@ -1207,7 +1212,12 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   async stopAllOnExit(reason: string): Promise<readonly AgentTaskInfo[]> {
     await this.suppressAllTerminalNotifications();
     if (this.keepAliveOnExit()) return [];
-    return this.stopAll(reason);
+    const stopping = this.list(true).filter(info => !this.hasPausedExecution(info)).map(info => this.stop(info.taskId, reason));
+    return (await Promise.all(stopping)).filter((info): info is AgentTaskInfo => info !== undefined);
+  }
+
+  private hasPausedExecution(info: AgentTaskInfo): boolean {
+    return info.kind === 'agent' && info.agentId !== undefined && this.executionControl.resumePoint(info.agentId) !== undefined;
   }
 
   override dispose(): void | Promise<void> {
@@ -1224,6 +1234,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
           clearTimeout(entry.timeoutHandle);
           entry.timeoutHandle = undefined;
         }
+        if (this.hasPausedExecution(this.toInfo(entry))) continue;
         if (entry.handle !== undefined) {
           entry.handle.cancel();
         } else {
@@ -1345,6 +1356,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   }
 
   private async markLoadedTasksLost(): Promise<readonly AgentTaskInfo[]> {
+    await this.executionControl.ready();
     const lostTasks: AgentTaskInfo[] = [];
     let changed = false;
     const persistence = this.persistence;
@@ -1360,6 +1372,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     for (const [taskId, info] of this.ghosts) {
       if (this.restoreDisposed) break;
       if (TERMINAL_STATUSES.has(info.status) || this.localTaskIds.has(taskId)) continue;
+      if (this.hasPausedExecution(info)) continue;
       if (info.kind === 'media' && this.mediaRecovery !== undefined) {
         const recovered = await this.mediaRecovery(info);
         if (recovered !== undefined) {
@@ -1633,6 +1646,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   ): Promise<boolean> {
     if (entry.stopCleanup !== undefined) await entry.stopCleanup;
     if (entry.cleanupFailure !== undefined || TERMINAL_STATUSES.has(entry.status)) return false;
+    const info = this.toInfo(entry);
+    if (info.kind === 'agent' && info.agentId !== undefined && this.executionControl.isParked(info.agentId)) {
+      await this.persistLive(entry);
+      return false;
+    }
     entry.status = settlement.status;
     entry.endedAt = Date.now();
     entry.stopReason =

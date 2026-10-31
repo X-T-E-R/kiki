@@ -254,6 +254,7 @@ export const agentLoopStatusSchema = z.object({
   activeTurnId: z.number().optional(),
   lastTurnResult: z.enum(['completed', 'failed', 'cancelled']).optional(),
   finalizing: z.boolean().optional(),
+  executionPaused: z.boolean().optional(),
   persistenceFailure: z.object({
     executionOutcome: z.enum(['completed', 'failed', 'cancelled']),
     message: z.string(),

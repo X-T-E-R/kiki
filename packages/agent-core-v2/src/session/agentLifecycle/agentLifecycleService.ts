@@ -835,8 +835,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       } catch (error) {
         failures.push({ error, domain: 'cleanup' });
       }
-      if (execution !== undefined) await collect(() => execution!.cancel(reason), 'cleanup');
-      if (loop !== undefined) {
+      const parked = mode === 'preserve-pending' && loop?.preservePausedForExit?.() === true;
+      if (execution !== undefined && !parked) await collect(() => execution!.cancel(reason), 'cleanup');
+      if (loop !== undefined && !parked) {
         let pendingTurnIds: readonly number[] = [];
         try {
           pendingTurnIds = loop.status().pendingTurnIds;

@@ -32,6 +32,7 @@ import { createHooks } from '#/hooks';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import type { SessionWorktree } from '#/app/git/worktreeModel';
 import type {
   AgentRunHandle,
@@ -107,6 +108,19 @@ export class AgentExecutionService implements IAgentExecutionService {
   ): Promise<AgentRunHandle> {
     if (this.shuttingDown) {
       throw new Error2(ErrorCodes.INTERNAL, `Agent executor "${this.agent.id}" is shutting down`);
+    }
+    options.signal.throwIfAborted();
+    const control = this.agent.accessor.get(ISessionExecutionControl);
+    await control.ready();
+    if (control.isHeld()) {
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = (): void => { subscription.dispose(); options.signal.removeEventListener('abort', aborted); };
+        const aborted = (): void => { cleanup(); reject(options.signal.reason); };
+        const subscription = control.onDidChange(() => { if (!control.isHeld()) { cleanup(); resolve(); } });
+        options.signal.addEventListener('abort', aborted, { once: true });
+        if (options.signal.aborted) aborted();
+        else if (!control.isHeld()) { cleanup(); resolve(); }
+      });
     }
     options.signal.throwIfAborted();
     const release = this.dispatch.reserveExecution(this.agent.id, this.scope.parentAgentId, options.capacityReservation);

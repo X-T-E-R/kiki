@@ -757,7 +757,7 @@ describe('task notification → main agent (real Agent instance)', () => {
       }
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-    it.each(['user', 'already paused'] as const)('PAUSE RACE: %s pause keeps the receipt wakeup and stops goal continuation', async (actor) => {
+    it.each(['user', 'already paused', 'runtime then user'] as const)('PAUSE RACE: %s pause keeps the receipt wakeup and stops goal continuation', async (actor) => {
       const goals = ctx.get(IAgentGoalService);
       await goals.createGoal({ objective: 'finish delegated work' });
       const hold = loop.tryAcquireQuiescence();
@@ -770,6 +770,7 @@ describe('task notification → main agent (real Agent instance)', () => {
         await vi.waitFor(() => {
           expect(enqueue.mock.calls.some(([request]) => request.kind === 'task_notification')).toBe(true);
         });
+        if (actor === 'runtime then user') await goals.pauseGoal({ reason: 'Paused after provider API error' }, 'runtime');
         await goals.pauseGoal();
         ctx.mockNextResponse({ type: 'text', text: 'receipt received; goal remains paused' });
         await hold!.dispose();

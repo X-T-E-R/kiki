@@ -1,0 +1,219 @@
+import { Disposable, toDisposable } from '#/_base/di/lifecycle';
+import { Emitter } from '#/_base/event';
+import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { Error2, ErrorCodes } from '#/errors';
+import { LifecycleScope } from '#/app/scopes';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { ISessionExecutionControl, type ExecutionControlState, type ExecutionPauseParticipant, type ExecutionResumePoint } from './executionControl';
+import { resumeAgentTask } from './resumeAgentTask';
+
+interface ControlDocument {
+  readonly version: 1;
+  readonly checkpointComplete?: boolean;
+  readonly state: ExecutionControlState;
+  readonly points: Readonly<Record<string, ExecutionResumePoint>>;
+  readonly receipts: Readonly<Record<string, { readonly action: string; readonly state: ExecutionControlState }>>;
+}
+
+const KEY = 'execution-control.json';
+
+export class SessionExecutionControl extends Disposable implements ISessionExecutionControl {
+  declare readonly _serviceBrand: undefined;
+  private readonly changed = this._register(new Emitter<ExecutionControlState>());
+  readonly onDidChange = this.changed.event;
+  private readonly participants = new Map<string, ExecutionPauseParticipant>();
+  private document: ControlDocument = { version: 1, state: { phase: 'running', agents: [] }, points: {}, receipts: {} };
+  private readonly loaded: Promise<void>;
+  private initialized = false;
+  private tail: Promise<unknown> = Promise.resolve();
+  private readonly parked = new Set<string>();
+  private readonly attachedTurns = new WeakSet<import('#/agent/loop/loop').Turn>();
+
+  resumePoint(agentId: string): ExecutionResumePoint | undefined { return this.document.points[agentId]; }
+  park(agentId: string): void { this.parked.add(agentId); }
+  isParked(agentId: string): boolean { return this.parked.has(agentId); }
+
+  invalidate(agentId: string, turnId: number): Promise<void> {
+    return this.serialize(async () => {
+      await this.loaded;
+      if (this.document.points[agentId]?.turnId !== turnId) return;
+      const points = { ...this.document.points };
+      delete points[agentId];
+      const state = { ...this.document.state, agents: this.document.state.agents.map(agent => agent.agentId === agentId
+        ? { ...agent, state: 'idle' as const, resumable: false, turnId: undefined } : agent) };
+      await this.save({ ...this.document, state, points });
+    });
+  }
+
+  constructor(
+    @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
+    @ISessionContext private readonly session: ISessionContext,
+    @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
+    @ISessionMetadata private readonly metadata: ISessionMetadata,
+  ) {
+    super();
+    this.loaded = this.load();
+    void this.loaded.catch(() => undefined);
+  }
+
+  ready(): Promise<void> { return this.loaded; }
+  isHeld(): boolean { return !this.initialized || this.document.state.phase !== 'running'; }
+  async read(): Promise<ExecutionControlState> { await this.loaded; return structuredClone(this.document.state); }
+
+  private async load(): Promise<void> {
+    const saved = await this.documents.get<ControlDocument>(this.session.scope(), KEY);
+    if (saved !== undefined) {
+      if (saved.version !== 1) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Unsupported execution pause document');
+      this.document = saved;
+      if (saved.state.phase === 'pausing' || saved.state.phase === 'resuming') {
+        await this.save({ ...saved, state: { ...saved.state, phase: 'failed', error: 'The process stopped before the control operation settled. Inspect saved work before resuming.' } });
+      }
+    }
+    this.initialized = true;
+    this.changed.fire(structuredClone(this.document.state));
+  }
+
+  register(agentId: string, participant: ExecutionPauseParticipant) {
+    this.participants.set(agentId, participant);
+    return toDisposable(() => { if (this.participants.get(agentId) === participant) this.participants.delete(agentId); });
+  }
+
+  private serialize<T>(run: () => Promise<T>): Promise<T> {
+    const operation = this.tail.then(run, run);
+    this.tail = operation.catch(() => undefined);
+    return operation;
+  }
+
+  pause(input: { readonly operationId: string }): Promise<ExecutionControlState> {
+    return this.serialize(async () => {
+      await this.loaded;
+      this.validateId(input.operationId);
+      const replay = this.receipt(input.operationId, 'pause');
+      const retry = this.document.state.phase === 'failed' && this.document.state.pauseOperationId === input.operationId && !this.document.checkpointComplete;
+      if (replay !== undefined && !retry) return replay;
+      if (this.isHeld() && !retry) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Execution is already held; use its pause operation ID');
+      const state: ExecutionControlState = {
+        phase: 'pausing', pauseOperationId: input.operationId, requestedAt: new Date().toISOString(),
+        agents: [...this.participants.keys()].map(agentId => ({ agentId, state: 'settling', resumable: false })),
+      };
+      if (retry && this.document.state.agents.some(agent => !this.participants.has(agent.agentId))) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'The interrupted execution has an unconfirmed outcome; inspect its original turn before replacing work');
+      }
+      const pending = { ...this.document, checkpointComplete: false, state, points: {}, receipts: { ...this.document.receipts, [input.operationId]: { action: 'pause', state } } };
+      try {
+        await this.save(pending);
+      } catch (error) {
+        this.retainFailure(pending, error);
+        throw error;
+      }
+      const participants = [...this.participants.entries()];
+      void this.settlePause(input.operationId, participants);
+      return state;
+    });
+  }
+
+  private async settlePause(operationId: string, participants: readonly (readonly [string, ExecutionPauseParticipant])[]): Promise<void> {
+    const results = await Promise.allSettled(participants.map(async ([agentId, participant]) => ({ agentId, point: await participant.pause() })));
+    await this.serialize(async () => {
+      if (this.document.state.pauseOperationId !== operationId) return;
+      const points: Record<string, ExecutionResumePoint> = {};
+      const agents: ExecutionControlState['agents'][number][] = [];
+      let failure: string | undefined;
+      for (const [index, result] of results.entries()) {
+        const agentId = participants[index]![0];
+        if (result.status === 'rejected') {
+          failure = result.reason instanceof Error ? result.reason.message : String(result.reason);
+          agents.push({ agentId, state: 'unknown', resumable: false, detail: failure });
+        } else {
+          const point = result.value.point;
+          if (point !== undefined) points[agentId] = point;
+          agents.push({ agentId, state: point === undefined ? 'idle' : 'paused', resumable: point !== undefined, turnId: point?.turnId });
+        }
+      }
+      const state: ExecutionControlState = { ...this.document.state, phase: failure === undefined ? 'paused' : 'failed', pausedAt: failure === undefined ? new Date().toISOString() : undefined, agents, error: failure };
+      try {
+        await this.save({ ...this.document, checkpointComplete: failure === undefined, state, points, receipts: { ...this.document.receipts, [operationId]: { action: 'pause', state } } });
+      } catch (error) {
+        this.retainFailure({ ...this.document, checkpointComplete: false }, error);
+      }
+    });
+  }
+
+  resume(input: { readonly operationId: string; readonly pauseOperationId: string }): Promise<ExecutionControlState> {
+    return this.serialize(async () => {
+      await this.loaded;
+      this.validateId(input.operationId);
+      const action = `resume:${input.pauseOperationId}`;
+      const replay = this.receipt(input.operationId, action);
+      if (replay !== undefined && !(this.document.state.phase === 'failed' && this.document.checkpointComplete)) return replay;
+      if (this.document.state.pauseOperationId !== input.pauseOperationId ||
+        (this.document.state.phase !== 'paused' && !(this.document.state.phase === 'failed' && this.document.checkpointComplete))) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'Resume requires the current durably paused operation');
+      }
+      for (const { agentId } of this.document.state.agents) {
+        if (this.participants.has(agentId)) continue;
+        const point = this.document.points[agentId];
+        await this.lifecycle.create({ agentId, restoreBinding: point === undefined ? undefined : {
+          profileName: point.binding.profileName, routeId: point.binding.routeId, modelAlias: point.binding.modelAlias,
+          thinkingEffort: point.binding.thinkingLevel, thinkingEffortExplicit: point.binding.thinkingEffortExplicit,
+          executorId: point.binding.executorId, executorProtocol: point.binding.executorProtocol,
+        } });
+      }
+      const state: ExecutionControlState = { ...this.document.state, phase: 'resuming', resumeOperationId: input.operationId, error: undefined };
+      const pending = { ...this.document, state, receipts: { ...this.document.receipts, [input.operationId]: { action, state } } };
+      try {
+        await this.save(pending);
+        for (const [agentId, participant] of this.participants) {
+          const turn = await participant.resume(this.document.points[agentId]);
+          if (turn !== undefined && !this.attachedTurns.has(turn)) {
+            const agent = this.lifecycle.get(agentId)!;
+            await resumeAgentTask(agent, turn);
+            agent.accessor.get(IAgentPromptService).attachPausedTurn?.(turn);
+            this.attachedTurns.add(turn);
+          }
+        }
+        const resumed: ExecutionControlState = { ...state, phase: 'running', resumedAt: new Date().toISOString(), agents: [] };
+        await this.save({ ...this.document, state: resumed, points: {}, receipts: { ...this.document.receipts, [input.operationId]: { action, state: resumed } } });
+        return resumed;
+      } catch (error) {
+        this.retainFailure(pending, error);
+        await this.save(this.document);
+        throw error;
+      }
+    });
+  }
+
+  private validateId(id: string): void {
+    if (id.length < 1 || id.length > 256) throw new Error2(ErrorCodes.REQUEST_INVALID, 'operationId must contain 1–256 characters');
+  }
+
+  private receipt(id: string, action: string): ExecutionControlState | undefined {
+    const receipt = this.document.receipts[id];
+    if (receipt === undefined) return undefined;
+    if (receipt.action !== action) throw new Error2(ErrorCodes.REQUEST_INVALID, 'operationId was used for a different execution control operation');
+    return structuredClone(receipt.state);
+  }
+
+  private retainFailure(document: ControlDocument, error: unknown): void {
+    const state: ExecutionControlState = { ...document.state, phase: 'failed', error: error instanceof Error ? error.message : String(error) };
+    const operationId = state.resumeOperationId ?? state.pauseOperationId;
+    const receipt = operationId === undefined ? undefined : document.receipts[operationId];
+    this.document = { ...document, state, receipts: operationId === undefined || receipt === undefined ? document.receipts
+      : { ...document.receipts, [operationId]: { ...receipt, state } } };
+    this.changed.fire(structuredClone(state));
+  }
+
+  private async save(document: ControlDocument): Promise<void> {
+    await this.documents.set(this.session.scope(), KEY, document);
+    if (document.state.phase !== 'running') this.document = document;
+    await this.metadata.update({ executionPhase: document.state.phase });
+    this.document = document;
+    this.changed.fire(structuredClone(document.state));
+  }
+}
+
+registerScopedService(LifecycleScope.Session, ISessionExecutionControl, SessionExecutionControl, ScopeActivation.OnDemand);

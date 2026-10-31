@@ -1,4 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import { ISessionExecutionControl, type ExecutionResumePoint } from '#/session/executionControl/executionControl';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentTaskService } from '#/agent/task/task';
+import { ResumeStepRequest } from './stepRequest';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { ILogService } from '#/_base/log/log';
 import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
@@ -153,6 +159,99 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   private finalization: { readonly turn: Turn; readonly result: TurnResult; readonly event: TurnEnded; recoveryAttempts?: number; error?: unknown } | undefined;
   private persistenceRecoveryTimer?: ReturnType<typeof setTimeout>;
   private persistenceWriteWakeAfter = 0;
+  private pauseReady?: ReturnType<typeof createControlledPromise<ExecutionResumePoint | undefined>>;
+  private pauseWake?: ReturnType<typeof createControlledPromise<void>>;
+  private pausedRuntime?: LoopRuntime;
+  private parkedForExit = false;
+
+  private async pauseExecution(): Promise<ExecutionResumePoint | undefined> {
+    const profile = this.instantiation.invokeFunction(accessor => accessor.get(IAgentProfileService).data());
+    if ((profile.executorId ?? 'native') !== 'native') {
+      const execution = this.instantiation.invokeFunction(accessor => accessor.get(IAgentExecutionService));
+      await execution.settled();
+    }
+    let point: ExecutionResumePoint | undefined;
+    if (this.activeTurnJob !== undefined && this.pausedRuntime === undefined) {
+      this.pauseReady ??= createControlledPromise<ExecutionResumePoint | undefined>();
+      point = await this.pauseReady;
+    }
+    const tasks = this.instantiation.invokeFunction(accessor => accessor.get(IAgentTaskService));
+    for (;;) {
+      const active = tasks.list(true).filter(task => task.kind === 'process' || task.kind === 'media');
+      if (active.length === 0) break;
+      await Promise.all(active.map(task => tasks.wait(task.taskId, 30_000)));
+    }
+    if (this.pausedRuntime !== undefined) return this.captureResumePoint(this.pausedRuntime);
+    await this.dispatcher.flush();
+    return this.activeTurnJob?.turn.id === point?.turnId ? point : undefined;
+  }
+
+  private async captureResumePoint(runtime: LoopRuntime): Promise<ExecutionResumePoint | undefined> {
+    if (runtime.queue.pendingKinds().some(kind => kind !== 'continuation')) {
+      for (;;) {
+        const batch = runtime.queue.takeNextBatch();
+        if (batch === undefined) break;
+        this.materializeBatch(batch, { turnId: runtime.turnId, stepId: randomUUID(), step: runtime.steps });
+      }
+      runtime.queue.enqueue(new ResumeStepRequest(runtime.job?.seed ?? { input: [], origin: { kind: 'unknown' } }));
+    }
+    await this.dispatcher.flush();
+    const binding = this.instantiation.invokeFunction(accessor => accessor.get(IAgentProfileService).data());
+    return runtime.job === undefined ? undefined : {
+      turnId: runtime.turnId, completedSteps: runtime.steps,
+      seed: runtime.job.seed, binding: structuredClone(binding),
+    };
+  }
+
+  private async pauseAtBoundary(runtime: LoopRuntime): Promise<void> {
+    await this.executionControl.ready();
+    if (!this.executionControl.isHeld()) return;
+    this.pausedRuntime = runtime;
+    this.pauseWake ??= createControlledPromise<void>();
+    const ready = this.pauseReady ??= createControlledPromise<ExecutionResumePoint | undefined>();
+    try {
+      ready.resolve(await this.captureResumePoint(runtime));
+    } catch (error) {
+      ready.reject(error);
+    }
+    const aborted = () => this.pauseWake?.reject(runtime.turnSignal.reason);
+    runtime.turnSignal.addEventListener('abort', aborted, { once: true });
+    try {
+      while (this.executionControl.isHeld() && !this.parkedForExit) await this.pauseWake;
+      if (this.parkedForExit) throw abortError('Execution checkpoint parked for restart');
+      runtime.turnSignal.throwIfAborted();
+    } finally {
+      runtime.turnSignal.removeEventListener('abort', aborted);
+      this.pausedRuntime = undefined;
+      this.pauseWake = undefined;
+      this.pauseReady = undefined;
+    }
+  }
+
+  private async resumeExecution(point?: ExecutionResumePoint): Promise<Turn | undefined> {
+    if (point === undefined) return;
+    const binding = this.instantiation.invokeFunction(accessor => accessor.get(IAgentProfileService).data());
+    if (binding.modelAlias !== point.binding.modelAlias || binding.thinkingLevel !== point.binding.thinkingLevel ||
+      binding.executorId !== point.binding.executorId || binding.executorProtocol !== point.binding.executorProtocol ||
+      !isDeepStrictEqual(JSON.parse(JSON.stringify(binding.boundProfile ?? null)), JSON.parse(JSON.stringify(point.binding.boundProfile ?? null)))) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The saved execution binding changed; restore its original binding before resuming');
+    }
+    if (this.activeTurnJob !== undefined) return;
+    const existing = this.pendingTurns.find(job => job.turn.id === point.turnId);
+    if (existing !== undefined) return existing.turn;
+    const job = this.createPendingTurn(new ResumeStepRequest(point.seed), point.seed, point);
+    this.pendingTurns.unshift(job);
+    return job.turn;
+  }
+
+  preservePausedForExit(): boolean {
+    if (this.parkedForExit) return true;
+    if (this.pausedRuntime === undefined || this.executionControl.resumePoint(this.scope.agentId) === undefined) return false;
+    this.parkedForExit = true;
+    this.executionControl.park(this.scope.agentId);
+    this.pauseWake?.resolve();
+    return true;
+  }
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -168,8 +267,19 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     @IInstantiationService private readonly instantiation: IInstantiationService,
     @IAppendLogStore appendLog: IAppendLogStore,
     @ILogService private readonly log: ILogService,
+    @ISessionExecutionControl private readonly executionControl: ISessionExecutionControl,
   ) {
     super();
+    this._register(executionControl.register(scope.agentId, {
+      pause: () => this.pauseExecution(),
+      resume: point => this.resumeExecution(point),
+    }));
+    this._register(executionControl.onDidChange(() => {
+      if (!executionControl.isHeld()) {
+        this.pauseWake?.resolve();
+        this.pumpTurns();
+      }
+    }));
     this._register(appendLog.onDidWrite(() => {
       const finalization = this.finalization;
       if (this.disposing || finalization?.error === undefined || Date.now() < this.persistenceWriteWakeAfter) return;
@@ -297,6 +407,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       state: this.activeTurnJob === undefined ? 'idle' : 'running',
       activeTurnId: this.activeTurnJob?.turn.id,
       finalizing: this.finalization !== undefined,
+      executionPaused: this.pausedRuntime !== undefined,
       persistenceFailure: this.finalization?.error === undefined ? undefined : {
         executionOutcome: this.finalization.result.type,
         message: new TurnPersistenceError(this.finalization.turn.id, this.finalization.result, this.finalization.error).message,
@@ -472,8 +583,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     for (const { resolve } of waiters) resolve();
   }
 
-  private createPendingTurn(request: StepRequest, seed: TurnSeed): TurnJob {
-    const id = this.reserveTurnId();
+  private createPendingTurn(request: StepRequest, seed: TurnSeed, restored?: ExecutionResumePoint): TurnJob {
+    const id = restored?.turnId ?? this.reserveTurnId();
     const controller = new AbortController();
     const ready = createControlledPromise<void>();
     const result = createControlledPromise<TurnResult>();
@@ -492,7 +603,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       durableResult,
       cancel: (reason) => this.cancel(id, reason),
     };
-    const job = { request, seed, controller, ready, result, durableResult, queue, steps, turn, steerController: new AbortController() };
+    const job = { request, seed, controller, ready, result, durableResult, queue, steps, turn, restored, steerController: new AbortController() };
     this.assignStep(job, request);
     this.moveStandaloneStepsTo(job);
     return job;
@@ -583,7 +694,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   }
 
   private pumpTurns(): void {
-    if (this.disposing || this.quiescenceDepth > 0 || this.activeTurnJob !== undefined) return;
+    if (this.disposing || this.executionControl.isHeld() || this.quiescenceDepth > 0 || this.activeTurnJob !== undefined) return;
     const job = this.pendingTurns.shift();
     if (job === undefined) {
       this.maybeSettle();
@@ -594,7 +705,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
   private startTurn(job: TurnJob): void {
     const origin = job.seed.origin;
-    void this.dispatcher.dispatch(
+    if (job.restored === undefined) void this.dispatcher.dispatch(
       new TurnPrompt({
         turnId: job.turn.id,
         promptId: job.seed.promptId,
@@ -660,48 +771,54 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       result = this.resultFromTurnError(turn, error);
       return result;
     } finally {
-      try {
-        this.settleTurnReady(ready, result);
+      if (this.parkedForExit) {
         releaseCapacity?.();
-        const traceId =
-          result?.type === 'completed'
-            ? this.lastRequestTraceId
-            : this.activeRequestTrace?.traceId;
-        if (result !== undefined) {
-          const error = result.type === 'failed' ? toKimiErrorPayload(result.error) : undefined;
-          const interruptReason =
-            result.type === 'completed' ? undefined : interruptReasonFor(result);
-          const durationMs = Date.now() - startedAt;
-          this.finalization = { turn, result, event: new TurnEnded({ turnId: turn.id, reason: result.type, error, durationMs, interruptReason }) };
-          if (error !== undefined) void this.dispatcher.dispatch(new AgentErrorEvent(error));
-          if (interruptReason !== undefined) {
-            const interrupted: TurnInterruptedEvent = {
-              turn_id: turn.id,
-              at_step: result.steps,
-              mode,
-              interrupt_reason: interruptReason,
-              provider_type,
-              protocol,
-              thinking_effort: thinkingEffort,
-              trace_id: traceId,
-            };
-            turnTelemetry.track2('turn_interrupted', interrupted);
-          }
-        }
-        const ended: TurnEndedTelemetryEvent = {
-          turn_id: turn.id,
-          reason: result?.type ?? 'failed',
-          duration_ms: Date.now() - startedAt,
-          mode,
-          provider_type,
-          protocol,
-          thinking_effort: thinkingEffort,
-          trace_id: traceId,
-        };
-        turnTelemetry.track2('turn_ended', ended);
-        await this.persistTurnEnd(turn, result);
-      } finally {
         activityPermit?.release();
+        this.releaseActiveTurn(turn, result);
+      } else {
+        try {
+          this.settleTurnReady(ready, result);
+          releaseCapacity?.();
+          const traceId =
+            result?.type === 'completed'
+              ? this.lastRequestTraceId
+              : this.activeRequestTrace?.traceId;
+          if (result !== undefined) {
+            const error = result.type === 'failed' ? toKimiErrorPayload(result.error) : undefined;
+            const interruptReason =
+              result.type === 'completed' ? undefined : interruptReasonFor(result);
+            const durationMs = Date.now() - startedAt;
+            this.finalization = { turn, result, event: new TurnEnded({ turnId: turn.id, reason: result.type, error, durationMs, interruptReason }) };
+            if (error !== undefined) void this.dispatcher.dispatch(new AgentErrorEvent(error));
+            if (interruptReason !== undefined) {
+              const interrupted: TurnInterruptedEvent = {
+                turn_id: turn.id,
+                at_step: result.steps,
+                mode,
+                interrupt_reason: interruptReason,
+                provider_type,
+                protocol,
+                thinking_effort: thinkingEffort,
+                trace_id: traceId,
+              };
+              turnTelemetry.track2('turn_interrupted', interrupted);
+            }
+          }
+          const ended: TurnEndedTelemetryEvent = {
+            turn_id: turn.id,
+            reason: result?.type ?? 'failed',
+            duration_ms: Date.now() - startedAt,
+            mode,
+            provider_type,
+            protocol,
+            thinking_effort: thinkingEffort,
+            trace_id: traceId,
+          };
+          turnTelemetry.track2('turn_ended', ended);
+          await this.persistTurnEnd(turn, result);
+        } finally {
+          activityPermit?.release();
+        }
       }
     }
   }
@@ -718,6 +835,9 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     try {
       await timeRestorePhase(this.log, { agentId: this.scope.agentId, turnId: finalization.turn.id },
         'turn_end_commit', () => this.dispatcher.dispatchDurably(finalization.event));
+      if (this.executionControl.isHeld()) {
+        await this.executionControl.invalidate(this.scope.agentId, finalization.turn.id);
+      }
     } catch (error) {
       finalization.error = error;
       this.persistenceChanged.fire();
@@ -796,6 +916,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     this.lastTurnResult = result?.type ?? 'failed';
     job.durableResult.resolve(result ?? { type: 'failed', steps: 0, error: new Error2(ErrorCodes.INTERNAL, 'Turn ended without an execution result') });
     this.activeTurnJob = undefined;
+    if (this.executionControl.isHeld() && !this.parkedForExit) this.pauseReady?.resolve(undefined);
     this.maybeSettle();
   }
 
@@ -835,6 +956,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     try {
       while (true) {
         try {
+          if (runtime.queue.hasPendingRequests()) await this.pauseAtBoundary(runtime);
           const begun = this.beginLoopStep(runtime);
           if ('result' in begun) return begun.result;
           runtime.current = begun.step;
@@ -870,7 +992,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       turnSignal: options.signal ?? new AbortController().signal,
       job,
       queue: job?.queue ?? this.standaloneStepQueue,
-      steps: 0,
+      steps: job?.restored?.completedSteps ?? 0,
       thinkingOnlyContinuations: 0,
       thinkingOnlySnapshotActive: false,
       attempts: new Map(),
@@ -1905,6 +2027,7 @@ type MutableStep = {
 };
 
 interface TurnJob {
+  readonly restored?: ExecutionResumePoint;
   readonly request: StepRequest;
   readonly seed: TurnSeed;
   readonly controller: AbortController;

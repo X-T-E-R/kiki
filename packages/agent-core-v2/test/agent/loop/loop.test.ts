@@ -11,6 +11,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { IAgentProfileService } from '#/index';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import type { ModelRequestTiming } from '#/kosong/model/modelRequester';
 import type { ContextMessage } from '#/agent/contextMemory/types';
@@ -33,6 +35,7 @@ import { IAgentUsageService } from '#/agent/usage/usage';
 import { IEventBus } from '#/app/event/eventBus';
 import { userCancellationReason } from '#/_base/utils/abort';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
@@ -72,6 +75,134 @@ describe('Agent loop', () => {
 
   it('resolves the loop service from the agent scope by interface', () => {
     expect(loop).toBeDefined();
+  });
+
+  it('durably pauses at a settled step and resumes the same turn exactly once', async () => {
+    const control = ctx.get(ISessionExecutionControl);
+    let release!: () => void;
+    let reached!: () => void;
+    const entered = new Promise<void>(resolve => { reached = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let steps = 0;
+    loop.hooks.onDidFinishStep.register('pause-boundary-test', async (step, next) => {
+      await next();
+      steps++;
+      if (step.step === 1) {
+        loop.enqueue(new ContinuationStepRequest());
+        reached();
+        await held;
+      }
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'first result' });
+    ctx.mockNextResponse({ type: 'text', text: 'second result' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'work' }] });
+    await entered;
+    const turnId = loop.status().activeTurnId;
+    expect(await control.pause({ operationId: 'pause-once' })).toMatchObject({ phase: 'pausing' });
+    expect(steps).toBe(1);
+    release();
+    await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused' }));
+    expect(loop.status()).toMatchObject({ activeTurnId: turnId, executionPaused: true });
+    expect((await control.pause({ operationId: 'pause-once' })).phase).toBe('paused');
+    expect(steps).toBe(1);
+    await expect(control.resume({ operationId: 'bad-resume', pauseOperationId: 'stale' })).rejects.toThrow();
+    await control.resume({ operationId: 'resume-once', pauseOperationId: 'pause-once' });
+    await loop.settled();
+    expect(steps).toBe(2);
+    expect((await control.resume({ operationId: 'resume-once', pauseOperationId: 'pause-once' })).phase).toBe('running');
+    expect(steps).toBe(2);
+  });
+
+  it('holds queued prompts and the user-paused Goal until explicit execution resume', async () => {
+    const control = ctx.get(ISessionExecutionControl);
+    const goals = ctx.get(IAgentGoalService);
+    await goals.createGoal({ objective: 'preserve user intent', initialStatus: 'paused' });
+    await control.pause({ operationId: 'queue-pause' });
+    await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused' }));
+    ctx.mockNextResponse({ type: 'text', text: 'queued work completed' });
+    const prompt = await ctx.get(IAgentPromptService).enqueue({ id: 'held-prompt', waitForLaunch: false,
+      message: { role: 'user', content: [{ type: 'text', text: 'accepted while paused' }], toolCalls: [], origin: { kind: 'user' } } });
+    expect(prompt.state).toBe('pending');
+    expect(ctx.llmCalls).toHaveLength(0);
+    await control.resume({ operationId: 'queue-resume', pauseOperationId: 'queue-pause' });
+    await prompt.completion;
+    await loop.settled();
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(goals.getGoal().goal?.status).toBe('paused');
+  });
+
+  it('keeps a failed pause held and retries only its original operation', async () => {
+    const control = ctx.get(ISessionExecutionControl);
+    const pause = vi.fn().mockRejectedValueOnce(new Error('fixture checkpoint failed')).mockResolvedValue(undefined);
+    const participant = control.register('checkpoint-fixture', { pause, resume: async () => undefined });
+    try {
+      await control.pause({ operationId: 'failed-pause' });
+      await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'failed', error: 'fixture checkpoint failed' }));
+      expect(control.isHeld()).toBe(true);
+      await expect(control.resume({ operationId: 'unsafe-resume', pauseOperationId: 'failed-pause' })).rejects.toThrow();
+      await expect(control.pause({ operationId: 'replacement-pause' })).rejects.toThrow();
+      await control.pause({ operationId: 'failed-pause' });
+      await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused' }));
+      expect(pause).toHaveBeenCalledTimes(2);
+      await control.resume({ operationId: 'safe-resume', pauseOperationId: 'failed-pause' });
+      expect(control.isHeld()).toBe(false);
+    } finally { await participant.dispose(); }
+  });
+
+  it('retains the hold after a checkpoint write fails and retries without model work', async () => {
+    const control = ctx.get(ISessionExecutionControl);
+    await control.ready();
+    const documents = ctx.get(IAtomicDocumentStore);
+    const original = documents.set.bind(documents);
+    const save = vi.spyOn(documents, 'set').mockImplementation(async (scope, key, data) => {
+      if (key === 'execution-control.json' && (data as { state?: { phase?: string } }).state?.phase === 'paused') {
+        throw new Error('fixture checkpoint write failed');
+      }
+      await original(scope, key, data);
+    });
+    try {
+      await control.pause({ operationId: 'write-failed-pause' });
+      await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'failed', error: 'fixture checkpoint write failed' }));
+      expect(control.isHeld()).toBe(true);
+      expect(ctx.llmCalls).toHaveLength(0);
+      await expect(control.resume({ operationId: 'no-unknown-replay', pauseOperationId: 'write-failed-pause' })).rejects.toThrow();
+      save.mockRestore();
+      await control.pause({ operationId: 'write-failed-pause' });
+      await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused' }));
+      await control.resume({ operationId: 'saved-resume', pauseOperationId: 'write-failed-pause' });
+      expect(ctx.llmCalls).toHaveLength(0);
+    } finally { save.mockRestore(); }
+  });
+
+  it.each(['pausing', 'resuming', 'running'] as const)('keeps a failed %s metadata publication held and retryable', async (phase) => {
+    const control = ctx.get(ISessionExecutionControl);
+    await control.ready();
+    if (phase !== 'pausing') {
+      await control.pause({ operationId: 'projection-pause' });
+      await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused' }));
+    }
+    const metadata = ctx.get(ISessionMetadata);
+    const update = metadata.update.bind(metadata);
+    const publication = vi.spyOn(metadata, 'update').mockImplementation(async patch => {
+      if (patch.executionPhase === phase) throw new Error('fixture execution projection failed');
+      return update(patch);
+    });
+    try {
+      await expect(phase === 'pausing' ? control.pause({ operationId: 'projection-pause' })
+        : control.resume({ operationId: 'projection-resume', pauseOperationId: 'projection-pause' })).rejects.toThrow('fixture execution projection failed');
+      expect(await control.read()).toMatchObject({ phase: 'failed', error: 'fixture execution projection failed' });
+      expect(control.isHeld()).toBe(true);
+      expect(ctx.llmCalls).toHaveLength(0);
+      publication.mockRestore();
+      if (phase === 'pausing') {
+        await control.pause({ operationId: 'projection-pause' });
+        await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused' }));
+      }
+      await control.resume({ operationId: 'projection-resume', pauseOperationId: 'projection-pause' });
+      expect(await control.read()).toMatchObject({ phase: 'running' });
+      expect(await metadata.read()).toMatchObject({ executionPhase: 'running' });
+      expect(ctx.llmCalls).toHaveLength(0);
+    } finally { publication.mockRestore(); }
   });
 
   it('keeps settled pending while an admission is held', async () => {

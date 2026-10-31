@@ -5,6 +5,7 @@ import type { IAgentScopeHandle } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 import { isAbortError, userCancellationReason } from '#/_base/utils/abort';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { acknowledgeResumeOutcome } from '#/session/dispatch/resume';
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -264,6 +265,7 @@ export async function mirrorAgentRun(
     });
     return result;
   } catch (error) {
+    if (requester.accessor.get(ISessionExecutionControl).isParked(run.agentId)) throw error;
     const cancelled = isAbortError(error) || (!hookFailed && options.signal.aborted && error === options.signal.reason);
     const taskId = await options.resolveTaskId?.();
     if ((options.deferStarted !== true || taskId !== undefined) && (cancelled || !shouldSuppressFailure(options, error))) {

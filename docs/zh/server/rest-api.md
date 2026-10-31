@@ -369,6 +369,53 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 创建会话和更新 profile 均接受 `agent_config.plan_gate: "free" | "gated"`。profile 更新直接应用到 live main agent，无需发送提示词；live 快照返回生效的 `plan_gate`。该覆盖只持续到当前 Agent 实例关闭，恢复后重新使用配置中的 gate；冷快照省略此字段。要通过 klient 让指定 Agent 退出 Plan 模式，调用 `klient.session(sessionId).agent(agentId).exitPlan()`；它的父 Agent 和同级 Agent 保持各自的模式。
 
+#### 通过 Klient 暂停和恢复执行
+
+暂停和恢复是会话级 Klient 调用，不是新增的 REST 会话动作。使用现有
+`POST /api/klient/call` 契约，或 typed Klient 的
+`klient.session(sessionId).execution` facade。例如，暂停会话时发送：
+
+```json
+{
+  "procedure": {
+    "scope": "session",
+    "sessionId": "session_example",
+    "service": "sessionExecutionControl",
+    "method": "pause"
+  },
+  "params": [{ "operationId": "pause-1" }]
+}
+```
+
+读取使用 `method: "read"` 和 `params: []`。恢复使用
+`method: "resume"` 和 `params: [{ "operationId": "resume-1", "pauseOperationId": "pause-1" }]`。
+执行状态放在通常响应信封的 `data` 中返回。通过已认证的
+`/api/klient/events` socket 在 `session.events` 订阅 `execution.changed`，
+断线重连后用 `read` 对账；这不是新增的
+`/api/sessions/{session_id}:pause` 路由，也不是旧 `/api/ws` 的事件。
+
+返回的 `phase` 取 `running`、`pausing`、`paused`、`resuming` 或 `failed`。
+`pause` 会先原子持久化暂停意图，再协调会话的 `main` 和 native 子 Agent。
+已经开始的 native 模型或工具 step 会用真实结果完成，然后在下一 step 前停下。
+已启动的外部执行、进程和媒体工作不会被强制取消，会等真实结算，因此会话可能长时间
+保持 `pausing`。每个 `agents` 条目会报告 `settling`、`paused`、`idle` 或 `unknown`，
+以及是否 `resumable`。`failed` 状态可能带有 `error` 字符串。`phase` 为 `failed` 时，
+读取 `error` 和 `agents` 了解失败；暂停仍然保留，冷会话的未知结果也不授权自动 resume。
+
+状态稳定为 `paused` 后，普通 close 会保留 turn、task、queue 和 binding。重启后
+仍保持 hold；必须带当前 `pauseOperationId` 显式调用 `resume`，外部结果未知的工作
+不会自动重放。`operationId` 和 `pauseOperationId` 都必须是 1–256 个字符的
+非空字符串。每次新的 pause 或 resume 周期都要使用新的 `operationId`；只有重试同一
+动作时才保留稳定 ID。用同一 ID 重试同一动作会返回该操作已保存的回执或最新已保存
+状态，把该 ID 改用于其他动作则会被拒绝。暂停期间普通发送仍会进入队列，不会加发送
+禁止门。用户发起的暂停独立于 Goal；Goal 不会隐式 resume 它，
+`execution.resume` 也不会重新打开用户暂停的 Goal。
+
+会话列表和冷读取不会激活冷会话。`GET /api/sessions` 与
+`GET /api/sessions/{session_id}` 可能带可选的只读事实投影 `execution_phase`；
+`GET /api/sessions/query` 在 `meta.execution_phase` 中返回同一投影。该字段不是
+会话 profile 更新或 Klient `session.update` 的输入。
+
 #### `POST /api/sessions/{session_id}:archive`
 
 空请求体保留单会话归档行为。发送 `{ "include_attached": true, "exclude_session_ids": ["independent-thread-id"] }` 可归档仍附属的整组对话。服务器跨所有工作区读取持久元数据，不依赖客户端已加载的页面。`created_by_session_id` 表示创建的线程；`parent_session_id` 只有同时带 `child_session_kind: "child"` 才算附属，普通 fork 不包含在内。排除某个线程会排除其整棵子树；排除请求中的根线程 ID 不会排除根自身。

@@ -127,3 +127,8 @@ export class ContinuationStepRequest extends StepRequest {
     return [];
   }
 }
+
+export class ResumeStepRequest extends ContinuationStepRequest {
+  constructor(private readonly seed: TurnSeed) { super({ admission: 'newTurn' }); }
+  override get turnSeed(): TurnSeed { return this.seed; }
+}
