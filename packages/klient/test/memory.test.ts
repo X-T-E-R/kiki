@@ -76,7 +76,12 @@ describe('memory dispatcher specifics', () => {
       const created = await klient.global.sessions.create({ workDir: homeDir });
       const session = klient.session(created.id);
       await session.agent('main').setPermission('manual');
-      await session.update({ executionPhase: 'paused' });
+      const internal = getLiveSessionById(app.accessor, created.id)!.accessor.get(ISessionMetadata);
+      const publicPatch = { title: 'public title', executionPhase: 'paused' };
+      await session.update(publicPatch);
+      expect((await internal.read()).executionPhase).toBeUndefined();
+      expect((await internal.read()).title).toBe('public title');
+      await internal.update({ executionPhase: 'paused' });
       const agents = await session.agents();
       expect(agents['main']).toBeDefined();
       const metadata = await session.get();

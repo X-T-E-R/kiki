@@ -104,7 +104,9 @@ export function isExternalClientMain(meta: Pick<SessionMeta, 'custom'>, agentId:
   return agentId === 'main' && externalClientMetaOf(meta) !== undefined;
 }
 
-export type SessionMetaPatch = Partial<Omit<SessionMeta, 'id' | 'createdAt'>>;
+export type SessionMetaPatch = Partial<Omit<SessionMeta, 'id' | 'createdAt' | 'executionPhase'>>;
+
+export type SessionMetadataWrite = SessionMetaPatch & Pick<SessionMeta, 'executionPhase'>;
 
 export interface SessionMetadataChangedEvent {
   readonly changed: readonly (keyof SessionMeta)[];
@@ -130,7 +132,7 @@ export interface ISessionMetadata {
   usage(): SessionUsageSummary | undefined;
   recordUsage(model: string, usage: TokenUsage, usageKnown?: boolean): void;
   /** Deferred writes update live metadata immediately and share the usage flush window; drain and disposal persist them. */
-  update(patch: SessionMetaPatch, opts?: { readonly touchUpdatedAt?: boolean; readonly deferPersistence?: boolean }): Promise<void>;
+  update(patch: SessionMetadataWrite, opts?: { readonly touchUpdatedAt?: boolean; readonly deferPersistence?: boolean }): Promise<void>;
   setTitle(title: string): Promise<void>;
   /**
    * Applies a generated title unless the user customized theirs; the title

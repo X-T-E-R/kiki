@@ -21,7 +21,7 @@ import {
   type AgentMeta,
   type SessionMeta,
   type SessionMetadataChangedEvent,
-  type SessionMetaPatch,
+  type SessionMetadataWrite,
   type SessionTitleKind,
 } from './sessionMetadata';
 
@@ -272,7 +272,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   }
 
   async update(
-    patch: SessionMetaPatch,
+    patch: SessionMetadataWrite,
     opts?: { readonly touchUpdatedAt?: boolean; readonly deferPersistence?: boolean },
   ): Promise<void> {
     if (opts?.deferPersistence === true) {
@@ -289,7 +289,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     });
   }
 
-  private mergePatch(patch: SessionMetaPatch, opts?: { readonly touchUpdatedAt?: boolean }): void {
+  private mergePatch(patch: SessionMetadataWrite, opts?: { readonly touchUpdatedAt?: boolean }): void {
     const updatedAt =
       patch.updatedAt ?? (opts?.touchUpdatedAt === false ? this.data.updatedAt : Date.now());
     const activityUpdatedAt = patch.activityUpdatedAt === undefined ? this.data.activityUpdatedAt
@@ -303,7 +303,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     this.data = { ...this.data, ...patch, agents, updatedAt, activityUpdatedAt };
   }
 
-  private async applyUpdate(patch: SessionMetaPatch, opts?: { readonly touchUpdatedAt?: boolean }): Promise<boolean> {
+  private async applyUpdate(patch: SessionMetadataWrite, opts?: { readonly touchUpdatedAt?: boolean }): Promise<boolean> {
     await this.ready;
     if (this.disposed) return false;
     this.mergePatch(patch, opts);

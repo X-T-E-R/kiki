@@ -84,7 +84,6 @@ export const sessionMetaPatchSchema = z.object({
   delivery: z.enum(['reply', 'message']).optional(),
   updatedAt: z.number().optional(),
   activityUpdatedAt: z.number().optional(),
-  executionPhase: z.enum(['running', 'pausing', 'paused', 'resuming', 'failed']).optional(),
   archived: z.boolean().optional(),
   archivedAt: z.number().optional(),
   cwd: z.string().optional(),
