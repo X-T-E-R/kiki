@@ -17,7 +17,7 @@ import { AgentStateService } from '#/agent/state/agentStateService';
 import type { ExecutableTool, ExecutableToolContext, ExecutableToolResult, ToolExecution, ToolResult } from '#/tool/toolContract';
 import type { ToolDidExecuteContext, ResolvedToolExecutionHookContext, BeforeExecuteDecision } from '#/agent/toolExecutor/toolHooks';
 import { IAgentToolDedupeService, type ToolDedupeResult } from '#/agent/toolDedupe/toolDedupe';
-import { AgentToolDedupeService, __testing as toolDedupeTesting } from '#/agent/toolDedupe/toolDedupeService';
+import { AgentToolDedupeService, toolDedupeStepCallsKey, __testing as toolDedupeTesting } from '#/agent/toolDedupe/toolDedupeService';
 import { IAgentToolExecutorService, type ToolExecutionResult } from '#/agent/toolExecutor/toolExecutor';
 import { AgentToolExecutorService } from '#/agent/toolExecutor/toolExecutorService';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
@@ -279,6 +279,24 @@ describe('AgentToolDedupeService', () => {
     expect(await call('ordinary-repeat')).toEqual({ ...ordinary, approvalRule: undefined });
     expect(tool.calls).toHaveLength(3);
     await afterStep(h, 1, 1);
+  });
+  it('releases completed external steps without discarding deduplication inside a step', async () => {
+    const h = createHarness();
+    const tool = new EchoTool();
+    h.registry.register(tool);
+    const dedupe = h.ix.get(IAgentToolDedupeService);
+    for (let operation = 0; operation < 12; operation += 1) {
+      const results: ToolExecutionResult[] = [];
+      for await (const result of h.executor.execute([
+        toolCall(`${operation}-first`, 'Echo', { text: 'same' }),
+        toolCall(`${operation}-duplicate`, 'Echo', { text: 'same' }),
+      ], { turnId: operation + 1, signal: new AbortController().signal, deduplicationKey: `request-${operation}` })) results.push(result);
+      expect(results.map(result => result.result.output)).toEqual(['same', 'same']);
+      expect(tool.calls).toHaveLength(operation + 1);
+      dedupe.clearStep();
+      expect(h.ix.get(IAgentStateService).get(toolDedupeStepCallsKey)).toHaveLength(0);
+      expect(Reflect.get(dedupe, 'stepDeferreds').size).toBe(0);
+    }
   });
   describe('same-step dedupe', () => {
     it('returns a placeholder synchronously and resolves to the real result on finalize', async () => {

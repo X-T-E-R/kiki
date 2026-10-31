@@ -481,3 +481,21 @@ test('binding settings fixture applies idle picks and only the latest running pi
     await server.stop();
   }
 });
+
+
+test('external client plugin grants are retained in owner list reads', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'external-clients' });
+  const origin = `http://127.0.0.1:${server.http.address().port}`;
+  const headers = { authorization: 'Bearer kiki-fixture-token', 'content-type': 'application/json' };
+  try {
+    const read = async () => (await fetch(`${origin}/api/external-clients`, { headers })).json();
+    const initial = await read();
+    assert.equal(initial.data.toolCatalog[0].pluginId, 'fixture-media');
+    const tool = initial.data.toolCatalog[0].tools[0].name;
+    await fetch(`${origin}/api/external-clients/conn_chatgpt`, { method: 'PATCH', headers,
+      body: JSON.stringify({ tools: ['Read', tool], allowCommands: true }) });
+    const saved = (await read()).data.connections.find((item) => item.id === 'conn_chatgpt');
+    assert.deepEqual(saved.tools, ['Read', tool]);
+    assert.equal(saved.allowCommands, true);
+  } finally { await server.stop(); }
+});

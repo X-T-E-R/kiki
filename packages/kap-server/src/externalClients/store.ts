@@ -34,11 +34,21 @@ export class ExternalClientStore {
   saveConnection(connection: ExternalClientConnection): Promise<void> {
     return this.documents.set(this.scope, `external-clients/connections/${safeId(connection.id)}`, connection);
   }
-  async credential(id: string): Promise<string> {
-    await this.active(id);
-    const token = `kec_${randomBytes(32).toString('base64url')}`;
-    await this.documents.set(this.scope, `external-clients/tokens/${digest(token)}`, { connectionId: id, expiresAt: Date.now() + 3600_000 });
-    return token;
+  async credential(id: string): Promise<{token:string;expiresAt:number}> {
+    return this.serialize(async()=>{
+      await this.active(id);
+      const now=Date.now();
+      const scope=`${this.scope}/external-clients/tokens`;
+      const keys=await this.documents.list(scope);
+      for(let offset=0;offset<keys.length;offset+=64) await Promise.all(keys.slice(offset,offset+64).map(async key=>{
+        const entry=await this.documents.get<{expiresAt:number}>(scope,key);
+        if(entry!==undefined&&entry.expiresAt<=now) await this.documents.delete(scope,key);
+      }));
+      const token = `kec_${randomBytes(32).toString('base64url')}`;
+      const expiresAt=Date.now()+3600_000;
+      await this.documents.set(this.scope, `external-clients/tokens/${digest(token)}`, { connectionId: id, expiresAt });
+      return {token,expiresAt};
+    });
   }
   async resolveBearer(token: string): Promise<ExternalClientConnection | undefined> {
     if (!token.startsWith('kec_')) return undefined;

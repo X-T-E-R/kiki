@@ -146,6 +146,7 @@ const config = withMermaid(defineConfig({
               items: [
                 { text: '服务 API', link: '/zh/server/rest-api' },
                 { text: 'Model Context Protocol', link: '/zh/server/mcp' },
+                { text: '从脚本调用工具', link: '/zh/server/script-tools' },
                 { text: 'Node.js SDK', link: '/zh/server/sdk' },
               ],
             },
@@ -280,6 +281,7 @@ const config = withMermaid(defineConfig({
               items: [
                 { text: 'Server API', link: '/en/server/rest-api' },
                 { text: 'Model Context Protocol', link: '/en/server/mcp' },
+                { text: 'Tools from scripts', link: '/en/server/script-tools' },
                 { text: 'Node.js SDK', link: '/en/server/sdk' },
               ],
             },

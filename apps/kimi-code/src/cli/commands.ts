@@ -12,6 +12,7 @@ import { registerProviderCommand } from './sub/provider';
 import { registerSessionCommand } from './sub/session';
 import { registerStorageCommand } from './sub/storage';
 import { registerWebCommand } from './sub/web';
+import { registerToolsCommand } from './sub/tools';
 
 export type MainCommandHandler = (opts: CLIOptions) => void;
 export type PluginNodeRunnerHandler = (entry: string, args: readonly string[]) => void;
@@ -140,6 +141,7 @@ export function createProgram(
   registerExportCommand(program);
   registerSessionCommand(program);
   registerStorageCommand(program);
+  registerToolsCommand(program);
   registerProviderCommand(program);
   registerAcpCommand(program);
   registerDesktopCommand(program);

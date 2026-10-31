@@ -263,6 +263,27 @@ describe('external clients settings panel', () => {
     expect(container.querySelector('[data-xc-empty]')).toBeNull();
   });
 
+  it('groups enabled plugin tools and saves their explicit grants without granting command access implicitly', async () => {
+    const tool = 'plugin__fixture_media__generate';
+    facade.list.mockResolvedValue({ connections: [chatgpt], listener: stopped,
+      toolCatalog: [{ pluginId: 'fixture-media', displayName: 'Fixture Media', tools: [{ name: tool, requiresCommands: true }] }] });
+    await render();
+    (firstRow().querySelector('summary') as HTMLElement).click();
+    await settle();
+    (firstRow().querySelector('[data-xc-edit]') as HTMLElement).click();
+    await settle();
+    const group = firstRow().querySelector('[data-xc-plugin="fixture-media"]')!;
+    expect(group.textContent).toContain('Fixture Media');
+    expect(group.textContent).toContain('Requires “Allow commands on this machine”');
+    (group.querySelector(`[data-xc-tool="${tool}"]`) as HTMLInputElement).click();
+    await settle();
+    (firstRow().querySelector('[data-xc-save]') as HTMLElement).click();
+    await settle();
+    (document.querySelector('[data-confirm-action="confirm"]') as HTMLElement).click();
+    await settle();
+    expect(facade.update).toHaveBeenCalledWith(chatgpt.id, { tools: [...chatgpt.tools, tool] });
+  });
+
   it.each(['local', 'remote'])('creates only access settings for a %s client', async (access) => {
     facade.list.mockResolvedValue({ connections: [], listener: stopped });
     await render();

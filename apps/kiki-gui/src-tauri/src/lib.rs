@@ -19,6 +19,7 @@ mod space_badge;
 mod space_shortcut;
 mod remote_space;
 mod work_mode;
+mod resource_defaults;
 use work_mode::WindowModeDescriptor;
 mod clipboard_files;
 mod plugin_focus;
@@ -757,6 +758,10 @@ impl BackendManager {
                     let home = runtime.kiki_home.clone();
                     let level = read_desktop_prefs_for(&home).log_level;
                     let args = desktop_backend_args(level.as_str(), !self.shared_service && self.idle_exit);
+                    let original_node_options = env::var("NODE_OPTIONS").unwrap_or_default();
+                    let node_options = resource_defaults::node_options(&original_node_options)
+                        .map_err(|error| DesktopStartupFailure::plain(format!("Cannot size the Kiki backend heap: {error}")))?;
+                    let injected_heap = if node_options == original_node_options { "" } else { node_options.split_whitespace().last().unwrap_or("") };
                     let command = app
                         .shell()
                         .sidecar("kiki-server")
@@ -767,6 +772,8 @@ impl BackendManager {
                         })?
                         .args(args)
                         .env("KIKI_HOME", &runtime.kiki_home)
+                        .env("NODE_OPTIONS", &node_options)
+                        .env("KIKI_INJECTED_HEAP_OPTION", injected_heap)
                         .env("KIKI_BUILD_ID", EXPECTED_SIDECAR_BUILD_ID)
                         .env("KIKI_BUILD_CHANNEL", EXPECTED_SIDECAR_BUILD_CHANNEL)
                         .env("KIKI_DESKTOP_BUNDLED", "1")

@@ -109,6 +109,18 @@ root unions and local references. Tool calls still use the same registered
 validator before reaching the context procedure; a complete catalog is not
 permission to omit required arguments or bypass the bound session's policy.
 
+## Script tool access
+
+`src/externalClients/toolRoutes.ts` wraps the existing `ExternalClientHost` grant/catalog/call chain for plain HTTP. The global auth hook routes only the exact tool/job methods to `resolveBearer`; those requests require a loopback socket and a live one-hour `kec_` connection credential. Owner tokens do not authorize them, and connection credentials do not authorize owner-management routes. The handler rechecks the active grant and catalog before dispatch. Native execution still owns approvals, workspace access and plugin usage admission.
+
+The four routes, result shape, CLI and runnable examples are maintained in [Tools from scripts](../../docs/en/server/script-tools.md#http-and-client-reference). `klient.rest.externalClients` is their typed HTTP consumer. `kiki tools --client` uses the local owner channel only to mint the short-lived credential; business calls use that credential.
+
+Admission persists the existing external operation before launch and keeps its idempotency key across reconnect and restart. The executor receives the operation ID as its deduplication key: distinct status queries must not reuse a previous tool result just because their arguments match. The shared host queue and operation recovery remain authoritative; HTTP disconnect is not cancellation of admitted work. Use `kiki_operation` to inspect or explicitly cancel work, and never automatically replay `outcome_unknown`.
+
+Artifact pages extend `kiki_operation`'s existing saved-result reader, so MCP and HTTP share the same contract. `artifact=N` resolves only a `file_id` in a saved `media_generation` job result and opens media under that operation's owned session. It never reads a provider URL or an arbitrary host path. Pages contain at most 256000 source bytes, encoded as a base64 resource. Keep the original pending generation receipt distinct from a later media-status operation containing completed artifacts.
+
+`test/externalClientTools.integration.ts` covers connection/owner separation, expiry, nonloopback rejection, revocation, concurrent idempotency, fresh repeated reads, native approval, session plugin disablement, fixture media submission/resume/download, unknown submission and the actual JSON CLI. All homes and providers are isolated fixtures. The existing MCP coverage remains in `test/externalClients.integration.ts`.
+
 ## Launcher operations
 
 `scripts/codex-kiki-mcp.ps1` manages the per-workspace KAP processes it spawns.

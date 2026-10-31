@@ -1,3 +1,5 @@
+import './native/worker-heap';
+import { initializeMainHeap } from './native/main-heap';
 import { mcpModeError, type McpModeOptions } from './kiki/mcpMode';
 
 function commandArguments(argv: readonly string[]): readonly string[] {
@@ -47,7 +49,8 @@ function attachedMcpDecision(argv: readonly string[]): { readonly kind: 'attache
 
 const indexerArg = process.argv.findIndex((arg, index) => index > 0 && arg === '__search-indexer');
 
-if (indexerArg > 0) {
+const launching = initializeMainHeap();
+if (!launching && indexerArg > 0) {
   void import('@kiki/kap-server/sqlite-indexer-runtime')
     .then(({ runSqliteIndexerCommand }) => runSqliteIndexerCommand(process.argv[indexerArg + 1] ?? ''))
     .then(
@@ -57,7 +60,7 @@ if (indexerArg > 0) {
         process.exit(1);
       },
     );
-} else {
+} else if (!launching) {
   const decision = attachedMcpDecision(process.argv);
   if (decision.kind === 'error') {
     process.stderr.write(`${decision.message}\n`);

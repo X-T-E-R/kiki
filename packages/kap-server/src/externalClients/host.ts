@@ -6,6 +6,7 @@ import { IBootstrapService, ISessionManager, ISessionMetadata, IAgentLifecycleSe
   ISessionContext, ISessionInteractionService, ensureMainAgent, type Scope, type IAgentScopeHandle,
 } from '@kiki/agent-core-v2';
 import { IAgentTaskService } from '@kiki/agent-core-v2/agent/task/task';
+import { IAgentToolDedupeService } from '@kiki/agent-core-v2/agent/toolDedupe/toolDedupe';
 import { ExternalClientRecorder } from '@kiki/agent-core-v2/agent/execution/externalClientRecorder';
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { ExternalClientStore } from './store';
@@ -300,10 +301,10 @@ export class ExternalClientHost {
           });
           try{
             for await(const executed of main.accessor.get(IAgentToolExecutorService).execute([{id:operation.id,type:'function',name:operation.name,arguments:JSON.stringify(operation.arguments)}],
-              {signal,turnId:recorder.turnId,onToolCall:payload=>{recorder!.toolCall(payload);}})){
+              {signal,turnId:recorder.turnId,deduplicationKey:operation.id,onToolCall:payload=>{recorder!.toolCall(payload);}})){
               await recorder.toolResult(executed);result=executed.result;break;
             }
-          }finally{changed.dispose();await approvalWrite;}
+          }finally{changed.dispose();main.accessor.get(IAgentToolDedupeService).clearStep();await approvalWrite;}
         }
         if(result===undefined) throw new ExternalClientError('missing_result','Native tool returned no result.');
         const failed=typeof result==='object'&&result!==null&&'isError' in result&&result.isError===true;
@@ -370,7 +371,7 @@ function policyFingerprint(connection:ExternalClientConnection):string {
 function bridgeSchema(){return {type:'object',properties:{session_ref:{type:'string'},idempotency_key:{type:'string',minLength:1,maxLength:256}},additionalProperties:false};}
 function controlTools():ExternalClientToolDescriptor[]{return[
   {name:'kiki_session',description:'List or explicitly resume sessions shared in Kiki. Create the first session in Kiki with a workspace; action=new with session_ref inherits that session’s workspace and settings. Transport initialization does not create a chat. Persist session_ref in _kiki on future calls.',inputSchema:{type:'object',properties:{action:{enum:['new','resume','list','close']},session_ref:{type:'string'},_kiki:bridgeSchema()},required:['action']},annotations:{readOnlyHint:false,destructiveHint:false}},
-  {name:'kiki_operation',description:'Query/cancel an accepted operation without resubmitting. action=read pages the original saved result; part selects native output array content. Text ranges are UTF-16; media ranges are bytes, delivered as base64 resource chunks. Follow next until complete.',inputSchema:{type:'object',properties:{operation_id:{type:'string'},action:{enum:['get','cancel','read']},part:{type:'integer',minimum:0},offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:256000}},required:['operation_id']},annotations:{readOnlyHint:false,destructiveHint:false}},
+  {name:'kiki_operation',description:'Query/cancel an accepted operation without resubmitting. action=read pages the original saved result; part selects native output array content, artifact selects a generated media artifact. Text ranges are UTF-16; media ranges are bytes, delivered as base64 resource chunks. Follow next until complete.',inputSchema:{type:'object',properties:{operation_id:{type:'string'},action:{enum:['get','cancel','read']},part:{type:'integer',minimum:0},artifact:{type:'integer',minimum:0},offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:256000}},required:['operation_id']},annotations:{readOnlyHint:false,destructiveHint:false}},
   {name:'kiki_save_text',description:'Save text explicitly provided by the external model, not automatically synchronized chat. kind=user_excerpt is a client-supplied excerpt, not verified human testimony. Stable idempotency key required.',inputSchema:{type:'object',properties:{text:{type:'string'},kind:{enum:['note','user_excerpt','assistant_excerpt','handoff']},title:{type:'string'},related_operation_ids:{type:'array',items:{type:'string'}},_kiki:bridgeSchema()},required:['text','kind']},annotations:{readOnlyHint:false,destructiveHint:false}},
 ];}
 async function canonicalPath(path:string):Promise<string>{try{return await realpath(path);}catch{const parent=dirname(path);if(parent===path)return resolve(path);return resolve(await canonicalPath(parent),path.slice(parent.length+1));}}

@@ -246,6 +246,10 @@ export default {
     materials,
     sessions: sessionsByConnection,
     nextConnectionNumber: 4,
+    toolCatalog: [{ pluginId: 'fixture-media', displayName: 'Fixture Media', tools: [
+      { name: 'plugin__fixture_media__generate', requiresCommands: true },
+      { name: 'plugin__fixture_media__media', requiresCommands: true },
+    ] }],
   },
   sessions: [
     sessionRecord(SID, {
