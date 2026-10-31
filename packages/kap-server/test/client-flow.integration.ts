@@ -7,12 +7,13 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  IAgentExecutionService, IAgentLifecycleService, IAgentTaskService, IAppendLogStore, IFileService,
+  IAgentExecutionService, IAgentLifecycleService, IAgentTaskService, IAppendLogStore, IEventDispatcher, IFileService,
   IHomeRuntimeService, IMcpOAuthService, IPluginHostService, ISessionIndexMirror, ISessionManager,
   IThreadCommunicationService, IThreadMailboxStore, IWorktreeService, getLiveSessionById,
   type ServiceIdentifier,
 } from '@kiki/agent-core-v2';
 import { InstantiationService } from '@kiki/agent-core-v2/_base/di/instantiationService';
+import { CompactionCancelled, CompactionCompleted, CompactionStarted } from '@kiki/agent-core-v2/agent/fullCompaction/compactionOps';
 import { IGlobalSearchService } from '../src/search/searchService';
 import { SqliteSearchHost } from '../src/search/sqlite/host';
 import { SessionController } from '../../session-core/src/session/sessionController';
@@ -434,8 +435,69 @@ describe('GUI shared client against an isolated KAP host', () => {
     await vi.waitFor(async () => expect(await client.klient.session(id).status()).toBe('idle'), { timeout: 10000 });
   }
 
+  it.each(['auto-compact', 'context-strategy', 'ssh-hosts', 'model-switches', 'mcp-capabilities'] as const)('keeps main absent after empty session %s reads', async (read) => {
+    if (read === 'mcp-capabilities') {
+      await client.klient.global.mcp.add({ server: { name: 'disabled-example', transport: 'stdio', command: 'must-not-start', enabled: false } });
+    }
+    const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') } })).id;
+    const lifecycle = getLiveSessionById(host.core.accessor, id)!.accessor.get(IAgentLifecycleService);
+    const view = client.sessionView(id);
+    let ready = false;
+    const subscription = view.bootstrap!({ transcriptGrades: { main: 'delta' } }, signal => { if (signal.type === 'ready') ready = true; });
+    try {
+      await vi.waitFor(() => expect(ready).toBe(true), { timeout: 10000 });
+      expect(lifecycle.get('main')).toBeUndefined();
+      const agent = client.klient.session(id).agent('main');
+      if (read === 'auto-compact') await expect(client.getAutoCompact(id, 'main')).rejects.toThrow('Model not set');
+      if (read === 'context-strategy') {
+        expect(await client.getContextStrategy(id, 'main')).toEqual({ strategy: 'auto', source: 'default', shadow: false });
+        await client.patchConfig({ loop_control: { context_strategy: 'fresh', relay_shadow: true } });
+        expect(await client.getContextStrategy(id, 'main')).toEqual({ strategy: 'fresh', source: 'global', shadow: true });
+      }
+      if (read === 'ssh-hosts') {
+        const response = await fetch(`${endpoint}/api/sessions/${id}/ssh/hosts`, { headers: { authorization: `Bearer ${host.localOwnerToken}` } });
+        expect(await response.json()).toMatchObject({ code: 0, data: { hosts: [] } });
+      }
+      if (read === 'model-switches') expect(await agent.listModelSwitches()).toEqual([]);
+      if (read === 'mcp-capabilities') expect(await agent.listMcpSessionCapabilities()).toContainEqual(expect.objectContaining({
+        runtimeName: 'disabled-example', locator: { source: 'global', name: 'disabled-example' }, connection: 'disabled', override: 'inherit',
+      }));
+      expect(lifecycle.get('main')).toBeUndefined();
+    } finally { subscription.close(); }
+  });
+
+  it.each(['compaction.started', 'compaction.completed', 'compaction.cancelled'] as const)('watches absent main %s over WS without creating it and attaches on real creation', async (type) => {
+    const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') } })).id;
+    const lifecycle = getLiveSessionById(host.core.accessor, id)!.accessor.get(IAgentLifecycleService);
+    const received = vi.fn();
+    const removed = vi.fn();
+    const events = client.klient.session(id).agent('main').events;
+    const active = events.on(type, received);
+    const disposed = events.on(type, removed);
+    try {
+      await Promise.all([active.ready, disposed.ready]);
+      expect(lifecycle.get('main')).toBeUndefined();
+      disposed.dispose();
+      const main = await lifecycle.create({ agentId: 'main' });
+      const event = type === 'compaction.started' ? new CompactionStarted({ trigger: 'manual', phase: 'running' })
+        : type === 'compaction.cancelled' ? new CompactionCancelled({ trigger: 'manual' })
+        : new CompactionCompleted({ trigger: 'manual', result: { summary: '', compactedCount: 0, tokensBefore: 0, tokensAfter: 0 } });
+      await main.accessor.get(IEventDispatcher).dispatch(event);
+      await vi.waitFor(() => expect(received).toHaveBeenCalledOnce());
+      expect(received.mock.calls[0]![0]).toMatchObject({ type, trigger: 'manual' });
+      expect(removed).not.toHaveBeenCalled();
+    } finally { active.dispose(); disposed.dispose(); }
+  });
+
   it('bootstraps a new empty main with verified complete history', async () => {
     const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') } })).id;
+    expect(getLiveSessionById(host.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+    await Promise.all([
+      client.getAutoCompact(id, 'main').catch(error => { expect(error.message).toContain('Model not set'); }),
+      client.getContextStrategy(id, 'main'),
+      client.klient.session(id).agent('main').listMcpSessionCapabilities(),
+      client.klient.session(id).agent('main').listModelSwitches(),
+    ]);
     expect(getLiveSessionById(host.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
     const view = client.sessionView(id);
     const signals: Parameters<Parameters<typeof view.subscribe>[1]>[0][] = [];
