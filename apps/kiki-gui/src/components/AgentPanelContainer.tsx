@@ -680,7 +680,8 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   // Which hook rules this agent runs with, and from which file: an on-demand
   // detail under its notes, asked only when this agent has live state.
   const hooksSection = agentState !== undefined
-    ? <AgentHooksSection key={`hooks:${state.sessionId}:${agentId}`} sessionId={state.sessionId} agentId={agentId} />
+    ? <AgentHooksSection key={`hooks:${state.sessionId}:${agentId}`} sessionId={state.sessionId} agentId={agentId}
+      refreshKey={JSON.stringify([visible, state.loaded, state.resyncing, agentState.loaded, agentState.resyncing, active, agentState.profile, agentState.model])} />
     : null;
   if (part === 'work') {
     return <div data-agent-panel-container data-agent-panel-part="work" className="space-y-4 empty:hidden">
