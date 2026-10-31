@@ -118,6 +118,24 @@ function dispatchFor(ctx: TestAgentContext) {
   return { dispatch, child, runs: ix.get(ISessionSubagentService) };
 }
 
+async function defaultExternal(id = 'claude-acp') {
+  const ctx = await host();
+  const registry = ctx.get(IAgentExecutorRegistry);
+  const delivered: unknown[] = [];
+  const resolved: ResolvedAgentExecutor = { descriptor: { id, protocol: 'acp', args: [], revision: 'fixture' }, options: {},
+    provider: { id, protocol: 'acp', validateOptions: () => ({}), validateBinding: binding => ({ ok: true, binding }),
+      create: context => ({ hooks: createHooks(['onWillRun']), status: () => ({ state: 'idle' }), cancel: () => false,
+        settled: async () => {}, shutdown: async () => {}, run: async request => {
+          delivered.push({ request, binding: context.binding });
+          throw new Error('fixture-native-run-reached');
+        } }) } };
+  vi.spyOn(registry, 'resolve').mockReturnValue(resolved);
+  vi.spyOn(registry, 'resolveExecutable').mockResolvedValue(resolved);
+  vi.spyOn(registry, 'validateBinding').mockImplementation((_id, _options, binding) => ({ ok: true, binding }));
+  await ctx.get(IAgentProfileService).bind({ resolvedProfile: nativeTargets([resolved.descriptor])[0], delegationPosition: 'sub' });
+  return { ctx, delivered, ...dispatchFor(ctx) };
+}
+
 async function journal(ctx: TestAgentContext): Promise<WireRecord[]> {
   await ctx.get(IWireService).flush();
   const records: WireRecord[] = [];
@@ -508,22 +526,20 @@ describe('dispatch resume through model switch and real native run', () => {
     expect((await metadata.read()).agents![CHILD]).toBeUndefined();
   });
 
+  it.each([{ tools: ['Read'] }, { disallowedTools: ['Bash'] }])('rejects vendor-default resume tool override %j before a run or binding change', async toolOverride => {
+    const { ctx, dispatch, child, runs } = await defaultExternal();
+    const before = ctx.get(IAgentProfileService).data();
+    const run = vi.spyOn(runs, 'run');
+    const attempt = dispatch.runOnExisting(child, 'Continue', { ...options('default-tool-override'), toolOverride });
+    void attempt.then(value => value.started.catch(() => {}), () => {});
+    await expect(attempt).rejects.toThrow('does not support AgentRun tools or disallowed_tools overrides');
+    expect(run).not.toHaveBeenCalled();
+    expect(ctx.get(IAgentProfileService).data()).toEqual(before);
+    expect(readResumeRecord((await ctx.get(ISessionMetadata).read()).agents![CHILD], 'default-tool-override')).toBeUndefined();
+  });
+
   it.each(['codex-app-server', 'claude-acp', 'agy-cli', 'grok-acp'])('resumes %s native defaults without manufacturing a Kiki model', async (id) => {
-    const ctx = await host();
-    const registry = ctx.get(IAgentExecutorRegistry);
-    const delivered: unknown[] = [];
-    const resolved: ResolvedAgentExecutor = { descriptor: { id, protocol: 'acp', args: [], revision: 'fixture' }, options: {},
-      provider: { id, protocol: 'acp', validateOptions: () => ({}), validateBinding: binding => ({ ok: true, binding }),
-        create: context => ({ hooks: createHooks(['onWillRun']), status: () => ({ state: 'idle' }), cancel: () => false,
-          settled: async () => {}, shutdown: async () => {}, run: async request => {
-            delivered.push({ request, binding: context.binding });
-            throw new Error('fixture-native-run-reached');
-          } }) } };
-    vi.spyOn(registry, 'resolve').mockReturnValue(resolved);
-    vi.spyOn(registry, 'resolveExecutable').mockResolvedValue(resolved);
-    vi.spyOn(registry, 'validateBinding').mockImplementation((_id, _options, binding) => ({ ok: true, binding }));
-    await ctx.get(IAgentProfileService).bind({ resolvedProfile: nativeTargets([resolved.descriptor])[0], delegationPosition: 'sub' });
-    const { dispatch, child } = dispatchFor(ctx);
+    const { ctx, dispatch, child, delivered } = await defaultExternal(id);
     const run = await dispatch.runOnExisting(child, 'Continue native task', options(`native-${id}`));
     await expect(run.started).rejects.toThrow('fixture-native-run-reached');
     expect(delivered).toHaveLength(1);

@@ -526,6 +526,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       ? resolveInheritedModelAlias(INHERIT_MODEL_ALIAS, callerData?.modelAlias)
       : undefined;
     const childData = childProfile.data();
+    assertNativeToolOverride(childData.executorId, options.toolOverride);
     const modelProfileThinking = childData.boundProfile === undefined || inheritedModel === undefined
       ? undefined
       : resolveRoleThinkingDefault(roleConstraintsFromProfile(childData.boundProfile), inheritedModel,
@@ -568,7 +569,6 @@ export class SessionDispatchService implements ISessionDispatchService {
     const modelSwitch = child.agent.accessor.get(IAgentModelSwitchService);
     const switchState = modelSwitch.get(operationId)?.state;
     const recoveringCommit = saved !== undefined && (switchState === 'preparing' || switchState === 'completed');
-    assertNativeToolOverride(childData.executorId, options.toolOverride);
     const binding = recoveringCommit ? undefined : await childProfile.prepareResumeBinding({
       ...options.bindingOverride,
       modelAlias: inheritedModel ?? options.bindingOverride?.modelAlias,
