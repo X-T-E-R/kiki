@@ -46,6 +46,19 @@ function mockFileService(): IFileService {
   };
 }
 
+it('resolves an uploaded video without a session media store', async () => {
+  const files = mockFileService();
+  const upload = await files.save(Readable.from(Buffer.from('video bytes')), 'clip.mp4', { mimeType: 'video/mp4' });
+  const prepared = await resolvePromptMediaFiles([
+    { type: 'video', source: { kind: 'file', file_id: upload.id } },
+  ], files, '.unused');
+  expect(prepared.content).toEqual([
+    { type: 'video', source: { kind: 'url', url: `kimi-file://${upload.id}` }, name: 'clip.mp4' },
+  ]);
+  await prepared.discard();
+  expect((await files.get(upload.id)).meta).toEqual(upload);
+});
+
 const REF_ID = 'session_0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
 const REF_INFO = {
   sessionId: REF_ID,

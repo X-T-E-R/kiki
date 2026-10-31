@@ -5,10 +5,10 @@ import {
   IBlobStore, ILogService, ISessionIndex, ISessionManager, isError2, type Scope,
 } from '@kiki/agent-core-v2';
 import { ScopedMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStoreService';
-import { fileNotFoundError, type GetResult } from '@kiki/agent-core-v2/app/file/fileService';
+import { fileNotFoundError } from '@kiki/agent-core-v2/app/file/fileService';
 import { sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import type { PromptItem, PromptSubmission, PromptSubmitResult, PromptSubmitReceipt } from '../protocol/rest-prompt';
-import { assertPromptFileRefs } from '../lib/promptMedia';
+import { assertPromptFileRefs, sessionPromptFiles } from '../lib/promptMedia';
 import { mapError } from '../transport/errors';
 import type { RestoreProgress } from '@kiki/agent-core-v2/session/agentLifecycle/restoreTiming';
 import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
@@ -346,15 +346,7 @@ export class PromptIngress {
   }
 
   private files(target: Target): IFileService {
-    const staged = this.core.accessor.get(IFileService);
-    const media = this.media(target);
-    return { _serviceBrand: undefined, save: (source, name, options) => staged.save(source, name, options), delete: id => staged.delete(id),
-      get: async (id): Promise<GetResult> => {
-        const file = await media.open(id);
-        if (file === undefined) return staged.get(id);
-        return { meta: { id, name: file.name, media_type: file.mediaType, size: file.size, created_at: new Date(0).toISOString() },
-          stream: range => Readable.from(file.stream(range)) };
-      } };
+    return sessionPromptFiles(this.core.accessor.get(IFileService), this.media(target));
   }
 
   private async retainMedia(target: Target, content: PromptSubmission['content']): Promise<PromptSubmission['content']> {
@@ -375,7 +367,10 @@ export class PromptIngress {
         await media.materialize({ fileId: id, size: bytes.length, name: part.name ?? `${part.type}.${extension}`, mimeType: part.source.media_type, stream: () => Readable.from(bytes) });
         retained.push({ ...part, source: { kind: 'file', file_id: id } });
       } else {
-        if ((part.type === 'image' || part.type === 'video' || part.type === 'audio') && part.source.kind === 'session_media' && !part.source.file_id.startsWith('inline')) {
+        if ((part.type === 'image' || part.type === 'video' || part.type === 'audio') && part.source.kind === 'session_media' && !part.source.file_id.startsWith('inline')
+          && await media.open(part.source.file_id) === undefined) {
+          const file = await this.core.accessor.get(IFileService).get(part.source.file_id);
+          await media.materialize({ fileId: file.meta.id, size: file.meta.size, name: file.meta.name, mimeType: file.meta.media_type, stream: () => file.stream() });
           if (await media.open(part.source.file_id) === undefined) throw fileNotFoundError(part.source.file_id);
         }
         retained.push(part);

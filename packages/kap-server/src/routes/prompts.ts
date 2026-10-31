@@ -88,6 +88,7 @@ import {
   contentToCoreParts,
   resolvePromptMediaFiles,
   resolvePromptSessionMediaRefs,
+  sessionPromptFiles,
   type PromptMediaPreparation,
 } from '../lib/promptMedia';
 import { requestLog } from '../lib/requestLog';
@@ -584,8 +585,10 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         if (req.body.prompt_id === undefined && req.body.skills !== undefined) {
           await assertActivatableSkills(session.accessor.get(ISessionSkillCatalog), req.body.skills);
         }
+        const sessionMedia = session.accessor.get(ISessionMediaStore);
+        const files = ingressExecution?.files ?? sessionPromptFiles(core.accessor.get(IFileService), sessionMedia);
         if (req.body.prompt_id === undefined) {
-          await assertPromptFileRefs(req.body.content, ingressExecution?.files ?? core.accessor.get(IFileService));
+          await assertPromptFileRefs(req.body.content, files);
         }
         const restoring = resolvePromptFromSession(core, session, req.body.agent_id);
         const resolved = await phase('prompt_ensure_main', () => signal === undefined ? restoring : abortable(restoring, signal));
@@ -603,11 +606,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           }
         }
         if (req.body.skills !== undefined) await assertActivatableSkills(session.accessor.get(ISessionSkillCatalog), req.body.skills);
-        const files = ingressExecution?.files ?? core.accessor.get(IFileService);
         await assertPromptFileRefs(req.body.content, files);
         const resolveContent = (signal: AbortSignal) => resolvePromptSessionMediaRefs(req.body.content,
-          session.accessor.get(ISessionMediaStore),
-          transcriptService === undefined ? undefined : publishedInlineMediaReader(transcriptService, session_id, signal));
+          sessionMedia,
+          transcriptService === undefined ? undefined : publishedInlineMediaReader(transcriptService, session_id, signal),
+          files);
         const submittedContent = ingressExecution === undefined
           ? await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], resolveContent)
           : await resolveContent(ingressExecution.signal);
@@ -620,6 +623,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           core.accessor.get(IBootstrapService).cacheDir,
           {
             telemetry,
+            sessionMedia,
             providerType: resolved.profile.getModelProviderType(req.body.model),
             resolveOriginalsDir: async () =>
               sessionMediaOriginalsDir(session.accessor.get(ISessionContext).sessionDir),
@@ -896,21 +900,25 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           if (!replacement.success) {
             throw new Error2(ErrorCodes.REQUEST_INVALID, 'replacement content is required');
           }
-          await assertPromptFileRefs(replacement.data.content, core.accessor.get(IFileService));
           lease = await acquireSessionOperation(core, session_id, 'operation');
           const session = requireSession(lease.handle, session_id);
+          const sessionMedia = session.accessor.get(ISessionMediaStore);
+          const files = sessionPromptFiles(core.accessor.get(IFileService), sessionMedia);
+          await assertPromptFileRefs(replacement.data.content, files);
           const replacementContent = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => resolvePromptSessionMediaRefs(
             replacement.data.content,
-            session.accessor.get(ISessionMediaStore),
+            sessionMedia,
             transcriptService === undefined ? undefined : publishedInlineMediaReader(transcriptService, session_id, signal),
+            files,
           ));
           const resolved = await resolvePromptFromSession(core, session);
           preparedMedia = await resolvePromptMediaFiles(
             replacementContent,
-            core.accessor.get(IFileService),
+            files,
             core.accessor.get(IBootstrapService).cacheDir,
             {
               telemetry: core.accessor.get(ITelemetryService).withContext({ sessionId: session_id }),
+              sessionMedia,
               providerType: resolved.profile.getModelProviderType(),
               resolveOriginalsDir: async () =>
                 sessionMediaOriginalsDir(session.accessor.get(ISessionContext).sessionDir),

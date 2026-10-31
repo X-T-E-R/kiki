@@ -51,6 +51,7 @@ import {
   contentToCoreParts,
   resolvePromptMediaFiles,
   resolvePromptSessionMediaRefs,
+  sessionPromptFiles,
   type PromptMediaPreparation,
 } from '../lib/promptMedia';
 import { requestLog } from '../lib/requestLog';
@@ -533,23 +534,27 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope, transcri
                 `Skill "${skill.name}" cannot be activated by the user`,
               );
             }
-            await assertPromptFileRefs(attachments, core.accessor.get(IFileService));
+            const sessionMedia = resolved.handle.accessor.get(ISessionMediaStore);
+            const files = sessionPromptFiles(core.accessor.get(IFileService), sessionMedia);
+            await assertPromptFileRefs(attachments, files);
             const submittedAttachments = await withReplyCloseSignal<PromptSubmission['content']>(
               reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
               (signal) => resolvePromptSessionMediaRefs(
                 attachments,
-                resolved.handle.accessor.get(ISessionMediaStore),
+                sessionMedia,
                 transcriptService === undefined ? undefined : publishedInlineMediaReader(transcriptService, session_id, signal),
+                files,
               ),
             );
             const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
             const sessionDir = resolved.handle.accessor.get(ISessionContext).sessionDir;
             preparedMedia = await resolvePromptMediaFiles(
               submittedAttachments,
-              core.accessor.get(IFileService),
+              files,
               core.accessor.get(IBootstrapService).cacheDir,
               {
                 telemetry,
+                sessionMedia,
                 providerType: agent.accessor
                   .get(IAgentProfileService)
                   .getModelProviderType(),

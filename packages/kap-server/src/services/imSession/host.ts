@@ -344,6 +344,7 @@ class NotificationSessionPorts implements ImSessionPorts {
       if (known !== undefined) return { duplicate: true, promptId: input.promptId, turnId: known.turnId, deliveryState: prompt.list().pending.some((item) => item.id === input.promptId) ? 'queued' : 'pending' };
       const prepared = await resolvePromptMediaFiles([...input.content], this.core.accessor.get(IFileService), this.core.accessor.get(IBootstrapService).cacheDir, {
         resolveAttachmentsDir: async () => join(session.accessor.get(ISessionContext).sessionDir, 'attachments'),
+        sessionMedia: session.accessor.get(ISessionMediaStore),
       });
       const reservation = reservePrompt(prompt, input.promptId, true);
       try {

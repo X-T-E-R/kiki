@@ -9,6 +9,7 @@ import {
   ITelemetryService,
   ensureMainAgent,
   isError2,
+  ISessionMediaStore,
   sessionMediaOriginalsDir,
   type Scope,
 } from '@kiki/agent-core-v2';
@@ -27,7 +28,10 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import {
   assertPromptFileRefs,
   resolvePromptMediaFiles,
+  resolvePromptSessionMediaRefs,
+  sessionPromptFiles,
 } from '../lib/promptMedia';
+import { publishedInlineMediaReader } from '../services/publishedMedia';
 import { requestLog } from '../lib/requestLog';
 import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
@@ -219,13 +223,22 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
             reply.send(okEnvelope(projectPromptHandle(replay), req.id));
             return;
           }
-          await assertPromptFileRefs(body.content, core.accessor.get(IFileService));
-          preparedMedia = await resolvePromptMediaFiles(
+          const sessionMedia = session.accessor.get(ISessionMediaStore);
+          const files = sessionPromptFiles(core.accessor.get(IFileService), sessionMedia);
+          await assertPromptFileRefs(body.content, files);
+          const editedContent = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => resolvePromptSessionMediaRefs(
             body.content,
-            core.accessor.get(IFileService),
+            sessionMedia,
+            publishedInlineMediaReader(deps.transcriptService, session_id, signal),
+            files,
+          ));
+          preparedMedia = await resolvePromptMediaFiles(
+            editedContent,
+            files,
             core.accessor.get(IBootstrapService).cacheDir,
             {
               telemetry: core.accessor.get(ITelemetryService).withContext({ sessionId: session_id }),
+              sessionMedia,
               providerType: agent.accessor.get(IAgentProfileService).getModelProviderType(),
               resolveOriginalsDir: async () =>
                 sessionMediaOriginalsDir(session.accessor.get(ISessionContext).sessionDir),
