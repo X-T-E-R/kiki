@@ -219,16 +219,36 @@ Key movement creates a connection without exposing the key to the caller, switch
 
 ### Executor catalog and checks
 
-The executor catalog lists registered engines without waiting for executable discovery or authentication checks. Reading it does not launch an engine or sign in.
+The executor catalog and the two discovery views below answer different questions and are read-only. Catalog reads do not wait for executable discovery or authentication checks. The candidate view evaluates dispatchable profile and native-engine references, while the executor discovery view reads local installation metadata; none of these GET requests launches an engine or signs in.
 
 | Method and path | Description |
 | --- | --- |
+| `GET /api/agents/references` | Caller-permitted profile and native-engine message-reference candidates; accepts one of the query forms below and does not launch a child |
 | `GET /api/executors` | Registered engines and the latest check for each. This request does not probe. A result older than 60 seconds has `check_stale: true` |
 | `GET /api/executors/{id}` | One engine's capabilities, connection settings, and latest check. This request does not probe |
-| `POST /api/executors/{id}/check` | Check only that engine's executable sources and its declared authentication hints |
+| `GET /api/executors/discovery` | Read-only discovery of installed external-engine files and metadata; takes no query or body and does not spawn a process |
+| `POST /api/executors/{id}/check` | Explicitly check that engine's executable sources and its declared authentication hints |
 | `GET /api/executors/installations` | Pinned adapter releases and any selected source-owned adapter. This request does not install. An item with no installation omits `active` |
 | `POST /api/executors/{id}/install` | Explicitly update one selected adapter. The request has no body fields |
 | `POST /api/executors/{id}/rollback` | Restore that adapter's previous installation. The request has no body fields |
+
+`GET /api/agents/references` accepts exactly one of these strict query forms; unknown fields are rejected:
+
+| Query form | Use |
+| --- | --- |
+| `session_id=<id>&agent_id=<id>` | Read the live caller's candidates, or the saved caller binding when the session or agent is cold |
+| `workspace_id=<id>&profile=<name>` | Preview candidates for a named profile in a registered workspace |
+| `cwd=<absolute-path>&profile=<name>` | Preview candidates for a named profile from an absolute working directory |
+
+A cold session is read from the session index and persisted agent metadata; this endpoint does not resume the session or agent. Workspace and `cwd` forms use a draft profile catalog. The endpoint only inventories candidates: it does not call `AgentRun`, start an external engine, or change `show_in_profile_list`.
+
+The response data is `{ items, delegation_available, unavailable_reason? }`; `delegation_available` reports whether the caller can use `AgentRun`, and the top-level `unavailable_reason` explains a false value. Each item contains `profile`, `label`, `executor`, `engine_label`, a `reference` in the form `kiki://agents/<percent-encoded-profile>`, `configuration` (`native` for an engine target or `profile` for a named role), `group` (`native`, `profile`, or `main`), `defaults_available`, `available`, and optional `unavailable_reason`, `unavailable_reason_code`, and `description`. Hard-policy-blocked targets are omitted; a missing engine or missing defaults remains as an item with `available: false` so a client can render it disabled.
+
+Use `group: "main"` to place main-profile candidates in an advanced group, and preserve `reference` unchanged when embedding the target in a message. A later `AgentRun.source_ref` is a server-generated ID associated with that visible message, not the URI itself. Stored `AgentReference` and `AgentRunSource` objects also carry an optional `engine_label` for display without a catalog lookup; `executor` remains the engine ID. The typed Klient method is `klient.rest.agents.referenceCandidates(query, options?)`.
+
+`GET /api/executors/discovery` takes no query or body and returns `{ items }` for registered non-native executors only. Each item contains `id`, `label`, `protocol`, `installed`, `status` (`installed`, `missing`, or `error`), `checked_at`, and `components`, plus optional `version`, `path`, `source`, `source_kind` (`explicit-path`, `env`, `glob`, `path-lookup`, or `node-script`), `reason`, and `reason_code`. A component contains `id`, `label`, `role` (`program` or `dependency`), `installed`, and optional `path`, `version`, `reason`, and `reason_code`. Unknown versions are omitted. Top-level `installed` reports whether the selected program files were found; a source-owned AGY adapter also requires its AGY CLI dependency. Other declared dependency results are reported independently in `components`. Discovery does not establish authentication or launch readiness.
+
+This discovery reads local files, PATH/environment values, glob matches, and package metadata only. It does not spawn a process, run a CLI or version probe, inspect credentials, contact a network service, or change `show_in_profile_list`. `reason` remains the English diagnostic text without a `code:` prefix; common stable `reason_code` values include `not_on_path`, `path_not_found`, `env_unset`, `no_glob_match`, and `metadata_unreadable`. Clients should preserve unknown codes. Results are cached for 30 seconds from completion while the descriptor and source configuration remain unchanged. Use `POST /api/executors/{id}/check` when an explicit executable or authentication check is intended; that probe is separate from this safe discovery. The typed Klient method is `klient.rest.executors.discover(options?)`.
 
 Catalog `status` is `ready`, `unavailable`, or `unknown`. Native is always `ready`. An external engine with no check yet is `unknown`. `check_status` keeps the latest explicit check as `ready`, `warning`, or `unavailable`, and `checked_at` is that time. While the launch configuration is unchanged, `check_stale` is false for 60 seconds and true after that. The list still returns the previous `check_status` instead of falling back to `unknown`. After the engine revision changes, both fields disappear and that engine is unchecked again. `POST` updates only the named engine. The others keep the results they already have. One engine timing out or failing does not mark the rest ready. `GET` does not start a probe.
 
