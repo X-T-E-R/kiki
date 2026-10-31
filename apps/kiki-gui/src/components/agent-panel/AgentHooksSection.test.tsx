@@ -29,26 +29,27 @@ afterAll(() => {
   delete (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT;
 });
 
-async function renderSection(sessionId = 's1', agentId = 'main') {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+async function renderSection(sessionId = 's1', agentId = 'main', refreshKey?: string) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
-  await act(async () => {
-    root.render(
-      <QueryClientProvider client={queryClient}>
-        <I18nProvider>
-          <AgentHooksSection sessionId={sessionId} agentId={agentId} />
-        </I18nProvider>
-      </QueryClientProvider>,
-    );
-  });
-  // Flush promises
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
+  const render = async (nextKey?: string) => {
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <AgentHooksSection sessionId={sessionId} agentId={agentId} refreshKey={nextKey} />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  };
+  await render(refreshKey);
   return {
     container,
+    render,
     cleanup: async () => {
       await act(async () => { root.unmount(); });
       queryClient.clear();
@@ -164,6 +165,37 @@ describe('AgentHooksSection', () => {
     expect(container.querySelector('[data-agent-hooks-summary]')?.textContent).toBe('1 active');
     expect(container.querySelector('[data-agent-hooks-retry]')).toBeNull();
     await cleanup();
+  });
+
+  it.each(['state', 'focus', 'visibility'] as const)('retries a failed initial read on %s recovery without polling', async (trigger) => {
+    mockGetAgentHooksInspect.mockReset().mockRejectedValue(new ApiError({ code: 40001, msg: 'Agent not found', data: null }));
+    const { container, render, cleanup } = await renderSection(`s-${trigger}`, 'main', 'opening');
+    expect(container.querySelector('[data-agent-hooks-state="failed"]')).not.toBeNull();
+    expect(mockGetAgentHooksInspect).toHaveBeenCalledTimes(1);
+    mockGetAgentHooksInspect.mockResolvedValue({ ...sampleInspect, sources: [], diagnostics: [] });
+    if (trigger === 'state') await render('ready');
+    else await act(async () => {
+      if (trigger === 'focus') window.dispatchEvent(new Event('focus'));
+      else window.dispatchEvent(new Event('visibilitychange'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(mockGetAgentHooksInspect).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-agent-hooks-state="ready"]')).not.toBeNull();
+    await cleanup();
+  });
+
+  it('does not retry an unsupported route or a successful read on focus or state changes', async () => {
+    for (const unsupported of [true, false]) {
+      mockGetAgentHooksInspect.mockReset();
+      if (unsupported) mockGetAgentHooksInspect.mockRejectedValue(new ApiError({ code: 404, msg: 'Not found', data: null }));
+      else mockGetAgentHooksInspect.mockResolvedValue({ ...sampleInspect, sources: [], diagnostics: [] });
+      const { render, cleanup } = await renderSection(`s-no-retry-${unsupported}`, 'main', 'opening');
+      await render('ready');
+      await act(async () => { window.dispatchEvent(new Event('focus')); await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(mockGetAgentHooksInspect).toHaveBeenCalledTimes(1);
+      await cleanup();
+    }
   });
 
   it('renders summary when closed and unfolds rules + degraded sources + diagnostics', async () => {

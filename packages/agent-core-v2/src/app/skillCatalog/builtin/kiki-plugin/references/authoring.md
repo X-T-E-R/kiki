@@ -73,6 +73,7 @@ manifest 里的写法是 `"tools": [{ ...见上 }]`——同一份对象，或�
 | `description` | 模型据此选工具；kiki-office 全部控制在 600 字符内 |
 | `parameters` | JSON Schema 对象；缺省是空对象 schema |
 | `accesses` | 默认 `[{ kind: 'all' }]`。声明 `kind: 'file'` 时 `path` 写 `$.<参数名>` |
+| `concurrencySafe` | 独立调用可安全并发时设为 `true`；只改变调度，不改变权限与审批，也不取消显式文件读写冲突或未知 Bash 屏障。省略或 `false` 保持原行为；插件自行控制提供方限流 |
 | `disclosure` | `inline` 或 `deferred`（默认 `deferred`） |
 | `approvalRule` | 无文件准入时使用；有文件准入后由宿主按路径生成 |
 

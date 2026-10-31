@@ -35,11 +35,25 @@ export function legacyHeapOptions(argv: readonly string[]): { argv: string[]; op
 
 export function needsLargeHeap(args: readonly string[]): boolean {
   if (args.some(arg => ['--version', '-V', '--help', '-h'].includes(arg))) return false;
-  if (args.some(arg => ['-p', '--prompt', '--prompt-file'].includes(arg) || arg.startsWith('--prompt='))) return true;
-  return args.length === 0 || args.some(arg => ['serve', 'web', '--resume', '--session'].includes(arg));
+  const valued = new Set(['-m', '--model', '--effort', '--thinking', '--timeout', '--wait-for-session', '--output-format', '--skills-dir', '--agent', '--agent-file', '--persona', '--add-dir', '--permission-mode']);
+  const optional = new Set(['-S', '--session', '-r', '--resume']);
+  let prompt = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]!;
+    if (['-p', '--prompt', '--prompt-file'].includes(arg)) { prompt = true; index++; continue; }
+    if (arg.startsWith('--prompt=') || arg.startsWith('--prompt-file=')) { prompt = true; continue; }
+    if (valued.has(arg)) { index++; continue; }
+    if (optional.has(arg)) { if (args[index + 1] !== undefined && !args[index + 1]!.startsWith('-')) index++; continue; }
+    if (arg.startsWith('-')) continue;
+    if (arg === 'serve') return !args.slice(index + 1).some(value => ['--ensure', '--query', '--stop'].includes(value));
+    if (arg === 'acp') return !args.slice(index + 1).includes('--login');
+    return false;
+  }
+  return prompt;
 }
 
 export function mainHeapEnvironment(env: NodeJS.ProcessEnv, mb = mainHeapMb()): NodeJS.ProcessEnv {
+  if (heapFlag.test(env['NODE_OPTIONS'] ?? '')) return { ...env };
   const flag = `--max-old-space-size=${mb}`;
   return { ...env, NODE_OPTIONS: `${env['NODE_OPTIONS'] ?? ''} ${flag}`, KIKI_INJECTED_HEAP_OPTION: flag };
 }

@@ -1850,7 +1850,7 @@ export class TranscriptService {
     signal?.throwIfAborted();
     if (info === undefined) return this.readColdSnapshot(sessionId, agentId, undefined, signal);
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
-    if (!tailFirst && info.size <= (boundedPage ? FIRST_SCREEN_WINDOW_BYTES : FIRST_SCREEN_WINDOW_MAX_BYTES)) {
+    if (info.size <= (tailFirst || boundedPage ? FIRST_SCREEN_WINDOW_BYTES : FIRST_SCREEN_WINDOW_MAX_BYTES)) {
       if (this.coldWireWindows.has(wirePath)) {
         this.forgetColdWindow(wirePath);
         this.retainedColdTurns.delete(wirePath);
@@ -1923,7 +1923,7 @@ export class TranscriptService {
     signal?.throwIfAborted();
     if (info === undefined) return this.readColdSnapshot(sessionId, agentId, preserveOpenTurnIds, signal, captureReplayState);
     const fingerprint = `${fileIdentity(info)}:${fileFingerprint(info)}`;
-    if (!tailFirst && info.size <= FIRST_SCREEN_WINDOW_MAX_BYTES) {
+    if (info.size <= (tailFirst ? FIRST_SCREEN_WINDOW_BYTES : FIRST_SCREEN_WINDOW_MAX_BYTES)) {
       return this.readColdSnapshot(sessionId, agentId, preserveOpenTurnIds, signal, captureReplayState);
     }
     const opened = signal ?? new AbortController().signal;
@@ -2841,7 +2841,20 @@ export class TranscriptService {
       if (signal.aborted) {
         throw signal.reason ?? new DOMException('The cold transcript read was aborted', 'AbortError');
       }
-      if (missingWire && (error as NodeJS.ErrnoException).code === 'ENOENT') return unknownSnapshot();
+      if (missingWire && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+        const metadata = agentId === MAIN_AGENT_ID
+          ? await readFile(join(this.deps.homeDir, SESSIONS_ROOT, summary.workspaceId, sessionId, STATE_FILE), 'utf-8').then(text => JSON.parse(text) as SessionMeta).catch((error: NodeJS.ErrnoException) => {
+              if (error.code === 'ENOENT') return undefined;
+              throw error;
+            })
+          : undefined;
+        signal.throwIfAborted();
+        if (metadata?.agents !== undefined && Object.keys(metadata.agents).length === 0) {
+          captureReplayState?.({ adapter: adapter.checkpoint(), acceptedDurableFacts: reducer.checkpoint() });
+          return { ...knownSnapshot(transcript.snapshot(), 0), hasMoreOlder: false };
+        }
+        return unknownSnapshot();
+      }
       this.logTranscriptFailure(sessionId, agentId, error);
       throw error;
     }

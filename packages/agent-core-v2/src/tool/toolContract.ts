@@ -113,6 +113,8 @@ export interface ExecutableToolContext {
 export interface RunnableToolExecution {
   readonly isError?: false | undefined;
   readonly accesses?: ToolAccesses | undefined;
+  /** Override scheduling conflicts without changing permission admission or approval accesses. */
+  readonly schedulingAccesses?: ToolAccesses;
   readonly display?: ToolInputDisplay | undefined;
   readonly description?: string;
   readonly stopBatchAfterThis?: boolean | undefined;

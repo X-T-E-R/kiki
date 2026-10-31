@@ -490,6 +490,12 @@ Use either single-message `text`/`attachments`/`reply_to`/`mention_ids` or an ex
 
 `minSendIntervalMs` sets the Host's per-target sending interval. Adapters may report `{ status: "failed", errorKind: "rate_limited", retryAfterMs }` only when the platform explicitly rejected the send without accepting it. Kiki retries that result at most twice; delivered results with no message IDs, partial deliveries and unknown outcomes are not retried. Built-in channels also use the Host's target pacing; a platform rate limit without an exact retry delay remains a failed receipt.
 
+### Native tool concurrency
+
+For a tool whose independent calls can safely overlap, set `"concurrencySafe": true` in its `x-kiki.tools` definition and in the identical definition passed to `api.registerTool`. Omit it or set it to `false` to retain the existing scheduling behavior.
+
+This declaration changes scheduling only: broad `accesses: [{ "kind": "all" }]` no longer makes independent calls mutually exclusive. Permissions and approvals still use the original `accesses`. Declared file writes retain their read/write ordering, and an unknown `Bash` command remains a barrier. The plugin must handle shared state safely and enforce its own provider limits.
+
 ### Native tool results
 
 Native tools declared under `x-kiki.tools` can return text and PNG, JPEG or WebP images as base64 data URLs. Large results are saved automatically as session attachments: text keeps a preview with the complete original's path and `kimi-file://` reference, and images remain available through the session attachment reference. Ask the agent to use `Read` to page through the original text or `ReadMediaFile` to inspect the original image. Plugin authors can keep the usual return format; they do not need to split the result themselves.

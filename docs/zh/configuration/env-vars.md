@@ -172,6 +172,28 @@ kiki
 | `KIKI_MODEL_THINKING_KEEP` | 保留思考透传；在 `kimi` 上以 `thinking.keep` 发送，在 `anthropic`（Claude 以及 Kimi 的 Anthropic 兼容模式）上以 `context_management` 的 `clear_thinking_20251015` 编辑发送（开启 keep 会让 Anthropic 请求走 beta Messages API）；覆盖 `[thinking] keep`（其默认值为 `"all"`）；仅在 Thinking 开启时注入 | API 接受的值，如 `all`；传入关值（`false`/`0`/`no`/`off`/`none`/`null`）可禁用 |
 | `KIKI_DISABLE_CRON` | 禁用定时任务工具（`Cron` 的 `action: "create"` 调用会被拒绝，已有任务不触发） | `1` 表示禁用 |
 
+## 资源覆盖
+
+[配置文件](./config-files.md#硬件自适应的资源默认值)介绍了硬件自适应默认值。下面的变量只覆盖对应资源，不会改写 `config.toml`。
+
+| 环境变量 | 用途 | 合法值与时机 |
+| --- | --- | --- |
+| `KIKI_CPU_MAX_WORKERS` | 覆盖 `[cpu_workers].max_workers` | 正整数；创建 App 服务时读取。实际 worker 数仍受 `C - 1` 封顶 |
+| `KIKI_CPU_MAX_QUEUE` | 覆盖 `[cpu_workers].max_queue` | 正整数；创建 App 服务时读取 |
+| `KIKI_CPU_MAX_QUEUED_BYTES` | 覆盖 `[cpu_workers].max_queued_bytes` | 正整数（字节）；创建 App 服务时读取 |
+| `KIKI_CPU_TIMEOUT_MS` | 覆盖 `[cpu_workers].timeout_ms` | 不超过 `2147483647` 的正整数；创建 App 服务时读取 |
+| `KIKI_SEARCH_INDEXER_SOFT_MB` / `KIKI_SEARCH_INDEXER_HARD_MB` | 覆盖搜索 indexer 的 soft 或 hard RSS 预算 | 正整数 MiB。显式 search host 选项优先，其次是环境变量，最后才是 `2H + 256` / `3H + 256` MiB 的硬件默认值 |
+| `KIKI_DESKTOP_BUNDLED` | 标记进程为 bundled desktop sidecar，以启用 watchdog 默认值 | `1` 开启 bundled 默认值；未设置或为其他值时，除非显式设置阈值覆盖，否则不启用默认值 |
+| `KIKI_SERVER_HEAP_RESTART_MB` | 覆盖桌面 sidecar 的 heap watchdog 阈值 | 正整数 MiB；`0` 关闭 heap 指标。默认是 effective V8 heap 的 75% |
+| `KIKI_SERVER_RSS_RESTART_MB` | 覆盖桌面 sidecar 的 RSS watchdog 阈值 | 正整数 MiB；`0` 关闭 RSS 指标。默认是 `max(3 GiB, 总内存的 35%)` |
+| `KIKI_SERVER_EXTERNAL_RESTART_MB` | 覆盖桌面 sidecar 的 external-memory watchdog 阈值 | 正整数 MiB；`0` 关闭 external 指标。默认是 `max(1.5 GiB, 总内存 / 16)`，且仍只有 RSS 至少达到 3 GiB 时才计入 |
+
+桌面 watchdog 每 30 秒采样一次。默认值只对 bundled desktop sidecar 生效；显式变量在任何宿主上都生效。桌面 launcher 会为 sidecar 注入 `max(8192, floor(totalmem / MiB / 4))` MiB 的目标 heap。Native SEA profile 使用 `execArgv=[]` 和 `execArgvExtension="env"`，因此用户的 `NODE_OPTIONS` 保持权威。前台 `serve`、非登录用途的 `acp` 和进程内执行的提示词（`-p`、`--prompt` 或 `--prompt-file`）仅在当前堆低于目标的 90%、且用户没有显式堆覆盖时最多重新启动一次。默认交互入口 `kiki`、恢复/继续会话、`web` 和 `serve --ensure/--query/--stop` 都是 daemon 客户端，不会自动重启；新建 daemon 会在启动前收到目标堆参数。`--version`、工具调用和补全等短命令不会重启。
+
+CLI 兼容旧的 `--node-options`，但只接受堆相关参数；其他参数会明确报错，不会被静默丢弃。其他受支持的 Node 参数请放入 `NODE_OPTIONS`。入口保留用户原本的 `NODE_OPTIONS`，只移除 Kiki 注入的一次性堆参数，避免它传给子进程。
+
+Kiki 自有 CLI/SEA 入口在创建 worker 前只启用一次独立堆限制。导入 SDK 不会修改进程级参数。如果 SDK 宿主用 `--max-old-space-size` 或对应的百分比参数启动 Node，该全局设置可能覆盖 `Worker.resourceLimits`。要显式启用独立限额，请在创建 worker 前调用 `@kiki/node-sdk/worker-heap-policy` 的 `enableIndependentWorkerHeaps`。这会修改宿主进程中所有后续 isolate（独立 JavaScript 运行实例）的 V8 默认值，不仅影响 Kiki worker，且依赖 Node/V8 的行为；主堆大小应在进程启动时设置。worker 实测堆上限与所请求预算偏差较大时会输出警告。
+
 subagent 并发没有环境变量覆盖。请在 [`[subagent]`](./config-files.md#subagent) 中配置 `max_direct_children` 和 `max_total_subagents`，默认值分别为 `16` 和 `0`（不限）。
 
 `[subagent].default_model` 只在派发参数与生效 pin 都未指定模型时提供兜底。它不会继承调用方的模型；它和宿主强制的环境值都不能绕过 profile 的硬模型规则。`[subagent].default_effort` 已移除、不再读取，启动时会给出警告——请改用 profile、route 或 caller lease 上的 effort pin，或者交给所选模型使用它自己的默认值。

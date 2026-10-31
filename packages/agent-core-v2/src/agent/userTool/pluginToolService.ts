@@ -338,6 +338,9 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
     const pathOptions = { cwd: workspace.workspaceDir, pathClass: env.pathClass, homeDir: env.homeDir };
     return {
       accesses,
+      schedulingAccesses: definition.concurrencySafe === true
+        ? accesses.map((access) => access.kind === 'all' ? { ...access, operation: 'read' as const } : access)
+        : undefined,
       approvalRule: path === undefined ? definition.approvalRule ?? name : literalRulePattern(name, path),
       matchesRule: path === undefined ? undefined : (ruleArgs) => matchesPathRuleSubject(ruleArgs, path, pathOptions),
       execute: async (context) => {

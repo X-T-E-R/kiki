@@ -5,6 +5,10 @@ import { SqliteSearchIndex } from './index';
 import { SqliteSearchQueries } from './queries';
 import type { QueryEvent, QueryRequest } from './processProtocol';
 
+import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
+import { warnIfWorkerHeapLimit } from '@kiki/agent-core-v2/_base/node/workerHeapPolicy';
+
+warnIfWorkerHeapLimit(RESOURCE_DEFAULTS.workerHeapMb);
 const port = parentPort;
 if (!port) throw new Error('query entry requires a worker thread');
 let reader: SqliteSearchIndex | undefined;

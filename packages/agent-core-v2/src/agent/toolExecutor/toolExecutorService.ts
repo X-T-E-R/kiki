@@ -497,7 +497,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
 
       return {
         task: {
-          accesses: execution.accesses ?? ToolAccesses.all(),
+          accesses: execution.schedulingAccesses ?? execution.accesses ?? ToolAccesses.all(),
           execute: async (taskSignal) =>
             this.runSingleExecution(call, execution, executionMetadata, options, taskSignal),
         },

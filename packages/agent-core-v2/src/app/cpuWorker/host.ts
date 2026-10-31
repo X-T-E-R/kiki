@@ -2,6 +2,7 @@ import { availableParallelism } from 'node:os';
 import { Worker, type Transferable } from 'node:worker_threads';
 import type { CpuRequest, CpuResponse } from './protocol';
 import { fromErrorPayload } from '#/_base/errors/serialize';
+import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
 
 export interface CpuPoolOptions {
   readonly maxWorkers?: number;
@@ -53,10 +54,10 @@ export class CpuWorkerPool {
   private closing?: Promise<void>;
 
   constructor(private readonly entry: URL, options: CpuPoolOptions = {}) {
-    const cap = positiveInteger(options.maxWorkers ?? 4, 'maxWorkers');
+    const cap = positiveInteger(options.maxWorkers ?? RESOURCE_DEFAULTS.cpuWorkers, 'maxWorkers');
     this.size = Math.max(1, Math.min(availableParallelism() - 1, cap));
-    this.maxQueue = positiveInteger(options.maxQueue ?? 64, 'maxQueue');
-    this.maxQueuedBytes = positiveInteger(options.maxQueuedBytes ?? 64 * 1024 * 1024, 'maxQueuedBytes');
+    this.maxQueue = positiveInteger(options.maxQueue ?? RESOURCE_DEFAULTS.cpuQueue, 'maxQueue');
+    this.maxQueuedBytes = positiveInteger(options.maxQueuedBytes ?? RESOURCE_DEFAULTS.cpuQueuedBytes, 'maxQueuedBytes');
     this.timeoutMs = positiveInteger(options.timeoutMs ?? 30_000, 'timeoutMs');
   }
 
@@ -108,7 +109,7 @@ export class CpuWorkerPool {
     const worker = new Worker(this.entry, {
       name: 'kiki-cpu',
       execArgv: [],
-      resourceLimits: { maxOldGenerationSizeMb: 512 },
+      resourceLimits: { maxOldGenerationSizeMb: RESOURCE_DEFAULTS.workerHeapMb },
     });
     slot.worker = worker;
     worker.on('message', (response: CpuResponse) => {

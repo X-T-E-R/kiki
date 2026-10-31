@@ -18,6 +18,7 @@ import { connectionIdentitySchema, type ConnectionIdentity } from '@kiki/protoco
 import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
 
 import { parseLogLevel } from '../cli/log-level';
+import { mainHeapEnvironment } from '../native/main-heap';
 import { createKimiCodeHostIdentity, getVersion } from '../cli/version';
 import { requireServerWebAssetsDir } from '../native/web-assets';
 import { getBrowserDriverFile } from '../native/native-assets';
@@ -318,7 +319,7 @@ function spawnDetachedServer(options: {
     '--json',
   ];
   if (options.port !== undefined) args.push('--port', String(options.port));
-  const env: NodeJS.ProcessEnv = { ...process.env, KIKI_HOME: options.homeDir };
+  const env = mainHeapEnvironment({ ...process.env, KIKI_HOME: options.homeDir });
   for (const name of [
     'KIKI_EXTERNAL_PRINCIPAL_ID',
     'KIKI_EXTERNAL_SESSION_ID',

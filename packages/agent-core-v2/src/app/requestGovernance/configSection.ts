@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
 import { isPlainObject, plainObjectToToml, transformPlainObject } from '#/app/config/toml';
 
@@ -22,7 +23,7 @@ export const RequestConcurrencyRuleSchema = z.object({
 export const RequestGovernanceConfigSchema = z.object({
   schemaVersion: z.literal(1).default(1),
   maxWaitMs: z.number().int().positive().default(300_000),
-  maxQueueSize: z.number().int().positive().default(1024),
+  maxQueueSize: z.number().int().positive().default(Math.max(1024, RESOURCE_DEFAULTS.workerQueue * 4)).meta({ 'x-default-formula': 'max(1024, max(128, availableParallelism * 16) * 4)' }),
   rules: z.array(RequestConcurrencyRuleSchema).default([]),
 }).strict().superRefine((value, context) => {
   const ids = new Set<string>();

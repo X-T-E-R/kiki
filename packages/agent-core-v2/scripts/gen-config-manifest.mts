@@ -152,6 +152,11 @@ function renderBody(section: ConfigSectionContribution): string[] {
     const lines = [`[${key}]`];
     for (const [name, prop] of Object.entries(jsonSchema.properties)) {
       const fieldKey = camelToSnake(name);
+      const resolvedProperty = resolveRef(prop, jsonSchema);
+      if (isRecord(resolvedProperty) && typeof resolvedProperty['x-default-formula'] === 'string') {
+        lines.push(`# ${fieldKey}: ${describeType(resolvedProperty)} (adaptive default: ${resolvedProperty['x-default-formula']})`);
+        continue;
+      }
       if (defaults[name] !== undefined) {
         lines.push(`${fieldKey} = ${toTomlValue(defaults[name])}`);
         continue;

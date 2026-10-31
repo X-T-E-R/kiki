@@ -37,6 +37,16 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); process.exitCode = 0; });
 
 describe('script tools CLI owner commands', () => {
+  it('discloses the automatic Bash grant in help and both grant guides', async () => {
+    const command = new Command('kiki');
+    registerToolsCommand(command);
+    const grant = command.commands.find(child => child.name() === 'tools')!.commands.find(child => child.name() === 'grant')!;
+    expect(grant.helpInformation().replace(/\s+/g, ' ')).toContain('also grants the Bash tool');
+    const en = await readFile(new URL('../../../../docs/en/server/script-tools.md', import.meta.url), 'utf8');
+    const zh = await readFile(new URL('../../../../docs/zh/server/script-tools.md', import.meta.url), 'utf8');
+    expect(en).toContain('with `--allow-commands`, also grants `Bash`');
+    expect(zh).toContain('`--allow-commands`，也会授权 `Bash`');
+  });
   it('reuses an unexpired credential in-process and refreshes after expiry or a server restart', async () => {
     vi.stubEnv('KIKI_EXTERNAL_CLIENT_TOKEN', undefined);
     const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);

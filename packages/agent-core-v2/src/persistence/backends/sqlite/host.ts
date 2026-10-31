@@ -1,6 +1,7 @@
 import { statSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
 import { queryStoreWorkerEntry, type StoreOperation, type StoreRequest, type StoreResponse } from './protocol';
 import { QueryStoreBusyError } from '#/persistence/interface/queryStore';
 
@@ -28,7 +29,7 @@ export class QueryStoreWorker {
     this.worker = new Worker(entry, {
       name: 'kiki-query-store', workerData: { database },
       execArgv: entry.pathname.endsWith('.ts') ? ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'] : [],
-      resourceLimits: { maxOldGenerationSizeMb: 256 },
+      resourceLimits: { maxOldGenerationSizeMb: RESOURCE_DEFAULTS.workerHeapMb },
     });
     this.worker.unref();
     this.exited = new Promise((resolve) => { this.worker.once('exit', () => resolve()); });
@@ -51,7 +52,7 @@ export class QueryStoreWorker {
   request<T>(operation: StoreOperation, signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted();
     if (this.stopped || this.closing !== undefined) return Promise.reject(new Error('Query store worker closed'));
-    if (this.waiting.length >= 128) return Promise.reject(new QueryStoreBusyError());
+    if (this.waiting.length >= RESOURCE_DEFAULTS.workerQueue) return Promise.reject(new QueryStoreBusyError());
     return this.enqueue<T>(operation, signal);
   }
 

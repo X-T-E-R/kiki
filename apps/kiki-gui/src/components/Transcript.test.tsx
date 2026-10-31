@@ -1791,6 +1791,18 @@ describe('live and event chrome', () => {
     expect(onLoadOlder).toHaveBeenCalledOnce();
   });
 
+  it('renders verified empty history as a blank session without a retry warning', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(root, <Transcript
+      state={transcriptState([], { historyCoverageKind: 'full', hasMoreHistory: false })}
+      onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions}
+      onAnswerQuestion={noopActions} onDismissQuestion={noopActions}
+    />);
+    expect(container.textContent).toContain('A blank page');
+    expect(container.textContent).not.toContain('not been verified');
+    expect([...container.querySelectorAll('button')].some(button => button.textContent === 'Retry')).toBe(false);
+  });
+
   it('does not certify an unverified empty cold read as a blank session', async () => {
     const retry = vi.fn();
     const { root, container } = makeRoot();

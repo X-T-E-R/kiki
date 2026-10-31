@@ -118,6 +118,55 @@ afterEach(async () => {
 });
 
 describe('AgentToolExecutorService', () => {
+  it.each([false, true])('runs ten independent 60-second plugin calls with parallel scheduling=%s and unchanged permission accesses', async (parallel) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const starts: number[] = [];
+    const admitted: ToolAccesses[] = [];
+    const prepared = deferred();
+    const observation = executor.onBeforeExecuteTool((event) => {
+      admitted.push(event.execution.accesses!);
+      if (admitted.length === 10) prepared.resolve();
+    });
+    registry.register(new TestTool('plugin__fixture__generate', {
+      accesses: ToolAccesses.all(),
+      schedulingAccesses: parallel ? ToolAccesses.readAll() : undefined,
+      execute: async () => {
+        starts.push(Date.now());
+        await new Promise<void>((resolve) => setTimeout(resolve, 60_000));
+        return { output: 'generated' };
+      },
+    }));
+    try {
+      const began = Date.now();
+      const pending = execute(Array.from({ length: 10 }, (_, index) => toolCall(`media-${index}`, 'plugin__fixture__generate', {})));
+      await prepared.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(starts).toHaveLength(parallel ? 10 : 1);
+      expect(admitted).toEqual(Array.from({ length: 10 }, () => ToolAccesses.all()));
+      await vi.runAllTimersAsync();
+      expect(await pending).toHaveLength(10);
+      expect(Date.now() - began).toBe(parallel ? 60_000 : 600_000);
+      console.info(JSON.stringify({ fixture: '10x60s-plugin', parallel, elapsed_ms: Date.now() - began, start_span_ms: Math.max(...starts) - Math.min(...starts), fixed_overhead_ms: 0 }));
+    } finally {
+      observation.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps permission vetoes effective with independent scheduling accesses', async () => {
+    const tool = new TestTool('plugin__fixture__generate', { accesses: ToolAccesses.all(), schedulingAccesses: ToolAccesses.readAll() });
+    registry.register(tool);
+    const observation = executor.onBeforeExecuteTool((event) => {
+      expect(event.execution.accesses).toEqual(ToolAccesses.all());
+      event.veto({ isError: true, output: 'Local command access is disabled' });
+    });
+    try {
+      const results = await execute([toolCall('denied-media', tool.name, {})]);
+      expect(results[0]).toMatchObject({ isError: true, output: 'Local command access is disabled' });
+      expect(tool.calls).toHaveLength(0);
+    } finally { observation.dispose(); }
+  });
+
   it('names the unknown shell call that blocks a later reader', async () => {
     let clock = 0;
     const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
@@ -1914,6 +1963,7 @@ class TestTool implements ExecutableTool<Record<string, unknown>> {
     private readonly options: {
       readonly parameters?: Record<string, unknown>;
       readonly accesses?: ToolAccesses;
+      readonly schedulingAccesses?: ToolAccesses;
       readonly stopBatchAfterThis?: boolean;
       readonly description?: string;
       readonly display?: ToolInputDisplay;
@@ -1931,6 +1981,7 @@ class TestTool implements ExecutableTool<Record<string, unknown>> {
     return {
       approvalRule: this.name,
       accesses: this.options.accesses,
+      schedulingAccesses: this.options.schedulingAccesses,
       stopBatchAfterThis: this.options.stopBatchAfterThis,
       description: this.options.description,
       display: this.options.display,

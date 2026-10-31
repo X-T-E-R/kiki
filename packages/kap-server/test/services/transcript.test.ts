@@ -6,6 +6,8 @@ import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { NOTE_SECTIONS } from '@kiki/agent-core-v2/session/todo/todoNotes';
+import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
+import { HistoryReadLane } from '../../src/services/transcript/historyReadLane';
 
 import {
   IAgentActivityView,
@@ -153,7 +155,7 @@ describe('transcript memory config', () => {
     expect(DEFAULT_TRANSCRIPT_MEMORY_CONFIG).toEqual({
       tailTurns: 20,
       maxAgentBytes: 16 << 20,
-      maxDetailCacheBytes: 256 << 20,
+      maxDetailCacheBytes: RESOURCE_DEFAULTS.workerHeapMb * 1024 * 1024,
     });
     expect(TranscriptMemoryConfigSchema.parse(DEFAULT_TRANSCRIPT_MEMORY_CONFIG)).toEqual(
       DEFAULT_TRANSCRIPT_MEMORY_CONFIG,
@@ -1199,7 +1201,7 @@ describe('TranscriptService live integration', () => {
       holdReads = true;
       const controllers = Array.from({ length: 220 }, () => new AbortController());
       const flights = controllers.map((controller, index) => service.readColdSnapshot(`s${Math.floor(index / 110) + 1}`, `child-${index % 110}`, undefined, controller.signal).catch(error => error));
-      await vi.waitFor(() => expect(service.memoryReport().readLane).toMatchObject({ active: 2, queued: 8, peak: 2 }));
+      await vi.waitFor(() => expect(service.memoryReport().readLane).toMatchObject({ active: 2, queued: Math.min(218, RESOURCE_DEFAULTS.workerQueue), peak: 2 }));
       for (const controller of controllers) controller.abort();
       await Promise.all(flights);
       await vi.waitFor(() => expect(service.memoryReport().readLane).toMatchObject({ active: 0, queued: 0 }));
@@ -1655,7 +1657,7 @@ describe('TranscriptService live integration', () => {
       expect(store.getAgent('main')?.getTurn('t1')?.steps[0]?.frames[0]).toMatchObject({ progress: { text: `progress-${updates - 1}` } });
       releaseFlush();
       if (updates === 600) {
-        await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.objectContaining({ overBudget: 1 }), 'transcript: retaining turns without matching bounded durable proof'));
+        await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.objectContaining({ overBudget: 1 }), 'transcript: retaining turns without matching bounded durable proof'), { timeout: 10_000 });
         expect(store.getAgent('main')?.getTurn('t1')).toMatchObject({ state: 'completed' });
         expect(navigation.canonicalReadReport().proofMaxExtraBytes).toBeGreaterThan(8 << 20);
       } else {
@@ -2653,6 +2655,63 @@ describe('TranscriptService live integration', () => {
       }
     },
   );
+
+  it('certifies an unstarted main as complete empty history across cold and live first reads', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-unstarted-'));
+    const sessionDir = join(home, 'sessions', 'ws', 's1');
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(sessionDir, 'state.json'), JSON.stringify({ agents: {} }));
+    const agents = new FakeAgents();
+    const service = new TranscriptService({ homeDir: home, core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
+    try {
+      const snapshot = await service.readColdSnapshot('s1', 'main');
+      expect(snapshot).toMatchObject({ items: [], toolCallCount: 0, toolCallCountKnown: true, hasMoreOlder: false });
+      const baseline = await readColdSessionViewBaseline(service, 's1', 'main', 'delta', new AbortController().signal);
+      expect(baseline).toMatchObject({ coverage: { kind: 'full', hasMoreOlder: false }, read: { readiness: 'ready' } });
+      service.forSessionLive('s1', { tailFirst: true });
+      await service.whenReady('s1');
+      const live = await service.ensureAgentHistory('s1', 'main', { tailFirst: true });
+      expect(live?.snapshot()).toMatchObject({ items: [], toolCallCount: 0, toolCallCountKnown: true, hasMoreOlder: false });
+      const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
+      expect(page).toMatchObject({ items: [], has_more: false, coverage: { kind: 'full', hasMoreOlder: false }, read: { readiness: 'ready' } });
+      expect(agents.get('main')).toBeUndefined();
+      expect(service.getMaterializedAgentToolCallCounts('s1', ['main']).get('main')).toBe(0);
+      expect((await service.readColdSnapshot('s1', 'missing-child'))?.toolCallCountKnown).toBe(false);
+      await writeFile(join(sessionDir, 'state.json'), JSON.stringify({ agents: { main: { type: 'main' } } }));
+      expect((await service.readColdSnapshot('s1', 'main'))?.toolCallCountKnown).toBe(false);
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it.each(['cold', 'live'] as const)('verifies a small materialized empty main during %s tail-first reads', async (source) => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-materialized-empty-'));
+    const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+    await mkdir(wireDir, { recursive: true });
+    const path = join(wireDir, 'wire.jsonl');
+    await writeFile(path, `${JSON.stringify({ type: 'metadata', protocol_version: '1.6', created_at: 1 })}\n${JSON.stringify({ type: 'runtime.set_binding', workspaceId: 'ws', runtimeId: 'local', time: 2 })}\n`);
+    const agents = new FakeAgents();
+    const verify = vi.fn(async () => true);
+    if (source === 'live') {
+      await writeFixtureFile(join(wireDir, WIRE_TRANSCRIPT_RECEIPT_KEY), JSON.stringify({ format: 2, epoch: 'fresh-empty', state: 'open', trusted: true }));
+      agents.add('main', { wire: { ...stubAgentWire(), verifyTranscriptLiveEpoch: verify, isTranscriptLiveEpochVerified: () => true } });
+    }
+    const service = new TranscriptService({ homeDir: home, core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
+    try {
+      if (source === 'live') {
+        service.forSessionLive('s1', { tailFirst: true });
+        await service.whenReady('s1');
+        expect((await service.ensureAgentHistory('s1', 'main', { tailFirst: true }))?.snapshot()).toMatchObject({ items: [], toolCallCountKnown: true, hasMoreOlder: false });
+        expect(verify).toHaveBeenCalled();
+      }
+      const baseline = await readColdSessionViewBaseline(service, 's1', 'main', 'delta', new AbortController().signal);
+      expect(baseline).toMatchObject({ snapshot: { items: [], toolCallCount: 0, toolCallCountKnown: true }, coverage: { kind: 'full', hasMoreOlder: false }, read: { readiness: 'ready' } });
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
 
   it('[STAT-R3] rejects zero-byte wire proofs but counts zero tools in a sealed nonempty wire', async () => {
     const scenarios = [
@@ -5328,6 +5387,18 @@ it('accounts for unprojected wire bytes and bounds anchor windows across cold se
   } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 });
 
+it('bounds the hardware-sized history queue while keeping parsing concurrency at two', async () => {
+  const lane = new HistoryReadLane();
+  const read = (signal: AbortSignal) => new Promise<never>((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  });
+  const accepted = Array.from({ length: RESOURCE_DEFAULTS.workerQueue + 2 }, () => lane.run(undefined, read).catch(error => error));
+  try {
+    expect(lane.report()).toEqual({ active: 2, queued: RESOURCE_DEFAULTS.workerQueue, peak: 2, activeLimit: 2, queueLimit: RESOURCE_DEFAULTS.workerQueue });
+    await expect(lane.run(undefined, read)).rejects.toMatchObject({ code: 'session.busy' });
+  } finally { lane.dispose(); await Promise.all(accepted); }
+  expect(lane.report()).toMatchObject({ active: 0, queued: 0 });
+});
 
 it('shares the history lane across anchored agent scans and cancels queued and active readers', async () => {
   const home = await mkdtemp(join(tmpdir(), 'transcript-anchor-lane-'));
@@ -5364,9 +5435,8 @@ it('shares the history lane across anchored agent scans and cancels queued and a
     const results: unknown[] = [];
     flights = controllers.map((controller, n) => service.readAnchoredColdSnapshot('s1', `child-${n}`, 't2', controller.signal)
       .catch(error => { results.push(error); return error; }));
-    await vi.waitFor(() => expect(results).toHaveLength(2));
-    expect(results).toEqual([expect.objectContaining({ code: 'session.busy' }), expect.objectContaining({ code: 'session.busy' })]);
-    expect(service.memoryReport().readLane).toMatchObject({ active: 2, queued: 8, peak: 2 });
+    await vi.waitFor(() => expect(service.memoryReport().readLane).toMatchObject({ active: 2, queued: 10, peak: 2 }));
+    expect(results).toEqual([]);
     expect(peak).toBe(2);
     controllers.forEach(controller => controller.abort(new Error('reader cancelled')));
     await Promise.all(flights);

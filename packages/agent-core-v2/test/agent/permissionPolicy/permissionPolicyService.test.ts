@@ -170,6 +170,19 @@ describe('AgentPermissionPolicyService chain', () => {
     return svc.evaluate(policyContext(input));
   }
 
+  it.each([false, true])('keeps plugin approval and deny rules with independent scheduling=%s', async (parallel) => {
+    const name = 'plugin__fixture__generate';
+    const original = policyContext({ toolName: name, args: {}, accesses: ToolAccesses.all() });
+    const context = { ...original, execution: { ...original.execution, schedulingAccesses: parallel ? ToolAccesses.readAll() : undefined } };
+    await expect(service().evaluate(context)).resolves.toMatchObject({ policyName: 'fallback-ask', result: { kind: 'ask' } });
+    rules = [{ decision: 'allow', scope: 'user', pattern: name }];
+    await expect(service().evaluate(context)).resolves.toMatchObject({ policyName: 'user-configured-allow', result: { kind: 'approve' } });
+    rules = [{ decision: 'deny', scope: 'user', pattern: name }];
+    await expect(service().evaluate(context)).resolves.toMatchObject({ policyName: 'user-configured-deny', result: { kind: 'deny' } });
+    await expect(ix.get(IAgentPermissionGate).authorize(context)).resolves.toMatchObject({ veto: { isError: true, output: 'Not approved' } });
+    expect(context.execution.accesses).toEqual(ToolAccesses.all());
+  });
+
   function externalContext(inherit = false): AgentExecutorContext {
     return { agent: { id: 'main', accessor: ix }, descriptor: { id: 'example-acp', protocol: 'acp-v1', args: [], revision: 'r1' },
       binding: { systemPrompt: '', thinkingLevel: 'off', permissionMode: inherit ? undefined : mode }, worktree: worktreeMeta };
