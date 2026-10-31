@@ -5,6 +5,7 @@ import { nativeTargets } from '@kiki/agent-profiles/nativeTarget';
 import { normalizeAgentProfile } from '@kiki/agent-profiles/agentProfile';
 import { TestInstantiationService } from '#/_base/di/test';
 import type { ContextMessage } from '#/agent/contextMemory/types';
+import { selectCompactionUserMessages } from '#/agent/contextMemory/compactionHandoff';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { prepareAgentReferences, resolveAgentRunSource } from '#/agent/prompt/agentReferences';
@@ -92,6 +93,20 @@ describe('server-owned agent references', () => {
     const prepared = fixture(undefined, false)(message(agentRefLink('reviewer')), 'no-tools');
     expect(text(prepared)).toContain('delegation is not available');
     expect(text(prepared)).not.toContain('using AgentRun');
+  });
+
+  it('resolves one logical reference across compaction fragments and rejects conflicting sources', () => {
+    const prepared = fixture()({ ...message('kiki://agents/reviewer ' + 'x'.repeat(10_000)), id: 'long' }, 'long');
+    const selected = selectCompactionUserMessages([prepared], 100, 50);
+    const fragments = [...selected.head, ...selected.tail];
+    expect(fragments).toHaveLength(2);
+    const source = resolveAgentRunSource(fragments, 'reviewer', 'native', 'profile', 'ar:long:reviewer');
+    expect(source).toMatchObject({ messageId: 'long', refId: 'ar:long:reviewer', engine_label: 'Kiki' });
+    expect(() => resolveAgentRunSource([...fragments, { ...prepared, id: 'different-message' }],
+      'reviewer', 'native', 'profile', 'ar:long:reviewer')).toThrow('source_ref');
+    const refs = prepared.origin?.kind === 'user' ? prepared.origin.agentRefs! : [];
+    const conflict: ContextMessage = { ...prepared, origin: { kind: 'user', agentRefs: [{ ...refs[0]!, executor: 'different-engine' }] } };
+    expect(() => resolveAgentRunSource([...fragments, conflict], 'reviewer', 'native', 'profile', 'ar:long:reviewer')).toThrow('source_ref');
   });
 
   it('links only exact targets and the current triggering message unless source_ref is explicit', () => {

@@ -61,9 +61,10 @@ export function resolveAgentRunSource(
     : messages;
   const refs = candidates.flatMap(message => message.id !== undefined && message.origin?.kind === 'user'
     ? (message.origin.agentRefs ?? []).filter(ref => sourceRef === undefined || ref.refId === sourceRef)
-      .filter(ref => ref.profile === profile && ref.executor === executor && ref.configuration === configuration)
       .map(ref => ({ ...ref, messageId: message.id! })) : []);
-  if (sourceRef !== undefined && refs.length !== 1) throw new Error2(ErrorCodes.REQUEST_INVALID,
+  const unique = new Map(refs.map(ref => [JSON.stringify([ref.messageId, ref.refId, ref.profile, ref.executor, ref.configuration]), ref]));
+  const matches = [...unique.values()].filter(ref => ref.profile === profile && ref.executor === executor && ref.configuration === configuration);
+  if (sourceRef !== undefined && (unique.size !== 1 || matches.length !== 1)) throw new Error2(ErrorCodes.REQUEST_INVALID,
     'source_ref must identify a visible user-message reference matching the selected profile and engine.');
-  return refs.length === 1 ? refs[0] : undefined;
+  return matches.length === 1 ? matches[0] : undefined;
 }
