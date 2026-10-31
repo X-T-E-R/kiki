@@ -434,6 +434,25 @@ describe('GUI shared client against an isolated KAP host', () => {
     await vi.waitFor(async () => expect(await client.klient.session(id).status()).toBe('idle'), { timeout: 10000 });
   }
 
+  it('bootstraps a new empty main with verified complete history', async () => {
+    const id = (await client.createSession({ metadata: { cwd: join(home, 'workspace') } })).id;
+    expect(getLiveSessionById(host.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+    const view = client.sessionView(id);
+    const signals: Parameters<Parameters<typeof view.subscribe>[1]>[0][] = [];
+    const subscription = view.bootstrap!({ sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } }, signal => signals.push(signal));
+    try {
+      await vi.waitFor(() => expect(signals.some(signal => signal.type === 'ready')).toBe(true), { timeout: 10000 });
+      const resets = signals.filter(signal => signal.type === 'transcript' && signal.event.type === 'transcript.reset');
+      expect(resets).toHaveLength(1);
+      expect(resets[0]).toMatchObject({ event: {
+        coverage: { kind: 'full', hasMoreOlder: false }, read: { readiness: 'ready' },
+        snapshot: { items: [], toolCallCount: 0, toolCallCountKnown: true, hasMoreOlder: false },
+      } });
+      expect(await client.klient.session(id).view.snapshot()).toMatchObject({ session: { message_count: 0 }, messages: { items: [], has_more: false } });
+      expect(getLiveSessionById(host.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+    } finally { subscription.close(); }
+  });
+
   it('automatically generates a configured title after the first real reply and exposes it to clients', async () => {
     await client.patchConfig({ session_title: { model: 'second' }, replace_domains: ['session_title'] });
     const id = await session();
