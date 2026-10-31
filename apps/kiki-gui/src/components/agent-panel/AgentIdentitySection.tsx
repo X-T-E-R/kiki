@@ -13,6 +13,7 @@ import type {
 } from './types';
 import { AgentDetailDrawer } from './AgentDetailDrawer';
 import { agentUsageCacheHitRate } from './cacheRate';
+import { PanelMetricsCounting } from './PanelMetricsCounting';
 import { INSPECTOR_HEAD, INSPECTOR_LINK } from './InspectorSection';
 import { capabilitySourceLabel, SOURCE_TONE_CLASS } from './sourceLabel';
 
@@ -224,6 +225,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
       ];
   const shownFacts = facts.filter((fact): fact is { key: string; text: string; title: string | undefined } => fact.text !== undefined);
   const partial = !treeScope && (usage?.usagePartial === true || usage?.costPartial === true);
+  const counting = !treeScope && usage?.usageComplete === false;
   const scopeButton = (value: 'agent' | 'tree', label: string) => (
     <button
       type="button"
@@ -245,7 +247,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
       {scopeButton('tree', t('inspector.treeTotal'))}
     </div>
   ) : null;
-  const usageBlock = contextPct !== null || known(contextUsed) || shownFacts.length > 0 ? (
+  const usageBlock = contextPct !== null || known(contextUsed) || shownFacts.length > 0 || counting ? (
     <div className="space-y-2">
       {contextPct !== null || known(contextUsed) ? (
         <div className="flex items-center gap-3 text-[12.5px]">
@@ -270,7 +272,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
           </span>
         </div>
       ) : null}
-      {shownFacts.length > 0 ? (
+      {shownFacts.length > 0 || counting ? (
         <p {...(treeScope ? { 'data-tree-metrics': '' } : { 'data-agent-usage': '' })} className="truncate text-[12px] text-ink-soft tabular-nums" title={shownFacts.map((fact) => fact.text).join(' · ')}>
           {shownFacts.map((fact, index) => (
             <span key={fact.key} title={fact.title} className={index === 0 ? 'text-ink' : undefined}>
@@ -278,7 +280,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
               {fact.text}
             </span>
           ))}
-          {partial ? <span className="ml-1.5 text-amber-ink">{t('agentPanel.partialBadge')}</span> : null}
+          {counting ? <span className="ml-1.5"><PanelMetricsCounting /></span> : partial ? <span className="ml-1.5 text-amber-ink">{t('agentPanel.partialBadge')}</span> : null}
         </p>
       ) : null}
     </div>
