@@ -167,6 +167,15 @@ describe('script tool access',()=>{
     await vi.waitFor(async()=>{const observed=await terminal(await call(media,{action:'get',job_id:initial.job_id},ref,`unknown-${Date.now()}`));expect(JSON.parse(observed.result.output).job).toMatchObject({state:'unknown',can_resume:false});},{timeout:15_000});
     const duplicate=await call(generate,args,ref,'unknown-once');expect(duplicate).toMatchObject({duplicate:true,operation_id:receipt.operation_id});expect(await submitted()).toHaveLength(1);
   },60_000);
+  it('rejects manual work without an approval consumer instead of waiting indefinitely',async()=>{
+    await setup();
+    await owner(`/api/external-clients/${connectionId}`,{mode:'manual'},'PATCH');
+    const path=join(workspace,'unattended.txt');
+    const result=await terminal(await call('Write',{path,content:'not approved'},ref,'no-consumer'));
+    expect(result).toMatchObject({state:'completed',result:{isError:true}});
+    expect(result.result.output).toContain('no_consumer');
+    await expect(readFile(path)).rejects.toMatchObject({code:'ENOENT'});
+  });
   it('uses native approvals and honors a session plugin off choice',async()=>{
     await setup();
     await owner(`/api/external-clients/${connectionId}`,{mode:'manual'},'PATCH');

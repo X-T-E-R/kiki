@@ -66,7 +66,7 @@ wait_operation() {
     state=$(printf '%s' "$receipt" | jq -r '.structuredContent.state')
     case "$state" in
       completed) printf '%s\n' "$receipt"; return ;;
-      accepted|running) sleep 1 ;;
+      accepted|running|waiting_approval) sleep 1 ;;
       *) printf '%s\n' "$receipt" >&2; return 1 ;;
     esac
     attempts=$((attempts + 1))
@@ -131,7 +131,7 @@ def tool(name, arguments, key):
     result = api("/tools/" + name + ":call", {"arguments": arguments,
         "session_ref": session, "idempotency_key": key})["structuredContent"]
     deadline = time.monotonic() + 120
-    while result["state"] in ("accepted", "running") and time.monotonic() < deadline:
+    while result["state"] in ("accepted", "running", "waiting_approval") and time.monotonic() < deadline:
         time.sleep(1)
         result = api("/jobs/" + result["operation_id"])["structuredContent"]
     if result["state"] != "completed" or result.get("result", {}).get("isError"):
@@ -194,7 +194,7 @@ async function api(path, body) {
 async function tool(name, args, key) {
   let result = (await api(`/tools/${name}:call`, { arguments: args, session_ref: session, idempotency_key: key })).structuredContent;
   const deadline = Date.now() + 120_000;
-  while (['accepted', 'running'].includes(result.state) && Date.now() < deadline) {
+  while (['accepted', 'running', 'waiting_approval'].includes(result.state) && Date.now() < deadline) {
     await delay(1000);
     result = (await api(`/jobs/${result.operation_id}`)).structuredContent;
   }
@@ -236,7 +236,9 @@ console.log(JSON.stringify({ job_id: job.job_id, output }));
 
 请求超时时，如果提交可能已经开始，使用原来的键和参数找回回执，绝不要自动换新键重提。操作为 `outcome_unknown` 或媒体任务为 `unknown` 时，先检查供应商已接受的任务，再决定下一步；再次生成可能再次计费。
 
-`waiting_approval` 表示仍需要正常的 Kiki 审批。在 Kiki 中批准或拒绝后，查询同一个操作。脚本不能提高连接的权限上限。
+权限上限为 `manual` 时，要在 Kiki 中打开共享会话，让 GUI 能接收审批请求。没有审批消费者时，需要审批的调用会立即以 `no_consumer` 被拒绝，不会等待窗口打开。无人值守的批量任务可在检查允许工具及其访问范围后，将连接上限和会话模式设为 `auto` 或 `yolo`。`auto` 仍可能对高风险操作发起审批；`yolo` 在已有授权范围内免除这些正常审批。
+
+`waiting_approval` 表示已连接的 Kiki 窗口正在等待你决定。在窗口中批准或拒绝后，查询同一个操作。示例会在截止时间前继续轮询此状态。脚本不能提高连接的权限上限。
 
 已接受的媒体任务为 `can_resume: true` 时，明确恢复同一任务，不要再次调用 `generate`：
 

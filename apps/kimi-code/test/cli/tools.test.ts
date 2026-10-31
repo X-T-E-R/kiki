@@ -86,3 +86,57 @@ describe('script tools CLI owner commands', () => {
     expect(await invoke(['grant', 'Read'])).toMatchObject({ error: expect.stringContaining('--client') });
   });
 });
+
+
+describe('documented operation polling', () => {
+  it('keeps Shell, Python and Node.js waiting through approval in both locales', async () => {
+    const en = await readFile(new URL('../../../../docs/en/server/script-tools.md', import.meta.url), 'utf8');
+    const zh = await readFile(new URL('../../../../docs/zh/server/script-tools.md', import.meta.url), 'utf8');
+    const blocks = (doc: string) => [...doc.matchAll(/```(sh|python|js)\n([\s\S]*?)```/g)].map((match) => match[2]);
+    expect(blocks(zh)).toEqual(blocks(en));
+    const python = /def tool\([\s\S]*?\n    return result/.exec(en)![0];
+    const pythonResult = await promisify(execFile)(process.platform === 'win32' ? 'python' : 'python3', ['-c', `
+import json
+class Clock:
+    def monotonic(self): return 0
+    def sleep(self, seconds): pass
+time = Clock()
+session = 'fixture'
+count = 0
+def api(path, body=None):
+    global count
+    count += 1
+    return {'structuredContent': {'operation_id': 'same-operation', 'state': 'waiting_approval' if count < 3 else 'completed', 'result': {}}}
+${python}
+assert tool('Write', {}, 'stable-key')['state'] == 'completed'
+assert count == 3
+`]);
+    expect(pythonResult.stderr).toBe('');
+    const node = /async function tool\([\s\S]*?\n}/.exec(en)![0];
+    const nodeResult = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', `
+let count = 0; const session = 'fixture';
+const delay = async () => {};
+const api = async () => ({ structuredContent: { operation_id: 'same-operation', state: ++count < 3 ? 'waiting_approval' : 'completed', result: {} } });
+${node}
+if ((await tool('Write', {}, 'stable-key')).state !== 'completed' || count !== 3) throw new Error('Approval polling stopped early');
+`]);
+    expect(nodeResult.stderr).toBe('');
+    const shell = /wait_operation\(\) \{[\s\S]*?\n}/.exec(en)![0];
+    const root = await mkdtemp(join(tmpdir(), 'kiki-script-poll-'));
+    try {
+      const result = await promisify(execFile)('bash', ['-c', `set -eu
+sleep() { :; }
+jq() { IFS= read -r value; printf '%s\\n' "$value"; }
+tools() {
+  n=0; if [ -f "$POLL_COUNT" ]; then read n < "$POLL_COUNT"; fi
+  n=$((n + 1)); printf '%s\\n' "$n" > "$POLL_COUNT"
+  if [ "$n" -lt 3 ]; then printf 'waiting_approval\\n'; else printf 'completed\\n'; fi
+}
+${shell}
+wait_operation same-operation
+`], { env: { ...process.env, POLL_COUNT: join(root, 'count').replaceAll('\\', '/') } });
+      expect(result.stdout.trim()).toBe('completed');
+      expect((await readFile(join(root, 'count'), 'utf8')).trim()).toBe('3');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});

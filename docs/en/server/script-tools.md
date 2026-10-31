@@ -66,7 +66,7 @@ wait_operation() {
     state=$(printf '%s' "$receipt" | jq -r '.structuredContent.state')
     case "$state" in
       completed) printf '%s\n' "$receipt"; return ;;
-      accepted|running) sleep 1 ;;
+      accepted|running|waiting_approval) sleep 1 ;;
       *) printf '%s\n' "$receipt" >&2; return 1 ;;
     esac
     attempts=$((attempts + 1))
@@ -131,7 +131,7 @@ def tool(name, arguments, key):
     result = api("/tools/" + name + ":call", {"arguments": arguments,
         "session_ref": session, "idempotency_key": key})["structuredContent"]
     deadline = time.monotonic() + 120
-    while result["state"] in ("accepted", "running") and time.monotonic() < deadline:
+    while result["state"] in ("accepted", "running", "waiting_approval") and time.monotonic() < deadline:
         time.sleep(1)
         result = api("/jobs/" + result["operation_id"])["structuredContent"]
     if result["state"] != "completed" or result.get("result", {}).get("isError"):
@@ -194,7 +194,7 @@ async function api(path, body) {
 async function tool(name, args, key) {
   let result = (await api(`/tools/${name}:call`, { arguments: args, session_ref: session, idempotency_key: key })).structuredContent;
   const deadline = Date.now() + 120_000;
-  while (['accepted', 'running'].includes(result.state) && Date.now() < deadline) {
+  while (['accepted', 'running', 'waiting_approval'].includes(result.state) && Date.now() < deadline) {
     await delay(1000);
     result = (await api(`/jobs/${result.operation_id}`)).structuredContent;
   }
@@ -236,7 +236,9 @@ console.log(JSON.stringify({ job_id: job.job_id, output }));
 
 If a request times out after submission may have started, reuse its original key and arguments to recover the receipt. Never automatically submit with a new key. When an operation is `outcome_unknown`, or a media job is `unknown`, inspect the provider's accepted work before deciding what to do; another generation may incur another charge.
 
-`waiting_approval` means the normal Kiki approval is still required. Approve or reject it in Kiki, then query the same operation. Scripts cannot elevate the connection's permission ceiling.
+With the `manual` permission ceiling, keep the shared conversation open in Kiki so its GUI can receive approval requests. Without an approval consumer, a call that needs approval is immediately rejected with `no_consumer`; it does not wait for a window to open. For unattended batches, set an `auto` or `yolo` ceiling and a matching conversation mode only after reviewing the allowed tools and their access. `auto` can still ask for risky actions; `yolo` removes those normal approval prompts within the existing grant.
+
+`waiting_approval` means a connected Kiki window is waiting for your decision. Approve or reject there, then query the same operation. The examples keep polling this state until their deadline. Scripts cannot elevate the connection's permission ceiling.
 
 For an accepted media job with `can_resume: true`, explicitly resume the same job rather than calling `generate` again:
 
