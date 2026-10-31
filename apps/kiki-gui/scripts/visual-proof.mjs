@@ -311,6 +311,8 @@ const SOURCES = {
   systemReminder: { key: 'transcript.systemReminder' },
   fromSubagentApprover: { key: 'ia.fromSubagent', params: { name: 'Approver' } },
   goalFollowUpSubagents: { key: 'goal.followUp', params: { timing: { key: 'timing.subagentsDone' } } },
+  agentRefRejectedCue: { key: 'agentRef.rejectedCue' },
+  agentRefRunLatest: { key: 'agentRef.runLatest' },
   queuePromptAria: { key: 'composer.queueAria' },
   sendNow: { key: 'sv.queueSendNow' },
   removeQueued: { key: 'sv.queueRemove' },
@@ -4181,6 +4183,69 @@ async function scenarioTurnPolish() {
   await shot('turn-tail');
 }
 
+async function scenarioAgentReferences() {
+  await selectSession('Fixture: agent references');
+  // Five chips in one user bubble: worker delegated (twice → a run menu),
+  // reviewer rejected, planner only mentioned, helper on an external engine
+  // with a persisted engine label, scout on one without (an older record).
+  const bubble = page.locator('[role="log"] [data-block-id^="user-"]').first();
+  await bubble.waitFor({ timeout: 15_000 });
+  const chips = bubble.locator('[data-agent-ref-chip]');
+  await chips.first().waitFor({ timeout: 10_000 });
+  if ((await chips.count()) !== 5) throw new Error(`expected 5 agent reference chips, saw ${await chips.count()}`);
+  const chipOf = (profile) => bubble.locator(`[data-agent-ref-chip]`, { hasText: profile }).first();
+  const statusOf = async (profile) => chipOf(profile).getAttribute('data-agent-ref-status');
+  const statuses = [await statusOf('worker'), await statusOf('reviewer'), await statusOf('planner'), await statusOf('helper'), await statusOf('scout')];
+  console.log(`[check] agent ref statuses: worker=${statuses[0]} reviewer=${statuses[1]} planner=${statuses[2]} helper=${statuses[3]} scout=${statuses[4]}`);
+  if (statuses[0] !== 'delegated') throw new Error(`worker chip should be delegated, got ${statuses[0]}`);
+  if (statuses[1] !== 'rejected') throw new Error(`reviewer chip should be rejected, got ${statuses[1]}`);
+  if (statuses[2] !== 'pending') throw new Error(`planner chip should be pending, got ${statuses[2]}`);
+  // The external engine names its label: helper reads the reference's own
+  // persisted engine_label, scout (an older record) the catalog's — both the
+  // badge the picker shows, never the raw id, never "native engine".
+  const helperText = await chipOf('helper').textContent();
+  if (!helperText?.includes('Claude Code') || helperText.includes('claude-code') || helperText.includes('native engine') || helperText.includes('原生引擎')) {
+    throw new Error(`helper chip should read "Claude Code", got "${helperText}"`);
+  }
+  const scoutText = await chipOf('scout').textContent();
+  if (!scoutText?.includes('Codex') || scoutText.includes('codex') || scoutText.includes('native engine') || scoutText.includes('原生引擎')) {
+    throw new Error(`scout chip should read "Codex" from the catalog, got "${scoutText}"`);
+  }
+  const reviewerText = await chipOf('reviewer').textContent();
+  if (!reviewerText?.includes(S.agentRefRejectedCue)) throw new Error(`reviewer chip should read its rejection, got "${reviewerText}"`);
+  await shot('agent-references-bubble');
+  // The worker chip ran twice: clicking opens a run menu. Each entry is told
+  // apart without a task id: "Most recent" leads, then the run's own label
+  // and status; the most recent run is the jump target.
+  const workerRuns = await chipOf('worker').getAttribute('data-agent-ref-runs');
+  if (workerRuns !== '2') throw new Error(`worker chip should read 2 runs, got ${workerRuns}`);
+  await chipOf('worker').click();
+  const runMenu = page.locator('[data-agent-ref-runs-menu]');
+  await runMenu.waitFor({ timeout: 5_000 });
+  const runItems = runMenu.locator('[data-menu-item]');
+  if ((await runItems.count()) !== 2) throw new Error(`expected 2 runs in the menu, saw ${await runItems.count()}`);
+  const firstRunText = await runItems.first().textContent();
+  if (!firstRunText?.includes(S.agentRefRunLatest)) throw new Error(`first run should be marked most recent, got "${firstRunText}"`);
+  if (firstRunText?.includes('task-')) throw new Error(`run menu must not show a task id, got "${firstRunText}"`);
+  await shot('agent-references-runs');
+  // Picking the most recent run opens that child as a preview tab.
+  await runItems.first().click();
+  const panel = page.locator('[data-preview-tabpanel="panel:agent-worker"]');
+  await panel.waitFor({ timeout: 10_000 });
+  await waitForText('投影扫完了');
+  await shot('agent-references-jump');
+  // The parked prompt renders the same chip in the queue strip before sending,
+  // and the collapsed header summary reads "@worker", never the raw link.
+  await openQueueStrip();
+  const queueChip = page.locator('[data-queue-strip] [data-agent-ref-chip]').first();
+  await queueChip.waitFor({ timeout: 10_000 });
+  if (!(await queueChip.textContent())?.includes('worker')) throw new Error('queue chip does not name worker');
+  await shot('agent-references-queue');
+  const summaryText = await page.locator('[data-composer-header] [data-header-toggle="queue"]').textContent();
+  if (summaryText?.includes('kiki://agents/')) throw new Error(`queue summary must not show the raw link, got "${summaryText}"`);
+  if (!summaryText?.includes('@worker')) throw new Error(`queue summary should read @worker, got "${summaryText}"`);
+}
+
 async function scenarioSubagentApproval() {
   await selectSession('Fixture: subagent approval');
   await sendPrompt('Clean the build output.');
@@ -6495,6 +6560,7 @@ const BODIES = [
   ['steer', scenarioSteer],
   ['subagents', scenarioSubagents],
   ['subagent-invocations', scenarioSubagentInvocations],
+  ['agent-references', scenarioAgentReferences],
   ['subagent-approval', scenarioSubagentApproval],
   ['subagents-burst', scenarioSubagentsBurst],
   ['goal', scenarioGoal],

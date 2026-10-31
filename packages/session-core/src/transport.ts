@@ -31,7 +31,7 @@ import type {
   RequestIdentityPolicyWire,
   Session,
 } from '@kiki/protocol';
-import type { GoalMeta, TranscriptGradeSpec } from '@kiki/transcript';
+import type { AgentRunSource, GoalMeta, TranscriptGradeSpec } from '@kiki/transcript';
 
 export type ApiErrorSource = 'server' | 'transport';
 
@@ -452,6 +452,7 @@ export interface AgentTranscriptTask {
   readonly command?: string;
   readonly ownerTurnId?: number;
   readonly agentId?: string;
+  readonly sourceRef?: AgentRunSource;
   readonly outputTail: string;
   /** Present when `outputTail` is truncated; the full task is read by reference. */
   readonly detailRef?: { readonly kind: 'task'; readonly taskId: string };

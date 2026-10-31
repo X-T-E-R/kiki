@@ -4769,6 +4769,7 @@ boundExecution,
           sendNowDisabled={state.resyncing || state.resyncFailed}
           sendNowUnavailable={nativeSteeringUnavailable ? t('harness.steerUnsupported') : undefined}
           timingReady={queueTimingReady}
+          agentRefTasks={state.tasks} onOpenAgent={openAgent}
         />
         </TranscriptDetailProvider>
       ),
@@ -4779,7 +4780,7 @@ boundExecution,
     handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady, nativeSteeringUnavailable,
     modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel, modelsQuery.data,
     hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities,
-    controller, sessionId, state.detailLoads, state.contentRefs,
+    controller, sessionId, state.detailLoads, state.contentRefs, state.tasks, openAgent,
   ]);
   const composerHeader = useMemo(() => headerGoalSection === undefined && headerQueueSection === undefined ? undefined : (
     <ComposerHeader goal={headerGoalSection} queue={headerQueueSection} settled={state.loaded} />

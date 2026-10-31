@@ -42,16 +42,17 @@
 
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 
-import type { DeferredAppendTiming } from '@kiki/protocol';
+import type { DeferredAppendTiming, Task } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { parseSelectionCarryovers, stripThreadRefContext } from '@kiki/session-core/composer';
 import type { MediaRef } from '@kiki/session-core/composer/media';
-import { isOrdinaryQueueItem, type QueuedPromptPreview, type TranscriptDetailStatus } from '@kiki/session-core/session';
+import { isOrdinaryQueueItem, replaceAgentRefs, type QueuedPromptPreview, type TranscriptDetailStatus } from '@kiki/session-core/session';
 import type { TranscriptGlobalEntityCoverage } from '@kiki/transcript';
 import { mergeSessionQueueRows, pendingModelSwitchChange, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
 import { useI18n } from '../i18n';
 import type { QueuedModelSwitch } from '../lib/client';
 import { useCoarsePointer } from '../lib/layoutHooks';
+import { AgentRefResolutionProvider, AgentRefText } from './AgentRefChip';
 import { ContentContinuation, ContinuationRow } from './ContentContinuation';
 import { QuoteChip } from './ContextChips';
 import { SentAnnotationsBubble } from './SentAnnotationsBubble';
@@ -183,7 +184,7 @@ export function QueueHeaderSummary({
       {first !== undefined ? (
         <>
           <span data-queue-first-preview className="min-w-0 truncate text-ink-faint">
-            {previewText === '' ? t('sv.queueNoText') : stripThreadRefContext(previewText)}
+            {previewText === '' ? t('sv.queueNoText') : replaceAgentRefs(stripThreadRefContext(previewText))}
           </span>
           <span data-queue-first-timing className="shrink-0 text-ink-faint">
             {t(TIMING_SHORT_KEY[first.timing])}
@@ -210,7 +211,14 @@ function QueuedMessageContent({ item }: { readonly item: QueuedPromptPreview }) 
   const source = useMemo(() => ({ kind: 'prompt' as const, id: item.promptId }), [item.promptId]);
   return <div className="min-w-0 flex-1 basis-36 text-[13px] text-ink">
     <div className="truncate" title={stripThreadRefContext(carry.body) || undefined}>
-      {carry.body === '' ? t('sv.queueNoText') : <ThreadRefText text={stripThreadRefContext(carry.body)} projectSegment={(text) => text} />}
+      {carry.body === '' ? t('sv.queueNoText') : (
+        <AgentRefText
+          text={stripThreadRefContext(carry.body)}
+          references={[]}
+          messageId={item.userMessageId}
+          projectSegment={(text) => <ThreadRefText text={text} projectSegment={(segment) => segment} />}
+        />
+      )}
     </div>
     {carry.quotes.length > 0 || carry.annotations.length > 0 ? <div className="mt-1 flex flex-wrap items-center gap-1.5">
       {carry.quotes.map((quote, index) => <QuoteChip key={index} quote={quote.quote} />)}
@@ -238,9 +246,18 @@ export function QueueStrip({
   sendNowUnavailable,
   timingReady,
   promptContinuation,
+  agentRefTasks,
+  onOpenAgent,
 }: {
   readonly items: readonly QueuedPromptPreview[];
   readonly promptContinuation?: QueuePromptContinuation;
+  /**
+   * Agent-reference resolution for the chips in queued messages: the session's
+   * task list a delegation lands in, and the entry that opens a child run.
+   * Absent on read-only surfaces, the chips stay status reads.
+   */
+  readonly agentRefTasks?: readonly Task[];
+  readonly onOpenAgent?: (agentId: string) => void;
   /**
    * Queued model-switch control items. They share this list's drain order and
    * never render as messages: each keeps its own row with edit/cancel while
@@ -360,6 +377,9 @@ export function QueueStrip({
 
   const hasPromptContinuation = promptContinuation !== undefined
     && (promptContinuation.coverage.hasMore || promptContinuation.status !== undefined);
+  // The chips in queued messages read the same task list the timeline's
+  // delegation cards use, and open a child through the same entry.
+  const queueAgentRefResolution = useMemo(() => ({ tasks: agentRefTasks ?? [], onOpenAgent }), [agentRefTasks, onOpenAgent]);
   if (rows.length === 0 && !hasPromptContinuation) return null;
 
   // An in-flight action locks drag reordering: a second move computed against
@@ -788,6 +808,7 @@ export function QueueStrip({
   }
 
   return (
+    <AgentRefResolutionProvider value={queueAgentRefResolution}>
     <section
       data-queue-strip
       data-queue-sort-mode={sortMode ? '' : undefined}
@@ -856,5 +877,6 @@ export function QueueStrip({
         />
       ) : null}
     </section>
+    </AgentRefResolutionProvider>
   );
 }
