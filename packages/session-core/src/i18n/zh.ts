@@ -10518,6 +10518,7 @@ export const zh = {
   'usage.execution.pauseSession': '暂停执行',
   'usage.execution.resumeSession': '恢复',
   'usage.execution.retryResume': '重试恢复',
+  'usage.execution.retryRead': '重新读取',
   'usage.execution.pauseAll': '全部暂停',
   'usage.execution.phase.paused': '已暂停',
   'usage.execution.phase.pausing': '暂停中',

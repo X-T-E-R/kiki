@@ -10613,6 +10613,7 @@ export const en = {
   'usage.execution.pauseSession': 'Pause execution',
   'usage.execution.resumeSession': 'Resume',
   'usage.execution.retryResume': 'Retry resume',
+  'usage.execution.retryRead': 'Retry read',
   'usage.execution.pauseAll': 'Pause all',
   'usage.execution.phase.paused': 'Paused',
   'usage.execution.phase.pausing': 'Pausing',

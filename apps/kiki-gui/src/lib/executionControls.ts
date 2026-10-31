@@ -29,9 +29,6 @@ export type ExecutionPhase = ExecutionControlState['phase'];
 const EXECUTION_KEY = 'session-execution';
 /** Poll cadence: a reconnect/read-failure fallback only — events carry freshness. */
 const EXECUTION_POLL_MS = 5000;
-/** One discovery page; the loop walks every page so a paused session past the first page is still found. */
-const DISCOVERY_PAGE_LIMIT = 100;
-
 export function executionQueryKey(scopeId: string | undefined, sessionId: string): readonly unknown[] {
   return [EXECUTION_KEY, scopeId, sessionId] as const;
 }
@@ -104,36 +101,47 @@ export function useSessionExecutions(
   const joined = sessionIds.join('\n');
   const ids = useMemo(() => (joined === '' ? [] : joined.split('\n')), [joined]);
   const batchKey = useMemo(() => [EXECUTION_KEY, scopeId, 'batch', joined] as const, [scopeId, joined]);
-  // Per-session freshness: an event bump invalidates any poll response that
-  // started before it, so the event always wins.
+  // Per-session freshness generation, bumped by an event. A poll response is
+  // committed per session against the CURRENT cache at completion time, so a
+  // slower read never rolls a newer event back — neither on success nor on a
+  // read failure.
   const generations = useRef(new Map<string, number>());
   const lastReadError = useRef<unknown>(undefined);
+  const bump = (sessionId: string) => {
+    generations.current.set(sessionId, (generations.current.get(sessionId) ?? 0) + 1);
+  };
+  // Commit one session's state into the batch cache, but only if no event has
+  // superseded the read that produced it.
+  const commit = (sessionId: string, state: ExecutionControlState | null, readGeneration: number) => {
+    if ((generations.current.get(sessionId) ?? 0) !== readGeneration) return;
+    queryClient.setQueryData(batchKey, (current: Record<string, ExecutionControlState | null> | undefined) => ({
+      ...(current ?? {}),
+      [sessionId]: state,
+    }));
+  };
 
   const query = useQuery({
     queryKey: batchKey,
     queryFn: async (): Promise<Record<string, ExecutionControlState | null>> => {
       const started = new Map(ids.map((sessionId) => [sessionId, generations.current.get(sessionId) ?? 0]));
-      const previous = queryClient.getQueryData<Record<string, ExecutionControlState | null>>(batchKey) ?? {};
-      const next: Record<string, ExecutionControlState | null> = {};
       let readFailure: unknown;
       await Promise.all(ids.map(async (sessionId) => {
         const execution = executionOf(client, sessionId);
-        if (execution === undefined) { next[sessionId] = null; return; }
+        const readGeneration = started.get(sessionId) ?? 0;
+        if (execution === undefined) { commit(sessionId, null, readGeneration); return; }
         try {
           const state = await execution.read();
-          // A poll that predates the latest event for this session loses.
-          if ((generations.current.get(sessionId) ?? 0) === (started.get(sessionId) ?? 0)) {
-            next[sessionId] = state;
-          } else {
-            next[sessionId] = previous[sessionId] ?? state;
-          }
+          commit(sessionId, state, readGeneration);
         } catch (error) {
           readFailure = error;
-          next[sessionId] = previous[sessionId] ?? null;
+          // On a read failure keep whatever the cache currently holds for this
+          // session — including a newer event — instead of writing anything.
         }
       }));
       lastReadError.current = readFailure;
-      return next;
+      // The batch cache is the source of truth; this return only satisfies the
+      // query contract. Commits above already merged per session.
+      return queryClient.getQueryData<Record<string, ExecutionControlState | null>>(batchKey) ?? {};
     },
     refetchInterval: EXECUTION_POLL_MS,
     retry: false,
@@ -155,7 +163,7 @@ export function useSessionExecutions(
         observations.push(events.observe(
           { events: ['execution.changed'], read: () => execution.read() },
           (state) => {
-            generations.current.set(sessionId, (generations.current.get(sessionId) ?? 0) + 1);
+            bump(sessionId);
             queryClient.setQueryData(batchKey, (current: Record<string, ExecutionControlState | null> | undefined) => ({
               ...(current ?? {}),
               [sessionId]: state,
@@ -201,40 +209,94 @@ export function liveInventorySessionIds(agents: readonly { readonly sessionId: s
   return [...new Set(agents.map((agent) => agent.sessionId))];
 }
 
+/** One discovery page; the loop walks every page so a paused session past the first page is still found. */
+const DISCOVERY_PAGE_LIMIT = 100;
+
+/** True when a sessions.list RPC failure means "this server predates the index". */
+function isUnsupportedSessionsRpc(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 40401;
+}
+
 /**
  * Sessions the cold summary projects a non-running execution for — the
- * restart-recovery discovery path. Walks every page of the existing paginated
- * session index (`klient.global.sessions.list`, cursor to cursor), never
+ * restart-recovery discovery path. Walks the existing paginated session index
+ * (`klient.global.sessions.list`) strictly OLDER page by page (the keyset
+ * `nextCursor` is the page's last session id, passed as `before`), never
  * activates a session, and keeps only summaries whose `executionPhase` the
- * server projected as paused / pausing / resuming / failed. An older server
- * without the field returns no discovery.
+ * server projected as paused / pausing / resuming / failed.
+ *
+ * This is a triggered read, not a standing full scan: it runs on first mount,
+ * on a reconnect, on a relevant session-list change (metaUpdated / archived /
+ * workChanged), and on an explicit refresh — never on a wall-clock interval.
+ * A pagination in flight when the component unmounts is abandoned. A genuine
+ * read failure surfaces as `error`; a server that predates the index (RPC
+ * 40401) reads as simply "no discovery support", not an error.
  */
 export function usePausedSessionDiscovery(options?: { readonly enabled?: boolean }) {
-  const { client, scopeId } = useConnection();
+  const { client, scopeId, wsStatus } = useConnection();
+  const queryClient = useQueryClient();
   const enabled = options?.enabled ?? true;
+  const queryKey = useMemo(() => [EXECUTION_KEY, scopeId, 'paused-summaries'] as const, [scopeId]);
+  const cancelled = useRef(false);
+  useEffect(() => {
+    cancelled.current = false;
+    return () => { cancelled.current = true; };
+  }, []);
+
   const query = useQuery({
-    queryKey: [EXECUTION_KEY, scopeId, 'paused-summaries'],
+    queryKey,
     queryFn: async (): Promise<readonly string[]> => {
       const sessions = (client as { klient?: { global?: { sessions?: { list(query: unknown): Promise<{ items: readonly { id: string; executionPhase?: string }[]; nextCursor?: string }> } } } })
         .klient?.global?.sessions;
       if (sessions === undefined) return [];
       const found: string[] = [];
-      let cursor: string | undefined;
+      let before: string | undefined;
       for (;;) {
-        const page: { items: readonly { id: string; executionPhase?: string }[]; nextCursor?: string } =
-          await sessions.list({ includeArchived: true, limit: DISCOVERY_PAGE_LIMIT, ...(cursor === undefined ? {} : { after: cursor }) });
+        if (cancelled.current) return found;
+        let page: { items: readonly { id: string; executionPhase?: string }[]; nextCursor?: string };
+        try {
+          page = await sessions.list({ includeArchived: true, limit: DISCOVERY_PAGE_LIMIT, ...(before === undefined ? {} : { before }) });
+        } catch (error) {
+          if (isUnsupportedSessionsRpc(error)) return found;
+          throw error;
+        }
         for (const item of page.items) {
           if (item.executionPhase !== undefined && item.executionPhase !== 'running') found.push(item.id);
         }
         if (page.nextCursor === undefined || page.items.length === 0) return found;
-        cursor = page.nextCursor;
+        before = page.nextCursor;
       }
     },
-    refetchInterval: EXECUTION_POLL_MS,
     retry: false,
     enabled,
   });
-  return { sessionIds: query.data ?? [], resolved: query.data !== undefined };
+
+  // Trigger a re-read on a reconnect and on a relevant session-list change —
+  // never on an interval.
+  useEffect(() => {
+    if (!enabled) return;
+    const events = (client as { klient?: { events?: import('@kiki/klient').KlientEvents } }).klient?.events;
+    if (events === undefined) return;
+    const refresh = () => { if (!cancelled.current) void queryClient.invalidateQueries({ queryKey }); };
+    const subscriptions = [
+      events.on('session.metaUpdated', refresh),
+      events.on('session.archived', refresh),
+      events.on('session.workChanged', refresh),
+    ];
+    return () => { for (const subscription of subscriptions) subscription.dispose(); };
+  }, [client, enabled, queryClient, queryKey]);
+
+  // Reconnect: re-read once the socket is open again.
+  useEffect(() => {
+    if (enabled && wsStatus === 'open') void queryClient.invalidateQueries({ queryKey });
+  }, [enabled, wsStatus, queryClient, queryKey]);
+
+  return {
+    sessionIds: query.data ?? [],
+    resolved: query.data !== undefined,
+    error: query.isError && !isUnsupportedSessionsRpc(query.error) ? query.error : undefined,
+    refresh: query.refetch,
+  };
 }
 
 export interface ExecutionAction {

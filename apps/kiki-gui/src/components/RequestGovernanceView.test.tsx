@@ -837,15 +837,42 @@ describe('execution pause/resume', () => {
     expect(container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')?.textContent).toContain('Pause execution');
   });
 
-  it('shows the failed phase error with a retry that does not auto-resume', async () => {
+  it('shows the failed phase error with a retry-read that re-reads instead of resuming', async () => {
     vi.useFakeTimers();
     liveAgentsWith(['session-alpha']);
-    stubExecution('session-alpha', executionState('failed', { error: 'resume lost a participant' }));
+    const execution = stubExecution('session-alpha', executionState('failed', { error: 'resume lost a participant' }));
     const { container, render } = mount('realtime');
     await settle(render, 1100);
     const row = container.querySelector<HTMLElement>('[data-execution-paused="session-alpha"]')!;
     expect(row.textContent).toContain('resume lost a participant');
-    expect(row.textContent).toContain('Retry resume');
+    expect(row.textContent).toContain('Retry read');
+    // A failed row never resumes implicitly: its recovery re-reads the state.
+    const readsBefore = execution.facade.read.mock.calls.length;
+    await act(async () => { row.querySelector<HTMLButtonElement>('button')!.click(); });
+    await settle(render);
+    expect(execution.facade.resume).not.toHaveBeenCalled();
+    expect(execution.facade.read.mock.calls.length).toBeGreaterThan(readsBefore);
+  });
+
+  it('offers resume once a failed retry-read returns a durably paused state', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha']);
+    const execution = stubExecution('session-alpha', executionState('failed', { error: 'resume lost a participant' }));
+    const { container, render } = mount('realtime');
+    await settle(render, 1100);
+    // The failed retry-read re-reads; the server now reports durably paused,
+    // so the row flips to the real resume action.
+    execution.state.current = executionState('paused', { pauseOperationId: 'pause-recovered' });
+    await act(async () => { container.querySelector<HTMLElement>('[data-execution-paused="session-alpha"] button')!.click(); });
+    await settle(render, 1100);
+    const row = container.querySelector<HTMLElement>('[data-execution-paused="session-alpha"]')!;
+    expect(row.textContent).toContain('Resume');
+    expect(row.textContent).not.toContain('Retry read');
+    await act(async () => { row.querySelector<HTMLButtonElement>('button')!.click(); });
+    await settle(render);
+    expect(execution.facade.resume).toHaveBeenCalledTimes(1);
+    const resumeArgs = execution.facade.resume.mock.calls[0] as unknown as [{ pauseOperationId: string }];
+    expect(resumeArgs[0].pauseOperationId).toBe('pause-recovered');
   });
 
   it('hides the controls on an older server without the execution facade', async () => {
@@ -901,24 +928,28 @@ describe('execution pause/resume', () => {
     expect(second).not.toBe(first);
   });
 
-  it('discovers a paused session beyond the first discovery page', async () => {
+  it('discovers a paused session on a strictly older page (100+ sessions)', async () => {
     vi.useFakeTimers();
     liveAgentsWith([]);
-    stubExecution('session-late', executionState('paused', { pauseOperationId: 'pause-late' }));
-    // Two discovery pages: the paused session lives on page 2.
+    // The real index sorts newest-first; page the keyset strictly OLDER with
+    // `before`, and the paused session lives on the second (oldest) page.
+    const newest = Array.from({ length: 100 }, (_, index) => ({ id: `session-new-${index}`, executionPhase: 'running' }));
+    stubExecution('session-oldest', executionState('paused', { pauseOperationId: 'pause-oldest' }));
     connection.client.klient = {
       global: {
         sessions: {
-          list: vi.fn(async (query: { after?: string }) => query.after === undefined
-            ? { items: [{ id: 'session-running', executionPhase: 'running' }], nextCursor: 'cursor-2' }
-            : { items: [{ id: 'session-late', executionPhase: 'paused' }] }),
+          list: vi.fn(async (query: { before?: string }) => query.before === undefined
+            ? { items: newest, nextCursor: 'session-new-99' }
+            : { items: [{ id: 'session-oldest', executionPhase: 'paused' }] }),
         },
       },
     };
+    const listMock = (connection.client.klient as { global: { sessions: { list: ReturnType<typeof vi.fn> } } }).global.sessions.list;
     const { container, render } = mount('realtime');
     await settle(render, 1100);
-    expect(container.querySelector('[data-execution-paused="session-late"]')).not.toBeNull();
-    connection.client.klient = undefined;
+    expect(listMock).toHaveBeenCalledWith(expect.objectContaining({ before: 'session-new-99' }));
+    expect(container.querySelector('[data-execution-paused="session-oldest"]')).not.toBeNull();
+    (connection.client as { klient: unknown }).klient = undefined;
   });
 
   it('shows the failing session and its own error on a bulk pause failure, keeping state', async () => {
@@ -953,5 +984,69 @@ describe('execution pause/resume', () => {
     const control = container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')!;
     expect(control.textContent).toContain('storage locked');
     expect(control.textContent).toContain('Pause execution');
+  });
+
+  it('keeps a paused event over a slower running poll response', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha']);
+    // A running read that resolves only after the paused event lands. The
+    // stale poll must not roll the UI back to running.
+    let finishSlowRead!: () => void;
+    const slowRunning = new Promise<ReturnType<typeof executionState>>((resolve) => { finishSlowRead = () => resolve(executionState('running')); });
+    const facade = {
+      read: vi.fn()
+        .mockImplementationOnce(() => slowRunning)
+        .mockImplementation(async () => executionState('paused', { pauseOperationId: 'pause-evt' })),
+      pause: vi.fn(),
+      resume: vi.fn(),
+    };
+    let emitPaused!: (state: ReturnType<typeof executionState>) => void;
+    const events = {
+      observe: vi.fn((_options: unknown, listener: (state: ReturnType<typeof executionState>) => void) => {
+        emitPaused = listener;
+        return { dispose: vi.fn() };
+      }),
+    };
+    connection.client.session.mockImplementation((id: string) =>
+      id === 'session-alpha' ? { execution: facade, events } : { execution: undefined, events: undefined });
+    const { container, render } = mount('realtime');
+    await settle(render);
+    // The paused event arrives before the slow running read resolves.
+    await act(async () => { emitPaused(executionState('paused', { pauseOperationId: 'pause-evt' })); });
+    await act(async () => { finishSlowRead(); });
+    await settle(render);
+    await settle(render, 1100);
+    // The event wins: the row reports paused, not the stale running read.
+    expect(container.querySelector('[data-execution-paused="session-alpha"]')).not.toBeNull();
+    expect(container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')?.textContent).toContain('Paused');
+  });
+
+  it('keeps a newer event state when a read later fails', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha']);
+    let emitPaused!: (state: ReturnType<typeof executionState>) => void;
+    const facade = {
+      read: vi.fn()
+        .mockImplementationOnce(async () => executionState('running'))
+        .mockRejectedValue(new Error('read failed')),
+      pause: vi.fn(),
+      resume: vi.fn(),
+    };
+    const events = {
+      observe: vi.fn((_options: unknown, listener: (state: ReturnType<typeof executionState>) => void) => {
+        emitPaused = listener;
+        return { dispose: vi.fn() };
+      }),
+    };
+    connection.client.session.mockImplementation((id: string) =>
+      id === 'session-alpha' ? { execution: facade, events } : { execution: undefined, events: undefined });
+    const { container, render } = mount('realtime');
+    await settle(render);
+    await act(async () => { emitPaused(executionState('paused', { pauseOperationId: 'pause-evt' })); });
+    await settle(render, 5100); // a later poll whose read fails
+    await settle(render);
+    // The failed read keeps the event's paused state instead of clearing it.
+    expect(container.querySelector('[data-execution-paused="session-alpha"]')).not.toBeNull();
+    expect(container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')?.textContent).toContain('Paused');
   });
 });

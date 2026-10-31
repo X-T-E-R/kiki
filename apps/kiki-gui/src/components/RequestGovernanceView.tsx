@@ -322,7 +322,7 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
             {liveSessionIds.map((sessionId) => (
               <li key={sessionId} className="flex min-w-0 items-center gap-2">
                 <span className="min-w-0 truncate font-mono text-[12px] text-ink-faint" title={sessionId}>{sessionId}</span>
-                <SessionExecutionControl sessionId={sessionId} state={executionStates[sessionId]} />
+                <SessionExecutionControl sessionId={sessionId} state={executionStates[sessionId]} onRetryRead={refetchExecutions} />
               </li>
             ))}
           </ol>
@@ -335,7 +335,7 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
             </button>
           </p>
         ) : null}
-        <PausedExecutionsPanel states={executionStates} />
+        <PausedExecutionsPanel states={executionStates} onRetryRead={refetchExecutions} />
       </section>
     </div>
   );

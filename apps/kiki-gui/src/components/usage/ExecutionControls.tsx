@@ -22,12 +22,10 @@ import {
   isExecutionActionError,
   liveInventorySessionIds,
   useExecutionPause,
-  useExecutionResume,
   useExecutionResumeOne,
   type ExecutionControlState,
 } from '../../lib/executionControls';
 import type { LiveAgentSnapshot } from '../../lib/liveAgentGovernance';
-import { pushToast } from '../../lib/toasts';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine } from '../controls';
 import { Icon } from '../icons';
@@ -97,7 +95,11 @@ function PhaseChip({ state }: { readonly state: ExecutionControlState }) {
  * `state` comes from the batch read the panel already runs, so the row does
  * not open a second poller per session. Resume is strictly this session.
  */
-export function SessionExecutionControl({ sessionId, state }: { readonly sessionId: string; readonly state: ExecutionControlState | undefined }) {
+export function SessionExecutionControl({ sessionId, state, onRetryRead }: {
+  readonly sessionId: string;
+  readonly state: ExecutionControlState | undefined;
+  readonly onRetryRead: () => void;
+}) {
   const { t } = useI18n();
   const pause = useExecutionPause([sessionId]);
   const resume = useExecutionResumeOne(sessionId, state);
@@ -123,8 +125,11 @@ export function SessionExecutionControl({ sessionId, state }: { readonly session
         </button>
       ) : null}
       {phase === 'failed' ? (
-        <button type="button" className={ROW_BUTTON} disabled={busy} onClick={() => { resume.reset(); resume.run(); }}>
-          {t('usage.execution.retryResume')}
+        // The contract resumes only a durably paused phase. A failed row's
+        // recovery re-reads the real state from the server, so the next action
+        // the row offers is truthful — never an implicit resume.
+        <button type="button" className={ROW_BUTTON} disabled={busy} onClick={() => { onRetryRead(); }}>
+          {t('usage.execution.retryRead')}
         </button>
       ) : null}
       {phase === 'failed' && state.error !== undefined ? (
@@ -196,7 +201,10 @@ export function PauseAllExecutions({ snapshot, states }: {
  * the user's recovery click (the contract resumes only a durably `paused`
  * phase, so a failed row never resumes implicitly).
  */
-export function PausedExecutionsPanel({ states }: { readonly states: Readonly<Record<string, ExecutionControlState | undefined>> }) {
+export function PausedExecutionsPanel({ states, onRetryRead }: {
+  readonly states: Readonly<Record<string, ExecutionControlState | undefined>>;
+  readonly onRetryRead: () => void;
+}) {
   const { t } = useI18n();
   const entries = Object.entries(states)
     .filter((entry): entry is [string, ExecutionControlState] => entry[1] !== undefined && (entry[1].phase === 'paused' || entry[1].phase === 'failed'))
@@ -205,15 +213,16 @@ export function PausedExecutionsPanel({ states }: { readonly states: Readonly<Re
   return (
     <div data-execution-paused-panel className="space-y-1.5" aria-label={t('usage.execution.phase.paused')}>
       {entries.map(([sessionId, state]) => (
-        <PausedExecutionRow key={sessionId} sessionId={sessionId} state={state} />
+        <PausedExecutionRow key={sessionId} sessionId={sessionId} state={state} onRetryRead={onRetryRead} />
       ))}
     </div>
   );
 }
 
-function PausedExecutionRow({ sessionId, state }: {
+function PausedExecutionRow({ sessionId, state, onRetryRead }: {
   readonly sessionId: string;
   readonly state: ExecutionControlState;
+  readonly onRetryRead: () => void;
 }) {
   const { t } = useI18n();
   // Strictly this session's resume: a click never touches another session.
@@ -238,16 +247,16 @@ function PausedExecutionRow({ sessionId, state }: {
         disabled={resume.pending}
         onClick={() => {
           if (isFailed) {
-            // The contract resumes only a durably paused phase. A failed row's
-            // recovery re-reads the real state so the next allowed action is
-            // truthful; it never resumes implicitly.
-            pushToast({ tone: 'error', text: state.error ?? t('usage.execution.readFailed') });
+            // Re-read the real state; the contract resumes only a durably
+            // paused phase, so a failed row never resumes implicitly.
+            onRetryRead();
+            return;
           }
           resume.reset();
           resume.run();
         }}
       >
-        {isFailed ? t('usage.execution.retryResume') : t('usage.execution.resumeSession')}
+        {isFailed ? t('usage.execution.retryRead') : t('usage.execution.resumeSession')}
       </button>
       {resume.error !== undefined ? (
         <FeedbackLine feedback={{ tone: 'error', text: executionFailureText(resume.error, 'resume', t) }} />
