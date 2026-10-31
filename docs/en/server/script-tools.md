@@ -4,7 +4,7 @@ Call Kiki's shared tools from Python, Node.js, a shell, or another local program
 
 ## Prepare a connection
 
-In **Settings → Connection & remote → Access from elsewhere → Agents & clients**, create a connection and allow the tools you need. Create a conversation for that connection in Kiki and choose its workspace and permission mode. Plugin tools must also be installed, configured and enabled for that conversation. The connection's permission ceiling, tool allowlist, workspace boundaries and normal approvals still apply. Media tools that declare unrestricted access also require the connection's local-command access permission.
+In **Settings → Connection & remote → Access from elsewhere → External clients**, create a connection and allow the tools you need. Create a conversation for that connection in Kiki and choose its workspace and permission mode. Plugin tools must also be installed, configured and enabled for that conversation. The connection's permission ceiling, tool allowlist, workspace boundaries and normal approvals still apply. Media tools that declare unrestricted access also require the connection's local-command access permission.
 
 In the connection's **Pick tools** list, enabled plugin tools appear grouped by plugin. Select `plugin__kiki_media__generate` and `plugin__kiki_media__media`, and enable **Allow commands on this machine** for their unrestricted access. The local owner can also add these grants from the terminal; existing grants are retained, and changing a grant stops the connection's running work:
 
@@ -49,7 +49,7 @@ Keep both `idempotency_key` and media `request_id` stable for the same submissio
 
 ### Shell with the CLI
 
-This POSIX shell example needs `jq`. The CLI handles credential minting and downloads; every command writes JSON to stdout and returns a nonzero exit code for a request or tool error.
+This POSIX shell example needs `jq`. On Windows, use the Python example or Git Bash with `jq` installed. The CLI handles credential minting and downloads; every command writes JSON to stdout and returns a nonzero exit code for a request or tool error.
 
 ```sh
 set -eu

@@ -4,7 +4,7 @@
 
 ## 准备连接
 
-在 **设置 → 连接与远程 → 从其他地方访问 → Agent 与客户端** 中创建连接，允许所需工具。再为该连接创建会话，选择工作区和权限模式。插件工具还需要安装、配置，并在该会话中启用。连接的权限上限、工具允许列表、工作区边界和正常审批仍然有效。声明不受限访问的媒体工具还需要连接的本地命令访问权限。
+在 **设置 → 连接与远程 → 外部接入 → 外部客户端** 中创建连接，允许所需工具。再为该连接创建会话，选择工作区和权限模式。插件工具还需要安装、配置，并在该会话中启用。连接的权限上限、工具允许列表、工作区边界和正常审批仍然有效。声明不受限访问的媒体工具还需要连接的本地命令访问权限。
 
 连接的 **自选工具** 列表按插件分组显示已启用插件的工具。勾选 `plugin__kiki_media__generate` 和 `plugin__kiki_media__media`，并为它们的不受限访问开启 **允许在这台机器上执行命令**。本机所有者也可以在终端中追加授权；已有工具授权会保留，修改授权会停止该连接正在运行的工作：
 
@@ -28,7 +28,7 @@ kiki tools --client CONNECTION_ID list
 kiki tools --client CONNECTION_ID credential --output /private/connection-token
 ```
 
-此命令新建私有文件，拒绝覆盖已有文件。输出的 JSON 只包含文件路径和服务器 URL，不含凭据。将 `KIKI_EXTERNAL_CLIENT_CREDENTIAL_FILE` 设为该路径，将 `KIKI_SERVER_URL` 设为返回的 `server_url`。工具路由只接受来自回环地址的连接 bearer 凭据，不接受服务器所有者 token。
+此命令新建私有文件，拒绝覆盖已有文件。输出的 JSON 包含文件路径和服务器 URL，不含凭据。将 `KIKI_EXTERNAL_CLIENT_CREDENTIAL_FILE` 设为该路径，将 `KIKI_SERVER_URL` 设为返回的 `server_url`。工具路由只接受来自回环地址的连接 bearer 凭据，不接受服务器所有者 token。
 
 凭据一小时后过期。收到 HTTP 401 时，用新的输出路径再次运行 `credential`，更新环境变量，并使用原来的提交键重新运行脚本。较长的 CLI 工作流可直接使用 `--client`，由 CLI 自动获取有效凭据。暂停或撤销连接会立即停止访问。
 
@@ -49,7 +49,7 @@ Python 和 Node.js 示例读取以下环境变量：
 
 ### 在 Shell 中使用 CLI
 
-此 POSIX Shell 示例需要 `jq`。CLI 负责签发凭据和下载；每条命令向 stdout（程序输出通道）写入 JSON，请求或工具出错时以非零退出码结束。
+此 POSIX Shell 示例需要 `jq`。Windows 用户可使用下方 Python 示例，或使用已安装 `jq` 的 Git Bash。CLI 负责签发凭据和下载；每条命令向 stdout（程序输出通道）写入 JSON，请求或工具出错时以非零退出码结束。
 
 ```sh
 set -eu

@@ -106,6 +106,20 @@ describe('script tools CLI owner commands', () => {
 
 
 describe('documented operation polling', () => {
+  it('uses the displayed external-client settings labels and states Windows shell prerequisites', async () => {
+    const dictionaries = await Promise.all([
+      import('@kiki/session-core/i18n/en'), import('@kiki/session-core/i18n/zh'),
+    ]);
+    for (const [locale, labels] of [['en', dictionaries[0].en], ['zh', dictionaries[1].zh]] as const) {
+      const expected = `${labels['st.section.externalAccess']} → ${labels['st.section.externalClients']}`;
+      for (const path of ['server/script-tools.md', 'server/mcp.md', 'guides/settings.md']) {
+        const doc = await readFile(new URL(`../../../../docs/${locale}/${path}`, import.meta.url), 'utf8');
+        expect(doc).toContain(expected);
+        expect(doc).not.toMatch(/Agents & clients|Agent 与客户端|智能体与客户端/);
+        if (path === 'server/script-tools.md') expect(doc).toMatch(/Windows[^\n]*Python[^\n]*jq[^\n]*Git Bash|Windows[^\n]*Python[^\n]*Git Bash[^\n]*jq/);
+      }
+    }
+  });
   it('keeps Shell, Python and Node.js waiting through approval in both locales', async () => {
     const en = await readFile(new URL('../../../../docs/en/server/script-tools.md', import.meta.url), 'utf8');
     const zh = await readFile(new URL('../../../../docs/zh/server/script-tools.md', import.meta.url), 'utf8');
