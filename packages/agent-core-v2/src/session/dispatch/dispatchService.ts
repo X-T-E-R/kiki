@@ -564,8 +564,15 @@ export class SessionDispatchService implements ISessionDispatchService {
       if (options.requesterAgentId !== undefined) this.recordDelegatedRun(options.requesterAgentId, child.agentId);
       const started = this.runs.run(child.agentId, request, { signal: options.signal, onReady: options.onReady, capacityReservation: reservation })
         .then(async handle => {
-          await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'started', turnId: handle.turn.id });
+          try {
+            await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'started', turnId: handle.turn.id });
+          } catch (error) {
+            this.log.warn('resume started but metadata confirmation failed', { operationId, agentId: child.agentId, turnId: handle.turn.id, error });
+          }
           return handle;
+        }, (error: unknown) => {
+          this.resumeRuns.delete(JSON.stringify([child.agentId, operationId]));
+          throw error;
         });
       return { child: { ...this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta), sourceRef: child.sourceRef }, request, lineage: options.lineage, started };
     }

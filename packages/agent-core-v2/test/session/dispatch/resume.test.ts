@@ -570,6 +570,42 @@ describe('dispatch resume through model switch and real native run', () => {
     expect(readResumeRecord((await ctx.get(ISessionMetadata).read()).agents![CHILD], 'default-tool-override')).toBeUndefined();
   });
 
+  it('retries a vendor-default start failure with the same operation and prompt id', async () => {
+    const { ctx, dispatch, child, runs, delivered } = await defaultExternal();
+    const run = vi.spyOn(runs, 'run');
+    const opts = options('retry-default-start');
+    const first = await dispatch.runOnExisting(child, 'Continue', opts);
+    await expect(first.started).rejects.toThrow('fixture-native-run-reached');
+    const second = await dispatch.runOnExisting(child, 'Continue', opts);
+    await expect(second.started).rejects.toThrow('fixture-native-run-reached');
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(delivered).toEqual([expect.objectContaining({ request: expect.objectContaining({ promptId: 'resume-prompt:retry-default-start' }) }),
+      expect.objectContaining({ request: expect.objectContaining({ promptId: 'resume-prompt:retry-default-start' }) })]);
+    expect(readResumeRecord((await ctx.get(ISessionMetadata).read()).agents![CHILD], opts.operationId!)).toMatchObject({ state: 'ready' });
+    await expect(dispatch.runOnExisting(child, 'Changed request', opts)).rejects.toThrow('different request');
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps an already-started vendor-default run when metadata confirmation fails', async () => {
+    const { ctx, dispatch, child, runs } = await defaultExternal();
+    const handle = { agentId: CHILD, turn: { id: 42 }, completion: Promise.resolve({ summary: 'Done' }) } as Awaited<ReturnType<ISessionSubagentService['run']>>;
+    const run = vi.spyOn(runs, 'run').mockResolvedValue(handle);
+    const metadata = ctx.get(ISessionMetadata);
+    const update = metadata.updateAgent.bind(metadata);
+    let updates = 0;
+    vi.spyOn(metadata, 'updateAgent').mockImplementation(async (...args) => {
+      if (++updates === 2) throw new Error('fixture confirmation unavailable');
+      return update(...args);
+    });
+    const opts = options('started-default');
+    const first = await dispatch.runOnExisting(child, 'Continue', opts);
+    await expect(first.started).resolves.toBe(handle);
+    const second = await dispatch.runOnExisting(child, 'Continue', opts);
+    expect(second).toBe(first);
+    await expect(second.started).resolves.toBe(handle);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['codex-app-server', 'claude-acp', 'agy-cli', 'grok-acp'])('resumes %s native defaults without manufacturing a Kiki model', async (id) => {
     const { ctx, dispatch, child, delivered } = await defaultExternal(id);
     const run = await dispatch.runOnExisting(child, 'Continue native task', options(`native-${id}`));
