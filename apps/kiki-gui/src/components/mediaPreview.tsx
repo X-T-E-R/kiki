@@ -161,7 +161,7 @@ export function MediaPreviewProvider({
   const connection = useOptionalConnection();
   const clientIdentity = connection?.client;
   const remoteScope = isRemoteConnection(connection);
-  const [image, setImage] = useState<{ src: string; name?: string; client: unknown; sessionId?: string; agentId: string } | null>(null);
+  const [image, setImage] = useState<{ src: string; name?: string; sourcePath?: string; client: unknown; sessionId?: string; agentId: string } | null>(null);
   const [gallery, setGallery] = useState<{ images: readonly GalleryImage[]; selected: number; client: unknown; sessionId?: string; scopeAgentId: string; seededId?: string; seededSrc?: string } | null>(null);
   const registeredImages = useRef<{ client: unknown; sessionId?: string; agentId: string; images: Map<string, GalleryImage> }>({ client: clientIdentity, sessionId, agentId: snapshotAgentId, images: new Map() });
   if (registeredImages.current.client !== clientIdentity || registeredImages.current.sessionId !== sessionId || registeredImages.current.agentId !== snapshotAgentId) {
@@ -423,7 +423,7 @@ export function MediaPreviewProvider({
         chooseMode('cockpit');
       } : undefined}
       onWidthChange={handleWidthChange}
-      onOpenImage={(src, name) => { setImage({ src, name, client: clientIdentity, sessionId, agentId: snapshotAgentId }); }}
+      onOpenImage={(src, name, sourcePath) => { setImage({ src, name, sourcePath, client: clientIdentity, sessionId, agentId: snapshotAgentId }); }}
       reportDirty={reportDirty}
       scrollPositions={positions}
       onScrollPosition={reportPosition}
@@ -477,6 +477,7 @@ export function MediaPreviewProvider({
         <MediaLightbox
           src={image.src}
           name={image.name}
+          sourcePath={image.sourcePath}
           linkUrl={httpImageLink(image.src)}
           outcomeKey={mediaOutcomeKey({ url: image.src })}
           remote={remoteScope}

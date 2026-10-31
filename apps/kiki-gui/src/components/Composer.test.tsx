@@ -680,6 +680,21 @@ describe('Composer send latch', () => {
 });
 
 describe('Composer non-text sends', () => {
+  it.each([false, true])('previews draft and edited images without a parent gallery (%s)', async (messageEditing) => {
+    const { container } = await renderComposer({
+      messageEditing,
+      attachments: [{ kind: 'image', name: 'draft.png', mediaType: 'image/png', data: 'AA==', size: 1, previewUrl: 'data:image/png;base64,AA==' }],
+    });
+    const tile = container.querySelector<HTMLButtonElement>('[data-image-tile] button')!;
+    await act(async () => { tile.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 })); });
+    expect(document.querySelector('[data-menu-item="copy-image"]')).not.toBeNull();
+    expect(document.querySelector('[data-menu-item="save-image"]')).not.toBeNull();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    await click(tile);
+    expect(document.querySelector('[role="dialog"][aria-label="draft.png"]')).not.toBeNull();
+    expect(document.querySelector('[role="dialog"] img')?.getAttribute('src')).toBe('data:image/png;base64,AA==');
+  });
+
   it('enables and sends an annotation-only draft', async () => {
     const onSend = vi.fn();
     const annotations = [{ id: 'annotation-1', quote: 'selected source', comment: 'check this' }];

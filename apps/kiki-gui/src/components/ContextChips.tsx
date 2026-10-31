@@ -11,10 +11,12 @@
  * Remove buttons are optional: the composer passes them, the bubble does not.
  */
 
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
+import { MediaLightbox } from './MediaLightbox';
+import { useMessageImageMenu } from './mediaParts';
 
 const TILE = 'context-chip anim-enter relative flex h-8 min-w-0 items-center gap-1.5 rounded-[10px] text-[12px]';
 
@@ -52,7 +54,7 @@ export function QuoteChip({ quote, onRemove }: { quote: string; onRemove?: () =>
   );
 }
 
-/** Square rounded thumbnail; `onOpen` makes it a button that opens the lightbox. */
+/** Square thumbnail with shared image actions and an optional gallery opener. */
 export function ImageTile({
   src,
   name,
@@ -69,23 +71,23 @@ export function ImageTile({
   removeLabel?: string;
 }) {
   const { t } = useI18n();
+  const [viewing, setViewing] = useState(false);
+  const imageMenu = useMessageImageMenu({ kind: 'image', url: src, name }, src, name);
   const title = detail === undefined ? name : `${name} · ${detail}`;
-  const image = <img src={src} alt={name} className="h-full w-full object-cover" draggable={false} />;
   return (
     <div data-image-tile className="context-chip anim-enter group relative h-12 w-12 shrink-0">
-      {onOpen !== undefined ? (
-        <button
-          type="button"
-          title={title}
-          aria-label={`${t('media.viewImage')}: ${name}`}
-          onClick={onOpen}
-          className="context-image block h-full w-full cursor-zoom-in overflow-hidden rounded-[10px] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
-        >
-          {image}
-        </button>
-      ) : (
-        <span title={title} className="context-image block h-full w-full overflow-hidden rounded-[10px]">{image}</span>
-      )}
+      <button
+        type="button"
+        title={title}
+        aria-label={`${t('media.viewImage')}: ${name}`}
+        onClick={onOpen ?? (() => { setViewing(true); })}
+        onContextMenu={imageMenu.openMenu}
+        className="context-image block h-full w-full cursor-zoom-in overflow-hidden rounded-[10px] focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none"
+      >
+        <img src={src} alt={name} className="h-full w-full object-cover" draggable={false} />
+      </button>
+      {imageMenu.menuElement}
+      {viewing ? <MediaLightbox src={src} name={name} onClose={() => { setViewing(false); }} /> : null}
       {onRemove !== undefined ? (
         <button
           type="button"

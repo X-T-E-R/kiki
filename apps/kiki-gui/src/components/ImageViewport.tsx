@@ -7,7 +7,7 @@
  * (touch keeps native scrolling).
  */
 
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEventHandler, type ReactNode } from 'react';
 
 import { useI18n } from '../i18n';
 import { Icon } from './icons';
@@ -117,6 +117,7 @@ export function ImageViewport({
   meta,
   actions,
   onError,
+  onContextMenu,
 }: {
   readonly src: string;
   readonly alt: string;
@@ -126,6 +127,7 @@ export function ImageViewport({
   readonly meta?: string;
   readonly actions?: ReactNode;
   readonly onError?: () => void;
+  readonly onContextMenu?: MouseEventHandler<HTMLDivElement>;
 }) {
   const { t } = useI18n();
   const dpr = useDevicePixelRatio();
@@ -225,6 +227,7 @@ export function ImageViewport({
         tabIndex={0}
         data-image-viewport={mode}
         aria-label={alt}
+        onContextMenu={onContextMenu}
         onClick={(event) => {
           if (pan.consumePan()) return;
           switchZoom(zoom === 'fit' ? 100 : 'fit', { x: event.clientX, y: event.clientY });

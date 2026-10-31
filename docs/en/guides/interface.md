@@ -24,7 +24,7 @@ Long tool output and other large fields arrive in stages. **Continue loading** p
 
 ## Input box
 
-The input box accepts free-form text. `Enter` sends; `Shift-Enter` / `Ctrl-J` insert a newline. You can paste images and video from the clipboard, as long as the current model accepts them — [Interaction and input](/en/guides/interaction) covers the details.
+The input box accepts free-form text. `Enter` sends; `Shift-Enter` / `Ctrl-J` insert a newline. You can paste images and video from the clipboard, as long as the current model accepts them — [Interaction and input](/en/guides/interaction) covers the details. Click an attached image to preview it before sending, including in a new conversation or while editing a message. Right-click images in the draft, Markdown, conversation or file preview to copy the image itself or save it.
 
 In an existing conversation, changing **Approvals**, switching between **Normal** and **Plan**, or changing the Plan gate saves immediately, without sending a message. With native execution, the next tool approval uses the new permission mode, Plan mode's restrictions apply to subsequent tool calls in the running turn, and the gate controls the next plan submission. A request already waiting for approval still needs your decision. If saving fails, the control returns to the session's reported setting and shows the error.
 

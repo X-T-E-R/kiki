@@ -1569,6 +1569,17 @@ describe('PreviewWorkspace media tabs', () => {
     expect(panel.querySelector('[data-download-file]')).toBeNull();
     expect(panel.querySelector('[data-open-default-app]')).toBeNull();
     expect(panel.querySelector('[data-reveal-file]')).toBeNull();
+    await act(async () => { image.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 })); });
+    expect(document.querySelector('[data-menu-item="copy-image"]')).not.toBeNull();
+    expect(document.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    await act(async () => { panel.querySelector<HTMLButtonElement>('button[aria-label="View image"]')!.click(); });
+    const viewer = document.querySelector('[role="dialog"]')!;
+    await act(async () => { viewer.querySelector('img')!.dispatchEvent(new Event('load')); });
+    await act(async () => { viewer.querySelector('img')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 })); });
+    expect(document.querySelector('[data-menu-item="copy-path"]')).not.toBeNull();
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-menu-item="show-in-folder"]')!.click(); });
+    expect(hostMock.revealPath).toHaveBeenCalledWith('/work/shots/screen.png');
   });
 });
 

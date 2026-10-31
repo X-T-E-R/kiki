@@ -59,6 +59,7 @@ import { Markdown } from './Markdown';
 import { Icon } from './icons';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { ImageViewport } from './ImageViewport';
+import { useMessageImageMenu } from './mediaParts';
 import { DocumentTabView } from './preview/DocumentTabView';
 
 export interface PreviewWorkspaceProps {
@@ -88,7 +89,7 @@ export interface PreviewWorkspaceProps {
   readonly onCollapse: () => void;
   readonly onOpenCockpit?: () => void;
   readonly onWidthChange: (width: number, final: boolean) => void;
-  readonly onOpenImage: (src: string, name?: string) => void;
+  readonly onOpenImage: (src: string, name?: string, sourcePath?: string) => void;
   readonly reportDirty: (path: string, dirty: boolean) => void;
   /**
    * Per-tab reading positions for this visit (tab key → scroller offset).
@@ -1167,7 +1168,7 @@ function PreviewTabView({
   readonly root?: string;
   readonly visible: boolean;
   readonly navigation?: FileReference;
-  readonly onOpenImage: (src: string, name?: string) => void;
+  readonly onOpenImage: (src: string, name?: string, sourcePath?: string) => void;
   readonly reportDirty: (path: string, dirty: boolean) => void;
   /** This tab's reading position for the current visit, when it has one. */
   readonly position?: { readonly top: number; readonly left?: number };
@@ -1228,7 +1229,7 @@ function ImageTabView({
   onOpenImage,
 }: {
   readonly path: string;
-  readonly onOpenImage: (src: string, name?: string) => void;
+  readonly onOpenImage: (src: string, name?: string, sourcePath?: string) => void;
 }) {
   const { t } = useI18n();
   const client = useOptionalConnection()?.client;
@@ -1238,6 +1239,7 @@ function ImageTabView({
     | { readonly status: 'error' }
     | { readonly status: 'ready'; readonly url: string; readonly size: number }
   >({ status: 'loading' });
+  const imageMenu = useMessageImageMenu({ kind: 'image', path, name }, state.status === 'ready' ? state.url : undefined, name);
 
   // The tab shows the original bytes: a downscaled preview thumbnail here is
   // what made full-size screenshots unreadable.
@@ -1284,16 +1286,17 @@ function ImageTabView({
   }
 
   return (
-    <ImageViewport
+    <><ImageViewport
       src={state.url}
       alt={name}
       caption={<span title={path}>{path}</span>}
       meta={formatBytes(state.size)}
+      onContextMenu={imageMenu.openMenu}
       onError={() => { setState({ status: 'error' }); }}
       actions={
         <button
           type="button"
-          onClick={() => { onOpenImage(state.url, name); }}
+          onClick={() => { onOpenImage(state.url, name, path); }}
           title={t('media.viewImage')}
           aria-label={t('media.viewImage')}
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
@@ -1301,7 +1304,7 @@ function ImageTabView({
           <Icon name="eye" size={14} />
         </button>
       }
-    />
+    />{imageMenu.menuElement}</>
   );
 }
 
