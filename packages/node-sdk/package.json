@@ -45,6 +45,10 @@
     "./native-fs-watch-error-guard": {
       "types": "./src/native-fs-watch-error-guard.ts",
       "default": "./src/native-fs-watch-error-guard.ts"
+    },
+    "./worker-heap-policy": {
+      "types": "./src/worker-heap-policy.ts",
+      "default": "./src/worker-heap-policy.ts"
     }
   },
   "publishConfig": {
@@ -59,6 +63,11 @@
         "types": "./dist/native-fs-watch-error-guard.d.mts",
         "import": "./dist/native-fs-watch-error-guard.mjs",
         "default": "./dist/native-fs-watch-error-guard.mjs"
+      },
+      "./worker-heap-policy": {
+        "types": "./dist/worker-heap-policy.d.mts",
+        "import": "./dist/worker-heap-policy.mjs",
+        "default": "./dist/worker-heap-policy.mjs"
       }
     },
     "provenance": true

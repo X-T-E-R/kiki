@@ -18,8 +18,8 @@ describe('SEA build options', () => {
     expect(seaCodeCacheEnabled(`${process.platform}-${process.arch}`)).toBe(true);
   });
 
-  it('preserves the local daemon heap limit and release environment override policy', () => {
-    expect(seaExecArgv('local')).toEqual(['--max-old-space-size=8192']);
+  it('uses Node hardware sizing and preserves each profile heap override policy', () => {
+    expect(seaExecArgv('local')).toEqual([]);
     expect(seaExecArgv('release')).toEqual([]);
   });
 });

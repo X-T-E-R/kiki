@@ -8,7 +8,7 @@ import { BUILT_IN_CATALOG_DEFINE, builtInCatalogDefine } from './scripts/built-i
 const appRoot = import.meta.dirname;
 
 export default defineConfig({
-  entry: ['./src/main.ts'],
+  entry: ['./src/entry.ts'],
   format: ['esm'],
   outDir: 'dist',
   clean: true,

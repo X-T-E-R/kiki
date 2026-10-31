@@ -16,7 +16,7 @@ const read = (path) => readFile(join(root, path), 'utf8');
 void test('public CLI and desktop sidecar builds use the release SEA policy independently of signing', async () => {
   assert.deepEqual(seaRuntimeOptions('release'), { execArgv: [], execArgvExtension: 'env' });
   assert.deepEqual(seaRuntimeOptions('local'), {
-    execArgv: ['--max-old-space-size=8192'], execArgvExtension: 'cli',
+    execArgv: [], execArgvExtension: 'env',
   });
   const env = { APPLE_SIGNING_IDENTITY: 'Developer ID Application: Example', APPLE_KEYCHAIN_PATH: '/example/keychain' };
   assert.deepEqual(macosSigningOptions(false, env), { identity: '-', keychainPath: null });
