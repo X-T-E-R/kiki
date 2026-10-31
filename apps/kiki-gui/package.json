@@ -50,6 +50,7 @@
     "fixtures": "node scripts/fixture-server.mjs",
     "proof": "node scripts/visual-proof.mjs",
     "proof:smoke": "node scripts/visual-smoke.mjs",
+    "proof:headless-smoke": "node scripts/visual-proof.mjs --config scripts/visual-proof-headless-smoke.mjs",
     "proof:update-goldens": "node scripts/visual-proof.mjs --update-goldens",
     "proof:test": "node --test proof/registry.test.mjs scripts/fixture-server.test.mjs scripts/fixture-transcript.test.mjs scripts/fixture-agent-hooks.test.mjs scripts/visual-smoke.test.mjs"
   },

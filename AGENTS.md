@@ -15,7 +15,7 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 ## Project Map
 
 - `apps/kimi-code`: the CLI / TUI application. It consumes `@kiki/klient` / `@kiki/session-core` for client operations and `@kiki/node-sdk` for host setup and SDK utilities; it must not depend directly on `@kiki/agent-core-v2`. When writing or modifying its terminal UI, use the `write-tui` skill (`.agents/skills/write-tui/SKILL.md`).
-- `apps/kiki-gui`: the shared browser and desktop GUI. `apps/kimi-code` builds it into the CLI package and serves it from `kiki web`; for development, run `pnpm dev:server` and point the GUI Vite server at it with `KIKI_SERVER_URL`.
+- `apps/kiki-gui`: the shared browser and desktop GUI. `apps/kimi-code` builds it into the CLI package and serves it from `kiki web`; for development, run `pnpm dev:server` and point the GUI Vite server at it with `KIKI_SERVER_URL`. Default visual acceptance uses the headless `scripts/visual-proof.mjs`; see `apps/kiki-gui/AGENTS.md`.
 - `packages/agent-core-v2`: the agent engine — the only one. (The historical v1 `packages/agent-core` was deleted; nothing in the repo may reintroduce it.) A DI × Scope design with three `LifecycleScope` tiers (`App` / `Session` / `Agent`, `src/app/scopes.ts`), the L3 unit layer (`Service`/`Fiber`, collections, Features), and App-scope `ISessionManager`. Workspace resources live in leased `WorkspaceInstance` / `Program` runtime generations, not a fourth DI scope. See `packages/agent-core-v2/AGENTS.md` and use the `agent-core-dev` skill (`.agents/skills/agent-core-dev/SKILL.md`) when developing here.
 - `packages/node-sdk`: the public TypeScript SDK and harness.
 - `packages/kaos`: the execution environment and file/process abstractions.
