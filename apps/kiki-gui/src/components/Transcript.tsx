@@ -61,6 +61,7 @@ import {
 } from '@kiki/session-core/settings';
 import {
   agentChildren,
+  agentRefsOfBlock,
   foldHistory,
   groupBlocks,
   groupHasError,
@@ -186,6 +187,7 @@ import { NestedFoldContext, NestedFoldStore, countFoldedDescendants, groupDescen
 import { InvocationContext, useInvocationDetails } from './timeline/SubagentInvocationView';
 import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
 import { MessageLinkContext, MessageRowActions, messageLinkHref, UserMessageEditor, useMessageLink, useMessageRowTapActions } from './RowActions';
+import { AgentRefText, AgentRefResolutionProvider } from './AgentRefChip';
 import { ThreadRefText } from './ThreadRefChip';
 import { PeerThreadSource } from './PeerThreadSource';
 import { useThreadRefDirectory } from '../lib/threadRefs';
@@ -498,9 +500,18 @@ const UserMessage = memo(function UserMessage({
   );
   const carried = carry.annotations.length > 0 || quoteItems.length > 0;
   const media = block.media ?? [];
+  const agentRefs = useMemo(() => agentRefsOfBlock(block), [block]);
+  const messageId = block.userMessageId ?? block.clientRequestId;
   const projectBody = useCallback(
-    (segment: string) => <ThreadRefText text={segment} projectSegment={projectUserText} />,
-    [],
+    (segment: string) => (
+      <AgentRefText
+        text={segment}
+        references={agentRefs}
+        messageId={messageId}
+        projectSegment={(rest) => <ThreadRefText text={rest} projectSegment={projectUserText} />}
+      />
+    ),
+    [agentRefs, messageId],
   );
   const optimisticStatusLabel = block.optimisticStatus === 'offline'
     ? t('transcript.sendUnconfirmed')
@@ -3869,6 +3880,10 @@ export function Transcript({
   }
   const invocationTools = useMemo(() => new Map(blocks.filter((block): block is ToolBlock => block.kind === 'tool').map((block) => [block.toolCallId, block])), [blocks]);
   const invocationContext = useMemo(() => ({ callerAgentId: agentId, tools: invocationTools, hasMore: state.hasMoreHistory, loadOlder: onLoadOlder }), [agentId, invocationTools, state.hasMoreHistory, onLoadOlder]);
+  // Agent-reference chips read the same task list the delegation cards use,
+  // and open a child through the same entry. Read-only surfaces keep the
+  // status read but no jump (onOpenAgent stays undefined there).
+  const agentRefResolution = useMemo(() => ({ tasks: state.tasks, onOpenAgent }), [state.tasks, onOpenAgent]);
   const handleToggleSubagentForm = useCallback((agentId: string, form: SubagentCardForm) => {
     setCardForms((previous) => {
       const next = new Map(previous);
@@ -5134,6 +5149,7 @@ export function Transcript({
   }
 
   return (
+    <AgentRefResolutionProvider value={agentRefResolution}>
     <InvocationContext.Provider value={invocationContext}>
     <NestedFoldContext.Provider value={nestedFolds}>
     <PromptOutcomeActionsContext.Provider value={promptOutcomeActions}>
@@ -5346,5 +5362,6 @@ export function Transcript({
     </PromptOutcomeActionsContext.Provider>
     </NestedFoldContext.Provider>
     </InvocationContext.Provider>
+    </AgentRefResolutionProvider>
   );
 }

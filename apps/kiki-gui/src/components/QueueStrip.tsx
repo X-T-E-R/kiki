@@ -52,6 +52,7 @@ import { mergeSessionQueueRows, pendingModelSwitchChange, type SessionQueueRow }
 import { useI18n } from '../i18n';
 import type { QueuedModelSwitch } from '../lib/client';
 import { useCoarsePointer } from '../lib/layoutHooks';
+import { AgentRefText } from './AgentRefChip';
 import { ContentContinuation, ContinuationRow } from './ContentContinuation';
 import { QuoteChip } from './ContextChips';
 import { SentAnnotationsBubble } from './SentAnnotationsBubble';
@@ -210,7 +211,14 @@ function QueuedMessageContent({ item }: { readonly item: QueuedPromptPreview }) 
   const source = useMemo(() => ({ kind: 'prompt' as const, id: item.promptId }), [item.promptId]);
   return <div className="min-w-0 flex-1 basis-36 text-[13px] text-ink">
     <div className="truncate" title={stripThreadRefContext(carry.body) || undefined}>
-      {carry.body === '' ? t('sv.queueNoText') : <ThreadRefText text={stripThreadRefContext(carry.body)} projectSegment={(text) => text} />}
+      {carry.body === '' ? t('sv.queueNoText') : (
+        <AgentRefText
+          text={stripThreadRefContext(carry.body)}
+          references={[]}
+          messageId={item.userMessageId}
+          projectSegment={(text) => <ThreadRefText text={text} projectSegment={(segment) => segment} />}
+        />
+      )}
     </div>
     {carry.quotes.length > 0 || carry.annotations.length > 0 ? <div className="mt-1 flex flex-wrap items-center gap-1.5">
       {carry.quotes.map((quote, index) => <QuoteChip key={index} quote={quote.quote} />)}
