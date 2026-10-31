@@ -161,6 +161,21 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     } finally { await stack.container.dispose(); }
   });
 
+  it.each([false, true])('keeps a disabled engine target absent with registered collision %s', async collision => {
+    const name = 'engine:claude-acp';
+    const records = collision ? [{ sourceId: 'user', contribution: { profiles: [profile(name)] } }] : [];
+    const descriptors = ['claude-acp', 'grok-acp'].map(id => ({ id, protocol: 'acp' as const, args: [], revision: 'test' }));
+    const stack = makeCatalog(WORKSPACE_KEY, [name], records, descriptors);
+    try {
+      await stack.catalog.ready;
+      expect(stack.catalog.get(name)).toBeUndefined();
+      expect(stack.catalog.list().some(item => item.name === name)).toBe(false);
+      expect(stack.catalog.snapshot().resolvableProfiles.has(name)).toBe(false);
+      expect(() => stack.catalog.resolveSelection({ profile: name })).toThrow();
+      expect(stack.catalog.get('engine:grok-acp')).toMatchObject({ executor: 'grok-acp' });
+    } finally { await stack.container.dispose(); }
+  });
+
   it('preserves a registered profile whose name collides with a native target', async () => {
     const registered = profile('engine:claude-acp');
     const stack = makeCatalog(WORKSPACE_KEY, [], [{ sourceId: 'user', contribution: { profiles: [registered] } }],

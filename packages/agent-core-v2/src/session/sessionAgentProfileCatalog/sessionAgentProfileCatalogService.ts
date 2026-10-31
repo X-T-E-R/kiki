@@ -320,9 +320,10 @@ export class SessionAgentProfileCatalogService
 
   private reproject(): boolean {
     try {
+      const disabledNamedProfiles = this.disabledNamedProfileNames();
       const projection = projectAgentProfileCatalog({
         entries: this.relevantEntries(),
-        disabledNamedProfiles: this.disabledNamedProfileNames(),
+        disabledNamedProfiles,
         routeBaseMissingCode: ErrorCodes.ROUTE_BASE_MISSING,
         warn: (message) => warnCatalog(this.log, message),
       });
@@ -334,6 +335,7 @@ export class SessionAgentProfileCatalogService
       this.publicRoutes = new Map(projection.publicRoutes);
       this.routeDiagnosticsValue = [...projection.routeDiagnostics];
       for (const target of nativeTargets(this.executors.list())) {
+        if (disabledNamedProfiles.has(target.name)) continue;
         if (this.resolvable.has(target.name)) {
           warnCatalog(this.log, `Duplicate agent profile "${target.name}" conflicts with the reserved native engine target; keeping the registered definition.`);
           continue;
