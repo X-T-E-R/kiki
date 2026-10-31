@@ -266,19 +266,28 @@ describe('RightRail fixed and switchable parts', () => {
 
   it('keeps every fixed part in both modes', async () => {
     const rail = await renderRail({ sessionPending: [pendingApproval] });
+    // What the reader checks most comes first and open: what waits (pinned),
+    // the figures, the work in hand, the team; the schedule and the folded
+    // reference tail follow.
     const standardReadingOrder = [
       '[data-inspector-needs-you]',
       '[data-rail-agent-panel-slot]',
-      '[data-rail-background]',
+      '#rail-todos',
+      '[data-tasks-scroll]',
       '[data-inspector-agents]',
       '[data-rail-session-cron]',
-      // The capabilities and session chapters render nothing without a
-      // connection / session in these fixtures; in production they sit between
-      // agents and record, and record and the page's end.
+      '[data-inspector-tail]',
     ].map((selector) => rail.querySelector(selector));
     expect(standardReadingOrder.every((node) => node !== null)).toBe(true);
     expect(rail.querySelector('[data-rail-pinned] [data-inspector-needs-you]')).not.toBeNull();
-    expect(rail.querySelector('#rail-todos [data-rail-session-cron]')).not.toBeNull();
+    // The overview follows the page; the pinned block keeps who and what waits.
+    expect(rail.querySelector('[data-rail-pinned] [data-rail-agent-panel-slot]')).toBeNull();
+    // The team reads without a click.
+    expect(rail.querySelector('[data-inspector-agents] [data-agent-tree]')).not.toBeNull();
+    // Every scrolling section parts from the one above by a hairline.
+    for (const selector of ['[data-rail-agent-panel-slot]', '#rail-todos', '[data-inspector-tail]']) {
+      expect(rail.querySelector(selector)?.classList.contains('border-t')).toBe(true);
+    }
     for (let index = 1; index < standardReadingOrder.length; index += 1) {
       const before = standardReadingOrder[index - 1]!;
       const after = standardReadingOrder[index]!;
@@ -353,9 +362,8 @@ describe('RightRail fixed and switchable parts', () => {
       expect(well.className).not.toMatch(/(?:^|\s)(?:rounded|bg|border|ring|shadow)(?:-|\s|$)/);
       expect(well.querySelector('#rail-overview-title')).not.toBeNull();
       expect(well.querySelector<HTMLElement>('[data-panel-props="overview"]')?.dataset['panelMode']).toBe(mode);
-      if (mode === 'cockpit') {
-        expect(well.closest('[data-rail-switchable]')?.classList.contains('pt-5')).toBe(true);
-      }
+      // The section itself carries the page's one hairline, in both modes.
+      expect(well.closest('[data-rail-switchable]')?.classList.contains('border-t')).toBe(true);
     }
   });
 
@@ -385,20 +393,17 @@ describe('RightRail fixed and switchable parts', () => {
     // Zero rects in jsdom read as fully visible: choosing cockpit does not scroll.
     await choose(rail, 'cockpit');
     expect(scrollIntoView).not.toHaveBeenCalled();
-    // The lift is measured against the slot that is mounted when the mode
-    // changes; give it a rect below the fold and the scroller a viewport.
+    // The slot is one node in both modes; give it a rect below the fold and
+    // the scroller a viewport.
     const rect = (top: number, bottom: number) =>
       ({ top, bottom, left: 0, right: 0, width: 0, height: bottom - top, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
-    const mounted = () => rail.querySelector<HTMLElement>('[data-rail-agent-panel-slot]')!;
-    const slotRect = vi.spyOn(mounted(), 'getBoundingClientRect').mockReturnValue(rect(1200, 1500));
+    expect(rail.querySelector('[data-rail-agent-panel-slot]')).toBe(slot);
+    const slotRect = vi.spyOn(slot, 'getBoundingClientRect').mockReturnValue(rect(1200, 1500));
     const scrollerRect = vi.spyOn(scroller, 'getBoundingClientRect').mockReturnValue(rect(0, 900));
-    Object.assign(mounted(), { scrollIntoView });
     // Choosing the standard mode never scrolls…
     await choose(rail, 'default');
     expect(scrollIntoView).not.toHaveBeenCalled();
     // …but with the block below the fold, choosing cockpit lifts it into view.
-    Object.assign(mounted(), { scrollIntoView });
-    vi.spyOn(mounted(), 'getBoundingClientRect').mockReturnValue(rect(1200, 1500));
     await choose(rail, 'cockpit');
     expect(scrollIntoView.mock.calls.length).toBe(1);
     expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'smooth' }));
@@ -536,19 +541,17 @@ describe('RightRail shared chapters', () => {
     const main = await renderRail();
     const child = await renderRail({ subagent: context });
 
-    // Main's team chapter is a folded summary line; a click unfolds the roster.
-    expect(main.querySelector('[data-inspector-agents]')).not.toBeNull();
-    expect(main.querySelector('[data-agent-tree]')).toBeNull();
-    await act(async () => { main.querySelector<HTMLButtonElement>('[data-inspector-agents] > div > button[aria-expanded="false"]')?.click(); });
+    // Main's team is open from the start: its rows read without a click.
+    expect(main.querySelector('[data-inspector-agents] [aria-expanded]')).toBeNull();
     expect(main.querySelector('[data-agent-tree] [data-agent-id="agent-1"]')).not.toBeNull();
     expect(main.querySelector('[data-terminate-all-subagents]')).not.toBeNull();
-    // Background tasks sit with the record chapter on both pages.
+    // Background tasks are their own open section on both pages, each row
+    // with its stop; nothing repeats them in the pinned block.
     for (const rail of [main, child]) {
-      expect(rail.querySelector('[data-tasks-scroll] [data-task-open="background-1"]')).not.toBeNull();
+      expect(rail.querySelector('[data-rail-section="tasks"] [data-tasks-scroll] [data-task-open="background-1"]')).not.toBeNull();
       expect(rail.querySelector('[data-task-open="subagent-1"]')).toBeNull();
       expect(rail.querySelector('[data-panel-props]')).not.toBeNull();
-      // The pinned "现在" block carries the one-line background summary.
-      expect(rail.querySelector('[data-rail-pinned] [data-rail-background]')).not.toBeNull();
+      expect(rail.querySelector('[data-rail-pinned] [data-tasks-scroll]')).toBeNull();
     }
     expect(child.querySelector('[data-inspector-agents]')).toBeNull();
     expect(main.querySelector('[data-subagent-context]')).toBeNull();
@@ -631,11 +634,10 @@ describe('RightRail shared chapters', () => {
       expect(empty.querySelector('[data-rail-agent-panel-slot]')).not.toBeNull();
       expect(empty.querySelector('[data-subagent-context]') !== null).toBe(subagent !== undefined);
     }
-    // The team chapter is a folded summary line: the tree stays out until asked.
+    // A populated team is open: its status chips and rows are on the page.
     const populated = await renderRail();
-    expect(populated.querySelector('[data-inspector-agents]')).not.toBeNull();
-    expect(populated.querySelector('[data-agent-tree]')).toBeNull();
-    expect(populated.querySelector('[data-inspector-agents] > div > button[aria-expanded="false"]')).not.toBeNull();
+    expect(populated.querySelector('[data-inspector-agents] [data-roster-summary]')).not.toBeNull();
+    expect(populated.querySelector('[data-inspector-agents] [data-agent-tree]')).not.toBeNull();
   });
 
   it('windows a large roster, folds ended agents and never sets failures apart', async () => {
@@ -647,7 +649,6 @@ describe('RightRail shared chapters', () => {
       })),
     ]);
     const rail = await renderRail({ agentForest: large });
-    await act(async () => { rail.querySelector<HTMLButtonElement>('[data-inspector-agents] > div > button[aria-expanded="false"]')?.click(); });
     const rows = rail.querySelectorAll('[data-agent-tree] [data-agent-id]');
     expect(rows.length).toBeGreaterThan(0);
     expect(rows.length).toBeLessThan(60);
@@ -675,7 +676,6 @@ describe('RightRail shared chapters', () => {
       })),
     ]);
     const rail = await renderRail({ agentForest: historical });
-    await act(async () => { rail.querySelector<HTMLButtonElement>('[data-inspector-agents] > div > button[aria-expanded="false"]')?.click(); });
     expect(rail.querySelector('[data-agent-id="parent"]')?.getAttribute('data-roster-bucket')).toBe('unknown');
     expect(rail.querySelector('[data-agent-id="old-0"]')).toBeNull();
     const unknown = rail.querySelector<HTMLButtonElement>('[data-roster-unknown-group]');
@@ -728,7 +728,6 @@ describe('RightRail shared chapters', () => {
     await act(async () => { rail.querySelector<HTMLButtonElement>('[data-needs-you-approve="a1"]')!.click(); });
     expect(decided).toEqual(['a1:approved']);
     // The lead's folded row says a descendant waits.
-    await act(async () => { rail.querySelector<HTMLButtonElement>('[data-inspector-agents] > div > button[aria-expanded="false"]')?.click(); });
     expect(rail.querySelector('[data-agent-id="lead"]')?.textContent).toContain('1 needs you below');
   });
 
@@ -736,7 +735,6 @@ describe('RightRail shared chapters', () => {
     const opened: string[] = [];
     const onInspectMain = vi.fn();
     const rail = await renderRail({ onOpenSubagent: (agentId) => { opened.push(agentId); }, onInspectMain });
-    await act(async () => { rail.querySelector<HTMLButtonElement>('[data-inspector-agents] > div > button[aria-expanded="false"]')?.click(); });
     await act(async () => { rail.querySelector<HTMLButtonElement>('[data-agent-tree] [data-agent-id="agent-1"]')!.click(); });
     // The same handler the timeline card uses (SessionView.openAgent): the
     // preview opens, and the rail does not turn to the agent on its own.
@@ -836,7 +834,6 @@ describe('opening a subagent: timeline card and rail are one entry', () => {
       'needs-you': '[data-needs-you-from="worker"]',
     }[entry];
     if (entry === 'roster') {
-      await act(async () => { container.querySelector<HTMLButtonElement>('[data-inspector-agents] > div > button[aria-expanded="false"]')?.click(); });
     }
     const target = () => container.querySelector<HTMLElement>(selector)!;
     await press(target());

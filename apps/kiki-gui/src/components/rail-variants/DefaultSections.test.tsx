@@ -3,7 +3,7 @@
 /**
  * The rail's capabilities chapter is ONE fold: the observation tabs (tools,
  * skills, subagent targets) sit beside the session switches (plugins, system
- * capabilities, MCP servers), because "它能用什么" covers both. Plugin and MCP
+ * capabilities, MCP servers), because "能力" covers both. Plugin and MCP
  * tools remain observable in the complete tools inventory.
  *
  * The agent-panel and plugin-usage reads fail independently. A failed read
@@ -231,7 +231,7 @@ describe('CapabilitiesBlock', () => {
     expect(readCapabilities).not.toHaveBeenCalled();
     expect(getUsage).not.toHaveBeenCalled();
     expect(head.getAttribute('aria-expanded')).toBe('false');
-    expect(head.textContent).toContain('它能用什么');
+    expect(head.textContent).toContain('能力');
     expect(container.querySelector('[data-agent-capabilities-section]')).toBeNull();
     expect(container.querySelector('[data-rail-plugin="demo"]')).toBeNull();
 
