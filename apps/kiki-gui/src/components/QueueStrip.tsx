@@ -46,7 +46,7 @@ import type { DeferredAppendTiming, Task } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { parseSelectionCarryovers, stripThreadRefContext } from '@kiki/session-core/composer';
 import type { MediaRef } from '@kiki/session-core/composer/media';
-import { isOrdinaryQueueItem, type QueuedPromptPreview, type TranscriptDetailStatus } from '@kiki/session-core/session';
+import { isOrdinaryQueueItem, replaceAgentRefs, type QueuedPromptPreview, type TranscriptDetailStatus } from '@kiki/session-core/session';
 import type { TranscriptGlobalEntityCoverage } from '@kiki/transcript';
 import { mergeSessionQueueRows, pendingModelSwitchChange, type SessionQueueRow } from '@kiki/session-core/session/modelSwitchQueue';
 import { useI18n } from '../i18n';
@@ -184,7 +184,7 @@ export function QueueHeaderSummary({
       {first !== undefined ? (
         <>
           <span data-queue-first-preview className="min-w-0 truncate text-ink-faint">
-            {previewText === '' ? t('sv.queueNoText') : stripThreadRefContext(previewText)}
+            {previewText === '' ? t('sv.queueNoText') : replaceAgentRefs(stripThreadRefContext(previewText))}
           </span>
           <span data-queue-first-timing className="shrink-0 text-ink-faint">
             {t(TIMING_SHORT_KEY[first.timing])}
