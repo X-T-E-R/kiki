@@ -2656,6 +2656,63 @@ describe('TranscriptService live integration', () => {
     },
   );
 
+  it('certifies an unstarted main as complete empty history across cold and live first reads', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-unstarted-'));
+    const sessionDir = join(home, 'sessions', 'ws', 's1');
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(sessionDir, 'state.json'), JSON.stringify({ agents: {} }));
+    const agents = new FakeAgents();
+    const service = new TranscriptService({ homeDir: home, core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
+    try {
+      const snapshot = await service.readColdSnapshot('s1', 'main');
+      expect(snapshot).toMatchObject({ items: [], toolCallCount: 0, toolCallCountKnown: true, hasMoreOlder: false });
+      const baseline = await readColdSessionViewBaseline(service, 's1', 'main', 'delta', new AbortController().signal);
+      expect(baseline).toMatchObject({ coverage: { kind: 'full', hasMoreOlder: false }, read: { readiness: 'ready' } });
+      service.forSessionLive('s1', { tailFirst: true });
+      await service.whenReady('s1');
+      const live = await service.ensureAgentHistory('s1', 'main', { tailFirst: true });
+      expect(live?.snapshot()).toMatchObject({ items: [], toolCallCount: 0, toolCallCountKnown: true, hasMoreOlder: false });
+      const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
+      expect(page).toMatchObject({ items: [], has_more: false, coverage: { kind: 'full', hasMoreOlder: false }, read: { readiness: 'ready' } });
+      expect(agents.get('main')).toBeUndefined();
+      expect(service.getMaterializedAgentToolCallCounts('s1', ['main']).get('main')).toBe(0);
+      expect((await service.readColdSnapshot('s1', 'missing-child'))?.toolCallCountKnown).toBe(false);
+      await writeFile(join(sessionDir, 'state.json'), JSON.stringify({ agents: { main: { type: 'main' } } }));
+      expect((await service.readColdSnapshot('s1', 'main'))?.toolCallCountKnown).toBe(false);
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it.each(['cold', 'live'] as const)('verifies a small materialized empty main during %s tail-first reads', async (source) => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-materialized-empty-'));
+    const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+    await mkdir(wireDir, { recursive: true });
+    const path = join(wireDir, 'wire.jsonl');
+    await writeFile(path, `${JSON.stringify({ type: 'metadata', protocol_version: '1.6', created_at: 1 })}\n${JSON.stringify({ type: 'runtime.set_binding', workspaceId: 'ws', runtimeId: 'local', time: 2 })}\n`);
+    const agents = new FakeAgents();
+    const verify = vi.fn(async () => true);
+    if (source === 'live') {
+      await writeFixtureFile(join(wireDir, WIRE_TRANSCRIPT_RECEIPT_KEY), JSON.stringify({ format: 2, epoch: 'fresh-empty', state: 'open', trusted: true }));
+      agents.add('main', { wire: { ...stubAgentWire(), verifyTranscriptLiveEpoch: verify, isTranscriptLiveEpochVerified: () => true } });
+    }
+    const service = new TranscriptService({ homeDir: home, core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
+    try {
+      if (source === 'live') {
+        service.forSessionLive('s1', { tailFirst: true });
+        await service.whenReady('s1');
+        expect((await service.ensureAgentHistory('s1', 'main', { tailFirst: true }))?.snapshot()).toMatchObject({ items: [], toolCallCountKnown: true, hasMoreOlder: false });
+        expect(verify).toHaveBeenCalled();
+      }
+      const baseline = await readColdSessionViewBaseline(service, 's1', 'main', 'delta', new AbortController().signal);
+      expect(baseline).toMatchObject({ snapshot: { items: [], toolCallCount: 0, toolCallCountKnown: true }, coverage: { kind: 'full', hasMoreOlder: false }, read: { readiness: 'ready' } });
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
   it('[STAT-R3] rejects zero-byte wire proofs but counts zero tools in a sealed nonempty wire', async () => {
     const scenarios = [
       { name: 'missing', content: undefined, expectedKnown: false },

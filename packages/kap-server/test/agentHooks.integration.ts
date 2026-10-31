@@ -64,3 +64,33 @@ it('exposes agent hook sources and effective rules through the typed read-only R
     expect(invalidView.diagnostics).toHaveLength(1);
   } finally { await server.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 });
+
+it('inspects an unmaterialized main with native defaults without starting the live or cold session', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'kiki-hooks-unstarted-'));
+  await writeFile(join(home, 'config.toml'), [
+    '[search]', 'enabled = false', '[hooks]', 'schema_version = 2',
+    '[[hooks.rules]]', 'id = "focus"', 'event = "step.before"',
+    '[hooks.rules.action]', 'type = "inject"', 'text = "Inspect evidence before choosing"', '',
+  ].join('\n'));
+  const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const created = await fetch(`${base}/api/sessions`, { method: 'POST', headers: authHeaders(server, { 'content-type': 'application/json' }), body: JSON.stringify({ metadata: { cwd: home } }) }).then(response => response.json()) as { code: number; data: { id: string } };
+    expect(created.code).toBe(0);
+    const read = async (agent = 'main', session = created.data.id) => fetch(`${base}/api/sessions/${session}/agents/${agent}/hooks`, { headers: authHeaders(server) }).then(response => response.json()) as Promise<{ code: number; data: unknown }>;
+    expect(getLiveSessionById(server.core.accessor, created.data.id)?.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+    for (const cold of [false, true]) {
+      if (cold) await closeSessionById(server.core.accessor, created.data.id);
+      const response = await read();
+      expect(response.code).toBe(0);
+      const view = agentHooksInspectSchema.parse(response.data);
+      expect(view.binding).toEqual({ executorId: 'native', agentRole: 'root' });
+      expect(view.rules).toContainEqual(expect.objectContaining({ id: 'user/focus', active: true, completedSteps: 0, resetPending: false }));
+      expect(view.sources).toContainEqual({ namespace: 'user', path: join(home, 'config.toml'), status: 'loaded' });
+      expect((await read('missing')).code).toBe(40001);
+      expect(getLiveSessionById(server.core.accessor, created.data.id)?.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
+      if (cold) expect(getLiveSessionById(server.core.accessor, created.data.id)).toBeUndefined();
+    }
+    expect((await read('main', 'missing-session')).code).toBe(40401);
+  } finally { await server.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+});

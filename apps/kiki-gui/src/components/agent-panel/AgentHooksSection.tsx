@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { AgentHooksInspect } from '@kiki/protocol';
 import { ApiError } from '../../lib/client';
@@ -9,6 +9,7 @@ import { InspectorChevron, INSPECTOR_HEAD } from './InspectorSection';
 export interface AgentHooksSectionProps {
   readonly sessionId: string;
   readonly agentId: string;
+  readonly refreshKey?: string;
 }
 
 /**
@@ -16,7 +17,7 @@ export interface AgentHooksSectionProps {
  * absence like other capability gaps — not a retryable failure.
  */
 function isHooksUnsupportedError(error: unknown): boolean {
-  if (error instanceof ApiError && error.code === 404) return true;
+  if (error instanceof ApiError) return error.code === 404;
   const message = error instanceof Error ? error.message : '';
   return /unknown (route|service)|not found|unsupported/i.test(message);
 }
@@ -99,7 +100,7 @@ function RuleRow({ rule }: { readonly rule: AgentHooksInspect['rules'][number] }
  * visible is the opposite case — a source that failed to load or a diagnostic
  * the user has to act on renders the chapter even when no rule survived.
  */
-export const AgentHooksSection = memo(function AgentHooksSection({ sessionId, agentId }: AgentHooksSectionProps) {
+export const AgentHooksSection = memo(function AgentHooksSection({ sessionId, agentId, refreshKey }: AgentHooksSectionProps) {
   const { t } = useI18n();
   const { client } = useConnection();
   const [open, setOpen] = useState(false);
@@ -107,8 +108,22 @@ export const AgentHooksSection = memo(function AgentHooksSection({ sessionId, ag
     queryKey: ['agent-hooks-inspect', sessionId, agentId],
     queryFn: () => client.getAgentHooksInspect(sessionId, agentId),
     refetchInterval: open ? 10_000 : false,
+    refetchOnWindowFocus: (query) => query.state.status === 'error' && !isHooksUnsupportedError(query.state.error),
     retry: false,
   });
+  const previousRefreshKey = useRef(refreshKey);
+  const retryable = inspect.isError && !isHooksUnsupportedError(inspect.error);
+  useEffect(() => {
+    if (previousRefreshKey.current === refreshKey) return;
+    previousRefreshKey.current = refreshKey;
+    if (retryable) void inspect.refetch({ cancelRefetch: false });
+  }, [refreshKey, retryable, inspect.refetch]);
+  useEffect(() => {
+    if (!retryable) return;
+    const retry = () => { void inspect.refetch({ cancelRefetch: false }); };
+    window.addEventListener('focus', retry);
+    return () => { window.removeEventListener('focus', retry); };
+  }, [retryable, inspect.refetch]);
 
   if (inspect.isPending) {
     return <section data-agent-hooks-section data-agent-hooks-state="loading">
