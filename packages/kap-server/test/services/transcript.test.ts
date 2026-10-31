@@ -2654,6 +2654,35 @@ describe('TranscriptService live integration', () => {
     },
   );
 
+  it('certifies an unstarted main as complete empty history across cold and live first reads', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-unstarted-'));
+    const sessionDir = join(home, 'sessions', 'ws', 's1');
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(join(sessionDir, 'state.json'), JSON.stringify({ agents: {} }));
+    const agents = new FakeAgents();
+    const service = new TranscriptService({ homeDir: home, core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), agents) });
+    try {
+      const snapshot = await service.readColdSnapshot('s1', 'main');
+      expect(snapshot).toMatchObject({ items: [], toolCallCount: 0, toolCallCountKnown: true, hasMoreOlder: false });
+      const baseline = await readColdSessionViewBaseline(service, 's1', 'main', 'delta', new AbortController().signal);
+      expect(baseline).toMatchObject({ coverage: { kind: 'full', hasMoreOlder: false }, read: { readiness: 'ready' } });
+      service.forSessionLive('s1', { tailFirst: true });
+      await service.whenReady('s1');
+      const live = await service.ensureAgentHistory('s1', 'main', { tailFirst: true });
+      expect(live?.snapshot()).toMatchObject({ items: [], toolCallCount: 0, toolCallCountKnown: true, hasMoreOlder: false });
+      const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
+      expect(page).toMatchObject({ items: [], has_more: false, coverage: { kind: 'full', hasMoreOlder: false }, read: { readiness: 'ready' } });
+      expect(agents.get('main')).toBeUndefined();
+      expect(service.getMaterializedAgentToolCallCounts('s1', ['main']).get('main')).toBe(0);
+      expect((await service.readColdSnapshot('s1', 'missing-child'))?.toolCallCountKnown).toBe(false);
+      await writeFile(join(sessionDir, 'state.json'), JSON.stringify({ agents: { main: { type: 'main' } } }));
+      expect((await service.readColdSnapshot('s1', 'main'))?.toolCallCountKnown).toBe(false);
+    } finally {
+      service.dispose();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
   it('[STAT-R3] rejects zero-byte wire proofs but counts zero tools in a sealed nonempty wire', async () => {
     const scenarios = [
       { name: 'missing', content: undefined, expectedKnown: false },
