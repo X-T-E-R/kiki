@@ -30,11 +30,15 @@ export function agentRefsOfBlock(block: Pick<UserBlock, 'sourceOrigin'>): readon
 
 /**
  * One run a reference produced: the child it opened and the task that records
- * it, so a chip can jump to the run and say how many there are.
+ * it, so a chip can jump to the run and tell the runs apart.
  */
 export interface AgentRefRun {
   readonly agentId: string;
   readonly taskId: string;
+  /** The run's own description — what distinguishes it from the reference's other runs. */
+  readonly label?: string;
+  /** The task's lifecycle status; a run is never `failed`/`cancelled` (those read as rejected). */
+  readonly status: Task['status'];
   /** Task start time (ISO); a run with none sorts as the oldest. */
   readonly startedAt?: string;
 }
@@ -74,7 +78,13 @@ export function agentRefDelegation(
   if (pool.length === 0) return { status: 'pending' };
   const runs = pool
     .filter((task) => task.agent_id !== undefined && task.status !== 'failed' && task.status !== 'cancelled')
-    .map((task) => ({ agentId: task.agent_id!, taskId: task.id, startedAt: task.started_at }))
+    .map((task) => ({
+      agentId: task.agent_id!,
+      taskId: task.id,
+      label: task.description?.trim() === '' ? undefined : task.description,
+      status: task.status,
+      startedAt: task.started_at,
+    }))
     .sort(byMostRecent);
   if (runs.length === 0) return { status: 'rejected' };
   const latest = runs[0]!;

@@ -51,7 +51,7 @@ describe('agentRefDelegation', () => {
       status: 'delegated',
       agentId: 'agent-child-1',
       taskId: 'task-1',
-      runs: [{ agentId: 'agent-child-1', taskId: 'task-1', startedAt: undefined }],
+      runs: [{ agentId: 'agent-child-1', taskId: 'task-1', label: 'Delegate', status: 'running', startedAt: undefined }],
     });
   });
 
@@ -74,21 +74,21 @@ describe('agentRefDelegation', () => {
       status: 'delegated',
       agentId: 'agent-own',
       taskId: 'task-own',
-      runs: [{ agentId: 'agent-own', taskId: 'task-own', startedAt: undefined }],
+      runs: [{ agentId: 'agent-own', taskId: 'task-own', label: 'Delegate', status: 'running', startedAt: undefined }],
     });
   });
 
   it('jumps to the most recent child and lists every run when one reference ran several', () => {
-    const older = task({ id: 'task-older', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-older', started_at: '2026-01-01T10:00:00.000Z' });
-    const newer = task({ id: 'task-newer', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-newer', started_at: '2026-01-01T12:00:00.000Z' });
+    const older = task({ id: 'task-older', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-older', description: 'First sweep', status: 'completed', started_at: '2026-01-01T10:00:00.000Z' });
+    const newer = task({ id: 'task-newer', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-newer', description: 'Second sweep', status: 'completed', started_at: '2026-01-01T12:00:00.000Z' });
     const delegation = agentRefDelegation(ref, [older, newer], MESSAGE_ID);
     expect(delegation).toEqual({
       status: 'delegated',
       agentId: 'agent-newer',
       taskId: 'task-newer',
       runs: [
-        { agentId: 'agent-newer', taskId: 'task-newer', startedAt: '2026-01-01T12:00:00.000Z' },
-        { agentId: 'agent-older', taskId: 'task-older', startedAt: '2026-01-01T10:00:00.000Z' },
+        { agentId: 'agent-newer', taskId: 'task-newer', label: 'Second sweep', status: 'completed', startedAt: '2026-01-01T12:00:00.000Z' },
+        { agentId: 'agent-older', taskId: 'task-older', label: 'First sweep', status: 'completed', startedAt: '2026-01-01T10:00:00.000Z' },
       ],
     });
   });
