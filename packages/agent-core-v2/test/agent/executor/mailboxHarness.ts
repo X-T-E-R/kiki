@@ -18,6 +18,13 @@ import { AgentCollaborationMessagingService } from '#/session/agentCollaboration
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { ILogService } from '#/_base/log/log';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { stubLog } from '../../_base/log/stubs';
 
 export interface ExternalMailboxHarness {
   readonly messaging: IAgentCollaborationMessagingService;
@@ -90,6 +97,10 @@ export function attachExternalMailboxHarness(
     list: () => [handle],
   } as unknown as IAgentLifecycleService;
   const collaboration = new TestInstantiationService();
+  collaboration.set(ILogService, stubLog());
+  collaboration.stub(ISessionManager, { get: () => undefined });
+  collaboration.set(IFileSystemStorageService, new InMemoryStorageService());
+  collaboration.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
   collaboration.set(IAgentCollaborationMessageStore, store);
   collaboration.set(IAgentLifecycleService, lifecycle);
   collaboration.set(ISessionContext, {

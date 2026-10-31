@@ -58,6 +58,11 @@ import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { externalExecutorKey } from '#/agent/execution/externalExecutorOps';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { stubLog } from '../../_base/log/stubs';
 import { createTestAgent } from '../../harness';
 import { executeTool } from '../../tools/fixtures/execute-tool';
 import { connectInProcessScriptedAgent, createInProcessScriptedAgent, type InProcessAgentScript } from '../../../../acp-client/test/fixtures/in-process-scripted-agent';
@@ -148,6 +153,7 @@ function modelSwitchFor(executionIx: TestInstantiationService, metadata: ISessio
   state.contributeState(contextRevisionKey);
   state.contributeState(contextWindowEpochKey);
   const ix = new TestInstantiationService();
+  ix.set(ILogService, stubLog());
   ix.set(IAgentStateService, state);
   ix.set(IEventDispatcher, {
     dispatch: async (event: { operationId?: string; agentId?: string; fromModel?: string; toModel?: string; mode?: 'direct'; thinking?: string; newEpoch?: number; summaryGenerated?: boolean; input?: unknown }) => {
@@ -421,6 +427,8 @@ describe('recoverable ACP broken resume', () => {
       scope: (subKey?: string) => subKey === undefined ? 'session/scope' : `session/scope/${subKey}`,
     } as ISessionContext;
     const messagingIx = new TestInstantiationService();
+    messagingIx.set(IFileSystemStorageService, new InMemoryStorageService());
+    messagingIx.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
     messagingIx.set(IAgentCollaborationMessageStore, mailbox.store);
     messagingIx.set(IAgentLifecycleService, lifecycle);
     messagingIx.set(ISessionContext, session);
@@ -693,6 +701,8 @@ describe('recoverable ACP broken resume', () => {
       scope: (subKey?: string) => subKey === undefined ? 'session/scope' : `session/scope/${subKey}`,
     } as ISessionContext;
     const messagingIx = new TestInstantiationService();
+    messagingIx.set(IFileSystemStorageService, new InMemoryStorageService());
+    messagingIx.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
     messagingIx.set(IAgentCollaborationMessageStore, mailbox.store);
     messagingIx.set(IAgentLifecycleService, lifecycle);
     messagingIx.set(ISessionContext, session);
