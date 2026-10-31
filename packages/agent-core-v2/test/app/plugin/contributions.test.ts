@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { PluginManager } from '#/app/plugin/manager';
 import { parseManifest } from '#/app/plugin/manifest';
+import { PluginHost } from '#/app/plugin/host';
 
 const homes: string[] = [];
 async function temp(): Promise<string> {
@@ -30,12 +31,44 @@ function manifest(description = 'Echo value', permission = 'workspace') {
   };
 }
 
-async function makeSource(dir: string, data = manifest()): Promise<void> {
+async function makeSource(dir: string, data: unknown = manifest()): Promise<void> {
   await writeFile(path.join(dir, 'kimi.plugin.json'), JSON.stringify(data));
   await writeFile(path.join(dir, 'entry.mjs'), 'export function register() {}');
 }
 
 describe('plugin extension compatibility and consent', () => {
+  it.each([undefined, false, true])('preserves concurrencySafe=%s through manifest parsing and runner registration', async (concurrencySafe) => {
+    const root = await temp();
+    const data = manifest();
+    const definition = { ...data['x-kiki'].tools[0]!, concurrencySafe };
+    data['x-kiki'].tools = [definition];
+    await makeSource(root, data);
+    await writeFile(path.join(root, 'entry.mjs'), `export function register(api) { api.registerTool(${JSON.stringify(definition)}, async () => ({ output: 'registered' })); }`);
+    const parsed = await parseManifest(root);
+    expect(parsed.diagnostics).toEqual([]);
+    const tools = parsed.manifest!.kiki!.tools!;
+    expect(tools[0]?.concurrencySafe).toBe(concurrencySafe);
+    expect(tools[0]?.accesses).toEqual([{ kind: 'all' }]);
+    const host = new PluginHost('example', path.join(root, 'entry.mjs'), tools);
+    try {
+      await expect(host.execute('echo', {}, new AbortController().signal)).resolves.toMatchObject({ output: 'registered' });
+    } finally { host.stop(); }
+  });
+
+  it('rejects non-boolean concurrency declarations and registration drift', async () => {
+    const root = await temp();
+    const data = manifest();
+    await makeSource(root, { ...data, 'x-kiki': { ...data['x-kiki'], tools: [{ ...data['x-kiki'].tools[0]!, concurrencySafe: 'true' }] } });
+    expect((await parseManifest(root)).diagnostics.some((item) => item.severity === 'error')).toBe(true);
+    await makeSource(root, data);
+    await writeFile(path.join(root, 'entry.mjs'), `export function register(api) { api.registerTool(${JSON.stringify({ ...data['x-kiki'].tools[0]!, concurrencySafe: true })}, async () => ({ output: 'must not run' })); }`);
+    const parsed = await parseManifest(root);
+    const host = new PluginHost('example', path.join(root, 'entry.mjs'), parsed.manifest!.kiki!.tools!);
+    try {
+      await expect(host.execute('echo', {}, new AbortController().signal)).rejects.toThrow('changed tool definition');
+    } finally { host.stop(); }
+  });
+
   it('accepts a plugin that requires the 0.4.1 home bridge', async () => {
     const root = await temp();
     const data = manifest();

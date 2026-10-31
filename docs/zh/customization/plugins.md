@@ -491,6 +491,12 @@ const receipt = await context.messages.send({
 
 `minSendIntervalMs` 设置 Host 对同一目标的发送间隔。只有平台明确拒绝且未受理发送时，adapter 才能返回 `{ status: "failed", errorKind: "rate_limited", retryAfterMs }`；Kiki 对此最多重试两次。已投递但无消息 ID、部分投递和未知结果均不重试。内置信道同样使用 Host 的目标间隔；平台限流若未提供准确重试时长，则保留失败 receipt。
 
+### 原生工具并发
+
+工具的独立调用可以安全重叠执行时，在 `x-kiki.tools` 定义和传给 `api.registerTool` 的相同定义中设置 `"concurrencySafe": true`。省略或设为 `false` 时，保持原有调度行为。
+
+这项声明只改变调度：宽泛的 `accesses: [{ "kind": "all" }]` 不再让独立调用互斥。权限准入与审批仍使用原来的 `accesses`。显式声明的文件写入仍保持读写顺序，无法判定只读的 `Bash` 命令仍是屏障。插件须自行保证共享状态安全，并控制提供方的并发上限。
+
 ### 原生工具结果
 
 在 `x-kiki.tools` 下声明的原生工具可以返回文本和 PNG、JPEG 或 WebP 图像的 base64 data URL。大结果自动保存为会话附件：文本保留预览，并附上完整原件的路径和 `kimi-file://` 引用；图像通过会话附件引用继续显示。让 Agent 用 `Read` 分页读取完整文本，或用 `ReadMediaFile` 检查原图。插件作者仍按通常的格式返回结果，不需要自己拆分。

@@ -26,7 +26,8 @@ import type { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { IAgentProfileService } from '#/agent/profile/profile';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
-import type { ExecutableTool, RunnableToolExecution } from '#/tool/toolContract';
+import { ToolAccesses, type ExecutableTool, type RunnableToolExecution } from '#/tool/toolContract';
+import { toolContributionSchema } from '#/app/plugin/contributions';
 
 const directories: string[] = [];
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }); });
@@ -139,6 +140,28 @@ function executorForResults(results: readonly ToolExecutionResult['result'][], c
 const context = { turnId: 1, toolCallId: 'one', signal: new AbortController().signal };
 
 describe('plugin file target admission', () => {
+  it.each([undefined, false, true])('keeps permission and explicit file writes when concurrencySafe=%s', async (concurrencySafe) => {
+    const workspace = await dir();
+    const { service, tools, hosts } = setup(workspace);
+    const definition = toolContributionSchema.parse({ schemaVersion: 1, name: 'generate', description: 'Fixture generation', concurrencySafe });
+    vi.mocked(hosts.list).mockResolvedValue([{ pluginId: 'fixture', definition }]);
+    try {
+      await service.ready();
+      const execution = await tools.get('plugin__fixture__generate')!.resolveExecution({}) as RunnableToolExecution;
+      expect(execution.accesses).toEqual(ToolAccesses.all());
+      expect(execution.schedulingAccesses).toEqual(concurrencySafe === true ? ToolAccesses.readAll() : undefined);
+      expect(execution.approvalRule).toBe('plugin__fixture__generate');
+      definition.accesses.push({ kind: 'file', operation: 'write', path: '$.file' });
+      const write = await tools.get('plugin__fixture__generate')!.resolveExecution({ file: 'output.png' }) as RunnableToolExecution;
+      expect(write.accesses?.[1]).toMatchObject({ kind: 'file', operation: 'write' });
+      if (concurrencySafe) {
+        expect(write.schedulingAccesses?.[1]).toEqual(write.accesses?.[1]);
+        expect(ToolAccesses.conflict(write.schedulingAccesses!, ToolAccesses.readFile(path.join(workspace, 'output.png')))).toBe(true);
+        expect(ToolAccesses.conflict(execution.schedulingAccesses!, ToolAccesses.all())).toBe(true);
+      }
+    } finally { await service.dispose(); }
+  });
+
   it('resolves $.file into a real target and only passes the approved outside target to its own host', async () => {
     const workspace = await dir();
     const outside = await dir();

@@ -32,6 +32,8 @@ export interface PluginToolDefinition {
   readonly description: string;
   readonly parameters?: Record<string, unknown>;
   readonly accesses?: readonly ToolAccess[];
+  /** Treat broad access as read-only for scheduling; permissions and declared file conflicts remain unchanged. */
+  readonly concurrencySafe?: boolean;
   readonly display?: Record<string, unknown>;
   readonly approvalRule?: string;
   readonly disclosure?: 'inline' | 'deferred';
