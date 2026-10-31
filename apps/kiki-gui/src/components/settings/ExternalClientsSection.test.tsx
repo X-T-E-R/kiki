@@ -263,10 +263,10 @@ describe('external clients settings panel', () => {
     expect(container.querySelector('[data-xc-empty]')).toBeNull();
   });
 
-  it('groups enabled plugin tools and saves their explicit grants without granting command access implicitly', async () => {
+  it.each([true, false])('requires explicit command consent before saving an unrestricted plugin grant (%s)', async requiresCommands => {
     const tool = 'plugin__fixture_media__generate';
     facade.list.mockResolvedValue({ connections: [chatgpt], listener: stopped,
-      toolCatalog: [{ pluginId: 'fixture-media', displayName: 'Fixture Media', tools: [{ name: tool, requiresCommands: true }] }] });
+      toolCatalog: [{ pluginId: 'fixture-media', displayName: 'Fixture Media', tools: [{ name: tool, requiresCommands }] }] });
     await render();
     (firstRow().querySelector('summary') as HTMLElement).click();
     await settle();
@@ -274,14 +274,67 @@ describe('external clients settings panel', () => {
     await settle();
     const group = firstRow().querySelector('[data-xc-plugin="fixture-media"]')!;
     expect(group.textContent).toContain('Fixture Media');
-    expect(group.textContent).toContain('Requires “Allow commands on this machine”');
     (group.querySelector(`[data-xc-tool="${tool}"]`) as HTMLInputElement).click();
     await settle();
-    (firstRow().querySelector('[data-xc-save]') as HTMLElement).click();
+    const save = firstRow().querySelector('[data-xc-save]') as HTMLButtonElement;
+    expect(save.disabled).toBe(requiresCommands);
+    expect(firstRow().querySelector('[data-xc-commands-hint]')?.textContent).toContain('Bash');
+    if (requiresCommands) {
+      save.click();
+      await settle();
+      expect(facade.update).not.toHaveBeenCalled();
+      expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+      expect(firstRow().querySelector('[data-xc-commands-required]')?.textContent).toContain('Enable it or deselect');
+      expect((firstRow().querySelector('#xc-conn_chatgpt-commands') as HTMLInputElement).checked).toBe(false);
+      (firstRow().querySelector('[data-xc-enable-commands]') as HTMLElement).click();
+      await settle();
+      expect(firstRow().querySelector('[data-xc-commands-required]')).toBeNull();
+      expect((firstRow().querySelector('#xc-conn_chatgpt-commands') as HTMLInputElement).checked).toBe(true);
+      expect(save.disabled).toBe(false);
+      expect(facade.update).not.toHaveBeenCalled();
+    }
+    save.click();
     await settle();
     (document.querySelector('[data-confirm-action="confirm"]') as HTMLElement).click();
     await settle();
-    expect(facade.update).toHaveBeenCalledWith(chatgpt.id, { tools: [...chatgpt.tools, tool] });
+    expect(facade.update).toHaveBeenCalledWith(chatgpt.id, requiresCommands
+      ? { tools: [...chatgpt.tools, tool], allowCommands: true }
+      : { tools: [...chatgpt.tools, tool] });
+  });
+
+  it.each(['enable', 'deselect'])('blocks a new invalid grant until explicit recovery by %s', async recovery => {
+    const tool = 'plugin__fixture_media__generate';
+    facade.list.mockResolvedValue({ connections: [], listener: stopped,
+      toolCatalog: [{ pluginId: 'fixture-media', displayName: 'Fixture Media', tools: [{ name: tool, requiresCommands: true }] }] });
+    await render();
+    (container.querySelector('[data-xc-add]') as HTMLElement).click();
+    await settle();
+    const name = container.querySelector('[data-xc-new-name]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => { setter.call(name, 'Media script'); name.dispatchEvent(new Event('input', { bubbles: true })); });
+    await settle();
+    (container.querySelector('[data-xc-create] [data-xc-tools="custom"]') as HTMLElement).click();
+    await settle();
+    const checkbox = container.querySelector(`[data-xc-create] [data-xc-tool="${tool}"]`) as HTMLInputElement;
+    checkbox.click();
+    await settle();
+    const save = container.querySelector('[data-xc-create-submit]') as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    save.click();
+    await settle();
+    expect(facade.create).not.toHaveBeenCalled();
+    (recovery === 'enable' ? container.querySelector('[data-xc-enable-commands]') as HTMLElement : checkbox).click();
+    await settle();
+    expect(save.disabled).toBe(false);
+    expect(container.querySelector('[data-xc-commands-required]')).toBeNull();
+    expect(facade.create).not.toHaveBeenCalled();
+    save.click();
+    await settle();
+    expect(facade.create).toHaveBeenCalledTimes(1);
+    const body = facade.create.mock.calls[0]![0];
+    expect(body.name).toBe('Media script');
+    expect(body.tools.includes(tool)).toBe(recovery === 'enable');
+    expect(body.allowCommands ?? false).toBe(recovery === 'enable');
   });
 
   it.each(['local', 'remote'])('creates only access settings for a %s client', async (access) => {

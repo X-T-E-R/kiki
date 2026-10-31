@@ -202,6 +202,11 @@ export function policyChangeOf(
   return narrowed ? 'access' : 'none';
 }
 
+function needsCommandAccess(draft: ConnectionDraft, catalog: readonly ExternalClientToolGroup[]): boolean {
+  return !draft.allowCommands && draft.toolPreset === 'custom'
+    && catalog.some(group => group.tools.some(tool => tool.requiresCommands && draft.tools.includes(tool.name)));
+}
+
 function AccessEditor({ draft, onChange, disabled, idPrefix }: {
   draft: ConnectionDraft;
   onChange: (next: ConnectionDraft) => void;
@@ -292,6 +297,15 @@ function AccessEditor({ draft, onChange, disabled, idPrefix }: {
         <p data-xc-commands-hint className={`text-[12px] leading-4 ${draft.allowCommands ? 'text-amber-ink' : 'text-ink-faint'}`}>
           {t('st.xc.commandsHint')}
         </p>
+        {needsCommandAccess(draft, toolCatalog) ? (
+          <div data-xc-commands-required role="alert" className="space-y-2 border-l-2 border-amber-rule py-1 pl-3">
+            <p className="text-[12px] leading-4 text-amber-ink">{t('st.xc.pluginCommandsBlocked')}</p>
+            <button type="button" data-xc-enable-commands className={SECONDARY_BUTTON} disabled={disabled}
+              onClick={() => { onChange({ ...draft, allowCommands: true }); }}>
+              {t('st.xc.enableCommands')}
+            </button>
+          </div>
+        ) : null}
       </div>
       <Group label={t('st.xc.memory')}>
         <div className="flex flex-wrap gap-x-4 gap-y-1">
@@ -543,7 +557,9 @@ function ConnectionRow({ connection, api, onChanged }: {
 }) {
   const { t, locale, time } = useI18n();
   const navigate = useNavigate();
+  const toolCatalog = useContext(ToolCatalogContext);
   const [draft, setDraft] = useState<ConnectionDraft>(() => draftOf(connection));
+  const commandsBlocked = needsCommandAccess(draft, toolCatalog);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [busy, setBusy] = useState(false);
   const [revoking, setRevoking] = useState(false);
@@ -564,6 +580,7 @@ function ConnectionRow({ connection, api, onChanged }: {
   }
 
   const save = async (confirmed = false) => {
+    if (commandsBlocked) return;
     if (draft.name.trim() === '') {
       setFeedback({ tone: 'error', text: t('st.xc.nameRequired') });
       return;
@@ -676,7 +693,7 @@ function ConnectionRow({ connection, api, onChanged }: {
             </Field>
             <AccessEditor idPrefix={`xc-${connection.id}`} draft={draft} disabled={busy} onChange={setDraft} />
             <div className="flex flex-wrap items-center gap-2">
-              <button type="button" data-xc-save className={SECONDARY_BUTTON} disabled={busy} aria-busy={busy}
+              <button type="button" data-xc-save className={SECONDARY_BUTTON} disabled={busy || commandsBlocked} aria-busy={busy}
                 onClick={() => { void save(); }}>
                 {t('common.save')}
               </button>
@@ -802,12 +819,15 @@ function ConnectionRow({ connection, api, onChanged }: {
 
 function CreateConnection({ api, onCreated }: { api: Facade; onCreated: () => void }) {
   const { t, locale } = useI18n();
+  const toolCatalog = useContext(ToolCatalogContext);
   const [access, setAccess] = useState<'local' | 'remote'>('local');
   const [draft, setDraft] = useState<ConnectionDraft>(() => draftOf(undefined));
+  const commandsBlocked = needsCommandAccess(draft, toolCatalog);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
 
   const create = async () => {
+    if (commandsBlocked) return;
     if (draft.name.trim() === '') {
       setFeedback({ tone: 'error', text: t('st.xc.nameRequired') });
       return;
@@ -854,7 +874,7 @@ function CreateConnection({ api, onCreated }: { api: Facade; onCreated: () => vo
           onChange={(event) => { setDraft({ ...draft, name: event.target.value }); }} />
       </Field>
       <AccessEditor idPrefix="xc-new" draft={draft} disabled={busy} onChange={setDraft} />
-      <button type="button" data-xc-create-submit className={SECONDARY_BUTTON} disabled={busy} aria-busy={busy}
+      <button type="button" data-xc-create-submit className={SECONDARY_BUTTON} disabled={busy || commandsBlocked} aria-busy={busy}
         onClick={() => { void create(); }}>
         {t('st.xc.add')}
       </button>
