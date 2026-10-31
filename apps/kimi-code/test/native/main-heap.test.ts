@@ -82,6 +82,22 @@ describe('isolated heap processes', () => {
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
+  it('preserves the platform termination result when the engine child is killed by SIGTERM', () => {
+    const home = mkdtempSync(join(tmpdir(), 'kiki-heap-terminated-'));
+    const entry = join(home, 'entry.mjs');
+    writeFileSync(entry, `import {initializeMainHeap} from ${JSON.stringify(launcher)};if(!initializeMainHeap())process.kill(process.pid,'SIGTERM');`);
+    const termination = (args: string[]) => {
+      try { execFileSync(process.execPath, args, { env: { ...process.env, NODE_OPTIONS: '', KIKI_HEAP_REEXEC: '' }, timeout: 20_000 }); }
+      catch (error) { const result = error as { status: number | null; signal: string | null }; return { status: result.status, signal: result.signal }; }
+      throw new Error('Expected forced process termination');
+    };
+    try {
+      const direct = termination(['-e', 'process.kill(process.pid,"SIGTERM")']);
+      expect(direct).toEqual(process.platform === 'win32' ? { status: 1, signal: null } : { status: null, signal: 'SIGTERM' });
+      expect(termination([entry, 'serve'])).toEqual(direct);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
   it.skipIf(process.platform !== 'win32')('handles real Windows Ctrl+C, Ctrl+Break and console close in an isolated console', () => {
     const home = mkdtempSync(join(tmpdir(), 'kiki-heap-console-'));
     const entry = join(home, 'entry.mjs');
