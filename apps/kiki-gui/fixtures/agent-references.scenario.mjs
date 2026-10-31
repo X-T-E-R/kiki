@@ -23,13 +23,15 @@ const REFS = [
   { refId: `ar:${MESSAGE_ID}:worker`, profile: 'worker', executor: 'native', configuration: 'native', label: 'worker' },
   { refId: `ar:${MESSAGE_ID}:reviewer`, profile: 'reviewer', executor: 'native', configuration: 'native', label: 'reviewer' },
   { refId: `ar:${MESSAGE_ID}:planner`, profile: 'planner', executor: 'native', configuration: 'native', label: 'planner' },
+  { refId: `ar:${MESSAGE_ID}:helper`, profile: 'helper', executor: 'claude-code', configuration: 'profile', label: 'helper' },
 ];
 
 const PROMPT_TEXT = [
-  '把这三件事分出去:',
+  '把这几件事分出去:',
   'kiki://agents/worker 去扫一遍 transcript 投影,',
   'kiki://agents/reviewer 复核我刚才的改动,',
-  'kiki://agents/planner 先帮我排个计划。',
+  'kiki://agents/planner 先帮我排个计划,',
+  'kiki://agents/helper 顺手看看 fixtures。',
 ].join('\n');
 
 function refTurn(turnId, minutesAgo) {
@@ -103,6 +105,7 @@ export default {
     { name: 'worker', source: 'builtin', description: 'Bounded execution agent.', main: false, routes: [] },
     { name: 'reviewer', source: 'builtin', description: 'Review agent.', main: false, routes: [] },
     { name: 'planner', source: 'builtin', description: 'Planning agent.', main: false, routes: [] },
+    { name: 'helper', source: 'builtin', description: 'External-engine helper agent.', main: false, routes: [] },
   ],
   sessions: [sessionRecord(SID, { title: 'Fixture: agent references' })],
   snapshots: {
@@ -132,7 +135,8 @@ export default {
             },
           ],
           tasks: [
-            // Delegated: the task names the same ref and produced a child.
+            // Delegated, and run twice: the most recent run is the jump target,
+            // the earlier one stays in the chip's run menu.
             {
               taskId: 'task-agent-worker',
               kind: 'subagent',
@@ -146,6 +150,20 @@ export default {
               sourceRef: { ...REFS[0], messageId: MESSAGE_ID },
               startedAt: ts(38),
               endedAt: ts(37),
+            },
+            {
+              taskId: 'task-agent-worker-earlier',
+              kind: 'subagent',
+              agentId: 'agent-worker-earlier',
+              name: 'worker',
+              description: '先扫一半 transcript 投影',
+              state: 'completed',
+              detached: true,
+              outputTail: '扫了一半。',
+              resultSummary: '扫了一半。',
+              sourceRef: { ...REFS[0], messageId: MESSAGE_ID },
+              startedAt: ts(50),
+              endedAt: ts(49),
             },
             // Rejected: the run never started a child (failed, no agent id).
             {
@@ -165,6 +183,7 @@ export default {
           ],
         },
         'agent-worker': childTranscript('agent-worker', '扫一遍 transcript 投影', '投影扫完了:排序在投影层,分页只窗口化 items。'),
+        'agent-worker-earlier': childTranscript('agent-worker-earlier', '先扫一半 transcript 投影', '扫了一半:marker 排序在投影层。'),
       },
     },
   },
