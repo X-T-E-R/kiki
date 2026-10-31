@@ -118,6 +118,28 @@ describe('copyImageToClipboard', () => {
     await Promise.resolve();
   });
 
+  it('falls back to a resolved Blob when the engine rejects promised ClipboardItem data', async () => {
+    const write = imageClipboard();
+    vi.stubGlobal('ClipboardItem', class {
+      constructor(readonly items: Record<string, Blob | Promise<Blob>>) {
+        if (items['image/png'] instanceof Promise) throw new TypeError('Expected Blob');
+      }
+    });
+    const { copyImageToClipboard } = await import('./clipboard');
+    const png = new Blob([new Uint8Array(PNG_HEADER)], { type: 'image/png' });
+    await copyImageToClipboard(Promise.resolve(png));
+    expect(write).toHaveBeenCalledOnce();
+    expect(write.mock.calls[0]![0][0]!.items['image/png']).toBe(png);
+  });
+
+  it('does not retry a denied write with a resolved Blob', async () => {
+    const write = imageClipboard();
+    write.mockRejectedValue(new DOMException('denied', 'NotAllowedError'));
+    const { copyImageToClipboard } = await import('./clipboard');
+    await expect(copyImageToClipboard(new Blob([new Uint8Array(PNG_HEADER)], { type: 'image/png' }))).rejects.toThrow('denied');
+    expect(write).toHaveBeenCalledOnce();
+  });
+
   it('reports when clipboard images are unavailable and observes a rejected source', async () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
     const { copyImageToClipboard } = await import('./clipboard');

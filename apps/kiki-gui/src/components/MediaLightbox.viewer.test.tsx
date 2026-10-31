@@ -128,7 +128,7 @@ describe('lightbox viewing', () => {
         document.querySelector<HTMLButtonElement>('[data-menu-item="save-annotated-image"]')!.click();
         await Promise.resolve();
       });
-      expect(document.querySelector('[role="alert"]')?.textContent).toContain('Could not save the annotated image');
+      expect(document.querySelector('[role="alert"]')?.textContent).toContain('Could not download the annotated image');
       expect(svg.querySelector('rect')).not.toBeNull();
       act(() => { [...document.querySelectorAll('button')].find((button) => button.textContent === 'Cancel')!.click(); });
       expect(document.querySelector('[data-image-annotations] rect')).toBeNull();
@@ -304,7 +304,7 @@ describe('lightbox zoom controls and details', () => {
       });
       const toasts = getToasts();
       expect(toasts).toHaveLength(1);
-      expect(toasts[0]?.text).toBe('Clipboard access was denied. Focus this window, allow clipboard access in your browser, and try again.');
+      expect(toasts[0]?.text).toBe('Clipboard access was denied. Focus this tab and allow clipboard access in your browser, then try again.');
       expect(toasts[0]?.detail).toContain('Write permission denied.');
       expect(toasts[0]?.retry).toBeDefined();
     } finally {

@@ -8,7 +8,7 @@ import { browserSaveSink, bufferedSaveSink } from '../host/saveSink';
 import { Dialog } from './Dialog';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { Icon } from './icons';
-import { copyImageBitmap, httpImageLink, imageCopyFailureText, imageMenuEntries, noteMediaReady } from './imageActions';
+import { copyImageBitmap, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageDownloadSink, imageDownloadStep, imageMenuEntries, noteMediaReady, saveMediaToDisk } from './imageActions';
 import { imagePreviewDownloadName, imagePreviewLabel } from './imagePreviewName';
 import { useDevicePixelRatio, useDragPan, MAX_ZOOM, MIN_ZOOM, ZOOM_STEPS, zoomPercentOf } from './ImageViewport';
 import { ImageViewportAnnotations, renderAnnotatedImage, type AnnotationTool, type ImageAnnotation } from './ImageViewportAnnotations';
@@ -183,8 +183,9 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
           document.body.append(anchor); anchor.click(); anchor.remove();
           setTimeout(() => { URL.revokeObjectURL(url); }, 0);
         }
-      } catch {
+      } catch (error) {
         setSaveFailed(true);
+        pushToast({ tone: 'error', text: t('media.annotationDownloadFailed'), detail: errorToText(error) });
       }
       return;
     }
@@ -196,44 +197,40 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
       let sink: HostSaveSink | null = null;
       setTransfer({ status: 'downloading', bytes: 0 });
       try {
-        sink = host.openSaveSink !== undefined ? await host.openSaveSink(downloadName)
-          : host.saveBlob !== undefined ? bufferedSaveSink((blob) => host.saveBlob!(blob, downloadName))
-          : await browserSaveSink(downloadName);
+        sink = await imageDownloadStep('write', () => host.openSaveSink !== undefined ? host.openSaveSink(downloadName)
+          : host.saveBlob !== undefined ? Promise.resolve(bufferedSaveSink((blob) => host.saveBlob!(blob, downloadName)))
+          : browserSaveSink(downloadName));
         if (sink === null) {
           if (!controller.signal.aborted) setTransfer({ status: 'idle' });
           return;
         }
         controller.signal.throwIfAborted();
-        await onSaveOriginal(sink, controller.signal, (bytes, total) => {
+        const target = imageDownloadSink(sink);
+        await imageDownloadStep('read', () => onSaveOriginal(target, controller.signal, (bytes, total) => {
           if (!controller.signal.aborted) setTransfer({ status: 'downloading', bytes, total });
-        });
+        }));
         controller.signal.throwIfAborted();
         setTransfer({ status: 'saving' });
-        const saved = await sink.close();
+        const saved = await target.close();
         if (!controller.signal.aborted) setTransfer({ status: saved ? 'saved' : 'idle' });
       } catch (error) {
         await sink?.abort().catch(() => {});
-        if (!controller.signal.aborted) setTransfer({ status: 'failed', message: error instanceof Error ? error.message : String(error) });
+        if (!controller.signal.aborted) {
+          const message = imageDownloadFailureText(error, t);
+          setTransfer({ status: 'failed', message });
+          pushToast({ tone: 'error', text: message, detail: errorToText(error) });
+        }
       } finally {
         if (downloadController.current === controller) downloadController.current = null;
       }
       return;
     }
 
-    if (host.saveBlob !== undefined) {
-      const response = await fetch(src!);
-      if (!response.ok) throw new Error(`${response.status}`);
-      const blob = await response.blob();
-      await host.saveBlob(blob, downloadName);
-      return;
+    try {
+      await saveMediaToDisk({ url: src }, downloadName, host, undefined, undefined);
+    } catch (error) {
+      pushToast({ tone: 'error', text: imageDownloadFailureText(error, t), detail: errorToText(error) });
     }
-
-    const anchor = document.createElement('a');
-    anchor.href = src!;
-    anchor.download = downloadName;
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
   };
   const copyImage = async () => {
     if (src === undefined) return;
@@ -242,7 +239,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     } catch (error) {
       pushToast({
         tone: 'error',
-        text: imageCopyFailureText(error, t),
+        text: imageCopyFailureText(error, t, host.kind),
         detail: errorToText(error),
         retry: { run: () => { void copyImage(); } },
       });
@@ -359,7 +356,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
           </>}
         </div>
       ) : null}
-      {saveFailed ? <div role="alert" className="text-sm text-shell-ink">{t('media.annotationSaveFailed')}</div> : null}
+      {saveFailed ? <div role="alert" className="text-sm text-shell-ink">{t('media.annotationDownloadFailed')}</div> : null}
       <div ref={scroller} tabIndex={0} data-lightbox-viewport={mode} aria-label={label}
         {...pan.handlers}
         onContextMenu={(event) => { if (src === undefined) return; event.preventDefault(); event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); setMenu({ x: event.clientX || rect.left, y: event.clientY || rect.top }); }}

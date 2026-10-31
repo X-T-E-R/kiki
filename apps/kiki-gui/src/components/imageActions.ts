@@ -99,6 +99,36 @@ export interface MediaSaveHost {
   saveBlob?: (blob: Blob, filename: string) => Promise<boolean>;
 }
 
+class ImageDownloadError extends Error {
+  constructor(readonly stage: 'read' | 'write', error: unknown) {
+    super(error instanceof Error ? `${error.name}: ${error.message}` : String(error), { cause: error });
+  }
+}
+
+export async function imageDownloadStep<T>(stage: 'read' | 'write', action: () => Promise<T>): Promise<T> {
+  try {
+    return await action();
+  } catch (error) {
+    throw error instanceof ImageDownloadError ? error : new ImageDownloadError(stage, error);
+  }
+}
+
+export function imageDownloadSink(sink: HostSaveSink): HostSaveSink {
+  return {
+    streaming: sink.streaming,
+    write: (chunk) => imageDownloadStep('write', () => sink.write(chunk)),
+    close: () => imageDownloadStep('write', () => sink.close()),
+    abort: () => sink.abort(),
+  };
+}
+
+export function imageDownloadFailureText(error: unknown, t: (key: I18nKey) => string): string {
+  const cause = error instanceof ImageDownloadError ? error.cause : error;
+  if ((cause instanceof Error || cause instanceof DOMException) && (cause.name === 'NotAllowedError' || cause.name === 'SecurityError')) return t('media.downloadDenied');
+  if (error instanceof ImageDownloadError) return t(error.stage === 'read' ? 'media.downloadReadFailed' : 'media.downloadWriteFailed');
+  return t('media.downloadFailed');
+}
+
 /**
  * Save one media reference to a host save sink, streaming the original bytes.
  * A session-media id or host path streams through the client; a ready URL
@@ -118,29 +148,32 @@ export async function saveMediaToDisk(
   // picker/anchor). A bare URL has no canonical source to stream, so it falls
   // through to the same URL fetch the lightbox uses.
   if ((item.path !== undefined || (item.fileId !== undefined && sessionId !== undefined)) && client !== undefined) {
-    const sink = host.openSaveSink !== undefined ? await host.openSaveSink(downloadName)
-      : host.saveBlob !== undefined ? bufferedSaveSink((blob) => host.saveBlob!(blob, downloadName))
-        : await browserSaveSink(downloadName);
-    if (sink === null) return false;
+    const opened = await imageDownloadStep('write', () => host.openSaveSink !== undefined ? host.openSaveSink(downloadName)
+      : host.saveBlob !== undefined ? Promise.resolve(bufferedSaveSink((blob) => host.saveBlob!(blob, downloadName)))
+        : browserSaveSink(downloadName));
+    if (opened === null) return false;
+    const sink = imageDownloadSink(opened);
     try {
-      if (item.path !== undefined) {
-        await client.downloadHostFile(item.path, async (chunk) => { await sink.write(chunk); }, { signal });
-      } else {
-        await client.downloadSessionMedia(sessionId!, item.fileId!, async (chunk) => { await sink.write(chunk); }, { signal });
-      }
+      await imageDownloadStep('read', () => item.path !== undefined
+        ? client.downloadHostFile(item.path, async (chunk) => { await sink.write(chunk); }, { signal })
+        : client.downloadSessionMedia(sessionId!, item.fileId!, async (chunk) => { await sink.write(chunk); }, { signal }));
       return await sink.close();
     } catch (error) {
       await sink.abort().catch(() => {});
       throw error;
     }
   }
-  if (item.url === undefined) throw new Error('This image has no readable source');
+  if (item.url === undefined) throw new ImageDownloadError('read', new Error('This image has no readable source'));
   // On the desktop the shell owns the save dialog; in a plain browser the URL
   // downloads directly through an anchor, matching the lightbox's URL path.
   if (host.saveBlob !== undefined) {
-    const response = await fetch(item.url, { signal });
-    if (!response.ok) throw new Error(`Image could not be read (${response.status})`);
-    return host.saveBlob(await response.blob(), downloadName);
+    const url = item.url;
+    const blob = await imageDownloadStep('read', async () => {
+      const response = await fetch(url, { signal });
+      if (!response.ok) throw new Error(`Image could not be read (${response.status})`);
+      return response.blob();
+    });
+    return imageDownloadStep('write', () => host.saveBlob!(blob, downloadName));
   }
   const anchor = document.createElement('a');
   anchor.href = item.url;
@@ -207,11 +240,11 @@ class ImageCopyError extends Error {
   }
 }
 
-export function imageCopyFailureText(error: unknown, t: (key: I18nKey) => string): string {
+export function imageCopyFailureText(error: unknown, t: (key: I18nKey) => string, hostKind: 'browser' | 'tauri'): string {
   if (error instanceof ImageCopyError) return t(error.stage === 'read' ? 'media.copyReadFailed' : 'media.copyDecodeFailed');
-  if ((error instanceof Error || error instanceof DOMException) && error.name === 'NotAllowedError') return t('media.copyDenied');
-  if (error instanceof Error && error.message === 'Clipboard image write is unavailable') return t('media.copyUnavailable');
-  return `${t('media.copyFailed')} ${error instanceof Error ? error.message : String(error)}`;
+  if ((error instanceof Error || error instanceof DOMException) && error.name === 'NotAllowedError') return t(hostKind === 'tauri' ? 'media.copyDeniedDesktop' : 'media.copyDeniedWeb');
+  if (error instanceof Error && error.message === 'Clipboard image write is unavailable') return t(hostKind === 'tauri' ? 'media.copyUnavailableDesktop' : 'media.copyUnavailableWeb');
+  return t('media.copyFailed');
 }
 
 export function copyImageBitmap(src: string): Promise<void> {
@@ -226,12 +259,7 @@ async function imagePngForClipboard(src: string): Promise<Blob> {
     blob = await typedImageBlob(await response.blob());
     if (blob.size === 0) throw new Error('Image could not be read');
   } catch (error) {
-    if (src.startsWith('blob:') || src.startsWith('data:')) throw new ImageCopyError('read', error);
-    try {
-      blob = await rasterPng(src);
-    } catch {
-      throw new ImageCopyError('read', error);
-    }
+    throw new ImageCopyError('read', error);
   }
   try {
     if (blob.type !== 'image/png' || !(await isPngBlob(blob))) return await rasterPng(src, blob);

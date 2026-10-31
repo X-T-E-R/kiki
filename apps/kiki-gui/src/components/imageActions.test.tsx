@@ -7,7 +7,7 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 import { HostProvider, browserHost } from '../host';
 import { I18nProvider } from '../i18n';
 import { MediaLightbox, mediaSourceLabel } from './MediaLightbox';
-import { copyImageBitmap, hostActionPath, imageCopyFailureText, imageMenuEntries, isRemoteConnection, localImagePath, resolveImageMime, saveMediaToDisk, sniffImageMime, type MediaDownloadClient } from './imageActions';
+import { copyImageBitmap, hostActionPath, imageCopyFailureText, imageDownloadFailureText, imageMenuEntries, isRemoteConnection, localImagePath, resolveImageMime, saveMediaToDisk, sniffImageMime, type MediaDownloadClient } from './imageActions';
 import type { MiniMenuEntry as MenuEntry } from './MiniContextMenu';
 
 function keys(entries: readonly MenuEntry[]): string[] {
@@ -131,6 +131,23 @@ describe('saveMediaToDisk', () => {
     expect(sinkWrites).toEqual([]);
   });
 
+  it('classifies an original read failure without putting raw text in the body', async () => {
+    const client = clientWith([]);
+    client.downloadHostFile = async () => { throw new Error('private backend detail'); };
+    const error = await saveMediaToDisk({ path: '/missing.png' }, 'shot.png', { openSaveSink: async () => fakeSink() }, client, 'session-1').catch((failure: unknown) => failure);
+    expect(imageDownloadFailureText(error, label)).toBe('media.downloadReadFailed');
+    expect(String(error)).toContain('private backend detail');
+  });
+
+  it('keeps destination write failures distinct from the surrounding stream read', async () => {
+    const sink = fakeSink();
+    sink.write = async () => { throw new Error('disk full'); };
+    const error = await saveMediaToDisk({ fileId: 'file-1' }, 'shot.png', { openSaveSink: async () => sink }, clientWith([[1]]), 'session-1').catch((failure: unknown) => failure);
+    expect(imageDownloadFailureText(error, label)).toBe('media.downloadWriteFailed');
+    expect(imageDownloadFailureText(new DOMException('denied', 'NotAllowedError'), label)).toBe('media.downloadDenied');
+    expect(imageDownloadFailureText(new Error('raw detail'), label)).toBe('media.downloadFailed');
+  });
+
   it('throws when the reference has no readable source', async () => {
     await expect(saveMediaToDisk({}, 'shot.png', {}, undefined, 'session-1')).rejects.toThrow('no readable source');
   });
@@ -156,9 +173,7 @@ describe('copyImageBitmap', () => {
   it('allows displayed memory images to be fetched under the packaged desktop CSP', () => {
     const directives = tauriConfig.app.security.csp.split(';').map((part: string) => part.trim().split(/\s+/));
     const connect = directives.find((parts: string[]) => parts[0] === 'connect-src');
-    const images = directives.find((parts: string[]) => parts[0] === 'img-src');
     expect(connect).toEqual(expect.arrayContaining(['data:', 'blob:']));
-    expect(images).toEqual(expect.arrayContaining(['https:', 'http:']));
   });
 
   it('starts clipboard write before the source fetch has completed', async () => {
@@ -173,9 +188,24 @@ describe('copyImageBitmap', () => {
   it('shows the source failure rather than a generic clipboard failure', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
     const error = await copyImageBitmap('blob:expired').catch((failure: unknown) => failure);
-    expect(imageCopyFailureText(error, label)).toBe('media.copyReadFailed');
+    expect(imageCopyFailureText(error, label, 'tauri')).toBe('media.copyReadFailed');
     expect(String(error)).toContain('TypeError: Failed to fetch');
-    expect(imageCopyFailureText(new DOMException('Document is not focused.', 'NotAllowedError'), label)).toBe('media.copyDenied');
+  });
+
+  it.each(['browser', 'tauri'] as const)('gives host-specific clipboard recovery for %s', (host) => {
+    const suffix = host === 'tauri' ? 'Desktop' : 'Web';
+    expect(imageCopyFailureText(new DOMException('Document is not focused.', 'NotAllowedError'), label, host)).toBe(`media.copyDenied${suffix}`);
+    expect(imageCopyFailureText(new Error('Clipboard image write is unavailable'), label, host)).toBe(`media.copyUnavailable${suffix}`);
+    expect(imageCopyFailureText(new Error('private raw failure'), label, host)).toBe('media.copyFailed');
+  });
+
+  it('does not bypass a remote fetch refusal with a remote image element', async () => {
+    const Image = vi.fn();
+    vi.stubGlobal('Image', Image);
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('CORS blocked'); }));
+    const error = await copyImageBitmap('https://example.test/private.png').catch((failure: unknown) => failure);
+    expect(imageCopyFailureText(error, label, 'browser')).toBe('media.copyReadFailed');
+    expect(Image).not.toHaveBeenCalled();
   });
 
   it('writes the png bytes as a clipboard image and not as a url', async () => {

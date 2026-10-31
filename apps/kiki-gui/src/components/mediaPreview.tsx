@@ -46,7 +46,7 @@ import { useNavSnapshotAdapter, useNavVisitId } from '../lib/useNavSnapshot';
 import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
 import { Icon } from './icons';
-import { copyImageBitmap, httpImageLink, imageCopyFailureText, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, noteMediaReady, resolveImageMime } from './imageActions';
+import { copyImageBitmap, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageDownloadSink, imageDownloadStep, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, noteMediaReady, resolveImageMime } from './imageActions';
 import { MediaLightbox } from './MediaLightbox';
 import { pushToast } from '../lib/toasts';
 import { errorToText } from '@kiki/session-core/util';
@@ -606,25 +606,30 @@ function AttachmentPreviewDialog({
     let sink: HostSaveSink | null = null;
     setTransfer({ status: 'downloading', bytes: 0, total: item.size });
     try {
-      sink = host.openSaveSink !== undefined ? await host.openSaveSink(name)
-        : host.saveBlob !== undefined ? bufferedSaveSink((blob) => host.saveBlob!(blob, name)) : await browserSaveSink(name);
+      sink = await imageDownloadStep('write', () => host.openSaveSink !== undefined ? host.openSaveSink(name)
+        : host.saveBlob !== undefined ? Promise.resolve(bufferedSaveSink((blob) => host.saveBlob!(blob, name))) : browserSaveSink(name));
       if (sink === null) { if (!controller.signal.aborted) setTransfer({ status: 'idle' }); return; }
       controller.signal.throwIfAborted();
-      const target = sink;
+      const target = imageDownloadSink(sink);
       const consume: import('@kiki/klient').HttpRestMediaSink = async (chunk, progress) => {
         await target.write(chunk);
         if (!controller.signal.aborted) setTransfer({ status: 'downloading', bytes: progress.bytes, total: progress.totalBytes });
       };
       const options = { ...client.readingOptions(), signal: controller.signal };
-      if (item.path !== undefined) await client.downloadHostFile(item.path, consume, options);
-      else await client.downloadSessionMedia(sessionId!, item.fileId!, consume, options);
+      await imageDownloadStep('read', () => item.path !== undefined
+        ? client.downloadHostFile(item.path, consume, options)
+        : client.downloadSessionMedia(sessionId!, item.fileId!, consume, options));
       controller.signal.throwIfAborted();
       setTransfer({ status: 'saving' });
-      const saved = await sink.close();
+      const saved = await target.close();
       if (!controller.signal.aborted) setTransfer({ status: saved ? 'saved' : 'idle' });
     } catch (error) {
       await sink?.abort().catch(() => {});
-      if (!controller.signal.aborted) setTransfer({ status: 'failed', message: error instanceof Error ? error.message : String(error) });
+      if (!controller.signal.aborted) {
+        const message = imageDownloadFailureText(error, t);
+        setTransfer({ status: 'failed', message });
+        pushToast({ tone: 'error', text: message, detail: errorToText(error) });
+      }
     } finally {
       if (downloadController.current === controller) downloadController.current = null;
     }
@@ -778,7 +783,7 @@ function AttachmentPreviewDialog({
         onCopyImage: async () => {
           if (load.status !== 'ready') return;
           try { await copyImageBitmap(load.url); }
-          catch (error) { pushToast({ tone: 'error', text: imageCopyFailureText(error, t), detail: errorToText(error) }); }
+          catch (error) { pushToast({ tone: 'error', text: imageCopyFailureText(error, t, host.kind), detail: errorToText(error) }); }
         },
         onSave: download,
       })} onClose={() => { setImageMenu(null); }} ariaLabel={title} overlayId="attachment-image-menu" dataAttribute="data-attachment-image-menu" modalOwnerId="session-attachment-preview" />}
