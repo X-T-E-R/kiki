@@ -350,7 +350,7 @@ describe('conversation-time checkpoint registration', () => {
     'goalForkNotice',
     'turn',
     'contextMemory.revision',
-    'agentCollaboration.materializedMessages',
+    'agentCollaboration.materializedMessages.v2',
     'todo.continuityClock',
     'externalHooks.clock',
     'promptAdmission',

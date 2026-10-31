@@ -82,7 +82,7 @@ function actionNames(container: HTMLElement): string[] {
 describe('ModelSwitchNotice', () => {
   it('names the queued switch and its mode while it waits', async () => {
     const container = await renderNotice(block({ state: 'pending', mode: 'fresh' }));
-    expect(container.textContent).toContain('Will switch to example/new when idle');
+    expect(container.textContent).toContain('Will switch to example/new at the next step');
     expect(container.textContent).toContain('Fresh context');
     expect(container.querySelector('[data-model-switch-notice="pending"]')).not.toBeNull();
   });
@@ -166,7 +166,7 @@ describe('ModelSwitchNotice', () => {
     expect(effort.textContent).toContain('Thinking effort updated · example/same');
     expect(effort.textContent).not.toContain('Resumed');
     const queued = await renderNotice(block({ state: 'pending', from: 'example/same', to: 'example/same' }));
-    expect(queued.textContent).toContain('Will apply model settings when idle');
+    expect(queued.textContent).toContain('Will apply model settings at the next step');
     const compact = await renderNotice(block({ state: 'completed', mode: 'compact', from: 'example/same', to: 'example/same', summaryGenerated: true }));
     expect(compact.textContent).toContain('Context rebuilt · continuing with example/same');
     expect(compact.textContent).not.toContain('Switched');
@@ -175,6 +175,6 @@ describe('ModelSwitchNotice', () => {
   it('stays copy-only where no actions are provided', async () => {
     const container = await renderNotice(block({ state: 'pending' }));
     expect(actionNames(container)).toEqual([]);
-    expect(container.textContent).toContain('Will switch to example/new when idle');
+    expect(container.textContent).toContain('Will switch to example/new at the next step');
   });
 });

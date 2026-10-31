@@ -124,7 +124,7 @@ describe('ModelSwitchDialog', () => {
 
   it('reads as queued while the agent is busy, and as an edit when changing a pending switch', async () => {
     const busy = await renderDialog({ busy: true });
-    expect(busy.container.textContent).toContain('Switch when idle');
+    expect(busy.container.textContent).toContain('Switch at next step');
     const editing = await renderDialog({ editing: true });
     expect(editing.container.textContent).toContain('Save changes');
   });
