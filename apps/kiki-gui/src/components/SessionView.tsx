@@ -12,7 +12,7 @@ import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed'
 import { useLocation, useMatch, useNavigate, useParams } from 'react-router-dom';
 
 import type { DeferredAppendTiming, MessageContent, PermissionMode, PromptPlanGate, PromptSubmission, Session, SessionPendingInteraction } from '@kiki/protocol';
-import { mediaFromContentParts } from '@kiki/session-core/composer/media';
+import { mediaFromContentParts, mediaRefWithAttachmentDetail } from '@kiki/session-core/composer/media';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { AgentWorkspace, HEADER_ICON_BUTTON, nowReceiptDecision, PanelIcon, ResyncStatusBanner, sendNowNotice, sendNowQueuedNotice, trackOpenNowReceipt, WorkspaceHeader, type AgentWorkspaceNavigation } from './agent-workspace';
@@ -3975,7 +3975,8 @@ boundExecution,
     signal?.throwIfAborted();
     const mediaItems = block.queuedContent === undefined ? block.media ?? [] : mediaFromContentParts(block.queuedContent);
     const retained = block.queuedContent === undefined ? [] : retainedAttachmentsFromContent(block.queuedContent);
-    return Promise.all(mediaItems.map(async (media, index): Promise<ComposerAttachment> => {
+    return Promise.all(mediaItems.map(async (item, index): Promise<ComposerAttachment> => {
+      let media = item;
       const existing = retained[index];
       if (existing !== undefined && (existing.content.type === 'image' || existing.content.type === 'video')) {
         const source = existing.content.source;
@@ -3992,6 +3993,7 @@ boundExecution,
         const source = detail.attachment.source;
         if (source.kind === 'url') url = source.url;
         else fileId = source.fileId;
+        media = mediaRefWithAttachmentDetail(media, detail.attachment);
       }
       if (media.kind === 'file') {
         if (fileId === undefined) throw new Error(t('preview.failed'));

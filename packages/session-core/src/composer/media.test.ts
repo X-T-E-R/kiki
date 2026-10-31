@@ -12,6 +12,7 @@ import {
   isAppRouteHref,
   joinPath,
   mediaFromContentParts,
+  mediaRefWithAttachmentDetail,
   previewKindOf,
   resolveFileHref,
   resolveFileReference,
@@ -19,6 +20,23 @@ import {
   unwrapFileLinkTarget,
   wrapFileLinkTarget,
 } from './media';
+
+describe('mediaRefWithAttachmentDetail', () => {
+  const placeholder = { kind: 'file' as const, detail: { agentId: 'main', attachmentId: 'turn.att1' } };
+
+  it('re-types an omitted image placeholder from its detail media type', () => {
+    expect(mediaRefWithAttachmentDetail(placeholder, { mediaType: 'image/png', name: 'shot.png' }))
+      .toEqual({ ...placeholder, kind: 'image', name: 'shot.png', mime: 'image/png' });
+    expect(mediaRefWithAttachmentDetail(placeholder, { mediaType: 'video/*' }))
+      .toEqual({ ...placeholder, kind: 'video', name: undefined, mime: undefined });
+  });
+
+  it('keeps real file attachments and already typed media unchanged', () => {
+    expect(mediaRefWithAttachmentDetail(placeholder, { mediaType: 'text/plain' })).toBe(placeholder);
+    const image = { kind: 'image' as const, fileId: 'f_a', mime: 'image/png' };
+    expect(mediaRefWithAttachmentDetail(image, { mediaType: 'video/mp4' })).toBe(image);
+  });
+});
 
 describe('mediaFromContentParts', () => {
   it('rebuilds a data: URL for inline base64 images', () => {

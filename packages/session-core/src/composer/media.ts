@@ -94,6 +94,28 @@ export function mediaRefFromUrl(
   return { kind, ...extra, url, mime: extra?.mime ?? mimeFromDataUrl(url) };
 }
 
+/**
+ * Refine a media ref with the attachment detail read for it. A transcript
+ * window that omitted an attachment only knows its id and projects it as a
+ * `file`; the detail's media type says whether it is an image or a video, so
+ * an edited message re-sends it as session media instead of an upload id.
+ */
+export function mediaRefWithAttachmentDetail(
+  media: MediaRef,
+  attachment: { readonly mediaType: string; readonly name?: string },
+): MediaRef {
+  if (media.kind !== 'file') return media;
+  const kind = attachment.mediaType.startsWith('image/') ? 'image'
+    : attachment.mediaType.startsWith('video/') ? 'video' : undefined;
+  if (kind === undefined) return media;
+  return {
+    ...media,
+    kind,
+    name: media.name ?? attachment.name,
+    mime: attachment.mediaType.endsWith('/*') ? media.mime : attachment.mediaType,
+  };
+}
+
 /** Collect the structured media parts of a wire message content array. */
 export function mediaFromContentParts(content: readonly ContentPart[]): MediaRef[] {
   const media: MediaRef[] = [];
