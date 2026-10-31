@@ -693,6 +693,14 @@ describe('GUI shared client against an isolated KAP host', () => {
           expect(controller.getAgentState(child.id).busy).toBe(false);
         }, { timeout: 10000 });
       }
+      const current = getLiveSessionById(host.core.accessor, id)!;
+      const tasks = current.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentTaskService);
+      await vi.waitFor(() => {
+        const childTasks = tasks.list(false).filter((task) => task.kind === 'agent' && task.agentId === child.id);
+        expect(childTasks).toHaveLength(4);
+        expect(childTasks.map((task) => task.status).toSorted()).toEqual(['completed', 'completed', 'failed', 'killed']);
+      });
+      expect(requests).toHaveLength(5);
     } finally {
       offMain();
       offChild();

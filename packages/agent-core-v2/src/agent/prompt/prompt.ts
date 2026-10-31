@@ -194,6 +194,8 @@ export const promptAdmission = Symbol('promptAdmission');
 export interface PromptAdmissionOptions {
   readonly waitForLaunch?: boolean;
   readonly contentRanges?: readonly PromptContentRange[];
+  /** The admission owner publishes this child's task outcome; suppress autonomous duplicate receipts. */
+  readonly parentReceiptManaged?: boolean;
 }
 
 type PromptAdmissionHook = (promptId?: string, durableAcceptance?: boolean, retryFingerprint?: string, options?: PromptAdmissionOptions) => PromptReservation;

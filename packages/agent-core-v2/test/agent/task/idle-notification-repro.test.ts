@@ -34,7 +34,7 @@ import { escapeXml } from '#/_base/utils/xml-escape';
 import { runAgentTurn } from '#/session/subagent/runAgentTurn';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentLoopService } from '#/agent/loop/loop';
-import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentPromptService, reservePrompt } from '#/agent/prompt/prompt';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { GoalUpdate } from '#/agent/goal/goalOps';
 import { IEventDispatcher } from '#/state/eventDispatcher';
@@ -257,7 +257,7 @@ describe('autonomous child receipt return', () => {
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-  it.each(['prompt', 'mailbox', 'retry', 'summary continuation'] as const)('does not duplicate a managed %s receipt', async (kind) => {
+  it.each(['prompt', 'reserved prompt', 'mailbox', 'retry', 'summary continuation'] as const)('does not duplicate a managed %s receipt', async (kind) => {
     const { parent, child, parentHandle, childHandle, dispose } = await receiptPair();
     try {
       const tasks = parent.get(IAgentTaskService);
@@ -268,7 +268,13 @@ describe('autonomous child receipt return', () => {
         origin: { kind: 'system_trigger' as const, name: 'agent-message' } };
       const request: AgentRunRequest = kind === 'mailbox' ? { kind: 'mailbox', prompt: 'Saved follow-up message.', message }
         : kind === 'retry' ? { kind: 'retry' } : { kind: 'prompt', prompt: 'Finish the review.' };
-      const run = await runAgentTurn(childHandle, request, {
+      const run = kind === 'reserved prompt' ? await (async () => {
+        const reservation = reservePrompt(child.get(IAgentPromptService), undefined, false, undefined, { parentReceiptManaged: true });
+        const prompt = await reservation.submit(message);
+        const turn = await prompt.launched;
+        if (turn === undefined) throw new Error('Managed reserved prompt did not launch');
+        return { agentId: childHandle.id, turn, completion: prompt.completion.then(() => ({ summary: 'Managed final receipt.' })) };
+      })() : await runAgentTurn(childHandle, request, {
         signal: new AbortController().signal,
         summaryPolicy: kind === 'summary continuation' ? { minChars: 20, retries: 1, continuationPrompt: 'Finish the summary.' } : undefined,
       });

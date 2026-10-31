@@ -631,6 +631,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         reservation = reservePrompt(resolved.prompt, req.body.prompt_id, retryPromptId !== undefined || req.query.receipt === 'true', retryFingerprint, {
           waitForLaunch: req.query.receipt === 'true' || ingressExecution !== undefined ? false : undefined,
           contentRanges: preparedMedia.sourceRanges,
+          parentReceiptManaged: resolved.agentId !== MAIN_AGENT_ID,
         });
 
         if (req.body.profile !== undefined) {

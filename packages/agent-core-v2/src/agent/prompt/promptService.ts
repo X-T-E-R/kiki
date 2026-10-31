@@ -1203,7 +1203,8 @@ export class AgentPromptService implements IAgentPromptService {
         }
         if (signal?.aborted) throw submissionCancelled(id);
         const handle = await this.enqueue({ id, message, execution, appendTiming, deferredDisabledTools, signal, retryFingerprint,
-          waitForLaunch: options?.waitForLaunch, retryContentRanges: options?.contentRanges });
+          waitForLaunch: options?.waitForLaunch, retryContentRanges: options?.contentRanges,
+          parentReceiptManaged: options?.parentReceiptManaged });
         if (durableAcceptance) await this.wire.flush();
         return handle;
       },
