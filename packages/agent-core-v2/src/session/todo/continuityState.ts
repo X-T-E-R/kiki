@@ -1,3 +1,4 @@
+import { original, type Draft } from 'immer';
 import { z } from 'zod';
 import { defineState } from '#/state/state';
 import { TurnPrompt, TurnSteer } from '#/agent/loop/turnOps';
@@ -192,10 +193,16 @@ export function advanceContinuityClock(state: ContinuityClock, event: TurnPrompt
     notesReminderCount: state.notesReminderCount + (notes ? 1 : 0) };
 }
 
+function foldContinuityClock(draft: Draft<ContinuityClock>, event: Parameters<typeof advanceContinuityClock>[1]): ContinuityClock | undefined {
+  const base = original(draft) as ContinuityClock;
+  const next = advanceContinuityClock(base, event);
+  return next === base ? undefined : next;
+}
+
 export const continuityClockKey = defineState('todo.continuityClock', initialContinuityClock)
   .replayable({ schema: z.custom<ContinuityClock>() })
-  .on(TurnPrompt, advanceContinuityClock)
-  .on(TurnSteer, advanceContinuityClock)
-  .on(ContextAppendLoopEvent, advanceContinuityClock)
-  .on(ContextAppendMessage, advanceContinuityClock)
-  .on(ToolsUpdateStore, advanceContinuityClock);
+  .on(TurnPrompt, foldContinuityClock)
+  .on(TurnSteer, foldContinuityClock)
+  .on(ContextAppendLoopEvent, foldContinuityClock)
+  .on(ContextAppendMessage, foldContinuityClock)
+  .on(ToolsUpdateStore, foldContinuityClock);
