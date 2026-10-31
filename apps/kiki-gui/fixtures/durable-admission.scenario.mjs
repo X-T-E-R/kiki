@@ -38,6 +38,9 @@ export default {
     resumeMs: 30_000,
     rules: [
       { match: 'Pick up where we left off.', restoreMs: 9000, queuePosition: 2 },
+      // A live send the server saves but cannot admit: the message stays on
+      // its bubble with a retry instead of returning to the composer.
+      { match: 'Try the flaky restore.', restoreMs: 800, outcome: 'failed' },
     ],
     seed: [
       {

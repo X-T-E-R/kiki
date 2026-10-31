@@ -793,6 +793,50 @@ it.each(['failed', 'cancelled'] as const)('restores draft and selection after a 
   expect(retained[1]!.quote).toBe('new passage');
 });
 
+it('keeps a saved-but-failed durable send on its bubble, out of the composer and without a toast', async () => {
+  writeDraft('session-example', 'keep off the composer');
+  const failed: PromptItem = {
+    admission: 'failed', prompt_id: 'saved-failed', user_message_id: 'saved-failed-message', status: 'failed' as never,
+    content: [{ type: 'text', text: 'keep off the composer' }], created_at: '2026-01-01T00:00:00Z',
+  };
+  let resolveResult!: (result: PromptItem) => void;
+  const send = vi.fn((input: { promptId?: string; onPreservation?: (persisted: boolean) => void }) => {
+    input.onPreservation?.(true);
+    return new Promise<PromptItem>(resolve => { resolveResult = resolve; });
+  });
+  const controller = {
+    state: { ...createViewState('session-example'), loaded: true, transcriptReady: true, durableIngress: [failed],
+      session: { id: 'session-example', title: 'Saved failure', workspace_id: 'workspace-example', metadata: { cwd: '/example' }, agent_config: { model: 'example/model', profile: 'agent' }, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' } },
+    subscribe: () => () => {}, subscribeInterruptedPrompt: () => () => {}, subscribeAgent: () => () => {},
+    getState: () => controller.state, getAgentState: () => controller.state, getForest: () => ({ roots: [], byId: {} }),
+    getDurableIngress: () => controller.state.durableIngress ?? [],
+    open: async () => {}, close() {}, setFocusedAgent() {}, refreshSession: async () => {}, retainHistoryRead: () => () => {},
+    contentRefsFor: () => [], sendPrompt: send, ...contentRead,
+  };
+  fixture.controller = controller;
+  root = createRoot(container);
+  await act(async () => root!.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes><Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route></Routes></MemoryRouter></I18nProvider></QueryClientProvider>));
+  for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+  const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'keep off the composer');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!.click(); });
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(readDraft('session-example')).toBe('');
+  const request = send.mock.results[0]!.value as Promise<PromptItem>;
+  await act(async () => { resolveResult(failed); await request; await Promise.resolve(); });
+  // The server kept the message, so the composer, the unconfirmed-send record
+  // and a toast all stay out of it: recovery lives on the "not sent" bubble
+  // (the durable record stays, so the timeline keeps a row for the retry).
+  expect(readDraft('session-example')).toBe('');
+  expect(fixture.pushToast).not.toHaveBeenCalled();
+  expect(readUnconfirmedSubmissions('session-example')).toEqual([]);
+  expect(container.querySelector('[data-optimistic-status]')).toBeNull();
+  expect(container.querySelector('[data-user-message="admission-saved-failed"]')?.textContent).toContain('keep off the composer');
+});
+
 it('migrates a legacy draft quote and restores all serialized queued quotes through cancel and replacement', async () => {
   writeComposerState('session-example', { attachments: [], annotations: [], quote: 'legacy passage', permissionMode: undefined, planMode: undefined, planGate: undefined, goalObjective: undefined, modelOverride: undefined, effortOverride: undefined });
   const carry = selectionCarryoverPresentation([], [createQuote('queued first'), createQuote('queued second')]);
