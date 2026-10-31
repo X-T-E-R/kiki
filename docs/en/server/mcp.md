@@ -129,7 +129,7 @@ In YOLO mode, MCP tool calls are automatically approved. Only use this mode when
 
 ## Let an external client use Kiki tools
 
-External clients reverse the direction described above: an MCP-capable model calls Kiki's native file, media, agent, task, History and authorized Memory tools. Kiki keeps the tool activity in a normal session without binding a local model to its main agent. This does not automatically import the external chat, its thinking, or its usage.
+External clients reverse the direction described above: an MCP-capable model calls Kiki's native file, media, agent, task, History and authorized Memory tools. Kiki keeps the tool activity in a normal session without binding a local model to its main agent. This does not automatically import the external chat, its thinking, or its usage. Local programs can use the same grants through [HTTP and the JSON tools CLI](./script-tools.md), without MCP.
 
 Open **Settings → Connection & remote → Access from elsewhere → Agents & clients** to create a named connection and choose its shared tools and permission ceiling. The workspace is chosen when you create a conversation for that client. The capability is available by default; setting `external_clients = false` under `[experimental]`, or `KIKI_EXPERIMENTAL_EXTERNAL_CLIENTS=0`, keeps it off, and changing that override requires a host restart. Leave local commands off unless the client needs them. A connection is a permission grant, not a chat: initialization and tool discovery do not create business sessions.
 

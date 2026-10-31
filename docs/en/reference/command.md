@@ -149,7 +149,7 @@ Thread communication is allowed and off by default. A user setting of `[thread_c
 
 ## Subcommands
 
-`kiki` provides the following subcommands: `session` (inspect saved timelines), `storage` (upgrade and back up canonical mailboxes), `serve` (start, reuse, or stop the shared daemon), `seat` (manage external-caller seats), `mcp` (run the stdio MCP edge), `doctor` (diagnose the daemon connection), `prompt-fields` (discover and validate prompt fields), `login` (non-interactive OAuth login), `acp` (ACP IDE mode), `web` (the compatible foreground REST/WebSocket/web service), `export` (export a session), and `provider` (manage providers).
+`kiki` provides the following subcommands: `session` (inspect saved timelines), `storage` (upgrade and back up canonical mailboxes), `serve` (start, reuse, or stop the shared daemon), `seat` (manage external-caller seats), [`tools`](../server/script-tools.md) (call shared tools and download saved results as JSON), `mcp` (run the stdio MCP edge), `doctor` (diagnose the daemon connection), `prompt-fields` (discover and validate prompt fields), `login` (non-interactive OAuth login), `acp` (ACP IDE mode), `web` (the compatible foreground REST/WebSocket/web service), `export` (export a session), and `provider` (manage providers).
 
 ### `kiki session`
 

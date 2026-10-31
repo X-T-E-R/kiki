@@ -129,7 +129,7 @@ pattern = "mcp__filesystem__write_file"
 
 ## 让外部客户端使用 Kiki 工具
 
-外部客户端与上文的接入方向相反：支持 MCP 的模型调用 Kiki 原生文件、媒体、Agent、Task、History 和获准的 Memory 工具。Kiki 在普通会话中保存工具活动，main agent 不绑定本地模型。这不会自动导入外部聊天、思考过程或用量。
+外部客户端与上文的接入方向相反：支持 MCP 的模型调用 Kiki 原生文件、媒体、Agent、Task、History 和获准的 Memory 工具。Kiki 在普通会话中保存工具活动，main agent 不绑定本地模型。这不会自动导入外部聊天、思考过程或用量。本机程序也可通过 [HTTP 和 JSON tools CLI](./script-tools.md) 复用同一授权，无需 MCP。
 
 打开 **设置 → 连接与远程 → 外部接入 → 智能体与客户端**，创建一个有名称的连接，选择共享工具和权限上限。工作区在为该客户端创建会话时选择。这项能力默认可用；在 `[experimental]` 下显式设置 `external_clients = false`，或设置 `KIKI_EXPERIMENTAL_EXTERNAL_CLIENTS=0`，会保持关闭，修改该覆写后需重启 host。只有客户端确实需要执行本机命令时，才开启该权限。连接代表权限授权，不代表聊天；初始化和工具发现不会创建业务会话。
 
