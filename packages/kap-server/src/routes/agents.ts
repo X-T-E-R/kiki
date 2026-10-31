@@ -38,7 +38,7 @@ export function registerAgentHooksRoutes(app: RouteHost, core: Scope): void {
         const resident = session.accessor.get(IAgentLifecycleService).get(req.params.agent_id);
         if (resident !== undefined) { reply.send(okEnvelope(await resident.accessor.get(IAgentHookRules).inspect(), req.id)); return; }
         const metadata = (await session.accessor.get(ISessionMetadata).read()).agents?.[req.params.agent_id];
-        if (metadata === undefined) { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent does not exist in this session', req.id)); return; }
+        if (metadata === undefined && req.params.agent_id !== 'main') { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent does not exist in this session', req.id)); return; }
         const rules = session.accessor.get(IHookRulesSession);
         const [, persisted] = await Promise.all([rules.ready, readPersistedHookInspection(core.accessor.get(IAppendLogStore), session.accessor.get(ISessionContext).scope(`agents/${req.params.agent_id}`), metadata)]);
         finish(rules.snapshot(), persisted);
@@ -50,7 +50,7 @@ export function registerAgentHooksRoutes(app: RouteHost, core: Scope): void {
     const scope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
     const docs = core.accessor.get(IAtomicDocumentStore);
     const metadata = (await docs.get<SessionMeta>(scope, 'state.json') ?? await docs.get<SessionMeta>(`${scope}/session-meta`, 'state.json'))?.agents?.[req.params.agent_id];
-    if (metadata === undefined) { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent does not exist in this session', req.id)); return; }
+    if (metadata === undefined && req.params.agent_id !== 'main') { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent does not exist in this session', req.id)); return; }
     const lease = await core.accessor.get(IWorkspaceInstanceManager).acquire({ workspaceId: summary.workspaceId });
     try {
       await lease.instance.program.ready;
