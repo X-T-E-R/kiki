@@ -28,7 +28,7 @@ export type PanelMetricsSource = {
   readonly rosterUsage?: UsageRevision;
 };
 
-/** A cold settle:false row: the server has not counted this agent yet. */
+/** A missing or interrupted count still needs a settle read. */
 export function isUnsettledPanelMetrics(row: SettleMetricRow | undefined): boolean {
   if (row === undefined) return true;
   if (row.usageComplete !== undefined) return !row.usageComplete;
@@ -45,6 +45,21 @@ export function isCompletePanelMetrics(row: SettleMetricRow | undefined): boolea
   if (row.usageSource === 'live' || row.usageSource === 'persisted') return true;
   return [row.totalTokens, row.totalCostUsd, row.inputTokens, row.outputTokens]
     .some((value) => value !== null && value !== undefined);
+}
+
+function hasMeasuredUsage(row: SettleMetricRow | undefined): boolean {
+  return row !== undefined && [row.totalTokens, row.totalCostUsd, row.inputTokens, row.outputTokens]
+    .some((value) => value !== null && value !== undefined);
+}
+
+/** Successful interrupted reads resume without retrying transport errors. */
+export function panelMetricsContinuationDelay(
+  metrics: Readonly<Record<string, SettleMetricRow>> | undefined,
+  ids: readonly string[],
+  successes: number,
+): number | false {
+  if (!ids.some((id) => metrics?.[id]?.usageComplete === false)) return false;
+  return Math.min(15_000, 1_000 * 2 ** Math.min(4, Math.max(0, successes - 1)));
 }
 
 function packUsage(usage: UsageRevision | undefined): string {
@@ -69,9 +84,8 @@ export function panelMetricsSourceRevision(source: PanelMetricsSource | undefine
 }
 
 /**
- * A complete header replaces an older settle. A cold placeholder does not.
- * When both are complete, the newer stamp wins; without stamps the header is
- * the later read.
+ * Keep a measured prefix over a cold placeholder. When both rows are measured
+ * or complete, the newer stamp wins; without stamps the header is the later read.
  */
 export function mergePanelMetrics<T extends SettleMetricRow>(
   header: Readonly<Record<string, T>>,
@@ -83,11 +97,11 @@ export function mergePanelMetrics<T extends SettleMetricRow>(
   for (const id of new Set([...Object.keys(header), ...Object.keys(settled)])) {
     const headerRow = header[id];
     const settledRow = settled[id];
-    const headerComplete = isCompletePanelMetrics(headerRow);
-    const settledComplete = isCompletePanelMetrics(settledRow);
+    const headerMeasured = isCompletePanelMetrics(headerRow) || hasMeasuredUsage(headerRow);
+    const settledMeasured = isCompletePanelMetrics(settledRow) || hasMeasuredUsage(settledRow);
     const headerNewer = freshness === undefined || freshness.headerStamp >= (freshness.settledStamp[id] ?? -1);
-    if (headerComplete && (!settledComplete || headerNewer)) merged[id] = headerRow as T;
-    else if (settledComplete) merged[id] = settledRow as T;
+    if (headerMeasured && (!settledMeasured || headerNewer)) merged[id] = headerRow as T;
+    else if (settledMeasured) merged[id] = settledRow as T;
     else if (headerRow !== undefined && !isUnsettledPanelMetrics(headerRow)) merged[id] = headerRow;
     else if (settledRow !== undefined && !isUnsettledPanelMetrics(settledRow)) merged[id] = settledRow;
     else if (headerRow !== undefined) merged[id] = headerRow;

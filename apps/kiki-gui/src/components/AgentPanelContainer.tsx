@@ -46,7 +46,7 @@ import {
   mapPanelSubagentTargets,
   mapPanelTools,
 } from './agent-panel/mapCapabilities';
-import { isCompletePanelMetrics, isUnsettledPanelMetrics, mergePanelMetrics, panelMetricsCapabilitiesKey, panelMetricsSettleKey, panelMetricsSourceRevision } from './agent-panel/panelMetricsQuery';
+import { isCompletePanelMetrics, isUnsettledPanelMetrics, mergePanelMetrics, panelMetricsCapabilitiesKey, panelMetricsContinuationDelay, panelMetricsSettleKey, panelMetricsSourceRevision } from './agent-panel/panelMetricsQuery';
 import { useAgentPanelCatalog } from './agent-panel/useAgentPanelCatalog';
 
 const EMPTY_PANEL_METRICS: Readonly<Record<string, AgentPanelMetrics>> = {};
@@ -382,7 +382,10 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const missingIds = settleKeyIds.filter((id) => {
     if (dirtyIds.includes(id)) return false;
     const keptRow = kept.current.byId.get(id);
-    if (keptRow !== undefined && !isUnsettledPanelMetrics(keptRow.metrics) && keptRow.revision === revisionOf(id)) return false;
+    if (keptRow !== undefined && keptRow.revision === revisionOf(id)) {
+      if (!isUnsettledPanelMetrics(keptRow.metrics)) return false;
+      if (!isCompletePanelMetrics(headerMetrics[id]) || keptRow.stamp > headerStamp.current) return true;
+    }
     if (isCompletePanelMetrics(headerMetrics[id])) return false;
     return isUnsettledPanelMetrics(headerMetrics[id]);
   });
@@ -452,12 +455,14 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
         if (settleReadAbort.current === abortController) settleReadAbort.current = undefined;
       });
     },
-    // The first read counts the ids on screen. After that, only an agent whose
-    // controller, transcript or roster revision moved is read again. Hiding
-    // drops the waiter; it does not start another read when the panel returns.
+    // A successful budget-limited read resumes the same projection. Completed
+    // sources stay cached until their revision changes; hidden panels stop.
     enabled: canSettle && requestIds.length > 0 && !settleBlocked,
     staleTime: Number.POSITIVE_INFINITY,
-    refetchInterval: false,
+    refetchInterval: (current) => canSettle && !settleBlocked && current.state.status === 'success'
+      ? panelMetricsContinuationDelay(current.state.data?.metrics, requestIds, current.state.dataUpdateCount)
+      : false,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
     retry: false,
   });
@@ -477,7 +482,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     let changed = false;
     for (const [id, revision] of requested) {
       const row = settled[id];
-      if (row === undefined || isUnsettledPanelMetrics(row)) {
+      if (row === undefined) {
         if (kept.current.accepted.get(id) !== revision) {
           kept.current.accepted.set(id, revision);
           changed = true;
@@ -507,18 +512,19 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     }
     if (changed) setKeptEpoch((epoch) => epoch + 1);
   }, [metricsSettle.data, metricsSettle.dataUpdatedAt, metricsIdentity, spaceIdentity]);
-  // Hiding drops the waiter. The query stays disabled for that same source,
-  // so showing the panel again does not start a second scan.
+  // Hiding cancels the read and its continuation timer. Reopening checks the
+  // shared facts before resuming any remaining projection.
   useEffect(() => {
     if (visible || requestIds.length === 0 || startedToken.current !== requestToken) return;
     settleReadAbort.current?.abort();
+    reopenRefetch.current = undefined;
     setSettleBlock({ identity: metricsIdentity, token: requestToken });
   }, [visible, requestToken, requestIds.length, metricsIdentity]);
 
   // A hidden panel releases its scan. Reopening first checks shared completed
   // facts, then resumes the incremental read only if those facts are still missing.
   useEffect(() => {
-    if (!visible || !settleBlocked || !metricsWanted || !state.loaded || state.resyncing || header.isFetching) return;
+    if (!visible || !settleBlocked || !metricsWanted || !state.loaded || state.resyncing) return;
     if (reopenRefetch.current === requestToken) return;
     reopenRefetch.current = requestToken;
     let current = true;
@@ -908,6 +914,7 @@ function figuresFrom(usage: AgentTokenUsage, t: Translate): OverviewFigures {
       : undefined,
     compactions: known(usage.compactionCount) ? usage.compactionCount : undefined,
     partial: usage.usagePartial === true || usage.costPartial === true,
+    counting: usage.usageComplete === false,
   };
 }
 
@@ -946,6 +953,7 @@ function overviewFacts(input: {
     totalTokens: tree.totalTokens ?? undefined,
     cacheRate: aggregateTreeCacheHitRate(ids, metrics) ?? undefined,
     incomplete: !treeComplete,
+    counting: ids.some((id) => metrics[id]?.usageComplete === false),
   } : undefined;
   // The cockpit's figures, for every agent's page.
   //
@@ -968,6 +976,7 @@ function overviewFacts(input: {
     totalTokens: tree.totalTokens ?? undefined,
     cacheRate: aggregateTreeCacheHitRate(ids, metrics) ?? undefined,
     incomplete: !treeComplete,
+    counting: ids.some((id) => metrics[id]?.usageComplete === false),
   };
   const startedAt = isMain ? state.session?.created_at : node?.startedAt;
   const turns = isMain ? state.session?.usage?.turn_count : undefined;

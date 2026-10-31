@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { UNKNOWN_AGENT_PANEL_METRICS } from '@kiki/session-core/session/agentPanel';
-import { isCompletePanelMetrics, isUnsettledPanelMetrics, mergePanelMetrics, panelMetricsCapabilitiesKey, panelMetricsSettleKey, panelMetricsSourceRevision } from './panelMetricsQuery';
+import { isCompletePanelMetrics, isUnsettledPanelMetrics, mergePanelMetrics, panelMetricsCapabilitiesKey, panelMetricsContinuationDelay, panelMetricsSettleKey, panelMetricsSourceRevision } from './panelMetricsQuery';
 import type { AgentTokenUsage } from './types';
 
 const cold: AgentTokenUsage = {
@@ -104,4 +104,28 @@ it('does not retry a fully read unknown record but keeps an interrupted known pr
   expect(isCompletePanelMetrics(unknown)).toBe(true);
   expect(mergePanelMetrics({ main: unknown }, { main: counted })['main']).toEqual(unknown);
   expect(isUnsettledPanelMetrics({ ...counted, usageComplete: false, usagePartial: true })).toBe(true);
+});
+
+it('keeps measured partial rows over placeholders and chooses the newer partial reading', () => {
+  const partial: AgentTokenUsage = { ...counted, usageComplete: false, usagePartial: true };
+  expect(mergePanelMetrics({ main: { ...cold, usageComplete: false } }, { main: partial })['main']).toBe(partial);
+  const newer = { ...partial, totalTokens: 28 };
+  expect(mergePanelMetrics({ main: counted }, { main: newer }, {
+    headerStamp: 1, settledStamp: { main: 2 },
+  })['main']).toBe(newer);
+  expect(mergePanelMetrics({ main: partial }, { main: newer }, {
+    headerStamp: 1, settledStamp: { main: 2 },
+  })['main']).toBe(newer);
+  expect(mergePanelMetrics({ main: newer }, { main: partial }, {
+    headerStamp: 3, settledStamp: { main: 2 },
+  })['main']).toBe(newer);
+});
+
+it('backs off successful partial reads to 15 seconds and stops for complete or unreported rows', () => {
+  const partial = { main: { ...counted, usageComplete: false } };
+  expect([1, 2, 3, 4, 5, 6, 40].map((successes) => panelMetricsContinuationDelay(partial, ['main'], successes)))
+    .toEqual([1_000, 2_000, 4_000, 8_000, 15_000, 15_000, 15_000]);
+  expect(panelMetricsContinuationDelay({ main: { ...cold, usageComplete: true } }, ['main'], 3)).toBe(false);
+  expect(panelMetricsContinuationDelay(undefined, ['main'], 1)).toBe(false);
+  expect(panelMetricsContinuationDelay(partial, ['other'], 1)).toBe(false);
 });
