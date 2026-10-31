@@ -1639,6 +1639,7 @@ export interface SessionWireFields {
   readonly activityUpdatedAt?: number;
   readonly archived: boolean;
   readonly archivedAt?: number;
+  readonly executionPhase?: 'running' | 'pausing' | 'paused' | 'resuming' | 'failed';
   readonly worktree?: { readonly worktreeId: string; readonly branch: string; readonly sourceRoot: string; readonly baseRef: string };
   readonly custom?: Record<string, unknown>;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
@@ -1683,6 +1684,7 @@ export function toWireSession(
     pending_interaction: facts.pendingInteraction,
     last_turn_reason:
       facts.lastTurnReason ?? (facts.live === false ? fields.lastTurnReason : undefined),
+    execution_phase: fields.executionPhase,
     archived: fields.archived,
     ephemeral: ephemeral || undefined,
     last_prompt: fields.lastPrompt,

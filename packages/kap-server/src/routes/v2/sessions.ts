@@ -199,6 +199,7 @@ const v2SessionSchema = z.object({
     updated_at: z.number().int(),
     archived: z.boolean(),
     archived_at: z.number().int().nullable(),
+    execution_phase: z.enum(['running', 'pausing', 'paused', 'resuming', 'failed']).optional(),
   }),
   activity: z.object({ status: v2ActivityStatusSchema }),
   git: v2GitDomainSchema.optional(),
@@ -588,6 +589,7 @@ export function registerV2SessionsRoutes(app: V2SessionsRouteHost, core: Scope):
             updated_at: summary.updatedAt,
             archived: summary.archived,
             archived_at: summary.archivedAt ?? null,
+            execution_phase: summary.executionPhase,
           },
           activity: { status: mapActivityStatus(factsOf(summary.id), summary.lastTurnReason) },
           git:

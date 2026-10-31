@@ -173,6 +173,7 @@ export const sessionSchema = z.object({
    *  decide how to present it (e.g. an "aborted" tag when `!busy` and the
    *  reason is cancelled/failed). */
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),
+  execution_phase: z.enum(['running', 'pausing', 'paused', 'resuming', 'failed']).optional(),
   archived: z.boolean().optional(),
   ephemeral: z.boolean().optional(),
   /** When the session was archived (ISO 8601); absent for sessions archived

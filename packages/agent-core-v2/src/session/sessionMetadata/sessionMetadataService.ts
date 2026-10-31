@@ -17,6 +17,7 @@ import { AgentOutcomeDocuments } from './agentOutcomeStore';
 import {
   ISessionMetadata,
   SESSION_META_VERSION,
+  parseSessionExecutionPhase,
   type AgentMeta,
   type SessionMeta,
   type SessionMetadataChangedEvent,
@@ -463,6 +464,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
           activityUpdatedAt: this.data.activityUpdatedAt,
           archived: this.data.archived === true,
           archivedAt: this.data.archivedAt,
+          executionPhase: this.data.executionPhase,
           custom: this.data.custom,
           lastTurnReason: this.data.lastTurnReason,
           usage: this.data.usage,
@@ -590,6 +592,7 @@ export function normalizeSessionMeta(raw: SessionMeta, sessionId: string): Sessi
     cwd,
     title,
     titleKind,
+    executionPhase: parseSessionExecutionPhase(clean.executionPhase),
     createdAt: toEpochMs(legacyCreatedAt),
     updatedAt: toEpochMs(legacyUpdatedAt),
     archived: clean.archived === true,

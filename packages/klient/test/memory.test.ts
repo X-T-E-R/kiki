@@ -76,14 +76,20 @@ describe('memory dispatcher specifics', () => {
       const created = await klient.global.sessions.create({ workDir: homeDir });
       const session = klient.session(created.id);
       await session.agent('main').setPermission('manual');
+      await session.update({ executionPhase: 'paused' });
       const agents = await session.agents();
       expect(agents['main']).toBeDefined();
       const metadata = await session.get();
       expect(metadata.id).toBe(created.id);
+      expect(metadata.executionPhase).toBe('paused');
       await session.close();
       const manager = app.accessor.get(ISessionManager);
       const resume = vi.spyOn(manager, 'resume');
       expect(await session.get()).toEqual(metadata);
+      expect(await klient.global.sessions.get(created.id)).toMatchObject({ executionPhase: 'paused' });
+      expect(await klient.global.sessions.list({ sessionId: created.id })).toMatchObject({
+        items: [expect.objectContaining({ id: created.id, executionPhase: 'paused' })],
+      });
       expect(await session.agents()).toEqual(agents);
       await expect(klient.session('missing-session').get()).rejects.toMatchObject({ code: 40404 });
       const controller = new AbortController();

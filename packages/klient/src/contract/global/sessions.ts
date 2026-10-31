@@ -20,6 +20,7 @@ export const sessionSummarySchema = z.object({
   updatedAt: z.number(),
   archived: z.boolean(),
   archivedAt: z.number().optional(),
+  executionPhase: z.enum(['running', 'pausing', 'paused', 'resuming', 'failed']).optional(),
   custom: z.record(z.string(), z.unknown()).optional(),
   lastTurnReason: z.enum(['completed', 'cancelled', 'failed']).optional(),
   executorId: z.string().optional(),

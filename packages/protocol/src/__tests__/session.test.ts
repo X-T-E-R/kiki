@@ -58,6 +58,7 @@ describe('sessionSchema', () => {
     busy: true,
     main_turn_active: true,
     pending_interaction: 'approval',
+    execution_phase: 'paused',
     archived: false,
     metadata: { cwd: '/tmp/test' },
     agent_config: { model: 'moonshot-v1-128k' },

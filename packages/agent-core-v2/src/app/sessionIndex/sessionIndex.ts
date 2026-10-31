@@ -5,6 +5,7 @@ import type { TokenUsage } from '#/kosong/contract/usage';
 import type { SessionWorktree } from '#/app/git/worktreeModel';
 import type { Page } from '#/persistence/interface/queryStore';
 import type { UsageFactTotals } from '#/agent/usage/usageFact';
+import type { SessionExecutionPhase } from '#/session/sessionMetadata/sessionMetadata';
 
 export const PARENT_SESSION_ID_KEY = 'parent_session_id';
 
@@ -38,6 +39,7 @@ export interface SessionSummary {
   /** Archive time (epoch ms); absent for sessions archived before the field
    *  existed — callers fall back to `updatedAt` for display. */
   readonly archivedAt?: number;
+  readonly executionPhase?: SessionExecutionPhase;
   readonly custom?: Record<string, unknown>;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
   readonly usage?: SessionUsageSummary;

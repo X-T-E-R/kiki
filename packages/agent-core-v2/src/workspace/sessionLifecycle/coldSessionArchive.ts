@@ -72,6 +72,7 @@ async function setColdArchived(
       createdAt: nextMeta.createdAt,
       updatedAt: nextMeta.updatedAt,
       activityUpdatedAt: nextMeta.activityUpdatedAt,
+      executionPhase: nextMeta.executionPhase,
       archived,
       archivedAt,
       custom: nextMeta.custom,

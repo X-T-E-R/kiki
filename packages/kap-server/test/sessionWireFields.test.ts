@@ -40,6 +40,11 @@ describe('toWireSession execution activity', () => {
     expect(wire.busy).toBe(true);
     expect(wire.executing).toBe(executing);
   });
+
+  it('projects the persisted execution phase for cold sessions', () => {
+    expect(toWireSession({ ...fields, executionPhase: 'paused' }, '/example', coldFacts).execution_phase).toBe('paused');
+    expect(toWireSession(fields, '/example', coldFacts).execution_phase).toBeUndefined();
+  });
 });
 
 describe('toWireSession independent recency', () => {

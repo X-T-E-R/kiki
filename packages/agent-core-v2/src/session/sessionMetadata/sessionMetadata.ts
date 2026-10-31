@@ -44,6 +44,13 @@ export type DelegatorRef =
 export const SESSION_META_VERSION = 2;
 
 export type SessionTitleKind = 'replaceable' | 'generated' | 'custom';
+export type SessionExecutionPhase = 'running' | 'pausing' | 'paused' | 'resuming' | 'failed';
+
+export function parseSessionExecutionPhase(value: unknown): SessionExecutionPhase | undefined {
+  return value === 'running' || value === 'pausing' || value === 'paused' || value === 'resuming' || value === 'failed'
+    ? value
+    : undefined;
+}
 
 export interface SessionMeta {
   readonly id: string;
@@ -54,6 +61,7 @@ export interface SessionMeta {
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly activityUpdatedAt?: number;
+  readonly executionPhase?: SessionExecutionPhase;
   readonly archived: boolean;
   readonly archivedAt?: number;
   readonly cwd?: string;

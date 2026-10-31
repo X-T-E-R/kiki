@@ -32,6 +32,7 @@ export async function updateSessionProfile(
     updatedAt: meta.updatedAt,
     archived: meta.archived,
     archivedAt: meta.archivedAt,
+    executionPhase: meta.executionPhase,
     custom: meta.custom,
   };
 }

@@ -1,6 +1,6 @@
 import { basename, sep } from 'node:path';
 
-import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { parseSessionExecutionPhase, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { ILogService } from '#/_base/log/log';
 import type { TokenUsage } from '#/kosong/contract/usage';
@@ -115,6 +115,7 @@ export function buildSessionSummary(fields: {
   createdAt: number;
   updatedAt: number;
   activityUpdatedAt?: number;
+  executionPhase?: SessionSummary['executionPhase'];
   archived: boolean;
   archivedAt?: number;
   custom?: Record<string, unknown>;
@@ -136,6 +137,7 @@ export function buildSessionSummary(fields: {
     ownUpdatedAt: fields.updatedAt,
     archived: fields.archived,
     archivedAt: fields.archivedAt,
+    executionPhase: fields.executionPhase,
     custom: fields.custom,
     lastTurnReason: fields.lastTurnReason,
     usage: fields.usage,
@@ -176,6 +178,7 @@ export function summaryEquals(a: SessionSummary, b: SessionSummary): boolean {
     a.ownUpdatedAt === b.ownUpdatedAt &&
     a.archived === b.archived &&
     a.archivedAt === b.archivedAt &&
+    a.executionPhase === b.executionPhase &&
     a.lastTurnReason === b.lastTurnReason &&
     JSON.stringify(a.custom) === JSON.stringify(b.custom) &&
     JSON.stringify(a.usage) === JSON.stringify(b.usage) &&
@@ -337,6 +340,7 @@ function summaryFromMetadata(
     activityUpdatedAt: parseTime(meta['activityUpdatedAt']),
     archived: meta['archived'] === true,
     archivedAt: meta['archivedAt'] === undefined ? undefined : parseTime(meta['archivedAt']),
+    executionPhase: parseSessionExecutionPhase(meta['executionPhase']),
     custom,
     lastTurnReason: parseTurnOutcome(meta['lastTurnReason']),
     usage: parseSessionUsageSummary(meta['usage']),

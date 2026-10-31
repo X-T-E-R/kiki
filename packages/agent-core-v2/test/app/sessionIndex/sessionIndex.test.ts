@@ -200,6 +200,16 @@ describe('FileSessionIndex (legacy)', () => {
     expect(await store.get('missing')).toBeUndefined();
   });
 
+  it('preserves a cold execution phase in list and point summaries', async () => {
+    await seedSession('paused', { createdAt: 1, updatedAt: 2, executionPhase: 'paused' });
+
+    const store = build();
+    expect((await store.listRecent({ workspaceIds: [workspaceId] })).items).toMatchObject([
+      { id: 'paused', executionPhase: 'paused' },
+    ]);
+    expect(await store.get('paused')).toMatchObject({ executionPhase: 'paused' });
+  });
+
   it('probes a new session id across workspaces with bounded concurrency and no session inventories', async () => {
     const firstBatch = deferred<void>();
     const release = deferred<void>();
