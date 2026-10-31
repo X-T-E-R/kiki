@@ -5,7 +5,10 @@ import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Event } from '#/_base/event';
-import { resolvedRecipeSchema } from '@kiki/protocol';
+import { IEventBus } from '#/app/event/eventBus';
+import { ILogService } from '#/_base/log/log';
+import { WarningIssued } from '#/agent/profile/profileOps';
+import { resolvedRecipeSchema, type AgentPromptDiagnostics } from '@kiki/protocol';
 import { parseAgentFileText } from '@kiki/agent-profiles/agentFile';
 import { agentProfileFromFile } from '@kiki/agent-profiles/agentProfileFromFile';
 import { IRecipeService, IRecipeSourceReader } from '#/app/recipes/recipes';
@@ -464,6 +467,112 @@ describe('per-model cognition overlay', () => {
       expect(ctx.kimiConfig.models![MOCK_MODEL]).toEqual(saved);
       await ctx.dispose(); ctx = undefined;
     }
+  });
+
+  it('exposes a steering-only profile Recipe and sends its complete content through the requester', async () => {
+    const packageDir = join(homeDir, 'research-recipe');
+    await mkdir(packageDir);
+    const cue = 'FOLLOW THE EVIDENCE\nKeep the strongest baseline and continue the current research.';
+    await writeFile(join(packageDir, 'steering.md'), cue);
+    await writeFile(join(packageDir, 'recipe.toml'), stringify({ schema_version: 1, id: 'research', name: 'Research guidance', version: '1.0.0', prompts: { steering: { file: 'steering.md' } } }));
+    let observedSystem = '';
+    let observedMessages = '';
+    ctx = createTestAgent({ autoConfigure: false }, homeDirServices(homeDir), appServices((reg) => {
+      reg.define(IRecipeService, RecipeService); reg.define(IRecipeSourceReader, RecipeSourceReader);
+    }), llmGenerateServices(async (_provider, system, _tools, messages) => {
+      observedSystem = system;
+      observedMessages = JSON.stringify(messages);
+      expect(messages.some((message) => message.role === 'user' && message.content.some((part) => part.type === 'text' && part.text === cue))).toBe(true);
+      return { id: 'response', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
+    }));
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ resolvedProfile: normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, sourcePath: join(homeDir, 'role.md'), recipe: './research-recipe/recipe.toml', systemPrompt: () => 'ROLE BODY' }), model: MOCK_MODEL, thinking: 'off' });
+    const binding = await profile.getCognitionBinding();
+    expect(binding.recipe?.resolved.layers?.[0]?.surface).toBe('profile');
+    expect(binding.slots?.steering).toBe(cue);
+    expect(binding.recipe?.resolved.branches.main.system).toBeUndefined();
+    const diagnostics = await profile.getPromptDiagnostics();
+    expect(diagnostics.recipe_model_binding?.references).toContainEqual(expect.objectContaining({ surface: 'profile', name: 'Research guidance' }));
+    expect(diagnostics.channels.find((channel) => channel.id === 'recipe.profile.steering')).toMatchObject({ state: 'effective', recipe: { name: 'Research guidance', slot: 'steering', content: cue, origins: [expect.objectContaining({ file: 'steering.md' })] } });
+    expect(diagnostics.channels.find((channel) => channel.id === 'recipe.profile.system')?.state).toBe('inactive');
+    ctx.get(IAgentContextMemoryService).append({ role: 'user', content: [{ type: 'text', text: 'Continue the research' }], toolCalls: [], origin: { kind: 'user' } });
+    ctx.get(IAgentModelSteeringService);
+    await runWillBeginStepHooks(ctx.get(IAgentLoopService), true);
+    await ctx.get(IAgentLLMRequesterService).request({ tools: [] });
+    expect(observedSystem).toContain('ROLE BODY');
+    expect(observedSystem).not.toContain(cue);
+    expect(observedMessages).toContain('FOLLOW THE EVIDENCE');
+  });
+
+  it.each(['same-revision', 'changed-revision', 'unavailable'] as const)('projects legacy frozen Recipe diagnostics when the current package is %s', async (state) => {
+    const persistence = new InMemoryWireRecordPersistence();
+    let selected: ReturnType<typeof recipe> | undefined = recipe('frozen-revision');
+    const role = normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, recipe: 'profile-pack', systemPrompt: () => 'ROLE BODY' });
+    const create = () => {
+      ctx = createTestAgent({ persistence, autoConfigure: false }, homeDirServices(homeDir), appServices((reg) => reg.definePartialInstance(IRecipeService, {
+        resolve: async () => { if (selected === undefined) throw new Error('Recipe installation not found'); return structuredClone(selected); }, onDidChange: Event.None as Event<void>,
+      })));
+      vi.spyOn(ctx.get(ISessionAgentProfileCatalog), 'get').mockReturnValue(role);
+      return ctx;
+    };
+    let agent = create();
+    await agent.get(IAgentProfileService).bind({ resolvedProfile: role, model: MOCK_MODEL });
+    const frozen = structuredClone(await agent.get(IAgentProfileService).getCognitionBinding());
+    await agent.get(IWireService).flush(); await agent.dispose();
+    for (const record of persistence.records) {
+      if (record.type !== 'profile.bind') continue;
+      const bound = record['boundProfile'] as { promptBase: { promptDiagnostics: AgentPromptDiagnostics } };
+      for (const channel of bound.promptBase.promptDiagnostics.channels) if (channel.recipe !== undefined) {
+        delete channel.recipe.name;
+        delete channel.recipe.content;
+      }
+    }
+    selected = state === 'unavailable' ? undefined : { ...recipe(state === 'same-revision' ? 'frozen-revision' : 'new-revision'), name: 'Current package name' };
+    if (state === 'changed-revision') selected!.branches.main.steering = 'NEW DISK STEERING';
+    agent = create(); await agent.restorePersisted();
+    const profile = agent.get(IAgentProfileService);
+    await profile.syncBindingMetadata();
+    const warnings: WarningIssued[] = [];
+    agent.get(IEventBus).subscribe(WarningIssued, (event) => warnings.push(event));
+    const diagnostics = await profile.getPromptDiagnostics();
+    const reference = diagnostics.recipe_model_binding?.references?.find((entry) => entry.surface === 'profile');
+    expect(reference).toMatchObject({ installation_id: 'profile-pack', revision: 'frozen-revision' });
+    expect(reference?.name).toBe(state === 'same-revision' ? 'Current package name' : undefined);
+    expect(diagnostics.channels.find((channel) => channel.id === 'recipe.profile.steering')).toMatchObject({ state: 'effective', recipe: { content: 'RECIPE MAIN CUE', revision: 'frozen-revision' } });
+    expect(JSON.stringify(diagnostics.channels)).not.toContain('NEW DISK STEERING');
+    if (state === 'unavailable') expect(diagnostics.disk_error).toContain('Recipe installation not found');
+    else expect(diagnostics.disk_changed).toBe(state === 'changed-revision');
+    expect(await profile.getCognitionBinding()).toEqual(frozen);
+    expect(warnings).toEqual([]);
+  });
+
+  it.each(['installation:missing-profile-recipe', './missing-profile-recipe.toml'])('reports the profile and reference for an unavailable Recipe %s without replacing the saved binding', async (reference) => {
+    ctx = createTestAgent({ autoConfigure: false }, homeDirServices(homeDir), appServices((reg) => {
+      reg.define(IRecipeService, RecipeService); reg.define(IRecipeSourceReader, RecipeSourceReader);
+    }));
+    const profile = ctx.get(IAgentProfileService);
+    const role = normalizeAgentProfile({ name: 'example-role', sourcePath: join(homeDir, 'role.md'), systemPrompt: () => 'KEPT ROLE' });
+    await profile.bind({ resolvedProfile: role, model: MOCK_MODEL, thinking: 'off' });
+    const previous = structuredClone(profile.data());
+    const warnings: WarningIssued[] = [];
+    ctx.get(IEventBus).subscribe(WarningIssued, (event) => warnings.push(event));
+    const warn = vi.spyOn(ctx.get(ILogService), 'warn');
+    await expect(profile.bind({ resolvedProfile: { ...role, recipe: reference }, model: MOCK_MODEL, thinking: 'off' })).rejects.toMatchObject({
+      message: expect.stringContaining(`Profile "example-role"`),
+      details: expect.objectContaining({ profile: 'example-role', reference, surface: 'profile', profilePath: role.sourcePath }),
+    });
+    expect(warnings).toContainEqual(expect.objectContaining({ code: 'profile.recipe_resolution_failed', message: expect.stringContaining(reference) }));
+    expect(warnings.at(-1)?.message).toMatch(/Recipe installation not found|ENOENT/);
+    expect(warn).toHaveBeenCalledWith('Profile Recipe resolution failed', expect.objectContaining({ profile: 'example-role', reference, reason: expect.any(String) }));
+    const warningCount = warnings.length;
+    const warnCount = warn.mock.calls.length;
+    vi.spyOn(ctx.get(ISessionAgentProfileCatalog), 'get').mockReturnValue({ ...role, recipe: reference });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect((await profile.getPromptDiagnostics()).disk_error).toContain(reference);
+    }
+    expect(warnings).toHaveLength(warningCount);
+    expect(warn).toHaveBeenCalledTimes(warnCount);
+    expect(structuredClone(profile.data())).toEqual(previous);
   });
 
   it('cold-restores profile Recipe revisions and local declarations, rebuilds explicitly, and preserves the binding on an invalid reference', async () => {

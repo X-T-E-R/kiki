@@ -3035,6 +3035,7 @@ export interface AgentStateSnapshot {
             file?: string;
           };
           };
+          name?: string;
           hooks?: readonly {
             event: string;
             command: string;
@@ -3391,6 +3392,7 @@ export interface AgentStateSnapshot {
                 file?: string;
               };
               };
+              name?: string;
               hooks?: readonly {
                 event: string;
                 command: string;
@@ -6424,6 +6426,8 @@ export interface AgentStateSnapshot {
                 version: string;
                 file?: string;
               }[];
+              name?: string;
+              content?: string;
             };
             anchor_steps?: number;
             anchor_scope?: 'session' | 'turn';
@@ -6460,6 +6464,7 @@ export interface AgentStateSnapshot {
               surface: 'profile' | 'model';
               installation_id: string;
               revision: string;
+              name?: string;
             }[];
           };
           request?: {
@@ -6872,6 +6877,7 @@ export interface AgentStateSnapshot {
                   file?: string;
                 };
                 };
+                name?: string;
                 hooks?: readonly {
                   event: string;
                   command: string;
@@ -7228,6 +7234,7 @@ export interface AgentStateSnapshot {
                       file?: string;
                     };
                     };
+                    name?: string;
                     hooks?: readonly {
                       event: string;
                       command: string;

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { AgentCapabilitiesQuery, AgentPromptDiagnostics, RecipeModelBinding } from '@kiki/protocol';
+import type { AgentCapabilitiesQuery, AgentPromptChannel, AgentPromptDiagnostics, RecipeModelBinding } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
 import { FilePathLink } from '../mediaParts';
 import { ContextRebuildControl, ContextRebuildSources } from './ContextRebuildControl';
@@ -67,6 +67,7 @@ export function PromptEffectiveDetails({ value, query, unavailable = false, load
                 <div className="space-y-2 pt-2 text-[11.5px] leading-5 text-ink-soft">
                   {entry.reason !== undefined ? <p data-prompt-reason>{entry.reason}</p> : null}
                   {entry.anchor_steps !== undefined || entry.anchor_scope !== undefined ? <AnchorWindow steps={entry.anchor_steps} scope={entry.anchor_scope} /> : null}
+                  <RecipeSteeringDetails entry={entry} />
                   {entry.sources.length > 0 ? <ol className="space-y-2" aria-label={t('agentPanel.prompt.sources')}>
                     {entry.sources.map((source, sourceIndex) => <li key={`${source.path}:${sourceIndex}`} className="min-w-0" data-prompt-source>
                       <p className="text-ink-faint">{source.order ?? sourceIndex + 1}. {source.surface} · {source.kind}</p>
@@ -104,6 +105,29 @@ export function PromptEffectiveDetails({ value, query, unavailable = false, load
   </details>;
 }
 
+function RecipeSteeringDetails({ entry }: { entry: AgentPromptChannel }) {
+  const { t } = useI18n();
+  if (entry.channel !== 'cognition_steering') return null;
+  const recipe = entry.recipe;
+  if (recipe === undefined && entry.state !== 'effective') return null;
+  return <div className="space-y-2" data-prompt-recipe-steering>
+    {entry.state === 'effective' ? <p className="font-medium text-ink" data-prompt-steering-applied>{t('agentPanel.prompt.steeringApplied')}</p> : null}
+    {recipe?.name !== undefined ? <p className="text-ink-soft" data-prompt-recipe-name>{recipe.name}</p> : null}
+    {recipe?.content !== undefined ? <div className="space-y-1" data-prompt-recipe-content>
+      <p className="text-ink-faint">{t('agentPanel.prompt.recipeContent')}</p>
+      <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded border border-hairline bg-paper/60 p-2 font-mono text-[11px] leading-5 text-ink-soft">{recipe.content}</pre>
+    </div> : null}
+    {recipe !== undefined && recipe.origins.length > 0 ? <div className="space-y-1" data-prompt-recipe-origins>
+      <p className="text-ink-faint">{t('agentPanel.prompt.recipeOrigins')}</p>
+      <ul className="space-y-0.5">
+        {recipe.origins.map((origin, index) => <li key={`${origin.source}:${origin.manifest_id}:${index}`} className="break-all font-mono text-[11px] text-ink-faint">
+          {origin.source} · {origin.manifest_id} · {origin.version}{origin.file === undefined ? '' : ` · ${origin.file}`}
+        </li>)}
+      </ul>
+    </div> : null}
+  </div>;
+}
+
 /**
  * Which Recipes produced the words in this binding, and from where.
  *
@@ -123,6 +147,7 @@ function RecipeSources({ binding }: { binding: RecipeModelBinding | undefined })
     <ul className="space-y-0.5">
       {references.map((reference) => <li key={`${reference.surface}:${reference.installation_id}`} className="min-w-0 text-[11px] leading-5 text-ink-faint" data-prompt-recipe-source={reference.surface}>
         <span className="text-ink-soft">{t(`agentPanel.prompt.recipeSurface.${reference.surface}`)}</span>
+        {reference.name === undefined ? null : <><span> · </span><span className="font-medium text-ink">{reference.name}</span></>}
         {' · '}
         <span className="font-mono">{reference.installation_id}</span>
         {' · '}

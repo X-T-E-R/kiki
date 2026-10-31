@@ -3,7 +3,7 @@ import { isNativeTarget } from '@kiki/agent-profiles/nativeTarget';
 import { resolveNativeTargetBinding } from '#/session/subagent/nativeTargetBinding';
 import { loadSteeringSources } from '#/agent/cognition/steeringBinding';
 import { dirname } from 'node:path';
-import { composeRecipeLayers, recipeReferences } from '#/app/recipes/recipeOverlay';
+import { composeRecipeLayers, recipeReferences, recipeRevisionContent } from '#/app/recipes/recipeOverlay';
 import { isRecipeFileReference, resolveRecipeFileLocator } from '#/app/recipes/recipePrimitives';
 import { resolveModelRecipeReference } from '#/app/recipes/recipeReferenceResolution';
 import { snapshotRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
@@ -13,7 +13,7 @@ import { resolveSelectedExecutionBinding } from './executionBinding';
 import { agentExecutorBindingFingerprint, agentExecutorBindingMatches } from '#/app/agentExecutor/agentExecutor';
 import { ExecutorSessionUpdated, externalExecutorKey } from '#/agent/execution/externalExecutorOps';
 import { resolveExecutorPrompt } from '@kiki/agent-profiles/executorPrompt';
-import { promptConfigurationChannels } from './promptDiagnostics';
+import { frozenRecipeDiagnostics, promptConfigurationChannels } from './promptDiagnostics';
 import { llmRequestTraceKey } from '#/agent/llmRequester/llmRequestOps';
 import {
   bindingAdvisoryKey,
@@ -2357,21 +2357,32 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     });
   }
 
-  private async selectedRecipe(alias: string, external = this.isExternalExecutor, profile = this.profileState.boundProfile ?? this.resolveActiveProfile()): Promise<import('@kiki/protocol').ResolvedRecipe | undefined> {
+  private async selectedRecipe(alias: string, external = this.isExternalExecutor, profile = this.profileState.boundProfile ?? this.resolveActiveProfile(), reportFailure = true): Promise<import('@kiki/protocol').ResolvedRecipe | undefined> {
     if (external) return undefined;
     const model = this.models.get(alias);
     const references = [{ surface: 'model' as const, id: model?.recipe, options: model?.recipeOptions }, { surface: 'profile' as const, id: profile?.recipe, options: profile?.recipeOptions }].filter((entry) => entry.id !== undefined && entry.id !== 'off');
     if (references.length === 0) return undefined;
-    if (this.recipes === undefined) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'Recipe service is unavailable');
     const profileBase = profile?.sourcePath === undefined ? undefined : dirname(profile.sourcePath);
     const layers: import('@kiki/protocol').RecipeResolvedLayer[] = [];
     for (const reference of references) {
       const raw = reference.id!;
-      const file = isRecipeFileReference(raw);
-      const installation_id = file ? reference.surface === 'profile'
-        ? resolveRecipeFileLocator(raw, profileBase) : resolveModelRecipeReference(raw, alias, this.config, this.bootstrap)
-        : raw.replace(/^installation:/u, '');
-      layers.push({ surface: reference.surface, installation_id, resolved: await this.recipes.resolve(installation_id, undefined, reference.options) });
+      try {
+        if (this.recipes === undefined) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'Recipe service is unavailable');
+        const file = isRecipeFileReference(raw);
+        const installation_id = file ? reference.surface === 'profile'
+          ? resolveRecipeFileLocator(raw, profileBase) : resolveModelRecipeReference(raw, alias, this.config, this.bootstrap)
+          : raw.trim().replace(/^installation:/u, '');
+        layers.push({ surface: reference.surface, installation_id, resolved: await this.recipes.resolve(installation_id, undefined, reference.options) });
+      } catch (cause) {
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        const details = { ...(cause instanceof Error2 ? cause.details : undefined), profile: profile?.name, profilePath: profile?.sourcePath, surface: reference.surface, reference: raw, model: alias, reason };
+        const message = `Profile "${profile?.name ?? this.profileName ?? 'agent'}" could not apply ${reference.surface} Recipe "${raw}": ${reason}`;
+        if (reportFailure) {
+          this.log.current?.warn('Profile Recipe resolution failed', details);
+          await this.dispatcher.dispatch(new WarningIssued({ code: 'profile.recipe_resolution_failed', message }));
+        }
+        throw new Error2(cause instanceof Error2 ? cause.code : ProfileErrors.codes.MODEL_CONFIG_INVALID, message, { cause, details });
+      }
     }
     return composeRecipeLayers(layers, model?.overrides);
   }
@@ -2587,6 +2598,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     } : this.buildPromptDiagnostics(current, alias, this.promptFieldSnapshot));
     let diskRevision: string | undefined;
     let diskError: string | undefined;
+    let diskRecipe: import('@kiki/protocol').ResolvedRecipe | undefined;
     const live = this.catalog.get(this.profileName ?? '') ?? current;
     const diskProfile = live === undefined ? undefined : applyLease(live, this.profileState.appliedLease, (id) => this.models.resolveId(id));
     const fileChecks = options?.checkAllPromptFiles === true && diskProfile !== undefined ? await checkPromptFiles({
@@ -2597,7 +2609,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     try {
       if (diskProfile !== undefined) {
         const external = (diskProfile.executor ?? 'native') !== 'native';
-        const recipe = await this.selectedRecipe(alias, external, diskProfile);
+        const recipe = await this.selectedRecipe(alias, external, diskProfile, false);
+        diskRecipe = recipe;
         const fields = await this.resolvePromptFieldSnapshot(diskProfile, alias, recipe ?? null);
         const previous = this.cognitionBinding;
         const previousRevision = this.cognitionRevision;
@@ -2613,7 +2626,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       diskError = error instanceof Error ? error.message : String(error);
     }
     return {
-      ...snapshot,
+      ...frozenRecipeDiagnostics(snapshot, binding, diskRecipe),
       binding_revision: bound?.binding_revision ?? snapshot.binding_revision ?? binding.bindingRevision,
       disk_revision: diskRevision,
       disk_changed: diskRevision === undefined || snapshot.binding_revision === undefined ? undefined : diskRevision !== snapshot.binding_revision,
@@ -2669,7 +2682,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         position: this.delegationPosition,
         modelAlias,
         revision: ++this.cognitionRevision,
-        contentRevision: createHash('sha256').update(JSON.stringify({ alias: this.models.resolveId(modelAlias) ?? modelAlias, position: this.delegationPosition, config, slots, steeringSources, recipe, modelSettings })).digest('hex'),
+        contentRevision: createHash('sha256').update(JSON.stringify({ alias: this.models.resolveId(modelAlias) ?? modelAlias, position: this.delegationPosition, config, slots, steeringSources, recipe: recipe === undefined ? undefined : recipeRevisionContent(recipe), modelSettings })).digest('hex'),
         config: config === undefined ? undefined : structuredClone(config),
         modelSettings,
         recipe: recipe === undefined ? undefined : { installation_id: recipe.layers?.at(-1)?.installation_id ?? this.models.get(modelAlias)?.recipe ?? '', resolved: recipe },

@@ -85,10 +85,10 @@ export class RecipeService extends Disposable implements IRecipeService {
     return { summary: record.summary, resolved: this.selectOptions(snapshot, selection), files: snapshot.files, history: record.history, editable: record.editable && (await this.localRecords())[id] !== undefined, used_by: this.usedBy(id) };
   }
   private selectOptions(snapshot: RecipeSnapshot, selection?: import('@kiki/protocol').RecipeOptionValues): ResolvedRecipe {
-    if (selection === undefined) return structuredClone(snapshot.resolved);
+    if (selection === undefined) return { ...structuredClone(snapshot.resolved), name: snapshot.manifest.name };
     const resolved = resolveRecipe(snapshot.declaration, snapshot.resolved.dependencies, selection);
     const changed = JSON.stringify(resolved.option_values) !== JSON.stringify(snapshot.resolved.option_values);
-    return { ...resolved, revision: changed ? recipeDigest({ package_revision: snapshot.resolved.revision, option_values: resolved.option_values }) : snapshot.resolved.revision };
+    return { ...resolved, name: snapshot.manifest.name, revision: changed ? recipeDigest({ package_revision: snapshot.resolved.revision, option_values: resolved.option_values }) : snapshot.resolved.revision };
   }
   private consentFailure(): never {
     throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Confirm installation to authorize new Recipe scripts', { details: { code: 'recipe-hook-consent-required', path: 'hooks' } });

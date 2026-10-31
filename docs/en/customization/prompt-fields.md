@@ -127,7 +127,11 @@ Recipes contribute only their declared values. Model settings resolve from the s
 
 Set `recipe: off` on a model or profile to disable that layer's Recipe, including an inherited model selection. For model API updates, pass the current `base_revision`; `recipe: null` clears the local selection instead. Saved manual values and the other layer's Recipe remain intact. New bindings freeze each referenced package revision, selected option values, expanded text and effective model settings, including inherited parameters; option values and patch content are part of the revision, so the result is reproducible.
 
-Existing bindings and cold restores keep that snapshot. To adopt changed option values, rebuild the context or create a new binding; hot reload alone does not change an existing binding immediately.
+To check a session's profile Recipe, click **Recipe** beside the model in the composer. **Effective prompts** lists the bound package and revision. Under **Per-turn user reminder**, expand `recipe.profile.steering` to see **Steering applied**, the full frozen text and its sources. A steering-only Recipe sends a user message after the task prompt; it does not add that text to the system prompt.
+
+Existing bindings and cold restores keep their snapshot. Older snapshots without a saved name show the installation id and revision unless the same package revision can supply a confirmed name. The displayed body still comes from the saved binding, even if the package changes or becomes unavailable. To adopt changed option values, rebuild the context or create a new binding; hot reload alone does not change an existing binding immediately.
+
+If a Recipe reference cannot be resolved, the profile editor shows the unavailable reference, and a failed binding reports the profile, reference and reason. Correct the installation id or profile-relative path, then bind again or rebuild the existing context. A failed bind or rebuild keeps the previous binding; inspecting its diagnostics does not replace it.
 
 ### Inherit or customize
 

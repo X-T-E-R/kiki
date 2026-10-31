@@ -112,6 +112,11 @@ export function promptConfigurationChannels(input: {
   const effective = recipe.resolved.branches[position];
   const result = channels.map((channel) => (channel.id === 'cognition.steering' && effective.steering !== undefined || channel.id === 'cognition.anchor' && effective.anchor !== undefined)
     ? { ...channel, state: 'shadowed' as const, reason: 'A higher-priority Recipe supplies this cognition slot; the saved value is retained.' } : channel);
+  return [...result, ...recipePromptChannels(recipe, position)];
+}
+
+function recipePromptChannels(recipe: NonNullable<import('#/agent/cognition/cognitionConfig').CognitionBinding['recipe']>, position: DelegationPosition): AgentPromptChannel[] {
+  const result: AgentPromptChannel[] = [];
   const layers = recipe.resolved.layers ?? [{ surface: 'model' as const, installation_id: recipe.installation_id, resolved: recipe.resolved }];
   for (const [index, layer] of layers.entries()) for (const slot of ['system', 'steering', 'anchor'] as const) {
     const branch = layer.resolved.branches[position];
@@ -119,11 +124,32 @@ export function promptConfigurationChannels(input: {
     const shadowed = layers.slice(index + 1).some((next) => next.resolved.branches[position][slot] !== undefined);
     result.push({ id: `recipe.${layer.surface}.${slot}`, channel: slot === 'system' ? 'system' : `cognition_${slot}`, state: branch[slot] === undefined ? 'inactive' : shadowed ? 'shadowed' : 'effective',
       reason: shadowed ? 'A higher-priority Recipe supplies this slot.' : slot === 'anchor' ? 'Replaces only the Recipe system segment within its request window; role, persona, delegation and shared instructions remain active.' : undefined,
-      recipe: { installation_id: layer.installation_id, revision: layer.resolved.revision, slot, origins: origins.map((origin) => ({ ...origin })) },
+      recipe: { installation_id: layer.installation_id, revision: layer.resolved.revision, name: layer.resolved.name, slot, content: slot === 'anchor' ? branch.anchor?.content : branch[slot], origins: origins.map((origin) => ({ ...origin })) },
       sources: origins.length === 0 ? [{ surface: 'recipe', kind: 'inline', path: `${layer.surface}:${layer.installation_id}@${layer.resolved.revision}` }] : origins.map((origin) => ({ surface: 'recipe', kind: origin.file === undefined ? 'inline' as const : 'file' as const, path: origin.file ?? origin.source })),
       anchor_steps: slot === 'anchor' ? branch.anchor?.steps : undefined, anchor_scope: slot === 'anchor' ? branch.anchor?.scope : undefined });
   }
   return result;
+}
+
+export function frozenRecipeDiagnostics(snapshot: import('@kiki/protocol').AgentPromptDiagnostics, binding: import('#/agent/cognition/cognitionConfig').CognitionBinding, current?: import('@kiki/protocol').ResolvedRecipe): import('@kiki/protocol').AgentPromptDiagnostics {
+  const recipe = binding.recipe;
+  if (recipe === undefined) return snapshot;
+  const layers = recipe.resolved.layers ?? [{ surface: 'model' as const, installation_id: recipe.installation_id, resolved: recipe.resolved }];
+  const named = { ...recipe, resolved: { ...recipe.resolved, layers: layers.map((layer) => {
+    const frozenReference = snapshot.recipe_model_binding?.references?.find((entry) => entry.surface === layer.surface && entry.installation_id === layer.installation_id && entry.revision === layer.resolved.revision);
+    const matching = current?.layers?.find((entry) => entry.surface === layer.surface && entry.installation_id === layer.installation_id && entry.resolved.revision === layer.resolved.revision);
+    return { ...layer, resolved: { ...layer.resolved, name: layer.resolved.name ?? frozenReference?.name ?? matching?.resolved.name } };
+  }) } };
+  return {
+    ...snapshot,
+    recipe_model_binding: {
+      installation_id: recipe.installation_id, revision: recipe.resolved.revision,
+      model: recipe.resolved.model, model_origins: recipe.resolved.model_origins,
+      ...snapshot.recipe_model_binding,
+      references: named.resolved.layers.map((layer) => ({ surface: layer.surface, installation_id: layer.installation_id, revision: layer.resolved.revision, name: layer.resolved.name })),
+    },
+    channels: [...snapshot.channels.filter((channel) => channel.recipe === undefined), ...recipePromptChannels(named, binding.position)],
+  };
 }
 
 export function promptSourceSelection(source: PromptOverrideSource): 'common' | 'main' | 'independent' | undefined {

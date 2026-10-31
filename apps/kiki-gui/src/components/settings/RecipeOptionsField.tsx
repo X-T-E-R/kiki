@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { RecipeOption, RecipeOptionValues } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
+import { recipeDiagnosticText } from '../../lib/recipes';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Toggle, type Feedback } from '../controls';
 import { SettingField, SettingsBox } from './fields';
@@ -25,15 +26,30 @@ export function RecipeOptionsField({ recipe, sourceFile, values, options, disabl
   const relativeFile = recipe !== undefined && !/^(?:[a-z][a-z0-9+.-]*:|\/|~)/iu.test(recipe) && (recipe.startsWith('.') || /[\\/]|\.toml$/iu.test(recipe));
   const locator = relativeFile && sourcePath !== undefined ? `${sourcePath.slice(0, sourcePath.lastIndexOf('/') + 1)}${recipe}` : recipe;
   const query = useQuery({
-    queryKey: ['recipe-options', locator],
-    queryFn: () => client.getRecipe(locator!),
+    queryKey: ['recipe-options', locator, values],
+    queryFn: async () => {
+      const detail = values === undefined ? await client.getRecipe(locator!) : await client.getRecipe(locator!, values);
+      return detail ?? null;
+    },
     enabled: selected && options === undefined,
     retry: false,
   });
   if (!selected) return null;
+  const recipeReference = recipe;
   const definitions = options ?? query.data?.resolved.options ?? [];
-  if (query.isError && options === undefined) return <FeedbackLine feedback={{ tone: 'error', text: errorText(locale, query.error) }} />;
-  if (definitions.length === 0) return null;
+  const diagnostics = options === undefined ? query.data?.resolved.diagnostics ?? [] : [];
+  const diagnosticLines = diagnostics.map((diagnostic, index) => (
+    <FeedbackLine key={`${diagnostic.code}-${index}`} feedback={{ tone: 'error', text: `${recipeReference}: ${recipeDiagnosticText(diagnostic)}` }} />
+  ));
+  if (query.isError && options === undefined) {
+    return <FeedbackLine feedback={{ tone: 'error', text: `${recipeReference}: ${errorText(locale, query.error)}` }} />;
+  }
+  if (query.data === null && options === undefined) {
+    return <FeedbackLine feedback={{ tone: 'error', text: `${recipeReference}: ${t('st.recipe.dangling')}` }} />;
+  }
+  if (definitions.length === 0) {
+    return diagnostics.length === 0 ? null : <div data-recipe-options-diagnostics>{diagnosticLines}</div>;
+  }
   return <fieldset className="min-w-0" disabled={disabled || saving} data-recipe-options>
     <legend className="text-[13px] font-medium text-ink">{t('st.recipe.options')}</legend>
     <SettingsBox>
@@ -49,6 +65,7 @@ export function RecipeOptionsField({ recipe, sourceFile, values, options, disabl
         </SettingField>
       </div>)}
     </SettingsBox>
+    {diagnostics.length === 0 ? null : <div data-recipe-options-diagnostics>{diagnosticLines}</div>}
     <FeedbackLine feedback={feedback} />
   </fieldset>;
 }

@@ -32,9 +32,16 @@ export function composeRecipeLayers(layers: RecipeResolvedLayer[], overrides?: M
   const content = { model, model_origins, hooks: hooks.length === 0 ? undefined : hooks, branches: { main: branch('main'), sub: branch('sub'), independent: branch('independent') },
     origins: layers.flatMap((layer) => layer.resolved.origins), dependencies: layers.flatMap((layer) => layer.resolved.dependencies), layers };
   const diagnostics = layers.flatMap((layer) => layer.resolved.diagnostics ?? []);
-  return { ...content, revision: recipeDigest(content), diagnostics: diagnostics.length === 0 ? undefined : diagnostics };
+  return { ...content, revision: recipeDigest(recipeRevisionContent(content)), diagnostics: diagnostics.length === 0 ? undefined : diagnostics };
+}
+
+export function recipeRevisionContent<T extends { name?: string; layers?: readonly RecipeResolvedLayer[] }>(recipe: T): T {
+  const content = structuredClone(recipe);
+  delete content.name;
+  for (const layer of content.layers ?? []) delete layer.resolved.name;
+  return content;
 }
 
 export function recipeReferences(recipe: import('#/state/state').DeepReadonly<ResolvedRecipe>) {
-  return recipe.layers?.map((layer) => ({ surface: layer.surface, installation_id: layer.installation_id, revision: layer.resolved.revision }));
+  return recipe.layers?.map((layer) => ({ surface: layer.surface, installation_id: layer.installation_id, revision: layer.resolved.revision, name: layer.resolved.name }));
 }

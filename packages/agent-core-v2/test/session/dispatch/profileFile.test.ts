@@ -17,8 +17,8 @@ it.each([{ tools: undefined }, { tools: ['manage_task'] }, { tools: ['*'] }])('f
   const original = normalizeAgentProfile({ name: 'coder', systemPrompt: () => 'original' });
   const catalog = { get: () => original, getDefault: () => original, list: () => [original] } as unknown as ISessionAgentProfileCatalog;
   const files = new Map([
-    ['/workspace/team.md', '---\nname: coder\ndescription: Team\nmodel_alias: model-a\nallowed_subagents:\n  - name: research\n    source: ./_private/research.md\n---\nROOT SOURCE'],
-    ['/workspace/_private/research.md', '---\nname: research\ndescription: Research\nprivate: true\nmodel_alias: model-a\ntools: [Read]\n---\nFROZEN RESEARCH SOURCE'],
+    ['/workspace/team.md', '---\nname: coder\ndescription: Team\nmodel_alias: model-a\nrecipe: ./recipes/team.toml\nrecipe_options: { research: true }\nallowed_subagents:\n  - name: research\n    source: ./_private/research.md\n---\nROOT SOURCE'],
+    ['/workspace/_private/research.md', '---\nname: research\ndescription: Research\nprivate: true\nmodel_alias: model-a\nrecipe: installation:example-research\nrecipe_options: { citations: false }\ntools: [Read]\n---\nFROZEN RESEARCH SOURCE'],
   ]);
   const readText = vi.fn(async (path: string) => {
     const text = files.get(path);
@@ -35,7 +35,7 @@ it.each([{ tools: undefined }, { tools: ['manage_task'] }, { tools: ['*'] }])('f
   const bound = JSON.parse(JSON.stringify(freezeBoundProfile(loaded.snapshot.publicProfiles.get('coder')!)));
   expect(Object.keys(bound.fileSources.sourceDefinitions)).toHaveLength(1);
   expect(bound.fileSources.callerCeiling).toMatchObject({ activeToolNames: ['Read'], externalToolAllowPolicies: tools === undefined ? [] : [tools] });
-  expect(bound.sourcePath).toBe('/workspace/team.md');
+  expect(bound).toMatchObject({ sourcePath: '/workspace/team.md', recipe: './recipes/team.toml', recipeOptions: { research: true } });
   expect(catalog.get('coder')).toBe(original);
   expect(readText).toHaveBeenCalledTimes(2);
   files.clear();
@@ -43,6 +43,7 @@ it.each([{ tools: undefined }, { tools: ['manage_task'] }, { tools: ['*'] }])('f
   const restored = inheritProfileFileSources({ ...caller, profileDefinitionId: bound.definitionId, boundProfile: bound }, catalog)!;
   const child = restored.scopedBindings.get(bound.definitionId)?.get('research');
   expect(child?.status).toBe('ready');
+  expect(child?.profile).toMatchObject({ recipe: 'installation:example-research', recipeOptions: { citations: false } });
   expect(child?.profile?.systemPrompt({})).toContain('FROZEN RESEARCH SOURCE');
   expect(readText).not.toHaveBeenCalled();
   expect(restored.publicProfiles.get('coder')).toBe(original);

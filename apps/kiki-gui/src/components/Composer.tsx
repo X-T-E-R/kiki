@@ -130,6 +130,7 @@ import { POPOVER_SURFACE_CLASS, SearchableSelect, type SearchableSelectOption } 
 import { SessionRemainder } from './SessionRemainder';
 import type { ContentContinuationHandle } from './transcriptDetail';
 import { PersonaAvatar, type PersonaAvatarData } from './persona/PersonaAvatar';
+import { RecipeBindingStatus } from './agent-panel/RecipeBindingStatus';
 import {
   AddMenu,
   type AddMenuView,
@@ -1026,6 +1027,11 @@ export function Composer({
     : model || selectionDefaultModel || serverDefaultModel;
   const modelRuleSource = projectedProfileModelRuleSource(modelProjection, models, validatingModel, selectedProfileName);
   const modelDomainState = externalExecution ? 'allowed' : projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition);
+  const recipeBindingSourceRevision = JSON.stringify([
+    selectedProfileName,
+    validatingModel,
+    frozenMenuQuery.data?.prompt?.binding_revision,
+  ]);
   const invalidModelDomain = modelDomainState === 'blocked' || modelDomainState === 'unknown';
   const queryClient = useQueryClient();
   const executorModelsKey = ['executor-models', connectionId, scopeId, executorId] as const;
@@ -2738,6 +2744,12 @@ export function Composer({
           onChangeEffort={onChangeEffort}
         />
       ),
+    });
+  }
+  if (sessionId !== undefined) {
+    statusSegments.push({
+      key: 'recipe-binding',
+      node: <RecipeBindingStatus sessionId={sessionId} agentId={agentId} sourceRevision={recipeBindingSourceRevision} />,
     });
   }
   if (bindingSetting !== undefined) {

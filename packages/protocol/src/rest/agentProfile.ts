@@ -484,7 +484,7 @@ export const agentPromptChannelSchema = z.object({
   selection: z.enum(['common', 'main', 'independent', 'off']).optional(),
   reason: z.string().optional(),
   reason_code: z.string().optional(),
-  recipe: z.object({ installation_id: z.string(), revision: z.string(), slot: z.string(), origins: z.array(z.object({ source: z.string(), manifest_id: z.string(), version: z.string(), file: z.string().optional() })).readonly() }).optional(),
+  recipe: z.object({ installation_id: z.string(), revision: z.string(), name: z.string().optional(), slot: z.string(), content: z.string().optional(), origins: z.array(z.object({ source: z.string(), manifest_id: z.string(), version: z.string(), file: z.string().optional() })).readonly() }).optional(),
   sources: z.array(agentPromptSourceSchema).readonly(),
   anchor_steps: z.number().int().positive().optional(),
   anchor_scope: z.enum(['session', 'turn']).optional(),
