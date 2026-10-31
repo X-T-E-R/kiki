@@ -5,12 +5,14 @@
  * A pause never kills an in-flight step: the server persists the receipt,
  * settles the current step, then reports `paused`. Only a durably `paused`
  * phase means the session is safe to restart; `failed` keeps the server error
- * and waits for the user's explicit retry. There is no local pause flag — the
- * state always comes from `session.execution.read()` (re-read on every
- * `execution.changed` event through `events.observe`, with a 1s poll as the
- * reconnect fallback). Repeated clicks never send a second request while one
- * is in flight; the idempotent operationId makes a safe retry return the same
- * receipt.
+ * and waits for the user's explicit recovery action. There is no local pause
+ * flag — the state always comes from `session.execution.read()`, with
+ * `execution.changed` observations as the primary channel and a slow poll as
+ * the reconnect fallback. One read feeds every control (row, pause-all,
+ * paused overview); the event wins over a stale poll so a late response never
+ * rolls the UI back. Repeated clicks never send a second request while one is
+ * in flight; the idempotent operationId makes a safe retry return the same
+ * receipt, and a fresh operation gets a fresh id once the previous one settled.
  */
 
 import { useEffect, useMemo, useRef } from 'react';
@@ -25,6 +27,10 @@ export type ExecutionPauseAgent = ExecutionControlState['agents'][number];
 export type ExecutionPhase = ExecutionControlState['phase'];
 
 const EXECUTION_KEY = 'session-execution';
+/** Poll cadence: a reconnect/read-failure fallback only — events carry freshness. */
+const EXECUTION_POLL_MS = 5000;
+/** One discovery page; the loop walks every page so a paused session past the first page is still found. */
+const DISCOVERY_PAGE_LIMIT = 100;
 
 export function executionQueryKey(scopeId: string | undefined, sessionId: string): readonly unknown[] {
   return [EXECUTION_KEY, scopeId, sessionId] as const;
@@ -71,48 +77,73 @@ export function executionPhaseNeedsRead(phase: string | undefined): boolean {
   return phase !== undefined && phase !== 'running';
 }
 
+export interface ExecutionBatch {
+  readonly states: Record<string, ExecutionControlState | undefined>;
+  readonly anyAvailable: boolean;
+  readonly resolved: boolean;
+  /** A read failed (network/server, not "older server without the facade"). */
+  readonly readError: unknown;
+  readonly refetch: () => void;
+}
+
 /**
- * Live execution state of the given sessions: one read per session, kept in
- * the shared `session-execution` cache, refreshed every second, and pushed
- * fresh by `execution.changed` observations where the server exposes them.
- * A session whose facade is absent (an older server) is simply unavailable —
- * its controls hide rather than guessing a state.
+ * Live execution state of the given sessions. One batched read keeps the
+ * shared `session-execution` cache; `execution.changed` observations push
+ * freshness per session and stamp a per-session generation so a slower poll
+ * response never overwrites a newer event. A session whose facade is absent
+ * (an older server) is unavailable; a session whose read failed keeps its
+ * last state and reports `readError` rather than flickering away.
  */
 export function useSessionExecutions(
   sessionIds: readonly string[],
   options?: { readonly enabled?: boolean },
-): { states: Record<string, ExecutionControlState | undefined>; anyAvailable: boolean; resolved: boolean } {
+): ExecutionBatch {
   const { client, scopeId } = useConnection();
   const queryClient = useQueryClient();
   const enabled = options?.enabled ?? true;
   const joined = sessionIds.join('\n');
   const ids = useMemo(() => (joined === '' ? [] : joined.split('\n')), [joined]);
   const batchKey = useMemo(() => [EXECUTION_KEY, scopeId, 'batch', joined] as const, [scopeId, joined]);
+  // Per-session freshness: an event bump invalidates any poll response that
+  // started before it, so the event always wins.
+  const generations = useRef(new Map<string, number>());
+  const lastReadError = useRef<unknown>(undefined);
 
   const query = useQuery({
     queryKey: batchKey,
     queryFn: async (): Promise<Record<string, ExecutionControlState | null>> => {
+      const started = new Map(ids.map((sessionId) => [sessionId, generations.current.get(sessionId) ?? 0]));
+      const previous = queryClient.getQueryData<Record<string, ExecutionControlState | null>>(batchKey) ?? {};
       const next: Record<string, ExecutionControlState | null> = {};
+      let readFailure: unknown;
       await Promise.all(ids.map(async (sessionId) => {
         const execution = executionOf(client, sessionId);
         if (execution === undefined) { next[sessionId] = null; return; }
         try {
-          next[sessionId] = await execution.read();
-        } catch {
-          next[sessionId] = null;
+          const state = await execution.read();
+          // A poll that predates the latest event for this session loses.
+          if ((generations.current.get(sessionId) ?? 0) === (started.get(sessionId) ?? 0)) {
+            next[sessionId] = state;
+          } else {
+            next[sessionId] = previous[sessionId] ?? state;
+          }
+        } catch (error) {
+          readFailure = error;
+          next[sessionId] = previous[sessionId] ?? null;
         }
       }));
+      lastReadError.current = readFailure;
       return next;
     },
-    refetchInterval: 1000,
+    refetchInterval: EXECUTION_POLL_MS,
     retry: false,
     enabled: enabled && ids.length > 0,
     placeholderData: (previous) => previous,
   });
 
-  // Per-session event observations keep the cache fresh without waiting for
-  // the poll; an unknown `execution.changed` event (older server) drops the
-  // observation and the poll alone carries the state.
+  // Per-session event observations are the primary freshness channel; an
+  // unknown `execution.changed` event (older server) drops the observation and
+  // the poll alone carries the state.
   useEffect(() => {
     if (!enabled || ids.length === 0) return;
     const observations: { dispose(): void }[] = [];
@@ -124,6 +155,7 @@ export function useSessionExecutions(
         observations.push(events.observe(
           { events: ['execution.changed'], read: () => execution.read() },
           (state) => {
+            generations.current.set(sessionId, (generations.current.get(sessionId) ?? 0) + 1);
             queryClient.setQueryData(batchKey, (current: Record<string, ExecutionControlState | null> | undefined) => ({
               ...(current ?? {}),
               [sessionId]: state,
@@ -147,11 +179,9 @@ export function useSessionExecutions(
     }
     return out;
   }, [query.data]);
-  // A server without the execution facade leaves every session null: the
-  // batch itself is unavailable, so bulk controls hide rather than acting on
-  // a subset the facade happens to answer for.
   const anyAvailable = query.data !== undefined && Object.values(query.data).some((state) => state !== null);
-  return { states, anyAvailable, resolved: query.data !== undefined };
+  const readError = query.isError ? query.error : lastReadError.current;
+  return { states, anyAvailable, resolved: query.data !== undefined, readError, refetch: query.refetch };
 }
 
 /** Single-session convenience wrapper. */
@@ -173,10 +203,11 @@ export function liveInventorySessionIds(agents: readonly { readonly sessionId: s
 
 /**
  * Sessions the cold summary projects a non-running execution for — the
- * restart-recovery discovery path. Reads the existing paginated session index
- * (`klient.global.sessions.list`), never activates a session, and keeps only
- * summaries whose `executionPhase` the server projected as paused / pausing /
- * resuming / failed. An older server without the field returns no discovery.
+ * restart-recovery discovery path. Walks every page of the existing paginated
+ * session index (`klient.global.sessions.list`, cursor to cursor), never
+ * activates a session, and keeps only summaries whose `executionPhase` the
+ * server projected as paused / pausing / resuming / failed. An older server
+ * without the field returns no discovery.
  */
 export function usePausedSessionDiscovery(options?: { readonly enabled?: boolean }) {
   const { client, scopeId } = useConnection();
@@ -184,15 +215,22 @@ export function usePausedSessionDiscovery(options?: { readonly enabled?: boolean
   const query = useQuery({
     queryKey: [EXECUTION_KEY, scopeId, 'paused-summaries'],
     queryFn: async (): Promise<readonly string[]> => {
-      const sessions = (client as { klient?: { global?: { sessions?: { list(query: unknown): Promise<{ items: readonly { id: string; executionPhase?: string }[] }> } } } })
+      const sessions = (client as { klient?: { global?: { sessions?: { list(query: unknown): Promise<{ items: readonly { id: string; executionPhase?: string }[]; nextCursor?: string }> } } } })
         .klient?.global?.sessions;
       if (sessions === undefined) return [];
-      const page = await sessions.list({ includeArchived: true, limit: 100 });
-      return page.items
-        .filter((item) => item.executionPhase !== undefined && item.executionPhase !== 'running')
-        .map((item) => item.id);
+      const found: string[] = [];
+      let cursor: string | undefined;
+      for (;;) {
+        const page: { items: readonly { id: string; executionPhase?: string }[]; nextCursor?: string } =
+          await sessions.list({ includeArchived: true, limit: DISCOVERY_PAGE_LIMIT, ...(cursor === undefined ? {} : { after: cursor }) });
+        for (const item of page.items) {
+          if (item.executionPhase !== undefined && item.executionPhase !== 'running') found.push(item.id);
+        }
+        if (page.nextCursor === undefined || page.items.length === 0) return found;
+        cursor = page.nextCursor;
+      }
     },
-    refetchInterval: 1000,
+    refetchInterval: EXECUTION_POLL_MS,
     retry: false,
     enabled,
   });
@@ -207,11 +245,24 @@ export interface ExecutionAction {
   readonly reset: () => void;
 }
 
+export interface ExecutionActionError {
+  readonly failures: readonly { readonly sessionId: string; readonly error: unknown }[];
+  readonly succeeded: readonly string[];
+  readonly total: number;
+  readonly kind: 'pause' | 'resume';
+}
+
+export function isExecutionActionError(error: unknown): error is ExecutionActionError {
+  return typeof error === 'object' && error !== null && Array.isArray((error as ExecutionActionError).failures);
+}
+
 /**
- * One action hook shape shared by pause and resume. The operationId is stable
- * per (action, session) on this client: a retried request replays the server's
- * receipt instead of starting a second operation, and a click while a request
- * is in flight is dropped by the button's disabled state.
+ * One action hook shape shared by pause and resume. The operationId lives for
+ * exactly one operation attempt: a network-uncertain retry replays the same id
+ * (the server answers with its receipt), and once an attempt settles the id is
+ * dropped so the next user action mints a fresh operation. Resume always reads
+ * the session's current durably paused `pauseOperationId` from the state the
+ * caller rendered — it never resumes a stale pause.
  */
 function useExecutionAction(
   sessionIds: readonly string[],
@@ -220,7 +271,8 @@ function useExecutionAction(
 ) {
   const { client, scopeId } = useConnection();
   const queryClient = useQueryClient();
-  const operationIdsRef = useRef(new Map<string, string>());
+  // operationId per session for the CURRENT in-flight attempt only.
+  const inFlight = useRef(new Map<string, string>());
   const joined = sessionIds.join('\n');
   const ids = useMemo(() => (joined === '' ? [] : joined.split('\n')), [joined]);
   const mutation = useMutation({
@@ -228,14 +280,21 @@ function useExecutionAction(
       return Promise.all(ids.map(async (sessionId) => {
         const execution = executionOf(client, sessionId);
         if (execution === undefined) return { sessionId, error: new Error('execution-unavailable') };
-        let operationId = operationIdsRef.current.get(sessionId);
+        // One in-flight attempt per session: reuse its id on retry; a new run
+        // mints a new id. The id clears once the attempt settles either way.
+        let operationId = inFlight.current.get(sessionId);
         if (operationId === undefined) {
           operationId = newOperationId(kind, sessionId);
-          operationIdsRef.current.set(sessionId, operationId);
+          inFlight.current.set(sessionId, operationId);
         }
         try {
-          return { sessionId, state: await call(execution, sessionId, operationId) };
+          const state = await call(execution, sessionId, operationId);
+          inFlight.current.delete(sessionId);
+          return { sessionId, state };
         } catch (error) {
+          // Network-uncertain: keep the id so a retry replays the same receipt.
+          // A definite server rejection (already held / not paused) also keeps
+          // it — the next read re-derives whether a fresh attempt is valid.
           return { sessionId, error };
         }
       }));
@@ -250,12 +309,16 @@ function useExecutionAction(
       void queryClient.invalidateQueries({ queryKey: [EXECUTION_KEY, scopeId, 'batch'] });
     },
   });
-  const failures = mutation.data?.filter((result) => result.error !== undefined) ?? [];
-  const succeeded = mutation.data?.filter((result) => result.state !== undefined) ?? [];
+  const failures = (mutation.data?.filter((result) => result.error !== undefined) ?? [])
+    .map((result) => ({ sessionId: result.sessionId, error: result.error }));
+  const succeeded = (mutation.data?.filter((result) => result.state !== undefined) ?? []).map((result) => result.sessionId);
+  const actionError: ExecutionActionError | undefined = failures.length > 0
+    ? { failures, succeeded, total: ids.length, kind }
+    : undefined;
   return {
     available: ids.length > 0,
     pending: mutation.isPending,
-    error: mutation.error ?? (failures.length > 0 ? { failures, succeeded, total: ids.length } : undefined),
+    error: mutation.error ?? actionError,
     run: () => { if (!mutation.isPending) mutation.mutate(); },
     reset: mutation.reset,
   };
@@ -283,4 +346,13 @@ export function useExecutionResume(
   );
   return useExecutionAction(resumable, 'resume', (execution, sessionId, operationId) =>
     execution.resume({ operationId, pauseOperationId: states[sessionId]!.pauseOperationId! }));
+}
+
+/**
+ * One session's resume, for a row that must resume exactly its own session —
+ * never every paused session the overview knows about.
+ */
+export function useExecutionResumeOne(sessionId: string, state: ExecutionControlState | undefined): ExecutionAction {
+  const states = useMemo(() => ({ [sessionId]: state }), [sessionId, state]);
+  return useExecutionResume(states);
 }

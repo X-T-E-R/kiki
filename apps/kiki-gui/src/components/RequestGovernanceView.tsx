@@ -171,7 +171,7 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
     () => [...new Set([...liveSessionIds, ...pausedDiscovery.sessionIds])],
     [liveSessionIds, pausedDiscovery.sessionIds],
   );
-  const { states: executionStates } = useSessionExecutions(executionSessionIds);
+  const { states: executionStates, readError: executionReadError, refetch: refetchExecutions } = useSessionExecutions(executionSessionIds);
 
   const requestSummary = [
     `${t('usage.governance.running')} ${snapshot.active}`,
@@ -263,7 +263,7 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
           help={agentSummary}
           actions={(
             <>
-              {agentSnapshot !== undefined && agentSnapshot !== null ? <PauseAllExecutions snapshot={agentSnapshot} /> : null}
+              {agentSnapshot !== undefined && agentSnapshot !== null ? <PauseAllExecutions snapshot={agentSnapshot} states={executionStates} /> : null}
               <span className="sr-only" data-governance-main-agents>{agentSnapshot?.mainActive ?? agentSnapshot?.main ?? 0}</span>
               <span className="sr-only" data-governance-sub-agents>{agentSnapshot?.subActive ?? agentSnapshot?.subagent ?? 0}</span>
               <span className="sr-only" data-governance-independent-agents>{agentSnapshot?.independentActive ?? agentSnapshot?.independent ?? 0}</span>
@@ -326,6 +326,14 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
               </li>
             ))}
           </ol>
+        ) : null}
+        {executionReadError !== undefined ? (
+          <p role="status" data-execution-stale className="mb-2 text-[12px] text-amber-ink">
+            {t('usage.execution.staleState')}
+            <button type="button" data-execution-stale-retry className="ml-2 underline underline-offset-2 hover:text-ink" onClick={() => { refetchExecutions(); }}>
+              {t('usage.execution.retryRefresh')}
+            </button>
+          </p>
         ) : null}
         <PausedExecutionsPanel states={executionStates} />
       </section>

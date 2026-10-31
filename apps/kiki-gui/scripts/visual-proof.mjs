@@ -5603,6 +5603,53 @@ async function scenarioExecutionPause() {
   if (resumed?.phase !== 'running') throw new Error(`fixture did not resume to running: ${JSON.stringify(resumed)}`);
   await page.locator(`[data-execution-control="${ZETA}"]`).waitFor({ timeout: 10_000 });
   await shot('execution-resumed');
+
+  // Review fix 1: with two paused sessions a row resumes only its own session.
+  const ETA = 'session_fixture_usage_eta';
+  const executionOfEta = async () => (await control({ action: 'session', session_id: ETA })).data?.executionControl;
+  // Pause both, then resume only zeta: eta must stay paused with zero resume calls.
+  for (const id of [ZETA, ETA]) {
+    const row2 = page.locator(`[data-execution-control="${id}"]`);
+    await row2.waitFor({ timeout: 10_000 });
+    await row2.locator('button').first().click();
+    await page.locator('[role="alertdialog"] [data-confirm-action="confirm"]').click();
+    await page.locator(`[data-execution-paused="${id}"]`).waitFor({ timeout: 15_000 });
+  }
+  await page.locator(`[data-execution-paused="${ZETA}"] button`).click();
+  await page.locator(`[data-execution-paused="${ZETA}"]`).waitFor({ state: 'detached', timeout: 15_000 });
+  const etaAfter = await executionOfEta();
+  if (etaAfter?.phase !== 'paused') throw new Error(`strict row resume leaked into the other session: ${JSON.stringify(etaAfter)}`);
+  await shot('execution-strict-row-resume');
+  // Clean up eta so the walker leaves the fixture running.
+  await page.locator(`[data-execution-paused="${ETA}"] button`).click();
+  await page.locator(`[data-execution-paused="${ETA}"]`).waitFor({ state: 'detached', timeout: 15_000 });
+
+  // Review fix 2: a second pause after a settled one is a NEW operation, not a
+  // replay of the first receipt — the fixture records each distinct operationId.
+  await page.locator(`[data-execution-control="${ZETA}"]`).waitFor({ timeout: 10_000 });
+  const pauseOnce = async () => {
+    await page.locator(`[data-execution-control="${ZETA}"] button`).first().click();
+    await page.locator('[role="alertdialog"] [data-confirm-action="confirm"]').click();
+    await page.locator(`[data-execution-paused="${ZETA}"]`).waitFor({ timeout: 15_000 });
+  };
+  const resumeOnce = async () => {
+    await page.locator(`[data-execution-paused="${ZETA}"] button`).click();
+    await page.locator(`[data-execution-paused="${ZETA}"]`).waitFor({ state: 'detached', timeout: 15_000 });
+  };
+  await pauseOnce();
+  const firstPause = await executionOf();
+  await resumeOnce();
+  await page.locator(`[data-execution-control="${ZETA}"]`).waitFor({ timeout: 10_000 });
+  await pauseOnce();
+  const secondPause = await executionOf();
+  if (firstPause?.pauseOperationId === undefined || secondPause?.pauseOperationId === undefined) {
+    throw new Error(`missing pause operation ids: ${JSON.stringify({ firstPause, secondPause })}`);
+  }
+  if (firstPause.pauseOperationId === secondPause.pauseOperationId) {
+    throw new Error(`second pause replayed the settled operation id ${firstPause.pauseOperationId}`);
+  }
+  console.log(`[check] two settled pauses minted distinct operation ids`);
+  await resumeOnce();
 }
 
 /** Keep the fixture's authoritative theme and the device boot value in step. */

@@ -17,6 +17,7 @@ const connection = vi.hoisted(() => ({
     listModels: vi.fn().mockResolvedValue({ items: [] }),
     listProviders: vi.fn().mockResolvedValue({ items: [] }),
     session: vi.fn(),
+    klient: undefined as unknown,
   },
 }));
 vi.mock('../state/connection', () => ({ useConnection: () => connection }));
@@ -854,5 +855,103 @@ describe('execution pause/resume', () => {
     await settle(render, 1100);
     expect(container.querySelector('[data-execution-control]')).toBeNull();
     expect(container.querySelector('[data-execution-pause-all]')).toBeNull();
+  });
+
+  // --- review fixes: strict row resume, operation-id lifecycle, discovery pagination, error semantics ---
+
+  it('resumes only its own session when two sessions are paused', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha', 'session-beta']);
+    const alpha = stubExecution('session-alpha', executionState('paused', { pauseOperationId: 'pause-alpha' }));
+    const beta = stubExecution('session-beta', executionState('paused', { pauseOperationId: 'pause-beta' }));
+    const { container, render } = mount('realtime');
+    await settle(render, 1100);
+    const rowA = container.querySelector<HTMLElement>('[data-execution-paused="session-alpha"]')!;
+    const rowB = container.querySelector<HTMLElement>('[data-execution-paused="session-beta"]')!;
+    expect(rowA).not.toBeNull();
+    expect(rowB).not.toBeNull();
+    await act(async () => { rowA.querySelector<HTMLButtonElement>('button')!.click(); });
+    await settle(render);
+    // Strictly row A: session-beta's facade was never asked to resume.
+    expect(alpha.facade.resume).toHaveBeenCalledTimes(1);
+    expect(beta.facade.resume).not.toHaveBeenCalled();
+  });
+
+  it('mints a fresh operation id for a second pause after the first settled', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha']);
+    const execution = stubExecution('session-alpha', executionState('running'));
+    const { container, render } = mount('realtime');
+    await settle(render);
+    const open = () => container.querySelector<HTMLElement>('[data-execution-control="session-alpha"] button')!;
+    await act(async () => { open().click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
+    await settle(render);
+    const first = (execution.facade.pause.mock.calls[0] as unknown as [{ operationId: string }])[0].operationId;
+    // Resume, then pause again: the second pause must be a NEW operation, not a
+    // replay of the settled first receipt.
+    await settle(render, 1100);
+    await act(async () => { container.querySelector<HTMLElement>('[data-execution-paused="session-alpha"] button')!.click(); });
+    await settle(render, 1100);
+    await act(async () => { open().click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
+    await settle(render);
+    expect(execution.facade.pause).toHaveBeenCalledTimes(2);
+    const second = (execution.facade.pause.mock.calls[1] as unknown as [{ operationId: string }])[0].operationId;
+    expect(second).not.toBe(first);
+  });
+
+  it('discovers a paused session beyond the first discovery page', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith([]);
+    stubExecution('session-late', executionState('paused', { pauseOperationId: 'pause-late' }));
+    // Two discovery pages: the paused session lives on page 2.
+    connection.client.klient = {
+      global: {
+        sessions: {
+          list: vi.fn(async (query: { after?: string }) => query.after === undefined
+            ? { items: [{ id: 'session-running', executionPhase: 'running' }], nextCursor: 'cursor-2' }
+            : { items: [{ id: 'session-late', executionPhase: 'paused' }] }),
+        },
+      },
+    };
+    const { container, render } = mount('realtime');
+    await settle(render, 1100);
+    expect(container.querySelector('[data-execution-paused="session-late"]')).not.toBeNull();
+    connection.client.klient = undefined;
+  });
+
+  it('shows the failing session and its own error on a bulk pause failure, keeping state', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha', 'session-beta']);
+    const alpha = stubExecution('session-alpha', executionState('running'));
+    const beta = stubExecution('session-beta', executionState('running'));
+    beta.facade.pause.mockRejectedValueOnce(new Error('beta storage locked'));
+    const { container, render } = mount('realtime');
+    await settle(render);
+    await act(async () => { container.querySelector<HTMLElement>('[data-execution-pause-all] button')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
+    await settle(render);
+    // The pause-all row reports the pause verb, the failing session and its
+    // error; beta stays running (no phase chip) and can be retried.
+    const pauseAll = container.querySelector<HTMLElement>('[data-execution-pause-all]')!;
+    expect(pauseAll.textContent).toContain('1 of 2 paused');
+    expect(pauseAll.textContent).toContain('beta storage locked');
+    expect(container.querySelector('[data-execution-paused="session-beta"]')).toBeNull();
+  });
+
+  it('shows the row pause error and keeps the session pausable after a failed pause', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha']);
+    const execution = stubExecution('session-alpha', executionState('running'));
+    execution.facade.pause.mockRejectedValueOnce(new Error('storage locked'));
+    const { container, render } = mount('realtime');
+    await settle(render);
+    await act(async () => { container.querySelector<HTMLElement>('[data-execution-control="session-alpha"] button')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
+    await settle(render);
+    const control = container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')!;
+    expect(control.textContent).toContain('storage locked');
+    expect(control.textContent).toContain('Pause execution');
   });
 });
