@@ -17,6 +17,7 @@ import { createProviderQuotaFacade } from './provider-quota.js';
 import { createExternalClientsFacade } from './external-clients.js';
 import { listAgentTasksQuerySchema, listAgentTasksResponseSchema } from '../../contract/session/agent-tasks.js';
 import { sessionMediaPlaybackSchema } from '../../contract/session/media-playback.js';
+import { agentReferenceCandidatesQuerySchema, agentReferenceCandidatesResponseSchema, executorDiscoveryResponseSchema } from '@kiki/protocol';
 import type {
   ActivateSkillRequest,
   AuthSummary,
@@ -633,6 +634,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     executors: {
+      discover: async (options) => executorDiscoveryResponseSchema.parse(await transport.json('/executors/discovery', options)),
       list: () => transport.json('/executors'),
       listInstallations: (options) => transport.json('/executors/installations', options),
       install: (executorId, options) => transport.json(
@@ -660,6 +662,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
     },
 
     agents: {
+      referenceCandidates: async (query, options) => agentReferenceCandidatesResponseSchema.parse(await transport.json('/agents/references', { ...options, query: agentReferenceCandidatesQuerySchema.parse(query) })),
       list: (query?: string | ListNamedAgentProfilesQuery) => transport.json<ListNamedAgentProfilesResponse>('/agents', {
         query: typeof query === 'string' ? { workspace_id: query } : query,
       }),
