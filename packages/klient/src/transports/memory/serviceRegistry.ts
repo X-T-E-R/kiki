@@ -6,6 +6,7 @@
  */
 
 import { ISettingsTransferService } from '@kiki/agent-core-v2/app/settingsTransfer/settingsTransfer';
+import { ISessionExecutionControl } from '@kiki/agent-core-v2/session/executionControl/executionControl';
 import type { ServiceIdentifier } from '@kiki/agent-core-v2/_base/di/instantiation';
 import { IAgentPanelService } from '../agentPanelService.js';
 import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
@@ -124,6 +125,7 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   workspaceInstanceManager: IWorkspaceInstanceManager,
   sessionManager: ISessionManager,
   sessionMetadata: ISessionMetadata,
+  sessionExecutionControl: ISessionExecutionControl,
   sessionOptionalCapabilityService: ISessionOptionalCapabilityService,
   agentCollaborationMessagingService: IAgentCollaborationMessagingService,
   sessionActivityView: ISessionActivityView,

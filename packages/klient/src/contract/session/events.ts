@@ -6,6 +6,8 @@
  */
 
 import { z } from 'zod';
+import type { ExecutionControlState } from '@kiki/agent-core-v2/session/executionControl/executionControl';
+import { executionControlStateSchema } from './executionControl.js';
 
 import type {
   Interaction,
@@ -36,6 +38,7 @@ type SessionEventRegistration = EventRegistration | StreamEventRegistration;
 
 /** Public event name → payload type. Keys must stay in sync with `sessionEvents`. */
 export interface SessionEventPayloads {
+  'execution.changed': ExecutionControlState;
   'metadata.changed': SessionMetadataChangedEvent;
   'interactions.changed': readonly Interaction[];
   'interactions.resolved': InteractionResolution;
@@ -47,6 +50,9 @@ export type SessionEventName = keyof SessionEventPayloads;
 
 /** Public event name → source binding + payload schema. */
 export const sessionEvents = {
+  'execution.changed': {
+    kind: 'emitter', service: 'sessionExecutionControl', event: 'onDidChange', schema: executionControlStateSchema,
+  },
   'metadata.changed': {
     kind: 'emitter',
     service: 'sessionMetadata',

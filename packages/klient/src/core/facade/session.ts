@@ -8,6 +8,7 @@
  */
 
 import type { SessionActivityState } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
+import type { ISessionExecutionControl } from '@kiki/agent-core-v2/session/executionControl/executionControl';
 import type { IAgentCollaborationMessagingService } from '@kiki/agent-core-v2/session/agentCollaboration/messageMailbox';
 import type { ISessionBtwService } from '@kiki/agent-core-v2/features/btw/btw';
 import type { ISessionInitService } from '@kiki/agent-core-v2/features/sessionInit/sessionInit';
@@ -140,6 +141,7 @@ export interface SessionFacade {
   countPendingBackgroundTasks(): Promise<number>;
   drainBackgroundTasks(timeoutMs: number): Promise<void>;
   nextCronFireAt(): Promise<number | null>;
+  readonly execution: Pick<ISessionExecutionControl, 'read' | 'pause' | 'resume'>;
   readonly todos: SessionTodosFacade;
   readonly init: SessionInitFacade;
   readonly btw: SessionBtwFacade;
@@ -230,6 +232,11 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
         call(scope, 'sessionCronService', 'list', []) as Promise<ReturnType<ISessionCronService['list']>>,
       nextFireAt: (taskId) =>
         call(scope, 'sessionCronService', 'getNextFireForTask', [taskId]) as Promise<ReturnType<ISessionCronService['getNextFireForTask']>>,
+    },
+    execution: {
+      read: () => call(scope, 'sessionExecutionControl', 'read', []) as ReturnType<ISessionExecutionControl['read']>,
+      pause: input => call(scope, 'sessionExecutionControl', 'pause', [input]) as ReturnType<ISessionExecutionControl['pause']>,
+      resume: input => call(scope, 'sessionExecutionControl', 'resume', [input], { timeoutMs: 0 }) as ReturnType<ISessionExecutionControl['resume']>,
     },
     optionalCapabilities: {
       read: () => call(scope, 'sessionOptionalCapabilityService', 'read', []) as Promise<SessionCapabilityView>,
