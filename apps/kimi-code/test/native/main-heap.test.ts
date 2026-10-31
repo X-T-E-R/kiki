@@ -30,6 +30,16 @@ it('removes only the injected heap flag and leaves user NODE_OPTIONS byte-for-by
   expect(explicit.NODE_OPTIONS).toBe('--max-old-space-size=1024');
 });
 
+it('pre-sizes a detached server so its registry PID remains the spawned PID', () => {
+  expect(mainHeapEnvironment({ KIKI_HOME: 'isolated-home', NODE_OPTIONS: '--trace-warnings' }, 16384)).toMatchObject({
+    KIKI_HOME: 'isolated-home', NODE_OPTIONS: '--trace-warnings --max-old-space-size=16384', KIKI_INJECTED_HEAP_OPTION: '--max-old-space-size=16384',
+  });
+});
+
+it('preserves a detached server user heap override without adding an injection marker', () => {
+  expect(mainHeapEnvironment({ NODE_OPTIONS: '--max_old_space_size=1024' }, 16384)).toEqual({ NODE_OPTIONS: '--max_old_space_size=1024' });
+});
+
 describe('isolated heap processes', () => {
   it.each([8192, 16384])('keeps the %s MiB main heap while enforcing worker heaps and surviving worker OOM', (mb) => {
     const code = `import {Worker} from 'node:worker_threads';

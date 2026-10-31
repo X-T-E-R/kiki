@@ -40,6 +40,7 @@ export function needsLargeHeap(args: readonly string[]): boolean {
 }
 
 export function mainHeapEnvironment(env: NodeJS.ProcessEnv, mb = mainHeapMb()): NodeJS.ProcessEnv {
+  if (heapFlag.test(env['NODE_OPTIONS'] ?? '')) return { ...env };
   const flag = `--max-old-space-size=${mb}`;
   return { ...env, NODE_OPTIONS: `${env['NODE_OPTIONS'] ?? ''} ${flag}`, KIKI_INJECTED_HEAP_OPTION: flag };
 }
