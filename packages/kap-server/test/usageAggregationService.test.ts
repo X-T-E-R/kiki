@@ -1882,6 +1882,7 @@ describe('shared agent and History typed usage', () => {
       const list = f.core.accessor.get(ISessionIndex).listRecent.bind(f.core.accessor.get(ISessionIndex));
       const recount = vi.spyOn(f.core.accessor.get(ISessionIndex), 'listRecent').mockImplementation(async (...args) => { await gate; return list(...args); });
       changed.fire('w\0later');
+      changed.fire('w\0first');
       const refreshing = await f.service.query({});
       expect(refreshing.reliability.import_progress).toMatchObject({ verified_sources: 1, total_sources: 2 });
       expect(refreshing.summary.tokens).toEqual(partial.summary.tokens);

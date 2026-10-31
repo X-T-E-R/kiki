@@ -252,7 +252,6 @@ export class UsageAggregationService {
       else {
         const prefix = `sessions/${key.replace('\0', '/')}/agents/`;
         for (const source of this.sourceMetadata.keys()) if (source.startsWith(prefix)) this.sourceMetadata.delete(source);
-        for (const source of this.verifiedSources.keys()) if (source.startsWith(prefix)) this.verifiedSources.delete(source);
       }
       this.progressInventoryReady = false;
       this.modelReady = false;
@@ -727,7 +726,7 @@ export class UsageAggregationService {
   }
 
   private importProgress(query: NormalizedQuery): UsageResponse['reliability']['import_progress'] {
-    if (!this.progressInventoryReady && this.progressRows.length === 0 && this.retainedProgress.length === 0) return undefined;
+    if (!this.progressInventoryReady && this.progressRows.length === 0) return undefined;
     let verified_sources = 0, total_sources = 0, read_bytes = 0, total_bytes = 0;
     for (const { summary, metadata, journalSize } of this.progressRows) {
       if (!query.includeArchived && summary.archived || query.workspaceIds.length > 0 && !query.workspaceIds.includes(summary.workspaceId) || metadata.mtimeMs >= 1_000_000_000_000 && metadata.mtimeMs < (query.range.startAt ?? -Infinity)) continue;
