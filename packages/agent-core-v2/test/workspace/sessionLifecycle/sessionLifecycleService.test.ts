@@ -194,7 +194,7 @@ function fixture(terminalService?: ISessionTerminalService, agentAccessor?: Serv
 
 describe('SessionLifecycleService resume history quiescence', () => {
   it.each(['idle', 'active-turn', 'queued-prompt', 'pending-task', 'referenced', 'cold', 'busy'] as const)(
-    'prunes legacy records only after a current idle proof: %s', async (state) => {
+    'prunes turnless legacy records only after a current agent idle proof: %s', async (state) => {
       const fx = fixture();
       let meta: AgentMeta = { status: 'completed', labels: Object.fromEntries(Array.from({ length: 40 }, (_, i) => {
         const operationId = `operation-${i}`;
@@ -205,10 +205,10 @@ describe('SessionLifecycleService resume history quiescence', () => {
         [IAgentPromptService, { list: () => ({ pending: state === 'queued-prompt' ? [{}] : [] }) }],
         [IAgentLoopService, { status: () => ({ state: state === 'active-turn' ? 'running' : 'idle', pendingTurnIds: [], hasPendingRequests: false }) }],
         [IAgentExecutionService, { status: () => ({ state: 'idle' }) }],
-        [IAgentTaskService, { list: () => [], hasUnfinishedWork: () => state === 'pending-task' }],
+        [IAgentTaskService, { list: () => [], getTask: () => undefined, hasUnfinishedWork: () => state === 'pending-task' }],
       ]) } as IAgentScopeHandle;
       const parent = { ...target, id: 'parent', accessor: accessor([
-        [IAgentTaskService, { list: () => state === 'referenced' ? [{ kind: 'agent', agentId: 'child' }] : [] }],
+        [IAgentTaskService, { list: () => state === 'referenced' ? [{ kind: 'agent', agentId: 'child' }] : [], getTask: () => undefined }],
       ]) };
       const handle = { ...fx.handle, accessor: accessor([
         [ISessionMetadata, {
@@ -220,10 +220,53 @@ describe('SessionLifecycleService resume history quiescence', () => {
       ]) };
       try {
         await (fx.service as unknown as { pruneResumeHistory(handle: ISessionScopeHandle): Promise<void> }).pruneResumeHistory(handle);
-        expect(Object.keys(meta.labels ?? {})).toHaveLength(state === 'idle' ? 32 : 40);
+        expect(Object.keys(meta.labels ?? {})).toHaveLength(state === 'idle' || state === 'busy' ? 32 : 40);
       } finally { await fx.service.dispose(); }
     },
   );
+
+  it('prunes settled legacy records in a busy session while keeping every unproven record', async () => {
+    const fx = fixture();
+    const overrides: Record<number, Record<string, unknown>> = {
+      0: { turnId: 1, taskId: 'task-done' },
+      1: { turnId: 2, taskId: 'task-running' },
+      2: { turnId: 7 },
+      3: { turnId: 3, request: { kind: 'prompt', prompt: 'continue', promptId: 'prompt-queued' } },
+      4: { turnId: 4 },
+      5: {},
+      6: { turnId: 5, taskId: 'task-missing' },
+      7: { turnId: 6 },
+    };
+    let meta: AgentMeta = { status: 'completed', labels: Object.fromEntries(Array.from({ length: 40 }, (_, i) => {
+      const operationId = `operation-${i}`;
+      return [`dispatchResume:${operationId}`, JSON.stringify({ operationId, fingerprint: 'example',
+        request: { kind: 'prompt', prompt: 'continue' }, switchInput: { operationId }, state: 'started', ...overrides[i] })];
+    })) };
+    const tasks = new Map([['task-done', { status: 'completed' }], ['task-running', { status: 'running' }]]);
+    const target = { kind: 'agent', id: 'child', dispose: () => {}, accessor: accessor([
+      [IAgentPromptService, { list: () => ({ active: { id: 'resume-prompt:operation-4' }, pending: [{ id: 'prompt-queued' }] }) }],
+      [IAgentLoopService, { status: () => ({ state: 'running', activeTurnId: 7, pendingTurnIds: [], hasPendingRequests: true }) }],
+      [IAgentExecutionService, { status: () => ({ state: 'running' }) }],
+      [IAgentTaskService, { list: () => [], getTask: (id: string) => tasks.get(id), hasUnfinishedWork: () => true }],
+    ]) } as IAgentScopeHandle;
+    const handle = { ...fx.handle, accessor: accessor([
+      [ISessionMetadata, {
+        read: async () => ({ agents: { child: meta } }),
+        updateAgent: async (_id: string, updater: (current: AgentMeta) => AgentMeta) => { meta = updater(meta); },
+      }],
+      [ISessionActivityView, { state: () => ({ busy: true, pendingInteraction: 'none' }) }],
+      [IAgentLifecycleService, { get: () => target, list: () => [target] }],
+    ]) };
+    try {
+      await (fx.service as unknown as { pruneResumeHistory(handle: ISessionScopeHandle): Promise<void> }).pruneResumeHistory(handle);
+      const kept = new Set(Object.keys(meta.labels ?? {}));
+      expect(kept.size).toBe(38);
+      expect(kept.has('dispatchResume:operation-0')).toBe(false);
+      expect(kept.has('dispatchResume:operation-7')).toBe(false);
+      for (const i of [1, 2, 3, 4, 5, 6]) expect(kept.has(`dispatchResume:operation-${i}`)).toBe(true);
+    } finally { await fx.service.dispose(); }
+  });
+
 });
 
 describe('SessionLifecycleService create persistence ownership', () => {

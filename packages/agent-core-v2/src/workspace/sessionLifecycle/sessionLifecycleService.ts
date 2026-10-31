@@ -20,7 +20,8 @@ import { IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentTaskService } from '#/agent/task/task';
-import { pruneResumeRecords } from '#/session/dispatch/resume';
+import { TERMINAL_STATUSES } from '#/agent/task/types';
+import { pruneResumeRecords, type DispatchResumeRecord } from '#/session/dispatch/resume';
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
@@ -136,6 +137,7 @@ type MaterializeSessionOptions = Omit<CreateSessionOptions, 'sessionId'> & {
 
 const NO_ABORT = new AbortController().signal;
 const CHECKPOINT_IDLE_DELAY_MS = 1_000;
+const RESUME_PRUNE_INTERVAL_MS = 60_000;
 
 const SESSION_CREATE_RELOAD_SKILL_SOURCES: readonly string[] = [
   'user',
@@ -219,6 +221,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   private readonly checkpointTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly checkpointSaves = new Map<string, Promise<boolean>>();
   private readonly checkpointSubscriptions = new Map<string, IDisposable>();
+  private readonly resumePrunes = new Map<string, { at: number; running?: Promise<void> }>();
 
   constructor(
     private readonly instantiation: IInstantiationService,
@@ -272,6 +275,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     for (const subscription of this.checkpointSubscriptions.values()) await subscription.dispose();
     this.checkpointSubscriptions.clear();
     this.checkpointSaves.clear();
+    this.resumePrunes.clear();
     for (const [sessionId, handle] of [...this.sessions].reverse()) {
       this.sessions.delete(sessionId);
       await handle.dispose();
@@ -646,6 +650,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         sessionId,
         activity.onDidChange((event) => {
           if (event.cause !== 'turn_ended' && event.cause !== 'background') return;
+          if (event.cause === 'turn_ended') void this.pruneResumeHistoryThrottled(sessionId, handle);
           this.scheduleCheckpoint(sessionId, handle, CHECKPOINT_IDLE_DELAY_MS);
         }),
       );
@@ -664,7 +669,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       const retry = () => {
         if (attempt < 3) this.scheduleCheckpoint(sessionId, handle, [100, 500, 2_000][attempt]!, attempt + 1);
       };
-      void this.pruneResumeHistory(handle).then(() => this.saveReplayCheckpoints(sessionId, handle)).then((saved) => {
+      void this.pruneResumeHistoryThrottled(sessionId, handle, true).then(() => this.saveReplayCheckpoints(sessionId, handle)).then((saved) => {
         if (saved || this.sessions.get(sessionId) !== handle) return;
         const reasons = handle.accessor.get(IAgentLifecycleService).list().map((agent) => ({
           agentId: agent.id,
@@ -732,6 +737,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const timer = this.checkpointTimers.get(sessionId);
     if (timer !== undefined) clearTimeout(timer);
     this.checkpointTimers.delete(sessionId);
+    this.resumePrunes.delete(sessionId);
     const previous = this.checkpointSubscriptions.get(sessionId)?.dispose();
     if (previous instanceof Promise) previous.catch(onUnexpectedError);
     this.checkpointSubscriptions.delete(sessionId);
@@ -872,16 +878,26 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     return true;
   }
 
+  private pruneResumeHistoryThrottled(sessionId: string, handle: ISessionScopeHandle, force = false): Promise<void> {
+    const state = this.resumePrunes.get(sessionId);
+    if (state?.running !== undefined) return state.running;
+    const now = Date.now();
+    if (!force && state !== undefined && now - state.at < RESUME_PRUNE_INTERVAL_MS) return Promise.resolve();
+    const running = this.pruneResumeHistory(handle).catch((error: unknown) => {
+      this.log.warn('dispatch resume history prune failed', { sessionId, error: error instanceof Error ? error.message : String(error) });
+    }).finally(() => {
+      if (this.resumePrunes.get(sessionId)?.running === running) this.resumePrunes.set(sessionId, { at: Date.now() });
+    });
+    this.resumePrunes.set(sessionId, { at: now, running });
+    return running;
+  }
+
   private async pruneResumeHistory(handle: ISessionScopeHandle): Promise<void> {
     const metadata = handle.accessor.get(ISessionMetadata);
     const lifecycle = handle.accessor.get(IAgentLifecycleService);
     const saved = await metadata.read();
     let referenced: Set<string> | undefined;
-    const quiescent = (id: string): boolean => {
-      const activity = handle.accessor.get(ISessionActivityView).state();
-      if (activity.busy || activity.pendingInteraction !== 'none') return false;
-      const target = lifecycle.get(id);
-      if (target === undefined) return false;
+    const referencedAgents = (): Set<string> => {
       if (referenced === undefined) {
         referenced = new Set();
         for (const agent of lifecycle.list()) {
@@ -890,17 +906,40 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
           }
         }
       }
-      if (referenced.has(id)) return false;
+      return referenced;
+    };
+    const settledRecord = (id: string) => {
+      const target = lifecycle.get(id);
+      if (target === undefined) return () => false;
       const prompts = target.accessor.get(IAgentPromptService).list();
-      if (prompts.active !== undefined || prompts.launching !== undefined || prompts.pending.length > 0 || prompts.hold !== undefined) return false;
       const loop = target.accessor.get(IAgentLoopService).status();
-      if (loop.state !== 'idle' || loop.pendingTurnIds.length > 0 || loop.hasPendingRequests) return false;
-      const execution = target.accessor.get(IAgentExecutionService).status().state;
-      return (execution === 'idle' || execution === 'closed') && !target.accessor.get(IAgentTaskService).hasUnfinishedWork();
+      const tasks = target.accessor.get(IAgentTaskService);
+      const parentTasks = lifecycle.list().map((agent) => agent.accessor.get(IAgentTaskService));
+      const queuedPromptIds = new Set([prompts.active, prompts.launching, ...prompts.pending]
+        .flatMap((prompt) => prompt === undefined ? [] : [prompt.id]));
+      const openTurns = new Set([...loop.pendingTurnIds, ...(loop.activeTurnId === undefined ? [] : [loop.activeTurnId])]);
+      const agentQuiescent = (): boolean => {
+        if (prompts.active !== undefined || prompts.launching !== undefined || prompts.pending.length > 0) return false;
+        if (loop.state !== 'idle' || loop.pendingTurnIds.length > 0 || loop.hasPendingRequests) return false;
+        const execution = target.accessor.get(IAgentExecutionService).status().state;
+        return (execution === 'idle' || execution === 'closed') && !tasks.hasUnfinishedWork() && !referencedAgents().has(id);
+      };
+      return (record: DispatchResumeRecord): boolean => {
+        if (prompts.hold !== undefined) return false;
+        if (record.turnId === undefined) return agentQuiescent();
+        if (openTurns.has(record.turnId)) return false;
+        const promptId = record.request.kind === 'prompt' ? record.request.promptId ?? `resume-prompt:${record.operationId}` : undefined;
+        if (promptId !== undefined && queuedPromptIds.has(promptId)) return false;
+        if (record.taskId !== undefined) {
+          const task = tasks.getTask(record.taskId) ?? parentTasks.map((owner) => owner.getTask(record.taskId!)).find((info) => info !== undefined);
+          return task !== undefined && TERMINAL_STATUSES.has(task.status);
+        }
+        return !referencedAgents().has(id);
+      };
     };
     await Promise.all(Object.entries(saved.agents ?? {}).filter(([, meta]) =>
       Object.keys(meta.labels ?? {}).filter((key) => key.startsWith('dispatchResume:')).length > 32,
-    ).map(([id]) => metadata.updateAgent(id, (meta) => pruneResumeRecords(meta, quiescent(id)))));
+    ).map(([id]) => metadata.updateAgent(id, (meta) => pruneResumeRecords(meta, settledRecord(id)))));
   }
 
   private unloadBlocker(handle: ISessionScopeHandle): SessionUnloadRefusal | undefined {

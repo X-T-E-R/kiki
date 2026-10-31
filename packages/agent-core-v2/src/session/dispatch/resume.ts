@@ -112,8 +112,12 @@ export function acknowledgeResumeOutcome(meta: AgentMeta, taskId: string | undef
   return labels === undefined ? meta : { ...meta, labels };
 }
 
-/** Keeps the newest 32 operations and every operation from the last seven days. Legacy records require a current quiescence proof. */
-export function pruneResumeRecords(meta: AgentMeta, quiescent: boolean, now = Date.now()): AgentMeta {
+/** Keeps the newest 32 operations and every operation from the last seven days. A legacy record without outcome proof is removed only when `quiescent` proves that record has no in-flight turn, queued prompt, unfinished task or open reference. */
+export function pruneResumeRecords(
+  meta: AgentMeta,
+  quiescent: boolean | ((record: DispatchResumeRecord) => boolean),
+  now = Date.now(),
+): AgentMeta {
   const entries = resumeEntries(meta);
   if (entries.length <= 32) return meta;
   entries.sort((a, b) => (a.record.createdAt ?? 0) - (b.record.createdAt ?? 0));
@@ -125,7 +129,8 @@ export function pruneResumeRecords(meta: AgentMeta, quiescent: boolean, now = Da
     if (timestamp !== undefined && (!Number.isFinite(timestamp) || timestamp > now - 7 * 24 * 60 * 60_000)) continue;
     const proven = typeof record.taskId === 'string' && record.taskId.length > 0
       && record.outcome?.taskId === record.taskId && Number.isFinite(record.outcome.completedAt);
-    if (!proven && (record.retentionVersion === 1 || !quiescent)) continue;
+    if (!proven && (record.retentionVersion === 1 ||
+      !(typeof quiescent === 'function' ? quiescent(record) : quiescent))) continue;
     labels ??= { ...meta.labels };
     delete labels[key];
   }
