@@ -6852,10 +6852,23 @@ const BODIES = [
 export const scenarios = BODIES.map(([name, body]) => scenario(name, body, { ...ENTRY_EXTRA[name], matrix: MATRIX[name] }));
 
 async function main() {
+  const argv = process.argv.slice(2);
+  const { isGenericInvocation } = await import('./visual-proof-generic.mjs');
+  if (isGenericInvocation(argv)) {
+    try {
+      const { runGenericVisualProof } = await import('./visual-proof-generic.mjs');
+      await runGenericVisualProof({ argv });
+      process.exitCode = 0;
+    } catch (error) {
+      console.error(`[visual-proof] ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
   const { failed } = await runProof({
     root: ROOT,
     scenarios,
-    argv: process.argv.slice(2),
+    argv,
     label: 'proof',
     onWebUp: (url) => { WEB_URL = url; },
   });
