@@ -4179,6 +4179,39 @@ async function scenarioTurnPolish() {
   await shot('turn-tail');
 }
 
+async function scenarioAgentReferences() {
+  await selectSession('Fixture: agent references');
+  // Three chips in one user bubble: worker delegated, reviewer rejected,
+  // planner only mentioned. Each is readable and none is a bare link.
+  const bubble = page.locator('[role="log"] [data-block-id^="user-"]').first();
+  await bubble.waitFor({ timeout: 15_000 });
+  const chips = bubble.locator('[data-agent-ref-chip]');
+  await chips.first().waitFor({ timeout: 10_000 });
+  if ((await chips.count()) !== 3) throw new Error(`expected 3 agent reference chips, saw ${await chips.count()}`);
+  const statusOf = async (profile) => bubble.locator(`[data-agent-ref-chip]`, { hasText: profile }).first().getAttribute('data-agent-ref-status');
+  const statuses = [await statusOf('worker'), await statusOf('reviewer'), await statusOf('planner')];
+  console.log(`[check] agent ref statuses: worker=${statuses[0]} reviewer=${statuses[1]} planner=${statuses[2]}`);
+  if (statuses[0] !== 'delegated') throw new Error(`worker chip should be delegated, got ${statuses[0]}`);
+  if (statuses[1] !== 'rejected') throw new Error(`reviewer chip should be rejected, got ${statuses[1]}`);
+  if (statuses[2] !== 'pending') throw new Error(`planner chip should be pending, got ${statuses[2]}`);
+  await shot('agent-references-bubble');
+  // The parked prompt renders the same chip in the queue strip before sending.
+  await openQueueStrip();
+  const queueChip = page.locator('[data-queue-strip] [data-agent-ref-chip]').first();
+  await queueChip.waitFor({ timeout: 10_000 });
+  if (!(await queueChip.textContent())?.includes('worker')) throw new Error('queue chip does not name worker');
+  await shot('agent-references-queue');
+  // Collapse the queue again so the delegated chip is clickable in the bubble.
+  await page.locator('[data-composer-header] [data-header-toggle="queue"]').click();
+  // The delegated chip jumps to the child run it produced: the worker panel
+  // opens as a preview tab by default.
+  await bubble.locator('[data-agent-ref-chip]', { hasText: 'worker' }).first().click();
+  const panel = page.locator('[data-preview-tabpanel="panel:agent-worker"]');
+  await panel.waitFor({ timeout: 10_000 });
+  await waitForText('投影扫完了');
+  await shot('agent-references-jump');
+}
+
 async function scenarioSubagentApproval() {
   await selectSession('Fixture: subagent approval');
   await sendPrompt('Clean the build output.');
@@ -6485,6 +6518,7 @@ const BODIES = [
   ['steer', scenarioSteer],
   ['subagents', scenarioSubagents],
   ['subagent-invocations', scenarioSubagentInvocations],
+  ['agent-references', scenarioAgentReferences],
   ['subagent-approval', scenarioSubagentApproval],
   ['subagents-burst', scenarioSubagentsBurst],
   ['goal', scenarioGoal],
