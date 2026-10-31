@@ -65,7 +65,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  * given. `locale` is a base dimension of every scenario and is not listed.
  */
 const MATRIX = {
-  'agent-mentions': ['width'],
+  'agent-mentions': ['theme', 'width'],
   capabilities: ['theme', 'width'],
   cockpit: ['theme', 'width'],
   'composer-modes': ['theme', 'width'],
@@ -4681,15 +4681,23 @@ async function scenarioAgentMentions() {
   const linkEnd = draft.indexOf('kiki://agents/') + 'kiki://agents/claude-code'.length;
   const stepsIn = draft.length - (linkEnd - 3);
   for (let index = 0; index < stepsIn; index += 1) await page.keyboard.press('ArrowLeft');
-  await page.waitForTimeout(200);
-  if (await page.locator('[data-thread-ref-overlay-token][data-ref-kind="agent"]').count() !== 0) {
-    throw new Error('caret inside the token must reveal the raw link');
-  }
+  // Wait for the overlay to drop the label (caret inside reveals the raw link),
+  // not a fixed sleep, so a fast or slow run never catches a mid-transition.
+  await page.waitForFunction(
+    () => document.querySelector('[data-thread-ref-overlay-token][data-ref-kind="agent"]') === null,
+    undefined,
+    { timeout: 5000 },
+  );
+  // The backdrop keeps tinting the raw link while it is being edited.
+  await page.locator('[data-thread-ref-token][data-ref-kind="agent"]').waitFor({ timeout: 5000 });
   await shot('agent-mentions-editing');
   // Back out of the range: the label returns.
   await page.keyboard.press('End');
-  await page.waitForTimeout(200);
-  await page.locator('[data-thread-ref-overlay-token][data-ref-kind="agent"]').waitFor({ timeout: 5000 });
+  await page.waitForFunction(
+    () => document.querySelector('[data-thread-ref-overlay-token][data-ref-kind="agent"]') !== null,
+    undefined,
+    { timeout: 5000 },
+  );
   // Send: the text part carries the agent link; the fixture echoes receipt.
   await page.type('textarea', 'please review');
   await page.press('textarea', 'Control+Enter');
