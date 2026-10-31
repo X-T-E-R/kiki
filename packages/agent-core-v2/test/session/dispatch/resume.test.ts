@@ -21,6 +21,7 @@ import { toInputJsonSchema } from '#/tool/input-schema';
 import { IConfigService } from '#/app/config/config';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
+import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
@@ -786,6 +787,7 @@ describe('dispatch resume after cancellation with deferred task notifications', 
     const fixture = await persistenceBlockedChild(true);
     const { ctx, loop, run, tasks, taskId, action } = fixture;
     try {
+      await ctx.get(IUsageFactStore).checkpoint(ctx.get(IAgentScopeContext).scope());
       const before = fixture.failures();
       await vi.advanceTimersByTimeAsync(90 * 60_000);
       expect(fixture.failures() - before).toBe(36);
