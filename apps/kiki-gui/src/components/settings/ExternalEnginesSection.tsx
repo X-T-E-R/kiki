@@ -6,7 +6,7 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
-import type { ExecutorDiscoveryReasonCode, ExecutorDiscoveryResponse, ExecutorDiscoveryStatus, ExecutorCheckResult } from '../../lib/client';
+import type { ExecutorDiscoveryResponse, ExecutorDiscoveryStatus, ExecutorCheckResult } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { localSessionEngine } from '../../lib/localSessions';
 import { LocalSessionsEntry } from '../localSessions/LocalSessionsEntry';
@@ -75,29 +75,22 @@ function missingComponent(status: ExecutorDiscoveryStatus): ExecutorDiscoverySta
 }
 
 /**
- * A component's reason in the reader's language. Discovery returns a code
- * for the states it can name (mapped in the dictionaries); anything else is
- * the server's own sentence and renders as sent, English by wire convention.
+ * A component's reason in the reader's language. A machine-readable
+ * `reason_code` maps through the dictionaries; without one the server's own
+ * `reason` sentence renders as sent, English by wire convention.
  */
 function discoveryReasonText(
   component: ExecutorDiscoveryStatus['components'][number],
   t: ReturnType<typeof useI18n>['t'],
 ): string | undefined {
-  const reason = component.reason;
-  if (reason === undefined) return undefined;
-  if (reason.startsWith('code:')) {
-    const [code, detail] = reason.slice('code:'.length).split(':', 2);
+  const code = component.reason_code;
+  if (code !== undefined) {
     const key = `st.engines.discovery.reasonCode.${code}` as I18nKey;
-    const detailParams = {
-      command: detail ?? component.label,
-      path: detail ?? component.path ?? '',
-      name: detail ?? '',
-      pattern: detail ?? '',
-    };
-    const text = t(key, detailParams);
-    return text === key ? reason.slice('code:'.length) : text;
+    const detail = code === 'not_on_path' ? component.id : (component.path ?? component.id);
+    const text = t(key, { command: detail, path: detail, name: detail, pattern: detail });
+    if (text !== key) return text;
   }
-  return reason;
+  return component.reason;
 }
 
 /**

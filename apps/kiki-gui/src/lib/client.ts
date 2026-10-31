@@ -508,13 +508,6 @@ export type { ExecutorDiscoveryStatus, ExecutorDiscoveryResponse } from '@kiki/p
 export type ExecutorDiscoveryComponent = import('@kiki/protocol').ExecutorDiscoveryStatus['components'][number];
 
 /**
- * Codes a discovery `reason` may carry instead of free text, mapped in the
- * i18n dictionaries. Anything outside this list renders as the server sent
- * it — wire values stay English by convention.
- */
-export type ExecutorDiscoveryReasonCode = 'not_on_path' | 'path_not_found' | 'env_unset' | 'no_glob_match' | 'metadata_unreadable';
-
-/**
  * Goal-control inputs mirrored from the engine's goal service (the klient
  * agent facade types them out of agent-core, which apps must not import).
  * `updateAgentGoal` rides `expectedRevision` for optimistic concurrency: a

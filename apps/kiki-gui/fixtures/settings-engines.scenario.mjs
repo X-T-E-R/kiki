@@ -38,12 +38,12 @@ function discoveryItems(agyInstalled) {
     {
       id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1',
       installed: false, status: 'missing', checked_at: ts(4),
-      reason: 'The claude CLI dependency is not installed.',
+      reason: 'The claude CLI dependency is not installed.', reason_code: 'not_on_path',
       components: [
         component('claude', 'Claude Code CLI', 'dependency', false, {
-          // Coded reason: the client localizes known codes and falls back to
-          // the server text for anything else.
-          reason: 'code:not_on_path:claude',
+          // A coded reason localizes through the dictionaries; free text
+          // would render as sent.
+          reason: 'claude was not found on PATH.', reason_code: 'not_on_path',
         }),
         component('claude-acp', 'claude-agent-acp', 'program', true, {
           path: 'C:/Users/fixture/.kiki/tools/claude-agent-acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js', version: '0.84.0',
@@ -67,9 +67,10 @@ function discoveryItems(agyInstalled) {
       id: 'grok-acp', label: 'Grok Build', protocol: 'acp-v1',
       installed: false, status: 'error', checked_at: ts(26),
       path: 'C:/Users/fixture/.grok/bin/grok.exe', source: 'path', source_kind: 'path-lookup',
-      reason: 'The file metadata could not be read.',
+      reason: 'The file metadata could not be read.', reason_code: 'metadata_unreadable',
       components: [component('grok', 'Grok Build CLI', 'program', false, {
-        path: 'C:/Users/fixture/.grok/bin/grok.exe', reason: 'The file exists but its metadata could not be read.',
+        path: 'C:/Users/fixture/.grok/bin/grok.exe',
+        reason: 'The file exists but its metadata could not be read.', reason_code: 'metadata_unreadable',
       })],
     },
   ];

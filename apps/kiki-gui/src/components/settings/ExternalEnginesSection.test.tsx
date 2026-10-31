@@ -569,7 +569,7 @@ describe('external engines connection kind', () => {
       { id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', installed: false, status: 'missing',
         checked_at: '2026-10-12T00:00:00.000Z', reason: 'The claude CLI dependency is not installed.',
         components: [
-          { id: 'claude', label: 'Claude Code CLI', role: 'dependency', installed: false, reason: 'code:not_on_path:claude' },
+          { id: 'claude', label: 'Claude Code CLI', role: 'dependency', installed: false, reason: 'claude was not found on PATH.', reason_code: 'not_on_path' },
           { id: 'claude-acp', label: 'claude-agent-acp', role: 'program', installed: true, path: 'C:/kiki/tools/index.js', version: '0.84.0' },
         ] },
       { id: 'agy-cli', label: 'AGY', protocol: 'acp-v1', installed: false, status: 'missing',
