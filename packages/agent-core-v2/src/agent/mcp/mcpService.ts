@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { LifecycleScope } from '#/app/scopes';
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { ScopeActivation, registerScopedService, type ISessionScopeHandle } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
 import type { Tool as KosongTool } from '#/kosong/contract/tool';
 
@@ -445,26 +445,8 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     const managerEntry = sameRegistryEntry(entry, effective)
       ? this.mcpHandle.connectionManager.get(entry.name)
       : undefined;
-    const connection = toSessionConnection(
-      entry,
-      managerEntry?.status,
-      managerEntry !== undefined,
-      override,
-      effective,
-    );
     const refreshError = managerEntry !== undefined && override !== 'off' ? this.refreshErrors.get(entry.name) : undefined;
-    const error = refreshError ?? managerEntry?.error ?? toSessionCapabilityError(entry, effective, managerEntry, override);
-    return {
-      locator,
-      runtimeName: entry.name,
-      origin: entry.source,
-      config: toMcpServerConfigView(entry.config),
-      authStatus: toSessionAuthStatus(entry.config, managerEntry?.status),
-      connection,
-      override,
-      error,
-      errorCode: refreshError === undefined ? undefined : 'tool_catalog_refresh_failed',
-    };
+    return projectSessionMcpCapability(entry, effective, override, managerEntry, refreshError);
   }
 
   private reconnectForToolCall(
@@ -843,6 +825,42 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       ),
     );
   }
+}
+
+export async function readUnstartedSessionMcpCapabilities(session: ISessionScopeHandle): Promise<readonly McpSessionCapability[]> {
+  const context = session.accessor.get(ISessionContext);
+  const handle = session.accessor.get(ISessionMcpHandle);
+  const registry = session.accessor.get(IMcpRegistryService);
+  const docs = session.accessor.get(IAtomicDocumentStore);
+  await handle.selection?.loaded;
+  const overrides = handle.selection?.loaded === undefined
+    ? new Map(Object.entries(readSessionOverrides(await docs.get<unknown>(SESSION_MCP_OVERRIDES_SCOPE, context.sessionId))))
+    : handle.selection.overrides;
+  const catalog = await registry.list({ cwd: context.cwd });
+  const effective = effectiveEntries(catalog);
+  return catalog.map((entry) => {
+    const selected = effective.get(entry.name);
+    const managerEntry = sameRegistryEntry(entry, selected) ? handle.connectionManager.get(entry.name) : undefined;
+    return projectSessionMcpCapability(entry, selected, overrides.get(mcpLocatorKey(toMcpLocator(entry))) ?? 'inherit', managerEntry);
+  });
+}
+
+function projectSessionMcpCapability(
+  entry: McpRegistryEntry,
+  effective: McpRegistryEntry | undefined,
+  override: McpSessionOverrideValue,
+  managerEntry: McpServerEntry | undefined,
+  refreshError?: string,
+): McpSessionCapability {
+  return {
+    locator: toMcpLocator(entry), runtimeName: entry.name, origin: entry.source,
+    config: toMcpServerConfigView(entry.config),
+    authStatus: toSessionAuthStatus(entry.config, managerEntry?.status),
+    connection: toSessionConnection(entry, managerEntry?.status, managerEntry !== undefined, override, effective),
+    override,
+    error: refreshError ?? managerEntry?.error ?? toSessionCapabilityError(entry, effective, managerEntry, override),
+    errorCode: refreshError === undefined ? undefined : 'tool_catalog_refresh_failed',
+  };
 }
 
 const SESSION_MCP_OVERRIDES_SCOPE = 'session-mcp-overrides';

@@ -1,8 +1,8 @@
 /**
  * In-process dispatcher — resolves a wire triple `(service, method, args)`
  * against a live engine scope and mirrors kap-server's dispatcher semantics
- * (reflection call, non-function members are property reads, `main` agent
- * auto-materialized via `ensureMainAgent`). Scope routing resolves workspace
+ * (reflection calls and property reads, with lifecycle-only watches for an
+ * absent `main`). Scope routing resolves workspace
  * instances through `IWorkspaceInstanceManager` and live sessions through the
  * App `SessionManager`, matching the server's `resolveScope`. Every argument,
  * result, and event payload passes
@@ -34,6 +34,7 @@ import { IHostFileSystem } from '@kiki/agent-core-v2/os/interface/hostFileSystem
 import { readPersistedPlan } from '@kiki/agent-core-v2/features/plan/planRead';
 import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { PersistedModelSwitchReader, ModelSwitchQueuePreparingError } from '@kiki/agent-core-v2/agent/prompt/modelSwitchQueueRead';
+import { readUnstartedSessionMcpCapabilities } from '@kiki/agent-core-v2/agent/mcp/mcpService';
 import type {
   FileMeta,
   GetResult,
@@ -296,6 +297,15 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
           await lease?.dispose();
         }
       }
+      if (service === 'agentMcpService' && method === 'listMcpSessionCapabilities' &&
+        scope.sessionId !== undefined && scope.agentId === 'main' && scope.workspaceId === undefined) {
+        const live = getLiveSessionById(root.accessor, scope.sessionId);
+        if (live !== undefined && live.accessor.get(IAgentLifecycleService).get('main') === undefined) {
+          const result = await readUnstartedSessionMcpCapabilities(live);
+          options?.signal?.throwIfAborted();
+          return wireClone(result);
+        }
+      }
       if (service === 'agentPromptService' && method === 'listModelSwitches' &&
         scope.sessionId !== undefined && scope.agentId !== undefined && scope.workspaceId === undefined) {
         const live = getLiveSessionById(root.accessor, scope.sessionId);
@@ -535,8 +545,25 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
     },
 
     listen(scope, source, handler, onError, onReady) {
-      // Scope resolution can be async (main-agent materialization); the
-      // subscription attaches once settled. Disposing early cancels it.
+      if (scope.sessionId !== undefined && scope.agentId === 'main' && scope.workspaceId === undefined) {
+        const session = getLiveSessionById(root.accessor, scope.sessionId);
+        const lifecycle = session?.accessor.get(IAgentLifecycleService);
+        if (lifecycle !== undefined && lifecycle.get('main') === undefined) {
+          let inner: IDisposable | undefined;
+          let disposed = false;
+          const pending = lifecycle.onDidCreate((agent) => {
+            if (disposed || agent.id !== 'main') return;
+            pending.dispose();
+            try {
+              inner = subscribeSource({ kind: 'agent', like: agent }, source, handler);
+            } catch (error) {
+              onError?.(error instanceof Error ? error : new Error(String(error)));
+            }
+          });
+          queueMicrotask(() => { if (!disposed) onReady?.(); });
+          return { dispose: () => { disposed = true; pending.dispose(); inner?.dispose(); } };
+        }
+      }
       let inner: IDisposable | undefined;
       let disposed = false;
       void resolveScope(scope).then(

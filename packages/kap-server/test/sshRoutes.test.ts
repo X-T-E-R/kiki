@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   IAgentLifecycleService, IAgentRuntimeService, ISessionApprovalService, ISessionInteractionService,
-  ISessionManager, ISessionStateService,
+  ISessionContext, ISessionManager, ISessionStateService,
   ISshConnectionGateService, ISshHostService, sessionSshHostsKey, type Scope,
 } from '@kiki/agent-core-v2';
 import { SessionStateService } from '@kiki/agent-core-v2/session/state/sessionStateService';
@@ -129,7 +129,8 @@ describe('SSH management REST routes', () => {
       return { inspect: () => ({ identity: { workspaceId: 'workspace' } }) };
     } } };
     const session = { accessor: { get: (token: unknown) => {
-      if (token === IAgentLifecycleService) return { create: async () => agent };
+      if (token === IAgentLifecycleService) return { create: async () => agent, get: () => undefined };
+      if (token === ISessionContext) return { workspaceId: 'workspace' };
       if (token === ISessionStateService) return state;
       if (token === ISessionApprovalService) return { decideSsh };
       if (token === ISessionInteractionService) return { listPending: () => [{ id: 'ssh-approval', payload: { ssh: { kind: 'login' } } }] };

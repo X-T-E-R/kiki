@@ -171,8 +171,7 @@ describe('automatic compaction REST contract', () => {
     expect(read.msg).toContain('Model not set');
     expect(read.data).toBeNull();
     const live = getLiveSessionById(server!.core.accessor, created.data.id);
-    const agent = live?.accessor.get(IAgentLifecycleService).get('main');
-    expect(agent?.accessor.get(IAgentProfileService).hasModel()).toBe(false);
+    expect(live?.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
     for (const body of [
       { tokens: 400_000 },
       { tokens: null },
@@ -187,6 +186,8 @@ describe('automatic compaction REST contract', () => {
     }
     expect(await readFile(join(home, 'config.toml'), 'utf8')).toBe(configBefore);
     expect(await readFile(join(home, 'agents', 'custom.md'), 'utf8')).toBe(profileBefore);
+    const agent = live?.accessor.get(IAgentLifecycleService).get('main');
+    expect(agent?.accessor.get(IAgentProfileService).hasModel()).toBe(false);
     expect(agent?.accessor.get(IAgentStateService).get(autoCompactOverrideKey)).toEqual({});
     const models = await request<{ items: Array<{ id: string; auto_compact?: number }> }>('/api/models');
     expect(models.data.items.find((item) => item.id === 'test')?.auto_compact).toBeUndefined();

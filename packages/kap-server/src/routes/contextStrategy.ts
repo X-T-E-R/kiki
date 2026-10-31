@@ -1,4 +1,5 @@
 import { IAgentFullCompactionService, IAgentLifecycleService, IConfigService, MAIN_AGENT_ID, type Scope } from '@kiki/agent-core-v2';
+import type { LoopControl } from '@kiki/agent-core-v2/agent/loop/configSection';
 import { contextStrategyStatusSchema, contextStrategyWriteSchema } from '@kiki/protocol';
 import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -21,8 +22,13 @@ export function registerContextStrategyRoutes(app: RouteHost, core: Scope): void
     description: 'Read the effective context-window strategy and its source', tags: ['sessions'] }, async (req, reply) => {
     await withSessionOperation(core, req.params.session_id, async (session) => {
       if (session === undefined) { reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id)); return; }
-      const agent = req.params.agent_id === MAIN_AGENT_ID ? await ensureMainAgent(session) : session.accessor.get(IAgentLifecycleService).get(req.params.agent_id);
-      if (agent === undefined) { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent is not active in this session', req.id)); return; }
+      const agent = session.accessor.get(IAgentLifecycleService).get(req.params.agent_id);
+      if (agent === undefined) {
+        if (req.params.agent_id !== MAIN_AGENT_ID) { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent is not active in this session', req.id)); return; }
+        const config = core.accessor.get(IConfigService).get<LoopControl>('loopControl');
+        reply.send(okEnvelope({ strategy: config.contextStrategy ?? 'auto', source: config.contextStrategy === undefined ? 'default' : 'global', shadow: config.relayShadow === true }, req.id));
+        return;
+      }
       reply.send(okEnvelope(agent.accessor.get(IAgentFullCompactionService).getContextStrategy(), req.id));
     });
   });

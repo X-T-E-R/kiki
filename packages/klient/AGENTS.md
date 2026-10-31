@@ -53,9 +53,11 @@ invalidates ordinary subscriptions and streams on the shared socket. Memory
 and IPC currently reject view calls; never silently replace them with events.
 See the README's Ordered session views section for the recovery contract.
 
-The procedure facade covers services that behave identically on all transports
-(the in-process dispatcher mirrors the server's scope resolution, including
-`main`-agent materialization via `ensureMainAgent`). onWill/hook-style
+The procedure facade covers services that behave identically on all transports.
+Actions materialize `main` through the shared dispatcher when needed. Reads of
+model-switch queues and MCP capabilities preserve an unstarted main. Event watches
+on that main acknowledge an attached lifecycle watch, then attach the real source
+on `onDidCreate`; disposing the watch cancels both attachments. onWill/hook-style
 interception is not wire-exposable
 (engine hooks are in-process `OrderedHookSlot`s). `klient.terminal` is an optional
 HTTP-only PTY capability: lifecycle uses the host's existing REST routes, while
