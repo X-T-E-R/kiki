@@ -3912,7 +3912,10 @@ boundExecution,
           });
       } else {
         void compactSessionContext(actionContext, record)
-          .then((receipt) => { pushToast({ tone: 'success', text: t(receipt.status === undefined ? 'action.compactRequestedSession' : `context.compaction.manual.${receipt.status}`) }); })
+          .then((receipt) => {
+            if (receipt.accepted === false) { pushToast({ tone: 'info', text: t('context.compaction.manual.duplicate') }); return; }
+            pushToast({ tone: 'success', text: t(receipt.status === undefined ? 'action.compactRequestedSession' : `context.compaction.manual.${receipt.status}`) });
+          })
           .catch((error: unknown) => {
             pushToast({
               tone: 'error',

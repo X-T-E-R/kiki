@@ -974,6 +974,7 @@ export const zh = {
   'context.compaction.manual.completed': '手动压缩已完成',
   'context.compaction.manual.cancelled': '手动压缩已取消',
   'context.compaction.manual.failed': '手动压缩失败',
+  'context.compaction.manual.duplicate': '已有一次手动压缩在执行或排队中，等它完成后再试',
   'context.compaction.auto.queued': '自动压缩已排队',
   'context.compaction.auto.running': '自动压缩中',
   'context.compaction.auto.completed': '自动压缩已完成',
