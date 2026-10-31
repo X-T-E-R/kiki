@@ -23,6 +23,33 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it('calls the script tools and pages saved results with a connection credential without retrying submissions', async () => {
+    const calls: { path: string; method: string; body: unknown; query: string }[] = [];
+    const body = { arguments: { request_id: 'example-image', execution: 'background' }, session_ref: 'ext_example', idempotency_key: 'example-image' };
+    const receipt = { content: [{ type: 'text', text: 'accepted' }], structuredContent: { operation_id: 'op_example', state: 'accepted' } };
+    const fetcher = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer kec_fixture' });
+      calls.push({ path: url.pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body), query: url.search });
+      return envelope(url.pathname.endsWith('/tools') ? { tools: [] } : receipt);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://127.0.0.1:12345', token: 'kec_fixture', fetch: fetcher as typeof fetch });
+    try {
+      expect(await channel.rest.externalClients.tools()).toEqual({ tools: [] });
+      expect(await channel.rest.externalClients.callTool('plugin__example__generate', body)).toEqual(receipt);
+      await channel.rest.externalClients.job('op_example');
+      await channel.rest.externalClients.result('op_example', { artifact: 0, offset: 5, limit: 10 });
+      expect(calls).toEqual([
+        { path: '/api/external-clients/tools', method: 'GET', body: undefined, query: '' },
+        { path: '/api/external-clients/tools/plugin__example__generate:call', method: 'POST', body, query: '' },
+        { path: '/api/external-clients/jobs/op_example', method: 'GET', body: undefined, query: '' },
+        { path: '/api/external-clients/jobs/op_example/result', method: 'GET', body: undefined, query: '?artifact=0&offset=5&limit=10' },
+      ]);
+      fetcher.mockRejectedValueOnce(new Error('connection lost after submission'));
+      await expect(channel.rest.externalClients.callTool('plugin__example__generate', body)).rejects.toThrow();
+      expect(fetcher).toHaveBeenCalledTimes(5);
+    } finally { await channel.close(); }
+  });
   it('validates decision sources and synthetic probes without exposing a secret-moving value', async () => {
     const source = { kind: 'connection' as const, connection: 'judgment', model: 'arbitrary-remote-name' };
     const probe = { ok: true, status: { state: 'ready', protocol: 'system_one', connection: 'judgment', credential_source: 'env', credential_env: 'TYPESAFE_API_KEY' }, duration_ms: 3 };

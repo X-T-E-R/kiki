@@ -4,6 +4,10 @@ export function createExternalClientsFacade(transport:HttpRestTransport):Externa
   const base='/external-clients';const at=(id:string)=>`${base}/${encodeURIComponent(id)}`;
   const session=(id:string)=>`${base}/sessions/${encodeURIComponent(id)}`;
   return {
+    tools:options=>transport.json(`${base}/tools`,options),
+    callTool:(name,body,options)=>transport.json(`${base}/tools/${encodeURIComponent(name)}:call`,{...options,method:'POST',body}),
+    job:(id,options)=>transport.json(`${base}/jobs/${encodeURIComponent(id)}`,options),
+    result:(id,query,options)=>transport.json(`${base}/jobs/${encodeURIComponent(id)}/result`,{...options,query:{...query}}),
     list:options=>transport.json(base,options),
     create:(body,options)=>transport.json(base,{...options,method:'POST',body}),
     update:(id,body,options)=>transport.json(at(id),{...options,method:'PATCH',body}),
