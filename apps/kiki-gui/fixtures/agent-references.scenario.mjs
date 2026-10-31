@@ -100,6 +100,12 @@ function childTranscript(agentId, prompt, answer) {
 }
 
 export default {
+  // The executor catalog the chip reads the external engine's human label
+  // from — the same source the composer's engine badge uses.
+  executors: [
+    { id: 'native', label: 'Kiki', protocol: 'native', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
+    { id: 'claude-code', label: 'Claude Code', protocol: 'claude-acp', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
+  ],
   agentProfiles: [
     { name: 'agent', source: 'builtin', description: 'General-purpose built-in agent.', main: true, routes: [] },
     { name: 'worker', source: 'builtin', description: 'Bounded execution agent.', main: false, routes: [] },

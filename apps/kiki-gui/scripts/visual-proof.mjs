@@ -310,6 +310,7 @@ const SOURCES = {
   fromSubagentApprover: { key: 'ia.fromSubagent', params: { name: 'Approver' } },
   goalFollowUpSubagents: { key: 'goal.followUp', params: { timing: { key: 'timing.subagentsDone' } } },
   agentRefRejectedCue: { key: 'agentRef.rejectedCue' },
+  agentRefRunLatest: { key: 'agentRef.runLatest' },
   queuePromptAria: { key: 'composer.queueAria' },
   sendNow: { key: 'sv.queueSendNow' },
   removeQueued: { key: 'sv.queueRemove' },
@@ -4196,17 +4197,18 @@ async function scenarioAgentReferences() {
   if (statuses[0] !== 'delegated') throw new Error(`worker chip should be delegated, got ${statuses[0]}`);
   if (statuses[1] !== 'rejected') throw new Error(`reviewer chip should be rejected, got ${statuses[1]}`);
   if (statuses[2] !== 'pending') throw new Error(`planner chip should be pending, got ${statuses[2]}`);
-  // The external engine names itself, not "native engine"; the rejected chip
-  // says "not started" in words.
+  // The external engine names itself by the catalog label ("Claude Code"),
+  // matching the picker's badge — never the raw id, never "native engine".
   const helperText = await chipOf('helper').textContent();
-  if (!helperText?.includes('claude-code') || helperText.includes('native engine') || helperText.includes('原生引擎')) {
-    throw new Error(`helper chip should name claude-code, got "${helperText}"`);
+  if (!helperText?.includes('Claude Code') || helperText.includes('claude-code') || helperText.includes('native engine') || helperText.includes('原生引擎')) {
+    throw new Error(`helper chip should read "Claude Code", got "${helperText}"`);
   }
   const reviewerText = await chipOf('reviewer').textContent();
   if (!reviewerText?.includes(S.agentRefRejectedCue)) throw new Error(`reviewer chip should read its rejection, got "${reviewerText}"`);
   await shot('agent-references-bubble');
-  // The worker chip ran twice: clicking opens a run menu (most recent first),
-  // and the most recent run is the jump target.
+  // The worker chip ran twice: clicking opens a run menu. Each entry is told
+  // apart without a task id: "Most recent" leads, then the run's own label
+  // and status; the most recent run is the jump target.
   const workerRuns = await chipOf('worker').getAttribute('data-agent-ref-runs');
   if (workerRuns !== '2') throw new Error(`worker chip should read 2 runs, got ${workerRuns}`);
   await chipOf('worker').click();
@@ -4214,6 +4216,9 @@ async function scenarioAgentReferences() {
   await runMenu.waitFor({ timeout: 5_000 });
   const runItems = runMenu.locator('[data-menu-item]');
   if ((await runItems.count()) !== 2) throw new Error(`expected 2 runs in the menu, saw ${await runItems.count()}`);
+  const firstRunText = await runItems.first().textContent();
+  if (!firstRunText?.includes(S.agentRefRunLatest)) throw new Error(`first run should be marked most recent, got "${firstRunText}"`);
+  if (firstRunText?.includes('task-')) throw new Error(`run menu must not show a task id, got "${firstRunText}"`);
   await shot('agent-references-runs');
   // Picking the most recent run opens that child as a preview tab.
   await runItems.first().click();
