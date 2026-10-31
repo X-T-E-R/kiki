@@ -5,6 +5,7 @@ import { resolve, sep } from 'node:path';
 import { isSea } from 'node:sea';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
 
 import { GlobalSearchError, type GlobalSearchUnavailableReason } from '../contract';
 import type { NormalizedQuery, SearchBudgets } from '../match';
@@ -56,7 +57,7 @@ const QUERY_WORKER_COUNT = 1;
 
 export function seaIndexerArgs(database: string, execArgv: readonly string[]): string[] {
   return [
-    ...(execArgv.includes('--max-old-space-size=8192') ? ['--node-options=--max-old-space-size=384'] : []),
+    ...(execArgv.some(value => /^--max[-_]old[-_]space[-_]size(?:=|$)/.test(value)) ? [`--node-options=--max-old-space-size=${RESOURCE_DEFAULTS.workerHeapMb}`] : []),
     INDEXER_COMMAND, database,
   ];
 }
@@ -219,7 +220,7 @@ export class SqliteSearchHost {
   async search(query: NormalizedQuery, pageToken?: string, budgets?: SearchBudgets): Promise<SqliteSearchResult & { stale: boolean }> {
     await this.openReader();
     if (this.queries.size + this.reservedQuerySlots >= QUERY_ACTIVE_SLOTS || this.queryWaiters.length) {
-      if (this.queryWaiters.length >= 32) throw new GlobalSearchError('index_unavailable', 'search queue full');
+      if (this.queryWaiters.length >= RESOURCE_DEFAULTS.workerQueue) throw new GlobalSearchError('index_unavailable', 'search queue full');
       await new Promise<void>((resolve, reject) => {
         const waiter = { resolve, reject, timer: setTimeout(() => {
           this.queryWaiters.splice(this.queryWaiters.indexOf(waiter), 1);
@@ -283,14 +284,14 @@ export class SqliteSearchHost {
       fileURLToPath(new URL('./indexerDev.ts', import.meta.url));
     const source = entry.endsWith('.ts');
     const args = sea ? seaIndexerArgs(this.options.database, process.execArgv) :
-      ['--max-old-space-size=256', ...(source ? ['--experimental-transform-types', '--import', 'tsx',
+      [`--max-old-space-size=${RESOURCE_DEFAULTS.workerHeapMb}`, ...(source ? ['--experimental-transform-types', '--import', 'tsx',
         '--import', new URL('./register-dev-hooks.mjs', import.meta.url).href] : []),
       entry, this.options.database];
     const child = spawn(process.execPath, args, {
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true,
-      env: { ...process.env, NODE_OPTIONS: `--max-old-space-size=${sea ? 384 : 256}`,
-        KIKI_SEARCH_INDEXER_HARD_MB: String(this.options.indexerHardMb ?? 768),
-        KIKI_SEARCH_INDEXER_SOFT_MB: String(this.options.indexerSoftMb ?? (sea ? 512 : 384)),
+      env: { ...process.env, NODE_OPTIONS: `--max-old-space-size=${RESOURCE_DEFAULTS.workerHeapMb}`,
+        KIKI_SEARCH_INDEXER_HARD_MB: String(this.options.indexerHardMb ?? process.env['KIKI_SEARCH_INDEXER_HARD_MB'] ?? RESOURCE_DEFAULTS.workerHeapMb * 3 + 256),
+        KIKI_SEARCH_INDEXER_SOFT_MB: String(this.options.indexerSoftMb ?? process.env['KIKI_SEARCH_INDEXER_SOFT_MB'] ?? RESOURCE_DEFAULTS.workerHeapMb * 2 + 256),
         KIKI_SEARCH_INDEX_SUBAGENTS: this.options.indexSubagents ? '1' : '0' },
     });
     this.child = child;
@@ -333,7 +334,7 @@ export class SqliteSearchHost {
         if (message.status.state === 'wal_stuck') this.reason = 'wal_stuck';
         else if (this.reason === 'wal_stuck' ||
           (this.pending.size === 0 && !message.inflight && message.rss <=
-            (this.options.indexerHardMb ?? 768) * 1048576 &&
+            Number(this.options.indexerHardMb ?? process.env['KIKI_SEARCH_INDEXER_HARD_MB'] ?? RESOURCE_DEFAULTS.workerHeapMb * 3 + 256) * 1048576 &&
             (this.reason === 'indexer_backoff' || this.reason === 'memory_budget'))) {
           this.reason = undefined;
           this.failures = 0;
@@ -437,7 +438,7 @@ export class SqliteSearchHost {
       const worker = new Worker(pathToFileURL(entry), { workerData: { database: this.options.database, bootSalt: this.bootSalt },
         execArgv: source ? ['--experimental-transform-types', '--import', 'tsx', '--import',
           new URL('./register-dev-hooks.mjs', import.meta.url).href] : [],
-        resourceLimits: { maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 32 } });
+        resourceLimits: { maxOldGenerationSizeMb: RESOURCE_DEFAULTS.workerHeapMb, maxYoungGenerationSizeMb: 32 } });
       const opening = setTimeout(() => { void worker.terminate(); reject(new Error('query worker ready timed out')); }, 5000);
       worker.on('message', (event: QueryEvent) => {
         if (event.type === 'ready') {

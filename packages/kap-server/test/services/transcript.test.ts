@@ -6,6 +6,8 @@ import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { NOTE_SECTIONS } from '@kiki/agent-core-v2/session/todo/todoNotes';
+import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
+import { HistoryReadLane } from '../../src/services/transcript/historyReadLane';
 
 import {
   IAgentActivityView,
@@ -153,7 +155,7 @@ describe('transcript memory config', () => {
     expect(DEFAULT_TRANSCRIPT_MEMORY_CONFIG).toEqual({
       tailTurns: 20,
       maxAgentBytes: 16 << 20,
-      maxDetailCacheBytes: 256 << 20,
+      maxDetailCacheBytes: RESOURCE_DEFAULTS.workerHeapMb * 1024 * 1024,
     });
     expect(TranscriptMemoryConfigSchema.parse(DEFAULT_TRANSCRIPT_MEMORY_CONFIG)).toEqual(
       DEFAULT_TRANSCRIPT_MEMORY_CONFIG,
@@ -1199,7 +1201,7 @@ describe('TranscriptService live integration', () => {
       holdReads = true;
       const controllers = Array.from({ length: 220 }, () => new AbortController());
       const flights = controllers.map((controller, index) => service.readColdSnapshot(`s${Math.floor(index / 110) + 1}`, `child-${index % 110}`, undefined, controller.signal).catch(error => error));
-      await vi.waitFor(() => expect(service.memoryReport().readLane).toMatchObject({ active: 2, queued: 8, peak: 2 }));
+      await vi.waitFor(() => expect(service.memoryReport().readLane).toMatchObject({ active: 2, queued: Math.min(218, RESOURCE_DEFAULTS.workerQueue), peak: 2 }));
       for (const controller of controllers) controller.abort();
       await Promise.all(flights);
       await vi.waitFor(() => expect(service.memoryReport().readLane).toMatchObject({ active: 0, queued: 0 }));
@@ -1655,7 +1657,7 @@ describe('TranscriptService live integration', () => {
       expect(store.getAgent('main')?.getTurn('t1')?.steps[0]?.frames[0]).toMatchObject({ progress: { text: `progress-${updates - 1}` } });
       releaseFlush();
       if (updates === 600) {
-        await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.objectContaining({ overBudget: 1 }), 'transcript: retaining turns without matching bounded durable proof'));
+        await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.objectContaining({ overBudget: 1 }), 'transcript: retaining turns without matching bounded durable proof'), { timeout: 10_000 });
         expect(store.getAgent('main')?.getTurn('t1')).toMatchObject({ state: 'completed' });
         expect(navigation.canonicalReadReport().proofMaxExtraBytes).toBeGreaterThan(8 << 20);
       } else {
@@ -5324,6 +5326,18 @@ it('accounts for unprojected wire bytes and bounds anchor windows across cold se
   } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 });
 
+it('bounds the hardware-sized history queue while keeping parsing concurrency at two', async () => {
+  const lane = new HistoryReadLane();
+  const read = (signal: AbortSignal) => new Promise<never>((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  });
+  const accepted = Array.from({ length: RESOURCE_DEFAULTS.workerQueue + 2 }, () => lane.run(undefined, read).catch(error => error));
+  try {
+    expect(lane.report()).toEqual({ active: 2, queued: RESOURCE_DEFAULTS.workerQueue, peak: 2, activeLimit: 2, queueLimit: RESOURCE_DEFAULTS.workerQueue });
+    await expect(lane.run(undefined, read)).rejects.toMatchObject({ code: 'session.busy' });
+  } finally { lane.dispose(); await Promise.all(accepted); }
+  expect(lane.report()).toMatchObject({ active: 0, queued: 0 });
+});
 
 it('shares the history lane across anchored agent scans and cancels queued and active readers', async () => {
   const home = await mkdtemp(join(tmpdir(), 'transcript-anchor-lane-'));
@@ -5360,9 +5374,8 @@ it('shares the history lane across anchored agent scans and cancels queued and a
     const results: unknown[] = [];
     flights = controllers.map((controller, n) => service.readAnchoredColdSnapshot('s1', `child-${n}`, 't2', controller.signal)
       .catch(error => { results.push(error); return error; }));
-    await vi.waitFor(() => expect(results).toHaveLength(2));
-    expect(results).toEqual([expect.objectContaining({ code: 'session.busy' }), expect.objectContaining({ code: 'session.busy' })]);
-    expect(service.memoryReport().readLane).toMatchObject({ active: 2, queued: 8, peak: 2 });
+    await vi.waitFor(() => expect(service.memoryReport().readLane).toMatchObject({ active: 2, queued: 10, peak: 2 }));
+    expect(results).toEqual([]);
     expect(peak).toBe(2);
     controllers.forEach(controller => controller.abort(new Error('reader cancelled')));
     await Promise.all(flights);

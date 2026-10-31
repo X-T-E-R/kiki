@@ -1,4 +1,5 @@
 import { Error2, ErrorCodes } from '@kiki/agent-core-v2';
+import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
 
 interface Waiter {
   start(): void;
@@ -15,7 +16,7 @@ export class HistoryReadLane {
     const owned = signal === undefined ? this.shutdown.signal : AbortSignal.any([signal, this.shutdown.signal]);
     owned.throwIfAborted();
     if (this.active >= 2) {
-      if (this.waiting.size >= 8) throw new Error2(ErrorCodes.SESSION_BUSY, 'History readers are busy. Retry this page shortly.');
+      if (this.waiting.size >= RESOURCE_DEFAULTS.workerQueue) throw new Error2(ErrorCodes.SESSION_BUSY, 'History readers are busy. Retry this page shortly.');
       await new Promise<void>((resolve, reject) => {
         let onAbort = (): void => {};
         const waiter: Waiter = {
@@ -36,7 +37,7 @@ export class HistoryReadLane {
     }
   }
 
-  report() { return { active: this.active, queued: this.waiting.size, peak: this.peak, activeLimit: 2, queueLimit: 8 }; }
+  report() { return { active: this.active, queued: this.waiting.size, peak: this.peak, activeLimit: 2, queueLimit: RESOURCE_DEFAULTS.workerQueue }; }
 
   dispose(): void { this.shutdown.abort(new DOMException('History service closed', 'AbortError')); }
 }

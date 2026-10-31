@@ -1,5 +1,6 @@
 import { registerConfigSection, registerFlagDefinition } from '@kiki/agent-core-v2';
 import { z } from 'zod';
+import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
 
 export const TRANSCRIPT_MEMORY_SECTION = 'transcriptMemory';
 export const TRANSCRIPT_RESIDENT_WINDOW_FLAG_ID = 'transcript_resident_window';
@@ -17,7 +18,7 @@ export type TranscriptMemoryConfig = z.infer<typeof TranscriptMemoryConfigSchema
 export const DEFAULT_TRANSCRIPT_MEMORY_CONFIG: Required<TranscriptMemoryConfig> = {
   tailTurns: 20,
   maxAgentBytes: 16 << 20,
-  maxDetailCacheBytes: 256 << 20,
+  maxDetailCacheBytes: RESOURCE_DEFAULTS.workerHeapMb * 1024 * 1024,
 };
 
 registerConfigSection(TRANSCRIPT_MEMORY_SECTION, TranscriptMemoryConfigSchema, {

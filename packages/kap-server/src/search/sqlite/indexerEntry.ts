@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rename, rm, statfs } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getHeapStatistics } from 'node:v8';
+import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
 import { SqliteSearchIndex, type SqliteSessionInput } from './index';
 import { MEMORY_BUDGET_EXIT, type IndexerEvent, type IndexerRequest } from './processProtocol';
 
@@ -11,8 +12,8 @@ const report = (event: IndexerEvent): void => { if (process.connected) process.s
 
 export async function runSqliteIndexerCommand(path: string): Promise<void> {
   if (!path || !process.send) throw new Error('indexer requires a database path and IPC channel');
-  const hardMb = Number(process.env['KIKI_SEARCH_INDEXER_HARD_MB'] ?? 768);
-  const softMb = Number(process.env['KIKI_SEARCH_INDEXER_SOFT_MB'] ?? 384);
+  const hardMb = Number(process.env['KIKI_SEARCH_INDEXER_HARD_MB'] ?? RESOURCE_DEFAULTS.workerHeapMb * 3 + 256);
+  const softMb = Number(process.env['KIKI_SEARCH_INDEXER_SOFT_MB'] ?? RESOURCE_DEFAULTS.workerHeapMb * 2 + 256);
   if (!(hardMb > 0 && softMb > 0)) throw new Error('invalid indexer memory budget');
   let stopped = false;
   const noteClose = (message: IndexerRequest): void => { if (message.type === 'close') stopped = true; };

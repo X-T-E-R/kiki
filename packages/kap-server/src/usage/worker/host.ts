@@ -1,6 +1,7 @@
 import { statSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
 import type { UsageWireState } from '@kiki/agent-core-v2/agent/usage/usageWireFramer';
 import { usageWorkerEntry } from './runtime';
 import { USAGE_CHUNK_BYTES, type UsageWorkerMetrics, type UsageWorkerRequest, type UsageWorkerResponse } from './protocol';
@@ -40,7 +41,7 @@ export class UsageParserWorker {
     this.signal = signal;
     const source = entry ?? resolveEntry();
     this.ready = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
-    this.worker = new Worker(source, { name: 'kiki-usage-parser', execArgv: source.pathname.endsWith('.ts') ? ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'] : [], resourceLimits: { maxOldGenerationSizeMb: 128 } });
+    this.worker = new Worker(source, { name: 'kiki-usage-parser', execArgv: source.pathname.endsWith('.ts') ? ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'] : [], resourceLimits: { maxOldGenerationSizeMb: RESOURCE_DEFAULTS.workerHeapMb } });
     this.openingTimer = setTimeout(() => { this.fail(new Error('Usage parser worker did not become ready')); }, 5000);
     this.abort = () => { this.fail(signal.reason instanceof Error ? signal.reason : new DOMException('Usage read cancelled', 'AbortError')); };
     signal.addEventListener('abort', this.abort, { once: true });

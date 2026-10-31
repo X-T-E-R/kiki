@@ -85,6 +85,8 @@ describe('SEA native package imports', () => {
         console: { log: stdout },
         process: {
           argv: [process.execPath, bundle, '__search-indexer'],
+          execArgv: [],
+          env: {},
           execPath: process.execPath,
           stderr: { write: stderr },
           exit,

@@ -4,6 +4,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { UsageDatabase } from './usageDatabase.ts';
 import type { UsageStoreRequest, UsageStoreResponse } from './usageProtocol.ts';
 
+import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
+import { warnIfWorkerHeapLimit } from '#/_base/node/workerHeapPolicy';
+
+warnIfWorkerHeapLimit(RESOURCE_DEFAULTS.workerHeapMb);
 const port = parentPort;
 if (port === null) throw new Error('Usage database requires a worker');
 const options = workerData as { database: string; writable: boolean };

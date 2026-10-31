@@ -1,6 +1,7 @@
 import { statSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
 import { usageReadModelWorkerEntry, type UsageStoreOperation, type UsageStoreRequest, type UsageStoreResponse } from './usageProtocol';
 
 interface Pending {
@@ -25,7 +26,7 @@ export class UsageReadModelWorker {
   constructor(database: string, private readonly writable: boolean) {
     const configured = usageReadModelWorkerEntry();
     const entry = configured === undefined ? resolveEntry() : pathToFileURL(configured);
-    this.worker = new Worker(entry, { name: writable ? 'kiki-usage-writer' : 'kiki-usage-reader', workerData: { database, writable }, execArgv: entry.pathname.endsWith('.ts') ? ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'] : [], resourceLimits: { maxOldGenerationSizeMb: 128 } });
+    this.worker = new Worker(entry, { name: writable ? 'kiki-usage-writer' : 'kiki-usage-reader', workerData: { database, writable }, execArgv: entry.pathname.endsWith('.ts') ? ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'] : [], resourceLimits: { maxOldGenerationSizeMb: RESOURCE_DEFAULTS.workerHeapMb } });
     this.worker.unref();
     this.exited = new Promise((resolve) => { this.worker.once('exit', () => resolve()); });
     this.worker.on('message', (response: UsageStoreResponse) => {
@@ -44,7 +45,7 @@ export class UsageReadModelWorker {
   request<T>(operation: UsageStoreOperation, signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted();
     if (this.stopped || this.closing !== undefined) return Promise.reject(new Error('Usage worker closed'));
-    if (this.waiting.length >= 16) return Promise.reject(Object.assign(new Error('Usage queue full; retry'), { code: 'usage.busy' }));
+    if (this.waiting.length >= RESOURCE_DEFAULTS.workerQueue) return Promise.reject(Object.assign(new Error('Usage queue full; retry'), { code: 'usage.busy' }));
     return this.enqueue(operation, signal);
   }
   private enqueue<T>(operation: UsageStoreOperation, signal?: AbortSignal): Promise<T> {

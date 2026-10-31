@@ -23,7 +23,6 @@ const MB = 1024 * 1024;
 const DEFAULT_HEAP_LIMIT_FRACTION = 0.75;
 const DEFAULT_RSS_MEMORY_FRACTION = 0.35;
 const DEFAULT_RSS_MIN_BYTES = 3072 * MB;
-const DEFAULT_RSS_MAX_BYTES = 5120 * MB;
 const DEFAULT_EXTERNAL_BYTES = 1536 * MB;
 const EXTERNAL_RSS_THRESHOLD_BYTES = 3072 * MB;
 const DEFAULT_INTERVAL_MS = 30_000;
@@ -65,16 +64,13 @@ export function resolveHeapWatchdogPolicy(
       ? Math.floor(heapSizeLimit * DEFAULT_HEAP_LIMIT_FRACTION)
       : 0;
   const defaultRssThreshold = useBundledDefaults
-    ? Math.min(
-        DEFAULT_RSS_MAX_BYTES,
-        Math.max(DEFAULT_RSS_MIN_BYTES, Math.floor(totalMemory * DEFAULT_RSS_MEMORY_FRACTION)),
-      )
+    ? Math.max(DEFAULT_RSS_MIN_BYTES, Math.floor(totalMemory * DEFAULT_RSS_MEMORY_FRACTION))
     : 0;
   const heapThresholdBytes = thresholdBytes(heapOverride, defaultHeapThreshold);
   const rssThresholdBytes = thresholdBytes(env[RSS_RESTART_ENV], defaultRssThreshold);
   const externalThresholdBytes = thresholdBytes(
     env[EXTERNAL_RESTART_ENV],
-    useBundledDefaults ? DEFAULT_EXTERNAL_BYTES : 0,
+    useBundledDefaults ? Math.max(DEFAULT_EXTERNAL_BYTES, Math.floor(totalMemory / 16)) : 0,
   );
 
   if (heapThresholdBytes === 0 && rssThresholdBytes === 0 && externalThresholdBytes === 0) {

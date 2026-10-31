@@ -276,9 +276,9 @@ usage_preference = "avoid"
 # ##########################################################################
 
 [cpu_workers]
-max_workers = 4
-max_queue = 64
-max_queued_bytes = 67108864
+# max_workers: integer (adaptive default: min(availableParallelism - 1, floor(totalmem / 4 / workerHeap)), at least 1; workerHeap = max(512 MiB, totalmem / 64))
+# max_queue: integer (adaptive default: max(128, default CPU workers * 16))
+# max_queued_bytes: integer (adaptive default: max(64 MiB, floor(totalmem / 128 / MiB) MiB))
 timeout_ms = 30000
 
 # ##########################################################################
@@ -887,7 +887,7 @@ markets = []
 [request_governance]
 schema_version = 1
 max_wait_ms = 300000
-max_queue_size = 1024
+# max_queue_size: integer (adaptive default: max(1024, max(128, availableParallelism * 16) * 4))
 rules = []
 
 # ##########################################################################
@@ -959,12 +959,12 @@ rules = []
 
 [session_residency]
 idle_ttl_ms = 600000
-max_live_sessions = 8
+# max_live_sessions: integer (adaptive default: max(16, floor(totalmem / 128 MiB)))
 min_idle_ms = 60000
 sweep_interval_ms = 30000
-max_concurrent_restores = 4
-max_queued_restores = 8
-max_resident_heap_bytes = 1610612736
+# max_concurrent_restores: integer (adaptive default: CPU worker default: min(availableParallelism - 1, floor(totalmem / 4 / workerHeap)), at least 1)
+# max_queued_restores: integer (adaptive default: max(128, availableParallelism * 16))
+# max_resident_heap_bytes: integer (adaptive default: max(256 MiB, floor(totalmem / 8 / MiB) MiB), further bounded by 60% of the effective V8 heap)
 
 # ##########################################################################
 # sessionTitle (config.toml: session_title)

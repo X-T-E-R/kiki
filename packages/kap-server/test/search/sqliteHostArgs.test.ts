@@ -1,10 +1,11 @@
 import { expect, it } from 'vitest';
+import { RESOURCE_DEFAULTS } from '@kiki/agent-core-v2/_base/node/resourceDefaults';
 
 import { seaIndexerArgs, seaIndexerSelected } from '../../src/search/sqlite/host';
 
-it('overrides the embedded local SEA heap limit only for the search child', () => {
-  expect(seaIndexerArgs('index.sqlite', ['--max-old-space-size=8192'])).toEqual([
-    '--node-options=--max-old-space-size=384', '__search-indexer', 'index.sqlite',
+it.each(['--max-old-space-size=0', '--max-old-space-size=8192', '--max_old_space_size=4096'])('overrides local SEA %s only for the search child', (flag) => {
+  expect(seaIndexerArgs('index.sqlite', [flag])).toEqual([
+    `--node-options=--max-old-space-size=${RESOURCE_DEFAULTS.workerHeapMb}`, '__search-indexer', 'index.sqlite',
   ]);
 });
 

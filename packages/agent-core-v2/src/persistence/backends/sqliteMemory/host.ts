@@ -1,6 +1,7 @@
 import { statSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { RESOURCE_DEFAULTS } from '#/_base/node/resourceDefaults';
 import { memoryWorkerEntry, type MemoryOperation, type MemoryRequest, type MemoryResponse } from './protocol';
 
 interface Pending {
@@ -20,7 +21,7 @@ export class MemoryWorker {
   constructor(database: string) {
     const configured = memoryWorkerEntry();
     const entry = configured === undefined ? resolveEntry() : pathToFileURL(configured);
-    this.worker = new Worker(entry, { name: 'kiki-memory', workerData: { database }, execArgv: entry.pathname.endsWith('.ts') ? ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'] : [], resourceLimits: { maxOldGenerationSizeMb: 128 } });
+    this.worker = new Worker(entry, { name: 'kiki-memory', workerData: { database }, execArgv: entry.pathname.endsWith('.ts') ? ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'] : [], resourceLimits: { maxOldGenerationSizeMb: RESOURCE_DEFAULTS.workerHeapMb } });
     this.worker.unref();
     this.exited = new Promise((resolve) => { this.worker.once('exit', () => { resolve(); }); });
     this.worker.on('message', (response: MemoryResponse) => {
@@ -36,7 +37,7 @@ export class MemoryWorker {
   }
   request<T>(operation: MemoryOperation): Promise<T> {
     if (this.stopped || this.closing !== undefined) return Promise.reject(new Error('Memory worker closed; reopen and reconcile the operation receipt'));
-    if (this.waiting.length >= 128) return Promise.reject(Object.assign(new Error('Memory queue full'), { committed: false }));
+    if (this.waiting.length >= RESOURCE_DEFAULTS.workerQueue) return Promise.reject(Object.assign(new Error('Memory queue full'), { committed: false }));
     return this.enqueue(operation);
   }
   private enqueue<T>(operation: MemoryOperation): Promise<T> {

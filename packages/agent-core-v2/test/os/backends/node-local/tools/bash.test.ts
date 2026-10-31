@@ -1,4 +1,7 @@
+import { execFileSync } from 'node:child_process';
 import { PassThrough, Readable, type Writable } from 'node:stream';
+import { removeInjectedHeapOption } from '#/_base/node/workerHeapPolicy';
+import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -787,6 +790,29 @@ function bashTool(
 }
 
 describe('BashTool', () => {
+  it.each([false, true])('runs real Node with only the user heap options after Kiki entry cleanup (user override: %s)', async (userHeap) => {
+    const original = process.env['NODE_OPTIONS'];
+    const marker = process.env['KIKI_INJECTED_HEAP_OPTION'];
+    const probe = 'console.log(require("node:v8").getHeapStatistics().heap_size_limit/1048576)';
+    const expected = Number(execFileSync(process.execPath, ['-e', probe], { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: userHeap ? '--max-old-space-size=1024' : '' } }).trim());
+    try {
+      process.env['NODE_OPTIONS'] = userHeap ? '--max-old-space-size=1024' : ' --max-old-space-size=16384';
+      if (userHeap) delete process.env['KIKI_INJECTED_HEAP_OPTION'];
+      else process.env['KIKI_INJECTED_HEAP_OPTION'] = '--max-old-space-size=16384';
+      removeInjectedHeapOption(process.env);
+      const runner = disposables.add(new HostProcessService());
+      const env = process.platform === 'win32' ? windowsBashEnv : posixEnv;
+      const node = process.execPath.replaceAll('\\', '/').replaceAll("'", "'\\''");
+      const result = await executeTool(bashTool(runner, env, createTestCtx(process.cwd())), context({ command: `'${node}' -e '${probe}'` }));
+      expect(result.isError).toBe(false);
+      if (typeof result.output !== 'string') throw new Error('Expected Bash text output');
+      expect(Number(result.output.trim())).toBe(expected);
+    } finally {
+      if (original === undefined) delete process.env['NODE_OPTIONS']; else process.env['NODE_OPTIONS'] = original;
+      if (marker === undefined) delete process.env['KIKI_INJECTED_HEAP_OPTION']; else process.env['KIKI_INJECTED_HEAP_OPTION'] = marker;
+    }
+  });
+
   it.each(['sleep 2; cat file.txt', 'ls -al | head -20', 'printf "%s" "literal"', "echo '$(literal)'", 'pwd && whoami'])('allows a proven read-only shell command to share readers: %s', async (command) => {
     const { runner } = createTestRunner(processWithOutput());
     const execution = await bashTool(runner).resolveExecution({ command });
