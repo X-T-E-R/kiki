@@ -191,7 +191,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
       while (offset < size) {
         signal?.throwIfAborted();
         if ((budget?.remainingRecords ?? Infinity) <= 0) throw new FactBudgetReached();
-        const count = Math.min(64 << 10, Math.max(4, (budget?.remainingRecords ?? Infinity) * 16), size - offset);
+        const count = Math.min(1 << 20, Math.max(4, (budget?.remainingRecords ?? Infinity) * 16), size - offset);
         let bytes: Uint8Array = new Uint8Array(0);
         for await (const chunk of this.storage.readStream(directory, LOG, { start: offset, end: offset + count - 1 }, { signal, chunkBytes: count })) { bytes = bytes.length === 0 ? chunk : Buffer.concat([bytes, chunk]); }
         if (bytes.length === 0) throw new SyntaxError('Truncated Usage journal');
