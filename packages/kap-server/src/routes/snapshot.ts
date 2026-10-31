@@ -4,7 +4,6 @@ import {
   subagentUserLabel,
 } from '@kiki/transcript-live';
 import {
-  ensureMainAgent,
   IAgentProfileService,
   IAgentLifecycleService,
   IAgentActivityView,
@@ -314,7 +313,7 @@ async function assembleSnapshotFromLease(
     throw new SnapshotNotFoundError(sessionId);
   }
   const fields = { sessionId, requestId: timing.requestId };
-  const main = await timeSessionViewPhase('snapshot_ensure_main', { ...fields, agentId: 'main' }, () => ensureMainAgent(handle), timing);
+  const main = handle.accessor.get(IAgentLifecycleService).get('main');
   const metadata = handle.accessor.get(ISessionMetadata);
   await timeSessionViewPhase('snapshot_metadata_ready', fields, () => metadata.ready, timing);
   timing.signal?.throwIfAborted();
@@ -325,13 +324,13 @@ async function assembleSnapshotFromLease(
       const workspaceId = handle.accessor.get(ISessionContext).workspaceId;
       const meta = metadata.snapshot();
       const facts = resolveSessionFacts(core, sessionId);
-      const model = readBoundModel(main);
+      const model = main === undefined ? undefined : readBoundModel(main);
       const runtime = new Map(handle.accessor.get(IAgentLifecycleService).list().map((agent) =>
         [agent.id, agent.accessor.get(IAgentActivityView).state()] as const));
       const [workspace, controls] = await Promise.all([
         timeSessionViewPhase('snapshot_workspace', fields,
           () => core.accessor.get(IWorkspaceService).get(workspaceId), timing),
-        timeSessionViewPhase('snapshot_controls', { ...fields, agentId: 'main' }, () => readAgentRuntimeControls(main), timing),
+        main === undefined ? {} : timeSessionViewPhase('snapshot_controls', { ...fields, agentId: 'main' }, () => readAgentRuntimeControls(main), timing),
       ]);
       timing.signal?.throwIfAborted();
       const projected = toWireSession({ ...meta, workspaceId }, workspace?.root ?? '', facts);
@@ -361,7 +360,7 @@ async function assembleSnapshotFromLease(
   );
   const status = snapState.status;
 
-  const messageTail = compact
+  const messageTail = compact || main === undefined
     ? undefined
     : await loadCapturedMessageHistoryTail(
         main,
