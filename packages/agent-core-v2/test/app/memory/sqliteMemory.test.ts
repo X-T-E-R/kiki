@@ -631,7 +631,7 @@ describe('Memory shadow import and replay barriers', () => {
     } finally { current.close(); }
   });
 
-  it('retains uncertain pre-admission history bytes behind the read barrier across old provenance and replay', async () => {
+  it('quarantines uncertain history outside schema-3 readers and provenance replay', async () => {
     const scope = 'memory/global';
     const path = join(home, 'uncertain-history.sqlite');
     const seed = { ...(await save('Uncertain history fixture')).entry, id: 'm_uncertain_forgotten', revision: 'uncertain:forgotten', source: { writer: 'agent' as const, session: 'uncertain-history', turn: 17 } };
@@ -663,16 +663,30 @@ describe('Memory shadow import and replay barriers', () => {
       } finally { current.close(); }
       const raw = new DatabaseSync(path);
       try {
-        expect(raw.prepare('SELECT entry FROM revisions WHERE scope=? AND id=?').get(scope, replay.id)?.['entry']).toBe(JSON.stringify(replay));
-        expect(raw.prepare('SELECT COUNT(*) AS n FROM journal WHERE scope=? AND id=?').get(scope, replay.id)?.['n']).toBe(1);
-        expect(raw.prepare('SELECT payload FROM legacy WHERE scope=? AND key=?').get(scope, `entries/${replay.id}.md`)?.['payload']).toBe(JSON.stringify(replay));
+        expect(raw.prepare('SELECT entry FROM revisions WHERE scope=? AND id=?').get(scope, replay.id)?.['entry']).toBeUndefined();
+        expect(raw.prepare('SELECT COUNT(*) AS n FROM journal WHERE scope=? AND id=?').get(scope, replay.id)?.['n']).toBe(0);
+        expect(raw.prepare('SELECT payload FROM legacy WHERE scope=? AND key=?').get(scope, `entries/${replay.id}.md`)?.['payload']).not.toContain(replay.body);
+        expect(raw.prepare("SELECT payload FROM memory_quarantine WHERE scope=? AND id=? AND kind='revisions'").get(scope, replay.id)?.['payload']).toContain(replay.body);
         expect(raw.prepare('SELECT generation FROM memory_admissions WHERE scope=? AND id=? AND revision=?').get(scope, replay.id, replay.revision)?.['generation']).toBeNull();
       } finally { raw.close(); }
       if (pass === 0) {
         const old = new Schema3MemoryDatabase(path);
-        try { old.provenance(scope, replay.id); expect(old.importLegacy([{ ...record(replay), key: `inbox/${replay.id}.md` }]).imported).toBe(1); } finally { old.close(); }
+        try {
+          expect(old.revision(scope, replay.id, replay.revision)).toBeUndefined();
+          expect(old.journal(scope, replay.id)).toEqual([]);
+          old.provenance(scope, replay.id);
+          expect(old.importLegacy([{ ...record(replay), key: `inbox/${replay.id}.md` }])).toMatchObject({ imported: 0, issues: [expect.objectContaining({ issue: 'forgotten_source_rejected' })] });
+          expect(old.read([scope]).objects).toEqual([]);
+        } finally { old.close(); }
       }
     }
+    const proof = new DatabaseSync(path);
+    try { proof.prepare('UPDATE memory_admissions SET generation=0 WHERE scope=? AND id=? AND revision=?').run(scope, replay.id, replay.revision); } finally { proof.close(); }
+    current = new MemoryDatabase(path);
+    try {
+      expect(current.revision(scope, replay.id, replay.revision)).toEqual(JSON.parse(JSON.stringify(replay)));
+      expect(current.journal(scope, replay.id)).toEqual([event]);
+    } finally { current.close(); }
   });
 
   it('checkpoints only old-writer deltas and never revisits untouched admissions on reopening', async () => {

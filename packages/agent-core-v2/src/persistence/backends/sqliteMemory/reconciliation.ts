@@ -16,13 +16,14 @@ export class MemoryReconciliation {
       CREATE TABLE IF NOT EXISTS memory_admissions(scope TEXT NOT NULL,id TEXT NOT NULL,revision TEXT NOT NULL,generation INTEGER,signature TEXT,PRIMARY KEY(scope,id,revision));
       CREATE INDEX IF NOT EXISTS memory_admission_signature ON memory_admissions(scope,signature,id,generation);
       CREATE TABLE IF NOT EXISTS memory_changes(sequence INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,id TEXT NOT NULL,revision TEXT);
+      CREATE TABLE IF NOT EXISTS memory_quarantine(kind TEXT NOT NULL,scope TEXT NOT NULL,id TEXT NOT NULL,revision TEXT NOT NULL,key TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(kind,scope,id,key));
       INSERT OR IGNORE INTO metadata VALUES('memory_reconcile_sequence',0);
       INSERT OR IGNORE INTO metadata VALUES('memory_writer_active',0);
     `);
-    this.baseline = this.db.prepare("SELECT value FROM metadata WHERE key='memory_reconcile_version'").get() === undefined;
+    this.baseline = this.db.prepare("SELECT value FROM metadata WHERE key='memory_reconcile_version'").get() === undefined || this.db.prepare("SELECT value FROM metadata WHERE key='memory_quarantine_version'").get() === undefined;
     this.db.exec("UPDATE metadata SET value=1 WHERE key='memory_writer_active'");
     if (this.baseline) {
-      const insert = this.db.prepare('INSERT OR IGNORE INTO memory_admissions VALUES(?,?,?,?,?)');
+      const insert = this.db.prepare('INSERT INTO memory_admissions VALUES(?,?,?,?,?) ON CONFLICT(scope,id,revision) DO UPDATE SET signature=excluded.signature');
       for (const row of this.db.prepare('SELECT scope,id,revision,generation,entry FROM revisions WHERE entry IS NOT NULL').all()) {
         const entry = JSON.parse(String(row['entry'])) as MemoryEntry;
         const generation = Number(row['generation']);
@@ -78,7 +79,11 @@ export class MemoryReconciliation {
   pending(): boolean { return this.db.prepare("SELECT 1 FROM memory_changes WHERE sequence>(SELECT value FROM metadata WHERE key='memory_reconcile_sequence') LIMIT 1").get() !== undefined; }
   acknowledge(): void {
     this.db.exec("UPDATE metadata SET value=COALESCE((SELECT seq FROM sqlite_sequence WHERE name='memory_changes'),0) WHERE key='memory_reconcile_sequence'; DELETE FROM memory_changes; INSERT INTO metadata VALUES('memory_reconcile_version',1) ON CONFLICT(key) DO UPDATE SET value=1;");
+    this.db.exec("INSERT OR IGNORE INTO metadata VALUES('memory_quarantine_version',1)");
     this.baseline = false;
+  }
+  stash(kind: string, scope: string, id: string, revision: string, key: string, row: Record<string, SQLOutputValue>): void {
+    this.db.prepare('INSERT OR IGNORE INTO memory_quarantine VALUES(?,?,?,?,?,?)').run(kind, scope, id, revision, key, JSON.stringify(row));
   }
   active(value: boolean): void { this.db.prepare("UPDATE metadata SET value=? WHERE key='memory_writer_active'").run(Number(value)); }
   admission(scope: string, id: string, revision: string): number | undefined {
