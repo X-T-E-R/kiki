@@ -846,6 +846,21 @@ async function scenarioDurableAdmission() {
   await page.locator('[data-admission]').waitFor({ state: 'detached', timeout: 15_000 });
   console.log('[check] slow restore: line after threshold, gone on admission');
 
+  // A live send the server saves but cannot admit: the failure stays on the
+  // message's own bubble (retry reuses the saved id), the composer stays empty
+  // and no toast competes with it.
+  await sendPrompt('Try the flaky restore.', 'queue');
+  const failedLine = page.locator('[data-admission="failed"]');
+  await failedLine.waitFor({ timeout: 10_000 });
+  await noPanel('live failed send');
+  const composerAfterFail = await page.locator('textarea').inputValue();
+  if (composerAfterFail.trim() !== '') throw new Error(`live failed send restored the composer: ${composerAfterFail}`);
+  if (await page.locator('[data-toast]').count() !== 0) throw new Error('live failed send raised a toast beside the bubble');
+  if (await failedLine.locator('[data-admission-retry]').count() !== 1) throw new Error('live failed send lost its retry');
+  await page.mouse.move(0, 0);
+  await shot('durable-admission-failed-live');
+  console.log('[check] live failed send: failure on the bubble, composer empty, no toast');
+
   // Held and failed copies opened from history.
   await selectSession('Fixture: held admission');
   await page.locator('[data-admission="failed"]').waitFor({ timeout: 10_000 });

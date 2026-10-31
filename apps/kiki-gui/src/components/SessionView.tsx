@@ -113,6 +113,7 @@ import {
   sendsLegacyControl,
   namesLegacyControl,
   executionSelectionOf,
+  forgetUnconfirmedSubmission,
   sameExecutionChoice,
   isEffortOnlyExecutionChange,
   isNativeExecutor,
@@ -1405,6 +1406,11 @@ function PromptRecordsRemainder({ continuation }: { readonly continuation: NonNu
   </section>;
 }
 
+/** Whether the server saved this prompt as a durable ingress record. */
+function hasDurableRecord(controller: Pick<SessionController, 'getDurableIngress'>, promptId: string): boolean {
+  return (controller.getDurableIngress?.() ?? []).some((item) => item.prompt_id === promptId);
+}
+
 export function withOptimisticUserBlock(
   blocks: readonly Block[],
   pending: { id: string; text: string; content?: MessageContent[]; createdAt: string; slow: boolean; preserved: boolean; retryable: boolean; status: 'sending' | 'offline' | 'server' } | undefined,
@@ -1992,18 +1998,13 @@ export function SessionView({
   // a session override the engine would inherit (see resolveProfileSwitchSubmission).
   const [pendingProfile, setPendingProfile] = useState<string | undefined>(undefined);
   const [switchConfirmation, setSwitchConfirmation] = useState<
-    | { readonly kind: 'profile'; readonly profile: string }
     | { readonly kind: 'execution'; readonly execution: ExecutionChoice }
     | { readonly kind: 'model'; readonly fromModel: string; readonly toModel: string; readonly initialMode: ModelSwitchMode;
         readonly matchedRuleId?: string; readonly editingOperationId?: string; readonly editingRevision?: number }
     | undefined
   >(undefined);
-  const profileSwitchConfirm = switchConfirmation?.kind === 'profile' ? switchConfirmation.profile : undefined;
   const executionSwitchConfirm = switchConfirmation?.kind === 'execution' ? switchConfirmation.execution : undefined;
   const modelSwitchDialog = switchConfirmation?.kind === 'model' ? switchConfirmation : undefined;
-  const setProfileSwitchConfirm = useCallback((profile: string | undefined) => {
-    setSwitchConfirmation(profile === undefined ? undefined : { kind: 'profile', profile });
-  }, []);
   const setExecutionSwitchConfirm = useCallback((execution: ExecutionChoice | undefined) => {
     setSwitchConfirmation(execution === undefined ? undefined : { kind: 'execution', execution });
   }, []);
@@ -2375,7 +2376,15 @@ export function SessionView({
     const ingress = state.durableIngress?.find((item) => item.prompt_id === pending.id);
     const row = state.blocks.find((block): block is UserBlock => block.kind === 'user' && block.promptId === pending.id);
     const admission = ingress?.admission;
-    if (admission === 'failed' || admission === 'cancelled') {
+    if (admission === 'failed') {
+      // The server kept this message: its bubble carries "not sent" with a
+      // same-id retry, so the composer and a toast stay out of it.
+      if (pendingSendRef.current) return;
+      if (pendingRecoveryRef.current?.id === pending.id) pendingRecoveryRef.current = undefined;
+      setPendingSubmission((current) => current?.id === pending.id ? undefined : current);
+      return;
+    }
+    if (admission === 'cancelled') {
       if (pendingSendRef.current) return;
       const recoveryEntry = pendingRecoveryRef.current?.id === pending.id ? pendingRecoveryRef.current : undefined;
       pendingRecoveryRef.current = undefined;
@@ -3332,6 +3341,11 @@ export function SessionView({
               onAcknowledged: releaseComposition,
             })
             .then((result) => {
+              if (result.outcome === 'failed' && hasDurableRecord(controller, result.promptId)) {
+                forgetUnconfirmedSubmission(sessionId, result.promptId);
+                releaseComposition();
+                return;
+              }
               if (result.outcome === 'failed' || result.outcome === 'cancelled') {
                 if (composerOwnerActive.current) {
                   setAnnotations((current) => restoreSentAnnotations(current, sentAnnotationsNow));
@@ -3550,6 +3564,15 @@ export function SessionView({
           .then((result) => {
             clearFirstRecord();
             const admissionRejected = result.admission === 'failed' || result.admission === 'cancelled';
+            if (result.admission === 'failed' && hasDurableRecord(controller, result.prompt_id)) {
+              // Saved but not admitted: the message stays on the timeline as
+              // a "not sent" bubble whose retry reuses this id.
+              forgetUnconfirmedSubmission(sessionId, result.prompt_id);
+              releaseComposition();
+              setPendingSubmission((current) => current?.id === submissionId ? undefined : current);
+              pendingRecoveryRef.current = undefined;
+              return;
+            }
             if (admissionRejected) {
               restoreCapturedSubmission();
               setPendingSubmission((current) => current?.id === submissionId ? undefined : current);
