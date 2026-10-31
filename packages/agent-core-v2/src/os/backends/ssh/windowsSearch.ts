@@ -26,6 +26,7 @@ interface SearchOptions {
   lineNumbers: boolean;
   before: number;
   after: number;
+  maxDepth?: number;
 }
 
 function parseArgs(args: readonly string[], cwd: string): SearchOptions {
@@ -54,6 +55,7 @@ function parseArgs(args: readonly string[], cwd: string): SearchOptions {
     } else if (arg === '-C') result.before = result.after = Number(next());
     else if (arg === '-B') result.before = Number(next());
     else if (arg === '-A') result.after = Number(next());
+    else if (arg === '--max-depth') result.maxDepth = Number(next());
     else if (arg === '--max-columns' || arg === '--field-context-separator' || arg === '-j') next();
     else if (arg === '--') {
       result.pattern = next();
@@ -91,10 +93,11 @@ function EmitFile($file,[string]$root) {
 foreach ($root in $c.paths) {
   $item=Get-Item -LiteralPath $root -Force
   if (!$item.PSIsContainer) { EmitFile $item $item.DirectoryName.Replace('\\','/'); continue }
-  $pending=New-Object 'System.Collections.Generic.Stack[System.IO.DirectoryInfo]'
-  $pending.Push([IO.DirectoryInfo]::new($root))
+  $pending=New-Object 'System.Collections.Generic.Stack[object]'
+  $pending.Push(@{Directory=[IO.DirectoryInfo]::new($root);Depth=0})
   while ($pending.Count -gt 0) {
-    $directory=$pending.Pop()
+    $current=$pending.Pop()
+    $directory=$current.Directory
     $base=$directory.FullName.Replace('\\','/')
     try {
       if (!$c.noIgnore) {
@@ -106,7 +109,7 @@ foreach ($root in $c.paths) {
       foreach ($entry in $directory.EnumerateFileSystemInfos()) {
         if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
         if (($entry.Attributes -band [IO.FileAttributes]::Directory) -ne 0) {
-          if (@('.git','.svn','.hg','.bzr','.jj','.sl') -notcontains $entry.Name) { $pending.Push($entry) }
+          if (@('.git','.svn','.hg','.bzr','.jj','.sl') -notcontains $entry.Name -and ($null -eq $c.maxDepth -or $current.Depth+1 -lt $c.maxDepth)) { $pending.Push(@{Directory=$entry;Depth=$current.Depth+1}) }
         } else { EmitFile $entry $root }
       }
     } catch { [Console]::WriteLine('e'+[char]9+(Encode $base)+[char]9+(Encode $_.ToString())) }

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server as NetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +21,7 @@ import type { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import type { Runtime, RuntimeLease } from '#/runtime/runtime';
 import { SshRuntime } from '#/runtime/sshRuntime';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { spawnWindowsSearch } from '#/os/backends/ssh/windowsSearch';
 import type { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import type { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import type { IAgentToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncation';
@@ -302,6 +303,24 @@ describe('SSH tools over a real ssh2 transport', () => {
     const failed = await execute(await f.tools.glob.resolveExecution({ host: 'dev', path: 'E:/scratch', pattern: '*' }));
     expect(failed.isError).toBe(true); expect(failed.output).toContain('readdir'); expect(failed.output).not.toContain('No matches found');
     f.remote.dispose();
+  });
+
+  it.skipIf(process.platform !== 'win32').each([1, 2, undefined])('honors traversal depth %s in the actual Windows search script', async (maxDepth) => {
+    const f = await fixture('win32');
+    await f.remote.connect();
+    await mkdir(join(f.home, 'nested', 'deeper'), { recursive: true });
+    const paths = [join(f.home, 'root.txt'), join(f.home, 'nested', 'child.txt'), join(f.home, 'nested', 'deeper', 'grandchild.txt')];
+    for (const path of paths) await writeFile(path, 'example');
+    f.response.executePowerShell = true;
+    const ssh = (await f.manager.get('dev')).withCwd(f.home);
+    const args = ['--files', '--glob', '*.txt'];
+    if (maxDepth !== undefined) args.push('--max-depth', String(maxDepth));
+    args.push(f.home);
+    const search = spawnWindowsSearch(ssh, args);
+    const [output, diagnostics, exitCode] = await Promise.all([text(search.stdout), text(search.stderr), search.wait()]);
+    expect(diagnostics).toBe('');
+    expect(exitCode).toBe(0);
+    expect(output.trim().split('\n').toSorted()).toEqual(paths.slice(0, maxDepth).map((path) => path.replaceAll('\\', '/')).toSorted());
   });
 
   it('preserves long Windows Grep patterns through TEMP scripts and propagates failures', async () => {
