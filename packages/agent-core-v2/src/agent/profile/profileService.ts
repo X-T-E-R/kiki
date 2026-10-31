@@ -2357,21 +2357,32 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     });
   }
 
-  private async selectedRecipe(alias: string, external = this.isExternalExecutor, profile = this.profileState.boundProfile ?? this.resolveActiveProfile()): Promise<import('@kiki/protocol').ResolvedRecipe | undefined> {
+  private async selectedRecipe(alias: string, external = this.isExternalExecutor, profile = this.profileState.boundProfile ?? this.resolveActiveProfile(), reportFailure = true): Promise<import('@kiki/protocol').ResolvedRecipe | undefined> {
     if (external) return undefined;
     const model = this.models.get(alias);
     const references = [{ surface: 'model' as const, id: model?.recipe, options: model?.recipeOptions }, { surface: 'profile' as const, id: profile?.recipe, options: profile?.recipeOptions }].filter((entry) => entry.id !== undefined && entry.id !== 'off');
     if (references.length === 0) return undefined;
-    if (this.recipes === undefined) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'Recipe service is unavailable');
     const profileBase = profile?.sourcePath === undefined ? undefined : dirname(profile.sourcePath);
     const layers: import('@kiki/protocol').RecipeResolvedLayer[] = [];
     for (const reference of references) {
       const raw = reference.id!;
-      const file = isRecipeFileReference(raw);
-      const installation_id = file ? reference.surface === 'profile'
-        ? resolveRecipeFileLocator(raw, profileBase) : resolveModelRecipeReference(raw, alias, this.config, this.bootstrap)
-        : raw.replace(/^installation:/u, '');
-      layers.push({ surface: reference.surface, installation_id, resolved: await this.recipes.resolve(installation_id, undefined, reference.options) });
+      try {
+        if (this.recipes === undefined) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'Recipe service is unavailable');
+        const file = isRecipeFileReference(raw);
+        const installation_id = file ? reference.surface === 'profile'
+          ? resolveRecipeFileLocator(raw, profileBase) : resolveModelRecipeReference(raw, alias, this.config, this.bootstrap)
+          : raw.trim().replace(/^installation:/u, '');
+        layers.push({ surface: reference.surface, installation_id, resolved: await this.recipes.resolve(installation_id, undefined, reference.options) });
+      } catch (cause) {
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        const details = { ...(cause instanceof Error2 ? cause.details : undefined), profile: profile?.name, profilePath: profile?.sourcePath, surface: reference.surface, reference: raw, model: alias, reason };
+        const message = `Profile "${profile?.name ?? this.profileName ?? 'agent'}" could not apply ${reference.surface} Recipe "${raw}": ${reason}`;
+        if (reportFailure) {
+          this.log.current?.warn('Profile Recipe resolution failed', details);
+          await this.dispatcher.dispatch(new WarningIssued({ code: 'profile.recipe_resolution_failed', message }));
+        }
+        throw new Error2(cause instanceof Error2 ? cause.code : ProfileErrors.codes.MODEL_CONFIG_INVALID, message, { cause, details });
+      }
     }
     return composeRecipeLayers(layers, model?.overrides);
   }
@@ -2597,7 +2608,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     try {
       if (diskProfile !== undefined) {
         const external = (diskProfile.executor ?? 'native') !== 'native';
-        const recipe = await this.selectedRecipe(alias, external, diskProfile);
+        const recipe = await this.selectedRecipe(alias, external, diskProfile, false);
         const fields = await this.resolvePromptFieldSnapshot(diskProfile, alias, recipe ?? null);
         const previous = this.cognitionBinding;
         const previousRevision = this.cognitionRevision;

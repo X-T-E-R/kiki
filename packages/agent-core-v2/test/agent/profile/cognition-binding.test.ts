@@ -5,6 +5,9 @@ import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Event } from '#/_base/event';
+import { IEventBus } from '#/app/event/eventBus';
+import { ILogService } from '#/_base/log/log';
+import { WarningIssued } from '#/agent/profile/profileOps';
 import { resolvedRecipeSchema } from '@kiki/protocol';
 import { parseAgentFileText } from '@kiki/agent-profiles/agentFile';
 import { agentProfileFromFile } from '@kiki/agent-profiles/agentProfileFromFile';
@@ -464,6 +467,35 @@ describe('per-model cognition overlay', () => {
       expect(ctx.kimiConfig.models![MOCK_MODEL]).toEqual(saved);
       await ctx.dispose(); ctx = undefined;
     }
+  });
+
+  it.each(['installation:missing-profile-recipe', './missing-profile-recipe.toml'])('reports the profile and reference for an unavailable Recipe %s without replacing the saved binding', async (reference) => {
+    ctx = createTestAgent({ autoConfigure: false }, homeDirServices(homeDir), appServices((reg) => {
+      reg.define(IRecipeService, RecipeService); reg.define(IRecipeSourceReader, RecipeSourceReader);
+    }));
+    const profile = ctx.get(IAgentProfileService);
+    const role = normalizeAgentProfile({ name: 'example-role', sourcePath: join(homeDir, 'role.md'), systemPrompt: () => 'KEPT ROLE' });
+    await profile.bind({ resolvedProfile: role, model: MOCK_MODEL, thinking: 'off' });
+    const previous = structuredClone(profile.data());
+    const warnings: WarningIssued[] = [];
+    ctx.get(IEventBus).subscribe(WarningIssued, (event) => warnings.push(event));
+    const warn = vi.spyOn(ctx.get(ILogService), 'warn');
+    await expect(profile.bind({ resolvedProfile: { ...role, recipe: reference }, model: MOCK_MODEL, thinking: 'off' })).rejects.toMatchObject({
+      message: expect.stringContaining(`Profile "example-role"`),
+      details: expect.objectContaining({ profile: 'example-role', reference, surface: 'profile', profilePath: role.sourcePath }),
+    });
+    expect(warnings).toContainEqual(expect.objectContaining({ code: 'profile.recipe_resolution_failed', message: expect.stringContaining(reference) }));
+    expect(warnings.at(-1)?.message).toMatch(/Recipe installation not found|ENOENT/);
+    expect(warn).toHaveBeenCalledWith('Profile Recipe resolution failed', expect.objectContaining({ profile: 'example-role', reference, reason: expect.any(String) }));
+    const warningCount = warnings.length;
+    const warnCount = warn.mock.calls.length;
+    vi.spyOn(ctx.get(ISessionAgentProfileCatalog), 'get').mockReturnValue({ ...role, recipe: reference });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect((await profile.getPromptDiagnostics()).disk_error).toContain(reference);
+    }
+    expect(warnings).toHaveLength(warningCount);
+    expect(warn).toHaveBeenCalledTimes(warnCount);
+    expect(structuredClone(profile.data())).toEqual(previous);
   });
 
   it('cold-restores profile Recipe revisions and local declarations, rebuilds explicitly, and preserves the binding on an invalid reference', async () => {
