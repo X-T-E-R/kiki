@@ -45,7 +45,7 @@ export function registerToolsCommand(program: Command): void {
   tools
     .command('grant <names...>')
     .description('Add tool grants as the local owner; existing grants are retained.')
-    .option('--allow-commands', 'Also allow local commands and unrestricted plugin access.')
+    .option('--allow-commands', 'Allow local commands and unrestricted plugin access; also grants the Bash tool.')
     .action(async (names: string[], _options: unknown, command: Command) =>
       run(command, async (client, options) => {
         const api = client.rest!.externalClients;
