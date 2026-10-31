@@ -374,8 +374,15 @@ describe('hooks v2 completed-step engine contract', () => {
     const loop = ctx.get(IAgentLoopService);
     const tasks = ctx.get(IAgentTaskService);
     const completion = createControlledPromise<{ result: string }>();
-    const taskId = tasks.registerTask(new SubagentTask({ agentId: 'example-child', profileName: 'worker', completion }, 'unfinished work', new AbortController()));
-    const cancel = loop.hooks.onDidFinishStep.register('test.cancel', async (_step, next) => { loop.cancel(); await next(); });
+    let taskId = '';
+    const cancel = loop.hooks.onDidFinishStep.register('test.cancel', async (_step, next) => {
+      const ownerTurnId = loop.status().activeTurnId;
+      expect(ownerTurnId).toBe(0);
+      taskId = tasks.registerTask(new SubagentTask({ agentId: 'example-child', profileName: 'worker', completion }, 'unfinished work', new AbortController()));
+      expect(tasks.getTask(taskId)?.ownerTurnId).toBe(ownerTurnId);
+      loop.cancel();
+      await next();
+    });
     try { await turn(ctx, 'Start work'); await loop.settled(); }
     finally { await cancel.dispose(); }
     expect(loop.status().lastTurnResult).toBe('cancelled');
