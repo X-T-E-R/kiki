@@ -4665,14 +4665,31 @@ async function scenarioAgentMentions() {
   await page.fill('textarea', '@clau');
   await page.waitForSelector('[role="option"]:has-text("claude-code")', { timeout: 5000 });
   await page.locator('[role="option"]', { hasText: 'claude-code' }).first().click();
-  // The draft carries the verbatim link; the backdrop marks its range as a
-  // tinted token (the marks are transparent — a readable @label needs an
-  // overlay, tracked as a follow-up the parent decides).
+  // The draft carries the verbatim link; the overlay shows the readable @label
+  // over the link's range (the raw text stays in the transparent textarea).
   const draft = await page.inputValue('textarea');
   if (!draft.includes('kiki://agents/claude-code')) throw new Error(`agent link missing from draft: "${draft}"`);
-  const token = page.locator('[data-thread-ref-token][data-ref-kind="agent"]');
+  const token = page.locator('[data-thread-ref-overlay-token][data-ref-kind="agent"]');
   await token.waitFor({ timeout: 5000 });
+  if ((await token.textContent()) !== '@claude-code') {
+    throw new Error(`agent token must show the readable @label, got "${await token.textContent()}"`);
+  }
   await shot('agent-mentions-chip');
+  // Moving the caret inside the link reveals the raw link for editing. Arrow
+  // keys move the caret through a real key event (onSelect syncs the overlay),
+  // so step from the end back into the token's interior.
+  const linkEnd = draft.indexOf('kiki://agents/') + 'kiki://agents/claude-code'.length;
+  const stepsIn = draft.length - (linkEnd - 3);
+  for (let index = 0; index < stepsIn; index += 1) await page.keyboard.press('ArrowLeft');
+  await page.waitForTimeout(200);
+  if (await page.locator('[data-thread-ref-overlay-token][data-ref-kind="agent"]').count() !== 0) {
+    throw new Error('caret inside the token must reveal the raw link');
+  }
+  await shot('agent-mentions-editing');
+  // Back out of the range: the label returns.
+  await page.keyboard.press('End');
+  await page.waitForTimeout(200);
+  await page.locator('[data-thread-ref-overlay-token][data-ref-kind="agent"]').waitFor({ timeout: 5000 });
   // Send: the text part carries the agent link; the fixture echoes receipt.
   await page.type('textarea', 'please review');
   await page.press('textarea', 'Control+Enter');
