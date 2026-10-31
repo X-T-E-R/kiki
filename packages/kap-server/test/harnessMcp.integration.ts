@@ -61,6 +61,7 @@ describe('attached harness MCP', () => {
       await client.connect(new StdioClientTransport({ command: process.execPath,
         args: ['--import', pathToFileURL(require.resolve('tsx/esm')).href, '--import', loader, cli, ...lease.server.args],
         env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)), ...env,
+          KIKI_HOME: home,
           TSX_TSCONFIG_PATH: fileURLToPath(new URL('../../../apps/kimi-code/tsconfig.dev.json', import.meta.url)) }, cwd: home,
       }));
       const tools = await client.listTools();
@@ -608,7 +609,7 @@ it.skipIf(!process.env['KIKI_AGY_LIVE_SMOKE'])('live AGY session uses the source
     const loader = new URL('../../../build/register-raw-text-loader.mjs', import.meta.url).href;
     const native = { ...lease.server, command: process.execPath,
       args: ['--import', pathToFileURL(require.resolve('tsx/esm')).href, '--import', loader, cli, ...lease.server.args],
-      env: [...lease.server.env, { name: 'TSX_TSCONFIG_PATH', value: fileURLToPath(new URL('../../../apps/kimi-code/tsconfig.dev.json', import.meta.url)) }],
+      env: [...lease.server.env, { name: 'KIKI_HOME', value: home }, { name: 'TSX_TSCONFIG_PATH', value: fileURLToPath(new URL('../../../apps/kimi-code/tsconfig.dev.json', import.meta.url)) }],
     };
     const direct = createContextKlient({ endpoint, token: lease.server.env.find(entry => entry.name === 'KIKI_DELEGATION_TOKEN')!.value });
     const directStarted = performance.now();
@@ -661,7 +662,7 @@ it('leases a directly executable SEA or npm MCP command and preserves unknown-ho
   const cli = fileURLToPath(new URL('../../../apps/kimi-code/src/main.ts', import.meta.url));
   const loader = new URL('../../../build/register-raw-text-loader.mjs', import.meta.url).href;
   await writeFile(entry, `import {spawn} from 'node:child_process';
-const child=spawn(process.execPath,${JSON.stringify(['--import', pathToFileURL(require.resolve('tsx/esm')).href, '--import', loader, cli])}.concat(process.argv.slice(2)),{stdio:'inherit',env:{...process.env,TSX_TSCONFIG_PATH:${JSON.stringify(fileURLToPath(new URL('../../../apps/kimi-code/tsconfig.dev.json', import.meta.url)))}}});
+const child=spawn(process.execPath,${JSON.stringify(['--import', pathToFileURL(require.resolve('tsx/esm')).href, '--import', loader, cli])}.concat(process.argv.slice(2)),{stdio:'inherit',env:{...process.env,KIKI_HOME:${JSON.stringify(home)},TSX_TSCONFIG_PATH:${JSON.stringify(fileURLToPath(new URL('../../../apps/kimi-code/tsconfig.dev.json', import.meta.url)))}}});
 child.once('error',error=>{console.error(error.message);process.exitCode=1;});child.once('close',code=>{process.exitCode=code??1;});
 `);
   const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });

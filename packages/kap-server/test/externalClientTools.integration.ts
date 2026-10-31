@@ -239,7 +239,7 @@ describe('script tool access',()=>{
     const cli=fileURLToPath(new URL('../../../apps/kimi-code/src/main.ts',import.meta.url));
     const loader=new URL('../../../build/register-raw-text-loader.mjs',import.meta.url).href;
     const invoke=async(args:string[])=>{
-      const result=await promisify(execFile)(process.execPath,['--import',pathToFileURL(require.resolve('tsx/esm')).href,'--import',loader,cli,'tools','--url',base,'--credential-file',credentialFile,...args],{cwd:workspace,env:{...process.env,TSX_TSCONFIG_PATH:fileURLToPath(new URL('../../../apps/kimi-code/tsconfig.dev.json',import.meta.url))},timeout:30_000});
+      const result=await promisify(execFile)(process.execPath,['--import',pathToFileURL(require.resolve('tsx/esm')).href,'--import',loader,cli,'tools','--home',home,'--url',base,'--credential-file',credentialFile,...args],{cwd:workspace,env:{...process.env,KIKI_HOME:home,TSX_TSCONFIG_PATH:fileURLToPath(new URL('../../../apps/kimi-code/tsconfig.dev.json',import.meta.url))},timeout:30_000});
       expect(result.stdout).not.toContain(token);return JSON.parse(result.stdout.trim());
     };
     expect((await invoke(['list'])).tools.map((tool:any)=>tool.name)).toContain('Read');

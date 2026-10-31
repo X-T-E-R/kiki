@@ -68,6 +68,7 @@ describe('native external clients',()=>{
     await client.connect(new StdioClientTransport({ command: process.execPath,
       args: ['--import', pathToFileURL(require.resolve('tsx/esm')).href, '--import', loader, cli, ...config.args],
       env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+        KIKI_HOME: home,
         TSX_TSCONFIG_PATH: fileURLToPath(new URL('../../../apps/kimi-code/tsconfig.dev.json', import.meta.url)) }, cwd: workspace,
     }));
     expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('kiki_session');
