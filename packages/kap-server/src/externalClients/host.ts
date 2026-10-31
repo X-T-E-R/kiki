@@ -6,6 +6,7 @@ import { IBootstrapService, ISessionManager, ISessionMetadata, IAgentLifecycleSe
   ISessionContext, ISessionInteractionService, ensureMainAgent, type Scope, type IAgentScopeHandle,
 } from '@kiki/agent-core-v2';
 import { IAgentTaskService } from '@kiki/agent-core-v2/agent/task/task';
+import { IAgentToolDedupeService } from '@kiki/agent-core-v2/agent/toolDedupe/toolDedupe';
 import { ExternalClientRecorder } from '@kiki/agent-core-v2/agent/execution/externalClientRecorder';
 import { withSessionOperation } from '../lib/sessionOperationLease';
 import { ExternalClientStore } from './store';
@@ -303,7 +304,7 @@ export class ExternalClientHost {
               {signal,turnId:recorder.turnId,deduplicationKey:operation.id,onToolCall:payload=>{recorder!.toolCall(payload);}})){
               await recorder.toolResult(executed);result=executed.result;break;
             }
-          }finally{changed.dispose();await approvalWrite;}
+          }finally{changed.dispose();main.accessor.get(IAgentToolDedupeService).clearStep();await approvalWrite;}
         }
         if(result===undefined) throw new ExternalClientError('missing_result','Native tool returned no result.');
         const failed=typeof result==='object'&&result!==null&&'isError' in result&&result.isError===true;

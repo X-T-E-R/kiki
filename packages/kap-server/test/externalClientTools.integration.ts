@@ -8,7 +8,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mediaGenerateInputSchema, mediaActionSchema } from '@kiki/protocol';
 import { z } from 'zod';
-import { IFileService, ISessionManager, ISessionInteractionService } from '@kiki/agent-core-v2';
+import { IFileService, ISessionManager, ISessionInteractionService, IAgentStateService, ensureMainAgent } from '@kiki/agent-core-v2';
+import { IAgentToolDedupeService } from '@kiki/agent-core-v2/agent/toolDedupe/toolDedupe';
+import { toolDedupeStepCallsKey } from '@kiki/agent-core-v2/agent/toolDedupe/toolDedupeService';
 import { Readable } from 'node:stream';
 import { ExternalClientStore } from '../src/externalClients/store';
 import { ISessionApprovalService } from '@kiki/agent-core-v2/session/approval/approval';
@@ -142,6 +144,19 @@ describe('script tool access',()=>{
     const other=await owner('/api/external-clients',{name:'Other script',workspace,mode:'yolo'});
     const otherToken=(await owner(`/api/external-clients/${other.connection.id}/credential`,{})).token;
     expect(await request(`/jobs/${left.operation_id}`,undefined,otherToken)).toMatchObject({code:40001,details:{code:'operation_unavailable'}});
+  });
+  it('releases HTTP dedupe state after every operation in a long-lived session',async()=>{
+    await setup(['Read']);
+    const sessions=(await owner(`/api/external-clients/${connectionId}/sessions`,undefined,'GET')).sessions;
+    const main=await ensureMainAgent(server.core.accessor.get(ISessionManager).get(sessions[0].sessionId)!);
+    const path=join(workspace,'repeated.txt');
+    for(let index=0;index<12;index++){
+      const content=`version-${index}`;await writeFile(path,content);
+      const result=await terminal(await call('Read',{path}));
+      expect(result).toMatchObject({state:'completed',result:{output:expect.stringContaining(content)}});
+      expect(main.accessor.get(IAgentStateService).get(toolDedupeStepCallsKey)).toHaveLength(0);
+      expect(Reflect.get(main.accessor.get(IAgentToolDedupeService),'stepDeferreds').size).toBe(0);
+    }
   });
   it('offers enabled plugin tools to the owner before a session exists and hides disabled plugins',async()=>{
     await installMedia();
