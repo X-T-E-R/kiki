@@ -26,6 +26,7 @@ import { buildModeOption } from '../../../../acp-server/src/config-options';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import type { ContextMessage } from '#/agent/contextMemory/types';
@@ -93,6 +94,7 @@ import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IHarnessMcpService } from '#/app/agentExecutor/harnessMcp';
 import { IRequestGovernance } from '#/app/requestGovernance/requestGovernance';
+import { stubBootstrap } from '../../app/bootstrap/stubs';
 import { createTestAgent } from '../../harness';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
@@ -347,6 +349,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     },
   } as unknown as ISessionMcpHandle;
   const services = new Map<unknown, unknown>([
+    [IBootstrapService, stubBootstrap()],
     [ISessionContext, { sessionId: 'session-fixture' }],
     [IAgentScopeContext, { parentAgentId: options.parentAgentId }],
     [IHarnessMcpService, { acquire: vi.fn(async () => ({ server: {
@@ -602,6 +605,7 @@ export function createExecutionHarness(options: FakeHarnessOptions = {}): {
   const harness = createHarness({ ...options, deferTurnCompletion: true });
   const ix = new TestInstantiationService();
   const agentId = harness.executorContext.agent.id;
+  ix.set(IBootstrapService, stubBootstrap());
   ix.stub(ISessionDispatchService, { reserveExecution: () => () => {} });
   ix.stub(ISessionContext, { sessionId: 'session-fixture' });
   ix.stub(IRequestGovernance, { acquireAgent: async () => ({ release() {} }) });
@@ -893,7 +897,7 @@ describe('ACP external executor', () => {
     const forwarded = createHarness({ mcpServers: config, supportsMcp: true, thinkingEffort: 'off', unpinModel: true });
     await forwarded.session.run({ kind: 'prompt', prompt: 'Hello' }, { signal: new AbortController().signal });
     expect(forwarded.opens[0]?.mcpServers).toEqual([
-      { name: 'relay', command: 'node', args: ['relay.js'], env: [] },
+      { name: 'relay', command: 'node', args: ['relay.js'], env: [{ name: 'KIKI_HOME', value: '/tmp/kimi-home' }] },
     ]);
     await forwarded.session.shutdown();
 
