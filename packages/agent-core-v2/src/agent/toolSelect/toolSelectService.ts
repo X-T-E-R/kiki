@@ -15,7 +15,7 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import { CompactionCompleted } from '#/agent/fullCompaction/compactionOps';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentStateService } from '#/agent/state/agentState';
-import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { IAgentToolPolicyService, withToolPolicySnapshot } from '#/agent/toolPolicy/toolPolicy';
 import { isLegacyToolName } from '#/agent/toolPolicy/toolAliases';
 import { isMcpToolName, type ToolInfo } from '#/tool/toolContract';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
@@ -345,6 +345,10 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   }
 
   private activeEntries(entries: readonly ToolInfo[], disclosure: boolean): readonly ToolInfo[] {
+    return withToolPolicySnapshot(this.toolPolicy, () => this.activeEntriesInSnapshot(entries, disclosure));
+  }
+
+  private activeEntriesInSnapshot(entries: readonly ToolInfo[], disclosure: boolean): readonly ToolInfo[] {
     let filtered: ToolInfo[] | undefined;
     for (let i = 0; i < entries.length; i += 1) {
       const entry = entries[i]!;

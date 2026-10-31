@@ -52,23 +52,48 @@ function policy(options: {
   ix.stub(ISessionDeliveryService, { effectiveMode: () => options.deliveryMode ?? 'reply' });
   ix.stub(ICapabilitySnapshotService, { toolAvailable: () => options.snapshot ?? true });
   ix.stub(IAgentScopeContext, { agentId: 'main' });
-  ix.stub(IAgentProfileService, { data: (): ProfileData => ({
+  const data = vi.fn((): ProfileData => ({
     modelCapabilities: { image_in: false, video_in: false, audio_in: false, thinking: false, tool_use: true, max_context_tokens: 128_000 },
     thinkingLevel: 'off',
     systemPrompt: '',
     disabledToolGroups: options.disabledToolGroups,
     disallowedTools: options.disallowedTools,
-  }) });
+  }));
+  ix.stub(IAgentProfileService, { data });
   ix.stub(IConfigService, { get: <T>() => ({ approval: options.approval ?? 'auto' }) as T });
   ix.stub(ISessionToolPolicy, { disabledTools: () => [] });
   ix.stub(ISessionToolPolicyGate, { disabledTools: options.workspaceDisabledTools ?? [] });
   ix.stub(IAgentToolExecutorService, { registerToolCallGuard: () => ({ dispose() {} }) });
   ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
   ix.set(IAgentToolPolicyService, new SyncDescriptor(AgentToolPolicyService));
-  return { sut: ix.get(IAgentToolPolicyService), admit };
+  return { sut: ix.get(IAgentToolPolicyService), admit, data };
 }
 
 describe('optional capability tool gate', () => {
+  it('shares one profile read inside a snapshot and reads fresh state after it', () => {
+    const { sut, data } = policy({});
+    data.mockClear();
+    const inside = sut.withSnapshot(() => [
+      sut.isToolActive('Bash'),
+      sut.withSnapshot(() => sut.isToolActive('WebSearch')),
+      sut.isToolActiveForDisclosure('Read'),
+    ]);
+    expect(inside).toEqual([true, true, true]);
+    expect(data).toHaveBeenCalledTimes(1);
+    sut.isToolActive('Bash');
+    sut.isToolActive('Bash');
+    expect(data).toHaveBeenCalledTimes(3);
+  });
+
+  it('drops the snapshot when the evaluation throws', () => {
+    const { sut, data } = policy({});
+    expect(() => sut.withSnapshot(() => { sut.isToolActive('Bash'); throw new Error('boom'); })).toThrow('boom');
+    data.mockClear();
+    sut.isToolActive('Bash');
+    sut.isToolActive('Bash');
+    expect(data).toHaveBeenCalledTimes(2);
+  });
+
   it('hides web tools when this session is not admitted and keeps Bash on the existing policy', () => {
     const { sut, admit } = policy({ admit: (id) => id !== 'web' });
     expect(sut.isToolActive('WebSearch')).toBe(false);

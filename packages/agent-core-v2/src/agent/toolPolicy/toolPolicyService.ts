@@ -29,6 +29,7 @@ import { isLegacyShippedMessageBinding } from './sendMessageAdmission';
 export class AgentToolPolicyService extends Disposable implements IAgentToolPolicyService {
   declare readonly _serviceBrand: undefined;
   private noted = false;
+  private snapshot: { profile?: ProfileData; optional?: { value: IOptionalCapabilityPolicy | undefined } } | undefined;
 
   constructor(
     @IAgentProfileService private readonly profile: IAgentProfileService,
@@ -57,8 +58,23 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     );
   }
 
+  withSnapshot<T>(evaluate: () => T): T {
+    if (this.snapshot !== undefined) return evaluate();
+    this.snapshot = {};
+    try {
+      return evaluate();
+    } finally {
+      this.snapshot = undefined;
+    }
+  }
+
+  private profileData(): ProfileData {
+    if (this.snapshot === undefined) return this.profile.data();
+    return this.snapshot.profile ??= this.profile.data();
+  }
+
   isToolActive(name: string, source: ToolSource = 'builtin'): boolean {
-    const profile = this.profile.data();
+    const profile = this.profileData();
     return this.evaluate(
       {
         tools: profile.activeToolNames,
@@ -76,7 +92,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
 
   isToolActiveForDisclosure(name: string, source: ToolSource = 'builtin'): boolean {
     if (name !== SELECT_TOOLS_TOOL_NAME && name !== CALL_TOOL_NAME) return this.isToolActive(name, source);
-    const profile = this.profile.data();
+    const profile = this.profileData();
     return this.evaluate(
       {
         disallowedTools: profile.disallowedTools,
@@ -95,7 +111,7 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     name: string,
     source: ToolSource = 'builtin',
   ): boolean {
-    const data = this.profile.data();
+    const data = this.profileData();
     return this.evaluate(
       {
         ...profile,
@@ -175,6 +191,11 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
   }
 
   private optionalPolicy(): IOptionalCapabilityPolicy | undefined {
+    if (this.snapshot === undefined) return this.lookupOptionalPolicy();
+    return (this.snapshot.optional ??= { value: this.lookupOptionalPolicy() }).value;
+  }
+
+  private lookupOptionalPolicy(): IOptionalCapabilityPolicy | undefined {
     try {
       return this.instantiation.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy)) ?? undefined;
     } catch {

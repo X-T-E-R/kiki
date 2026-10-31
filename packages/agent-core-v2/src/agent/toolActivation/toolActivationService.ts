@@ -13,7 +13,7 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { isToolActive } from '#/agent/toolPolicy/evaluate';
 import { isSendMessageCapabilityAdmitted } from '#/agent/toolPolicy/sendMessageAdmission';
-import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
+import { IAgentToolPolicyService, withToolPolicySnapshot } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolContribution } from '#/agent/toolRegistry/toolContribution';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
@@ -136,6 +136,10 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
 
   private activateRecords(records: readonly AgentToolContribution[]): void {
     if (records.length === 0) return;
+    withToolPolicySnapshot(this.policyService, () => { this.activateRecordsInSnapshot(records); });
+  }
+
+  private activateRecordsInSnapshot(records: readonly AgentToolContribution[]): void {
     const data = this.profile.data();
     const policy = {
       tools: data.activeToolNames,
@@ -198,7 +202,7 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
 
   private refreshConditionalRecords(): void {
     if (this.closing) return;
-    this.instantiationService.invokeFunction((accessor) => {
+    withToolPolicySnapshot(this.policyService, () => this.instantiationService.invokeFunction((accessor) => {
       for (const record of this.contributions.items) {
         if (!this.runtimeAllows(record) || record.options.when?.(accessor) === false ||
           !isToolActive({ disallowedTools: this.toolPolicyGate.disabledTools }, record.options.name, record.options.source ?? 'builtin') ||
@@ -206,7 +210,7 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
           this.deactivateRecord(record);
         }
       }
-    });
+    }));
     this.activateRecords(this.contributions.items);
   }
 
