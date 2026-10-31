@@ -11,7 +11,7 @@ import { engineHealth, ExternalEnginesList, resetEngineDiscoveryRunsForTests } f
 
 const { client } = vi.hoisted(() => ({ client: {
   listExecutors: vi.fn(), checkExecutor: vi.fn(), patchConfig: vi.fn(), getConfig: vi.fn(),
-  removeExecutorRegistration: vi.fn(),
+  removeExecutorRegistration: vi.fn(), discoverEngines: vi.fn(),
 } }));
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({ client, scopeId: 'local', meta: { server_id: 'server-1' } }),
@@ -41,6 +41,7 @@ beforeEach(() => {
   resetEngineDiscoveryRunsForTests();
   client.patchConfig.mockResolvedValue({});
   client.getConfig.mockResolvedValue({ raw: { agent_executor_display: { discovery_initialized: true } } });
+  client.discoverEngines.mockRejectedValue(new Error('discovery not available on this server'));
   localStorage.setItem('kiki.locale', 'en');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement('div'); document.body.append(container);
@@ -549,10 +550,86 @@ describe('external engines connection kind', () => {
     expect(switchEl.textContent).toContain('This engine has no tool injection bridge');
     expect(switchEl.querySelector('[data-mcp-option]')).toBeNull();
   });
+
+  it('reads each native engine from the discovery snapshot, naming a missing component', async () => {
+    const claude: ExecutorCatalogItem = {
+      id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', status: 'unavailable', model_binding: 'mapped', thinking_binding: 'unavailable',
+      connection: { command: 'claude-agent-acp', login_status: 'unknown', default_args: [] },
+    };
+    const agy: ExecutorCatalogItem = {
+      id: 'agy-cli', label: 'AGY', protocol: 'acp-v1', status: 'unavailable', model_binding: 'unavailable', thinking_binding: 'unavailable',
+      connection: { command: 'agy', install_hint: 'Install the Antigravity CLI', login_status: 'unknown', default_args: [] },
+    };
+    client.listExecutors.mockResolvedValue({ items: [codex, claude, agy] });
+    client.discoverEngines.mockResolvedValue({ items: [
+      { id: 'codex-app-server', label: 'Codex', protocol: 'codex-app-server', installed: true, status: 'installed',
+        checked_at: '2026-10-12T00:00:00.000Z', version: '0.158.0',
+        path: 'C:/Program Files/WindowsApps/OpenAI.Codex_1.4.2_x64/app/resources/codex.exe', source: 'desktop', source_kind: 'glob',
+        components: [{ id: 'codex-app-server', label: 'Codex app-server', role: 'program', installed: true, path: 'C:/codex.exe', version: '0.158.0' }] },
+      { id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', installed: false, status: 'missing',
+        checked_at: '2026-10-12T00:00:00.000Z', reason: 'The claude CLI dependency is not installed.',
+        components: [
+          { id: 'claude', label: 'Claude Code CLI', role: 'dependency', installed: false, reason: 'claude was not found on PATH.' },
+          { id: 'claude-acp', label: 'claude-agent-acp', role: 'program', installed: true, path: 'C:/kiki/tools/index.js', version: '0.84.0' },
+        ] },
+      { id: 'agy-cli', label: 'AGY', protocol: 'acp-v1', installed: false, status: 'missing',
+        checked_at: '2026-10-12T00:00:00.000Z', reason: 'agy was not found on this machine.',
+        components: [{ id: 'agy', label: 'AGY CLI', role: 'program', installed: false, reason: 'agy was not found on PATH.' }] },
+    ] });
+    await render();
+    await settle();
+    expect(client.discoverEngines).toHaveBeenCalled();
+    await until(() => container.querySelector('[data-engine-row="codex-app-server"]')?.getAttribute('data-engine-discovery') === 'installed');
+    expect(container.querySelector('[data-engine-row="claude-acp"]')?.getAttribute('data-engine-discovery')).toBe('missing');
+    expect(container.querySelector('[data-engine-row="codex-app-server"] [data-engine-summary]')?.textContent).toContain('0.158.0');
+    expect(container.querySelector('[data-engine-row="claude-acp"] [data-engine-summary]')?.textContent).toContain('Version unknown');
+
+    const panel = await openEngine('claude-acp');
+    const banner = panel.querySelector('[data-engine-discovery-banner="missing"]')!;
+    expect(banner).not.toBeNull();
+    expect(banner.querySelector('[data-engine-discovery-reason]')?.textContent).toContain('Claude Code CLI');
+    expect(banner.querySelector('[data-engine-discovery-checked]')?.textContent).toContain('Checked');
+  });
+
+  it('re-detects through the discovery read and updates the row, without a per-engine check', async () => {
+    const agy: ExecutorCatalogItem = {
+      id: 'agy-cli', label: 'AGY', protocol: 'acp-v1', status: 'unavailable', model_binding: 'unavailable', thinking_binding: 'unavailable',
+      connection: { command: 'agy', install_hint: 'Install the Antigravity CLI', login_status: 'unknown', default_args: [] },
+    };
+    client.listExecutors.mockResolvedValue({ items: [agy] });
+    const missing = { id: 'agy-cli', label: 'AGY', protocol: 'acp-v1', installed: false, status: 'missing' as const,
+      checked_at: '2026-10-12T00:00:00.000Z', reason: 'agy was not found on this machine.',
+      components: [{ id: 'agy', label: 'AGY CLI', role: 'program' as const, installed: false, reason: 'agy was not found on PATH.' }] };
+    const installed = { id: 'agy-cli', label: 'AGY', protocol: 'acp-v1', installed: true, status: 'installed' as const,
+      checked_at: '2026-10-12T00:05:00.000Z', path: 'C:/Users/fixture/agy/agy.exe', source: 'path', source_kind: 'path-lookup' as const,
+      components: [{ id: 'agy', label: 'AGY CLI', role: 'program' as const, installed: true, path: 'C:/Users/fixture/agy/agy.exe' }] };
+    let found = false;
+    client.discoverEngines.mockImplementation(async () => ({ items: [found ? installed : missing] }));
+    await render();
+    await until(() => container.querySelector('[data-engine-row="agy-cli"]')?.getAttribute('data-engine-discovery') === 'missing');
+
+    found = true;
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-engine-redetect-button]')!.click());
+    await until(() => container.querySelector('[data-engine-row="agy-cli"]')?.getAttribute('data-engine-discovery') === 'installed');
+    expect(client.discoverEngines).toHaveBeenCalledTimes(2);
+    expect(client.checkExecutor).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-engine-row="agy-cli"]')?.getAttribute('data-engine-discovery')).toBe('installed');
+    expect(container.querySelector('[data-engine-row="agy-cli"] [data-engine-summary]')?.textContent).toContain('Version unknown');
+  });
+
+  it('keeps the catalog rows and hides the re-detect when the server has no discovery route', async () => {
+    client.listExecutors.mockResolvedValue({ items: [codex] });
+    client.discoverEngines.mockRejectedValue(new Error('not found'));
+    await render();
+    expect(container.querySelector('[data-engine-row="codex-app-server"]')?.getAttribute('data-engine-discovery')).toBeNull();
+    expect(container.querySelector('[data-engine-row="codex-app-server"]')?.getAttribute('data-engine-health')).toBe('ready');
+    expect(container.querySelector('[data-engine-redetect-button]')).toBeNull();
+    expect(container.querySelector('[data-engine-discovery-unavailable]')?.textContent).toContain('not available');
+  });
 });
 
-async function until(predicate: () => boolean): Promise<void> {
-  for (let i = 0; i < 40; i += 1) {
+async function until(predicate: () => boolean, tries = 40): Promise<void> {
+  for (let i = 0; i < tries; i += 1) {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     if (predicate()) return;
   }

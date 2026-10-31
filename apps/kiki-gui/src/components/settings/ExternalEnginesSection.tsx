@@ -6,7 +6,7 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
-import type { ExecutorCheckResult } from '../../lib/client';
+import type { ExecutorDiscoveryResponse, ExecutorDiscoveryStatus, ExecutorCheckResult } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { localSessionEngine } from '../../lib/localSessions';
 import { LocalSessionsEntry } from '../localSessions/LocalSessionsEntry';
@@ -29,6 +29,63 @@ import {
 import { EngineDefaults } from './EngineDefaults';
 import { ANTIGRAVITY_ID, AntigravitySetup } from './AntigravitySetup';
 import { HARNESS_CAPABILITIES } from '../harness/HarnessMark';
+
+function discoverySnapshotKey(scopeId: string | undefined, serverId: string | undefined): readonly unknown[] {
+  return ['engine-discovery', scopeId ?? '', serverId ?? ''] as const;
+}
+
+/**
+ * The backend's native-engine discovery, read as one snapshot. The server
+ * reads file metadata only — it never spawns, signs in, or installs — so an
+ * absent version is "unknown", not an error. An older server without the
+ * route fails the query, and the list falls back to the catalog's binary
+ * status rather than inventing states.
+ */
+function useEngineDiscoveryQuery() {
+  const { client, scopeId, meta } = useConnection();
+  return useQuery({
+    queryKey: discoverySnapshotKey(scopeId, meta?.server_id),
+    queryFn: () => client.discoverEngines(),
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
+/** One engine's discovery entry, when the backend reported one for it. */
+function discoveryOf(snapshot: ExecutorDiscoveryResponse | undefined, engineId: string): ExecutorDiscoveryStatus | undefined {
+  return snapshot?.items.find((entry) => entry.id === engineId);
+}
+
+/** The discovery status that maps to the row's health word and dot color. */
+function discoveryHealth(status: ExecutorDiscoveryStatus['status']): EngineHealth {
+  if (status === 'installed') return 'ready';
+  if (status === 'missing') return 'missing';
+  return 'warning';
+}
+
+const DISCOVERY_STATUS_KEY: Record<ExecutorDiscoveryStatus['status'], I18nKey> = {
+  installed: 'st.engines.discovery.installed',
+  missing: 'st.engines.discovery.missing',
+  error: 'st.engines.discovery.error',
+};
+
+/** The first component that is not installed, when the engine is missing. */
+function missingComponent(status: ExecutorDiscoveryStatus): ExecutorDiscoveryStatus['components'][number] | undefined {
+  return status.components.find((component) => !component.installed);
+}
+
+/** The reason a discovery status is not installed, naming the component when one is missing. */
+function discoveryReason(status: ExecutorDiscoveryStatus, t: ReturnType<typeof useI18n>['t']): string | undefined {
+  if (status.status === 'installed') return undefined;
+  const missing = missingComponent(status);
+  if (status.status === 'missing' && missing !== undefined) {
+    return t('st.engines.discovery.componentMissing', { component: missing.label });
+  }
+  if (missing !== undefined && missing.reason !== undefined) {
+    return t('st.engines.discovery.componentProblem', { component: missing.label, reason: missing.reason });
+  }
+  return status.reason;
+}
 
 /** Row health in words: ready, needs attention (warnings / signed out), not found, not checked. */
 export type EngineHealth = 'ready' | 'warning' | 'missing' | 'unknown';
@@ -200,6 +257,9 @@ export function ExternalEnginesList() {
   const queryClient = useQueryClient();
   const catalogKey = executorCatalogQueryKey(scopeId, meta?.server_id);
   const query = useExecutorCatalogQuery();
+  const discoveryQuery = useEngineDiscoveryQuery();
+  const discovery = discoveryQuery.data;
+  const [redetecting, setRedetecting] = useState(false);
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000, retry: false });
   const overrides = engineOverridesOf(configQuery.data);
   const display = engineDisplayOf(configQuery.data);
@@ -252,10 +312,34 @@ export function ExternalEnginesList() {
   // engine is an existing object from this list, not a panel over it.
   const engineDetail = useDetailParam('engine');
   const detailItem = engineDetail.selected === null ? undefined : engines.find((item) => item.id === engineDetail.selected);
+
+  const redetect = useCallback(async () => {
+    if (redetecting) return;
+    setRedetecting(true);
+    try {
+      // A re-detect is the same read again: the server re-reads the engines'
+      // files. The button's busy state is the feedback while it runs; the
+      // rest of Settings is untouched.
+      await queryClient.fetchQuery({
+        queryKey: discoverySnapshotKey(scopeId, meta?.server_id),
+        queryFn: () => client.discoverEngines(),
+        // Always re-read: a re-detect is the point of the button.
+        staleTime: 0,
+        retry: false,
+      });
+      await queryClient.invalidateQueries({ queryKey: catalogKey });
+    } catch (error) {
+      setFaults((current) => ({ ...current, '*': errorText(locale, error) }));
+    } finally {
+      setRedetecting(false);
+    }
+  }, [catalogKey, client, locale, meta?.server_id, queryClient, redetecting, scopeId]);
+
   // No rows, no box: an empty bordered list reads as a stray rule under the heading.
   const list = engines.length === 0 && removalNote === undefined ? null : <div data-engine-list className="overflow-hidden rounded-lg border border-hairline bg-panel">
     {removalNote !== undefined ? <p role="status" data-engine-removal-result className="border-b border-hairline px-3 py-2 text-[12px] leading-4 text-ink-soft">{removalNote}</p> : null}
     {engines.map((item) => <EngineRow key={item.id} item={item} overrides={overrides} display={display} fault={faults[item.id]}
+      discovery={discoveryOf(discovery, item.id)}
       onOpen={() => { engineDetail.open(item.id); }} />)}
     {/* Fresh check results merge into the catalog cache, so rows re-read
         themselves when a check lands elsewhere (the detail's recheck). */}
@@ -265,6 +349,7 @@ export function ExternalEnginesList() {
       current={item.id === detailItem?.id} onSelect={() => { engineDetail.open(item.id); }} />)}
   </DetailRailGroup>;
   const detail = detailItem === undefined ? null : <EngineDetailPane item={detailItem} overrides={overrides} display={display}
+    discovery={discoveryOf(discovery, detailItem.id)}
     onClose={engineDetail.close}
     onRegistrationRemoved={setRemovalNote}
     onFault={(id, text) => {
@@ -290,6 +375,19 @@ export function ExternalEnginesList() {
       ) : null}
       {query.isLoading ? <Hint>{t('st.engines.loading')}</Hint> : null}
       {query.isError ? <InlineError error={query.error} /> : null}
+      {discoveryQuery.isSuccess ? (
+        <div data-engine-redetect className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+          <button type="button" data-engine-redetect-button className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+            disabled={redetecting} aria-busy={redetecting} onClick={() => void redetect()}>
+            {redetecting ? <span aria-hidden className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-current border-t-transparent motion-reduce:animate-none" /> : null}
+            {redetecting ? t('st.engines.discovery.redetecting') : t('st.engines.discovery.redetect')}
+          </button>
+          <span className="text-[12px] text-ink-faint">{t('st.engines.discovery.redetectHint')}</span>
+        </div>
+      ) : null}
+      {discoveryQuery.isError ? (
+        <p data-engine-discovery-unavailable className="text-[12px] leading-4 text-ink-faint">{t('st.engines.discovery.unavailable')}</p>
+      ) : null}
     </div>
   );
 }
@@ -802,7 +900,7 @@ function registrationRemovalText(locale: string, result: {
   return [registration, builtin, resources, result.reason].filter((part): part is string => part !== undefined && part !== '').join(' ');
 }
 
-function EngineRow({ item, overrides, display, fault, onOpen }: {
+function EngineRow({ item, overrides, display, fault, discovery, onOpen }: {
   item: ExecutorCatalogItem;
   /** The config's `agent_executor_overrides` record, for the per-engine display choice. */
   overrides: Readonly<Record<string, unknown>> | undefined;
@@ -810,10 +908,12 @@ function EngineRow({ item, overrides, display, fault, onOpen }: {
   display: Readonly<Record<string, unknown>> | undefined;
   /** This engine's own check failure. It never changes another row. */
   fault?: string;
+  /** The backend's discovery entry for this engine, when one was reported. */
+  discovery?: ExecutorDiscoveryStatus;
   /** Opens this engine's in-page detail (`?engine=<id>`). */
   onOpen: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, time } = useI18n();
   const query = useExecutorCatalogQuery();
   // A check's result is already merged into the cached catalog by the pane,
   // so the freshest row state comes from the cache alone; refetching would
@@ -821,19 +921,27 @@ function EngineRow({ item, overrides, display, fault, onOpen }: {
   const current = query.data?.items.find((candidate) => candidate.id === item.id) ?? item;
   const shown = catalogCheckOf(current);
   const faultText = shown === undefined ? fault : undefined;
-  const health = faultText !== undefined && shown === undefined ? 'warning' : engineHealth(current, shown);
-  const healthText = t(HEALTH_KEY[health]);
+  // Discovery wins when the backend reported one for this engine: it names
+  // the machine's real state, which the catalog's binary found/not-found
+  // cannot. Otherwise the row keeps the catalog's health so an older server
+  // still reads truthfully.
+  const health = discovery !== undefined ? discoveryHealth(discovery.status)
+    : faultText !== undefined && shown === undefined ? 'warning' : engineHealth(current, shown);
+  const statusKey = discovery !== undefined ? DISCOVERY_STATUS_KEY[discovery.status] : HEALTH_KEY[health];
+  const statusText = t(statusKey);
   const connection = current.connection;
   const login: LoginStatus = shown?.login_status ?? connection?.login_status ?? 'unknown';
   const credential = shown?.credential_source ?? connection?.credential_source;
   const credentialKey = credentialLabel(credential);
   // A check is the freshest fact: once one ran, an empty field means "not found", not "use the catalog".
-  const version = shown === undefined ? current.version : shown.version;
+  const version = discovery?.version ?? (shown === undefined ? current.version : shown.version);
   const summaryFacts = [
     t('st.engines.kind'),
     protocolLabel(item.protocol),
-    version,
-    health === 'missing' ? undefined : credentialKey === undefined ? t(`st.engines.login.${login}`) : t(credentialKey),
+    version ?? (discovery !== undefined ? t('st.engines.discovery.versionUnknown') : undefined),
+    discovery !== undefined
+      ? t('st.engines.discovery.lastChecked', { time: time.relativeTime(discovery.checked_at) })
+      : health === 'missing' ? undefined : credentialKey === undefined ? t(`st.engines.login.${login}`) : t(credentialKey),
   ].filter((part): part is string => part !== undefined);
 
   // One row per engine: what it is and whether it works on the left, how it
@@ -842,7 +950,7 @@ function EngineRow({ item, overrides, display, fault, onOpen }: {
   // stays a list. The row itself opens the detail; the run-mode control
   // keeps its clicks to itself.
   return (
-    <div data-engine-row={item.id} data-engine-health={health}
+    <div data-engine-row={item.id} data-engine-health={health} data-engine-discovery={discovery?.status}
       onClick={onOpen}
       className="group/engine flex min-h-14 cursor-pointer flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-hairline px-3 py-2 transition-colors last:border-b-0 hover:bg-ink/[0.03]">
       <button type="button" data-engine-open data-detail-trigger={item.id}
@@ -862,8 +970,8 @@ function EngineRow({ item, overrides, display, fault, onOpen }: {
             health === 'missing' ? 'text-danger' : health === 'warning' ? 'text-amber-ink' : 'text-ink-faint'}`}>
           <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${
             health === 'missing' ? 'bg-danger' : health === 'warning' ? 'bg-amber-rule' : health === 'unknown' ? 'bg-ink-faint' : 'bg-success'}`} />
-          <span className="hidden md:inline">{healthText}</span>
-          <span className="sr-only md:hidden">{healthText}</span>
+          <span className="hidden md:inline">{statusText}</span>
+          <span className="sr-only md:hidden">{statusText}</span>
         </span>
       </button>
       <Icon name="chevron" size={12} className="shrink-0 text-ink-faint transition-colors group-hover/engine:text-ink-soft" />
@@ -877,10 +985,12 @@ function EngineRow({ item, overrides, display, fault, onOpen }: {
  * setup, checks, parameters, diagnostics and the custom-registration
  * removal — as the pane of the DetailSplit, not a panel over the list.
  */
-function EngineDetailPane({ item, overrides, display, onClose, onFault, onRegistrationRemoved }: {
+function EngineDetailPane({ item, overrides, display, discovery, onClose, onFault, onRegistrationRemoved }: {
   item: ExecutorCatalogItem;
   overrides: Readonly<Record<string, unknown>> | undefined;
   display: Readonly<Record<string, unknown>> | undefined;
+  /** The backend's discovery entry for this engine, when one was reported. */
+  discovery?: ExecutorDiscoveryStatus;
   onClose: () => void;
   /** A failed check leaves its reason on the row until the next one clears it. */
   onFault?: (id: string, text: string | undefined) => void;
@@ -994,10 +1104,38 @@ function EngineDetailPane({ item, overrides, display, onClose, onFault, onRegist
       </div>
           <div data-engine-panel={item.id} className="space-y-6">
             <div className="space-y-4">
+              {discovery !== undefined ? (
+                <div data-engine-discovery-banner={discovery.status}
+                  className={`rounded-md border px-3 py-2 ${
+                    discovery.status === 'installed' ? 'border-success/30 bg-success/5' : 'border-amber-rule/40 bg-amber-rule/5'}`}>
+                  <div className="flex min-w-0 items-center gap-2 text-[12.5px] leading-5">
+                    <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                      discovery.status === 'installed' ? 'bg-success' : discovery.status === 'error' ? 'bg-amber-rule' : 'bg-danger'}`} />
+                    <span className="min-w-0 font-medium text-ink">{t(DISCOVERY_STATUS_KEY[discovery.status])}</span>
+                    <span className="shrink-0 text-ink-faint">{discovery.version ?? t('st.engines.discovery.versionUnknown')}</span>
+                    <span className="shrink-0 text-[12px] text-ink-faint" data-engine-discovery-checked>
+                      {t('st.engines.discovery.lastChecked', { time: time.relativeTime(discovery.checked_at) })}
+                    </span>
+                  </div>
+                  {discovery.path !== undefined ? (
+                    <p className="mt-1 break-all font-mono text-[11.5px] leading-4 text-ink-soft" data-engine-discovery-path>
+                      {discovery.path}
+                      {discovery.source !== undefined ? <span className="text-ink-faint"> · {t('st.engines.discovery.pathSource', { source: discovery.source })}</span> : null}
+                    </p>
+                  ) : null}
+                  {(() => {
+                    const reason = discoveryReason(discovery, t);
+                    return reason === undefined ? null : <p className="mt-1 text-[12px] leading-4 text-ink-soft" data-engine-discovery-reason>{reason}</p>;
+                  })()}
+                </div>
+              ) : null}
               {antigravity ? <AntigravitySetup login={login} onChanged={() => void runCheck()}
                 ideDetected={shown?.diagnostics.some((diagnostic) => diagnostic.code === 'antigravity_ide_not_acp') === true} /> : null}
               {setup && !antigravity && shown !== undefined ? <EngineSetup check={shown} loginCommand={loginCommand} apiKeyEnv={apiKeyEnv} /> : null}
-              {health === 'missing' && !setup && !antigravity ? (
+              {/* When discovery reported, its banner already carries the
+                  missing reason and the named component; the generic catalog
+                  "not found" block would repeat it with a vaguer program. */}
+              {health === 'missing' && !setup && !antigravity && discovery === undefined ? (
                 <div role="alert" data-engine-missing className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
                   <p className="text-[12px] leading-4 text-ink-soft">{t('st.engines.notFoundBody', { program: program ?? item.label })}</p>
                   {connection?.install_hint !== undefined ? (

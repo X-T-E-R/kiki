@@ -504,6 +504,9 @@ export interface ExecutorCheckResult {
   readonly requirements?: readonly import('@kiki/protocol').ExecutorRequirement[];
 }
 
+export type { ExecutorDiscoveryStatus, ExecutorDiscoveryResponse } from '@kiki/protocol';
+export type ExecutorDiscoveryComponent = import('@kiki/protocol').ExecutorDiscoveryStatus['components'][number];
+
 /**
  * Goal-control inputs mirrored from the engine's goal service (the klient
  * agent facade types them out of agent-core, which apps must not import).
@@ -2659,6 +2662,18 @@ export class KikiClient {
   checkExecutor(id: string): Promise<ExecutorCheckResult> {
     return this.memoryRequest('POST', `/executors/${encodeURIComponent(id)}/check`);
   }
+
+  /**
+   * `GET /executors/discovery` — the native engines' discovery snapshot
+   * (`ExecutorDiscoveryResponse`). The read is file-metadata only on the
+   * server: it never spawns, signs in, or installs, so an absent version is
+   * "unknown", not an error. A re-detect is this same call again; the deeper
+   * per-engine probe stays on `checkExecutor`.
+   */
+  discoverEngines(): Promise<import('@kiki/protocol').ExecutorDiscoveryResponse> {
+    return this.run(this.rest.executors.discover());
+  }
+
 
   /**
    * `POST /executors/{id}/registration:remove` — drop a user registration.
