@@ -63,7 +63,9 @@ import {
 import type { KikiConfigResponse } from '@kiki/session-core/transport';
 
 import { useI18n } from '../i18n';
+import { Icon } from './icons';
 import { useConnection } from '../state/connection';
+import { Dialog } from './Dialog';
 import { useDiscovery } from './discovery';
 import { OnboardingAgreementStep } from './OnboardingAgreementStep';
 import { OnboardingAppearanceStep } from './OnboardingAppearanceStep';
@@ -73,8 +75,7 @@ import type { Feedback } from './controls';
 import { DirtyGuardContext, useGuardedNavigate } from './dirtyGuard';
 import { mergeConfigEcho } from './settings/configEcho';
 import { SettingsSegmented } from './settings/SettingsPrimitives';
-import { SidePanel } from './SidePanel';
-import { PRIMARY_BUTTON as SHARED_PRIMARY_BUTTON } from './ui';
+import { PRIMARY_BUTTON as SHARED_PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 import { Wordmark } from './Wordmark';
 
 // On the dark accent white text falls below AA; the on-accent ink holds it.
@@ -238,12 +239,13 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     onClose();
   }, [onClose]);
 
-  // Leaving the run. Scrim clicks and a bare Escape never reach here (the
-  // panel is `dismissible={false}`): the header's close and the footer's
-  // last-step "Set up later" are the only ways out, so neither a stray click
-  // nor an interrupted thought can mark the first run done behind the user. A
-  // picker opened inside the panel still owns its own Escape through the
-  // shared modal-escape contract.
+  // Leaving the run. Backdrop clicks and a bare Escape never reach here (the
+  // dialog is `dismissible={false}`): the header's close and the footer's
+  // last-step "Close setup" are the only ways out, so neither a stray click
+  // nor an interrupted thought can mark the first run done behind the user.
+  // A picker opened inside the dialog still owns its own Escape through the
+  // shared modal-escape contract: with dismissal off, Escape never closes the
+  // wizard itself, and the picker's portaled surface closes on its own.
 
   /** The agreement step's save: the permission default lands in the server config. */
   const savePermissionMode = async (): Promise<boolean> => {
@@ -336,110 +338,109 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   const last = stepIndex === STEPS.length - 1;
 
   return (
-    <SidePanel
-      title={step === 'agreement' ? t('onboarding.title') : t(STEP_TITLE_KEYS[step])}
-      description={step === 'agreement' ? t('onboarding.intro.subtitle') : undefined}
-      closeAriaLabel={t('onboarding.close')}
-      overlayId="onboarding-wizard"
-      width="lg"
+    <Dialog
       onClose={close}
-      data={{ 'data-onboarding-dialog': '' }}
-      stepKey={step}
+      ariaLabel={step === 'agreement' ? t('onboarding.title') : t(STEP_TITLE_KEYS[step])}
+      overlayId="onboarding-wizard"
+      overlayData={{ 'data-onboarding-dialog': '' }}
       dismissible={false}
-      back={stepIndex === 0 ? undefined : { label: t('onboarding.back'), onClick: () => { goToStep(STEPS[stepIndex - 1]!); } }}
-      footer={(
-        <>
+      panelClassName="anim-enter flex max-h-[85vh] min-h-0 w-full max-w-[680px] flex-col rounded-2xl border border-hairline bg-panel shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)]"
+    >
+      {/* Step 1 keeps the full masthead and language selector. Later steps use compact header. */}
+      <div
+        className={`flex shrink-0 justify-between gap-4 border-b border-hairline px-6 ${
+          step === 'agreement' ? 'items-start pb-4 pt-5' : 'items-center pb-3 pt-3.5'
+        }`}
+        data-onboarding-header={step === 'agreement' ? 'full' : 'compact'}
+      >
+        <div className="min-w-0">
+          <span className="inline-flex" aria-hidden>
+            <Wordmark size="md" />
+          </span>
+          {step === 'agreement' ? (
+            <>
+              <h2 className="mt-1.5 font-display text-[18px] font-semibold tracking-tight text-ink">
+                {t('onboarding.title')}
+              </h2>
+              <p className="mt-0.5 text-[12px] text-ink-soft">{t('onboarding.intro.subtitle')}</p>
+            </>
+          ) : null}
+        </div>
+        <div className={`flex shrink-0 items-center gap-3 ${step === 'agreement' ? 'pt-1' : ''}`}>
+          <StepDots step={step} />
           <button
             type="button"
-            onClick={() => { void skipStep(); }}
-            disabled={permissionBusy}
-            className="shrink-0 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink disabled:opacity-50"
+            onClick={close}
+            aria-label={t('onboarding.close')}
+            className="flex h-7 w-7 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
           >
-            {last ? t('onboarding.close') : t('onboarding.skip')}
+            <Icon name="close" />
           </button>
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            {!last ? (
-              <button
-                type="button"
-                data-autofocus
-                disabled={permissionBusy}
-                onClick={() => void goNext()}
-                className={PRIMARY_BUTTON}
-              >
-                {step === 'agreement' && permissionBusy ? t('common.saving') : t('onboarding.next')}
-              </button>
-            ) : null}
-          </div>
-        </>
-      )}
-    >
-      {/* The step gets its own scroller inside the panel body (the panel's own
-          body scroll stays unused), so a tall step says there is more below
-          instead of being clipped — the same contract the dialog had. */}
-      <div className="relative -mx-5 -my-4 flex min-h-0 flex-1 flex-col overflow-hidden">
+        </div>
+      </div>
+
+      {/*
+        * The body row already has a used height (the panel caps at 85vh and
+        * this row shrinks). A child with height:100% does not resolve against
+        * that used height, so it grew with the step and the row clipped it —
+        * a short window showed the cut-off step and could not scroll. The
+        * scroller has to be the flex child: it keeps the header and footer
+        * where they are, scrolls when the step is taller, and stays content-
+        * sized when the step fits.
+        */}
+      <div className="relative flex min-h-0 shrink grow flex-col overflow-hidden">
         <div
           ref={stepScrollRef}
           data-onboarding-step-scroll
           onScroll={noteStepScroll}
-          className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-5 py-4"
+          className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-6 py-3"
         >
-          {/* The masthead (wordmark + step dots + language) rides the body so
-              the SidePanel's fixed header stays the panel chrome. */}
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2" data-onboarding-header={step === 'agreement' ? 'full' : 'compact'}>
-            <span className="inline-flex" aria-hidden>
-              <Wordmark size="md" />
-            </span>
-            <div className="flex items-center gap-3">
-              {step === 'agreement' ? (
-                <div className="flex items-center gap-2" data-onboarding-language>
-                  <span id="onboarding-language-label" className="text-[12px] text-ink-faint">
-                    {t('st.language.title')}
-                  </span>
-                  <SettingsSegmented<Locale>
-                    ariaLabelledBy="onboarding-language-label"
-                    value={locale}
-                    onChange={(choice) => { setLocale(choice); }}
-                    choices={[{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }]}
-                  />
-                </div>
-              ) : null}
-              <StepDots step={step} />
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          <h3 className="font-display text-[15px] leading-5 font-semibold text-ink">{t(STEP_TITLE_KEYS[step])}</h3>
+          {step === 'agreement' ? (
+            <div className="flex items-center gap-2" data-onboarding-language>
+              <span id="onboarding-language-label" className="text-[12px] text-ink-faint">
+                {t('st.language.title')}
+              </span>
+              <SettingsSegmented<Locale>
+                ariaLabelledBy="onboarding-language-label"
+                value={locale}
+                onChange={(choice) => { setLocale(choice); }}
+                choices={[{ value: 'en', label: 'English' }, { value: 'zh', label: '中文' }]}
+              />
             </div>
+          ) : null}
+        </div>
+
+        {step === 'agreement' ? (
+          <OnboardingAgreementStep
+            key={permissionMode}
+            permissionMode={permissionMode}
+            onPermissionModeChange={(mode) => {
+              permissionTouched.current = true;
+              setPermissionMode(mode);
+            }}
+            permissionBusy={permissionBusy}
+            permissionFeedback={permissionFeedback}
+          />
+        ) : null}
+
+        {step === 'appearance' ? (
+          <div className="mt-3 space-y-4" data-onboarding-appearance>
+            <OnboardingAppearanceStep />
+            <p className="mt-1 text-[12px] text-ink-faint">{t('onboarding.appearance.later')}</p>
           </div>
+        ) : null}
 
-          {step === 'agreement' ? (
-            <h3 className="mb-3 font-display text-[15px] leading-5 font-semibold text-ink">{t('onboarding.step.agreement')}</h3>
-          ) : null}
-
-          {step === 'agreement' ? (
-            <OnboardingAgreementStep
-              key={permissionMode}
-              permissionMode={permissionMode}
-              onPermissionModeChange={(mode) => {
-                permissionTouched.current = true;
-                setPermissionMode(mode);
-              }}
-              permissionBusy={permissionBusy}
-              permissionFeedback={permissionFeedback}
-            />
-          ) : null}
-
-          {step === 'appearance' ? (
-            <div className="space-y-4" data-onboarding-appearance>
-              <OnboardingAppearanceStep />
-              <p className="mt-1 text-[12px] text-ink-faint">{t('onboarding.appearance.later')}</p>
-            </div>
-          ) : null}
-
-          {step === 'depart' ? (
-            <OnboardingDepartStep
-              onDismiss={close}
-              onOpenModelSettings={openModelSettings}
-              onStartRoute={(routeId) => { void startDiscoveryRoute(routeId); }}
-              discoverBusy={discoverBusy}
-              discoverFeedback={discoverFeedback}
-            />
-          ) : null}
+        {step === 'depart' ? (
+          <OnboardingDepartStep
+            onDismiss={close}
+            onOpenModelSettings={openModelSettings}
+            onStartRoute={(routeId) => { void startDiscoveryRoute(routeId); }}
+            discoverBusy={discoverBusy}
+            discoverFeedback={discoverFeedback}
+          />
+        ) : null}
         </div>
         {stepScrollsMore ? (
           <div
@@ -449,6 +450,39 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
           />
         ) : null}
       </div>
-    </SidePanel>
+
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-hairline px-6 py-3">
+        <button
+          type="button"
+          onClick={() => { void skipStep(); }}
+          disabled={permissionBusy}
+          className="shrink-0 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink disabled:opacity-50"
+        >
+          {last ? t('onboarding.close') : t('onboarding.skip')}
+        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          {stepIndex > 0 ? (
+            <button
+              type="button"
+              onClick={() => { goToStep(STEPS[stepIndex - 1]!); }}
+              className={SECONDARY_BUTTON}
+            >
+              {t('onboarding.back')}
+            </button>
+          ) : null}
+          {!last ? (
+            <button
+              type="button"
+              data-autofocus
+              disabled={permissionBusy}
+              onClick={() => void goNext()}
+              className={PRIMARY_BUTTON}
+            >
+              {step === 'agreement' && permissionBusy ? t('common.saving') : t('onboarding.next')}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </Dialog>
   );
 }

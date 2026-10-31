@@ -52,6 +52,7 @@ import { backgroundRowsOf, projectSessionTasks, taskRowState, type SessionTaskCo
 import { FOCUS_RING, StateMark, stateFillClass } from './shell';
 import { Icon } from '../icons';
 import type { OverviewFigures } from '../agent-panel/InspectorOverview';
+import { PanelMetricsCounting } from '../agent-panel/PanelMetricsCounting';
 
 /** The `useSyncExternalStore` subscribe contract: a function that unsubscribes. */
 const noop = (): (() => void) => () => {};
@@ -1137,7 +1138,7 @@ export const CockpitOverview = memo(function CockpitOverview({ sessionId, agentI
           </dd>
         </div>
       </dl>
-      {treeFigures?.incomplete === true ? (
+      {treeFigures?.counting === true ? <PanelMetricsCounting /> : treeFigures?.incomplete === true ? (
         <p data-cockpit-tree-partial className="-mt-1 text-[11.5px] leading-4 text-amber-ink">{t('rail.cockpit.treePartial')}</p>
       ) : null}
     </div>

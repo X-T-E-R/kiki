@@ -44,6 +44,7 @@ export interface AgentTokenUsage {
   readonly cacheWriteTokens?: number | null;
   readonly totalCostUsd: number | null;
   readonly compactionCount: number | null;
+  readonly usageComplete?: boolean;
   readonly usagePartial?: boolean;
   readonly costPartial?: boolean;
   readonly usageSource?: 'live' | 'persisted';

@@ -38,7 +38,7 @@ import { GoalCard, GoalHeaderSummary, GoalPauseButton, goalShowsInHeader, Recove
 import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
 import { SubmissionRecovery } from './SubmissionRecovery';
-import { RestoreAdmissionStatus } from './RestoreAdmissionStatus';
+import { AdmissionScope, useAdmissionScope, withAdmissionUserBlocks } from './timeline/AdmissionLine';
 import { ContinuationRow } from './ContentContinuation';
 import { RightRail } from './RightRail';
 import { ModelSwitchDialog } from './model-switch/ModelSwitchDialog';
@@ -4811,9 +4811,21 @@ boundExecution,
   // the full block list; per-delta publishes reuse it when blocks/forest are
   // untouched.
   const mainTranscriptBlocks = useMemo(
-    () => withOptimisticUserBlock(filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID), pendingSubmission),
-    [state.blocks, forest, pendingSubmission],
+    () => withAdmissionUserBlocks(
+      withOptimisticUserBlock(filterBlocksToDirectChildren(state.blocks, forest, MAIN_AGENT_ID), pendingSubmission),
+      state.durableIngress,
+    ),
+    [state.blocks, forest, pendingSubmission, state.durableIngress],
   );
+  const retryOwnPending = useCallback((promptId: string) => {
+    const pending = pendingRetryRef.current;
+    if (pending?.id !== promptId || pendingSubmissionRef.current?.id !== promptId) return false;
+    pending.run();
+    return true;
+  }, []);
+  const admissionScope = useAdmissionScope({
+    ingress: state.durableIngress, blocks: mainTranscriptBlocks, controller, retryPending: retryOwnPending,
+  });
   // "Needs you": every pending approval/question in the session (main and
   // subagents) is answered in the composer card itself (it takes the input
   // over, see Composer `needsYou`); the timeline keeps one-line records
@@ -5256,6 +5268,7 @@ boundExecution,
       <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
       <MessageViewContext.Provider value={messageViewContext}>
       <InteractionPlacementContext.Provider value={interactionPlacement}>
+      <AdmissionScope value={admissionScope}>
       <AgentWorkspace
         target={{ sessionId, agentId: MAIN_AGENT_ID }}
         controller={controller}
@@ -5306,7 +5319,6 @@ boundExecution,
             onQuote={handleQuoteSelection} onAnnotate={handleAnnotateSelection}
           />,
           dock: <>
-            <RestoreAdmissionStatus state={state} controller={controller} />
             <SubmissionRecovery sessionId={sessionId} state={state} />
             <ResyncStatusBanner
               resyncing={state.resyncing} resyncFailed={state.resyncFailed}
@@ -5339,6 +5351,7 @@ boundExecution,
           /> : null,
         }}
       />
+      </AdmissionScope>
       </InteractionPlacementContext.Provider>
       </MessageViewContext.Provider>
       <ModelSwitchDialog

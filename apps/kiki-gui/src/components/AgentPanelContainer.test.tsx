@@ -1975,3 +1975,98 @@ it('keeps the folded profile independent of metrics settlement and reads only it
   await flushRender();
   expect(getAgentCapabilities).toHaveBeenCalledTimes(1);
 });
+
+it.each(['default', 'cockpit'] as const)('continues successful partial %s metrics with backoff, keeps known numbers, and stops at complete', async (overviewMode) => {
+  vi.useFakeTimers();
+  try {
+    let attempts = 0;
+    const starts: number[] = [];
+    getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => {
+      if (query.metrics_settle !== true) return Promise.resolve({ metrics: { main: { ...coldMetrics, usageComplete: false } } });
+      attempts += 1;
+      starts.push(Date.now());
+      return Promise.resolve({ metrics: { main: {
+        ...countedMetrics(attempts * 1_200, attempts * 0.05),
+        usageComplete: attempts === 4,
+        usagePartial: attempts !== 4,
+      } } });
+    });
+    const options = { part: 'overview' as const, overviewMode };
+    await render('main', options);
+    await act(async () => { await vi.advanceTimersByTimeAsync(5); });
+    expect(attempts).toBe(1);
+    expect(element.querySelector('[data-metrics-counting]')?.textContent).toBe('统计中…');
+    const cost = () => element.querySelector(overviewMode === 'default' ? '[data-overview-fact="cost"]' : '[data-cockpit-fact="cost"]')?.textContent;
+    expect(cost()).toContain('$0.05');
+    for (const [delay, count] of [[1_000, 2], [2_000, 3], [4_000, 4]] as const) {
+      const remaining = starts.at(-1)! + delay - Date.now();
+      await act(async () => { await vi.advanceTimersByTimeAsync(remaining - 1); });
+      expect(attempts).toBe(count - 1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(attempts).toBe(count);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5); });
+      expect(cost()).toContain(`$${(count * 0.05).toFixed(2)}`);
+    }
+    expect(starts.map((at) => at - starts[0]!)).toEqual([0, 1_000, 3_000, 7_000]);
+    expect(element.querySelector('[data-metrics-counting]')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(attempts).toBe(4);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('stops partial continuation while hidden, resumes on reopen, and never renders unknown usage as zero', async () => {
+  vi.useFakeTimers();
+  try {
+    let attempts = 0;
+    getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => {
+      if (query.metrics_settle === true) attempts += 1;
+      return Promise.resolve({ metrics: { main: { ...coldMetrics, usageComplete: false } } });
+    });
+    await render('main', { part: 'overview' });
+    expect(attempts).toBe(1);
+    expect(element.querySelector('[data-metrics-counting]')).not.toBeNull();
+    expect(element.querySelector('[data-overview-fact="tokens"]')).toBeNull();
+    expect(element.querySelector('[data-overview-fact="cost"]')).toBeNull();
+    await render('main', { part: 'overview', visible: false });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(attempts).toBe(1);
+    await render('main', { part: 'overview', visible: true });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(attempts).toBeGreaterThan(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('continues a dirty source partial even while the header retains its earlier complete total', async () => {
+  vi.useFakeTimers();
+  try {
+    let attempts = 0;
+    getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => {
+      if (query.metrics_settle !== true) return Promise.resolve({ metrics: { main: countedMetrics(1_200, 0.05) } });
+      attempts += 1;
+      return Promise.resolve({ metrics: { main: {
+        ...countedMetrics(attempts === 1 ? 2_400 : 3_600, attempts === 1 ? 0.10 : 0.15),
+        usageComplete: attempts > 1, usagePartial: attempts === 1,
+      } } });
+    });
+    await render('main', { part: 'overview' });
+    expect(settleCalls()).toHaveLength(0);
+    harness.agents['main'] = viewState({ usage: { total: { inputOther: 2_000, output: 400, inputCacheRead: 0, inputCacheCreation: 0 } } });
+    await act(async () => { harness.emit(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5); });
+    expect(attempts).toBe(1);
+    expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('2.4k');
+    expect(element.querySelector('[data-metrics-counting]')).not.toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5); });
+    expect(attempts).toBe(2);
+    expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('3.6k');
+    expect(element.querySelector('[data-metrics-counting]')).toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});

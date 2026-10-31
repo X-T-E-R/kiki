@@ -56,11 +56,10 @@ export function registerAutoCompactRoutes(app: RouteHost, core: Scope): void {
         reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id));
         return;
       }
-      const agent = req.params.agent_id === MAIN_AGENT_ID
-        ? await ensureMainAgent(session)
-        : session.accessor.get(IAgentLifecycleService).get(req.params.agent_id);
+      const agent = session.accessor.get(IAgentLifecycleService).get(req.params.agent_id);
       if (agent === undefined) {
-        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent is not active in this session', req.id));
+        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED,
+          req.params.agent_id === MAIN_AGENT_ID ? 'Model not set' : 'Agent is not active in this session', req.id));
         return;
       }
       const compact = agent.accessor.get(IAgentFullCompactionService);

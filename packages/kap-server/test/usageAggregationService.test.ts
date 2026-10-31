@@ -1419,7 +1419,7 @@ describe('UsageAggregationService cache budgets', () => {
       { deadlineMs: 1_500 },
       { items: [], complete: true, scannedRecords: 0 },
       (bytes) => { if (chargeReads) time += Math.ceil(bytes / 20_000); },
-      [], undefined, undefined, { ready: true, onDidChange: Event.None },
+      [], undefined, undefined, { ready: true, onDidChange: () => ({ dispose() {} }) },
     );
     await instance.service.readAgentUsage('workspace-a', 'session-0', ['main'], { deadlineAt: Infinity, maxFacts: Infinity });
     await instance.service.readAgentUsage('workspace-a', 'session-1', ['main'], { deadlineAt: Infinity, maxFacts: Infinity });
@@ -1890,10 +1890,10 @@ describe('shared agent and History typed usage', () => {
     const stalled = vi.spyOn(f.facts, 'summary').mockImplementationOnce(async (...args) => { await gate; return summarize(...args); });
     try {
       const partial = await f.service.readAgentUsage('w', 's', ['main'], { summaryOnly: true, deadlineAt: Date.now() + 30 });
-      expect(partial.main).toMatchObject({ complete: false, totals: { records: 1, usage: { output: 1 } } });
+      expect(partial['main']).toMatchObject({ complete: false, totals: { records: 1, usage: { output: 1 } } });
       release();
       const complete = await f.service.readAgentUsage('w', 's', ['main'], { summaryOnly: true });
-      expect(complete.main).toMatchObject({ complete: true, totals: { records: 2, usage: { output: 2 } } });
+      expect(complete['main']).toMatchObject({ complete: true, totals: { records: 2, usage: { output: 2 } } });
     } finally { release(); stalled.mockRestore(); f.service.dispose(); }
   });
 

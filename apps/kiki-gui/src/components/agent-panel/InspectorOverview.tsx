@@ -29,6 +29,7 @@
 import { memo, type ReactNode } from 'react';
 
 import { useI18n } from '../../i18n';
+import { PanelMetricsCounting } from './PanelMetricsCounting';
 
 export interface OverviewFigures {
   readonly costUsd?: number;
@@ -39,6 +40,7 @@ export interface OverviewFigures {
   readonly cacheTitle?: string;
   readonly compactions?: number;
   readonly partial?: boolean;
+  readonly counting?: boolean;
   /** This count covers part of the tree, not all of it. */
   readonly incomplete?: boolean;
 }
@@ -242,10 +244,10 @@ export const InspectorOverview = memo(function InspectorOverview({
         </div>
       ) : null}
 
-      {figureCells.length > 0 ? (
+      {figureCells.length > 0 || shown.counting === true ? (
         <div {...(tree ? { 'data-tree-metrics': '' } : { 'data-agent-usage': '' })} className="flex flex-wrap items-baseline gap-x-4 gap-y-1.5">
           {figureCells}
-          {shown.partial === true ? <span className="text-[11.5px] text-amber-ink">{t('agentPanel.partialBadge')}</span> : null}
+          {shown.counting === true ? <PanelMetricsCounting /> : shown.partial === true ? <span className="text-[11.5px] text-amber-ink">{t('agentPanel.partialBadge')}</span> : null}
         </div>
       ) : null}
 
