@@ -412,7 +412,12 @@ export class SessionDispatchService implements ISessionDispatchService {
     if (options.requesterAgentId !== undefined) {
       const caller = this.requireHandle(options.requesterAgentId, 'Requester agent');
       const binding = child.agent.accessor.get(IAgentProfileService).data();
-      child = { ...child, sourceRef: resolveAgentRunSource(caller.accessor.get(IAgentContextMemoryService).get(),
+      const selectionKind = binding.dispatchDecision?.selectionKind;
+      const referencesNamedTarget = selectionKind !== 'profile_file' && selectionKind !== 'route'
+        && binding.profileSource !== 'profile-file' && binding.routeId === undefined;
+      if (options.sourceRef !== undefined && !referencesNamedTarget) throw new Error2(ErrorCodes.REQUEST_INVALID,
+        'source_ref must identify the referenced registered profile, not a profile_file or a different route.');
+      child = { ...child, sourceRef: !referencesNamedTarget ? undefined : resolveAgentRunSource(caller.accessor.get(IAgentContextMemoryService).get(),
         child.profileName, binding.executorId ?? 'native', binding.execution !== undefined && binding.execution.selection.profile === undefined ? 'native' : 'profile', options.sourceRef) };
     } else if (options.sourceRef !== undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'source_ref requires a caller agent.');
     const operationId = options.operationId ?? randomUUID();

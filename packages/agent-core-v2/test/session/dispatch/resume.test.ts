@@ -526,6 +526,38 @@ describe('dispatch resume through model switch and real native run', () => {
     expect((await metadata.read()).agents![CHILD]).toBeUndefined();
   });
 
+  it.each(['profile_file', 'route'] as const)('does not attach a registered reference to a same-name %s child on resume', async selectionKind => {
+    const ctx = await host();
+    const profile = ctx.get(IAgentProfileService);
+    const bound = profile.data();
+    vi.spyOn(profile, 'data').mockReturnValue({ ...bound,
+      dispatchDecision: { ...bound.dispatchDecision, version: 2, selectionKind },
+    } as ReturnType<IAgentProfileService['data']>);
+    const ref = { refId: 'ar:registered:example-worker', profile: 'example-worker', executor: 'native', configuration: 'profile' as const, label: 'Worker' };
+    ctx.get(IAgentContextMemoryService).append({ id: 'registered', role: 'user', content: [{ type: 'text', text: 'kiki://agents/example-worker' }], toolCalls: [], origin: { kind: 'user', agentRefs: [ref] } });
+    const { dispatch, child, runs } = dispatchFor(ctx);
+    const started = vi.spyOn(runs, 'run');
+    const explicit = dispatch.runOnExisting(child, 'Continue', { ...options('file-source'), sourceRef: ref.refId });
+    void explicit.then(value => value.started.catch(() => {}), () => {});
+    await expect(explicit).rejects.toThrow('source_ref');
+    expect(started).not.toHaveBeenCalled();
+    ctx.mockNextResponse({ type: 'text', text: 'File role completed.' });
+    const automatic = await dispatch.runOnExisting(child, 'Continue', options('file-no-source'));
+    expect(automatic.child.sourceRef).toBeUndefined();
+    await (await automatic.started).completion;
+  });
+
+  it('retains registered target references on a genuine registered child resume', async () => {
+    const ctx = await host();
+    const ref = { refId: 'ar:registered:example-worker', profile: 'example-worker', executor: 'native', configuration: 'profile' as const, label: 'Worker' };
+    ctx.get(IAgentContextMemoryService).append({ id: 'registered', role: 'user', content: [{ type: 'text', text: 'kiki://agents/example-worker' }], toolCalls: [], origin: { kind: 'user', agentRefs: [ref] } });
+    const { dispatch, child } = dispatchFor(ctx);
+    ctx.mockNextResponse({ type: 'text', text: 'Registered role completed.' });
+    const run = await dispatch.runOnExisting(child, 'Continue', { ...options('registered-source'), sourceRef: ref.refId });
+    expect(run.child.sourceRef).toMatchObject({ ...ref, messageId: 'registered' });
+    await (await run.started).completion;
+  });
+
   it.each([{ tools: ['Read'] }, { disallowedTools: ['Bash'] }])('rejects vendor-default resume tool override %j before a run or binding change', async toolOverride => {
     const { ctx, dispatch, child, runs } = await defaultExternal();
     const before = ctx.get(IAgentProfileService).data();
