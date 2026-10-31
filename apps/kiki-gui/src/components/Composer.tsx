@@ -2698,6 +2698,7 @@ export function Composer({
             executorRefreshBusy={executorRefreshCurrent && executorRefresh.isPending}
             executorRefreshFailed={executorRefreshCurrent && executorRefresh.isError}
             onRefreshExecutorModels={() => { executorRefresh.mutate({ id: executorId!, key: executorModelsKey }); }}
+            domainNote={modelDomainState === 'warning' ? t('selection.modelMenuWarning', { source: modelRuleSource }) : undefined}
           />
         </ComposerPanelOrigin>
       ),
@@ -2742,6 +2743,7 @@ export function Composer({
           efforts={externalExecution ? executorEfforts : efforts}
           effort={statusEffort}
           onChangeEffort={onChangeEffort}
+          domainNote={modelDomainState === 'warning' ? t('selection.modelMenuWarning', { source: modelRuleSource }) : undefined}
         />
       ),
     });
@@ -2908,9 +2910,6 @@ export function Composer({
           {selectionCatalogError !== null ? <button type="button" className="underline" onClick={() => { void modelsQuery.refetch(); if (validateProfile) void agentProfilesQuery.refetch(); if (validateFile) void filePreviewQuery.refetch(); }}>{t('common.retry')}</button> : null}
           {invalidEffort && selectedModel?.default_effort !== undefined && catalogModelSupportsEffort(selectedModel, selectedModel.default_effort) ? <button type="button" className="underline" onClick={() => { onChangeEffort(selectedModel.default_effort); }}>{t('selection.resetEffort')}</button> : null}
         </div> : null}
-        {modelDomainState === 'warning' ? <p data-model-menu-warning role="status" className="mb-2 px-1 text-[11.5px] text-ink-soft">
-          {t('selection.modelMenuWarning', { source: modelRuleSource })}
-        </p> : null}
         {/* A draft is in progress: the pending decision waits on a bar
             instead of taking the card; the bar hands the card over. */}
         {offerTakeover ? (
@@ -4255,7 +4254,14 @@ function ModelChip({
   engineLabel,
   executorLabel,
   openSignal,
+  domainNote,
 }: {
+  /**
+   * Why the bound model sits outside the profile's menu without blocking a
+   * send. The chip carries a quiet dot and the reason lives in its tooltip;
+   * the menu rows already explain it at the moment of choosing.
+   */
+  readonly domainNote?: string;
   readonly modelOptions: readonly SearchableSelectOption[];
   /** Set when an external engine serves the model: the label is read-only. */
   readonly engineLabel?: string;
@@ -4285,9 +4291,10 @@ function ModelChip({
   // The trigger shows only the display name + effort; the tooltip carries the
   // full picture (raw id and where the choice came from).
   const servingEngine = executorLabel ?? engineLabel;
-  const title = servingEngine !== undefined
+  const baseTitle = servingEngine !== undefined
     ? `${t('composer.engineModelTitle', { model: effectiveModel ?? t('composer.engineModelDefault'), engine: servingEngine })} · ${sourceTitle}`
     : effectiveModel !== undefined ? `${effectiveModel} · ${sourceTitle}` : sourceTitle;
+  const title = domainNote === undefined ? baseTitle : `${baseTitle}\n${domainNote}`;
 
   if (engineLabel !== undefined) {
     return (
@@ -4345,12 +4352,21 @@ function ModelChip({
       triggerIcon={<EffortGauge efforts={displayEfforts} effort={showEffort ? effort : undefined} />}
       triggerLabel={shortLabel}
       triggerSuffix={
-        showEffort ? (
-          // Same segment, same quiet gap: the gauge already draws the depth,
-          // the word names it. Narrow composers drop the word first.
-          <span data-effort-label className="shrink-0 text-ink-faint capitalize @max-[24rem]/toolbar:hidden">
-            {effort}
-          </span>
+        showEffort || domainNote !== undefined ? (
+          <>
+            {showEffort ? (
+              // Same segment, same quiet gap: the gauge already draws the depth,
+              // the word names it. Narrow composers drop the word first.
+              <span data-effort-label className="shrink-0 text-ink-faint capitalize @max-[24rem]/toolbar:hidden">
+                {effort}
+              </span>
+            ) : null}
+            {domainNote !== undefined ? (
+              <span data-model-domain-note className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-rule">
+                <span className="sr-only">{domainNote}</span>
+              </span>
+            ) : null}
+          </>
         ) : null
       }
       // Provenance lives in the panel, not on the chip: where the current

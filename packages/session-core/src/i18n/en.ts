@@ -989,6 +989,7 @@ export const en = {
   'context.compaction.manual.completed': 'Manual compaction complete',
   'context.compaction.manual.cancelled': 'Manual compaction cancelled',
   'context.compaction.manual.failed': 'Manual compaction failed',
+  'context.compaction.manual.duplicate': 'A manual compaction is already running or queued; wait for it to finish',
   'context.compaction.auto.queued': 'Automatic compaction queued',
   'context.compaction.auto.running': 'Automatic compaction running',
   'context.compaction.auto.completed': 'Automatic compaction complete',
