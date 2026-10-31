@@ -30,7 +30,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFsSearchFeed, type FsSearchFeedSearch, type FsSearchFeedView } from '../lib/fsSearchFeed';
 import { useNavigate } from 'react-router-dom';
 
-import type { DeferredAppendTiming, ExecutorModelCatalogResponse, FsSearchHit, PermissionMode, PromptPlanGate, SessionUsageError } from '@kiki/protocol';
+import type { AgentReferenceCandidate, AgentReferenceCandidatesQuery, DeferredAppendTiming, ExecutorModelCatalogResponse, FsSearchHit, PermissionMode, PromptPlanGate, SessionUsageError } from '@kiki/protocol';
 
 import {
   buildSlashItems,
@@ -45,7 +45,9 @@ import {
 import {
   ACCEPTED_IMAGE_MIMES,
   prepareThreadRefContext,
+  agentRefDeletionRange,
   fileToImageAttachment,
+  findAgentRefs,
   findConversationRefs,
   formatBytes,
   hasMention,
@@ -53,7 +55,9 @@ import {
   insertThreadRef,
   isNativeExecutor,
   profileExecutor,
+  removeAgentRef,
   removeThreadRef,
+  replaceMentionTriggerWithAgentRef,
   subscribeComposerInserts,
   threadRefDeletionRange,
   parseMentionTrigger,
@@ -89,6 +93,11 @@ import {
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
 import { isExecutorActionAvailable, mapExecutorCapabilities } from '../lib/executorCapabilities';
+import {
+  filterAgentCandidates,
+  groupAgentCandidates,
+  type AgentCandidateGroup,
+} from '../lib/agentMentionCandidates';
 import { pendingModelSwitchChange, type PendingModelSwitch } from '@kiki/session-core/session/modelSwitchQueue';
 import { registerOverlay } from '../lib/uiBusy';
 import { useCoarsePointer } from '../lib/layoutHooks';
@@ -1195,7 +1204,52 @@ export function Composer({
   });
   const mentionItems = menu?.kind === 'mention' && menu.query === mentionQuery ? fsFeed.items : [];
 
-  const menuRowCount = menu?.kind === 'slash' ? filteredSlashItems.length : mentionItems.length;
+  // Agent candidates (the `@` menu's agent groups) come from the server's
+  // `GET /agents/references`, keyed to the same scope the profile catalog uses.
+  // The server is the sole producer: it hides hard-policy blocks and returns
+  // fixable faults as unavailable rows. Until 934's handler ships, the fixture
+  // feeds this exact shape. The query needs the scope's profile name for the
+  // workspace/cwd forms; the session form needs only ids.
+  const agentReferenceScope = useMemo((): AgentReferenceCandidatesQuery | null => {
+    if (sessionId !== undefined) return { session_id: sessionId, agent_id: agentId };
+    if (agentProfileCatalogMode.mode === 'workspace') return { workspace_id: agentProfileCatalogMode.workspaceId, profile: selectedProfileName };
+    if (agentProfileCatalogMode.mode === 'cwd') return { cwd: agentProfileCatalogMode.cwd, profile: selectedProfileName };
+    return null;
+  }, [sessionId, agentId, agentProfileCatalogMode, selectedProfileName]);
+  const agentReferencesQuery = useQuery({
+    queryKey: ['agent-references', connectionId, scopeId, agentReferenceScope],
+    queryFn: () => client.klient.rest!.agents.referenceCandidates(agentReferenceScope!),
+    enabled: menu?.kind === 'mention' && agentReferenceScope !== null,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const agentCandidateList = useMemo(
+    () => (agentReferencesQuery.data === undefined ? { groups: [], delegationAvailable: true } : groupAgentCandidates(agentReferencesQuery.data)),
+    [agentReferencesQuery.data],
+  );
+  const filteredAgentGroups = useMemo(
+    () => (menu?.kind === 'mention' ? filterAgentCandidates(agentCandidateList.groups, menu.query) : []),
+    [menu, agentCandidateList],
+  );
+  const mentionAgentRows = useMemo(
+    () => filteredAgentGroups.flatMap((group) => group.candidates),
+    [filteredAgentGroups],
+  );
+  // The unified mention list rows: file hits first, then agent candidates.
+  // The flat index drives ↑/↓, Enter and Tab across both groups as one list.
+  type MentionRow =
+    | { readonly kind: 'file'; readonly hit: FsSearchHit }
+    | { readonly kind: 'agent'; readonly candidate: AgentReferenceCandidate };
+  const mentionRows: readonly MentionRow[] = useMemo(
+    () => [
+      ...mentionItems.map((hit): MentionRow => ({ kind: 'file', hit })),
+      ...mentionAgentRows.map((candidate): MentionRow => ({ kind: 'agent', candidate })),
+    ],
+    [mentionItems, mentionAgentRows],
+  );
+  const mentionRowCount = mentionRows.length;
+
+  const menuRowCount = menu?.kind === 'slash' ? filteredSlashItems.length : mentionRowCount;
   const menuQuery = menu?.query ?? null;
   useEffect(() => {
     setActiveIndex(0);
@@ -1269,6 +1323,16 @@ export function Composer({
   // Conversation links in the draft — threads and rooms alike: one tray chip
   // each, a tinted token in the text, and whole-link deletion.
   const conversationRefs = useMemo(() => findConversationRefs(text), [text]);
+  const agentRefs = useMemo(() => findAgentRefs(text), [text]);
+  // Both link kinds tint as tokens in the backdrop: one merged, ordered list so
+  // a draft mixing thread and agent links highlights every range in place.
+  const backdropTokens = useMemo(
+    () => [
+      ...conversationRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: ref.kind as string })),
+      ...agentRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: 'agent' as string })),
+    ].sort((a, b) => a.start - b.start || a.end - b.end),
+    [conversationRefs, agentRefs],
+  );
   const threadRefs = useMemo(() => conversationRefs.filter((ref) => ref.kind === 'session'), [conversationRefs]);
   const roomRefs = useMemo(() => conversationRefs.filter((ref) => ref.kind === 'room'), [conversationRefs]);
   const threadRefIds = useMemo(() => threadRefs.map((ref) => ref.id), [threadRefs]);
@@ -1561,6 +1625,38 @@ export function Composer({
       ]);
     }
     node?.focus();
+  };
+
+  /** Accept the highlighted mention row, whether it is a file hit or an agent. */
+  const acceptMentionRow = (row: MentionRow) => {
+    if (row.kind === 'file') acceptMentionItem(row.hit);
+    else acceptMentionAgent(row.candidate);
+  };
+
+  /**
+   * Accept the highlighted agent target: replace the `@query` trigger text with
+   * the server's `reference` link verbatim. An unavailable target is dimmed and
+   * cannot be picked. The link stays in the draft text (not an attachment), so
+   * it survives queue edit/resend and the backend reads it on send.
+   */
+  const acceptMentionAgent = (candidate: AgentReferenceCandidate) => {
+    if (menu?.kind !== 'mention' || !candidate.available) return;
+    const trigger = menu;
+    setMenu(null);
+    const node = textareaRef.current;
+    const cursor = node?.selectionStart ?? text.length;
+    pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+    historyIndexRef.current = null;
+    const next = replaceMentionTriggerWithAgentRef(text, trigger, cursor, candidate.reference);
+    onChange(next.text);
+    lastCursorRef.current = next.cursor;
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (node !== null && !composingRef.current) {
+        node.focus();
+        node.setSelectionRange(next.cursor, next.cursor);
+      }
+    });
   };
 
   /**
@@ -1937,8 +2033,8 @@ export function Composer({
         const item = filteredSlashItems[Math.min(activeIndex, filteredSlashItems.length - 1)];
         if (item !== undefined) acceptSlashItem(item);
       } else {
-        const item = mentionItems[Math.min(activeIndex, mentionItems.length - 1)];
-        if (item !== undefined) acceptMentionItem(item);
+        const row = mentionRows[Math.min(activeIndex, mentionRows.length - 1)];
+        if (row !== undefined) acceptMentionRow(row);
       }
       return;
     }
@@ -2213,8 +2309,8 @@ export function Composer({
     // half-committed text stranded. keyCode 229 covers engines that skip the
     // isComposing flag on keydown.
     if (composingRef.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
-    // A thread link deletes as one token: Backspace/Delete touching it (or a
-    // selection overlapping it) takes the whole link.
+    // A thread or agent link deletes as one token: Backspace/Delete touching
+    // it (or a selection overlapping it) takes the whole link.
     if ((event.key === 'Backspace' || event.key === 'Delete') && !event.altKey) {
       const node = event.currentTarget;
       const range = threadRefDeletionRange(text, node.selectionStart, node.selectionEnd, event.key);
@@ -2223,6 +2319,16 @@ export function Composer({
         pushUndoSnapshot({ text, cursor: node.selectionStart });
         historyIndexRef.current = null;
         const next = removeThreadRef(text, range);
+        applyTextChange(next.text, next.cursor);
+        refreshMenu(next.text, next.cursor);
+        return;
+      }
+      const agentRange = agentRefDeletionRange(text, node.selectionStart, node.selectionEnd, event.key);
+      if (agentRange !== null) {
+        event.preventDefault();
+        pushUndoSnapshot({ text, cursor: node.selectionStart });
+        historyIndexRef.current = null;
+        const next = removeAgentRef(text, agentRange);
         applyTextChange(next.text, next.cursor);
         refreshMenu(next.text, next.cursor);
         return;
@@ -2241,8 +2347,8 @@ export function Composer({
           const item = filteredSlashItems[Math.min(activeIndex, filteredSlashItems.length - 1)];
           if (item !== undefined) acceptSlashItem(item);
         } else {
-          const item = mentionItems[Math.min(activeIndex, mentionItems.length - 1)];
-          if (item !== undefined) acceptMentionItem(item);
+          const row = mentionRows[Math.min(activeIndex, mentionRows.length - 1)];
+          if (row !== undefined) acceptMentionRow(row);
         }
         return;
       }
@@ -3088,11 +3194,15 @@ export function Composer({
                 ) : (
                   <MentionMenuBody
                     items={mentionItems}
+                    agentGroups={filteredAgentGroups}
+                    delegationAvailable={agentCandidateList.delegationAvailable}
+                    delegationReason={agentCandidateList.unavailableReason}
                     activeIndex={activeIndex}
                     feed={fsFeed}
                     loading={fsFeed.pendingInitial || menu.query !== mentionQuery}
                     query={menu.query}
                     onAccept={acceptMentionItem}
+                    onAcceptAgent={acceptMentionAgent}
                   />
                 )}
               </div>
@@ -3103,20 +3213,20 @@ export function Composer({
             {/* Conversation links read as tokens: a tinted backdrop mirrors
                 the draft behind the (transparent) textarea and tints each
                 link's range. Only mounted while the draft carries a link. */}
-            {conversationRefs.length > 0 ? (
+            {backdropTokens.length > 0 ? (
               <div
                 ref={threadRefBackdropRef}
                 aria-hidden
                 data-thread-ref-backdrop
                 className="pointer-events-none absolute top-3 right-3 left-3 max-h-[190px] overflow-hidden py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed break-words whitespace-pre-wrap text-transparent"
               >
-                {conversationRefs.map((ref, index) => (
+                {backdropTokens.map((ref, index) => (
                   <span key={ref.start}>
-                    {text.slice(index === 0 ? 0 : conversationRefs[index - 1]!.end, ref.start)}
+                    {text.slice(index === 0 ? 0 : backdropTokens[index - 1]!.end, ref.start)}
                     <mark data-thread-ref-token data-ref-kind={ref.kind} className="rounded-[3px] bg-accent/[0.14] text-transparent shadow-[0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.14)]">{ref.raw}</mark>
                   </span>
                 ))}
-                {text.slice(conversationRefs.at(-1)!.end)}
+                {text.slice(backdropTokens.at(-1)!.end)}
                 {ZERO_WIDTH_TAIL}
               </div>
             ) : null}
@@ -3726,27 +3836,37 @@ function SkillPreviewCard({ item }: { item: SlashItem }) {
 
 function MentionMenuBody({
   items,
+  agentGroups,
+  delegationAvailable,
+  delegationReason,
   activeIndex,
   loading,
   feed,
   query,
   onAccept,
+  onAcceptAgent,
 }: {
   items: readonly FsSearchHit[];
+  agentGroups: readonly AgentCandidateGroup[];
+  delegationAvailable: boolean;
+  delegationReason?: string;
   activeIndex: number;
   loading: boolean;
   feed: FsSearchFeedView;
   query: string;
   onAccept: (item: FsSearchHit) => void;
+  onAcceptAgent: (candidate: AgentReferenceCandidate) => void;
 }) {
   const { t } = useI18n();
   const pending = feed.pendingMore || feed.pendingRestart;
+  const agentCount = agentGroups.reduce((total, group) => total + group.candidates.length, 0);
+  const bothEmpty = items.length === 0 && agentCount === 0;
   return (
     <>
       {feed.failed ? <p className="px-3 py-2 text-[12px] text-danger">{t('composer.filesFailed')}</p> : null}
-      {loading || (items.length === 0 && feed.exhausted && !feed.failed) ? (
+      {loading || (bothEmpty && feed.exhausted && !feed.failed) ? (
         <p className="px-3 py-2 text-[12px] text-ink-faint">
-          {loading ? t('composer.filesSearching') : query === '' ? t('composer.filesEmpty') : t('composer.filesNoMatch', { query })}
+          {loading ? t('composer.filesSearching') : query === '' ? t('composer.mentionEmpty') : t('composer.mentionNoMatch', { query })}
         </p>
       ) : null}
       {items.length > 0 ? <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('composer.filesHeader')}</p> : null}
@@ -3779,6 +3899,51 @@ function MentionMenuBody({
           </button>
         );
       })}
+      {agentGroups.length > 0 && !delegationAvailable ? (
+        <p className="mx-1 mt-1 rounded-md bg-ink/[0.045] px-3 py-1.5 text-[11.5px] text-ink-faint" data-agent-mention-note>
+          {t('composer.agentsNoDelegation')}{delegationReason !== undefined && delegationReason !== '' ? ` — ${delegationReason}` : ''}
+        </p>
+      ) : null}
+      {agentGroups.map((group) => (
+        <div key={group.group}>
+          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
+            {t('composer.agentsHeader', { engine: group.label })}
+          </p>
+          {group.candidates.map((candidate) => {
+            const index = items.length + agentGroups
+              .slice(0, agentGroups.indexOf(group))
+              .reduce((total, g) => total + g.candidates.length, 0) + group.candidates.indexOf(candidate);
+            const active = index === activeIndex;
+            const disabled = !candidate.available;
+            const reason = candidate.unavailable_reason ?? t('composer.agentsUnavailable');
+            return (
+              <button
+                key={candidate.profile}
+                type="button"
+                role="option"
+                aria-selected={active}
+                aria-disabled={disabled}
+                disabled={disabled}
+                title={disabled ? reason : undefined}
+                onClick={() => { onAcceptAgent(candidate); }}
+                className={`flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left transition-colors ${
+                  disabled ? 'cursor-not-allowed opacity-45' : active ? 'bg-paper' : 'hover:bg-paper'
+                }`}
+              >
+                <span aria-hidden className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-ink-faint">
+                  <Icon name="thread" size={12} />
+                </span>
+                <span className={`shrink-0 text-[12.5px] font-medium ${active && !disabled ? 'text-selected-ink' : 'text-ink'}`}>
+                  {candidate.label}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[11px] text-ink-faint">
+                  {disabled ? reason : candidate.description ?? ''}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ))}
       </div>
       {!loading && (!feed.exhausted || feed.failed || pending) ? (
         <button type="button" data-mention-file-more={feed.failed ? 'retry' : pending ? 'pending' : 'more'}
