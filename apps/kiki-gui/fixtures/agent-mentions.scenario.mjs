@@ -59,6 +59,8 @@ export default {
         group: 'profile',
         defaults_available: false,
         available: false,
+        // A known code localizes on the client; the English server text is only
+        // the fallback for codes the client does not know.
         unavailable_reason: 'Codex is not installed on this machine',
         unavailable_reason_code: 'executor_not_installed',
         description: 'Run on the Codex engine',

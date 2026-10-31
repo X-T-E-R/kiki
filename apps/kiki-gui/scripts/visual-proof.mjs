@@ -304,7 +304,11 @@ const SOURCES = {
   resyncing: { key: 'sv.resyncing' },
   notActivatable: { key: 'composer.slash.notActivatable' },
   shortcuts: { key: 'composer.slash.shortcuts' },
-  agentsHeader: { key: 'composer.agentsHeader', params: { engine: 'Codex' } },
+  agentGroupNative: { key: 'composer.agentGroup.native' },
+  agentGroupProfile: { key: 'composer.agentGroup.profile' },
+  agentNoDelegation: { key: 'composer.agentsNoDelegation' },
+  agentReasonNotInstalled: { key: 'composer.agentReason.executor_not_installed' },
+  agentMentionFailed: { key: 'composer.agentsFailed' },
   sendAnyway: { key: 'composer.slash.sendAnyway' },
   queueRecoveredDismiss: { key: 'sv.queueRecovered.dismiss' },
   objectivePlaceholder: { key: 'composer.goalObjectivePlaceholder' },
@@ -4643,12 +4647,17 @@ async function scenarioAgentMentions() {
   await page.fill('textarea', '@');
   await page.waitForSelector(`text=${S.filesHeader}`, { timeout: 5000 });
   await page.waitForSelector('[role="option"]:has-text("agent")', { timeout: 5000 });
-  await page.waitForSelector(`text=${S.agentsHeader}`, { timeout: 5000 });
-  // The unavailable Codex target is dimmed and disabled, with its reason.
+  // Group headers name what the group is, never the first item's engine.
+  await page.waitForSelector(`text=${S.agentGroupNative}`, { timeout: 5000 });
+  await page.waitForSelector(`text=${S.agentGroupProfile}`, { timeout: 5000 });
+  // The unavailable Codex target is dimmed and disabled, with a localized reason.
   const codex = page.locator('[role="option"]', { hasText: 'codex' }).first();
   await codex.waitFor({ timeout: 5000 });
   if ((await codex.getAttribute('aria-disabled')) !== 'true' && !(await codex.isDisabled())) {
     throw new Error('unavailable agent target must be disabled');
+  }
+  if (!(await codex.textContent())?.includes(S.agentReasonNotInstalled)) {
+    throw new Error(`unavailable reason must be localized, got "${await codex.textContent()}"`);
   }
   await page.waitForTimeout(450); // menu entrance settle
   await shot('agent-mentions-picker');
@@ -4656,10 +4665,13 @@ async function scenarioAgentMentions() {
   await page.fill('textarea', '@clau');
   await page.waitForSelector('[role="option"]:has-text("claude-code")', { timeout: 5000 });
   await page.locator('[role="option"]', { hasText: 'claude-code' }).first().click();
-  // The draft carries the verbatim link and a tinted backdrop token.
+  // The draft carries the verbatim link; the backdrop marks its range as a
+  // tinted token (the marks are transparent — a readable @label needs an
+  // overlay, tracked as a follow-up the parent decides).
   const draft = await page.inputValue('textarea');
   if (!draft.includes('kiki://agents/claude-code')) throw new Error(`agent link missing from draft: "${draft}"`);
-  await page.waitForSelector('[data-thread-ref-token][data-ref-kind="agent"]', { timeout: 5000 });
+  const token = page.locator('[data-thread-ref-token][data-ref-kind="agent"]');
+  await token.waitFor({ timeout: 5000 });
   await shot('agent-mentions-chip');
   // Send: the text part carries the agent link; the fixture echoes receipt.
   await page.type('textarea', 'please review');
@@ -4675,6 +4687,46 @@ async function scenarioAgentMentions() {
     throw new Error(`typed text missing from the text part: ${JSON.stringify(textPart)}`);
   }
   await shot('agent-mentions-sent');
+}
+
+/**
+ * agent-mentions-delegation — `delegation_available: false`: the agent groups
+ * stay listed with a banner saying the current engine cannot delegate (with
+ * the server's reason), instead of being silently dropped.
+ */
+async function scenarioAgentMentionsDelegation() {
+  await selectSession('Fixture: agent mentions (no delegation)');
+  await page.click('textarea');
+  await page.fill('textarea', '@');
+  await page.waitForSelector('[role="option"]:has-text("agent")', { timeout: 5000 });
+  const note = page.locator('[data-agent-mention-note]');
+  await note.waitFor({ timeout: 5000 });
+  const noteText = await note.textContent();
+  if (!noteText?.includes(S.agentNoDelegation)) {
+    throw new Error(`no-delegation banner must state the engine cannot delegate, got "${noteText}"`);
+  }
+  if (!noteText?.includes('External dispatch is off for this engine')) {
+    throw new Error(`no-delegation banner must carry the server reason, got "${noteText}"`);
+  }
+  // The group is still listed, not dropped.
+  await page.waitForSelector('[role="option"]:has-text("claude-code")', { timeout: 5000 });
+  await page.waitForTimeout(450);
+  await shot('agent-mentions-no-delegation');
+}
+
+/**
+ * agent-mentions-failure — the candidate load fails: the menu shows a single
+ * readable line instead of crashing or hanging.
+ */
+async function scenarioAgentMentionsFailure() {
+  await selectSession('Fixture: agent mentions (load failure)');
+  await page.click('textarea');
+  await page.fill('textarea', '@');
+  // The file group still loads; the failed candidate query leaves the menu on
+  // its empty line rather than a broken list.
+  await page.waitForSelector(`text=${S.agentMentionFailed}`, { timeout: 8000 });
+  await page.waitForTimeout(450);
+  await shot('agent-mentions-load-failure');
 }
 
 /**
@@ -6582,6 +6634,8 @@ const BODIES = [
   ['slash-commands', scenarioSlashCommands],
   ['attachments', scenarioAttachments],
   ['agent-mentions', scenarioAgentMentions],
+  ['agent-mentions-delegation', scenarioAgentMentionsDelegation],
+  ['agent-mentions-failure', scenarioAgentMentionsFailure],
   ['selection-annotate', scenarioSelectionAnnotate],
   ['annotation-bubbles', scenarioAnnotationBubbles],
   ['preview-workbench', scenarioPreviewWorkbench],

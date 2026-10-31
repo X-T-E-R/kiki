@@ -3169,6 +3169,9 @@ class FixtureServer {
     if (path === '/agents/references') {
       const seed = this.scenario?.data.agentReferences;
       if (seed === undefined) return this.envelope(res, null, 40404, 'no agent references fixture for this scenario');
+      // A failed load must reach the client as a failure, not a 200 it reads
+      // as success — kap-server answers an unavailable route with a real status.
+      if (seed.error !== undefined) return this.failureEnvelope(res, 503, seed.error, seed.message ?? 'agent references unavailable');
       return this.envelope(res, structuredClone(seed));
     }
     if (path === '/agents') {
