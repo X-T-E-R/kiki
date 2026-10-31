@@ -2842,6 +2842,8 @@ export const en = {
   'usage.strip.today': 'Today',
   'usage.strip.burnRate': 'Burn rate',
   'usage.strip.burnRateValue': '{rate} tok/h',
+  'usage.strip.counting': 'Counting…',
+  'usage.strip.countingProgress': 'Counting {verified}/{total}',
   'usage.strip.currentSession': 'Current session',
   'usage.incomplete.sessionCap': 'The scan reached its session limit. Older sessions are not included.',
   'usage.incomplete.recordBudget': 'The scan reached its record limit. Some usage is not included.',

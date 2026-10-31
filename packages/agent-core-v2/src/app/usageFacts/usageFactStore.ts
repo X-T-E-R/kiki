@@ -33,6 +33,7 @@ export interface UsageFactReadOptions { readonly budget?: UsageFactReadBudget; r
 export interface UsageFactRange { readonly startAt?: number; readonly endAt?: number }
 export interface IUsageFactStore {
   readonly _serviceBrand: undefined;
+  journalSize(scope: string, signal?: AbortSignal): Promise<number>;
   checkpoint(scope: string, signal?: AbortSignal): Promise<UsageFactCheckpoint | undefined>;
   read(scope: string, range?: UsageFactRange, signal?: AbortSignal, options?: UsageFactReadOptions): Promise<UsageFactSnapshot>;
   summary(scope: string, signal?: AbortSignal, options?: UsageFactReadOptions): Promise<{ checkpoint?: UsageFactCheckpoint; totals?: UsageFactTotals; readComplete?: boolean }>;
@@ -103,6 +104,10 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
       } else { this.logs.append(directory, LOG, batch); await this.logs.flush(directory, LOG); }
       await this.prepare(scope);
     } finally { await owner.dispose(); }
+  }
+  async journalSize(scope: string, signal?: AbortSignal): Promise<number> {
+    signal?.throwIfAborted();
+    return await abortable(this.storage.size(factDirectory(scope), LOG), signal) ?? 0;
   }
   checkpoint(scope: string, signal?: AbortSignal): Promise<UsageFactCheckpoint | undefined> {
     return abortable(this.exclusive(scope, async () => {

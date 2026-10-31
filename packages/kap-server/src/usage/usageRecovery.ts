@@ -1,4 +1,4 @@
-import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
+import { setImmediate as yieldToEventLoop, setTimeout as delay } from 'node:timers/promises';
 import { UsageReadAllowance, UsageWireFramer, type UsageWireState } from '@kiki/agent-core-v2/agent/usage/usageWireFramer';
 import type { UsageFact } from '@kiki/agent-core-v2/agent/usage/usageFact';
 import type { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
@@ -38,6 +38,8 @@ export class UsageRecoveryPool {
   private readonly stop = new AbortController();
   private readonly waiters: { resolve: () => void; reject: (error: Error) => void; signal: AbortSignal; abort: () => void }[] = [];
   private worker?: UsageParserWorker;
+  private isolatedWorker?: UsageParserWorker;
+  private nextReadAt = 0;
   private lastObservation?: UsageWorkerObservation;
   private closing: Promise<void> = Promise.resolve();
   private idle: Promise<void> = Promise.resolve();
@@ -47,7 +49,7 @@ export class UsageRecoveryPool {
 
   constructor(workerEnabled = true, entry?: URL) { this.workerEnabled = workerEnabled; this.entry = entry; }
 
-  async run<T>(sources: readonly T[], consume: (source: T, worker: UsageParserWorker | undefined, signal: AbortSignal) => Promise<void>, signal?: AbortSignal, parallel = true): Promise<void> {
+  async run<T>(sources: readonly T[], consume: (source: T, worker: UsageParserWorker | undefined, signal: AbortSignal) => Promise<void>, signal?: AbortSignal, parallel = true, isolated = false): Promise<void> {
     const readSignal = signal === undefined ? this.stop.signal : AbortSignal.any([signal, this.stop.signal]);
     await this.acquire(readSignal);
     const operation = new AbortController();
@@ -57,6 +59,13 @@ export class UsageRecoveryPool {
       while (index < sources.length) { laneSignal.throwIfAborted(); const source = sources[index++]!; await consume(source, worker, laneSignal); }
     };
     try {
+      if (isolated && this.workerEnabled) {
+        if (this.isolatedWorker?.isStopped) { await this.isolatedWorker.close(); this.isolatedWorker = undefined; }
+        this.isolatedWorker ??= new UsageParserWorker(this.stop.signal, this.entry);
+        try { await loop(this.isolatedWorker); }
+        catch (error) { await this.isolatedWorker.close(); this.isolatedWorker = undefined; throw error; }
+        return;
+      }
       if (parallel && this.workerEnabled && sources.length > 1) this.worker = new UsageParserWorker(laneSignal, this.entry);
       const lanes = [loop()];
       if (this.worker !== undefined) lanes.push(loop(this.worker));
@@ -74,8 +83,16 @@ export class UsageRecoveryPool {
     }
   }
 
-  observation(): UsageWorkerObservation | undefined { return this.worker?.observation() ?? this.lastObservation; }
-  dispose(): void { this.disposed = true; this.stop.abort(new DOMException('Usage recovery disposed', 'AbortError')); if (this.worker !== undefined) this.closing = this.worker.close(); }
+  async pace(bytes: number, signal: AbortSignal): Promise<void> {
+    const now = performance.now();
+    const wait = Math.max(0, this.nextReadAt - now);
+    this.nextReadAt = Math.max(now, this.nextReadAt) + bytes / (64 * 1024 * 1024) * 1000;
+    if (wait >= 1) await delay(wait, undefined, { signal });
+    else await yieldToEventLoop(undefined, { signal });
+  }
+
+  observation(): UsageWorkerObservation | undefined { return this.worker?.observation() ?? this.isolatedWorker?.observation() ?? this.lastObservation; }
+  dispose(): void { this.disposed = true; this.stop.abort(new DOMException('Usage recovery disposed', 'AbortError')); this.closing = Promise.all([this.worker?.close(), this.isolatedWorker?.close()]).then(() => undefined); }
   async closed(): Promise<void> { await this.idle; await this.closing; }
 
   private async acquire(signal: AbortSignal): Promise<void> {
@@ -114,6 +131,7 @@ export async function readUsageWireTail(
   worker?: UsageParserWorker,
   onScannedRecord?: () => void,
   externalSignal?: AbortSignal,
+  onReadBytes?: (cursor: number, bytes: number) => Promise<void>,
 ): Promise<WireTailResult> {
   const retained = continuations.get(scope);
   continuations.delete(scope);
@@ -141,6 +159,7 @@ export async function readUsageWireTail(
       sourceRead: for await (const input of readLogicalBytes(storage, scope, 'wire.jsonl', { start: state.cursor, end: end - 1 }, { signal: readSignal, chunkBytes: USAGE_CHUNK_BYTES })) {
         signal?.throwIfAborted();
         readBytes += input.byteLength;
+        await onReadBytes?.(state.cursor + input.byteLength, input.byteLength);
         for (let part = 0; part < input.byteLength; part += USAGE_CHUNK_BYTES) {
           const chunk = input.subarray(part, Math.min(part + USAGE_CHUNK_BYTES, input.byteLength));
           const count = chunk.byteLength;

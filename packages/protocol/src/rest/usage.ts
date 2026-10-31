@@ -161,6 +161,12 @@ export const usageResponseSchema = z.object({
       earliest_at: z.number().int().nonnegative().nullable(),
       latest_at: z.number().int().nonnegative().nullable(),
     }),
+    import_progress: z.object({
+      verified_sources: z.number().int().nonnegative(),
+      total_sources: z.number().int().nonnegative(),
+      read_bytes: z.number().int().nonnegative(),
+      total_bytes: z.number().int().nonnegative(),
+    }).optional(),
     scanned_sessions: z.number().int().nonnegative(),
     incomplete_sessions: z.number().int().nonnegative(),
     unknown_price_models: z.array(z.string()),

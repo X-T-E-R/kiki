@@ -77,6 +77,7 @@ export class SqliteUsageReadModel extends Disposable implements IUsageReadModel 
   async invalidate(source: string): Promise<void> { await this.writeOperation({ type: 'invalidate', source }); }
   read(source: string, range?: UsageFactRange, offset?: number, limit?: number, signal?: AbortSignal, until?: number): ReturnType<IUsageReadModel['read']> { return this.readOperation({ type: 'read', source, range, offset, limit, until }, signal); }
   summary(...[source, signal]: Parameters<IUsageReadModel['summary']>): ReturnType<IUsageReadModel['summary']> { return this.readOperation({ type: 'summary', source }, signal); }
+  summaries(...[sources, signal]: Parameters<IUsageReadModel['summaries']>): ReturnType<IUsageReadModel['summaries']> { return this.readOperation({ type: 'summaries', sources }, signal); }
   async catalog(sessions: readonly UsageReadModelSession[], sources: readonly { source: string; workspaceId: string; sessionId: string }[], inventory?: boolean): Promise<void> { await this.writeOperation({ type: 'catalog', sessions, sources, inventory }); }
   async settleRetained(ledger: string, generation: string): Promise<void> { await this.writeOperation({ type: 'settleRetained', ledger, generation }); }
   retained(workspaceIds?: readonly string[], signal?: AbortSignal): ReturnType<IUsageReadModel['retained']> { return this.readOperation({ type: 'retained', workspaceIds }, signal); }

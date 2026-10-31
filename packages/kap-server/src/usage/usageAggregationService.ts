@@ -13,6 +13,7 @@ import {
   type UsageReadModelQuote,
   IAppendLogStore,
   IFileSystemStorageService,
+  ILogService,
   readLogicalBytes,
   IRetainedUsageService,
   ISessionIndex,
@@ -105,9 +106,18 @@ export interface AgentUsageReadOptions {
 
 interface SourceReadOptions extends AgentUsageReadOptions {
   readonly verifyBoundary?: boolean;
+  readonly background?: boolean;
   readonly factBudget?: UsageFactReadBudget;
   readonly recoveryBudget?: { remainingRecords: number; remainingBytes: number };
   readonly onScannedRecord?: () => void;
+}
+
+interface UsageSourceMetadata {
+  readonly source: string;
+  readonly agentId: string;
+  readonly generation: string;
+  readonly size: number;
+  readonly mtimeMs: number;
 }
 
 interface UsageInventorySession {
@@ -236,8 +246,15 @@ export class UsageAggregationService {
     this.limits = { ...DEFAULT_LIMITS, ...limits };
     this.sourceSubscription = sourceChanges?.onDidChange((key) => {
       this.replayEpoch++;
-      if (key === undefined) this.inventoryRevision++;
-      else { this.dirtySessions.set(key, this.replayEpoch); this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1); }
+      if (key === undefined) { this.inventoryRevision++; this.agentInventories.clear(); }
+      else { this.dirtySessions.set(key, this.replayEpoch); this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1); this.agentInventories.delete(key); }
+      if (key === undefined) this.sourceMetadata.clear();
+      else {
+        const prefix = `sessions/${key.replace('\0', '/')}/agents/`;
+        for (const source of this.sourceMetadata.keys()) if (source.startsWith(prefix)) this.sourceMetadata.delete(source);
+        for (const source of this.verifiedSources.keys()) if (source.startsWith(prefix)) this.verifiedSources.delete(source);
+      }
+      this.progressInventoryReady = false;
       this.modelReady = false;
     });
   }
@@ -339,6 +356,12 @@ export class UsageAggregationService {
     return { tokens: { input_other: totals.usage.inputOther, output: totals.usage.output, input_cache_read: totals.usage.inputCacheRead, input_cache_creation: totals.usage.inputCacheCreation }, tokens_unknown: partial, cost_usd_estimated: cost, cost_unknown: costUnknown || partial };
   }
 
+  async readPublishedAgentUsage(workspaceId: string, sessionId: string, agentIds: readonly string[], signal?: AbortSignal): Promise<Readonly<Record<string, AgentUsageProjection>>> {
+    const session = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
+    const snapshots = await this.core.accessor.get(IUsageReadModel).summaries(agentIds.map((id) => agentScopeOf(session, id)), signal);
+    return Object.fromEntries(agentIds.map((id) => [id, { records: [], totals: snapshots[agentScopeOf(session, id)]?.totals, complete: false }]));
+  }
+
   async readAgentUsage(
     workspaceId: string,
     sessionId: string,
@@ -361,13 +384,8 @@ export class UsageAggregationService {
       options.signal?.throwIfAborted();
       if (!deadline.signal.aborted) throw error;
       if (options.summaryOnly) {
-        const model = this.core.accessor.get(IUsageReadModel);
-        const session = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
-        for (const id of new Set(agentIds)) {
-          if (rows[id]?.complete) continue;
-          const snapshot = await model.summary(agentScopeOf(session, id), options.signal);
-          rows[id] = { records: [], totals: snapshot.totals, complete: false };
-        }
+        const pending = [...new Set(agentIds)].filter((id) => !rows[id]?.complete);
+        Object.assign(rows, await this.readPublishedAgentUsage(workspaceId, sessionId, pending, options.signal));
       }
     } finally { if (timer !== undefined) clearTimeout(timer); }
     for (const id of agentIds) rows[id] ??= { records: [], complete: false };
@@ -388,7 +406,8 @@ export class UsageAggregationService {
     const model = this.core.accessor.get(IUsageReadModel);
     const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
     const signal = options.factSignal ?? this.modelController.signal;
-    for (const id of new Set(agentIds)) {
+    const ordered = [...new Set(agentIds)].toSorted((left, right) => Number(right === 'main') - Number(left === 'main'));
+    for (const id of ordered) {
       signal.throwIfAborted();
       if (this.now() >= (options.deadlineAt ?? Infinity)) break;
       const source = agentScopeOf(sessionScope, id);
@@ -551,9 +570,16 @@ export class UsageAggregationService {
       if (imported.readComplete === false) return false;
       const head = await model.source(source.source, signal);
       let checkpoint = head?.pendingCheckpoint ?? head?.checkpoint;
-      if (!options.verifyBoundary && checkpoint?.generation === source.generation && checkpoint.offset === source.size && checkpoint.size === source.size && checkpoint.mtimeMs === source.mtimeMs) return true;
+      if (!options.verifyBoundary && checkpoint?.generation === source.generation && checkpoint.offset === source.size && checkpoint.size === source.size && checkpoint.mtimeMs === source.mtimeMs) {
+        if (checkpoint.valid && head?.pendingCheckpoint === undefined) this.verifiedSources.set(source.source, sourceIdentity(source));
+        return true;
+      }
       if (checkpoint !== undefined && (checkpoint.generation !== source.generation || checkpoint.offset > source.size || checkpoint.offset === source.size && checkpoint.mtimeMs !== source.mtimeMs || checkpoint.offset > 0 && await this.boundaryHash(storage, source.source, checkpoint.offset, signal) !== checkpoint.boundaryHash)) checkpoint = undefined;
       let committedOffset = checkpoint?.offset ?? 0;
+      const identity = sourceIdentity(source);
+      const previousProgress = this.canonicalProgress.get(source.source);
+      const canonical = previousProgress?.identity === identity ? previousProgress : { identity, startOffset: committedOffset, readBytes: 0, totalBytes: source.size - committedOffset };
+      this.canonicalProgress.set(source.source, canonical);
       let committedFacts = 0;
       const allowance = new UsageReadAllowance(options.recoveryBudget?.remainingRecords ?? options.maxRecords ?? this.limits.wireRecordBudget, budget.remainingRecords, options.recoveryBudget?.remainingBytes ?? options.maxBytes ?? Infinity);
       const deadlineAt = options.deadlineAt ?? this.now() + this.limits.deadlineMs;
@@ -567,19 +593,23 @@ export class UsageAggregationService {
         await facts.commit(source.source, committedOffset, { generation: source.generation, offset: end, size: source.size, mtimeMs: source.mtimeMs, boundaryHash: await this.boundaryHash(storage, source.source, end, publicationSignal), valid: (checkpoint?.valid ?? true) && valid }, records.slice(committedFacts));
         committedOffset = end;
         committedFacts = records.length;
+        if (end === source.size && (checkpoint?.valid ?? true) && valid) this.verifiedSources.set(source.source, identity);
       };
       try {
         if (source.size === 0) { await publish(0, [], true); return true; }
         let complete = false;
         await this.recovery.run([source], async (_job, worker, laneSignal) => {
-          const tail = await readUsageWireTail(storage, source.source, checkpoint?.offset ?? 0, source.size, allowance, deadlineAt, this.now, source.agentId, laneSignal, publish, this.pendingWireLines, JSON.stringify([source.generation, source.size, source.mtimeMs]), worker, options.onScannedRecord, publicationSignal);
+          const tail = await readUsageWireTail(storage, source.source, checkpoint?.offset ?? 0, source.size, allowance, deadlineAt, this.now, source.agentId, laneSignal, publish, this.pendingWireLines, JSON.stringify([source.generation, source.size, source.mtimeMs]), worker, options.onScannedRecord, publicationSignal, async (cursor, bytes) => {
+            canonical.readBytes = Math.max(canonical.readBytes, Math.min(source.size, cursor) - canonical.startOffset);
+            if (options.background) await this.recovery.pace(bytes, laneSignal);
+          });
           if (options.recoveryBudget !== undefined) {
             options.recoveryBudget.remainingRecords -= tail.scannedRecordCount;
             options.recoveryBudget.remainingBytes -= tail.readBytes;
           }
           if (tail.offset !== committedOffset || checkpoint === undefined) await publish(tail.offset, tail.records, tail.valid);
           complete = tail.complete && tail.offset === source.size;
-        }, signal, false);
+        }, signal, false, options.background === true);
         budget.remainingRecords -= allowance.counts().facts;
         return complete;
       } finally { signal.removeEventListener('abort', onAbort); }
@@ -599,6 +629,7 @@ export class UsageAggregationService {
   private async prepareReadModel(requestSignal: AbortSignal, startAt?: number): Promise<void> {
     if (this.rescan.state === 'running') return;
     if (this.modelReady && (startAt ?? -Infinity) >= this.modelRangeStart && this.sourceChanges?.ready && this.now() - this.modelVerifiedAt < SOURCE_RECHECK_MS) return;
+    this.discoverImportProgress();
     if (this.preparationController?.signal.aborted) await this.modelPreparing?.catch(() => undefined);
     if (this.modelPreparing === undefined) this.preparationController = new AbortController();
     const slice = new AbortController();
@@ -626,6 +657,91 @@ export class UsageAggregationService {
   private knownSessions = new Map<string, SessionSummary>();
   private knownSources = new Map<string, { source: string; workspaceId: string; sessionId: string }>();
 
+  private readonly agentInventories = new Map<string, Promise<readonly string[]>>();
+  private readonly sourceMetadata = new Map<string, Promise<UsageSourceMetadata>>();
+  private readonly verifiedSources = new Map<string, string>();
+  private readonly canonicalProgress = new Map<string, { identity: string; startOffset: number; readBytes: number; totalBytes: number }>();
+  private progressInventory?: Promise<void>;
+  private progressInventoryReady = false;
+  private progressRows: readonly { summary: SessionSummary; metadata: UsageSourceMetadata; journalSize: number }[] = [];
+  private retainedProgress: readonly { source: string; size: number; readBytes: number; complete: boolean }[] = [];
+
+  private agentsOf(summary: SessionSummary): Promise<readonly string[]> {
+    const key = sessionKey(summary);
+    let read = this.agentInventories.get(key);
+    if (read === undefined) {
+      const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
+      read = this.core.accessor.get(IFileSystemStorageService).list(`${session}/agents`);
+      this.agentInventories.set(key, read);
+      void read.catch(() => { if (this.agentInventories.get(key) === read) this.agentInventories.delete(key); });
+    }
+    return read;
+  }
+
+  private metadataOf(source: string, agentId: string): Promise<UsageSourceMetadata> {
+    let read = this.sourceMetadata.get(source);
+    if (read === undefined) {
+      const storage = this.core.accessor.get(IFileSystemStorageService), logs = this.core.accessor.get(IAppendLogStore);
+      read = Promise.all([logs.generation(source, AGENT_WIRE_RECORD_KEY), storage.size(source, AGENT_WIRE_RECORD_KEY), storage.mtime(source, AGENT_WIRE_RECORD_KEY)]).then(([generation, size, mtimeMs]) => ({ source, agentId, generation, size: size ?? 0, mtimeMs: mtimeMs ?? 0 }));
+      this.sourceMetadata.set(source, read);
+      void read.catch(() => { if (this.sourceMetadata.get(source) === read) this.sourceMetadata.delete(source); });
+    }
+    return read;
+  }
+
+  private discoverImportProgress(): void {
+    if (this.progressInventoryReady || this.progressInventory !== undefined) return;
+    const epoch = this.replayEpoch;
+    const signal = this.modelController.signal;
+    const work = (async () => {
+      const index = this.core.accessor.get(ISessionIndex), model = this.core.accessor.get(IUsageReadModel), facts = this.core.accessor.get(IUsageFactStore);
+      const rows: { summary: SessionSummary; metadata: UsageSourceMetadata; journalSize: number }[] = [];
+      let before: string | undefined;
+      do {
+        const page = await waitForSource(index.listRecent({ includeArchived: true, limit: INDEX_PAGE_SIZE, before }), signal);
+        for (const summary of page.items) {
+          const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
+          const agents = await waitForSource(this.agentsOf(summary), signal);
+          for (let offset = 0; offset < agents.length; offset += 32) {
+            rows.push(...await Promise.all(agents.slice(offset, offset + 32).map(async (agentId) => {
+              const source = agentScopeOf(session, agentId);
+              const [metadata, journalSize] = await Promise.all([this.metadataOf(source, agentId), facts.journalSize(source, signal)]);
+              return { summary, metadata, journalSize };
+            })));
+            await yieldToEventLoop(undefined, { signal });
+          }
+        }
+        before = page.nextCursor;
+      } while (before !== undefined);
+      this.retainedProgress = await this.core.accessor.get(IRetainedUsageService).readModelImportProgress?.(signal) ?? [];
+      const heads = await model.sources(signal);
+      for (const { source, head } of heads) {
+        const metadata = await this.sourceMetadata.get(source);
+        const checkpoint = head.checkpoint;
+        if (metadata !== undefined && checkpoint?.valid && head.pendingCheckpoint === undefined && checkpoint.generation === metadata.generation && checkpoint.offset === metadata.size && checkpoint.size === metadata.size && checkpoint.mtimeMs === metadata.mtimeMs) this.verifiedSources.set(source, sourceIdentity(metadata));
+      }
+      if (epoch === this.replayEpoch) { this.progressRows = rows; this.progressInventoryReady = true; }
+    })();
+    this.progressInventory = work;
+    void work.catch((error: unknown) => { if (!signal.aborted) this.core.accessor.get(ILogService).warn('Usage import progress inventory pending', error); }).finally(() => { if (this.progressInventory === work) this.progressInventory = undefined; });
+  }
+
+  private importProgress(query: NormalizedQuery): UsageResponse['reliability']['import_progress'] {
+    if (!this.progressInventoryReady && this.progressRows.length === 0 && this.retainedProgress.length === 0) return undefined;
+    let verified_sources = 0, total_sources = 0, read_bytes = 0, total_bytes = 0;
+    for (const { summary, metadata, journalSize } of this.progressRows) {
+      if (!query.includeArchived && summary.archived || query.workspaceIds.length > 0 && !query.workspaceIds.includes(summary.workspaceId) || metadata.mtimeMs >= 1_000_000_000_000 && metadata.mtimeMs < (query.range.startAt ?? -Infinity)) continue;
+      total_sources++;
+      const identity = sourceIdentity(metadata);
+      if (this.verifiedSources.get(metadata.source) === identity) verified_sources++;
+      const canonical = this.canonicalProgress.get(metadata.source);
+      if (canonical?.identity === identity) { total_bytes += canonical.totalBytes; read_bytes += canonical.readBytes; }
+      else if (journalSize === 0 && this.verifiedSources.get(metadata.source) !== identity) total_bytes += metadata.size;
+    }
+    for (const retained of this.retainedProgress) { total_sources++; if (retained.complete) verified_sources++; total_bytes += retained.size; read_bytes += retained.readBytes; }
+    return { verified_sources, total_sources, read_bytes, total_bytes };
+  }
+
   private startReadModelPreparation(full = false, startAt?: number): Promise<void> {
     if (this.modelPreparing !== undefined) return this.modelPreparing;
     const epoch = this.replayEpoch;
@@ -642,13 +758,12 @@ export class UsageAggregationService {
     if (full || this.inventory !== undefined && rangeStart < this.inventory.startAt) this.inventory = undefined;
     const work = (async () => {
       const index = this.core.accessor.get(ISessionIndex);
-      const storage = this.core.accessor.get(IFileSystemStorageService);
-      const logs = this.core.accessor.get(IAppendLogStore);
       const model = this.core.accessor.get(IUsageReadModel);
       if (this.inventory === undefined) {
         const verifyAll = full || this.verifiedInventoryRevision !== this.inventoryRevision || !this.sourceChanges?.ready || this.now() - this.modelVerifiedAt >= SOURCE_RECHECK_MS || rangeStart < this.modelRangeStart;
         const heads = new Map(verifyAll ? (await waitForSource(model.sources(signal), signal)).map((row) => [row.source, row.head]) : []);
         if (verifyAll) {
+          if (full || this.verifiedInventoryRevision >= 0 && (!this.sourceChanges?.ready || this.now() - this.modelVerifiedAt >= SOURCE_RECHECK_MS)) { this.agentInventories.clear(); this.sourceMetadata.clear(); this.progressInventoryReady = false; }
           this.modelExcludedSources.clear();
           this.modelRangeStart = rangeStart;
         }
@@ -680,7 +795,7 @@ export class UsageAggregationService {
               const key = sessionKey(summary);
               const version = this.dirtySessions.get(key);
               const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
-              const agents = await storage.list(`${session}/agents`);
+              const agents = await this.agentsOf(summary);
               return { key, summary, agents, version, sources: agents.map((agentId) => ({ source: agentScopeOf(session, agentId), workspaceId: summary.workspaceId, sessionId: summary.id })) };
             })), signal);
             await model.catalog(page.items.map((summary) => ({ ...summary, deleted: false })), prepared.flatMap((item) => item.sources));
@@ -711,7 +826,7 @@ export class UsageAggregationService {
           const prepared = inventory.prepared.get(key);
           const observedVersion = inventory.full ? prepared === undefined ? this.dirtySessions.get(key) : prepared.version : version;
           const session = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
-          const agents = prepared?.agents ?? await waitForSource(storage.list(`${session}/agents`), signal);
+          const agents = prepared?.agents ?? await waitForSource(this.agentsOf(summary), signal);
           const accountedAgents = this.sessionAccounting.get(key)?.agents;
           if (accountedAgents !== undefined && (accountedAgents.length !== agents.length || accountedAgents.some((agent) => !agents.includes(agent)))) this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
           const sources = agents.map((agentId) => ({ source: agentScopeOf(session, agentId), workspaceId: summary.workspaceId, sessionId: summary.id }));
@@ -727,9 +842,9 @@ export class UsageAggregationService {
           if (current.pending === undefined || current.pending.length === 0) {
             const count = full ? 32 : Math.min(32, this.limits.sourceScanLimit - scannedSources);
             current.pending = await waitForSource(Promise.all(current.sources.slice(current.nextAgent, current.nextAgent + count).map(async ({ source }, offset) => {
-              const [generation, size, mtime, head] = await Promise.all([logs.generation(source, AGENT_WIRE_RECORD_KEY), storage.size(source, AGENT_WIRE_RECORD_KEY), storage.mtime(source, AGENT_WIRE_RECORD_KEY), inventory.full ? inventory.heads.get(source) : model.source(source, signal)]);
+              const [metadata, head] = await Promise.all([this.metadataOf(source, current.agents[current.nextAgent + offset]!), inventory.full ? inventory.heads.get(source) : model.source(source, signal)]);
               const checkpoint = head?.checkpoint;
-              return { source, agentId: current.agents[current.nextAgent + offset]!, generation, size: size ?? 0, mtimeMs: mtime ?? 0, aligned: !full && checkpoint?.generation === generation && checkpoint.offset === (size ?? 0) && checkpoint.size === (size ?? 0) && checkpoint.mtimeMs === (mtime ?? 0) };
+              return { ...metadata, aligned: !full && head?.pendingCheckpoint === undefined && checkpoint?.generation === metadata.generation && checkpoint.offset === metadata.size && checkpoint.size === metadata.size && checkpoint.mtimeMs === metadata.mtimeMs };
             })), signal);
           }
           const source = current.pending[0]!;
@@ -739,7 +854,7 @@ export class UsageAggregationService {
             const key = sessionKey(current.summary);
             if (!source.aligned && this.sessionAccounting.has(key)) this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
             this.modelExcludedSources.delete(source.source);
-            if (!source.aligned && !await this.synchronizeSource(source, signal, { factBudget, recoveryBudget, deadlineAt, onScannedRecord: full ? () => { this.rescan = { ...this.rescan, scanned_records: this.rescan.scanned_records + 1 }; } : undefined })) { this.modelIncompleteReason = this.now() >= deadlineAt ? 'deadline' : 'record_budget'; return; }
+            if (!source.aligned && !await this.synchronizeSource(source, signal, { factBudget, recoveryBudget, deadlineAt, background: true, onScannedRecord: full ? () => { this.rescan = { ...this.rescan, scanned_records: this.rescan.scanned_records + 1 }; } : undefined })) { this.modelIncompleteReason = this.now() >= deadlineAt ? 'deadline' : 'record_budget'; return; }
             if (full && (await model.source(source.source, signal))?.checkpoint?.valid !== true) {
               fullScannedSessions.add(sessionKey(current.summary));
               this.rescan = { ...this.rescan, scanned_sessions: fullScannedSessions.size };
@@ -764,6 +879,7 @@ export class UsageAggregationService {
       const retained = this.core.accessor.get(IRetainedUsageService);
       if (retained.prepareReadModel !== undefined) {
         const progress = await retained.prepareReadModel({ deadlineAt, recordLimit: factBudget.remainingRecords, signal });
+        this.retainedProgress = await retained.readModelImportProgress?.(signal) ?? [];
         if (!progress.complete) { this.modelIncompleteReason = progress.incompleteReason ?? null; return; }
       }
       signal.throwIfAborted();
@@ -822,13 +938,14 @@ export class UsageAggregationService {
       catch (error) { if ((error as { code?: string }).code === 'usage.revision_changed') throw new UsagePageTokenMismatchError('Usage statistics changed; restart from the first page'); throw error; }
       if (this.now() - started >= this.limits.deadlineMs) incompleteReason = 'deadline';
       const last = result.sessions.at(-1);
+      const complete = this.modelReady && incompleteReason === null && result.incompleteSessions === 0;
       const wire = (value: UsageReadModelAggregate): UsageAggregateWire => ({ tokens: { input_other: value.usage.inputOther, output: value.usage.output, input_cache_read: value.usage.inputCacheRead, input_cache_creation: value.usage.inputCacheCreation }, tokens_unknown: value.missingRecords > 0 || value.legacyZeroRecords > 0, cost_usd_estimated: value.cost, cost_unknown: value.costUnknown });
       return {
         query: { granularity: query.granularity, range: { preset: query.range.preset, start_at: query.range.startAt ?? null, end_at: query.range.endAt ?? null, defaulted_to_all_history: query.range.defaultedToAllHistory }, dimension: query.dimension, models: [...query.models], providers: [...query.providers], profiles: [...query.profiles], agent_ids: [...query.agentIds], workspace_ids: [...query.workspaceIds], include_archived: query.includeArchived, timezone_offset_minutes: query.timezoneOffsetMinutes },
         summary: { ...wire(result.total), session_count: result.sessionCount },
         trend: result.trend.map((bucket) => ({ key: bucket.key, start_at: bucket.startAt, end_at: bucket.endAt, request_count: bucket.requests, turn_count: bucket.turns, groups: bucket.groups.map((group) => ({ key: group.key, ...wire(group), provider: group.provider, model_alias: group.modelAlias, agent_id: group.agentId, parent_agent_id: group.parentAgentId, profile_name: group.profileName })), drilldown: { sessions: bucket.sessions.map((session) => ({ session_id: session.id, turn_ids: [...session.turnIds], turn_count: session.turns, unknown_turn_records: session.unknownTurnRecords, turn_ids_truncated: session.turns > session.turnIds.length })), sessions_truncated: bucket.sessionsTruncated } })),
         sessions: { items: result.sessions.map((row) => ({ id: row.session.id, workspace_id: row.session.workspaceId, title: row.session.title ?? null, created_at: row.session.createdAt, updated_at: row.session.updatedAt, archived: row.session.archived, deleted: row.session.deleted, usage: wire(row), primary_model: row.primaryModel ?? null, profile_names: [...row.profileNames], unknown_price_models: [...row.unknownPriceModels] })), total: result.sessionCount, has_more: result.hasMore, next_page_token: result.hasMore && last !== undefined ? Buffer.from(JSON.stringify({ v: 2, f: fingerprint, r: result.revision, p: pricingRevision, k: [last.cost, last.session.id] })).toString('base64url') : null },
-        reliability: { complete: this.modelReady && incompleteReason === null && result.incompleteSessions === 0, coverage: { earliest_at: result.earliestAt ?? null, latest_at: result.latestAt ?? null }, usage_coverage: { known_records: result.total.knownRecords, missing_records: result.total.missingRecords, legacy_zero_records: result.total.legacyZeroRecords }, scanned_sessions: result.scannedSessions, incomplete_sessions: result.incompleteSessions, unknown_price_models: [...result.unknownPriceModels], includes_deleted_sessions: result.includesDeletedSessions, incomplete_reason: incompleteReason },
+        reliability: { complete, import_progress: complete ? undefined : this.importProgress(query), coverage: { earliest_at: result.earliestAt ?? null, latest_at: result.latestAt ?? null }, usage_coverage: { known_records: result.total.knownRecords, missing_records: result.total.missingRecords, legacy_zero_records: result.total.legacyZeroRecords }, scanned_sessions: result.scannedSessions, incomplete_sessions: result.incompleteSessions, unknown_price_models: [...result.unknownPriceModels], includes_deleted_sessions: result.includesDeletedSessions, incomplete_reason: incompleteReason },
       };
     } catch (error) {
       signal.throwIfAborted();
@@ -969,6 +1086,10 @@ function normalizeRetainedRecord(record: RetainedUsageRecord): NormalizedUsageRe
     modelAlias: record.modelAlias,
     profileName: record.profileName,
   };
+}
+
+function sourceIdentity(source: UsageSourceMetadata): string {
+  return JSON.stringify([source.generation, source.size, source.mtimeMs]);
 }
 
 function sessionKey(summary: Pick<SessionSummary, 'id' | 'workspaceId'>): string {

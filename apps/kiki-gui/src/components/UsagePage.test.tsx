@@ -67,6 +67,17 @@ function tokens(inputOther: number, cacheRead = 0) {
   };
 }
 
+type UsageImportProgress = {
+  verified_sources: number;
+  total_sources: number;
+  read_bytes: number;
+  total_bytes: number;
+};
+
+type UsageResponseFixture = Omit<UsageResponseWire, 'reliability'> & {
+  reliability: UsageResponseWire['reliability'] & { import_progress?: UsageImportProgress };
+};
+
 function usageResponse(overrides: {
   defaulted?: boolean;
   costUnknown?: boolean;
@@ -91,7 +102,8 @@ function usageResponse(overrides: {
   rangeEndAt?: number | null;
   rangePreset?: UsageResponseWire['query']['range']['preset'];
   trendBuckets?: UsageResponseWire['trend'];
-} = {}): UsageResponseWire {
+  importProgress?: UsageImportProgress;
+} = {}): UsageResponseFixture {
   const items = (overrides.sessions ?? [{ id: 's_1', title: 'Alpha session', cost: 1.5 }]).map(
     (item) => ({
       id: item.id,
@@ -186,6 +198,7 @@ function usageResponse(overrides: {
       unknown_price_models: overrides.unknownPriceModels ?? [],
       includes_deleted_sessions: false,
       incomplete_reason: overrides.incompleteReason ?? null,
+      import_progress: overrides.importProgress,
     },
   };
 }
@@ -317,6 +330,107 @@ describe('UsagePage (V2)', () => {
     expect(getUsage).toHaveBeenCalledTimes(2);
     await act(async () => { root.unmount(); });
     queryClient.clear();
+  });
+
+  it.each([
+    ['en', 'Counting 2/5'],
+    ['zh', '统计中 2/5'],
+  ])('shows the localized counting progress instead of zeroes for an empty partial shared today strip (%s)', async (locale, counting) => {
+    localStorage.setItem('kiki.locale', locale);
+    getUsage.mockResolvedValue(usageResponse({
+      summaryTokens: tokens(0),
+      summaryCost: 0,
+      incompleteReason: 'deadline',
+      importProgress: { verified_sources: 2, total_sources: 5, read_bytes: 2048, total_bytes: 4096 },
+    }));
+    const { container, root } = await renderPage('/usage?panel=history');
+    expect(container.querySelector('[data-usage-scan-counting]')?.textContent).toContain(counting);
+    expect(container.querySelector('[data-usage-scan-bytes]')?.textContent).toBe('2.0 KB / 4.0 KB');
+    await openLiveStrip(container);
+    const today = container.querySelector('[data-usage-strip-tokens]');
+    const burnRate = container.querySelector('[data-usage-strip-burn-rate]');
+    expect(today?.textContent).toContain(counting);
+    expect(today?.textContent).not.toContain('$0.00');
+    expect(burnRate?.textContent).toContain(counting);
+    expect(burnRate?.textContent).not.toContain('tok/h');
+    expect(container.querySelector('[data-usage-strip-incomplete]')).not.toBeNull();
+    await act(async () => { root.unmount(); });
+  });
+
+  it('keeps the legacy partial counting label when import progress is unavailable', async () => {
+    getUsage.mockResolvedValue(usageResponse({
+      summaryTokens: tokens(0),
+      summaryCost: 0,
+      incompleteReason: 'deadline',
+    }));
+    const { container, root } = await renderPage('/usage?panel=history');
+    expect(container.querySelector('[data-usage-scan-counting]')?.textContent).toBe('Counting…');
+    expect(container.querySelector('[data-usage-scan-bytes]')).toBeNull();
+    await openLiveStrip(container);
+    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toBe('Counting…');
+    expect(container.querySelector('[data-usage-strip-burn-rate]')?.textContent).toBe('Counting…');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('removes the pending progress and strip marker after a shared partial completes', async () => {
+    let mainCallsCount = 0;
+    getUsage.mockImplementation(async (query: Record<string, unknown>) => {
+      if (query['page_size'] === 25) {
+        mainCallsCount += 1;
+        return mainCallsCount === 1
+          ? usageResponse({ incompleteReason: 'deadline', importProgress: { verified_sources: 4, total_sources: 9, read_bytes: 4096, total_bytes: 9216 } })
+          : usageResponse();
+      }
+      return usageResponse();
+    });
+    const { container, root } = await renderPage('/usage?panel=history');
+    expect(container.querySelector('[data-usage-scan-counting]')?.textContent).toContain('Counting 4/9');
+    expect(container.querySelector('[data-usage-scan-bytes]')?.textContent).toBe('4.0 KB / 9.0 KB');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-usage-scan-pending]')).toBeNull();
+    await openLiveStrip(container);
+    expect(container.querySelector('[data-usage-strip]')?.textContent).not.toContain('Counting 4/9');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('keeps known numbers on a partial independent today strip until it completes', async () => {
+    let todayCalls = 0;
+    const partial = usageResponse({
+      summaryTokens: tokens(100),
+      summaryCost: 2,
+      incompleteReason: 'record_budget',
+      importProgress: { verified_sources: 3, total_sources: 7, read_bytes: 3072, total_bytes: 8192 },
+    });
+    const complete = usageResponse({
+      summaryTokens: tokens(200),
+      summaryCost: 4,
+    });
+    getUsage.mockImplementation(async (query: Record<string, unknown>) => {
+      if (query['page_size'] === 1) {
+        todayCalls += 1;
+        return todayCalls === 1 ? partial : complete;
+      }
+      return usageResponse();
+    });
+    const { container, root } = await renderPage('/usage?range=last_7_days');
+    await openLiveStrip(container);
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(todayCalls).toBe(1);
+    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('11');
+    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('$2.00');
+    expect(container.querySelector('[data-usage-strip-incomplete]')?.textContent).toBe('Counting 3/7');
+    expect(container.querySelector('[data-usage-strip-burn-rate]')?.textContent).toContain('Counting 3/7');
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(todayCalls).toBe(2);
+    expect(container.querySelector('[data-usage-strip-tokens]')?.textContent).toContain('$4.00');
+    expect(container.querySelector('[data-usage-strip]')?.textContent).not.toContain('Counting 3/7');
+
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+    expect(todayCalls).toBe(2);
+    await act(async () => { root.unmount(); });
   });
 
   it('recovers an initial failure without starting a competing today request', async () => {
@@ -950,7 +1064,7 @@ describe('UsagePage (V2)', () => {
     const partial = usageResponse({ summaryTokens: tokens(0), summaryCost: 0, incompleteReason: 'deadline', incompleteSessions: 1 });
     getUsage.mockResolvedValue({ ...partial, trend: [] });
     const { container, root } = await renderPage();
-    expect(container.querySelector('[data-usage-scan-pending]')?.textContent).toContain('Counting is not complete');
+    expect(container.querySelector('[data-usage-scan-counting]')?.textContent).toBe('Counting…');
     expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toBe('—');
     expect(container.querySelector('[data-usage-summary-tokens]')?.textContent).toBe('—');
     expect(container.querySelector('[data-usage-summary-cache]')?.textContent).toBe('—');

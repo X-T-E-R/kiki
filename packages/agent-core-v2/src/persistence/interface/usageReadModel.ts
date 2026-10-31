@@ -116,6 +116,7 @@ export interface IUsageReadModel {
   invalidate(source: string): Promise<void>;
   read(source: string, range?: UsageFactRange, offset?: number, limit?: number, signal?: AbortSignal, until?: number): Promise<{ readonly head?: UsageSourceHead; readonly records: readonly UsageFact[]; readonly nextOffset?: number }>;
   summary(source: string, signal?: AbortSignal): Promise<{ readonly head?: UsageSourceHead; readonly totals?: UsageFactTotals }>;
+  summaries(sources: readonly string[], signal?: AbortSignal): Promise<Readonly<Record<string, { readonly head?: UsageSourceHead; readonly totals?: UsageFactTotals }>>>;
   catalog(sessions: readonly UsageReadModelSession[], sources: readonly { readonly source: string; readonly workspaceId: string; readonly sessionId: string }[], inventory?: boolean): Promise<void>;
   settleRetained(ledger: string, generation: string): Promise<void>;
   retained(workspaceIds?: readonly string[], signal?: AbortSignal): Promise<readonly { readonly source: string; readonly session: UsageReadModelSession }[]>;

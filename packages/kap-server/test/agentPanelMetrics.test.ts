@@ -580,6 +580,32 @@ describe('persisted agent panel metrics provenance', () => {
     expect(fixture.reads()).toBe(0);
   });
 
+  it('returns a committed main subtotal within one second while a shared tree settle continues', async () => {
+    const gate = deferred();
+    const fixture = persistedFixture([record('known-model', usage(2, 3), true)], undefined, {
+      agentIds: ['child', 'main'],
+      beforeRead: async (scope) => { if (scope.endsWith('/child')) await gate.promise; },
+    });
+    const options = { settle: true, complete: true } as const;
+    const started = performance.now();
+    try {
+      const partial = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'tree-slice', options);
+      expect(performance.now() - started).toBeLessThan(1000);
+      expect(partial['main']).toMatchObject({ totalTokens: 5, usageComplete: false });
+      expect(partial['child']).toMatchObject({ totalTokens: null, usageComplete: false });
+      const header = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'tree-slice', { settle: false });
+      expect(header['main']).toMatchObject({ totalTokens: 5, usageComplete: false });
+      gate.resolve();
+      const complete = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'tree-slice', options);
+      expect(complete['main']).toMatchObject({ totalTokens: 5, usageComplete: true });
+      expect(complete['child']).toMatchObject({ totalTokens: 5, usageComplete: true });
+      expect(fixture.reads()).toBe(2);
+    } finally {
+      gate.resolve();
+      await persisted(fixture.core, pricing({ 'known-model': 2 }), 'tree-slice', options);
+    }
+  });
+
   it('keeps a bounded settle flight after disconnect and shares its progress with the next read', async () => {
     const gate = deferred();
     const fixture = persistedFixture([
@@ -605,7 +631,7 @@ describe('persisted agent panel metrics provenance', () => {
     expect(fixture.reads()).toBe(1);
   });
 
-  it('does not cache a capped usage prefix for a later header read', async () => {
+  it('serves the committed capped prefix to a later header without importing and continues on settle', async () => {
     const fixture = persistedFixture([
       record('known-model', usage(2, 3), true),
       record('known-model', usage(4, 5), true),
@@ -618,7 +644,7 @@ describe('persisted agent panel metrics provenance', () => {
     const readsAfterCapped = fixture.reads();
     expect(readsAfterCapped).toBe(1);
     const header = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', { settle: false });
-    expect(header['main']).toMatchObject({ totalTokens: null, usagePartial: true, usageSource: 'persisted' });
+    expect(header['main']).toMatchObject({ totalTokens: 5, usagePartial: true, usageComplete: false, usageSource: 'persisted' });
     expect(fixture.reads()).toBe(readsAfterCapped);
     const again = await persisted(fixture.core, pricing({ 'known-model': 2 }), 'capped', {
       settle: true, complete: true,

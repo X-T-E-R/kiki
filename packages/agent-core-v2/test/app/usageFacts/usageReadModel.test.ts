@@ -68,6 +68,9 @@ describe('Usage source read model', () => {
     expect((await model.query(query)).total).toMatchObject({ usage: usage(25, 1), cost: 2.5, knownRecords: 4 });
     const priced = await model.query({ ...query, quotes: [{ model: 'example', inputOther: 0.1, output: 2 }] });
     expect(priced.total).toMatchObject({ cost: 4.5, costUnknown: false });
+    const snapshots = await model.summaries([SCOPE, 'sessions/example/session/agents/missing']);
+    expect(snapshots[SCOPE]).toEqual(await model.summary(SCOPE));
+    expect(snapshots['sessions/example/session/agents/missing']).toEqual({ head: undefined });
   });
 
   it('reads exact boundary facts when an hourly group crosses a range or timezone bucket', async () => {

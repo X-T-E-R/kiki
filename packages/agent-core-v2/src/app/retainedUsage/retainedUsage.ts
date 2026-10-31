@@ -61,6 +61,7 @@ export type RetainedUsageExportEvent =
 export interface IRetainedUsageService {
   readonly _serviceBrand: undefined;
   retainDeletedSession(summary: SessionSummary): Promise<RetainedDeletedSessionUsage>;
+  readModelImportProgress?(signal?: AbortSignal): Promise<readonly { readonly source: string; readonly size: number; readonly readBytes: number; readonly complete: boolean }[]>;
   listDeletedSessions(query: RetainedUsageListQuery): Promise<RetainedUsageListResult>;
   prepareReadModel?(query: RetainedUsageListQuery, includeEphemeral?: boolean): Promise<{ readonly complete: boolean; readonly scannedRecords: number; readonly incompleteReason?: RetainedUsageIncompleteReason }>;
   readExportUsage?(includeEphemeral: boolean, signal?: AbortSignal): AsyncGenerator<RetainedUsageExportEvent>;

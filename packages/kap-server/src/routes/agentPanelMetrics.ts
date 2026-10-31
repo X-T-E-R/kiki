@@ -169,7 +169,8 @@ export async function readPersistedAgentPanelMetrics(
   }
   if (missing.length === 0) return Object.freeze(Object.fromEntries(result));
   if (options.settle === false) {
-    for (const agentId of missing) result.set(agentId, toPersistedMetrics(emptyPersistedUsage(true)));
+    const rows = await usageRuntime(core).service.readPublishedAgentUsage(workspaceId, sessionId, missing, options.signal);
+    for (const agentId of missing) result.set(agentId, toPersistedMetrics(persistedUsageOf(rows[agentId]), pricing));
     return Object.freeze(Object.fromEntries(result));
   }
   const limitsKey = [
@@ -199,8 +200,9 @@ export async function readPersistedAgentPanelMetrics(
       options.limits,
       controller.signal, () => created.sharedWaiters,
     )).then((scanResult) => {
-      if (scanResult.budgetCapped || revision !== state.revision || controller.signal.aborted) return scanResult;
+      if (revision !== state.revision || controller.signal.aborted) return scanResult;
       for (const [agentId, usage] of Object.entries(scanResult.usages)) {
+        if (!usage.complete) continue;
         const ttl = mutable.has(agentId)
           ? PERSISTED_METRICS_MUTABLE_CACHE_TTL_MS
           : PERSISTED_METRICS_IMMUTABLE_CACHE_TTL_MS;
@@ -219,7 +221,18 @@ export async function readPersistedAgentPanelMetrics(
     flight = created;
     state.flights.set(flightKey, flight);
   }
-  const scanned = await waitForPersistedMetricsFlight(flight, options.signal);
+  const slice = new AbortController();
+  const timer = options.complete === true ? setTimeout(() => { slice.abort(new DOMException('Panel preparation continues in background', 'TimeoutError')); }, 650) : undefined;
+  timer?.unref();
+  let scanned: PersistedMetricsScanResult;
+  try {
+    scanned = await waitForPersistedMetricsFlight(flight, options.signal === undefined ? slice.signal : AbortSignal.any([options.signal, slice.signal]));
+  } catch (error) {
+    options.signal?.throwIfAborted();
+    if (!slice.signal.aborted) throw error;
+    const rows = await usageRuntime(core).service.readPublishedAgentUsage(workspaceId, sessionId, missing, options.signal);
+    scanned = { usages: Object.fromEntries(missing.map((id) => [id, persistedUsageOf(rows[id])])), budgetCapped: true };
+  } finally { if (timer !== undefined) clearTimeout(timer); }
   for (const agentId of missing) {
     const usage = scanned.usages[agentId]
       ?? state.cache.get(keyFor(agentId))?.usage
@@ -316,11 +329,7 @@ async function scanPersistedAgentPanelMetrics(
   let partial = false;
   for (const id of agentIds) {
     const row = rows[id];
-    const state: PersistedUsage = row?.totals === undefined
-      ? emptyPersistedUsage(row?.complete !== true)
-      : { ...row.totals, usage: { ...row.totals.usage }, byModel: { ...row.totals.byModel }, partial: row.totals.partial || !row.complete, complete: row.complete };
-    if (row?.totals === undefined) Object.assign(state, summarizeUsageFacts(row?.records ?? [], state));
-    usages[id] = state;
+    usages[id] = persistedUsageOf(row);
     partial ||= row?.complete !== true;
   }
   core.accessor.get(ILogService).info('agent panel usage projection read', {
@@ -329,6 +338,14 @@ async function scanPersistedAgentPanelMetrics(
     shared_waiters_count: sharedWaiters(), partial,
   });
   return { usages, budgetCapped: partial };
+}
+
+function persistedUsageOf(row: import('../usage/usageAggregationService').AgentUsageProjection | undefined): PersistedUsage {
+  const state: PersistedUsage = row?.totals === undefined
+    ? emptyPersistedUsage(row?.complete !== true)
+    : { ...row.totals, usage: { ...row.totals.usage }, byModel: { ...row.totals.byModel }, partial: row.totals.partial || !row.complete, complete: row.complete };
+  if (row?.totals === undefined) Object.assign(state, summarizeUsageFacts(row?.records ?? [], state));
+  return state;
 }
 
 function emptyPersistedUsage(partial = false): PersistedUsage {

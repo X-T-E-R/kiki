@@ -43,6 +43,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
 import { UsageSourceTracker, type UsageSourceChanges } from '../src/usage/usageSourceTracker';
+import { UsageRecoveryPool } from '../src/usage/usageRecovery';
 
 const queryFixtures: { home: string; ix: TestInstantiationService; store: IQueryStore; model?: IUsageReadModel }[] = [];
 afterEach(async () => {
@@ -352,13 +353,14 @@ function fixture(
         if (identifier === IUsageFactStore) return facts;
         if (identifier === IQueryStore) return queryStore;
         if (identifier === IAppendLogStore) return logs;
+        if (identifier === ILogService) return stubLog();
         throw new Error('unexpected service');
       },
     },
   } as unknown as Scope;
   return {
     core,
-    service: new UsageAggregationService(core, now, { preparationWaitMs: 10_000, ...limits }, sourceChanges),
+    service: new UsageAggregationService(core, now, { preparationWaitMs: 10_000, ...limits }, sourceChanges, new UsageRecoveryPool(false)),
     model,
     facts,
     reads,
@@ -371,7 +373,7 @@ function fixture(
     retainedQueries,
     setWire,
     setMtime: (wireScope: string, mtimeMs: number) => { wireMtimes.set(wireScope, mtimeMs); },
-    restart: () => new UsageAggregationService(core, now, { preparationWaitMs: 10_000, ...limits }, sourceChanges),
+    restart: () => new UsageAggregationService(core, now, { preparationWaitMs: 10_000, ...limits }, sourceChanges, new UsageRecoveryPool(false)),
     setAgentIds: (ids) => { agentIds = ids; },
     setPrice: (value) => { price = value; },
     onPrice: (observer) => { priceObserver = observer; },
@@ -869,7 +871,9 @@ describe('UsageAggregationService cache budgets', () => {
     f.setAgentIds(ids);
     let result = await query(f.service);
     expect(result.reliability).toMatchObject({ complete: false, incomplete_reason: 'record_budget' });
-    expect([...f.sourceProbes.values()].reduce((a, b) => a + b, 0)).toBe(2);
+    await Reflect.get(f.service, 'progressInventory');
+    expect([...f.sourceProbes.values()].reduce((a, b) => a + b, 0)).toBe(7);
+    expect(Reflect.get(f.service, 'verifiedSources').size).toBe(2);
     for (let page = 0; page < 3; page++) result = await query(f.service);
     expect(result.reliability.complete).toBe(true);
     expect([...f.agentLists]).toEqual([['sessions/w/s/agents', 1]]);
@@ -880,7 +884,9 @@ describe('UsageAggregationService cache budgets', () => {
     const sessions = Array.from({ length: 3 }, (_, i) => summary(`s${i}`, 'w'));
     const f = fixture(sessions, {}, () => 0, { sessionScanLimit: 1 });
     expect((await query(f.service)).reliability).toMatchObject({ complete: false, incomplete_reason: 'session_cap' });
-    expect([...f.agentLists.keys()]).toEqual(['sessions/w/s0/agents']);
+    await Reflect.get(f.service, 'progressInventory');
+    expect([...f.agentLists.keys()]).toEqual(sessions.map((session) => `sessions/w/${session.id}/agents`));
+    expect(Reflect.get(f.service, 'verifiedSources').size).toBe(1);
     expect((await query(f.service)).reliability.complete).toBe(false);
     expect((await query(f.service)).reliability.complete).toBe(true);
     expect([...f.agentLists.values()]).toEqual([1, 1, 1]);
@@ -1063,7 +1069,8 @@ describe('UsageAggregationService cache budgets', () => {
     const f = fixture([summary('s', 'w')], { [scope('w', 's')]: [invalid] }, () => day);
     const cold = await query(f.service, { range: 'today' });
     expect(cold.reliability).toMatchObject({ complete: false, incomplete_sessions: 1 });
-    expect(await query(f.service, { range: 'today' })).toEqual(cold);
+    const warm = await query(f.service, { range: 'today' });
+    expect(warm).toEqual({ ...cold, reliability: { ...cold.reliability, import_progress: warm.reliability.import_progress } });
   });
 
   it('serves warmed cache entries without spending the wire-read budget', async () => {
@@ -1846,7 +1853,8 @@ describe('UsageSourceTracker', () => {
 describe('shared agent and History typed usage', () => {
   it('returns committed History numbers within the foreground slice while one preparation continues to completion', async () => {
     const first = scope('w', 'first'), later = scope('w', 'later');
-    const f = fixture([summary('first', 'w'), summary('later', 'w')], { [first]: [usageRecord(1)], [later]: [usageRecord(2)] }, Date.now, { preparationWaitMs: 30 });
+    const changed = new Emitter<string | undefined>();
+    const f = fixture([summary('first', 'w'), summary('later', 'w')], { [first]: [usageRecord(1)], [later]: [usageRecord(2)] }, Date.now, { preparationWaitMs: 30 }, undefined, undefined, undefined, undefined, undefined, { ready: true, onDidChange: changed.event });
     await f.service.readAgentUsage('w', 'first', ['main'], { summaryOnly: true });
     await f.model.catalog([{ ...summary('first', 'w'), deleted: false }], [{ source: first, workspaceId: 'w', sessionId: 'first' }]);
     let enter!: () => void, release!: () => void;
@@ -1864,9 +1872,20 @@ describe('shared agent and History typed usage', () => {
       expect(partial.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline', usage_coverage: { known_records: 1 } });
       expect(partial.summary.tokens.output).toBe(1);
       await entered;
+      await Reflect.get(f.service, 'progressInventory');
       const repeated = await f.service.query({});
+      expect(repeated.reliability.import_progress).toMatchObject({ verified_sources: 1, total_sources: 2 });
+      expect(repeated.reliability.import_progress?.read_bytes).toBeGreaterThan(0);
+      expect(repeated.reliability.import_progress!.total_bytes).toBeGreaterThan(repeated.reliability.import_progress!.read_bytes);
       expect(repeated.summary.tokens).toEqual(partial.summary.tokens);
       expect(stalled.mock.calls.filter(([source]) => source === later)).toHaveLength(1);
+      const list = f.core.accessor.get(ISessionIndex).listRecent.bind(f.core.accessor.get(ISessionIndex));
+      const recount = vi.spyOn(f.core.accessor.get(ISessionIndex), 'listRecent').mockImplementation(async (...args) => { await gate; return list(...args); });
+      changed.fire('w\0later');
+      const refreshing = await f.service.query({});
+      expect(refreshing.reliability.import_progress).toMatchObject({ verified_sources: 1, total_sources: 2 });
+      expect(refreshing.summary.tokens).toEqual(partial.summary.tokens);
+      recount.mockRestore();
       release();
       await Reflect.get(f.service, 'modelPreparing');
       const complete = await f.service.query({});
@@ -1876,6 +1895,7 @@ describe('shared agent and History typed usage', () => {
       release();
       await Reflect.get(f.service, 'modelPreparing')?.catch(() => undefined);
       f.service.dispose();
+      changed.dispose();
     }
   });
 

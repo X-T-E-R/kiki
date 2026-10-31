@@ -3,6 +3,7 @@ import type { UsageReadModelQuery, UsageReadModelSession, UsageSourcePage } from
 
 export type UsageStoreOperation =
   | { readonly type: 'source' | 'progress' | 'summary'; readonly source: string }
+  | { readonly type: 'summaries'; readonly sources: readonly string[] }
   | { readonly type: 'apply'; readonly page: UsageSourcePage }
   | { readonly type: 'applyBatch'; readonly pages: readonly UsageSourcePage[] }
   | { readonly type: 'abandon' | 'invalidate'; readonly source: string }

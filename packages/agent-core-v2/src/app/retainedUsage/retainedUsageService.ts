@@ -154,6 +154,18 @@ export class RetainedUsageService implements IRetainedUsageService {
 
   private importing = Promise.resolve();
 
+  async readModelImportProgress(signal?: AbortSignal): Promise<readonly { source: string; size: number; readBytes: number; complete: boolean }[]> {
+    const sources = await Promise.all([RETAINED_USAGE_KEY, EPHEMERAL_USAGE_KEY].map(async (key) => {
+      signal?.throwIfAborted();
+      const source = `retained-ledger:${key}`;
+      const [size, generation, progress] = await Promise.all([this.storage.size(this.storeScope, key), this.appendLog.generation(this.storeScope, key), this.model.progress(source, signal)]);
+      const state = progress?.parser as RetainedImportState | undefined;
+      const readBytes = state?.generation === generation ? Math.min(size ?? 0, progress?.offset ?? 0) : 0;
+      return { source, size: size ?? 0, readBytes, complete: state?.generation === generation && readBytes === size && state.current === undefined && !state.damaged };
+    }));
+    return sources.filter((row) => row.size > 0);
+  }
+
   prepareReadModel(query: RetainedUsageListQuery, includeEphemeral = true): Promise<{ complete: boolean; scannedRecords: number; incompleteReason?: RetainedUsageIncompleteReason }> {
     const next = this.importing.then(async () => {
       const deleted = await this.importLedger(RETAINED_USAGE_KEY, false, query);

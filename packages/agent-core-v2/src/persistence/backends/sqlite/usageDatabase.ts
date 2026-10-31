@@ -94,30 +94,8 @@ export class UsageDatabase {
         if (more) rows.pop();
         return { head, records: rows.map(factOf), nextOffset: more ? Number(rows.at(-1)!['ordinal']) + 1 : undefined };
       });
-      case 'summary': return this.snapshot(() => {
-        const head = this.source(operation.source);
-        if (head?.checkpoint === undefined) return { head };
-        const rows = this.db.prepare('SELECT t.* FROM source_model_total t JOIN source s ON t.source=s.id AND t.generation=s.generation WHERE s.id=?').all(operation.source);
-        const byModel: Record<string, typeof EMPTY> = {};
-        const byModelMask: Record<string, Record<string, typeof EMPTY>> = {};
-        const usage = { ...EMPTY };
-        let records = 0, knownUsageRecords = 0, partial = !head.checkpoint.valid;
-        for (const row of rows) {
-          if (Number(row['state']) === 3) { partial = true; continue; }
-          records += Number(row['records']);
-          if (Number(row['state']) !== 0) { partial = true; continue; }
-          knownUsageRecords += Number(row['records']);
-          const model = String(row['model']);
-          const value = tokenOf(row);
-          const current = byModel[model] ?? { ...EMPTY };
-          for (const key of Object.keys(EMPTY) as (keyof typeof EMPTY)[]) { usage[key] += value[key]; current[key] += value[key]; }
-          Object.defineProperty(byModel, model, { value: current, enumerable: true, writable: true, configurable: true });
-          const masks = Object.hasOwn(byModelMask, model) ? byModelMask[model]! : {};
-          masks[String(row['mask'])] = value;
-          Object.defineProperty(byModelMask, model, { value: masks, enumerable: true, writable: true, configurable: true });
-        }
-        return { head, totals: { version: 2, usage, byModel, byModelMask, records, knownUsageRecords, partial } };
-      });
+      case 'summary': return this.snapshot(() => this.summary(operation.source));
+      case 'summaries': return this.snapshot(() => Object.fromEntries(operation.sources.map((source) => { this.check(); return [source, this.summary(source)]; })));
       case 'catalog': return this.transaction(() => this.catalog(operation.sessions, operation.sources, operation.inventory));
       case 'models': return this.db.prepare('SELECT DISTINCT t.model FROM source_model_total t JOIN source s ON t.source=s.id AND t.generation=s.generation WHERE s.present=1').all().map((row) => String(row['model']));
       case 'retained': return this.db.prepare("SELECT id,retained_meta FROM source WHERE kind='retained' AND present=1 AND retained_meta IS NOT NULL").all().map((row) => ({ source: String(row['id']), session: JSON.parse(String(row['retained_meta'])) as UsageReadModelSession })).filter((row) => operation.workspaceIds === undefined || operation.workspaceIds.includes(row.session.workspaceId));
@@ -146,6 +124,31 @@ export class UsageDatabase {
   private source(source: string): UsageSourceHead | undefined {
     const row = this.db.prepare('SELECT * FROM source WHERE id=?').get(source);
     return row === undefined ? undefined : sourceHeadOf(row);
+  }
+  private summary(source: string) {
+    const head = this.source(source);
+    if (head?.checkpoint === undefined) return { head };
+    const rows = this.db.prepare('SELECT t.* FROM source_model_total t JOIN source s ON t.source=s.id AND t.generation=s.generation WHERE s.id=?').all(source);
+    const byModel: Record<string, typeof EMPTY> = {};
+    const byModelMask: Record<string, Record<string, typeof EMPTY>> = {};
+    const usage = { ...EMPTY };
+    let records = 0, knownUsageRecords = 0, partial = !head.checkpoint.valid;
+    for (const row of rows) {
+      this.check();
+      if (Number(row['state']) === 3) { partial = true; continue; }
+      records += Number(row['records']);
+      if (Number(row['state']) !== 0) { partial = true; continue; }
+      knownUsageRecords += Number(row['records']);
+      const model = String(row['model']);
+      const value = tokenOf(row);
+      const current = Object.hasOwn(byModel, model) ? byModel[model]! : { ...EMPTY };
+      for (const key of Object.keys(EMPTY) as (keyof typeof EMPTY)[]) { usage[key] += value[key]; current[key] += value[key]; }
+      Object.defineProperty(byModel, model, { value: current, enumerable: true, writable: true, configurable: true });
+      const masks = Object.hasOwn(byModelMask, model) ? byModelMask[model]! : {};
+      masks[String(row['mask'])] = value;
+      Object.defineProperty(byModelMask, model, { value: masks, enumerable: true, writable: true, configurable: true });
+    }
+    return { head, totals: { version: 2 as const, usage, byModel, byModelMask, records, knownUsageRecords, partial } };
   }
   private progress(source: string): UsageImportProgress | undefined {
     const row = this.db.prepare('SELECT progress FROM import WHERE source=?').get(source);

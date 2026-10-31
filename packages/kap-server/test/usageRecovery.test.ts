@@ -18,6 +18,33 @@ function sourceStorage(bytes: Uint8Array): IFileSystemStorageService {
 }
 
 describe('bounded usage recovery lanes', () => {
+  it('keeps background parsing isolated and reuses one worker across sources while pacing bytes cooperatively', async () => {
+    const pool = new UsageRecoveryPool();
+    const bytes = Buffer.from(`${JSON.stringify(fact(1))}\n`);
+    const threads: number[] = [];
+    try {
+      for (const id of ['main', 'child']) {
+        await pool.run([id], async (source, worker, signal) => {
+          expect(worker).toBeDefined();
+          const result = await readUsageWireTail(sourceStorage(bytes), source, 0, bytes.length, new UsageReadAllowance(Infinity), Infinity, Date.now, source, signal, undefined, new Map(), 'same-prefix', worker);
+          expect(result.complete).toBe(true);
+          threads.push(worker!.observation().threadId);
+        }, undefined, false, true);
+      }
+      expect(threads[0]).toBeGreaterThan(0);
+      expect(threads[1]).toBe(threads[0]);
+      let yielded = false;
+      setImmediate(() => { yielded = true; });
+      const start = performance.now();
+      for (let chunk = 0; chunk < 5; chunk++) await pool.pace(1 << 20, new AbortController().signal);
+      expect(yielded).toBe(true);
+      expect(performance.now() - start).toBeGreaterThanOrEqual(50);
+      const cancelled = new AbortController();
+      cancelled.abort();
+      await expect(pool.pace(1 << 20, cancelled.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    } finally { pool.dispose(); await pool.closed(); }
+    expect(pool.observation()?.threadId).toBe(-1);
+  });
   it('recovers usage from the sealed prefix rather than a changed retained file', async () => {
     const storage = new InMemoryStorageService();
     const bytes = Buffer.from(`${JSON.stringify(fact(1))}\n`);

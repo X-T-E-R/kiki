@@ -78,6 +78,8 @@ export class UsageParserWorker {
     return this.request({ v: 1, id: ++this.serial, type: 'chunk', bytes, start, end }, [bytes]);
   }
 
+  get isStopped(): boolean { return this.stopped; }
+
   observation(): UsageWorkerObservation { return { threadId: this.worker.threadId, startupMs: this.startupMs, roundTripMs: this.roundTripMs, inFlightBytes: this.inFlightBytes, peakInFlightBytes: this.peakInFlightBytes, worker: this.metrics }; }
 
   close(): Promise<void> {

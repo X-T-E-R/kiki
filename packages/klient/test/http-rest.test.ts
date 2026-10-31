@@ -494,7 +494,7 @@ describe('HTTP REST domains', () => {
       expect(url.searchParams.getAll('profile')).toEqual(['explore', 'profile/with space']);
       expect(url.searchParams.getAll('provider')).toEqual(['provider-a', 'provider-b']);
       expect(url.searchParams.getAll('model')).toEqual(['shared-alias', 'model-b']);
-      return envelope({ query: { profiles: ['explore', 'profile/with space'] } });
+      return envelope({ query: { profiles: ['explore', 'profile/with space'] }, reliability: { complete: false, import_progress: { verified_sources: 2, total_sources: 5, read_bytes: 1024, total_bytes: 4096 } } });
     });
     const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
     try {
@@ -504,6 +504,7 @@ describe('HTTP REST domains', () => {
         'workspace.id': 'workspace-a', range: 'custom', start_at: 100, end_at: 200,
       });
       expect(result.query.profiles).toEqual(['explore', 'profile/with space']);
+      expect(result.reliability.import_progress).toEqual({ verified_sources: 2, total_sources: 5, read_bytes: 1024, total_bytes: 4096 });
       expect(calls).toEqual(['/api/usage?dimension=profile&profile=explore&profile=profile%2Fwith+space&provider=provider-a&provider=provider-b&model=shared-alias&model=model-b&workspace.id=workspace-a&range=custom&start_at=100&end_at=200']);
     } finally { await channel.close(); }
   });

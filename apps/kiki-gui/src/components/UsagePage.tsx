@@ -29,6 +29,7 @@ import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 
 import { ErrorCode, type Session, type WorkspaceCatalogEntry } from '@kiki/protocol';
 
+import { formatBytes } from '@kiki/session-core/composer/media';
 import { readLastSessionId } from '@kiki/session-core/settings';
 import { spaceStorageKey } from '@kiki/session-core/storage';
 import { formatCostUsd, formatGrouped } from '@kiki/session-core/util';
@@ -139,6 +140,10 @@ function localDateKey(nowMs: number): string {
     .join('-');
 }
 
+function importProgressOf(response: UsageResponseWire | undefined): UsageResponseWire['reliability']['import_progress'] {
+  return response?.reliability.import_progress;
+}
+
 /**
  * The collapsed live line at the foot of the page: current session, today,
  * burn rate. It is a reference, not part of the selected history, so it stays
@@ -181,7 +186,13 @@ function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWi
         ),
         { signal },
       ),
-    refetchInterval: enabled && open ? 60_000 : false,
+    refetchInterval: (query) => {
+      if (!enabled || !open) return false;
+      const response = query.state.data;
+      const continueCounting = response !== undefined && !response.reliability.complete &&
+        (response.reliability.incomplete_reason === 'deadline' || response.reliability.incomplete_reason === 'record_budget');
+      return continueCounting ? 250 : 60_000;
+    },
     staleTime: 30_000,
   });
   const sessionQuery = useQuery({
@@ -199,11 +210,23 @@ function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWi
     void queryClient.cancelQueries({ queryKey: ['usage-v2-strip-session', lastSessionId] });
   }, [lastSessionId, open, queryClient]);
 
-  const today = (todayResponse ?? todayQuery.data)?.summary;
+  const todayResponseData = todayResponse ?? todayQuery.data;
+  const today = todayResponseData?.summary;
+  const todayIncomplete = todayResponseData?.reliability.complete === false;
+  const todayProgress = importProgressOf(todayResponseData);
+  const todayCountingLabel = todayProgress === undefined
+    ? t('usage.strip.counting')
+    : t('usage.strip.countingProgress', {
+        verified: formatGrouped(todayProgress.verified_sources),
+        total: formatGrouped(todayProgress.total_sources),
+      });
   const todayTokenTotalUnknown = today !== undefined && usageTokenTotalIsUnknown(today);
+  const todayKnownTokenTotal = today === undefined ? undefined : totalTokensOf(today);
+  const todayEmptyPartial = todayIncomplete === true && todayKnownTokenTotal === 0 && today?.cost_usd_estimated === 0;
+  const todayHasNoKnownTokens = todayTokenTotalUnknown || (todayIncomplete === true && todayKnownTokenTotal === 0);
   const todayHasUnknownSubtotal = today !== undefined && !todayTokenTotalUnknown && today.tokens_unknown === true;
   const todayHasUnknownCost = today !== undefined && today.cost_unknown === true;
-  const knownTodayTokens = today === undefined || todayTokenTotalUnknown ? undefined : totalTokensOf(today);
+  const knownTodayTokens = today === undefined || todayHasNoKnownTokens ? undefined : todayKnownTokenTotal;
   const rate = knownTodayTokens !== undefined ? burnRatePerHour(knownTodayTokens, nowMs) : undefined;
   const current: Session | undefined = open && sessionQuery.data?.id === lastSessionId ? sessionQuery.data : undefined;
   const currentAccounting = current?.usage?.accounting;
@@ -245,19 +268,29 @@ function LiveStrip({ todayResponse, enabled }: { todayResponse?: UsageResponseWi
           ) : (
             <span className="text-ink-faint">—</span>
           ))}
-          {item(t('usage.strip.today'), today !== undefined ? (
+          {item(t('usage.strip.today'), today !== undefined ? todayEmptyPartial ? (
+            <span data-usage-strip-tokens data-usage-strip-incomplete className="text-ink-soft">
+              {todayCountingLabel}
+            </span>
+          ) : (
             <span data-usage-strip-tokens className="text-ink tabular-nums">
               {todayTokenTotalUnknown ? '—' : time.formatTokens(totalTokensOf(today))}
               {' · '}
               {todayTokenTotalUnknown ? '—' : formatCostUsd(today.cost_usd_estimated)}
+              {todayIncomplete ? (
+                <span data-usage-strip-incomplete className="ml-1 text-amber-ink">{todayCountingLabel}</span>
+              ) : null}
               {todayHasUnknownSubtotal || todayHasUnknownCost ? <KnownSubtotalMarker /> : null}
             </span>
           ) : (
             <span className="text-ink-faint">…</span>
           ))}
           {item(t('usage.strip.burnRate'), (
-            <span className="text-ink tabular-nums">
-              {rate !== undefined ? t('usage.strip.burnRateValue', { rate: formatGrouped(rate) }) : '…'}
+            <span data-usage-strip-burn-rate className="text-ink tabular-nums">
+              {todayEmptyPartial ? todayCountingLabel : rate !== undefined ? t('usage.strip.burnRateValue', { rate: formatGrouped(rate) }) : '…'}
+              {todayIncomplete && !todayEmptyPartial ? (
+                <span data-usage-strip-incomplete className="ml-1 text-amber-ink">{todayCountingLabel}</span>
+              ) : null}
             </span>
           ))}
         </div>
@@ -1247,14 +1280,30 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
           ) : null}
           {usageQuery.data !== undefined && firstPage !== undefined ? (
             <>
-              {!firstPage.reliability.complete ? (
-                <div data-usage-scan-pending role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-rule/30 bg-amber-card/40 px-3 py-2 text-[12px] text-amber-ink">
-                  <p>{t('usage.scanIncomplete')}</p>
-                  <button type="button" data-usage-continue-scan disabled={usageQuery.isFetching} onClick={() => void usageQuery.refetch()} className="rounded-md border border-amber-rule/40 px-3 py-1.5 font-medium disabled:opacity-50">
-                    {t(usageQuery.isFetching ? 'usage.loading' : 'usage.continueScan')}
-                  </button>
-                </div>
-              ) : null}
+              {!firstPage.reliability.complete ? (() => {
+                const progress = importProgressOf(firstPage);
+                const countingLabel = progress === undefined
+                  ? t('usage.strip.counting')
+                  : t('usage.strip.countingProgress', {
+                      verified: formatGrouped(progress.verified_sources),
+                      total: formatGrouped(progress.total_sources),
+                    });
+                return (
+                  <div data-usage-scan-pending role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-rule/30 bg-amber-card/40 px-3 py-2 text-[12px] text-amber-ink">
+                    <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <p data-usage-scan-counting>{countingLabel}</p>
+                      {progress !== undefined ? (
+                        <span data-usage-scan-bytes className="text-[11.5px] text-amber-ink/75 tabular-nums">
+                          {formatBytes(progress.read_bytes)} / {formatBytes(progress.total_bytes)}
+                        </span>
+                      ) : null}
+                    </div>
+                    <button type="button" data-usage-continue-scan disabled={usageQuery.isFetching} onClick={() => void usageQuery.refetch()} className="rounded-md border border-amber-rule/40 px-3 py-1.5 font-medium disabled:opacity-50">
+                      {t(usageQuery.isFetching ? 'usage.loading' : 'usage.continueScan')}
+                    </button>
+                  </div>
+                );
+              })() : null}
               {summary !== undefined ? <KpiRow summary={summary} incomplete={!firstPage.reliability.complete} comparing={comparing} prior={compareQuery.data?.summary} /> : null}
 
               <div data-usage-secondary-meta className="flex flex-wrap items-start gap-x-5 gap-y-1 text-[12px] text-ink-soft">

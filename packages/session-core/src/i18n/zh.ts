@@ -2812,6 +2812,8 @@ export const zh = {
   'usage.strip.today': '今日',
   'usage.strip.burnRate': '消耗速度',
   'usage.strip.burnRateValue': '{rate} tok/h',
+  'usage.strip.counting': '统计中',
+  'usage.strip.countingProgress': '统计中 {verified}/{total}',
   'usage.strip.currentSession': '当前会话',
   'usage.incomplete.sessionCap': '本次扫描的会话数已达上限，更早的会话未计入。',
   'usage.incomplete.recordBudget': '本次扫描的记录数已达上限，部分用量未计入。',
