@@ -3413,6 +3413,7 @@ function transcriptTaskToSessionTask(task: TranscriptTask | AgentTranscriptTask)
     completed_at: task.endedAt,
     output_preview: task.outputTail,
     agent_id: task.agentId,
+    source_ref: task.sourceRef,
   };
 }
 

@@ -1,3 +1,4 @@
+export * from './agentReferences';
 export * from './agentTree';
 export * from './agentWorkspace';
 export * from './grouping';
