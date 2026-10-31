@@ -757,12 +757,13 @@ describe('task notification → main agent (real Agent instance)', () => {
       }
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-    it('RACE: an explicit pause after notification enqueue is honored when wake admission resumes', async () => {
+    it.each(['user', 'already paused'] as const)('PAUSE RACE: %s pause keeps the receipt wakeup and stops goal continuation', async (actor) => {
       const goals = ctx.get(IAgentGoalService);
       await goals.createGoal({ objective: 'finish delegated work' });
       const hold = loop.tryAcquireQuiescence();
       expect(hold).toBeDefined();
       const enqueue = vi.spyOn(loop, 'enqueue');
+      if (actor === 'already paused') await goals.pauseGoal();
       const taskId = background.registerTask(agentTask(Promise.resolve({ result: 'receipt saved before pause' }), 'held notification'));
       try {
         await background.wait(taskId);
@@ -770,17 +771,14 @@ describe('task notification → main agent (real Agent instance)', () => {
           expect(enqueue.mock.calls.some(([request]) => request.kind === 'task_notification')).toBe(true);
         });
         await goals.pauseGoal();
+        ctx.mockNextResponse({ type: 'text', text: 'receipt received; goal remains paused' });
         await hold!.dispose();
+        await vi.waitFor(() => { expect(notifiedCount(ctx)).toBe(1); });
         await loop.settled();
-        expect(ctx.llmCalls).toHaveLength(0);
-        expect(notifiedCount(ctx)).toBe(0);
-        ctx.mockNextResponse({ type: 'text', text: 'authorized handling' });
-        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'inspect the retained receipt' }] });
-        await ctx.untilTurnEnd();
-        await loop.settled();
-        expect(notifiedCount(ctx)).toBe(1);
+        expect(ctx.llmCalls).toHaveLength(1);
         expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === taskId)).toHaveLength(1);
         expect(goals.getGoal().goal?.status).toBe('paused');
+        expect(ctx.context.get().filter((m) => m.origin?.kind === 'system_trigger' && m.origin.name === 'goal_continuation')).toHaveLength(0);
       } finally {
         await hold?.dispose();
       }
@@ -839,17 +837,13 @@ describe('task notification → main agent (real Agent instance)', () => {
       }
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-    it.each(['paused', 'runtime then user pause', 'runtime pause with token budget', 'token budget', 'turn budget', 'time budget'] as const)(
+    it.each(['runtime pause with token budget', 'token budget', 'turn budget', 'time budget'] as const)(
       'GOAL CONTROL: %s retains completion until an authorized prompt', async (control) => {
         const goals = ctx.get(IAgentGoalService);
         await goals.createGoal({ objective: 'finish delegated work' });
         const completion = createControlledPromise<{ result: string }>();
         const taskId = background.registerTask(agentTask(completion, 'controlled dependency'));
-        if (control === 'paused') await goals.pauseGoal();
-        else if (control === 'runtime then user pause') {
-          await goals.pauseGoal({ reason: 'Paused after provider API error' }, 'runtime');
-          await goals.pauseGoal();
-        } else if (control === 'runtime pause with token budget') {
+        if (control === 'runtime pause with token budget') {
           await goals.pauseGoal({ reason: 'Paused after provider API error' }, 'runtime');
           await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 0 } });
         } else {

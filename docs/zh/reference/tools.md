@@ -349,7 +349,7 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 
 体量较大的前台结果只返回尾部预览，而不是完整正文。回执会附带 `output_size_bytes`、`preview_bytes`、`truncated`、`full_output_available`，以及存在时的 `output_path`。有 `output_path` 时，用 `Read` 读取该文件取得完整结果，或用 `TaskOutput` 配合 `offset` 与 `max_bytes` 分页读取。没有完整输出文件时，`full_output_available` 为 `false`，只能读到预览：把工作拆成更小的片段，或用更窄的要求重新执行，让结果能被完整读回。结果较小时仍是普通摘要文本，不需要这一步。
 
-[目标](../guides/goals.md)处于「阻塞（`blocked`）」时，完成结果仍会自动送达：主 Agent 会醒来处理这一次结果，目标保持阻塞。已暂停或取消的目标、以及预算耗尽，仍会把结果留到你的下一条消息。
+[目标](../guides/goals.md)处于「阻塞（`blocked`）」或「暂停（`paused`）」时，完成结果仍会自动送达：主 Agent 会醒来处理结果，但不会恢复目标。派出任务的轮次被取消，或当前目标预算耗尽时，结果会保留到下一个获准轮次。恢复时发现的 `lost` 回执会并入可用轮次或显式 resume，不会另起轮次抢占恢复，也不会把外部执行结果视为已确认。
 
 **`AgentList`** 列出当前 Agent 的直属子 Agent。可选参数 `include_finished` 默认为 false。实例正在启动、运行或取消时，即使之前的后台任务已完成或超时，也会以 `running` 保持可见。执行已结束但最终保存失败的子 Agent 会以 `persistence_failed` 保持可见，`persistence_failure` 包含轮次 ID、执行结果和存储错误。没有活跃执行时，如果跟踪任务已不再保留，或同一任务仍残留运行记录，会采用已保存的完成、失败或取消结果；旧任务的结果不会覆盖新任务。其他情况采用最近一次后台任务状态，或执行器的故障、关闭状态；空闲子 Agent 既没有已保存结果也没有任务记录时为 `untracked`。传 `true` 才会额外包含已结束或出错的子 Agent。最多返回 50 条，运行中的排在前面；装不下的数量记在 `omitted`。每条记录含 `agent_id`、可选的 `name` 与 `profile`，以及 `status`。`running` 不代表一定有跟踪中的后台任务或之后的完成通知；用 `TaskList` 查看跟踪中的工作。
 

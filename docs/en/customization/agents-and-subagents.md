@@ -25,9 +25,9 @@ Each dispatch appears as an approval request unless it matches an allow rule or 
 
 Results also return when a child starts another turn on its own, such as after its background `Bash` finishes or a scheduled prompt fires. A completed turn with a final written result gets a new parent-owned task receipt, including an `output.log` pointer. If the previous task failed, the new `completed` receipt names that task and its status; the earlier `failed` record stays unchanged. If the parent is no longer live or the session is archived, the receipt is retained in the parent's task history for later inspection rather than waking it.
 
-A live background-task completion wakes an idle main agent, including after its goal completes, is removed, or is replaced. A provider or runtime error that paused the goal does not prevent delivery; receiving the result leaves that goal paused. Use `/goal resume` to continue a paused goal. A completion queued just as a successful turn ends is delivered in a new turn without another user message.
+A live background-task completion wakes an idle main agent, including while its goal is paused or after the goal completes, is removed, or is replaced. Receiving a result does not resume a paused goal or start its automatic follow-up turns; use `/goal resume` for that. A completion queued just as a successful turn ends is delivered in a new turn without another user message.
 
-If you paused a task's goal yourself, cancelled the turn that launched it, or exhausted the current goal's budget, its result does not wake the idle main agent. Held results are delivered when it next runs, such as when you send another message. Tasks launched after a cancellation can still wake it.
+Cancelling the turn that launched a task or exhausting the current goal's budget prevents its result from waking the idle main agent. Held results are delivered when it next runs, such as when you send another message. Tasks launched after a cancellation can still wake it. A restored `lost` receipt also waits for an available turn and joins an explicit resume instead of starting a competing turn; the external execution outcome remains unconfirmed.
 
 ## Named child agents
 

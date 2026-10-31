@@ -261,6 +261,41 @@ describe('dispatch resume through model switch and real native run', () => {
     await expect(dispatch.runOnExisting(child, 'Bad effort', options('bad-effort', { thinkingEffort: 'unknown' }))).rejects.toThrow(/not supported/);
   });
 
+  it('merges pending lost notifications into the explicit resume instead of starting a competing turn', async () => {
+    const ctx = await host();
+    const { dispatch, child } = dispatchFor(ctx);
+    const taskId = 'bash-lost0000';
+    await ctx.dispatch({ type: 'task.started', info: {
+      taskId, kind: 'process', command: 'example-command', description: 'Unconfirmed earlier execution',
+      pid: 0, startedAt: 1, endedAt: null, exitCode: null, status: 'running', detached: true,
+    } });
+    await ctx.get(IWireService).flush();
+    await ctx.dispatcher.restore();
+    const tasks = ctx.get(IAgentTaskService);
+    const loop = ctx.get(IAgentLoopService);
+    const enqueue = vi.spyOn(loop, 'enqueue');
+    ctx.mockNextResponse({ type: 'text', text: 'Inspected preserved work; the external outcome stays unconfirmed.' });
+    const run = await dispatch.runOnExisting(child, 'Continue the preserved task without repeating external actions', {
+      ...options('lost-during-resume'),
+      onBeforeRun: async () => {
+        await tasks.resumeRestoration?.();
+        expect(tasks.getTask(taskId)?.status).toBe('lost');
+        expect(loop.status()).toMatchObject({ state: 'idle', pendingTurnIds: [], pendingRequestKinds: ['task_notification'] });
+        expect(ctx.llmCalls).toHaveLength(0);
+      },
+    });
+    const handle = await run.started;
+    await handle.completion;
+    await ctx.get(IAgentExecutionService).settled();
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(JSON.stringify(ctx.llmCalls[0]!.history)).toContain('task.lost');
+    expect(JSON.stringify(ctx.llmCalls[0]!.history)).toContain('external execution outcome is unconfirmed');
+    expect(enqueue.mock.calls.filter(([request]) => request.kind === 'prompt')).toHaveLength(1);
+    expect(ctx.allEvents.filter((event) => event.type === '[rpc]' && event.event === 'turn.started')).toHaveLength(1);
+    expect(ctx.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'task' && message.origin.taskId === taskId)).toHaveLength(1);
+    expect(loop.status()).toMatchObject({ state: 'idle', hasPendingRequests: false });
+  });
+
   it('coalesces repeated requests and rejects same ID with different request or binding', async () => {
     const ctx = await host();
     const { dispatch, child, runs } = dispatchFor(ctx);

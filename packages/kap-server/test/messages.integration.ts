@@ -6,6 +6,9 @@ import {
   AGENT_WIRE_RECORD_KEY,
   IAgentContextMemoryService,
   IAgentExecutionService,
+  IAgentLLMRequesterService,
+  IAgentLoopService,
+  IAgentTaskService,
   IAgentLifecycleService,
   IAgentProfileService,
   IAgentScopeContext,
@@ -303,6 +306,96 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
       await agent.accessor.get(IWireService).flush();
     }
   }
+
+  it.each(['noGoal', 'paused'] as const)('delivers an AgentRun resume receipt to idle main over HTTP and ordered views with %s', async (goalState) => {
+    const { id, main } = await createTerminalPrompt('Preserve the existing conversation.');
+    const session = getLiveSessionById(server!.core.accessor, id)!;
+    const child = await session.accessor.get(IAgentLifecycleService).create({
+      binding: { profile: 'agent', model: 'stub', thinking: 'high' },
+      delegator: { kind: 'agent', agentId: 'main' },
+    });
+    const client = createKlient({ endpoint: base, token: server!.localOwnerToken, WebSocket: WebSocket as unknown as typeof globalThis.WebSocket });
+    const remoteMain = client.session(id).agent('main');
+    await remoteMain.setPermission('yolo');
+    if (goalState === 'paused') await remoteMain.createGoal({ objective: 'Finish authorized delegated work.', initialStatus: 'paused' });
+    const expectedGoal = (await remoteMain.getGoal()).goal;
+    let finishChild!: (result: import('@kiki/agent-core-v2/agent/llmRequester/llmRequester').AgentLLMRequestFinish) => void;
+    const childResult = new Promise<import('@kiki/agent-core-v2/agent/llmRequester/llmRequester').AgentLLMRequestFinish>((resolve) => { finishChild = resolve; });
+    const usage = { inputOther: 1, output: 1, inputCacheRead: 0, inputCacheCreation: 0 };
+    const finalChild = { message: { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'Preserved child result.' }], toolCalls: [] }, usage, providerFinishReason: 'completed' as const };
+    const childRequest = vi.spyOn(child.accessor.get(IAgentLLMRequesterService), 'start').mockReturnValue({ trace: { traceId: 'held-child-result' }, result: childResult });
+    const mainRequester = main.accessor.get(IAgentLLMRequesterService);
+    const mainRequest = vi.spyOn(mainRequester, 'start').mockReturnValueOnce({
+      trace: { traceId: 'resume-existing-child' }, result: Promise.resolve({
+        message: { role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'resume-child-call', name: 'AgentRun',
+          arguments: JSON.stringify({ resume: child.id, prompt: 'Finish the preserved task.', description: 'Continue authorized child', background: true }) }] },
+        usage, providerFinishReason: 'completed',
+      }),
+    });
+    const view = client.session(id).view;
+    const signals: import('@kiki/klient/session-view').SessionViewSignal[] = [];
+    const subscribe = view.subscribe.bind(view);
+    vi.spyOn(view, 'subscribe').mockImplementation((options, callback) => subscribe(options, (signal) => {
+      signals.push(signal);
+      callback(signal);
+    }));
+    const controller = new SessionController(createSessionTransport(client), view, id);
+    const observations: string[][] = [];
+    const unsubscribe = controller.subscribe(() => observations.push(controller.getState().blocks.map((block) => block.id)));
+    try {
+      await controller.open();
+      await vi.waitFor(() => {
+        controller.flushFrames();
+        expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'Preserve the existing conversation.')).toBe(true);
+      });
+      const stableIds = controller.getState().blocks.map((block) => block.id);
+      observations.length = 0;
+      const resetVersion = controller.getState().transcriptResetVersion;
+      await remoteMain.prompt({ input: [{ type: 'text', text: 'Continue the authorized child and wait for its receipt.' }] }, { waitFor: 'terminal' });
+      await waitForTerminal(main);
+      expect(mainRequest).toHaveBeenCalledTimes(2);
+      expect(childRequest).toHaveBeenCalledTimes(1);
+      expect(await remoteMain.getLoopStatus()).toMatchObject({ state: 'idle', pendingTurnIds: [] });
+      expect(await client.session(id).agent(child.id).getLoopStatus()).toMatchObject({ state: 'running', activeTurnId: 0 });
+      const tasks = await remoteMain.getTasks({ activeOnly: true });
+      expect(tasks).toHaveLength(1);
+      const taskId = tasks[0]!.taskId;
+      expect(tasks[0]).toMatchObject({ kind: 'agent', agentId: child.id, status: 'running' });
+      const toolResult = main.accessor.get(IAgentContextMemoryService).get().find((message) => message.role === 'tool' && message.toolCallId === 'resume-child-call');
+      expect(JSON.stringify(toolResult)).toContain('automatic_notification: true');
+      finishChild(finalChild);
+      await vi.waitFor(() => { expect(mainRequest).toHaveBeenCalledTimes(3); }, { timeout: 5_000 });
+      await main.accessor.get(IAgentLoopService).settled();
+      await child.accessor.get(IAgentExecutionService).settled();
+      await vi.waitFor(async () => {
+        controller.flushFrames();
+        expect(await remoteMain.getTasks({ activeOnly: true })).toHaveLength(0);
+        expect(controller.getState().tasks.find((task) => task.id === taskId)?.status).toBe('completed');
+        expect(controller.getState().busy).toBe(false);
+      });
+      const context = await remoteMain.getContext();
+      expect(context.history.filter((message) => message.origin?.kind === 'task' && message.origin.taskId === taskId)).toHaveLength(1);
+      expect(JSON.stringify(context.history)).toContain('Preserved child result.');
+      expect((await remoteMain.getGoal()).goal).toEqual(expectedGoal);
+      const records = await readMainWireRecords(main);
+      const turns = records.filter((record) => record.type === 'turn.prompt');
+      expect(turns).toHaveLength(3);
+      expect(turns.at(-1)?.['origin']).toMatchObject({ kind: 'task', taskId, status: 'completed' });
+      expect(records.filter((record) => record.type === 'task.notified')).toHaveLength(1);
+      expect(controller.getState().transcriptResetVersion).toBe(resetVersion);
+      expect(observations.every((ids) => stableIds.every((stableId) => ids.includes(stableId)))).toBe(true);
+      expect(signals.filter((signal) => signal.type === 'protocolError' || signal.type === 'resyncRequired')).toEqual([]);
+      console.log(JSON.stringify({ case: 'subagent-resume-idle-wakeup', goalState, taskId,
+        turnOrigins: turns.map((turn) => turn['origin']), mainRequests: mainRequest.mock.calls.length,
+        childRequests: childRequest.mock.calls.length, taskStatus: main.accessor.get(IAgentTaskService).getTask(taskId)?.status,
+        transcriptResetsDuringDelivery: controller.getState().transcriptResetVersion - resetVersion }));
+    } finally {
+      finishChild(finalChild);
+      unsubscribe();
+      controller.close();
+      await client.close();
+    }
+  });
 
   it('reads cold message pages and media without restoring a session or workspace', async () => {
     const id = await createSession();

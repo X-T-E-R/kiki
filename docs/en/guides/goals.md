@@ -80,7 +80,7 @@ A goal can stop in three ways:
 
 Describe completion conditions in the objective. Goals have no hard budget by default. To cap a goal's turns, output tokens, or active time, set a budget manually in the web goal editor; limits written in chat do not configure a budget.
 
-Pausing a goal yourself stops its current goal-driven turn and automatic follow-up turns without deleting the objective. Background tasks already launched for that goal continue, but their results do not wake an idle main agent; they are delivered when it next runs. Tasks outside that goal can still wake it. You can send ordinary messages while the goal is paused. Reopening a session after a restart pauses an active goal; a goal you already paused or cancelled stays stopped until you explicitly resume or create one.
+Pausing a goal yourself stops its current goal-driven turn and automatic follow-up turns without deleting the objective. Background tasks already launched for that goal continue, and their results can wake an idle main agent to process the receipt. Receiving a result leaves the goal paused. You can send ordinary messages while the goal is paused. Reopening a session after a restart pauses an active goal; a goal you already paused or cancelled stays stopped until you explicitly resume or create one.
 
 A blocked goal does not cancel work it already started. Unless its budget is exhausted, a finished task wakes the idle main agent to process that completion. A goal paused by a runtime error can receive results the same way; receiving them leaves the goal blocked or paused. Completing, removing, or replacing a goal does not stop later task completions from waking the main agent.
 

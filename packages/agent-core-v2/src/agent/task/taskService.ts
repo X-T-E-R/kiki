@@ -1776,12 +1776,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private notificationAdmission(info: AgentTaskInfo): StepRequestAdmission {
     const goal = this.currentGoal();
     const lastEnded = this.states.has(turnKey) ? this.states.get(turnKey).lastEnded : undefined;
-    if (lastEnded?.reason === 'cancelled' && info.ownerTurnId === lastEnded.turnId) {
+    if (info.status === 'lost' || (lastEnded?.reason === 'cancelled' && info.ownerTurnId === lastEnded.turnId)) {
       return 'activeOrNextTurn';
     }
     if (goal !== null && goal.status !== 'complete' &&
-      ((goal.status === 'paused' && goal.statusActor === 'user' && info.goalId === goal.goalId) ||
-        (goal.budgetLimits.tokenBudget !== undefined && goal.tokensUsed >= goal.budgetLimits.tokenBudget) ||
+      ((goal.budgetLimits.tokenBudget !== undefined && goal.tokensUsed >= goal.budgetLimits.tokenBudget) ||
         (goal.budgetLimits.turnBudget !== undefined && goal.turnsUsed >= goal.budgetLimits.turnBudget) ||
         (goal.budgetLimits.wallClockBudgetMs !== undefined && goal.wallClockMs >= goal.budgetLimits.wallClockBudgetMs))) {
       return 'activeOrNextTurn';
