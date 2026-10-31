@@ -36,6 +36,7 @@ import { createToolGroupsWalker } from './visual-proof-tool-groups.mjs';
 import { createProfileEditorWalker } from './visual-proof-profile-editor.mjs';
 import { createModelsPageWalker } from './visual-proof-models-page.mjs';
 import { createSettingsIaWalker } from './visual-proof-settings-ia.mjs';
+import { createSettingsEnginesWalker } from './visual-proof-settings-engines.mjs';
 import { createWorktreesWalker } from './visual-proof-worktrees.mjs';
 import { createNativeSshWalker } from './visual-proof-native-ssh.mjs';
 import { createUsageExportWalker } from './visual-proof-usage-export.mjs';
@@ -78,6 +79,7 @@ const MATRIX = {
   'question-card': ['width'],
   'external-main': ['theme'],
   'settings-ia': ['theme', 'width'],
+  'settings-engines': ['theme', 'width'],
   skins: ['theme'],
   steer: ['width'],
   'notes-rail': ['width'],
@@ -5469,6 +5471,14 @@ async function scenarioSubagentContextMeter() {
   await shot(`subagent-context-closed-${job().view.width}`);
 }
 
+/** Settings external-engines list on the native-engine discovery (scripts/visual-proof-settings-engines.mjs). */
+async function scenarioSettingsEngines() {
+  const walk = createSettingsEnginesWalker({
+    page, shot, view: job().view, webUrl: WEB_URL, fixtureUrl: () => fixtureUrl(), fixtureToken: FIXTURE_TOKEN,
+  });
+  await walk();
+}
+
 async function scenarioSettingsIa() {
   const walk = createSettingsIaWalker({
     page, shot, resizeViewport, setProofTheme, view: job().view,
@@ -6528,6 +6538,7 @@ const BODIES = [
   ['settings-shipped', scenarioSettingsShipped],
   ['settings-nbsearch', scenarioSettingsNbSearch],
   ['settings-ia', scenarioSettingsIa],
+  ['settings-engines', scenarioSettingsEngines],
   ['slash-commands', scenarioSlashCommands],
   ['attachments', scenarioAttachments],
   ['selection-annotate', scenarioSelectionAnnotate],
