@@ -39,6 +39,7 @@ import { createSessionTransport } from '../../session-core/src/session/klientTra
 import { type RunningServer, startServer } from '../src/start';
 import { TranscriptService } from '../src/services/transcript/transcriptService';
 import { MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES } from '../src/services/messages/messageHistory';
+import { SessionEventBroadcaster } from '../src/transport/ws/v1/sessionEventBroadcaster';
 import { PROMPT_BODY_LIMIT_BYTES } from '../src/routes/prompts';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
@@ -334,20 +335,39 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     });
     const view = client.session(id).view;
     const signals: import('@kiki/klient/session-view').SessionViewSignal[] = [];
+    let finishAttach!: (signal: import('@kiki/klient/session-view').SessionViewSignal) => void;
+    const attached = new Promise<import('@kiki/klient/session-view').SessionViewSignal>((resolve) => { finishAttach = resolve; });
     const subscribe = view.subscribe.bind(view);
     vi.spyOn(view, 'subscribe').mockImplementation((options, callback) => subscribe(options, (signal) => {
       signals.push(signal);
       callback(signal);
+      if (signal.type === 'ready' || signal.type === 'protocolError' || signal.type === 'resyncRequired') finishAttach(signal);
     }));
     const controller = new SessionController(createSessionTransport(client), view, id);
     const observations: string[][] = [];
     const unsubscribe = controller.subscribe(() => observations.push(controller.getState().blocks.map((block) => block.id)));
+    let releaseSeed!: () => void;
+    const seedReleased = new Promise<void>((resolve) => { releaseSeed = resolve; });
+    const flushSeed = SessionEventBroadcaster.prototype.flushTranscriptSeed;
+    const seed = goalState === 'paused'
+      ? vi.spyOn(SessionEventBroadcaster.prototype, 'flushTranscriptSeed').mockImplementationOnce(async function (this: SessionEventBroadcaster, sessionId, target) {
+        await seedReleased;
+        await flushSeed.call(this, sessionId, target);
+      }) : undefined;
     try {
       await controller.open();
-      await vi.waitFor(() => {
+      if (goalState === 'paused') {
         controller.flushFrames();
-        expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'Preserve the existing conversation.')).toBe(true);
-      });
+        expect(controller.getState()).toMatchObject({ loaded: true, transcriptReady: false, blocks: [] });
+        expect(signals.some((signal) => signal.type === 'ready')).toBe(false);
+        console.log(JSON.stringify({ case: 'shell-before-transcript-seed', loaded: controller.getState().loaded,
+          transcriptReady: controller.getState().transcriptReady, signalTypes: signals.map((signal) => signal.type) }));
+      }
+      releaseSeed();
+      expect((await attached).type).toBe('ready');
+      controller.flushFrames();
+      expect(controller.getState().transcriptReady).toBe(true);
+      expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'Preserve the existing conversation.')).toBe(true);
       const stableIds = controller.getState().blocks.map((block) => block.id);
       observations.length = 0;
       const resetVersion = controller.getState().transcriptResetVersion;
@@ -390,6 +410,8 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
         childRequests: childRequest.mock.calls.length, taskStatus: main.accessor.get(IAgentTaskService).getTask(taskId)?.status,
         transcriptResetsDuringDelivery: controller.getState().transcriptResetVersion - resetVersion }));
     } finally {
+      releaseSeed();
+      seed?.mockRestore();
       finishChild(finalChild);
       unsubscribe();
       controller.close();
