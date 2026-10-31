@@ -160,4 +160,58 @@ describe('AgentRefText', () => {
     expect(chips[0]!.textContent).toContain('alpha');
     expect(chips[1]!.textContent).toContain('beta');
   });
+
+  it('marks a rejected chip in words, not by dot colour alone', async () => {
+    const ref = reference('worker');
+    const failed = task({ source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: undefined, status: 'failed' });
+    const container = await render('use kiki://agents/worker', { references: [ref], tasks: [failed] });
+    const chip = container.querySelector<HTMLElement>(`[data-agent-ref-chip="${ref.refId}"]`)!;
+    expect(chip.getAttribute('data-agent-ref-status')).toBe('rejected');
+    expect(chip.textContent).toContain('not started');
+    expect(chip.querySelector('.line-through')).not.toBeNull();
+  });
+
+  it('renders an external engine reference with its engine id, not "native engine"', async () => {
+    const external: AgentReference = { refId: `ar:${MESSAGE_ID}:helper`, profile: 'helper', executor: 'claude-code', configuration: 'profile', label: 'helper' };
+    const container = await render('ask kiki://agents/helper', { references: [external] });
+    const chip = container.querySelector<HTMLElement>('[data-agent-ref-chip]')!;
+    expect(chip.textContent).toContain('helper');
+    expect(chip.textContent).toContain('claude-code');
+    expect(chip.textContent).not.toContain('native engine');
+  });
+
+  it('jumps to the most recent run when one reference ran several children', async () => {
+    const onOpenAgent = vi.fn();
+    const ref = reference('worker');
+    const older = task({ id: 'task-older', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-older', started_at: '2026-01-01T10:00:00.000Z' });
+    const newer = task({ id: 'task-newer', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-newer', started_at: '2026-01-01T12:00:00.000Z' });
+    const container = await render('use kiki://agents/worker', { references: [ref], tasks: [older, newer], onOpenAgent });
+    const chip = container.querySelector<HTMLElement>(`[data-agent-ref-chip="${ref.refId}"]`)!;
+    expect(chip.getAttribute('data-agent-ref-runs')).toBe('2');
+    expect(chip.textContent).toContain('2 runs');
+    // The click opens the run menu rather than jumping blind; the most recent
+    // run is the first item, and picking it (or any run) opens that child.
+    await act(async () => { chip.click(); });
+    const menu = document.querySelector<HTMLElement>('[data-agent-ref-runs-menu]')!;
+    expect(menu).not.toBeNull();
+    const items = [...menu.querySelectorAll<HTMLElement>('[data-menu-item]')];
+    expect(items).toHaveLength(2);
+    expect(items[0]!.textContent).toContain('task-newer');
+    expect(items[1]!.textContent).toContain('task-older');
+    await act(async () => { items[0]!.click(); });
+    expect(onOpenAgent).toHaveBeenCalledExactlyOnceWith('agent-newer');
+  });
+
+  it('opens an earlier run from the menu when one is picked', async () => {
+    const onOpenAgent = vi.fn();
+    const ref = reference('worker');
+    const older = task({ id: 'task-older', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-older', started_at: '2026-01-01T10:00:00.000Z' });
+    const newer = task({ id: 'task-newer', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-newer', started_at: '2026-01-01T12:00:00.000Z' });
+    const container = await render('use kiki://agents/worker', { references: [ref], tasks: [older, newer], onOpenAgent });
+    const chip = container.querySelector<HTMLElement>(`[data-agent-ref-chip="${ref.refId}"]`)!;
+    await act(async () => { chip.click(); });
+    const items = [...document.querySelectorAll<HTMLElement>('[data-agent-ref-runs-menu] [data-menu-item]')];
+    await act(async () => { items[1]!.click(); });
+    expect(onOpenAgent).toHaveBeenCalledExactlyOnceWith('agent-older');
+  });
 });
