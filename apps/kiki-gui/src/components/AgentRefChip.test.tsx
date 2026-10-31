@@ -2,12 +2,14 @@
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { Task } from '@kiki/protocol';
 import type { AgentReference } from '@kiki/transcript';
 
 import { I18nProvider } from '../i18n';
+import { executorCatalogQueryKey } from './settings/profileEditor/engines';
 import { AgentRefResolutionProvider, AgentRefText } from './AgentRefChip';
 
 const roots: Root[] = [];
@@ -53,6 +55,8 @@ async function render(
     tasks?: readonly Task[];
     onOpenAgent?: (agentId: string) => void;
     messageId?: string;
+    /** Engine catalog entries (`GET /executors` items) the chip reads engine labels from. */
+    executors?: readonly { readonly id: string; readonly label: string }[];
   } = {},
 ) {
   const container = document.createElement('div');
@@ -60,18 +64,24 @@ async function render(
   containers.push(container);
   const root = createRoot(container);
   roots.push(root);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (options.executors !== undefined) {
+    client.setQueryData(executorCatalogQueryKey('', undefined), { items: options.executors });
+  }
   await act(async () => {
     root.render(
-      <I18nProvider>
-        <AgentRefResolutionProvider value={{ tasks: options.tasks ?? [], onOpenAgent: options.onOpenAgent }}>
-          <AgentRefText
-            text={text}
-            references={options.references ?? []}
-            messageId={options.messageId ?? MESSAGE_ID}
-            projectSegment={(segment) => segment}
-          />
-        </AgentRefResolutionProvider>
-      </I18nProvider>,
+      <QueryClientProvider client={client}>
+        <I18nProvider>
+          <AgentRefResolutionProvider value={{ tasks: options.tasks ?? [], onOpenAgent: options.onOpenAgent }}>
+            <AgentRefText
+              text={text}
+              references={options.references ?? []}
+              messageId={options.messageId ?? MESSAGE_ID}
+              projectSegment={(segment) => segment}
+            />
+          </AgentRefResolutionProvider>
+        </I18nProvider>
+      </QueryClientProvider>,
     );
   });
   return container;
@@ -171,33 +181,43 @@ describe('AgentRefText', () => {
     expect(chip.querySelector('.line-through')).not.toBeNull();
   });
 
-  it('renders an external engine reference with its engine id, not "native engine"', async () => {
+  it('renders an external engine reference with its catalog label, and falls back to the id', async () => {
     const external: AgentReference = { refId: `ar:${MESSAGE_ID}:helper`, profile: 'helper', executor: 'claude-code', configuration: 'profile', label: 'helper' };
-    const container = await render('ask kiki://agents/helper', { references: [external] });
-    const chip = container.querySelector<HTMLElement>('[data-agent-ref-chip]')!;
+    const labeled = await render('ask kiki://agents/helper', { references: [external], executors: [{ id: 'claude-code', label: 'Claude Code' }] });
+    const chip = labeled.querySelector<HTMLElement>('[data-agent-ref-chip]')!;
     expect(chip.textContent).toContain('helper');
-    expect(chip.textContent).toContain('claude-code');
+    expect(chip.textContent).toContain('Claude Code');
+    expect(chip.textContent).not.toContain('claude-code');
     expect(chip.textContent).not.toContain('native engine');
+    // With no catalog entry the chip falls back to the raw engine id.
+    const fallback = await render('ask kiki://agents/helper', { references: [external] });
+    const fallbackChip = fallback.querySelector<HTMLElement>('[data-agent-ref-chip]')!;
+    expect(fallbackChip.textContent).toContain('claude-code');
   });
 
   it('jumps to the most recent run when one reference ran several children', async () => {
     const onOpenAgent = vi.fn();
     const ref = reference('worker');
-    const older = task({ id: 'task-older', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-older', started_at: '2026-01-01T10:00:00.000Z' });
-    const newer = task({ id: 'task-newer', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-newer', started_at: '2026-01-01T12:00:00.000Z' });
+    const older = task({ id: 'task-older', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-older', description: 'First sweep', status: 'completed', started_at: '2026-01-01T10:00:00.000Z' });
+    const newer = task({ id: 'task-newer', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-newer', description: 'Second sweep', status: 'completed', started_at: '2026-01-01T12:00:00.000Z' });
     const container = await render('use kiki://agents/worker', { references: [ref], tasks: [older, newer], onOpenAgent });
     const chip = container.querySelector<HTMLElement>(`[data-agent-ref-chip="${ref.refId}"]`)!;
     expect(chip.getAttribute('data-agent-ref-runs')).toBe('2');
     expect(chip.textContent).toContain('2 runs');
     // The click opens the run menu rather than jumping blind; the most recent
-    // run is the first item, and picking it (or any run) opens that child.
+    // run is the first item and is marked, and picking a run opens that child.
     await act(async () => { chip.click(); });
     const menu = document.querySelector<HTMLElement>('[data-agent-ref-runs-menu]')!;
     expect(menu).not.toBeNull();
     const items = [...menu.querySelectorAll<HTMLElement>('[data-menu-item]')];
     expect(items).toHaveLength(2);
-    expect(items[0]!.textContent).toContain('task-newer');
-    expect(items[1]!.textContent).toContain('task-older');
+    // The reader tells the runs apart without a task id: "Most recent" leads,
+    // then the run's own label and status; the older run keeps its label.
+    expect(items[0]!.textContent).toContain('Most recent');
+    expect(items[0]!.textContent).toContain('Second sweep');
+    expect(items[0]!.textContent).toContain('Completed');
+    expect(items[1]!.textContent).toContain('First sweep');
+    expect(items[0]!.textContent).not.toContain('task-newer');
     await act(async () => { items[0]!.click(); });
     expect(onOpenAgent).toHaveBeenCalledExactlyOnceWith('agent-newer');
   });
@@ -205,8 +225,8 @@ describe('AgentRefText', () => {
   it('opens an earlier run from the menu when one is picked', async () => {
     const onOpenAgent = vi.fn();
     const ref = reference('worker');
-    const older = task({ id: 'task-older', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-older', started_at: '2026-01-01T10:00:00.000Z' });
-    const newer = task({ id: 'task-newer', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-newer', started_at: '2026-01-01T12:00:00.000Z' });
+    const older = task({ id: 'task-older', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-older', description: 'First sweep', status: 'completed', started_at: '2026-01-01T10:00:00.000Z' });
+    const newer = task({ id: 'task-newer', source_ref: { ...ref, messageId: MESSAGE_ID }, agent_id: 'agent-newer', description: 'Second sweep', status: 'completed', started_at: '2026-01-01T12:00:00.000Z' });
     const container = await render('use kiki://agents/worker', { references: [ref], tasks: [older, newer], onOpenAgent });
     const chip = container.querySelector<HTMLElement>(`[data-agent-ref-chip="${ref.refId}"]`)!;
     await act(async () => { chip.click(); });

@@ -6170,7 +6170,7 @@ export const en = {
   'agentRef.rejectedCue': 'not started',
   'agentRef.runs.one': '{count} run',
   'agentRef.runs.other': '{count} runs',
-  'agentRef.openRun': 'Open run {taskId}',
+  'agentRef.runLatest': 'Most recent',
   'roomRef.open': 'Open room {title}',
   'roomRef.remove': 'Remove link to room {title}',
   'roomRef.members.one': '{count} member',

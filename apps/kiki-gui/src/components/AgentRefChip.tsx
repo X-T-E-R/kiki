@@ -18,15 +18,18 @@
  */
 
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import { findAgentRefs } from '@kiki/protocol';
 import type { Task } from '@kiki/protocol';
 import type { AgentReference } from '@kiki/transcript';
-import type { I18nKey } from '@kiki/session-core/i18n';
+import type { I18nKey, I18nParams } from '@kiki/session-core/i18n';
 import { agentRefDelegation, type AgentRefDelegation, type AgentRefRun } from '@kiki/session-core/session';
 import { useI18n } from '../i18n';
+import { useOptionalConnection } from '../state/connection';
 import { Icon } from './icons';
 import { MiniContextMenu } from './MiniContextMenu';
+import { engineLabel as catalogEngineLabel, executorCatalogQueryKey } from './settings/profileEditor/engines';
 
 /**
  * What a transcript surface knows for resolving agent references: the task
@@ -59,10 +62,43 @@ function statusDot(status: AgentRefDelegation['status']): ReactNode {
   return <span aria-hidden className="h-[6px] w-[6px] shrink-0 rounded-full border border-ink-faint/70" />;
 }
 
-/** The engine the reference names: the engine id for an external target, "native engine" for a native one. */
-function engineLabel(reference: AgentReference, t: (key: I18nKey, params?: Record<string, string | number>) => string): string {
-  if (reference.configuration === 'native' || reference.executor === 'native') return t('agentRef.configuration.native');
-  return reference.executor;
+/** One run-menu entry: how the reader tells it apart from the reference's other runs. */
+function runMenuLabel(
+  run: AgentRefRun,
+  isLatest: boolean,
+  t: (key: I18nKey, params?: I18nParams) => string,
+  relativeTime: (iso: string) => string,
+  latestText: string,
+): string {
+  const status = t(`subagent.status.${run.status}` as I18nKey);
+  const when = run.startedAt === undefined ? undefined : relativeTime(run.startedAt);
+  return [
+    isLatest ? latestText : undefined,
+    run.label,
+    status,
+    when,
+  ].filter((part): part is string => part !== undefined && part !== '').join(' · ');
+}
+
+/**
+ * The engine catalog when the surface has a connection, empty otherwise. The
+ * chip renders inside read-only and test surfaces too, where there is no
+ * connection to query — the engine then falls back to its raw id, matching
+ * how the catalog reads while it is still loading.
+ */
+function useOptionalExecutorCatalog() {
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const scopeId = connection?.scopeId;
+  const serverId = connection?.meta?.server_id;
+  const query = useQuery({
+    queryKey: executorCatalogQueryKey(scopeId ?? '', serverId),
+    queryFn: () => client!.listExecutors(),
+    enabled: client !== undefined && typeof client.listExecutors === 'function',
+    staleTime: 60_000,
+    retry: false,
+  });
+  return query.data?.items ?? [];
 }
 
 /** The quiet cue a rejected chip carries in words: the run never started. */
@@ -92,10 +128,14 @@ export function AgentRefChip({
   /** Opens the delegated child run; absent means this surface cannot navigate. */
   readonly onOpen?: (agentId: string) => void;
 }) {
-  const { t, tp } = useI18n();
+  const { t, tp, time } = useI18n();
+  const catalog = useOptionalExecutorCatalog();
   const [runMenu, setRunMenu] = useState<{ x: number; y: number } | null>(null);
   const statusText = t(`agentRef.status.${delegation.status}`);
-  const engine = engineLabel(reference, t);
+  // The engine label the picker's badge shows: the catalog's human label for
+  // an external engine, "native engine" for a native one, the raw id only when
+  // the catalog has not loaded the engine yet.
+  const engine = catalogEngineLabel(reference.executor, t('agentRef.configuration.native'), catalog);
   const details = t('agentRef.details', { profile: reference.profile, executor: reference.executor, configuration: engine });
 
   if (delegation.status === 'rejected') {
@@ -116,9 +156,8 @@ export function AgentRefChip({
     const runs = delegation.runs;
     const latest = runs[0]!;
     const runsText = tp('agentRef.runs', runs.length);
-    const runList = runs.map((run) => run.taskId).join(', ');
     const tooltip = runs.length > 1
-      ? [details, runsText, runList].join('\n')
+      ? [details, runsText, ...runs.map((run, index) => runMenuLabel(run, index === 0, t, time.relativeTime, t('agentRef.runLatest')))].join('\n')
       : [details, statusText].join('\n');
     const body = (
       <>
@@ -162,9 +201,9 @@ export function AgentRefChip({
             overlayId="agent-ref-runs-menu"
             dataAttribute="data-agent-ref-runs-menu"
             onClose={() => { setRunMenu(null); }}
-            entries={runs.map((run) => ({
+            entries={runs.map((run, index) => ({
               key: run.taskId,
-              label: t('agentRef.openRun', { taskId: run.taskId }),
+              label: runMenuLabel(run, index === 0, t, time.relativeTime, t('agentRef.runLatest')),
               run: () => { openRun(run); },
             }))}
           />

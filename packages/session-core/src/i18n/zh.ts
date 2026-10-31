@@ -6111,7 +6111,7 @@ export const zh = {
   'agentRef.details': '{profile} · {executor} · {configuration}',
   'agentRef.rejectedCue': '未起来',
   'agentRef.runs.other': '{count} 次运行',
-  'agentRef.openRun': '打开运行 {taskId}',
+  'agentRef.runLatest': '最近一次',
   'roomRef.open': '打开房间 {title}',
   'roomRef.remove': '移除指向房间 {title} 的链接',
   'roomRef.members.other': '{count} 位成员',
