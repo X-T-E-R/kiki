@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => {
     parseAsync,
     hook,
     installKikiDocs: vi.fn(() => ({ status: 'source-missing' })),
+    nativeAssetSmoke: vi.fn(() => false),
     createProgram: vi.fn(() => ({ parse, parseAsync, hook })),
     getVersion: vi.fn(() => '0.0.1-alpha.2'),
     validateOptions: vi.fn(),
@@ -80,6 +81,8 @@ vi.mock('../../src/cli/commands', () => ({
 }));
 
 vi.mock('../../src/native/product-docs', () => ({ installKikiDocs: mocks.installKikiDocs }));
+vi.mock('../../src/native/main-heap', () => ({ initializeMainHeap: () => false }));
+vi.mock('../../src/native/smoke', () => ({ runNativeAssetSmokeIfRequested: mocks.nativeAssetSmoke }));
 
 vi.mock('../../src/cli/version', async () => {
   const actual = await vi.importActual<typeof import('../../src/cli/version.js')>(
@@ -175,7 +178,7 @@ describe('main entry command handling', () => {
   let homeDir: string;
 
   it('installs docs only after parsing the selected command home', async () => {
-    main();
+    await main();
     await waitForProgramArgs();
     expect(mocks.installKikiDocs).not.toHaveBeenCalled();
     const preAction = mocks.hook.mock.calls.find(([name]) => name === 'preAction')?.[1] as (_: unknown, command: Command) => void;
@@ -186,6 +189,28 @@ describe('main entry command handling', () => {
     expect(mocks.installKikiDocs).toHaveBeenCalledWith({ kikiHome: join(homeDir, 'selected-space') });
     expect(await readdir(homeDir)).not.toContain('docs');
   });
+  it('does not sync docs for tools selected under root options', async () => {
+    await main();
+    await waitForProgramArgs();
+    const preAction = mocks.hook.mock.calls.find(([name]) => name === 'preAction')?.[1] as (_: unknown, command: Command) => void;
+    const program = new Command('kiki');
+    const command = program.command('tools').command('list').action(() => {});
+    preAction(undefined, command);
+    expect(mocks.installKikiDocs).not.toHaveBeenCalled();
+  });
+
+  it.each(['KIKI_NATIVE_ASSET_SMOKE', 'KIKI_AUTH_NATIVE_SMOKE'])('preserves explicit %s on version invocations', async (flag) => {
+    const argv = process.argv;
+    process.argv = [process.execPath, 'kiki', '--version'];
+    vi.stubEnv(flag, '1');
+    mocks.nativeAssetSmoke.mockReturnValueOnce(true);
+    try {
+      await main();
+      expect(mocks.nativeAssetSmoke).toHaveBeenCalledOnce();
+      expect(mocks.createProgram).not.toHaveBeenCalled();
+    } finally { process.argv = argv; }
+  });
+
   afterEach(async () => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
@@ -232,7 +257,7 @@ describe('main entry command handling', () => {
   it('clears inherited SEA indexer mode before parsing Node CLI arguments', async () => {
     vi.stubEnv('KIKI_SQLITE_INDEXER_SEA', '1');
 
-    main();
+    await main();
     await waitForProgramArgs();
 
     expect(process.env['KIKI_SQLITE_INDEXER_SEA']).toBeUndefined();
@@ -241,7 +266,7 @@ describe('main entry command handling', () => {
   it('drops an inherited source-owned adapter root when this process has no bundle of its own', async () => {
     vi.stubEnv('KIKI_SOURCE_OWNED_ADAPTER_ROOT', 'C:\\inherited\\external-harness');
 
-    main();
+    await main();
     await waitForProgramArgs();
 
     expect(process.env['KIKI_SOURCE_OWNED_ADAPTER_ROOT']).toBeUndefined();
@@ -297,7 +322,7 @@ describe('main entry command handling', () => {
     mocks.runPrompt.mockResolvedValue(void 0);
     mocks.finalizeHeadlessRun.mockResolvedValue(void 0);
 
-    main();
+    await main();
     const programArgs = await waitForProgramArgs();
     const mainAction = programArgs[1] as (opts: CLIOptions) => void;
     mainAction(opts);
@@ -322,7 +347,7 @@ describe('main entry command handling', () => {
     });
 
     try {
-      main();
+      await main();
       const programArgs = await waitForProgramArgs();
       const mainAction = programArgs[1] as (opts: CLIOptions) => void;
       mainAction(opts);
@@ -341,7 +366,7 @@ describe('main entry command handling', () => {
   });
 
   it('parses CLI arguments during startup', async () => {
-    main();
+    await main();
 
     await waitForAssertion(() => {
       expect(mocks.parseAsync).toHaveBeenCalledWith(process.argv);
@@ -354,7 +379,7 @@ describe('main entry command handling', () => {
     mocks.parseAsync.mockRejectedValueOnce(new CommanderError(0, code, '(outputHelp)'));
     try {
       process.exitCode = undefined;
-      main();
+      await main();
       await waitForAssertion(() => { expect(process.exitCode).toBe(0); });
       expect(stderr).not.toHaveBeenCalled();
       expect(mocks.runShell).not.toHaveBeenCalled();
@@ -374,7 +399,7 @@ describe('main entry command handling', () => {
     mocks.parseAsync.mockRejectedValueOnce(error);
     try {
       process.exitCode = undefined;
-      main();
+      await main();
       await waitForAssertion(() => { expect(process.exitCode).toBe(expected); });
       expect(stderr).toHaveBeenCalledWith(`${error.message}\n`);
     } finally {
@@ -383,11 +408,11 @@ describe('main entry command handling', () => {
     }
   });
 
-  it('sets the process title during startup', () => {
+  it('sets the process title during startup', async () => {
     const originalTitle = process.title;
     try {
       process.title = 'kimi-test-runner';
-      main();
+      await main();
 
       expect(process.title).toBe('kiki');
     } finally {

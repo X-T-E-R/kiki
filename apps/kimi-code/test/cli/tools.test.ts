@@ -1,11 +1,13 @@
 import { Command } from 'commander';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerToolsCommand } from '../../src/cli/sub/tools';
+import { getVersion } from '../../src/cli/package-version';
 
 const { ensureServer, daemonRequest, api, createKlient } = vi.hoisted(() => {
   const api = { list: vi.fn(), update: vi.fn(), tools: vi.fn(), credential: vi.fn() };
@@ -104,6 +106,34 @@ describe('script tools CLI owner commands', () => {
   });
 });
 
+
+describe('lightweight script entry', () => {
+  it.each([
+    { args: ['tools', '--help'], expected: 'Call shared Kiki tools' },
+    { args: ['tools', 'job', 'download', '--help'], expected: '--output' },
+    { args: ['--version'], expected: getVersion() },
+  ])('does not load the engine or create home files for $args', async ({ args, expected }) => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-light-cli-'));
+    const home = join(root, 'home');
+    await mkdir(home);
+    const guard = join(root, 'guard.mjs');
+    await writeFile(guard, `import { registerHooks } from 'node:module';
+registerHooks({resolve(specifier,context,next){
+  if(specifier==='@kiki/node-sdk'||specifier==='@kiki/kap-server'||specifier.includes('main-runtime'))throw new Error('Unexpected heavy startup: '+specifier);
+  return next(specifier,context);
+}});`);
+    const repo = resolve(import.meta.dirname, '../../../..');
+    try {
+      const result = await promisify(execFile)(process.execPath, [
+        '--import', 'tsx/esm', '--import', './build/register-raw-text-loader.mjs',
+        '--import', pathToFileURL(guard).href, 'apps/kimi-code/src/main.ts', ...args,
+      ], { cwd: repo, env: { ...process.env, KIKI_HOME: home, TSX_TSCONFIG_PATH: join(repo, 'apps/kimi-code/tsconfig.dev.json') }, timeout: 10_000 });
+      expect(result.stdout).toContain(expected);
+      expect(result.stderr).toBe('');
+      expect(await readdir(home)).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
 
 describe('documented operation polling', () => {
   it('uses the displayed external-client settings labels and states Windows shell prerequisites', async () => {

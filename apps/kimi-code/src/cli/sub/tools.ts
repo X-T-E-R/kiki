@@ -4,12 +4,8 @@ import { userInfo } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Command } from 'commander';
-import { createKlient } from '@kiki/klient/http';
+import type { createKlient } from '@kiki/klient/http';
 import type { ExternalClientResultRange } from '@kiki/klient';
-
-import { resolveKikiHome } from '#/kiki/home';
-import { ensureServer } from '#/kiki/serve';
-import { daemonRequest } from '#/kiki/seat';
 
 const credentials = new Map<string, { expiresAt: number; pending: Promise<{ token: string; expiresAt?: number }> }>();
 
@@ -234,6 +230,9 @@ async function run(
     let endpoint = options.url ?? process.env['KIKI_SERVER_URL'];
     if (owner && options.client === undefined) throw new Error('This owner command requires --client ID.');
     if ((owner || token === undefined) && options.client !== undefined) {
+      const [{ ensureServer }, { resolveKikiHome }, { daemonRequest }] = await Promise.all([
+        import('#/kiki/serve'), import('#/kiki/home'), import('#/kiki/seat'),
+      ]);
       const connection = await ensureServer({ homeDir: resolveKikiHome(options.home) });
       if (owner) {
         token = connection.token;
@@ -271,6 +270,7 @@ async function run(
     ) {
       throw new Error('Connection credentials require a loopback HTTP URL without embedded credentials.');
     }
+    const { createKlient } = await import('@kiki/klient/http');
     client = createKlient({ endpoint, token });
     const result = await work(client, { ...options, url: endpoint });
     process.stdout.write(`${JSON.stringify(result)}\n`);

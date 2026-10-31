@@ -2,13 +2,7 @@ import { ErrorCodes } from '@kiki/node-sdk';
 
 import { currentKimiProfile } from '#/utils/region';
 
-export const PRODUCT_NAME = 'Kiki';
-export const CLI_COMMAND_NAME = 'kiki';
-export const PROCESS_NAME = 'kiki';
-
-// Used in telemetry app names and HTTP User-Agent headers.
-export const CLI_USER_AGENT_PRODUCT = 'kiki-cli';
-export const KIMI_CODE_CLI_USER_AGENT_PRODUCT = 'kimi-code-cli';
+export { PRODUCT_NAME, CLI_COMMAND_NAME, PROCESS_NAME, CLI_USER_AGENT_PRODUCT, KIMI_CODE_CLI_USER_AGENT_PRODUCT } from './identity';
 export const CLI_UI_MODE = 'shell';
 // Telemetry ui_mode for the `kimi web` host. Same product
 // as the CLI (CLI_USER_AGENT_PRODUCT); the surface is distinguished by ui_mode.
