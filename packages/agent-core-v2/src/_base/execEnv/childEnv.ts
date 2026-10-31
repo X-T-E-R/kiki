@@ -6,18 +6,23 @@ export function mergeChildEnv(
   windows = process.platform === 'win32',
 ): Record<string, string> {
   const env: Record<string, string> = {};
-  const remove = (name: string): void => {
-    for (const key of Object.keys(env)) {
-      if (windows ? key.toLowerCase() === name.toLowerCase() : key === name) delete env[key];
-    }
+  const spelling = new Map<string, string>();
+  const identity = windows ? (name: string): string => name.toLowerCase() : (name: string): string => name;
+  const remove = (id: string): void => {
+    const key = spelling.get(id);
+    if (key === undefined) return;
+    delete env[key];
+    spelling.delete(id);
   };
   for (const layer of [parent, defaults, overrides]) {
     for (const [key, value] of Object.entries(layer)) {
       if (value === undefined) continue;
-      remove(key);
+      const id = identity(key);
+      remove(id);
       env[key] = value;
+      spelling.set(id, key);
     }
   }
-  for (const key of unset) remove(key);
+  for (const key of unset) remove(identity(key));
   return env;
 }
