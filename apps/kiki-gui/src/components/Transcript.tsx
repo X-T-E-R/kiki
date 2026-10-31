@@ -3355,18 +3355,34 @@ function TopEdge({ state, onLoadOlder }: {
   onLoadOlder: (signal?: AbortSignal) => Promise<boolean>;
 }) {
   const { t } = useI18n();
+  const [open, setOpen] = useState(false);
   // Unverified coverage says one thing: the top of what loaded cannot be
   // vouched for as the beginning. While older pages remain there is nothing
   // to warn about yet (the reader just loads them); it replaces the
   // "beginning of history" boundary once the pages run out.
   if (state.historyCoverageKind === 'unknown' && !state.hasMoreHistory && !state.loadingOlder && state.olderError === undefined) {
+    // Quiet boundary, not a default warning: the reason stays behind an
+    // expandable detail so the line itself only marks "top of loaded is not
+    // vouched as the beginning".
     return (
-      <div role="status" data-top-edge="unverified" className="flex items-center gap-3 pb-1">
-        <span className="h-px flex-1 bg-hairline" />
-        <span className="text-[12px] text-ink-faint" title={t('transcript.historyUnverifiedHint')}>
-          {t('transcript.historyPartial')}
-        </span>
-        <span className="h-px flex-1 bg-hairline" />
+      <div role="status" data-top-edge="unverified" className="flex flex-col items-stretch gap-1 pb-1">
+        <button
+          type="button"
+          data-top-edge-toggle
+          aria-expanded={open}
+          onClick={() => { setOpen((value) => !value); }}
+          className="group flex items-center gap-3 text-left"
+        >
+          <span className="h-px flex-1 bg-hairline" />
+          <span className="flex items-center gap-1 text-[12px] text-ink-faint transition-colors group-hover:text-ink-soft">
+            {t('transcript.historyPartial')}
+            <Icon name="chevron" size={12} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+          </span>
+          <span className="h-px flex-1 bg-hairline" />
+        </button>
+        {open ? (
+          <p data-top-edge-detail className="text-center text-[12px] leading-4 text-ink-faint">{t('transcript.historyUnverifiedHint')}</p>
+        ) : null}
       </div>
     );
   }

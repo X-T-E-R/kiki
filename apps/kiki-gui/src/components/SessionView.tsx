@@ -4911,13 +4911,9 @@ boundExecution,
   // The composer footer carries connection facts and reading continuation only;
   // each message keeps its own send lifecycle on the timeline.
   const composerStatusNotice = useMemo(() => {
-    const connectionNotice = wsStatus === 'connecting' ? t('app.reconnecting') : wsStatus === 'closed' ? t('app.disconnected') : undefined;
-    if (!hasPromptContinuation && connectionNotice === undefined) return undefined;
-    return <>
-      {hasPromptContinuation && promptCoverage !== undefined ? <PromptRecordsRemainder continuation={{ coverage: promptCoverage, status: promptEntityLoad, onRequest: handleLoadPromptEntities }} /> : null}
-      {connectionNotice === undefined ? null : <span className="truncate">{connectionNotice}</span>}
-    </>;
-  }, [hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities, wsStatus, t]);
+    if (!hasPromptContinuation) return undefined;
+    return promptCoverage !== undefined ? <PromptRecordsRemainder continuation={{ coverage: promptCoverage, status: promptEntityLoad, onRequest: handleLoadPromptEntities }} /> : null;
+  }, [hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities]);
 
   const composerBusy = canAbortActiveTurn(state);
   // The working line under the composer: only while the agent itself is

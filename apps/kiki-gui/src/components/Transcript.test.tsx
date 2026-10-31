@@ -4612,7 +4612,11 @@ describe('virtualized transcript scrolling', () => {
     const line = container.querySelector('[data-top-edge="unverified"]');
     expect(line?.getAttribute('role')).toBe('status');
     expect(line?.textContent).toContain('Earlier history is unverified');
-    expect(line?.querySelector('button')).toBeNull();
+    const toggle = line?.querySelector<HTMLButtonElement>('[data-top-edge-toggle]');
+    expect(toggle).not.toBeNull();
+    expect(line?.querySelector('[data-top-edge-detail]')).toBeNull();
+    await act(async () => { toggle!.click(); });
+    expect(line?.querySelector('[data-top-edge-detail]')?.textContent).toBeTruthy();
     expect(container.textContent).not.toContain('beginning of history');
   });
 
