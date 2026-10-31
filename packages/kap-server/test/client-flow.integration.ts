@@ -439,7 +439,7 @@ describe('GUI shared client against an isolated KAP host', () => {
     expect(getLiveSessionById(host.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')).toBeUndefined();
     const view = client.sessionView(id);
     const signals: Parameters<Parameters<typeof view.subscribe>[1]>[0][] = [];
-    const subscription = view.bootstrap!({ sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } }, signal => signals.push(signal));
+    const subscription = view.bootstrap!({ transcriptGrades: { main: 'delta' } }, signal => signals.push(signal));
     try {
       await vi.waitFor(() => expect(signals.some(signal => signal.type === 'ready')).toBe(true), { timeout: 10000 });
       const resets = signals.filter(signal => signal.type === 'transcript' && signal.event.type === 'transcript.reset');
