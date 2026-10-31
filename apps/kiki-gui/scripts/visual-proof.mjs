@@ -4183,25 +4183,31 @@ async function scenarioTurnPolish() {
 
 async function scenarioAgentReferences() {
   await selectSession('Fixture: agent references');
-  // Four chips in one user bubble: worker delegated (twice → a run menu),
-  // reviewer rejected, planner only mentioned, helper on an external engine.
+  // Five chips in one user bubble: worker delegated (twice → a run menu),
+  // reviewer rejected, planner only mentioned, helper on an external engine
+  // with a persisted engine label, scout on one without (an older record).
   const bubble = page.locator('[role="log"] [data-block-id^="user-"]').first();
   await bubble.waitFor({ timeout: 15_000 });
   const chips = bubble.locator('[data-agent-ref-chip]');
   await chips.first().waitFor({ timeout: 10_000 });
-  if ((await chips.count()) !== 4) throw new Error(`expected 4 agent reference chips, saw ${await chips.count()}`);
+  if ((await chips.count()) !== 5) throw new Error(`expected 5 agent reference chips, saw ${await chips.count()}`);
   const chipOf = (profile) => bubble.locator(`[data-agent-ref-chip]`, { hasText: profile }).first();
   const statusOf = async (profile) => chipOf(profile).getAttribute('data-agent-ref-status');
-  const statuses = [await statusOf('worker'), await statusOf('reviewer'), await statusOf('planner'), await statusOf('helper')];
-  console.log(`[check] agent ref statuses: worker=${statuses[0]} reviewer=${statuses[1]} planner=${statuses[2]} helper=${statuses[3]}`);
+  const statuses = [await statusOf('worker'), await statusOf('reviewer'), await statusOf('planner'), await statusOf('helper'), await statusOf('scout')];
+  console.log(`[check] agent ref statuses: worker=${statuses[0]} reviewer=${statuses[1]} planner=${statuses[2]} helper=${statuses[3]} scout=${statuses[4]}`);
   if (statuses[0] !== 'delegated') throw new Error(`worker chip should be delegated, got ${statuses[0]}`);
   if (statuses[1] !== 'rejected') throw new Error(`reviewer chip should be rejected, got ${statuses[1]}`);
   if (statuses[2] !== 'pending') throw new Error(`planner chip should be pending, got ${statuses[2]}`);
-  // The external engine names itself by the catalog label ("Claude Code"),
-  // matching the picker's badge — never the raw id, never "native engine".
+  // The external engine names its label: helper reads the reference's own
+  // persisted engine_label, scout (an older record) the catalog's — both the
+  // badge the picker shows, never the raw id, never "native engine".
   const helperText = await chipOf('helper').textContent();
   if (!helperText?.includes('Claude Code') || helperText.includes('claude-code') || helperText.includes('native engine') || helperText.includes('原生引擎')) {
     throw new Error(`helper chip should read "Claude Code", got "${helperText}"`);
+  }
+  const scoutText = await chipOf('scout').textContent();
+  if (!scoutText?.includes('Codex') || scoutText.includes('codex') || scoutText.includes('native engine') || scoutText.includes('原生引擎')) {
+    throw new Error(`scout chip should read "Codex" from the catalog, got "${scoutText}"`);
   }
   const reviewerText = await chipOf('reviewer').textContent();
   if (!reviewerText?.includes(S.agentRefRejectedCue)) throw new Error(`reviewer chip should read its rejection, got "${reviewerText}"`);

@@ -23,7 +23,10 @@ const REFS = [
   { refId: `ar:${MESSAGE_ID}:worker`, profile: 'worker', executor: 'native', configuration: 'native', label: 'worker' },
   { refId: `ar:${MESSAGE_ID}:reviewer`, profile: 'reviewer', executor: 'native', configuration: 'native', label: 'reviewer' },
   { refId: `ar:${MESSAGE_ID}:planner`, profile: 'planner', executor: 'native', configuration: 'native', label: 'planner' },
-  { refId: `ar:${MESSAGE_ID}:helper`, profile: 'helper', executor: 'claude-code', configuration: 'profile', label: 'helper' },
+  // A current record: the producer persisted the engine label on the reference.
+  { refId: `ar:${MESSAGE_ID}:helper`, profile: 'helper', executor: 'claude-code', configuration: 'profile', label: 'helper', engine_label: 'Claude Code' },
+  // An older record: it predates engine_label, so the chip reads the catalog.
+  { refId: `ar:${MESSAGE_ID}:scout`, profile: 'scout', executor: 'codex', configuration: 'profile', label: 'scout' },
 ];
 
 const PROMPT_TEXT = [
@@ -31,7 +34,8 @@ const PROMPT_TEXT = [
   'kiki://agents/worker 去扫一遍 transcript 投影,',
   'kiki://agents/reviewer 复核我刚才的改动,',
   'kiki://agents/planner 先帮我排个计划,',
-  'kiki://agents/helper 顺手看看 fixtures。',
+  'kiki://agents/helper 顺手看看 fixtures,',
+  'kiki://agents/scout 也瞄一眼。',
 ].join('\n');
 
 function refTurn(turnId, minutesAgo) {
@@ -105,6 +109,7 @@ export default {
   executors: [
     { id: 'native', label: 'Kiki', protocol: 'native', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
     { id: 'claude-code', label: 'Claude Code', protocol: 'claude-acp', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
+    { id: 'codex', label: 'Codex', protocol: 'codex-acp', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
   ],
   agentProfiles: [
     { name: 'agent', source: 'builtin', description: 'General-purpose built-in agent.', main: true, routes: [] },
@@ -112,6 +117,7 @@ export default {
     { name: 'reviewer', source: 'builtin', description: 'Review agent.', main: false, routes: [] },
     { name: 'planner', source: 'builtin', description: 'Planning agent.', main: false, routes: [] },
     { name: 'helper', source: 'builtin', description: 'External-engine helper agent.', main: false, routes: [] },
+    { name: 'scout', source: 'builtin', description: 'External-engine scout agent.', main: false, routes: [] },
   ],
   sessions: [sessionRecord(SID, { title: 'Fixture: agent references' })],
   snapshots: {
