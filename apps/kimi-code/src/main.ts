@@ -5,6 +5,8 @@
  * the requested UI runner.
  */
 
+import './native/worker-heap';
+import { initializeMainHeap } from './native/main-heap';
 import '@kiki/node-sdk/native-fs-watch-error-guard';
 import { initializeNbSearchWorkerEntry } from './native/nb-search-worker';
 import { runSqliteIndexerCommand } from '@kiki/kap-server/sqlite-indexer-runtime';
@@ -86,6 +88,7 @@ export async function handleMainCommand(
 }
 
 export function main(): void {
+  if (initializeMainHeap()) return;
   process.title = PROCESS_NAME;
   const indexerArg = process.argv.findIndex((arg, index) => index > 0 && arg === '__search-indexer');
   if (indexerArg > 0) {

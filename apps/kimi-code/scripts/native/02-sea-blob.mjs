@@ -21,16 +21,14 @@ async function ensureBundleExists() {
   }
 }
 
-const LOCAL_PROFILE_EXEC_ARGV = ['--max-old-space-size=8192'];
-
-export function seaExecArgv(profile) {
-  return profile === 'local' ? LOCAL_PROFILE_EXEC_ARGV : [];
+export function seaExecArgv(_profile) {
+  return [];
 }
 
 export function seaRuntimeOptions(profile) {
   return {
     execArgv: seaExecArgv(profile),
-    execArgvExtension: profile === 'local' ? 'cli' : 'env',
+    execArgvExtension: 'env',
   };
 }
 
