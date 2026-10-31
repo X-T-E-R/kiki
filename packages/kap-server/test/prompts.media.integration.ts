@@ -1,13 +1,17 @@
-import { chmod, mkdir, readFile, realpath } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import { createServer as createHttpServer } from 'node:http';
 import { dirname, join } from 'node:path';
 import { paddedPng, pngDimensions, solidPng } from './helpers/png';
 import {
   IAgentContextMemoryService,
   IAgentLifecycleService,
-  IBootstrapService,
+  IAtomicDocumentStore,
   IFileService,
+  IFileSystemStorageService,
   IModelCatalogMutationService,
+  ISessionContext,
+  ISessionMediaStore,
+  Error2,
   getLiveSessionById,
 } from '@kiki/agent-core-v2';
 import { describe, expect, it, vi } from 'vitest';
@@ -315,16 +319,21 @@ describe('server-v2 /api prompts', () => {
       await expectSessionMedia(fixture.server!, id, `${uploaded.id}.png`, image);
       await fixture.server!.core.accessor.get(IFileService).delete(uploaded.id);
 
-      for (const source of [{ kind: 'session_media', file_id: uploaded.id }, { kind: 'file', file_id: uploaded.id }] as const) {
-        const replaced = await client.session(id).commands.replace('queued-image', {
-          content: [{ type: 'text', text: `edited via ${source.kind}` }, { type: 'image', source }],
-          replace_attachments: true,
-        });
-        expect(replaced.content).toEqual([
-          { type: 'text', text: `edited via ${source.kind}` },
-          { type: 'image', source: { kind: 'session_media', file_id: uploaded.id }, name: 'queued.png' },
-        ]);
-      }
+      const media = getLiveSessionById(fixture.server!.core.accessor, id)!.accessor.get(ISessionMediaStore);
+      const materializeSpy = vi.spyOn(media, 'materialize').mockRejectedValue(new Error('canonical media is read-only'));
+      try {
+        for (const source of [{ kind: 'session_media', file_id: uploaded.id }, { kind: 'file', file_id: uploaded.id }] as const) {
+          const replaced = await client.session(id).commands.replace('queued-image', {
+            content: [{ type: 'text', text: `edited via ${source.kind}` }, { type: 'image', source }],
+            replace_attachments: true,
+          });
+          expect(replaced.content).toEqual([
+            { type: 'text', text: `edited via ${source.kind}` },
+            { type: 'image', source: { kind: 'session_media', file_id: uploaded.id }, name: 'queued.png' },
+          ]);
+        }
+        expect(materializeSpy).not.toHaveBeenCalled();
+      } finally { materializeSpy.mockRestore(); }
 
       const other = await createSession(fixture.home as string);
       await createHeldMainAgent(other);
@@ -391,40 +400,68 @@ describe('server-v2 /api prompts', () => {
     });
   });
 
-  it('keeps the upload-backed reference when the session media dir is not writable', async () => {
-    if (process.getuid?.() === 0) return;
+  it.each([
+    { fault: 'blob', sourceKind: 'file' },
+    { fault: 'metadata', sourceKind: 'file' },
+    { fault: 'unavailable', sourceKind: 'file' },
+    { fault: 'unavailable', sourceKind: 'session_media' },
+  ] as const)('rejects canonical $fault failures for $sourceKind and retries the original request after recovery', async ({ fault, sourceKind }) => {
     const id = await createSession(fixture.home as string);
-    await createMainAgent(id);
-    const smallPng = solidPng(10, 10);
-    const uploaded = await uploadFile(smallPng, 'image/png', 'small.png');
-
-    const mediaDir = sessionMediaDir(fixture.server!, id);
-    await mkdir(mediaDir, { recursive: true });
-    await chmod(mediaDir, 0o555);
+    await createHeldMainAgent(id);
+    const client = createHttpKlient({ endpoint: fixture.base, token: bearerToken(fixture.server!) });
+    const session = getLiveSessionById(fixture.server!.core.accessor, id)!;
+    const media = session.accessor.get(ISessionMediaStore);
+    const mediaScope = session.accessor.get(ISessionContext).scope('media');
+    const storage = fixture.server!.core.accessor.get(IFileSystemStorageService);
+    const documents = fixture.server!.core.accessor.get(IAtomicDocumentStore);
+    const files = fixture.server!.core.accessor.get(IFileService);
+    const writeStream = storage.writeStream.bind(storage);
+    const set = documents.set.bind(documents);
+    const materialize = media.materialize.bind(media);
+    let failing = true;
+    const failure = new Error2('storage.io_failed', `injected canonical ${fault} failure`);
+    const writeSpy = vi.spyOn(storage, 'writeStream').mockImplementation(async (...args) => {
+      if (failing && fault === 'blob' && args[0] === mediaScope) throw failure;
+      return writeStream(...args);
+    });
+    const metadataSpy = vi.spyOn(documents, 'set').mockImplementation(async (...args) => {
+      if (failing && fault === 'metadata' && args[0] === mediaScope) throw failure;
+      return set(...args);
+    });
+    const materializeSpy = vi.spyOn(media, 'materialize').mockImplementation(async (input) => {
+      if (failing && fault === 'unavailable') return undefined;
+      return materialize(input);
+    });
     try {
-      const submitted = await call<PromptItemWire>('POST', `/api/sessions/${id}/prompts`, {
-        content: [{ type: 'image', source: { kind: 'file', file_id: uploaded.id } }],
+      await client.session(id).commands.submit({ prompt_id: 'busy', content: [{ type: 'text', text: 'busy' }] });
+      const image = solidPng(8, 8);
+      const uploaded = await uploadFile(image, 'image/png', 'retry.png');
+      const request = {
+        prompt_id: 'retention-retry',
+        content: [{ type: 'image' as const, name: 'retry.png', source: { kind: sourceKind, file_id: uploaded.id } }],
+      };
+      await expect(client.session(id).commands.submit(request)).rejects.toMatchObject({
+        code: 50001,
+        message: fault === 'unavailable' ? 'Failed to save the message attachment. Retry the request.' : failure.message,
       });
-      expect(submitted.body.code).toBe(0);
+      expect(materializeSpy).toHaveBeenCalled();
+      expect((await files.get(uploaded.id)).meta.id).toBe(uploaded.id);
+      const rejected = await call<{ active: PromptItemWire; queued: PromptItemWire[] }>('GET', `/api/sessions/${id}/prompts`);
+      expect(rejected.body.data.active.prompt_id).toBe('busy');
+      expect(rejected.body.data.queued).toEqual([]);
 
-      const session = getLiveSessionById(fixture.server!.core.accessor, id);
-      const main = session!.accessor.get(IAgentLifecycleService).get('main')!;
-      await vi.waitFor(() => {
-        const message = main.accessor
-          .get(IAgentContextMemoryService)
-          .get()
-          .find((m) => m.role === 'user' && m.content.some((part) => part.type === 'image_url'));
-        expect(message).toBeDefined();
-        expect(message!.content).toContainEqual({
-          type: 'image_url',
-          imageUrl: { url: `kimi-file://${uploaded.id}`, name: 'small.png' },
-        });
+      failing = false;
+      const retried = await client.session(id).commands.submit(request);
+      expect(retried).toMatchObject({
+        prompt_id: request.prompt_id, status: 'queued',
+        content: [{ type: 'image', source: { kind: 'session_media', file_id: uploaded.id }, name: 'retry.png' }],
       });
-
-      const cacheDir = fixture.server!.core.accessor.get(IBootstrapService).cacheDir;
-      await expect(readFile(join(cacheDir, `${uploaded.id}.png`))).rejects.toThrow();
+      expect((await media.read(uploaded.id))?.data).toEqual(image);
     } finally {
-      await chmod(mediaDir, 0o755);
+      writeSpy.mockRestore();
+      metadataSpy.mockRestore();
+      materializeSpy.mockRestore();
+      await client.close();
     }
   });
 

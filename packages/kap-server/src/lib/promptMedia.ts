@@ -9,7 +9,7 @@ import { buildImageCompressionCaption, compressBase64ForModel, compressImageForM
 import { decodeBase64Prefix, isModelAcceptedImageMime, normalizeImageMime, resolveEffectiveImageMime } from '@kiki/agent-core-v2/agent/media/image-format-policy';
 import { persistOriginalImage } from '@kiki/agent-core-v2/agent/media/image-originals';
 import { fileNotFoundError, type GetResult, type IFileService } from '@kiki/agent-core-v2/app/file/fileService';
-import type { ISessionMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
+import type { ISessionMediaStore, SessionMediaFile } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
 import type { ContentPart } from '@kiki/agent-core-v2/kosong/contract/message';
 import type { ITelemetryService } from '@kiki/agent-core-v2/app/telemetry/telemetry';
 import { Error2 } from '@kiki/agent-core-v2/errors';
@@ -42,15 +42,24 @@ export function sessionPromptFiles(staged: IFileService, media: ISessionMediaSto
   };
 }
 
-async function retainSessionMedia(media: ISessionMediaStore | undefined, file: GetResult): Promise<void> {
-  if (media === undefined || await media.open(file.meta.id) !== undefined) return;
+async function materializeSessionMedia(media: ISessionMediaStore, file: GetResult): Promise<SessionMediaFile> {
   await media.materialize({
     fileId: file.meta.id,
     size: file.meta.size,
     name: file.meta.name,
     mimeType: file.meta.media_type,
     stream: () => file.stream(),
-  }).catch(() => undefined);
+  });
+  const retained = await media.open(file.meta.id);
+  if (retained === undefined) {
+    throw new Error2('storage.io_failed', 'Failed to save the message attachment. Retry the request.');
+  }
+  return retained;
+}
+
+async function retainSessionMedia(media: ISessionMediaStore | undefined, file: GetResult): Promise<void> {
+  if (media === undefined || await media.open(file.meta.id) !== undefined) return;
+  await materializeSessionMedia(media, file);
 }
 
 /**
@@ -102,8 +111,7 @@ export async function resolvePromptSessionMediaRefs(
     if (file === undefined && !published && staged !== undefined) {
       const upload = await staged.get(fileId);
       assertMediaFile(upload, part.type);
-      await retainSessionMedia(store, upload);
-      file = await store.open(fileId) ?? { name: upload.meta.name, mediaType: upload.meta.media_type, size: upload.meta.size, stream: () => upload.stream() };
+      file = await materializeSessionMedia(store, upload);
     }
     if (file === undefined) throw fileNotFoundError(fileId);
     if (published) {
