@@ -3317,15 +3317,18 @@ export function Composer({
                     <span key={ref.start}>
                       {text.slice(index === 0 ? 0 : overlayTokens[index - 1]!.end, ref.start)}
                       {covered ? (
-                        // An invisible raw-width placeholder keeps the range's box;
-                        // the opaque chip overlays it, truncating the label inside.
-                        <mark className="relative inline-block rounded-[3px] align-bottom not-italic">
+                        // Two layers over the link's range: an opaque, borderless
+                        // placeholder sized to the raw link covers the raw text;
+                        // a text-width pill carries just the label with the same
+                        // hairline ring and radius as a bubble chip. A long label
+                        // truncates to the placeholder's width.
+                        <mark className="relative inline-block rounded-md bg-paper align-bottom not-italic">
                           <span className="invisible">{ref.raw}</span>
                           <mark
                             data-thread-ref-overlay-token
                             data-ref-kind={ref.kind}
                             title={ref.raw}
-                            className="absolute inset-0 inline-block max-w-full truncate rounded-[3px] bg-paper text-ink not-italic shadow-[0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.35),inset_0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.35)]"
+                            className="absolute top-1/2 left-0 inline-block max-w-full -translate-y-1/2 truncate rounded-md bg-ink/[0.045] px-1 text-[0.92em] leading-tight text-ink not-italic shadow-[inset_0_0_0_1px_var(--color-hairline)]"
                           >{ref.label}</mark>
                         </mark>
                       ) : (
