@@ -180,13 +180,16 @@ it('binds profile installation, relative file, and installed market Recipes acro
       const profileName = `recipe-${kind}`;
       let session = await sessions.create({ workDir: root });
       const workspace = (await client.global.workspaces.list()).find((entry) => entry.root === root)!;
-      await client.rest.agents.create({ workspace_id: workspace.id, name: profileName, scope: 'user', description: 'Example recipe role', prompt: 'PROFILE ROLE BODY', pinned_model_alias: 'sample', recipe: reference, recipe_options: { research: true } });
+      const rest = client.rest;
+      if (rest === undefined) throw new Error('HTTP client has no REST capability');
+      await rest.agents.create({ workspace_id: workspace.id, name: profileName, scope: 'user', description: 'Example recipe role', prompt: 'PROFILE ROLE BODY', pinned_model_alias: 'sample', recipe: reference, recipe_options: { research: true } });
       let agent = await session.accessor.get(IAgentLifecycleService).create({ agentId: 'main', binding: { profile: profileName, model: 'sample', thinking: 'off' } });
       const check = async (scenario: string) => {
         const profile = agent.accessor.get(IAgentProfileService);
         const binding = await profile.getCognitionBinding();
         expect(binding.recipe?.resolved.layers?.[0]?.surface, `${kind}:${scenario}`).toBe('profile');
         expect(binding.recipe?.resolved.layers?.[0]?.resolved.option_values).toEqual({ research: true });
+        if (binding.slots === undefined) throw new Error(`Recipe prompt slots are missing for ${kind}:${scenario}`);
         expect(binding.slots.steering).toBe('PROFILE RECIPE CUE');
         const diagnostics = await profile.getPromptDiagnostics();
         expect(diagnostics.recipe_model_binding?.references?.[0]).toMatchObject({ surface: 'profile', name: 'Profile example' });
