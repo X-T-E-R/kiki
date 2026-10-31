@@ -42,7 +42,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode } from 'react';
 
-import type { DeferredAppendTiming } from '@kiki/protocol';
+import type { DeferredAppendTiming, Task } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { parseSelectionCarryovers, stripThreadRefContext } from '@kiki/session-core/composer';
 import type { MediaRef } from '@kiki/session-core/composer/media';
@@ -52,7 +52,7 @@ import { mergeSessionQueueRows, pendingModelSwitchChange, type SessionQueueRow }
 import { useI18n } from '../i18n';
 import type { QueuedModelSwitch } from '../lib/client';
 import { useCoarsePointer } from '../lib/layoutHooks';
-import { AgentRefText } from './AgentRefChip';
+import { AgentRefResolutionProvider, AgentRefText } from './AgentRefChip';
 import { ContentContinuation, ContinuationRow } from './ContentContinuation';
 import { QuoteChip } from './ContextChips';
 import { SentAnnotationsBubble } from './SentAnnotationsBubble';
@@ -246,9 +246,18 @@ export function QueueStrip({
   sendNowUnavailable,
   timingReady,
   promptContinuation,
+  agentRefTasks,
+  onOpenAgent,
 }: {
   readonly items: readonly QueuedPromptPreview[];
   readonly promptContinuation?: QueuePromptContinuation;
+  /**
+   * Agent-reference resolution for the chips in queued messages: the session's
+   * task list a delegation lands in, and the entry that opens a child run.
+   * Absent on read-only surfaces, the chips stay status reads.
+   */
+  readonly agentRefTasks?: readonly Task[];
+  readonly onOpenAgent?: (agentId: string) => void;
   /**
    * Queued model-switch control items. They share this list's drain order and
    * never render as messages: each keeps its own row with edit/cancel while
@@ -368,6 +377,9 @@ export function QueueStrip({
 
   const hasPromptContinuation = promptContinuation !== undefined
     && (promptContinuation.coverage.hasMore || promptContinuation.status !== undefined);
+  // The chips in queued messages read the same task list the timeline's
+  // delegation cards use, and open a child through the same entry.
+  const queueAgentRefResolution = useMemo(() => ({ tasks: agentRefTasks ?? [], onOpenAgent }), [agentRefTasks, onOpenAgent]);
   if (rows.length === 0 && !hasPromptContinuation) return null;
 
   // An in-flight action locks drag reordering: a second move computed against
@@ -796,6 +808,7 @@ export function QueueStrip({
   }
 
   return (
+    <AgentRefResolutionProvider value={queueAgentRefResolution}>
     <section
       data-queue-strip
       data-queue-sort-mode={sortMode ? '' : undefined}
@@ -864,5 +877,6 @@ export function QueueStrip({
         />
       ) : null}
     </section>
+    </AgentRefResolutionProvider>
   );
 }

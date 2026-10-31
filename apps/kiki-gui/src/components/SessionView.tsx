@@ -37,7 +37,6 @@ import { ComposerHeader, type ComposerHeaderSection } from './ComposerHeader';
 import { GoalCard, GoalHeaderSummary, GoalPauseButton, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
 import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
-import { AgentRefResolutionProvider } from './AgentRefChip';
 import { SubmissionRecovery } from './SubmissionRecovery';
 import { RestoreAdmissionStatus } from './RestoreAdmissionStatus';
 import { ContinuationRow } from './ContentContinuation';
@@ -4731,9 +4730,6 @@ boundExecution,
       ),
     }
   ), [headerGoal, t, handleGoalRefresh, handleGoalUpdate, handleGoalPause, handleGoalResume, handleGoalCancel]);
-  // Queued prompts reference agents the same way sent ones do; the chips read
-  // the same task list and open a child through the same entry.
-  const queueAgentRefResolution = useMemo(() => ({ tasks: state.tasks, onOpenAgent: openAgent }), [state.tasks, openAgent]);
   const headerQueueSection = useMemo<ComposerHeaderSection | undefined>(() => {
     // A queued switch is a queue item too: the strip stays visible so its
     // control row can be changed or cancelled before it runs. A scheduled
@@ -4762,7 +4758,6 @@ boundExecution,
           sessionId={sessionId} agentId={MAIN_AGENT_ID}
           load={(agentId, kind, id) => controller?.loadTranscriptDetail(agentId, kind, id) ?? Promise.resolve(false)}
           loadContent={(ref) => controller?.loadContentSegment(MAIN_AGENT_ID, ref) ?? Promise.resolve(false)}>
-        <AgentRefResolutionProvider value={queueAgentRefResolution}>
         <QueueStrip
           items={queuedItems} onSendNow={handleSendNowQueued} onRemove={handleCancelQueued}
           onRemoveAttachment={handleRemoveQueuedAttachment} onEdit={handleStartQueueEdit}
@@ -4774,8 +4769,8 @@ boundExecution,
           sendNowDisabled={state.resyncing || state.resyncFailed}
           sendNowUnavailable={nativeSteeringUnavailable ? t('harness.steerUnsupported') : undefined}
           timingReady={queueTimingReady}
+          agentRefTasks={state.tasks} onOpenAgent={openAgent}
         />
-        </AgentRefResolutionProvider>
         </TranscriptDetailProvider>
       ),
     };
@@ -4785,7 +4780,7 @@ boundExecution,
     handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady, nativeSteeringUnavailable,
     modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel, modelsQuery.data,
     hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities,
-    controller, sessionId, state.detailLoads, state.contentRefs, queueAgentRefResolution,
+    controller, sessionId, state.detailLoads, state.contentRefs, state.tasks, openAgent,
   ]);
   const composerHeader = useMemo(() => headerGoalSection === undefined && headerQueueSection === undefined ? undefined : (
     <ComposerHeader goal={headerGoalSection} queue={headerQueueSection} settled={state.loaded} />
