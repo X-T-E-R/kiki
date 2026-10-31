@@ -35,6 +35,8 @@ import { ISessionDispatchService, type DispatchChild, type DispatchRunOptions } 
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import { acknowledgeResumeOutcome, bindResumeTask, pruneResumeRecords, readResumeRecord, writeResumeRecord, type DispatchResumeRecord } from '#/session/dispatch/resume';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { ExternalTurnRecorder } from '#/agent/execution/externalTurnRecorder';
+import { resolveAgentRunSource } from '#/agent/prompt/agentReferences';
 import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentExecutorRegistry, type ResolvedAgentExecutor } from '#/app/agentExecutor/agentExecutor';
 import { recordNegotiatedSnapshot } from '#/agent/execution/negotiatedSnapshot';
@@ -176,6 +178,27 @@ describe('AgentRun new_window shape', () => {
 });
 
 describe('dispatch resume through model switch and real native run', () => {
+  it('keeps an ordinary external prompt source in live and replayed caller context without duplicating a materialized source', async () => {
+    const ctx = await host();
+    const ref = { refId: 'ar:external-input:example-worker', profile: 'example-worker', executor: 'native', configuration: 'profile' as const, label: 'Worker', engine_label: 'Kiki' };
+    const origin = { kind: 'user' as const, agentRefs: [ref] };
+    const makeRecorder = (turnId: number) => new ExternalTurnRecorder({ id: CHILD, accessor: { get: id => ctx.get(id) } }, turnId, 'remote-1', {
+      executorId: 'claude-acp', protocol: 'acp-v1', model: 'vendor-default', resumeMode: 'new', profileDelivery: 'native', parentReceiptManaged: true,
+    });
+    await makeRecorder(3).begin('kiki://agents/example-worker', origin, [], 'external-input');
+    const memory = ctx.get(IAgentContextMemoryService);
+    expect(resolveAgentRunSource(memory.get(), 'example-worker', 'native', 'profile', ref.refId))
+      .toMatchObject({ messageId: 'external-input', engine_label: 'Kiki' });
+    await makeRecorder(4).begin('kiki://agents/example-worker', origin, [], 'different-request');
+    expect(memory.get().filter(message => message.origin?.kind === 'user' && message.origin.agentRefs?.some(item => item.refId === ref.refId))).toHaveLength(1);
+    const records = await journal(ctx);
+    expect(records.filter(record => record.type === 'context.append_message' && (record['message'] as { id?: string }).id === 'external-input')).toHaveLength(1);
+    const cold = await host();
+    await cold.restore(records);
+    expect(resolveAgentRunSource(cold.get(IAgentContextMemoryService).get(), 'example-worker', 'native', 'profile', ref.refId))
+      .toMatchObject({ messageId: 'external-input', engine_label: 'Kiki' });
+  });
+
   it.each([undefined, false, true].flatMap((allowModelChange) => [undefined, false, true].map((newWindow) => ({ allowModelChange, newWindow }))))(
     'canonical change allow=$allowModelChange new_window=$newWindow', async ({ allowModelChange, newWindow }) => {
       const ctx = await host();

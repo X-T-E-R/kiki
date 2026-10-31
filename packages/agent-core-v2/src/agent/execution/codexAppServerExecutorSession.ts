@@ -306,7 +306,8 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         initialLosses: [...losses],
       },
     );
-    await recorder.begin(prompt, origin, externalAttachments(request), request.kind === 'prompt' ? request.promptId : undefined);
+    await recorder.begin(prompt, origin, externalAttachments(request), request.kind === 'prompt' ? request.promptId : undefined,
+      request.kind === 'prompt' ? request.contextMessages : undefined);
     if (opened.actualModel !== undefined || opened.modelProvider !== undefined) {
       await recorder.record({
         type: 'session.info',
@@ -429,16 +430,21 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     if (message.content.length === 0 || message.content.some((part) => part.type !== 'text')) return false;
     const text = message.content.map((part) => part.type === 'text' ? part.text : '').join('\n');
     if (text.trim().length === 0) return false;
+    const discardEcho = active.recorder.expectUserEcho(text);
+    let accepted = false;
     try {
       const response = await this.#client.request('turn/steer', {
         threadId: remote.threadId,
         expectedTurnId: remote.turnId,
         input: [{ type: 'text', text }],
       }, active.turn.signal);
-      return typeof response === 'object' && response !== null && 'turnId' in response && response.turnId === remote.turnId;
+      accepted = typeof response === 'object' && response !== null && 'turnId' in response && response.turnId === remote.turnId;
+      return accepted;
     } catch (error) {
       if (error instanceof CodexRemoteError || error instanceof CodexClientError || active.turn.signal.aborted) return 'unknown';
       throw error;
+    } finally {
+      if (!accepted) discardEcho();
     }
   }
 

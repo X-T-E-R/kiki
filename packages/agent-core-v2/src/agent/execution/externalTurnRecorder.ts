@@ -15,7 +15,7 @@ import {
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { deliveryOriginOf, newDeliveryId, type MessageDelivery } from '#/agent/contextMemory/messageDelivery';
 import { newMessageId } from '#/agent/contextMemory/messageId';
-import type { PromptOrigin } from '#/agent/contextMemory/types';
+import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import {
   AssistantDelta,
   ThinkingDelta,
@@ -149,6 +149,7 @@ export class ExternalTurnRecorder {
   #promptId: string | undefined;
   #outboundEchoSuppressed = false;
   #promptEchoSuppressed = false;
+  readonly #expectedUserEchoes: Array<{ text: string }> = [];
   readonly #userSegments: UserSegment[] = [];
   readonly #committedUsers = new Map<string, { text: string; origin: PromptOrigin }>();
   readonly #tools = new Map<string, RecordedTool>();
@@ -177,7 +178,7 @@ export class ExternalTurnRecorder {
     for (const loss of metadata.initialLosses ?? []) this.losses.add(loss);
   }
 
-  async begin(prompt: string, origin: PromptOrigin, attachments: readonly ContentPart[] = [], promptId?: string): Promise<void> {
+  async begin(prompt: string, origin: PromptOrigin, attachments: readonly ContentPart[] = [], promptId?: string, contextMessages?: readonly ContextMessage[]): Promise<void> {
     this.#prompt = prompt;
     this.#promptId = promptId;
     await this.#dispatcher.dispatch(
@@ -200,6 +201,30 @@ export class ExternalTurnRecorder {
       turnId: String(this.turnId),
       step: 1,
     });
+    let messages = contextMessages;
+    if (messages === undefined && origin.kind === 'user' && origin.agentRefs?.length) {
+      const visibleRefs = new Set(this.#context.get().flatMap(message => message.role === 'user' && message.origin?.kind === 'user'
+        ? message.origin.agentRefs?.map(ref => ref.refId) ?? [] : []));
+      if (origin.agentRefs.some(ref => !visibleRefs.has(ref.refId))) {
+        messages = [{ role: 'user', id: promptId, content: [{ type: 'text', text: prompt }, ...attachments], toolCalls: [], origin }];
+      }
+    }
+    for (const message of messages ?? []) {
+      const messageId = message.id ?? newMessageId();
+      this.#context.appendManaged({ ...message, id: messageId }, {
+        deliveryId: newDeliveryId(), messageId, turnId: this.turnId, stepId: this.stepId, step: 1,
+        deliveredAt: new Date().toISOString(), origin: deliveryOriginOf(message.origin),
+      });
+    }
+  }
+
+  expectUserEcho(text: string): () => void {
+    const echo = { text };
+    this.#expectedUserEchoes.push(echo);
+    return () => {
+      const index = this.#expectedUserEchoes.indexOf(echo);
+      if (index >= 0) this.#expectedUserEchoes.splice(index, 1);
+    };
   }
 
   async record(event: ExternalExecutorEvent): Promise<void> {
@@ -996,6 +1021,11 @@ export class ExternalTurnRecorder {
     }
     if (!this.#promptEchoSuppressed && this.#prompt.length > 0 && text === this.#prompt) {
       this.#promptEchoSuppressed = true;
+      return true;
+    }
+    const index = this.#expectedUserEchoes.findIndex(echo => echo.text === text);
+    if (index >= 0) {
+      this.#expectedUserEchoes.splice(index, 1);
       return true;
     }
     return false;

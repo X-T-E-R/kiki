@@ -6,8 +6,9 @@ import type { Turn } from '#/agent/loop/loop';
 import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import type { Hooks } from '#/hooks';
 
+/** External prompts carry unmaterialized logical inputs in `contextMessages`; executors record them after preparing any history handoff and before provider delivery. */
 export type AgentRunRequest =
-  | { readonly kind: 'prompt'; readonly prompt: string; readonly promptId?: string; readonly input?: readonly import('#/kosong/contract/message').ContentPart[]; readonly origin?: PromptOrigin }
+  | { readonly kind: 'prompt'; readonly prompt: string; readonly promptId?: string; readonly input?: readonly import('#/kosong/contract/message').ContentPart[]; readonly origin?: PromptOrigin; readonly contextMessages?: readonly ContextMessage[] }
   | { readonly kind: 'mailbox'; readonly prompt: string; readonly message: ContextMessage }
   | { readonly kind: 'retry'; readonly trigger?: string };
 

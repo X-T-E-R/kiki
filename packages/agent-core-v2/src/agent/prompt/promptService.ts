@@ -2237,6 +2237,12 @@ export class AgentPromptService implements IAgentPromptService {
         this.publishQueueHoldChanged();
       } else if (outcome === true && active !== undefined && selected.every((item) => this.pending.includes(item))) {
         for (const item of selected) {
+          const materialized = item.message.origin?.kind === 'agent_message'
+            ? hasMailboxMessageInContext(this.context.get(), item.message) : item.alreadyMaterialized;
+          if (!materialized) {
+            const { message, captions } = this.extractCompressionCaptions(item.message);
+            this.appendPrompt(message, captions);
+          }
           this.pending.splice(this.pending.indexOf(item), 1);
           item.state = 'steered';
           item.launchedDeferred.resolve(active.turn);
@@ -2607,7 +2613,8 @@ export class AgentPromptService implements IAgentPromptService {
         const text = deliveredMessage.content.filter((part) => part.type === 'text').map((part) => part.text).join('');
         await admission.dispose();
         const execution = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutionService));
-        turn = (await execution.run({ kind: 'prompt', prompt: text, promptId: item.id, input: deliveredMessage.content, origin: deliveredMessage.origin },
+        turn = (await execution.run({ kind: 'prompt', prompt: text, promptId: item.id, input: deliveredMessage.content, origin: deliveredMessage.origin,
+          contextMessages: deliverableBatch.filter(candidate => !candidate.alreadyMaterialized).map(candidate => candidate.message) },
           { signal: controller.signal, parentReceiptManaged: item.parentReceiptManaged })).turn;
         if (this.queuedExternalSteerIds.delete(item.id)) {
           await this.dispatcher.dispatch(new ExecutorHintDelivery({

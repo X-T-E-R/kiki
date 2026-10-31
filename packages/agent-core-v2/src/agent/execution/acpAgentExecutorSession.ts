@@ -362,7 +362,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         initialLosses: [...losses],
       },
     );
-    await recorder.begin(prompt, origin, externalAttachments(request), request.kind === 'prompt' ? request.promptId : undefined);
+    await recorder.begin(prompt, origin, externalAttachments(request), request.kind === 'prompt' ? request.promptId : undefined,
+      request.kind === 'prompt' ? request.contextMessages : undefined);
     if (this.context.descriptor.id === 'claude-acp') {
       const actualModel = configured.configOptions.find((option) =>
         option.category === 'model' && typeof option.currentValue === 'string')?.currentValue;
@@ -535,10 +536,17 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     const boundary = AbortSignal.any([active.turn.signal, AbortSignal.timeout(STEER_TOOL_BOUNDARY_MS)]);
     if (!await active.recorder.toolsSettled(boundary) || this.#active !== active) return false;
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
-    return this.#client.steer([
-      { type: 'text', text },
-      ...acpAttachments(message.content.filter((part) => part.type !== 'text')),
-    ]);
+    const discardEcho = active.recorder.expectUserEcho(text);
+    let outcome: boolean | 'unknown' = false;
+    try {
+      outcome = await this.#client.steer([
+        { type: 'text', text },
+        ...acpAttachments(message.content.filter((part) => part.type !== 'text')),
+      ]);
+      return outcome;
+    } finally {
+      if (outcome !== true) discardEcho();
+    }
   }
 
   updateBinding(binding: AgentExecutorContext['binding']): void {

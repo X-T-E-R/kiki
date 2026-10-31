@@ -21,6 +21,7 @@ import { turnPromptText } from '#/agent/loop/turnEvents';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { ExecutorHintDelivery } from '#/agent/execution/externalExecutorOps';
 import { IAgentPromptService, PROMPT_EDIT_HOLD_TTL_MS, reservePrompt } from '#/agent/prompt/prompt';
+import { resolveAgentRunSource } from '#/agent/prompt/agentReferences';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentPlanService } from '#/features/plan/plan';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
@@ -343,7 +344,71 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
   };
 }
 
+function externalReferenceHarness() {
+  const local = harness();
+  local.setExecutor('codex-app-server');
+  local.profile.data.mockReturnValue({ ...local.profile.data(), subagents: ['reviewer'], spawnPolicy: undefined });
+  const reviewer = normalizeAgentProfile({ name: 'reviewer', systemPrompt: () => 'Review' });
+  local.target.accessor.stub(ISessionAgentProfileCatalog, { ready: Promise.resolve(), get: () => reviewer,
+    list: () => [reviewer], getDefault: () => reviewer });
+  local.target.accessor.stub(IModelService, { resolveId: value => value });
+  local.target.accessor.stub(IAgentToolPolicyService, { ...local.toolPolicy, isToolActive: () => true });
+  return local;
+}
+
 describe('AgentPromptService', () => {
+  it('passes an external prompt source with its logical message id without adding the current input to handoff history', async () => {
+    const { prompt, context, externalRun, externalTurns } = externalReferenceHarness();
+    const active = await prompt.enqueue({ id: 'request-prompt', userMessageId: 'logical-prompt', message: message('Review kiki://agents/reviewer') });
+    await active.launched;
+    expect(active.state).toBe('running');
+    expect(externalRun).toHaveBeenCalledWith(expect.objectContaining({
+      promptId: 'request-prompt', contextMessages: [expect.objectContaining({ id: 'logical-prompt', origin: expect.objectContaining({
+        agentRefs: [expect.objectContaining({ refId: 'ar:logical-prompt:reviewer' })],
+      }) })],
+    }), expect.anything());
+    expect(context.get()).toEqual([]);
+    externalTurns[0]!.finish();
+    await active.completion;
+  });
+
+  it.each([1, 2])('keeps each accepted external steer source separate in a batch of %i', async count => {
+    const { prompt, context, externalSteer, externalTurns } = externalReferenceHarness();
+    const active = await prompt.enqueue({ id: 'active', message: message('Work') });
+    await active.launched;
+    const queued = [];
+    for (let index = 0; index < count; index++) queued.push(await prompt.enqueue({
+      id: `request-steer-${index}`, userMessageId: `logical-steer-${index}`, message: message('Review kiki://agents/reviewer'),
+    }));
+    expect(context.get().filter(item => item.origin?.kind === 'user' && item.origin.agentRefs?.length)).toHaveLength(0);
+    await prompt.steer(queued.map(item => item.id));
+    expect(externalSteer).toHaveBeenCalledTimes(1);
+    for (let index = 0; index < count; index++) {
+      expect(resolveAgentRunSource(context.get(), 'reviewer', 'native', 'profile', `ar:logical-steer-${index}:reviewer`))
+        .toMatchObject({ messageId: `logical-steer-${index}` });
+      expect(context.get().filter(item => item.id === `logical-steer-${index}`)).toHaveLength(1);
+    }
+    expect(resolveAgentRunSource(context.get(), 'reviewer', 'native', 'profile')).toMatchObject({ messageId: `logical-steer-${count - 1}` });
+    externalTurns[0]!.finish();
+    await active.completion;
+    await Promise.all(queued.map(item => item.completion));
+  });
+
+  it.each([false, 'unknown'] as const)('does not materialize an unaccepted external steer source (%s)', async outcome => {
+    const { prompt, context, externalSteer, externalTurns } = externalReferenceHarness();
+    externalSteer.mockResolvedValue(outcome as never);
+    const active = await prompt.enqueue({ id: 'active', message: message('Work') });
+    await active.launched;
+    const queued = await prompt.enqueue({ id: 'request-steer', userMessageId: 'logical-steer', message: message('Review kiki://agents/reviewer') });
+    await prompt.steer([queued.id]);
+    expect(() => resolveAgentRunSource(context.get(), 'reviewer', 'native', 'profile', 'ar:logical-steer:reviewer')).toThrow('source_ref');
+    expect(queued.state).toBe('pending');
+    prompt.abort(queued.id);
+    externalTurns[0]!.finish();
+    await active.completion;
+    await queued.completion;
+  });
+
   it('revalidates queued agent references at launch and keeps their logical identity on edit', async () => {
     const { prompt, target, profile, toolPolicy, setExecutor, externalTurns, externalRun } = harness();
     setExecutor('codex-app-server');
