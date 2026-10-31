@@ -181,18 +181,24 @@ describe('AgentRefText', () => {
     expect(chip.querySelector('.line-through')).not.toBeNull();
   });
 
-  it('renders an external engine reference with its catalog label, and falls back to the id', async () => {
-    const external: AgentReference = { refId: `ar:${MESSAGE_ID}:helper`, profile: 'helper', executor: 'claude-code', configuration: 'profile', label: 'helper' };
-    const labeled = await render('ask kiki://agents/helper', { references: [external], executors: [{ id: 'claude-code', label: 'Claude Code' }] });
-    const chip = labeled.querySelector<HTMLElement>('[data-agent-ref-chip]')!;
-    expect(chip.textContent).toContain('helper');
-    expect(chip.textContent).toContain('Claude Code');
-    expect(chip.textContent).not.toContain('claude-code');
-    expect(chip.textContent).not.toContain('native engine');
-    // With no catalog entry the chip falls back to the raw engine id.
-    const fallback = await render('ask kiki://agents/helper', { references: [external] });
-    const fallbackChip = fallback.querySelector<HTMLElement>('[data-agent-ref-chip]')!;
-    expect(fallbackChip.textContent).toContain('claude-code');
+  it('reads the engine label the reference carries, then the catalog, then the id', async () => {
+    const helper: AgentReference = { refId: `ar:${MESSAGE_ID}:helper`, profile: 'helper', executor: 'claude-code', configuration: 'profile', label: 'helper', engine_label: 'Claude Code' };
+    const scout: AgentReference = { refId: `ar:${MESSAGE_ID}:scout`, profile: 'scout', executor: 'codex', configuration: 'profile', label: 'scout' };
+    const catalog = [{ id: 'claude-code', label: 'Claude Code (catalog)' }, { id: 'codex', label: 'Codex' }];
+    const labeled = await render('ask kiki://agents/helper and kiki://agents/scout', { references: [helper, scout], executors: catalog });
+    const helperChip = labeled.querySelector<HTMLElement>(`[data-agent-ref-chip="${helper.refId}"]`)!;
+    // The reference's own persisted label wins over the catalog.
+    expect(helperChip.textContent).toContain('Claude Code');
+    expect(helperChip.textContent).not.toContain('Claude Code (catalog)');
+    expect(helperChip.textContent).not.toContain('claude-code');
+    // An older record has no engine_label, so the catalog's label is read.
+    const scoutChip = labeled.querySelector<HTMLElement>(`[data-agent-ref-chip="${scout.refId}"]`)!;
+    expect(scoutChip.textContent).toContain('Codex');
+    expect(scoutChip.textContent).not.toContain('codex');
+    // With neither a persisted label nor a catalog entry, the raw id is read.
+    const fallback = await render('ask kiki://agents/scout', { references: [scout] });
+    const fallbackChip = fallback.querySelector<HTMLElement>(`[data-agent-ref-chip="${scout.refId}"]`)!;
+    expect(fallbackChip.textContent).toContain('codex');
   });
 
   it('jumps to the most recent run when one reference ran several children', async () => {

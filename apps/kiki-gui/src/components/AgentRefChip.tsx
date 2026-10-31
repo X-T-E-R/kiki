@@ -132,10 +132,11 @@ export function AgentRefChip({
   const catalog = useOptionalExecutorCatalog();
   const [runMenu, setRunMenu] = useState<{ x: number; y: number } | null>(null);
   const statusText = t(`agentRef.status.${delegation.status}`);
-  // The engine label the picker's badge shows: the catalog's human label for
-  // an external engine, "native engine" for a native one, the raw id only when
-  // the catalog has not loaded the engine yet.
-  const engine = catalogEngineLabel(reference.executor, t('agentRef.configuration.native'), catalog);
+  // The engine label, in the order a reader can trust it: the label the
+  // producer persisted on the reference itself, then the catalog's label (the
+  // badge the picker shows), then the raw engine id while neither has it. A
+  // native target reads "native engine".
+  const engine = reference.engine_label ?? catalogEngineLabel(reference.executor, t('agentRef.configuration.native'), catalog);
   const details = t('agentRef.details', { profile: reference.profile, executor: reference.executor, configuration: engine });
 
   if (delegation.status === 'rejected') {
