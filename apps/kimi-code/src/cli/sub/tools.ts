@@ -11,6 +11,8 @@ import { resolveKikiHome } from '#/kiki/home';
 import { ensureServer } from '#/kiki/serve';
 import { daemonRequest } from '#/kiki/seat';
 
+const credentials = new Map<string, { expiresAt: number; pending: Promise<{ token: string; expiresAt?: number }> }>();
+
 interface Options {
   readonly url?: string;
   readonly client?: string;
@@ -233,9 +235,26 @@ async function run(
     if (owner && options.client === undefined) throw new Error('This owner command requires --client ID.');
     if ((owner || token === undefined) && options.client !== undefined) {
       const connection = await ensureServer({ homeDir: resolveKikiHome(options.home) });
-      token = owner ? connection.token : (await daemonRequest<{ token: string }>(
-        connection, 'POST', `/api/external-clients/${encodeURIComponent(options.client)}/credential`, {},
-      )).token;
+      if (owner) {
+        token = connection.token;
+      } else {
+        const now = Date.now();
+        for (const [key, cached] of credentials) if (cached.expiresAt <= now) credentials.delete(key);
+        const key = JSON.stringify([resolveKikiHome(options.home), connection.serverId, options.client]);
+        let cached = credentials.get(key);
+        if (cached === undefined) {
+          const pending = daemonRequest<{ token: string; expiresAt?: number }>(
+            connection, 'POST', `/api/external-clients/${encodeURIComponent(options.client)}/credential`, {},
+          );
+          cached = { expiresAt: now + 3_595_000, pending };
+          credentials.set(key, cached);
+          const entry = cached;
+          void pending.then(value => { if (value.expiresAt !== undefined) entry.expiresAt = Math.min(entry.expiresAt, value.expiresAt - 5000); }, () => {
+            if (credentials.get(key) === entry) credentials.delete(key);
+          });
+        }
+        token = (await cached.pending).token;
+      }
       endpoint = connection.url;
     }
     if (!token || !endpoint) {

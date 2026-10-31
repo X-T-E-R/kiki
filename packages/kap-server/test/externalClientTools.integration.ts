@@ -107,6 +107,26 @@ describe('script tool access',()=>{
     await owner(`/api/external-clients/${connectionId}`,undefined,'DELETE');
     expect((await request('/tools')).status).toBe(401);
   });
+  it('prunes expired credentials while retaining every unexpired connection credential',async()=>{
+    await setup(['Read']);
+    const store=new ExternalClientStore(server.core);
+    const scope=`${store.scope}/external-clients/tokens`;
+    await store.documents.set(scope,'expired-fixture',{connectionId,expiresAt:Date.now()-1});
+    const other=await owner('/api/external-clients',{name:'Other credential',workspace});
+    const otherCredential=await owner(`/api/external-clients/${other.connection.id}/credential`,{});
+    expect(await store.documents.list(scope)).toHaveLength(2);
+    const fresh=await owner(`/api/external-clients/${connectionId}/credential`,{});
+    expect(fresh.expiresAt-Date.now()).toBeGreaterThan(3_590_000);
+    expect(await store.resolveBearer(token)).toMatchObject({id:connectionId});
+    expect(await store.resolveBearer(otherCredential.token)).toMatchObject({id:other.connection.id});
+    const keys=await store.documents.list(scope);
+    expect(keys).toHaveLength(3);
+    await Promise.all(keys.map(key=>store.documents.update<{connectionId:string;expiresAt:number}>(scope,key,entry=>entry===undefined?undefined:{...entry,expiresAt:Date.now()-1})));
+    const replacement=await owner(`/api/external-clients/${connectionId}/credential`,{});
+    expect(await store.documents.list(scope)).toHaveLength(1);
+    expect(await store.resolveBearer(token)).toBeUndefined();
+    expect(await store.resolveBearer(replacement.token)).toMatchObject({id:connectionId});
+  });
   it('deduplicates concurrent submissions, rejects changed arguments and reads saved results',async()=>{
     await setup();
     const args={path:join(workspace,'once.txt'),content:'once'};

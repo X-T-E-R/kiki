@@ -41,7 +41,7 @@ export function registerExternalClientRoutes(app:FastifyInstance,host:ExternalCl
   app.post(`${path}/:id/credential`,invoke(async request=>{
     const address=request.socket.remoteAddress;
     if(address!=='127.0.0.1'&&address!=='::1'&&address!=='::ffff:127.0.0.1')throw new ExternalClientError('local_only','Local MCP credentials require a loopback owner connection.');
-    return {token:await host.store.credential(id(request)),mcpUrl:await listener.ensureLocal()};
+    return {...await host.store.credential(id(request)),mcpUrl:await listener.ensureLocal()};
   }));
   app.get(`${path}/listener`,invoke(async()=>listener.status()));
   app.put(`${path}/listener`,invoke(request=>listener.configure(z.object({enabled:z.boolean(),host:z.string().optional(),port:z.number().int().min(0).max(65535).optional(),publicUrl:z.string().url().optional()}).strict().parse(request.body))));

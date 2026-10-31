@@ -35,6 +35,23 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); process.exitCode = 0; });
 
 describe('script tools CLI owner commands', () => {
+  it('reuses an unexpired credential in-process and refreshes after expiry or a server restart', async () => {
+    vi.stubEnv('KIKI_EXTERNAL_CLIENT_TOKEN', undefined);
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1000);
+    daemonRequest.mockResolvedValue({ token: 'kec_cache_fixture', expiresAt: 3_601_000 });
+    api.tools.mockResolvedValue({ tools: [] });
+    const args = ['--home', 'E:/fixture-cache-home', '--client', 'cache-example', 'list'];
+    await invoke(args); output = '';
+    await invoke(args); output = '';
+    expect(daemonRequest).toHaveBeenCalledTimes(1);
+    clock.mockReturnValue(3_601_001);
+    await invoke(args); output = '';
+    expect(daemonRequest).toHaveBeenCalledTimes(2);
+    ensureServer.mockResolvedValue({ url: 'http://127.0.0.1:12345', token: 'fixture-owner', serverId: 'restarted-server' });
+    await invoke(args);
+    expect(daemonRequest).toHaveBeenCalledTimes(3);
+    expect(output).not.toContain('kec_cache_fixture');
+  });
   it('exports a private new file without printing the credential and refuses overwrite before minting', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-tools-credential-'));
     const path = join(root, 'credential');
