@@ -25,7 +25,8 @@ import {
 } from './sessionMetadata';
 
 const META_KEY = 'state.json';
-const USAGE_FLUSH_DELAY_MS = 1_000;
+const DEFERRED_FLUSH_DELAY_MS = 1_000;
+const USAGE_FLUSH_DELAY_MS = 15_000;
 const AGENT_UPDATE_WINDOW_MS = 50;
 
 interface AgentUpdateBatch {
@@ -85,6 +86,8 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   private createdDocument = false;
   private usageDirty = false;
   private usageTimer: ReturnType<typeof setTimeout> | undefined;
+  private usageTimerDue = 0;
+  private deferredGeneration = 0;
   private usageFlushInFlight: Promise<void> | undefined;
   private readonly flushUsage = (): Promise<void> => {
     if (this.usageTimer !== undefined) {
@@ -118,11 +121,30 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     await this.store.set(this.scope, META_KEY, encodeSessionMeta(await this.outcomes.project(this.data)));
   }
 
+  private async persistAbsorbingDeferred(): Promise<readonly (keyof SessionMeta)[]> {
+    const generation = this.deferredGeneration;
+    const absorbed = [...this.deferredChanges];
+    await this.persist();
+    if (!this.usageDirty || this.deferredGeneration !== generation) return [];
+    this.usageDirty = false;
+    this.deferredChanges.clear();
+    if (this.usageTimer !== undefined) clearTimeout(this.usageTimer);
+    this.usageTimer = undefined;
+    return absorbed;
+  }
+
   private deferChanges(changed: readonly (keyof SessionMeta)[]): void {
     for (const key of changed) this.deferredChanges.add(key);
+    this.deferredGeneration += 1;
     this.usageDirty = true;
-    if (this.usageTimer !== undefined) return;
-    this.usageTimer = setTimeout(this.onUsageTimer, USAGE_FLUSH_DELAY_MS);
+    const delay = changed.every((key) => key === 'usage') ? USAGE_FLUSH_DELAY_MS : DEFERRED_FLUSH_DELAY_MS;
+    const due = Date.now() + delay;
+    if (this.usageTimer !== undefined) {
+      if (due >= this.usageTimerDue) return;
+      clearTimeout(this.usageTimer);
+    }
+    this.usageTimerDue = due;
+    this.usageTimer = setTimeout(this.onUsageTimer, delay);
     this.usageTimer.unref?.();
   }
 
@@ -284,11 +306,11 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     await this.ready;
     if (this.disposed) return false;
     this.mergePatch(patch, opts);
-    await this.persist();
+    const absorbed = await this.persistAbsorbingDeferred();
     if (this.disposed) return false;
     this.mirrorToReadModel();
     this._onDidChangeMetadata.fire({
-      changed: Object.keys(patch) as (keyof SessionMeta)[],
+      changed: [...new Set([...Object.keys(patch) as (keyof SessionMeta)[], ...absorbed])],
     });
     return true;
   }
@@ -375,14 +397,15 @@ export class SessionMetadata extends Service implements ISessionMetadata {
         }
         if (!changed || this.disposed) return;
         this.data = { ...this.data, agents, updatedAt: touched ? Date.now() : previousUpdatedAt };
+        let absorbed: readonly (keyof SessionMeta)[];
         try {
-          await this.persist();
+          absorbed = await this.persistAbsorbingDeferred();
         } catch (error) {
           this.data = { ...this.data, agents: previous, updatedAt: previousUpdatedAt };
           throw error;
         }
         this.mirrorToReadModel();
-        this._onDidChangeMetadata.fire({ changed: ['agents'] });
+        this._onDidChangeMetadata.fire({ changed: [...new Set<keyof SessionMeta>(['agents', ...absorbed])] });
       }, false);
       void run.then(
         () => { for (const mutation of batch.mutations) mutation.resolve(); },

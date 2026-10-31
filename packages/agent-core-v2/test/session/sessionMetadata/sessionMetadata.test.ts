@@ -574,7 +574,7 @@ describe('SessionMetadata', () => {
     };
     vi.useFakeTimers();
     meta.recordUsage('example-model', { inputOther: 1, output: 2, inputCacheRead: 0, inputCacheCreation: 0 });
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     await entered.promise;
     const draining = drainSessionMetadataWrites(false);
     await ticks();
@@ -606,6 +606,58 @@ describe('SessionMetadata', () => {
     expect(stateWrites).toBe(afterCreate + 1);
     const persisted = await ix.get(IAtomicDocumentStore).get<{ usage?: { total?: { output?: number } } }>(META_SCOPE, 'state.json');
     expect(persisted?.usage?.total?.output).toBe(4);
+  });
+
+  it('folds per-step usage into later immediate writes instead of a separate document rewrite', async () => {
+    const storage = ix.get(IFileSystemStorageService);
+    let stateWrites = 0;
+    const original = storage.write.bind(storage);
+    storage.write = async (scope, key, data, options) => {
+      if (key === 'state.json') stateWrites += 1;
+      return original(scope, key, data, options);
+    };
+    const meta = ix.get(ISessionMetadata) as SessionMetadata;
+    await meta.ready;
+    await meta.registerAgent('main', { executor: 'native' });
+    const changes: string[][] = [];
+    disposables.add(meta.onDidChangeMetadata((event) => changes.push([...event.changed])));
+    vi.useFakeTimers();
+    const afterRegister = stateWrites;
+    const usage = { inputOther: 1, output: 2, inputCacheRead: 0, inputCacheCreation: 0 };
+    meta.recordUsage('example-model', usage);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(stateWrites).toBe(afterRegister);
+    const agentWrite = meta.updateAgent('main', (current) => ({ ...current, contextTokens: 10 }));
+    await vi.advanceTimersByTimeAsync(50);
+    await agentWrite;
+    expect(stateWrites).toBe(afterRegister + 1);
+    expect(changes.at(-1)).toEqual(['agents', 'usage']);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(stateWrites).toBe(afterRegister + 1);
+    const persisted = await ix.get(IAtomicDocumentStore).get<{ usage?: { total?: { output?: number } } }>(META_SCOPE, 'state.json');
+    expect(persisted?.usage?.total?.output).toBe(2);
+    meta.recordUsage('example-model', usage);
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(stateWrites).toBe(afterRegister + 1);
+    await vi.advanceTimersByTimeAsync(1);
+    await ticks();
+    expect(stateWrites).toBe(afterRegister + 2);
+    expect(changes.at(-1)).toEqual(['usage']);
+  });
+
+  it('keeps the short deferred window for non-usage changes queued behind usage', async () => {
+    const meta = ix.get(ISessionMetadata) as SessionMetadata;
+    await meta.ready;
+    const changes: string[][] = [];
+    disposables.add(meta.onDidChangeMetadata((event) => changes.push([...event.changed])));
+    vi.useFakeTimers();
+    meta.recordUsage('example-model', { inputOther: 1, output: 2, inputCacheRead: 0, inputCacheCreation: 0 });
+    await meta.update({ activityUpdatedAt: 123 }, { touchUpdatedAt: false, deferPersistence: true });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await ticks();
+    expect(changes.at(-1)?.sort()).toEqual(['activityUpdatedAt', 'usage']);
+    const persisted = await ix.get(IAtomicDocumentStore).get<{ activityUpdatedAt?: number }>(META_SCOPE, 'state.json');
+    expect(persisted?.activityUpdatedAt).toBe(123);
   });
 
   it('keeps an agent contextTokens snapshot apart from session usage totals', async () => {
