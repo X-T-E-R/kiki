@@ -170,7 +170,7 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
       await stack.catalog.ready;
       expect(stack.catalog.get(name)).toBeUndefined();
       expect(stack.catalog.list().some(item => item.name === name)).toBe(false);
-      expect(stack.catalog.snapshot().resolvableProfiles.has(name)).toBe(false);
+      expect(stack.catalog.snapshot().resolvableProfiles!.has(name)).toBe(false);
       expect(() => stack.catalog.resolveSelection({ profile: name })).toThrow();
       expect(stack.catalog.get('engine:grok-acp')).toMatchObject({ executor: 'grok-acp' });
     } finally { await stack.container.dispose(); }
