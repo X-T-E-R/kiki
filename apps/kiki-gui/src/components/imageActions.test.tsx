@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { act } from 'react';
+import tauriConfig from '../../src-tauri/tauri.conf.json';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { HostProvider, browserHost } from '../host';
 import { I18nProvider } from '../i18n';
 import { MediaLightbox, mediaSourceLabel } from './MediaLightbox';
-import { copyImageBitmap, hostActionPath, imageMenuEntries, isRemoteConnection, localImagePath, resolveImageMime, saveMediaToDisk, sniffImageMime, type MediaDownloadClient } from './imageActions';
+import { copyImageBitmap, hostActionPath, imageCopyFailureText, imageMenuEntries, isRemoteConnection, localImagePath, resolveImageMime, saveMediaToDisk, sniffImageMime, type MediaDownloadClient } from './imageActions';
 import type { MiniMenuEntry as MenuEntry } from './MiniContextMenu';
 
 function keys(entries: readonly MenuEntry[]): string[] {
@@ -142,8 +143,8 @@ describe('copyImageBitmap', () => {
   beforeEach(() => {
     write.mockReset();
     writeText.mockReset();
-    write.mockResolvedValue(undefined);
-    vi.stubGlobal('ClipboardItem', class ClipboardItem { constructor(readonly items: Record<string, Blob>) {} });
+    write.mockImplementation(async (items: { items: Record<string, Promise<Blob>> }[]) => { await items[0]?.items['image/png']; });
+    vi.stubGlobal('ClipboardItem', class ClipboardItem { constructor(readonly items: Record<string, Promise<Blob>>) {} });
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write, writeText } });
   });
 
@@ -152,12 +153,38 @@ describe('copyImageBitmap', () => {
     vi.restoreAllMocks();
   });
 
+  it('allows displayed memory images to be fetched under the packaged desktop CSP', () => {
+    const directives = tauriConfig.app.security.csp.split(';').map((part: string) => part.trim().split(/\s+/));
+    const connect = directives.find((parts: string[]) => parts[0] === 'connect-src');
+    const images = directives.find((parts: string[]) => parts[0] === 'img-src');
+    expect(connect).toEqual(expect.arrayContaining(['data:', 'blob:']));
+    expect(images).toEqual(expect.arrayContaining(['https:', 'http:']));
+  });
+
+  it('starts clipboard write before the source fetch has completed', async () => {
+    let resolve!: (response: { ok: boolean; blob: () => Promise<Blob> }) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise((done) => { resolve = done; })));
+    const copying = copyImageBitmap('blob:slow-image');
+    expect(write).toHaveBeenCalledOnce();
+    resolve({ ok: true, blob: async () => new Blob([bytesOfPng() as BlobPart], { type: 'image/png' }) });
+    await copying;
+  });
+
+  it('shows the source failure rather than a generic clipboard failure', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
+    const error = await copyImageBitmap('blob:expired').catch((failure: unknown) => failure);
+    expect(imageCopyFailureText(error, label)).toBe('media.copyReadFailed');
+    expect(String(error)).toContain('TypeError: Failed to fetch');
+    expect(imageCopyFailureText(new DOMException('Document is not focused.', 'NotAllowedError'), label)).toBe('media.copyDenied');
+  });
+
   it('writes the png bytes as a clipboard image and not as a url', async () => {
     const bytes = bytesOfPng();
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob([bytes as BlobPart], { type: 'image/png' }) })));
     await copyImageBitmap('blob:shot');
     expect(write).toHaveBeenCalledOnce();
-    const item = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Blob> };
+    const entry = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Promise<Blob>> };
+    const item = { items: { 'image/png': await entry.items['image/png'] } };
     expect(item.items['image/png']?.type).toBe('image/png');
     expect(item.items['image/png']?.size).toBe(bytes.byteLength);
     expect(writeText).not.toHaveBeenCalled();
@@ -170,7 +197,8 @@ describe('copyImageBitmap', () => {
     const convertedPng = bytesOfPng();
     HTMLCanvasElement.prototype.toBlob = (callback) => { callback(new Blob([convertedPng as BlobPart], { type: 'image/png' })); };
     await copyImageBitmap('https://example.test/shot.jpg');
-    const item = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Blob> };
+    const entry = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Promise<Blob>> };
+    const item = { items: { 'image/png': await entry.items['image/png'] } };
     expect(item.items['image/png']?.type).toBe('image/png');
     expect(item.items['image/png']?.size).toBe(convertedPng.byteLength);
     expect(writeText).not.toHaveBeenCalled();
@@ -189,7 +217,8 @@ describe('copyImageBitmap', () => {
     const convertedPng = bytesOfPng();
     HTMLCanvasElement.prototype.toBlob = (callback) => { callback(new Blob([convertedPng as BlobPart], { type: 'image/png' })); };
     await copyImageBitmap('blob:corrupt-mime');
-    const item = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Blob> };
+    const entry = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Promise<Blob>> };
+    const item = { items: { 'image/png': await entry.items['image/png'] } };
     expect(item.items['image/png']?.type).toBe('image/png');
     expect(item.items['image/png']?.size).toBe(convertedPng.byteLength);
   });
@@ -240,8 +269,8 @@ describe('copyImageBitmap through a generic media type', () => {
   beforeEach(() => {
     write.mockReset();
     writeText.mockReset();
-    write.mockResolvedValue(undefined);
-    vi.stubGlobal('ClipboardItem', class ClipboardItem { constructor(readonly items: Record<string, Blob>) {} });
+    write.mockImplementation(async (items: { items: Record<string, Promise<Blob>> }[]) => { await items[0]?.items['image/png']; });
+    vi.stubGlobal('ClipboardItem', class ClipboardItem { constructor(readonly items: Record<string, Promise<Blob>>) {} });
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write, writeText } });
   });
 
@@ -257,7 +286,8 @@ describe('copyImageBitmap through a generic media type', () => {
     const raster = vi.spyOn(HTMLCanvasElement.prototype, 'getContext');
     await copyImageBitmap('blob:stored');
     expect(write).toHaveBeenCalledOnce();
-    const item = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Blob> };
+    const entry = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Promise<Blob>> };
+    const item = { items: { 'image/png': await entry.items['image/png'] } };
     expect(item.items['image/png']?.type).toBe('image/png');
     expect(item.items['image/png']?.size).toBe(bytes.byteLength);
     expect(raster).not.toHaveBeenCalled();
@@ -273,7 +303,8 @@ describe('copyImageBitmap through a generic media type', () => {
     const converted = bytesOfPng();
     HTMLCanvasElement.prototype.toBlob = (callback) => { callback(new Blob([converted as BlobPart], { type: 'image/png' })); };
     await copyImageBitmap('blob:stored-jpeg');
-    const item = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Blob> };
+    const entry = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Promise<Blob>> };
+    const item = { items: { 'image/png': await entry.items['image/png'] } };
     expect(item.items['image/png']?.type).toBe('image/png');
     expect(writeText).not.toHaveBeenCalled();
   });

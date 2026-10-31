@@ -46,8 +46,10 @@ import { useNavSnapshotAdapter, useNavVisitId } from '../lib/useNavSnapshot';
 import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
 import { Icon } from './icons';
-import { copyImageBitmap, httpImageLink, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, noteMediaReady, resolveImageMime } from './imageActions';
+import { copyImageBitmap, httpImageLink, imageCopyFailureText, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, noteMediaReady, resolveImageMime } from './imageActions';
 import { MediaLightbox } from './MediaLightbox';
+import { pushToast } from '../lib/toasts';
+import { errorToText } from '@kiki/session-core/util';
 import { blockGalleryImages, canonicalGalleryItem, galleryImageId, orderedGalleryImages, type GalleryImage } from './mediaGallery';
 import { MiniContextMenu } from './MiniContextMenu';
 import { PreviewCloseConfirm, PreviewWorkspace } from './PreviewWorkspace';
@@ -772,7 +774,11 @@ function AttachmentPreviewDialog({
         canCopyImage: load.status === 'ready' && load.mime.startsWith('image/') && failedUrl !== load.url,
         canSave: true,
         annotated: false,
-        onCopyImage: async () => { if (load.status === 'ready') await copyImageBitmap(load.url); },
+        onCopyImage: async () => {
+          if (load.status !== 'ready') return;
+          try { await copyImageBitmap(load.url); }
+          catch (error) { pushToast({ tone: 'error', text: imageCopyFailureText(error, t), detail: errorToText(error) }); }
+        },
         onSave: download,
       })} onClose={() => { setImageMenu(null); }} ariaLabel={title} overlayId="attachment-image-menu" dataAttribute="data-attachment-image-menu" modalOwnerId="session-attachment-preview" />}
     </Dialog>

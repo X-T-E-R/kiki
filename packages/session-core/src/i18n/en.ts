@@ -11944,7 +11944,12 @@ export const en = {
   'media.zoomIn': 'Zoom in',
   'media.zoomOut': 'Zoom out',
   'media.details': 'Image details',
-  'media.copyFailed': 'Could not copy the image. Try downloading it instead.',
+  'media.copyFailed': 'Could not copy the image.',
+  'media.copyReadFailed': 'Could not read the image for copying. Its link may have expired or blocked access; reload the image and try again.',
+  'media.copyDecodeFailed': 'Could not convert this image to PNG. Save the original and open it in an image editor.',
+  'media.copyDenied': 'Clipboard access was denied. Focus this window, allow clipboard access in your browser, and try again.',
+  'media.copyUnavailable': 'This host cannot write clipboard images. Open Kiki in a browser on HTTPS or localhost, or save the image.',
+  'media.saveFailed': 'Could not save the image.',
   'agentPanel.metrics.settleFailed': 'Usage totals did not finish',
   'nav.scope.failed.target-missing.body': 'The session or page you came from is no longer there.',
   // ---- model editor and Recipe surfaces (ported with the model-panel slice) ----

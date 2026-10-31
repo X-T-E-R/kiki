@@ -201,7 +201,24 @@ export async function typedImageBlob(blob: Blob): Promise<Blob> {
   return new Blob([bytes as BlobPart], { type: mime });
 }
 
-export async function copyImageBitmap(src: string): Promise<void> {
+class ImageCopyError extends Error {
+  constructor(readonly stage: 'read' | 'decode', error: unknown) {
+    super(error instanceof Error ? `${error.name}: ${error.message}` : String(error), { cause: error });
+  }
+}
+
+export function imageCopyFailureText(error: unknown, t: (key: I18nKey) => string): string {
+  if (error instanceof ImageCopyError) return t(error.stage === 'read' ? 'media.copyReadFailed' : 'media.copyDecodeFailed');
+  if ((error instanceof Error || error instanceof DOMException) && error.name === 'NotAllowedError') return t('media.copyDenied');
+  if (error instanceof Error && error.message === 'Clipboard image write is unavailable') return t('media.copyUnavailable');
+  return `${t('media.copyFailed')} ${error instanceof Error ? error.message : String(error)}`;
+}
+
+export function copyImageBitmap(src: string): Promise<void> {
+  return copyImageToClipboard(imagePngForClipboard(src));
+}
+
+async function imagePngForClipboard(src: string): Promise<Blob> {
   let blob: Blob;
   try {
     const response = await fetch(src);
@@ -209,17 +226,19 @@ export async function copyImageBitmap(src: string): Promise<void> {
     blob = await typedImageBlob(await response.blob());
     if (blob.size === 0) throw new Error('Image could not be read');
   } catch (error) {
-    if (src.startsWith('blob:') || src.startsWith('data:')) throw error;
+    if (src.startsWith('blob:') || src.startsWith('data:')) throw new ImageCopyError('read', error);
     try {
       blob = await rasterPng(src);
     } catch {
-      throw error;
+      throw new ImageCopyError('read', error);
     }
   }
-  if (blob.type !== 'image/png' || !(await isPngBlob(blob))) {
-    blob = await rasterPng(src, blob);
+  try {
+    if (blob.type !== 'image/png' || !(await isPngBlob(blob))) return await rasterPng(src, blob);
+    return blob;
+  } catch (error) {
+    throw new ImageCopyError('decode', error);
   }
-  await copyImageToClipboard(blob);
 }
 
 async function rasterPng(src: string, blob?: Blob): Promise<Blob> {

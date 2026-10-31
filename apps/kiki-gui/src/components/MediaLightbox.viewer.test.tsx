@@ -290,11 +290,12 @@ describe('lightbox zoom controls and details', () => {
 
   it('reports a refused clipboard write in the reader words and keeps the cause beneath it', async () => {
     clearToasts();
-    const denied = new Error('Write permission denied.');
+    const denied = new DOMException('Write permission denied.', 'NotAllowedError');
     renderLightbox({ name: 'shot.png', src: 'https://example.test/shot.png' });
     loadImage(400, 200);
-    vi.stubGlobal('fetch', vi.fn(async () => { throw denied; }));
-    vi.stubGlobal('Image', class { crossOrigin: string | null = null; src = ''; decode() { return Promise.reject(denied); } });
+    vi.stubGlobal('ClipboardItem', class { constructor(readonly items: Record<string, Promise<Blob>>) {} });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write: vi.fn(async () => { throw denied; }) } });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], { type: 'image/png' }) })));
     try {
       act(() => { document.querySelector('[data-lightbox-viewport]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 4, clientY: 4 })); });
       await act(async () => {
@@ -303,7 +304,7 @@ describe('lightbox zoom controls and details', () => {
       });
       const toasts = getToasts();
       expect(toasts).toHaveLength(1);
-      expect(toasts[0]?.text).toBe('Could not copy the image. Try downloading it instead.');
+      expect(toasts[0]?.text).toBe('Clipboard access was denied. Focus this window, allow clipboard access in your browser, and try again.');
       expect(toasts[0]?.detail).toContain('Write permission denied.');
       expect(toasts[0]?.retry).toBeDefined();
     } finally {

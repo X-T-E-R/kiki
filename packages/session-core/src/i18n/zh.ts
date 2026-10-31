@@ -11850,7 +11850,12 @@ export const zh = {
   'media.zoomIn': '放大',
   'media.zoomOut': '缩小',
   'media.details': '图片详情',
-  'media.copyFailed': '复制图片失败，请尝试下载。',
+  'media.copyFailed': '复制图片失败。',
+  'media.copyReadFailed': '无法读取要复制的图片。链接可能已失效或限制访问，请重新加载图片后重试。',
+  'media.copyDecodeFailed': '无法将这张图片转换为 PNG，请保存原图后用图片编辑器打开。',
+  'media.copyDenied': '剪贴板访问被拒绝。请切回此窗口，允许浏览器访问剪贴板后重试。',
+  'media.copyUnavailable': '当前宿主不支持写入图片剪贴板，请通过 HTTPS 或 localhost 在浏览器中打开 Kiki，或保存图片。',
+  'media.saveFailed': '保存图片失败。',
   'agentPanel.metrics.settleFailed': '用量统计没有完成',
   'nav.scope.failed.target-missing.body': '你刚才所在的会话或页面已经不在了。',
   // ---- model editor and Recipe surfaces (ported with the model-panel slice) ----

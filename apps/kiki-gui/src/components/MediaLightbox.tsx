@@ -8,7 +8,7 @@ import { browserSaveSink, bufferedSaveSink } from '../host/saveSink';
 import { Dialog } from './Dialog';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { Icon } from './icons';
-import { copyImageBitmap, httpImageLink, imageMenuEntries, noteMediaReady } from './imageActions';
+import { copyImageBitmap, httpImageLink, imageCopyFailureText, imageMenuEntries, noteMediaReady } from './imageActions';
 import { imagePreviewDownloadName, imagePreviewLabel } from './imagePreviewName';
 import { useDevicePixelRatio, useDragPan, MAX_ZOOM, MIN_ZOOM, ZOOM_STEPS, zoomPercentOf } from './ImageViewport';
 import { ImageViewportAnnotations, renderAnnotatedImage, type AnnotationTool, type ImageAnnotation } from './ImageViewportAnnotations';
@@ -235,11 +235,6 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     anchor.click();
     anchor.remove();
   };
-  /**
-   * A refused clipboard write is reported in the reader's terms; the actual
-   * failure stays one level down in the toast's details so it is still
-   * diagnosable without becoming the message.
-   */
   const copyImage = async () => {
     if (src === undefined) return;
     try {
@@ -247,7 +242,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
     } catch (error) {
       pushToast({
         tone: 'error',
-        text: t('media.copyFailed'),
+        text: imageCopyFailureText(error, t),
         detail: errorToText(error),
         retry: { run: () => { void copyImage(); } },
       });

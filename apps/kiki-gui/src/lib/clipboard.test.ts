@@ -63,67 +63,64 @@ const PNG_HEADER = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 const JPEG_HEADER = [0xFF, 0xD8, 0xFF, 0xE0];
 
 describe('copyImageToClipboard', () => {
-  it('writes valid png blob to clipboard when available', async () => {
-    const write = vi.fn(() => Promise.resolve());
-    vi.stubGlobal('ClipboardItem', class ClipboardItem {
-      constructor(readonly items: Record<string, Blob>) {}
-    });
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { write },
-    });
+  type PromisedItem = { items: Record<string, Promise<Blob>> };
+  function imageClipboard() {
+    vi.stubGlobal('ClipboardItem', class { constructor(readonly items: Record<string, Promise<Blob>>) {} });
+    const write = vi.fn(async (items: PromisedItem[]) => { await Promise.all(items.map((item) => item.items['image/png'])); });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write } });
+    return write;
+  }
 
-    const validPng = new Blob([new Uint8Array(PNG_HEADER)], { type: 'image/png' });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('starts write synchronously and validates the promised PNG before delivery', async () => {
+    const write = imageClipboard();
     const { copyImageToClipboard } = await import('./clipboard');
-    await copyImageToClipboard(validPng);
-
+    let resolve!: (blob: Blob) => void;
+    const source = new Promise<Blob>((done) => { resolve = done; });
+    const copying = copyImageToClipboard(source);
     expect(write).toHaveBeenCalledOnce();
-    const calls = write.mock.calls as unknown[][];
-    const itemsArg = calls[0]?.[0] as { items: Record<string, Blob> }[] | undefined;
-    const item = itemsArg?.[0];
-    expect(item?.items['image/png']?.type).toBe('image/png');
-  });
-
-  it('rejects non-PNG bytes even if mislabeled with image/png MIME', async () => {
-    const write = vi.fn(() => Promise.resolve());
-    vi.stubGlobal('ClipboardItem', class ClipboardItem {
-      constructor(readonly items: Record<string, Blob>) {}
-    });
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { write },
-    });
-
-    // A JPEG stream falsely given image/png MIME must be rejected at the clipboard boundary
-    const fakePng = new Blob([new Uint8Array(JPEG_HEADER)], { type: 'image/png' });
-    const { copyImageToClipboard } = await import('./clipboard');
-    await expect(copyImageToClipboard(fakePng)).rejects.toThrow('Clipboard image write requires a valid PNG image');
-    expect(write).not.toHaveBeenCalled();
-  });
-
-  it('rejects non-PNG MIME types (e.g. image/jpeg)', async () => {
-    const write = vi.fn(() => Promise.resolve());
-    vi.stubGlobal('ClipboardItem', class ClipboardItem {
-      constructor(readonly items: Record<string, Blob>) {}
-    });
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { write },
-    });
-
-    const jpegBlob = new Blob([new Uint8Array(JPEG_HEADER)], { type: 'image/jpeg' });
-    const { copyImageToClipboard } = await import('./clipboard');
-    await expect(copyImageToClipboard(jpegBlob)).rejects.toThrow('Clipboard image write requires a valid PNG image');
-    expect(write).not.toHaveBeenCalled();
-  });
-
-  it('throws error when clipboard or ClipboardItem is unavailable', async () => {
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: undefined,
-    });
-    const { copyImageToClipboard } = await import('./clipboard');
+    const item = write.mock.calls[0]![0][0]!;
+    expect(item.items['image/png']).toBeInstanceOf(Promise);
     const validPng = new Blob([new Uint8Array(PNG_HEADER)], { type: 'image/png' });
-    await expect(copyImageToClipboard(validPng)).rejects.toThrow('Clipboard image write is unavailable');
+    resolve(validPng);
+    await copying;
+    expect(await item.items['image/png']).toBe(validPng);
+  });
+
+  it.each([
+    [JPEG_HEADER, 'image/png'],
+    [JPEG_HEADER, 'image/jpeg'],
+  ])('rejects invalid PNG data at the clipboard boundary (%s, %s)', async (bytes, type) => {
+    imageClipboard();
+    const { copyImageToClipboard } = await import('./clipboard');
+    await expect(copyImageToClipboard(new Blob([new Uint8Array(bytes)], { type }))).rejects.toThrow('requires a valid PNG image');
+  });
+
+  it('preserves the source error when the browser rejects promised image data', async () => {
+    const write = imageClipboard();
+    write.mockImplementation(async (items) => {
+      try { await items[0]!.items['image/png']; }
+      catch { throw new DOMException('Failed to read clipboard data', 'DataError'); }
+    });
+    const { copyImageToClipboard } = await import('./clipboard');
+    await expect(copyImageToClipboard(Promise.reject(new TypeError('Failed to fetch')))).rejects.toThrow('Failed to fetch');
+  });
+
+  it('reports clipboard denial even if image preparation is still pending', async () => {
+    const write = imageClipboard();
+    write.mockRejectedValue(new DOMException('Document is not focused.', 'NotAllowedError'));
+    const { copyImageToClipboard } = await import('./clipboard');
+    let reject!: (error: Error) => void;
+    const source = new Promise<Blob>((_resolve, fail) => { reject = fail; });
+    await expect(copyImageToClipboard(source)).rejects.toThrow('Document is not focused.');
+    reject(new Error('decode failed later'));
+    await Promise.resolve();
+  });
+
+  it('reports when clipboard images are unavailable and observes a rejected source', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    const { copyImageToClipboard } = await import('./clipboard');
+    await expect(copyImageToClipboard(Promise.reject(new Error('source failed')))).rejects.toThrow('Clipboard image write is unavailable');
   });
 });
