@@ -47,6 +47,7 @@ describe('Usage source read model', () => {
     logs = ix.get(IAppendLogStore);
   }
   async function catalog(): Promise<void> {
+    await facts.summary(SCOPE);
     await model.catalog([{ id: 'session', workspaceId: 'example', createdAt: 0, updatedAt: 1, archived: false, deleted: false }], [{ source: SCOPE, workspaceId: 'example', sessionId: 'session' }], true);
   }
   beforeEach(async () => { home = await mkdtemp(join(tmpdir(), 'usage-read-model-')); storage = new InMemoryStorageService(); open(); });
@@ -63,7 +64,7 @@ describe('Usage source read model', () => {
     expect(result.trend[0]).toMatchObject({ key: '0', requests: 3, turns: 1, groups: [{ key: 'alias' }] });
     expect((await facts.summary(SCOPE)).totals?.byModelMask).toEqual({ example: { 1: usage(20), 2: usage(0, 1) } });
     logs.append(SCOPE, 'wire.jsonl', record(1, 5));
-    await logs.flush();
+    await logs.flush(); await facts.summary(SCOPE);
     expect((await model.query(query)).total).toMatchObject({ usage: usage(25, 1), cost: 2.5, knownRecords: 4 });
     const priced = await model.query({ ...query, quotes: [{ model: 'example', inputOther: 0.1, output: 2 }] });
     expect(priced.total).toMatchObject({ cost: 4.5, costUnknown: false });
@@ -139,6 +140,16 @@ describe('Usage source read model', () => {
     expect(await model.models()).toEqual(['example']);
   });
 
+  it('rolls back every page when a batched import has a changed continuation', async () => {
+    const first = { source: SCOPE, progress: { batchStart: 0, offset: 10, ordinal: 1 }, records: [record(1)] };
+    const second = { source: SCOPE, expected: { batchStart: 0, offset: 9, ordinal: 1 }, progress: { batchStart: 0, offset: 20, ordinal: 2 }, records: [record(2)] };
+    expect(await model.applyBatch([first, second])).toBe(false);
+    expect(await model.progress(SCOPE)).toBeUndefined();
+    expect(await model.source(SCOPE)).toBeUndefined();
+    expect(await model.applyBatch([first, { ...second, expected: first.progress }])).toBe(true);
+    expect(await model.progress(SCOPE)).toEqual(second.progress);
+  });
+
   it('keeps staged facts invisible and resumes a large batch across budgets and process restart', async () => {
     const checkpoint = { generation: 'legacy', offset: 100, size: 100, mtimeMs: 1, boundaryHash: '', valid: true };
     const records = Array.from({ length: 1200 }, (_, time) => ({ ...record(time), sourceAgentId: 'main' }));
@@ -162,7 +173,7 @@ describe('Usage source read model', () => {
   it('publishes managed rewrite as one generation and invalidates version-bound query pages', async () => {
     logs.append(SCOPE, 'wire.jsonl', record(1)); await logs.flush(); await catalog();
     const old = await model.query(query);
-    await logs.rewrite(SCOPE, 'wire.jsonl', [record(2, 7)]);
+    await logs.rewrite(SCOPE, 'wire.jsonl', [record(2, 7)]); await facts.summary(SCOPE);
     const changed = await model.query(query);
     expect(changed.total.usage.inputOther).toBe(7);
     expect(changed.revision).not.toBe(old.revision);
@@ -250,7 +261,7 @@ describe('Usage source read model', () => {
       await expect(other.catalog([], [], true)).rejects.toMatchObject({ code: 'usage.read_only', committed: false });
       const controller = new AbortController(); controller.abort(new Error('cancel read'));
       await expect(other.query(query, controller.signal)).rejects.toThrow('cancel read');
-      logs.append(SCOPE, 'wire.jsonl', record(2)); await logs.flush();
+      logs.append(SCOPE, 'wire.jsonl', record(2)); await logs.flush(); await facts.summary(SCOPE);
       expect((await other.query(query)).total.knownRecords).toBe(2);
     } finally { await other.close(); await follower.dispose(); }
   });
@@ -259,7 +270,7 @@ describe('Usage source read model', () => {
     logs.append(SCOPE, 'wire.jsonl', record(1)); await logs.flush(); await catalog();
     const writer = Reflect.get(model, 'writer');
     await Reflect.get(writer, 'worker').terminate();
-    logs.append(SCOPE, 'wire.jsonl', record(2)); await logs.flush();
+    logs.append(SCOPE, 'wire.jsonl', record(2)); await logs.flush(); await facts.summary(SCOPE);
     expect((await model.query(query)).total.knownRecords).toBe(2);
     const wire = await storage.read(SCOPE, 'wire.jsonl');
     await model.close(); await ix.dispose(); await drainQueryStoreDisposals();
