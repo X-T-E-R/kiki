@@ -982,6 +982,7 @@ class FixtureServer {
     this.shortcutPreferences = null;
     this.providerHealth = null;
     this.executorLogin = null;
+    this.engineDiscoveryReads = 0;
     this.wsInbound = [];
     this.wsOutbound = [];
     console.log(`[fixture] scenario "${name}" loaded (${this.sessions.size} sessions)`);
@@ -1383,6 +1384,20 @@ class FixtureServer {
         ? { ...item, connection: { ...item.connection, login_status: login } }
         : item;
     });
+  }
+
+  /**
+   * `GET /executors/discovery` — the native engines' discovery snapshot,
+   * seeded per scenario under `engineDiscovery`. The seed may be a plain
+   * `{ items }` matching `executorDiscoveryResponseSchema`, or a function
+   * `(calls) => snapshot` invoked per read so a scenario can answer a
+   * re-detect with new states.
+   */
+  engineDiscoverySnapshot() {
+    const seed = this.scenario?.data.engineDiscovery;
+    const snapshot = typeof seed === 'function' ? seed(this.engineDiscoveryReads ?? 0) : seed;
+    this.engineDiscoveryReads = (this.engineDiscoveryReads ?? 0) + 1;
+    return structuredClone(snapshot ?? { items: [] });
   }
 
   /**
@@ -3380,6 +3395,15 @@ class FixtureServer {
     }
     if (path === '/executors' && method === 'GET') {
       return this.envelope(res, { items: this.executorItems() });
+    }
+    // Native-engine discovery (`executorDiscoveryResponseSchema`): the read
+    // re-reads the engines' files server-side, so a re-detect is the same GET
+    // again. `engineDiscoveryRunMs` stretches the answer so the busy state is
+    // observable. Scenarios without the seed answer 404 like a server that
+    // predates the route.
+    if (path === '/executors/discovery' && method === 'GET') {
+      if (this.scenario?.data.engineDiscovery === undefined) return this.envelope(res, null, 40404, 'Executor discovery not found');
+      return this.envelope(res, this.engineDiscoverySnapshot());
     }
     // 0.3.3 external clients: the one connection authorization and the
     // restricted listener. Scenario `externalClients` seeds
