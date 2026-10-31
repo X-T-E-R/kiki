@@ -60,6 +60,7 @@ export const toolContributionSchema = z.object({
   description: z.string().min(1),
   parameters: z.record(z.string(), z.unknown()).optional(),
   accesses: z.array(accessSchema).default([{ kind: 'all' }]),
+  concurrencySafe: z.boolean().optional(),
   display: z.record(z.string(), z.unknown()).optional(),
   approvalRule: z.string().min(1).optional(),
   disclosure: z.enum(['inline', 'deferred']).default('deferred'),
