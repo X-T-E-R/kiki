@@ -1325,11 +1325,24 @@ export function Composer({
   // each, a tinted token in the text, and whole-link deletion.
   const conversationRefs = useMemo(() => findConversationRefs(text), [text]);
   const agentRefs = useMemo(() => findAgentRefs(text), [text]);
+  // The token range being edited, tracked in state: the overlay shows a
+  // token's label until the caret enters its range, then reveals the raw link
+  // until the caret leaves. It starts null so a freshly inserted token shows
+  // its label; the selection handlers below update it on select/click/change.
+  const [editingRange, setEditingRange] = useState<{ start: number; end: number } | null>(null);
+  const syncEditingRange = (selStart: number, selEnd: number) => {
+    const hit = backdropTokens.find((ref) =>
+      selStart === selEnd
+        ? selStart > ref.start && selStart < ref.end
+        : selStart < ref.end && selEnd > ref.start,
+    );
+    const next = hit === undefined ? null : { start: hit.start, end: hit.end };
+    setEditingRange((current) => (current?.start === next?.start && current?.end === next?.end ? current : next));
+  };
   // Both link kinds tint as tokens in the backdrop: one merged, ordered list so
   // a draft mixing thread and agent links highlights every range in place. The
   // backdrop's marks are transparent (the textarea's dark text paints over
-  // them), so a token can only tint, never show a readable label — see the
-  // receipt for the overlay/short-link options that would change that.
+  // them); an opaque overlay sibling (below) carries each token's label.
   const backdropTokens = useMemo(
     () => [
       ...conversationRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: ref.kind as string, profile: undefined as string | undefined })),
@@ -1351,7 +1364,47 @@ export function Composer({
     (roomId: string) => ({ id: roomId, ...roomRefDirectory.lookup(roomId) }),
     [roomRefDirectory],
   );
+  // Token overlay labels: a referenced agent shows its candidate label (the
+  // profile name before candidates load or for a stale reference); a linked
+  // thread or room shows its title/name, falling back to the raw link when the
+  // record is not loaded yet. The raw link stays in the (transparent) textarea
+  // and is what gets sent.
+  const agentLabelByProfile = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const group of agentCandidateList.groups) {
+      for (const candidate of group.candidates) {
+        if (!map.has(candidate.profile)) map.set(candidate.profile, candidate.label);
+      }
+    }
+    return map;
+  }, [agentCandidateList]);
+  const overlayTokens = useMemo(
+    () => backdropTokens.map((ref) => {
+      const editing = editingRange !== null && editingRange.start === ref.start && editingRange.end === ref.end;
+      let label: string;
+      if (ref.kind === 'agent') {
+        label = `@${(ref.profile !== undefined ? agentLabelByProfile.get(ref.profile) : undefined) ?? ref.profile ?? ref.raw}`;
+      } else if (ref.kind === 'session') {
+        const refId = conversationRefs.find((candidate) => candidate.raw === ref.raw)?.id;
+        const title = refId === undefined ? undefined : threadRefDirectory.lookup(refId).session?.title.trim();
+        label = title === undefined || title === '' ? ref.raw : title;
+      } else if (ref.kind === 'room') {
+        const refId = conversationRefs.find((candidate) => candidate.raw === ref.raw)?.id;
+        const name = refId === undefined ? undefined : roomRefDirectory.lookup(refId).name?.trim();
+        label = name === undefined || name === '' ? ref.raw : name;
+      } else {
+        label = ref.raw;
+      }
+      return { ...ref, label, editing };
+    }),
+    [backdropTokens, editingRange, agentLabelByProfile, conversationRefs, threadRefDirectory, roomRefDirectory],
+  );
+  const hasOverlayLabels = useMemo(
+    () => overlayTokens.some((ref) => !ref.editing && ref.label !== ref.raw),
+    [overlayTokens],
+  );
   const threadRefBackdropRef = useRef<HTMLDivElement>(null);
+  const threadRefOverlayRef = useRef<HTMLDivElement>(null);
   const removeConversationRefAt = (index: number) => {
     const ref = conversationRefs[index];
     if (ref === undefined) return;
@@ -1654,6 +1707,9 @@ export function Composer({
     const next = replaceMentionTriggerWithAgentRef(text, trigger, cursor, candidate.reference);
     onChange(next.text);
     lastCursorRef.current = next.cursor;
+    // The caret rests just after the inserted token: outside its range, so the
+    // overlay keeps the label until the user moves back into it.
+    setEditingRange(null);
     requestAnimationFrame(() => {
       const node = textareaRef.current;
       if (node !== null && !composingRef.current) {
@@ -3217,7 +3273,13 @@ export function Composer({
             ) : null}
             {/* Conversation links read as tokens: a tinted backdrop mirrors
                 the draft behind the (transparent) textarea and tints each
-                link's range. Only mounted while the draft carries a link. */}
+                link's range. The overlay sibling re-renders the same text with
+                an opaque label where a token is not being edited; it sits above
+                the textarea's own text to cover the raw link, and shares the
+                backdrop's geometry, so it tracks scroll, wrap, font and resize.
+                A covered range keeps its width in the mirror (the visible label
+                truncates) so the surrounding text never reflows. Only mounted
+                while the draft carries a link. */}
             {backdropTokens.length > 0 ? (
               <div
                 ref={threadRefBackdropRef}
@@ -3225,18 +3287,54 @@ export function Composer({
                 data-thread-ref-backdrop
                 className="pointer-events-none absolute top-3 right-3 left-3 max-h-[190px] overflow-hidden py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed break-words whitespace-pre-wrap text-transparent"
               >
-                {backdropTokens.map((ref, index) => (
-                  <span key={ref.start}>
-                    {text.slice(index === 0 ? 0 : backdropTokens[index - 1]!.end, ref.start)}
-                    <mark
-                      data-thread-ref-token
-                      data-ref-kind={ref.kind}
-                      title={ref.kind === 'agent' ? ref.raw : undefined}
-                      className="rounded-[3px] bg-accent/[0.14] text-transparent shadow-[0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.14)]"
-                    >{ref.raw}</mark>
-                  </span>
-                ))}
-                {text.slice(backdropTokens.at(-1)!.end)}
+                {overlayTokens.map((ref, index) => {
+                  const covered = !ref.editing && ref.label !== ref.raw;
+                  return (
+                    <span key={ref.start}>
+                      {text.slice(index === 0 ? 0 : overlayTokens[index - 1]!.end, ref.start)}
+                      <mark
+                        data-thread-ref-token
+                        data-ref-kind={ref.kind}
+                        className={`rounded-[3px] text-transparent shadow-[0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.14)]${covered ? ' invisible' : ' bg-accent/[0.14]'}`}
+                      >{ref.raw}</mark>
+                    </span>
+                  );
+                })}
+                {text.slice(overlayTokens.at(-1)!.end)}
+                {ZERO_WIDTH_TAIL}
+              </div>
+            ) : null}
+            {hasOverlayLabels ? (
+              <div
+                ref={threadRefOverlayRef}
+                aria-hidden
+                data-thread-ref-overlay
+                className="pointer-events-none absolute top-3 right-3 left-3 z-20 max-h-[190px] overflow-hidden py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed break-words whitespace-pre-wrap text-transparent"
+              >
+                {overlayTokens.map((ref, index) => {
+                  const covered = !ref.editing && ref.label !== ref.raw;
+                  return (
+                    <span key={ref.start}>
+                      {text.slice(index === 0 ? 0 : overlayTokens[index - 1]!.end, ref.start)}
+                      {covered ? (
+                        // An invisible raw-width placeholder keeps the range's box;
+                        // the opaque chip overlays it, truncating the label inside.
+                        <mark className="relative inline-block rounded-[3px] align-bottom not-italic">
+                          <span className="invisible">{ref.raw}</span>
+                          <mark
+                            data-thread-ref-overlay-token
+                            data-ref-kind={ref.kind}
+                            title={ref.raw}
+                            className="absolute inset-0 inline-block max-w-full truncate rounded-[3px] bg-paper text-ink not-italic shadow-[0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.35),inset_0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.35)]"
+                          >{ref.label}</mark>
+                        </mark>
+                      ) : (
+                        <mark className="invisible rounded-[3px]">{ref.raw}</mark>
+                      )}
+                    </span>
+                  );
+                })}
+                {text.slice(overlayTokens.at(-1)!.end)}
                 {ZERO_WIDTH_TAIL}
               </div>
             ) : null}
@@ -3272,6 +3370,8 @@ export function Composer({
               onScroll={(event) => {
                 const backdrop = threadRefBackdropRef.current;
                 if (backdrop !== null) backdrop.scrollTop = event.currentTarget.scrollTop;
+                const overlay = threadRefOverlayRef.current;
+                if (overlay !== null) overlay.scrollTop = event.currentTarget.scrollTop;
               }}
               data-autofocus={autoFocus === true ? '' : undefined}
               disabled={disabled}
@@ -3287,6 +3387,7 @@ export function Composer({
                 if (composingRef.current) setCompositionText(event.target.value);
                 onChange(event.target.value);
                 lastCursorRef.current = event.target.selectionStart;
+                syncEditingRange(event.target.selectionStart, event.target.selectionEnd);
                 setSlashConfirm(null);
                 refreshMenu(event.target.value, event.target.selectionStart);
               }}
@@ -3297,11 +3398,18 @@ export function Composer({
                   refreshMenu(text, event.currentTarget.selectionStart);
                 }
               }}
-              onClick={(event) => { refreshMenu(text, event.currentTarget.selectionStart); }}
+              onClick={(event) => {
+                syncEditingRange(event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+                refreshMenu(text, event.currentTarget.selectionStart);
+              }}
               onSelect={(event) => {
                 lastCursorRef.current = event.currentTarget.selectionStart;
+                syncEditingRange(event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
               }}
-              onFocus={() => { setInputFocused(true); }}
+              onFocus={(event) => {
+                setInputFocused(true);
+                syncEditingRange(event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+              }}
               onBlur={(event) => {
                 setMenu(null);
                 // A caret in the input holds off the needs-you takeover only
@@ -3328,7 +3436,7 @@ export function Composer({
               }
               // The card's focus-within border is the focus indicator; the
               // global :focus-visible ring would draw a box inside the card.
-              className="relative max-h-[190px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed text-ink outline-none placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
+              className="relative z-10 max-h-[190px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed text-ink outline-none placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
             />
           </div>
 

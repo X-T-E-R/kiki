@@ -243,6 +243,73 @@ describe('Composer agent mentions', () => {
     expect(options(container).some((node) => (node.textContent ?? '').includes('claude-code'))).toBe(true);
   });
 
+  it('overlays the readable @label over the link and reveals the raw link while the caret is inside', async () => {
+    const container = await render({ sessionId: 'session_current', fsSearch: vi.fn().mockResolvedValue([]) });
+    await typeAndSettle(container, '@clau');
+    const node = textarea(container);
+    await act(async () => { node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+    await settle(60); // flush the rAF that lands the caret after the inserted token
+    // The overlay carries the candidate label; the raw link stays in the draft.
+    expect(node.value).toContain('kiki://agents/claude-code');
+    const token = container.querySelector<HTMLElement>('[data-thread-ref-overlay-token][data-ref-kind="agent"]');
+    expect(token?.textContent).toBe('@claude-code');
+    // Move the caret inside the link's range: the raw link shows for editing.
+    const start = node.value.indexOf('kiki://agents/');
+    await act(async () => {
+      node.focus();
+      node.setSelectionRange(start + 4, start + 4);
+      node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await settle(60);
+    expect(container.querySelector('[data-thread-ref-overlay-token][data-ref-kind="agent"]')).toBeNull();
+    // Back out of the range and the label returns.
+    await act(async () => {
+      node.setSelectionRange(node.value.length, node.value.length);
+      node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await settle(60);
+    expect(container.querySelector('[data-thread-ref-overlay-token][data-ref-kind="agent"]')?.textContent).toBe('@claude-code');
+  });
+
+  it('overlays each reference independently when the same target is named twice', async () => {
+    const container = await render({ sessionId: 'session_current', fsSearch: vi.fn().mockResolvedValue([]) });
+    await typeAndSettle(container, '@clau');
+    const node = textarea(container);
+    await act(async () => { node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+    await settle(60);
+    await typeText(node, `${node.value}and @clau`);
+    await settle(320);
+    await settle(60);
+    await act(async () => { node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+    await settle(60);
+    const tokens = [...container.querySelectorAll<HTMLElement>('[data-thread-ref-overlay-token][data-ref-kind="agent"]')];
+    expect(tokens.map((token) => token.textContent)).toEqual(['@claude-code', '@claude-code']);
+  });
+
+  it('truncates a long label to the covered range instead of reflowing the draft', async () => {
+    referenceCandidates.mockResolvedValue({
+      delegation_available: true,
+      items: [{ ...CANDIDATES.items[2]!, label: 'Claude Code with an extremely long display name that cannot fit' }],
+    });
+    const container = await render({ sessionId: 'session_current', fsSearch: vi.fn().mockResolvedValue([]) });
+    await typeAndSettle(container, '@clau');
+    const node = textarea(container);
+    await act(async () => { node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+    await settle(60);
+    const token = container.querySelector<HTMLElement>('[data-thread-ref-overlay-token][data-ref-kind="agent"]')!;
+    expect(token.textContent).toContain('Claude Code with an extremely long display name');
+    // The token is the truncating overlay chip, capped to the line.
+    expect(token.className).toContain('truncate');
+    expect(token.className).toContain('max-w-full');
+  });
+
+  it('falls back to the profile name for a reference the candidates do not list', async () => {
+    const container = await render({ sessionId: 'session_current', initial: 'ask kiki://agents/stale-profile now', fsSearch: vi.fn().mockResolvedValue([]) });
+    await settle();
+    const token = container.querySelector<HTMLElement>('[data-thread-ref-overlay-token][data-ref-kind="agent"]');
+    expect(token?.textContent).toBe('@stale-profile');
+  });
+
   it('keeps the link verbatim through queue edit/resend', async () => {
     // A queued message's text parks in the draft unchanged; confirming routes
     // it back through onQueueEditConfirm with the link intact.
