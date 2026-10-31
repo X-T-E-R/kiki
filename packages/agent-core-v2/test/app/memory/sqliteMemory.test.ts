@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { MemoryWorker } from '#/persistence/backends/sqliteMemory/host';
 import { configureMemoryWorkerRuntime } from '#/persistence/backends/sqliteMemory/protocol';
@@ -54,6 +54,7 @@ function removeMemoryReconciliation(db: DatabaseSync): void {
 const global: MemoryScope = { kind: 'global' };
 const workspace = { kind: 'workspace', workspaceId: 'wd_example_0123456789ab' } as const;
 const source = { writer: 'user' as const };
+const packageRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const pathFor = (scope: MemoryScope): string => scope.kind === 'global' ? 'memory/global' : scope.kind === 'workspace' ? `memory/workspaces/${scope.workspaceId}` : scope.kind === 'persona' ? `memory/global/personas/${scope.personaId}` : `memory/workspaces/${scope.workspaceId}/personas/${scope.personaId}`;
 let home: string;
 let ix: TestInstantiationService;
@@ -1059,7 +1060,7 @@ describe('Memory shadow import and replay barriers', () => {
   it('reconciles a worker death after COMMIT and before acknowledgment without replaying the write', async () => {
     const path = join(home, 'isolated', 'unknown.sqlite');
     const crashEntry = join(home, 'crash-entry.ts');
-    const module = pathToFileURL(join(process.cwd(), 'src/persistence/backends/sqliteMemory/database.ts')).href;
+    const module = new URL('../../../src/persistence/backends/sqliteMemory/database.ts', import.meta.url).href;
     await writeFile(crashEntry, `import { parentPort, workerData } from 'node:worker_threads';\nimport { MemoryDatabase } from ${JSON.stringify(module)};\nconst db = new MemoryDatabase(workerData.database);\nparentPort.on('message', ({ operation }) => { db.commit(operation.input); process.exit(72); });\n`);
     configureMemoryWorkerRuntime(crashEntry);
     const worker = new MemoryWorker(path);
@@ -1428,7 +1429,7 @@ describe('single Memory authority and isolated recovery', () => {
     expect((await memory.get(global, saved.entry.id))?.body).toBe('Use 5 workers; never upload output.');
     expect(await storage.read('memory/global', `entries/${saved.entry.id}.md`)).toEqual(initial);
     await expect(createManaged(legacy, 'Old writer')).rejects.toThrow('authority changed');
-    const child = await promisify(execFile)(process.execPath, [createRequire(import.meta.url).resolve('tsx/cli'), '--tsconfig', 'tsconfig.json', 'test/fixtures/memoryLegacyWriter.mts', home], { cwd: process.cwd(), timeout: 15_000 });
+    const child = await promisify(execFile)(process.execPath, [createRequire(import.meta.url).resolve('tsx/cli'), '--tsconfig', 'tsconfig.json', 'test/fixtures/memoryLegacyWriter.mts', home], { cwd: packageRoot, timeout: 15_000 });
     expect(JSON.parse(child.stdout.trim())).toMatchObject({ written: false, code: 'storage.locked' });
   });
 
@@ -1481,7 +1482,7 @@ describe('single Memory authority and isolated recovery', () => {
     const first = await createManaged(legacy, 'Interrupted startup rule');
     const persona = { kind: 'persona', personaId: 'startup-example' } as const;
     const second = await legacy.put({ action: 'create', scope: persona, type: 'reference', title: 'Persona retained through restart', body: 'Retain this exact persona-only condition.', reason: 'Owner instruction', source });
-    const run = promisify(execFile)(process.execPath, ['--import', 'tsx', '--import', '../../build/register-raw-text-loader.mjs', 'test/fixtures/memoryStartupInterrupted.mts', home], { cwd: process.cwd(), timeout: 20_000 });
+    const run = promisify(execFile)(process.execPath, ['--import', 'tsx', '--import', '../../build/register-raw-text-loader.mjs', 'test/fixtures/memoryStartupInterrupted.mts', home], { cwd: packageRoot, timeout: 20_000 });
     const crashed = await run.then(() => { throw new Error('Expected interrupted startup'); }, (error: { code: number; stdout: string; stderr: string }) => error);
     expect(crashed.code, crashed.stderr).toBe(73);
     const interrupted = JSON.parse(crashed.stdout.trim());

@@ -370,12 +370,19 @@ describe('thinking-only continuation', () => {
       if (kind !== 'missing_stop') yield { type: 'message_delta', delta: { stop_reason: kind }, usage: { output_tokens: THINK_OUTPUT } };
       if (kind === 'max_tokens' || kind === 'refusal') yield { type: 'message_stop' };
     };
-    const create = scriptedCreate([stream, textStream('should not run')]);
-    const local = anthropicAgent(create);
+    const create = scriptedCreate([stream, textStream('Recovered answer')]);
+    const local = anthropicAgent(create, { initialConfig: { retry: { policies: [{ match: 'APIConnectionError', backoff: 1 }] } } });
+    const interrupted = kind === 'none' || kind === 'missing_stop';
     try {
-      await (await prompt(local)).completion;
-      expect(create).toHaveBeenCalledTimes(1);
-      expect(storedThinking(local)).toContainEqual({ type: 'think', think: THINKING, encrypted: SIGNATURE });
+      const terminal = await (await prompt(local)).completion;
+      expect(create).toHaveBeenCalledTimes(interrupted ? 2 : 1);
+      expect(continued(local)).toBe(false);
+      if (interrupted) {
+        expect(terminal.state).toBe('completed');
+        expect(signaturesOf(create.mock.calls[1]?.[0])).toEqual([]);
+        expect(promptCount(create.mock.calls[1]?.[0], PROMPT)).toBe(1);
+        expect(storedThinking(local)).toEqual([]);
+      } else expect(storedThinking(local)).toContainEqual({ type: 'think', think: THINKING, encrypted: SIGNATURE });
       await local.expectResumeMatches();
     } finally {
       await local.dispose();
@@ -699,12 +706,17 @@ describe('zero-output continuation', () => {
       yield { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: SIGNATURE } };
       yield { type: 'content_block_stop', index: 0 };
     };
-    const create = scriptedCreate([stream, textStream('should not run')]);
-    const local = anthropicAgent(create, { initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    const create = scriptedCreate([stream, textStream('Recovered answer')]);
+    const local = anthropicAgent(create, { initialConfig: {
+      loopControl: { zeroOutputContinuation: true },
+      retry: { policies: [{ match: 'APIConnectionError', backoff: 1 }] },
+    } });
     try {
       const terminal = await (await prompt(local)).completion;
-      expect(terminal.state).toBe('failed');
-      expect(create).toHaveBeenCalledTimes(1);
+      expect(terminal.state).toBe('completed');
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(signaturesOf(create.mock.calls[1]?.[0])).toEqual([]);
+      expect(storedThinking(local)).toEqual([]);
       expect(continued(local)).toBe(false);
       await local.expectResumeMatches();
     } finally {

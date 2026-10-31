@@ -3184,7 +3184,7 @@ describe('Responses terminal output contract', () => {
     }];
     const error = await generate(diagnosticFixtureProvider(events), 'synthetic fixture', [], []).catch((error: unknown) => error);
     const payload = toErrorPayload(error);
-    expect(payload.name).toBe(mode === 'empty-response-object' ? 'APIEmptyResponseError' : 'ChatProviderError');
+    expect(payload.name).toBe(mode === 'empty-response-object' ? 'APIEmptyResponseError' : mode === 'missing-terminal' ? 'APIConnectionError' : 'ChatProviderError');
     expect(isRetryableGenerateError(error)).toBe(true);
     expect(readGenerateFailureFacts(error)).toBeUndefined();
     expect(payload.details?.['streamDiagnostics']).toMatchObject({
@@ -3216,7 +3216,7 @@ describe('Responses safe stream diagnostics', () => {
     const error = await generate(diagnosticFixtureProvider([{ type: 'response.output_text.delta', delta: 'partial' }]), 'synthetic fixture', [], []).catch((error: unknown) => error);
     expect(isRetryableGenerateError(error)).toBe(false);
     const payload = toErrorPayload(error);
-    expect(payload.name).toBe('ChatProviderError');
+    expect(payload.name).toBe('APIConnectionError');
     expect(payload.details?.['streamDiagnostics']).toMatchObject({ endSource: 'eof', emittedTextChars: 7, terminalEventCount: 0 });
   });
 
@@ -3272,7 +3272,7 @@ describe('Responses safe stream diagnostics', () => {
 
   it('keeps unknown terminal counts distinct from zero when EOF has no terminal event', async () => {
     const payload = await diagnosticFailure([]);
-    expect(payload.name).toBe('ChatProviderError');
+    expect(payload.name).toBe('APIConnectionError');
     expect(payload.details?.['streamDiagnostics']).toMatchObject({
       endSource: 'eof', terminalStatus: null,
       terminalTextParts: null, terminalTextChars: null, terminalToolCalls: null,
@@ -3326,6 +3326,7 @@ describe('Responses safe stream diagnostics', () => {
     expect(safeProviderFailureDetails(payload.details)).toEqual({
       errorSource: 'provider_event', upstreamErrorType: 'internal_server_error', upstreamErrorCode: 'stream_failed',
       requestId: 'request-fixture', traceId: 'trace-fixture', streamDiagnostics: payload.details?.['streamDiagnostics'],
+      responsesTransport: { transport: 'sse', webSocketCapabilities: false, webSocketCapabilityVersion: null, webSocketConnectionAgeMs: null },
     });
   });
 
@@ -3391,8 +3392,12 @@ describe('Responses safe stream diagnostics', () => {
 
 
 describe('incomplete provider tool streams through the agent loop', () => {
-  it.each(['openai', 'anthropic', 'google-genai'] as const)('does not execute or replay a %s tool call after clean EOF', async protocol => {
+  it.each([
+    ['openai', true], ['anthropic', true], ['google-genai', true],
+    ['openai', false], ['anthropic', false], ['google-genai', false],
+  ] as const)('never executes an incomplete %s tool call with partial retry=%s', async (protocol, retryPartialResponses) => {
     let requests = 0;
+    const requestBodies: string[] = [];
     const events: Record<string, unknown>[] = protocol === 'openai'
       ? [{ id: 'fixture', object: 'chat.completion.chunk', created: 0, model: 'fixture', choices: [{ index: 0, delta: {
         tool_calls: [{ index: 0, id: 'call_lookup', type: 'function', function: { name: 'Lookup', arguments: '{}' } }],
@@ -3401,12 +3406,23 @@ describe('incomplete provider tool streams through the agent loop', () => {
         ? [{ type: 'message_start', message: { id: 'fixture', usage: { input_tokens: 1, output_tokens: 0 } } },
           { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'call_lookup', name: 'Lookup', input: {} } }]
         : [{ candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: 'Lookup', args: {} } }] } }] }];
+    const completed: Record<string, unknown>[] = protocol === 'openai'
+      ? [{ id: 'recovered', object: 'chat.completion.chunk', created: 0, model: 'fixture', choices: [{ index: 0, delta: { content: 'Recovered answer.' }, finish_reason: 'stop' }] }]
+      : protocol === 'anthropic'
+        ? [{ type: 'message_start', message: { id: 'recovered', usage: { input_tokens: 1, output_tokens: 0 } } },
+          { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'Recovered answer.' } },
+          { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } },
+          { type: 'message_stop' }]
+        : [{ candidates: [{ content: { role: 'model', parts: [{ text: 'Recovered answer.' }] }, finishReason: 'STOP' }] }];
     const server = createServer((request, response) => {
-      requests++;
-      request.resume();
+      const fixture = requests++ === 0 ? events : completed;
+      request.setEncoding('utf8');
+      let body = '';
+      request.on('data', (chunk: string) => { body += chunk; });
       request.on('end', () => {
+        requestBodies.push(body);
         response.writeHead(200, { 'content-type': 'text/event-stream' });
-        response.end(events.map(event => `${typeof event['type'] === 'string' ? `event: ${event['type']}\n` : ''}data: ${JSON.stringify(event)}\n\n`).join(''));
+        response.end(fixture.map(event => `${typeof event['type'] === 'string' ? `event: ${event['type']}\n` : ''}data: ${JSON.stringify(event)}\n\n`).join(''));
       });
     });
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -3418,7 +3434,9 @@ describe('incomplete provider tool streams through the agent loop', () => {
     class FixtureRegistry extends ProtocolAdapterRegistry {
       override createChatProvider(): ChatProvider { return provider; }
     }
-    const ctx = createTestAgent(permissionModeServices('yolo'), appService(IProtocolAdapterRegistry, new FixtureRegistry()));
+    const ctx = createTestAgent(permissionModeServices('yolo'), appService(IProtocolAdapterRegistry, new FixtureRegistry()), {
+      initialConfig: { retry: { retryPartialResponses, policies: [{ match: 'APIConnectionError', backoff: 1 }] } },
+    });
     const execute = vi.fn(async () => ({ output: 'must not run' }));
     try {
       ctx.get(IAgentProfileService).update({ activeToolNames: ['Lookup'] });
@@ -3427,10 +3445,12 @@ describe('incomplete provider tool streams through the agent loop', () => {
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Run the fixture lookup.' }] });
       await ctx.untilTurnEnd();
       expect(execute).not.toHaveBeenCalled();
-      expect(requests).toBe(1);
+      expect(requests).toBe(retryPartialResponses ? 2 : 1);
+      if (retryPartialResponses) expect(requestBodies[1]).not.toContain('call_lookup');
+      expect(ctx.contextData().history.flatMap(message => message.toolCalls)).toEqual([]);
       const wire = ctx.allEvents.filter(entry => entry.type === '[wire]');
-      expect(wire.find(entry => entry.event === 'turn.ended')?.args).toMatchObject({ reason: 'failed' });
-      expect(wire.filter(entry => entry.event === 'turn.step.retrying')).toEqual([]);
+      expect(wire.find(entry => entry.event === 'turn.ended')?.args).toMatchObject({ reason: retryPartialResponses ? 'completed' : 'failed' });
+      expect(wire.filter(entry => entry.event === 'turn.step.retrying')).toHaveLength(retryPartialResponses ? 1 : 0);
     } finally {
       await ctx.dispose();
       server.closeAllConnections();
