@@ -12,6 +12,7 @@ export type AgentRunRequest =
   | { readonly kind: 'retry'; readonly trigger?: string };
 
 export interface RunAgentOptions {
+  readonly parentReceiptManaged?: boolean;
   readonly capacityReservation?: import('#/session/dispatch/capacity').DispatchReservation;
   readonly signal: AbortSignal;
   readonly summaryPolicy?: AgentProfileSummaryPolicy;

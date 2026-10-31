@@ -290,6 +290,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       turnId,
       `${opened.threadId}:e${sessionEpoch}`,
       {
+        parentReceiptManaged: options.parentReceiptManaged,
         executorId: this.context.descriptor.id,
         protocol: this.context.descriptor.protocol,
         model: this.context.binding.modelAlias ?? 'harness-default',

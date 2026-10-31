@@ -110,6 +110,7 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     return handle.accessor
       .get(IAgentExecutionService)
       .run(request, {
+        parentReceiptManaged: true,
         summaryPolicy: opts.summaryPolicy ?? this.summaryPolicyFor(handle),
         signal: opts.signal,
         onReady: opts.onReady,

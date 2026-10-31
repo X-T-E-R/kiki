@@ -75,6 +75,7 @@ export type ExternalExecutorContent = NormalizedExecutorContent | ExternalStruct
 export type ExternalExecutorEvent = NormalizedExecutorEvent;
 
 export interface ExternalTurnRecorderMetadata {
+  readonly parentReceiptManaged?: boolean;
   readonly executorId: string;
   readonly protocol: string;
   readonly model: string;
@@ -188,7 +189,7 @@ export class ExternalTurnRecorder {
       }),
     );
     await this.#dispatcher.dispatch(
-      new TurnStarted({ turnId: this.turnId, origin, prompt, promptId }),
+      new TurnStarted({ turnId: this.turnId, origin, prompt, promptId, parentReceiptManaged: this.metadata.parentReceiptManaged }),
     );
     await this.#dispatcher.dispatch(
       new TurnStepStarted({ turnId: this.turnId, step: 1, stepId: this.stepId }),
