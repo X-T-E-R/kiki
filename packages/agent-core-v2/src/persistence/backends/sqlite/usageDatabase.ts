@@ -9,6 +9,7 @@ import type { UsageReadModelAggregate, UsageReadModelQuery, UsageReadModelResult
 import type { UsageStoreOperation } from './usageProtocol.ts';
 
 const COST_OVERFLOW = new Error('Usage cost overflow');
+const IMPORT_CHANGED = new Error('Usage import changed');
 const APPLICATION_ID = 0x4b555332;
 const COLUMNS = 'time,model,upstream_model,source_agent,agent,parent_agent,provider,model_alias,profile,turn,input_other,output,cache_read,cache_creation,state,mask,known,usage_scope,executor';
 const EMPTY = { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 };
@@ -60,6 +61,10 @@ export class UsageDatabase {
       case 'sources': return this.snapshot(() => this.db.prepare('SELECT * FROM source').all().map((row) => { this.check(); return { source: String(row['id']), head: sourceHeadOf(row) }; }));
       case 'progress': return this.progress(operation.source);
       case 'apply': return this.transaction(() => this.apply(operation.page));
+      case 'applyBatch': {
+        try { return this.transaction(() => { for (const page of operation.pages) if (!this.apply(page)) throw IMPORT_CHANGED; return true; }); }
+        catch (error) { if (error === IMPORT_CHANGED) return false; throw error; }
+      }
       case 'maintain': return this.transaction(() => this.backfillHourTotals());
       case 'abandon': return this.transaction(() => { this.db.prepare('DELETE FROM stage WHERE source=?').run(operation.source); this.db.prepare('DELETE FROM import WHERE source=?').run(operation.source); });
       case 'invalidate': return this.transaction(() => {

@@ -4,6 +4,7 @@ import type { UsageReadModelQuery, UsageReadModelSession, UsageSourcePage } from
 export type UsageStoreOperation =
   | { readonly type: 'source' | 'progress' | 'summary'; readonly source: string }
   | { readonly type: 'apply'; readonly page: UsageSourcePage }
+  | { readonly type: 'applyBatch'; readonly pages: readonly UsageSourcePage[] }
   | { readonly type: 'abandon' | 'invalidate'; readonly source: string }
   | { readonly type: 'read'; readonly source: string; readonly range?: UsageFactRange; readonly offset?: number; readonly limit?: number; readonly until?: number }
   | { readonly type: 'catalog'; readonly sessions: readonly UsageReadModelSession[]; readonly sources: readonly { readonly source: string; readonly workspaceId: string; readonly sessionId: string }[]; readonly inventory?: boolean }

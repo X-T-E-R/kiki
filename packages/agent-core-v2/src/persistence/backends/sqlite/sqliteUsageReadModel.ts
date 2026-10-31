@@ -72,6 +72,7 @@ export class SqliteUsageReadModel extends Disposable implements IUsageReadModel 
   sources(signal?: AbortSignal): ReturnType<IUsageReadModel['sources']> { return this.readOperation({ type: 'sources' }, signal); }
   progress(...[source, signal]: Parameters<IUsageReadModel['progress']>): ReturnType<IUsageReadModel['progress']> { return this.readOperation({ type: 'progress', source }, signal); }
   apply(page: UsageSourcePage): Promise<boolean> { return this.writeOperation({ type: 'apply', page }); }
+  applyBatch(pages: readonly UsageSourcePage[]): Promise<boolean> { return this.writeOperation({ type: 'applyBatch', pages }); }
   async abandon(source: string): Promise<void> { await this.writeOperation({ type: 'abandon', source }); }
   async invalidate(source: string): Promise<void> { await this.writeOperation({ type: 'invalidate', source }); }
   read(source: string, range?: UsageFactRange, offset?: number, limit?: number, signal?: AbortSignal, until?: number): ReturnType<IUsageReadModel['read']> { return this.readOperation({ type: 'read', source, range, offset, limit, until }, signal); }
