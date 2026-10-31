@@ -780,8 +780,8 @@ export class AgyBridge {
     const content = promptText(params.prompt);
     const promise = new Promise((resolveTurn, rejectTurn) => {
       const active = { client, text: '', steering: [],
-        resolve: value => { this.releaseSteering(session, active); this.closeSteeringHook(session).catch(() => {}).then(() => resolveTurn(value)); },
-        reject: error => { this.releaseSteering(session, active); this.closeSteeringHook(session).catch(() => {}).then(() => rejectTurn(error)); } };
+        resolve: value => { this.releaseSteering(session, active); void this.closeSteeringHook(session).catch(() => {}).then(() => resolveTurn(value)); },
+        reject: error => { this.releaseSteering(session, active); void this.closeSteeringHook(session).catch(() => {}).then(() => rejectTurn(error)); } };
       session.active = active;
     });
     promise.catch(() => {});

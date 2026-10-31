@@ -30,7 +30,7 @@ import {
 
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, SaveStatus, type Feedback } from '../controls';
+import { FeedbackLine, SaveStatus, type Feedback } from '../controls';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { useDirtyReporter, useGuardedNavigate } from '../dirtyGuard';
 import { useMemoryAdvisor } from '../memory/useMemoryAdvisor';

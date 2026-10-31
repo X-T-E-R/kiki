@@ -544,7 +544,8 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       const digest = small
         ? this.wire.journalSha256 === undefined ? undefined : await this.wire.journalSha256(wire.size)
         : await this.wire.journalBoundarySha256!(wire.size);
-      if ((small ? this.wire.journalSha256 : this.wire.journalBoundarySha256) !== undefined && digest === undefined) {
+      const digestAvailable = small ? this.wire.journalSha256 !== undefined : this.wire.journalBoundarySha256 !== undefined;
+      if (digestAvailable && digest === undefined) {
         return this.skipReplayCheckpoint('journal_changed');
       }
       if (!this.checkpointStable(generation, revision)) return false;

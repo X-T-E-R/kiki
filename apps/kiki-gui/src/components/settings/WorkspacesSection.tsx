@@ -205,13 +205,6 @@ function WorkspacesList() {
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const byRecent = (a: Workspace, b: Workspace) => Date.parse(b.last_opened_at) - Date.parse(a.last_opened_at);
 
-/** The last path segment, across separators, without a trailing slash. */
-function basenameOf(path: string): string {
-  const cleaned = path.replaceAll('\\', '/').replace(/\/+$/, '');
-  const index = cleaned.lastIndexOf('/');
-  return index === -1 ? cleaned : cleaned.slice(index + 1);
-}
-
 /**
  * The name a row leads with. A folder whose registered name reads as an
  * opaque id (releases/…/d300ab…) names the folder itself instead, truncated,
@@ -225,7 +218,7 @@ export function workspaceDisplayName(workspace: Workspace): string {
   // nearest readable ancestor, e.g. `Kiki · d300ab1…`.
   const parts = workspace.root.replaceAll('\\', '/').split('/').filter((part) => part !== '');
   const leaf = parts.at(-1) ?? name;
-  const parent = [...parts.slice(0, -1)].reverse().find((part) => !opaque(part) && !/^releases?$/i.test(part));
+  const parent = parts.slice(0, -1).reverse().find((part) => !opaque(part) && !/^releases?$/i.test(part));
   const short = `${leaf.slice(0, 7)}…`;
   return parent === undefined ? short : `${parent} · ${short}`;
 }

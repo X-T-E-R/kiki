@@ -18,7 +18,6 @@ import { setNbSearchCredentialEnv, type NbSearchDraft } from '@kiki/session-core
 
 import { useI18n } from '../../../i18n';
 import { Hint, Toggle } from '../../controls';
-import { SECONDARY_BUTTON } from '../../ui';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { ExternalLink } from '../../../host/ExternalLink';
 import { AdvancedDetails, SettingField } from '../fields';

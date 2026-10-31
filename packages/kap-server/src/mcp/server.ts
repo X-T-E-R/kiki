@@ -466,7 +466,7 @@ function intersectShapes(left: ObjectShape, right: ObjectShape): ObjectShape {
       : unconstrained(schema) ? known : { allOf: [known, schema] });
   }
   const allowed = (shape: ObjectShape, key: string) => !shape.closed || shape.properties.has(key);
-  for (const key of [...properties.keys()]) if (!allowed(left, key) || !allowed(right, key)) properties.delete(key);
+  for (const key of properties.keys()) if (!allowed(left, key) || !allowed(right, key)) properties.delete(key);
   return { properties, required: new Set([...left.required, ...right.required]), closed: left.closed || right.closed };
 }
 

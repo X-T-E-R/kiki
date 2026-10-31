@@ -36,7 +36,7 @@ export function join(parts: readonly (string | undefined | false)[], separator =
 
 export function details(values: Receipt): string {
   return Object.entries(values).filter(([, value]) => value !== undefined && value !== null)
-    .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`).join(' · ');
+    .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : text(value)}`).join(' · ');
 }
 
 export function coverage(value: unknown, incomplete?: unknown): string {

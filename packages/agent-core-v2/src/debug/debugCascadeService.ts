@@ -174,7 +174,7 @@ export class DebugCascadeService implements IDebugCascadeService {
   private _stopWatching(): void {
     const result = this.treeSubscriptions.dispose();
     if (result instanceof Promise) result.catch(onUnexpectedError);
-    for (const engine of [...this.engineSubscriptions.keys()]) {
+    for (const engine of this.engineSubscriptions.keys()) {
       this._unwatchEngine(engine);
     }
   }

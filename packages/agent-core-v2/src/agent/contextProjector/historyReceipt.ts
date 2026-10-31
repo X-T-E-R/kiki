@@ -58,7 +58,7 @@ export function renderHistoryReceipt(name: string, value: Receipt): string | und
     join([name, details({ workspace: target['workspace_id'], session: target['session_id'], agent: target['agent_id'],
       scope: value['scope_used'], mode: value['mode_used'] })], ' · '),
     summary,
-    partial ? `${partial} ${cursor == null ? 'Use HistoryList to inspect another source or retry after the writer settles.' : 'Continue below to scan the remaining history.'}` : '',
+    partial ? `${partial} ${cursor === null || cursor === undefined ? 'Use HistoryList to inspect another source or retry after the writer settles.' : 'Continue below to scan the remaining history.'}` : '',
     value['warning'] === 'page_local_relevance' ? 'Relevance is ranked within each page; later pages may contain stronger matches.' : text(value['warning']),
     cursor === undefined ? nextCall(value['next_call']) : `${preparation ? 'Continue scan' : 'Next page'}: ${call(name, { cursor })}`,
     cursor === undefined && name === 'HistorySearch' ? nextCall(record(value['expand_hint'])['next_call']) : '',

@@ -3080,7 +3080,6 @@ function searchQueryDisplay(search: SessionSearchState): string {
     .join(' ');
 }
 
-const MENU_WIDTH = 232;
 /** Rows beyond this are reachable through "manage workspaces"; the menu is a
  * shortcut list, not a workspace browser. */
 const MENU_WORKSPACE_ROWS = 8;
@@ -3666,7 +3665,6 @@ function SidebarRenameEditor({
   onClose: () => void;
   onRenamed: () => void;
 }) {
-  const { t } = useI18n();
   const currentTitle = item.kind === 'room' ? item.title : item.session.title;
   const [title, setTitle] = useState(currentTitle);
   const [busy, setBusy] = useState(false);

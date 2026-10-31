@@ -42,7 +42,6 @@ import { isCapabilityUnsupportedError } from '../agent-panel/mapCapabilities';
 import { SidePanel } from '../SidePanel';
 import { FOCUS_RING } from '../rail-variants/shell';
 import { Spinner } from '../icons';
-import { SECONDARY_BUTTON } from '../ui';
 import { Toggle } from '../controls';
 import type { PluginMarketplaceEntry } from '../../lib/client';
 import { CapabilityIcon } from './CapabilityIcon';

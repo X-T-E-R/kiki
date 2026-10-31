@@ -94,7 +94,6 @@ import {
   usageBranchDraft,
   usageBranchProblem,
   usageEffectiveFor,
-  setUsageText,
   usagePolicyDraftsEqual,
   usagePolicyPatch,
   usageSourceFor,
@@ -2094,20 +2093,6 @@ function EditorSection({ id, title, aside, children }: {
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
-/** A stored identity value, or undefined when it inherits. */
-function identityUsageNumber(value: string | undefined): number | undefined {
-  return value === undefined || value === '' || !/^\d+$/.test(value.trim())
-    ? undefined
-    : Number(value.trim());
-}
-
-/** The lower of two optional token counts: the engine's own budget rule. */
-function minOptional(a: number | undefined, b: number | undefined): number | undefined {
-  if (a === undefined) return b;
-  if (b === undefined) return a;
-  return Math.min(a, b);
 }
 
 /**

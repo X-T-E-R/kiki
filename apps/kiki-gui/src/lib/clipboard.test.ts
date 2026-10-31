@@ -66,7 +66,9 @@ describe('copyImageToClipboard', () => {
   type PromisedItem = { items: Record<string, Promise<Blob>> };
   function imageClipboard() {
     vi.stubGlobal('ClipboardItem', class { constructor(readonly items: Record<string, Promise<Blob>>) {} });
-    const write = vi.fn(async (items: PromisedItem[]) => { await Promise.all(items.map((item) => item.items['image/png'])); });
+    const write = vi.fn(async (items: PromisedItem[]) => {
+      await Promise.all(items.map((item) => Promise.resolve(item.items['image/png'])));
+    });
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write } });
     return write;
   }

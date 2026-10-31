@@ -29,7 +29,7 @@
  * retargets the shared rail at the active panel tab's agent.
  */
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useNavVisitId } from '../lib/useNavSnapshot';
 
 import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
@@ -40,7 +40,6 @@ import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import type { KikiClient } from '../lib/client';
 import { runToastAction } from '../lib/toasts';
-import { registerOverlay } from '../lib/uiBusy';
 import { useOptionalConnection } from '../state/connection';
 import {
   HostFileEditorController,

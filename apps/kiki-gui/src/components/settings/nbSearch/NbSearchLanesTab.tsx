@@ -13,10 +13,7 @@
 
 import { useMemo, useState } from 'react';
 import type { NbSearchCapabilities } from '@kiki/protocol';
-import {
-  resolveEffectiveDefaultLane,
-  type NbSearchDraft,
-} from '@kiki/session-core/settings';
+import { resolveEffectiveDefaultLane } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../../i18n';
 import { Icon } from '../../icons';
@@ -25,7 +22,7 @@ import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { SectionCard } from '../SectionCard';
 import { AdvancedDetails } from '../fields';
 import { ListEmpty, ListToolbar, useListView } from '../list';
-import { nbSearchServiceCards, operationWord, providerLabelKey, serviceTitle, type ServiceCard } from './types';
+import { operationWord, providerLabelKey, serviceTitle, type ServiceCard } from './types';
 import type { KeyDraft } from './NbSearchMultiKeyEditor';
 import { NbSearchServiceCard } from './NbSearchServiceCard';
 import { NbSearchLaneComposer } from './NbSearchLaneComposer';

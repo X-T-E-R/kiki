@@ -7,7 +7,7 @@
  * are Bots/personas and rooms need Bot mode.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { BotSummary, PersonaSummary, Session } from '@kiki/protocol';

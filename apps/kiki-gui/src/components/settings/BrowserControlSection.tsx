@@ -159,7 +159,6 @@ function BrowserSection() {
   const browserCapability = optionalCapabilityState(configQuery.data, 'browser');
   const isEnabled = browserCapability?.allowed ?? isBrowserControlEnabled(configQuery.data);
   const browserHostLocked = browserCapability?.host_locked === true;
-  const locked = save.saving || configQuery.isLoading || browserHostLocked;
 
   const { connectionsQuery } = allowance;
   const verdict = browserControlVerdict({

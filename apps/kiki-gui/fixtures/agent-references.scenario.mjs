@@ -13,7 +13,7 @@
  * must jump to the right child.
  */
 
-import { fid, sessionRecord, ts } from './helpers.mjs';
+import { sessionRecord, ts } from './helpers.mjs';
 
 const SID = 'session_fixture_agent_references';
 

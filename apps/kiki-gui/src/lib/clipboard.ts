@@ -71,7 +71,12 @@ export async function copyImageToClipboard(source: Blob | Promise<Blob>): Promis
     // Start during the click, not after fetch/decode/toBlob has spent activation.
     await clipboard.write([new ClipboardItem({ 'image/png': png })]);
   } catch (error) {
-    if (preparationError !== undefined) throw preparationError;
+    if (preparationError !== undefined) {
+      const preparationFailure = preparationError instanceof Error
+        ? preparationError
+        : new Error('Clipboard image preparation failed', { cause: preparationError });
+      throw preparationFailure;
+    }
     // Older engines accept Blob values but reject promised ClipboardItem data.
     if (!(error instanceof TypeError)) throw error;
     const blob = await png;

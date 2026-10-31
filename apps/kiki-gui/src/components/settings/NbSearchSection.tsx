@@ -50,7 +50,7 @@ function resolveTabFromLocation(
 }
 
 export function NbSearchSection() {
-  const { client, scopeId } = useConnection();
+  const { client } = useConnection();
   const readCredential = useCallback((id: string, reveal: boolean) => client.readNbSearchCredential(id, reveal), [client]);
   const readKeyUsage = useCallback((id: string, refresh: boolean) => client.readNbSearchKeyUsage(id, refresh), [client]);
   const writeCredential = useCallback((id: string, value: string | null, version: string, binding: string) => client.writeNbSearchCredential(id, value, version, binding), [client]);

@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import type { SpaceRecord, UpdateSpaceResponse } from '@kiki/protocol';
+import type { UpdateSpaceResponse } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../../i18n';
@@ -10,9 +10,8 @@ import { useConnection } from '../../../state/connection';
 import type { KikiClient } from '../../../lib/client';
 import { FeedbackLine, Hint, type Feedback } from '../../controls';
 import { ConfirmDialog } from '../../ConfirmDialog';
-import { DANGER_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
+import { INPUT } from '../../ui';
 import { FORM_LABEL } from '../SettingsPrimitives';
-import { SpaceDot } from './SpaceDot';
 
 /**
  * Permanent deletion (`homes.erase`). The destructive verb stays disabled until

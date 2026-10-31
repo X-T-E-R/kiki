@@ -229,7 +229,7 @@ export function UnifiedAgentManager() {
   const workspaceOptions = useMemo(() => (workspacesQuery.data?.items ?? []).map((workspace) => {
     // A workspace's own name, else the folder it points at — never the raw
     // registration id, which reads as a hash.
-    const base = workspace.root.replace(/[\/]+$/, '').split(/[\/]/).pop();
+    const base = workspace.root.replace(/[/]+$/, '').split(/[/]/).pop();
     const label = workspace.name !== undefined && workspace.name !== '' ? workspace.name : base !== '' && base !== undefined ? base : workspace.id;
     return { value: workspace.id, label, hint: workspace.root, title: workspace.root };
   }), [workspacesQuery.data]);

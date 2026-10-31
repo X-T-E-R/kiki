@@ -5,7 +5,7 @@ import { LEGACY_HOOK_EVENTS, type LegacyHookConfig } from '@kiki/protocol';
 import { useI18n } from '../../../i18n';
 import { DANGER_GHOST_BUTTON, INPUT } from '../../ui';
 import { SettingField, SettingsBox } from '../fields';
-import { FORM_LABEL, SettingsSegmented, SettingsSelect } from '../SettingsPrimitives';
+import { SettingsSegmented, SettingsSelect } from '../SettingsPrimitives';
 import type { DraftIssue } from './hooksDraft';
 
 /** First issue message for one field of this rule, if any. */

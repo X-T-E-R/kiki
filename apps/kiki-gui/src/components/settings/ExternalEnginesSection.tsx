@@ -105,19 +105,6 @@ function componentRoleLabel(
   return component.role === 'program' ? t('st.engines.discovery.adapterLabel') : t('st.engines.discovery.role.dependency');
 }
 
-/** The reason a discovery status is not installed, naming the component when one is missing. */
-function discoveryReason(status: ExecutorDiscoveryStatus, t: ReturnType<typeof useI18n>['t']): string | undefined {
-  if (status.status === 'installed') return undefined;
-  const missing = missingComponent(status);
-  if (status.status === 'missing' && missing !== undefined) {
-    return t('st.engines.discovery.componentMissing', { component: missing.label });
-  }
-  if (missing !== undefined && missing.reason !== undefined) {
-    return t('st.engines.discovery.componentProblem', { component: missing.label, reason: missing.reason });
-  }
-  return status.reason;
-}
-
 /** The conclusion line: what the discovery status means for running this engine. */
 function discoveryConclusion(status: ExecutorDiscoveryStatus, t: ReturnType<typeof useI18n>['t']): string | undefined {
   if (status.status === 'installed') return undefined;
@@ -969,7 +956,7 @@ function registrationRemovalText(locale: string, result: {
   return [registration, builtin, resources, result.reason].filter((part): part is string => part !== undefined && part !== '').join(' ');
 }
 
-function EngineRow({ item, overrides, display, fault, discovery, onOpen }: {
+function EngineRow({ item, overrides: _overrides, display: _display, fault, discovery, onOpen }: {
   item: ExecutorCatalogItem;
   /** The config's `agent_executor_overrides` record, for the per-engine display choice. */
   overrides: Readonly<Record<string, unknown>> | undefined;

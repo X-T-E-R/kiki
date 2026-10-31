@@ -264,12 +264,12 @@ describe('debug domain — IDebugCascadeService', () => {
 
     const first = service.observeUnitChanges();
     const second = service.observeUnitChanges();
-    first.dispose();
-    first.dispose();
+    void first.dispose();
+    void first.dispose();
     ws.provide(IMid, new SyncDescriptor(Mid));
     expect(events.published.length).toBeGreaterThan(0);
 
-    second.dispose();
+    void second.dispose();
     const publishedAfterRelease = events.published.length;
     ws.unprovide(IMid);
     app.provide(IBoom, new SyncDescriptor(Boom));
@@ -278,7 +278,7 @@ describe('debug domain — IDebugCascadeService', () => {
     const again = service.observeUnitChanges();
     ws.provide(IMid, new SyncDescriptor(Mid));
     expect(events.published.length).toBeGreaterThan(publishedAfterRelease);
-    again.dispose();
+    void again.dispose();
     await service.dispose();
     await app.dispose();
   });

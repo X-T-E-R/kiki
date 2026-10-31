@@ -1782,7 +1782,7 @@ describe('BrowserControlSection', () => {
     // A switched-off connection cannot be allowed, so ticking the box is also the
     // request to switch it on — through the bridge's own branch, not a CDP write.
     expect(allowBox('kimi-webbridge')?.checked).toBe(false);
-    await click(`[data-browser-allow-switch=\"kimi-webbridge\"] input`);
+    await click(`[data-browser-allow-switch="kimi-webbridge"] input`);
 
     expect(patchConfig).toHaveBeenCalledWith({ browser_control: { allowed_browsers: ['kimi-webbridge'] } });
     expect(upsert).toHaveBeenCalledWith('kimi-webbridge', {

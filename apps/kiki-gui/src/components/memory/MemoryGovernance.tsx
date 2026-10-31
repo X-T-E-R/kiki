@@ -33,7 +33,7 @@ import { Dialog, DIALOG_PANEL_BASE, DIALOG_PANEL_SIZES } from '../Dialog';
 import { InlineError } from '../controls';
 
 import { RelativeTime } from '../RelativeTime';
-import { DANGER_BUTTON, SECONDARY_BUTTON } from '../ui';
+import { SECONDARY_BUTTON } from '../ui';
 import { VersionBlock } from '../MemoryHistory';
 import { memoryTargetKey } from '../persona/PersonaMemoryScope';
 import { parseMemoryEntry } from './memoryReceipt';

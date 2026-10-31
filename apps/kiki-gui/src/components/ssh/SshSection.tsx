@@ -129,7 +129,6 @@ function SshHostsSettings() {
   // Kiki's own hosts come first (they are the editable ones), the system
   // config's aliases after; one list, one order.
   const kikiHosts = hosts.filter((host) => host.source === 'kiki');
-  const configHosts = hosts.filter((host) => host.source === 'ssh-config');
   // Kiki hosts that shadow a discovered alias keep the alias visible as "overridden".
   const discovered = discoveredQuery.data ?? [];
   const overridden = new Set(kikiHosts.filter((host) => discovered.some((alias) => alias.id === host.id)).map((host) => host.id));

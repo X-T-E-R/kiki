@@ -10,7 +10,7 @@ import {
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
-import { FeedbackLine, Hint, InlineError, SaveStatus, Toggle, type Feedback } from '../controls';
+import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../controls';
 import { FORM_LABEL, SettingsDiagnosticRow, SettingsDraftFooter } from './SettingsPrimitives';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails, SettingField, SettingsBox } from './fields';
