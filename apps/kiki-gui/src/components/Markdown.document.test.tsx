@@ -121,6 +121,10 @@ it('leaves external image URLs with query strings on the external path', async (
   const container = await render('![logo](https://example.test/logo.png?rev=2)', '/work/docs');
   expect(readHostMediaPreviewBytes).not.toHaveBeenCalled();
   expect(container.querySelector('img')?.getAttribute('src')).toBe('https://example.test/logo.png?rev=2');
+  await act(async () => { container.querySelector('img')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 })); });
+  expect(document.querySelector('[data-menu-item="copy-image"]')).not.toBeNull();
+  expect(document.querySelector('[data-menu-item="copy-link"]')).not.toBeNull();
+  expect(document.querySelector('[data-menu-item="save-image"]')).not.toBeNull();
 });
 
 it('loads a Windows absolute image in ordinary chat through the host preview', async () => {

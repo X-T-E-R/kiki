@@ -46,8 +46,10 @@ import { useNavSnapshotAdapter, useNavVisitId } from '../lib/useNavSnapshot';
 import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
 import { Icon } from './icons';
-import { copyImageBitmap, httpImageLink, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, noteMediaReady, resolveImageMime } from './imageActions';
+import { copyImageBitmap, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageDownloadSink, imageDownloadStep, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, noteMediaReady, resolveImageMime } from './imageActions';
 import { MediaLightbox } from './MediaLightbox';
+import { pushToast } from '../lib/toasts';
+import { errorToText } from '@kiki/session-core/util';
 import { blockGalleryImages, canonicalGalleryItem, galleryImageId, orderedGalleryImages, type GalleryImage } from './mediaGallery';
 import { MiniContextMenu } from './MiniContextMenu';
 import { PreviewCloseConfirm, PreviewWorkspace } from './PreviewWorkspace';
@@ -159,7 +161,7 @@ export function MediaPreviewProvider({
   const connection = useOptionalConnection();
   const clientIdentity = connection?.client;
   const remoteScope = isRemoteConnection(connection);
-  const [image, setImage] = useState<{ src: string; name?: string; client: unknown; sessionId?: string; agentId: string } | null>(null);
+  const [image, setImage] = useState<{ src: string; name?: string; sourcePath?: string; client: unknown; sessionId?: string; agentId: string } | null>(null);
   const [gallery, setGallery] = useState<{ images: readonly GalleryImage[]; selected: number; client: unknown; sessionId?: string; scopeAgentId: string; seededId?: string; seededSrc?: string } | null>(null);
   const registeredImages = useRef<{ client: unknown; sessionId?: string; agentId: string; images: Map<string, GalleryImage> }>({ client: clientIdentity, sessionId, agentId: snapshotAgentId, images: new Map() });
   if (registeredImages.current.client !== clientIdentity || registeredImages.current.sessionId !== sessionId || registeredImages.current.agentId !== snapshotAgentId) {
@@ -421,7 +423,7 @@ export function MediaPreviewProvider({
         chooseMode('cockpit');
       } : undefined}
       onWidthChange={handleWidthChange}
-      onOpenImage={(src, name) => { setImage({ src, name, client: clientIdentity, sessionId, agentId: snapshotAgentId }); }}
+      onOpenImage={(src, name, sourcePath) => { setImage({ src, name, sourcePath, client: clientIdentity, sessionId, agentId: snapshotAgentId }); }}
       reportDirty={reportDirty}
       scrollPositions={positions}
       onScrollPosition={reportPosition}
@@ -475,6 +477,7 @@ export function MediaPreviewProvider({
         <MediaLightbox
           src={image.src}
           name={image.name}
+          sourcePath={image.sourcePath}
           linkUrl={httpImageLink(image.src)}
           outcomeKey={mediaOutcomeKey({ url: image.src })}
           remote={remoteScope}
@@ -603,25 +606,30 @@ function AttachmentPreviewDialog({
     let sink: HostSaveSink | null = null;
     setTransfer({ status: 'downloading', bytes: 0, total: item.size });
     try {
-      sink = host.openSaveSink !== undefined ? await host.openSaveSink(name)
-        : host.saveBlob !== undefined ? bufferedSaveSink((blob) => host.saveBlob!(blob, name)) : await browserSaveSink(name);
+      sink = await imageDownloadStep('write', () => host.openSaveSink !== undefined ? host.openSaveSink(name)
+        : host.saveBlob !== undefined ? Promise.resolve(bufferedSaveSink((blob) => host.saveBlob!(blob, name))) : browserSaveSink(name));
       if (sink === null) { if (!controller.signal.aborted) setTransfer({ status: 'idle' }); return; }
       controller.signal.throwIfAborted();
-      const target = sink;
+      const target = imageDownloadSink(sink);
       const consume: import('@kiki/klient').HttpRestMediaSink = async (chunk, progress) => {
         await target.write(chunk);
         if (!controller.signal.aborted) setTransfer({ status: 'downloading', bytes: progress.bytes, total: progress.totalBytes });
       };
       const options = { ...client.readingOptions(), signal: controller.signal };
-      if (item.path !== undefined) await client.downloadHostFile(item.path, consume, options);
-      else await client.downloadSessionMedia(sessionId!, item.fileId!, consume, options);
+      await imageDownloadStep('read', () => item.path !== undefined
+        ? client.downloadHostFile(item.path, consume, options)
+        : client.downloadSessionMedia(sessionId!, item.fileId!, consume, options));
       controller.signal.throwIfAborted();
       setTransfer({ status: 'saving' });
-      const saved = await sink.close();
+      const saved = await target.close();
       if (!controller.signal.aborted) setTransfer({ status: saved ? 'saved' : 'idle' });
     } catch (error) {
       await sink?.abort().catch(() => {});
-      if (!controller.signal.aborted) setTransfer({ status: 'failed', message: error instanceof Error ? error.message : String(error) });
+      if (!controller.signal.aborted) {
+        const message = imageDownloadFailureText(error, t);
+        setTransfer({ status: 'failed', message });
+        pushToast({ tone: 'error', text: message, detail: errorToText(error) });
+      }
     } finally {
       if (downloadController.current === controller) downloadController.current = null;
     }
@@ -772,7 +780,11 @@ function AttachmentPreviewDialog({
         canCopyImage: load.status === 'ready' && load.mime.startsWith('image/') && failedUrl !== load.url,
         canSave: true,
         annotated: false,
-        onCopyImage: async () => { if (load.status === 'ready') await copyImageBitmap(load.url); },
+        onCopyImage: async () => {
+          if (load.status !== 'ready') return;
+          try { await copyImageBitmap(load.url); }
+          catch (error) { pushToast({ tone: 'error', text: imageCopyFailureText(error, t, host.kind), detail: errorToText(error) }); }
+        },
         onSave: download,
       })} onClose={() => { setImageMenu(null); }} ariaLabel={title} overlayId="attachment-image-menu" dataAttribute="data-attachment-image-menu" modalOwnerId="session-attachment-preview" />}
     </Dialog>

@@ -372,7 +372,7 @@ it.each([true, false])('uses native image saving without a browser download when
     const image = document.querySelector('img')!;
     await act(async () => { image.dispatchEvent(new KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true, cancelable: true })); });
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-lightbox-image-menu] [data-menu-item="save-image"]')!.click(); });
-    expect(fetchImage).toHaveBeenCalledWith('blob:original');
+    expect(fetchImage).toHaveBeenCalledWith('blob:original', { signal: undefined });
     expect(saveBlob).toHaveBeenCalledWith(blob, 'example.png');
     expect(click).not.toHaveBeenCalled();
   } finally { click.mockRestore(); }

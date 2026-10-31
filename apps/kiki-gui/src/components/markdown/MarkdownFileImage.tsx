@@ -7,7 +7,7 @@ import { useI18n } from '../../i18n';
 import { useOptionalConnection } from '../../state/connection';
 import { mediaOutcomeKey, useMediaReady } from '../imageActions';
 import { safeImagePreviewName } from '../imagePreviewName';
-import { MediaPart, useGalleryImage, useSessionMedia } from '../mediaParts';
+import { MediaPart, useGalleryImage, useMessageImageMenu, useSessionMedia } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
 import { useRecordRenderedImage } from './renderedImages';
 
@@ -45,9 +45,11 @@ export function MarkdownFileImage({ src, alt, title: _title, node: _node, docume
   const offset = (_node as { position?: { start?: { offset?: number } } } | undefined)?.position?.start?.offset ?? 0;
   const openImage = useGalleryImage(galleryItem, 0, undefined, offset);
   useRecordRenderedImage(typeof src === 'string' && src !== '' ? src : undefined);
-  if (fileId !== undefined) return <MediaPart item={{ kind: 'image', fileId }} />;
   const label = name ?? t('media.image');
   const description = safeImagePreviewName({ name: alt }) ?? label;
+  const url = path === undefined ? src : load.status === 'ready' ? load.url : undefined;
+  const imageMenu = useMessageImageMenu(galleryItem, typeof url === 'string' ? url : undefined, description);
+  if (fileId !== undefined) return <MediaPart item={{ kind: 'image', fileId }} />;
 
   if (path !== undefined && (load.status === 'failed' || failure)) {
     return (
@@ -64,11 +66,10 @@ export function MarkdownFileImage({ src, alt, title: _title, node: _node, docume
     );
   }
 
-  const url = path === undefined ? src : load.status === 'ready' ? load.url : undefined;
-  const content = <img {...props} src={url} alt={description} decoding="async" onError={() => { setFailedMedia({ client, path }); }} className="max-w-full h-auto" />;
-  if (preview === null) return content;
+  const content = <img {...props} src={url} alt={description} decoding="async" onContextMenu={imageMenu.openMenu} onError={() => { setFailedMedia({ client, path }); }} className="max-w-full h-auto" />;
+  if (preview === null) return <>{content}{imageMenu.menuElement}</>;
   return (
-    <button
+    <><button
       type="button"
       title={label}
       aria-label={label}
@@ -78,6 +79,6 @@ export function MarkdownFileImage({ src, alt, title: _title, node: _node, docume
       }}
     >
       {content}
-    </button>
+    </button>{imageMenu.menuElement}</>
   );
 }

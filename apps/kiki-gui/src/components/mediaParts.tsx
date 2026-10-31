@@ -9,7 +9,7 @@ import { Icon } from './icons';
 import { imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { useMediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
-import { copyImageBitmap, httpImageLink, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, saveMediaToDisk, useMediaReady } from './imageActions';
+import { copyImageBitmap, httpImageLink, imageCopyFailureText, imageDownloadFailureText, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, saveMediaToDisk, useMediaReady } from './imageActions';
 import { imagePreviewDownloadName } from './imagePreviewName';
 import { pushToast } from '../lib/toasts';
 import { errorToText } from '@kiki/session-core/util';
@@ -155,7 +155,7 @@ export function useMessageImageMenu(item: MediaRef, src: string | undefined, lab
         preview?.sessionId,
       );
     } catch (error) {
-      pushToast({ tone: 'error', text: t('media.copyFailed'), detail: errorToText(error) });
+      pushToast({ tone: 'error', text: imageDownloadFailureText(error, t), detail: errorToText(error) });
     }
   }, [item.url, item.path, item.fileId, src, downloadName, host, client, preview?.sessionId, t]);
   const onCopyImage = useCallback(async () => {
@@ -163,9 +163,9 @@ export function useMessageImageMenu(item: MediaRef, src: string | undefined, lab
     try {
       await copyImageBitmap(src);
     } catch (error) {
-      pushToast({ tone: 'error', text: t('media.copyFailed'), detail: errorToText(error) });
+      pushToast({ tone: 'error', text: imageCopyFailureText(error, t, host.kind), detail: errorToText(error) });
     }
-  }, [src, t]);
+  }, [src, t, host.kind]);
   const entries = imageMenuEntries({
     t,
     src,

@@ -53,13 +53,28 @@ export async function isPngBlob(blob: Blob): Promise<boolean> {
   return PNG_MAGIC.every((byte, index) => header[index] === byte);
 }
 
-export async function copyImageToClipboard(blob: Blob): Promise<void> {
+export async function copyImageToClipboard(source: Blob | Promise<Blob>): Promise<void> {
+  let preparationError: unknown;
+  const png = Promise.resolve(source).then(async (blob) => {
+    if (blob.type !== 'image/png' || !(await isPngBlob(blob))) {
+      throw new Error('Clipboard image write requires a valid PNG image');
+    }
+    return blob;
+  });
+  // A denied write can finish before decoding does; always observe both promises.
+  void png.catch((error: unknown) => { preparationError = error; });
   const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;
   if (clipboard === undefined || typeof clipboard.write !== 'function' || typeof ClipboardItem === 'undefined') {
     throw new Error('Clipboard image write is unavailable');
   }
-  if (blob.type !== 'image/png' || !(await isPngBlob(blob))) {
-    throw new Error('Clipboard image write requires a valid PNG image');
+  try {
+    // Start during the click, not after fetch/decode/toBlob has spent activation.
+    await clipboard.write([new ClipboardItem({ 'image/png': png })]);
+  } catch (error) {
+    if (preparationError !== undefined) throw preparationError;
+    // Older engines accept Blob values but reject promised ClipboardItem data.
+    if (!(error instanceof TypeError)) throw error;
+    const blob = await png;
+    await clipboard.write([new ClipboardItem({ 'image/png': blob })]);
   }
-  await clipboard.write([new ClipboardItem({ 'image/png': blob })]);
 }
