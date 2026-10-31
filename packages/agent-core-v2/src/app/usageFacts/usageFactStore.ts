@@ -9,7 +9,7 @@ import { normalizeUsageFact, type UsageFact, type UsageFactTotals } from '#/agen
 import { UsageJsonStream, type UsageFactJsonObserver } from '#/agent/usage/usageJson';
 import { IAppendLogStore, type AppendLogCommit } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
-import { IUsageReadModel, type UsageImportProgress } from '#/persistence/interface/usageReadModel';
+import { IUsageReadModel, type UsageImportProgress, type UsageSourcePage } from '#/persistence/interface/usageReadModel';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 
 export interface UsageFactCheckpoint {
@@ -178,6 +178,15 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
       record: (raw) => { const fact = raw as unknown as UsageFact; if (!validFact(fact)) throw new SyntaxError('Invalid usage fact'); queued.push(fact); ordinal++; },
     };
     let parser = progress?.parser === undefined ? undefined : UsageJsonStream.resume(progress.parser, observer);
+    const pages: UsageSourcePage[] = [];
+    const publish = async (): Promise<void> => {
+      if (pages.length === 0) return;
+      signal?.throwIfAborted();
+      const accepted = pages.length === 1 ? await this.model.apply(pages[0]!) : await this.model.applyBatch(pages);
+      if (!accepted) throw new UsageFactCursorChangedError();
+      pages.length = 0;
+      await yieldToEventLoop(undefined, { signal });
+    };
     try {
       while (offset < size) {
         signal?.throwIfAborted();
@@ -201,14 +210,18 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
           const batch = complete ? parser.finishBatch() as unknown as FactBatch : undefined;
           if (batch !== undefined && !validBatch(batch)) throw new SyntaxError('Invalid Usage batch envelope');
           const next: UsageImportProgress = { batchStart, offset, ordinal, parser: complete ? undefined : parser.snapshot() };
-          const accepted = await this.model.apply({ source: scope, expected: progress, progress: next, records: queued, reset, publish: batch === undefined ? undefined : { start: batch.start, checkpoint: batch.checkpoint, journalSize: size } });
-          if (!accepted) throw new UsageFactCursorChangedError();
+          const page: UsageSourcePage = { source: scope, expected: progress, progress: next, records: queued, reset, publish: batch === undefined ? undefined : { start: batch.start, checkpoint: batch.checkpoint, journalSize: size } };
+          const prior = pages.at(-1);
+          if (prior?.publish !== undefined && page.publish !== undefined && prior.progress.parser === undefined && page.expected === undefined && page.publish.start === prior.publish.checkpoint.offset && page.publish.start > 0 && page.publish.checkpoint.generation === prior.publish.checkpoint.generation) {
+            pages[pages.length - 1] = { ...prior, progress: { ...next, ordinal: prior.progress.ordinal + page.progress.ordinal }, records: [...prior.records, ...page.records], publish: { ...page.publish, start: prior.publish.start, checkpoint: { ...page.publish.checkpoint, valid: prior.publish.checkpoint.valid && page.publish.checkpoint.valid } } };
+          } else pages.push(page);
           queued = []; reset = false;
           progress = complete ? undefined : next;
           if (complete) parser = undefined;
-          if ((budget?.remainingRecords ?? Infinity) <= 0 && offset < size) throw new FactBudgetReached();
-          await yieldToEventLoop(undefined, { signal });
+          if ((budget?.remainingRecords ?? Infinity) <= 0 && offset < size) { await publish(); throw new FactBudgetReached(); }
+          if (pages.length >= 128) await publish();
         }
+        await publish();
       }
       if (parser !== undefined) throw new SyntaxError('Incomplete Usage batch');
       return true;

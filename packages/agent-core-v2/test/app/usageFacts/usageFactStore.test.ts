@@ -259,6 +259,25 @@ describe('UsageFactStore', () => {
     expect(complete).toBe(true); expect((await facts.read(SCOPE)).records).toHaveLength(900);
   });
 
+  it('imports thousands of small legacy envelopes in bounded transactions and resumes exact occurrences', async () => {
+    const count = 2000;
+    const records = Array.from({ length: count }, (_, index) => ({ version: 1, start: index, checkpoint: checkpoint(index + 1), records: [normalizeUsageFact(fact(index % 3), 'main')!] }));
+    await storage.write(DIRECTORY, 'facts.jsonl', Buffer.from(records.map((row) => JSON.stringify(row)).join('\n') + '\n'));
+    const apply = vi.spyOn(model, 'apply');
+    const batches = vi.spyOn(model, 'applyBatch');
+    const first = await facts.summary(SCOPE, undefined, { budget: { remainingRecords: 17 } });
+    expect(first.readComplete).toBe(false);
+    expect((await model.summary(SCOPE)).totals?.records).toBe(16);
+    expect((await model.progress(SCOPE))?.ordinal).toBe(1);
+    await close(); open();
+    const single = vi.spyOn(model, 'apply'), batch = vi.spyOn(model, 'applyBatch');
+    const result = await facts.summary(SCOPE);
+    expect(result.totals?.records).toBe(count);
+    expect(result.totals?.usage).toEqual({ inputOther: count, output: 2 * count, inputCacheRead: 3 * count, inputCacheCreation: 4 * count });
+    expect((await facts.read(SCOPE)).records).toHaveLength(count);
+    expect(apply.mock.calls.length + batches.mock.calls.length + single.mock.calls.length + batch.mock.calls.length).toBeLessThan(100);
+  }, 30_000);
+
   it('reconciles a publication whose acknowledgement was lost without counting a retry twice', async () => {
     const apply = model.apply.bind(model);
     vi.spyOn(model, 'apply').mockImplementationOnce(async (page) => { await apply(page); throw new Error('worker acknowledgement lost'); });

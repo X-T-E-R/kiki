@@ -111,6 +111,7 @@ export interface IUsageReadModel {
   sources(signal?: AbortSignal): Promise<readonly { readonly source: string; readonly head: UsageSourceHead }[]>;
   progress(source: string, signal?: AbortSignal): Promise<UsageImportProgress | undefined>;
   apply(page: UsageSourcePage): Promise<boolean>;
+  applyBatch(pages: readonly UsageSourcePage[]): Promise<boolean>;
   abandon(source: string): Promise<void>;
   invalidate(source: string): Promise<void>;
   read(source: string, range?: UsageFactRange, offset?: number, limit?: number, signal?: AbortSignal, until?: number): Promise<{ readonly head?: UsageSourceHead; readonly records: readonly UsageFact[]; readonly nextOffset?: number }>;
