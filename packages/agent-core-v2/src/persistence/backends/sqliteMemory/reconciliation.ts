@@ -24,7 +24,7 @@ export class MemoryReconciliation {
     this.db.exec("UPDATE metadata SET value=1 WHERE key='memory_writer_active'");
     if (this.baseline) {
       const insert = this.db.prepare('INSERT INTO memory_admissions VALUES(?,?,?,?,?) ON CONFLICT(scope,id,revision) DO UPDATE SET signature=excluded.signature');
-      for (const row of this.db.prepare('SELECT scope,id,revision,generation,entry FROM revisions WHERE entry IS NOT NULL').all()) {
+      for (const row of this.db.prepare('SELECT scope,id,revision,generation,entry FROM revisions WHERE entry IS NOT NULL').iterate()) {
         const entry = JSON.parse(String(row['entry'])) as MemoryEntry;
         const generation = Number(row['generation']);
         insert.run(String(row['scope']), entry.id, entry.revision, generation === 0 ? null : generation, memorySourceUnitId(String(row['scope']), entry.source, entry.body, entry.basis?.refs) ?? null);
@@ -43,24 +43,14 @@ export class MemoryReconciliation {
       CREATE TRIGGER IF NOT EXISTS memory_track_object_forget AFTER INSERT ON barriers WHEN (SELECT value FROM metadata WHERE key='memory_writer_active')=0 BEGIN INSERT INTO memory_changes(scope,id) VALUES(NEW.scope,NEW.id); END;`);
   }
   private recoverPreimages(): void {
-    const update = this.db.prepare('UPDATE memory_admissions SET generation=? WHERE scope=? AND id=? AND revision=? AND (generation IS NULL OR generation>?)');
-    for (const object of this.db.prepare('SELECT scope,id FROM memory_admissions WHERE generation IS NULL GROUP BY scope,id').all()) {
-      const scope = String(object['scope']); const id = String(object['id']);
-      const events = this.db.prepare('SELECT payload FROM journal WHERE scope=? AND id=? ORDER BY ordinal').all(scope, id).map((row) => JSON.parse(String(row['payload'])) as { operationId: string; beforeRevision: string | null; afterRevision: string | null });
-      const accepted = new Map(this.db.prepare('SELECT revision,MIN(generation) AS generation FROM commit_views WHERE scope=? AND id=? GROUP BY revision').all(scope, id).map((row) => [String(row['revision']), Number(row['generation'])]));
-      for (let changed = true; changed;) {
-        changed = false;
-        for (const event of events) {
-          const generation = accepted.get(event.afterRevision ?? `legacy-deleted:${event.operationId}`);
-          if (generation === undefined || event.beforeRevision === null || (accepted.get(event.beforeRevision) ?? Infinity) <= generation) continue;
-          accepted.set(event.beforeRevision, generation); changed = true;
-        }
-      }
-      for (const [revision, generation] of accepted) {
-        const barrier = this.db.prepare('SELECT b.generation FROM memory_admissions a JOIN source_barriers b ON b.scope=a.scope AND b.id=a.signature WHERE a.scope=? AND a.id=? AND a.revision=?').get(scope, id, revision);
-        if (barrier === undefined || generation <= Number(barrier['generation'])) update.run(generation, scope, id, revision, generation);
-      }
-    }
+    this.db.exec(`CREATE TEMP TABLE memory_preimages(scope TEXT,id TEXT,revision TEXT,generation INTEGER,PRIMARY KEY(scope,id,revision));
+      INSERT INTO memory_preimages SELECT c.scope,c.id,c.revision,MIN(c.generation) FROM (SELECT DISTINCT scope,id FROM memory_admissions WHERE generation IS NULL) u CROSS JOIN commit_views c ON c.scope=u.scope AND c.id=u.id GROUP BY c.scope,c.id,c.revision;`);
+    const propagate = this.db.prepare(`INSERT INTO memory_preimages SELECT p.scope,p.id,json_extract(j.payload,'$.beforeRevision'),MIN(p.generation) FROM memory_preimages p CROSS JOIN journal j ON j.scope=p.scope AND j.id=p.id WHERE COALESCE(json_extract(j.payload,'$.afterRevision'),'legacy-deleted:'||json_extract(j.payload,'$.operationId'))=p.revision AND json_extract(j.payload,'$.beforeRevision') IS NOT NULL GROUP BY p.scope,p.id,json_extract(j.payload,'$.beforeRevision')
+      ON CONFLICT(scope,id,revision) DO UPDATE SET generation=excluded.generation WHERE excluded.generation<memory_preimages.generation`);
+    while (propagate.run().changes !== 0) {}
+    this.db.exec(`UPDATE memory_admissions AS a SET generation=p.generation FROM memory_preimages p LEFT JOIN source_barriers b ON b.scope=p.scope AND b.id=(SELECT signature FROM memory_admissions WHERE scope=p.scope AND id=p.id AND revision=p.revision)
+      WHERE a.scope=p.scope AND a.id=p.id AND a.revision=p.revision AND a.generation IS NULL AND (b.generation IS NULL OR p.generation<=b.generation);
+      DROP TABLE memory_preimages;`);
   }
   note(scope: string, entry: MemoryEntry): void {
     this.db.prepare('UPDATE memory_admissions SET signature=? WHERE scope=? AND id=? AND revision=?').run(memorySourceUnitId(scope, entry.source, entry.body, entry.basis?.refs) ?? null, scope, entry.id, entry.revision);
@@ -70,11 +60,11 @@ export class MemoryReconciliation {
       SELECT r.rowid AS row FROM changed c CROSS JOIN revisions r ON r.scope=c.scope AND r.id=c.id AND r.revision=c.revision
       UNION SELECT r.rowid FROM changed c CROSS JOIN revisions r ON r.scope=c.scope AND r.id=c.id WHERE c.revision IS NULL) `;
   }
-  rows(): readonly Record<string, SQLOutputValue>[] {
-    return this.db.prepare(`${this.baseline ? '' : this.targets()}SELECT r.scope,r.id,r.revision,r.generation,r.entry FROM ${this.baseline ? 'revisions r' : 'target t CROSS JOIN revisions r ON r.rowid=t.row'} WHERE r.entry IS NOT NULL`).all();
+  rows(): Iterable<Record<string, SQLOutputValue>> {
+    return this.db.prepare(`${this.baseline ? '' : this.targets()}SELECT r.scope,r.id,r.revision,r.generation,r.entry FROM ${this.baseline ? 'revisions r' : 'target t CROSS JOIN revisions r ON r.rowid=t.row'} WHERE r.entry IS NOT NULL`).iterate();
   }
-  evidenceRows(): readonly Record<string, SQLOutputValue>[] {
-    return this.db.prepare(`${this.baseline ? '' : this.targets()}SELECT DISTINCT r.scope,r.entry,l.key,l.payload FROM ${this.baseline ? 'revisions r' : 'target t CROSS JOIN revisions r ON r.rowid=t.row'} CROSS JOIN memory_admissions a ON a.scope=r.scope AND a.id=r.id AND a.revision=r.revision LEFT JOIN legacy l ON l.scope=r.scope AND l.object_id=r.id AND l.revision=r.revision LEFT JOIN operations p ON p.generation=r.generation LEFT JOIN operation_objects o ON o.operation_id=p.id AND o.scope=r.scope AND o.id=r.id LEFT JOIN sources s ON s.scope=r.scope AND s.object_id=r.id AND (s.payload=r.entry OR s.payload=l.payload) WHERE r.entry IS NOT NULL AND a.generation IS NOT NULL AND o.operation_id IS NULL AND s.id IS NULL`).all();
+  evidenceRows(): Iterable<Record<string, SQLOutputValue>> {
+    return this.db.prepare(`${this.baseline ? '' : this.targets()}SELECT DISTINCT r.scope,r.entry,l.key,l.payload FROM ${this.baseline ? 'revisions r' : 'target t CROSS JOIN revisions r ON r.rowid=t.row'} CROSS JOIN memory_admissions a ON a.scope=r.scope AND a.id=r.id AND a.revision=r.revision LEFT JOIN legacy l ON l.scope=r.scope AND l.object_id=r.id AND l.revision=r.revision LEFT JOIN operations p ON p.generation=r.generation LEFT JOIN operation_objects o ON o.operation_id=p.id AND o.scope=r.scope AND o.id=r.id LEFT JOIN sources s ON s.scope=r.scope AND s.object_id=r.id AND (s.payload=r.entry OR s.payload=l.payload) WHERE r.entry IS NOT NULL AND a.generation IS NOT NULL AND o.operation_id IS NULL AND s.id IS NULL`).iterate();
   }
   pending(): boolean { return this.db.prepare("SELECT 1 FROM memory_changes WHERE sequence>(SELECT value FROM metadata WHERE key='memory_reconcile_sequence') LIMIT 1").get() !== undefined; }
   acknowledge(): void {

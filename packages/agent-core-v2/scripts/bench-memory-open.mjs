@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
+import { Worker } from 'node:worker_threads';
 
 const scope = 'memory/global';
 const defaultSizes = [5000, 10000, 50000];
@@ -27,6 +28,7 @@ function usage() {
     '--modes=native,legacy      Seed modes (default: native,legacy)',
     '--mode=native              Alias for one seed mode',
     '--increment=10             Objects receiving two old-writer revisions',
+    '--history                  Add one preimage per object; align in the production 128 MiB worker',
     '--old=PATH                 Frozen Schema3 MemoryDatabase module',
     '--out=PATH                 Also write the JSON result to PATH',
     '--help',
@@ -69,9 +71,11 @@ function parseArguments(argv) {
   let modes = [...defaultModes];
   let increment = defaultIncrement;
   let oldModule = defaultOldModule;
+  let history = false;
   let out;
   for (let index = 0; index < argv.length; index++) {
     const argument = argv[index];
+    if (argument === '--history') { history = true; continue; }
     if (argument === '--help') {
       process.stdout.write(`${usage()}\n`);
       process.exit(0);
@@ -110,7 +114,7 @@ function parseArguments(argv) {
     throw new Error(`Unknown argument: ${argument}`);
   }
   for (const size of sizes) if (increment > size) throw new Error(`--increment=${increment} exceeds fixture size ${size}`);
-  return { sizes, modes, increment, oldModule: resolve(oldModule), out };
+  return { sizes, modes, increment, history, oldModule: resolve(oldModule), out };
 }
 
 function fingerprint(request) {
@@ -149,7 +153,7 @@ function sourceUnitIds(memoryObjectSourceUnitId, memorySourceUnitId, entry) {
   return { objectSource, signature };
 }
 
-function seedFixture({ Previous, memoryObjectSourceUnitId, memorySourceUnitId, path, size, mode }) {
+function seedFixture({ Previous, memoryObjectSourceUnitId, memorySourceUnitId, path, size, mode, history }) {
   const initial = new Previous(path);
   initial.close();
   const raw = new DatabaseSync(path);
@@ -172,6 +176,10 @@ function seedFixture({ Previous, memoryObjectSourceUnitId, memorySourceUnitId, p
       const source = sourceFor(mode, 'seed', index, entry);
       const { objectSource, signature } = sourceUnitIds(memoryObjectSourceUnitId, memorySourceUnitId, entry);
       revisions.run(scope, entry.id, entry.revision, currentGeneration, encoded);
+      if (history) {
+        const previous = { ...entry, revision: `preimage:${entry.revision}` };
+        revisions.run(scope, entry.id, previous.revision, 0, JSON.stringify(previous));
+      }
       commitViews.run(scope, entry.id, currentGeneration, entry.revision);
       heads.run(scope, entry.id, entry.revision);
       sources.run(source.id, scope, entry.id, encoded, null, entry.created);
@@ -218,6 +226,43 @@ function databaseCounts(path) {
   } finally {
     raw.close();
   }
+}
+
+async function measureWorkerOpen(path) {
+  assert.equal(typeof Worker.prototype.getHeapStatistics, 'function', 'Worker heap sampling requires getHeapStatistics()');
+  const started = performance.now();
+  const worker = new Worker(pathToFileURL(join(dirname(currentModulePath), 'entry.ts')), {
+    workerData: { database: path }, resourceLimits: { maxOldGenerationSizeMb: 128 },
+    execArgv: ['--experimental-transform-types', '--disable-warning=ExperimentalWarning'],
+  });
+  const exited = new Promise((resolve, reject) => { worker.once('exit', resolve); worker.once('error', reject); });
+  let peakHeapUsed = 0; let samples = 0; let sampling;
+  const sample = () => {
+    sampling ??= worker.getHeapStatistics().then((stats) => {
+      peakHeapUsed = Math.max(peakHeapUsed, stats.used_heap_size); samples++;
+    }).finally(() => { sampling = undefined; });
+    return sampling;
+  };
+  await new Promise((resolve, reject) => { worker.once('online', resolve); worker.once('error', reject); });
+  await sample();
+  let samplingError;
+  const interval = setInterval(() => { void sample().catch((error) => { samplingError = error; }); }, 25);
+  let response;
+  try {
+    response = await new Promise((resolve, reject) => {
+      worker.once('message', resolve); worker.once('error', reject);
+      worker.postMessage({ id: 1, operation: { type: 'read', scopes: [] } }, []);
+    });
+  } finally { clearInterval(interval); }
+  const milliseconds = performance.now() - started;
+  await sample();
+  worker.postMessage({ id: 2, operation: { type: 'close' } }, []);
+  assert.equal(await exited, 0);
+  assert.equal(samplingError, undefined);
+  assert.equal(response.error, undefined);
+  assert.deepEqual(response.result.objects, []);
+  assert.ok(samples > 0);
+  return { milliseconds: Number(milliseconds.toFixed(3)), fileBytes: statSync(path).size, workerOldGenerationLimitMb: 128, peakHeapUsed, samples, sampleIntervalMs: 25 };
 }
 
 function measureOpen(Module, path, verify) {
@@ -316,12 +361,13 @@ function verifyIncrement(database, incrementResult, mode) {
   return { readableRevisions: incrementResult.entries.length, provenanceChecked: true, provenanceSources: provenance.sources.length, matchingSources: matchingSources.length };
 }
 
-function runCase({ Current, Previous, memoryObjectSourceUnitId, memorySourceUnitId, scratchRoot, size, mode, increment }) {
+async function runCase({ Current, Previous, memoryObjectSourceUnitId, memorySourceUnitId, scratchRoot, size, mode, increment, history }) {
   const caseRoot = mkdtempSync(join(scratchRoot, `${mode}-${size}-`));
   const path = join(caseRoot, 'memory.sqlite');
-  seedFixture({ Previous, memoryObjectSourceUnitId, memorySourceUnitId, path, size, mode });
+  seedFixture({ Previous, memoryObjectSourceUnitId, memorySourceUnitId, path, size, mode, history });
+  const revisions = size * (history ? 2 : 1);
   const seed = { fileBytes: statSync(path).size, counts: databaseCounts(path) };
-  assert.equal(seed.counts.revisions, size);
+  assert.equal(seed.counts.revisions, revisions);
   assert.equal(seed.counts.commitViews, size);
   assert.equal(seed.counts.heads, size);
   assert.equal(seed.counts.sources, size);
@@ -338,9 +384,9 @@ function runCase({ Current, Previous, memoryObjectSourceUnitId, memorySourceUnit
     assert.equal(seed.counts.legacy, size);
   }
   const oldOpen = measureOpen(Previous, path);
-  const currentFirstUpgrade = measureOpen(Current, path);
+  const currentFirstUpgrade = history ? await measureWorkerOpen(path) : measureOpen(Current, path);
   const afterFirst = databaseCounts(path);
-  assert.equal(afterFirst.revisions, size);
+  assert.equal(afterFirst.revisions, revisions);
   assert.equal(afterFirst.heads, size);
   assert.equal(afterFirst.sources, size);
   assert.equal(afterFirst.generation, size);
@@ -351,7 +397,7 @@ function runCase({ Current, Previous, memoryObjectSourceUnitId, memorySourceUnit
   const currentIncrementalOpen = measureOpen(Current, path, (database) => verifyIncrement(database, incrementResult, mode));
   const finalCounts = databaseCounts(path);
   assert.equal(finalCounts.heads, size);
-  assert.equal(finalCounts.revisions, size + increment * 2);
+  assert.equal(finalCounts.revisions, revisions + increment * 2);
   assert.equal(finalCounts.generation, size + 2);
   return {
     mode,
@@ -378,7 +424,7 @@ const scratchRoot = mkdtempSync(join(tmpdir(), 'kiki-memory-open-'));
 const results = [];
 for (const mode of options.modes) for (const size of options.sizes) {
   process.stderr.write(`Benchmark ${mode} ${size}: seeding and measuring\n`);
-  const result = runCase({ Current, Previous, memoryObjectSourceUnitId, memorySourceUnitId, scratchRoot, size, mode, increment: options.increment });
+  const result = await runCase({ Current, Previous, memoryObjectSourceUnitId, memorySourceUnitId, scratchRoot, size, mode, increment: options.increment, history: options.history });
   results.push(result);
   process.stderr.write(`Benchmark ${mode} ${size}: first ${result.currentFirstUpgrade.milliseconds} ms, reopen ${result.currentReopen.map((sample) => sample.milliseconds).join('/')} ms, incremental ${result.currentIncrementalOpen.milliseconds} ms\n`);
 }
@@ -388,6 +434,7 @@ const output = {
   modes: options.modes,
   sizes: options.sizes,
   increment: options.increment,
+  history: options.history,
   bodyChars: body.length,
   currentModule: currentModulePath,
   oldModule: options.oldModule,

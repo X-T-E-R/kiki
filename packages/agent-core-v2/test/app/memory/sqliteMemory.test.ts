@@ -689,6 +689,29 @@ describe('Memory shadow import and replay barriers', () => {
     } finally { current.close(); }
   });
 
+  it('streams admission and evidence reconciliation without materializing revision bodies', async () => {
+    const scope = 'memory/global';
+    const path = join(home, 'streaming-reconciliation.sqlite');
+    const seed = (await save('Streaming baseline fixture')).entry;
+    const entries = Array.from({ length: 500 }, (_, index) => ({ ...seed, id: `m_stream_${index}`, revision: `stream:${index}`, body: 'Complete instruction; exception 17. '.repeat(50), source: { writer: 'agent' as const, session: `stream-${index}`, turn: 17 } }));
+    const old = new Schema3MemoryDatabase(path);
+    try { old.importLegacy(entries.map((entry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }))); } finally { old.close(); }
+    const raw = new DatabaseSync(path);
+    try { raw.exec("INSERT INTO revisions SELECT scope,id,'preimage:'||revision,0,json_set(entry,'$.revision','preimage:'||revision) FROM revisions WHERE entry IS NOT NULL"); } finally { raw.close(); }
+    const prepare = DatabaseSync.prototype.prepare;
+    const spy = vi.spyOn(DatabaseSync.prototype, 'prepare').mockImplementation(function(this: DatabaseSync, sql: string) {
+      const statement = prepare.call(this, sql);
+      if (sql.includes('entry') && sql.includes('revisions')) vi.spyOn(statement, 'all').mockImplementation(() => { throw new Error('Unbounded revision-body allocation'); });
+      return statement;
+    });
+    let current: MemoryDatabase | undefined;
+    try {
+      current = new MemoryDatabase(path);
+      expect(current.revision(scope, entries[0]!.id, entries[0]!.revision)?.body).toBe(entries[0]!.body);
+      expect(current.revision(scope, entries[0]!.id, `preimage:${entries[0]!.revision}`)?.body).toBe(entries[0]!.body);
+    } finally { current?.close(); spy.mockRestore(); }
+  });
+
   it('checkpoints only old-writer deltas and never revisits untouched admissions on reopening', async () => {
     const scope = 'memory/global';
     const path = join(home, 'incremental-evidence.sqlite');
