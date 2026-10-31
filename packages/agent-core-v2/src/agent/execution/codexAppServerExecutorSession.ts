@@ -79,6 +79,7 @@ interface CodexClientLike {
     params: Readonly<Record<string, unknown>>,
     signal: AbortSignal,
     onEvent: (event: NormalizedExecutorEvent) => void | Promise<void>,
+    onDeliveryAttempt?: () => void,
   ): Promise<CodexTurnHandle>;
   request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown>;
   shutdown(reason?: unknown): Promise<void>;
@@ -337,6 +338,8 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     this.#permissionContext = { turn, recorder, signal: controller.signal, fileChanges: new Map() };
 
     let handle: CodexTurnHandle;
+    let deliveryAttempted = false;
+    let acknowledged = false;
     try {
       if (priorThreadId !== opened.threadId || this.#approvalRestore !== undefined) {
         await this.#dispatcher.dispatch(new ExecutorSessionUpdated({
@@ -355,7 +358,8 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
             ? this.context.binding.thinkingLevel : undefined,
         approvalPolicy,
         sandboxPolicy: undefined,
-      }, controller.signal, recorder.record.bind(recorder));
+      }, controller.signal, recorder.record.bind(recorder), () => { deliveryAttempted = true; });
+      acknowledged = true;
       if (override === undefined && this.#approvalRestore !== undefined) {
         this.#vendorApprovalPolicy = this.#approvalRestore.policy;
         this.#approvalRestore = undefined;
@@ -373,18 +377,29 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       ready.resolve();
       options.onReady?.();
     } catch (error) {
-      const failure = await this.#authUpdates.then(() => error, (authError: unknown) => authError);
+      const outcomeUnknown = acknowledged || (deliveryAttempted && !(error instanceof CodexRemoteError));
+      const classify = (cause: unknown): unknown => outcomeUnknown
+        ? new Error2(ErrorCodes.EXECUTOR_SESSION_FAILED,
+            'Codex may have received this prompt, but its start could not be confirmed. Inspect the external session before starting another run.',
+            { cause, details: { executorId: this.context.descriptor.id, threadId: opened.threadId, deliveryOutcome: 'unknown' } })
+        : cause;
+      const failure = classify(await this.#authUpdates.then(() => error, (authError: unknown) => authError));
       turn.state = controller.signal.aborted ? 'cancelled' : 'failed';
       ready.reject(toError(failure, 'Codex turn failed to start'));
-      if (controller.signal.aborted) {
-        await recorder.cancel(controller.signal.reason ?? failure);
-        result.resolve({ type: 'cancelled', steps: 1, reason: controller.signal.reason ?? failure });
-      } else {
-        await recorder.fail(failure);
-        result.resolve({ type: 'failed', steps: 1, error: failure });
+      try {
+        if (controller.signal.aborted) {
+          await recorder.cancel(controller.signal.reason ?? failure);
+          result.resolve({ type: 'cancelled', steps: 1, reason: controller.signal.reason ?? failure });
+        } else {
+          await recorder.fail(failure);
+          result.resolve({ type: 'failed', steps: 1, error: failure });
+        }
+      } catch (recordError) {
+        throw classify(recordError);
+      } finally {
+        this.#permissionContext = undefined;
+        options.signal.removeEventListener('abort', relayAbort);
       }
-      this.#permissionContext = undefined;
-      options.signal.removeEventListener('abort', relayAbort);
       throw failure;
     }
 

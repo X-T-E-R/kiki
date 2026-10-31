@@ -526,20 +526,38 @@ describe('Codex request and admission deadlines', () => {
     }
   });
 
+  it('reports no delivery attempt when turn/start fails before writing', async () => {
+    const fixture = scriptedProcess();
+    const client = turnClient(fixture);
+    const delivery = vi.fn();
+    try {
+      await client.connect();
+      const signal = new AbortController();
+      signal.abort();
+      await expect(client.startTurn({ threadId: 'thread-1' }, signal.signal, () => {}, delivery)).rejects.toBeDefined();
+      await expect(client.startTurn({ threadId: undefined }, new AbortController().signal, () => {}, delivery)).rejects.toMatchObject({ code: 'protocol' });
+      expect(delivery).not.toHaveBeenCalled();
+      expect(fixture.methods).not.toContain('turn/start');
+    } finally { await client.shutdown(); }
+  });
+
   it('does not duplicate a timed-out turn/start and associates its late ACK with the original turn', async () => {
     vi.useFakeTimers();
     const fixture = scriptedProcess();
     const client = turnClient(fixture, { requestTimeoutMs: 10 });
     const events: NormalizedExecutorEvent[] = [];
+    const delivery = vi.fn();
     try {
       await client.connect();
       const starting = client.startTurn(
         { threadId: 'thread-1' },
         new AbortController().signal,
         (event) => { events.push(event); },
+        delivery,
       );
       void starting.catch(() => undefined);
       const firstFrame = await waitForFrame(fixture, 'turn/start');
+      expect(delivery).toHaveBeenCalledOnce();
       await vi.advanceTimersByTimeAsync(11);
       await expect(starting).rejects.toMatchObject({ code: 'timeout' });
       await expect(client.startTurn(

@@ -120,7 +120,7 @@ function dispatchFor(ctx: TestAgentContext) {
   return { dispatch, child, runs: ix.get(ISessionSubagentService) };
 }
 
-async function defaultExternal(id = 'claude-acp') {
+async function defaultExternal(id = 'claude-acp', modelAlias?: string) {
   const ctx = await host();
   const registry = ctx.get(IAgentExecutorRegistry);
   const delivered: unknown[] = [];
@@ -134,7 +134,11 @@ async function defaultExternal(id = 'claude-acp') {
   vi.spyOn(registry, 'resolve').mockReturnValue(resolved);
   vi.spyOn(registry, 'resolveExecutable').mockResolvedValue(resolved);
   vi.spyOn(registry, 'validateBinding').mockImplementation((_id, _options, binding) => ({ ok: true, binding }));
-  await ctx.get(IAgentProfileService).bind({ resolvedProfile: nativeTargets([resolved.descriptor])[0], delegationPosition: 'sub' });
+  vi.spyOn(registry, 'get').mockReturnValue(resolved.descriptor);
+  await ctx.get(IAgentProfileService).bind({ resolvedProfile: modelAlias === undefined
+    ? nativeTargets([resolved.descriptor])[0]
+    : normalizeAgentProfile({ name: 'external-worker', executor: id, modelAlias, allowedModels: [modelAlias], tools: [], systemPrompt: () => 'External test role.' }),
+  model: modelAlias, thinking: modelAlias === undefined ? undefined : 'off', delegationPosition: 'sub' });
   return { ctx, delivered, ...dispatchFor(ctx) };
 }
 
@@ -606,6 +610,36 @@ describe('dispatch resume through model switch and real native run', () => {
       expect.objectContaining({ request: expect.objectContaining({ promptId: 'resume-prompt:retry-default-start' }) })]);
     expect(readResumeRecord((await ctx.get(ISessionMetadata).read()).agents![CHILD], opts.operationId!)).toMatchObject({ state: 'ready' });
     await expect(dispatch.runOnExisting(child, 'Changed request', opts)).rejects.toThrow('different request');
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([undefined, 'vendor-model'])('keeps the same resume operation after an outcome-unknown start with model %s', async modelAlias => {
+    const { ctx, dispatch, child, runs } = await defaultExternal('codex-app-server', modelAlias);
+    const failure = new Error2(ErrorCodes.EXECUTOR_SESSION_FAILED, 'Prompt delivery could not be confirmed', {
+      details: { deliveryOutcome: 'unknown', executorId: 'codex-app-server' },
+    });
+    const run = vi.spyOn(runs, 'run').mockRejectedValue(failure);
+    const opts = options('unknown-start');
+    const first = await dispatch.runOnExisting(child, 'Continue exactly once', opts);
+    await expect(first.started).rejects.toBe(failure);
+    const second = await dispatch.runOnExisting(child, 'Continue exactly once', opts);
+    expect(second).toBe(first);
+    await expect(second.started).rejects.toBe(failure);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(readResumeRecord((await ctx.get(ISessionMetadata).read()).agents![CHILD], opts.operationId!)).toMatchObject({ state: 'ready' });
+    await expect(dispatch.runOnExisting(child, 'Changed request', opts)).rejects.toThrow('different request');
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, 'vendor-model'])('retries a pre-send failure with the same operation and model %s', async modelAlias => {
+    const { dispatch, child, runs } = await defaultExternal('codex-app-server', modelAlias);
+    const run = vi.spyOn(runs, 'run');
+    const opts = options('pre-send-start');
+    const first = await dispatch.runOnExisting(child, 'Continue', opts);
+    await expect(first.started).rejects.toThrow('fixture-native-run-reached');
+    const second = await dispatch.runOnExisting(child, 'Continue', opts);
+    await expect(second.started).rejects.toThrow('fixture-native-run-reached');
+    expect(second).not.toBe(first);
     expect(run).toHaveBeenCalledTimes(2);
   });
 

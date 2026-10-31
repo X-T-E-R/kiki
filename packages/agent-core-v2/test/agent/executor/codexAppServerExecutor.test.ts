@@ -1559,7 +1559,7 @@ describe('Codex native MCP elicitation', () => {
   });
 });
 
-function realProtocolProcess() {
+function realProtocolProcess(startOutcome: 'ack' | 'no-ack' | 'reject' = 'ack') {
   const stdout = new PassThrough();
   const stderr = new PassThrough();
   const methods: string[] = [];
@@ -1580,7 +1580,14 @@ function realProtocolProcess() {
         let result: unknown = {};
         if (frame.method === 'model/list') result = { data: [{ id: 'gpt-test' }], nextCursor: null };
         if (frame.method === 'thread/start' || frame.method === 'thread/resume') result = { thread: { id: 'thread-1' }, approvalPolicy: 'untrusted' };
-        if (frame.method === 'turn/start') result = { turn: { id: `turn-${++turnIndex}` } };
+        if (frame.method === 'turn/start') {
+          if (startOutcome === 'no-ack') continue;
+          if (startOutcome === 'reject') {
+            stdout.write(`${JSON.stringify({ id: frame.id, error: { code: -32000, message: 'Vendor rejected the prompt' } })}\n`);
+            continue;
+          }
+          result = { turn: { id: `turn-${++turnIndex}` } };
+        }
         stdout.write(`${JSON.stringify({ id: frame.id, result })}\n`);
       }
       callback();
@@ -1605,6 +1612,36 @@ function realProtocolProcess() {
 }
 
 describe('real Codex client through execution settlement and capacity', () => {
+  it.each(['no-ack', 'reject'] as const)('classifies a written turn/start with %s before releasing the execution', async startOutcome => {
+    const fixture = realProtocolProcess(startOutcome);
+    const harness = createExecutionHarness({ clientFactory: (_processes, onServerRequest) =>
+      new CodexAppServerClient({ spawn: async () => fixture.process }, {
+        id: 'fixture', command: 'fixture', requestTimeoutMs: 10, shutdownGraceMs: 5,
+      }, { onServerRequest }) });
+    try {
+      const starting = harness.execution.run({ kind: 'prompt', prompt: 'Do this once' }, { signal: new AbortController().signal });
+      const failed = starting.catch((error: unknown) => error);
+      await vi.waitFor(() => { expect(fixture.kill).toHaveBeenCalled(); }, { interval: 1 });
+      fixture.exit();
+      fixture.releaseDispose();
+      if (startOutcome === 'no-ack') {
+        expect(await failed).toMatchObject({ code: 'executor.session_failed', details: {
+          executorId: 'codex-app-server', threadId: 'thread-1', deliveryOutcome: 'unknown',
+        }, cause: { code: 'timeout' } });
+      } else {
+        expect(await failed).toMatchObject({ code: 'remote', remoteCode: -32000 });
+        expect(await failed).not.toHaveProperty('details.deliveryOutcome');
+      }
+      expect(fixture.methods.filter(method => method === 'turn/start')).toHaveLength(1);
+      await harness.execution.settled();
+    } finally {
+      fixture.exit();
+      fixture.releaseDispose();
+      await harness.execution.shutdown();
+      await harness.ix.dispose();
+    }
+  });
+
   it('preserves the structured vendor error message in failed turn results', async () => {
     const fixture = realProtocolProcess();
     const harness = createExecutionHarness({ clientFactory: (_processes, onServerRequest) =>

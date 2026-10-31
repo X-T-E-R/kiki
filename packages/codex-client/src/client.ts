@@ -189,11 +189,14 @@ export class CodexAppServerClient {
    * Attaches the ordered event consumer before requesting the turn. The consumer
    * may run before the start ACK and is awaited to backpressure stdout; it must
    * not wait for another RPC on this connection. Resolves only after the ACK.
+   * `onDeliveryAttempt` runs immediately before writing turn/start to stdin;
+   * after it runs, a missing ACK does not mean the prompt was rejected.
    */
   async startTurn(
     params: Readonly<Record<string, unknown>>,
     signal: AbortSignal,
     onEvent: (event: NormalizedExecutorEvent) => void | Promise<void>,
+    onDeliveryAttempt?: () => void,
   ): Promise<CodexTurnHandle> {
     signal.throwIfAborted();
     if (this.#state !== 'ready') throw closedError(this.#state);
@@ -220,7 +223,7 @@ export class CodexAppServerClient {
     void completion.finally(() => signal.removeEventListener('abort', onAbort)).catch(() => undefined);
     const started = (async (): Promise<CodexTurnHandle> => {
       try {
-        const result = object(await this.#requestCore('turn/start', params), 'turn/start result');
+        const result = object(await this.#requestCore('turn/start', params, undefined, undefined, onDeliveryAttempt), 'turn/start result');
         const turn = object(result['turn'], 'turn/start result.turn');
         const turnId = requiredString(turn['id'], 'turn/start result.turn.id');
         if (this.#activeTurn !== active || this.#state !== 'ready') throw asError(this.#terminalError, closedError(this.#state));
@@ -345,6 +348,7 @@ export class CodexAppServerClient {
     params: unknown,
     timeoutOverride?: number,
     signal?: AbortSignal,
+    onDeliveryAttempt?: () => void,
   ): Promise<unknown> {
     if (signal?.aborted) throw aborted(method, signal.reason);
     const id = `kiki-${++this.#requestSequence}`;
@@ -353,7 +357,7 @@ export class CodexAppServerClient {
     });
     void response.catch(() => undefined);
     try {
-      await this.#write({ id, method, params });
+      await this.#write({ id, method, params }, onDeliveryAttempt);
     } catch (error) {
       this.#takePending(id)?.reject(error);
       throw error;
@@ -600,7 +604,7 @@ export class CodexAppServerClient {
     }
   }
 
-  async #write(payload: JsonObject): Promise<void> {
+  async #write(payload: JsonObject, onDeliveryAttempt?: () => void): Promise<void> {
     const process = this.#process;
     if (process === undefined || this.#state === 'broken' || this.#state === 'closed') {
       throw asError(this.#terminalError, closedError(this.#state));
@@ -611,6 +615,7 @@ export class CodexAppServerClient {
       : 'response';
     this.#observe('client-to-server', boundary, raw, payload);
     await new Promise<void>((resolve, reject) => {
+      onDeliveryAttempt?.();
       process.stdin.write(`${raw}\n`, (error) => {
         if (error === null || error === undefined) resolve();
         else reject(new CodexClientError('stdio', 'Failed to write Codex app-server stdin', error));

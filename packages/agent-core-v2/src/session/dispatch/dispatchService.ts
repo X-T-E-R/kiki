@@ -19,7 +19,7 @@ import { abortable } from '#/_base/utils/abort';
 import { setClampedTimeout } from '#/_base/utils/timer';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
-import { Error2, ErrorCodes } from '#/errors';
+import { Error2, ErrorCodes, isCodedError } from '#/errors';
 import { brokenOriginalResumeRefusal, IAgentExecutionService } from '#/agent/execution/execution';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
@@ -571,7 +571,9 @@ export class SessionDispatchService implements ISessionDispatchService {
           }
           return handle;
         }, (error: unknown) => {
-          this.resumeRuns.delete(JSON.stringify([child.agentId, operationId]));
+          if (!(isCodedError(error) && error.code === ErrorCodes.EXECUTOR_SESSION_FAILED && error.details?.['deliveryOutcome'] === 'unknown')) {
+            this.resumeRuns.delete(JSON.stringify([child.agentId, operationId]));
+          }
           throw error;
         });
       return { child: { ...this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta), sourceRef: child.sourceRef }, request, lineage: options.lineage, started };
@@ -647,7 +649,9 @@ export class SessionDispatchService implements ISessionDispatchService {
       }
       return handle;
     }, (error: unknown) => {
-      this.resumeRuns.delete(JSON.stringify([child.agentId, operationId]));
+      if (!(isCodedError(error) && error.code === ErrorCodes.EXECUTOR_SESSION_FAILED && error.details?.['deliveryOutcome'] === 'unknown')) {
+        this.resumeRuns.delete(JSON.stringify([child.agentId, operationId]));
+      }
       throw error;
     });
     return {

@@ -85,6 +85,8 @@ ACP 客户端在 `session/new`、`session/load` 或 `session/resume` 中提供 `
 
 原生引擎 child 恢复时会保留已保存的引擎会话合同。Adapter 无法恢复或核验该会话时，Kiki 会报告引擎错误，不会静默新建会话。不同引擎支持的 resume、load 和控制能力各不相同。
 
+如果 Codex prompt 已提交，但无法确认是否开始执行，Kiki 会返回 `executor.session_failed`，并携带 `details.deliveryOutcome: "unknown"`。Kiki 会话仍驻留时，重试同一次 resume 操作会返回原有错误，不会再次发送 prompt。发起新操作或重新加载 Kiki 会话前，先检查外部会话；提交前失败的操作可以用同一操作重试。
+
 在 `[agent_executor_overrides.<executor-id>.defaults]` 下设置 `inject_kiki_mcp`，作为引擎默认值。Profile 的 `inject_kiki_mcp` 优先于引擎默认，会话的 `execution.overrides.inject_kiki_mcp` 再覆盖 Profile。将会话值设为 `null` 即恢复继承。这些选择在下一次绑定生效，也适用于具名外部子 Agent；冷恢复保留已保存的选择。Agent 绑定 `false` 后，现有工具桥凭证也不能继续列出或调用其工具。
 
 各层均未设置时，普通的兼容职责 profile 子 Agent 保留原有行为，只获得它获准的原生工具；原样 main agent 只有请求上下文或委派能力时才获得桥。使用 `profile: engine:<executor-id>` 启动的 child 则是裸目标：默认不发送 Kiki 职责、system prompt 或 profile 正文，仅因为是 child 也不会创建 Kiki 工具桥。显式的每引擎 defaults 仍然生效，明确设置 `inject_kiki_mcp = false` 会关闭工具桥。开启注入不会额外开放工具组；明确的 `kiki_context: []` 和 `allow_kiki_subagents: false` 仍保持这些组关闭。
