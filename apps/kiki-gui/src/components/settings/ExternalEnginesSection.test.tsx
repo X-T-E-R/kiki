@@ -587,8 +587,58 @@ describe('external engines connection kind', () => {
     const panel = await openEngine('claude-acp');
     const banner = panel.querySelector('[data-engine-discovery-banner="missing"]')!;
     expect(banner).not.toBeNull();
-    expect(banner.querySelector('[data-engine-discovery-reason]')?.textContent).toContain('Claude Code CLI');
+    expect(banner.querySelector('[data-engine-discovery-conclusion]')?.textContent).toContain('Unavailable: Claude Code CLI is missing');
     expect(banner.querySelector('[data-engine-discovery-checked]')?.textContent).toContain('Checked');
+    // Components on their own lines: the CLI missing, the adapter installed —
+    // and the catalog's bare program/version facts stay out of the way.
+    const cliLine = banner.querySelector('[data-engine-discovery-component="claude"]')!;
+    expect(cliLine.getAttribute('data-component-installed')).toBe('false');
+    expect(cliLine.textContent).toContain('Claude Code CLI');
+    expect(cliLine.textContent).toContain('not installed');
+    const adapterLine = banner.querySelector('[data-engine-discovery-component="claude-acp"]')!;
+    expect(adapterLine.getAttribute('data-component-installed')).toBe('true');
+    expect(adapterLine.textContent).toContain('0.84.0');
+    expect(banner.querySelector('[data-engine-discovery-next-step]')?.textContent).toContain('then click Re-detect');
+    expect(panel.querySelector('[data-engine-fact="program"]')).toBeNull();
+    expect(panel.querySelector('[data-engine-fact="version"]')).toBeNull();
+  });
+
+  it('points a missing engine at its install command and names the failing component on error', async () => {
+    const claude: ExecutorCatalogItem = {
+      id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', status: 'unavailable', model_binding: 'mapped', thinking_binding: 'unavailable',
+      connection: { command: 'claude-agent-acp', install_hint: 'npm install -g @anthropic-ai/claude-code', login_status: 'unknown', default_args: [] },
+    };
+    const grok: ExecutorCatalogItem = {
+      id: 'grok-acp', label: 'Grok Build', protocol: 'acp-v1', status: 'unavailable', model_binding: 'unavailable', thinking_binding: 'unavailable',
+      connection: { command: 'C:/Users/fixture/.grok/bin/grok.exe', source: 'path', login_status: 'unknown', default_args: [] },
+    };
+    client.listExecutors.mockResolvedValue({ items: [claude, grok] });
+    client.discoverEngines.mockResolvedValue({ items: [
+      { id: 'claude-acp', label: 'Claude Code', protocol: 'acp-v1', installed: false, status: 'missing',
+        checked_at: '2026-10-12T00:00:00.000Z', reason: 'The claude CLI dependency is not installed.',
+        components: [{ id: 'claude', label: 'Claude Code CLI', role: 'dependency', installed: false, reason: 'claude was not found on PATH.' }] },
+      { id: 'grok-acp', label: 'Grok Build', protocol: 'acp-v1', installed: false, status: 'error',
+        checked_at: '2026-10-12T00:00:00.000Z', path: 'C:/Users/fixture/.grok/bin/grok.exe', source: 'path', source_kind: 'path-lookup',
+        reason: 'The file metadata could not be read.',
+        components: [{ id: 'grok', label: 'Grok Build CLI', role: 'program', installed: false, path: 'C:/Users/fixture/.grok/bin/grok.exe', reason: 'metadata unreadable' }] },
+    ] });
+    await render();
+    await until(() => container.querySelector('[data-engine-row="grok-acp"]')?.getAttribute('data-engine-discovery') === 'error');
+
+    const missingPanel = await openEngine('claude-acp');
+    // The declared install command is the next step, not a paraphrase of it.
+    const nextStep = missingPanel.querySelector('[data-engine-discovery-next-step]');
+    expect(nextStep?.textContent).toContain('npm install -g @anthropic-ai/claude-code');
+    await closeEngine();
+
+    const errorPanel = await openEngine('grok-acp');
+    const banner = errorPanel.querySelector('[data-engine-discovery-banner="error"]')!;
+    expect(banner.querySelector('[data-engine-discovery-conclusion]')?.textContent).toContain('Detection failed');
+    expect(banner.querySelector('[data-engine-discovery-conclusion]')?.textContent).toContain('metadata could not be read');
+    expect(banner.querySelector('[data-engine-discovery-next-step]')?.textContent).toContain('Re-detect');
+    // The rail carries each engine's state while another engine is open.
+    expect(document.querySelector('[data-detail-rail-item="grok-acp"] [data-rail-engine-health]')?.getAttribute('data-rail-engine-health')).toBe('warning');
+    expect(document.querySelector('[data-detail-rail-item="claude-acp"] [data-rail-engine-health]')?.getAttribute('data-rail-engine-health')).toBe('missing');
   });
 
   it('re-detects through the discovery read and updates the row, without a per-engine check', async () => {

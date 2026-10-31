@@ -87,6 +87,37 @@ function discoveryReason(status: ExecutorDiscoveryStatus, t: ReturnType<typeof u
   return status.reason;
 }
 
+/** The conclusion line: what the discovery status means for running this engine. */
+function discoveryConclusion(status: ExecutorDiscoveryStatus, t: ReturnType<typeof useI18n>['t']): string | undefined {
+  if (status.status === 'installed') return undefined;
+  const missing = missingComponent(status);
+  if (status.status === 'missing' && missing !== undefined) {
+    return t('st.engines.discovery.conclusion.missing', { component: missing.label });
+  }
+  if (status.status === 'error') {
+    return t('st.engines.discovery.conclusion.error', { reason: status.reason ?? t('st.engines.discovery.error') });
+  }
+  return status.reason;
+}
+
+/**
+ * The next step that moves a non-installed state forward, from what the
+ * discovery data and the page already offer: a concrete install command when
+ * the catalog declares one, the path override the Advanced section already
+ * has when a wrong path is the problem, or the install-then-redetect default.
+ */
+function discoveryNextStep(status: ExecutorDiscoveryStatus, item: ExecutorCatalogItem, t: ReturnType<typeof useI18n>['t']): string | undefined {
+  if (status.status === 'installed') return undefined;
+  if (status.status === 'error') return t('st.engines.discovery.nextStep.redetect');
+  const hint = item.connection?.install_hint;
+  if (hint !== undefined) return undefined; // the install command itself is the step; it renders beside this line
+  const hasOverride = item.connection?.override !== undefined;
+  if (hasOverride && (status.path !== undefined || missingComponent(status)?.path !== undefined)) {
+    return t('st.engines.discovery.nextStep.setPath');
+  }
+  return t('st.engines.discovery.nextStep.installThenRedetect');
+}
+
 /** Row health in words: ready, needs attention (warnings / signed out), not found, not checked. */
 export type EngineHealth = 'ready' | 'warning' | 'missing' | 'unknown';
 
@@ -345,8 +376,15 @@ export function ExternalEnginesList() {
         themselves when a check lands elsewhere (the detail's recheck). */}
   </div>;
   const rail = <DetailRailGroup label={t('st.engines.title')} count={engines.length}>
-    {engines.map((item) => <DetailRailItem key={item.id} itemKey={item.id} label={item.label}
-      current={item.id === detailItem?.id} onSelect={() => { engineDetail.open(item.id); }} />)}
+    {engines.map((item) => {
+      const entry = discoveryOf(discovery, item.id);
+      const health = entry !== undefined ? discoveryHealth(entry.status) : engineHealth(item, catalogCheckOf(item));
+      return <DetailRailItem key={item.id} itemKey={item.id} label={item.label}
+        current={item.id === detailItem?.id}
+        trailing={<span data-rail-engine-health={health} aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+          health === 'missing' ? 'bg-danger' : health === 'warning' ? 'bg-amber-rule' : health === 'unknown' ? 'bg-ink-faint' : 'bg-success'}`} />}
+        onSelect={() => { engineDetail.open(item.id); }} />;
+    })}
   </DetailRailGroup>;
   const detail = detailItem === undefined ? null : <EngineDetailPane item={detailItem} overrides={overrides} display={display}
     discovery={discoveryOf(discovery, detailItem.id)}
@@ -1111,21 +1149,58 @@ function EngineDetailPane({ item, overrides, display, discovery, onClose, onFaul
                   <div className="flex min-w-0 items-center gap-2 text-[12.5px] leading-5">
                     <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${
                       discovery.status === 'installed' ? 'bg-success' : discovery.status === 'error' ? 'bg-amber-rule' : 'bg-danger'}`} />
-                    <span className="min-w-0 font-medium text-ink">{t(DISCOVERY_STATUS_KEY[discovery.status])}</span>
-                    <span className="shrink-0 text-ink-faint">{discovery.version ?? t('st.engines.discovery.versionUnknown')}</span>
+                    {(() => {
+                      const conclusion = discoveryConclusion(discovery, t);
+                      return (
+                        <span className="min-w-0 font-medium text-ink" data-engine-discovery-conclusion>
+                          {conclusion ?? t(DISCOVERY_STATUS_KEY[discovery.status])}
+                        </span>
+                      );
+                    })()}
                     <span className="shrink-0 text-[12px] text-ink-faint" data-engine-discovery-checked>
                       {t('st.engines.discovery.lastChecked', { time: time.relativeTime(discovery.checked_at) })}
                     </span>
                   </div>
+                  {/* Each component on its own line, so an engine whose parts
+                      disagree (the ACP adapter installed, its CLI missing) never
+                      reads as one contradictory state. */}
+                  {discovery.components.length > 0 ? (
+                    <ul className="mt-1.5 space-y-0.5" data-engine-discovery-components>
+                      {discovery.components.map((component) => (
+                        <li key={component.id} data-engine-discovery-component={component.id} data-component-installed={component.installed ? 'true' : 'false'}
+                          className="flex min-w-0 items-baseline gap-1.5 text-[12px] leading-4 text-ink-soft">
+                          <span className="shrink-0 font-medium text-ink">{component.label}</span>
+                          <span className="shrink-0 text-ink-faint">·</span>
+                          <span className={component.installed ? 'shrink-0' : 'shrink-0 text-danger'}>
+                            {component.installed ? (component.version ?? t('st.engines.discovery.componentStatus.installed')) : t('st.engines.discovery.componentStatus.missing')}
+                          </span>
+                          {component.installed && item.connection?.source === 'kiki-managed' && component.role === 'program' ? (
+                            <span className="shrink-0 text-ink-faint">({t('st.engines.discovery.managedNote')})</span>
+                          ) : null}
+                          {component.installed && component.version !== undefined ? (
+                            <span className="shrink-0 text-ink-faint">{t(`st.engines.discovery.role.${component.role}`)}</span>
+                          ) : null}
+                          {component.reason !== undefined ? <span className="min-w-0 text-ink-faint">— {component.reason}</span> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
                   {discovery.path !== undefined ? (
-                    <p className="mt-1 break-all font-mono text-[11.5px] leading-4 text-ink-soft" data-engine-discovery-path>
+                    <p className="mt-1 break-all font-mono text-[11.5px] leading-4 text-ink-faint" data-engine-discovery-path>
                       {discovery.path}
-                      {discovery.source !== undefined ? <span className="text-ink-faint"> · {t('st.engines.discovery.pathSource', { source: discovery.source })}</span> : null}
+                      {discovery.source !== undefined ? <span> · {t('st.engines.discovery.pathSource', { source: discovery.source })}</span> : null}
                     </p>
                   ) : null}
                   {(() => {
-                    const reason = discoveryReason(discovery, t);
-                    return reason === undefined ? null : <p className="mt-1 text-[12px] leading-4 text-ink-soft" data-engine-discovery-reason>{reason}</p>;
+                    const nextStep = discoveryNextStep(discovery, item, t);
+                    const hint = item.connection?.install_hint;
+                    if (nextStep === undefined && (discovery.status === 'installed' || hint === undefined)) return null;
+                    return (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-2" data-engine-discovery-next-step>
+                        {nextStep !== undefined ? <span className="text-[12px] leading-4 text-ink-soft">{nextStep}</span> : null}
+                        {hint !== undefined && discovery.status !== 'installed' ? <CopyCommand command={hint} /> : null}
+                      </div>
+                    );
                   })()}
                 </div>
               ) : null}
@@ -1167,15 +1242,23 @@ function EngineDetailPane({ item, overrides, display, discovery, onClose, onFaul
                 </p>
               </div>
               <dl className="space-y-2">
-                <Fact label={t('st.engines.program')} dataFact="program">
-                  {source === 'kiki-managed'
-                    ? <span>{t('st.engines.managedByKiki')}</span>
-                    : program !== undefined ? <span className="break-all text-[12.5px]">{program}</span> : <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
-                </Fact>
-                <Fact label={t('st.engines.version')} dataFact="version">
-                  {version ?? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
-                  <span className="text-ink-faint"> · {protocolLabel(item.protocol)}</span>
-                </Fact>
+                {/* Discovery's component lines already carry the program and
+                    its version with their roles named; repeating the catalog's
+                    single program/version here would restate 0.84.0 with a
+                    different meaning. */}
+                {discovery === undefined ? (
+                  <>
+                    <Fact label={t('st.engines.program')} dataFact="program">
+                      {source === 'kiki-managed'
+                        ? <span>{t('st.engines.managedByKiki')}</span>
+                        : program !== undefined ? <span className="break-all text-[12.5px]">{program}</span> : <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
+                    </Fact>
+                    <Fact label={t('st.engines.version')} dataFact="version">
+                      {version ?? <span className="text-ink-faint">{t('st.engines.versionUnknown')}</span>}
+                      <span className="text-ink-faint"> · {protocolLabel(item.protocol)}</span>
+                    </Fact>
+                  </>
+                ) : null}
                 {health === 'missing' || setup || antigravity ? null : <Fact label={t('st.engines.login')} dataFact="login">
                   <span className={login === 'logged_out' ? 'text-amber-ink' : login === 'unknown' ? 'text-ink-soft' : ''}>{t(`st.engines.login.${login}`)}</span>
                   {credentialKey !== undefined ? <span data-engine-credential={credential} className="block text-[12px] text-ink-faint">
