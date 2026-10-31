@@ -8,7 +8,7 @@ import { I18nProvider } from '../i18n';
 import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 import { SubmissionRecovery } from './SubmissionRecovery';
-import { RestoreAdmissionStatus } from './RestoreAdmissionStatus';
+import { AdmissionLine, AdmissionScope, RESTORE_NOTICE_MS, RESTORE_POLL_MS, useAdmissionScope, useAdmissionView, withAdmissionUserBlocks } from './timeline/AdmissionLine';
 import { preserveSubmission, readUnconfirmedSubmissions, readDraft, writeDraft, resetDraftMemoryForTests, resetComposerMemoryForTests, readComposerState, writeComposerState, createQuote, selectionCarryoverPresentation } from '@kiki/session-core/composer';
 import { createViewState, type UserBlock } from '@kiki/session-core/session';
 import { emptySessionUsage, type PromptItem, type SessionPendingInteraction } from '@kiki/protocol';
@@ -1095,33 +1095,80 @@ describe('live composer mode controls', () => {
   });
 });
 
-it('shows restore queue position and elapsed time, then retries or cancels the saved ID only on user action', async () => {
-  vi.useFakeTimers();
-  const refreshDurablePrompt = vi.fn(async () => {});
-  const refreshDurableIngress = vi.fn(async () => {});
-  const resumeDurableIngress = vi.fn(async () => ({}));
-  const abortPrompt = vi.fn(async () => {});
-  const controller = { refreshDurablePrompt, refreshDurableIngress, resumeDurableIngress, abortPrompt } as unknown as import('@kiki/session-core/session').SessionController;
+describe('admission line on the message', () => {
   const item: PromptItem = { prompt_id: 'saved-request', user_message_id: 'saved-request', status: 'queued', admission: 'restoring',
     content: [{ type: 'text', text: 'A retained message' }], created_at: '2026-01-01T00:00:00Z',
-    restore_progress: { phase: 'restore_queue', started_at: '2026-01-01T00:00:00Z', elapsed_ms: 3200, queue_position: 2 } };
-  root = createRoot(container);
-  const render = async (receipt: PromptItem) => act(async () => root!.render(<I18nProvider><RestoreAdmissionStatus state={{ ...createViewState('session-example'), durableIngress: [receipt] }} controller={controller} /></I18nProvider>));
-  try {
-    await render(item);
-    expect(container.textContent).toContain('Waiting for other sessions to restore (position 2)');
-    expect(container.textContent).toContain('3s');
-    expect(resumeDurableIngress).not.toHaveBeenCalled();
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    expect(refreshDurablePrompt).toHaveBeenCalledExactlyOnceWith('saved-request');
-    await render({ ...item, admission: 'failed', admission_error: { code: 40903, message: 'Timed out during materialize_workspace_profiles' } });
-    expect(container.textContent).toContain('materialize_workspace_profiles');
-    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === 'Retry saved message')!.click());
-    expect(resumeDurableIngress).toHaveBeenCalledExactlyOnceWith('saved-request', { content: item.content });
-    await act(async () => [...container.querySelectorAll('button')].find(button => button.textContent === 'Cancel message')!.click());
-    expect(abortPrompt).toHaveBeenCalledExactlyOnceWith('saved-request');
-    await render({ ...item, admission: 'held', admission_duplicate_of: 'original-request' });
-    expect(container.textContent).toContain('this copy will not run automatically');
-    expect(container.textContent).toContain('Send separately');
-  } finally { vi.useRealTimers(); }
+    restore_progress: { phase: 'restore_queue', started_at: '2026-01-01T00:00:00Z', elapsed_ms: 0 } };
+  const makeController = () => {
+    const calls = {
+      refreshDurablePrompt: vi.fn(async () => {}),
+      refreshDurableIngress: vi.fn(async () => {}),
+      resumeDurableIngress: vi.fn(async () => ({})),
+      abortPrompt: vi.fn(async () => {}),
+    };
+    return { calls, controller: { ...calls, getDurableIngress: () => [] } as unknown as import('@kiki/session-core/session').SessionController };
+  };
+  function Probe({ ingress, controller }: { ingress: readonly PromptItem[]; controller: import('@kiki/session-core/session').SessionController }) {
+    const blocks = withAdmissionUserBlocks([], ingress);
+    const scope = useAdmissionScope({ ingress, blocks, controller });
+    return <AdmissionScope value={scope}>{blocks.map(block => block.kind === 'user' ? <Line key={block.id} promptId={block.promptId} text={block.text} /> : null)}</AdmissionScope>;
+  }
+  function Line({ promptId, text }: { promptId?: string; text: string }) {
+    const view = useAdmissionView(promptId);
+    return <div data-bubble>{text}{view === undefined ? null : <AdmissionLine view={view} />}</div>;
+  }
+  const mount = async (ingress: readonly PromptItem[], controller: import('@kiki/session-core/session').SessionController) => {
+    root ??= createRoot(container);
+    await act(async () => root!.render(<I18nProvider><Probe ingress={ingress} controller={controller} /></I18nProvider>));
+  };
+
+  it('keeps a short restore an ordinary send: no line, no polling', async () => {
+    vi.useFakeTimers();
+    const { calls, controller } = makeController();
+    try {
+      await mount([item], controller);
+      expect(container.querySelector('[data-bubble]')?.textContent).toBe('A retained message');
+      expect(container.querySelector('[data-admission]')).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(RESTORE_NOTICE_MS - 500); });
+      expect(container.querySelector('[data-admission]')).toBeNull();
+      expect(calls.refreshDurablePrompt).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('names a slow restore in one line, polls only then, and never shows phase or seconds', async () => {
+    vi.useFakeTimers();
+    const { calls, controller } = makeController();
+    try {
+      await mount([item], controller);
+      await act(async () => { await vi.advanceTimersByTimeAsync(RESTORE_NOTICE_MS + 10); });
+      expect(container.querySelector('[data-admission="loading"]')?.textContent).toContain('Loading session…');
+      expect(calls.refreshDurablePrompt).toHaveBeenCalledExactlyOnceWith('saved-request');
+      await act(async () => { await vi.advanceTimersByTimeAsync(RESTORE_POLL_MS); });
+      expect(calls.refreshDurablePrompt).toHaveBeenCalledTimes(2);
+      await mount([{ ...item, restore_progress: { ...item.restore_progress!, elapsed_ms: 9000, queue_position: 2 } }], controller);
+      const line = container.querySelector('[data-admission="queued"]')!;
+      expect(line.textContent).toContain('In line, #2');
+      expect(line.textContent).not.toMatch(/restore_queue|\d+s/);
+      expect(line.querySelector('[data-admission-retry]')).toBeNull();
+      await act(async () => { line.querySelector<HTMLButtonElement>('[data-admission-cancel]')!.click(); });
+      expect(calls.abortPrompt).toHaveBeenCalledExactlyOnceWith('saved-request');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('keeps retry and cancel on a failed or held message, and send separately for a duplicate', async () => {
+    const { calls, controller } = makeController();
+    await mount([{ ...item, admission: 'failed', restore_progress: undefined, admission_error: { code: 40903, message: 'Timed out during materialize_workspace_profiles' } }], controller);
+    expect(container.textContent).toContain('Not sent');
+    expect(container.textContent).not.toContain('materialize_workspace_profiles');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-admission-retry]')!.click(); });
+    expect(calls.resumeDurableIngress).toHaveBeenCalledExactlyOnceWith('saved-request', { content: item.content });
+    calls.resumeDurableIngress.mockClear();
+    const held = { ...item, admission: 'held' as const, restore_progress: undefined, admission_duplicate_of: 'original-request' };
+    await mount([held], controller);
+    expect(container.querySelector('[data-admission="duplicate"]')?.textContent).toContain('Send separately');
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-admission-retry]')!.click(); });
+    expect(calls.resumeDurableIngress).toHaveBeenCalledExactlyOnceWith('saved-request', { content: held.content });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-admission-cancel]')!.click(); });
+    expect(calls.abortPrompt).toHaveBeenCalledExactlyOnceWith('saved-request');
+  });
 });
