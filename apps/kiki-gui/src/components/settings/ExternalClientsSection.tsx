@@ -11,8 +11,9 @@
  * (`ConnectionServicesSection`), beside installing Kiki into another agent host.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import type { ExternalClientToolGroup } from '@kiki/klient';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
@@ -48,6 +49,7 @@ import { SectionCard } from './SectionCard';
 const CLIENTS_QUERY_KEY = ['external-clients'] as const;
 const AUTHORIZATIONS_QUERY_KEY = ['external-clients', 'authorizations'] as const;
 const SESSIONS_QUERY_KEY = ['external-clients', 'sessions'] as const;
+const ToolCatalogContext = createContext<readonly ExternalClientToolGroup[]>([]);
 
 type Facade = NonNullable<ReturnType<typeof externalClientsFacade>>;
 
@@ -207,6 +209,7 @@ function AccessEditor({ draft, onChange, disabled, idPrefix }: {
   idPrefix: string;
 }) {
   const { t } = useI18n();
+  const toolCatalog = useContext(ToolCatalogContext);
   const custom = draft.toolPreset === 'custom';
   return (
     <div className="space-y-4">
@@ -260,6 +263,22 @@ function AccessEditor({ draft, onChange, disabled, idPrefix }: {
                   className="h-3.5 w-3.5 cursor-pointer accent-[var(--color-ink)]" />
                 <span className="font-mono text-[11.5px]">{tool}</span>
               </label>
+            ))}
+            {toolCatalog.map((group) => (
+              <fieldset key={group.pluginId} data-xc-plugin={group.pluginId} className="min-w-0 space-y-1 border-t border-hairline pt-2 mt-2">
+                <legend className="px-1 text-[12px] font-medium text-ink-soft">{group.displayName}</legend>
+                {group.tools.map((tool) => (
+                  <label key={tool.name} className="flex min-h-7 cursor-pointer items-start gap-2 py-1 text-[12.5px] text-ink">
+                    <input type="checkbox" data-xc-tool={tool.name} checked={draft.tools.includes(tool.name)} disabled={disabled}
+                      onChange={() => { onChange({ ...draft, tools: toggleValue(draft.tools, tool.name) }); }}
+                      className="mt-0.5 h-3.5 w-3.5 shrink-0 cursor-pointer accent-[var(--color-ink)]" />
+                    <span className="min-w-0">
+                      <span className="break-all font-mono text-[11.5px]">{tool.name}</span>
+                      {tool.requiresCommands ? <span className={`block text-[12px] leading-4 ${draft.allowCommands ? 'text-ink-faint' : 'text-amber-ink'}`}>{t('st.xc.pluginCommandsRequired')}</span> : null}
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
             ))}
             {draft.tools.length === 0 ? <p className="text-[12px] text-ink-faint">{t('st.xc.toolsNone')}</p> : null}
           </div>
@@ -879,6 +898,7 @@ export function ExternalClientsSection() {
   const empty = listQuery.isSuccess && connections.length === 0;
 
   return (
+    <ToolCatalogContext value={listQuery.data?.toolCatalog ?? []}>
     <SectionCard id="st-card-external-clients" title={t('st.section.externalClients')}>
       <div data-external-clients className="space-y-3">
         {api === undefined ? (
@@ -957,5 +977,6 @@ export function ExternalClientsSection() {
         <HostSkillInstallCard />
       </div>
     </SectionCard>
+    </ToolCatalogContext>
   );
 }

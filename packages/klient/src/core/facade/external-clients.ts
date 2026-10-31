@@ -47,12 +47,17 @@ export interface ExternalClientToolResult {
   readonly structuredContent?:Record<string,unknown>;readonly isError?:boolean;
 }
 export interface ExternalClientResultRange {readonly part?:number;readonly artifact?:number;readonly offset?:number;readonly limit?:number;}
+export interface ExternalClientToolGroup {
+  readonly pluginId: string;
+  readonly displayName: string;
+  readonly tools: readonly { readonly name: string; readonly requiresCommands: boolean }[];
+}
 export interface ExternalClientsFacade {
   tools(options?:HttpRestRequestOptions):Promise<{tools:ExternalClientTool[]}>;
   callTool(name:string,body:ExternalClientToolCall,options?:HttpRestRequestOptions):Promise<ExternalClientToolResult>;
   job(id:string,options?:HttpRestRequestOptions):Promise<ExternalClientToolResult>;
   result(id:string,query?:ExternalClientResultRange,options?:HttpRestRequestOptions):Promise<ExternalClientToolResult>;
-  list(options?:HttpRestRequestOptions):Promise<{connections:ExternalClientConnection[];listener:ExternalClientListener}>;
+  list(options?:HttpRestRequestOptions):Promise<{connections:ExternalClientConnection[];listener:ExternalClientListener;toolCatalog?:readonly ExternalClientToolGroup[]}>;
   create(body:ExternalClientConnectionInput,options?:HttpRestRequestOptions):Promise<{connection:ExternalClientConnection;stdio:{command:string;args:string[]}}>;
   update(id:string,body:Partial<ExternalClientConnectionInput>&{enabled?:boolean},options?:HttpRestRequestOptions):Promise<{connection:ExternalClientConnection}>;
   revoke(id:string,options?:HttpRestRequestOptions):Promise<{connection:ExternalClientConnection}>;

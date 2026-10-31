@@ -8086,6 +8086,7 @@ export const en = {
   'st.xc.toolsHint': 'What this client may call. Anything outside the list is refused.',
   'st.xc.toolsAll': 'Files, media, sub agents, tasks, history and saved text',
   'st.xc.toolsCustom': 'Pick tools',
+  'st.xc.pluginCommandsRequired': 'Requires “Allow commands on this machine”.',
   'st.xc.toolsNone': 'No tools selected. This connection can start no work.',
   'st.xc.toolsCount': '{count} tools',
   'st.xc.toolsNoneHint': 'Pick at least one tool before saving.',

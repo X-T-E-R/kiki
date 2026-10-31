@@ -20,6 +20,7 @@ interface Options {
   readonly part?: string;
   readonly artifact?: string;
   readonly output?: string;
+  readonly allowCommands?: boolean;
 }
 
 export function registerToolsCommand(program: Command): void {
@@ -35,6 +36,27 @@ export function registerToolsCommand(program: Command): void {
     .option(
       '--credential-file <path>',
       'Read the connection bearer credential from a file; otherwise use KIKI_EXTERNAL_CLIENT_TOKEN.',
+    );
+  tools
+    .command('grant <names...>')
+    .description('Add tool grants as the local owner; existing grants are retained.')
+    .option('--allow-commands', 'Also allow local commands and unrestricted plugin access.')
+    .action(async (names: string[], _options: unknown, command: Command) =>
+      run(command, async (client, options) => {
+        const api = client.rest!.externalClients;
+        const current = await api.list();
+        const saved = current.connections.find((connection) => connection.id === options.client);
+        if (saved === undefined) throw new Error('External connection is unavailable.');
+        const needsCommands = current.toolCatalog?.flatMap((group) => group.tools)
+          .some((tool) => names.includes(tool.name) && tool.requiresCommands) === true;
+        if (needsCommands && !saved.allowCommands && !options.allowCommands) {
+          throw new Error('These tools require local-command access. Use --allow-commands only if you trust this client.');
+        }
+        return api.update(saved.id, {
+          tools: [...new Set([...saved.tools, ...names])],
+          allowCommands: options.allowCommands ? true : undefined,
+        });
+      }, true),
     );
   tools
     .command('list')
@@ -168,25 +190,23 @@ export function registerToolsCommand(program: Command): void {
 async function run(
   command: Command,
   work: (client: ReturnType<typeof createKlient>, options: Options) => Promise<unknown>,
+  owner = false,
 ): Promise<void> {
   const options = command.optsWithGlobals<Options>();
   let token: string | undefined;
   let client: ReturnType<typeof createKlient> | undefined;
   try {
-    token =
+    token = owner ? undefined :
       options.credentialFile === undefined
         ? process.env['KIKI_EXTERNAL_CLIENT_TOKEN']
         : (await readFile(options.credentialFile, 'utf8')).trim();
     let endpoint = options.url ?? process.env['KIKI_SERVER_URL'];
-    if (token === undefined && options.client !== undefined) {
+    if (owner && options.client === undefined) throw new Error('This owner command requires --client ID.');
+    if ((owner || token === undefined) && options.client !== undefined) {
       const connection = await ensureServer({ homeDir: resolveKikiHome(options.home) });
-      const credential = await daemonRequest<{ token: string }>(
-        connection,
-        'POST',
-        `/api/external-clients/${encodeURIComponent(options.client)}/credential`,
-        {},
-      );
-      token = credential.token;
+      token = owner ? connection.token : (await daemonRequest<{ token: string }>(
+        connection, 'POST', `/api/external-clients/${encodeURIComponent(options.client)}/credential`, {},
+      )).token;
       endpoint = connection.url;
     }
     if (!token || !endpoint) {

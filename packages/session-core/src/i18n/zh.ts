@@ -8009,6 +8009,7 @@ export const zh = {
   'st.xc.toolsHint': '这个客户端可以调用什么。列表之外的调用会被拒绝。',
   'st.xc.toolsAll': '文件、媒体、子智能体、任务、历史和保存文本',
   'st.xc.toolsCustom': '自选工具',
+  'st.xc.pluginCommandsRequired': '需要开启 "允许在这台机器上执行命令"。',
   'st.xc.toolsNone': '没有选择任何工具。这个连接无法开始任何工作。',
   'st.xc.toolsCount': '{count} 个工具',
   'st.xc.toolsNoneHint': '保存前至少选一个工具。',

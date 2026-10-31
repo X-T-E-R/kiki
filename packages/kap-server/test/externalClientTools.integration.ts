@@ -123,6 +123,19 @@ describe('script tool access',()=>{
     const otherToken=(await owner(`/api/external-clients/${other.connection.id}/credential`,{})).token;
     expect(await request(`/jobs/${left.operation_id}`,undefined,otherToken)).toMatchObject({code:40001,details:{code:'operation_unavailable'}});
   });
+  it('offers enabled plugin tools to the owner before a session exists and hides disabled plugins',async()=>{
+    await installMedia();
+    const catalog=(await owner('/api/external-clients',undefined,'GET')).toolCatalog;
+    expect(catalog).toContainEqual({pluginId:'fixture-media',displayName:expect.any(String),tools:[
+      {name:generate,requiresCommands:true},{name:media,requiresCommands:true},
+    ]});
+    const created=await owner('/api/external-clients',{name:'Plugin grant',tools:[generate,media],allowCommands:true});
+    expect(created.connection.tools).toEqual(expect.arrayContaining([generate,media]));
+    const credential=(await owner(`/api/external-clients/${created.connection.id}/credential`,{})).token;
+    expect((await fetch(`${base}/api/external-clients`,{headers:{authorization:`Bearer ${credential}`}})).status).toBe(401);
+    await owner('/api/plugins/fixture-media:disable',{});
+    expect((await owner('/api/external-clients',undefined,'GET')).toolCatalog).toEqual([]);
+  },60_000);
   it('returns a background media job, resumes download and pages original bytes without another purchase',async()=>{
     await installMedia();await setup([generate,media]);
     const args={request_id:'fixture-video',provider:'fixture-media/synthetic',execution:'background',request:{kind:'video',prompt:'download'}};

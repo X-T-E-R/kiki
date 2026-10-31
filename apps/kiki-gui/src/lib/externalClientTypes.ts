@@ -114,7 +114,7 @@ export interface ExternalClientMaterialsPreview {
 }
 
 export interface ExternalClientsFacade {
-  list(options?: unknown): Promise<{ connections: ExternalClientConnection[]; listener: ExternalClientListener }>;
+  list(options?: unknown): Promise<{ connections: ExternalClientConnection[]; listener: ExternalClientListener; toolCatalog?: readonly import('@kiki/klient').ExternalClientToolGroup[] }>;
   create(body: ExternalClientConnectionInput, options?: unknown): Promise<{ connection: ExternalClientConnection; stdio: { command: string; args: string[] } }>;
   update(id: string, body: Partial<ExternalClientConnectionInput> & { enabled?: boolean }, options?: unknown): Promise<{ connection: ExternalClientConnection }>;
   revoke(id: string, options?: unknown): Promise<{ connection: ExternalClientConnection }>;
