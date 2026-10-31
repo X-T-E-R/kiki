@@ -65,6 +65,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
  * given. `locale` is a base dimension of every scenario and is not listed.
  */
 const MATRIX = {
+  'agent-mentions': ['width'],
   capabilities: ['theme', 'width'],
   cockpit: ['theme', 'width'],
   'composer-modes': ['theme', 'width'],
@@ -303,6 +304,7 @@ const SOURCES = {
   resyncing: { key: 'sv.resyncing' },
   notActivatable: { key: 'composer.slash.notActivatable' },
   shortcuts: { key: 'composer.slash.shortcuts' },
+  agentsHeader: { key: 'composer.agentsHeader', params: { engine: 'Codex' } },
   sendAnyway: { key: 'composer.slash.sendAnyway' },
   queueRecoveredDismiss: { key: 'sv.queueRecovered.dismiss' },
   objectivePlaceholder: { key: 'composer.goalObjectivePlaceholder' },
@@ -4627,6 +4629,55 @@ async function scenarioAttachments() {
 }
 
 /**
+ * agent-mentions — the composer `@` menu's agent group beside the file group.
+ * The walker opens the menu, reads both group headers, sees the unavailable
+ * Codex target dimmed with its reason (and unselectable), filters, accepts an
+ * available target so the draft gains the server's `kiki://agents/…` link
+ * verbatim and a tinted token, sends, and inspects the wire submission for the
+ * link in the text part.
+ */
+async function scenarioAgentMentions() {
+  await selectSession('Fixture: agent mentions');
+  await page.click('textarea');
+  // "@" opens the unified menu: the file group header, then the agent groups.
+  await page.fill('textarea', '@');
+  await page.waitForSelector(`text=${S.filesHeader}`, { timeout: 5000 });
+  await page.waitForSelector('[role="option"]:has-text("agent")', { timeout: 5000 });
+  await page.waitForSelector(`text=${S.agentsHeader}`, { timeout: 5000 });
+  // The unavailable Codex target is dimmed and disabled, with its reason.
+  const codex = page.locator('[role="option"]', { hasText: 'codex' }).first();
+  await codex.waitFor({ timeout: 5000 });
+  if ((await codex.getAttribute('aria-disabled')) !== 'true' && !(await codex.isDisabled())) {
+    throw new Error('unavailable agent target must be disabled');
+  }
+  await page.waitForTimeout(450); // menu entrance settle
+  await shot('agent-mentions-picker');
+  // Filter narrows the list to the matching agent, then accept it.
+  await page.fill('textarea', '@clau');
+  await page.waitForSelector('[role="option"]:has-text("claude-code")', { timeout: 5000 });
+  await page.locator('[role="option"]', { hasText: 'claude-code' }).first().click();
+  // The draft carries the verbatim link and a tinted backdrop token.
+  const draft = await page.inputValue('textarea');
+  if (!draft.includes('kiki://agents/claude-code')) throw new Error(`agent link missing from draft: "${draft}"`);
+  await page.waitForSelector('[data-thread-ref-token][data-ref-kind="agent"]', { timeout: 5000 });
+  await shot('agent-mentions-chip');
+  // Send: the text part carries the agent link; the fixture echoes receipt.
+  await page.type('textarea', 'please review');
+  await page.press('textarea', 'Control+Enter');
+  await waitForText('Agent reference received by the fixture.');
+  const state = await control({ action: 'session', session_id: 'session_fixture_agent_mentions' });
+  const content = state.data?.last_prompt_submission?.content ?? [];
+  const textPart = content.find((part) => part.type === 'text');
+  if (textPart === undefined || !textPart.text.includes('kiki://agents/claude-code')) {
+    throw new Error(`agent link did not reach the wire text part: ${JSON.stringify(textPart)}`);
+  }
+  if (!textPart.text.includes('please review')) {
+    throw new Error(`typed text missing from the text part: ${JSON.stringify(textPart)}`);
+  }
+  await shot('agent-mentions-sent');
+}
+
+/**
  * selection-annotate — the transcript selection popover's two actions:
  * "Quote" chips the selection (blockquote prefix on send, unchanged), while
  * "Annotate" opens an in-place comment input (Enter commits, Esc cancels) and
@@ -6530,6 +6581,7 @@ const BODIES = [
   ['settings-ia', scenarioSettingsIa],
   ['slash-commands', scenarioSlashCommands],
   ['attachments', scenarioAttachments],
+  ['agent-mentions', scenarioAgentMentions],
   ['selection-annotate', scenarioSelectionAnnotate],
   ['annotation-bubbles', scenarioAnnotationBubbles],
   ['preview-workbench', scenarioPreviewWorkbench],
