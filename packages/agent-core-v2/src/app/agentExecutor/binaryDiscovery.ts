@@ -43,9 +43,11 @@ export async function discoverExecutorMetadata(
   fs: IHostFileSystem,
   bootstrap: IBootstrapService,
 ): Promise<readonly AgentExecutorSourceProbe[]> {
-  const sources = descriptor.sources ?? (descriptor.command === undefined ? []
-    : [{ id: 'command', kind: 'path-lookup' as const, command: descriptor.command }]);
-  return Promise.all(sources.map(async (source): Promise<AgentExecutorSourceProbe> => {
+  const sources: readonly AgentExecutorBinarySource[] = descriptor.sources?.length ? descriptor.sources : descriptor.command === undefined ? []
+    : [/[\\/]/.test(descriptor.command) ? { id: 'command', kind: 'explicit-path', path: descriptor.command }
+      : { id: 'command', kind: 'path-lookup', command: descriptor.command }];
+  return Promise.all(sources.filter(source => descriptor.source === undefined || source.id === descriptor.source)
+    .map(async (source): Promise<AgentExecutorSourceProbe> => {
     if (source.kind === 'node-script') {
       const script = expandPath(source.path, bootstrap);
       const command = await isFile(fs, script) ? await nodeRuntime(fs, bootstrap) : undefined;

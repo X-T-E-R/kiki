@@ -44,12 +44,15 @@ import {
 import {
   agentCapabilitiesQuerySchema,
   agentCapabilitiesResponseSchema,
+  agentReferenceCandidatesQuerySchema,
+  agentReferenceCandidatesResponseSchema,
   agentModelMenuPreviewRequestSchema,
   agentModelMenuPreviewResponseSchema,
   createNamedAgentProfileRequestSchema,
   listNamedAgentProfilesQuerySchema,
   listNamedAgentProfilesResponseSchema,
   listExecutorsResponseSchema,
+  executorDiscoveryResponseSchema,
   executorDetailResponseSchema,
   executorCheckResponseSchema,
   getExecutorModelsResponseSchema,
@@ -84,6 +87,7 @@ import { previewExecutorPrompt } from './executorPromptPreview';
 import { applyAgentModelMenuDraft, projectAgentModelMenu } from './agentModelMenu';
 import { resumeLocalSession } from './localSessionResume';
 import { registerAntigravityRoutes } from './antigravity';
+import { agentReferenceCandidates } from './agentReferences';
 
 type ExecutorCapabilityCatalog = Awaited<ReturnType<NonNullable<IAgentExecutorRegistry['refreshExecutorCapabilityCatalog']>>>;
 
@@ -196,6 +200,18 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
   app.get(capabilitiesRoute.path, capabilitiesRoute.options,
     capabilitiesRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
 
+  const referencesRoute = defineRoute({
+    method: 'GET', path: '/agents/references', querystring: agentReferenceCandidatesQuerySchema,
+    success: { data: agentReferenceCandidatesResponseSchema },
+    description: 'List caller-permitted profile and native engine message references', tags: ['agents'],
+  }, async (req, reply) => {
+    await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async signal => {
+      reply.send(okEnvelope(await agentReferenceCandidates(core, req.query, signal), req.id));
+    });
+  });
+  app.get(referencesRoute.path, referencesRoute.options,
+    referencesRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
+
   const executorsRoute = defineRoute({
     method: 'GET',
     path: '/executors',
@@ -215,6 +231,19 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
   });
   app.get(executorsRoute.path, executorsRoute.options,
     executorsRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
+
+  const discoveryRoute = defineRoute({
+    method: 'GET', path: '/executors/discovery', success: { data: executorDiscoveryResponseSchema },
+    description: 'Discover installed engine files and metadata without executing programs', tags: ['agents'],
+  }, async (req, reply) => {
+    await core.accessor.get(IConfigService).ready;
+    const registry = core.accessor.get(IAgentExecutorRegistry);
+    const items = await Promise.all(registry.list().filter(descriptor => descriptor.protocol !== 'native')
+      .map(descriptor => registry.discoverMetadata!(descriptor.id)));
+    reply.send(okEnvelope({ items }, req.id));
+  });
+  app.get(discoveryRoute.path, discoveryRoute.options,
+    discoveryRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
 
   const executorParams = z.object({ id: z.string().min(1) });
   const executorDetailRoute = defineRoute({

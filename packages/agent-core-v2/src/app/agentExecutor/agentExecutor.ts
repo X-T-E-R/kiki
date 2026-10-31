@@ -313,6 +313,8 @@ export interface IAgentExecutorRegistry {
   resolveExecutable(id?: string, options?: unknown): Promise<ResolvedAgentExecutor>;
   /** Defaults to full diagnostics; false resolves only the admitted source needed for catalog availability. */
   discover(id: string, exhaustive?: boolean): Promise<readonly AgentExecutorSourceProbe[]>;
+  /** Reads installed files and package metadata without spawning programs or inspecting credentials. */
+  discoverMetadata?(id: string): Promise<import('@kiki/protocol').ExecutorDiscoveryStatus>;
   refreshExecutorCapabilityCatalog?(id: string): Promise<ExecutorCapabilityCatalog>;
   recordExecutorCapabilityCatalog?(catalog: ExecutorCapabilityCatalog): void;
   getExecutorCapabilityCatalog?(

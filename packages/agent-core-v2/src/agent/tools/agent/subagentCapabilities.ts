@@ -61,13 +61,14 @@ export interface SubagentCapabilityServices {
 export function projectSubagentCapabilities(
   input: SubagentCapabilityCatalog,
   services: SubagentCapabilityServices,
+  includeMain = false,
 ): readonly SubagentCapabilityTarget[] {
   const snapshot = input.snapshot ?? input.catalog.snapshot?.();
   const scoped = snapshot?.scopedBindings.get(input.caller.profileDefinitionId ?? '') ?? new Map();
   const profiles = [
-    ...input.profiles.filter((profile) => profile.main !== true && !scoped.has(profile.name)),
+    ...input.profiles.filter((profile) => (includeMain || profile.main !== true) && !scoped.has(profile.name)),
     ...[...scoped.values()].flatMap((binding) =>
-      binding.status === 'ready' && binding.profile !== undefined && binding.profile.main !== true
+      binding.status === 'ready' && binding.profile !== undefined && (includeMain || binding.profile.main !== true)
         ? [{ ...binding.profile, name: binding.alias }] : []),
   ];
   const bindingSnapshot = snapshot === undefined ? undefined : {

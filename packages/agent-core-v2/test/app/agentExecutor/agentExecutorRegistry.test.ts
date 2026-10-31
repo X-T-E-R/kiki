@@ -123,6 +123,42 @@ describe('AgentExecutorRegistryService', () => {
     await services.dispose();
   });
 
+  it('discovers installed files without executing adapters, reading credentials or changing preferences', async () => {
+    const reads: string[] = [];
+    const files = new Map([
+      ['/bin/codex', ''], ['/bin/grok', ''], ['/adapters/claude/dist/index.js', ''],
+      ['/adapters/claude/package.json', '{"name":"example-adapter","version":"1.2.3"}'],
+      ['/adapters/agy/agy-cli-acp.mjs', ''],
+    ]);
+    services.set(IHostFileSystem, { stat: async (path: string) => {
+      if (!files.has(path)) throw new Error('missing');
+      return { isFile: true, isDirectory: false, size: files.get(path)!.length };
+    }, readText: async (path: string) => { reads.push(path); return files.get(path)!; } } as unknown as IHostFileSystem);
+    services.set(IBootstrapService, { platform: 'linux', homeDir: '/kiki', osHomeDir: '/user',
+      getEnv: (name: string) => name === 'PATH' ? '/bin' : undefined } as unknown as IBootstrapService);
+    services.set(IHostProcessService, { spawn: async () => { throw new Error('metadata discovery must not spawn'); } } as unknown as IHostProcessService);
+    const binary = (path: string) => ({ protocol: 'acp-v1', args: [], sources: [{ id: 'explicit', kind: 'explicit-path', path }] });
+    services.set(IConfigService, configWith({
+      codex: binary('/bin/codex'), grok: binary('/bin/grok'),
+      'claude-acp': { protocol: 'acp-v1', args: [], sources: [{ id: 'adapter', kind: 'node-script', path: '/adapters/claude/dist/index.js' }],
+        diagnostics: [{ kind: 'dependency', command: 'claude', args: ['--version'], unavailable: 'missing', failed: 'failed' }] },
+      'agy-cli': { protocol: 'acp-v1', args: [], sources: [{ id: 'adapter', kind: 'node-script', path: '/adapters/agy/agy-cli-acp.mjs' }] },
+      pinned: { ...binary('/bin/codex'), source: 'missing' },
+    }));
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    const registry = services.get(IAgentExecutorRegistry);
+    expect(await registry.discoverMetadata!('codex')).toMatchObject({ installed: true, source: 'explicit', path: '/bin/codex' });
+    expect(await registry.discoverMetadata!('grok')).toMatchObject({ installed: true, path: '/bin/grok' });
+    expect(await registry.discoverMetadata!('claude-acp')).toMatchObject({ installed: true, version: '1.2.3', components: [
+      { installed: true, role: 'program' }, { installed: false, role: 'dependency' },
+    ] });
+    expect(await registry.discoverMetadata!('agy-cli')).toMatchObject({ installed: false, status: 'missing', components: [
+      { installed: true, role: 'program' }, { installed: false, role: 'dependency' },
+    ] });
+    expect(await registry.discoverMetadata!('pinned')).toMatchObject({ installed: false });
+    expect(reads).toEqual(['/adapters/claude/package.json']);
+  });
+
   it('normalizes the native executor when no descriptor is configured', () => {
     services.set(IConfigService, configWith({}));
     services.set(

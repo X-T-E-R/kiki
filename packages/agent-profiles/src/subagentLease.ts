@@ -200,7 +200,7 @@ export function parseSubagentPermissions(value: Record<string, unknown>, filePat
 
 function validateSubagentNames(names: readonly string[], field: string, filePath: string, wildcard: boolean): void {
   for (const name of names) {
-    if ((name !== '*' && !AGENT_NAME_PATTERN.test(name)) || (name === '*' && !wildcard)) throw new SubagentLeaseParseError(`Frontmatter field "${field}" in ${filePath} must contain profile names${wildcard ? ' or "*"' : ''}`);
+    if ((name !== '*' && !AGENT_NAME_PATTERN.test(name) && !/^engine:\S+$/.test(name)) || (name === '*' && !wildcard)) throw new SubagentLeaseParseError(`Frontmatter field "${field}" in ${filePath} must contain profile names or engine:<executor-id> targets${wildcard ? ' or "*"' : ''}`);
   }
 }
 

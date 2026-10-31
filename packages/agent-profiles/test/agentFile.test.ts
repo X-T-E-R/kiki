@@ -606,6 +606,14 @@ body
     expect(def.allowedSubagents).toEqual(['explore', 'plan']);
   });
 
+  it('accepts native engine identities in preset permission lists without permitting virtual profile definitions', () => {
+    const def = parse('---\nname: lead\ndescription: d\nallowed_subagents: ["engine:codex-app-server", helper]\npreferred_subagents: ["engine:claude-acp"]\ndeny_subagents: ["engine:agy-cli"]\n---\nbody');
+    expect(def).toMatchObject({ allowedSubagents: ['engine:codex-app-server', 'helper'],
+      preferredSubagents: ['engine:claude-acp'], denySubagents: ['engine:agy-cli'] });
+    for (const invalid of ['engine:', 'engine:has space']) expect(() => parse(`---\nname: lead\ndescription: d\nallowed_subagents: ["${invalid}"]\n---\nbody`)).toThrow();
+    expect(() => parse('---\nname: engine:codex-app-server\ndescription: d\n---\nbody')).toThrow(/Invalid agent name/);
+  });
+
   it('treats a lone "*" subagents field as all subagent types', () => {
     const def = parse('---\nname: solo\ndescription: d\nallowed_subagents: "*"\n---\n\nbody\n');
 
