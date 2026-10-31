@@ -31,6 +31,7 @@ export interface AgentMeta {
   readonly resultSummary?: string;
   readonly error?: string;
   readonly taskId?: string;
+  readonly runSources?: Readonly<Record<string, import('@kiki/protocol').AgentRunSource>>;
   readonly usage?: TokenUsage;
   readonly contextTokens?: number;
   readonly toolCallCount?: number;

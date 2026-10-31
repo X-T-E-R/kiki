@@ -45,6 +45,7 @@ import {
 import { bindingResultLines, SubagentTool } from '#/agent/tools/agent/agentTool';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import type { Event2 } from '#/app/event/event2';
@@ -123,6 +124,8 @@ import type { ExecutableToolResult } from '#/tool/toolContract';
 import { IWireService } from '#/wire/wire';
 
 import { executeTool } from '../../tools/fixtures/execute-tool';
+import { nativeTargets, isNativeTarget } from '@kiki/agent-profiles/nativeTarget';
+import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
 
 const authority: ExternalAuthority = {
   principalFingerprint: 'a'.repeat(64),
@@ -480,6 +483,7 @@ interface LaneOptions {
   readonly validateBinding?: (binding: ExecutorBinding) => ExecutorValidationResult;
   readonly externalPermissionCeiling?: PermissionMode;
   readonly notifyParent?: boolean;
+  readonly callerMessages?: readonly import('#/agent/contextMemory/types').ContextMessage[];
 }
 
 interface ParityLane {
@@ -698,7 +702,7 @@ function createLane(
         if (serviceId === IAgentContextMemoryService) {
           return {
             _serviceBrand: undefined,
-            get: () => [],
+            get: () => agentId === 'main' ? options.callerMessages ?? [] : [],
           };
         }
         if (serviceId === IAgentContextInjectorService) {
@@ -790,6 +794,7 @@ function createLane(
         : { ok: true as const, binding: requestedBinding };
     if (!validated.ok) throw new Error(validated.diagnostic);
     profileByAgent.set(agentId, {
+      execution: isNativeTarget(resolved) ? resolveExecutionBinding({ executor: resolved.executor! }, undefined, undefined, undefined) : undefined,
       modelAlias: validated.binding.modelAlias,
       modelCapabilities: UNKNOWN_CAPABILITY,
       profileName: binding?.profile ?? resolved.name,
@@ -1051,6 +1056,10 @@ function createLane(
   };
 
   ix.stub(IFlagService, { enabled: () => true });
+  ix.stub(IAgentExecutorRegistry, {
+    resolve: (id = 'native') => ({ descriptor: { id, protocol: id === 'native' ? 'native' : 'acp-v1', args: [], revision: 'fixture' }, options: {} }),
+    validateBinding: (_id, _options, binding) => options.validateBinding?.(binding) ?? { ok: true, binding },
+  });
   ix.stub(IAtomicDocumentStore, {
     _serviceBrand: undefined,
     get: async <T>(_scope: string, key: string) => documents.get(key) as T | undefined,
@@ -2867,6 +2876,42 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(
       external.metadataAgents['agent_child_1']?.labels?.[COLLABORATION_LATEST_TASK_LABEL],
     ).toBe(view.dispatchId);
+  });
+
+  it.each([true, false])('persists exact message-to-run provenance with explicit source_ref=%s', async explicit => {
+    const profile = nativeTargets([{ id: 'claude-acp', protocol: 'external' }])[0]!;
+    const ref = { refId: 'ar:message-1:native', profile: profile.name, executor: 'claude-acp', configuration: 'native' as const, label: 'Claude Code' };
+    const lane = createLane(disposables, 'internal', { profile, callerMessages: [{ id: 'message-1', role: 'user',
+      content: [{ type: 'text', text: 'Review this change' }], toolCalls: [], origin: { kind: 'user', agentRefs: [ref] } }] });
+    const result = await lane.runInternal({ prompt: 'Independent review', description: 'Native review', profile: profile.name,
+      source_ref: explicit ? ref.refId : undefined, background: true });
+    expect(result.isError).not.toBe(true);
+    expect(result.output).toContain(`source_ref: ${ref.refId}`);
+    const [taskId, task] = [...lane.taskRecords.entries()][0]!;
+    expect(task.task.toInfo({ taskId, description: '', status: 'running', startedAt: 1, endedAt: null }))
+      .toMatchObject({ sourceRef: { ...ref, messageId: 'message-1' } });
+    expect(Object.values(lane.metadataAgents['agent_child_1']?.runSources ?? {})).toEqual([{ ...ref, messageId: 'message-1' }]);
+    const rejected = await lane.runInternal({ prompt: 'Do not run', description: 'Forged reference', profile: profile.name,
+      source_ref: 'forged', background: true });
+    expect(rejected.isError).toBe(true);
+    expect(lane.lifecycleCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['codex-app-server', 'claude-acp', 'agy-cli', 'grok-acp'])('dispatches %s native targets through AgentRun and the external seat with vendor defaults', async (executor) => {
+    const profile = nativeTargets([{ id: executor, protocol: 'external' }])[0]!;
+    const internal = createLane(disposables, 'internal', { profile });
+    const external = createLane(disposables, 'external', { profile });
+    const result = await internal.runInternal({ prompt: 'native assignment', description: 'Native task', profile: profile.name,
+      name: 'native_task', background: true });
+    expect(result.isError).not.toBe(true);
+    expect(internal.metadataAgents['agent_child_1']?.model).toBeUndefined();
+    expect(internal.metadataAgents['agent_child_1']?.executor).toBe(executor);
+    const view = await external.external.dispatch({ authority, target: 'named', taskName: 'native_task',
+      profileName: profile.name, message: 'native assignment' });
+    expect(view.status).toBe('queued');
+    expect(external.metadataAgents['agent_child_1']?.model).toBeUndefined();
+    expect(external.metadataAgents['agent_child_1']?.executor).toBe(executor);
+    await completeExternal(external, view.dispatchId, 0);
   });
 
   it('P11 allows non-native executors while keeping unbound models fail-closed', async () => {

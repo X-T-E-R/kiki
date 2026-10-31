@@ -1,4 +1,6 @@
-import { captureProfileModelMenu } from '@kiki/agent-profiles/agentProfile';
+import { captureProfileModelMenu, normalizeAgentProfile } from '@kiki/agent-profiles/agentProfile';
+import { isNativeTarget } from '@kiki/agent-profiles/nativeTarget';
+import { resolveNativeTargetBinding } from '#/session/subagent/nativeTargetBinding';
 import { loadSteeringSources } from '#/agent/cognition/steeringBinding';
 import { dirname } from 'node:path';
 import { composeRecipeLayers, recipeReferences } from '#/app/recipes/recipeOverlay';
@@ -612,6 +614,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
               return { profile: base, baseProfile: base, route: undefined };
             })()
           : this.catalog.resolveSelection({ profile: selectedProfileName, route: input.route });
+    if (isNativeTarget(selection.profile)) {
+      if (input.route !== undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Native engine targets do not have profile routes');
+      assertResearchExecutor(this.profileState.executionRestriction ?? input.executionRestriction, selection.profile.executor);
+      const native = resolveNativeTargetBinding(selection.profile, {
+        modelAlias: input.model ?? undefined, thinkingEffort: input.thinking ?? undefined,
+      }, this.config, this.executors);
+      await this.bindExecution(native.execution.selection, { ...input, resolvedProfile: selection.profile }, assertCurrent);
+      return;
+    }
     const inheritedAlias = [
       selection.baseProfile.modelAlias,
       selection.profile.modelAlias,
@@ -871,7 +882,18 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   private async bindExecution(requested: ExecutionSelection, input: BindAgentInput, assertCurrent?: () => void): Promise<void> {
-    if (this.agentScope.agentId !== MAIN_AGENT_ID) throw new Error2(ErrorCodes.CONFIG_INVALID, 'Execution selection is supported only for the main agent');
+    const retainedPolicy = this.profileState.boundProfile;
+    const candidate = input.resolvedProfile ?? (retainedPolicy !== undefined && isNativeTarget(retainedPolicy)
+      ? normalizeAgentProfile({ ...retainedPolicy, systemPrompt: () => '' }) : undefined);
+    const policyProfile = candidate !== undefined && isNativeTarget(candidate)
+      && candidate.executor === requested.executor ? candidate : undefined;
+    if (policyProfile !== undefined) resolveNativeTargetBinding(policyProfile, {
+      modelAlias: input.model ?? requested.overrides?.model ?? undefined,
+      thinkingEffort: input.thinking ?? requested.overrides?.thinking ?? undefined,
+    }, this.config, this.executors);
+    if (this.agentScope.agentId !== MAIN_AGENT_ID && (policyProfile === undefined || requested.profile !== undefined || requested.profile_file !== undefined)) {
+      throw new Error2(ErrorCodes.CONFIG_INVALID, 'Child execution selection requires a native engine dispatch target');
+    }
     if (requested.profile !== undefined && requested.profile_file !== undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'profile and profile_file are mutually exclusive');
     const selected = requested.profile_file !== undefined ? await this.resolveFile(requested.profile_file)
       : requested.profile === undefined ? undefined : this.catalog.resolveSelection({ profile: requested.profile }).profile;
@@ -1002,18 +1024,22 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.dispatcher.dispatch(new ProfileBind({
       execution, bindingAdvisories, executorId: executor.descriptor.id, executorProtocol: executor.descriptor.protocol,
       executorOptions: executor.options, executorDescriptorRevision: executor.descriptor.revision,
-      profileName: role?.name, profileDefinitionId: role?.definitionId,
+      profileName: (role ?? policyProfile)?.name, profileDefinitionId: (role ?? policyProfile)?.definitionId,
       modelAlias: validated.modelAlias, thinkingEffort: (validated.thinkingEffort ?? 'off') as ThinkingEffort,
       thinkingEffortExplicit: execution.effective.thinking !== undefined,
       executorPrompt, kikiContext: execution.effective.kiki_context,
       allowKikiSubagents: execution.effective.allow_kiki_subagents,
       injectKikiMcp: execution.effective.inject_kiki_mcp,
-      systemPrompt, agentsMdPaths: [], disallowedTools: role?.disallowedTools ?? [],
+      systemPrompt, agentsMdPaths: [], disallowedTools: (role ?? policyProfile)?.disallowedTools ?? [],
+      activeToolNames: policyProfile?.tools, toolAllowPolicies: policyProfile?.toolAllowPolicies,
+      disabledToolGroups: policyProfile?.disabledToolGroups,
+      allowParentNotify: input.allowParentNotify,
       executionRestriction: this.profileState.executionRestriction ?? input.executionRestriction,
-      canSpawnSubagents: role?.canSpawnSubagents === false ? false : execution.effective.allow_kiki_subagents,
-      allowedSubagents: role?.allowedSubagents, preferredSubagents: role?.preferredSubagents,
-      denySubagents: role?.denySubagents, subagentLeases: role?.subagentLeases,
-      boundProfile: role === undefined ? undefined : freezeBoundProfile(role),
+      canSpawnSubagents: (role ?? policyProfile)?.canSpawnSubagents === false ? false : execution.effective.allow_kiki_subagents,
+      allowedSubagents: (role ?? policyProfile)?.allowedSubagents, preferredSubagents: (role ?? policyProfile)?.preferredSubagents,
+      denySubagents: (role ?? policyProfile)?.denySubagents, subagentLeases: (role ?? policyProfile)?.subagentLeases,
+      spawnPolicy: input.spawnPolicy, appliedLease: input.lease, dispatchDecision: input.dispatchDecision,
+      boundProfile: role === undefined && policyProfile === undefined ? undefined : freezeBoundProfile((role ?? policyProfile)!),
     }));
     this.agentsMdReminder.seedInjected([], inspectAgentWorkspaceRoots(this.runtime, this.workspace).workDir);
     this.afterConfigDispatch({ modelAlias: validated.modelAlias, profileName: role?.name,

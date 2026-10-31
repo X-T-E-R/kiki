@@ -49,6 +49,7 @@ export const SubagentToolInputSchema = z.preprocess(
       .describe(
         'Optional stable name for the new subagent, unique within this session (lowercase letters, digits, and underscores; "root" is reserved). Use it to address the same agent again with resume, AgentSend, or AgentList instead of tracking its generated ID. Rejected together with resume.',
       ),
+    source_ref: z.string().trim().min(1).optional().describe('Reference id from a server-generated agent_ref in a visible user message. Links this run to that message; it does not choose a target or grant permission.'),
     profile_file: z.string().trim().min(1).optional().describe('Explicit profile Markdown file, absolute or workspace-relative. Only for new agents; mutually exclusive with profile and route. This is a role definition, not a shared prompt template.'),
     allow_model_change: z.boolean().optional().describe('Confirm an explicit model_alias change to a different canonical model on resume while retaining context. A changed model requires this or new_window to be true; new_window:true takes precedence. This field requires resume and model_alias and does not bypass role, caller, route or executor restrictions.'),
     new_window: z.boolean().optional().describe('Resume the same child with fresh context while preserving task state and history, without calling the old model. Requires resume. Also confirms an explicit canonical model change; false does not veto allow_model_change:true.'),

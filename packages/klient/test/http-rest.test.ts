@@ -23,6 +23,29 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it('reads validated agent references and metadata-only engine discovery without a launch', async () => {
+    const candidates = { delegation_available: true, items: [{ profile: 'engine:codex-app-server', label: 'Codex', executor: 'codex-app-server', engine_label: 'Codex', reference: 'kiki://agents/engine%3Acodex-app-server', configuration: 'native', group: 'native', defaults_available: true, available: false, unavailable_reason: 'Codex is not installed' }] };
+    const discovery = { items: [{ id: 'codex-app-server', label: 'Codex', protocol: 'codex-app-server', installed: false, status: 'missing', checked_at: '2026-10-31T00:00:00.000Z', reason: 'Codex was not found on PATH', reason_code: 'not_on_path', components: [{ id: 'codex-app-server', label: 'Codex', role: 'program', installed: false, reason: 'Codex was not found on PATH', reason_code: 'not_on_path' }] }] };
+    const paths: string[] = [];
+    const fetcher = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(init?.method ?? 'GET').toBe('GET');
+      paths.push(url.pathname);
+      if (url.pathname.endsWith('/references')) {
+        expect(url.searchParams.get('session_id')).toBe('session/example');
+        expect(url.searchParams.get('agent_id')).toBe('main');
+        return envelope(candidates);
+      }
+      return envelope(discovery);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetcher as typeof fetch });
+    try {
+      expect(await channel.rest.agents.referenceCandidates({ session_id: 'session/example', agent_id: 'main' })).toEqual(candidates);
+      expect(await channel.rest.executors.discover()).toEqual(discovery);
+      await expect(channel.rest.agents.referenceCandidates({ cwd: 'relative', profile: 'agent' })).rejects.toThrow();
+      expect(paths).toEqual(['/api/agents/references', '/api/executors/discovery']);
+    } finally { await channel.close(); }
+  });
   it('validates decision sources and synthetic probes without exposing a secret-moving value', async () => {
     const source = { kind: 'connection' as const, connection: 'judgment', model: 'arbitrary-remote-name' };
     const probe = { ok: true, status: { state: 'ready', protocol: 'system_one', connection: 'judgment', credential_source: 'env', credential_env: 'TYPESAFE_API_KEY' }, duration_ms: 3 };

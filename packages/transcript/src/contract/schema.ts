@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { contentWindowSchema } from './content';
 import { textPresentationSchema } from './presentation';
 import { transcriptReadSchema } from './read';
+import { agentRunSourceSchema } from './agentReference';
 
 export const turnIdSchema = z.string().min(1);
 export const stepIdSchema = z.string().min(1);
@@ -327,6 +328,7 @@ export const transcriptTaskSchema = z.object({
   thinkingEffortExplicit: z.boolean().optional(),
   executorId: z.string().optional(),
   executorProtocol: z.string().optional(),
+  sourceRef: agentRunSourceSchema.optional(),
   description: z.string().optional(),
   command: z.string().optional(),
   agentId: agentIdSchema.optional(),

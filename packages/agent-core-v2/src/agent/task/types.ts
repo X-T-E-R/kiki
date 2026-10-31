@@ -60,6 +60,7 @@ export interface ProcessTaskInfo extends AgentTaskInfoBase {
 
 export interface SubagentTaskInfo extends AgentTaskInfoBase {
   readonly kind: 'agent';
+  readonly sourceRef?: import('@kiki/protocol').AgentRunSource;
   readonly agentId?: string;
   readonly profile?: string;
   readonly parentToolCallId?: string;

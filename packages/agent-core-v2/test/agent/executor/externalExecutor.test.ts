@@ -792,6 +792,22 @@ describe('ACP external executor', () => {
   });
 
 
+  it.each(['claude-acp', 'agy-cli', 'grok-acp'])('keeps %s native children bare without implicitly leasing a bridge', async (executorId) => {
+    const harness = createHarness({ executorId, parentAgentId: 'main', supportsMcp: true,
+      unpinModel: true, thinkingEffort: 'off', mcpServers: { relay: { transport: 'stdio', command: 'node' } } });
+    const execution = resolveExecutionBinding({ executor: executorId }, undefined, undefined, undefined);
+    const session = harness.createSession({ ...harness.executorContext, binding: { ...harness.executorContext.binding,
+      execution, systemPrompt: '', modelAlias: undefined, kikiContext: [], allowKikiSubagents: false } });
+    try {
+      const run = await session.run({ kind: 'prompt', prompt: 'ONLY_ASSIGNED_TASK' }, { signal: new AbortController().signal });
+      await run.completion;
+      expect(harness.opens[0]?.mcpServers).toEqual([]);
+      expect(harness.starts[0]?.prompt).toBe('ONLY_ASSIGNED_TASK');
+      expect(harness.opens[0]?.systemPromptOverride).toBeUndefined();
+      expect(harness.selections).toEqual([]);
+    } finally { await session.shutdown(); }
+  });
+
   it('keeps direct ACP factory payload bare across a durable generation boundary', async () => {
     const harness = createHarness({ unpinModel: true, thinkingEffort: 'off',
       mcpServers: { relay: { transport: 'stdio', command: 'node' } },
@@ -1309,6 +1325,35 @@ describe('ACP external executor', () => {
       })).toEqual(['acp']);
     } finally {
       await fixture.dispose();
+    }
+  });
+
+  it.each(['claude-acp', 'agy-cli', 'grok-acp'])('retains the logical prompt source and suppresses accepted steer echoes for %s', async executorId => {
+    const text = 'Review kiki://agents/reviewer';
+    const ref = { refId: 'ar:logical-input:reviewer', profile: 'reviewer', executor: 'native', configuration: 'profile' as const, label: 'Reviewer', engine_label: 'Kiki' };
+    const message: ContextMessage = { id: 'logical-input', role: 'user', toolCalls: [], content: [{ type: 'text', text }], origin: { kind: 'user', agentRefs: [ref] } };
+    const harness = createHarness({ executorId, deferTurnCompletion: true,
+      events: [{ type: 'message.delta', role: 'user', messageId: 'initial-echo', content: { type: 'text', text } }] });
+    Object.assign(harness.client, { steer: async () => true });
+    const expectedEcho = vi.spyOn(ExternalTurnRecorder.prototype, 'expectUserEcho');
+    try {
+      await harness.session.run({ kind: 'prompt', prompt: text, promptId: 'different-request', origin: message.origin, contextMessages: [message] },
+        { signal: new AbortController().signal, parentReceiptManaged: true });
+      await vi.waitFor(() => expect(harness.appendedMessages).toEqual([message]));
+      expect(harness.starts[0]!.prompt.split(text)).toHaveLength(2);
+      expect(await harness.session.steer({ ...message, content: [{ type: 'text', text: 'steered reference' }] })).toBe(true);
+      expect(expectedEcho).toHaveBeenCalledWith('steered reference');
+      const recorder = expectedEcho.mock.contexts[0] as ExternalTurnRecorder;
+      await recorder.record({ type: 'message.delta', role: 'user', messageId: 'steer-echo', content: { type: 'text', text: 'steered reference' } });
+      await recorder.record({ type: 'message.delta', role: 'user', messageId: 'remote-user', content: { type: 'text', text: 'a different remote message' } });
+      await harness.turnCancel();
+      await harness.session.settled();
+      expect(harness.appendedMessages.filter(item => item.role === 'user')).toEqual([
+        message, expect.objectContaining({ origin: { kind: 'unknown' }, content: [{ type: 'text', text: 'a different remote message' }] }),
+      ]);
+    } finally {
+      expectedEcho.mockRestore();
+      await harness.session.shutdown();
     }
   });
 

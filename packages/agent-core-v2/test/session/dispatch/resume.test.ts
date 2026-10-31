@@ -21,6 +21,7 @@ import { toInputJsonSchema } from '#/tool/input-schema';
 import { IConfigService } from '#/app/config/config';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
+import { IUsageFactStore } from '#/app/usageFacts/usageFactStore';
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
@@ -34,9 +35,12 @@ import { ISessionDispatchService, type DispatchChild, type DispatchRunOptions } 
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import { acknowledgeResumeOutcome, bindResumeTask, pruneResumeRecords, readResumeRecord, writeResumeRecord, type DispatchResumeRecord } from '#/session/dispatch/resume';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { ExternalTurnRecorder } from '#/agent/execution/externalTurnRecorder';
+import { resolveAgentRunSource } from '#/agent/prompt/agentReferences';
 import { IAgentActivityView } from '#/agent/activityView/activityView';
 import { IAgentExecutorRegistry, type ResolvedAgentExecutor } from '#/app/agentExecutor/agentExecutor';
 import { recordNegotiatedSnapshot } from '#/agent/execution/negotiatedSnapshot';
+import { nativeTargets } from '@kiki/agent-profiles/nativeTarget';
 import { mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { AGENT_RUN_PROMPT_ORIGIN, runAgentTurn } from '#/session/subagent/runAgentTurn';
 import { createHooks } from '#/hooks';
@@ -97,11 +101,13 @@ function dispatchFor(ctx: TestAgentContext) {
   containers.push(ix);
   const childHandle: IAgentScopeHandle = { kind: 'agent', id: CHILD, accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
   const callerHandle: IAgentScopeHandle = { kind: 'agent', id: 'main', accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
-  ix.stub(IAgentLifecycleService, { onDidCreate: Event.None as Event<IAgentScopeHandle>, get: (id) => id === CHILD ? childHandle : id === 'main' ? callerHandle : undefined });
+  ix.stub(IAgentLifecycleService, { onDidCreate: Event.None as IAgentLifecycleService['onDidCreate'],
+    get: (id) => id === CHILD ? childHandle : id === 'main' ? callerHandle : undefined });
   ix.stub(IAgentCollaborationRegistry, {});
   ix.set(IConfigService, ctx.get(IConfigService));
   ix.set(IModelService, ctx.get(IModelService));
   ix.set(IModelCatalog, ctx.get(IModelCatalog));
+  ix.set(IAgentExecutorRegistry, ctx.get(IAgentExecutorRegistry));
   ix.set(ISessionMetadata, ctx.get(ISessionMetadata));
   ix.set(ISessionAgentProfileCatalog, ctx.get(ISessionAgentProfileCatalog));
   ix.set(ILogService, ctx.get(ILogService));
@@ -112,6 +118,24 @@ function dispatchFor(ctx: TestAgentContext) {
   const dispatch = ix.get(ISessionDispatchService);
   const child: DispatchChild = { agent: childHandle, agentId: CHILD, name: 'saved_child', profileName: 'example-worker', thinkingEffort: 'off' };
   return { dispatch, child, runs: ix.get(ISessionSubagentService) };
+}
+
+async function defaultExternal(id = 'claude-acp') {
+  const ctx = await host();
+  const registry = ctx.get(IAgentExecutorRegistry);
+  const delivered: unknown[] = [];
+  const resolved: ResolvedAgentExecutor = { descriptor: { id, protocol: 'acp', args: [], revision: 'fixture' }, options: {},
+    provider: { id, protocol: 'acp', validateOptions: () => ({}), validateBinding: binding => ({ ok: true, binding }),
+      create: context => ({ hooks: createHooks(['onWillRun']), status: () => ({ state: 'idle' }), cancel: () => false,
+        settled: async () => {}, shutdown: async () => {}, run: async request => {
+          delivered.push({ request, binding: context.binding });
+          throw new Error('fixture-native-run-reached');
+        } }) } };
+  vi.spyOn(registry, 'resolve').mockReturnValue(resolved);
+  vi.spyOn(registry, 'resolveExecutable').mockResolvedValue(resolved);
+  vi.spyOn(registry, 'validateBinding').mockImplementation((_id, _options, binding) => ({ ok: true, binding }));
+  await ctx.get(IAgentProfileService).bind({ resolvedProfile: nativeTargets([resolved.descriptor])[0], delegationPosition: 'sub' });
+  return { ctx, delivered, ...dispatchFor(ctx) };
 }
 
 async function journal(ctx: TestAgentContext): Promise<WireRecord[]> {
@@ -154,6 +178,27 @@ describe('AgentRun new_window shape', () => {
 });
 
 describe('dispatch resume through model switch and real native run', () => {
+  it('keeps an ordinary external prompt source in live and replayed caller context without duplicating a materialized source', async () => {
+    const ctx = await host();
+    const ref = { refId: 'ar:external-input:example-worker', profile: 'example-worker', executor: 'native', configuration: 'profile' as const, label: 'Worker', engine_label: 'Kiki' };
+    const origin = { kind: 'user' as const, agentRefs: [ref] };
+    const makeRecorder = (turnId: number) => new ExternalTurnRecorder({ id: CHILD, accessor: { get: id => ctx.get(id) } }, turnId, 'remote-1', {
+      executorId: 'claude-acp', protocol: 'acp-v1', model: 'vendor-default', resumeMode: 'new', profileDelivery: 'native', parentReceiptManaged: true,
+    });
+    await makeRecorder(3).begin('kiki://agents/example-worker', origin, [], 'external-input');
+    const memory = ctx.get(IAgentContextMemoryService);
+    expect(resolveAgentRunSource(memory.get(), 'example-worker', 'native', 'profile', ref.refId))
+      .toMatchObject({ messageId: 'external-input', engine_label: 'Kiki' });
+    await makeRecorder(4).begin('kiki://agents/example-worker', origin, [], 'different-request');
+    expect(memory.get().filter(message => message.origin?.kind === 'user' && message.origin.agentRefs?.some(item => item.refId === ref.refId))).toHaveLength(1);
+    const records = await journal(ctx);
+    expect(records.filter(record => record.type === 'context.append_message' && (record['message'] as { id?: string }).id === 'external-input')).toHaveLength(1);
+    const cold = await host();
+    await cold.restore(records);
+    expect(resolveAgentRunSource(cold.get(IAgentContextMemoryService).get(), 'example-worker', 'native', 'profile', ref.refId))
+      .toMatchObject({ messageId: 'external-input', engine_label: 'Kiki' });
+  });
+
   it.each([undefined, false, true].flatMap((allowModelChange) => [undefined, false, true].map((newWindow) => ({ allowModelChange, newWindow }))))(
     'canonical change allow=$allowModelChange new_window=$newWindow', async ({ allowModelChange, newWindow }) => {
       const ctx = await host();
@@ -504,6 +549,99 @@ describe('dispatch resume through model switch and real native run', () => {
     expect((await metadata.read()).agents![CHILD]).toBeUndefined();
   });
 
+  it.each(['profile_file', 'route'] as const)('does not attach a registered reference to a same-name %s child on resume', async selectionKind => {
+    const ctx = await host();
+    const profile = ctx.get(IAgentProfileService);
+    const bound = profile.data();
+    vi.spyOn(profile, 'data').mockReturnValue({ ...bound,
+      dispatchDecision: { ...bound.dispatchDecision, version: 2, selectionKind },
+    } as ReturnType<IAgentProfileService['data']>);
+    const ref = { refId: 'ar:registered:example-worker', profile: 'example-worker', executor: 'native', configuration: 'profile' as const, label: 'Worker' };
+    ctx.get(IAgentContextMemoryService).append({ id: 'registered', role: 'user', content: [{ type: 'text', text: 'kiki://agents/example-worker' }], toolCalls: [], origin: { kind: 'user', agentRefs: [ref] } });
+    const { dispatch, child, runs } = dispatchFor(ctx);
+    const started = vi.spyOn(runs, 'run');
+    const explicit = dispatch.runOnExisting(child, 'Continue', { ...options('file-source'), sourceRef: ref.refId });
+    void explicit.then(value => value.started.catch(() => {}), () => {});
+    await expect(explicit).rejects.toThrow('source_ref');
+    expect(started).not.toHaveBeenCalled();
+    ctx.mockNextResponse({ type: 'text', text: 'File role completed.' });
+    const automatic = await dispatch.runOnExisting(child, 'Continue', options('file-no-source'));
+    expect(automatic.child.sourceRef).toBeUndefined();
+    await (await automatic.started).completion;
+  });
+
+  it('retains registered target references on a genuine registered child resume', async () => {
+    const ctx = await host();
+    const ref = { refId: 'ar:registered:example-worker', profile: 'example-worker', executor: 'native', configuration: 'profile' as const, label: 'Worker' };
+    ctx.get(IAgentContextMemoryService).append({ id: 'registered', role: 'user', content: [{ type: 'text', text: 'kiki://agents/example-worker' }], toolCalls: [], origin: { kind: 'user', agentRefs: [ref] } });
+    const { dispatch, child } = dispatchFor(ctx);
+    ctx.mockNextResponse({ type: 'text', text: 'Registered role completed.' });
+    const run = await dispatch.runOnExisting(child, 'Continue', { ...options('registered-source'), sourceRef: ref.refId });
+    expect(run.child.sourceRef).toMatchObject({ ...ref, messageId: 'registered' });
+    await (await run.started).completion;
+  });
+
+  it.each([{ tools: ['Read'] }, { disallowedTools: ['Bash'] }])('rejects vendor-default resume tool override %j before a run or binding change', async toolOverride => {
+    const { ctx, dispatch, child, runs } = await defaultExternal();
+    const before = ctx.get(IAgentProfileService).data();
+    const run = vi.spyOn(runs, 'run');
+    const attempt = dispatch.runOnExisting(child, 'Continue', { ...options('default-tool-override'), toolOverride });
+    void attempt.then(value => value.started.catch(() => {}), () => {});
+    await expect(attempt).rejects.toThrow('does not support AgentRun tools or disallowed_tools overrides');
+    expect(run).not.toHaveBeenCalled();
+    expect(ctx.get(IAgentProfileService).data()).toEqual(before);
+    expect(readResumeRecord((await ctx.get(ISessionMetadata).read()).agents![CHILD], 'default-tool-override')).toBeUndefined();
+  });
+
+  it('retries a vendor-default start failure with the same operation and prompt id', async () => {
+    const { ctx, dispatch, child, runs, delivered } = await defaultExternal();
+    const run = vi.spyOn(runs, 'run');
+    const opts = options('retry-default-start');
+    const first = await dispatch.runOnExisting(child, 'Continue', opts);
+    await expect(first.started).rejects.toThrow('fixture-native-run-reached');
+    const second = await dispatch.runOnExisting(child, 'Continue', opts);
+    await expect(second.started).rejects.toThrow('fixture-native-run-reached');
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(delivered).toEqual([expect.objectContaining({ request: expect.objectContaining({ promptId: 'resume-prompt:retry-default-start' }) }),
+      expect.objectContaining({ request: expect.objectContaining({ promptId: 'resume-prompt:retry-default-start' }) })]);
+    expect(readResumeRecord((await ctx.get(ISessionMetadata).read()).agents![CHILD], opts.operationId!)).toMatchObject({ state: 'ready' });
+    await expect(dispatch.runOnExisting(child, 'Changed request', opts)).rejects.toThrow('different request');
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps an already-started vendor-default run when metadata confirmation fails', async () => {
+    const { ctx, dispatch, child, runs } = await defaultExternal();
+    const handle = { agentId: CHILD, turn: { id: 42 }, completion: Promise.resolve({ summary: 'Done' }) } as Awaited<ReturnType<ISessionSubagentService['run']>>;
+    const run = vi.spyOn(runs, 'run').mockResolvedValue(handle);
+    const metadata = ctx.get(ISessionMetadata);
+    const update = metadata.updateAgent.bind(metadata);
+    let updates = 0;
+    vi.spyOn(metadata, 'updateAgent').mockImplementation(async (...args) => {
+      if (++updates === 2) throw new Error('fixture confirmation unavailable');
+      return update(...args);
+    });
+    const opts = options('started-default');
+    const first = await dispatch.runOnExisting(child, 'Continue', opts);
+    await expect(first.started).resolves.toBe(handle);
+    const second = await dispatch.runOnExisting(child, 'Continue', opts);
+    expect(second).toBe(first);
+    await expect(second.started).resolves.toBe(handle);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['codex-app-server', 'claude-acp', 'agy-cli', 'grok-acp'])('resumes %s native defaults without manufacturing a Kiki model', async (id) => {
+    const { ctx, dispatch, child, delivered } = await defaultExternal(id);
+    const run = await dispatch.runOnExisting(child, 'Continue native task', options(`native-${id}`));
+    await expect(run.started).rejects.toThrow('fixture-native-run-reached');
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ request: { prompt: 'Continue native task', promptId: `resume-prompt:native-${id}` },
+      binding: { execution: { selection: { executor: id } }, systemPrompt: '' } });
+    expect(ctx.get(IAgentProfileService).data().modelAlias).toBeUndefined();
+    expect(ctx.get(IAgentModelSwitchService).get(`native-${id}`)).toBeUndefined();
+    await expect(dispatch.runOnExisting(child, 'Fresh default', options(`fresh-${id}`, { newWindow: true })))
+      .rejects.toThrow('explicit vendor model');
+  });
+
   it('does not mark actual external model application successful merely because canonical binding committed', async () => {
     const ctx = await host();
     const registry = ctx.get(IAgentExecutorRegistry);
@@ -677,6 +815,7 @@ describe('dispatch resume after cancellation with deferred task notifications', 
     ix.set(ISessionContext, ctx.get(ISessionContext));
     ix.set(ISessionMetadata, ctx.get(ISessionMetadata));
     ix.set(ISessionDispatchService, dispatch);
+    ix.set(IAtomicDocumentStore, ctx.get(IAtomicDocumentStore));
     ix.set(ILogService, ctx.get(ILogService));
     ix.stub(ISessionManager, {});
     ix.set(IAgentCollaborationMessagingService, new SyncDescriptor(AgentCollaborationMessagingService));
@@ -755,6 +894,7 @@ describe('dispatch resume after cancellation with deferred task notifications', 
     const fixture = await persistenceBlockedChild(true);
     const { ctx, loop, run, tasks, taskId, action } = fixture;
     try {
+      await ctx.get(IUsageFactStore).checkpoint(ctx.get(IAgentScopeContext).scope());
       const before = fixture.failures();
       await vi.advanceTimersByTimeAsync(90 * 60_000);
       expect(fixture.failures() - before).toBe(36);

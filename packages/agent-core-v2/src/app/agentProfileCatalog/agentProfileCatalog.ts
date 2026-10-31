@@ -1,3 +1,4 @@
+export { isNativeTarget, nativeTargetName } from '@kiki/agent-profiles/nativeTarget';
 import type { ILogger } from '#/_base/log/log';
 import type { IHostProcessService } from '#/os/interface/hostProcess';
 import {

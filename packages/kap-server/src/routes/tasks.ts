@@ -406,6 +406,7 @@ function toWireTask(
     receipt: info.receipt,
     receipt_verification: info.receiptVerification,
     total_bytes: info.receipt?.bytes,
+    source_ref: info.kind === 'agent' ? info.sourceRef : undefined,
   };
   if (info.endedAt !== null && info.endedAt !== undefined) {
     base.completed_at = new Date(info.endedAt).toISOString();

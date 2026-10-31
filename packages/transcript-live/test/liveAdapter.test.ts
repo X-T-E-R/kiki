@@ -1793,6 +1793,35 @@ describe('AgentTranscriptLiveAdapter', () => {
     expect(wireTx.getTask('task-1')).toMatchObject({ state: 'completed' });
   });
 
+  it('keeps message references and each exact run source through live, cold and snapshot projections', () => {
+    const ref = { refId: 'ar:message-1:reviewer', profile: 'reviewer', executor: 'native', configuration: 'profile' as const, label: 'Reviewer' };
+    const sourceRef = { ...ref, messageId: 'message-1' };
+    const origin = { kind: 'user', agentRefs: [ref] };
+    const info = { taskId: 'task-1', kind: 'agent', agentId: 'child-1', profile: 'reviewer', sourceRef,
+      description: 'Review', detached: true, startedAt: 1_000, endedAt: null, status: 'running' };
+    const records = [
+      { type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'kiki://agents/reviewer' }], origin },
+      { type: 'task.started', info },
+      { type: 'task.terminated', info: { ...info, status: 'completed', endedAt: 2_000 } },
+    ];
+    const live = new AgentTranscript('main');
+    const adapter = new AgentTranscriptLiveAdapter('main');
+    live.apply(adapter.map(ev({ type: 'turn.started', turnId: 0, origin })));
+    for (const record of records.slice(1)) live.apply(adapter.map(ev(record)));
+    const cold = new AgentTranscript('main');
+    const wire = new TranscriptWireAdapter('main');
+    const reducer = new TranscriptFactReducer(cold);
+    for (const record of records) reducer.apply(wire.add(record));
+    for (const transcript of [live, cold]) {
+      expect(transcript.getTask('task-1')).toMatchObject({ agentId: 'child-1', sourceRef, state: 'completed' });
+      expect(transcript.getTurn('t0')).toMatchObject({ origin: { kind: 'user', payload: { agentRefs: [ref] } } });
+      const restored = new AgentTranscript('main');
+      restored.apply([{ op: 'reset', agentId: 'main', snapshot: transcript.snapshot() }]);
+      expect(restored.getTask('task-1')?.sourceRef).toEqual(sourceRef);
+    }
+    expect(cold.getTask('task-1')?.sourceRef).toEqual(live.getTask('task-1')?.sourceRef);
+  });
+
   it('projects goal updates into meta.goal plus an inline marker', () => {
     const liveAdapter = new AgentTranscriptLiveAdapter('main');
     const tx = new AgentTranscript('main');

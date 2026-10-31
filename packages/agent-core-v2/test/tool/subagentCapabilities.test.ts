@@ -12,6 +12,7 @@ import { IModelService } from '#/kosong/model/model';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { projectProfileModelMenu, projectSubagentModelCatalog } from '#/session/subagent/modelCatalogProjection';
 import { applyLease } from '@kiki/agent-profiles/applySubagentLease';
+import { nativeTargets } from '@kiki/agent-profiles/nativeTarget';
 
 describe('subagent capability final bindings', () => {
   let ix: TestInstantiationService;
@@ -65,6 +66,13 @@ describe('subagent capability final bindings', () => {
   function helper(fields: Partial<AgentProfile> = {}): AgentProfile {
     return normalizeAgentProfile({ name: 'helper', modelAlias: 'example', systemPrompt: () => '', ...fields });
   }
+
+  it.each(['codex-app-server', 'claude-acp', 'agy-cli', 'grok-acp'])('projects %s vendor defaults without borrowing a Kiki model', (id) => {
+    const target = nativeTargets([{ id, protocol: 'external' }])[0]!;
+    expect(project(target)[0]).toMatchObject({ profile: target.name, executor: id, dispatchAllowed: true, defaultsAvailable: true });
+    expect(project(target)[0]?.modelAlias).toBeUndefined();
+    expect(project({ ...target, allowedModels: ['explicit-vendor-model'] })[0]).toMatchObject({ defaultsAvailable: false });
+  });
 
   it('projects a model-only profile default and the same missing-default error as dispatch', () => {
     model = { ...model, supportEfforts: undefined, defaultEffort: 'high' };

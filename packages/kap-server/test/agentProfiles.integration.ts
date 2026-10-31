@@ -7,6 +7,7 @@ import {
   AgentProfileSourceDiagnosticCodes,
   ensureMainAgent,
   IAgentExecutorRegistry,
+  IHostProcessService,
   IAgentLifecycleService,
   IAgentLoopService,
   IAgentProfileRegistry,
@@ -799,6 +800,65 @@ describe('GET /api/agents', () => {
     await vi.waitFor(async () => {
       expect((await read()).items.some((item) => item.name === 'new-lead')).toBe(true);
     }, { timeout: 5000 });
+  });
+
+  it('discovers engine metadata and caller references through the typed API without executing engines or writing preferences', async () => {
+    const ids = ['codex-app-server', 'claude-acp', 'agy-cli', 'grok-acp'];
+    const path = join(home!, 'installed-engine.exe');
+    await writeFile(path, 'fixture executable metadata only');
+    const text = [
+      '[search]', 'enabled = false',
+      '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
+      '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
+      ...ids.flatMap(id => [`[agent_executor_overrides."${id}"]`, `bin_path = ${JSON.stringify(id === 'agy-cli' ? join(home!, 'missing-engine.exe') : path)}`, 'show_in_profile_list = false']),
+    ].join('\n');
+    await writeFile(join(home!, 'config.toml'), text);
+    const allowed = ['helper', 'unbound-helper', 'other-main', ...ids.map(id => `engine:${id}`)];
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    await writeFile(join(home!, 'agents', 'reference-lead.md'), ['---', 'name: reference-lead', 'description: Reference fixture lead', 'main: true', 'model_alias: stub',
+      'tools: [AgentRun]', `allowed_subagents: ${JSON.stringify(allowed)}`, '---', 'Coordinate the fixture.'].join('\n'));
+    for (const name of ['helper', 'unbound-helper', 'hidden-helper', 'other-main']) await writeFile(join(home!, 'agents', `${name}.md`),
+      ['---', `name: ${name}`, 'description: Reference fixture', `main: ${name === 'other-main'}`, ...(name === 'unbound-helper' ? [] : ['model_alias: stub']), '---', 'Fixture profile.'].join('\n'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const klient = createKlient({ endpoint: base, token: server.localOwnerToken });
+    const spawn = vi.spyOn(server.core.accessor.get(IHostProcessService), 'spawn');
+    try {
+      const discovery = await klient.rest!.executors.discover();
+      for (const id of ids) expect(discovery.items.find(item => item.id === id)).toMatchObject({
+        installed: id !== 'agy-cli', status: id === 'agy-cli' ? 'missing' : 'installed', checked_at: expect.any(String),
+      });
+      expect(discovery.items.find(item => item.id === 'codex-app-server')).toMatchObject({ source: 'override', source_kind: 'explicit-path', path: path.replaceAll('\\', '/') });
+      expect(discovery.items.find(item => item.id === 'agy-cli')).toMatchObject({ reason_code: 'path_not_found',
+        components: [expect.objectContaining({ role: 'program', reason_code: 'path_not_found' })] });
+      expect(discovery.items.find(item => item.id === 'agy-cli')!.reason).not.toMatch(/^code:/);
+      const draft = await klient.rest!.agents.referenceCandidates({ cwd: home!, profile: 'reference-lead' });
+      expect(draft.delegation_available).toBe(true);
+      expect(draft.items.map(item => item.profile).toSorted()).toEqual(allowed.toSorted());
+      expect(draft.items.find(item => item.profile === 'engine:codex-app-server')).toMatchObject({ configuration: 'native', group: 'native', available: true, reference: 'kiki://agents/engine%3Acodex-app-server' });
+      expect(draft.items.find(item => item.profile === 'engine:agy-cli')).toMatchObject({ available: false, unavailable_reason_code: 'engine_not_installed' });
+      expect(draft.items.find(item => item.profile === 'unbound-helper')).toMatchObject({ available: false, defaults_available: false, unavailable_reason_code: 'model_not_configured' });
+      expect(draft.items.find(item => item.profile === 'other-main')).toMatchObject({ group: 'main', configuration: 'profile' });
+      expect(spawn).not.toHaveBeenCalled();
+      const created = await (await authedFetch(server, base, '/api/sessions', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'reference-lead' } }),
+      })).json() as Envelope<{ id: string }>;
+      expect(created.code, created.msg).toBe(0);
+      spawn.mockClear();
+      const query = { session_id: created.data.id, agent_id: 'main' };
+      const live = await klient.rest!.agents.referenceCandidates(query);
+      expect(live.items.map(item => item.profile).toSorted()).toEqual(allowed.toSorted());
+      expect(server.core.accessor.get(ISessionManager).get(created.data.id)!.accessor.get(IAgentLifecycleService).list()).toHaveLength(1);
+      await server.core.accessor.get(ISessionManager).close(created.data.id);
+      spawn.mockClear();
+      const cold = await klient.rest!.agents.referenceCandidates(query);
+      expect(cold).toEqual(live);
+      expect(server.core.accessor.get(ISessionManager).get(created.data.id)).toBeUndefined();
+      expect(spawn).not.toHaveBeenCalled();
+      expect(await readFile(join(home!, 'config.toml'), 'utf8')).toBe(text);
+      expect(await klient.rest!.agents.referenceCandidates({ session_id: 'missing', agent_id: 'main' })).toMatchObject({ items: [], delegation_available: false });
+    } finally { spawn.mockRestore(); await klient.close(); }
   });
 
   it('lists registered engines while every discovery is pending and updates only the explicitly checked id', async () => {

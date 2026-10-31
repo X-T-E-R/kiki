@@ -287,6 +287,7 @@ export class AgentTranscriptLiveAdapter {
     readonly thinkingEffortExplicit?: boolean;
     readonly executorId?: string;
     readonly executorProtocol?: string;
+    readonly sourceRef?: import('@kiki/transcript').AgentRunSource;
     readonly description: string;
     readonly status: string;
     readonly detached: boolean;
@@ -306,6 +307,7 @@ export class AgentTranscriptLiveAdapter {
       thinkingEffortExplicit: info.thinkingEffortExplicit ?? prev?.thinkingEffortExplicit,
       executorId: info.executorId ?? prev?.executorId,
       executorProtocol: info.executorProtocol ?? prev?.executorProtocol,
+      sourceRef: info.sourceRef ?? prev?.sourceRef,
       description: info.description,
       agentId: info.agentId,
       outputTail: prev?.outputTail ?? '',
@@ -1221,6 +1223,7 @@ export class AgentTranscriptLiveAdapter {
       receiptVerification?: TranscriptTask['receiptVerification'];
       agentId?: string;
       profile?: string;
+      sourceRef?: TranscriptTask['sourceRef'];
       collaborationTaskName?: string;
       stopReason?: string;
       startedAt: number;
@@ -1241,6 +1244,7 @@ export class AgentTranscriptLiveAdapter {
       receiptVerification: info.receiptVerification ?? prev?.receiptVerification,
       name: info.collaborationTaskName ?? prev?.name,
       subagentName: info.profile ?? prev?.subagentName,
+      sourceRef: info.sourceRef ?? prev?.sourceRef,
       description: info.description,
       command: info.command ?? prev?.command,
       agentId: info.agentId ?? prev?.agentId,

@@ -126,6 +126,10 @@ allow_kiki_subagents = false
 
 Omit model, effort and permission fields to let the harness choose them. `kiki_context` accepts `memory`, `board`, `cron`, `threads`, `history` and `hooks`; `[]` explicitly disables all groups, and `allow_kiki_subagents = false` explicitly disables delegation. An omitted profile field inherits the harness settings in this execution path. Changing settings does not rewrite an existing binding: select the execution again or explicitly rebuild its context to adopt them.
 
+Every non-native executor descriptor also projects a reserved native target named `engine:<executor-id>`, such as `engine:codex-app-server`, `engine:claude-acp`, `engine:agy-cli` or `engine:grok-acp`. `AgentRun` can use that name as its `profile` to start a child with the engine's own configuration; it does not require a Markdown role profile. Ordinary named role profiles keep their existing behavior. For a bare engine target, model selection is explicit `AgentRun` value → `[agent_executor_overrides."<id>".defaults].model_alias` → the vendor's own default. The model ID is not resolved through Kiki's native `[models]` or provider settings.
+
+A bare engine target has no Kiki role, system prompt or profile body by default, and being a child does not by itself open the Kiki MCP bridge. Explicit per-engine defaults remain in force: `inject_kiki_mcp`, `kiki_context`, `allow_kiki_subagents` and `executor_prompt` can still request the corresponding bridge, context or prompt behavior when the engine supports it. The bridge itself is still filtered by the existing tool, path and approval rules.
+
 `native_agent` selects the vendor's own agent. It is a session override or a value in these defaults, not a profile field. JSON `null` on the session override clears that choice and inherits the defaults value. Omit it, or set `engine-default`, to keep the vendor's default agent; Kiki then does not send a custom agent selection. A newly chosen value must be one the executor has already advertised. Missing discovery keeps an existing choice when the executor, that agent, and the descriptor revision still match; a discovery list that omits the value is rejected and the current binding stays.
 
 Kiki's own executor accepts only omission or `engine-default`. AGY CLI's menu currently offers only `engine-default`, so its default main agent stays AGY's own and is not passed as a custom `--agent`.
@@ -691,7 +695,7 @@ In print mode (`kiki -p "<prompt>"`), Kiki stays alive after the main agent's tu
 
 ## `subagent`
 
-`subagent` controls how spawned subagents (`AgentRun`) run. Role selection uses the profile's [`can_spawn_subagents`, `allowed_subagents`, `preferred_subagents`, and `deny_subagents`](../customization/agents-and-subagents.md#agent-file-format); the former host dispatch-policy settings are removed.
+`subagent` controls how spawned subagents (`AgentRun`) run. Role selection uses the profile's [`can_spawn_subagents`, `allowed_subagents`, `preferred_subagents`, and `deny_subagents`](../customization/agents-and-subagents.md#agent-file-format); the former host dispatch-policy settings are removed. Reserved native engine targets such as `engine:claude-acp` are ordinary stable target names for these checks: an explicit `allowed_subagents` list must include the exact `engine:<executor-id>` name to permit that child. Projecting a target from an executor descriptor never widens an existing allowlist.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |

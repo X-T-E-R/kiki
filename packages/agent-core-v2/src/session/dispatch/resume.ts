@@ -10,7 +10,7 @@ export interface DispatchResumeRecord {
   readonly operationId: string;
   readonly fingerprint: string;
   readonly request: AgentRunRequest;
-  readonly switchInput: ModelSwitchInput;
+  readonly switchInput: ModelSwitchInput | { readonly operationId: string; readonly mode: 'direct'; readonly model?: undefined; readonly thinking?: undefined };
   readonly toolOverride?: import('#/agent/profile/profile').ToolBindingOverride;
   readonly state: 'accepted' | 'ready' | 'started';
   readonly turnId?: number;
@@ -24,6 +24,7 @@ export function resumeFingerprint(request: AgentRunRequest, options: DispatchRun
   return createHash('sha256').update(JSON.stringify({
     request,
     requesterAgentId: options.requesterAgentId,
+    sourceRef: options.sourceRef,
     bindingOverride: {
       modelAlias: options.bindingOverride?.modelAlias,
       thinkingEffort: options.bindingOverride?.thinkingEffort,

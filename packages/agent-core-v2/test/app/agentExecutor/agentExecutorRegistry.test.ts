@@ -123,6 +123,55 @@ describe('AgentExecutorRegistryService', () => {
     await services.dispose();
   });
 
+  it('discovers installed files without executing adapters, reading credentials or changing preferences', async () => {
+    const reads: string[] = [];
+    const files = new Map([
+      ['/bin/codex', ''], ['/bin/grok', ''], ['/adapters/claude/dist/index.js', ''],
+      ['/adapters/claude/package.json', '{"name":"example-adapter","version":"1.2.3"}'],
+      ['/adapters/agy/agy-cli-acp.mjs', ''],
+    ]);
+    services.set(IHostFileSystem, { stat: async (path: string) => {
+      if (path === '/denied') throw Object.assign(new Error('denied'), { code: 'EACCES' });
+      if (!files.has(path)) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      return { isFile: true, isDirectory: false, size: files.get(path)!.length };
+    }, readdir: async () => [], readText: async (path: string) => { reads.push(path); return files.get(path)!; } } as unknown as IHostFileSystem);
+    services.set(IBootstrapService, { platform: 'linux', homeDir: '/kiki', osHomeDir: '/user',
+      getEnv: (name: string) => name === 'PATH' ? '/bin' : name === 'BAD_BIN' ? '/missing/from-env' : undefined } as unknown as IBootstrapService);
+    services.set(IHostProcessService, { spawn: async () => { throw new Error('metadata discovery must not spawn'); } } as unknown as IHostProcessService);
+    const binary = (path: string) => ({ protocol: 'acp-v1', args: [], sources: [{ id: 'explicit', kind: 'explicit-path', path }] });
+    services.set(IConfigService, configWith({
+      codex: binary('/bin/codex'), grok: binary('/bin/grok'),
+      'claude-acp': { protocol: 'acp-v1', args: [], sources: [{ id: 'adapter', kind: 'node-script', path: '/adapters/claude/dist/index.js' }],
+        diagnostics: [{ kind: 'dependency', command: 'claude', args: ['--version'], unavailable: 'missing', failed: 'failed' }] },
+      'agy-cli': { protocol: 'acp-v1', args: [], sources: [{ id: 'adapter', kind: 'node-script', path: '/adapters/agy/agy-cli-acp.mjs' }] },
+      pinned: { ...binary('/bin/codex'), source: 'missing' },
+      missing_path: binary('/missing'), denied: binary('/denied'),
+      not_on_path: { protocol: 'acp-v1', args: [], sources: [{ id: 'path', kind: 'path-lookup', command: 'missing' }] },
+      env_unset: { protocol: 'acp-v1', args: [], sources: [{ id: 'env', kind: 'env', name: 'MISSING_BIN' }] },
+      env_missing_path: { protocol: 'acp-v1', args: [], sources: [{ id: 'env', kind: 'env', name: 'BAD_BIN' }] },
+      no_glob_match: { protocol: 'acp-v1', args: [], sources: [{ id: 'glob', kind: 'glob', pattern: '/missing/*' }] },
+    }));
+    services.set(IAgentExecutorRegistry, new SyncDescriptor(AgentExecutorRegistryService));
+    const registry = services.get(IAgentExecutorRegistry);
+    expect(await registry.discoverMetadata!('codex')).toMatchObject({ installed: true, source: 'explicit', path: '/bin/codex' });
+    expect(await registry.discoverMetadata!('grok')).toMatchObject({ installed: true, path: '/bin/grok' });
+    expect(await registry.discoverMetadata!('claude-acp')).toMatchObject({ installed: true, version: '1.2.3', components: [
+      { installed: true, role: 'program' }, { installed: false, role: 'dependency', reason_code: 'not_on_path' },
+    ] });
+    expect(await registry.discoverMetadata!('agy-cli')).toMatchObject({ installed: false, status: 'missing', reason_code: 'not_on_path', components: [
+      { installed: true, role: 'program' }, { installed: false, role: 'dependency', reason_code: 'not_on_path' },
+    ] });
+    expect(await registry.discoverMetadata!('pinned')).toMatchObject({ installed: false });
+    for (const [id, code] of [['missing_path', 'path_not_found'], ['denied', 'metadata_unreadable'],
+      ['not_on_path', 'not_on_path'], ['env_unset', 'env_unset'], ['env_missing_path', 'path_not_found'], ['no_glob_match', 'no_glob_match']]) {
+      const result = await registry.discoverMetadata!(id!);
+      expect(result).toMatchObject({ installed: false, status: code === 'metadata_unreadable' ? 'error' : 'missing', reason_code: code,
+        components: [expect.objectContaining({ reason_code: code })] });
+      expect(result.reason).not.toMatch(/^code:/);
+    }
+    expect(reads).toEqual(['/adapters/claude/package.json']);
+  });
+
   it('normalizes the native executor when no descriptor is configured', () => {
     services.set(IConfigService, configWith({}));
     services.set(

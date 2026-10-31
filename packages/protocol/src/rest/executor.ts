@@ -45,6 +45,35 @@ export const executorOverrideSchema = z.object({
 });
 export type ExecutorOverride = z.infer<typeof executorOverrideSchema>;
 
+export const executorDiscoveryComponentSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  role: z.enum(['program', 'dependency']),
+  installed: z.boolean(),
+  path: z.string().optional(),
+  version: z.string().optional(),
+  reason: z.string().optional(),
+  reason_code: z.string().optional(),
+});
+export const executorDiscoveryStatusSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  protocol: z.string(),
+  installed: z.boolean(),
+  status: z.enum(['installed', 'missing', 'error']),
+  checked_at: z.string(),
+  version: z.string().optional(),
+  path: z.string().optional(),
+  source: z.string().optional(),
+  source_kind: z.enum(['explicit-path', 'env', 'glob', 'path-lookup', 'node-script']).optional(),
+  reason: z.string().optional(),
+  reason_code: z.string().optional(),
+  components: z.array(executorDiscoveryComponentSchema),
+});
+export type ExecutorDiscoveryStatus = z.infer<typeof executorDiscoveryStatusSchema>;
+export const executorDiscoveryResponseSchema = z.object({ items: z.array(executorDiscoveryStatusSchema) });
+export type ExecutorDiscoveryResponse = z.infer<typeof executorDiscoveryResponseSchema>;
+
 export const executorCatalogItemSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),

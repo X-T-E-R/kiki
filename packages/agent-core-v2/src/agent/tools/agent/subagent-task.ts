@@ -19,6 +19,7 @@ type SubagentCompletion = {
 
 export type SubagentHandle = {
   readonly agentId: string;
+  readonly sourceRef?: import('@kiki/protocol').AgentRunSource;
   readonly profileName: string;
   readonly name?: string;
   readonly parentToolCallId?: string;
@@ -145,6 +146,7 @@ export class SubagentTask implements AgentTask {
       ...base,
       kind: 'agent',
       agentId: this.agentId,
+      sourceRef: this.handle.sourceRef,
       profile: this.profile,
       parentToolCallId: this.parentToolCallId,
       model: this.model,

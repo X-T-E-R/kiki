@@ -661,6 +661,7 @@ export interface HttpRestFacade {
   };
 
   readonly executors: {
+    discover(options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ExecutorDiscoveryResponse>;
     list(): Promise<import('@kiki/protocol').ListExecutorsResponse>;
     listInstallations(options?: HttpRestRequestOptions): Promise<{ readonly items: readonly HttpRestManagedAdapterStatus[] }>;
     install(executorId: string, options?: HttpRestRequestOptions): Promise<HttpRestManagedAdapterStatus>;
@@ -674,6 +675,7 @@ export interface HttpRestFacade {
   };
 
   readonly agents: {
+    referenceCandidates(query: import('@kiki/protocol').AgentReferenceCandidatesQuery, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').AgentReferenceCandidatesResponse>;
     list(query?: string | ListNamedAgentProfilesQuery): Promise<ListNamedAgentProfilesResponse>;
     previewFile(body: import('@kiki/protocol').PreviewAgentProfileFileRequest, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').PreviewAgentProfileFileResponse>;
     previewExecutorPrompt(name: string, body?: import('@kiki/protocol').ExecutorPromptPreviewRequest): Promise<import('@kiki/protocol').ExecutorPromptPreviewResponse>;

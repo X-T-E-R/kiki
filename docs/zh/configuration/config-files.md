@@ -126,6 +126,10 @@ allow_kiki_subagents = false
 
 省略模型、思考强度与权限字段，就交给 harness 自己选择。`kiki_context` 接受 `memory`、`board`、`cron`、`threads`、`history`、`hooks`；`[]` 明确关闭全部组，`allow_kiki_subagents = false` 明确关闭委派。在这条 execution 路径中，profile 未声明的字段继承 harness 设置。修改设置不会改写已有绑定；重新选择 execution 或显式重建上下文才会采用新值。
 
+每个非原生执行器描述符都会投影出一个保留的原生目标，名称为 `engine:<executor-id>`，例如 `engine:codex-app-server`、`engine:claude-acp`、`engine:agy-cli` 和 `engine:grok-acp`。`AgentRun` 可以把这个名称作为 `profile`，使用引擎自己的配置启动 child；不需要 Markdown role profile。普通的具名职责 profile 保持原有行为。裸引擎目标的模型顺序是：`AgentRun` 显式值 → `[agent_executor_overrides."<id>".defaults].model_alias` → 厂商自己的默认值。模型 ID 不会通过 Kiki 原生的 `[models]` 或 provider 设置解析。
+
+裸引擎目标默认没有 Kiki 职责、system prompt 或 profile 正文；仅因为它是 child，也不会自动打开 Kiki MCP 工具桥。显式的每引擎 defaults 仍然生效：`inject_kiki_mcp`、`kiki_context`、`allow_kiki_subagents` 和 `executor_prompt` 仍可在引擎支持时分别请求工具桥、上下文或提示词行为。工具桥仍受现有工具、路径和审批规则过滤。
+
 `native_agent` 选择厂商自己的 Agent。它是会话覆盖，或这里 defaults 中的一项，不是 profile 字段。会话覆盖上的 JSON `null` 清除这项选择，并继承 defaults。省略它，或写成 `engine-default`，就保留厂商默认 Agent；Kiki 此时不发送自定义 Agent 选择。新选择的值必须是该执行器已经宣告的 Agent。尚未发现时，只有执行器、该 Agent 和描述符版本仍与当前绑定一致，已有选择才会保留；发现结果不含该值时拒绝，当前绑定保持不变。
 
 Kiki 自己的执行器只接受省略或 `engine-default`。AGY CLI 的菜单目前只提供 `engine-default`，因此默认 main agent 仍是 AGY 自己的，不会作为自定义 `--agent` 传出。
@@ -677,7 +681,7 @@ backoff = 15000
 
 ## `subagent`
 
-`subagent` 控制派生 subagent（`AgentRun`）的运行方式。角色选择使用 profile 的 [`can_spawn_subagents`、`allowed_subagents`、`preferred_subagents` 和 `deny_subagents`](../customization/agents-and-subagents.md#agent-文件格式)；原宿主派发策略设置已移除。
+`subagent` 控制派生 subagent（`AgentRun`）的运行方式。角色选择使用 profile 的 [`can_spawn_subagents`、`allowed_subagents`、`preferred_subagents` 和 `deny_subagents`](../customization/agents-and-subagents.md#agent-文件格式)；原宿主派发策略设置已移除。`engine:claude-acp` 这类保留的原生引擎目标也按稳定名称参与这些检查：显式写出的 `allowed_subagents` 必须包含准确的 `engine:<executor-id>` 名称，才能允许启动这个 child。执行器描述符自动投影目标不会放宽已有 allowlist。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
-import { taskReceiptSchema } from '@kiki/protocol';
+import { taskReceiptSchema, agentRunSourceSchema } from '@kiki/protocol';
 
 export const taskKindSchema = z.enum(['subagent', 'bash', 'tool']);
 export type TaskKind = z.infer<typeof taskKindSchema>;
@@ -34,6 +34,7 @@ export const taskSchema = z.object({
   agent_id: z.string().optional(),
   profile: z.string().optional(),
   parent_tool_call_id: z.string().optional(),
+  source_ref: agentRunSourceSchema.optional(),
   run_in_background: z.boolean(),
   exit_code: z.number().int().nullable().optional(),
   stop_reason: z.string().optional(),

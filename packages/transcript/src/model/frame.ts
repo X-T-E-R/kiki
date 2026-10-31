@@ -18,6 +18,7 @@ export interface TranscriptSkillActivation {
 export interface TranscriptUserOrigin {
   readonly kind: 'user';
   readonly skillActivations?: readonly TranscriptSkillActivation[];
+  readonly agentRefs?: readonly import('../contract/agentReference').AgentReference[];
 }
 
 /**

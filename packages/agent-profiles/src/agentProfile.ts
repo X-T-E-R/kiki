@@ -202,6 +202,7 @@ export interface AgentProfile extends AgentModelParameters, AgentModelConstraint
   readonly subagents?: readonly string[];
   readonly subagentLeases?: Readonly<Record<string, SubagentLease>>;
   readonly spawnConstraints?: SpawnConstraints;
+  readonly configuration?: 'native';
   readonly executor?: string;
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly executorPrompt?: ExecutorPrompt;

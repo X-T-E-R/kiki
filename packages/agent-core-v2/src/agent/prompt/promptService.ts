@@ -4,6 +4,9 @@ import { z } from 'zod';
 import { castDraft } from 'immer';
 
 import { IInstantiationService } from '#/_base/di/instantiation';
+import { prepareAgentReferences } from '#/agent/prompt/agentReferences';
+import { findAgentRefs } from '@kiki/protocol';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ILogService } from '#/_base/log/log';
 import { timeRestorePhase } from '#/session/agentLifecycle/restoreTiming';
 import { RefCountedDisposable, toDisposable } from '#/_base/di/lifecycle';
@@ -630,8 +633,8 @@ function sharedSteerOrigin(
   skillActivations: readonly BundledSkillActivation[],
 ): PromptOrigin {
   const origins = records.map((item): PromptOrigin => item.message.origin ?? { kind: 'unknown' });
-  if (origins.every((origin) => origin.kind === 'user')) return skillActivations.length > 0 ? { kind: 'user', skillActivations } : USER_PROMPT_ORIGIN;
   if (origins.length === 1) return origins[0]!;
+  if (origins.every((origin) => origin.kind === 'user')) return skillActivations.length > 0 ? { kind: 'user', skillActivations } : USER_PROMPT_ORIGIN;
   return { kind: 'merged', origins };
 }
 
@@ -1299,6 +1302,15 @@ export class AgentPromptService implements IAgentPromptService {
     try { return await promise; } finally { this.enqueueFlights.delete(id); }
   }
 
+  private async prepareReferenceMessage(message: ContextMessage, messageId: string, signal?: AbortSignal): Promise<ContextMessage> {
+    if (message.origin?.kind === 'user' && message.content.some(part => part.type === 'text' && findAgentRefs(part.text).length > 0)) {
+      const ready = this.instantiation.invokeFunction(accessor => accessor.get(ISessionAgentProfileCatalog).ready);
+      await (signal === undefined ? ready : abortable(ready, signal));
+      if (signal?.aborted || this.closing !== undefined) throw submissionCancelled(messageId);
+    }
+    return this.instantiation.invokeFunction(accessor => prepareAgentReferences(message, messageId, accessor));
+  }
+
   private async enqueueNow(input: PromptInput): Promise<PromptHandle> {
     const mailboxMessageId =
       input.message.origin?.kind === 'peer_thread' || input.message.origin?.kind === 'bridged_peer' || input.message.origin?.kind === 'room_message'
@@ -1312,7 +1324,9 @@ export class AgentPromptService implements IAgentPromptService {
     const signal = input.signal;
     if (signal?.aborted || this.closing !== undefined) throw submissionCancelled(id);
     const userMessageId = input.userMessageId ?? id;
-    const message = { ...input.message, id: userMessageId };
+    const changesCaller = input.execution?.profile !== undefined || input.execution?.execution !== undefined;
+    const message = changesCaller ? { ...input.message, id: userMessageId }
+      : await this.prepareReferenceMessage({ ...input.message, id: userMessageId }, userMessageId, signal);
     const launchedDeferred = deferred<Turn | undefined>();
     const completionDeferred = deferred<PromptCompletion>();
     const goalId = this.instantiation.invokeFunction((accessor) => capturePromptGoalId(accessor, input.execution));
@@ -1826,11 +1840,12 @@ export class AgentPromptService implements IAgentPromptService {
       item.id,
       replacePromptContent(item.message, content, replaceAttachments),
     );
-    item.message = {
-      ...item.message,
-      id: item.id,
-      content: nextContent,
-    };
+    const origin = item.message.origin;
+    const nextOrigin = origin?.kind === 'user' && (origin.originalInput !== undefined || origin.skillActivations?.length)
+      ? { ...origin, originalInput: nextContent.slice(bundledSkillBlockCount(item.message)) } : origin;
+    const nextMessage = { ...item.message, id: item.userMessageId, content: nextContent, origin: nextOrigin };
+    item.message = item.execution?.profile !== undefined || item.execution?.execution !== undefined ? nextMessage
+      : this.instantiation.invokeFunction(accessor => prepareAgentReferences(nextMessage, item.userMessageId, accessor));
     item.revision += 1;
     const execution = this.syncGoalCreationObjective(item, content);
     void this.dispatcher.dispatch(
@@ -2076,6 +2091,7 @@ export class AgentPromptService implements IAgentPromptService {
           throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompts with pending plan or goal changes must run as their own turn');
         }
       }
+      for (const item of selected) item.message = await this.prepareReferenceMessage(item.message, item.userMessageId);
       const batch = selected.map(item => this.extractCompressionCaptions({ ...item.message,
         content: this.repairKnownTruncatedImages(item.id, item.message.content) }));
       const rerouted = mergeSteerMessages(batch);
@@ -2193,14 +2209,18 @@ export class AgentPromptService implements IAgentPromptService {
       throw new Error2(ErrorCodes.REQUEST_INVALID, 'Prompts with a model-switch dependency or different execution binding must run as their own turn');
     }
     const active = this.active;
+    let deliveryAttempted = false;
     for (const item of selected) {
       item.deliveryReason = undefined;
       this.steeringPromptIds.add(item.id);
     }
     try {
+      for (const item of selected) item.message = await this.prepareReferenceMessage(item.message, item.userMessageId);
+      if (selected.some(item => !this.pending.includes(item)) || this.active !== active) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are no longer pending');
       const message = mergeSteerMessages(selected);
       const execution = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutionService));
       const textOnly = message.content.every((part) => part.type === 'text');
+      deliveryAttempted = active !== undefined && textOnly && execution.steer !== undefined;
       const outcome = active !== undefined && textOnly
         ? await (execution.steer?.(message) ?? false)
         : false;
@@ -2218,6 +2238,12 @@ export class AgentPromptService implements IAgentPromptService {
         this.publishQueueHoldChanged();
       } else if (outcome === true && active !== undefined && selected.every((item) => this.pending.includes(item))) {
         for (const item of selected) {
+          const materialized = item.message.origin?.kind === 'agent_message'
+            ? hasMailboxMessageInContext(this.context.get(), item.message) : item.alreadyMaterialized;
+          if (!materialized) {
+            const { message, captions } = this.extractCompressionCaptions(item.message);
+            this.appendPrompt(message, captions);
+          }
           this.pending.splice(this.pending.indexOf(item), 1);
           item.state = 'steered';
           item.launchedDeferred.resolve(active.turn);
@@ -2246,7 +2272,7 @@ export class AgentPromptService implements IAgentPromptService {
       }
       return selected.map((item) => item.handle);
     } catch (error) {
-      if (selected.some(item => this.pending.includes(item))) {
+      if (deliveryAttempted && selected.some(item => this.pending.includes(item))) {
         this.recoveryHold = true;
         this.publishQueueHoldChanged();
       }
@@ -2503,7 +2529,8 @@ export class AgentPromptService implements IAgentPromptService {
       controller.signal.throwIfAborted();
       for (const candidate of selected) {
         this.steeringPromptIds.add(candidate.id);
-        candidate.message = { ...candidate.message, content: this.repairKnownTruncatedImages(candidate.id, candidate.message.content) };
+        candidate.message = await this.prepareReferenceMessage({ ...candidate.message,
+          content: this.repairKnownTruncatedImages(candidate.id, candidate.message.content) }, candidate.userMessageId, controller.signal);
       }
       const batch = selected.map(candidate => ({ ...this.extractCompressionCaptions(candidate.message),
         alreadyMaterialized: candidate.message.origin?.kind === 'agent_message'
@@ -2587,7 +2614,9 @@ export class AgentPromptService implements IAgentPromptService {
         const text = deliveredMessage.content.filter((part) => part.type === 'text').map((part) => part.text).join('');
         await admission.dispose();
         const execution = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutionService));
-        turn = (await execution.run({ kind: 'prompt', prompt: text, promptId: item.id, input: deliveredMessage.content, origin: deliveredMessage.origin }, { signal: controller.signal })).turn;
+        turn = (await execution.run({ kind: 'prompt', prompt: text, promptId: item.id, input: deliveredMessage.content, origin: deliveredMessage.origin,
+          contextMessages: deliverableBatch.filter(candidate => !candidate.alreadyMaterialized).map(candidate => candidate.message) },
+          { signal: controller.signal, parentReceiptManaged: item.parentReceiptManaged })).turn;
         if (this.queuedExternalSteerIds.delete(item.id)) {
           await this.dispatcher.dispatch(new ExecutorHintDelivery({
             executorId: this.profile.data().executorId, turnId: turn.id,

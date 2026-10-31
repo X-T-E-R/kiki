@@ -1,5 +1,7 @@
 import type { BindingAdvisory, BindingValueSource } from '@kiki/agent-profiles/bindingAdvisory';
 import { modelAliasResolverForExecutor } from '@kiki/agent-profiles/ports';
+import { isNativeTarget } from '@kiki/agent-profiles/nativeTarget';
+import { resolveNativeTargetBinding } from '#/session/subagent/nativeTargetBinding';
 import type { AgentCapabilityReasonCode } from '@kiki/protocol';
 
 import type { AgentProfile, AgentProfileRouteCatalogEntry } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -59,13 +61,14 @@ export interface SubagentCapabilityServices {
 export function projectSubagentCapabilities(
   input: SubagentCapabilityCatalog,
   services: SubagentCapabilityServices,
+  includeMain = false,
 ): readonly SubagentCapabilityTarget[] {
   const snapshot = input.snapshot ?? input.catalog.snapshot?.();
   const scoped = snapshot?.scopedBindings.get(input.caller.profileDefinitionId ?? '') ?? new Map();
   const profiles = [
-    ...input.profiles.filter((profile) => profile.main !== true && !scoped.has(profile.name)),
+    ...input.profiles.filter((profile) => (includeMain || profile.main !== true) && !scoped.has(profile.name)),
     ...[...scoped.values()].flatMap((binding) =>
-      binding.status === 'ready' && binding.profile !== undefined && binding.profile.main !== true
+      binding.status === 'ready' && binding.profile !== undefined && (includeMain || binding.profile.main !== true)
         ? [{ ...binding.profile, name: binding.alias }] : []),
   ];
   const bindingSnapshot = snapshot === undefined ? undefined : {
@@ -110,6 +113,11 @@ export function projectSubagentCapabilities(
         snapshot: bindingSnapshot,
       }, services.models);
       const profile = target.effectiveProfile;
+      if (isNativeTarget(profile)) {
+        const result = resolveNativeTargetBinding(profile, {}, services.config, services.executors);
+        return { ...identity, defaultsAvailable: true, modelAlias: result.execution.effective.model,
+          thinkingEffort: result.execution.effective.thinking, bindingAdvisories: result.bindingAdvisories };
+      }
       const route = target.selection.route;
       const native = (profile.executor ?? 'native') === 'native';
       const resolver = modelAliasResolverForExecutor(profile.executor, services.models);

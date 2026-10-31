@@ -1663,7 +1663,9 @@ function targetView(
   profileName: string | undefined,
 ): DispatchTarget {
   const binding = agent.accessor.get(IAgentProfileService).data();
-  if (binding.modelAlias === undefined) throw invalid('Target agent has no configured model.');
+  if (binding.modelAlias === undefined && (binding.execution === undefined || binding.execution.selection.executor === 'native')) {
+    throw invalid('Target agent has no configured model.');
+  }
   return {
     agent,
     agentId: agent.id,

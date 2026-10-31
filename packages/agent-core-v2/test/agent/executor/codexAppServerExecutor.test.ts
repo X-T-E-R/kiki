@@ -36,6 +36,7 @@ import { appendSharedPromptField } from '#/app/promptField/builtinPromptFields';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { CodexAppServerExecutorSession } from '#/agent/execution/codexAppServerExecutorSession';
+import { ExternalTurnRecorder } from '#/agent/execution/externalTurnRecorder';
 import {
   ExecutorRuntimeUpdate,
   ExecutorSessionUpdated,
@@ -669,6 +670,36 @@ describe('Codex app-server external executor', () => {
       } finally { await cold.shutdown(); }
     } finally { await session.shutdown(); }
   });
+  it('retains the logical Codex prompt source and suppresses accepted steer echoes', async () => {
+    const text = 'Review kiki://agents/reviewer';
+    const ref = { refId: 'ar:logical-input:reviewer', profile: 'reviewer', executor: 'native', configuration: 'profile' as const, label: 'Reviewer', engine_label: 'Kiki' };
+    const message: ContextMessage = { id: 'logical-input', role: 'user', toolCalls: [], content: [{ type: 'text', text }], origin: { kind: 'user', agentRefs: [ref] } };
+    const harness = createHarness({ deferTurnCompletion: true,
+      turnEvents: [{ type: 'message.delta', role: 'user', messageId: 'initial-echo', content: { type: 'text', text } }] });
+    const appended: ContextMessage[] = [];
+    Object.assign(harness.memory, { appendManaged: (message: ContextMessage) => appended.push(message) });
+    const expectedEcho = vi.spyOn(ExternalTurnRecorder.prototype, 'expectUserEcho');
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: text, promptId: 'different-request', origin: message.origin, contextMessages: [message] },
+        { signal: new AbortController().signal, parentReceiptManaged: true });
+      expect(appended).toEqual([message]);
+      expect(harness.prompts[0]).toMatchObject({ input: [{ type: 'text', text }] });
+      expect(await harness.session.steer({ ...message, content: [{ type: 'text', text: 'steered reference' }] })).toBe(true);
+      expect(expectedEcho).toHaveBeenCalledWith('steered reference');
+      const recorder = expectedEcho.mock.contexts[0] as ExternalTurnRecorder;
+      await recorder.record({ type: 'message.delta', role: 'user', messageId: 'steer-echo', content: { type: 'text', text: 'steered reference' } });
+      await recorder.record({ type: 'message.delta', role: 'user', messageId: 'remote-user', content: { type: 'text', text: 'a different remote message' } });
+      await harness.turnCancel();
+      await expect(run.completion).rejects.toThrow('Codex turn interrupted');
+      expect(appended.filter(item => item.role === 'user')).toEqual([
+        message, expect.objectContaining({ origin: { kind: 'unknown' }, content: [{ type: 'text', text: 'a different remote message' }] }),
+      ]);
+    } finally {
+      expectedEcho.mockRestore();
+      await harness.session.shutdown();
+    }
+  });
+
   it('delivers a text steer into the active remote turn and rejects stale acknowledgments', async () => {
     const harness = createHarness({ deferTurnCompletion: true });
     await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });

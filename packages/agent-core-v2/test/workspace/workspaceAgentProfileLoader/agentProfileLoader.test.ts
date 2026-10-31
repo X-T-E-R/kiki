@@ -445,7 +445,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
     _serviceBrand: undefined,
     workspaceKey: workspaceContext.workspaceId,
   };
-  const catalog = new SessionAgentProfileCatalogService(registry, seed, config, log, flags);
+  const catalog = new SessionAgentProfileCatalogService(registry, seed, config, log, flags, get(IAgentExecutorRegistry));
   const writer = new AgentProfileWriterService(
     hostFs,
     registry,
@@ -521,7 +521,7 @@ describe('agent profile loaders + session catalog', () => {
       await writeAgent(join(root, '.routes', 'helper'), 'brief.md', routeMd('helper.brief', 'helper', 'Brief'));
       await writeAgent(join(fixture.homeDir, 'agents'), 'user-helper.md', externalMd.replace('name: helper', 'name: user-helper'));
       const trust = workspaceTrustStub(false);
-      const executors = { validateBinding: () => ({ ok: true, binding: {} }) } as unknown as IAgentExecutorRegistry;
+      const executors = { list: () => [], validateBinding: () => ({ ok: true, binding: {} }) } as unknown as IAgentExecutorRegistry;
       await withStack(fixture, { workspaceTrust: trust, executors, routesEnabled: true }, async (stack) => {
         await stack.ready();
         expect(stack.catalog.get('helper')).toBeUndefined();
@@ -589,7 +589,7 @@ describe('agent profile loaders + session catalog', () => {
       const writes = vi.spyOn(documents, 'set');
       const deletes = vi.spyOn(documents, 'delete');
       await writeAgent(join(fixture.workDir, '.kiki', 'agents'), 'helper.md', '---\nname: helper\ndescription: helper\nexecutor: sample-acp\n---\n\nhelper');
-      const executors = { validateBinding: () => ({ ok: true, binding: {} }) } as unknown as IAgentExecutorRegistry;
+      const executors = { list: () => [], validateBinding: () => ({ ok: true, binding: {} }) } as unknown as IAgentExecutorRegistry;
       await withStack(fixture, { documents, executors }, async (stack) => {
         const draft = createUnscopedAgentProfileCatalog(stack.container, fixture.workDir);
         try {
@@ -1371,7 +1371,8 @@ describe('agent profile loaders + session catalog', () => {
 
         expect(stack.catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeUndefined();
         expect(() => stack.catalog.getDefault()).toThrow(/not available/);
-        expect(stack.catalog.list()).toEqual([]);
+        expect(stack.catalog.list().filter((profile) => profile.configuration !== 'native')).toEqual([]);
+        expect(stack.catalog.get('engine:codex-app-server')?.configuration).toBe('native');
       });
     });
   });

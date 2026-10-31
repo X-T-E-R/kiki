@@ -661,6 +661,15 @@ export interface SessionStateSnapshot {
       readonly resultSummary?: string;
       readonly error?: string;
       readonly taskId?: string;
+      readonly runSources?: Readonly<Record<string, /* AgentRunSource — packages/transcript/src/contract/agentReference.ts */ {
+        readonly messageId: string;
+        readonly refId: string;
+        readonly profile: string;
+        readonly executor: string;
+        readonly configuration: 'profile' | 'native';
+        readonly label: string;
+        readonly engine_label?: string;
+      }>>;
       readonly usage?: /* TokenUsage — packages/agent-core-v2/src/kosong/contract/usage.ts */ {
         inputOther: number;
         output: number;
@@ -1149,6 +1158,20 @@ export interface AgentStateSnapshot {
             }[];
           };
         };
+        readonly agentRefs?: readonly /* AgentReference — packages/transcript/src/contract/agentReference.ts */ {
+          readonly refId: string;
+          readonly profile: string;
+          readonly executor: string;
+          readonly configuration: 'profile' | 'native';
+          readonly label: string;
+          readonly engine_label?: string;
+        }[];
+        readonly agentRefContext?: {
+          readonly partIndex: number;
+          readonly start: number;
+          readonly end: number;
+          readonly text: string;
+        };
       } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'skill_activation';
         readonly activationId: string;
@@ -1484,6 +1507,20 @@ export interface AgentStateSnapshot {
           }[];
         };
       };
+      readonly agentRefs?: readonly /* AgentReference — packages/transcript/src/contract/agentReference.ts */ {
+        readonly refId: string;
+        readonly profile: string;
+        readonly executor: string;
+        readonly configuration: 'profile' | 'native';
+        readonly label: string;
+        readonly engine_label?: string;
+      }[];
+      readonly agentRefContext?: {
+        readonly partIndex: number;
+        readonly start: number;
+        readonly end: number;
+        readonly text: string;
+      };
     } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'skill_activation';
       readonly activationId: string;
@@ -1746,6 +1783,20 @@ export interface AgentStateSnapshot {
               }[];
             }[];
           };
+        };
+        readonly agentRefs?: readonly /* AgentReference — packages/transcript/src/contract/agentReference.ts */ {
+          readonly refId: string;
+          readonly profile: string;
+          readonly executor: string;
+          readonly configuration: 'profile' | 'native';
+          readonly label: string;
+          readonly engine_label?: string;
+        }[];
+        readonly agentRefContext?: {
+          readonly partIndex: number;
+          readonly start: number;
+          readonly end: number;
+          readonly text: string;
         };
       } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'skill_activation';
@@ -2133,6 +2184,20 @@ export interface AgentStateSnapshot {
             }[];
           }[];
         };
+      };
+      readonly agentRefs?: readonly /* AgentReference — packages/transcript/src/contract/agentReference.ts */ {
+        readonly refId: string;
+        readonly profile: string;
+        readonly executor: string;
+        readonly configuration: 'profile' | 'native';
+        readonly label: string;
+        readonly engine_label?: string;
+      }[];
+      readonly agentRefContext?: {
+        readonly partIndex: number;
+        readonly start: number;
+        readonly end: number;
+        readonly text: string;
       };
     } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'skill_activation';
@@ -4715,6 +4780,7 @@ export interface AgentStateSnapshot {
         readonly allowedEfforts?: readonly string[];
         readonly disallowedTools?: readonly string[];
       };
+      readonly configuration?: 'native';
       readonly executor?: string;
       readonly executorOptions?: Readonly<Record<string, boolean | string | number>>;
       readonly executorPrompt?: {
@@ -7509,6 +7575,20 @@ export interface AgentStateSnapshot {
               }[];
             };
           };
+          readonly agentRefs?: readonly /* AgentReference — packages/transcript/src/contract/agentReference.ts */ {
+            readonly refId: string;
+            readonly profile: string;
+            readonly executor: string;
+            readonly configuration: 'profile' | 'native';
+            readonly label: string;
+            readonly engine_label?: string;
+          }[];
+          readonly agentRefContext?: {
+            readonly partIndex: number;
+            readonly start: number;
+            readonly end: number;
+            readonly text: string;
+          };
         } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly kind: 'skill_activation';
           readonly activationId: string;
@@ -7807,6 +7887,15 @@ export interface AgentStateSnapshot {
   // replayable · durable — folds: TaskStarted, TaskTerminated
   'task': /* TaskModelState — packages/agent-core-v2/src/agent/task/taskOps.ts */ Map<string, /* AgentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ /* SubagentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'agent';
+    readonly sourceRef?: /* AgentRunSource — packages/transcript/src/contract/agentReference.ts */ {
+      readonly messageId: string;
+      readonly refId: string;
+      readonly profile: string;
+      readonly executor: string;
+      readonly configuration: 'profile' | 'native';
+      readonly label: string;
+      readonly engine_label?: string;
+    };
     readonly agentId?: string;
     readonly profile?: string;
     readonly parentToolCallId?: string;
@@ -7931,6 +8020,15 @@ export interface AgentStateSnapshot {
   'task.deliveredNotificationKeys': Set<string>;
   'task.ghosts': Map<string, /* AgentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ /* SubagentTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
     readonly kind: 'agent';
+    readonly sourceRef?: /* AgentRunSource — packages/transcript/src/contract/agentReference.ts */ {
+      readonly messageId: string;
+      readonly refId: string;
+      readonly profile: string;
+      readonly executor: string;
+      readonly configuration: 'profile' | 'native';
+      readonly label: string;
+      readonly engine_label?: string;
+    };
     readonly agentId?: string;
     readonly profile?: string;
     readonly parentToolCallId?: string;

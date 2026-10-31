@@ -219,16 +219,36 @@ home 中存在旧格式消息邮箱，或升级尚未完成时，服务会先进
 
 ### 执行器目录与检查
 
-执行器目录列出已注册的引擎，不等待可执行程序发现或认证检查。读取目录不会启动引擎，也不会执行登录。
+执行器目录与下面两个发现视图回答不同问题，并且都是只读接口。目录读取不等待可执行程序发现或认证检查；候选视图评估可派遣的 profile 与原生引擎引用，执行器发现视图读取本机安装元数据；这些 GET 请求都不会启动引擎或执行登录。
 
 | 方法与路径 | 说明 |
 | --- | --- |
+| `GET /api/agents/references` | 列出调用方允许的 profile 与原生引擎消息引用候选；接受下列一种 query 形式，不会启动 child |
 | `GET /api/executors` | 已注册引擎及其最近一次检查。此请求不探测。超过 60 秒的结果带 `check_stale: true` |
 | `GET /api/executors/{id}` | 单个引擎的能力、连接设置及最近一次检查。此请求不探测 |
-| `POST /api/executors/{id}/check` | 只检查该引擎的可执行程序来源和它声明的认证信息 |
+| `GET /api/executors/discovery` | 只读发现已安装的外部引擎文件与元数据；无 query 或 body，不启动进程 |
+| `POST /api/executors/{id}/check` | 显式检查该引擎的可执行程序来源和它声明的认证信息 |
 | `GET /api/executors/installations` | 固定版本的适配器，以及已选中的源码自有适配器。此请求不安装。没有安装记录的条目省略 `active` |
 | `POST /api/executors/{id}/install` | 显式更新一个选中的适配器。请求没有正文字段 |
 | `POST /api/executors/{id}/rollback` | 恢复该适配器的上一份安装。请求没有正文字段 |
+
+`GET /api/agents/references` 严格接受以下三种 query 形式之一；未知字段会被拒绝：
+
+| Query 形式 | 用途 |
+| --- | --- |
+| `session_id=<id>&agent_id=<id>` | 读取 live caller 的候选；会话或 Agent 为 cold 时读取已保存的 caller 绑定 |
+| `workspace_id=<id>&profile=<name>` | 预览已注册工作区中某个具名 profile 的候选 |
+| `cwd=<absolute-path>&profile=<name>` | 从绝对工作目录预览某个具名 profile 的候选 |
+
+cold 会话从 session index 和持久化 Agent 元数据读取；此接口不会恢复会话或 Agent。`workspace_id` 与 `cwd` 形式使用草稿 profile 目录。该接口只盘点候选，不调用 `AgentRun`、不启动外部引擎，也不修改 `show_in_profile_list`。
+
+响应 data 为 `{ items, delegation_available, unavailable_reason? }`；`delegation_available` 表示调用方能否使用 `AgentRun`，为 false 时由顶层 `unavailable_reason` 说明原因。每项包含 `profile`、`label`、`executor`、`engine_label`、形如 `kiki://agents/<percent-encoded-profile>` 的 `reference`、`configuration`（引擎目标为 `native`，具名职责为 `profile`）、`group`（`native`、`profile` 或 `main`）、`defaults_available`、`available`，以及可选的 `unavailable_reason`、`unavailable_reason_code` 和 `description`。被硬策略阻止的目标会被省略；引擎缺失或默认值缺失时仍返回 `available: false` 的条目，客户端可将其显示为禁用。
+
+`group: "main"` 用于把 main profile 候选放入高级分组；将目标嵌入消息时应原样保留 `reference`。后续 `AgentRun.source_ref` 是与这条可见消息关联的服务端生成 ID，不是该 URI 本身。已存的 `AgentReference` 和 `AgentRunSource` 也携带可选的 `engine_label`，显示时无需再查目录；`executor` 仍是引擎 ID。typed Klient 方法为 `klient.rest.agents.referenceCandidates(query, options?)`。
+
+`GET /api/executors/discovery` 无 query、无 body，仅返回已注册的非原生执行器：`{ items }`。每项包含 `id`、`label`、`protocol`、`installed`、`status`（`installed`、`missing` 或 `error`）、`checked_at` 和 `components`，以及可选的 `version`、`path`、`source`、`source_kind`（`explicit-path`、`env`、`glob`、`path-lookup` 或 `node-script`）、`reason` 和 `reason_code`。组件包含 `id`、`label`、`role`（`program` 或 `dependency`）、`installed`，以及可选的 `path`、`version`、`reason` 和 `reason_code`。未知版本省略。顶层 `installed` 表示选中的程序文件已找到；源码自有 AGY 适配器还要求找到 AGY CLI 依赖。其他声明依赖的发现结果在 `components` 中单独报告。安全发现不确认认证状态或启动就绪状态。
+
+这项发现只读取本机文件、PATH／环境变量值、glob 匹配和 package 元数据，不启动进程、不运行 CLI 或版本探针、不读取凭据、不连接网络，也不修改 `show_in_profile_list`。`reason` 保留不带 `code:` 前缀的英文诊断文本；常见稳定 `reason_code` 包括 `not_on_path`、`path_not_found`、`env_unset`、`no_glob_match` 和 `metadata_unreadable`。客户端应保留未知 code。描述符和来源配置不变时，结果从完成时起缓存 30 秒。需要明确检查可执行文件或认证时，使用 `POST /api/executors/{id}/check`；该检查与安全发现分开。typed Klient 方法为 `klient.rest.executors.discover(options?)`。
 
 目录 `status` 取 `ready`、`unavailable` 或 `unknown`。原生引擎始终为 `ready`。外部引擎还没有检查结果时为 `unknown`。`check_status` 保留最近一次显式检查的 `ready`、`warning` 或 `unavailable`，`checked_at` 是该次时间。启动配置未变时，60 秒内 `check_stale` 为 false；超过 60 秒后变为 true，列表仍返回上一次的 `check_status`，而不是回到 `unknown`。引擎修订变化后，这两项消失，该引擎重新成为尚未检查。`POST` 只更新被点名的引擎。其他引擎保持各自已有的结果，一个引擎超时或失败时，其余引擎不会被写成就绪。`GET` 不启动探测。
 

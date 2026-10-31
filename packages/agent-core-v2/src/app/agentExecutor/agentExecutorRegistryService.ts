@@ -54,6 +54,8 @@ import { wrapWindowsNodeShims } from './windowsNodeShim';
 import { ANTIGRAVITY_CACHE_SCOPE, type AntigravityCacheState } from './antigravityService';
 import { antigravityCacheRoot, antigravityRelease } from './antigravityDistribution';
 import { join } from 'pathe';
+import { readExecutorDiscovery } from './executorDiscovery';
+import type { ExecutorDiscoveryStatus } from '@kiki/protocol';
 
 const CAPABILITY_CACHE_MAX_AGE_MS = 60_000;
 
@@ -459,6 +461,27 @@ export class AgentExecutorRegistryService implements IAgentExecutorRegistry {
       this.fs,
       this.bootstrap,
     );
+  }
+
+  private readonly metadataDiscovery = new Map<string, { readonly revision: string; readonly until: number; readonly result: Promise<ExecutorDiscoveryStatus> }>();
+
+  async discoverMetadata(id: string): Promise<ExecutorDiscoveryStatus> {
+    const descriptor = this.get(id);
+    if (descriptor === undefined || descriptor.protocol === 'native') throw new Error2(ErrorCodes.CONFIG_INVALID, `Unknown external executor "${id}"`);
+    const managed = await this.#withManagedSource(descriptor);
+    const revision = JSON.stringify([managed.revision, managed.sources]);
+    const cached = this.metadataDiscovery.get(id);
+    if (cached?.revision === revision && cached.until > Date.now()) return cached.result;
+    const result = readExecutorDiscovery(managed, this.fs, this.bootstrap).then(status => {
+      if (this.metadataDiscovery.get(id)?.result === result) {
+        this.metadataDiscovery.set(id, { revision, until: Date.now() + 30_000, result });
+      }
+      return status;
+    });
+    this.metadataDiscovery.delete(id);
+    if (this.metadataDiscovery.size >= 64) this.metadataDiscovery.delete(this.metadataDiscovery.keys().next().value!);
+    this.metadataDiscovery.set(id, { revision, until: Infinity, result });
+    return result;
   }
 
   #probeProcessService(): IHostProcessService {

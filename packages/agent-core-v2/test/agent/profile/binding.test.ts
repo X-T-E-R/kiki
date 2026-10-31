@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, normalize } from 'pathe';
 import { executorPromptSchema } from '@kiki/agent-profiles/executorPrompt';
+import { nativeTargets } from '@kiki/agent-profiles/nativeTarget';
 import type { ExecutorBinding } from '@kiki/agent-profiles/ports';
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -1498,6 +1499,41 @@ describe('AgentProfileService.bind', () => {
       profile: external.name,
       delegationPosition: 'sub',
     })).rejects.toThrow(/thinking_effort unsupported is unsupported/);
+  });
+
+  it.each(['codex-app-server', 'claude-acp', 'agy-cli', 'grok-acp'])('binds %s native children without a role or Kiki model default', async (executor) => {
+    const descriptor: AgentExecutorDescriptor = { id: executor,
+      protocol: executor === 'codex-app-server' ? 'codex-app-server' : 'acp-v1',
+      command: 'fixture-engine', args: [], revision: 'fixture' };
+    const target = nativeTargets([descriptor])[0]!;
+    ctx = createTestAgent(
+      appService(IAgentExecutorRegistry, externalExecutorRegistry(descriptor)),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(target)),
+      agentService(IAgentScopeContext, makeAgentScopeContext({ agentId: 'native-child', parentAgentId: 'main', agentScope: 'test/native-child' })),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: target.name, delegationPosition: 'sub' });
+    expect(profile.data()).toMatchObject({ executorId: executor, systemPrompt: '',
+      execution: { selection: { executor }, sources: { model: 'harness-default' }, effective: { kiki_context: [], allow_kiki_subagents: false } } });
+    expect(profile.data().modelAlias).toBeUndefined();
+    expect(profile.data().profileName).toBe(target.name);
+    expect(profile.data().boundProfile?.configuration).toBe('native');
+    expect(profile.data().execution?.selection.profile).toBeUndefined();
+    await ctx.expectResumeMatches();
+    await profile.setModel('vendor-next');
+    expect(profile.data()).toMatchObject({ profileName: target.name, modelAlias: 'vendor-next', systemPrompt: '' });
+  });
+
+  it('requires a verifiable vendor model when native child constraints exclude an unknown default', async () => {
+    const target = { ...nativeTargets([DEFAULT_EXTERNAL_EXECUTOR_DESCRIPTOR])[0]!, allowedModels: ['vendor-model'] };
+    ctx = createTestAgent(appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(target)), hostEnvironmentServices(homeDir, hostPathClass));
+    const profile = ctx.get(IAgentProfileService);
+    await expect(profile.bind({ resolvedProfile: target })).rejects.toMatchObject({ code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION });
+    await profile.bind({ resolvedProfile: target, model: 'vendor-model' });
+    expect(profile.data().execution?.effective.model).toBe('vendor-model');
+    expect(profile.data().systemPrompt).toBe('');
   });
 
   it('fails an external profile closed when no model is pinned or dispatched', async () => {

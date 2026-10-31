@@ -493,6 +493,7 @@ export class SubagentTool implements ISubagentTool {
             resolvedProfile: prepared.defaultTarget?.resolvedProfile,
             profileName: prepared.fileTarget?.profileName ?? (args.profile?.length ? args.profile : prepared.defaultTarget?.profileName),
             routeId: args.route,
+            sourceRef: args.source_ref,
             selectionKind: prepared.fileTarget === undefined ? undefined : 'profile_file',
             selectionOrigin: prepared.defaultTarget?.selectionOrigin,
             snapshot: prepared.fileTarget?.snapshot ?? snapshot,
@@ -515,6 +516,7 @@ export class SubagentTool implements ISubagentTool {
             {
               signal: controller.signal, requesterAgentId: this.callerAgentId, capturedLaunchPolicy: prepared.policy,
               allowParentNotify: args.allow_parent_notify,
+              sourceRef: args.source_ref,
               toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
               operationId: `resume:${this.callerAgentId}:${parentTurnId}:${toolCallId}`,
               bindingOverride: args.model_alias === undefined && args.effort === undefined && args.new_window === undefined ? undefined : {
@@ -548,6 +550,7 @@ export class SubagentTool implements ISubagentTool {
       : 'disabled';
     return {
       agentId: run.child.agentId,
+      sourceRef: run.child.sourceRef,
       profileName: run.child.profileName,
       name: run.child.name,
       parentToolCallId: toolCallId,
@@ -623,7 +626,7 @@ export class SubagentTool implements ISubagentTool {
         const saved = readResumeRecord((await this.metadata.read()).agents?.[child.agentId], resumeOperationId);
         if (saved !== undefined) {
           assertResumeFingerprint(saved.fingerprint, resumeFingerprint({ kind: 'prompt', prompt: args.prompt }, {
-            signal, requesterAgentId: this.callerAgentId, allowParentNotify: args.allow_parent_notify,
+            signal, requesterAgentId: this.callerAgentId, allowParentNotify: args.allow_parent_notify, sourceRef: args.source_ref,
             toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
             bindingOverride: { modelAlias: args.model_alias, thinkingEffort: args.effort,
               allowModelChange: args.allow_model_change, newWindow: args.new_window },
@@ -695,7 +698,7 @@ export class SubagentTool implements ISubagentTool {
           registerOptions,
         );
         if (resumeRecord !== undefined) await writeResumeRecord(this.metadata, handle.agentId, { ...resumeRecord, taskId });
-        await this.dispatch.recordRun(handle.agentId, taskId);
+        await this.dispatch.recordRun(handle.agentId, taskId, handle.sourceRef, resumeRecord?.operationId);
         signal.removeEventListener('abort', abortBeforeRegister);
         const requester = this.lifecycle.get(this.callerAgentId);
         if (requester !== undefined) {
@@ -810,6 +813,7 @@ export function bindingResultLines(handle: SubagentHandle): string[] {
   const bindingAdvisories = handle.bindingAdvisories ?? [];
   return [
     `actual_profile: ${handle.profileName}`,
+    ...(handle.sourceRef === undefined ? [] : [`source_ref: ${handle.sourceRef.refId}`, `source_message_id: ${handle.sourceRef.messageId}`]),
     ...(handle.model === undefined ? [] : [`actual_model: ${handle.model}`]),
     ...(handle.profileSource === 'profile-file' ? ['profile_source: profile_file'] : []),
     ...(handle.dispatchDecision === undefined ? [] : [
