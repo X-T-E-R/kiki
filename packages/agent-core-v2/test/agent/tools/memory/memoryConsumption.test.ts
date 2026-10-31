@@ -537,8 +537,7 @@ describe('canonical Memory actual request working sets', () => {
     await prompt(ctx, 'Recheck the observed Memory reference');
     expect(requestText(ctx)).toContain(changed.entry.body);
     expect(requestText(ctx)).toContain(changed.entry.validity!.check);
-    expect(requestText(ctx)).toContain('"status":"active"');
-    expect(requestText(ctx)).toContain('"applicability":"expired"');
+    expect(requestText(ctx)).toContain('active · expired · complete entry');
     expect(requestText(ctx)).not.toContain(saved.entry.body);
     expect(requestText(ctx)).not.toContain(saved.entry.validity!.check);
   });

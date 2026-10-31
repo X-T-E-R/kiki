@@ -25,6 +25,8 @@ import { IMemoryShadowImport, MemoryShadowImport } from '#/app/memory/memoryShad
 import { IMemoryPersistence, type MemoryCommit } from '#/persistence/interface/memoryPersistence';
 import { SqliteMemoryPersistence } from '#/persistence/backends/sqliteMemory/sqliteMemoryPersistence';
 import { MemoryDatabase } from '#/persistence/backends/sqliteMemory/database';
+import { MemoryDatabase as Schema3MemoryDatabase } from '../../fixtures/memoryDatabaseSchema3';
+import { memoryObjectSourceUnitId, memorySourceUnitId } from '#/app/memory/memorySourceIdentity';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAgentMemorySnapshot, AgentMemorySnapshot } from '#/app/memory/memorySnapshot';
@@ -44,6 +46,10 @@ import { IMemoryReadTool, IMemoryWriteTool, IMemorySearchTool, MemoryReadTool, M
 function toolText(output: unknown): string {
   if (typeof output !== 'string') throw new Error('Expected a complete serialized Memory tool result');
   return output;
+}
+function removeMemoryReconciliation(db: DatabaseSync): void {
+  for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'memory_%'").all()) db.exec(`DROP TRIGGER "${String(row['name']).replaceAll('"', '""')}"`);
+  db.exec("DROP TABLE memory_admissions; DROP TABLE memory_changes; DELETE FROM metadata WHERE key IN('memory_reconcile_version','memory_reconcile_sequence','memory_writer_active');");
 }
 const global: MemoryScope = { kind: 'global' };
 const workspace = { kind: 'workspace', workspaceId: 'wd_example_0123456789ab' } as const;
@@ -78,7 +84,7 @@ async function close(): Promise<void> { await persistence.close(); await storage
 const save = (title: string, body = 'Keep the numeric limit 17 and the exception; never publish private data.') => store.put({ action: 'create', scope: global, type: 'feedback', title, body, reason: 'Human instruction', source });
 const update = (entry: MemoryEntry, body: string) => store.put({ action: 'update', scope: global, id: entry.id, expectedRevision: entry.revision, type: entry.type, title: entry.title, body, reason: 'Human correction', source });
 beforeEach(async () => { await mkdir(join(process.cwd(), '.tmp'), { recursive: true }); home = await mkdtemp(join(process.cwd(), '.tmp', 'sqlite-memory-')); approval = 'auto'; bind(); });
-afterEach(async () => { await close(); await rm(home, { force: true, recursive: true }); });
+afterEach(async () => { await close(); await rm(home, { force: true, recursive: true, maxRetries: 8, retryDelay: 100 }); });
 
 describe('canonical Memory transactions', () => {
   it('keeps the authority outside cache and recovers receipts and immutable revisions after reopening', async () => {
@@ -458,7 +464,7 @@ describe('Memory shadow import and replay barriers', () => {
     await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }]);
     await close();
     const db = new DatabaseSync(join(home, 'store', 'memory-sqlite-v1', 'memory.sqlite'));
-    try { db.exec("DROP TABLE source_links; DROP TABLE source_barriers; DELETE FROM sources WHERE id LIKE 'source-unit:%'; PRAGMA user_version=1;"); }
+    try { db.exec("DROP TABLE source_links; DROP TABLE source_barriers; DELETE FROM sources WHERE id LIKE 'source-unit:%'; DELETE FROM metadata WHERE key='source_evidence_version'; PRAGMA user_version=1;"); }
     finally { db.close(); }
     bind();
     const corrected = await update(entry, 'Current corrected schema source.');
@@ -468,6 +474,551 @@ describe('Memory shadow import and replay barriers', () => {
     expect(await store.get(global, duplicate.id)).toEqual(duplicate);
     expect((await store.provenance(global, duplicate.id)).relatedObjectIds).toEqual([duplicate.id]);
     expect((await store.get(global, entry.id))?.body).toBe(corrected.entry.body);
+  });
+
+  it.each([{ version: 2, forgotten: false }, { version: 3, forgotten: false }, { version: 3, forgotten: true }])('separates colliding source evidence from signatures when upgrading $version (prior barrier: $forgotten)', async ({ version, forgotten }) => {
+    const seed = (await save('Source evidence fixture')).entry;
+    const first: MemoryEntry = { ...seed, id: 'm_evidence_owner', title: 'Evidence owner', revision: 'evidence:r1', source: { writer: 'agent', session: 'first-attribution', turn: 17 } };
+    const second: MemoryEntry = { ...first, revision: 'evidence:r2', source: { ...first.source, session: 'second-attribution' } };
+    for (const entry of [first, second]) await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }]);
+    await close();
+    const db = new DatabaseSync(join(home, 'store/memory-sqlite-v1/memory.sqlite'));
+    const signature = memorySourceUnitId('memory/global', second.source, second.body)!;
+    try {
+      db.prepare('DELETE FROM sources WHERE object_id=?').run(first.id);
+      db.prepare('DELETE FROM source_links WHERE object_id=?').run(first.id);
+      db.prepare('DELETE FROM source_signatures WHERE object_id=?').run(first.id);
+      for (const entry of [first, second]) {
+        const id = version === 3 && entry === first ? memoryObjectSourceUnitId('memory/global', entry.id, entry.body) : memorySourceUnitId('memory/global', entry.source, entry.body)!;
+        db.prepare('INSERT INTO sources VALUES(?,?,?,?,?,?)').run(id, 'memory/global', entry.id, JSON.stringify(entry), null, entry.created);
+        db.prepare('INSERT INTO source_links VALUES(?,?,?)').run('memory/global', id, entry.id);
+        if (version === 3) db.prepare('INSERT INTO source_signatures VALUES(?,?,?)').run('memory/global', memorySourceUnitId('memory/global', entry.source, entry.body)!, entry.id);
+      }
+      const decision = { id: 'legacy-evidence-decision', scope: 'memory/global', objectId: first.id, revision: second.revision, kind: 'correction', reason: 'Retain attributed evidence', sourceIds: [signature] };
+      db.prepare('INSERT INTO adjudications VALUES(?,?,?,?,?,?)').run(decision.id, decision.scope, decision.objectId, decision.revision, 0, JSON.stringify(decision));
+      if (forgotten) db.prepare("INSERT INTO source_barriers SELECT ?,?,?,value FROM metadata WHERE key='generation'").run('memory/global', signature, '2026-01-02');
+      db.exec(`DELETE FROM metadata WHERE key='source_evidence_version'; PRAGMA user_version=${version}`);
+    } finally { db.close(); }
+    bind();
+    const payloads = [JSON.stringify(first), JSON.stringify(second)].toSorted();
+    expect((await store.provenance(global, first.id)).sources.map((source) => source.payload).toSorted()).toEqual(payloads);
+    if (!forgotten) {
+      const independent = { ...second, id: 'm_evidence_independent', title: 'Independent evidence peer' };
+      expect(await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${independent.id}.md`, payload: JSON.stringify(independent), entry: independent }])).toMatchObject({ imported: 1, issues: [] });
+      expect((await store.previewForget(global, [independent.id])).targets.map((target) => target.id)).toEqual([independent.id]);
+      await store.forget(global, [{ id: independent.id, expectedRevision: independent.revision }], 'forget-evidence-peer');
+    }
+    expect((await store.provenance(global, first.id)).sources.map((source) => source.payload).toSorted()).toEqual(payloads);
+    expect((await store.provenance(global, first.id)).relatedObjectIds).toEqual([first.id]);
+    expect(await store.get(global, first.id)).toEqual(second);
+    await close(); bind();
+    const reopened = await store.provenance(global, first.id);
+    expect(reopened.sources.map((source) => source.payload).toSorted()).toEqual(payloads);
+    const evidence = reopened.sources.find((source) => source.payload === JSON.stringify(second))!;
+    expect(reopened.adjudications.find((decision) => decision.id === 'legacy-evidence-decision')?.sourceIds).toEqual([evidence.id]);
+    expect(await persistence.source('memory/global', evidence.id)).toMatchObject({ state: 'registered', source: { objectId: first.id, payload: JSON.stringify(second), learnedAt: second.created } });
+  });
+
+  it.each([3, 4])('keeps upgraded schema %s databases and new backups readable and writable by the actual schema-3 module', async (version) => {
+    const scope = 'memory/global';
+    const path = join(home, 'schema-compat.sqlite');
+    const seed: MemoryEntry = { ...(await save('Reader compatibility fixture')).entry, id: 'm_compat_old', revision: 'compat:old', body: 'Original instruction; exception 17.' };
+    const append = (database: MemoryDatabase | Schema3MemoryDatabase, entry: MemoryEntry, before: MemoryEntry | null, operationId: string) => database.commit({ operationId, request: operationId, expectedGeneration: database.read([scope]).generation,
+      edits: [{ scope, id: entry.id, expectedRevision: before?.revision ?? null, revision: entry.revision, entry }],
+      sources: [{ id: `source:${operationId}`, scope, objectId: entry.id, payload: JSON.stringify(entry), learnedAt: entry.created }],
+      journal: [{ scope, id: entry.id, operationId, action: before === null ? 'create' : 'update', before: before === null ? null : JSON.stringify(before), beforeRevision: before?.revision ?? null, afterRevision: entry.revision, at: entry.updated, writer: entry.source.writer }], result: { entry } });
+    const original = new Schema3MemoryDatabase(path);
+    try { append(original, seed, null, 'compat-original'); } finally { original.close(); }
+    if (version === 4) { const raw = new DatabaseSync(path); try { raw.exec('PRAGMA user_version=4'); } finally { raw.close(); } }
+    const corrected = { ...seed, revision: 'compat:new-write', body: 'Newly saved correction; exceptions 17 and 19.' };
+    const forgotten = { ...seed, id: 'm_compat_forgotten', revision: 'compat:forgotten', title: 'Forgotten compatibility object', body: 'Remove this separate rule.', source: { writer: 'agent' as const, session: 'compat-forgotten', turn: 17 } };
+    const imported: MemoryEntry = { ...seed, id: 'm_compat_imported', revision: 'compat:imported', body: 'Imported evidence saved after the upgrade.', source: { writer: 'import', session: 'compat-import', turn: 19 } };
+    const upgraded = new MemoryDatabase(path);
+    const backup = join(home, 'postupgrade-backup.sqlite');
+    let receipt;
+    let view;
+    let journal;
+    let provenance;
+    let evidence;
+    let legacy;
+    try {
+      receipt = append(upgraded, corrected, seed, 'compat-new-write');
+      upgraded.importLegacy([{ scope, key: `entries/${imported.id}.md`, payload: JSON.stringify(imported), entry: imported }]);
+      const sourceId = upgraded.provenance(scope, imported.id).sources[0]!.id;
+      expect(sourceId).toMatch(/^source-evidence:/);
+      upgraded.commit({ operationId: 'compat-decision', request: 'compat-decision', expectedGeneration: upgraded.read([scope]).generation, edits: [], adjudications: [{ id: 'compat-decision', scope, objectId: imported.id, kind: 'correction', revision: imported.revision, reason: 'Owner confirmed the imported evidence', sourceIds: [sourceId] }], result: { confirmed: true } });
+      append(upgraded, forgotten, null, 'compat-forget-target');
+      upgraded.commit({ operationId: 'compat-forget', request: 'compat-forget', expectedGeneration: upgraded.read([scope]).generation, edits: [], barriers: [{ scope, objectId: forgotten.id, at: '2026-01-02' }], result: { forgotten: true } });
+      view = upgraded.read([scope]); journal = upgraded.journal(scope, seed.id); provenance = upgraded.provenance(scope, seed.id);
+      evidence = upgraded.provenance(scope, imported.id); legacy = upgraded.legacy(scope);
+      await upgraded.backup(backup);
+    } finally { upgraded.close(); }
+    for (const target of [path, backup]) {
+      const raw = new DatabaseSync(target);
+      try {
+        expect(raw.prepare('PRAGMA user_version').get()?.['user_version']).toBe(3);
+        expect(raw.prepare("SELECT value FROM metadata WHERE key='source_evidence_version'").get()?.['value']).toBe(1);
+      } finally { raw.close(); }
+      const old = new Schema3MemoryDatabase(target);
+      const returned = { ...corrected, revision: 'compat:old-reader-write', body: 'Saved while running the previous release.' };
+      try {
+        expect(old.read([scope])).toEqual(view);
+        expect(old.read([scope], 1).objects).toEqual([{ scope, id: seed.id, revision: seed.revision, entry: JSON.parse(JSON.stringify(seed)) }]);
+        expect(old.revision(scope, seed.id, seed.revision)).toEqual(JSON.parse(JSON.stringify(seed)));
+        expect(old.revision(scope, seed.id, corrected.revision)).toEqual(JSON.parse(JSON.stringify(corrected)));
+        expect(old.journal(scope, seed.id)).toEqual(journal);
+        expect(old.provenance(scope, seed.id)).toEqual(provenance);
+        expect(old.provenance(scope, imported.id)).toEqual(evidence);
+        expect(old.legacy(scope)).toEqual(legacy);
+        expect(old.receipt('compat-new-write', 'compat-new-write')).toEqual(receipt);
+        expect(old.revision(scope, forgotten.id, forgotten.revision)).toBeUndefined();
+        const replay = { ...forgotten, id: 'm_compat_replay', revision: 'compat:replay' };
+        expect(() => append(old, replay, null, 'compat-replay')).toThrow('source has a forget barrier');
+        append(old, returned, corrected, 'compat-old-reader-write');
+      } finally { old.close(); }
+      const current = new MemoryDatabase(target);
+      try {
+        expect(current.read([scope]).objects.find((object) => object.id === seed.id)?.entry).toEqual(JSON.parse(JSON.stringify(returned)));
+        expect(current.receipt('compat-old-reader-write')).toMatchObject({ result: { entry: JSON.parse(JSON.stringify(returned)) } });
+        expect(current.provenance(scope, imported.id)).toEqual(evidence);
+        expect(current.revision(scope, forgotten.id, forgotten.revision)).toBeUndefined();
+      } finally { current.close(); }
+    }
+  });
+
+  it.each([false, true])('repairs existing forgotten history before trusting old provenance (old registration first: %s)', async (registerFirst) => {
+    const scope = 'memory/global';
+    const path = join(home, 'leaked-history.sqlite');
+    const seed: MemoryEntry = { ...(await save('Existing leak fixture')).entry, id: 'm_leak_forgotten', revision: 'leak:forgotten', source: { writer: 'agent', session: 'leak-origin', turn: 17 } };
+    const survivor = { ...seed, id: 'm_leak_survivor', revision: 'leak:survivor' };
+    const replay = { ...seed, id: 'm_leak_replay', revision: 'leak:replay' };
+    const record = (entry: MemoryEntry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    let current = new MemoryDatabase(path);
+    try {
+      current.importLegacy([record(seed), record(survivor)]);
+      current.commit({ operationId: 'forget-leak-origin', request: 'forget-leak-origin', expectedGeneration: current.read([scope]).generation, edits: [], barriers: [{ scope, objectId: seed.id, at: '2026-01-02' }], result: {} });
+    } finally { current.close(); }
+    const events = [
+      { id: replay.id, operationId: 'leaked-create', action: 'create', before: null, beforeRevision: null, afterRevision: replay.revision, at: replay.created, writer: replay.source.writer },
+      { id: replay.id, operationId: 'leaked-update', action: 'update', before: JSON.stringify(replay), beforeRevision: replay.revision, afterRevision: 'leak:renamed', at: replay.updated, writer: replay.source.writer },
+    ];
+    const raw = new DatabaseSync(path);
+    try {
+      raw.prepare('INSERT INTO revisions VALUES(?,?,?,?,?)').run(scope, replay.id, replay.revision, 0, JSON.stringify(replay));
+      for (const event of events) raw.prepare('INSERT INTO journal(scope,id,operation_id,payload) VALUES(?,?,?,?)').run(scope, replay.id, event.operationId, JSON.stringify(event));
+      raw.prepare('INSERT INTO legacy VALUES(?,?,?,NULL,NULL,NULL)').run(scope, 'journal.jsonl', events.map((event) => JSON.stringify(event)).join('\n'));
+      raw.exec("DELETE FROM metadata WHERE key='source_evidence_version'; PRAGMA user_version=4");
+    } finally { raw.close(); }
+    if (registerFirst) {
+      const raw = new DatabaseSync(path); try { raw.exec('PRAGMA user_version=3'); } finally { raw.close(); }
+      const old = new Schema3MemoryDatabase(path);
+      try { old.provenance(scope, replay.id); expect(old.importLegacy([record(replay)]).imported).toBe(1); } finally { old.close(); }
+    }
+    current = new MemoryDatabase(path);
+    try {
+      expect(current.revision(scope, replay.id, replay.revision)).toBeUndefined();
+      expect(current.journal(scope, replay.id)).toEqual([]);
+      expect(current.legacy(scope).every((item) => !item.payload.includes(replay.id))).toBe(true);
+      expect(current.revision(scope, survivor.id, survivor.revision)).toEqual(JSON.parse(JSON.stringify(survivor)));
+      expect(current.provenance(scope, survivor.id).sources.map((item) => item.payload)).toEqual([JSON.stringify(survivor)]);
+    } finally { current.close(); }
+    const old = new Schema3MemoryDatabase(path);
+    try { expect(old.provenance(scope, replay.id).sources).toEqual([]); } finally { old.close(); }
+    current = new MemoryDatabase(path);
+    try {
+      expect(current.importLegacy([record(replay)])).toMatchObject({ imported: 0, issues: [expect.objectContaining({ issue: 'forgotten_source_rejected' })] });
+      expect(current.read([scope]).objects.map((object) => object.id)).toEqual([survivor.id]);
+    } finally { current.close(); }
+  });
+
+  it('quarantines uncertain history outside schema-3 readers and provenance replay', async () => {
+    const scope = 'memory/global';
+    const path = join(home, 'uncertain-history.sqlite');
+    const seed = { ...(await save('Uncertain history fixture')).entry, id: 'm_uncertain_forgotten', revision: 'uncertain:forgotten', source: { writer: 'agent' as const, session: 'uncertain-history', turn: 17 } };
+    const replay = { ...seed, id: 'm_uncertain_neighbor', revision: 'uncertain:neighbor' };
+    const record = (entry: MemoryEntry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    let current = new MemoryDatabase(path);
+    try {
+      current.importLegacy([record(seed)]);
+      current.commit({ operationId: 'forget-uncertain-peer', request: 'forget-uncertain-peer', expectedGeneration: current.read([scope]).generation, edits: [], barriers: [{ scope, objectId: seed.id, at: '2026-01-02' }], result: {} });
+    } finally { current.close(); }
+    const event = { id: replay.id, operationId: 'uncertain-update', action: 'update', before: JSON.stringify(replay), beforeRevision: replay.revision, afterRevision: null, at: replay.updated, writer: replay.source.writer };
+    const raw = new DatabaseSync(path);
+    try {
+      removeMemoryReconciliation(raw);
+      raw.prepare('INSERT INTO revisions VALUES(?,?,?,?,?)').run(scope, replay.id, replay.revision, 0, JSON.stringify(replay));
+      raw.prepare('INSERT INTO journal(scope,id,operation_id,payload) VALUES(?,?,?,?)').run(scope, replay.id, event.operationId, JSON.stringify(event));
+      raw.prepare('INSERT INTO legacy VALUES(?,?,?,?,?,NULL)').run(scope, `entries/${replay.id}.md`, JSON.stringify(replay), replay.id, replay.revision);
+      raw.prepare('INSERT INTO legacy VALUES(?,?,?,NULL,NULL,NULL)').run(scope, 'journal.jsonl', JSON.stringify(event));
+    } finally { raw.close(); }
+    for (let pass = 0; pass < 2; pass++) {
+      current = new MemoryDatabase(path);
+      try {
+        expect(current.revision(scope, replay.id, replay.revision)).toBeUndefined();
+        expect(current.journal(scope, replay.id)).toEqual([]);
+        expect(current.legacy(scope).every((item) => !item.payload.includes(replay.body))).toBe(true);
+        expect(current.provenance(scope, replay.id).sources).toEqual([]);
+        expect(current.importLegacy([record(replay)]).imported).toBe(0);
+        expect(current.read([scope]).objects).toEqual([]);
+      } finally { current.close(); }
+      const raw = new DatabaseSync(path);
+      try {
+        expect(raw.prepare('SELECT entry FROM revisions WHERE scope=? AND id=?').get(scope, replay.id)?.['entry']).toBeUndefined();
+        expect(raw.prepare('SELECT COUNT(*) AS n FROM journal WHERE scope=? AND id=?').get(scope, replay.id)?.['n']).toBe(0);
+        expect(raw.prepare('SELECT payload FROM legacy WHERE scope=? AND key=?').get(scope, `entries/${replay.id}.md`)?.['payload']).not.toContain(replay.body);
+        expect(raw.prepare("SELECT payload FROM memory_quarantine WHERE scope=? AND id=? AND kind='revisions'").get(scope, replay.id)?.['payload']).toContain(replay.body);
+        expect(raw.prepare('SELECT generation FROM memory_admissions WHERE scope=? AND id=? AND revision=?').get(scope, replay.id, replay.revision)?.['generation']).toBeNull();
+      } finally { raw.close(); }
+      if (pass === 0) {
+        const old = new Schema3MemoryDatabase(path);
+        try {
+          expect(old.revision(scope, replay.id, replay.revision)).toBeUndefined();
+          expect(old.journal(scope, replay.id)).toEqual([]);
+          old.provenance(scope, replay.id);
+          expect(old.importLegacy([{ ...record(replay), key: `inbox/${replay.id}.md` }])).toMatchObject({ imported: 0, issues: [expect.objectContaining({ issue: 'forgotten_source_rejected' })] });
+          expect(old.read([scope]).objects).toEqual([]);
+        } finally { old.close(); }
+      }
+    }
+    const proof = new DatabaseSync(path);
+    try { proof.prepare('UPDATE memory_admissions SET generation=0 WHERE scope=? AND id=? AND revision=?').run(scope, replay.id, replay.revision); } finally { proof.close(); }
+    current = new MemoryDatabase(path);
+    try {
+      expect(current.revision(scope, replay.id, replay.revision)).toEqual(JSON.parse(JSON.stringify(replay)));
+      expect(current.journal(scope, replay.id)).toEqual([event]);
+    } finally { current.close(); }
+  });
+
+  function quarantinedHistoryFixture(name: string, partial = true) {
+    const scope = 'memory/global';
+    const path = join(home, `quarantine-${name}.sqlite`);
+    const seed: MemoryEntry = { id: 'm_quarantine_a', revision: 'quarantine:a', type: 'feedback', title: 'Original source', body: 'Original instruction; exception 17.', status: 'active', pinned: false, created: '2026-01-01', updated: '2026-01-01', source: { writer: 'agent', session: 'quarantine-source', turn: 17 }, reason: 'Fixture' };
+    const legal = { ...seed, id: 'm_quarantine_c', revision: 'quarantine:c' };
+    const hidden = { ...seed, id: 'm_quarantine_b', revision: 'quarantine:preimage' };
+    const head = { ...hidden, revision: 'quarantine:current', body: 'Independent corrected instruction; exception 19.', source: { writer: 'user' as const } };
+    const record = (entry: MemoryEntry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    const events = [
+      { id: hidden.id, operationId: 'quarantine-create', action: 'create' as const, before: null, beforeRevision: null, afterRevision: hidden.revision, at: hidden.created, writer: hidden.source.writer },
+      { id: hidden.id, operationId: 'quarantine-update', action: 'update' as const, before: JSON.stringify(hidden), beforeRevision: hidden.revision, afterRevision: partial ? head.revision : null, at: hidden.updated, writer: hidden.source.writer },
+    ];
+    const old = new Schema3MemoryDatabase(path);
+    try {
+      old.importLegacy([record(seed), record(legal)]);
+      old.commit({ operationId: 'quarantine-forget-a', request: 'quarantine-forget-a', expectedGeneration: old.read([scope]).generation, edits: [], barriers: [{ scope, objectId: seed.id, at: '2026-01-02' }], result: {} });
+      if (partial) old.importLegacy([{ ...record(head), history: [hidden], journal: events }]);
+    } finally { old.close(); }
+    const raw = new DatabaseSync(path);
+    try {
+      if (!partial) {
+        raw.prepare('INSERT INTO revisions VALUES(?,?,?,?,?)').run(scope, hidden.id, hidden.revision, 0, JSON.stringify(hidden));
+        for (const event of events) raw.prepare('INSERT INTO journal(scope,id,operation_id,payload) VALUES(?,?,?,?)').run(scope, hidden.id, event.operationId, JSON.stringify(event));
+      }
+      raw.prepare("INSERT INTO legacy VALUES(?,'journal.jsonl',?,NULL,NULL,NULL)").run(scope, events.map((event) => JSON.stringify(event)).join('\n'));
+    } finally { raw.close(); }
+    const current = new MemoryDatabase(path);
+    try { expect(current.revision(scope, hidden.id, hidden.revision)).toBeUndefined(); } finally { current.close(); }
+    return { scope, path, seed, legal, hidden, head, events, record };
+  }
+
+  it.each([false, true])('restores admitted quarantined history before consuming its bytes (retained head: %s)', (partial) => {
+    const { scope, path, hidden, head, events } = quarantinedHistoryFixture(`restore-${partial}`, partial);
+    const proof = new DatabaseSync(path);
+    try {
+      expect(proof.prepare("SELECT COUNT(*) AS n FROM memory_quarantine WHERE kind='revisions' AND scope=? AND id=?").get(scope, hidden.id)?.['n']).toBe(1);
+      expect(proof.prepare('SELECT entry FROM revisions WHERE scope=? AND id=? AND revision=?').get(scope, hidden.id, hidden.revision)?.['entry']).toBe(partial ? null : undefined);
+      proof.prepare('UPDATE memory_admissions SET generation=1 WHERE scope=? AND id=? AND revision=?').run(scope, hidden.id, hidden.revision);
+    } finally { proof.close(); }
+    for (let pass = 0; pass < 2; pass++) {
+      const current = new MemoryDatabase(path);
+      try {
+        expect(current.revision(scope, hidden.id, hidden.revision)).toEqual(hidden);
+        expect(current.journal(scope, hidden.id)).toEqual(events);
+        if (partial) expect(current.read([scope]).objects.find((object) => object.id === head.id)?.entry).toEqual(head);
+      } finally { current.close(); }
+    }
+    const restored = new DatabaseSync(path);
+    try { expect(restored.prepare("SELECT COUNT(*) AS n FROM memory_quarantine WHERE kind='revisions' AND scope=? AND id=?").get(scope, hidden.id)?.['n']).toBe(0); } finally { restored.close(); }
+  });
+
+  it('restores a quarantined preimage after a normal source-lineage transfer without replacing its new proposal head', () => {
+    const { scope, path, hidden, head, legal } = quarantinedHistoryFixture('lineage');
+    const current = new MemoryDatabase(path);
+    try {
+      const proposal = { ...head, revision: 'quarantine:proposal', status: 'pending' as const, supersedes: legal.id, supersedes_revision: legal.revision };
+      current.commit({ operationId: 'quarantine-link-proposal', request: 'quarantine-link-proposal', expectedGeneration: current.read([scope]).generation, edits: [{ scope, id: head.id, expectedRevision: head.revision, revision: proposal.revision, entry: proposal }], sourceTransfers: [{ scope, from: legal.id, to: head.id }], result: {} });
+      expect(current.provenance(scope, hidden.id).relatedObjectIds).toContain(legal.id);
+      expect(current.revision(scope, hidden.id, hidden.revision)).toEqual(hidden);
+      expect(current.read([scope]).objects.find((object) => object.id === head.id)?.entry).toEqual(proposal);
+    } finally { current.close(); }
+  });
+
+  it.each(['revision-ignore', 'revision-readback', 'journal-ignore', 'journal-payload-ignore', 'operation-ignore', 'quarantine-delete'])('rolls back every quarantine restoration byte after %s and retries idempotently', (fault) => {
+    const { scope, path, hidden, events } = quarantinedHistoryFixture(`restore-fault-${fault}`);
+    const raw = new DatabaseSync(path);
+    const tables = ['revisions', 'heads', 'journal', 'legacy', 'operations', 'source_links', 'source_signatures', 'memory_quarantine', 'memory_admissions'];
+    const snapshot = (db: DatabaseSync) => tables.map((table) => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    let before;
+    try {
+      raw.prepare('UPDATE memory_admissions SET generation=1 WHERE scope=? AND id=? AND revision=?').run(scope, hidden.id, hidden.revision);
+      const operation = { id: 'quarantine-receipt', request: 'fixture', generation: 0, result: JSON.stringify({ entry: hidden }) };
+      raw.prepare('INSERT INTO operations VALUES(?,?,?,?)').run(operation.id, operation.request, operation.generation, JSON.stringify({ forgotten: true }));
+      raw.prepare('INSERT INTO operation_objects VALUES(?,?,?)').run(operation.id, scope, hidden.id);
+      raw.prepare("INSERT INTO memory_quarantine VALUES('operations',?,?,?,?,?)").run(scope, hidden.id, hidden.revision, operation.id, JSON.stringify(operation));
+      before = snapshot(raw);
+      const sql: Record<string, string> = {
+        'revision-ignore': "BEFORE UPDATE OF entry ON revisions WHEN NEW.revision='quarantine:preimage' BEGIN SELECT RAISE(IGNORE); END",
+        'revision-readback': "AFTER UPDATE OF entry ON revisions WHEN NEW.revision='quarantine:preimage' AND NEW.entry IS NOT NULL BEGIN UPDATE revisions SET entry=NULL WHERE scope=NEW.scope AND id=NEW.id AND revision=NEW.revision; END",
+        'journal-ignore': 'BEFORE INSERT ON journal BEGIN SELECT RAISE(IGNORE); END',
+        'journal-payload-ignore': "BEFORE UPDATE OF payload ON legacy WHEN NEW.key='journal.jsonl' BEGIN SELECT RAISE(IGNORE); END",
+        'operation-ignore': "BEFORE UPDATE OF result ON operations WHEN NEW.id='quarantine-receipt' BEGIN SELECT RAISE(IGNORE); END",
+        'quarantine-delete': "BEFORE DELETE ON memory_quarantine WHEN OLD.kind='journal' BEGIN SELECT RAISE(ABORT,'quarantine delete interrupted'); END",
+      };
+      raw.exec(`CREATE TRIGGER quarantine_restore_fault ${sql[fault]}`);
+    } finally { raw.close(); }
+    const current = new MemoryDatabase(path);
+    try { expect(() => current.revision(scope, hidden.id, hidden.revision)).toThrow(/restoration was not confirmed|quarantine delete interrupted/); } finally { current.close(); }
+    const retry = new DatabaseSync(path);
+    try { expect(snapshot(retry)).toEqual(before); retry.exec('DROP TRIGGER quarantine_restore_fault'); } finally { retry.close(); }
+    for (let pass = 0; pass < 2; pass++) {
+      const restored = new MemoryDatabase(path);
+      try {
+        expect(restored.revision(scope, hidden.id, hidden.revision)).toEqual(hidden);
+        expect(restored.journal(scope, hidden.id)).toEqual(events);
+        expect(restored.receipt('quarantine-receipt')?.result).toEqual({ entry: hidden });
+      } finally { restored.close(); }
+    }
+    const consumed = new DatabaseSync(path);
+    try { expect(consumed.prepare('SELECT COUNT(*) AS n FROM memory_quarantine WHERE scope=? AND id=?').get(scope, hidden.id)?.['n']).toBe(0); } finally { consumed.close(); }
+  });
+
+  it.each(['old-open', 'old-live', 'already-acknowledged', 'current'])('clears forgotten quarantine bytes through %s and keeps independent history', (mode) => {
+    const { scope, path, hidden, legal } = quarantinedHistoryFixture(`forget-${mode}`);
+    const before = new DatabaseSync(path);
+    try { expect(before.prepare('SELECT COUNT(*) AS n FROM memory_quarantine WHERE scope=? AND id=?').get(scope, hidden.id)?.['n']).toBe(5); } finally { before.close(); }
+    let current = mode === 'old-live' ? new MemoryDatabase(path) : undefined;
+    const writer = mode === 'current' ? new MemoryDatabase(path) : new Schema3MemoryDatabase(path);
+    try { writer.commit({ operationId: 'quarantine-forget-b', request: 'quarantine-forget-b', expectedGeneration: writer.read([scope]).generation, edits: [], barriers: [{ scope, objectId: hidden.id, at: '2026-02-01' }], result: {} }); } finally { writer.close(); }
+    if (mode === 'already-acknowledged') {
+      const raw = new DatabaseSync(path);
+      try { raw.exec("UPDATE metadata SET value=COALESCE((SELECT seq FROM sqlite_sequence WHERE name='memory_changes'),0) WHERE key='memory_reconcile_sequence'; DELETE FROM memory_changes; DELETE FROM metadata WHERE key='memory_quarantine_forget_version'"); } finally { raw.close(); }
+    }
+    for (let pass = 0; pass < 2; pass++) {
+      current ??= new MemoryDatabase(path);
+      try {
+        expect(current.revision(scope, hidden.id, hidden.revision)).toBeUndefined();
+        expect(current.revision(scope, legal.id, legal.revision)).toEqual(legal);
+      } finally { current.close(); current = undefined; }
+      const raw = new DatabaseSync(path);
+      try {
+        expect(raw.prepare('SELECT COUNT(*) AS n FROM memory_quarantine WHERE scope=? AND id=?').get(scope, hidden.id)?.['n']).toBe(0);
+        expect(raw.prepare('SELECT COUNT(*) AS n FROM memory_quarantine WHERE instr(payload,?)>0').get(hidden.id)?.['n']).toBe(0);
+      } finally { raw.close(); }
+    }
+  });
+
+  it.each(['incremental', 'checkpointed'])('rolls back interrupted bounded quarantine cleanup and resumes %s forgets', (mode) => {
+    const { scope, path, hidden, legal } = quarantinedHistoryFixture(`forget-batches-${mode}`);
+    const raw = new DatabaseSync(path);
+    try {
+      const insert = raw.prepare("INSERT INTO memory_quarantine VALUES('journal_payload',?,?,?,?,?)");
+      for (let index = 0; index < 700; index++) insert.run(scope, hidden.id, hidden.revision, `bulk:${index}`, JSON.stringify({ payload: hidden.body }));
+      insert.run(scope, legal.id, legal.revision, 'independent-quarantine', JSON.stringify({ payload: legal.body }));
+      raw.exec("CREATE TRIGGER keep_independent_quarantine BEFORE DELETE ON memory_quarantine WHEN OLD.id='m_quarantine_c' BEGIN SELECT RAISE(ABORT,'independent quarantine touched'); END");
+    } finally { raw.close(); }
+    const old = new Schema3MemoryDatabase(path);
+    try { old.commit({ operationId: 'quarantine-batched-forget', request: 'quarantine-batched-forget', expectedGeneration: old.read([scope]).generation, edits: [], barriers: [{ scope, objectId: hidden.id, at: '2026-02-01' }], result: {} }); } finally { old.close(); }
+    const interrupted = new DatabaseSync(path);
+    const snapshot = (db: DatabaseSync) => ['metadata', 'memory_changes', 'sqlite_sequence', 'memory_quarantine'].map((table) => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    let before;
+    try {
+      if (mode === 'checkpointed') interrupted.exec("UPDATE metadata SET value=COALESCE((SELECT seq FROM sqlite_sequence WHERE name='memory_changes'),0) WHERE key='memory_reconcile_sequence'; DELETE FROM memory_changes; DELETE FROM metadata WHERE key='memory_quarantine_forget_version'");
+      before = snapshot(interrupted);
+      interrupted.exec("CREATE TRIGGER fail_quarantine_second_batch BEFORE DELETE ON memory_quarantine WHEN OLD.key='bulk:300' BEGIN SELECT RAISE(ABORT,'second quarantine batch interrupted'); END");
+    } finally { interrupted.close(); }
+    expect(() => new MemoryDatabase(path)).toThrow('second quarantine batch interrupted');
+    const retry = new DatabaseSync(path);
+    try { expect(snapshot(retry)).toEqual(before); retry.exec('DROP TRIGGER fail_quarantine_second_batch'); } finally { retry.close(); }
+    const prepare = DatabaseSync.prototype.prepare;
+    let pages = 0;
+    const spy = vi.spyOn(DatabaseSync.prototype, 'prepare').mockImplementation(function(this: DatabaseSync, sql: string) {
+      if (sql.startsWith('DELETE FROM memory_quarantine')) { expect(sql).toContain('LIMIT 256'); pages++; }
+      return prepare.call(this, sql);
+    });
+    try {
+      for (let pass = 0; pass < 2; pass++) {
+        const current = new MemoryDatabase(path);
+        try { expect(current.revision(scope, hidden.id, hidden.revision)).toBeUndefined(); } finally { current.close(); }
+      }
+    } finally { spy.mockRestore(); }
+    expect(pages).toBeGreaterThan(0);
+    const complete = new DatabaseSync(path);
+    try {
+      expect(complete.prepare('SELECT COUNT(*) AS n FROM memory_quarantine WHERE scope=? AND id=?').get(scope, hidden.id)?.['n']).toBe(0);
+      expect(complete.prepare('SELECT COUNT(*) AS n FROM memory_quarantine WHERE scope=? AND id=?').get(scope, legal.id)?.['n']).toBe(1);
+      expect(complete.prepare('SELECT COUNT(*) AS n FROM memory_changes').get()?.['n']).toBe(0);
+      expect(complete.prepare("SELECT value FROM metadata WHERE key='memory_quarantine_forget_version'").get()?.['value']).toBe(1);
+    } finally { complete.close(); }
+  });
+
+  it('streams admission and evidence reconciliation without materializing revision bodies', async () => {
+    const scope = 'memory/global';
+    const path = join(home, 'streaming-reconciliation.sqlite');
+    const seed = (await save('Streaming baseline fixture')).entry;
+    const entries = Array.from({ length: 500 }, (_, index) => ({ ...seed, id: `m_stream_${index}`, revision: `stream:${index}`, body: 'Complete instruction; exception 17. '.repeat(50), source: { writer: 'agent' as const, session: `stream-${index}`, turn: 17 } }));
+    const old = new Schema3MemoryDatabase(path);
+    try { old.importLegacy(entries.map((entry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }))); } finally { old.close(); }
+    const raw = new DatabaseSync(path);
+    try { raw.exec("INSERT INTO revisions SELECT scope,id,'preimage:'||revision,0,json_set(entry,'$.revision','preimage:'||revision) FROM revisions WHERE entry IS NOT NULL"); } finally { raw.close(); }
+    const prepare = DatabaseSync.prototype.prepare;
+    const spy = vi.spyOn(DatabaseSync.prototype, 'prepare').mockImplementation(function(this: DatabaseSync, sql: string) {
+      const statement = prepare.call(this, sql);
+      if (sql.includes('entry') && sql.includes('revisions')) vi.spyOn(statement, 'all').mockImplementation(() => { throw new Error('Unbounded revision-body allocation'); });
+      return statement;
+    });
+    let current: MemoryDatabase | undefined;
+    try {
+      current = new MemoryDatabase(path);
+      expect(current.revision(scope, entries[0]!.id, entries[0]!.revision)?.body).toBe(entries[0]!.body);
+      expect(current.revision(scope, entries[0]!.id, `preimage:${entries[0]!.revision}`)?.body).toBe(entries[0]!.body);
+    } finally { current?.close(); spy.mockRestore(); }
+  });
+
+  it('checkpoints only old-writer deltas and never revisits untouched admissions on reopening', async () => {
+    const scope = 'memory/global';
+    const path = join(home, 'incremental-evidence.sqlite');
+    const seed = { ...(await save('Incremental evidence fixture')).entry, id: 'm_incremental_owner', revision: 'incremental:r1' };
+    const untouched = { ...seed, id: 'm_incremental_untouched' };
+    const record = (entry: MemoryEntry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    let current = new MemoryDatabase(path);
+    try { current.importLegacy([record(seed), record(untouched)]); } finally { current.close(); }
+    const raw = new DatabaseSync(path);
+    try {
+      raw.exec("CREATE TRIGGER fail_untouched_reconciliation BEFORE UPDATE ON memory_admissions WHEN OLD.id='m_incremental_untouched' BEGIN SELECT RAISE(ABORT,'untouched object was scanned'); END;");
+      expect(raw.prepare('SELECT COUNT(*) AS n FROM memory_changes').get()?.['n']).toBe(0);
+    } finally { raw.close(); }
+    const later = [2, 3].map((index) => ({ ...seed, revision: `incremental:r${index}`, source: { writer: 'agent' as const, session: `incremental-${index}`, turn: 17 } }));
+    const old = new Schema3MemoryDatabase(path);
+    try { for (const entry of later) old.importLegacy([record(entry)]); } finally { old.close(); }
+    let checkpoint = 0;
+    for (let pass = 0; pass < 2; pass++) {
+      current = new MemoryDatabase(path);
+      try { expect(current.provenance(scope, seed.id).sources.map((source) => source.payload).toSorted()).toEqual([seed, ...later].map((entry) => JSON.stringify(entry)).toSorted()); } finally { current.close(); }
+      const raw = new DatabaseSync(path);
+      try {
+        const next = Number(raw.prepare("SELECT value FROM metadata WHERE key='memory_reconcile_sequence'").get()?.['value']);
+        expect(next).toBeGreaterThan(0);
+        if (pass === 1) expect(next).toBe(checkpoint);
+        checkpoint = next;
+        expect(raw.prepare('SELECT COUNT(*) AS n FROM memory_changes').get()?.['n']).toBe(0);
+        expect(raw.prepare("SELECT value FROM metadata WHERE key='memory_writer_active'").get()?.['value']).toBe(0);
+      } finally { raw.close(); }
+    }
+  });
+
+  it.each([2, 3])('recovers all %s old-writer source revisions after returning to the current backend', async (count) => {
+    const scope = 'memory/global';
+    const path = join(home, 'old-writer-evidence.sqlite');
+    let current = new MemoryDatabase(path); current.close();
+    const seed = (await save('Old writer evidence fixture')).entry;
+    const entries = Array.from({ length: count }, (_, index): MemoryEntry => ({ ...seed, id: 'm_old_writer_evidence', revision: `old-evidence:${index + 1}`, source: { writer: 'agent', session: `old-evidence-${index + 1}`, turn: 17 } }));
+    const record = (entry: MemoryEntry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    const old = new Schema3MemoryDatabase(path);
+    try { for (const entry of entries) old.importLegacy([record(entry)]); } finally { old.close(); }
+    current = new MemoryDatabase(path);
+    try {
+      for (const entry of entries) expect(current.revision(scope, entry.id, entry.revision)).toEqual(JSON.parse(JSON.stringify(entry)));
+      const payloads = entries.map((entry) => JSON.stringify(entry)).toSorted();
+      expect(current.provenance(scope, entries[0]!.id).sources.map((item) => item.payload).toSorted()).toEqual(payloads);
+      expect(current.importLegacy([record(entries.at(-1)!)])).toMatchObject({ retained: 1 });
+      const peer = { ...entries.at(-1)!, id: 'm_old_writer_peer' };
+      current.importLegacy([record(peer)]);
+      current.commit({ operationId: 'forget-old-writer-peer', request: 'forget-old-writer-peer', expectedGeneration: current.read([scope]).generation, edits: [], barriers: [{ scope, objectId: peer.id, at: '2026-01-02' }], result: {} });
+      expect(current.provenance(scope, entries[0]!.id).sources.map((item) => item.payload).toSorted()).toEqual(payloads);
+    } finally { current.close(); }
+    current = new MemoryDatabase(path);
+    try { expect(current.provenance(scope, entries[0]!.id).sources).toHaveLength(count); } finally { current.close(); }
+  });
+
+  it.each(['live', 'missing', 'changed'])('reconciles legitimate old-writer revisions before reads with %s tracking triggers', async (mode) => {
+    const scope = 'memory/global';
+    const path = join(home, `read-reconciliation-${mode}.sqlite`);
+    const first = { ...(await save('Read reconciliation fixture')).entry, id: 'm_read_owner', revision: 'read:r1', source: { writer: 'agent' as const, session: 'read-first', turn: 17 } };
+    const second = { ...first, revision: 'read:r2', source: { ...first.source, session: 'read-second' } };
+    const peer = { ...second, id: 'm_read_peer', revision: 'read:peer' };
+    const record = (entry: MemoryEntry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    let current = new MemoryDatabase(path);
+    current.importLegacy([record(first)]);
+    if (mode !== 'live') {
+      current.close();
+      const raw = new DatabaseSync(path);
+      try {
+        for (const [table, event] of [['revisions', 'insert'], ['legacy', 'insert'], ['legacy', 'update']]) {
+          const name = `memory_track_${table}_${event}`;
+          raw.exec(`DROP TRIGGER ${name}`);
+          if (mode === 'changed') raw.exec(`CREATE TRIGGER ${name} AFTER ${event} ON ${table} BEGIN SELECT 1; END`);
+        }
+      } finally { raw.close(); }
+    }
+    const old = new Schema3MemoryDatabase(path);
+    try {
+      old.importLegacy([record(second), record(peer)]);
+      old.commit({ operationId: 'forget-read-peer', request: 'forget-read-peer', expectedGeneration: old.read([scope]).generation, edits: [], barriers: [{ scope, objectId: peer.id, at: '2026-01-02' }], result: {} });
+      expect(old.revision(scope, first.id, second.revision)?.body).toBe(second.body);
+    } finally { old.close(); }
+    if (mode !== 'live') current = new MemoryDatabase(path);
+    try {
+      expect(current.read([scope]).objects).toEqual([{ scope, id: first.id, revision: second.revision, entry: JSON.parse(JSON.stringify(second)) }]);
+      expect(current.revision(scope, first.id, second.revision)).toEqual(JSON.parse(JSON.stringify(second)));
+      expect(current.provenance(scope, first.id).sources.map((item) => item.payload).toSorted()).toEqual([first, second].map((entry) => JSON.stringify(entry)).toSorted());
+      expect(current.revision(scope, peer.id, peer.revision)).toBeUndefined();
+      expect(current.importLegacy([record({ ...peer, id: 'm_read_replay' })]).imported).toBe(0);
+    } finally { current.close(); }
+    current = new MemoryDatabase(path);
+    try { expect(current.provenance(scope, first.id).sources).toHaveLength(2); } finally { current.close(); }
+    const raw = new DatabaseSync(path);
+    try {
+      expect(raw.prepare('SELECT COUNT(*) AS n FROM memory_changes').get()?.['n']).toBe(0);
+      expect(raw.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name='memory_track_revisions_insert'").get()?.['sql']).toContain('INSERT INTO memory_changes');
+    } finally { raw.close(); }
+  });
+
+  it.each(['memory_track_revisions_insert', 'memory_track_legacy_insert', 'memory_track_legacy_update', 'memory_admit_revision', 'memory_track_forget', 'memory_track_object_forget'])('publishes repaired %s only after full alignment commits', async (name) => {
+    const scope = 'memory/global';
+    const path = join(home, `trigger-integrity-${name}.sqlite`);
+    const first = { ...(await save('Trigger integrity fixture')).entry, id: 'm_trigger_owner', revision: 'trigger:r1' };
+    const second = { ...first, revision: 'trigger:r2', source: { ...first.source, session: 'trigger-second' } };
+    const record = (entry: MemoryEntry) => ({ scope, key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry });
+    let current = new MemoryDatabase(path);
+    try { current.importLegacy([record(first)]); } finally { current.close(); }
+    const raw = new DatabaseSync(path);
+    let expected: string;
+    try {
+      expected = String(raw.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?").get(name)?.['sql']);
+      raw.exec(`DROP TRIGGER ${name}`);
+    } finally { raw.close(); }
+    const old = new Schema3MemoryDatabase(path);
+    try { old.importLegacy([record(second)]); } finally { old.close(); }
+    const interrupted = new DatabaseSync(path);
+    const tables = ['metadata', 'memory_admissions', 'memory_changes', 'sources', 'revisions'];
+    const snapshot = (db: DatabaseSync) => tables.map((table) => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    let before;
+    try {
+      before = snapshot(interrupted);
+      interrupted.exec("CREATE TRIGGER fail_full_alignment BEFORE UPDATE OF signature ON memory_admissions BEGIN SELECT RAISE(ABORT,'interrupted full alignment'); END");
+    } finally { interrupted.close(); }
+    expect(() => new MemoryDatabase(path)).toThrow('interrupted full alignment');
+    const retry = new DatabaseSync(path);
+    try {
+      expect(retry.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?").get(name)).toBeUndefined();
+      expect(snapshot(retry)).toEqual(before);
+      retry.exec('DROP TRIGGER fail_full_alignment');
+    } finally { retry.close(); }
+    for (let pass = 0; pass < 2; pass++) {
+      current = new MemoryDatabase(path);
+      try { expect(current.provenance(scope, first.id).sources).toHaveLength(2); } finally { current.close(); }
+    }
+    const repaired = new DatabaseSync(path);
+    try { expect(repaired.prepare("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?").get(name)?.['sql']).toBe(expected); } finally { repaired.close(); }
   });
 
   it('applies imported-source correction and forget to a changed legacy ID and real lorebook reimport', async () => {
@@ -1002,6 +1553,103 @@ describe('single Memory authority and isolated recovery', () => {
     expect(await managedMemory().authority.status()).toEqual(state);
   });
 
+  it.each([false, true])('preserves migrated same-signature preimages and Undo after forgetting only their independent peer (pre-admission database: %s)', async (baseline) => {
+    const managed = managedMemory();
+    const origin = { writer: 'agent' as const, session: 'admitted-legacy-history', turn: 17 };
+    const mutation = { action: 'create' as const, scope: global, type: 'feedback' as const, title: 'Independent legacy rule', body: 'Original equal instruction; exception 17.', reason: 'Owner instruction', source: origin };
+    const forgotten = await managed.legacy.put(mutation);
+    const original = await managed.legacy.put({ ...mutation, title: 'Retained independent rule' });
+    const changed = await managed.legacy.put({ ...mutation, action: 'update', id: original.entry.id, expectedRevision: original.entry.revision, body: 'Corrected independent rule; exceptions 17 and 19.' });
+    expect(await managed.authority.prepare()).toMatchObject({ backend: 'sqlite', mode: 'active' });
+    const journal = await store.journal(global, original.entry.id);
+    expect(journal).toHaveLength(2);
+    expect(await store.getRevision(global, original.entry.id, original.entry.revision)).toEqual(original.entry);
+    await store.forget(global, [{ id: forgotten.entry.id, expectedRevision: forgotten.entry.revision }], 'forget-admitted-history-peer');
+    expect(await store.getRevision(global, original.entry.id, original.entry.revision)).toEqual(original.entry);
+    await close();
+    if (baseline) {
+      const raw = new DatabaseSync(join(home, 'store/memory-sqlite-v1/memory.sqlite'));
+      try { removeMemoryReconciliation(raw); } finally { raw.close(); }
+    }
+    bind();
+    expect(await store.get(global, original.entry.id)).toEqual(changed.entry);
+    expect(await store.getRevision(global, original.entry.id, original.entry.revision)).toEqual(original.entry);
+    expect(await store.journal(global, original.entry.id)).toEqual(journal);
+    expect((await store.undo(global, changed.operationId))?.body).toBe(original.entry.body);
+    expect(await store.get(global, forgotten.entry.id)).toBeUndefined();
+    expect(await store.getRevision(global, forgotten.entry.id, forgotten.entry.revision)).toBeUndefined();
+  });
+
+  it('imports retained journal history and Undo beside a forgotten object', async () => {
+    const { memory, authority, legacy } = managedMemory();
+    const forgotten = await createManaged(legacy, 'Forgotten journal peer', 'Forget this independent rule.');
+    const original = await createManaged(legacy, 'Retained journal rule', 'Original retained version; exception 17.');
+    const changed = await legacy.put({ action: 'update', scope: global, id: original.entry.id, expectedRevision: original.entry.revision, type: original.entry.type, title: original.entry.title, body: 'Corrected retained version; exceptions 17 and 19.', reason: 'Owner correction', source });
+    for (const entry of [forgotten.entry, changed.entry]) await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: new TextDecoder().decode(await storage.read('memory/global', `entries/${entry.id}.md`)), entry }]);
+    await store.forget(global, [{ id: forgotten.entry.id, expectedRevision: forgotten.entry.revision }], 'forget-before-journal-import');
+    const expectedJournal = await legacy.journal(global, original.entry.id);
+    expect(expectedJournal).toHaveLength(2);
+    expect(await authority.prepare()).toMatchObject({ backend: 'sqlite', mode: 'active' });
+    expect(await memory.get(global, original.entry.id)).toEqual(changed.entry);
+    expect(await store.getRevision(global, original.entry.id, original.entry.revision)).toEqual(original.entry);
+    expect(await store.journal(global, original.entry.id)).toEqual(expectedJournal);
+    expect((await memory.undo(global, changed.operationId))?.body).toBe(original.entry.body);
+    expect(await memory.get(global, forgotten.entry.id)).toBeUndefined();
+    const retained = (await persistence.legacy('memory/global')).find((record) => record.key === 'journal.jsonl');
+    expect(retained?.payload).not.toContain(forgotten.entry.id);
+    expect(retained?.payload).toContain(original.entry.id);
+    expect((await authority.status()).migrationIssues).not.toContainEqual(expect.objectContaining({ key: 'journal.jsonl', issue: 'forgotten_source_rejected' }));
+  });
+
+  it.each(['updated', 'create-only', 'deleted'] as const)('filters signature-rejected legacy history and journal for a new %s object', async (shape) => {
+    const { authority, legacy } = managedMemory();
+    const origin = { writer: 'agent' as const, session: 'signature-history-fixture', turn: 17 };
+    const mutation = { action: 'create' as const, scope: global, type: 'feedback' as const, title: 'Forgotten signature owner', body: 'Forgotten complete instruction; exception 17.', reason: 'Source fixture', source: origin };
+    const forgotten = await legacy.put(mutation);
+    await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${forgotten.entry.id}.md`, payload: JSON.stringify(forgotten.entry), entry: forgotten.entry }]);
+    await store.forget(global, [{ id: forgotten.entry.id, expectedRevision: forgotten.entry.revision }], randomUUID());
+    const replay = await legacy.put({ ...mutation, title: 'New identity with forgotten signature' });
+    if (shape === 'updated') await legacy.put({ ...mutation, action: 'update', id: replay.entry.id, expectedRevision: replay.entry.revision, title: 'Renamed forgotten replay' });
+    if (shape === 'deleted') await legacy.delete(global, replay.entry.id, replay.entry.revision);
+    if (shape === 'create-only') {
+      const entry = replay.entry;
+      expect(await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry }])).toMatchObject({ imported: 0, issues: [expect.objectContaining({ issue: 'forgotten_source_rejected' })] });
+      await close(); bind();
+    }
+    const managed = shape === 'create-only' ? managedMemory() : { authority };
+    if (shape === 'create-only') {
+      expect(await ix.get(IMemoryShadowImport).run(global, 'entries/zzzz.md')).toMatchObject({ complete: true });
+      expect(await store.journal(global, replay.entry.id)).toEqual([]);
+    }
+    expect(await managed.authority.prepare()).toMatchObject({ backend: 'sqlite', mode: 'active' });
+    expect(await store.get(global, replay.entry.id)).toBeUndefined();
+    expect(await store.getRevision(global, replay.entry.id, replay.entry.revision)).toBeUndefined();
+    expect(await store.journal(global, replay.entry.id)).toEqual([]);
+    expect((await persistence.legacy('memory/global')).every((record) => !record.payload.includes(replay.entry.id) && !record.payload.includes(mutation.body))).toBe(true);
+  });
+
+  it('blocks a persisted whole-journal rejection until the same migration imports its history', async () => {
+    const { authority, legacy } = managedMemory();
+    const saved = await createManaged(legacy, 'Whole-journal rejection recovery');
+    await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${saved.entry.id}.md`, payload: JSON.stringify(saved.entry), entry: saved.entry }]);
+    const operationId = randomUUID();
+    await storage.write(MEMORY_AUTHORITY_SCOPE, 'backend.json', new TextEncoder().encode(JSON.stringify({ version: 1, epoch: 0, backend: 'legacy', mode: 'migrating', migration: { id: operationId, namespaces: ['memory/global'], index: 1, phase: 'importing', issues: [{ scope: 'memory/global', key: 'journal.jsonl', issue: 'forgotten_source_rejected' }] } })));
+    expect(await authority.migrate({ operationId })).toMatchObject({ backend: 'legacy', mode: 'migrating', migration: { phase: 'failed', failure: { code: 'memory.source_invalid' } } });
+    expect(await store.journal(global, saved.entry.id)).toEqual([]);
+    expect(await authority.retryMigration(operationId)).toMatchObject({ backend: 'sqlite', mode: 'active', migrationId: operationId });
+    expect(await store.journal(global, saved.entry.id)).toEqual(await legacy.journal(global, saved.entry.id));
+  });
+
+  it('keeps malformed journals blocking when the namespace has a forget barrier', async () => {
+    const { authority, legacy } = managedMemory();
+    const forgotten = await createManaged(legacy, 'Malformed journal peer');
+    await persistence.importLegacy([{ scope: 'memory/global', key: `entries/${forgotten.entry.id}.md`, payload: JSON.stringify(forgotten.entry), entry: forgotten.entry }]);
+    await store.forget(global, [{ id: forgotten.entry.id, expectedRevision: forgotten.entry.revision }], 'forget-before-malformed-journal');
+    const raw = new TextDecoder().decode(await storage.read('memory/global', 'journal.jsonl'));
+    await storage.write('memory/global', 'journal.jsonl', new TextEncoder().encode(`${raw}invalid journal record\n`));
+    expect(await authority.migrate(migration())).toMatchObject({ backend: 'legacy', mode: 'migrating', migration: { phase: 'failed', failure: { code: 'memory.source_invalid' } } });
+  });
+
   it.each(['migrate', 'retry'] as const)('uses durable forget barriers beyond 1000 migration notes through %s', async (resume) => {
     const seed: MemoryEntry = { id: 'm_limit_seed', revision: 'mem2:limit-seed', type: 'feedback', title: 'Forgotten entry', body: 'Equal source and complete body.', status: 'active', pinned: false, source: { writer: 'agent', session: 'migration-limit-fixture', turn: 17 }, reason: 'Independent instruction', created: '2026-01-01', updated: '2026-01-01' };
     const entries = Array.from({ length: 1001 }, (_, index) => ({ ...seed, id: `m_limit_${String(index).padStart(4, '0')}` }));
@@ -1269,6 +1917,32 @@ describe('revision-bound Memory Markdown imports', () => {
     const current = await authority.exportMarkdown(global, saved.entry.id);
     const fresh = await authority.previewImport(global, fileInput(editFile(current.markdown, {}, 'Reconciled complete choice, exceptions 17 and 19.')));
     expect((await authority.applyImport(global, fresh.previewToken!, randomUUID())).entry.body).toBe(fresh.incoming.body);
+  });
+
+  it('allows revision-bound Markdown edits of a surviving equal-source peer while rejecting new-object replays', async () => {
+    const { memory, authority } = managedMemory();
+    await authority.migrate(migration());
+    const origin = { writer: 'agent' as const, session: 'markdown-independent-fixture', turn: 17 };
+    const mutation = { action: 'create' as const, scope: global, type: 'feedback' as const, title: 'First Markdown peer', body: 'Same source and complete body; exception 17.', reason: 'Independent instruction', source: origin };
+    const first = await memory.put(mutation);
+    const second = await memory.put({ ...mutation, title: 'Surviving Markdown peer' });
+    const exported = await authority.exportMarkdown(global, second.entry.id);
+    await authority.forget(global, [{ id: first.entry.id, expectedRevision: first.entry.revision }], randomUUID());
+    const markdown = editFile(exported.markdown, { title: 'Renamed surviving Markdown peer' });
+    const preview = await authority.previewImport(global, fileInput(markdown));
+    expect(preview).toMatchObject({ canApply: true, action: 'update', current: JSON.parse(JSON.stringify(second.entry)) });
+    const applied = await authority.applyImport(global, preview.previewToken!, randomUUID());
+    expect(applied.entry.id).toBe(second.entry.id);
+    expect(applied.entry.body).toBe(second.entry.body);
+    expect(applied.entry.title).toBe('Renamed surviving Markdown peer');
+    expect((await authority.previewImport(global, fileInput(markdown))).action).toBe('retained');
+    for (const originField of [{ origin: null }, {}]) {
+      const replay = editFile(exported.markdown, { id: 'new', revision: null, title: 'New object replay', ...originField });
+      await expect(authority.previewImport(global, fileInput(replay, 'file:///example/memory/new-locator.md'))).rejects.toMatchObject({ code: 'inactive_target' });
+    }
+    const unrelated = await createManaged(memory, 'Unrelated Markdown target', 'Distinct owner instruction.');
+    const forged = editFile(exported.markdown, { id: unrelated.entry.id, revision: unrelated.entry.revision, origin: { id: unrelated.entry.id, revision: unrelated.entry.revision } });
+    await expect(authority.previewImport(global, fileInput(forged))).rejects.toMatchObject({ code: 'inactive_target' });
   });
 
   it('blocks corrected or forgotten exported origins despite renamed IDs, titles and locators', async () => {

@@ -61,7 +61,7 @@ export interface IMemoryAuthorityService {
 export const IMemoryAuthorityService = createDecorator<IMemoryAuthorityService>('memoryAuthorityService');
 function invalid(message: string): never { throw new MemoryDomainError('invalid_input', message, 'Inspect Memory authority status and reconcile the reported operation before retrying.'); }
 type MigrationIssue = NonNullable<MemoryAuthorityState['migration']>['issues'][number];
-function blocksMigration(issue: MigrationIssue): boolean { return !['current_revision_preserved', 'forgotten_source_rejected'].includes(issue.issue); }
+function blocksMigration(issue: MigrationIssue): boolean { return issue.issue !== 'current_revision_preserved' && (issue.issue !== 'forgotten_source_rejected' || issue.key === 'journal.jsonl'); }
 function uniqueIssues(issues: readonly MigrationIssue[]): MigrationIssue[] {
   return [...new Map(issues.map((issue) => [JSON.stringify(issue), issue])).values()].toSorted((a, b) => Number(blocksMigration(b)) - Number(blocksMigration(a))).slice(0, 1000);
 }
@@ -364,8 +364,10 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
     assertMemoryAuthorityWritable(state, 'sqlite');
     const { incoming, candidate, base } = await this.importCandidate(scope, input);
     const states = await Promise.all(memoryIngestSourceIds(base, candidate.unit).map((id) => this.persistence.source(base, id)));
-    const signatures = await Promise.all((candidate.unit.signatures ?? []).map((id) => this.persistence.source(base, id)));
-    if ([...states, ...signatures].some((state) => state.state === 'forgotten')) throw new MemoryDomainError('inactive_target', 'This exact Markdown source has been forgotten', 'Use a distinct new source; an old source cannot recreate forgotten Memory.');
+    const current = incoming.id === 'new' ? null : await this.sqlite.get(scope, incoming.id) ?? null;
+    const signatures = await Promise.all((candidate.unit.signatures ?? []).map(async (id) => ({ id, state: await this.persistence.source(base, id) })));
+    const retainedSource = current !== null && states[0]?.state === 'registered' && states[0].objectIds.includes(current.id);
+    if (states.some((state) => state.state === 'forgotten') || signatures.some(({ id, state }) => state.state === 'forgotten' && !retainedSource && (current === null || memorySourceUnitId(base, current.source, current.body, current.basis?.refs) !== id))) throw new MemoryDomainError('inactive_target', 'This exact Markdown source has been forgotten', 'Use a distinct new source; an old source cannot recreate forgotten Memory.');
     const related = new Set(states.flatMap((state) => state.state === 'registered' ? state.objectIds : []));
     if (related.size > 0) {
       const view = await this.sqlite.snapshot([scope]);
@@ -376,7 +378,6 @@ export class MemoryAuthorityService extends Disposable implements IMemoryAuthori
       if (current === undefined) throw new MemoryDomainError('inactive_target', 'This Markdown source belongs to a deleted Memory object', 'Undo the recoverable deletion through its existing operation before editing.');
       if (states[0]?.state === 'registered' || incoming.id !== current.id || incoming.revision !== current.revision) return { incoming, current, action: 'retained', canApply: false };
     }
-    const current = incoming.id === 'new' ? null : await this.sqlite.get(scope, incoming.id) ?? null;
     if (incoming.id !== 'new' && (current === null || current.revision !== incoming.revision)) return { incoming, current, action: 'update', canApply: false, issue: { code: 'revision_conflict', recovery: 'Export the current entry again, reconcile the complete content and preview that new file.' } };
     if (incoming.status !== 'active' || current !== null && current.status !== 'active') return { incoming, current, action: incoming.id === 'new' ? 'create' : 'update', canApply: false, issue: { code: 'inactive_target', recovery: 'Use the normal review or restoration controls for pending, replaced or archived entries before importing an edit.' } };
     if (incoming.id === 'new') {
