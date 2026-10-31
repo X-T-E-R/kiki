@@ -14,6 +14,7 @@ export function createExternalClientsFacade(transport:HttpRestTransport):Externa
     revoke:(id,options)=>transport.json(at(id),{...options,method:'DELETE'}),
     sessions:(id,options)=>transport.json(`${at(id)}/sessions`,options),
     stdio:(id,options)=>transport.json(`${at(id)}/stdio`,{...options,method:'POST',body:{}}),
+    credential:(id,options)=>transport.json(`${at(id)}/credential`,{...options,method:'POST',body:{}}),
     listener:options=>transport.json(`${base}/listener`,options),
     configureListener:(body,options)=>transport.json(`${base}/listener`,{...options,method:'PUT',body}),
     authorizations:options=>transport.json(`${base}/authorizations`,options),

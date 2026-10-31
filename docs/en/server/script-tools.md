@@ -22,7 +22,15 @@ kiki tools --client CONNECTION_ID list
 
 `--client` uses the local owner's existing connection configuration to mint a one-hour connection credential without printing it. Add `--home /path/to/kiki-home` when the connection belongs to another home. Discovery does not create a conversation. See [external-client setup](./mcp.md#let-an-external-client-use-kiki-tools) for connection and session controls.
 
-For unattended HTTP clients, the local owner can provision a credential through the existing owner-authenticated `POST /api/external-clients/CONNECTION_ID/credential` route with `{}`. Save only its returned `data.token` in a private file; do not log it. Tool routes accept that connection bearer credential only, from a loopback address. They do not accept the server's owner token. Refresh expired credentials through the owner channel; pausing or revoking the connection stops their access.
+For Python, Node.js or another HTTP client, export a connection credential as the local owner:
+
+```sh
+kiki tools --client CONNECTION_ID credential --output /private/connection-token
+```
+
+The command creates a new private file and refuses to overwrite it. Its JSON output contains the file path and server URL, never the credential. Set `KIKI_EXTERNAL_CLIENT_CREDENTIAL_FILE` to that path and `KIKI_SERVER_URL` to the returned `server_url`. Tool routes accept only this connection bearer credential, from a loopback address; the server's owner token is not accepted.
+
+Credentials expire after one hour. On HTTP 401, run `credential` again with a new output path, update the environment variable and restart the script with the same submission keys. For longer CLI workflows, use `--client` to obtain a current credential automatically. Pausing or revoking a connection stops access immediately.
 
 The Python and Node.js examples read these environment variables:
 

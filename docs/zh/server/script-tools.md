@@ -22,7 +22,15 @@ kiki tools --client CONNECTION_ID list
 
 `--client` 通过本机所有者已有的连接配置签发一小时有效的连接凭据，不会打印凭据。连接属于其他 home 时，加上 `--home /path/to/kiki-home`。发现工具不会创建会话。连接与会话管理详见 [外部客户端设置](./mcp.md#让外部客户端使用-kiki-工具)。
 
-无人值守的 HTTP 客户端可由本机所有者通过现有的所有者认证路由 `POST /api/external-clients/CONNECTION_ID/credential`、请求体 `{}` 签发凭据。仅将返回的 `data.token` 保存到私有文件，不要写入日志。工具路由只接受来自回环地址的连接 bearer 凭据，不接受服务器所有者 token。凭据过期后通过所有者通道更新；暂停或撤销连接会停止访问。
+使用 Python、Node.js 或其他 HTTP 客户端时，由本机所有者导出连接凭据：
+
+```sh
+kiki tools --client CONNECTION_ID credential --output /private/connection-token
+```
+
+此命令新建私有文件，拒绝覆盖已有文件。输出的 JSON 只包含文件路径和服务器 URL，不含凭据。将 `KIKI_EXTERNAL_CLIENT_CREDENTIAL_FILE` 设为该路径，将 `KIKI_SERVER_URL` 设为返回的 `server_url`。工具路由只接受来自回环地址的连接 bearer 凭据，不接受服务器所有者 token。
+
+凭据一小时后过期。收到 HTTP 401 时，用新的输出路径再次运行 `credential`，更新环境变量，并使用原来的提交键重新运行脚本。较长的 CLI 工作流可直接使用 `--client`，由 CLI 自动获取有效凭据。暂停或撤销连接会立即停止访问。
 
 Python 和 Node.js 示例读取以下环境变量：
 

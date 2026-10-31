@@ -1,5 +1,8 @@
 import { open, readFile, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { userInfo } from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { Command } from 'commander';
 import { createKlient } from '@kiki/klient/http';
 import type { ExternalClientResultRange } from '@kiki/klient';
@@ -56,6 +59,32 @@ export function registerToolsCommand(program: Command): void {
           tools: [...new Set([...saved.tools, ...names])],
           allowCommands: options.allowCommands ? true : undefined,
         });
+      }, true),
+    );
+  tools
+    .command('credential')
+    .description('Export a one-hour connection credential to a new private file as the local owner.')
+    .requiredOption('--output <path>', 'New private output file; an existing file is never replaced.')
+    .action(async (_options: unknown, command: Command) =>
+      run(command, async (client, options) => {
+        const output = resolve(options.output!);
+        const file = await open(output, 'wx', 0o600);
+        let complete = false;
+        try {
+          if (process.platform === 'win32') {
+            await promisify(execFile)('icacls.exe', [output, '/inheritance:r', '/grant:r', `${userInfo().username}:F`], { windowsHide: true });
+          } else {
+            await file.chmod(0o600);
+          }
+          const credential = await client.rest!.externalClients.credential(options.client!);
+          await file.writeFile(credential.token, 'utf8');
+          await file.sync();
+          complete = true;
+          return { output, server_url: options.url, expires_at: credential.expiresAt };
+        } finally {
+          await file.close();
+          if (!complete) await rm(output, { force: true });
+        }
       }, true),
     );
   tools
@@ -224,7 +253,7 @@ async function run(
       throw new Error('Connection credentials require a loopback HTTP URL without embedded credentials.');
     }
     client = createKlient({ endpoint, token });
-    const result = await work(client, options);
+    const result = await work(client, { ...options, url: endpoint });
     process.stdout.write(`${JSON.stringify(result)}\n`);
     if (
       typeof result === 'object' &&

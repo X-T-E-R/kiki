@@ -63,6 +63,7 @@ export interface ExternalClientsFacade {
   revoke(id:string,options?:HttpRestRequestOptions):Promise<{connection:ExternalClientConnection}>;
   sessions(id:string,options?:HttpRestRequestOptions):Promise<{sessions:ExternalClientSession[]}>;
   stdio(id:string,options?:HttpRestRequestOptions):Promise<{command:string;args:string[]}>;
+  credential(id:string,options?:HttpRestRequestOptions):Promise<{token:string;mcpUrl:string;expiresAt?:number}>;
   listener(options?:HttpRestRequestOptions):Promise<ExternalClientListener>;
   configureListener(body:ExternalClientListenerInput,options?:HttpRestRequestOptions):Promise<ExternalClientListener>;
   authorizations(options?:HttpRestRequestOptions):Promise<{authorizations:ExternalClientAuthorization[]}>;

@@ -1,9 +1,14 @@
 import { Command } from 'commander';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerToolsCommand } from '../../src/cli/sub/tools';
 
 const { ensureServer, daemonRequest, api, createKlient } = vi.hoisted(() => {
-  const api = { list: vi.fn(), update: vi.fn(), tools: vi.fn() };
+  const api = { list: vi.fn(), update: vi.fn(), tools: vi.fn(), credential: vi.fn() };
   return { ensureServer: vi.fn(), daemonRequest: vi.fn(), api,
     createKlient: vi.fn(() => ({ rest: { externalClients: api }, close: vi.fn() })) };
 });
@@ -30,6 +35,40 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); process.exitCode = 0; });
 
 describe('script tools CLI owner commands', () => {
+  it('exports a private new file without printing the credential and refuses overwrite before minting', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-tools-credential-'));
+    const path = join(root, 'credential');
+    try {
+      api.credential.mockResolvedValue({ token: 'kec_private_fixture' });
+      expect(await invoke(['--home', root, '--client', 'example', 'credential', '--output', path]))
+        .toEqual({ output: path, server_url: 'http://127.0.0.1:12345' });
+      expect(await readFile(path, 'utf8')).toBe('kec_private_fixture');
+      expect(output).not.toContain('kec_private_fixture');
+      if (process.platform === 'win32') {
+        const acl = await promisify(execFile)('powershell.exe', ['-NoProfile', '-Command',
+          '$acl=Get-Acl -LiteralPath $env:KIKI_TEST_ACL_FILE; ConvertTo-Json -Compress @{protected=$acl.AreAccessRulesProtected; count=@($acl.Access).Count; inherited=@($acl.Access | Where-Object IsInherited).Count}'], { env: { ...process.env, KIKI_TEST_ACL_FILE: path } });
+        expect(JSON.parse(acl.stdout)).toEqual({ protected: true, count: 1, inherited: 0 });
+      } else {
+        expect((await stat(path)).mode & 0o777).toBe(0o600);
+      }
+      await writeFile(path, 'keep-existing');
+      output = '';
+      expect(await invoke(['--home', root, '--client', 'example', 'credential', '--output', path]))
+        .toMatchObject({ error: expect.stringContaining('EEXIST') });
+      expect(await readFile(path, 'utf8')).toBe('keep-existing');
+      expect(api.credential).toHaveBeenCalledTimes(1);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it('removes a new empty credential file when minting fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-tools-credential-'));
+    const path = join(root, 'credential');
+    try {
+      api.credential.mockRejectedValueOnce(new Error('connection revoked'));
+      expect(await invoke(['--home', root, '--client', 'example', 'credential', '--output', path]))
+        .toEqual({ error: 'connection revoked' });
+      await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it('adds explicit plugin grants through the local owner without using the connection credential', async () => {
     vi.stubEnv('KIKI_EXTERNAL_CLIENT_TOKEN', 'fixture-connection');
     expect(await invoke(['--home', 'E:/fixture-home', '--client', 'example', 'grant', 'plugin__media__generate', '--allow-commands']))

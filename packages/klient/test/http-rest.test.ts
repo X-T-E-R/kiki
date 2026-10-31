@@ -50,6 +50,17 @@ describe('HTTP REST domains', () => {
       expect(fetcher).toHaveBeenCalledTimes(5);
     } finally { await channel.close(); }
   });
+  it('exports a connection credential only through the owner management endpoint', async () => {
+    const fetcher = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      expect(String(input)).toBe('http://127.0.0.1:12345/api/external-clients/example/credential');
+      expect(init).toMatchObject({ method: 'POST', headers: { authorization: 'Bearer fixture-owner' } });
+      expect(jsonRequestBody(init?.body)).toEqual({});
+      return envelope({ token: 'kec_fixture', mcpUrl: 'http://127.0.0.1:12346/mcp' });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://127.0.0.1:12345', token: 'fixture-owner', fetch: fetcher as typeof fetch });
+    try { expect(await channel.rest.externalClients.credential('example')).toMatchObject({ token: 'kec_fixture' }); }
+    finally { await channel.close(); }
+  });
   it('validates decision sources and synthetic probes without exposing a secret-moving value', async () => {
     const source = { kind: 'connection' as const, connection: 'judgment', model: 'arbitrary-remote-name' };
     const probe = { ok: true, status: { state: 'ready', protocol: 'system_one', connection: 'judgment', credential_source: 'env', credential_env: 'TYPESAFE_API_KEY' }, duration_ms: 3 };
