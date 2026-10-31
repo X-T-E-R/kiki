@@ -3177,6 +3177,18 @@ class FixtureServer {
     // Named agent profiles: the raw directory keeps every row and its
     // disabled flag; `effective=true` returns only the enabled same-name
     // winners for the requested workspace or cwd.
+    // Agent reference candidates for the composer `@` menu. The server is the
+    // sole producer of this list; the fixture replays the scenario's
+    // `agentReferences` seed ({ items, delegation_available, unavailable_reason? })
+    // verbatim so the walk covers available, unavailable and no-delegation rows.
+    if (path === '/agents/references') {
+      const seed = this.scenario?.data.agentReferences;
+      if (seed === undefined) return this.envelope(res, null, 40404, 'no agent references fixture for this scenario');
+      // A failed load must reach the client as a failure, not a 200 it reads
+      // as success — kap-server answers an unavailable route with a real status.
+      if (seed.error !== undefined) return this.failureEnvelope(res, 503, seed.error, seed.message ?? 'agent references unavailable');
+      return this.envelope(res, structuredClone(seed));
+    }
     if (path === '/agents') {
       if (query.get('unscoped') === 'true') {
         const items = this.effectiveAgentProfiles(undefined, true)

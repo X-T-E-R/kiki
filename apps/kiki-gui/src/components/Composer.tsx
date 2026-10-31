@@ -30,7 +30,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFsSearchFeed, type FsSearchFeedSearch, type FsSearchFeedView } from '../lib/fsSearchFeed';
 import { useNavigate } from 'react-router-dom';
 
-import type { DeferredAppendTiming, ExecutorModelCatalogResponse, FsSearchHit, PermissionMode, PromptPlanGate, SessionUsageError } from '@kiki/protocol';
+import type { AgentReferenceCandidate, AgentReferenceCandidatesQuery, DeferredAppendTiming, ExecutorModelCatalogResponse, FsSearchHit, PermissionMode, PromptPlanGate, SessionUsageError } from '@kiki/protocol';
 
 import {
   buildSlashItems,
@@ -45,7 +45,9 @@ import {
 import {
   ACCEPTED_IMAGE_MIMES,
   prepareThreadRefContext,
+  agentRefDeletionRange,
   fileToImageAttachment,
+  findAgentRefs,
   findConversationRefs,
   formatBytes,
   hasMention,
@@ -53,7 +55,9 @@ import {
   insertThreadRef,
   isNativeExecutor,
   profileExecutor,
+  removeAgentRef,
   removeThreadRef,
+  replaceMentionTriggerWithAgentRef,
   subscribeComposerInserts,
   threadRefDeletionRange,
   parseMentionTrigger,
@@ -89,6 +93,12 @@ import {
 } from '../lib/agentProfileCatalog';
 import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
 import { isExecutorActionAvailable, mapExecutorCapabilities } from '../lib/executorCapabilities';
+import {
+  agentUnavailableReason,
+  filterAgentCandidates,
+  groupAgentCandidates,
+  type AgentCandidateGroup,
+} from '../lib/agentMentionCandidates';
 import { pendingModelSwitchChange, type PendingModelSwitch } from '@kiki/session-core/session/modelSwitchQueue';
 import { registerOverlay } from '../lib/uiBusy';
 import { useCoarsePointer } from '../lib/layoutHooks';
@@ -1195,7 +1205,52 @@ export function Composer({
   });
   const mentionItems = menu?.kind === 'mention' && menu.query === mentionQuery ? fsFeed.items : [];
 
-  const menuRowCount = menu?.kind === 'slash' ? filteredSlashItems.length : mentionItems.length;
+  // Agent candidates (the `@` menu's agent groups) come from the server's
+  // `GET /agents/references`, keyed to the same scope the profile catalog uses.
+  // The server is the sole producer: it hides hard-policy blocks and returns
+  // fixable faults as unavailable rows. Until 934's handler ships, the fixture
+  // feeds this exact shape. The query needs the scope's profile name for the
+  // workspace/cwd forms; the session form needs only ids.
+  const agentReferenceScope = useMemo((): AgentReferenceCandidatesQuery | null => {
+    if (sessionId !== undefined) return { session_id: sessionId, agent_id: agentId };
+    if (agentProfileCatalogMode.mode === 'workspace') return { workspace_id: agentProfileCatalogMode.workspaceId, profile: selectedProfileName };
+    if (agentProfileCatalogMode.mode === 'cwd') return { cwd: agentProfileCatalogMode.cwd, profile: selectedProfileName };
+    return null;
+  }, [sessionId, agentId, agentProfileCatalogMode, selectedProfileName]);
+  const agentReferencesQuery = useQuery({
+    queryKey: ['agent-references', connectionId, scopeId, agentReferenceScope],
+    queryFn: () => client.klient.rest!.agents.referenceCandidates(agentReferenceScope!),
+    enabled: menu?.kind === 'mention' && agentReferenceScope !== null,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const agentCandidateList = useMemo(
+    () => (agentReferencesQuery.data === undefined ? { groups: [], delegationAvailable: true } : groupAgentCandidates(agentReferencesQuery.data, t)),
+    [agentReferencesQuery.data, t],
+  );
+  const filteredAgentGroups = useMemo(
+    () => (menu?.kind === 'mention' ? filterAgentCandidates(agentCandidateList.groups, menu.query) : []),
+    [menu, agentCandidateList],
+  );
+  const mentionAgentRows = useMemo(
+    () => filteredAgentGroups.flatMap((group) => group.candidates),
+    [filteredAgentGroups],
+  );
+  // The unified mention list rows: file hits first, then agent candidates.
+  // The flat index drives ↑/↓, Enter and Tab across both groups as one list.
+  type MentionRow =
+    | { readonly kind: 'file'; readonly hit: FsSearchHit }
+    | { readonly kind: 'agent'; readonly candidate: AgentReferenceCandidate };
+  const mentionRows: readonly MentionRow[] = useMemo(
+    () => [
+      ...mentionItems.map((hit): MentionRow => ({ kind: 'file', hit })),
+      ...mentionAgentRows.map((candidate): MentionRow => ({ kind: 'agent', candidate })),
+    ],
+    [mentionItems, mentionAgentRows],
+  );
+  const mentionRowCount = mentionRows.length;
+
+  const menuRowCount = menu?.kind === 'slash' ? filteredSlashItems.length : mentionRowCount;
   const menuQuery = menu?.query ?? null;
   useEffect(() => {
     setActiveIndex(0);
@@ -1269,6 +1324,32 @@ export function Composer({
   // Conversation links in the draft — threads and rooms alike: one tray chip
   // each, a tinted token in the text, and whole-link deletion.
   const conversationRefs = useMemo(() => findConversationRefs(text), [text]);
+  const agentRefs = useMemo(() => findAgentRefs(text), [text]);
+  // The token range being edited, tracked in state: the overlay shows a
+  // token's label until the caret enters its range, then reveals the raw link
+  // until the caret leaves. It starts null so a freshly inserted token shows
+  // its label; the selection handlers below update it on select/click/change.
+  const [editingRange, setEditingRange] = useState<{ start: number; end: number } | null>(null);
+  const syncEditingRange = (selStart: number, selEnd: number) => {
+    const hit = backdropTokens.find((ref) =>
+      selStart === selEnd
+        ? selStart > ref.start && selStart < ref.end
+        : selStart < ref.end && selEnd > ref.start,
+    );
+    const next = hit === undefined ? null : { start: hit.start, end: hit.end };
+    setEditingRange((current) => (current?.start === next?.start && current?.end === next?.end ? current : next));
+  };
+  // Both link kinds tint as tokens in the backdrop: one merged, ordered list so
+  // a draft mixing thread and agent links highlights every range in place. The
+  // backdrop's marks are transparent (the textarea's dark text paints over
+  // them); an opaque overlay sibling (below) carries each token's label.
+  const backdropTokens = useMemo(
+    () => [
+      ...conversationRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: ref.kind as string, profile: undefined as string | undefined })),
+      ...agentRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: 'agent' as string, profile: ref.profile as string | undefined })),
+    ].sort((a, b) => a.start - b.start || a.end - b.end),
+    [conversationRefs, agentRefs],
+  );
   const threadRefs = useMemo(() => conversationRefs.filter((ref) => ref.kind === 'session'), [conversationRefs]);
   const roomRefs = useMemo(() => conversationRefs.filter((ref) => ref.kind === 'room'), [conversationRefs]);
   const threadRefIds = useMemo(() => threadRefs.map((ref) => ref.id), [threadRefs]);
@@ -1283,7 +1364,47 @@ export function Composer({
     (roomId: string) => ({ id: roomId, ...roomRefDirectory.lookup(roomId) }),
     [roomRefDirectory],
   );
+  // Token overlay labels: a referenced agent shows its candidate label (the
+  // profile name before candidates load or for a stale reference); a linked
+  // thread or room shows its title/name, falling back to the raw link when the
+  // record is not loaded yet. The raw link stays in the (transparent) textarea
+  // and is what gets sent.
+  const agentLabelByProfile = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const group of agentCandidateList.groups) {
+      for (const candidate of group.candidates) {
+        if (!map.has(candidate.profile)) map.set(candidate.profile, candidate.label);
+      }
+    }
+    return map;
+  }, [agentCandidateList]);
+  const overlayTokens = useMemo(
+    () => backdropTokens.map((ref) => {
+      const editing = editingRange !== null && editingRange.start === ref.start && editingRange.end === ref.end;
+      let label: string;
+      if (ref.kind === 'agent') {
+        label = `@${(ref.profile !== undefined ? agentLabelByProfile.get(ref.profile) : undefined) ?? ref.profile ?? ref.raw}`;
+      } else if (ref.kind === 'session') {
+        const refId = conversationRefs.find((candidate) => candidate.raw === ref.raw)?.id;
+        const title = refId === undefined ? undefined : threadRefDirectory.lookup(refId).session?.title.trim();
+        label = title === undefined || title === '' ? ref.raw : title;
+      } else if (ref.kind === 'room') {
+        const refId = conversationRefs.find((candidate) => candidate.raw === ref.raw)?.id;
+        const name = refId === undefined ? undefined : roomRefDirectory.lookup(refId).name?.trim();
+        label = name === undefined || name === '' ? ref.raw : name;
+      } else {
+        label = ref.raw;
+      }
+      return { ...ref, label, editing };
+    }),
+    [backdropTokens, editingRange, agentLabelByProfile, conversationRefs, threadRefDirectory, roomRefDirectory],
+  );
+  const hasOverlayLabels = useMemo(
+    () => overlayTokens.some((ref) => !ref.editing && ref.label !== ref.raw),
+    [overlayTokens],
+  );
   const threadRefBackdropRef = useRef<HTMLDivElement>(null);
+  const threadRefOverlayRef = useRef<HTMLDivElement>(null);
   const removeConversationRefAt = (index: number) => {
     const ref = conversationRefs[index];
     if (ref === undefined) return;
@@ -1561,6 +1682,41 @@ export function Composer({
       ]);
     }
     node?.focus();
+  };
+
+  /** Accept the highlighted mention row, whether it is a file hit or an agent. */
+  const acceptMentionRow = (row: MentionRow) => {
+    if (row.kind === 'file') acceptMentionItem(row.hit);
+    else acceptMentionAgent(row.candidate);
+  };
+
+  /**
+   * Accept the highlighted agent target: replace the `@query` trigger text with
+   * the server's `reference` link verbatim. An unavailable target is dimmed and
+   * cannot be picked. The link stays in the draft text (not an attachment), so
+   * it survives queue edit/resend and the backend reads it on send.
+   */
+  const acceptMentionAgent = (candidate: AgentReferenceCandidate) => {
+    if (menu?.kind !== 'mention' || !candidate.available) return;
+    const trigger = menu;
+    setMenu(null);
+    const node = textareaRef.current;
+    const cursor = node?.selectionStart ?? text.length;
+    pushUndoSnapshot({ text, cursor: lastCursorRef.current });
+    historyIndexRef.current = null;
+    const next = replaceMentionTriggerWithAgentRef(text, trigger, cursor, candidate.reference);
+    onChange(next.text);
+    lastCursorRef.current = next.cursor;
+    // The caret rests just after the inserted token: outside its range, so the
+    // overlay keeps the label until the user moves back into it.
+    setEditingRange(null);
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (node !== null && !composingRef.current) {
+        node.focus();
+        node.setSelectionRange(next.cursor, next.cursor);
+      }
+    });
   };
 
   /**
@@ -1937,8 +2093,8 @@ export function Composer({
         const item = filteredSlashItems[Math.min(activeIndex, filteredSlashItems.length - 1)];
         if (item !== undefined) acceptSlashItem(item);
       } else {
-        const item = mentionItems[Math.min(activeIndex, mentionItems.length - 1)];
-        if (item !== undefined) acceptMentionItem(item);
+        const row = mentionRows[Math.min(activeIndex, mentionRows.length - 1)];
+        if (row !== undefined) acceptMentionRow(row);
       }
       return;
     }
@@ -2213,8 +2369,8 @@ export function Composer({
     // half-committed text stranded. keyCode 229 covers engines that skip the
     // isComposing flag on keydown.
     if (composingRef.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
-    // A thread link deletes as one token: Backspace/Delete touching it (or a
-    // selection overlapping it) takes the whole link.
+    // A thread or agent link deletes as one token: Backspace/Delete touching
+    // it (or a selection overlapping it) takes the whole link.
     if ((event.key === 'Backspace' || event.key === 'Delete') && !event.altKey) {
       const node = event.currentTarget;
       const range = threadRefDeletionRange(text, node.selectionStart, node.selectionEnd, event.key);
@@ -2223,6 +2379,16 @@ export function Composer({
         pushUndoSnapshot({ text, cursor: node.selectionStart });
         historyIndexRef.current = null;
         const next = removeThreadRef(text, range);
+        applyTextChange(next.text, next.cursor);
+        refreshMenu(next.text, next.cursor);
+        return;
+      }
+      const agentRange = agentRefDeletionRange(text, node.selectionStart, node.selectionEnd, event.key);
+      if (agentRange !== null) {
+        event.preventDefault();
+        pushUndoSnapshot({ text, cursor: node.selectionStart });
+        historyIndexRef.current = null;
+        const next = removeAgentRef(text, agentRange);
         applyTextChange(next.text, next.cursor);
         refreshMenu(next.text, next.cursor);
         return;
@@ -2241,8 +2407,8 @@ export function Composer({
           const item = filteredSlashItems[Math.min(activeIndex, filteredSlashItems.length - 1)];
           if (item !== undefined) acceptSlashItem(item);
         } else {
-          const item = mentionItems[Math.min(activeIndex, mentionItems.length - 1)];
-          if (item !== undefined) acceptMentionItem(item);
+          const row = mentionRows[Math.min(activeIndex, mentionRows.length - 1)];
+          if (row !== undefined) acceptMentionRow(row);
         }
         return;
       }
@@ -3088,11 +3254,16 @@ export function Composer({
                 ) : (
                   <MentionMenuBody
                     items={mentionItems}
+                    agentGroups={filteredAgentGroups}
+                    agentsFailed={agentReferencesQuery.isError}
+                    delegationAvailable={agentCandidateList.delegationAvailable}
+                    delegationReason={agentCandidateList.unavailableReason}
                     activeIndex={activeIndex}
                     feed={fsFeed}
                     loading={fsFeed.pendingInitial || menu.query !== mentionQuery}
                     query={menu.query}
                     onAccept={acceptMentionItem}
+                    onAcceptAgent={acceptMentionAgent}
                   />
                 )}
               </div>
@@ -3102,21 +3273,71 @@ export function Composer({
             ) : null}
             {/* Conversation links read as tokens: a tinted backdrop mirrors
                 the draft behind the (transparent) textarea and tints each
-                link's range. Only mounted while the draft carries a link. */}
-            {conversationRefs.length > 0 ? (
+                link's range. The overlay sibling re-renders the same text with
+                an opaque label where a token is not being edited; it sits above
+                the textarea's own text to cover the raw link, and shares the
+                backdrop's geometry, so it tracks scroll, wrap, font and resize.
+                A covered range keeps its width in the mirror (the visible label
+                truncates) so the surrounding text never reflows. Only mounted
+                while the draft carries a link. */}
+            {backdropTokens.length > 0 ? (
               <div
                 ref={threadRefBackdropRef}
                 aria-hidden
                 data-thread-ref-backdrop
                 className="pointer-events-none absolute top-3 right-3 left-3 max-h-[190px] overflow-hidden py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed break-words whitespace-pre-wrap text-transparent"
               >
-                {conversationRefs.map((ref, index) => (
-                  <span key={ref.start}>
-                    {text.slice(index === 0 ? 0 : conversationRefs[index - 1]!.end, ref.start)}
-                    <mark data-thread-ref-token data-ref-kind={ref.kind} className="rounded-[3px] bg-accent/[0.14] text-transparent shadow-[0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.14)]">{ref.raw}</mark>
-                  </span>
-                ))}
-                {text.slice(conversationRefs.at(-1)!.end)}
+                {overlayTokens.map((ref, index) => {
+                  const covered = !ref.editing && ref.label !== ref.raw;
+                  return (
+                    <span key={ref.start}>
+                      {text.slice(index === 0 ? 0 : overlayTokens[index - 1]!.end, ref.start)}
+                      <mark
+                        data-thread-ref-token
+                        data-ref-kind={ref.kind}
+                        className={`rounded-[3px] text-transparent shadow-[0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.14)]${covered ? ' invisible' : ' bg-accent/[0.14]'}`}
+                      >{ref.raw}</mark>
+                    </span>
+                  );
+                })}
+                {text.slice(overlayTokens.at(-1)!.end)}
+                {ZERO_WIDTH_TAIL}
+              </div>
+            ) : null}
+            {hasOverlayLabels ? (
+              <div
+                ref={threadRefOverlayRef}
+                aria-hidden
+                data-thread-ref-overlay
+                className="pointer-events-none absolute top-3 right-3 left-3 z-20 max-h-[190px] overflow-hidden py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed break-words whitespace-pre-wrap text-transparent"
+              >
+                {overlayTokens.map((ref, index) => {
+                  const covered = !ref.editing && ref.label !== ref.raw;
+                  return (
+                    <span key={ref.start}>
+                      {text.slice(index === 0 ? 0 : overlayTokens[index - 1]!.end, ref.start)}
+                      {covered ? (
+                        // Two layers over the link's range: an opaque, borderless
+                        // placeholder sized to the raw link covers the raw text;
+                        // a text-width pill carries just the label with the same
+                        // hairline ring and radius as a bubble chip. A long label
+                        // truncates to the placeholder's width.
+                        <mark className="relative inline-block rounded-md bg-paper align-bottom not-italic">
+                          <span className="invisible">{ref.raw}</span>
+                          <mark
+                            data-thread-ref-overlay-token
+                            data-ref-kind={ref.kind}
+                            title={ref.raw}
+                            className="absolute top-1/2 left-0 inline-block max-w-full -translate-y-1/2 truncate rounded-md bg-ink/[0.045] px-1 text-[0.92em] leading-tight text-ink not-italic shadow-[inset_0_0_0_1px_var(--color-hairline)]"
+                          >{ref.label}</mark>
+                        </mark>
+                      ) : (
+                        <mark className="invisible rounded-[3px]">{ref.raw}</mark>
+                      )}
+                    </span>
+                  );
+                })}
+                {text.slice(overlayTokens.at(-1)!.end)}
                 {ZERO_WIDTH_TAIL}
               </div>
             ) : null}
@@ -3152,6 +3373,8 @@ export function Composer({
               onScroll={(event) => {
                 const backdrop = threadRefBackdropRef.current;
                 if (backdrop !== null) backdrop.scrollTop = event.currentTarget.scrollTop;
+                const overlay = threadRefOverlayRef.current;
+                if (overlay !== null) overlay.scrollTop = event.currentTarget.scrollTop;
               }}
               data-autofocus={autoFocus === true ? '' : undefined}
               disabled={disabled}
@@ -3167,6 +3390,7 @@ export function Composer({
                 if (composingRef.current) setCompositionText(event.target.value);
                 onChange(event.target.value);
                 lastCursorRef.current = event.target.selectionStart;
+                syncEditingRange(event.target.selectionStart, event.target.selectionEnd);
                 setSlashConfirm(null);
                 refreshMenu(event.target.value, event.target.selectionStart);
               }}
@@ -3177,11 +3401,18 @@ export function Composer({
                   refreshMenu(text, event.currentTarget.selectionStart);
                 }
               }}
-              onClick={(event) => { refreshMenu(text, event.currentTarget.selectionStart); }}
+              onClick={(event) => {
+                syncEditingRange(event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+                refreshMenu(text, event.currentTarget.selectionStart);
+              }}
               onSelect={(event) => {
                 lastCursorRef.current = event.currentTarget.selectionStart;
+                syncEditingRange(event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
               }}
-              onFocus={() => { setInputFocused(true); }}
+              onFocus={(event) => {
+                setInputFocused(true);
+                syncEditingRange(event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+              }}
               onBlur={(event) => {
                 setMenu(null);
                 // A caret in the input holds off the needs-you takeover only
@@ -3208,7 +3439,7 @@ export function Composer({
               }
               // The card's focus-within border is the focus indicator; the
               // global :focus-visible ring would draw a box inside the card.
-              className="relative max-h-[190px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed text-ink outline-none placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
+              className="relative z-10 max-h-[190px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed text-ink outline-none placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
             />
           </div>
 
@@ -3726,27 +3957,43 @@ function SkillPreviewCard({ item }: { item: SlashItem }) {
 
 function MentionMenuBody({
   items,
+  agentGroups,
+  agentsFailed,
+  delegationAvailable,
+  delegationReason,
   activeIndex,
   loading,
   feed,
   query,
   onAccept,
+  onAcceptAgent,
 }: {
   items: readonly FsSearchHit[];
+  agentGroups: readonly AgentCandidateGroup[];
+  /** The agent candidate load failed; files may still list. */
+  agentsFailed: boolean;
+  delegationAvailable: boolean;
+  delegationReason?: string;
   activeIndex: number;
   loading: boolean;
   feed: FsSearchFeedView;
   query: string;
   onAccept: (item: FsSearchHit) => void;
+  onAcceptAgent: (candidate: AgentReferenceCandidate) => void;
 }) {
   const { t } = useI18n();
   const pending = feed.pendingMore || feed.pendingRestart;
+  const agentCount = agentGroups.reduce((total, group) => total + group.candidates.length, 0);
+  const bothEmpty = items.length === 0 && agentCount === 0;
   return (
     <>
       {feed.failed ? <p className="px-3 py-2 text-[12px] text-danger">{t('composer.filesFailed')}</p> : null}
-      {loading || (items.length === 0 && feed.exhausted && !feed.failed) ? (
-        <p className="px-3 py-2 text-[12px] text-ink-faint">
-          {loading ? t('composer.filesSearching') : query === '' ? t('composer.filesEmpty') : t('composer.filesNoMatch', { query })}
+      {/* The agent candidate load failing is its own line, independent of the
+          file list beside it — files may still list while agents are gone. */}
+      {agentsFailed ? <p className="px-3 py-2 text-[12px] text-ink-faint" data-agent-mention-failed>{t('composer.agentsFailed')}</p> : null}
+      {loading || (bothEmpty && feed.exhausted && !feed.failed && !agentsFailed) ? (
+        <p className="px-3 py-2 text-[12px] text-ink-faint" data-mention-empty>
+          {loading ? t('composer.filesSearching') : query === '' ? t('composer.mentionEmpty') : t('composer.mentionNoMatch', { query })}
         </p>
       ) : null}
       {items.length > 0 ? <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('composer.filesHeader')}</p> : null}
@@ -3779,6 +4026,54 @@ function MentionMenuBody({
           </button>
         );
       })}
+      {agentGroups.length > 0 && !delegationAvailable ? (
+        <p className="mx-1 mt-1 rounded-md bg-ink/[0.045] px-3 py-1.5 text-[11.5px] text-ink-faint" data-agent-mention-note>
+          {t('composer.agentsNoDelegation')}{delegationReason !== undefined && delegationReason !== '' ? ` — ${delegationReason}` : ''}
+        </p>
+      ) : null}
+      {agentGroups.map((group) => (
+        <div key={group.group}>
+          <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
+            {group.label}
+          </p>
+          {group.candidates.map((candidate) => {
+            const index = items.length + agentGroups
+              .slice(0, agentGroups.indexOf(group))
+              .reduce((total, g) => total + g.candidates.length, 0) + group.candidates.indexOf(candidate);
+            const active = index === activeIndex;
+            const disabled = !candidate.available;
+            const reason = agentUnavailableReason(candidate, t);
+            return (
+              <button
+                key={candidate.profile}
+                type="button"
+                role="option"
+                aria-selected={active}
+                aria-disabled={disabled}
+                disabled={disabled}
+                title={disabled ? reason : undefined}
+                onClick={() => { onAcceptAgent(candidate); }}
+                className={`flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left transition-colors ${
+                  disabled ? 'cursor-not-allowed opacity-45' : active ? 'bg-paper' : 'hover:bg-paper'
+                }`}
+              >
+                <span aria-hidden className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-ink-faint">
+                  <Icon name="thread" size={12} />
+                </span>
+                <span className={`shrink-0 text-[12.5px] font-medium ${active && !disabled ? 'text-selected-ink' : 'text-ink'}`}>
+                  {candidate.label}
+                </span>
+                <span className="shrink-0 rounded-full border border-hairline px-1.5 py-px text-[10.5px] text-ink-faint">
+                  {candidate.engine_label}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[11px] text-ink-faint">
+                  {disabled ? reason : candidate.description ?? ''}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ))}
       </div>
       {!loading && (!feed.exhausted || feed.failed || pending) ? (
         <button type="button" data-mention-file-more={feed.failed ? 'retry' : pending ? 'pending' : 'more'}
