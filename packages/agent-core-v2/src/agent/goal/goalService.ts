@@ -1233,7 +1233,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     const wallClockResumedAt = status === 'active' ? Date.now() : undefined;
     if (status === 'active') {
       this.liveWallClockStartedAt = this.deadlineScheduler.now();
-    } else if (state.status === 'active') {
+    } else if (state.status === 'active' || (status === 'paused' && actor === 'user')) {
       this.resumeContinuation = undefined;
       this.cancelPendingContinuation(
         opts.preserveLiveContinuation === true,

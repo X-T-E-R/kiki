@@ -1129,6 +1129,18 @@ describe('AgentGoalService core workflow hooks', () => {
     expect(goals.getGoal().goal?.status).toBe('paused');
   });
 
+  it('withdraws a retained runtime continuation when the user takes ownership of pause', async () => {
+    const abort = await startLiveContinuation();
+    await goals.pauseGoal({ reason: 'runtime hold' }, 'runtime');
+    expect(abort).not.toHaveBeenCalled();
+    await goals.pauseGoal({ reason: 'user hold' });
+    expect(abort).toHaveBeenCalledOnce();
+    expect(goals.getGoal().goal).toMatchObject({ status: 'paused' });
+    endTurn(eventBus, makeTurn(41), { reason: 'cancelled' });
+    await Promise.resolve();
+    expect(loopService.enqueue).toHaveBeenCalledOnce();
+  });
+
   it('aborts a live continuation when the user cancels the goal', async () => {
     const abort = await startLiveContinuation();
 
