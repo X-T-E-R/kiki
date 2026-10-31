@@ -61,7 +61,7 @@ describe('native engine backend vertical fixtures', () => {
       memory.appendObservable(message);
       expect(lifecycle.list()).toHaveLength(1);
       const ref = message.origin!.kind === 'user' ? message.origin!.agentRefs![0]! : undefined;
-      expect(ref).toMatchObject({ profile, executor });
+      expect(ref).toMatchObject({ profile, executor, engine_label: candidates.items[0]!.engine_label });
       const tasks = main.accessor.get(IAgentTaskService);
       await tasks.suppressAllTerminalNotifications();
       const tool = main.accessor.get(ISubagentTool);

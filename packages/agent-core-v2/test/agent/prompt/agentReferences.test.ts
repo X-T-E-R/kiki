@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { agentRefLink, findAgentRefs } from '@kiki/protocol';
+import { agentRefLink, agentReferenceSchema, findAgentRefs } from '@kiki/protocol';
+import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { nativeTargets } from '@kiki/agent-profiles/nativeTarget';
 import { normalizeAgentProfile } from '@kiki/agent-profiles/agentProfile';
 import { TestInstantiationService } from '#/_base/di/test';
@@ -28,6 +29,7 @@ function fixture(allowedSubagents?: readonly string[], active = true) {
   ix.stub(IAgentProfileService, { data: () => ({ profileName: 'main', allowedSubagents, systemPrompt: '' }) as ReturnType<IAgentProfileService['data']> });
   ix.stub(IAgentToolPolicyService, { isToolActive: () => active });
   ix.stub(IModelService, { resolveId: value => value });
+  ix.stub(IAgentExecutorRegistry, { get: () => ({ label: 'Claude Code' }) as ReturnType<IAgentExecutorRegistry['get']> });
   return (message: ContextMessage, id: string) => ix.invokeFunction(accessor => prepareAgentReferences(message, id, accessor));
 }
 
@@ -46,6 +48,11 @@ describe('server-owned agent references', () => {
     const first = prepare(message(raw), 'message-1');
     const second = prepare(message(raw), 'message-2');
     expect(first.origin?.kind === 'user' && first.origin.agentRefs?.map(ref => ref.profile)).toEqual(['reviewer', 'engine:claude-acp']);
+    const refs = first.origin?.kind === 'user' ? first.origin.agentRefs! : [];
+    expect(refs.map(ref => ref.engine_label)).toEqual(['Kiki', 'Claude Code']);
+    expect(agentReferenceSchema.parse(refs[1])).toEqual(refs[1]);
+    const { engine_label: _engineLabel, ...legacy } = refs[1]!;
+    expect(agentReferenceSchema.parse(legacy)).toEqual(legacy);
     expect(text(first)).toContain('source_ref');
     expect(text(first)).toContain('You decide whether and how to delegate');
     expect(text(first)).not.toBe(text(second));
