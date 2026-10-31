@@ -13,6 +13,11 @@ import type { I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../i18n';
 import {
+  liveInventorySessionIds,
+  usePausedSessionDiscovery,
+  useSessionExecutions,
+} from '../lib/executionControls';
+import {
   replaceConcurrencyResourceRules,
   useLiveAgentGovernance,
   type LiveAgentDimensionKind,
@@ -24,6 +29,7 @@ import { FeedbackLine, Toggle } from './controls';
 import { Icon } from './icons';
 import { InlineEditor } from './InlineEditor';
 import { SettingsSelect } from './settings/SettingsPrimitives';
+import { PausedExecutionsPanel, PauseAllExecutions, SessionExecutionControl } from './usage/ExecutionControls';
 import { AxisGroup, UsageSectionHeading } from './usage/usageShared';
 import { DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
@@ -155,6 +161,18 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
     return id;
   };
 
+  // Execution pause/resume: one state read per session in the live inventory
+  // (deduplicated — the full inventory, not the visible page), merged with the
+  // cold-summary discovery so a session paused before a restart still reports
+  // its real phase even though its agents left the live inventory.
+  const liveSessionIds = liveInventorySessionIds(agentSnapshot?.agents);
+  const pausedDiscovery = usePausedSessionDiscovery();
+  const executionSessionIds = useMemo(
+    () => [...new Set([...liveSessionIds, ...pausedDiscovery.sessionIds])],
+    [liveSessionIds, pausedDiscovery.sessionIds],
+  );
+  const { states: executionStates } = useSessionExecutions(executionSessionIds);
+
   const requestSummary = [
     `${t('usage.governance.running')} ${snapshot.active}`,
     `${t('usage.governance.queued')} ${snapshot.queued}`,
@@ -245,6 +263,7 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
           help={agentSummary}
           actions={(
             <>
+              {agentSnapshot !== undefined && agentSnapshot !== null ? <PauseAllExecutions snapshot={agentSnapshot} /> : null}
               <span className="sr-only" data-governance-main-agents>{agentSnapshot?.mainActive ?? agentSnapshot?.main ?? 0}</span>
               <span className="sr-only" data-governance-sub-agents>{agentSnapshot?.subActive ?? agentSnapshot?.subagent ?? 0}</span>
               <span className="sr-only" data-governance-independent-agents>{agentSnapshot?.independentActive ?? agentSnapshot?.independent ?? 0}</span>
@@ -298,6 +317,17 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
             </div>
           </div>
         )}
+        {liveSessionIds.length > 0 ? (
+          <ol data-execution-session-controls className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+            {liveSessionIds.map((sessionId) => (
+              <li key={sessionId} className="flex min-w-0 items-center gap-2">
+                <span className="min-w-0 truncate font-mono text-[12px] text-ink-faint" title={sessionId}>{sessionId}</span>
+                <SessionExecutionControl sessionId={sessionId} state={executionStates[sessionId]} />
+              </li>
+            ))}
+          </ol>
+        ) : null}
+        <PausedExecutionsPanel states={executionStates} />
       </section>
     </div>
   );

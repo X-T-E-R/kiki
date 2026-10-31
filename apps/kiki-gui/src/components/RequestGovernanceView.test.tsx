@@ -16,6 +16,7 @@ const connection = vi.hoisted(() => ({
     setRequestGovernanceRules: vi.fn(),
     listModels: vi.fn().mockResolvedValue({ items: [] }),
     listProviders: vi.fn().mockResolvedValue({ items: [] }),
+    session: vi.fn(),
   },
 }));
 vi.mock('../state/connection', () => ({ useConnection: () => connection }));
@@ -605,7 +606,7 @@ describe('limit rules editor', () => {
     localStorage.setItem('kiki.locale', 'en');
     connection.wsStatus = 'open';
     connection.client.getRequestGovernance.mockResolvedValue(snapshot);
-    mockLiveAgent.mockReturnValueOnce({
+    mockLiveAgent.mockReturnValue({
       snapshot: {
         domainId: 'this-service',
         asOf: '2026-01-01T12:00:00Z',
@@ -678,5 +679,180 @@ describe('limit rules editor', () => {
     expect(container.querySelectorAll('[data-governance-rule]')).toHaveLength(1);
     expect(container.querySelector('[data-governance-rule="provider-cap"]')).not.toBeNull();
     expect(container.querySelector('[data-governance-rule="agent-cap"]')).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Execution pause/resume — the Live tab's session execution controls
+// ---------------------------------------------------------------------------
+
+type ExecutionPhase = 'running' | 'pausing' | 'paused' | 'resuming' | 'failed';
+
+function executionState(phase: ExecutionPhase, overrides: Record<string, unknown> = {}) {
+  return {
+    phase,
+    agents: phase === 'running' ? [] : [{ agentId: 'main', state: phase === 'paused' ? 'paused' : 'settling', resumable: phase === 'paused', turnId: 3 }],
+    pauseOperationId: phase === 'running' ? undefined : 'pause-op-1',
+    ...overrides,
+  };
+}
+
+/** Registers one session id with a controllable execution facade + no events. */
+function stubExecution(sessionId: string, initial: ReturnType<typeof executionState>) {
+  const state = { current: initial };
+  const facade = {
+    read: vi.fn(async () => state.current),
+    pause: vi.fn(async ({ operationId }: { operationId: string }) => {
+      state.current = executionState('paused', { pauseOperationId: operationId });
+      return state.current;
+    }),
+    resume: vi.fn(async () => {
+      state.current = executionState('running');
+      return state.current;
+    }),
+  };
+  const existing = connection.client.session.getMockImplementation();
+  connection.client.session.mockImplementation((id: string) => {
+    if (id === sessionId) return { execution: facade, events: { observe: vi.fn(() => { throw new Error('unknown event'); }) } };
+    return existing?.(id) ?? { execution: undefined, events: undefined };
+  });
+  return { state, facade };
+}
+
+function liveAgentsWith(sessionIds: readonly string[]) {
+  mockLiveAgent.mockReturnValue({
+    snapshot: {
+      domainId: 'this-service',
+      asOf: '2026-01-01T12:00:00Z',
+      mainActive: sessionIds.length,
+      subActive: 0,
+      independentActive: 0,
+      totalActive: sessionIds.length,
+      queued: 0,
+      dimensions: [{ dimension: 'executor', id: 'kiki', mainActive: sessionIds.length, subActive: 0, independentActive: 0, totalActive: sessionIds.length }],
+      agents: sessionIds.map((sessionId) => ({ sessionId, agentId: 'main', role: 'main', phase: 'running', startedAt: '2026-01-01T11:00:00Z', executorId: 'native', profileId: 'general', modelId: 'k' })),
+    },
+    stale: false,
+    loading: false,
+    error: null,
+    refresh: vi.fn(),
+  });
+}
+
+describe('execution pause/resume', () => {
+  beforeEach(() => {
+    localStorage.setItem('kiki.locale', 'en');
+    connection.wsStatus = 'open';
+    connection.client.getRequestGovernance.mockResolvedValue(snapshot);
+    connection.client.session.mockReturnValue({ execution: undefined, events: undefined });
+  });
+
+  it('pauses a running session from its own row action and shows the paused overview with an explicit resume', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha']);
+    const execution = stubExecution('session-alpha', executionState('running'));
+    const { container, render } = mount('realtime');
+    await settle(render);
+
+    // Running: the session row offers pause; nothing claims restart safety yet.
+    const control = () => container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')!;
+    expect(control().textContent).toContain('Pause execution');
+    expect(container.querySelector('[data-execution-paused-panel]')).toBeNull();
+
+    await act(async () => { control().querySelector<HTMLButtonElement>('button')!.click(); });
+    const dialog = document.querySelector<HTMLElement>('[role="alertdialog"]')!;
+    expect(dialog.textContent).toContain('Pause this session?');
+    await act(async () => { dialog.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
+    await settle(render);
+    expect(execution.facade.pause).toHaveBeenCalledTimes(1);
+    expect(execution.facade.pause.mock.calls[0]?.[0]?.operationId).toMatch(/^pause:session-alpha:/);
+
+    // Paused: the overview reports restart safety and waits for the user.
+    await settle(render, 1100);
+    const panel = container.querySelector<HTMLElement>('[data-execution-paused-panel]')!;
+    expect(panel).not.toBeNull();
+    expect(panel.querySelector('[data-execution-paused="session-alpha"]')?.textContent).toContain('safe to restart');
+
+    // Explicit resume returns the session to running and clears the overview.
+    await act(async () => { panel.querySelector<HTMLButtonElement>('button')!.click(); });
+    await settle(render);
+    expect(execution.facade.resume).toHaveBeenCalledTimes(1);
+    const pauseArgs = execution.facade.pause.mock.calls[0] as unknown as [{ operationId: string }];
+    const resumeArgs = execution.facade.resume.mock.calls[0] as unknown as [{ pauseOperationId: string }];
+    expect(resumeArgs[0].pauseOperationId).toBe(pauseArgs[0].operationId);
+    await settle(render, 1100);
+    expect(container.querySelector('[data-execution-paused-panel]')).toBeNull();
+  });
+
+  it('drops a second pause click while the first request is in flight', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha']);
+    const execution = stubExecution('session-alpha', executionState('running'));
+    let finish!: () => void;
+    execution.facade.pause.mockImplementationOnce(async () => { await new Promise<void>((resolve) => { finish = resolve; }); return executionState('pausing'); });
+    const { container, render } = mount('realtime');
+    await settle(render);
+    const open = () => container.querySelector<HTMLElement>('[data-execution-control="session-alpha"] button')!;
+    await act(async () => { open().click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
+    expect(execution.facade.pause).toHaveBeenCalledTimes(1);
+    await act(async () => { open().click(); });
+    expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+    finish();
+    await settle(render);
+    expect(execution.facade.pause).toHaveBeenCalledTimes(1);
+  });
+
+  it('pauses every session in the full inventory with one action', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha', 'session-beta']);
+    const alpha = stubExecution('session-alpha', executionState('running'));
+    const beta = stubExecution('session-beta', executionState('running'));
+    const { container, render } = mount('realtime');
+    await settle(render);
+    const pauseAll = container.querySelector<HTMLElement>('[data-execution-pause-all] button')!;
+    expect(pauseAll.textContent).toContain('Pause all');
+    await act(async () => { pauseAll.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
+    await settle(render);
+    expect(alpha.facade.pause).toHaveBeenCalledTimes(1);
+    expect(beta.facade.pause).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the original state and shows the server error when pause fails', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha']);
+    const execution = stubExecution('session-alpha', executionState('running'));
+    execution.facade.pause.mockRejectedValueOnce(new Error('storage locked'));
+    const { container, render } = mount('realtime');
+    await settle(render);
+    await act(async () => { container.querySelector<HTMLElement>('[data-execution-control="session-alpha"] button')!.click(); });
+    await act(async () => { document.querySelector<HTMLButtonElement>('[data-confirm-action="confirm"]')!.click(); });
+    await settle(render);
+    // A failed pause keeps the session running: no paused row, no phase chip,
+    // and the action is still the pause offer (the error surfaces via toast).
+    expect(container.querySelector('[data-execution-paused-panel]')).toBeNull();
+    expect(container.querySelector('[data-execution-phase]')).toBeNull();
+    expect(container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')?.textContent).toContain('Pause execution');
+  });
+
+  it('shows the failed phase error with a retry that does not auto-resume', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha']);
+    stubExecution('session-alpha', executionState('failed', { error: 'resume lost a participant' }));
+    const { container, render } = mount('realtime');
+    await settle(render, 1100);
+    const row = container.querySelector<HTMLElement>('[data-execution-paused="session-alpha"]')!;
+    expect(row.textContent).toContain('resume lost a participant');
+    expect(row.textContent).toContain('Retry resume');
+  });
+
+  it('hides the controls on an older server without the execution facade', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha']);
+    const { container, render } = mount('realtime');
+    await settle(render, 1100);
+    expect(container.querySelector('[data-execution-control]')).toBeNull();
+    expect(container.querySelector('[data-execution-pause-all]')).toBeNull();
   });
 });

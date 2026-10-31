@@ -654,6 +654,13 @@ export class FixtureKlient {
           procedure.scope === 'session' &&
           ((procedure.service === 'sessionBtwService' && procedure.method === 'start') ||
             (procedure.service === 'sessionMetadata' && (procedure.method === 'read' || procedure.method === 'getAgentExecutor')));
+        // Execution pause/resume is a session-scope read+write pair: the same
+        // klient call route admits it, and the per-session state lives on the
+        // fixture session record so a scenario's seed and a GUI pause agree.
+        const sessionExecutionCall =
+          procedure.scope === 'session' &&
+          procedure.service === 'sessionExecutionControl' &&
+          (procedure.method === 'read' || procedure.method === 'pause' || procedure.method === 'resume');
         // Media: the global surface is core-scoped like every other global
         // service, but a job's stop and resume belong to the session and agent
         // that own it, so the agent-scoped pair is admitted here.
@@ -677,7 +684,7 @@ export class FixtureKlient {
           procedure.scope === 'agent' &&
           procedure.service === 'agentContextRebuildService' &&
           (procedure.method === 'rebuild' || procedure.method === 'control' || procedure.method === 'setEnabled');
-        if (procedure.scope !== 'core' && !agentPanelRead && !agentPlanStatus && !agentModelSwitchCall && !sessionSideQuestion && !agentMediaCall && !agentMcpCall && !contextRebuildCall) {
+        if (procedure.scope !== 'core' && !agentPanelRead && !agentPlanStatus && !agentModelSwitchCall && !sessionSideQuestion && !agentMediaCall && !agentMcpCall && !contextRebuildCall && !sessionExecutionCall) {
           throw invalid(`Unsupported fixture procedure scope: ${procedure.scope}`, 40401);
         }
         const serviceContract = globalContract[procedure.service];
@@ -966,6 +973,91 @@ export class FixtureKlient {
         const agentId = `btw-${session.sideAgents.length + 1}`;
         session.sideAgents.push(agentId);
         return agentId;
+      }
+      // The persisted session read model the paused-discovery path lists: one
+      // summary per session with the cold `executionPhase` projected from the
+      // session record's durable execution state (never an activation).
+      case 'sessionIndex.listRecent': {
+        const items = [...server.sessions.values()].map((session) => ({
+          id: session.record.id,
+          workspaceId: session.record.workspace_id ?? 'wd_fixture_000000000000',
+          createdAt: Date.parse(session.record.created_at) || Date.now(),
+          updatedAt: Date.parse(session.record.updated_at) || Date.now(),
+          archived: session.record.archived === true,
+          title: session.record.title,
+          executionPhase: session.executionControl === undefined ? undefined : session.executionControl.phase,
+        }));
+        return { items };
+      }
+      case 'sessionIndex.get': {
+        const session = server.sessions.get(args[0]);
+        if (session === undefined) return null;
+        return {
+          id: session.record.id,
+          workspaceId: session.record.workspace_id ?? 'wd_fixture_000000000000',
+          createdAt: Date.parse(session.record.created_at) || Date.now(),
+          updatedAt: Date.parse(session.record.updated_at) || Date.now(),
+          archived: session.record.archived === true,
+          title: session.record.title,
+          executionPhase: session.executionControl === undefined ? undefined : session.executionControl.phase,
+        };
+      }
+      // Session execution pause/resume. The fixture keeps the contract's real
+      // semantics on the session record: pause is idempotent per operationId,
+      // settle happens in the background (so the answer is `pausing` first and
+      // the poll sees `paused`), and resume only acts on the durably paused
+      // operation it names. A scenario seeds `executionControl` to open in any
+      // phase (e.g. already `paused` for the restart-recovery view).
+      case 'sessionExecutionControl.read': {
+        const session = server.sessions.get(procedure.sessionId);
+        if (session === undefined) throw invalid('session not found', 40401);
+        session.executionControl ??= { phase: 'running', agents: [] };
+        return structuredClone(session.executionControl);
+      }
+      case 'sessionExecutionControl.pause': {
+        const session = server.sessions.get(procedure.sessionId);
+        if (session === undefined) throw invalid('session not found', 40401);
+        session.executionControl ??= { phase: 'running', agents: [] };
+        const input = args[0];
+        const current = session.executionControl;
+        if (current.pauseOperationId === input.operationId) return structuredClone(current);
+        if (current.phase !== 'running') throw invalid('Execution is already held; use its pause operation ID', 40001);
+        const pausing = {
+          phase: 'pausing',
+          pauseOperationId: input.operationId,
+          requestedAt: now(),
+          agents: [{ agentId: 'main', state: 'settling', resumable: false }],
+        };
+        session.executionControl = pausing;
+        this.emitExecution(procedure.sessionId, pausing);
+        // The background settle: the current step finishes, then the session is
+        // durably paused. The GUI's 1s poll and the emitter both observe it.
+        setTimeout(() => {
+          if (session.executionControl?.pauseOperationId !== input.operationId) return;
+          session.executionControl = {
+            ...pausing,
+            phase: 'paused',
+            pausedAt: now(),
+            agents: [{ agentId: 'main', state: 'paused', resumable: true, turnId: 3 }],
+          };
+          this.emitExecution(procedure.sessionId, session.executionControl);
+        }, 600);
+        return structuredClone(pausing);
+      }
+      case 'sessionExecutionControl.resume': {
+        const session = server.sessions.get(procedure.sessionId);
+        if (session === undefined) throw invalid('session not found', 40401);
+        session.executionControl ??= { phase: 'running', agents: [] };
+        const input = args[0];
+        const current = session.executionControl;
+        if (current.resumeOperationId === input.operationId) return structuredClone(current);
+        if (current.phase !== 'paused' || current.pauseOperationId !== input.pauseOperationId) {
+          throw invalid('Resume requires the current durably paused operation', 40001);
+        }
+        const resumed = { ...current, phase: 'running', resumeOperationId: input.operationId, resumedAt: now(), agents: [], error: undefined };
+        session.executionControl = resumed;
+        this.emitExecution(procedure.sessionId, resumed);
+        return structuredClone(resumed);
       }
       // App-scope session lifecycle, as far as the client's transport needs it:
       // every runtime action (prompt submit, edit, regenerate, steer, approval)
@@ -2050,7 +2142,12 @@ export class FixtureKlient {
           const coreEvents = frame.scope === 'core' && frame.service === undefined && frame.event === 'events';
           const agentEvents = frame.scope === 'agent' && frame.service === undefined && frame.event === 'events'
             && typeof frame.sessionId === 'string' && typeof frame.agentId === 'string';
-          if (!coreEvents && !agentEvents) throw invalid(`Unsupported fixture subscription: ${frame.scope}.${frame.service ?? ''}.${frame.event}`, 40401);
+          // A session-scope service emitter (execution.changed): the klient
+          // observe() over `sessionExecutionControl.onDidChange` lands here.
+          const sessionExecutionEmitter = frame.scope === 'session'
+            && frame.service === 'sessionExecutionControl' && frame.event === 'onDidChange'
+            && typeof frame.sessionId === 'string';
+          if (!coreEvents && !agentEvents && !sessionExecutionEmitter) throw invalid(`Unsupported fixture subscription: ${frame.scope}.${frame.service ?? ''}.${frame.event}`, 40401);
           if (state.subscriptions.has(frame.id)) throw invalid('id already in use');
           state.subscriptions.set(frame.id, frame);
           send({ type: 'subscribed', id: frame.id });
@@ -2184,6 +2281,21 @@ export class FixtureKlient {
     for (const [socket, state] of this.connections) {
       for (const [id, subscription] of state.subscriptions) {
         if (subscription.scope === 'core') this.server.sendFrame(socket, { type: 'event', id, data });
+      }
+    }
+  }
+
+  /**
+   * A session execution state to that session's `sessionExecutionControl`
+   * emitter subscribers. The payload is the contract's `ExecutionControlState`
+   * (validated by the klient hub against `executionControlStateSchema`).
+   */
+  emitExecution(sessionId, state) {
+    for (const [socket, connectionState] of this.connections) {
+      for (const [id, subscription] of connectionState.subscriptions) {
+        if (subscription.scope === 'session' && subscription.service === 'sessionExecutionControl' && subscription.sessionId === sessionId) {
+          this.server.sendFrame(socket, { type: 'event', id, data: structuredClone(state) });
+        }
       }
     }
   }

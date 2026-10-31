@@ -967,7 +967,12 @@ class FixtureServer {
     resetBotRooms(this, data);
     for (const session of data.sessions ?? []) {
       const bound = bind(session, session.id);
-      this.sessions.set(session.id, new FixtureSession(bound, bind(data.snapshots?.[session.id] ?? {}, session.id)));
+      const created = new FixtureSession(bound, bind(data.snapshots?.[session.id] ?? {}, session.id));
+      // Execution pause/resume seed: a scenario opens a session in any phase
+      // (running by default when the facade exists); the klient dispatcher
+      // reads and mutates this record through pause/resume.
+      created.executionControl = structuredClone(data.executionControl?.[session.id] ?? { phase: 'running', agents: [] });
+      this.sessions.set(session.id, created);
     }
     for (const ws of this.sockets) {
       try { ws.terminate(); } catch { /* closing */ }
@@ -5195,6 +5200,7 @@ class FixtureServer {
           last_message_action: session.lastMessageAction,
           message_ids: session.messages.map((m) => m.id),
           terminals: [...session.terminals.values()].map((t) => t.record),
+          executionControl: session.executionControl === undefined ? undefined : structuredClone(session.executionControl),
         });
       }
       case 'state':

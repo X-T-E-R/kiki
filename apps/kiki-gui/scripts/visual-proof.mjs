@@ -5548,6 +5548,63 @@ async function scenarioUsageDashboard() {
   await setProofTheme('light');
 }
 
+/**
+ * execution-pause — the Live tab's session pause/resume: one session's row
+ * action pauses it through the real klient dispatcher, the poll + emitter
+ * carry it to durably `paused`, a reload reads the same state back from the
+ * server (the restart-recovery view), and an explicit resume returns it to
+ * running. Asserts hit the fixture's session record so the wire contract is
+ * proven, not just the repaint.
+ */
+async function scenarioExecutionPause() {
+  const usageUrl = () =>
+    `${WEB_URL}/usage?panel=realtime&server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
+  const ZETA = 'session_fixture_usage_zeta';
+  const executionOf = async () => (await control({ action: 'session', session_id: ZETA })).data?.executionControl;
+
+  await page.goto(usageUrl(), { waitUntil: 'domcontentloaded' });
+  const row = page.locator(`[data-execution-control="${ZETA}"]`);
+  await row.waitFor({ timeout: 15_000 });
+  // Running: the session's own row offers pause; nothing claims restart safety.
+  const pauseLabel = dictionaryText(job().view.locale, 'usage.execution.pauseSession');
+  const pausedHint = dictionaryText(job().view.locale, 'usage.execution.pausedHint');
+  if (!(await row.innerText()).includes(pauseLabel)) throw new Error(`running row lost its pause action: ${await row.innerText()}`);
+  if (await page.locator('[data-execution-paused-panel]').count() !== 0) throw new Error('paused overview rendered before any pause');
+  await shot('execution-running');
+
+  // Pause through the confirm; the state settles to durably paused.
+  await row.locator('button').first().click();
+  const dialog = page.locator('[role="alertdialog"]');
+  await dialog.waitFor({ timeout: 5000 });
+  await dialog.locator('[data-confirm-action="confirm"]').click();
+  await page.locator(`[data-execution-paused="${ZETA}"]`).waitFor({ timeout: 15_000 });
+  const settled = await executionOf();
+  if (settled?.phase !== 'paused') throw new Error(`fixture did not reach durably paused: ${JSON.stringify(settled)}`);
+  const pausedRow = page.locator(`[data-execution-paused="${ZETA}"]`);
+  if (!(await pausedRow.innerText()).includes(pausedHint)) throw new Error('paused row lost its restart-safety hint');
+  await shot('execution-paused');
+
+  // Reload: the paused state comes back from the server, not a local flag.
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.locator(`[data-execution-paused="${ZETA}"]`).waitFor({ timeout: 15_000 });
+  await shot('execution-paused-reloaded');
+
+  // Narrow: the paused row wraps inside the viewport instead of bleeding.
+  await resizeViewport(390);
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  if (overflow > 1) throw new Error(`390px execution layout overflows by ${overflow}px`);
+  await shot('execution-paused-390');
+  await resizeViewport(1440);
+
+  // Explicit resume returns the session to running and clears the overview.
+  await page.locator(`[data-execution-paused="${ZETA}"] button`).click();
+  await page.locator(`[data-execution-paused="${ZETA}"]`).waitFor({ state: 'detached', timeout: 15_000 });
+  const resumed = await executionOf();
+  if (resumed?.phase !== 'running') throw new Error(`fixture did not resume to running: ${JSON.stringify(resumed)}`);
+  await page.locator(`[data-execution-control="${ZETA}"]`).waitFor({ timeout: 10_000 });
+  await shot('execution-resumed');
+}
+
 /** Keep the fixture's authoritative theme and the device boot value in step. */
 async function setProofTheme(theme) {
   const headers = { authorization: `Bearer ${FIXTURE_TOKEN}` };
@@ -6756,6 +6813,7 @@ function scenario(name, run, extra = {}) {
 const ENTRY_EXTRA = {
   'first-run': { onboarding: false },
   cockpit: { fixture: 'rail-scale' },
+  'execution-pause': { fixture: 'usage-dashboard' },
   // Two engines' own facts, read from the one fixture that carries both.
   'codex-claude-engine-facts': { fixture: 'external-main' },
   'workspace-history': { fixture: 'sidebar-organize' },
@@ -6843,6 +6901,7 @@ const BODIES = [
   ['usage-export', scenarioUsageExport],
   ['profile-editor', scenarioProfileEditor],
   ['usage-dashboard', scenarioUsageDashboard],
+  ['execution-pause', scenarioExecutionPause],
   ['workspace-tools', scenarioWorkspaceTools],
   ['terminal', scenarioTerminal],
   ['capabilities', scenarioCapabilities],

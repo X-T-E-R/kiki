@@ -609,6 +609,14 @@ export default {
     { id: 'wd_fixture_000000000000', root: 'C:/fixture', name: 'fixture', created_at: ts(40 * DAY_MIN), last_opened_at: ts(3), session_count: 7, pinned: false },
     { id: DOCS_WS, root: 'C:/fixture-docs', name: 'docs-site', created_at: ts(20 * DAY_MIN), last_opened_at: ts(300), session_count: 2, pinned: false },
   ],
+  // Execution pause/resume seeds: both live sessions open `running` so the
+  // proof drives the real pause → paused → resume flow through the klient
+  // dispatcher. The fixture session record carries the state; a GUI pause
+  // settles it in the background and a reload reads it back from the server.
+  executionControl: {
+    [ZETA]: { phase: 'running', agents: [] },
+    [ETA]: { phase: 'running', agents: [] },
+  },
   sessions: [
     sessionRecord(ZETA, {
       title: 'Fixture: usage aggregation rework',
