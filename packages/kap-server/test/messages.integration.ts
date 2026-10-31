@@ -39,6 +39,7 @@ import { MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES } from '../src/services/messages/
 import { PROMPT_BODY_LIMIT_BYTES } from '../src/routes/prompts';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
+import { solidPng } from './helpers/png';
 
 interface Envelope<T> {
   code: number;
@@ -1091,6 +1092,47 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     expect(second.body.data.items).toHaveLength(1);
     expect(second.body.data.items[0]?.content[0]?.['text']).toBe(bigText);
     expect(reads).toBe(1);
+  });
+
+  it('edits a sent image message with its original image after the staged upload is deleted', async () => {
+    const id = await createSession();
+    const session = getLiveSessionById(server!.core.accessor, id);
+    if (session === undefined) throw new Error(`session ${id} not found`);
+    const main = await ensureMainAgent(session);
+    await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub', thinking: 'high' });
+    const image = solidPng(8, 8);
+    const uploaded = await uploadFixtureFile(image, 'sent.png', 'image/png');
+    const submitted = await postJson<PromptWire>(`/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'look' }, { type: 'image', source: { kind: 'file', file_id: uploaded.id } }],
+    });
+    expect(submitted.code, JSON.stringify(submitted)).toBe(0);
+    await vi.waitFor(() => expect(modelRequestCount).toBeGreaterThan(0), { timeout: 5_000 });
+    await waitForTerminal(main);
+    await deleteFixtureFile(uploaded.id);
+
+    const client = createKlient({ endpoint: base, token: server!.localOwnerToken });
+    try {
+      for (const source of [{ kind: 'file', file_id: uploaded.id }, { kind: 'session_media', file_id: uploaded.id }] as const) {
+        const edited = await client.session(id).commands.edit(submitted.data.user_message_id, {
+          content: [{ type: 'text', text: `edited via ${source.kind}` }, { type: 'image', source }],
+          expected_cursor: await stableCursor(id),
+        });
+        expect(edited.content).toEqual([
+          { type: 'text', text: `edited via ${source.kind}` },
+          { type: 'image', source: { kind: 'session_media', file_id: uploaded.id }, name: 'sent.png' },
+        ]);
+        await waitForTerminal(main);
+      }
+
+      const other = await createTerminalPrompt('other session prompt');
+      for (const source of [{ kind: 'file', file_id: uploaded.id }, { kind: 'session_media', file_id: uploaded.id }] as const) {
+        const crossSession = await postJson(`/api/sessions/${other.id}/messages/${other.submitted.data.user_message_id}:edit`, {
+          content: [{ type: 'text', text: 'borrow' }, { type: 'image', source }],
+          expected_cursor: await stableCursor(other.id),
+        });
+        expect(crossSession.code).toBe(40407);
+      }
+    } finally { await client.close(); }
   });
 
   it('keeps message edit preflight failures from changing a real prompt history', async () => {

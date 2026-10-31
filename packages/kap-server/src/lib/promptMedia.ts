@@ -19,6 +19,41 @@ import type { PublishedMediaReader } from '../services/publishedMedia';
 type WireContent = PromptSubmission['content'];
 
 /**
+ * The prompt-media file view of one session: a `file_id` resolves to the
+ * session's canonical media first and falls back to the global staged
+ * upload. Accepted prompts keep their media under the same id the upload
+ * had, so a queued or historical message stays editable after its staged
+ * upload expired or was deleted. Canonical media of another session is not
+ * visible here. Saves and deletes stay on the staged store.
+ */
+export function sessionPromptFiles(staged: IFileService, media: ISessionMediaStore): IFileService {
+  return {
+    _serviceBrand: undefined,
+    save: (source, name, options) => staged.save(source, name, options),
+    delete: (fileId) => staged.delete(fileId),
+    get: async (fileId) => {
+      const file = await media.open(fileId);
+      if (file === undefined) return staged.get(fileId);
+      return {
+        meta: { id: fileId, name: file.name, media_type: file.mediaType, size: file.size, created_at: new Date(0).toISOString() },
+        stream: (range) => Readable.from(file.stream(range)),
+      };
+    },
+  };
+}
+
+async function retainSessionMedia(media: ISessionMediaStore | undefined, file: GetResult): Promise<void> {
+  if (media === undefined || await media.open(file.meta.id) !== undefined) return;
+  await media.materialize({
+    fileId: file.meta.id,
+    size: file.meta.size,
+    name: file.meta.name,
+    mimeType: file.meta.media_type,
+    stream: () => file.stream(),
+  }).catch(() => undefined);
+}
+
+/**
  * Fail fast on stale or mis-kinded file references before anything
  * session-scoped happens: a bad `file_id` (unknown, or a real file used with
  * the wrong media kind, e.g. a PDF submitted as a video) must reject the
@@ -39,14 +74,17 @@ export async function assertPromptFileRefs(content: WireContent, store: IFileSer
 /**
  * Fail fast on stale `session_media` references: a file id with no canonical
  * copy in this session must reject the request before anything is resolved
- * or mutated. A resolvable reference also backfills the caller's original
- * filename when the request omitted it, so re-sent stored media keeps its
- * name instead of degrading to a synthesized one.
+ * or mutated. A reference whose canonical copy is not written yet (a queued
+ * prompt's upload) resolves through the staged upload and is retained as
+ * this session's canonical media. A resolvable reference also backfills the
+ * caller's original filename when the request omitted it, so re-sent stored
+ * media keeps its name instead of degrading to a synthesized one.
  */
 export async function resolvePromptSessionMediaRefs(
   content: WireContent,
   store: ISessionMediaStore,
   readPublishedMedia?: PublishedMediaReader,
+  staged?: IFileService,
 ): Promise<WireContent> {
   const resolved: WireContent = [];
   let changed = false;
@@ -60,7 +98,13 @@ export async function resolvePromptSessionMediaRefs(
     }
     const fileId = part.source.file_id;
     const published = fileId.startsWith('inline:') || fileId.startsWith('inline-content:');
-    const file = published ? await readPublishedMedia?.(fileId) : await store.open(fileId);
+    let file = published ? await readPublishedMedia?.(fileId) : await store.open(fileId);
+    if (file === undefined && !published && staged !== undefined) {
+      const upload = await staged.get(fileId);
+      assertMediaFile(upload, part.type);
+      await retainSessionMedia(store, upload);
+      file = await store.open(fileId) ?? { name: upload.meta.name, mediaType: upload.meta.media_type, size: upload.meta.size, stream: () => upload.stream() };
+    }
     if (file === undefined) throw fileNotFoundError(fileId);
     if (published) {
       const chunks: Uint8Array[] = [];
@@ -125,6 +169,13 @@ export interface ResolvePromptMediaOptions {
    * e.g. `kimi`). Unset falls back to the baseline accepted-format set.
    */
   readonly providerType?: string;
+  /**
+   * The target session's canonical media store. Every image/video reference
+   * the preparation emits is retained there under its file id when the
+   * request is accepted, so the message no longer depends on the staged
+   * upload while it waits in the queue or after it ran.
+   */
+  readonly sessionMedia?: ISessionMediaStore;
 }
 
 export interface PromptMediaPreparation {
@@ -154,6 +205,7 @@ export async function resolvePromptMediaFiles(
   cacheDir: string,
   options: ResolvePromptMediaOptions = {},
 ): Promise<PromptMediaPreparation> {
+  const files = options.sessionMedia === undefined ? store : sessionPromptFiles(store, options.sessionMedia);
   const ownedFileIds = new Set<string>();
   let discarded = false;
   const discard = async (): Promise<void> => {
@@ -203,6 +255,7 @@ export async function resolvePromptMediaFiles(
             { mimeType: canonicalMime },
           );
           ownedFileIds.add(saved.id);
+          await retainSessionMedia(options.sessionMedia, await store.get(saved.id));
           content.push({
             type: 'image',
             source: { kind: 'url', url: buildDaemonFileUrl(saved.id) },
@@ -259,7 +312,7 @@ export async function resolvePromptMediaFiles(
       }
 
       if (part.type === 'file') {
-        const file = await store.get(part.file_id);
+        const file = await files.get(part.file_id);
         const attachedPath = await materializeAttachmentToDir(file, await resolveAttachmentsDir());
         const text = buildAttachedFileNotice(file.meta.name, file.meta.media_type, file.meta.size, attachedPath);
         content.push({
@@ -276,7 +329,7 @@ export async function resolvePromptMediaFiles(
         continue;
       }
 
-      const file = await store.get(part.source.file_id);
+      const file = await files.get(part.source.file_id);
       assertMediaFile(file, part.type);
       if (part.type === 'image') {
         const data = await readFileOrStream(file);
@@ -320,6 +373,7 @@ export async function resolvePromptMediaFiles(
           ownedFileIds.add(saved.id);
           finalFile = await store.get(saved.id);
         }
+        await retainSessionMedia(options.sessionMedia, finalFile);
         content.push({
           type: 'image',
           source: { kind: 'url', url: buildDaemonFileUrl(finalFile.meta.id) },
@@ -329,6 +383,7 @@ export async function resolvePromptMediaFiles(
         continue;
       }
 
+      await retainSessionMedia(options.sessionMedia, file);
       content.push({
         type: 'video',
         source: { kind: 'url', url: buildDaemonFileUrl(file.meta.id) },

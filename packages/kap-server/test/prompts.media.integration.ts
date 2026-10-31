@@ -13,7 +13,8 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { type RunningServer } from '../src/start';
 import { PROMPT_BODY_LIMIT_BYTES } from '../src/routes/prompts';
-import { authHeaders } from './helpers/auth';
+import { createKlient as createHttpKlient } from '@kiki/klient/http';
+import { authHeaders, bearerToken } from './helpers/auth';
 import {
   type Envelope,
   type PromptItemWire,
@@ -34,7 +35,7 @@ vi.mock('../../../apps/kiki-gui/src/components/preview/DocumentTabView', () => (
 
 describe('server-v2 /api prompts', () => {
   const fixture = usePromptFixture();
-  const { call, createSession, createMainAgent, uploadFile } = fixture;
+  const { call, createSession, createMainAgent, createHeldMainAgent, uploadFile } = fixture;
 
   it('rejects a stale file reference without creating the agent or mutating the model', async () => {
     const id = await createSession(fixture.home as string, false);
@@ -297,6 +298,46 @@ describe('server-v2 /api prompts', () => {
         });
       });
     }
+  });
+
+  it('replaces a queued image prompt with its original image after the staged upload is deleted', async () => {
+    const id = await createSession(fixture.home as string);
+    await createHeldMainAgent(id);
+    const client = createHttpKlient({ endpoint: fixture.base, token: bearerToken(fixture.server!) });
+    try {
+      await client.session(id).commands.submit({ prompt_id: 'busy', content: [{ type: 'text', text: 'busy' }] });
+      const image = solidPng(8, 8);
+      const uploaded = await uploadFile(image, 'image/png', 'queued.png');
+      const queued = await client.session(id).commands.submit({
+        prompt_id: 'queued-image', content: [{ type: 'image', source: { kind: 'file', file_id: uploaded.id } }],
+      });
+      expect(queued).toMatchObject({ status: 'queued', content: [{ type: 'image', source: { kind: 'session_media', file_id: uploaded.id } }] });
+      await expectSessionMedia(fixture.server!, id, `${uploaded.id}.png`, image);
+      await fixture.server!.core.accessor.get(IFileService).delete(uploaded.id);
+
+      for (const source of [{ kind: 'session_media', file_id: uploaded.id }, { kind: 'file', file_id: uploaded.id }] as const) {
+        const replaced = await client.session(id).commands.replace('queued-image', {
+          content: [{ type: 'text', text: `edited via ${source.kind}` }, { type: 'image', source }],
+          replace_attachments: true,
+        });
+        expect(replaced.content).toEqual([
+          { type: 'text', text: `edited via ${source.kind}` },
+          { type: 'image', source: { kind: 'session_media', file_id: uploaded.id }, name: 'queued.png' },
+        ]);
+      }
+
+      const other = await createSession(fixture.home as string);
+      await createHeldMainAgent(other);
+      await client.session(other).commands.submit({ prompt_id: 'other-busy', content: [{ type: 'text', text: 'busy' }] });
+      await client.session(other).commands.submit({ prompt_id: 'other-queued', content: [{ type: 'text', text: 'queued' }] });
+      for (const source of [{ kind: 'session_media', file_id: uploaded.id }, { kind: 'file', file_id: uploaded.id }] as const) {
+        const crossSession = await call<null>('POST', `/api/sessions/${other}/prompts/other-queued:replace`, {
+          content: [{ type: 'text', text: 'borrow' }, { type: 'image', source }],
+          replace_attachments: true,
+        });
+        expect(crossSession.body.code).toBe(40407);
+      }
+    } finally { await client.close(); }
   });
 
   it('accepts a stored session-media reference after the transient upload is deleted', async () => {
