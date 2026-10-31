@@ -28,6 +28,7 @@ export interface RunAgentTurnOptions {
   readonly onReady?: () => void;
 }
 
+/** Runs the selected native request and its summary turns without releasing older recovery-held prompts. */
 export async function runAgentTurn(
   target: AgentExecutorAgentContext,
   request: AgentRunRequest,
@@ -67,14 +68,14 @@ export async function runAgentTurn(
   let turn: Turn | undefined;
   try {
     turn = promptInput !== undefined
-      ? await (await promptService.enqueue(promptInput)).launched
+      ? await launchRunPrompt(target, promptInput, options.signal)
       : request.kind === 'mailbox'
-        ? await (await promptService.enqueue({
+        ? await launchRunPrompt(target, {
             parentReceiptManaged: true,
             message: request.message,
             alreadyMaterialized: hasMailboxMessageInContext(target.accessor.get(IAgentContextMemoryService).get(), request.message),
             signal: options.signal,
-          })).launched
+          }, options.signal)
         : await promptService.retry({ parentReceiptManaged: true });
   } catch (error) {
     options.signal.throwIfAborted();
@@ -91,6 +92,28 @@ export async function runAgentTurn(
 
   const completion = awaitRun(target, turn, options);
   return { agentId: target.id, turn, completion };
+}
+
+async function launchRunPrompt(target: AgentExecutorAgentContext, input: PromptInput, signal: AbortSignal): Promise<Turn | undefined> {
+  const prompts = target.accessor.get(IAgentPromptService);
+  const prompt = await prompts.enqueue({ ...input, waitForLaunch: false });
+  const cancel = (): void => {
+    prompts.abort(prompt.id, signal.reason instanceof Error ? signal.reason : userCancellationReason());
+  };
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal.aborted) cancel();
+    signal.throwIfAborted();
+    if (prompt.state === 'pending' && prompts.list().hold?.reason === 'recovery') {
+      const loop = target.accessor.get(IAgentLoopService);
+      await abortable(loop.settled({ rejectOnPersistenceFailure: true }), signal);
+      signal.throwIfAborted();
+      if (prompt.state === 'pending') await prompts.steer([prompt.id]);
+    }
+    return await prompt.launched;
+  } finally {
+    signal.removeEventListener('abort', cancel);
+  }
 }
 
 async function awaitRun(
@@ -167,14 +190,13 @@ async function distillSummary(
   if (policy === undefined) return summary;
   if (isSummaryAdequate(summary, policy)) return summary;
 
-  const promptService = target.accessor.get(IAgentPromptService);
   for (let attempt = 0; attempt < policy.retries; attempt++) {
-    const turn = await (await promptService.enqueue({ parentReceiptManaged: true, message: {
+    const turn = await launchRunPrompt(target, { parentReceiptManaged: true, message: {
       role: 'user',
       content: [{ type: 'text', text: policy.continuationPrompt }],
       toolCalls: [],
       origin: AGENT_RUN_PROMPT_ORIGIN,
-    }, signal: controller.signal })).launched;
+    }, signal: controller.signal }, controller.signal);
     if (turn === undefined) break;
     setTurn(turn);
     const result = await awaitTurn(turn, controller, cancelTurn);

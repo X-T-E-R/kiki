@@ -64,6 +64,9 @@ import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IAgentCollaborationMessageStore, IAgentCollaborationMessagingService, type AcceptedAgentMessage } from '#/session/agentCollaboration/messageMailbox';
 import { AgentCollaborationMessagingService } from '#/session/agentCollaboration/messagingService';
 import type { ThreadDeliveryClaim } from '#/app/threadCommunication/threadMailboxStore';
+import { IAgentListTool, type AgentListOutput } from '#/agent/tools/agent-list/agent-list';
+import { AgentListTool } from '#/agent/tools/agent-list/agentListTool';
+import { executeTool } from '../../tools/fixtures/execute-tool';
 
 const OLD = 'example/old-model';
 const NEW = 'example/new-model';
@@ -259,6 +262,152 @@ describe('dispatch resume through model switch and real native run', () => {
     expect(ctx.get(IAgentProfileService).getEffectiveThinkingLevel()).toBe('high');
     const { dispatch, child } = dispatchFor(ctx);
     await expect(dispatch.runOnExisting(child, 'Bad effort', options('bad-effort', { thinkingEffort: 'unknown' }))).rejects.toThrow(/not supported/);
+  });
+
+  it.each(['fresh', 'same'] as const)('launches only the %s explicit resume across a restored recovery hold', async (identity) => {
+    const original = await host();
+    await complete(original, 'interrupted-before-launch');
+    const records = await journal(original);
+    const pendingEnd = records.findIndex((record) => record.type === 'prompt.enqueued');
+    const ctx = await host();
+    const taskId = 'bash-restored';
+    await ctx.restore([...records.slice(0, pendingEnd + 1), { type: 'task.started', info: {
+      taskId, kind: 'process', command: 'example-command', description: 'Unconfirmed earlier execution',
+      pid: 0, startedAt: 1, endedAt: null, exitCode: null, status: 'running', detached: true,
+    } }]);
+    const prompts = ctx.get(IAgentPromptService);
+    const execution = ctx.get(IAgentExecutionService);
+    const loop = ctx.get(IAgentLoopService);
+    expect(prompts.list()).toMatchObject({ hold: { reason: 'recovery', count: 1 },
+      pending: [{ id: 'resume-prompt:interrupted-before-launch' }] });
+    expect(execution.status().state).toBe('idle');
+    expect(loop.status()).toMatchObject({ state: 'idle', pendingRequestKinds: ['task_notification'] });
+    expect(ctx.get(IAgentTaskService).getTask(taskId)?.status).toBe('lost');
+    expect(ctx.get(IAgentTaskService).list(true)).toHaveLength(0);
+    const controller = new AbortController();
+    const { dispatch, child } = dispatchFor(ctx);
+    const operationId = identity === 'same' ? 'interrupted-before-launch' : 'fresh-after-restore';
+    const prompt = identity === 'same' ? 'Continue exactly once.' : 'Inspect preserved work; do not repeat unknown actions.';
+    let started = false;
+    let failure: unknown;
+    ctx.mockNextResponse({ type: 'text', text: 'Explicit fresh result.' });
+    const opts = { ...options(operationId), signal: controller.signal };
+    const [run, duplicate] = await Promise.all([
+      dispatch.runOnExisting(child, prompt, opts), dispatch.runOnExisting(child, prompt, opts),
+    ]);
+    expect(duplicate).toBe(run);
+    void run.started.then(() => { started = true; }, (error: unknown) => { failure = error; });
+    try {
+      await vi.waitFor(() => {
+        expect(failure).toBeUndefined();
+        expect(started, 'an explicit resume must not retain an execution lease while parked by recovery').toBe(true);
+      });
+      const handle = await run.started;
+      expect(handle.agentId).toBe(CHILD);
+      await handle.completion;
+      await execution.settled();
+      expect(execution.status().state).toBe('idle');
+      expect(loop.status()).toMatchObject({ state: 'idle', hasPendingRequests: false });
+      expect(prompts.list().pending.map((item) => item.id)).toEqual(identity === 'fresh' ? ['resume-prompt:interrupted-before-launch'] : []);
+      expect(prompts.list().hold).toEqual(identity === 'fresh' ? { reason: 'recovery', count: 1 } : undefined);
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect(JSON.stringify(ctx.llmCalls[0]!.history)).toContain('task.lost');
+      expect(ctx.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'task' && message.origin.taskId === taskId)).toHaveLength(1);
+      const after = await journal(ctx);
+      expect(after.filter((record) => record.type === 'turn.prompt')).toHaveLength(1);
+      expect(after.filter((record) => record.type === 'prompt.launch_committed')).toHaveLength(1);
+      expect(after.filter((record) => record.type === 'agent.model_switch')).toHaveLength(identity === 'fresh' ? 2 : 1);
+      expect(await dispatch.runOnExisting(child, prompt, opts)).toBe(run);
+      expect(ctx.llmCalls).toHaveLength(1);
+    } finally {
+      controller.abort();
+      await run.started.catch(() => undefined);
+    }
+  });
+
+  it.each(['cancelled', 'restored_cancelled', 'launch_failure'] as const)('releases a recovery-held resume after %s without replaying its prompt', async (outcome) => {
+    const original = await host();
+    await complete(original, 'preserved-unlaunched');
+    const records = await journal(original);
+    const ctx = await host();
+    await ctx.restore(records.slice(0, records.findIndex((record) => record.type === 'prompt.enqueued') + 1));
+    const prompts = ctx.get(IAgentPromptService);
+    const execution = ctx.get(IAgentExecutionService);
+    const { dispatch, child } = dispatchFor(ctx);
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const hook = prompts.hooks.onBeforeSubmitPrompt.register('recovery-launch-fixture', async (_context, next) => {
+      enter();
+      await blocked;
+      if (outcome === 'launch_failure') throw new Error('fixture preparation failed');
+      await next();
+    });
+    const controller = new AbortController();
+    const restored = outcome === 'restored_cancelled';
+    const operationId = restored ? 'preserved-unlaunched' : 'interrupted-recovery';
+    const prompt = restored ? 'Continue exactly once.' : 'This attempt must not call a model.';
+    const opts = { ...options(operationId), signal: controller.signal };
+    const run = await dispatch.runOnExisting(child, prompt, opts);
+    const rejected = expect(run.started).rejects.toBeDefined();
+    try {
+      await entered;
+      expect(execution.status().state).toBe('starting');
+      expect(ctx.get(IAgentTaskService).list(true)).toHaveLength(0);
+      await expect(dispatch.runOnExisting(child, 'Must not run concurrently.', options('competing-recovery')))
+        .rejects.toMatchObject({ code: ErrorCodes.AGENT_ALREADY_RUNNING });
+      if (outcome !== 'launch_failure') controller.abort();
+      release();
+      await rejected;
+      await execution.settled();
+      expect(execution.status().state).toBe('idle');
+      expect(ctx.llmCalls).toHaveLength(0);
+      expect(prompts.lookup(`resume-prompt:${operationId}`)).toMatchObject({ phase: 'terminal', terminal: { state: outcome === 'launch_failure' ? 'failed' : 'cancelled' } });
+      await hook.dispose();
+      const replay = await dispatch.runOnExisting(child, prompt, options(operationId));
+      await expect(replay.started).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+      expect(ctx.llmCalls).toHaveLength(0);
+      ctx.mockNextResponse({ type: 'text', text: 'Recovered on the same child.' });
+      const next = await dispatch.runOnExisting(child, 'Inspect and continue.', options('after-interruption'));
+      const handle = await next.started;
+      expect(handle.agentId).toBe(CHILD);
+      await handle.completion;
+      await execution.settled();
+      expect(execution.status().state).toBe('idle');
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect(prompts.list().pending.map((item) => item.id)).toEqual(restored ? [] : ['resume-prompt:preserved-unlaunched']);
+      expect(prompts.list().hold).toEqual(restored ? undefined : { reason: 'recovery', count: 1 });
+    } finally {
+      release();
+      controller.abort();
+      await run.started.catch(() => undefined);
+      await hook.dispose();
+    }
+  });
+
+  it('continues its own summary across a recovery hold without releasing historical prompts', async () => {
+    const original = await host();
+    await complete(original, 'preserved-unlaunched');
+    const records = await journal(original);
+    const ctx = await host();
+    await ctx.restore(records.slice(0, records.findIndex((record) => record.type === 'prompt.enqueued') + 1));
+    const { runs } = dispatchFor(ctx);
+    const controller = new AbortController();
+    ctx.mockNextResponse({ type: 'text', text: 'Short.' });
+    const summary = 'Completed the requested work with an adequate final summary.';
+    ctx.mockNextResponse({ type: 'text', text: summary });
+    const run = await runs.run(CHILD, { kind: 'prompt', prompt: 'Continue only this request.', promptId: 'summary-resume' }, {
+      signal: controller.signal, summaryPolicy: { minChars: 40, retries: 1, continuationPrompt: 'Report the result in full.' },
+    });
+    try {
+      await expect(run.completion).resolves.toMatchObject({ summary });
+      await ctx.get(IAgentExecutionService).settled();
+      expect(ctx.get(IAgentExecutionService).status().state).toBe('idle');
+      expect(ctx.get(IAgentPromptService).list()).toMatchObject({ hold: { reason: 'recovery', count: 1 }, pending: [{ id: 'resume-prompt:preserved-unlaunched' }] });
+      expect(ctx.llmCalls).toHaveLength(2);
+      expect((await journal(ctx)).filter((record) => record.type === 'prompt.launch_committed')).toHaveLength(2);
+    } finally { controller.abort(); }
   });
 
   it('merges pending lost notifications into the explicit resume instead of starting a competing turn', async () => {
@@ -1151,6 +1300,69 @@ describe('dispatch resume after cancellation with deferred task notifications', 
       expect(action).toHaveBeenCalledTimes(1);
       expect(ctx.llmCalls).toHaveLength(3);
     } finally { await fixture.cleanup(); }
+  });
+
+  it('keeps AgentSend queued behind restored work and delivers it once on an explicit same-child resume', async () => {
+    const original = await host();
+    await complete(original, 'unconfirmed-history');
+    const records = await journal(original);
+    const ctx = await host();
+    await ctx.restore(records.slice(0, records.findIndex((record) => record.type === 'prompt.enqueued') + 1));
+    const { dispatch, child } = dispatchFor(ctx);
+    const mail = mailboxFor(ctx, child, dispatch);
+    const ix = new TestInstantiationService();
+    containers.push(ix);
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    ix.set(ISessionMetadata, ctx.get(ISessionMetadata));
+    ix.set(IAgentTaskService, ctx.get(IAgentTaskService));
+    ix.set(IAgentLifecycleService, ctx.get(IAgentLifecycleService));
+    ix.set(IAgentListTool, new SyncDescriptor(AgentListTool));
+    const roster = async () => {
+      const result = await executeTool(ix.get(IAgentListTool), {
+        args: { include_finished: true }, signal: new AbortController().signal, turnId: 1, toolCallId: 'roster',
+      });
+      expect(result.isError).toBe(false);
+      return (JSON.parse(String(result.output)) as AgentListOutput).agents.find((agent) => agent.agent_id === CHILD)?.status;
+    };
+    const input = { sourceAgentId: CHILD, sourceTaskName: 'sender', targetAgentId: CHILD, targetTaskName: 'saved_child',
+      content: 'Use the preserved update.', idempotencyKey: 'held-mailbox', waitForRunningDelivery: true, idleWake: 'owned-child' as const };
+    expect(await mail.messaging.send(input)).toMatchObject({ delivery: 'queued', resumed: undefined });
+    expect(mail.delivered()).toBe(false);
+    expect(ctx.llmCalls).toHaveLength(0);
+    expect(await roster()).toBe('untracked');
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const hook = ctx.get(IAgentLoopService).hooks.onWillBeginStep.register('mailbox-recovery-fixture', async (_context, next) => {
+      enter();
+      await blocked;
+      await next();
+    });
+    const controller = new AbortController();
+    ctx.mockNextResponse({ type: 'text', text: 'Used the saved message.' });
+    const run = await dispatch.runOnExisting(child, '', { ...options('consume-held-mailbox'), signal: controller.signal });
+    try {
+      const handle = await run.started;
+      await entered;
+      expect(await roster()).toBe('running');
+      expect(ctx.get(IAgentTaskService).list(true)).toHaveLength(0);
+      await expect(dispatch.runOnExisting(child, '', options('parallel-mailbox-resume'))).rejects.toMatchObject({ code: ErrorCodes.AGENT_ALREADY_RUNNING });
+      release();
+      await handle.completion;
+      await ctx.get(IAgentExecutionService).settled();
+      expect(await roster()).toBe('untracked');
+      expect(await mail.messaging.send(input)).toMatchObject({ delivery: 'delivered', deduplicated: true });
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect(JSON.stringify(ctx.llmCalls[0]!.history)).toContain('Use the preserved update.');
+      expect(ctx.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'agent_message' && message.origin.messageId === 'queued-mailbox')).toHaveLength(1);
+      expect(ctx.get(IAgentPromptService).list()).toMatchObject({ hold: { reason: 'recovery', count: 1 }, pending: [{ id: 'resume-prompt:unconfirmed-history' }] });
+    } finally {
+      release();
+      controller.abort();
+      await run.started.catch(() => undefined);
+      await hook.dispose();
+    }
   });
 
   it('retains queued mailbox and late timeout notifications until the resumed first step', async () => {

@@ -55,7 +55,7 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 
 继承工作区提供的是上下文，不会新建目录沙箱。Kiki 不主动添加输入根目录，也不覆盖外部引擎的沙箱；未设置的模型、思考强度和权限选择保留[引擎自己的配置](#外部直连执行)。显式声明的额外目录通过执行器支持的目录接口传递；ACP 执行器未声明支持时，会记录 `additional_directories_dropped`。声明目录不会关闭显式权限规则、已绑定的 worktree 限制或引擎自己的沙箱。
 
-继续直属子 Agent 时把 `resume` 设为它的名称或 agent id，它与 `name`、`profile`、`profile_file`、`route` 互斥。`allow_model_change` 只在 `resume` 同时显式传入、且解析到不同规范模型的 `model_alias` 时有意义。
+继续直属子 Agent 时把 `resume` 设为它的名称或 agent id，它与 `name`、`profile`、`profile_file`、`route` 互斥。`allow_model_change` 只在 `resume` 同时显式传入、且解析到不同规范模型的 `model_alias` 时有意义。原生子 Agent 仍有恢复后暂停的旧队列时，显式 `resume` 会单独运行本次请求，旧队列继续暂停，不会自动重放。
 
 供应商报告完成，不等于任务已交付回执。已完成的响应如果含有真实思考、却没有正文或工具调用，Kiki 会在同一轮次内继续，直到出现正文或工具调用，无论思考是否带签名。已有签名和用量会保留，不另加用户提示词；步骤预算耗尽、取消或供应商永久错误仍会结束轮次。没有正文的工具步骤仍然有效，但 Agent 任务仍须提交书面结果。
 
