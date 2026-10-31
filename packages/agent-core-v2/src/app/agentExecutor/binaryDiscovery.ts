@@ -48,23 +48,34 @@ export async function discoverExecutorMetadata(
       : { id: 'command', kind: 'path-lookup', command: descriptor.command }];
   return Promise.all(sources.filter(source => descriptor.source === undefined || source.id === descriptor.source)
     .map(async (source): Promise<AgentExecutorSourceProbe> => {
-    if (source.kind === 'node-script') {
-      const script = expandPath(source.path, bootstrap);
-      const command = await isFile(fs, script) ? await nodeRuntime(fs, bootstrap) : undefined;
-      return { id: source.id, kind: source.kind, available: command !== undefined,
-        command, launchArgs: [script], diagnostic: command === undefined ? 'Adapter script or Node runtime is missing' : undefined };
-    }
-    const commands = (await sourceCommands(source, fs, bootstrap)).toSorted(compareExecutorBinaryPaths);
-    for (const command of commands.toReversed()) {
-      if (!await isFile(fs, command)) continue;
-      if (descriptor.id === 'antigravity-acp') {
-        const ide = stripExecutableExtension(basename(command)).toLowerCase() === 'antigravity';
-        const sibling = join(dirname(command), command.endsWith('.exe') ? 'localharness_external.exe' : 'localharness_external');
-        if (ide || !await isFile(fs, sibling)) continue;
+    try {
+      if (source.kind === 'node-script') {
+        const script = expandPath(source.path, bootstrap);
+        const exists = await isFile(fs, script, true);
+        const command = exists ? await nodeRuntime(fs, bootstrap, true) : undefined;
+        return { id: source.id, kind: source.kind, available: command !== undefined,
+          command, launchArgs: [script], diagnostic: command === undefined ? 'Adapter script or Node runtime is missing' : undefined,
+          diagnosticCode: command !== undefined ? undefined : exists ? 'not_on_path' : 'path_not_found' };
       }
-      return { id: source.id, kind: source.kind, available: true, command };
+      const commands = (await sourceCommands(source, fs, bootstrap, true)).toSorted(compareExecutorBinaryPaths);
+      for (const command of commands.toReversed()) {
+        if (!await isFile(fs, command, true)) continue;
+        if (descriptor.id === 'antigravity-acp') {
+          const ide = stripExecutableExtension(basename(command)).toLowerCase() === 'antigravity';
+          const sibling = join(dirname(command), command.endsWith('.exe') ? 'localharness_external.exe' : 'localharness_external');
+          if (ide || !await isFile(fs, sibling, true)) continue;
+        }
+        return { id: source.id, kind: source.kind, available: true, command };
+      }
+      const envUnset = source.kind === 'env' && !bootstrap.getEnv(source.name)?.trim();
+      return { id: source.id, kind: source.kind, available: false,
+        diagnostic: source.kind === 'env' && !envUnset ? `The path in ${source.name} does not exist` : unavailableDiagnostic(source, bootstrap),
+        diagnosticCode: source.kind === 'path-lookup' ? 'not_on_path' : source.kind === 'glob' ? 'no_glob_match'
+          : envUnset ? 'env_unset' : 'path_not_found' };
+    } catch {
+      return { id: source.id, kind: source.kind, available: false,
+        diagnostic: 'Installed engine metadata could not be read', diagnosticCode: 'metadata_unreadable' };
     }
-    return { id: source.id, kind: source.kind, available: false, diagnostic: unavailableDiagnostic(source, bootstrap) };
   }));
 }
 
@@ -327,9 +338,9 @@ async function probeNodeScript(
   return { ...base, available: true, command: node, version };
 }
 
-async function nodeRuntime(fs: IHostFileSystem, bootstrap: IBootstrapService): Promise<string | undefined> {
+async function nodeRuntime(fs: IHostFileSystem, bootstrap: IBootstrapService, strict = false): Promise<string | undefined> {
   if (stripExecutableExtension(basename(process.execPath)).toLowerCase() === 'node') return normalize(process.execPath);
-  return lookupPath('node', fs, bootstrap);
+  return lookupPath('node', fs, bootstrap, strict);
 }
 
 /** Resolves a bare command name the way the host PATH would, for display and for probes that need a path. */
@@ -337,9 +348,10 @@ export async function locateCommand(
   command: string,
   fs: IHostFileSystem,
   bootstrap: IBootstrapService,
+  strict = false,
 ): Promise<string | undefined> {
-  if (/[\\/]/.test(command)) return await isFile(fs, command) ? normalize(command) : undefined;
-  return lookupPath(command, fs, bootstrap);
+  if (/[\\/]/.test(command)) return await isFile(fs, command, strict) ? normalize(command) : undefined;
+  return lookupPath(command, fs, bootstrap, strict);
 }
 
 /** Expands `${NAME}` in display text such as an install command; `${KIKI_HOME}` is the resolved Kiki home. */
@@ -352,6 +364,7 @@ async function sourceCommands(
   source: AgentExecutorBinarySource,
   fs: IHostFileSystem,
   bootstrap: IBootstrapService,
+  strict = false,
 ): Promise<readonly string[]> {
   if (source.kind === 'env') {
     const value = bootstrap.getEnv(source.name)?.trim();
@@ -359,10 +372,10 @@ async function sourceCommands(
   }
   if (source.kind === 'explicit-path') {
     const path = expandPath(source.path, bootstrap);
-    return await isFile(fs, path) ? [path] : [];
+    return await isFile(fs, path, strict) ? [path] : [];
   }
   if (source.kind === 'path-lookup') {
-    const path = await lookupPath(source.command, fs, bootstrap);
+    const path = await lookupPath(source.command, fs, bootstrap, strict);
     if (path === undefined) return [];
     if (
       source.requiredBasename !== undefined &&
@@ -373,13 +386,14 @@ async function sourceCommands(
     return [path];
   }
   if (source.kind === 'node-script') return [];
-  return expandGlob(expandPath(source.pattern, bootstrap), fs, source.maxDepth ?? 8);
+  return expandGlob(expandPath(source.pattern, bootstrap), fs, source.maxDepth ?? 8, strict);
 }
 
 async function lookupPath(
   command: string,
   fs: IHostFileSystem,
   bootstrap: IBootstrapService,
+  strict = false,
 ): Promise<string | undefined> {
   const pathValue = bootstrap.getEnv('PATH') ?? bootstrap.getEnv('Path') ?? '';
   const separator = bootstrap.platform === 'win32' ? ';' : ':';
@@ -391,7 +405,7 @@ async function lookupPath(
     const commands = hasExtension ? [command] : extensions.map((extension) => `${command}${extension}`);
     for (const candidate of commands) {
       const path = normalize(join(root, candidate));
-      if (await isFile(fs, path)) return path;
+      if (await isFile(fs, path, strict)) return path;
     }
   }
   return undefined;
@@ -401,6 +415,7 @@ async function expandGlob(
   pattern: string,
   fs: IHostFileSystem,
   maxDepth: number,
+  strict = false,
 ): Promise<readonly string[]> {
   const normalized = normalize(pattern).replaceAll('\\', '/');
   const rootMatch = normalized.match(/^(?:[A-Za-z]:\/|\/)/);
@@ -410,13 +425,13 @@ async function expandGlob(
   const visit = async (current: string, index: number, depth: number): Promise<void> => {
     if (depth > maxDepth) return;
     if (index === segments.length) {
-      if (await isFile(fs, current)) results.push(current);
+      if (await isFile(fs, current, strict)) results.push(current);
       return;
     }
     const segment = segments[index]!;
     if (segment === '**') {
       await visit(current, index + 1, depth);
-      for (const entry of await safeReaddir(fs, current)) {
+      for (const entry of await safeReaddir(fs, current, strict)) {
         if (entry.isDirectory) await visit(join(current, entry.name), index, depth + 1);
       }
       return;
@@ -426,7 +441,7 @@ async function expandGlob(
       return;
     }
     const matcher = wildcard(segment);
-    for (const entry of await safeReaddir(fs, current)) {
+    for (const entry of await safeReaddir(fs, current, strict)) {
       if (matcher.test(entry.name)) await visit(join(current, entry.name), index + 1, depth + 1);
     }
   };
@@ -496,18 +511,25 @@ async function probeCommand(
   }
 }
 
-async function isFile(fs: IHostFileSystem, path: string): Promise<boolean> {
+function missingPathError(error: unknown): boolean {
+  return error !== null && typeof error === 'object' && 'code' in error &&
+    ['ENOENT', 'ENOTDIR', 'os.fs.not_found', 'os.fs.not_directory'].includes(String(error.code));
+}
+
+async function isFile(fs: IHostFileSystem, path: string, strict = false): Promise<boolean> {
   try {
     return (await fs.stat(path)).isFile;
-  } catch {
+  } catch (error) {
+    if (strict && !missingPathError(error)) throw error;
     return false;
   }
 }
 
-async function safeReaddir(fs: IHostFileSystem, path: string) {
+async function safeReaddir(fs: IHostFileSystem, path: string, strict = false) {
   try {
     return await fs.readdir(path);
-  } catch {
+  } catch (error) {
+    if (strict && !missingPathError(error)) throw error;
     return [];
   }
 }

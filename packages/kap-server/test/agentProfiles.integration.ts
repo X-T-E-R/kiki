@@ -829,6 +829,9 @@ describe('GET /api/agents', () => {
         installed: id !== 'agy-cli', status: id === 'agy-cli' ? 'missing' : 'installed', checked_at: expect.any(String),
       });
       expect(discovery.items.find(item => item.id === 'codex-app-server')).toMatchObject({ source: 'override', source_kind: 'explicit-path', path: path.replaceAll('\\', '/') });
+      expect(discovery.items.find(item => item.id === 'agy-cli')).toMatchObject({ reason_code: 'path_not_found',
+        components: [expect.objectContaining({ role: 'program', reason_code: 'path_not_found' })] });
+      expect(discovery.items.find(item => item.id === 'agy-cli')!.reason).not.toMatch(/^code:/);
       const draft = await klient.rest!.agents.referenceCandidates({ cwd: home!, profile: 'reference-lead' });
       expect(draft.delegation_available).toBe(true);
       expect(draft.items.map(item => item.profile).toSorted()).toEqual(allowed.toSorted());

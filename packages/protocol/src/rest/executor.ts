@@ -53,6 +53,7 @@ export const executorDiscoveryComponentSchema = z.object({
   path: z.string().optional(),
   version: z.string().optional(),
   reason: z.string().optional(),
+  reason_code: z.string().optional(),
 });
 export const executorDiscoveryStatusSchema = z.object({
   id: z.string(),
@@ -66,6 +67,7 @@ export const executorDiscoveryStatusSchema = z.object({
   source: z.string().optional(),
   source_kind: z.enum(['explicit-path', 'env', 'glob', 'path-lookup', 'node-script']).optional(),
   reason: z.string().optional(),
+  reason_code: z.string().optional(),
   components: z.array(executorDiscoveryComponentSchema),
 });
 export type ExecutorDiscoveryStatus = z.infer<typeof executorDiscoveryStatusSchema>;

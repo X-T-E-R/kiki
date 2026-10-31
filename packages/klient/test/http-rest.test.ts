@@ -25,7 +25,7 @@ function envelope(data: unknown, code = 0): Response {
 describe('HTTP REST domains', () => {
   it('reads validated agent references and metadata-only engine discovery without a launch', async () => {
     const candidates = { delegation_available: true, items: [{ profile: 'engine:codex-app-server', label: 'Codex', executor: 'codex-app-server', engine_label: 'Codex', reference: 'kiki://agents/engine%3Acodex-app-server', configuration: 'native', group: 'native', defaults_available: true, available: false, unavailable_reason: 'Codex is not installed' }] };
-    const discovery = { items: [{ id: 'codex-app-server', label: 'Codex', protocol: 'codex-app-server', installed: false, status: 'missing', checked_at: '2026-10-31T00:00:00.000Z', reason: 'Codex is not installed', components: [] }] };
+    const discovery = { items: [{ id: 'codex-app-server', label: 'Codex', protocol: 'codex-app-server', installed: false, status: 'missing', checked_at: '2026-10-31T00:00:00.000Z', reason: 'Codex was not found on PATH', reason_code: 'not_on_path', components: [{ id: 'codex-app-server', label: 'Codex', role: 'program', installed: false, reason: 'Codex was not found on PATH', reason_code: 'not_on_path' }] }] };
     const paths: string[] = [];
     const fetcher = vi.fn(async (input: string | URL, init?: RequestInit) => {
       const url = new URL(String(input));

@@ -17,30 +17,38 @@ export async function readExecutorDiscovery(
     const selected = probes.find(probe => probe.available);
     const path = selected?.launchArgs?.[0] ?? selected?.command;
     const version = path === undefined || selected?.kind !== 'node-script' ? undefined : await packageVersion(path, fs);
-    const reason = selected === undefined ? probes.find(probe => probe.diagnostic !== undefined)?.diagnostic
-      ?? 'No executable source was found' : undefined;
+    const failed = selected === undefined ? probes.find(probe => probe.diagnosticCode === 'metadata_unreadable')
+      ?? probes.find(probe => probe.diagnostic !== undefined) : undefined;
+    const reason = selected === undefined ? failed?.diagnostic ?? 'No executable source was found' : undefined;
+    const reasonCode = selected === undefined ? failed?.diagnosticCode ?? 'path_not_found' : undefined;
     const components: ExecutorDiscoveryStatus['components'] = [{
       id: descriptor.id, label: descriptor.programLabel ?? identity.label, role: 'program',
-      installed: selected !== undefined, path, version, reason,
+      installed: selected !== undefined, path, version, reason, reason_code: reasonCode,
     }];
     const dependencies = new Map((descriptor.diagnostics ?? []).flatMap(rule => rule.kind === 'dependency'
       ? [[rule.command, rule.label ?? rule.command] as const] : []));
     const agy = sourceOwnedAdapterScript(descriptor) !== undefined;
     if (agy) dependencies.set(descriptor.env?.['AGY_CLI_PATH']?.trim() || 'agy', 'AGY CLI');
     for (const [command, label] of dependencies) {
-      const dependency = await locateCommand(command, fs, bootstrap);
-      components.push({ id: command, label, role: 'dependency', installed: dependency !== undefined,
-        path: dependency,
-        reason: dependency === undefined ? `${label} was not found` : undefined });
+      try {
+        const dependency = await locateCommand(command, fs, bootstrap, true);
+        components.push({ id: command, label, role: 'dependency', installed: dependency !== undefined,
+          path: dependency, reason: dependency === undefined ? `${label} was not found` : undefined,
+          reason_code: dependency !== undefined ? undefined : /[\\/]/.test(command) ? 'path_not_found' : 'not_on_path' });
+      } catch {
+        components.push({ id: command, label, role: 'dependency', installed: false,
+          reason: `${label} metadata could not be read`, reason_code: 'metadata_unreadable' });
+      }
     }
     const missingAgy = agy ? components.find(component => component.role === 'dependency' && !component.installed) : undefined;
     const installed = selected !== undefined && missingAgy === undefined;
-    return { ...identity, installed, status: installed ? 'installed' : 'missing',
+    const failureCode = reasonCode ?? missingAgy?.reason_code;
+    return { ...identity, installed, status: installed ? 'installed' : failureCode === 'metadata_unreadable' ? 'error' : 'missing',
       checked_at: new Date().toISOString(), path, version, source: selected?.id, source_kind: selected?.kind,
-      reason: reason ?? missingAgy?.reason, components };
+      reason: reason ?? missingAgy?.reason, reason_code: failureCode, components };
   } catch {
     return { ...identity, installed: false, status: 'error', checked_at: new Date().toISOString(),
-      reason: 'Installed engine metadata could not be read', components: [] };
+      reason: 'Installed engine metadata could not be read', reason_code: 'metadata_unreadable', components: [] };
   }
 }
 
