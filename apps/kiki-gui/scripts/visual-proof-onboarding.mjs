@@ -7,28 +7,28 @@
  *
  * `onboarding-short-scroll` follows the steps the wizard has now — agreement,
  * appearance, then depart — at 800×450, 390×360 and 1440×900. It wheels, moves
- * scrollTop, and focuses a control below the fold. The walks below this note
- * still describe an older welcome → approvals → routes order.
+ * scrollTop, and focuses a control below the fold.
  *
- * The run has three steps: the welcome page (language + appearance), the
- * permission default, and a closing page that lists the five discovery routes
- * themselves, one quiet row each. A row starts that route through the shared
+ * The run has three steps: the agreement (language, permission default,
+ * notifications and reply style), the appearance choices, and a closing page
+ * that hands off model setup and lists the five discovery routes themselves,
+ * one quiet row each. A row starts that route through the shared
  * DiscoveryContext — the welcome invents no second flow, progress store or
  * resume state — and the run ends only once the guarded navigation commits.
- * The capability list and the model connection live on their own real pages,
- * not in the welcome. Connecting a model happens where it is needed: the hub's
- * row states the current connection from the server's own `auth` and provider
- * probes and opens the Connections card in Settings that actually owns sign-in
- * and the API-key form.
+ * The capability list lives on its own real page, not in the welcome. The
+ * closing page's own model row states the current connection from the server's
+ * `auth` probe and opens the Connections card in Settings that actually owns
+ * sign-in and the API-key form; nothing in the run writes a provider.
  *
  * Walks (asserted, not just captured):
- *  - onboarding-walk — welcome → approvals → the route rows; the closing page is
- *    one sentence plus the five catalog routes in order (no capability rows, no
- *    single call to action, no model row, nothing to scroll), the panel is
- *    shorter than its 85vh cap, and starting the overview route ends the run
- *    and pins the first station tag over the composer without leaving /new.
- *  - onboarding-skip — closing from the route rows starts nothing and routes
- *    nowhere.
+ *  - onboarding-walk — agreement → appearance → the closing page (model
+ *    hand-off, agent install, spotlight tour and the five catalog routes in
+ *    order, nothing the hub owns repeated); the centered panel stays inside
+ *    its 85vh cap and the last route row is reachable, and starting the
+ *    overview route ends the run and pins the first station tag over the
+ *    composer without leaving /new.
+ *  - onboarding-skip — closing from the closing page starts nothing and
+ *    routes nowhere.
  *  - discover-model-connection — the /discover map's row opens the real card,
  *    leaving the tour keeps its position, and the resume tag comes back to it.
  *    The station and resume paper tags must clear the composer and the search box.
@@ -66,39 +66,38 @@ async function openWizard(page) {
   return wizard;
 }
 
-/** Welcome → approvals → the closing route rows, through the wizard's own advance. */
+/** Agreement → appearance → the closing depart page, through the wizard's own advance. */
 async function toGuide(page, wizard, text, shot) {
-  await wizard.locator('[data-onboarding-appearance]').waitFor({ timeout: 5000 });
-  if (shot !== undefined) await shot('onboarding-1-welcome');
-  await wizard.getByRole('button', { name: text.next, exact: true }).click();
-  // Nothing configures a model between them: the welcome page's advance lands
-  // on the permission default.
+  await wizard.locator('[data-onboarding-agreement]').waitFor({ timeout: 5000 });
   await wizard.locator('[data-permission-choice]').first().waitFor({ timeout: 5000 });
   expect(await wizard.locator('[data-onboarding-model-id]').count() === 0, 'the run holds no model form');
-  if (shot !== undefined) await shot('onboarding-2-permissions');
+  if (shot !== undefined) await shot('onboarding-1-agreement');
   await wizard.getByRole('button', { name: text.next, exact: true }).click();
-  await wizard.locator('[data-onboarding-discover]').waitFor({ timeout: 5000 });
+  // Nothing configures a model between them: the agreement's advance lands on
+  // the appearance choices.
+  await wizard.locator('[data-onboarding-appearance]').first().waitFor({ timeout: 5000 });
+  if (shot !== undefined) await shot('onboarding-2-appearance');
+  await wizard.getByRole('button', { name: text.next, exact: true }).click();
+  await wizard.locator('[data-onboarding-depart]').waitFor({ timeout: 5000 });
   await page.waitForTimeout(300);
 }
 
 /**
- * The closing page is one sentence and the five catalog routes as quiet rows,
- * and it must not pretend to be the hub: no capability rows, no leftover single
- * call to action, no model row of its own, and no reserved empty height — the
- * panel is a cap, so the page takes the height its rows need and no more. On a
- * desktop window that is still a short page that comes nowhere near the cap; on
- * a phone-sized window five labelled rows legitimately fill most of it, so the
- * narrow pass only requires the cap to hold. Either way the last row keeps real
- * air between itself and the footer's divider — measured against the body
- * wrapper's visible bottom, not the panel, because the wrapper clips overflow
- * and a screenshot alone can miss that. If a taller translation ever does
- * overflow, the step must say so with its "more below" fade and scroll, never
- * clip silently.
+ * The closing page is the model hand-off, the agent install, the spotlight
+ * tour and the five catalog routes as quiet rows, and it must not pretend to
+ * be the hub: no capability rows, no leftover single call to action, no
+ * duplicate model row. The page is taller than its centered panel on most
+ * windows, so the panel rides its 85vh cap and the step scroller carries the
+ * rest; the cap is the hard promise on every window, and a page that scrolls
+ * must say so with its "more below" fade and keep its last route row
+ * reachable — measured against the body wrapper's visible bottom, not the
+ * panel, because the wrapper clips overflow and a screenshot alone can miss
+ * that.
  */
 async function checkClosingStepLayout(page, label) {
   const report = await page.evaluate(() => {
     const panel = document.querySelector('[role="dialog"]');
-    const body = document.querySelector('[role="dialog"] [data-onboarding-discover]');
+    const body = document.querySelector('[role="dialog"] [data-onboarding-depart]');
     const rows = [...document.querySelectorAll('[role="dialog"] [data-onboarding-route]')];
     const box = panel === null ? null : panel.getBoundingClientRect();
     const bodyBox = body === null ? null : body.getBoundingClientRect();
@@ -112,8 +111,6 @@ async function checkClosingStepLayout(page, label) {
       panelHeight: box === null ? -1 : Math.round(box.height),
       viewport: window.innerHeight,
       viewportWidth: window.innerWidth,
-      // 85vh is the cap; a page this short must come nowhere near it.
-      reservedCap: box === null || box.height >= window.innerHeight * 0.84,
       bodyInside: inside(bodyBox),
       rows: rows.map((row) => row.getAttribute('data-onboarding-route')),
       rowsInside: rows.every((row) => inside(row.getBoundingClientRect())),
@@ -144,15 +141,10 @@ async function checkClosingStepLayout(page, label) {
   expect(report.legacyCta === 0, `${label}: the old single call to action is still there`);
   expect(report.legacy.caps === 0 && report.legacy.routes === 0 && report.legacy.model === 0,
     `${label}: the closing page repeats what the hub owns ${JSON.stringify(report.legacy)}`);
-  // Narrow viewports (the 390 pass, or a job born narrow) may fill most of the
-  // window: the cap is the whole promise there — approach it, never cross it.
-  const compact = report.viewportWidth <= 600;
-  if (compact) {
-    expect(report.panelHeight <= Math.round(report.viewport * 0.85) + 2,
-      `${label}: panel is ${report.panelHeight}px, past the 85vh cap of a ${report.viewport}px viewport`);
-  } else {
-    expect(report.reservedCap !== true, `${label}: panel reserved ${report.panelHeight}px of a ${report.viewport}px viewport`);
-  }
+  // 85vh is the cap, on every window: the closing page may fill it and scroll,
+  // but it never crosses it.
+  expect(report.panelHeight <= Math.round(report.viewport * 0.85) + 2,
+    `${label}: panel is ${report.panelHeight}px, past the 85vh cap of a ${report.viewport}px viewport`);
   if (!report.scrolls) {
     expect(report.bodyInside && report.rowsInside, `${label}: the invitation or a route row falls outside the panel`);
   }
