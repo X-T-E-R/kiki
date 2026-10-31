@@ -41,15 +41,15 @@ export const recipeHookPreviewSchema = z.object({
     files: z.array(z.object({ path: z.string(), sha256: z.string(), bytes: z.number().int().nonnegative() })) })),
 });
 const resolvedRecipeContentSchema = z.object({
-  revision: z.string(), branches: z.object({ main: recipeBranchSchema, sub: recipeBranchSchema, independent: recipeBranchSchema }),
+  revision: z.string(), name: z.string().optional(), branches: z.object({ main: recipeBranchSchema, sub: recipeBranchSchema, independent: recipeBranchSchema }),
   dependencies: z.array(recipeLockEntrySchema), origins: z.array(recipeValueOriginSchema),
   model: z.record(z.string(), z.unknown()).default({}),
   model_origins: z.record(z.string(), recipeValueOriginSchema.omit({ position: true, slot: true })).default({}),
   hooks: z.array(recipeScriptHookSchema).optional(), hooks_fingerprint: z.string().optional(),
   options: z.array(recipeOptionSchema).optional(), option_values: recipeOptionValuesSchema.optional(), diagnostics: z.array(recipeDiagnosticSchema).optional(),
 });
-export const recipeReferenceSchema = z.object({ surface: z.enum(['model', 'profile']), installation_id: z.string(), revision: z.string() });
-export const recipeResolvedLayerSchema = recipeReferenceSchema.omit({ revision: true }).extend({ resolved: resolvedRecipeContentSchema });
+export const recipeReferenceSchema = z.object({ surface: z.enum(['model', 'profile']), installation_id: z.string(), revision: z.string(), name: z.string().optional() });
+export const recipeResolvedLayerSchema = recipeReferenceSchema.omit({ revision: true, name: true }).extend({ resolved: resolvedRecipeContentSchema });
 export const resolvedRecipeSchema = resolvedRecipeContentSchema.extend({ layers: z.array(recipeResolvedLayerSchema).optional() });
 export type RecipeResolvedLayer = z.infer<typeof recipeResolvedLayerSchema>;
 export type ResolvedRecipe = z.infer<typeof resolvedRecipeSchema>;

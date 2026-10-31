@@ -66,10 +66,10 @@ const prompt: AgentPromptDiagnostics = {
   ],
 };
 
-async function renderDiagnostic(): Promise<void> {
+async function renderDiagnostic(value: AgentPromptDiagnostics = prompt): Promise<void> {
   await act(async () => {
     root.render(<QueryClientProvider client={queryClient}><I18nProvider>
-      <PromptEffectiveDetails value={prompt} query={{ session_id: 'session-1', agent_id: 'main' }} defaultOpen />
+      <PromptEffectiveDetails value={value} query={{ session_id: 'session-1', agent_id: 'main' }} defaultOpen />
     </I18nProvider></QueryClientProvider>);
   });
   for (let index = 0; index < 6; index += 1) {
@@ -319,5 +319,32 @@ describe('ContextRebuildControl', () => {
     expect(profile?.textContent).not.toContain('Updated');
     expect(mcp?.getAttribute('data-context-rebuild-status')).toBe('unfinished');
     expect(container.textContent).not.toContain('Unchanged');
+  });
+
+  it('shows frozen Recipe steering content and marks only effective steering as applied', async () => {
+    await renderDiagnostic({
+      ...prompt,
+      channels: [
+        {
+          id: 'cognition.steering', channel: 'cognition_steering', state: 'effective', sources: [],
+          recipe: {
+            installation_id: 'profile-recipe', revision: 'sha256:steering', name: 'Focused work', slot: 'steering',
+            content: 'Keep the answer focused.\n',
+            origins: [{ source: 'installation:profile-recipe', manifest_id: 'focused-work', version: '1.0.0' }],
+          },
+        },
+        { id: 'cognition.steering.shadowed', channel: 'cognition_steering', state: 'shadowed', sources: [],
+          recipe: {
+            installation_id: 'old-recipe', revision: 'sha256:old', name: 'Old work', slot: 'steering', content: 'Old.',
+            origins: [{ source: 'installation:old-recipe', manifest_id: 'old-work', version: '0.9.0' }],
+          },
+        },
+      ],
+    });
+
+    expect(container.querySelector('[data-prompt-steering-applied]')?.textContent).toBe('Steering applied');
+    expect(container.querySelector('[data-prompt-recipe-content]')?.textContent).toContain('Keep the answer focused.');
+    expect(container.querySelector('[data-prompt-recipe-origins]')?.textContent).toContain('focused-work');
+    expect(container.querySelector('[data-prompt-channel="cognition.steering.shadowed"] [data-prompt-steering-applied]')).toBeNull();
   });
 });

@@ -510,6 +510,38 @@ describe('agent profile loaders + session catalog', () => {
     _clearAgentProfileContributionsForTests();
   });
 
+  it('preserves Recipe declarations and option selections from user, project, extra, explicit and plugin files', async () => {
+    await withFixture(async (fixture) => {
+      const pluginRoot = join(fixture.workDir, 'plugin-agents');
+      const roots = [
+        ['user', join(fixture.homeDir, 'agents')],
+        ['project', join(fixture.workDir, '.kiki', 'agents')],
+        ['extra', fixture.extraDir],
+        ['explicit', join(fixture.workDir, 'explicit')],
+        ['plugin', pluginRoot],
+      ] as const;
+      const expected: Array<{ name: string; path: string; recipe: string }> = [];
+      for (const [scope, root] of roots) for (const [kind, recipe] of [
+        ['installation', 'installation:example-installation'], ['file', './package/recipe.toml'], ['market', 'example-market-installation'],
+      ] as const) {
+        const name = `${scope}-${kind}`;
+        const text = `---\nname: ${name}\ndescription: Example Recipe profile\nrecipe: ${recipe}\nrecipe_options:\n  research: true\n  citations: false\n---\nROLE BODY`;
+        expected.push({ name, path: await writeAgent(root, `${name}.md`, text), recipe });
+      }
+      await withStack(fixture, {
+        extraAgentDirs: [fixture.extraDir],
+        explicitFiles: expected.filter((entry) => entry.name.startsWith('explicit-')).map((entry) => entry.path),
+        pluginAgentRoots: [{ path: pluginRoot, source: 'plugin' }],
+      }, async (stack) => {
+        await stack.ready();
+        for (const entry of expected) expect(stack.catalog.get(entry.name), entry.name).toMatchObject({
+          recipe: entry.recipe, recipeOptions: { research: true, citations: false }, sourcePath: entry.path.replaceAll('\\', '/'),
+          fileDefinition: { recipe: entry.recipe, recipeOptions: { research: true, citations: false } },
+        });
+      });
+    });
+  });
+
   it('refreshes external selections on trust changes without reviving revoked last-good profiles', async () => {
     await withFixture(async (fixture) => {
       const root = join(fixture.workDir, '.kiki', 'agents');

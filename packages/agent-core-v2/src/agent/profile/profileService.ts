@@ -3,7 +3,7 @@ import { isNativeTarget } from '@kiki/agent-profiles/nativeTarget';
 import { resolveNativeTargetBinding } from '#/session/subagent/nativeTargetBinding';
 import { loadSteeringSources } from '#/agent/cognition/steeringBinding';
 import { dirname } from 'node:path';
-import { composeRecipeLayers, recipeReferences } from '#/app/recipes/recipeOverlay';
+import { composeRecipeLayers, recipeReferences, recipeRevisionContent } from '#/app/recipes/recipeOverlay';
 import { isRecipeFileReference, resolveRecipeFileLocator } from '#/app/recipes/recipePrimitives';
 import { resolveModelRecipeReference } from '#/app/recipes/recipeReferenceResolution';
 import { snapshotRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
@@ -13,7 +13,7 @@ import { resolveSelectedExecutionBinding } from './executionBinding';
 import { agentExecutorBindingFingerprint, agentExecutorBindingMatches } from '#/app/agentExecutor/agentExecutor';
 import { ExecutorSessionUpdated, externalExecutorKey } from '#/agent/execution/externalExecutorOps';
 import { resolveExecutorPrompt } from '@kiki/agent-profiles/executorPrompt';
-import { promptConfigurationChannels } from './promptDiagnostics';
+import { frozenRecipeDiagnostics, promptConfigurationChannels } from './promptDiagnostics';
 import { llmRequestTraceKey } from '#/agent/llmRequester/llmRequestOps';
 import {
   bindingAdvisoryKey,
@@ -2598,6 +2598,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     } : this.buildPromptDiagnostics(current, alias, this.promptFieldSnapshot));
     let diskRevision: string | undefined;
     let diskError: string | undefined;
+    let diskRecipe: import('@kiki/protocol').ResolvedRecipe | undefined;
     const live = this.catalog.get(this.profileName ?? '') ?? current;
     const diskProfile = live === undefined ? undefined : applyLease(live, this.profileState.appliedLease, (id) => this.models.resolveId(id));
     const fileChecks = options?.checkAllPromptFiles === true && diskProfile !== undefined ? await checkPromptFiles({
@@ -2609,6 +2610,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       if (diskProfile !== undefined) {
         const external = (diskProfile.executor ?? 'native') !== 'native';
         const recipe = await this.selectedRecipe(alias, external, diskProfile, false);
+        diskRecipe = recipe;
         const fields = await this.resolvePromptFieldSnapshot(diskProfile, alias, recipe ?? null);
         const previous = this.cognitionBinding;
         const previousRevision = this.cognitionRevision;
@@ -2624,7 +2626,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       diskError = error instanceof Error ? error.message : String(error);
     }
     return {
-      ...snapshot,
+      ...frozenRecipeDiagnostics(snapshot, binding, diskRecipe),
       binding_revision: bound?.binding_revision ?? snapshot.binding_revision ?? binding.bindingRevision,
       disk_revision: diskRevision,
       disk_changed: diskRevision === undefined || snapshot.binding_revision === undefined ? undefined : diskRevision !== snapshot.binding_revision,
@@ -2680,7 +2682,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         position: this.delegationPosition,
         modelAlias,
         revision: ++this.cognitionRevision,
-        contentRevision: createHash('sha256').update(JSON.stringify({ alias: this.models.resolveId(modelAlias) ?? modelAlias, position: this.delegationPosition, config, slots, steeringSources, recipe, modelSettings })).digest('hex'),
+        contentRevision: createHash('sha256').update(JSON.stringify({ alias: this.models.resolveId(modelAlias) ?? modelAlias, position: this.delegationPosition, config, slots, steeringSources, recipe: recipe === undefined ? undefined : recipeRevisionContent(recipe), modelSettings })).digest('hex'),
         config: config === undefined ? undefined : structuredClone(config),
         modelSettings,
         recipe: recipe === undefined ? undefined : { installation_id: recipe.layers?.at(-1)?.installation_id ?? this.models.get(modelAlias)?.recipe ?? '', resolved: recipe },

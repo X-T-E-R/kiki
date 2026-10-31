@@ -9,6 +9,8 @@ import { stringify } from 'smol-toml';
 import { createServices } from '#/_base/di/test';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { applyRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
+import { composeRecipeLayers, recipeRevisionContent } from '#/app/recipes/recipeOverlay';
+import { resolvedRecipeSchema } from '@kiki/protocol';
 import { IRecipeService, IRecipeSourceReader } from '#/app/recipes/recipes';
 import { RecipeService } from '#/app/recipes/recipeService';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -32,6 +34,15 @@ const parent = 'https://example.test/parent/recipe.toml';
 const child = 'https://example.test/child/recipe.toml';
 const grandchild = 'https://example.test/grandchild/recipe.toml';
 const manifest = (id: string, prompts: unknown, extendsSource?: string) => stringify({ schema_version: 1, id, name: id, version: '1.0.0', prompts, ...(extendsSource === undefined ? {} : { extends: { source: extendsSource } }) });
+
+it('keeps display names out of composed Recipe content revisions', () => {
+  const resolved = resolvedRecipeSchema.parse({ revision: 'package-revision', dependencies: [], origins: [], branches: { main: { steering: 'FROZEN CUE', fields: {} }, sub: { fields: {} }, independent: { fields: {} } } });
+  const original = composeRecipeLayers([{ surface: 'profile', installation_id: 'example-pack', resolved }])!;
+  const named = composeRecipeLayers([{ surface: 'profile', installation_id: 'example-pack', resolved: { ...resolved, name: 'Example guidance' } }])!;
+  expect(named.revision).toBe(original.revision);
+  expect(recipeRevisionContent(named)).toEqual(recipeRevisionContent(original));
+  expect(named.layers?.[0]?.resolved.name).toBe('Example guidance');
+});
 
 describe('Recipe accepted revisions', () => {
   let disposables: DisposableStore;
