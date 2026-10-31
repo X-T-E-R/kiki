@@ -149,12 +149,12 @@ function RecipeSources({ binding }: { binding: RecipeModelBinding | undefined })
         <span className="text-ink-soft">{t(`agentPanel.prompt.recipeSurface.${reference.surface}`)}</span>
         {reference.name === undefined ? null : <><span> · </span><span className="font-medium text-ink">{reference.name}</span></>}
         {' · '}
-        <span className="font-mono">{reference.installation_id}</span>
+        <span className="break-all font-mono">{reference.installation_id}</span>
         {' · '}
-        <span className="font-mono">{reference.revision}</span>
+        <span className="break-all font-mono">{reference.revision}</span>
       </li>)}
     </ul>
-    {composite ? <p className="text-[11px] leading-5 text-ink-faint" data-prompt-recipe-composite>
+    {composite ? <p className="break-all text-[11px] leading-5 text-ink-faint" data-prompt-recipe-composite>
       {t('agentPanel.prompt.recipeCompositeRevision', { revision: binding.revision })}
     </p> : null}
   </div>;

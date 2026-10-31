@@ -306,6 +306,24 @@ test('unseeded agent panels expose a model domain without advertising capabiliti
   }
 });
 
+test('fixture answers the context-rebuild control the prompt drawer reads and writes', async () => {
+  const fixture = await startFixtureServer({ port: 0, scenario: 'basic-stream' });
+  const endpoint = `http://127.0.0.1:${fixture.http.address().port}`;
+  const client = createKlient({ endpoint, token: FIXTURE_TOKEN, WebSocket });
+  const sid = [...fixture.sessions.keys()][0];
+  try {
+    const initial = await client.session(sid).agent('main').contextRebuildControl();
+    assert.equal(initial.enabled, false);
+    assert.deepEqual(initial.rebuilt, []);
+    assert.deepEqual(initial.unsupported, []);
+    assert.equal(initial.outcome, undefined);
+    await client.session(sid).agent('main').setContextRebuildEnabled(true);
+    assert.equal((await client.session(sid).agent('main').contextRebuildControl()).enabled, true);
+    await client.session(sid).agent('main').setContextRebuildEnabled(false);
+    assert.equal((await client.session(sid).agent('main').contextRebuildControl()).enabled, false);
+  } finally { await client.close(); await fixture.stop(); }
+});
+
 test('fixture fails closed for missing auth, unsupported methods and invalid ordered view input', async () => {
   const fixture = await startFixtureServer({ port: 0, scenario: 'basic-stream' });
   const endpoint = `http://127.0.0.1:${fixture.http.address().port}`;

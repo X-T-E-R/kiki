@@ -671,11 +671,12 @@ export class FixtureKlient {
             || procedure.method === 'listMcpSessionCapabilities'
             || procedure.method === 'setMcpSessionOverride');
         // Rebuilding context re-reads what the conversation carries, including the
-        // MCP servers enabled since it started.
+        // MCP servers enabled since it started. The drawer reads the toggle state
+        // (`control`) and writes it (`setEnabled`) beside the rebuild itself.
         const contextRebuildCall =
           procedure.scope === 'agent' &&
           procedure.service === 'agentContextRebuildService' &&
-          procedure.method === 'rebuild';
+          (procedure.method === 'rebuild' || procedure.method === 'control' || procedure.method === 'setEnabled');
         if (procedure.scope !== 'core' && !agentPanelRead && !agentPlanStatus && !agentModelSwitchCall && !sessionSideQuestion && !agentMediaCall && !agentMcpCall && !contextRebuildCall) {
           throw invalid(`Unsupported fixture procedure scope: ${procedure.scope}`, 40401);
         }
@@ -827,6 +828,19 @@ export class FixtureKlient {
             plugins: { state: 'ready', errors: [] },
           },
         };
+      }
+      case 'agentContextRebuildService.control': {
+        server.contextRebuildEnabled ??= false;
+        return {
+          enabled: server.contextRebuildEnabled,
+          rebuilt: server.mcpRebuilt === true ? ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'] : [],
+          unsupported: [],
+          ...(server.mcpRebuilt === true ? { outcome: 'applied', trigger: 'manual', at: now() } : {}),
+        };
+      }
+      case 'agentContextRebuildService.setEnabled': {
+        server.contextRebuildEnabled = args[0] === true;
+        return null;
       }
       case 'mcpManagementService.listServers':
         return server.managedMcpServers();

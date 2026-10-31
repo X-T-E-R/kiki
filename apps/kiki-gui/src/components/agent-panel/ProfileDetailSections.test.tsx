@@ -366,6 +366,31 @@ describe('effective prompt details', () => {
     expect(section('prompt').querySelector('[data-prompt-file-check-empty]')).not.toBeNull();
   });
 
+  it('wraps the long Recipe installation id and revision so the frozen value stays reachable', async () => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [], complete: true });
+    const bound: import('@kiki/protocol').AgentPromptDiagnostics = {
+      ...prompt,
+      recipe_model_binding: {
+        installation_id: 'recipe.profile.science-frontier',
+        revision: 'sha256:a513a5c0452f36cf2328dc1896fd7d2854ed1ae8ed2a5e02ce456ff7c3575096',
+        model: {},
+        model_origins: {},
+        references: [
+          { surface: 'model', installation_id: 'recipe.model.base-pack', revision: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', name: 'Base pack' },
+          { surface: 'profile', installation_id: 'recipe.profile.science-frontier', revision: 'sha256:a513a5c0452f36cf2328dc1896fd7d2854ed1ae8ed2a5e02ce456ff7c3575096', name: 'Focused work' },
+        ],
+      },
+    };
+    await render({ profile: runningProfile, prompt: bound });
+    const sources = section('prompt').querySelector('[data-prompt-recipe-sources]')!;
+    const wraps = (node: Element | null) => node instanceof HTMLElement && node.className.includes('break-all');
+    const monoSpans = [...sources.querySelectorAll('[data-prompt-recipe-source] .font-mono')];
+    expect(monoSpans.length).toBeGreaterThan(0);
+    expect(monoSpans.every((span) => wraps(span))).toBe(true);
+    expect(sources.querySelector('[data-prompt-recipe-source="profile"]')?.textContent).toContain('sha256:a513a5c0452f36cf2328dc1896fd7d2854ed1ae8ed2a5e02ce456ff7c3575096');
+    expect(wraps(sources.querySelector('[data-prompt-recipe-composite]'))).toBe(true);
+  });
+
   it('shows no request evidence when absent and marks unavailable bindings honestly', async () => {
     client.listNamedAgentProfiles.mockResolvedValue({ items: [], complete: true });
     await render({ profile: runningProfile, prompt: { ...prompt, request: undefined } });
