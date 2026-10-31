@@ -93,6 +93,7 @@ const MATRIX = {
   'tool-groups': ['width'],
   'usage-export': ['theme', 'width'],
   'plugin-import': ['width'],
+  'image-hover-details': ['width'],
 };
 
 /**
@@ -349,6 +350,9 @@ const SOURCES = {
   previewSource: { key: 'preview.source' },
   previewCollapse: { key: 'preview.collapse' },
   previewUnsupported: { key: 'preview.unsupported' },
+  mediaDetails: { key: 'media.details' },
+  mediaZoomFit: { key: 'media.zoomFit' },
+  mediaZoomActual: { key: 'media.zoomActual' },
   editAction: { key: 'transcript.edit' },
   regenerateAction: { key: 'transcript.regenerate' },
   forkAction: { key: 'transcript.fork' },
@@ -5083,6 +5087,83 @@ async function scenarioAnnotationBubbles() {
   await shot('annotation-bubbles-popover');
 }
 
+/**
+ * image-hover-details — the lightbox details popup is hover/focus only, never
+ * a click toggle. A long Windows host path wraps in full inside the popup
+ * (no truncation, no overflow), revealed by pointer hover and keyboard focus,
+ * closed on leave/blur. Zoom 500% and the right-click copy/path menu still
+ * work. Runs wide and at 390px.
+ */
+async function scenarioImageHoverDetails() {
+  const LONG_PATH = 'C:/Users/someone/AppData/Local/Programs/Kiki/workspaces/deeply/nested/project/output/renders/2026-11-01/session-screenshots/final-composite-frame.png';
+  await selectSession('Fixture: image hover details');
+  // The tool-result image carries the long host path; open it in the lightbox.
+  const thumb = page.locator('.conversation-body img[alt="final-composite-frame.png"]').first();
+  await thumb.waitFor({ timeout: 10_000 });
+  await thumb.click();
+  const viewport = page.locator('[data-lightbox-viewport]');
+  await viewport.waitFor({ timeout: 10_000 });
+  await shot('image-hover-lightbox');
+
+  const detailsButton = page.locator(`[aria-label="${S.mediaDetails}"]`);
+  await detailsButton.waitFor({ timeout: 5000 });
+  const info = page.locator('[data-lightbox-info]');
+  const infoVisibility = () => info.evaluate((el) => getComputedStyle(el).visibility);
+  // Hidden until hover or focus: never pinned open on load.
+  if (await infoVisibility() !== 'hidden') throw new Error('details pinned open without hover');
+
+  // Hover reveals the full path, wrapped not truncated, inside the viewport.
+  await detailsButton.hover();
+  await page.waitForTimeout(250);
+  if (await infoVisibility() !== 'visible') throw new Error('details did not reveal on hover');
+  const sourceText = await page.locator('[data-lightbox-source]').innerText();
+  if (sourceText !== LONG_PATH) throw new Error(`details did not show the full host path: ${JSON.stringify(sourceText)}`);
+  const overflow = await info.evaluate((el) => {
+    const rect = el.getBoundingClientRect();
+    return { right: rect.right, left: rect.left, vw: window.innerWidth, scrollW: el.scrollWidth, clientW: el.clientWidth };
+  });
+  if (overflow.scrollW > overflow.clientW + 1 || overflow.right > overflow.vw + 1 || overflow.left < -1) {
+    throw new Error(`details popup overflows: ${JSON.stringify(overflow)}`);
+  }
+  await shot('image-hover-details-hover');
+
+  // Clicking never pins it open: no aria-pressed toggle state is set.
+  await detailsButton.click();
+  await page.waitForTimeout(150);
+  if ((await detailsButton.getAttribute('aria-pressed')) !== null) throw new Error('details click toggled a pressed state');
+  // Click focuses the button, so focus-within legitimately keeps it open; it is
+  // focus, not a latched panel. Blur (and pointer leave) is what closes it.
+  await detailsButton.evaluate((el) => el.blur());
+  await page.mouse.move(4, 4); // leave the trigger
+  await page.waitForTimeout(250);
+  if (await infoVisibility() !== 'hidden') throw new Error('details stayed open after blur and pointer leave');
+
+  // Keyboard focus is the equivalent entrance; blur closes it.
+  await detailsButton.focus();
+  await page.waitForTimeout(250);
+  if (await infoVisibility() !== 'visible') throw new Error('details did not reveal on keyboard focus');
+  await shot('image-hover-details-focus');
+  await detailsButton.evaluate((el) => el.blur());
+  await page.waitForTimeout(250);
+  if (await infoVisibility() !== 'hidden') throw new Error('details stayed open after blur');
+
+  // Zoom regression: 100% then 500% via the controls still work.
+  await page.locator('button[data-autofocus]').click(); // fit → actual
+  await page.waitForTimeout(200);
+  const zoomSlider = page.locator('[data-lightbox-zoom-slider]');
+  await zoomSlider.fill('500');
+  await page.waitForTimeout(200);
+  const zoomLabel = await page.locator('[data-lightbox-zoom]').innerText();
+  if (zoomLabel !== '500%') throw new Error(`expected 500% zoom, saw ${zoomLabel}`);
+  await shot('image-hover-zoom-500');
+  await page.locator('button[data-autofocus]').click(); // back to fit
+
+  // Right-click still opens the image menu with copy / path entries.
+  await viewport.click({ button: 'right' });
+  await page.waitForSelector('[data-lightbox-image-menu] [role="menuitem"]', { timeout: 5000 });
+  await shot('image-hover-context-menu');
+}
+
 async function scenarioPreviewWorkbench() {
   await selectSession('Fixture: preview workbench');
   await page.waitForSelector('text=Workbench notes', { timeout: 10_000 });
@@ -6929,6 +7010,7 @@ const BODIES = [
   ['selection-annotate', scenarioSelectionAnnotate],
   ['annotation-bubbles', scenarioAnnotationBubbles],
   ['preview-workbench', scenarioPreviewWorkbench],
+  ['image-hover-details', scenarioImageHoverDetails],
   ['preview-media', scenarioPreviewMedia],
   ['search', scenarioSearch],
   ['session-actions', scenarioSessionActions],

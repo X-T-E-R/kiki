@@ -248,30 +248,53 @@ describe('lightbox zoom controls and details', () => {
     expect(document.querySelector('[data-lightbox-viewport]')?.getAttribute('data-lightbox-viewport')).toBe('fit');
   });
 
-  it('shows the details it holds and strips credentials from a link', () => {
+  it('reveals the details it holds on hover and keyboard focus, without a click toggle', () => {
     renderLightbox({ name: 'long.png', mime: 'image/png', size: 155769, linkUrl: 'https://example.test/shot.png?token=secret' });
     loadImage(1940, 5170);
-    expect(document.querySelector('[data-lightbox-info]')).toBeNull();
-    const toggle = document.querySelector<HTMLButtonElement>('[aria-label="Image details"]')!;
-    act(() => { toggle.click(); });
-    expect(toggle.getAttribute('aria-pressed')).toBe('true');
-    const info = document.querySelector('[data-lightbox-info]')!;
-    expect(info.textContent).toContain('1940 × 5170');
-    expect(info.textContent).toContain('image/png');
-    expect(info.textContent).toContain('152 KB');
-    expect(info.querySelector('[data-lightbox-source]')?.textContent).toBe('https://example.test/shot.png?…');
-    expect(info.textContent).not.toContain('secret');
+    const trigger = document.querySelector<HTMLButtonElement>('[aria-label="Image details"]')!;
+    // The popup is mounted but invisible until hover or focus reaches the trigger.
+    const info = () => document.querySelector('[data-lightbox-info]')!;
+    expect(info().className).toContain('invisible');
+    expect(trigger.getAttribute('aria-pressed')).toBeNull();
+
+    act(() => { trigger.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+    expect(info().className).toContain('group-hover:visible');
+    expect(info().textContent).toContain('1940 × 5170');
+    expect(info().textContent).toContain('image/png');
+    expect(info().textContent).toContain('152 KB');
+    expect(info().querySelector('[data-lightbox-source]')?.textContent).toBe('https://example.test/shot.png?…');
+    expect(info().textContent).not.toContain('secret');
+
+    // Clicking never pins the panel open: the trigger keeps no pressed state.
+    act(() => { trigger.click(); });
+    expect(trigger.getAttribute('aria-pressed')).toBeNull();
+    expect(info().className).toContain('group-hover:visible');
+
+    // Keyboard focus is the equivalent entrance; blur closes it again.
+    act(() => { trigger.focus(); });
+    expect(document.activeElement).toBe(trigger);
+    expect(info().className).toContain('group-focus-within:visible');
+    act(() => { trigger.blur(); });
+    expect(info().className).toContain('invisible');
+  });
+
+  it('shows a long source in full, wrapping instead of truncating', () => {
+    const longPath = 'C:/Users/someone/AppData/Local/Programs/Kiki/workspaces/deeply/nested/project/output/renders/2026-11-01/session-screenshots/final-composite-frame-with-a-very-long-name.png';
+    renderLightbox({ name: 'long.png', sourcePath: longPath });
+    loadImage(80, 90);
+    const source = document.querySelector('[data-lightbox-source]')!;
+    expect(source.textContent).toBe(longPath);
+    expect(source.className).toContain('break-all');
+    expect(source.className).not.toContain('truncate');
   });
 
   it('does not present a remote path as a local one and shows a real local path', () => {
     renderLightbox({ name: 'shot.png', sourcePath: '/C:/fixture/viewer/shot.png' });
     loadImage(80, 90);
-    act(() => { document.querySelector<HTMLButtonElement>('[aria-label="Image details"]')!.click(); });
     expect(document.querySelector('[data-lightbox-source]')?.textContent).toBe('/C:/fixture/viewer/shot.png');
 
     renderLightbox({ name: 'shot.png', identity: 'remote', remote: true, sourcePath: '/srv/images/shot.png' });
     loadImage(80, 90);
-    act(() => { document.querySelector<HTMLButtonElement>('[aria-label="Image details"]')!.click(); });
     expect(document.querySelector('[data-lightbox-info]')?.textContent).not.toContain('/srv/images');
     expect(document.querySelector('[data-lightbox-source]')).toBeNull();
   });
