@@ -1839,7 +1839,10 @@ export class AgentPromptService implements IAgentPromptService {
       item.id,
       replacePromptContent(item.message, content, replaceAttachments),
     );
-    const nextMessage = { ...item.message, id: item.userMessageId, content: nextContent };
+    const origin = item.message.origin;
+    const nextOrigin = origin?.kind === 'user' && (origin.originalInput !== undefined || origin.skillActivations?.length)
+      ? { ...origin, originalInput: nextContent.slice(bundledSkillBlockCount(item.message)) } : origin;
+    const nextMessage = { ...item.message, id: item.userMessageId, content: nextContent, origin: nextOrigin };
     item.message = item.execution?.profile !== undefined || item.execution?.execution !== undefined ? nextMessage
       : this.instantiation.invokeFunction(accessor => prepareAgentReferences(nextMessage, item.userMessageId, accessor));
     item.revision += 1;

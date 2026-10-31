@@ -21,7 +21,8 @@ export function prepareAgentReferences(message: ContextMessage, messageId: strin
     return { ...part, text: part.text.slice(0, prior.start) + part.text.slice(prior.end),
       presentation: parsed.success ? { spans: parsed.data?.spans.filter(span => span.start !== prior.start || span.end !== prior.end) ?? [] } : undefined };
   });
-  const requested = [...new Set(content.flatMap(part => part.type === 'text' ? findAgentRefs(part.text).map(ref => ref.profile) : []))];
+  const userInput = origin.originalInput ?? (origin.skillActivations?.length ? [] : content);
+  const requested = [...new Set(userInput.flatMap(part => part.type === 'text' ? findAgentRefs(part.text).map(ref => ref.profile) : []))];
   if (requested.length === 0) return { ...message, content, origin: { ...origin, agentRefs: undefined, agentRefContext: undefined } };
   const catalog = accessor.get(ISessionAgentProfileCatalog);
   const caller = accessor.get(IAgentProfileService).data();

@@ -357,9 +357,15 @@ describe('AgentPromptService', () => {
     target.accessor.stub(IAgentToolPolicyService, { ...toolPolicy, isToolActive: () => true });
     const active = await prompt.enqueue({ id: 'active', message: message('Work') });
     await active.launched;
-    const queued = await prompt.enqueue({ id: 'request-1', userMessageId: 'logical-1', message: message('Review kiki://agents/reviewer') });
+    const userInput: ContentPart[] = [{ type: 'text', text: 'Review kiki://agents/reviewer' }];
+    const queued = await prompt.enqueue({ id: 'request-1', userMessageId: 'logical-1', message: {
+      ...bundledMessage('example', 'Review kiki://agents/reviewer'),
+      origin: { kind: 'user', skillActivations: [{ activationId: 'act-example', skillName: 'example' }], originalInput: userInput },
+    } });
     const ref = queued.message.origin?.kind === 'user' ? queued.message.origin.agentRefs?.[0] : undefined;
     expect(ref?.refId).toBe('ar:logical-1:reviewer');
+    prompt.replace(queued.id, [{ type: 'text', text: 'No target now' }]);
+    expect(queued.message.origin?.kind === 'user' ? queued.message.origin.agentRefs : undefined).toBeUndefined();
     prompt.replace(queued.id, [{ type: 'text', text: 'Updated kiki://agents/reviewer' }]);
     expect(queued.message.id).toBe('logical-1');
     expect(queued.message.origin?.kind === 'user' ? queued.message.origin.agentRefs?.[0]?.refId : undefined).toBe(ref?.refId);
