@@ -45,6 +45,7 @@ const DEFAULT_LIMITS: UsageAggregationLimits = {
   wireRecordBudget: Infinity,
   usageFactBudget: 200_000,
   deadlineMs: 10_000,
+  preparationWaitMs: 250,
   cacheTtlMs: 0,
   cacheMaxEntries: 500,
   cacheMaxRecords: 200_000,
@@ -60,6 +61,7 @@ export interface UsageAggregationLimits {
   readonly wireRecordBudget: number;
   readonly usageFactBudget: number;
   readonly deadlineMs: number;
+  readonly preparationWaitMs: number;
   readonly cacheTtlMs: number;
   readonly cacheMaxEntries: number;
   readonly cacheMaxRecords: number;
@@ -358,6 +360,15 @@ export class UsageAggregationService {
     } catch (error) {
       options.signal?.throwIfAborted();
       if (!deadline.signal.aborted) throw error;
+      if (options.summaryOnly) {
+        const model = this.core.accessor.get(IUsageReadModel);
+        const session = sessionScopeOf(workspacePersistenceScope('sessions', workspaceId), sessionId);
+        for (const id of new Set(agentIds)) {
+          if (rows[id]?.complete) continue;
+          const snapshot = await model.summary(agentScopeOf(session, id), options.signal);
+          rows[id] = { records: [], totals: snapshot.totals, complete: false };
+        }
+      }
     } finally { if (timer !== undefined) clearTimeout(timer); }
     for (const id of agentIds) rows[id] ??= { records: [], complete: false };
     return rows;
@@ -590,11 +601,22 @@ export class UsageAggregationService {
     if (this.modelReady && (startAt ?? -Infinity) >= this.modelRangeStart && this.sourceChanges?.ready && this.now() - this.modelVerifiedAt < SOURCE_RECHECK_MS) return;
     if (this.preparationController?.signal.aborted) await this.modelPreparing?.catch(() => undefined);
     if (this.modelPreparing === undefined) this.preparationController = new AbortController();
+    const slice = new AbortController();
+    const timer = setTimeout(() => { slice.abort(new DOMException('Usage preparation continues in background', 'TimeoutError')); }, Math.min(this.limits.preparationWaitMs, this.limits.deadlineMs / 2));
+    timer.unref();
+    const signal = AbortSignal.any([requestSignal, slice.signal]);
     this.preparationWaiters++;
     try {
-      await waitForSource(this.startReadModelPreparation(false, startAt), requestSignal);
-      if (this.modelReady && (startAt ?? -Infinity) < this.modelRangeStart) await waitForSource(this.startReadModelPreparation(false, startAt), requestSignal);
-    } finally { if (--this.preparationWaiters === 0 && this.modelPreparing !== undefined) this.preparationController?.abort(requestSignal.reason); }
+      await waitForSource(this.startReadModelPreparation(false, startAt), signal);
+      if (this.modelReady && (startAt ?? -Infinity) < this.modelRangeStart) await waitForSource(this.startReadModelPreparation(false, startAt), signal);
+    } catch (error) {
+      requestSignal.throwIfAborted();
+      if (!slice.signal.aborted) throw error;
+      this.modelIncompleteReason = 'deadline';
+    } finally {
+      clearTimeout(timer);
+      if (--this.preparationWaiters === 0 && requestSignal.aborted && this.modelPreparing !== undefined) this.preparationController?.abort(requestSignal.reason);
+    }
   }
 
   private inventory?: UsageInventory;
@@ -607,7 +629,10 @@ export class UsageAggregationService {
   private startReadModelPreparation(full = false, startAt?: number): Promise<void> {
     if (this.modelPreparing !== undefined) return this.modelPreparing;
     const epoch = this.replayEpoch;
-    const signal = AbortSignal.any([this.modelController.signal, this.preparationController!.signal]);
+    const deadline = new AbortController();
+    const timer = full ? undefined : setTimeout(() => { deadline.abort(new DOMException('Usage preparation deadline', 'TimeoutError')); }, this.limits.deadlineMs);
+    timer?.unref();
+    const signal = AbortSignal.any([this.modelController.signal, this.preparationController!.signal, deadline.signal]);
     const factBudget = { remainingRecords: full ? Infinity : this.limits.usageFactBudget };
     const recoveryBudget = { remainingRecords: full ? Infinity : this.limits.wireRecordBudget, remainingBytes: Infinity };
     const deadlineAt = full ? Infinity : this.now() + this.limits.deadlineMs;
@@ -745,8 +770,14 @@ export class UsageAggregationService {
       if (inventory.full) { this.modelVerifiedAt = this.now(); this.verifiedInventoryRevision = inventory.revision; }
       this.inventory = undefined;
       this.modelReady = epoch === this.replayEpoch && this.dirtySessions.size === 0 && this.verifiedInventoryRevision === this.inventoryRevision;
+      if (this.modelReady) this.modelIncompleteReason = null;
       this.modelFailure = undefined;
-    })();
+    })().catch((error: unknown) => {
+      this.modelController.signal.throwIfAborted();
+      this.preparationController!.signal.throwIfAborted();
+      if (!deadline.signal.aborted) throw error;
+      this.modelIncompleteReason = 'deadline';
+    }).finally(() => { if (timer !== undefined) clearTimeout(timer); });
     this.modelPreparing = work;
     void work.finally(() => { if (this.modelPreparing === work) this.modelPreparing = undefined; }).catch((error: unknown) => { this.modelFailure = error; this.modelReady = false; });
     return work;

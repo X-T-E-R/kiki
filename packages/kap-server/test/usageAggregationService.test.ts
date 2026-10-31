@@ -358,7 +358,7 @@ function fixture(
   } as unknown as Scope;
   return {
     core,
-    service: new UsageAggregationService(core, now, limits, sourceChanges),
+    service: new UsageAggregationService(core, now, { preparationWaitMs: 10_000, ...limits }, sourceChanges),
     model,
     facts,
     reads,
@@ -371,7 +371,7 @@ function fixture(
     retainedQueries,
     setWire,
     setMtime: (wireScope: string, mtimeMs: number) => { wireMtimes.set(wireScope, mtimeMs); },
-    restart: () => new UsageAggregationService(core, now, limits, sourceChanges),
+    restart: () => new UsageAggregationService(core, now, { preparationWaitMs: 10_000, ...limits }, sourceChanges),
     setAgentIds: (ids) => { agentIds = ids; },
     setPrice: (value) => { price = value; },
     onPrice: (observer) => { priceObserver = observer; },
@@ -402,6 +402,7 @@ async function openRange(sessions: readonly SessionSummary[], wires: Readonly<Re
     await storage.write(wireScope.slice(0, wireScope.lastIndexOf('/')), wireScope.slice(wireScope.lastIndexOf('/') + 1), new Uint8Array());
     for (const record of wireRecords) logs.append(wireScope, 'wire.jsonl', record);
     if (wireRecords.length > 0) await logs.flush(wireScope, 'wire.jsonl');
+    await facts.summary(wireScope);
   }
   const pricing = {
     ready: Promise.resolve(),
@@ -1418,10 +1419,16 @@ describe('UsageAggregationService cache budgets', () => {
       { deadlineMs: 1_500 },
       { items: [], complete: true, scannedRecords: 0 },
       (bytes) => { if (chargeReads) time += Math.ceil(bytes / 20_000); },
+      [], undefined, undefined, { ready: true, onDidChange: Event.None },
     );
     await instance.service.readAgentUsage('workspace-a', 'session-0', ['main'], { deadlineAt: Infinity, maxFacts: Infinity });
     await instance.service.readAgentUsage('workspace-a', 'session-1', ['main'], { deadlineAt: Infinity, maxFacts: Infinity });
-    const initial = await query(instance.service);
+    let initial = await query(instance.service);
+    for (let attempt = 0; !initial.reliability.complete && attempt < 10; attempt++) {
+      await Reflect.get(instance.service, 'modelPreparing');
+      initial = await query(instance.service);
+    }
+    expect(initial.reliability.complete).toBe(true);
     expect(initial.summary.tokens.output).toBe(121_000);
     chargeReads = true;
     const readBefore = [...instance.checkpointReads.values()].reduce((sum, bytes) => sum + bytes, 0);
@@ -1440,11 +1447,16 @@ describe('UsageAggregationService cache budgets', () => {
     const coldFirst = await query(cold);
     const coldFirstMs = performance.now() - coldStarted;
     const coldReadBytes = [...instance.checkpointReads.values()].reduce((sum, bytes) => sum + bytes, 0) - readAfter;
+    await Reflect.get(cold, 'modelPreparing');
     const warmStarted = performance.now();
-    const coldSecond = await query(cold);
+    let coldSecond = await query(cold);
+    for (let attempt = 0; !coldSecond.reliability.complete && attempt < 10; attempt++) {
+      await Reflect.get(cold, 'modelPreparing');
+      coldSecond = await query(cold);
+    }
     const coldSecondMs = performance.now() - warmStarted;
     console.info('usage checkpoint restart', { coldFirstMs, coldSecondMs, coldReadBytes, simulatedClockMs: time });
-    expect(coldFirst.reliability).toMatchObject({ complete: true, incomplete_reason: null });
+    expect(coldFirst.reliability.incomplete_reason).toBe(coldFirst.reliability.complete ? null : 'deadline');
     expect(coldFirst.reliability.usage_coverage?.known_records).toBe(121_000);
     expect(coldReadBytes).toBe(0);
     expect(coldSecond.reliability).toMatchObject({ complete: true, scanned_sessions: 337 });
@@ -1832,6 +1844,59 @@ describe('UsageSourceTracker', () => {
 
 
 describe('shared agent and History typed usage', () => {
+  it('returns committed History numbers within the foreground slice while one preparation continues to completion', async () => {
+    const first = scope('w', 'first'), later = scope('w', 'later');
+    const f = fixture([summary('first', 'w'), summary('later', 'w')], { [first]: [usageRecord(1)], [later]: [usageRecord(2)] }, Date.now, { preparationWaitMs: 30 });
+    await f.service.readAgentUsage('w', 'first', ['main'], { summaryOnly: true });
+    await f.model.catalog([{ ...summary('first', 'w'), deleted: false }], [{ source: first, workspaceId: 'w', sessionId: 'first' }]);
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const summarize = f.facts.summary.bind(f.facts);
+    const stalled = vi.spyOn(f.facts, 'summary').mockImplementation(async (...args) => {
+      if (args[0] === later) { enter(); await gate; }
+      return summarize(...args);
+    });
+    try {
+      const started = performance.now();
+      const partial = await f.service.query({});
+      expect(performance.now() - started).toBeLessThan(1000);
+      expect(partial.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline', usage_coverage: { known_records: 1 } });
+      expect(partial.summary.tokens.output).toBe(1);
+      await entered;
+      const repeated = await f.service.query({});
+      expect(repeated.summary.tokens).toEqual(partial.summary.tokens);
+      expect(stalled.mock.calls.filter(([source]) => source === later)).toHaveLength(1);
+      release();
+      await Reflect.get(f.service, 'modelPreparing');
+      const complete = await f.service.query({});
+      expect(complete.reliability.complete).toBe(true);
+      expect(complete.summary.tokens.output).toBe(2);
+    } finally {
+      release();
+      await Reflect.get(f.service, 'modelPreparing')?.catch(() => undefined);
+      f.service.dispose();
+    }
+  });
+
+  it('retains committed panel totals when source preparation reaches its deadline and continues on the next read', async () => {
+    const main = scope('w', 's');
+    const f = fixture([summary('s', 'w')], { [main]: [usageRecord(1)] }, Date.now);
+    await f.service.readAgentUsage('w', 's', ['main'], { summaryOnly: true });
+    f.setWire(main, [usageRecord(1), usageRecord(2)]);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const summarize = f.facts.summary.bind(f.facts);
+    const stalled = vi.spyOn(f.facts, 'summary').mockImplementationOnce(async (...args) => { await gate; return summarize(...args); });
+    try {
+      const partial = await f.service.readAgentUsage('w', 's', ['main'], { summaryOnly: true, deadlineAt: Date.now() + 30 });
+      expect(partial.main).toMatchObject({ complete: false, totals: { records: 1, usage: { output: 1 } } });
+      release();
+      const complete = await f.service.readAgentUsage('w', 's', ['main'], { summaryOnly: true });
+      expect(complete.main).toMatchObject({ complete: true, totals: { records: 2, usage: { output: 2 } } });
+    } finally { release(); stalled.mockRestore(); f.service.dispose(); }
+  });
+
   it('keeps one query snapshot stable when a backdated append commits before its response returns', async () => {
     const main = scope('w', 's');
     const saved = await openRange([summary('s', 'w')], { [main]: [usageRecord(10, 1)] }, true);
@@ -1965,11 +2030,14 @@ describe('shared agent and History typed usage', () => {
 
   it('applies the History deadline while SQL is stalled without falling back to wire', async () => {
     const main = scope('w', 's');
-    const f = fixture([summary('s', 'w')], { [main]: [usageRecord(10)] }, () => 100, { deadlineMs: 30 });
+    const f = fixture([summary('s', 'w')], { [main]: [usageRecord(10)] }, () => 100, { deadlineMs: 1000 });
     await f.service.readAgentUsage('w', 's', ['main']);
     const bytes = new Map(f.readBytes);
     let aborted = false;
-    const sql = vi.spyOn(f.model, 'query').mockImplementationOnce(async (_query, signal) => new Promise((_resolve, reject) => signal!.addEventListener('abort', () => { aborted = true; reject(signal!.reason); }, { once: true })));
+    const sql = vi.spyOn(f.model, 'query').mockImplementationOnce(async (_query, signal) => {
+      if (signal!.aborted) { aborted = true; signal!.throwIfAborted(); }
+      return new Promise((_resolve, reject) => signal!.addEventListener('abort', () => { aborted = true; reject(signal!.reason); }, { once: true }));
+    });
     const response = await f.service.query({});
     expect(aborted).toBe(true);
     expect(response.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline' });
