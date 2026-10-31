@@ -202,6 +202,33 @@ Model reads expose the saved `protocol` and resolved `effective_protocol` separa
 
 The single-model response also separates the stored `base_url` override from read-only `effective_base_url`. The latter resolves the model override, provider URL, provider environment and vendor default in that order, and is omitted if none resolves. Create and PATCH accept only stored fields; do not copy `effective_base_url` into a write.
 
+### Recipes and markets
+
+[Recipes](../customization/recipes.md) use a preview/install flow. Package reads and option previews do not change model bindings; apply a package with `PATCH /api/models/{model_id}`, passing `recipe`, optional `recipe_options` and that model's current `base_revision`.
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/recipes` | Installed package summaries, accepted option definitions and current model usage |
+| `GET /api/recipes/{id}` | Accepted package, source files, history, editability and `used_by`; optional `recipe_options` query is a JSON boolean map |
+| `GET /api/recipes/{id}/export` | Portable `{ name, revision, files }`; the client creates the ZIP |
+| `POST /api/recipes:preview` | Inspect `{ source: { locator, sha256? } }`; returns `preview_id`, resolved content and script-consent requirements |
+| `POST /api/recipes:install` | Accept `{ preview_id, update_mode?, consent? }` from that preview |
+| `POST /api/recipes:check-updates` | Check following installations without replacing accepted revisions |
+| `POST /api/recipes:update` | Update or pin an installation; accepts `installation_id`, `expected_revision?`, `update_mode?`, `revision?` |
+| `POST /api/recipes:fork` | Create a local `copy` or `extend` using `{ installation_id, mode, id, name }` |
+| `POST /api/recipes:save-local` | Save `{ installation_id, expected_revision, files }` on an editable local package |
+| `DELETE /api/recipes/{id}` | Remove an installation; optional `expected_revision` and explicit `disable_models=true` query guard affected models |
+| `GET /api/recipe-markets` | Configured markets, cached catalogs and offline diagnostics |
+| `POST /api/recipe-markets` | Add `{ id, name, url, enabled }`; URL must use HTTPS |
+| `PUT /api/recipe-markets/{id}` | Replace `{ name, url, enabled }` for that market |
+| `DELETE /api/recipe-markets/{id}` | Remove the market configuration |
+
+A directory summary's optional `used_by` lists effective model aliases, including inherited references; it is omitted when unused. `options` contains definitions and defaults from the accepted revision. Per-model choices are returned by `GET /api/models` as `recipe_options`, alongside `recipe`; both are omitted when the model has no active Recipe reference. Strip an `installation:` prefix before joining a reference to a directory id. A missing or corrupt accepted revision remains in the directory with `health: "unavailable"`, no `options`, and `last_error.code: "recipe-revision-unavailable"`.
+
+Preview ids expire after 15 minutes. On expiry, preview again. Installation uses the inspected snapshot; new scripts require `consent: true`. Local-file edits can also be previewed with `installation_id`, `expected_revision` and `files`. A stale `expected_revision` rejects the write; reload the package before retrying.
+
+Removal with affected models returns code `40001` and `details.used_by` unless explicitly authorized to disable them. With `disable_models=true`, their Recipe fields become `off` while other model settings remain. This usage check covers model references; profile references must be handled separately. Existing bound sessions retain their frozen snapshot. The equivalent typed facade is `klient.global.recipes`, with market operations under `.markets`.
+
 ### Decision connections
 
 Permission review and Memory Advisor each store a `source`: `{ kind: "connection", connection, model? }` for a decision connection, or `{ kind: "model", model }` for a configured chat alias. Save it under `permission.reviewer` with `POST /api/config`, or under `advisor` with `PATCH /api/memory/settings`. An omitted source is preserved; an object replaces the whole source. `source: null` clears it and the advisor's legacy selector, or resets the Reviewer to an unconfigured model backend. Without a source, legacy configurations continue working. Permission review rejects `pair_score`; Memory Advisor uses those scores for `rank` only.

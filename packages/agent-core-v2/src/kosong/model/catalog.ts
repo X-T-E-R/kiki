@@ -129,6 +129,8 @@ export const modelCatalogItemSchema = z.object({
   behavior: modelBehaviorWireSchema.optional(),
   request_identity: RequestIdentityPolicyWireSchema.optional(),
   images: imagePolicyWireSchema.optional(),
+  recipe: z.string().min(1).optional(),
+  recipe_options: z.record(z.string(), z.boolean()).optional(),
 });
 export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>;
 
@@ -221,6 +223,8 @@ export function toProtocolModel(
     behavior: modelBehaviorToWire(record.behavior),
     request_identity: requestIdentityToWire(record.requestIdentity),
     images: imagePolicyToWire(record.images),
+    recipe: recipeReferenceOf(record.recipe),
+    recipe_options: recipeReferenceOf(record.recipe) === undefined ? undefined : record.recipeOptions,
   };
 }
 
@@ -254,7 +258,14 @@ export function toProtocolModelFallback(
     behavior: modelBehaviorToWire(record.behavior),
     request_identity: requestIdentityToWire(record.requestIdentity),
     images: imagePolicyToWire(record.images),
+    recipe: recipeReferenceOf(record.recipe),
+    recipe_options: recipeReferenceOf(record.recipe) === undefined ? undefined : record.recipeOptions,
   };
+}
+
+function recipeReferenceOf(recipe: string | undefined): string | undefined {
+  const value = recipe?.trim();
+  return value === undefined || value === '' || value === 'off' ? undefined : value;
 }
 
 function providerOf(providerType: string | undefined): { readonly type: string } | undefined {

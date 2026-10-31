@@ -60,6 +60,7 @@ export const recipeSummarySchema = z.object({
   revision: z.string(), source: recipeSourceSchema, update_mode: recipeUpdateModeSchema, health: z.enum(['ready', 'unavailable']),
   update_available: z.boolean().optional(), last_error: recipeDiagnosticSchema.optional(), copied_from: z.string().optional(),
   hooks_fingerprint: z.string().optional(), hook_consent_required: z.boolean().optional(),
+  used_by: z.array(z.string()).optional(), options: z.array(recipeOptionSchema).optional(),
 });
 export type RecipeSummary = z.infer<typeof recipeSummarySchema>;
 export const recipePreviewSchema = z.object({ preview_id: z.string(), digest: z.string(), summary: recipeSummarySchema, resolved: resolvedRecipeSchema, diagnostics: z.array(recipeDiagnosticSchema), hooks: recipeHookPreviewSchema.optional() });

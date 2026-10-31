@@ -128,7 +128,6 @@ it('exports portable files over REST and klient without installing or changing t
   expect(await client.global.recipes.list()).toEqual(before); expect(await client.global.kosong.readModel('sample')).toEqual(model);
 });
 
-
 it('binds profile installation, relative file, and installed market Recipes across new, resume, switch, and dispatch requests', async () => {
   home = await mkdtemp(join(tmpdir(), 'kiki-profile-recipe-api-'));
   const root = home;
@@ -221,3 +220,66 @@ it('binds profile installation, relative file, and installed market Recipes acro
     await new Promise<void>((resolve, reject) => provider.close((error) => error ? reject(error) : resolve()));
   }
 }, 60_000);
+
+it('serves the Recipe directory over REST and klient through multi-model apply, update, local editing and guarded removal', async () => {
+  home = await mkdtemp(join(tmpdir(), 'kiki-recipe-directory-'));
+  const source = join(home, 'package'); await mkdir(source);
+  const manifest = (version: string) => stringify({ schema_version: 1, id: 'example', name: 'Example', version,
+    options: { research: { name: 'Research', description: 'Include research guidance', default: false, append: { common: { system: { text: 'OPTION GUIDANCE' } } } } },
+    prompts: { system: { text: 'BASE GUIDANCE' } },
+  });
+  await writeFile(join(source, 'recipe.toml'), manifest('1.0.0'));
+  await writeFile(join(home, 'config.toml'), stringify({ search: { enabled: false }, experimental: { persistence_minidb_readmodel: false }, recipes: { markets: [] },
+    providers: { example: { type: 'openai', base_url: 'http://127.0.0.1:1', api_key: 'EXAMPLE_TEST_KEY' } },
+    models: { alpha: { provider: 'example', model: 'alpha', max_context_size: 8192 }, beta: { provider: 'example', model: 'beta', max_context_size: 8192 } },
+  }));
+  server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+  const base = `http://127.0.0.1:${server.port}`;
+  client = createKlient({ endpoint: base, token: server.localOwnerToken });
+  const recipes = client.global.recipes; const models = client.global.kosong;
+  const preview = await recipes.preview({ source: { locator: source } });
+  const installed = await recipes.install({ preview_id: preview.preview_id });
+  const original = await Promise.all(['alpha', 'beta'].map((id) => models.readModel(id)));
+  for (const [index, model] of original.entries()) {
+    await models.updateModel(model.id, { recipe: index === 0 ? installed.installation_id : `installation:${installed.installation_id}`, recipe_options: { research: index === 0 }, base_revision: model.revision });
+  }
+  const list = await recipes.list();
+  const response = await authedFetch(server, base, '/api/recipes');
+  const directory = await response.json() as { code: number; data: typeof list };
+  expect(directory.code).toBe(0); expect(directory.data).toEqual(list);
+  expect(list.find((item) => item.installation_id === installed.installation_id)).toMatchObject({ used_by: ['alpha', 'beta'], options: [{ id: 'research', name: 'Research', description: 'Include research guidance', default: false }] });
+  const catalog = await models.listModels();
+  const catalogResponse = await authedFetch(server, base, '/api/models');
+  const catalogEnvelope = await catalogResponse.json() as { code: number; data: { items: typeof catalog } };
+  expect(catalogEnvelope.code).toBe(0); expect(catalogEnvelope.data.items).toEqual(catalog);
+  expect(catalog.find((item) => item.id === 'alpha')).toMatchObject({ recipe: installed.installation_id, recipe_options: { research: true } });
+  expect(catalog.find((item) => item.id === 'beta')).toMatchObject({ recipe: `installation:${installed.installation_id}`, recipe_options: { research: false } });
+  const beforePreview = await models.readModel('alpha');
+  expect((await recipes.get(installed.installation_id, { research: true }))?.resolved.branches.main.system).toBe('BASE GUIDANCE\n\nOPTION GUIDANCE');
+  expect((await recipes.get(installed.installation_id, { research: false }))?.resolved.branches.main.system).toBe('BASE GUIDANCE');
+  expect(await models.readModel('alpha')).toEqual(beforePreview);
+  await expect(models.updateModel('alpha', { recipe: null, base_revision: original[0]!.revision })).rejects.toThrow();
+  await writeFile(join(source, 'recipe.toml'), manifest('1.1.0'));
+  expect((await recipes.checkUpdates()).find((item) => item.installation_id === installed.installation_id)).toMatchObject({ revision: installed.revision, update_available: true, used_by: ['alpha', 'beta'] });
+  const updated = await recipes.update({ installation_id: installed.installation_id, expected_revision: installed.revision });
+  expect(updated.version).toBe('1.1.0');
+  await expect(recipes.update({ installation_id: installed.installation_id, expected_revision: installed.revision })).rejects.toThrow('changed');
+  const local = await recipes.fork({ installation_id: installed.installation_id, mode: 'copy', id: 'local', name: 'Local' });
+  const saved = await recipes.saveLocal({ installation_id: local.summary.installation_id, expected_revision: local.summary.revision,
+    files: { 'recipe.toml': stringify({ schema_version: 1, id: 'local', name: 'Local', version: '1.0.1', options: { brief: { name: 'Brief', default: true } }, prompts: { system: { text: 'LOCAL GUIDANCE' } } }) },
+  });
+  expect((await recipes.list()).find((item) => item.installation_id === saved.summary.installation_id)).toMatchObject({ copied_from: installed.source.locator, version: '1.0.1', options: [{ id: 'brief', name: 'Brief', default: true }] });
+  expect((await recipes.export(saved.summary.installation_id)).files['recipe.toml']).toContain('LOCAL GUIDANCE');
+  const market = { id: 'example', name: 'Example market', url: 'https://example.test/catalog.json', enabled: false };
+  await recipes.markets.add(market);
+  await recipes.markets.update({ ...market, name: 'Renamed market' });
+  expect(await recipes.markets.list()).toEqual([{ ...market, name: 'Renamed market', offline: false }]);
+  await recipes.markets.remove(market.id); expect(await recipes.markets.list()).toEqual([]);
+  const rejected = await authedFetch(server, base, `/api/recipes/${installed.installation_id}`, { method: 'DELETE' });
+  expect(await rejected.json()).toMatchObject({ code: 40001, details: { used_by: ['alpha', 'beta'] } });
+  await recipes.remove({ installation_id: installed.installation_id, expected_revision: updated.revision, disable_models: true });
+  const detached = await models.listModels();
+  expect(detached.every((item) => item.recipe === undefined && item.recipe_options === undefined)).toBe(true);
+  await recipes.remove({ installation_id: saved.summary.installation_id, expected_revision: saved.summary.revision });
+  expect(await recipes.list()).toEqual([]);
+});

@@ -71,7 +71,28 @@ export class RecipeService extends Disposable implements IRecipeService {
     return value;
   }
   private usedBy(id: string): string[] { return Object.entries(this.models.list()).filter(([, model]) => model.recipe?.trim().replace(/^installation:/u, '') === id).map(([alias]) => alias); }
-  async list(): Promise<RecipeSummary[]> { this.enabled(); return Object.values(await this.records()).map((value) => value.summary); }
+  async list(): Promise<RecipeSummary[]> {
+    this.enabled(); await this.models.ready;
+    const usage = new Map<string, string[]>();
+    for (const [alias, model] of Object.entries(this.models.list())) {
+      const id = model.recipe?.trim().replace(/^installation:/u, '');
+      if (id === undefined || id === '' || id === 'off') continue;
+      const aliases = usage.get(id) ?? [];
+      aliases.push(alias); usage.set(id, aliases);
+    }
+    return Promise.all(Object.values(await this.records()).map(async ({ summary }) => {
+      const used_by = usage.get(summary.installation_id);
+      try {
+        const snapshot = await this.snapshot(summary.revision);
+        const options = snapshot.resolved.options;
+        return { ...summary, used_by, options: options === undefined || options.length === 0 ? undefined : structuredClone(options) };
+      } catch (error) {
+        return { ...summary, used_by, options: undefined, health: 'unavailable' as const, last_error: {
+          code: 'recipe-revision-unavailable', message: error instanceof Error ? error.message : String(error), source: summary.source.locator,
+        } };
+      }
+    }));
+  }
   async get(id: string, selection?: import('@kiki/protocol').RecipeOptionValues): Promise<RecipeDetail | undefined> {
     this.enabled();
     if (isRecipeFileReference(id)) {

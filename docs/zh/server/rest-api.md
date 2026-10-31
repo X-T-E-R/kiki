@@ -202,6 +202,33 @@ home 中存在旧格式消息邮箱，或升级尚未完成时，服务会先进
 
 单个模型的响应还将已存的 `base_url` 覆盖值与只读的 `effective_base_url` 分开。后者依次取模型覆盖、供应商 URL、供应商环境配置和厂商默认地址；全部未解析到时省略。创建与 PATCH 只接受存储字段，提交时应排除 `effective_base_url`。
 
+### Recipe 与市场
+
+[Recipe](../customization/recipes.md) 采用先预览、再安装的流程。读取包和预览选项不改变模型绑定；应用时调用 `PATCH /api/models/{model_id}`，传入 `recipe`、可选 `recipe_options` 及该模型当前的 `base_revision`。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `GET /api/recipes` | 已安装包摘要、已接受修订的选项定义和当前模型使用情况 |
+| `GET /api/recipes/{id}` | 已接受包、源文件、历史、可编辑状态和 `used_by`；可选 `recipe_options` query 为 JSON 布尔映射 |
+| `GET /api/recipes/{id}/export` | 可移植的 `{ name, revision, files }`；客户端创建 ZIP |
+| `POST /api/recipes:preview` | 检查 `{ source: { locator, sha256? } }`，返回 `preview_id`、展开内容和脚本授权要求 |
+| `POST /api/recipes:install` | 接受该次预览的 `{ preview_id, update_mode?, consent? }` |
+| `POST /api/recipes:check-updates` | 检查跟随模式的安装包，不替换已接受修订 |
+| `POST /api/recipes:update` | 更新或固定安装包；接受 `installation_id`、`expected_revision?`、`update_mode?`、`revision?` |
+| `POST /api/recipes:fork` | 用 `{ installation_id, mode, id, name }` 创建本地 `copy` 或 `extend` |
+| `POST /api/recipes:save-local` | 向可编辑本地包保存 `{ installation_id, expected_revision, files }` |
+| `DELETE /api/recipes/{id}` | 移除安装包；可选 `expected_revision` 和显式 `disable_models=true` query 用于保护受影响模型 |
+| `GET /api/recipe-markets` | 已配置市场、缓存目录和离线诊断 |
+| `POST /api/recipe-markets` | 添加 `{ id, name, url, enabled }`；URL 必须为 HTTPS |
+| `PUT /api/recipe-markets/{id}` | 替换该市场的 `{ name, url, enabled }` |
+| `DELETE /api/recipe-markets/{id}` | 移除市场配置 |
+
+目录摘要中的可选 `used_by` 列出当前生效的模型别名，包含继承引用；无人使用时省略。`options` 是已接受修订的选项定义和默认值。各模型的选择由 `GET /api/models` 的 `recipe_options` 返回，与 `recipe` 一起出现；模型没有启用的 Recipe 引用时，两者均省略。与目录 id 关联前先去掉引用中的 `installation:` 前缀。已接受修订缺失或损坏时，目录仍保留条目，带 `health: "unavailable"`、省略的 `options` 及 `last_error.code: "recipe-revision-unavailable"`。
+
+预览 id 在 15 分钟后过期，过期后应重新预览。安装采用已检查的快照；新脚本需要 `consent: true`。还可用 `installation_id`、`expected_revision` 和 `files` 预览本地文件编辑。过期的 `expected_revision` 会拒绝写入，应先重新加载包再重试。
+
+模型仍在使用包时，移除返回错误码 `40001` 和 `details.used_by`，除非明确授权停用这些引用。传 `disable_models=true` 后，相关模型的 Recipe 字段写为 `off`，其他设置保留。这项使用检查覆盖模型引用；profile 引用需要单独处理。已有绑定会话保留冻结快照。对应的 typed facade 是 `klient.global.recipes`，市场操作在 `.markets` 下。
+
 ### 决策连接
 
 权限审查与记忆顾问分别保存 `source`：`{ kind: "connection", connection, model? }` 引用决策连接，`{ kind: "model", model }` 引用已配置的对话模型别名。通过 `POST /api/config` 写 `permission.reviewer.source`，或通过 `PATCH /api/memory/settings` 写 `advisor.source`。省略则保留，对象整体替换来源。`source: null` 会清除来源及顾问的旧 selector，或将 Reviewer 重置为未配置的 model backend。未设 source 时，旧配置继续工作。权限审查拒绝 `pair_score`；记忆顾问只用这类分数做 `rank`。

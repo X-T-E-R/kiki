@@ -30,8 +30,8 @@ const sections = {
   'getting-started': [['installation', 'first-launch', 'desktop-app', 'use-cases']],
   features: [['index', 'workbench', 'agent-workflows', 'long-work', 'people', 'browser-and-computer', 'extend', 'daily', 'freedom', 'look', 'spaces', 'phone', 'ecosystem']],
   guides: [['interface', 'sessions', 'memory', 'settings'], ['interaction', 'goals']],
-  customization: [['agent-profiles', 'personas', 'agents-and-subagents', 'skills', 'plugins', 'hooks', 'prompt-fields', 'themes', 'skins']],
-  server: [['local-server', 'ide', 'acp'], ['rest-api', 'mcp', 'sdk']],
+  customization: [['agent-profiles', 'personas', 'agents-and-subagents', 'skills', 'plugins', 'hooks', 'recipes', 'prompt-fields', 'themes', 'skins']],
+  server: [['local-server', 'ide', 'acp'], ['rest-api', 'mcp', 'script-tools', 'sdk']],
   configuration: [['config-files', 'providers', 'overrides', 'env-vars', 'data-locations']],
   reference: [['command', 'slash-commands', 'keyboard', 'tools', 'model-vocabulary'], ['changelog']],
 }

@@ -118,6 +118,14 @@ describe('model catalog schemas', () => {
     expect(modelCatalogItemSchema.parse(model)).toEqual(model);
   });
 
+  it('retains Recipe catalog bindings with boolean option selections', () => {
+    const bound = { ...model, recipe: 'installation:example', recipe_options: { brief: true, research: false } };
+    expect(modelCatalogItemSchema.parse(bound)).toEqual(bound);
+    expect(listModelsResponseSchema.parse({ items: [bound] })).toEqual({ items: [bound] });
+    expect(modelCatalogItemSchema.safeParse({ ...bound, recipe_options: { brief: 'true' } }).success).toBe(false);
+    expect(modelCatalogItemSchema.parse(model)).not.toHaveProperty('recipe');
+  });
+
   it('keeps the local alias and the remote id independent', () => {
     const item = modelCatalogItemSchema.parse(model);
     expect(item.id).toBe('fast');

@@ -758,6 +758,39 @@ export function defineKlientConformance(
       } finally { await kosong.removeProvider(id); }
     });
 
+    it('keeps Recipe directory metadata and model selections through the public transport', async () => {
+      const source = await mkdtemp(join(tmpdir(), 'klient-recipe-directory-'));
+      const recipes = target.klient.global.recipes;
+      const models = target.klient.global.kosong;
+      const id = '__recipe_directory_conformance__';
+      let installationId: string | undefined;
+      await models.addProvider({ id, model: 'recipe-model', protocol: 'openai', baseUrl: 'http://127.0.0.1:1', maxContextSize: 8192, auth: { method: 'api-key', apiKey: 'test-key' } });
+      try {
+        await writeFile(join(source, 'recipe.toml'), 'schema_version = 1\nid = "example"\nname = "Example"\nversion = "1.0.0"\n[options.brief]\nname = "Brief"\ndefault = false\n[prompts]\nsystem = { text = "BASE" }\n');
+        const preview = await recipes.preview({ source: { locator: source } });
+        const installed = await recipes.install({ preview_id: preview.preview_id });
+        installationId = installed.installation_id;
+        const original = await models.readModel(id);
+        await models.updateModel(id, { recipe: installationId, recipe_options: { brief: true }, base_revision: original.revision });
+        expect((await recipes.list()).find((item) => item.installation_id === installationId)).toMatchObject({
+          used_by: [id], options: [{ id: 'brief', name: 'Brief', default: false }],
+        });
+        expect((await models.listModels()).find((item) => item.id === id)).toMatchObject({ recipe: installationId, recipe_options: { brief: true } });
+        const before = await models.readModel(id);
+        expect((await recipes.get(installationId, { brief: false }))?.resolved.option_values).toEqual({ brief: false });
+        expect(await models.readModel(id)).toEqual(before);
+        await expect(recipes.remove({ installation_id: installationId })).rejects.toThrow('Disable affected models');
+        await recipes.remove({ installation_id: installationId, disable_models: true });
+        installationId = undefined;
+        const detached = (await models.listModels()).find((item) => item.id === id);
+        expect(detached?.recipe).toBeUndefined(); expect(detached?.recipe_options).toBeUndefined();
+      } finally {
+        if (installationId !== undefined) await recipes.remove({ installation_id: installationId, disable_models: true });
+        await models.removeProvider(id);
+        await rm(source, { recursive: true, force: true });
+      }
+    });
+
     it('flags / plugins / auth read models respond', async () => {
       expect(Array.isArray(await target.klient.global.flags.list())).toBe(true);
       expect(Array.isArray(await target.klient.global.flags.enabledIds())).toBe(true);

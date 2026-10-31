@@ -136,6 +136,7 @@ describe('Recipe accepted revisions', () => {
     expect((await service.get(installed.installation_id, { research: false }))?.resolved).toEqual(selected);
     sources.clear(); expect(await service.resolve(installed.installation_id, undefined, { research: false })).toEqual(selected);
     expect(defaults.option_values).toEqual({ research: true });
+    expect((await service.list()).find((entry) => entry.installation_id === installed.installation_id)?.options).toEqual(defaults.options);
   });
   it('merges option definitions before evaluating inherited gates and never inherits a filtered child slot', async () => {
     sources.set(parent, { 'recipe.toml': stringify({ schema_version: 1, id: 'parent', name: 'Parent', version: '1.0.0', options: { research: { name: 'Parent research', description: 'Parent description', default: true } }, prompts: { system: { text: 'PARENT', when: 'research' }, steering: { text: 'PARENT STEERING' } } }) });
@@ -375,6 +376,7 @@ describe('Recipe accepted revisions', () => {
     vi.spyOn(config, 'get').mockReturnValue(effective);
     Object.assign(config, { inspect: () => ({ userValue: local }) });
     expect((await recipes.get(installed.installation_id))?.used_by).toEqual(['inherited']);
+    expect((await recipes.list()).map((entry) => entry.used_by)).toEqual([['inherited']]);
     await expect(recipes.remove({ installation_id: installed.installation_id })).rejects.toThrow('Disable affected models');
     await recipes.remove({ installation_id: installed.installation_id, disable_models: true });
     expect(modelWrites).toHaveBeenCalledWith({ models: { inherited: { parameters: { temperature: 0.4 }, recipe: 'off' } } }, undefined, { models: local });
@@ -422,11 +424,38 @@ describe('Recipe accepted revisions', () => {
     expect(await isolated.list()).toEqual([]);
     expect(await service.list()).toHaveLength(2);
   });
-  it('rejects a corrupt immutable revision rather than binding altered content', async () => {
+  it('keeps unavailable revisions visible beside healthy installations without rereading sources or writing during list', async () => {
     const installed = await install();
+    const healthy = await install(parent);
     const key = `recipes/revisions/${installed.revision.slice(7)}`;
     await documents.update<{ files: Record<string, string> }>('store', key, (snapshot) => ({ ...snapshot!, files: { ...snapshot!.files, 'recipe.toml': 'corrupt' } }));
     await expect(service.resolve(installed.installation_id)).rejects.toThrow('corrupt');
+    sources.clear(); reads.length = 0;
+    const write = vi.spyOn(documents, 'update'); const set = vi.spyOn(documents, 'set');
+    const list = await service.list();
+    expect(list.find((entry) => entry.installation_id === installed.installation_id)).toMatchObject({
+      health: 'unavailable', revision: installed.revision, last_error: { code: 'recipe-revision-unavailable' },
+    });
+    expect(list.find((entry) => entry.installation_id === healthy.installation_id)).toMatchObject({ health: 'ready' });
+    expect(reads).toEqual([]); expect(write).not.toHaveBeenCalled(); expect(set).not.toHaveBeenCalled();
+  });
+  it('projects current model usage once per directory read and excludes off, file and other installation references', async () => {
+    const ix = newStore(); const recipes = ix.get(IRecipeService);
+    const preview = await recipes.preview({ source: { locator: parent } });
+    const installed = await recipes.install({ preview_id: preview.preview_id });
+    const models = vi.spyOn(ix.get(IModelService), 'list').mockReturnValue({
+      direct: { recipe: installed.installation_id }, prefixed: { recipe: ` installation:${installed.installation_id} ` },
+      disabled: { recipe: 'off' }, file: { recipe: 'file:/example/recipe.toml' }, other: { recipe: 'other' },
+    });
+    let ready!: () => void;
+    Object.assign(ix.get(IModelService), { ready: new Promise<void>((resolve) => { ready = resolve; }) });
+    const pending = recipes.list();
+    expect(models).not.toHaveBeenCalled();
+    ready();
+    expect((await pending)[0]?.used_by).toEqual(['direct', 'prefixed']);
+    expect(models).toHaveBeenCalledTimes(1);
+    models.mockReturnValue({ direct: { recipe: 'off' } });
+    expect((await recipes.list())[0]?.used_by).toBeUndefined();
   });
   it.each<{ name: 'defaults' | 'all-on' | 'all-off' | 'review-only'; options: Record<string, boolean> }>([
     { name: 'defaults', options: {} },

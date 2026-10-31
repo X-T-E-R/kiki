@@ -1635,6 +1635,22 @@ describe('wire projection (pure)', () => {
     });
   });
 
+  it('projects Recipe references and explicit values through materialized and fallback models', async () => {
+    const { host, catalog } = createHost(catalogSections);
+    try {
+      const base: ModelRecord = { provider: 'kimi', model: 'kimi-k2', maxContextSize: 131072 };
+      const record = { ...base, recipe: ' installation:inst-a ', recipeOptions: { strict: true, verbose: false } };
+      const expected = { recipe: 'installation:inst-a', recipe_options: { strict: true, verbose: false } };
+      expect(toProtocolModel(catalog.get('k2'), record, 'kimi')).toMatchObject(expected);
+      expect(toProtocolModelFallback('k2', record, 'kimi')).toMatchObject(expected);
+      for (const recipe of [undefined, '', '  ', 'off', ' off ']) {
+        for (const item of [toProtocolModel(catalog.get('k2'), { ...record, recipe }, 'kimi'), toProtocolModelFallback('k2', { ...record, recipe }, 'kimi')]) {
+          expect(item.recipe).toBeUndefined(); expect(item.recipe_options).toBeUndefined();
+        }
+      }
+    } finally { await host.dispose(); }
+  });
+
   it('projects an authored sparse model request identity without expansion', () => {
     const record: ModelRecord = {
       provider: 'kimi',

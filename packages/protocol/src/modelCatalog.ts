@@ -262,6 +262,8 @@ export const modelCatalogItemSchema = z.object({
   behavior: modelBehaviorWireSchema.optional(),
   request_identity: requestIdentityPolicySchema.optional(),
   images: imagePolicySchema.optional(),
+  recipe: z.string().min(1).optional(),
+  recipe_options: recipeOptionValuesSchema.optional(),
 });
 export type ModelCatalogItem = z.infer<typeof modelCatalogItemSchema>;
 
