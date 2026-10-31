@@ -218,6 +218,12 @@ interface ResolvedLLMRequest {
   readonly logFields: AgentLLMRequestLogFields;
 }
 
+interface ToolsetDigest {
+  readonly wireTools: readonly Tool[];
+  readonly tools: readonly LlmRequestToolSchema[];
+  readonly hash: string;
+}
+
 interface LLMRequestLogInput {
   readonly protocol: Protocol;
   readonly protocolSource?: 'model' | 'provider' | 'vendor';
@@ -271,6 +277,8 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
   private readonly toolCallIdNormalizer = new ToolCallIdNormalizer();
   private readonly frozenTurnTools = new Map<number, readonly Tool[]>();
   private previousToolset: { hash: string; tools: readonly LlmRequestToolSchema[] } | undefined;
+  private readonly toolsetDigests = new WeakMap<readonly Tool[], ToolsetDigest>();
+  private systemPromptDigest: { readonly prompt: string; readonly hash: string } | undefined;
   private responseCapture: AnthropicResponseCapture | undefined;
   private responsesTransport: ResponsesWebSocketTransport | undefined;
   private readonly responsesTransports = new Set<ResponsesWebSocketTransport>();
@@ -1255,19 +1263,19 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
 
   private logRequest(input: LLMRequestLogInput): void {
     const logFields: AgentLLMRequestLogFields = input.fields ?? {};
-    const wireTools = providerVisibleTools(input.tools);
+    const toolset = this.toolsetDigest(input.tools);
     const config = {
       provider: input.protocol,
       model: input.modelName,
       modelAlias: input.modelAlias,
       thinkingEffort: input.thinkingEffort ?? undefined,
       systemPromptChars: input.systemPrompt.length,
-      toolCount: wireTools.length,
+      toolCount: toolset.wireTools.length,
     };
     const signature = JSON.stringify({
       ...config,
-      systemPromptHash: fingerprint(input.systemPrompt),
-      toolsHash: fingerprint(JSON.stringify(toolSignature(wireTools))),
+      systemPromptHash: this.systemPromptHash(input.systemPrompt),
+      toolsHash: toolset.hash,
     });
     if (signature !== this.lastConfigLogSignature) {
       this.lastConfigLogSignature = signature;
@@ -1280,11 +1288,26 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
     this.log.info('llm request', requestFields);
   }
 
+  private toolsetDigest(tools: readonly Tool[]): ToolsetDigest {
+    const cached = this.toolsetDigests.get(tools);
+    if (cached !== undefined) return cached;
+    const wireTools = providerVisibleTools(tools);
+    const signature = toolSignature(wireTools);
+    const digest = { wireTools, tools: signature, hash: fingerprint(JSON.stringify(signature)) };
+    this.toolsetDigests.set(tools, digest);
+    return digest;
+  }
+
+  private systemPromptHash(prompt: string): string {
+    if (this.systemPromptDigest?.prompt === prompt) return this.systemPromptDigest.hash;
+    const hash = fingerprint(prompt);
+    this.systemPromptDigest = { prompt, hash };
+    return hash;
+  }
+
   private recordRequest(input: LLMRequestLogInput): void {
     const fields = input.fields ?? {};
-    const wireTools = providerVisibleTools(input.tools);
-    const tools = toolSignature(wireTools);
-    const toolsHash = fingerprint(JSON.stringify(tools));
+    const { wireTools, tools, hash: toolsHash } = this.toolsetDigest(input.tools);
     const previous = this.previousToolset;
     if (previous !== undefined && previous.hash !== toolsHash) {
       const beforeNames = new Set(previous.tools.map((tool) => tool.name));
@@ -1304,7 +1327,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
       void this.dispatcher.dispatch(new LlmToolsSnapshot({ hash: toolsHash, tools }));
     }
 
-    const systemPromptHash = fingerprint(input.systemPrompt);
+    const systemPromptHash = this.systemPromptHash(input.systemPrompt);
     const overrides = this.config.get<ModelOverrides>('modelOverrides');
     const thinkingConfig = this.config.get<ThinkingConfig>(THINKING_SECTION);
     const modelId =

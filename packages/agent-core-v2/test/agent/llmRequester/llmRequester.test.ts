@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { APIConnectionError, APIStatusError } from '#/kosong/contract/errors';
 import { TOOL_SELECT_FLAG_ENV } from '#/agent/toolSelect/flag';
 import { type StreamedMessagePart } from '#/kosong/contract/message';
@@ -158,6 +160,20 @@ describe('LLMRequester service migration coverage', () => {
         messageCount: 1,
         turnStep: '7.3',
       });
+      const sha = (text: string): string => createHash('sha256').update(text).digest('hex');
+      expect((requests[0]?.args as Record<string, unknown>)['systemPromptHash']).toBe(sha('request-specific system'));
+
+      ctx.mockNextResponse({ type: 'text', text: 'third response' });
+      await llmRequester.request({
+        messages: [userMessage('third direct request')],
+        systemPrompt: 'changed system',
+        tools: [...requestTools, { ...requestTools[0]!, name: 'LookupTwo' }],
+        source: { type: 'operation', requestKind: 'direct_test', logFields: { turnStep: '7.4' } },
+      });
+      const third = wireEvents(ctx, 'llm.request')[2]?.args as Record<string, unknown>;
+      expect(third['systemPromptHash']).toBe(sha('changed system'));
+      expect(third['toolsHash']).not.toBe(snapshotArgs?.['hash']);
+      expect(wireEvents(ctx, 'llm.tools_snapshot')).toHaveLength(2);
     });
 
     it('records the resolved Kimi thinking keep default when thinking is enabled', async () => {
