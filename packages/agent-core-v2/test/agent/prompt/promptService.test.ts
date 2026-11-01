@@ -19,6 +19,8 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { turnPromptText } from '#/agent/loop/turnEvents';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
+import { stubExecutionControl } from '../../session/executionControl/stubs';
 import { ExecutorHintDelivery } from '#/agent/execution/externalExecutorOps';
 import { IAgentPromptService, PROMPT_EDIT_HOLD_TTL_MS, reservePrompt } from '#/agent/prompt/prompt';
 import { resolveAgentRunSource } from '#/agent/prompt/agentReferences';
@@ -288,6 +290,7 @@ function harness(loopOptions: StubLoopOptions = { pendingTurnResult: true }) {
       reg.define(IEventBus, EventBusService);
       reg.define(IAgentSystemReminderService, AgentSystemReminderService);
       reg.define(ISessionHistoryMutationService, SessionHistoryMutationService);
+      reg.defineInstance(ISessionExecutionControl, stubExecutionControl());
       reg.define(IAgentPromptService, AgentPromptService);
       reg.definePartialInstance(IAgentExecutionService, { run: externalRun, steer: externalSteer });
       reg.definePartialInstance(ITelemetryService, { track: () => {}, track2: () => {} });
