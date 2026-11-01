@@ -561,11 +561,11 @@ export class SessionDispatchService implements ISessionDispatchService {
     const saved = readResumeRecord((await this.metadata.read()).agents?.[child.agentId], operationId);
     if (saved !== undefined) assertResumeFingerprint(saved.fingerprint, fingerprint);
     if (saved !== undefined && (childData.executorId ?? 'native') !== 'native' &&
-      (saved.state === 'started' || (saved.externalStart !== undefined && saved.externalStart !== 'not_sent'))) {
+      (saved.state === 'started' || (saved.externalStart !== 'not_sent' && (saved.state === 'ready' || saved.externalStart !== undefined)))) {
       throw new Error2(ErrorCodes.EXECUTOR_SESSION_FAILED,
-        'This resume already attempted an external prompt. Inspect the original remote session and saved task result; this operation will not send the prompt again.',
+        'This resume may already have delivered an external prompt. Inspect the original remote session and saved task result; this operation will not send the prompt again.',
         { details: { operationId, agentId: child.agentId, executorId: childData.executorId, turnId: saved.turnId,
-          externalStart: saved.externalStart ?? 'started', deliveryOutcome: 'unknown' } });
+          externalStart: saved.externalStart ?? (saved.state === 'started' ? 'started' : 'unconfirmed'), deliveryOutcome: 'unknown' } });
     }
     const contextMode = resolveResumeContextMode(options.bindingOverride);
     if (childData.execution !== undefined && childData.modelAlias === undefined && options.bindingOverride?.modelAlias === undefined) {
@@ -580,7 +580,8 @@ export class SessionDispatchService implements ISessionDispatchService {
       checkResume();
       const record = saved ?? { operationId, fingerprint, request: originalRequest,
         switchInput: { operationId, mode: 'direct' as const }, state: 'accepted' as const };
-      await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'ready' });
+      await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'ready',
+        externalStart: (childData.executorId ?? 'native') !== 'native' ? 'not_sent' : undefined });
       const request: AgentRunRequest = originalRequest.kind === 'prompt'
         ? { ...originalRequest, promptId: originalRequest.promptId ?? `resume-prompt:${operationId}` } : originalRequest;
       if (options.requesterAgentId !== undefined) this.recordDelegatedRun(options.requesterAgentId, child.agentId);
@@ -646,7 +647,8 @@ export class SessionDispatchService implements ISessionDispatchService {
       }
     }
     assertAdmission();
-    await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'ready' });
+    await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'ready',
+      externalStart: (childData.executorId ?? 'native') !== 'native' ? 'not_sent' : undefined });
     assertAdmission();
     const request: AgentRunRequest = originalRequest.kind === 'prompt'
       ? { ...originalRequest, promptId: originalRequest.promptId ?? `resume-prompt:${operationId}` }
