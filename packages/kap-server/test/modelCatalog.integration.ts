@@ -443,6 +443,8 @@ describe('server-v2 /api model/provider catalog', () => {
       {
         id: 'kimi',
         type: 'kimi',
+        service: 'chat',
+        effective_base_url: 'https://api.example.test/v1',
         base_url: 'https://api.example.test/v1',
         default_model: 'k2',
         request_identity: { overrides: { client: { user_agent: 'host' } } },
@@ -453,6 +455,7 @@ describe('server-v2 /api model/provider catalog', () => {
       {
         id: 'openai',
         type: 'openai',
+        service: 'chat',
         has_api_key: false,
         status: 'unconfigured',
         models: ['gpt4o'],
@@ -464,6 +467,8 @@ describe('server-v2 /api model/provider catalog', () => {
     expect(single.body.data).toMatchObject({
       id: 'kimi',
       type: 'kimi',
+      service: 'chat',
+      effective_base_url: 'https://api.example.test/v1',
       base_url: 'https://api.example.test/v1',
       default_model: 'k2',
       request_identity: { overrides: { client: { user_agent: 'host' } } },

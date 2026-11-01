@@ -142,7 +142,7 @@ describe('Kiki external delegation MCP projector', () => {
     const schema = listed?.inputSchema as Record<string, unknown>;
     expect(['anyOf', 'oneOf', 'allOf'].filter((key) => key in schema)).toEqual([]);
     expect(schema).toMatchObject({ $schema: parameters['$schema'], type: 'object', required: ['content'], additionalProperties: false });
-    expect(Object.keys(schema['properties'] as object).sort()).toEqual(['content', 'idempotency_key', 'mentions', 'room', 'thread']);
+    expect(Object.keys(schema['properties'] as object).toSorted()).toEqual(['content', 'idempotency_key', 'mentions', 'raw', 'room', 'thread']);
     expect(listed?.description).toBe('Send to a thread.\n\nInput constraint: use one of these parameter sets: (thread, content, idempotency_key) or (room, content).');
     const sent = { thread: { workspace_id: 'workspace-example', session_id: 'session-example' }, content: 'nonce', idempotency_key: 'nonce' };
     expect((await client.callTool({ name: 'kiki_ThreadSend', arguments: sent })).isError).not.toBe(true);
@@ -394,7 +394,7 @@ describe('Kiki external delegation MCP projector', () => {
     let ownedSignal: AbortSignal | null | undefined;
     const fetchMock = vi.fn<typeof fetch>(async (_input, init) => new Promise<Response>((_resolve, reject) => {
       ownedSignal = init?.signal;
-      ownedSignal?.addEventListener('abort', () => reject(ownedSignal?.reason), { once: true });
+      ownedSignal?.addEventListener('abort', () => { reject(ownedSignal?.reason); }, { once: true });
     }));
     const ownedServer = createKikiMcpServer({
       endpoint: 'http://127.0.0.1:58627',
@@ -406,7 +406,7 @@ describe('Kiki external delegation MCP projector', () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([ownedServer.connect(serverTransport), ownedClient.connect(clientTransport)]);
     const pending = ownedClient.callTool({ name: 'kiki_list', arguments: {} });
-    await vi.waitFor(() => expect(ownedSignal).toBeDefined());
+    await vi.waitFor(() => { expect(ownedSignal).toBeDefined(); });
     const ownedFirst = ownedServer.close();
     const ownedSecond = ownedServer.close();
     expect(ownedFirst).toBe(ownedSecond);

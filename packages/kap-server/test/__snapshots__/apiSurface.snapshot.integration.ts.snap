@@ -158,6 +158,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/agents/references",
+    ],
+    [
+      "GET",
       "/api/agents/shipped",
     ],
     [
@@ -310,6 +314,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/executors/discovery",
+    ],
+    [
+      "GET",
       "/api/executors/installations",
     ],
     [
@@ -326,11 +334,23 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/external-clients/jobs/{id}",
+    ],
+    [
+      "GET",
+      "/api/external-clients/jobs/{id}/result",
+    ],
+    [
+      "GET",
       "/api/external-clients/listener",
     ],
     [
       "GET",
       "/api/external-clients/sessions/{id}/materials",
+    ],
+    [
+      "GET",
+      "/api/external-clients/tools",
     ],
     [
       "GET",
@@ -826,6 +846,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/sessions/creation/{creation_id}",
+    ],
+    [
+      "GET",
       "/api/sessions/ephemeral",
     ],
     [
@@ -1235,6 +1259,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/external-clients/sessions/{id}/text",
+    ],
+    [
+      "POST",
+      "/api/external-clients/tools/{name_action}",
     ],
     [
       "POST",

@@ -66,6 +66,25 @@ function canonical(records: readonly Record<string, unknown>[]): TranscriptTurn 
   return draft.getTurn('t100');
 }
 
+function canonicalWithPositionedTurn(records: readonly Record<string, unknown>[], targetTurn: number): TranscriptTurn | undefined {
+  const draft = new AgentTranscriptDraft('main');
+  const reducer = new TranscriptFactReducer(draft);
+  const adapter = new TranscriptWireAdapter('main', { turn: (id) => draft.getTurn(id), tool: (id) => draft.getToolCall(id) });
+  let currentTurn = -1;
+  let byteOffset = 0;
+  for (const record of records) {
+    const payload = record.type === 'context.append_loop_event' && typeof record.event === 'object' && record.event !== null
+      ? record.event as Record<string, unknown> : record;
+    if (typeof payload['turnId'] === 'number') currentTurn = payload['turnId'];
+    const recordBytes = Buffer.byteLength(line(record));
+    const position = currentTurn === targetTurn ? { startByteOffset: byteOffset, endByteOffset: byteOffset + recordBytes } : undefined;
+    reducer.apply(adapter.add(record as { type: string }, position));
+    byteOffset += recordBytes;
+  }
+  reducer.apply(adapter.finish());
+  return draft.getTurn(`t${targetTurn}`);
+}
+
 describe('source-backed canonical detail', () => {
   it('prepares a large history once and replays only the target, then reuses warm and reopened reads', async () => {
     const history = Array.from({ length: 100 }, (_, id) => turnRecords(id, 'unrelated'.repeat(12000))).flat();
@@ -377,7 +396,7 @@ describe('source-backed canonical detail', () => {
       scans += 1;
       if (scans === 1) return { complete: false, nextByteOffset: 1, ordinal: 1, bytesRead: 1, recordsRead: 1, incarnation: 'test', incompleteReason: 'byte_budget' };
       if (mode === 'failure') throw new Error('source read failed');
-      return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => { reject(signal.reason); }, { once: true }));
     });
     try {
       expect(await reader.readEntity('s', 'main', { kind: 'turn', id: 't100' }, new AbortController().signal)).toMatchObject({ status: 'found' });
@@ -601,7 +620,7 @@ it('opens a cold HTTP view and reads first, middle and last canonical history ex
   try {
     const endpoint = await app.listen({ host: '127.0.0.1', port: 0 });
     connection.receive({ type: 'view_attach', id: 'view', sessionId: 's', data: { generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION, input: { sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } } } });
-    await vi.waitFor(() => expect(frames.some((frame) => (frame as { data?: { type?: string } }).data?.type === 'ready')).toBe(true));
+    await vi.waitFor(() => { expect(frames.some((frame) => (frame as { data?: { type?: string } }).data?.type === 'ready')).toBe(true); });
     expect(errors).toEqual([]);
     const draft = new AgentTranscriptDraft('main');
     const reducer = new TranscriptFactReducer(draft);
@@ -624,7 +643,7 @@ it('opens a cold HTTP view and reads first, middle and last canonical history ex
       expect(envelope.data.next_cursor).not.toBe(cursor);
       cursor = envelope.data.next_cursor;
     }
-    expect(all.map((item) => item.kind === 'turn' ? item.turnId : item.kind)).toEqual(expected!.items.map((item) => item.kind === 'turn' ? item.turnId : item.kind));
+    expect(all.map((item) => item.kind === 'turn' ? item.turnId : item.kind)).toEqual(expected.items.map((item) => item.kind === 'turn' ? item.turnId : item.kind));
     for (const ordinal of [0, 22, 44]) {
       const preview = all.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
       if (preview?.kind !== 'turn') throw new Error('Missing turn');
@@ -647,8 +666,11 @@ it('opens a cold HTTP view and reads first, middle and last canonical history ex
       };
       turn = await hydrate(turn);
       for (const step of turn.steps) for (let index = 0; index < step.frames.length; index += 1) step.frames[index] = await hydrate(step.frames[index]!);
-      const canonical = expected!.items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
-      expect(JSON.parse(JSON.stringify(turn, (key, value) => key === 'contentRefs' ? undefined : value))).toEqual(JSON.parse(JSON.stringify(canonical)));
+      const canonical = expected.items.find((item) => item.kind === 'turn' && item.ordinal === ordinal);
+      const hasRecordSpan = turn.steps.some((step) => step.frames.some((frame) => frame.part?.provenance.recordSpan !== undefined));
+      const expectedCanonical = hasRecordSpan ? canonicalWithPositionedTurn(records, ordinal) : canonical;
+      if (expectedCanonical === undefined) throw new Error('Missing canonical turn');
+      expect(JSON.parse(JSON.stringify(turn, (key, value) => key === 'contentRefs' ? undefined : value))).toEqual(JSON.parse(JSON.stringify(expectedCanonical)));
     }
     console.log('session-open-budget-http', JSON.stringify({ turns: all.length, pages, wireBytes: Buffer.byteLength(records.map(line).join('')), canonical: f.nav.canonicalReadReport() }));
   } finally { connection.dispose(); await app.close(); await f.close(); }
