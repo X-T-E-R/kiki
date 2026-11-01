@@ -77,6 +77,7 @@ export interface DispatchRunOptions {
     readonly thinkingEffort?: string;
     readonly allowModelChange?: boolean;
     readonly newWindow?: boolean;
+    readonly contextMode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode;
   };
   readonly onBeforeRun?: (child: DispatchChild) => Promise<void>;
 }

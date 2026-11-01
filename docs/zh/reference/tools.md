@@ -331,7 +331,10 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 | `route` | 用 profile route 代替具名 profile |
 | `model_alias` | 子 Agent 使用的模型，完整解析顺序见[模型选择](./model-vocabulary.md#绑定规则)。回执中的 `actual_model` 行给出实际绑定的模型 |
 | `effort` | 该子 Agent 的思考强度 |
-| `allow_model_change` | 在 `resume` 时把已有子 Agent 换到另一个模型需要显式传它 |
+| `resume` | 已有空闲直属子 Agent 的名称或 ID；拒绝新建目标及工作区字段 |
+| `context_mode` | 仅用于 resume：`direct` 保留上下文，`compact` 先用当前模型生成摘要，`fresh` 从保存的任务状态重建窗口而不调用旧模型；同时确认显式换模 |
+| `allow_model_change` | 旧换模确认参数，要求有 `resume` 和 `model_alias`；与 `context_mode` 互斥 |
+| `new_window` | 旧全新上下文继续参数，要求有 `resume`；与 `context_mode` 互斥 |
 | `tools` | 替换本次绑定已解析出的工具选择。只写 `*`，或写 `["*", ThreadRead]`，会保留普通工具并额外加入该 opt-in；有限名单仍然有限 |
 | `disallowed_tools` | 增加一层调用级 deny。传 `[]` 只清掉这一层，不会清除 profile、祖先或 route 的 deny |
 
@@ -341,7 +344,9 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 
 `preferred_models`、`discouraged_models`、`preferred_efforts` 是建议，选到列表之外的模型仍然能跑。`allowed_models`、`deny_models`、`allowed_efforts` 是硬限制：绑定、人工切换与恢复都会拒绝违规，机器级 deny 与不可用能力同样如此。
 
-**恢复。** `resume` 按名称或 agent id 继续已有直属子 Agent，与 `name`、`profile`、`profile_file`、`route` 互斥。同时省略 `model_alias` 和 `effort` 会保留已保存的绑定，也可以传 `effort` 让下一次空闲运行使用。恢复时同样拒绝 `model_alias: "inherit"`——显式换模请写具体模型名，解析到不同模型时再加 `allow_model_change: true`。外部 executor 无法修改已恢复 thread 的绑定时会报错，不会重建 thread。
+**恢复。** `resume` 按名称或 agent id 继续已有空闲直属子 Agent，拒绝 `name`、`profile`、`profile_file`、`route`、`workDir` 和 `additionalDirs`。省略 `model_alias` 和 `effort` 会保留已保存的绑定，也可以传 `effort` 用于下次空闲运行。显式 `context_mode` 选择 `direct`、`compact` 或 `fresh`；同时传入的 `model_alias` 选到不同规范模型时，该模式也确认这次换模。不选择上下文模式时，普通 resume 保持 direct。同一个子 Agent ID、任务笔记、Todo、历史与工作区仍然可用。`compact` 和 `fresh` 要求原生 Kiki 执行；外部 executor 会报错，不会重建 thread。
+
+`context_mode` 不能与任一旧参数混用，即使旧参数为 false。未设置 `context_mode` 时，旧参数 `new_window: true` 选择 fresh，优先于 `allow_model_change`；否则 `allow_model_change: true` 确认 direct 换模，`new_window: false` 不否决该确认。`model_alias: "inherit"` 仍无效。示例与提交失败后的恢复见[继续方式与恢复](../customization/agents-and-subagents.md#具名子-agent)。
 
 **超时与模式。** Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIKI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout。前台模式下父 Agent 等待结果；后台模式立即返回任务 ID，结果会通过之后的合成 User 消息送达。TUI 会把同一步中的多个前台调用合并展示，并显示状态与耗时。完整 profile 与生命周期契约见 [Agent 与子 Agent](../customization/agents-and-subagents.md)。
 

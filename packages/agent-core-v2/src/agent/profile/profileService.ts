@@ -2,6 +2,7 @@ import { captureProfileModelMenu, normalizeAgentProfile } from '@kiki/agent-prof
 import { isNativeTarget } from '@kiki/agent-profiles/nativeTarget';
 import { resolveNativeTargetBinding } from '#/session/subagent/nativeTargetBinding';
 import { loadSteeringSources } from '#/agent/cognition/steeringBinding';
+import { resolveResumeContextMode } from '#/agent/modelSwitch/modelSwitch';
 import { dirname } from 'node:path';
 import { composeRecipeLayers, recipeReferences, recipeRevisionContent } from '#/app/recipes/recipeOverlay';
 import { isRecipeFileReference, resolveRecipeFileLocator } from '#/app/recipes/recipePrimitives';
@@ -1414,6 +1415,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   async prepareResumeBinding(input: Parameters<IAgentProfileService['prepareResumeBinding']>[0]): Promise<import('./profile').PreparedModelSwitchBinding> {
+    resolveResumeContextMode(input);
     await this.ensureDelegationPosition();
     const previousState = this.profileState;
     const previous = this.data();
@@ -1442,11 +1444,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         `Changing the resumed agent model from "${previous.modelAlias ?? '(unbound)'}" to "${model}" requires an explicit model_alias.`,
         { details: { previousModel: previous.modelAlias, requestedModel: model, requiredParameter: 'model_alias' } });
     }
-    if (changedModel && input.allowModelChange !== true && input.newWindow !== true) {
+    if (changedModel && input.contextMode === undefined && input.allowModelChange !== true && input.newWindow !== true) {
       throw new Error2(ErrorCodes.REQUEST_INVALID,
-        `Changing the resumed agent model from "${previous.modelAlias ?? '(unbound)'}" to "${model}" requires either allow_model_change: true to keep the current context, or new_window: true to start a new context window.`,
-        { details: { previousModel: previous.modelAlias, requestedModel: model, requiredParameter: 'allow_model_change',
-          confirmationChoices: [{ parameter: 'allow_model_change', value: true, mode: 'direct' }, { parameter: 'new_window', value: true, mode: 'fresh' }] } });
+        `Changing the resumed agent model from "${previous.modelAlias ?? '(unbound)'}" to "${model}" requires context_mode: direct, compact or fresh, or the legacy allow_model_change: true / new_window: true confirmation.`,
+        { details: { previousModel: previous.modelAlias, requestedModel: model, requiredParameter: 'context_mode',
+          confirmationChoices: ['direct', 'compact', 'fresh'].map((mode) => ({ parameter: 'context_mode', value: mode, mode })) } });
     }
     const constraints = previous.boundProfile ?? this.resolveActiveProfile();
     if (constraints === undefined && changedModel) {

@@ -302,6 +302,8 @@ export function addSubagentBindingSchemaConstraints(
     { not: { allOf: [{ required: ['profile_file'] }, { anyOf: ['profile', 'route'].map((field) => ({ required: [field] })) }] } },
     conditionalSchema,
     { if: { required: ['new_window'] }, [conditionalSchemaKeyword]: { required: ['resume'] } },
+    { if: { required: ['context_mode'] }, [conditionalSchemaKeyword]: { required: ['resume'] } },
+    { not: { allOf: [{ required: ['context_mode'] }, { anyOf: ['new_window', 'allow_model_change'].map((field) => ({ required: [field] })) }] } },
   ];
 }
 

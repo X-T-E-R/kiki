@@ -3145,8 +3145,8 @@ describe('AgentProfileService.bind', () => {
       ),
     );
     await expect(svc.prepareResumeBinding({ modelAlias: RESUME_NEW_MODEL })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID,
-      details: { previousModel: RESUME_OLD_MODEL, requestedModel: RESUME_NEW_MODEL, requiredParameter: 'allow_model_change',
-        confirmationChoices: [{ parameter: 'allow_model_change', value: true, mode: 'direct' }, { parameter: 'new_window', value: true, mode: 'fresh' }] } });
+      details: { previousModel: RESUME_OLD_MODEL, requestedModel: RESUME_NEW_MODEL, requiredParameter: 'context_mode',
+        confirmationChoices: ['direct', 'compact', 'fresh'].map(mode => ({ parameter: 'context_mode', value: mode, mode })) } });
     expect(svc.data()).toMatchObject({
       modelAlias: RESUME_OLD_MODEL,
       thinkingLevel: 'low',

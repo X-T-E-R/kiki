@@ -322,6 +322,7 @@ export interface IAgentProfileService {
     readonly thinkingEffort?: string;
     readonly allowModelChange?: boolean;
     readonly newWindow?: boolean;
+    readonly contextMode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode;
     readonly allowParentNotify?: boolean;
     readonly callerConstraints?: readonly (BindingConstraintInput | SpawnConstraints)[];
   }): Promise<PreparedModelSwitchBinding>;

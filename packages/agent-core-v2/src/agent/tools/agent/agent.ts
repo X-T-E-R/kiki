@@ -51,8 +51,9 @@ export const SubagentToolInputSchema = z.preprocess(
       ),
     source_ref: z.string().trim().min(1).optional().describe('Reference id from a server-generated agent_ref in a visible user message. Links this run to that message; it does not choose a target or grant permission.'),
     profile_file: z.string().trim().min(1).optional().describe('Explicit profile Markdown file, absolute or workspace-relative. Only for new agents; mutually exclusive with profile and route. This is a role definition, not a shared prompt template.'),
-    allow_model_change: z.boolean().optional().describe('Confirm an explicit model_alias change to a different canonical model on resume while retaining context. A changed model requires this or new_window to be true; new_window:true takes precedence. This field requires resume and model_alias and does not bypass role, caller, route or executor restrictions.'),
-    new_window: z.boolean().optional().describe('Resume the same child with fresh context while preserving task state and history, without calling the old model. Requires resume. Also confirms an explicit canonical model change; false does not veto allow_model_change:true.'),
+    context_mode: z.enum(['direct', 'compact', 'fresh']).optional().describe('Explicit resume context choice: direct retains the current context; compact summarizes it with the current model before continuing; fresh rebuilds context from saved task state without calling the old model. Keeps the same child ID, task notes, Todo, history and workspace. Requires resume, works without changing model, and confirms an explicit model_alias change within existing policy. Native context rebuilding only. Mutually exclusive with new_window and allow_model_change, including false values.'),
+    allow_model_change: z.boolean().optional().describe('Legacy confirmation for an explicit model_alias change on resume while retaining context. A changed model requires this or new_window to be true; new_window:true takes precedence. Requires resume and model_alias. Mutually exclusive with context_mode. Does not bypass role, caller, route or executor restrictions.'),
+    new_window: z.boolean().optional().describe('Legacy fresh-context resume of the same child, preserving task state and history without calling the old model. Requires resume and is mutually exclusive with context_mode. Also confirms an explicit model_alias change; false does not veto allow_model_change:true.'),
     allow_parent_notify: z.boolean().optional().describe('Override AgentNotify availability for this child. On a new agent, omission uses the selected profile setting, which defaults to enabled. On resume, omission preserves the saved setting. This cannot override the global [agents].notify_parent switch or tool policy.'),
     tools: z.array(z.string().trim().min(1)).optional().describe('Replace the resolved child tool selection. A lone * keeps ordinary tools without opting in to restricted groups. For browser control use ["*", "BrowserConnections", "BrowserTabs", "browser__*"]; for computer control add "mcp__kiki-computer__*" (or the actual installed MCP server name). [] selects no business tools and revokes temporary access on resume. New agents default to the profile selection; omission on resume preserves the saved override. Denies, caller ceilings, group switches, connection allowsets and read-only restrictions still apply. Native executor only.'),
     disallowed_tools: z.array(z.string().trim().min(1)).optional().describe('Additional denied tools for this child binding. Omission on resume preserves the saved call-level deny; an explicit list replaces that layer, and [] clears only that layer, not profile or ancestor denies. Native executor only.'),
@@ -60,7 +61,7 @@ export const SubagentToolInputSchema = z.preprocess(
       .string()
       .optional()
       .describe(
-        'Name or agent ID of an existing direct child. Do not pass name, profile, profile_file, or route. Omitted effort/model keep the saved binding. An explicit effort applies to the next idle run; changing model_alias requires allow_model_change:true or new_window:true. A running child cannot be resumed; use AgentSend. If the child is still finishing earlier work, the prompt is saved and the receipt reports status: queued.',
+        'Name or agent ID of an existing direct child. Do not pass name, profile, profile_file, or route. Omitted effort/model keep the saved binding. An explicit effort applies to the next idle run; changing model_alias requires an explicit context_mode or legacy allow_model_change:true / new_window:true. A running child cannot be resumed; use AgentSend. If the child is still finishing earlier work, the prompt is saved and the receipt reports status: queued.',
       ),
     background: z
       .boolean()
@@ -91,6 +92,14 @@ export const SubagentToolInputSchema = z.preprocess(
     }
     if (args.resume?.trim() && (args.route !== undefined || args.profile_file !== undefined || args.profile !== undefined)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Cannot set profile, profile_file, or route when continuing an existing agent' });
+    }
+    if (args.context_mode !== undefined) {
+      if (!args.resume?.trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'context_mode requires resume', path: ['context_mode'] });
+      }
+      if (args.new_window !== undefined || args.allow_model_change !== undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'context_mode is mutually exclusive with new_window and allow_model_change, including false values', path: ['context_mode'] });
+      }
     }
     if (args.allow_model_change !== undefined && (!args.resume?.trim() || args.model_alias === undefined)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'allow_model_change requires resume and model_alias' });

@@ -100,7 +100,7 @@ profile 绑定时——新建主会话、新建 subagent、切换模型，或原
 
 如果以上都取不到值，或解析出的 effort 不被该模型支持，绑定会以配置错误失败，而不是悄悄替你挑一个。完全没有配置模型时，绑定会同时要求提供模型和 effort。只要 route、lease、profile pin 或模型默认里已经有可用值，就不必每次都传 effort；只有全都取不到时才需要，此时配置相应的 pin 或在本次调用里提供 `effort`。
 
-这些规则只作用于 profile 绑定。保留既有有效绑定的普通 resume 不会重新计算，因此早先保存的 effort 继续有效。只修改 `effort` 时保留已保存的模型；resume 时切换模型仍需 `allow_model_change: true`。
+这些规则只作用于 profile 绑定。保留既有有效绑定的普通 resume 不会重新计算，因此早先保存的 effort 继续有效。只修改 `effort` 时保留已保存的模型；resume 时切换模型需要显式选择 [`context_mode`](../customization/agents-and-subagents.md#具名子-agent)，或用旧参数 `allow_model_change: true` / `new_window: true` 确认。
 
 不经过 profile 绑定的路径保持原样：全局 `[thinking]` 仍提供兜底，`[thinking].enabled = false` 在这些路径上仍会把未固定的 effort 解析为 Off。
 

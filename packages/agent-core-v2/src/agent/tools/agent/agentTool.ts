@@ -522,9 +522,9 @@ export class SubagentTool implements ISubagentTool {
               toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
               operationId: `resume:${this.callerAgentId}:${parentTurnId}:${toolCallId}`,
               onQueued: markQueued,
-              bindingOverride: args.model_alias === undefined && args.effort === undefined && args.new_window === undefined ? undefined : {
+              bindingOverride: args.model_alias === undefined && args.effort === undefined && args.new_window === undefined && args.context_mode === undefined ? undefined : {
                 modelAlias: args.model_alias, thinkingEffort: args.effort, allowModelChange: args.allow_model_change,
-                newWindow: args.new_window,
+                newWindow: args.new_window, contextMode: args.context_mode,
               },
             },
           ));
@@ -636,7 +636,7 @@ export class SubagentTool implements ISubagentTool {
             signal, requesterAgentId: this.callerAgentId, allowParentNotify: args.allow_parent_notify, sourceRef: args.source_ref,
             toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
             bindingOverride: { modelAlias: args.model_alias, thinkingEffort: args.effort,
-              allowModelChange: args.allow_model_change, newWindow: args.new_window },
+              allowModelChange: args.allow_model_change, newWindow: args.new_window, contextMode: args.context_mode },
           }));
           const task = saved.taskId === undefined ? undefined : await this.tasks.getTaskSnapshot(saved.taskId);
           if (task !== undefined) {
@@ -651,8 +651,9 @@ export class SubagentTool implements ISubagentTool {
       const abortBeforeRegister = (): void => {
         controller.abort(signal.reason);
       };
-      if (!runInBackground) {
+      if (!runInBackground || args.context_mode === 'compact') {
         signal.addEventListener('abort', abortBeforeRegister, { once: true });
+        if (signal.aborted) abortBeforeRegister();
       }
 
       let handle: SubagentHandle;

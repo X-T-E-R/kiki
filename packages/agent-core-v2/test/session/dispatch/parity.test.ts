@@ -1578,17 +1578,17 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(lane.subagentRun).toHaveBeenCalledTimes(2);
   });
 
-  it('passes fresh-only through AgentRun and reuses one run and task for a repeated tool-call identity', async () => {
+  it.each([{ new_window: true }, { context_mode: 'direct' }, { context_mode: 'compact' }, { context_mode: 'fresh' }] as const)('passes $context_mode / $new_window through AgentRun and recovers one run and task for a repeated identity', async (mode) => {
     const lane = createLane(disposables, 'internal');
     await lane.runInternal({ profile: 'coder', name: 'repeat_child', prompt: 'start', description: 'Spawn', background: true });
     await complete(lane, 0);
-    const args = SubagentToolInputSchema.parse({ resume: 'repeat_child', new_window: true, prompt: 'Resume once', description: 'Resume', background: true });
+    const args = SubagentToolInputSchema.parse({ resume: 'repeat_child', ...mode, prompt: 'Resume once', description: 'Resume', background: true });
     const context = { turnId: 2, toolCallId: 'stable-resume-call', args, signal: new AbortController().signal };
     const tool = lane.ix.get(ISubagentTool);
     const [first, second] = await Promise.all([executeTool(tool, context), executeTool(tool, context)]);
     expect(first.isError).not.toBe(true);
     expect(second).toEqual(first);
-    expect(lane.probe.resumeBindings.at(-1)).toMatchObject({ newWindow: true });
+    expect(lane.probe.resumeBindings.at(-1)).toMatchObject({ contextMode: args.context_mode, newWindow: args.new_window });
     expect(lane.subagentRun).toHaveBeenCalledTimes(2);
     expect(lane.taskRecords.size).toBe(2);
     await complete(lane, 1);
@@ -1601,6 +1601,30 @@ describe('AgentRun and dispatch parity golden', () => {
     const conflict = await executeTool(lane.ix.get(ISubagentTool), { ...context, args: { ...args, prompt: 'Different request' } });
     expect(conflict.isError).toBe(true);
     expect(outputText(conflict.output)).toContain('different request');
+  });
+
+  it('cancels a background compact preparation before registering or launching its next task', async () => {
+    const lane = createLane(disposables, 'internal');
+    await lane.runInternal({ profile: 'coder', name: 'compact_child', prompt: 'start', description: 'Spawn', background: true });
+    await complete(lane, 0);
+    const controller = new AbortController();
+    let entered!: () => void;
+    const preparing = new Promise<void>(resolve => { entered = resolve; });
+    vi.spyOn(lane.ix.get(ISessionDispatchService), 'runOnExisting').mockImplementation(async (_child, _prompt, options) => {
+      entered();
+      await new Promise<void>((_resolve, reject) => {
+        if (options.signal.aborted) reject(options.signal.reason);
+        else options.signal.addEventListener('abort', () => { reject(options.signal.reason); }, { once: true });
+      });
+      throw new Error('Preparation unexpectedly completed');
+    });
+    const result = executeTool(lane.ix.get(ISubagentTool), { turnId: 2, toolCallId: 'cancel-compact', signal: controller.signal,
+      args: SubagentToolInputSchema.parse({ resume: 'compact_child', context_mode: 'compact', prompt: 'Continue', description: 'Compact continuation', background: true }) });
+    await preparing;
+    controller.abort(new Error('Cancelled compact preparation'));
+    expect(await result).toMatchObject({ isError: true });
+    expect(lane.subagentRun).toHaveBeenCalledTimes(1);
+    expect(lane.taskRecords.size).toBe(1);
   });
 
   it('shares the tree limit across main, child and grandchild dispatch and retains cancelled descendants until settlement', async () => {
