@@ -52,21 +52,23 @@ export function PageHeader({
         <Icon name="menu" size={16} />
       </button>
       <NavBackButton />
-      <h1 className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
+      <h1 data-page-title className="min-w-0 flex-1 truncate font-display text-[15px] font-semibold tracking-tight text-ink">
         {title}
       </h1>
-      {children}
+      {children === undefined ? null : <div data-page-actions className="flex min-w-0 max-w-full flex-wrap items-center gap-2">{children}</div>}
     </>
   );
+  // Below `md` the 44px menu button sets the row; the slim padding keeps the
+  // bar at the 48px Settings and conversations use.
   if (width === undefined) {
     return (
-      <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-2 gap-y-2 bg-paper px-4 py-2 lg:px-6">
+      <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-2 gap-y-2 bg-paper px-4 py-0.5 md:py-2 lg:px-6">
         {content}
       </header>
     );
   }
   return (
-    <header className="flex min-h-12 shrink-0 items-center bg-paper px-4 py-2 lg:px-6">
+    <header className="flex min-h-12 shrink-0 items-center bg-paper px-4 py-0.5 md:py-2 lg:px-6">
       <div
         data-page-header-inner={width}
         className={`mx-auto flex w-full ${PAGE_WIDTH[width]} flex-wrap items-center gap-x-2 gap-y-2`}

@@ -1240,7 +1240,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
       {pricingOpen ? (
         <PricingPanel models={reliability?.unknown_price_models ?? []} onClose={() => { setPricingOpen(false); }} />
       ) : null}
-      <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-4 pb-10 lg:px-8">
+      <main ref={scrollRef} onScroll={handleScroll} data-usage-scroll style={{ overflowAnchor: 'none' }} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pt-4 pb-10 lg:px-6">
         <div className={`mx-auto ${PAGE_WIDTH.dashboard} space-y-6`} data-usage-page>
           <UsageNavigation panel={panel} onChange={selectPanel} />
           {panel === 'export' ? (

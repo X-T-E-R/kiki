@@ -251,8 +251,8 @@ export function CapabilitiesPage({ onToggleSidebar }: { readonly onToggleSidebar
           <IconButton glyph={<CapabilityGlyph kind="refresh" />} label={t('cap.page.refresh')} onClick={refresh} dataAttrs={{ 'data-capabilities-refresh': '' }} />
           {addControl}
         </PageHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className={`mx-auto w-full ${PAGE_WIDTH.split} px-4 pb-16 pt-4 min-[720px]:px-8 min-[720px]:pt-8`}>
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 lg:px-6">
+          <div className={`mx-auto w-full ${PAGE_WIDTH.split} pb-16 pt-4 min-[720px]:pt-8`}>
             {/* One row of chrome: which kind of capability, and (for Skills and
                 MCP) which workspace. Every view below starts at its own
                 switch + search. */}

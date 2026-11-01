@@ -15,14 +15,12 @@ import {
   discoveryRouteProgress,
 } from '@kiki/session-core/discovery';
 import { useI18n } from '../../i18n';
-import { useSidebarContext } from '../sidebarContext';
 import { Icon } from '../icons';
-import { WorkspaceHeader } from '../agent-workspace';
 import { useDiscovery } from './DiscoveryContext';
 import { DiscoveryRouteRow } from './DiscoveryRouteRow';
 import { MODEL_SETTINGS_HREF, ModelConnectionEntry, useModelConnection } from './ModelConnectionEntry';
 import { useGuardedNavigate } from '../dirtyGuard';
-import { PAGE_WIDTH } from '../PageChrome';
+import { PAGE_WIDTH, PageHeader } from '../PageChrome';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
 
 function RouteMicroWireframe({ routeId }: { readonly routeId: string }) {
@@ -115,30 +113,12 @@ export function DiscoveryPage({
     void navigate(MODEL_SETTINGS_HREF);
   };
 
-  const { sidebarOpen } = useSidebarContext();
-
   return (
     <div className="flex h-full w-full flex-col overflow-y-auto bg-canvas text-ink" data-discovery-page>
-      <WorkspaceHeader main>
-        <button
-          type="button"
-          onClick={onToggleSidebar}
-          aria-label={t('sv.openMenuAria')}
-          aria-expanded={sidebarOpen}
-          aria-controls="app-sidebar"
-          className="-ml-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-panel hover:text-ink md:hidden"
-        >
-          <Icon name="menu" size={16} />
-        </button>
-        <div className="flex items-center gap-2">
-          <Icon name="compass" size={16} className="text-accent" />
-          <h2 className="font-display text-[15px] font-semibold text-ink">
-            {t('discovery.title')}
-          </h2>
-        </div>
-      </WorkspaceHeader>
+      <PageHeader title={t('discovery.title')} onToggleSidebar={onToggleSidebar} width="reading" />
 
-      <main className={`mx-auto w-full ${PAGE_WIDTH.reading} flex-1 px-6 py-8`}>
+      <main className="flex-1 px-4 py-6 sm:py-8 lg:px-6">
+        <div className={`mx-auto w-full ${PAGE_WIDTH.reading}`}>
         {/* Intro Banner */}
         <section data-discovery-welcome className="rounded-2xl border border-hairline bg-paper p-6 shadow-[var(--kiki-sheet-shadow)]">
           <div className="flex flex-wrap items-center gap-2 text-[12px] font-medium text-ink-soft">
@@ -150,9 +130,9 @@ export function DiscoveryPage({
             <span>{t('discovery.guide')}</span>
           </div>
 
-          <h1 className="mt-3 font-display text-[22px] font-bold tracking-tight text-ink sm:text-[24px]">
+          <h2 className="mt-3 font-display text-[22px] font-bold tracking-tight text-ink sm:text-[24px]">
             {t('discovery.welcome.title')}
-          </h1>
+          </h2>
           <p className="mt-1.5 text-[14px] leading-relaxed text-ink-soft">
             {t('discovery.welcome.body')}
           </p>
@@ -272,6 +252,7 @@ export function DiscoveryPage({
             <ModelConnectionEntry info={modelConnection} onOpen={openModelSettings} />
           </div>
         </section>
+        </div>
       </main>
     </div>
   );
