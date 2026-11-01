@@ -678,8 +678,9 @@ async function readColdTranscriptPage(
     return locateColdPage(snapshot.items, query);
   };
   let located = locate(prefixWasMaterialized(initialBoundary, await boundary()));
-  const orphan = snapshot.items.find((item): item is TranscriptTurn => isOrphanTurn(item) &&
-    (itemKey(item) === anchor || (item.turnId === query.orphanTurn && query.refreshedTurn !== item.turnId)));
+  const orphan = snapshot.items.find((item): item is TranscriptTurn =>
+    (isOrphanTurn(item) && itemKey(item) === anchor) ||
+    (item.kind === 'turn' && item.turnId === query.orphanTurn && query.refreshedTurn !== item.turnId && !hasTurnOpening(item)));
   let extendingBoundary = false;
   let extendedBoundary = false;
   if (orphan === undefined && anchor !== undefined && snapshot.items.some(item => historyAnchorMatches(itemKey(item), anchor)) &&
@@ -731,8 +732,7 @@ async function readColdTranscriptPage(
     snapshot = anchorPending;
     located = { page: { items: [], hasMore: true }, missing: false };
   } else if (query.orphanTurn !== undefined && query.refreshedTurn !== query.orphanTurn) {
-    const updated = snapshot.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === query.orphanTurn &&
-      (item.prompt !== undefined || (item.attachmentIds?.length ?? 0) > 0 || item.origin.kind !== 'other'));
+    const updated = snapshot.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === query.orphanTurn && hasTurnOpening(item));
     if (updated !== undefined) {
       located = { page: { items: [updated], hasMore: located.page.items.length > 0 || located.page.hasMore || snapshot.hasMoreOlder === true }, missing: false };
       query.refreshTurn = updated.turnId;
@@ -762,6 +762,11 @@ async function readColdTranscriptPage(
   if (located.missing && source !== 'derived' && decodePageCursor(input.beforeItem, input.agentId) !== undefined) throw new TranscriptSourceChangedError(source, 'stale_cursor');
   if (located.missing && source !== 'derived' && snapshot.hasMoreOlder !== true) throw new TranscriptDetailCursorError();
   return { snapshot, page: located.page, query };
+}
+
+function hasTurnOpening(turn: TranscriptTurn): boolean {
+  return turn.prompt !== undefined || (turn.attachmentIds?.length ?? 0) > 0 ||
+    turn.contentRefs?.some(ref => ref.path[0] === 'prompt' || ref.path[0] === 'attachmentIds') === true;
 }
 
 function isOrphanTurn(item: TranscriptItem): item is TranscriptTurn {

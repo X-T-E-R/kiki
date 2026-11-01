@@ -5151,7 +5151,7 @@ it('opens an anchor window at the delivered prompt of a managed turn', async () 
   } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 }, 60_000);
 
-it('locates an old turn of a long wire without one preparing page per 8 MiB slice', async () => {
+it('prepares a long wire in bounded slices and reuses discovered turn starts', async () => {
   const home = await mkdtemp(join(tmpdir(), 'transcript-turn-start-index-'));
   const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
   await mkdir(dirname(path), { recursive: true });
@@ -5163,9 +5163,16 @@ it('locates an old turn of a long wire without one preparing page per 8 MiB slic
   }
   const service = new TranscriptService({ homeDir: home, core: coldCore() });
   try {
-    const snapshot = await service.readAnchoredColdSnapshot('s1', 'main', 't1');
-    expect(snapshot === undefined ? undefined : service.anchorReadState(snapshot)).not.toBe('pending');
+    let snapshot = await service.readAnchoredColdSnapshot('s1', 'main', 't1');
+    expect(service.anchorReadState(snapshot!)).toBe('pending');
+    expect(service.memoryReport().coldReads.bytes).toBeLessThanOrEqual(8 << 20);
+    for (let attempt = 0; snapshot !== undefined && service.anchorReadState(snapshot) === 'pending' && attempt < 8; attempt += 1) {
+      snapshot = await service.readAnchoredColdSnapshot('s1', 'main', 't1');
+    }
     expect(snapshot?.items.find(item => item.kind === 'turn' && item.turnId === 't1')).toMatchObject({ prompt: 'opening 1' });
+    const indexed = await service.readAnchoredColdSnapshot('s1', 'main', 't0');
+    expect(service.anchorReadState(indexed!)).not.toBe('pending');
+    expect(indexed?.items.find(item => item.kind === 'turn' && item.turnId === 't0')).toMatchObject({ prompt: 'opening 0' });
   } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 }, 60_000);
 
@@ -5727,5 +5734,341 @@ it.each([{ count: 1200, chars: 8192 }, { count: 384, chars: 65536 }])('pages a s
     expect(actual).toEqual(Array.from({ length: count }, (_, ordinal) => `t${ordinal}`));
     expect(new Set(actual).size).toBe(count);
     expect(service.memoryReport().coldWindowBytes).toBeLessThanOrEqual(8 << 20);
+  } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+}, 60_000);
+
+
+it('[TL-001] bounds the first cold anchor scan, then reaches its target through bounded reads', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-tl-001-'));
+  const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+  const line = (record: object) => `${JSON.stringify(record)}\n`;
+  const prompt = (turnId: number, text: string) => ({
+    type: 'turn.prompt', turnId, promptId: `p${turnId}`, input: [{ type: 'text', text }], origin: { kind: 'user' }, time: 1000 + turnId,
+  });
+  const padding = line({ type: 'fixture.padding', padding: 'x'.repeat(256 << 10) });
+  await mkdir(dirname(path), { recursive: true });
+  await writeFixtureFile(path, line(prompt(0, 'zero')) + padding.repeat(128) + line(prompt(1, 'one')));
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const before = service.memoryReport().coldReads.bytes;
+    let snapshot = await service.readAnchoredColdSnapshot('s1', 'main', 't1');
+    const firstBytes = service.memoryReport().coldReads.bytes - before;
+    expect(snapshot).toBeDefined();
+    expect(service.anchorReadState(snapshot!)).toBe('pending');
+    expect(firstBytes).toBeLessThan(10 << 20);
+    for (let attempt = 0; snapshot !== undefined && service.anchorReadState(snapshot) === 'pending' && attempt < 8; attempt += 1) {
+      snapshot = await service.readAnchoredColdSnapshot('s1', 'main', 't1');
+    }
+    expect(snapshot).toBeDefined();
+    expect(['window', 'continues']).toContain(service.anchorReadState(snapshot!));
+    expect(snapshot?.items.some(item => item.kind === 'turn' && item.turnId === 't1')).toBe(true);
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);
+
+it('[TL-002] finds a turn created by a same-identity same-size rewrite from absent to present', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-tl-002-'));
+  const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+  const line = (record: object) => `${JSON.stringify(record)}\n`;
+  const prompt = (turnId: number, text: string) => ({
+    type: 'turn.prompt', turnId, promptId: `p${turnId}`, input: [{ type: 'text', text }], origin: { kind: 'user' }, time: 1000 + turnId,
+  });
+  const padding = line({ type: 'fixture.padding', padding: 'x'.repeat(256 << 10) });
+  const source = line(prompt(0, 'zero')) + padding.repeat(40) + line(prompt(2, 'two'));
+  await mkdir(dirname(path), { recursive: true });
+  await writeFixtureFile(path, source);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    let snapshot = await service.readAnchoredColdSnapshot('s1', 'main', 't9');
+    for (let attempt = 0; snapshot !== undefined && service.anchorReadState(snapshot) === 'pending' && attempt < 8; attempt += 1) {
+      snapshot = await service.readAnchoredColdSnapshot('s1', 'main', 't9');
+    }
+    expect(snapshot).toBeUndefined();
+    const before = await fsPromises.stat(path);
+    await writeFixtureFile(path, source.replace('"turnId":2', '"turnId":9'));
+    const after = await fsPromises.stat(path);
+    expect(after.dev).toBe(before.dev);
+    expect(after.ino).toBe(before.ino);
+    expect(after.birthtimeMs).toBe(before.birthtimeMs);
+    expect(after.size).toBe(before.size);
+
+    const readAnchored = async (instance: TranscriptService) => {
+      let value = await instance.readAnchoredColdSnapshot('s1', 'main', 't9');
+      for (let attempt = 0; value !== undefined && instance.anchorReadState(value) === 'pending' && attempt < 8; attempt += 1) {
+        value = await instance.readAnchoredColdSnapshot('s1', 'main', 't9');
+      }
+      return value;
+    };
+    const stale = await readAnchored(service);
+    const retry = await readAnchored(service);
+    const freshService = new TranscriptService({ homeDir: home, core: coldCore() });
+    try {
+      const fresh = await readAnchored(freshService);
+      expect(stale?.items.some(item => item.kind === 'turn' && item.turnId === 't9')).toBe(true);
+      expect(retry?.items.some(item => item.kind === 'turn' && item.turnId === 't9')).toBe(true);
+      expect(fresh?.items.some(item => item.kind === 'turn' && item.turnId === 't9')).toBe(true);
+    } finally {
+      freshService.dispose();
+    }
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);
+
+it('[TL-003] finds an anchor whose turnId property starts after the first 512 bytes', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-tl-003-'));
+  const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+  const line = (record: object) => `${JSON.stringify(record)}\n`;
+  const latePrompt = (turnId: number) => ({
+    type: 'turn.prompt', input: [{ type: 'text', text: `opening ${turnId} ` + 'q'.repeat(700) }], origin: { kind: 'user' }, promptId: `p${turnId}`, time: 1000 + turnId, turnId,
+  });
+  const padding = line({ type: 'fixture.padding', padding: 'x'.repeat(256 << 10) });
+  const lateLine = line(latePrompt(1));
+  await mkdir(dirname(path), { recursive: true });
+  await writeFixtureFile(path, line(latePrompt(0)) + padding.repeat(40) + lateLine + line(latePrompt(2)));
+  try {
+    expect(lateLine.indexOf('"turnId"')).toBeGreaterThan(512);
+    const service = new TranscriptService({ homeDir: home, core: coldCore() });
+    try {
+      let snapshot = await service.readAnchoredColdSnapshot('s1', 'main', 't1');
+      for (let attempt = 0; snapshot !== undefined && service.anchorReadState(snapshot) === 'pending' && attempt < 8; attempt += 1) {
+        snapshot = await service.readAnchoredColdSnapshot('s1', 'main', 't1');
+      }
+      expect(snapshot).toBeDefined();
+      expect(service.anchorReadState(snapshot!)).not.toBe('pending');
+      expect(snapshot?.items.some(item => item.kind === 'turn' && item.turnId === 't1')).toBe(true);
+      expect(snapshot?.items.find(item => item.kind === 'turn' && item.turnId === 't1')).toMatchObject({ prompt: expect.stringMatching(/^opening 1 /) });
+    } finally {
+      service.dispose();
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);
+
+it.each([1.25 * (1 << 20), 9 << 20])('[TL-003] keeps a legal $0-byte opening addressable across scan slices', async (chars) => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-tl-003-large-'));
+  const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+  const line = (record: object) => `${JSON.stringify(record)}\n`;
+  const prompt = (turnId: number, text: string) => ({
+    type: 'turn.prompt', turnId, promptId: `p${turnId}`, input: [{ type: 'text', text }], origin: { kind: 'user' }, time: 1000 + turnId,
+  });
+  const opening = `large opening ${'q'.repeat(chars)}`;
+  const largeLine = line(prompt(0, opening));
+  const padding = line({ type: 'fixture.padding', padding: 'x'.repeat(256 << 10) });
+  await mkdir(dirname(path), { recursive: true });
+  await writeFixtureFile(path, largeLine + padding.repeat(40) + line(prompt(1, 'next opening')));
+  try {
+    expect(Buffer.byteLength(largeLine)).toBeGreaterThan(1.25 * (1 << 20));
+    const service = new TranscriptService({ homeDir: home, core: coldCore() });
+    try {
+      let snapshot = await service.readAnchoredColdSnapshot('s1', 'main', 't0');
+      if (chars > (8 << 20)) {
+        expect(service.anchorReadState(snapshot!)).toBe('pending');
+        expect(service.memoryReport().coldReads.bytes).toBeLessThanOrEqual(8 << 20);
+      }
+      for (let attempt = 0; snapshot !== undefined && service.anchorReadState(snapshot) === 'pending' && attempt < 8; attempt += 1) {
+        snapshot = await service.readAnchoredColdSnapshot('s1', 'main', 't0');
+      }
+      expect(snapshot).toBeDefined();
+      expect(snapshot?.items.find(item => item.kind === 'turn' && item.turnId === 't0')).toMatchObject({ prompt: opening });
+    } finally {
+      service.dispose();
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);
+
+it('[TL-004] walks ordinary page-size-20 history to EOF and returns exactly three delayed managed openings', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-managed-opening-regression-'));
+  const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+  const lines: string[] = [];
+  for (let turnId = 0; turnId < 3; turnId += 1) {
+    const id = `p${turnId}`;
+    const text = `canonical opening ${turnId}`;
+    const origin = { kind: 'user' };
+    lines.push(JSON.stringify({ type: 'turn.prompt', turnId, promptId: id, input: [{ type: 'text', text }], origin, managed: true, time: 1000 + turnId }));
+    for (let n = 0; n < 9; n += 1) lines.push(JSON.stringify({ type: 'context.append_message', message: { role: 'user', content: [{ type: 'text', text: `injection ${n}` }], toolCalls: [], origin: { kind: 'injection', variant: 'runtime_snapshot' }, id: `injection-${turnId}-${n}` } }));
+    lines.push(JSON.stringify({ type: 'context.append_message', message: { role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin, id }, delivery: { deliveryId: `d${turnId}`, messageId: id, turnId, stepId: `s${turnId}`, step: 1, deliveredAt: '2026-01-01T00:00:00.000Z', origin: 'queue' } }));
+    lines.push(JSON.stringify({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId, uuid: `s${turnId}`, step: 1 } }));
+    for (let step = 0; step < 16; step += 1) {
+      lines.push(JSON.stringify({ type: 'context.append_loop_event', event: { type: 'tool.call', turnId, stepUuid: `s${turnId}`, uuid: `f${turnId}-${step}`, toolCallId: `c${turnId}-${step}`, name: 'Read', args: {} } }));
+      lines.push(JSON.stringify({ type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: `c${turnId}-${step}`, result: { output: 'x'.repeat(256 << 10), isError: false } } }));
+    }
+    lines.push(JSON.stringify({ type: 'turn.ended', turnId, reason: 'completed', time: 2000 + turnId }));
+  }
+  await mkdir(dirname(path), { recursive: true });
+  await writeFixtureFile(path, `${lines.join('\n')}\n`);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const prompts = new Map<string, string | undefined>();
+    let cursor: string | undefined;
+    let pages = 0;
+    let reachedEof = false;
+    for (; pages < 100; pages += 1) {
+      const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: cursor, pageSize: 20 });
+      expect(page).toBeDefined();
+      for (const item of page?.items ?? []) if (item.kind === 'turn') prompts.set(item.turnId, item.prompt ?? prompts.get(item.turnId));
+      if (page?.has_more !== true) {
+        expect(page?.next_cursor).toBeUndefined();
+        reachedEof = true;
+        break;
+      }
+      expect(page?.next_cursor).toBeDefined();
+      cursor = page!.next_cursor;
+    }
+    expect(reachedEof).toBe(true);
+    expect(pages).toBeGreaterThan(1);
+    expect([...prompts.entries()].toSorted(([left], [right]) => compareTurnIds(left, right))).toEqual([
+      ['t0', 'canonical opening 0'],
+      ['t1', 'canonical opening 1'],
+      ['t2', 'canonical opening 2'],
+    ]);
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 120_000);
+
+it('[append] reaches an ordinary appended turn after an initial cold page read', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-ordinary-append-regression-'));
+  const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+  const line = (record: object) => `${JSON.stringify(record)}\n`;
+  const prompt = (turnId: number, text: string) => ({
+    type: 'turn.prompt', turnId, promptId: `p${turnId}`, input: [{ type: 'text', text }], origin: { kind: 'user' }, time: 1000 + turnId,
+  });
+  const padding = line({ type: 'fixture.padding', padding: 'x'.repeat(256 << 10) });
+  await mkdir(dirname(path), { recursive: true });
+  await writeFixtureFile(path, line(prompt(0, 'initial')) + padding.repeat(40) + line(prompt(1, 'before append')));
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const first = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', pageSize: 20 });
+    expect(first?.items.some(item => item.kind === 'turn' && item.turnId === 't1')).toBe(true);
+    await appendFixtureFile(path, line(prompt(2, 'ordinary appended')));
+    const appended = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', pageSize: 20 });
+    expect(appended?.items.some(item => item.kind === 'turn' && item.turnId === 't2' && item.prompt === 'ordinary appended')).toBe(true);
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);
+
+it('[cancel-retry] cancels a cold wire reader and permits a later delegated retry', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-cancel-retry-regression-'));
+  const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+  const line = (record: object) => `${JSON.stringify(record)}\n`;
+  await mkdir(dirname(path), { recursive: true });
+  await writeFixtureFile(path, line({ type: 'turn.prompt', turnId: 0, promptId: 'p0', input: [{ type: 'text', text: 'retryable cold wire' }], origin: { kind: 'user' } }) + line({ type: 'fixture.padding', padding: 'x'.repeat(1 << 20) }));
+  let enteredScan!: () => void;
+  let noticedAbort!: () => void;
+  const scanStarted = new Promise<void>((resolve) => { enteredScan = resolve; });
+  const scanAborted = new Promise<void>((resolve) => { noticedAbort = resolve; });
+  let scans = 0;
+  const service = new TranscriptService({
+    homeDir: home,
+    core: coldCore(),
+    wireRecordReader: async (wirePath, options) => {
+      scans += 1;
+      enteredScan();
+      try {
+        return await streamWireRecords(wirePath, { ...options, chunkBytes: 8 });
+      } catch (error) {
+        if (options.signal?.aborted) noticedAbort();
+        throw error;
+      }
+    },
+  });
+  const controller = new AbortController();
+  try {
+    const abandoned = service.readColdSnapshot('s1', 'main', undefined, controller.signal);
+    await scanStarted;
+    controller.abort(new DOMException('client gone', 'AbortError'));
+    await expect(abandoned).rejects.toThrow('client gone');
+    await scanAborted;
+    expect(scans).toBe(1);
+    const retry = await service.readColdSnapshot('s1', 'main');
+    expect(scans).toBe(2);
+    expect(retry?.items.some(item => item.kind === 'turn' && item.turnId === 't0')).toBe(true);
+  } finally {
+    service.dispose();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}, 60_000);
+
+
+it.each(['failure', 'cancel'] as const)('[TL-004] retries the same managed opening continuation after %s', async (mode) => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-managed-retry-'));
+  const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+  const line = (record: object) => `${JSON.stringify(record)}\n`;
+  const opening = line({ type: 'turn.prompt', turnId: 0, promptId: 'p0', input: [{ type: 'text', text: 'delayed opening' }], origin: { kind: 'user' }, managed: true });
+  const injections = Array.from({ length: 9 }, (_, n) => line({ type: 'context.append_message', message: { role: 'user', id: `i${n}`, content: [{ type: 'text', text: `hidden ${n}` }], origin: { kind: 'injection', variant: 'runtime_snapshot' } } })).join('');
+  const delivery = line({ type: 'context.append_message', message: { role: 'user', id: 'p0', content: [{ type: 'text', text: 'delayed opening' }], origin: { kind: 'user' } }, delivery: { deliveryId: 'd0', messageId: 'p0', turnId: 0, stepId: 's0', step: 1, deliveredAt: '2026-01-01T00:00:00Z', origin: 'queue' } });
+  await mkdir(dirname(path), { recursive: true });
+  await writeFixtureFile(path, opening + injections + delivery + line({ type: 'turn.ended', turnId: 0, reason: 'completed' }) + line({ type: 'fixture.padding', padding: 'x'.repeat(256 << 10) }).repeat(40) + line({ type: 'turn.prompt', turnId: 1, promptId: 'p1', input: [{ type: 'text', text: 'tail' }], origin: { kind: 'user' } }));
+  const controller = new AbortController();
+  const offsets: number[] = [];
+  let stop = false;
+  const service = new TranscriptService({ homeDir: home, core: coldCore(), wireRecordReader: async (wirePath, options) => {
+    if (options.maxRecords === 8) {
+      offsets.push(options.startByteOffset ?? 0);
+      if (stop) {
+        stop = false;
+        if (mode === 'cancel') { controller.abort(new Error('opening cancelled')); options.signal?.throwIfAborted(); }
+        throw new Error('opening read failed');
+      }
+    }
+    return streamWireRecords(wirePath, options);
+  } });
+  try {
+    const cursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'cold', anchor: 'turn:t0', beforeTurn: 't0', orphanTurn: 't0' })).toString('base64url');
+    const pending = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: cursor });
+    expect(pending?.items).toEqual([]);
+    expect(pending?.read?.readiness).toBe('preparing');
+    expect(pending?.has_more).toBe(true);
+    expect(JSON.parse(Buffer.from(pending!.next_cursor!, 'base64url').toString('utf8'))).toMatchObject({ anchor: 'turn:t0', orphanTurn: 't0' });
+    stop = true;
+    await expect(readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: pending!.next_cursor, signal: controller.signal })).rejects.toThrow(mode === 'cancel' ? 'opening cancelled' : 'opening read failed');
+    const recovered = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: pending!.next_cursor });
+    expect(recovered?.items).toMatchObject([{ kind: 'turn', turnId: 't0', prompt: 'delayed opening' }]);
+    expect(offsets).toHaveLength(3);
+    expect(offsets[1]).toBeGreaterThan(offsets[0]!);
+    expect(offsets[2]).toBe(offsets[1]);
+  } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+}, 60_000);
+
+
+it('[TL-002] preserves a prepared prefix through append and cancellation retry', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-prefix-retry-'));
+  const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+  const line = (record: object) => `${JSON.stringify(record)}\n`;
+  const prompt = (turnId: number) => line({ type: 'turn.prompt', turnId, promptId: `p${turnId}`, input: [{ type: 'text', text: `opening ${turnId}` }], origin: { kind: 'user' } });
+  await mkdir(dirname(path), { recursive: true });
+  await writeFixtureFile(path, prompt(0) + line({ type: 'fixture.padding', padding: 'x'.repeat(256 << 10) }).repeat(40) + prompt(2));
+  const controller = new AbortController();
+  const starts: number[] = [];
+  let cancel = false;
+  const service = new TranscriptService({ homeDir: home, core: coldCore(), wireRecordReader: async (wirePath, options) => {
+    if (options.maxRecords === 50_000) {
+      starts.push(options.startByteOffset ?? 0);
+      if (cancel) { cancel = false; controller.abort(new Error('seek cancelled')); options.signal?.throwIfAborted(); }
+    }
+    return streamWireRecords(wirePath, options);
+  } });
+  try {
+    const first = await service.readAnchoredColdSnapshot('s1', 'main', 't9');
+    expect(service.anchorReadState(first!)).toBe('pending');
+    await appendFixtureFile(path, prompt(9));
+    cancel = true;
+    await expect(service.readAnchoredColdSnapshot('s1', 'main', 't9', controller.signal)).rejects.toThrow('seek cancelled');
+    const retried = await service.readAnchoredColdSnapshot('s1', 'main', 't9');
+    expect(retried?.items.find(item => item.kind === 'turn' && item.turnId === 't9')).toMatchObject({ prompt: 'opening 9' });
+    expect(starts).toHaveLength(3);
+    expect(starts[0]).toBe(0);
+    expect(starts[1]).toBeGreaterThan(0);
+    expect(starts[2]).toBe(starts[1]);
   } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 }, 60_000);
