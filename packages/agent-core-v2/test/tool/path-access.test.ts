@@ -37,6 +37,10 @@ import {
   resolveRealPathAccessPath,
 } from '#/tool/path-access';
 
+function outputText(output: string | readonly unknown[]): string {
+  return typeof output === 'string' ? output : JSON.stringify(output) ?? '';
+}
+
 describe('isSensitiveFile', () => {
   it('flags base .env files in any directory', () => {
     for (const path of ['.env', '/app/.env', 'project/.env']) {
@@ -278,11 +282,11 @@ describe('resolveRealPathAccessPath', () => {
     const current = join(docs, 'guide.md');
     await writeFile(current, 'current Space docs');
     const read = await services.get(IReadTool).resolveExecution({ path: '../docs/guide.md' });
-    if (read.isError === true) throw new Error(String(read.output));
+    if (read.isError === true) throw new Error(outputText(read.output));
     expect(read.accesses).toMatchObject([{ implicitExternal: false }]);
     expect(await execute(read)).toMatchObject({ output: expect.stringContaining('current Space docs') });
     const write = await services.get(IWriteTool).resolveExecution({ path: current, content: 'changed' });
-    if (write.isError === true) throw new Error(String(write.output));
+    if (write.isError === true) throw new Error(outputText(write.output));
     expect(write.accesses).toMatchObject([{ kind: 'file', operation: 'write', path: current.replaceAll('\\', '/') }]);
     await expect(resolveRealPathAccess(current, { ...options('write'), workspace: withDefinitionReadRoots(options().workspace, [], root, kikiDefinitionReadRoots(services.get(IBootstrapService))) }, fs)).resolves.toMatchObject({ outsideWorkspace: true });
     expect(await readFile(current, 'utf8')).toBe('current Space docs');

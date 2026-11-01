@@ -11,6 +11,9 @@ import { codexBindingPath, deliverCodexEvents, registerHostCodexCommands } from 
 
 const dispatchId = 'dispatch_MOCK001';
 const event = (seq: number, type: string, message?: string) => ({ seq, dispatchId, type, at: seq, message });
+function requestUrl(input: RequestInfo | URL): string {
+  return typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+}
 
 describe('external host wake adapters (mock seat and queue)', () => {
   let workspace: string;
@@ -40,7 +43,7 @@ describe('external host wake adapters (mock seat and queue)', () => {
   it.each(['events', 'result'] as const)('cancels an attachment stalled in %s without polling again or cancelling the child', async phase => {
     const cancel = vi.fn();
     const fetchMock = vi.fn<typeof fetch>(async input => {
-      if (phase === 'result' && String(input).endsWith('/events')) return Response.json({ code: 0, msg: 'ok',
+      if (phase === 'result' && requestUrl(input).endsWith('/events')) return Response.json({ code: 0, msg: 'ok',
         data: { items: [event(1, 'completed')] } });
       return new Response(new ReadableStream({ cancel }));
     });
@@ -54,7 +57,7 @@ describe('external host wake adapters (mock seat and queue)', () => {
     await rejected;
     expect(cancel).toHaveBeenCalledOnce();
     expect(emit).not.toHaveBeenCalled();
-    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual(phase === 'result'
+    expect(fetchMock.mock.calls.map(([url]) => requestUrl(url))).toEqual(phase === 'result'
       ? ['http://example.test/api/klient/delegation/events', 'http://example.test/api/klient/delegation/result']
       : ['http://example.test/api/klient/delegation/events']);
     await klient.close();

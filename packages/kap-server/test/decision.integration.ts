@@ -1,4 +1,4 @@
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,6 +19,11 @@ import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 let home: string | undefined;
 let server: RunningServer | undefined;
 let upstream: Server | undefined;
+function runUpstream(res: ServerResponse, task: () => Promise<void>): void {
+  void task().catch((error: unknown) => {
+    res.destroy(error instanceof Error ? error : new Error('Synthetic upstream request failed', { cause: error }));
+  });
+}
 afterEach(async () => {
   await server?.close(); server = undefined;
   if (upstream !== undefined) { upstream.closeAllConnections(); await new Promise<void>((resolve) => upstream!.close(() => resolve())); upstream = undefined; }
@@ -48,7 +53,8 @@ describe('decision connections', () => {
   it('uses one environment credential for both consumers without chat models, diagnoses changes, clears sources, and probes only confirmed synthetic data', async () => {
     vi.stubEnv('TYPESAFE_API_KEY', 'synthetic-env-key');
     const calls: { authorization?: string; body: any }[] = [];
-    upstream = createServer(async (req, res) => {
+    upstream = createServer((req, res) => {
+      runUpstream(res, async () => {
       let text = ''; for await (const chunk of req) text += String(chunk);
       const body = JSON.parse(text); calls.push({ authorization: req.headers.authorization, body });
       res.setHeader('content-type', 'application/json');
@@ -56,6 +62,7 @@ describe('decision connections', () => {
         ? { type: 'noul', noul: 0.99 }
         : { type: 'choice', choice: (question as any).criteria.read === undefined ? 'apply' : 'read', confidence: 0.99, probabilities: (question as any).criteria.read === undefined ? { apply: 0.99, history: 0.005, skip: 0.005 } : { read: 0.99, skip: 0.01 } }]));
       res.end(JSON.stringify({ answers }));
+      });
     });
     await new Promise<void>((resolve) => upstream!.listen(0, '127.0.0.1', resolve));
     const port = (upstream.address() as { port: number }).port;
@@ -202,7 +209,8 @@ describe('decision connections', () => {
   it('keeps custom System One connections keyless with a TypeSafe process key and preserves the explicit Jev environment preset', async () => {
     vi.stubEnv('TYPESAFE_API_KEY', 'synthetic-typesafe-key');
     const calls: { path: string; authorization?: string; token?: string | string[] }[] = [];
-    upstream = createServer(async (req, res) => {
+    upstream = createServer((req, res) => {
+      runUpstream(res, async () => {
       let text = ''; for await (const chunk of req) text += String(chunk);
       const body = JSON.parse(text);
       calls.push({ path: req.url ?? '', authorization: req.headers.authorization, token: req.headers['x-decision-token'] });
@@ -213,6 +221,7 @@ describe('decision connections', () => {
       }));
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ answers }));
+      });
     });
     await new Promise<void>((resolve) => upstream!.listen(0, '127.0.0.1', resolve));
     const origin = `http://127.0.0.1:${(upstream.address() as { port: number }).port}`;
@@ -241,7 +250,8 @@ describe('decision connections', () => {
 
   it('keeps keyless legacy HTTP selectors usable and accepts arbitrary custom auth headers on new connections', async () => {
     const calls: { path: string; authorization?: string; token?: string | string[] }[] = [];
-    upstream = createServer(async (req, res) => {
+    upstream = createServer((req, res) => {
+      runUpstream(res, async () => {
       for await (const _chunk of req) {}
       calls.push({ path: req.url ?? '', authorization: req.headers.authorization, token: req.headers['x-decision-token'] });
       res.setHeader('content-type', 'application/json');
@@ -249,6 +259,7 @@ describe('decision connections', () => {
         res.statusCode = req.url === '/v1/unauthorized' ? 401 : 403;
         res.end('{}');
       } else res.end(JSON.stringify({ results: [{ index: 0, relevance_score: 0.9 }] }));
+      });
     });
     await new Promise<void>((resolve) => upstream!.listen(0, '127.0.0.1', resolve));
     const origin = `http://127.0.0.1:${(upstream.address() as { port: number }).port}`;

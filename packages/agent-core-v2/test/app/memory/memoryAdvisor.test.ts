@@ -398,18 +398,22 @@ describe('Memory Advisor lifecycle and snapshot publication', () => {
     const releaseFirst = deferred<void>();
     const requests: string[] = [];
     async function upstream(old: boolean): Promise<{ server: Server; origin: string }> {
-      const server = createServer(async (req, res) => {
-        let text = ''; for await (const chunk of req) text += String(chunk);
-        requests.push(old ? 'old' : 'new');
-        const body = JSON.parse(text);
-        if (old) { firstStarted.resolve(); await releaseFirst.promise; }
-        const answers = Object.fromEntries(Object.entries(body.questions).map(([handle, raw]) => {
-          const question = raw as { criteria: Record<string, string> };
-          const choice = question.criteria['read'] !== undefined ? 'read' : old ? 'history' : 'apply';
-          return [handle, { type: 'choice', choice, confidence: 1, probabilities: Object.fromEntries(Object.keys(question.criteria).map((name) => [name, name === choice ? 1 : 0])) }];
-        }));
-        res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ answers }));
+      const server = createServer((req, res) => {
+        void (async () => {
+          let text = ''; for await (const chunk of req) text += String(chunk);
+          requests.push(old ? 'old' : 'new');
+          const body = JSON.parse(text);
+          if (old) { firstStarted.resolve(); await releaseFirst.promise; }
+          const answers = Object.fromEntries(Object.entries(body.questions).map(([handle, raw]) => {
+            const question = raw as { criteria: Record<string, string> };
+            const choice = question.criteria['read'] !== undefined ? 'read' : old ? 'history' : 'apply';
+            return [handle, { type: 'choice', choice, confidence: 1, probabilities: Object.fromEntries(Object.keys(question.criteria).map((name) => [name, name === choice ? 1 : 0])) }];
+          }));
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ answers }));
+        })().catch((error: unknown) => {
+          res.destroy(error instanceof Error ? error : new Error('Synthetic upstream request failed', { cause: error }));
+        });
       });
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
       disposables.push({ async dispose() { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); } });

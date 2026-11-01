@@ -13,6 +13,9 @@ import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
 const ids = ['codex-app-server', 'claude-acp', 'agy-cli', 'grok-acp'];
+function outputText(output: string | readonly unknown[]): string {
+  return typeof output === 'string' ? output : JSON.stringify(output) ?? '';
+}
 
 describe('native engine backend vertical fixtures', () => {
   let server: RunningServer | undefined;
@@ -84,7 +87,7 @@ describe('native engine backend vertical fixtures', () => {
       const child = lifecycle.list().find(agent => agent.id !== 'main')!;
       expect(child.accessor.get(IAgentProfileService).data()).toMatchObject({ executorId: executor,
         execution: { selection: { executor }, effective: { inject_kiki_mcp: undefined, allow_kiki_subagents: false } } });
-      const taskId = /task_id: (\S+)/.exec(String(result.output))![1]!;
+      const taskId = /task_id: (\S+)/.exec(outputText(result.output))![1]!;
       const task = await tasks.getTaskSnapshot(taskId);
       expect(task).toMatchObject({ status: 'completed', agentId: child.id, sourceRef: { refId: ref!.refId, messageId: 'fixture-message', profile, executor } });
       expect(tasks.list(false)).toEqual([]);
@@ -92,7 +95,7 @@ describe('native engine backend vertical fixtures', () => {
       await approve();
       const continued = await continuation;
       expect(continued.isError, JSON.stringify(continued)).not.toBe(true);
-      const continuedTaskId = /task_id: (\S+)/.exec(String(continued.output))![1]!;
+      const continuedTaskId = /task_id: (\S+)/.exec(outputText(continued.output))![1]!;
       expect(continuedTaskId).not.toBe(taskId);
       expect(await tasks.getTaskSnapshot(continuedTaskId)).toMatchObject({ status: 'completed', agentId: child.id,
         sourceRef: { refId: ref!.refId, messageId: 'fixture-message', profile, executor } });
