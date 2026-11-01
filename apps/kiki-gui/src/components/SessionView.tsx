@@ -71,6 +71,7 @@ import { MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './me
 import type { MediaPreviewApi } from './mediaPreviewContext';
 import {
   SESSION_REWRITTEN_EVENT,
+  compactReceiptOutcome,
   compactSessionContext,
   exportSessionArchive,
   forkSession,
@@ -3901,6 +3902,12 @@ boundExecution,
     [client, sessionId, actionContext],
   );
 
+  // One state fact for manual compaction: the receipt seeds it and live events
+  // advance it. The composer meter renders it; a toast only stands in when no
+  // meter is on screen to carry the state.
+  const { progress: compactionProgress, seed: seedCompactionProgress } = useCompactionProgress(client, sessionId);
+  const compactionHintShownRef = useRef(false);
+
   const runSessionAction = useCallback(
     (action: 'fork' | 'undo' | 'compact' | 'export' | 'fresh-context') => {
       const record = state.session;
@@ -3936,8 +3943,10 @@ boundExecution,
       } else {
         void compactSessionContext(actionContext, record)
           .then((receipt) => {
-            if (receipt.accepted === false) { pushToast({ tone: 'info', text: t('context.compaction.manual.duplicate') }); return; }
-            pushToast({ tone: 'success', text: t(receipt.status === undefined ? 'action.compactRequestedSession' : `context.compaction.manual.${receipt.status}`) });
+            const outcome = compactReceiptOutcome(receipt);
+            if (outcome === 'duplicate') { pushToast({ tone: 'info', text: t('context.compaction.manual.duplicate') }); return; }
+            seedCompactionProgress(receipt);
+            if (outcome === 'requested' || !compactionHintShownRef.current) pushToast({ tone: 'success', text: t(outcome === 'requested' ? 'action.compactRequestedSession' : `context.compaction.manual.${outcome}`) });
           })
           .catch((error: unknown) => {
             pushToast({
@@ -3947,7 +3956,7 @@ boundExecution,
           });
       }
     },
-    [actionContext, state.session, t, locale, currentBoundModel, openModelSwitchPanel],
+    [actionContext, state.session, t, locale, currentBoundModel, openModelSwitchPanel, seedCompactionProgress],
   );
 
   const confirmUndoRun = useCallback(() => {
@@ -4663,9 +4672,9 @@ boundExecution,
   const contextUsed = state.contextTokens ?? usage?.context_tokens;
   const contextLimit = state.maxContextTokens !== undefined && state.maxContextTokens > 0
     ? state.maxContextTokens : undefined;
+  compactionHintShownRef.current = contextUsed !== undefined && contextLimit !== undefined;
   // The main agent's automatic-compaction point, read from the server for the
   // meter's adjustable track (absent on engines that do not report one).
-  const compactionProgress = useCompactionProgress(client, sessionId);
   const contextAutoCompact = useContextMeterAutoCompact({
     sessionId: sessionIdForSendReadyRead(sessionId, sessionSendReady),
     agentId: MAIN_AGENT_ID,
@@ -5025,7 +5034,7 @@ boundExecution,
           disabled={composerDisabled}
         />
       ) : (
-        <ContextBreakdownProvider value={state.contextBreakdown} compaction={compactionProgress}>
+        <ContextBreakdownProvider value={state.contextBreakdown} compaction={compactionProgress} onCompactionReceipt={seedCompactionProgress}>
           <Composer
             busy={composerBusy}
             disabled={composerDisabled}

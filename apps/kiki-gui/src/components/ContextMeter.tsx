@@ -26,7 +26,7 @@ import { Link } from 'react-router-dom';
 
 import type { SessionUsageError, UsageAccountingSnapshot } from '@kiki/protocol';
 
-import { sessionActionErrorText } from '@kiki/session-core/commands';
+import { compactReceiptOutcome, sessionActionErrorText } from '@kiki/session-core/commands';
 import { formatCostUsd } from '@kiki/session-core/util';
 import type { ContextBreakdown } from '@kiki/session-core/wire';
 import { useI18n } from '../i18n';
@@ -117,17 +117,21 @@ const LEVEL_STROKE: Record<ContextUsageLevel, string> = {
 
 const ContextBreakdownContext = createContext<ContextBreakdown | undefined>(undefined);
 const CompactionProgressContext = createContext<import('./useCompactionProgress').CompactionProgress | undefined>(undefined);
+const CompactionSeedContext = createContext<((receipt: import('@kiki/protocol').CompactSessionResponse) => void) | undefined>(undefined);
 
 export function ContextBreakdownProvider({
   value,
   compaction,
+  onCompactionReceipt,
   children,
 }: {
   value: ContextBreakdown | undefined;
   compaction?: import('./useCompactionProgress').CompactionProgress;
+  /** Seeds the shared progress from a manual-compaction receipt raised inside the card. */
+  onCompactionReceipt?: (receipt: import('@kiki/protocol').CompactSessionResponse) => void;
   children: ReactNode;
 }) {
-  return <ContextBreakdownContext.Provider value={value}><CompactionProgressContext.Provider value={compaction}>{children}</CompactionProgressContext.Provider></ContextBreakdownContext.Provider>;
+  return <ContextBreakdownContext.Provider value={value}><CompactionProgressContext.Provider value={compaction}><CompactionSeedContext.Provider value={onCompactionReceipt}>{children}</CompactionSeedContext.Provider></CompactionProgressContext.Provider></ContextBreakdownContext.Provider>;
 }
 
 /** One labeled token row inside the detail card. */
@@ -196,6 +200,7 @@ export function ContextMeter({
   const { t, time, locale } = useI18n();
   const breakdown = useContext(ContextBreakdownContext);
   const compaction = useContext(CompactionProgressContext);
+  const seedCompaction = useContext(CompactionSeedContext);
   const manualPending = compaction?.source === 'manual' && (compaction.phase === 'queued' || compaction.phase === 'running');
   const detailsId = useId();
   const [open, setOpen] = useState(false);
@@ -332,8 +337,9 @@ export function ContextMeter({
         {warn ? <span className="sr-only">{t('context.detailsHint')}</span> : null}
       </button>
       {compaction !== undefined ? (
-        <span role="status" data-compaction-progress={compaction.phase} title={compaction.reason} className={`absolute right-0 bottom-full mb-1 whitespace-nowrap text-[11px] ${compaction.phase === 'failed' ? 'text-danger' : 'text-ink-soft'}`}>
+        <span role="status" data-compaction-progress={compaction.phase} data-compaction-unconfirmed={compaction.unconfirmed === true ? '' : undefined} title={compaction.reason ?? (compaction.unconfirmed === true ? t('context.compaction.uncheckedHint') : undefined)} className={`absolute right-0 bottom-full mb-1 whitespace-nowrap text-[11px] ${compaction.phase === 'failed' ? 'text-danger' : 'text-ink-soft'}`}>
           {t(`context.compaction.${compaction.source}.${compaction.phase}`)}
+          {compaction.unconfirmed === true ? <span className="text-ink-faint"> · {t('context.compaction.unchecked')}</span> : null}
         </span>
       ) : null}
       {open ? (
@@ -516,7 +522,12 @@ export function ContextMeter({
               onCompactWith={(strategy) => {
                 setOpen(false);
                 void autoCompact?.strategy?.compact(strategy)
-                  .then((receipt) => { pushToast({ tone: 'success', text: t(receipt?.status === undefined ? 'action.compactRequestedSession' : `context.compaction.manual.${receipt.status}`) }); })
+                  .then((receipt) => {
+                    const outcome = compactReceiptOutcome(receipt ?? {});
+                    if (outcome === 'duplicate') { pushToast({ tone: 'info', text: t('context.compaction.manual.duplicate') }); return; }
+                    if (receipt !== undefined) seedCompaction?.(receipt);
+                    if (outcome === 'requested') pushToast({ tone: 'success', text: t('action.compactRequestedSession') });
+                  })
                   .catch((error: unknown) => {
                     pushToast({ tone: 'error', text: t('action.compactFailed', { detail: sessionActionErrorText(locale, error) }) });
                   });

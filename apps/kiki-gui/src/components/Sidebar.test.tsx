@@ -32,6 +32,7 @@ import {
 import { HostProvider, browserHost, type HostAdapter } from '../host';
 import { I18nProvider } from '../i18n';
 import type { SearchMessageHit, SearchMessagesResponse } from '../lib/client';
+import { clearToasts, getToasts } from '../lib/toasts';
 import { nestSessionThreads, sessionRelationOf } from '../lib/sessionThreads';
 import { requestSessionSearch } from '../lib/sidebarSearch';
 import { configureSpaceStorage } from '../lib/spaceStorage';
@@ -67,6 +68,7 @@ const archiveSession = vi.fn<(
 /** A family archive that confirmed exactly one conversation. */
 const archived = (id: string): ArchiveFamilyResponse => ({ archived: true, outcomes: [{ id, ok: true }] });
 // The room rows' lifecycle calls; wired into the mocked client's klient.rest.
+const compactSession = vi.fn<(id: string, body: Record<string, never>) => Promise<unknown>>();
 const roomRest = vi.hoisted(() => ({
   list: vi.fn(),
   addMember: vi.fn(),
@@ -93,6 +95,7 @@ vi.mock('../state/connection', () => ({
       listPrompts,
       listPersonas,
       archiveSession,
+      compactSession,
       restoreSession: vi.fn(async () => { throw new Error('not stubbed'); }),
       updateSessionProfile: vi.fn(async () => ({ ok: true })),
       klient: { rest: { rooms: roomRest } },
@@ -1867,6 +1870,26 @@ describe('Sidebar session menu keyboard focus', () => {
     await act(async () => { menuItem(menu, 'Pin to top').click(); });
     expect(container.querySelector('[data-session-menu]')).toBeNull();
     expect(document.activeElement).toBe(origin);
+  });
+
+  it.each([
+    ['refused', { accepted: false }, 'A manual compaction is already running or queued; wait for it to finish'],
+    ['accepted', { accepted: true, status: 'queued', source: 'manual' }, null],
+  ] as const)('reads the %s manual-compaction receipt like the session view', async (_case, receipt, duplicateText) => {
+    clearToasts();
+    compactSession.mockResolvedValueOnce(receipt);
+    const { container } = await mount(listed());
+    const { menu } = await openMenuFromFocusedRow(container, 'one');
+    await act(async () => { menuItem(menu, 'Compact context').click(); });
+    expect(compactSession).toHaveBeenCalledWith('one', {});
+    const notice = container.querySelector('[role="status"].border-success');
+    if (duplicateText === null) {
+      expect(notice?.textContent).toContain('Compaction requested');
+      expect(getToasts()).toEqual([]);
+    } else {
+      expect(notice).toBeNull();
+      expect(getToasts().map((toast) => [toast.tone, toast.text])).toEqual([['info', duplicateText]]);
+    }
   });
 
   it('an entry that opens a dialog leaves focus with the dialog, not the row', async () => {

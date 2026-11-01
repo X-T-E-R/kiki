@@ -990,6 +990,8 @@ export const en = {
   'context.compaction.manual.cancelled': 'Manual compaction cancelled',
   'context.compaction.manual.failed': 'Manual compaction failed',
   'context.compaction.manual.duplicate': 'A manual compaction is already running or queued; wait for it to finish',
+  'context.compaction.unchecked': 're-checking',
+  'context.compaction.uncheckedHint': 'The live connection dropped; progress shows the last read and updates when it reconnects',
   'context.compaction.auto.queued': 'Automatic compaction queued',
   'context.compaction.auto.running': 'Automatic compaction running',
   'context.compaction.auto.completed': 'Automatic compaction complete',

@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { AgentCapabilitiesResponse } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
 import type { KikiClient } from '../lib/client';
-import { applyCompactionProgress, useCompactionProgress, type CompactionProgress, type CompactionProgressEvent } from './useCompactionProgress';
+import { applyCompactionProgress, COMPACTION_RECHECK_MS, reconcileCompactionProgress, seedCompactionProgress, useCompactionProgress, type CompactionProgress, type CompactionProgressEvent } from './useCompactionProgress';
 import {
   CONTEXT_DANGER_RATIO,
   CONTEXT_WARN_RATIO,
@@ -992,9 +992,16 @@ describe('compaction progress lifetime', () => {
   let listeners: Map<string, Map<string, (event: CompactionProgressEvent) => void>>;
   let disposals: ReturnType<typeof vi.fn>[];
   let mounted: boolean;
+  let errorListeners: Set<(error: Error) => void>;
+  let readyResults: Array<'resolve' | 'reject'>;
+  let engine: { compacting: boolean; turn: 'idle' | 'running' };
+  let reads: number;
+  let seed: ((receipt: { accepted?: boolean; status?: 'queued' | 'running'; source?: 'manual' }) => void) | undefined;
 
   function Probe({ sessionId, currentClient, used }: { sessionId?: string; currentClient: KikiClient; used: number }) {
-    const progress = useCompactionProgress(currentClient, sessionId);
+    const handle = useCompactionProgress(currentClient, sessionId);
+    const progress = handle.progress;
+    seed = handle.seed;
     return <I18nProvider><ContextBreakdownProvider value={undefined} compaction={progress}><ContextMeter used={used} limit={100_000} /></ContextBreakdownProvider></I18nProvider>;
   }
   async function draw(sessionId: string | undefined = 'session-a', currentClient = client, used = 80_000) {
@@ -1015,13 +1022,22 @@ describe('compaction progress lifetime', () => {
     vi.useFakeTimers();
     listeners = new Map();
     disposals = [];
-    client = { klient: { session: (id: string) => ({ agent: () => ({ events: {
+    errorListeners = new Set();
+    readyResults = [];
+    engine = { compacting: false, turn: 'idle' };
+    reads = 0;
+    client = { klient: { session: (id: string) => ({ agent: () => ({
+      isCompacting: () => { reads += 1; return Promise.resolve(engine.compacting); },
+      getLoopStatus: () => Promise.resolve({ state: engine.turn, pendingTurnIds: [], hasPendingRequests: false }),
+      events: {
+      onError: (listener: (error: Error) => void) => { errorListeners.add(listener); return { dispose: () => { errorListeners.delete(listener); } }; },
       on: (type: string, listener: (event: CompactionProgressEvent) => void) => {
         if (!listeners.has(id)) listeners.set(id, new Map());
         listeners.get(id)!.set(type, listener);
         const dispose = vi.fn(() => { listeners.get(id)!.delete(type); });
         disposals.push(dispose);
-        return { ready: Promise.resolve(), dispose };
+        const outcome = readyResults.shift() ?? 'resolve';
+        return { ready: outcome === 'resolve' ? Promise.resolve() : Promise.reject(new Error('detached')), dispose };
       },
     } }) }) } } as unknown as KikiClient;
     container = document.createElement('div');
@@ -1099,6 +1115,55 @@ describe('compaction progress lifetime', () => {
     mounted = false;
     expect(vi.getTimerCount()).toBe(0);
     expect(disposals.every((dispose) => dispose.mock.calls.length === 1)).toBe(true);
+  });
+
+  it('shows the receipt phase at once and lets the live event advance it', async () => {
+    await draw();
+    await act(async () => { seed!({ accepted: true, status: 'queued', source: 'manual' }); });
+    expect(hint()?.getAttribute('data-compaction-progress')).toBe('queued');
+    expect(hint()?.hasAttribute('data-compaction-unconfirmed')).toBe(false);
+    await emit({ type: 'compaction.started', trigger: 'manual', phase: 'running' });
+    await act(async () => { seed!({ accepted: true, status: 'queued', source: 'manual' }); });
+    expect(hint()?.getAttribute('data-compaction-progress')).toBe('running');
+    await emit(completed('manual'));
+    await act(async () => { seed!({ accepted: false }); });
+    expect(hint()?.textContent).toBe('Manual compaction complete');
+  });
+
+  it('marks in-flight progress unconfirmed on disconnect and settles it from a read after reattaching', async () => {
+    await draw();
+    await emit({ type: 'compaction.started', trigger: 'manual', phase: 'running' });
+    readyResults.push('reject', 'reject', 'reject');
+    await act(async () => { for (const listener of errorListeners) listener(new Error('http event socket disconnected')); });
+    expect(hint()?.getAttribute('data-compaction-progress')).toBe('running');
+    expect(hint()?.textContent).toBe('Manual compaction running · re-checking');
+    engine.compacting = true;
+    await act(async () => { vi.advanceTimersByTime(COMPACTION_RECHECK_MS); await Promise.resolve(); await Promise.resolve(); });
+    expect(reads).toBe(2);
+    expect(hint()?.getAttribute('data-compaction-progress')).toBe('running');
+    engine.compacting = false;
+    await act(async () => { for (const listener of errorListeners) listener(new Error('restored')); });
+    await act(async () => { vi.advanceTimersByTime(COMPACTION_RECHECK_MS); await Promise.resolve(); await Promise.resolve(); });
+    expect(hint()).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('compaction progress reconciliation', () => {
+  it('keeps a queue only while its turn runs and never invents a manual source', () => {
+    const queued: CompactionProgress = { source: 'manual', phase: 'queued' };
+    expect(reconcileCompactionProgress(queued, { compacting: false, turnRunning: true }, true)).toBe(queued);
+    expect(reconcileCompactionProgress(queued, { compacting: false, turnRunning: false }, true)).toBeUndefined();
+    expect(reconcileCompactionProgress(queued, { compacting: true, turnRunning: false }, false)).toEqual({ source: 'manual', phase: 'running', unconfirmed: true });
+    expect(reconcileCompactionProgress(undefined, { compacting: true, turnRunning: false }, true)).toEqual({ source: 'auto', phase: 'running' });
+    const failed: CompactionProgress = { source: 'manual', phase: 'failed', reason: 'No safe prefix' };
+    expect(reconcileCompactionProgress(failed, { compacting: false, turnRunning: false }, true)).toBe(failed);
+  });
+
+  it('ignores refused or status-less receipts', () => {
+    expect(seedCompactionProgress(undefined, { accepted: false }, true)).toBeUndefined();
+    expect(seedCompactionProgress(undefined, {}, true)).toBeUndefined();
+    expect(seedCompactionProgress(undefined, { accepted: true, status: 'running', source: 'manual' }, false)).toEqual({ source: 'manual', phase: 'running', unconfirmed: true });
   });
 });
 
