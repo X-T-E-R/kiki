@@ -250,7 +250,7 @@ export async function mirrorAgentRun(
       contextTokens,
       error: undefined,
     });
-    void dispatcher?.dispatch(
+    await dispatcher?.dispatch(
       new SubagentCompleted({
         subagentId: run.agentId,
         resultSummary: result.summary,

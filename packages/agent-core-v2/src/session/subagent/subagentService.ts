@@ -20,6 +20,7 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentTaskService } from '#/agent/task/task';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { createHooks } from '#/hooks';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 
@@ -51,7 +52,11 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     new Emitter<AgentTaskStopHookContext>(),
   );
   private readonly receiptObservers = this._register(new DisposableMap<string>());
-  private readonly pendingReceipts = new WeakMap<IAgentScopeHandle, number>();
+  private readonly pendingReceipts = new Set<{
+    readonly child: IAgentScopeHandle;
+    readonly parentId?: string;
+    readonly settled: Promise<void>;
+  }>();
   private readonly pendingReleases = new Map<string, ReturnType<typeof setTimeout>>();
   private stopped = false;
 
@@ -73,17 +78,29 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     this._register(agentLifecycle.onDidCreate((handle) => {
       if (handle.id !== MAIN_AGENT_ID) {
         void this.receiptObservers.set(handle.id, observeAutonomousReceipts(handle, (delivery) => {
-          this.pendingReceipts.set(handle, (this.pendingReceipts.get(handle) ?? 0) + 1);
-          void delivery.catch((error: unknown) => {
-            this.log.error('autonomous subagent receipt delivery failed', { agentId: handle.id, error });
-          }).finally(() => {
-            this.pendingReceipts.set(handle, (this.pendingReceipts.get(handle) ?? 1) - 1);
+          const receipt = {
+            child: handle,
+            parentId: handle.accessor.get(IAgentScopeContext).parentAgentId,
+            settled: delivery.catch((error: unknown) => {
+              this.log.error('autonomous subagent receipt delivery failed', { agentId: handle.id, error });
+            }),
+          };
+          this.pendingReceipts.add(receipt);
+          void receipt.settled.then(() => {
+            this.pendingReceipts.delete(receipt);
             if (this.agentLifecycle.get(handle.id) === handle) this.scheduleRelease(handle.id);
           });
         }));
       }
       if (!this.pendingReleases.has(handle.id)) this.scheduleRelease(handle.id, false);
     }));
+    if (agentLifecycle.onWillSealTranscript !== undefined) {
+      this._register(agentLifecycle.onWillSealTranscript((event) => {
+        void this.receiptObservers.deleteAndDispose(event.handle.id);
+        const pending = [...this.pendingReceipts].filter((receipt) => receipt.child === event.handle || receipt.parentId === event.handle.id);
+        event.waitUntil(Promise.all(pending.map((receipt) => receipt.settled)));
+      }));
+    }
     if (agentLifecycle.onDidDispose !== undefined) {
       this._register(agentLifecycle.onDidDispose((agentId) => {
         void this.receiptObservers.deleteAndDispose(agentId);
@@ -171,7 +188,7 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     if (this.stopped || !this.flags.enabled(SUBAGENT_RELEASE_IDLE_FLAG)) return;
     const handle = this.agentLifecycle.get(agentId);
     if (handle === undefined) return;
-    if ((this.pendingReceipts.get(handle) ?? 0) > 0 || !isReleasable(handle)) {
+    if ([...this.pendingReceipts].some((receipt) => receipt.child === handle) || !isReleasable(handle)) {
       this.scheduleRelease(agentId, false);
       return;
     }

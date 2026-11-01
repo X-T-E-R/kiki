@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
-import { Emitter } from '#/_base/event';
+import { AsyncEmitter, Emitter } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { timeRestorePhase } from './restoreTiming';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
@@ -64,6 +64,7 @@ import {
   type AgentListFilter,
   type AgentRemovalMode,
   type AgentRestoreBinding,
+  type AgentWillSealTranscriptEvent,
   type CreateAgentOptions,
   type ForkAgentOptions,
   IAgentLifecycleService,
@@ -98,6 +99,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   private readonly onDidCreateEmitter = this._register(new Emitter<IAgentScopeHandle>());
   private readonly onDidDisposeEmitter = this._register(new Emitter<string>());
   private readonly onDidCleanupEmitter = this._register(new Emitter<AgentCleanupReceipt>());
+  private readonly onWillSealTranscriptEmitter = this._register(new AsyncEmitter<AgentWillSealTranscriptEvent>());
   private readonly interactionBusDisposables = new Map<string, IDisposable>();
   private readonly usageDisposables = new Map<string, IDisposable>();
 
@@ -112,6 +114,9 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   }
   get onDidCleanup() {
     return this.onDidCleanupEmitter.event;
+  }
+  get onWillSealTranscript() {
+    return this.onWillSealTranscriptEmitter.event;
   }
 
   constructor(
@@ -862,6 +867,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       if (compaction?.promise !== undefined) await collect(() => compaction!.promise.catch(() => undefined), 'cleanup');
       if (promptDrain !== undefined) await collect(() => promptDrain!, 'cleanup');
       if (loop !== undefined) await collect(() => loop!.settled(), 'cleanup');
+      await collect(() => this.onWillSealTranscriptEmitter.fireAsync({ handle }, new AbortController().signal), 'persistence');
       await collect(async () => {
         try {
           await handle.accessor.get(IEventDispatcher).flush();

@@ -6,7 +6,8 @@ import { createControlledPromise } from '@antfu/utils';
 import type { IHostProcess } from '#/os/interface/hostProcess';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
 import { Emitter, Event } from '#/_base/event';
-import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { IAgentLifecycleService, type AgentWillSealTranscriptEvent } from '#/session/agentLifecycle/agentLifecycle';
+import { COLLABORATION_LATEST_TASK_LABEL } from '#/session/agentCollaboration/registry';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionSubagentService, type AgentRunRequest } from '#/session/subagent/subagent';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -71,6 +72,7 @@ function notifiedCount(ctx: TestAgentContext): number {
 
 async function receiptPair(maxRunningTasks?: number) {
   const created = new Emitter<IAgentScopeHandle>();
+  const sealing = new Emitter<AgentWillSealTranscriptEvent>();
   const handles = new Map<string, IAgentScopeHandle>();
   const mailbox = sessionService(IAgentCollaborationMessageStore, {
     _serviceBrand: undefined,
@@ -84,6 +86,7 @@ async function receiptPair(maxRunningTasks?: number) {
     onWillCreate: Event.None as Event<IAgentScopeHandle>,
     onDidCreate: created.event,
     onDidDispose: Event.None as Event<string>,
+    onWillSealTranscript: sealing.event,
     get: (id: string) => handles.get(id),
     list: () => [...handles.values()],
     create: async () => { throw new Error('Agent creation is unused in this fixture'); },
@@ -114,9 +117,10 @@ async function receiptPair(maxRunningTasks?: number) {
   await metadata.registerAgent('agent-child', { type: 'sub', parentAgentId: 'main', labels: { profileName: 'example-worker' } });
   created.fire(childHandle);
   return {
-    parent, child, metadata, handles, parentHandle, childHandle,
+    parent, child, metadata, handles, parentHandle, childHandle, sealing,
     dispose: async () => {
       created.dispose();
+      sealing.dispose();
       handles.clear();
       await child.dispose();
       await parent.dispose();
@@ -125,6 +129,46 @@ async function receiptPair(maxRunningTasks?: number) {
 }
 
 describe('autonomous child receipt return', () => {
+  it.each(['main', 'agent-child'])('joins accepted receipt delivery before sealing %s', async (closingAgent) => {
+    const { parent, child, metadata, handles, sealing, dispose } = await receiptPair();
+    const entered = createControlledPromise<void>();
+    const release = createControlledPromise<void>();
+    const update = metadata.updateAgent.bind(metadata);
+    const blocked = vi.spyOn(metadata, 'updateAgent').mockImplementation(async (agentId, change) => {
+      if (agentId === 'agent-child' && change(metadata.snapshot().agents![agentId]!).labels?.[COLLABORATION_LATEST_TASK_LABEL] !== undefined) {
+        entered.resolve();
+        await release;
+      }
+      return update(agentId, change);
+    });
+    const drains: Promise<unknown>[] = [];
+    try {
+      child.mockNextResponse({ type: 'text', text: 'Accepted final receipt.' });
+      parent.mockNextResponse({ type: 'text', text: 'Received before shutdown.' });
+      const prompt = await child.get(IAgentPromptService).enqueue({ message: {
+        role: 'user', content: [{ type: 'text', text: 'Finish the review.' }], toolCalls: [],
+        origin: { kind: 'system_trigger', name: 'example-wakeup' },
+      } });
+      expect((await prompt.completion).state).toBe('completed');
+      await entered;
+      const handle = handles.get(closingAgent)!;
+      handles.delete(closingAgent);
+      sealing.fire({ handle, signal: new AbortController().signal, waitUntil: (promise) => { drains.push(promise); } });
+      expect(drains).toHaveLength(1);
+      expect(parent.get(IAgentTaskService).list(false)).toHaveLength(0);
+      release.resolve();
+      await Promise.all(drains);
+      expect(parent.get(IAgentTaskService).list(false)).toEqual([expect.objectContaining({ status: 'completed', agentId: 'agent-child' })]);
+      await vi.waitFor(() => expect(notifiedCount(parent)).toBe(1));
+      await parent.get(IAgentLoopService).settled();
+    } finally {
+      release.resolve();
+      await Promise.all(drains);
+      blocked.mockRestore();
+      await dispose();
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
   it('returns a final receipt after a failed parent task and a child-owned bash wakeup', async () => {
     const { parent, child, metadata, dispose } = await receiptPair();
     const processExit = createControlledPromise<number>();

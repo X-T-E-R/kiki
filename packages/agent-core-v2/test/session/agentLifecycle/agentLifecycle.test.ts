@@ -833,6 +833,35 @@ describe('AgentLifecycleService', () => {
     expect(promptDrain).toHaveBeenCalledWith(expect.any(Error), 'cancel');
   });
 
+  it('drains accepted cross-agent writes before the final flush and transcript seal', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+    const handle = await svc.create({ agentId: 'main' });
+    let release!: () => void;
+    let started!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const flush = vi.spyOn(handle.accessor.get(IEventDispatcher), 'flush');
+    const wire = handle.accessor.get(IWireService);
+    const seal = vi.fn(async () => {});
+    wire.sealTranscriptEpoch = seal;
+    disposables.add(svc.onWillSealTranscript!((event) => {
+      expect(event.handle).toBe(handle);
+      event.waitUntil(pending);
+      started();
+    }));
+    const removal = svc.remove('main');
+    try {
+      await entered;
+      expect(flush).not.toHaveBeenCalled();
+      expect(seal).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await removal;
+    }
+    expect(flush).toHaveBeenCalledOnce();
+    expect(seal).toHaveBeenCalledOnce();
+  });
+
   it('publishes a settled cleanup receipt after the agent owner closes its scope', async () => {
     const svc = ix.get(IAgentLifecycleService);
     const receipts: unknown[] = [];

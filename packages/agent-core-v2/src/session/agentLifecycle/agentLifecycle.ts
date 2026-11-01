@@ -1,6 +1,6 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
-import type { Event } from '#/_base/event';
+import type { Event, IWaitUntil } from '#/_base/event';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import type { BindAgentInput } from '#/agent/profile/profile';
 import type { DelegatorRef } from '#/session/sessionMetadata/sessionMetadata';
@@ -64,6 +64,10 @@ export interface AgentCleanupReceipt {
   readonly settledAt: number;
 }
 
+export interface AgentWillSealTranscriptEvent extends IWaitUntil {
+  readonly handle: IAgentScopeHandle;
+}
+
 export interface IAgentLifecycleService {
   readonly _serviceBrand: undefined;
 
@@ -73,6 +77,8 @@ export interface IAgentLifecycleService {
   readonly onDidCreate: Event<IAgentScopeHandle>;
   readonly onDidDispose: Event<string>;
   readonly onDidCleanup?: Event<AgentCleanupReceipt>;
+  /** Drains accepted cross-agent writes after execution settles and before the final flush and transcript seal. */
+  readonly onWillSealTranscript?: Event<AgentWillSealTranscriptEvent>;
 
   /** Generated identities never reuse an existing wire journal; explicit agentId enables restoration. */
   create(opts?: CreateAgentOptions): Promise<IAgentScopeHandle>;
