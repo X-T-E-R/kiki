@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { SESSION_CAPABILITIES, createWechatSessionAdapter, type SessionAdapter, type SessionOutbound, type SessionPlatformId, type SessionSink, type SessionSpec } from '@nb-im/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { checkRealtimeSessionAccount, fileCursorStore, HubSessionAdapter, sessionSpec } from '../../../src/services/imSession/hubAdapter';
+import { checkRealtimeSessionAccount, fileCursorStore, HubSessionAdapter, mimeAllowed, sessionSpec } from '../../../src/services/imSession/hubAdapter';
+import { mimeAllowed as sharedMimeAllowed } from '@kiki-dsh/im-bridge-core/adapter';
 import { oneBotIdentityTransport, type OneBotIdentityLink } from '../../../src/services/imSession/oneBotIdentity';
 
 function session(): SessionAdapter & { sink?: SessionSink; sent: SessionOutbound[] } {
@@ -27,6 +28,12 @@ function session(): SessionAdapter & { sink?: SessionSink; sent: SessionOutbound
 }
 
 describe('hub session adapter', () => {
+  it('preserves the existing MIME helper export as the shared implementation', () => {
+    expect(mimeAllowed).toBe(sharedMimeAllowed);
+    expect(mimeAllowed({ kind: 'image', mimeTypes: ['image/*'] }, 'IMAGE/PNG')).toBe(true);
+    expect(mimeAllowed({ kind: 'image', mimeTypes: ['image/png'] }, 'image/jpeg')).toBe(false);
+  });
+
   it('passes the delivery signal through to the session and rejects late sends after cancellation', async () => {
     const raw = session();
     const signals: (AbortSignal | undefined)[] = [];
