@@ -1346,7 +1346,7 @@ describe('AgentLifecycleService', () => {
       signal: new AbortController().signal,
     })).rejects.toMatchObject({
       code: ErrorCodes.REQUEST_INVALID,
-      details: { requiredParameter: 'allow_model_change' },
+      details: { requiredParameter: 'context_mode' },
     });
     expect(run).not.toHaveBeenCalled();
     expect(executeSwitch).not.toHaveBeenCalled();

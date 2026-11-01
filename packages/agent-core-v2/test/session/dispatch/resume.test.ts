@@ -172,7 +172,23 @@ afterEach(async () => {
   await Promise.all(hosts.splice(0).map(async (ctx) => { await ctx.dispose(); }));
 });
 
-describe('AgentRun new_window shape', () => {
+describe('AgentRun context mode shape', () => {
+  it.each(['direct', 'compact', 'fresh'] as const)('requires resume for explicit %s and rejects legacy option mixtures', (context_mode) => {
+    const input = { prompt: 'Continue', description: 'Continue task', context_mode };
+    expect(SubagentToolInputSchema.safeParse(input).success).toBe(false);
+    expect(SubagentToolInputSchema.safeParse({ ...input, resume: CHILD }).success).toBe(true);
+    for (const flag of ['new_window', 'allow_model_change']) {
+      for (const value of [true, false]) {
+        const parsed = SubagentToolInputSchema.safeParse({ ...input, resume: CHILD, model_alias: NEW, [flag]: value });
+        expect(parsed.success).toBe(false);
+        if (!parsed.success) expect(parsed.error.message).toContain('mutually exclusive');
+      }
+    }
+    const schema = toInputJsonSchema(SubagentToolInputSchema, addSubagentBindingSchemaConstraints);
+    expect(schema['properties']).toHaveProperty('context_mode');
+    expect(schema['allOf']).toContainEqual(JSON.parse('{"if":{"required":["context_mode"]},"then":{"required":["resume"]}}'));
+    expect(schema['allOf']).toContainEqual({ not: { allOf: [{ required: ['context_mode'] }, { anyOf: [{ required: ['new_window'] }, { required: ['allow_model_change'] }] }] } });
+  });
   it.each([false, true])('requires resume whenever new_window is %s', (new_window) => {
     expect(SubagentToolInputSchema.safeParse({ prompt: 'Continue', description: 'Continue task', new_window }).success).toBe(false);
     expect(SubagentToolInputSchema.safeParse({ prompt: 'Continue', description: 'Continue task', resume: CHILD, new_window }).success).toBe(true);
@@ -186,6 +202,139 @@ describe('AgentRun new_window shape', () => {
 });
 
 describe('dispatch resume through model switch and real native run', () => {
+  it.each(['direct', 'compact', 'fresh'].flatMap(contextMode => [undefined, NEW].map(modelAlias => ({ contextMode: contextMode as 'direct' | 'compact' | 'fresh', modelAlias }))))(
+    'continues explicit $contextMode with model=$modelAlias through the same native child', async ({ contextMode, modelAlias }) => {
+      const ctx = await host();
+      const todo = ctx.get(ISessionTodoService);
+      todo.setTodos([{ title: 'Remaining verification', status: 'in_progress' }], CHILD);
+      todo.setNotes({ goal: 'Saved task goal', evidence: 'Sourced task evidence' }, { turnId: 3, step: 1, toolCallId: 'notes-source' }, CHILD);
+      const beforeNotes = structuredClone(todo.getNotes(CHILD));
+      const beforeMeta = (await ctx.get(ISessionMetadata).read()).agents![CHILD]!;
+      const models: string[] = [];
+      const requester = ctx.get(IAgentLLMRequesterService);
+      const start = requester.start.bind(requester);
+      vi.spyOn(requester, 'start').mockImplementation((...args) => { models.push(ctx.get(IAgentProfileService).getModel()); return start(...args); });
+      if (contextMode === 'compact') ctx.mockNextResponse({ type: 'text', text: 'Portable summary of the original work.' });
+      const { child, handle } = await complete(ctx, 'explicit-mode', { contextMode, modelAlias });
+      expect(child.agentId).toBe(CHILD);
+      expect(handle.agentId).toBe(CHILD);
+      expect(models).toEqual(contextMode === 'compact' ? [OLD, modelAlias ?? OLD] : [modelAlias ?? OLD]);
+      const continuation = JSON.stringify(ctx.llmCalls.at(-1));
+      expect(continuation.includes('OLD_BODY')).toBe(contextMode === 'direct');
+      if (contextMode === 'compact') {
+        expect(JSON.stringify(ctx.llmCalls[0])).toContain('OLD_BODY');
+        expect(continuation).toContain('Portable summary of the original work.');
+        expect(continuation).not.toContain('OLD_SIGNATURE');
+      }
+      expect((continuation.match(/Continue exactly once\./g) ?? [])).toHaveLength(1);
+      expect(ctx.get(IAgentModelSwitchService).get('explicit-mode')).toMatchObject({ state: 'completed', mode: contextMode, summaryGenerated: contextMode === 'compact' });
+      expect(ctx.get(IAgentStateService).get(contextWindowEpochKey)).toBe(contextMode === 'direct' ? 0 : 1);
+      expect(todo.getNotes(CHILD)).toEqual(beforeNotes);
+      expect(todo.getTodos(CHILD)).toEqual([{ title: 'Remaining verification', status: 'in_progress' }]);
+      expect((await ctx.get(ISessionMetadata).read()).agents![CHILD]).toMatchObject({ parentAgentId: beforeMeta.parentAgentId, delegator: beforeMeta.delegator,
+        labels: { customState: 'preserved', taskName: 'saved_child' } });
+      const records = await journal(ctx);
+      expect(records.some(record => record.type === 'context.append_message' && JSON.stringify(record).includes('OLD_BODY'))).toBe(true);
+    },
+  );
+
+  it('rejects conflicting runtime modes before binding preparation or launch', async () => {
+    const ctx = await host();
+    const { dispatch, child, runs } = dispatchFor(ctx);
+    const prepare = vi.spyOn(ctx.get(IAgentProfileService), 'prepareResumeBinding');
+    const start = vi.spyOn(runs, 'run');
+    await expect(dispatch.runOnExisting(child, 'Conflict', options('conflict', { contextMode: 'compact', newWindow: false }))).rejects.toThrow('mutually exclusive');
+    await expect(ctx.get(IAgentProfileService).prepareResumeBinding({ contextMode: 'direct', allowModelChange: true })).rejects.toThrow('mutually exclusive');
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(start).not.toHaveBeenCalled();
+    expect(ctx.llmCalls).toHaveLength(0);
+  });
+
+  it('rechecks launch admission after a compact summary before committing the binding', async () => {
+    const ctx = await host();
+    const { dispatch, child, runs } = dispatchFor(ctx);
+    const startRun = vi.spyOn(runs, 'run');
+    let planActive = false;
+    const plan = dispatch.registerPlanStateReader('main', () => planActive);
+    const requester = ctx.get(IAgentLLMRequesterService);
+    const start = requester.start.bind(requester);
+    vi.spyOn(requester, 'start').mockImplementation((...args) => { planActive = true; return start(...args); });
+    ctx.mockNextResponse({ type: 'text', text: 'Prepared summary under old admission.' });
+    try {
+      await expect(dispatch.runOnExisting(child, 'Must not launch', options('admission-race', { contextMode: 'compact', modelAlias: NEW }))).rejects.toThrow();
+      expect(startRun).not.toHaveBeenCalled();
+      expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+      expect(ctx.get(IAgentStateService).get(contextWindowEpochKey)).toBe(0);
+      expect(ctx.llmCalls).toHaveLength(1);
+    } finally { await plan.dispose(); }
+  });
+
+  it.each(['failure', 'cancel'] as const)('preserves old binding on compact summary %s and can continue fresh', async (outcome) => {
+    const ctx = await host();
+    const { dispatch, child, runs } = dispatchFor(ctx);
+    const startRun = vi.spyOn(runs, 'run');
+    const context = ctx.get(IAgentContextMemoryService).get();
+    const controller = new AbortController();
+    const requester = vi.spyOn(ctx.get(IAgentLLMRequesterService), 'start').mockImplementation(() => {
+      if (outcome === 'cancel') controller.abort(new Error('Summary cancelled'));
+      throw new Error2(ErrorCodes.PROVIDER_AUTH_ERROR, 'Summary unavailable');
+    });
+    await expect(dispatch.runOnExisting(child, 'Continue after compact', { ...options('compact-interrupted', { contextMode: 'compact', modelAlias: NEW }), signal: controller.signal })).rejects.toThrow();
+    expect(startRun).not.toHaveBeenCalled();
+    expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+    expect(ctx.get(IAgentContextMemoryService).get()).toBe(context);
+    expect(ctx.get(IAgentStateService).get(contextWindowEpochKey)).toBe(0);
+    expect(ctx.get(IAgentModelSwitchService).get('compact-interrupted')).toBeUndefined();
+    requester.mockRestore();
+    await complete(ctx, 'fresh-after-interruption', { contextMode: 'fresh', modelAlias: NEW });
+    expect(ctx.get(IAgentProfileService).getModel()).toBe(NEW);
+    expect(ctx.llmCalls).toHaveLength(1);
+  });
+
+  it('recovers a durably committed compact resume after restart without summarizing or replaying its launched prompt', async () => {
+    const original = await host();
+    const { dispatch, child, runs } = dispatchFor(original);
+    const startRun = vi.spyOn(runs, 'run');
+    const opts = options('cold-compact', { contextMode: 'compact', modelAlias: NEW });
+    const metadata = original.get(ISessionMetadata);
+    const update = metadata.updateAgent.bind(metadata);
+    vi.spyOn(metadata, 'updateAgent').mockImplementation(async (id, updater) => {
+      const current = (await metadata.read()).agents?.[id];
+      if (current !== undefined && readResumeRecord(updater(current), 'cold-compact')?.state === 'ready') throw new Error('Interrupted before launch');
+      await update(id, updater);
+    });
+    original.mockNextResponse({ type: 'text', text: 'Durable portable summary.' });
+    await expect(dispatch.runOnExisting(child, 'Continue recovered compact', opts)).rejects.toThrow('Interrupted before launch');
+    expect(startRun).not.toHaveBeenCalled();
+    expect(original.llmCalls).toHaveLength(1);
+    const records = await journal(original);
+    const meta = structuredClone((await metadata.read()).agents![CHILD]!);
+    const cold = await host();
+    await cold.restore(records);
+    await cold.get(ISessionMetadata).registerAgent(CHILD, meta);
+    const restored = dispatchFor(cold);
+    cold.mockNextResponse({ type: 'text', text: 'Recovered compact result.' });
+    const run = await restored.dispatch.runOnExisting(restored.child, 'Continue recovered compact', opts);
+    const handle = await run.started;
+    await handle.completion;
+    expect(cold.llmCalls).toHaveLength(1);
+    expect(JSON.stringify(cold.llmCalls[0])).toContain('Durable portable summary.');
+    expect(cold.get(IAgentStateService).get(contextWindowEpochKey)).toBe(1);
+    const terminal = await journal(cold);
+    const terminalMeta = structuredClone((await cold.get(ISessionMetadata).read()).agents![CHILD]!);
+    const retry = await host();
+    await retry.restore(terminal);
+    await retry.get(ISessionMetadata).registerAgent(CHILD, terminalMeta);
+    const replay = dispatchFor(retry);
+    const recovered = await replay.dispatch.runOnExisting(replay.child, 'Continue recovered compact', opts);
+    const recoveredHandle = await recovered.started;
+    expect(await recoveredHandle.completion).toMatchObject({ summary: 'Recovered compact result.' });
+    expect(recoveredHandle.turn.id).toBe(handle.turn.id);
+    expect(retry.llmCalls).toHaveLength(0);
+    expect((await journal(retry)).filter(record => record.type === 'agent.model_switch')).toHaveLength(1);
+    await expect(replay.dispatch.runOnExisting(replay.child, 'Continue recovered compact', options('cold-compact', { contextMode: 'fresh', modelAlias: NEW }))).rejects.toThrow('different request or binding');
+  });
+
   it('keeps an ordinary external prompt source in live and replayed caller context without duplicating a materialized source', async () => {
     const ctx = await host();
     const ref = { refId: 'ar:external-input:example-worker', profile: 'example-worker', executor: 'native', configuration: 'profile' as const, label: 'Worker', engine_label: 'Kiki' };
@@ -648,7 +797,7 @@ describe('dispatch resume through model switch and real native run', () => {
     expect(ctx.llmCalls).toHaveLength(1);
   });
 
-  it.each(['allowed', 'deny', 'menu', 'caller'] as const)('new_window does not bypass frozen %s constraints', async (constraint) => {
+  it.each(['allowed', 'deny', 'menu', 'caller'].flatMap(constraint => ['direct', 'compact', 'fresh'].map(contextMode => ({ constraint, contextMode: contextMode as 'direct' | 'compact' | 'fresh' }))))('$contextMode does not bypass frozen $constraint constraints', async ({ constraint, contextMode }) => {
     const ctx = await host();
     const profile = ctx.get(IAgentProfileService);
     const previous = profile.data();
@@ -664,7 +813,7 @@ describe('dispatch resume through model switch and real native run', () => {
     });
     const { dispatch, child, runs } = dispatchFor(ctx);
     const start = vi.spyOn(runs, 'run');
-    await expect(dispatch.runOnExisting(child, 'Blocked fresh', options(`blocked-${constraint}`, { modelAlias: NEW, newWindow: true }))).rejects.toThrow();
+    await expect(dispatch.runOnExisting(child, 'Blocked mode', options(`blocked-${constraint}`, { modelAlias: NEW, contextMode }))).rejects.toThrow();
     expect(start).not.toHaveBeenCalled();
     expect(profile.getModel()).toBe(OLD);
     expect(ctx.get(IAgentStateService).get(contextWindowEpochKey)).toBe(0);
@@ -881,6 +1030,17 @@ describe('dispatch resume through model switch and real native run', () => {
     expect(ctx.get(IAgentModelSwitchService).get(`native-${id}`)).toBeUndefined();
     await expect(dispatch.runOnExisting(child, 'Fresh default', options(`fresh-${id}`, { newWindow: true })))
       .rejects.toThrow('explicit vendor model');
+  });
+
+  it.each(['compact', 'fresh'] as const)('rejects external %s rebuilding without summary, binding mutation or remote launch', async contextMode => {
+    const { ctx, dispatch, child, delivered } = await defaultExternal('claude-acp', 'vendor-model');
+    const before = ctx.get(IAgentContextMemoryService).get();
+    await expect(dispatch.runOnExisting(child, 'Rebuild external', options('external-mode', { contextMode }))).rejects.toThrow('does not support rebuilding');
+    expect(ctx.llmCalls).toHaveLength(0);
+    expect(delivered).toHaveLength(0);
+    expect(ctx.get(IAgentProfileService).getModel()).toBe('vendor-model');
+    expect(ctx.get(IAgentContextMemoryService).get()).toBe(before);
+    expect(ctx.get(IAgentStateService).get(contextWindowEpochKey)).toBe(0);
   });
 
   it('does not mark actual external model application successful merely because canonical binding committed', async () => {

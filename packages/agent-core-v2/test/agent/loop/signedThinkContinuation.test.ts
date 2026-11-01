@@ -12,7 +12,7 @@ import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthrop
 import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 
-import { appService, createTestAgent, permissionModeServices, type TestAgentContext } from '../../harness';
+import { appService, createTestAgent, permissionModeServices, type TestAgentContext, type TestAgentOptions } from '../../harness';
 
 const THINKING = 'deliberate signed thought';
 const SIGNATURE = 'sig-example';
@@ -812,10 +812,7 @@ function anthropicAgent(
     readonly permission?: 'manual' | 'yolo';
     readonly model?: string;
     readonly sdkFetch?: typeof fetch;
-    readonly initialConfig?: {
-      readonly loopControl?: { readonly maxStepsPerTurn?: number; readonly thinkingOnlyContinuation?: boolean; readonly zeroOutputContinuation?: boolean };
-      readonly retry?: { readonly policies?: readonly { readonly match: string; readonly backoff?: number }[] };
-    };
+    readonly initialConfig?: TestAgentOptions['initialConfig'];
   } = {},
 ): TestAgentContext {
   const provider = new AnthropicChatProvider({

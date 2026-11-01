@@ -6,7 +6,7 @@ import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { resolveNativeTargetBinding } from '#/session/subagent/nativeTargetBinding';
 import { randomUUID } from 'node:crypto';
 
-import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
+import { IAgentModelSwitchService, resolveResumeContextMode } from '#/agent/modelSwitch/modelSwitch';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { resolveAgentRunSource } from '#/agent/prompt/agentReferences';
 import { assertResumeFingerprint, bindResumeTask, readResumeRecord, resumeFingerprint, writeResumeRecord } from './resume';
@@ -409,6 +409,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     options: DispatchRunOptions,
   ): Promise<DispatchRun> {
     options.signal.throwIfAborted();
+    resolveResumeContextMode(options.bindingOverride);
     if (options.requesterAgentId !== undefined) {
       const caller = this.requireHandle(options.requesterAgentId, 'Requester agent');
       const binding = child.agent.accessor.get(IAgentProfileService).data();
@@ -546,8 +547,9 @@ export class SessionDispatchService implements ISessionDispatchService {
     const fingerprint = resumeFingerprint(originalRequest, options);
     const saved = readResumeRecord((await this.metadata.read()).agents?.[child.agentId], operationId);
     if (saved !== undefined) assertResumeFingerprint(saved.fingerprint, fingerprint);
+    const contextMode = resolveResumeContextMode(options.bindingOverride);
     if (childData.execution !== undefined && childData.modelAlias === undefined && options.bindingOverride?.modelAlias === undefined) {
-      if (options.bindingOverride?.newWindow === true || options.bindingOverride?.thinkingEffort !== undefined) {
+      if (contextMode !== 'direct' || options.bindingOverride?.thinkingEffort !== undefined) {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'Select an explicit vendor model before changing the native context or effort; ordinary resume keeps the original native session and defaults.');
       }
       const frozen = childData.boundProfile;
@@ -593,23 +595,30 @@ export class SessionDispatchService implements ISessionDispatchService {
     });
     checkResume();
     this.requireIdle(child.agent, options.idlePolicy ?? 'execution');
-    options.signal.throwIfAborted();
-    if (callerConstraintKey !== JSON.stringify(readCallerConstraints())) {
-      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Caller constraints changed during resume admission. Retry against the current caller policy.');
-    }
-    if (wantsInheritance && (callerProfile?.data().modelAlias !== callerData?.modelAlias ||
-      callerProfile?.getEffectiveThinkingLevel() !== (callerData?.effectiveThinkingLevel ?? callerData?.thinkingLevel))) {
-      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Caller model or thinking effort changed during resume admission. Retry against its current binding.');
-    }
+    const assertAdmission = (): void => {
+      checkResume();
+      options.signal.throwIfAborted();
+      if (callerConstraintKey !== JSON.stringify(readCallerConstraints())) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'Caller constraints changed during resume admission. Retry against the current caller policy.');
+      }
+      if (wantsInheritance && (callerProfile?.data().modelAlias !== callerData?.modelAlias ||
+        callerProfile?.getEffectiveThinkingLevel() !== (callerData?.effectiveThinkingLevel ?? callerData?.thinkingLevel))) {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'Caller model or thinking effort changed during resume admission. Retry against its current binding.');
+      }
+    };
+    assertAdmission();
     const record = saved ?? {
       operationId, fingerprint, request: originalRequest, state: 'accepted' as const,
       toolOverride: binding!.config.toolOverride,
       switchInput: { operationId, model: binding!.model, thinking: binding!.thinking,
-        mode: options.bindingOverride?.newWindow === true ? 'fresh' as const : 'direct' as const },
+        mode: contextMode },
     };
     if (saved === undefined) await writeResumeRecord(this.metadata, child.agentId, record);
     if (record.switchInput.model === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'A model switch requires an explicit bound model.');
-    const receipt = await modelSwitch.execute(record.switchInput, { binding, signal: options.signal });
+    const receipt = await modelSwitch.execute(record.switchInput, {
+      binding: binding === undefined ? undefined : { ...binding, assertCurrent: () => { binding.assertCurrent(); assertAdmission(); } },
+      signal: options.signal,
+    });
     if (receipt.state !== 'completed') {
       throw new Error2(receipt.state === 'preparing' ? ErrorCodes.STORAGE_IO_FAILED : ErrorCodes.REQUEST_INVALID,
         receipt.error?.message ?? 'The model switch has not completed. Retry this resume operation before starting its task.',
@@ -629,8 +638,9 @@ export class SessionDispatchService implements ISessionDispatchService {
         throw new Error2(ErrorCodes.REQUEST_INVALID, 'Caller constraints changed during resume recovery. Retry against the current caller policy.');
       }
     }
+    assertAdmission();
     await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'ready' });
-    options.signal.throwIfAborted();
+    assertAdmission();
     const request: AgentRunRequest = originalRequest.kind === 'prompt'
       ? { ...originalRequest, promptId: originalRequest.promptId ?? `resume-prompt:${operationId}` }
       : originalRequest;

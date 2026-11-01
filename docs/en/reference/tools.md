@@ -343,7 +343,10 @@ Collaboration tools handle inter-Agent coordination, user interaction, and Skill
 | `route` | A profile route to run instead of a named profile |
 | `model_alias` | The model the child uses. See [model selection](./model-vocabulary.md#binding-rules) for the full resolution order. The receipt's `actual_model` line reports the model actually bound |
 | `effort` | Thinking effort for this child |
-| `allow_model_change` | Required on `resume` to switch an existing child to a different model |
+| `resume` | Name or ID of an existing idle direct child; rejects new-agent target and workspace fields |
+| `context_mode` | Resume-only: `direct` keeps context, `compact` summarizes with the current model first, `fresh` rebuilds from saved task state without calling the old model; also confirms an explicit model change |
+| `allow_model_change` | Legacy model-change confirmation requiring `resume` and `model_alias`; mutually exclusive with `context_mode` |
+| `new_window` | Legacy fresh-context continuation requiring `resume`; mutually exclusive with `context_mode` |
 | `tools` | Replaces the resolved tool selection for this binding only. A lone `*`, or `["*", ThreadRead]`, keeps the ordinary tools and adds that opt-in; a finite list stays finite |
 | `disallowed_tools` | Adds a call-level deny. `[]` clears only that layer, never a profile, ancestor, or route deny |
 
@@ -353,7 +356,9 @@ Omit both `tools` and `disallowed_tools` and a new child uses the configured def
 
 `preferred_models`, `discouraged_models`, and `preferred_efforts` are recommendations, so a model outside them still runs. `allowed_models`, `deny_models`, and `allowed_efforts` are hard: binding, manual changes, and resume all reject a violation, as do machine-level deny rules and unavailable capabilities.
 
-**Resume.** `resume` continues an existing direct child by name or agent id, and is mutually exclusive with `name`, `profile`, `profile_file`, and `route`. Omit both `model_alias` and `effort` to keep the saved binding, or pass `effort` to apply it on the next idle run. `model_alias: "inherit"` is rejected here too — use a concrete model name to change models, and add `allow_model_change: true` when the change resolves to a different model. An external executor that cannot change a resumed thread's binding returns an error rather than recreating the thread.
+**Resume.** `resume` continues an idle direct child by name or agent id, and rejects `name`, `profile`, `profile_file`, `route`, `workDir` and `additionalDirs`. Omit `model_alias` and `effort` to keep the saved binding, or pass `effort` for the next idle run. An explicit `context_mode` chooses `direct`, `compact` or `fresh` and confirms a different canonical model when `model_alias` is also supplied. Without a context choice, ordinary resume remains direct. The same child ID, task notes, Todo, history and workspace remain available. `compact` and `fresh` require native Kiki execution; an external executor returns an error without recreating its thread.
+
+Do not combine `context_mode` with either legacy parameter, even when false. Without `context_mode`, legacy `new_window: true` selects fresh context and takes precedence over `allow_model_change`; otherwise `allow_model_change: true` confirms a direct model change. `new_window: false` does not veto that confirmation. `model_alias: "inherit"` remains invalid. See [resume choices and recovery](../customization/agents-and-subagents.md#named-child-agents) for an example and commit-failure behavior.
 
 **Timeouts and modes.** Agent tasks time out after 2 hours by default; set the global limit with `[subagent] timeout_ms` or `KIKI_SUBAGENT_TIMEOUT_MS` (`0` disables it), and print mode defaults to no timeout. There is no per-call timeout. In foreground mode the parent waits; in background mode a task ID returns immediately and the result arrives later as a synthetic User message. The TUI groups several foreground calls from one step and shows their status and elapsed time. See [Agents and Sub-Agents](../customization/agents-and-subagents.md) for the complete profile and lifecycle contract.
 
