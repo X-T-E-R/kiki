@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AgentTranscript, AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter, type TranscriptWireRecord } from '@kiki/transcript';
 import { createViewState, projectAgentTranscriptView } from './transcript';
 import { foldHistory, groupBlocks } from './grouping';
@@ -24,6 +24,15 @@ describe('source-position timeline markers', () => {
     const blocks = project([turn(0, 0, [[1, 'before'], [5, 'after']]), marker('renew', 4), turn(1, 9, [[10, 'next']])]);
     expect(blocks.map((block) => block.id)).toEqual(['user-agent-turn-t0-prompt', 'agent-frame-f0.0',
       'agent-marker-renew', 'agent-frame-f0.1', 'user-agent-turn-t1-prompt', 'agent-frame-f1.0']);
+  });
+  it('reads each source timestamp once when placing a marker-dense history page', () => {
+    const items = Array.from({ length: 20 }, (_, ordinal) => [turn(ordinal, ordinal, [[ordinal + 1, `answer ${ordinal}`]]),
+      ...Array.from({ length: 3 }, (_, index) => marker(`model-${ordinal}-${index}`, ordinal + 2, 'model'))]).flat();
+    const parse = vi.spyOn(Date, 'parse');
+    try {
+      expect(project(items)).toHaveLength(100);
+      expect(parse.mock.calls.length).toBeLessThan(500);
+    } finally { parse.mockRestore(); }
   });
   it('places late backfilled model/goal/skill markers by source time without changing conversation order', () => {
     const blocks = project([turn(0, 0, [[1, 'first']]), turn(1, 10, [[11, 'last']]),

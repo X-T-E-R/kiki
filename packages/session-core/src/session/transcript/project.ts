@@ -2974,33 +2974,61 @@ export function agentTranscriptToBlocks(
   const firstTurn = turns.reduce<(typeof turns)[number] | undefined>((first, turn) =>
     first === undefined || ordinalOf(turn) < ordinalOf(first) ? turn : first, undefined);
   const firstAt = timestampMs(firstTurn?.startedAt);
+  const sourceTimes = new Map<Block, number | undefined>();
+  const sourceTime = (block: Block): number | undefined => {
+    if (!sourceTimes.has(block)) sourceTimes.set(block, 'frameId' in block && block.frameId !== undefined
+      ? frameTimes.get(block.frameId) ?? blockTimelineMs(block) : blockTimelineMs(block));
+    return sourceTimes.get(block);
+  };
+  const sourceTimestamps = new Set(withTaskBlocks.map(sourceTime).filter((time) => time !== undefined));
+  const nextSourceTurns = new Map<string, string | undefined>();
+  let nextTurnId: string | undefined;
+  for (let index = sourceItems.length - 1; index >= 0; index -= 1) {
+    const item = sourceItems[index]!;
+    if (item.kind === 'turn') nextTurnId = item.turnId;
+    else if (item.kind === 'marker') {
+      nextSourceTurns.set(`agent-marker-${item.markerId}`, nextTurnId);
+      const messageId = typeof item.payload === 'object' && item.payload !== null
+        ? recordString(item.payload as Record<string, unknown>, 'messageId') : undefined;
+      if (messageId !== undefined) nextSourceTurns.set(`user-${messageId}`, nextTurnId);
+    }
+  }
+  const firstBlockByTurn = new Map<string, Block>();
+  const promptIdentities = new Set<string>();
+  for (const block of withTaskBlocks) {
+    const turnId = normalizeTurnId(blockTurnId(block));
+    if (turnId !== undefined && !firstBlockByTurn.has(turnId)) firstBlockByTurn.set(turnId, block);
+    if (block.kind === 'user') for (const id of [block.promptId, block.userMessageId]) {
+      if (id !== undefined) promptIdentities.add(id);
+    }
+  }
+  const firstPosition = (turnId: string | undefined): number => {
+    const first = turnId === undefined ? undefined : firstBlockByTurn.get(normalizeTurnId(turnId)!);
+    return first === undefined ? -1 : withTaskBlocks.indexOf(first);
+  };
   const projectedIds = new Set(withTaskBlocks.map((block) => block.id));
-  for (const marker of markerBlocks.toSorted((left, right) => blockTimelineMs(left)! - blockTimelineMs(right)!)) {
+  for (const marker of markerBlocks.toSorted((left, right) => sourceTime(left)! - sourceTime(right)!)) {
     if (deliveryBlocks.has(marker) && projectedIds.has(marker.id)) continue;
-    const at = blockTimelineMs(marker)!;
+    const at = sourceTime(marker)!;
     const promptOwner = marker.kind === 'system-reminder' || marker.kind === 'system' ? marker.ownerPromptId : undefined;
-    const ownsLoadedPrompt = promptOwner !== undefined && withTaskBlocks.some((block) => isPromptIdentity(block, promptOwner));
+    const ownsLoadedPrompt = promptOwner !== undefined && promptIdentities.has(promptOwner);
     if (!ownsLoadedPrompt && firstTurn !== undefined && ordinalOf(firstTurn) > 0 && firstAt !== undefined && at < firstAt) continue;
-    const owner = blockTurnId(marker);
-    const ownerStart = owner === undefined ? -1 : withTaskBlocks.findIndex((block) => sameTurnId(blockTurnId(block), owner));
-    const sourceTime = (block: Block) => 'frameId' in block && block.frameId !== undefined
-      ? frameTimes.get(block.frameId) ?? blockTimelineMs(block) : blockTimelineMs(block);
+    const owner = normalizeTurnId(blockTurnId(marker));
+    const ownerStart = firstPosition(owner);
     const next = withTaskBlocks.findIndex((block, index) => {
       if (ownerStart >= 0 && index < ownerStart) return false;
       const time = sourceTime(block);
       return time !== undefined && time > at;
     });
-    const sourceIndex = sourceItems.findIndex((item) => item.kind === 'marker' &&
-      (`agent-marker-${item.markerId}` === marker.id || (marker.kind === 'user' &&
-        typeof item.payload === 'object' && item.payload !== null &&
-        recordString(item.payload as Record<string, unknown>, 'messageId') === marker.userMessageId)));
-    const nextSourceTurn = sourceIndex < 0 ? undefined : sourceItems.slice(sourceIndex + 1).find((item) => item.kind === 'turn');
-    const structural = nextSourceTurn?.kind === 'turn'
-      ? withTaskBlocks.findIndex((block) => sameTurnId(blockTurnId(block), nextSourceTurn.turnId)) : -1;
-    const tied = withTaskBlocks.some((block) => sourceTime(block) === at);
-    const noClock = !withTaskBlocks.some((block) => sourceTime(block) !== undefined);
-    const insertion = (tied || noClock) && structural >= 0 ? structural : next;
-    withTaskBlocks.splice(insertion < 0 ? withTaskBlocks.length : insertion, 0, marker);
+    const structural = firstPosition(nextSourceTurns.get(marker.id));
+    const insertion = (sourceTimestamps.has(at) || sourceTimestamps.size === 0) && structural >= 0 ? structural : next;
+    const position = insertion < 0 ? withTaskBlocks.length : insertion;
+    withTaskBlocks.splice(position, 0, marker);
+    if (owner !== undefined && (ownerStart < 0 || position <= ownerStart)) firstBlockByTurn.set(owner, marker);
+    if (marker.kind === 'user') for (const id of [marker.promptId, marker.userMessageId]) {
+      if (id !== undefined) promptIdentities.add(id);
+    }
+    sourceTimestamps.add(at);
     projectedIds.add(marker.id);
   }
   for (const block of deferredTaskBlocks) {
