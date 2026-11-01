@@ -81,6 +81,16 @@ http │ ipc │ memory
   attachment. Await it before triggering work whose output you need to capture.
   Delivery remains best-effort, not replay; later disconnects and invalid payloads
   report through `events.onError`. Underlying subscriptions are shared and ref-counted.
+
+  An `agent(id).events.on(...)` subscription for a cold child listed only in the
+  session's persisted metadata does not resume the session or run the agent; it
+  attaches session and agent lifecycle watches instead. `ready` resolves when the
+  event source or lifecycle watch is actually attached. It does not indicate that
+  the agent is running or idle, and the subscription does not replay past events.
+  If that child is later legally created or restored, the subscription follows its
+  live event source. The lifecycle watch survives session close/reopen and agent
+  generation replacement; `dispose()` cancels every source and lifecycle watch.
+  A missing session or child still fails with `40404`.
   `agent.prompt(input, { waitFor: 'terminal', signal })` waits for that submitted
   prompt's own terminal receipt, including blocked or failed launches, without a
   default request deadline. Abort stops only this wait; use `agent.cancel()` to

@@ -21,9 +21,10 @@ import {
 import { expect, it, vi } from 'vitest';
 import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
+import { ISessionMetadata } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 
 import { startServer } from '../../kap-server/src/start.js';
-import { createKlient } from '../src/transports/http/index.js';
+import { createKlient, HttpChannel } from '../src/transports/http/index.js';
 import { defineKlientConformance } from './helpers/conformance.js';
 import { TEST_CLIENT_IDENTITY } from './helpers/engine.js';
 
@@ -55,6 +56,65 @@ defineKlientConformance('http', async () => {
       await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     },
   };
+});
+
+it('reattaches cold archived child event watches after HTTP reconnect without restoring execution', async () => {
+  const homeDir = await mkdtemp(join(tmpdir(), 'klient-child-events-http-'));
+  const server = await startServer({
+    hostIdentity: TEST_CLIENT_IDENTITY, host: '127.0.0.1', port: 0, homeDir, logLevel: 'silent',
+  });
+  await server.core.accessor.get(ISessionIndex).prepare();
+  const sockets: WebSocket[] = [];
+  class ControlledWebSocket extends WebSocket {
+    constructor(url: string | URL, protocols?: ConstructorParameters<typeof WebSocket>[1]) {
+      super(url, protocols); sockets.push(this);
+    }
+  }
+  const options = { endpoint: `http://127.0.0.1:${server.port}`, token: server.localOwnerToken };
+  const klient = createKlient(options);
+  const channel = new HttpChannel({ ...options, WebSocket: ControlledWebSocket });
+  const manager = server.core.accessor.get(ISessionManager);
+  const resume = vi.spyOn(manager, 'resume');
+  try {
+    const created = await klient.global.sessions.create({ workDir: homeDir });
+    const session = klient.session(created.id);
+    const agentId = 'reconnect-child';
+    await manager.get(created.id)!.accessor.get(ISessionMetadata).registerAgent(agentId, { type: 'sub', status: 'cancelled' });
+    await manager.archive(created.id);
+    resume.mockClear();
+    const ready = vi.fn();
+    const errors = vi.fn();
+    const seen = vi.fn();
+    const sub = channel.listen({ sessionId: created.id, agentId }, { kind: 'stream', name: 'events' }, seen, errors, ready);
+    try {
+      await vi.waitFor(() => { expect(ready).toHaveBeenCalledOnce(); });
+      sockets.at(-1)!.close();
+      await vi.waitFor(() => { expect(ready).toHaveBeenCalledTimes(2); }, { timeout: 10_000 });
+      expect(errors).toHaveBeenCalledOnce();
+      expect(resume).not.toHaveBeenCalled();
+      expect(manager.get(created.id)).toBeUndefined();
+      expect((await session.get()).archived).toBe(true);
+      expect(seen).not.toHaveBeenCalled();
+      const restored = await manager.restore(created.id);
+      await restored!.accessor.get(IAgentLifecycleService).create({ agentId });
+      await session.agent(agentId).setPermission('manual');
+      await vi.waitFor(() => {
+        expect(seen.mock.calls.some(([event]) => event.type === 'agent.status.updated' && event.permission === 'manual')).toBe(true);
+      });
+      await session.close();
+      sockets.at(-1)!.close();
+      await vi.waitFor(() => { expect(ready).toHaveBeenCalledTimes(3); }, { timeout: 10_000 });
+      expect(manager.get(created.id)).toBeUndefined();
+      sub.dispose();
+      await manager.resume(created.id);
+      await manager.get(created.id)!.accessor.get(IAgentLifecycleService).create({ agentId });
+      await session.agent(agentId).setPermission('yolo');
+      expect(seen.mock.calls.some(([event]) => event.permission === 'yolo')).toBe(false);
+    } finally { sub.dispose(); await session.close(); }
+  } finally {
+    resume.mockRestore(); await channel.close(); await klient.close(); await server.close();
+    await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
 });
 
 it('converges interactions, metadata and providers changed in the HTTP black window without later events', async () => {
