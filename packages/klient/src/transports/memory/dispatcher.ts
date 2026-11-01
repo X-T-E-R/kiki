@@ -1,8 +1,8 @@
 /**
  * In-process dispatcher — resolves a wire triple `(service, method, args)`
  * against a live engine scope and mirrors kap-server's dispatcher semantics
- * (reflection calls and property reads, with lifecycle-only watches for an
- * absent `main`). Scope routing resolves workspace
+ * (reflection calls and property reads, with passive lifecycle watches for
+ * nonresident agents' ordinary events). Scope routing resolves workspace
  * instances through `IWorkspaceInstanceManager` and live sessions through the
  * App `SessionManager`, matching the server's `resolveScope`. Every argument,
  * result, and event payload passes
@@ -10,11 +10,11 @@
  * byte-identical data no matter whether the call crossed a socket or stayed
  * in-process — and non-serializable leaks fail early.
  *
- * Shared by the memory transport and the IPC host, which guarantees ipc and
- * memory behave identically by construction.
+ * Shared by the memory transport and the HTTP/IPC hosts, so scope routing and
+ * ordinary event subscriptions behave identically across transports.
  */
 
-import type { ServiceIdentifier } from '@kiki/agent-core-v2/_base/di/instantiation';
+import { IInstantiationService, type ServiceIdentifier } from '@kiki/agent-core-v2/_base/di/instantiation';
 import { IWorkspaceInstanceManager } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
 import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionManager';
 import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
@@ -272,6 +272,135 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
         handler(wireClone(data));
       },
     );
+  }
+
+  function listenAgentEvents(
+    sessionId: string,
+    agentId: string,
+    handler: (data: unknown) => void,
+    onError?: (error: Error) => void,
+    onReady?: () => void,
+  ): IDisposable {
+    let disposed = false;
+    let session: ScopeLike | undefined;
+    let agent: ScopeLike | undefined;
+    let source: IDisposable | undefined;
+    let agentDisposal: IDisposable | undefined;
+    let sessionWatches: IDisposable[] = [];
+    const watches: IDisposable[] = [];
+    const detachAgent = () => {
+      agent = undefined;
+      source?.dispose(); source = undefined;
+      agentDisposal?.dispose(); agentDisposal = undefined;
+    };
+    const detachSession = () => {
+      session = undefined;
+      detachAgent();
+      for (const watch of sessionWatches) watch.dispose();
+      sessionWatches = [];
+    };
+    const subscription = {
+      dispose: () => {
+        if (disposed) return;
+        disposed = true;
+        detachSession();
+        for (const watch of watches) watch.dispose();
+        watches.length = 0;
+      },
+    };
+    const fail = (error: unknown) => {
+      if (disposed) return;
+      subscription.dispose();
+      const normalized = toRPCError(error);
+      onError?.(normalized instanceof Error ? normalized : new Error(String(normalized)));
+    };
+    const attachAgent = (handle: ScopeLike | undefined) => {
+      if (disposed || handle === agent) return;
+      detachAgent();
+      if (handle === undefined) return;
+      agent = handle;
+      agentDisposal = handle.accessor.get(IInstantiationService).onWillDispose(detachAgent);
+      source = subscribeStream({ kind: 'agent', like: handle }, 'events', data => {
+        if (!disposed && agent === handle) handler(data);
+      });
+    };
+    const attachSession = (handle: ScopeLike | undefined) => {
+      if (disposed || handle === session) return;
+      detachSession();
+      if (handle === undefined) return;
+      let instantiation: IInstantiationService;
+      try {
+        instantiation = handle.accessor.get(IInstantiationService);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'InstantiationService has been disposed') return;
+        throw error;
+      }
+      session = handle;
+      sessionWatches.push(instantiation.onWillDispose(detachSession));
+      const lifecycle = handle.accessor.get(IAgentLifecycleService);
+      sessionWatches.push(lifecycle.onDidCreate(created => {
+        if (session !== handle || created.id !== agentId) return;
+        try { attachAgent(created); } catch (error) { fail(error); }
+      }));
+      sessionWatches.push(lifecycle.onDidDispose(id => {
+        if (session !== handle || id !== agentId) return;
+        try { attachAgent(lifecycle.get(agentId)); } catch (error) { fail(error); }
+      }));
+      attachAgent(lifecycle.get(agentId));
+    };
+    void Promise.resolve().then(async () => {
+      if (disposed) return;
+      const manager = root.accessor.get(ISessionManager);
+      const created = manager.onDidCreateSession?.(event => {
+        if (event.sessionId !== sessionId) return;
+        try { attachSession(event.handle); } catch (error) { fail(error); }
+      });
+      if (created === undefined) throw new RPCError(REQUEST_INVALID, 'session lifecycle event watch unavailable');
+      watches.push(created);
+      const closed = manager.onDidCloseSession?.(event => {
+        if (event.sessionId === sessionId) detachSession();
+      });
+      if (closed !== undefined) watches.push(closed);
+      const archived = manager.onDidArchiveSession?.(event => {
+        if (event.sessionId === sessionId) detachSession();
+      });
+      if (archived !== undefined) watches.push(archived);
+      const deleted = manager.onDidDeleteSession?.(event => {
+        if (event.sessionId === sessionId) fail(new RPCError(NOT_FOUND, `session not found: ${sessionId}`));
+      });
+      if (deleted !== undefined) watches.push(deleted);
+      attachSession(manager.get(sessionId));
+      for (;;) {
+        if (disposed || agent !== undefined || (session !== undefined && agentId === 'main')) break;
+        const observedSession = session;
+        let metadata: SessionMeta | undefined;
+        try {
+          if (observedSession !== undefined) {
+            metadata = await observedSession.accessor.get(ISessionMetadata).read();
+          } else {
+            const summary = await root.accessor.get(ISessionIndex).get(sessionId);
+            if (disposed) return;
+            if (session !== observedSession) continue;
+            if (summary === undefined) throw new RPCError(NOT_FOUND, `session not found: ${sessionId}`);
+            metadata = await root.accessor.get(IAtomicDocumentStore).get<SessionMeta>(`sessions/${summary.workspaceId}/${sessionId}`, 'state.json');
+          }
+        } catch (error) {
+          if (disposed) return;
+          if (session !== observedSession || agent !== undefined) continue;
+          throw error;
+        }
+        if (disposed) return;
+        if (session !== observedSession || agent !== undefined) continue;
+        if (metadata?.id !== sessionId) throw new RPCError(NOT_FOUND, `session not found: ${sessionId}`);
+        if (!/^[a-zA-Z0-9_-]+$/.test(agentId) ||
+          (agentId !== 'main' && !Object.hasOwn(metadata.agents ?? {}, agentId))) {
+          throw new RPCError(NOT_FOUND, `agent not found: ${agentId}`);
+        }
+        break;
+      }
+      if (!disposed) onReady?.();
+    }).catch(fail);
+    return subscription;
   }
 
   return {
@@ -568,6 +697,10 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
     },
 
     listen(scope, source, handler, onError, onReady) {
+      if (scope.workspaceId === undefined && scope.sessionId !== undefined && scope.agentId !== undefined &&
+        source.kind === 'stream' && source.name === 'events') {
+        return listenAgentEvents(scope.sessionId, scope.agentId, handler, onError, onReady);
+      }
       if (scope.sessionId !== undefined && scope.agentId === undefined && scope.workspaceId === undefined &&
         source.kind === 'emitter' && source.service === 'sessionExecutionControl') {
         const manager = root.accessor.get(ISessionManager);

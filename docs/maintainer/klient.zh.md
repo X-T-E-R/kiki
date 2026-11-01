@@ -53,6 +53,10 @@ await klient.session(session.id).close();
 await klient.close();
 ```
 
+`agent.events.on(...)` 是实时、尽力投递的订阅。如果 Agent ID 只存在于该 session 的已保存元数据中，订阅不会恢复 session，也不会运行该 Agent；它只附着 session 和 Agent 的生命周期 watch。`ready` 会在事件 source 或生命周期 watch 实际附着后才 resolve；它不表示 Agent 正在运行或处于 idle，订阅也不会回放历史事件。
+
+同一个 child 后续合法创建或恢复后，订阅会跟随它的实时 source。session close/reopen 和 Agent generation replacement 都会保留生命周期 watch；`dispose()` 会取消全部 source 与生命周期 watch。session 或 child 不存在时，订阅仍以 `40404` 失败。
+
 `agent.prompt(..., { waitFor: 'terminal' })` 等待这条提示词自己的终止回执（包括启动失败或被拦截的情况）；不带 `waitFor` 时调用立即返回启动结果。需要中止执行时用 `agent.cancel()`，它只取消执行，不影响这次等待。
 
 不需要独立服务器、想在进程内直接驱动引擎时，改用 memory 传输：

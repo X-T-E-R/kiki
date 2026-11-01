@@ -25,6 +25,8 @@ import { IAgentPromptService, reservePrompt } from '@kiki/agent-core-v2/agent/pr
 import { IModelService } from '@kiki/agent-core-v2/kosong/model/model';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { ISessionActivityView } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
+import { ISessionMetadata } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionManager';
 import { ConfigTarget, IConfigService, IEventService, IPluginService, PluginChanged } from '@kiki/agent-core-v2';
 import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import { IAgentPermissionModeService } from '@kiki/agent-core-v2/agent/permissionMode/permissionMode';
@@ -1216,6 +1218,84 @@ export function defineKlientConformance(
         await kosong.removeProvider(initialModel);
         await kosong.removeProvider(targetModel);
       }
+    });
+
+    it.each([false, true])('watches a persisted child without restoring execution (cold session: %s)', async (cold) => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const session = target.klient.session(created.id);
+      const manager = target.app.accessor.get(ISessionManager);
+      const agentId = 'watched-child';
+      const initial = manager.get(created.id)!;
+      await initial.accessor.get(ISessionMetadata).registerAgent(agentId, { type: 'sub', status: 'cancelled' });
+      if (cold) await session.close();
+      const resume = vi.spyOn(manager, 'resume');
+      const seen: string[] = [];
+      const errors: Error[] = [];
+      const agent = session.agent(agentId);
+      const errorSub = agent.events.onError(error => errors.push(error));
+      const sub = agent.events.on('agent.status.updated', event => {
+        if (typeof event['permission'] === 'string') seen.push(event['permission']);
+      });
+      try {
+        await sub.ready;
+        expect(resume).not.toHaveBeenCalled();
+        expect(manager.get(created.id)?.accessor.get(IAgentLifecycleService).get(agentId)).toBeUndefined();
+        expect((await session.agents())[agentId]).toMatchObject({ status: 'cancelled' });
+        expect(seen).toEqual([]);
+        const live = await manager.resume(created.id);
+        const lifecycle = live!.accessor.get(IAgentLifecycleService);
+        await lifecycle.create({ agentId });
+        await agent.setPermission('manual');
+        await waitFor(() => seen.includes('manual'), 2_000);
+        await lifecycle.remove(agentId);
+        await lifecycle.create({ agentId });
+        await agent.setPermission('yolo');
+        await waitFor(() => seen.includes('yolo'), 2_000);
+        await session.close();
+        const reopened = await manager.resume(created.id);
+        await reopened!.accessor.get(IAgentLifecycleService).create({ agentId });
+        await agent.setPermission('review');
+        await waitFor(() => seen.includes('review'), 2_000);
+        expect(seen).toEqual(['manual', 'yolo', 'review']);
+        expect(errors).toEqual([]);
+        sub.dispose();
+        await agent.setPermission('auto');
+        expect(seen).not.toContain('auto');
+      } finally {
+        resume.mockRestore(); sub.dispose(); errorSub.dispose(); await session.close();
+      }
+    });
+
+    it('keeps unstarted main event watches passive until main is created', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const session = target.klient.session(created.id);
+      const lifecycle = getLiveSessionById(target.app.accessor, created.id)!.accessor.get(IAgentLifecycleService);
+      const seen: string[] = [];
+      const sub = session.agent('main').events.on('goal.updated', event => {
+        if (event.snapshot !== null) seen.push(event.snapshot.objective);
+      });
+      try {
+        await sub.ready;
+        expect(lifecycle.get('main')).toBeUndefined();
+        await session.agent('main').createGoal({ objective: 'main created later', initialStatus: 'paused' });
+        await waitFor(() => seen.includes('main created later'), 2_000);
+      } finally { sub.dispose(); await session.close(); }
+    });
+
+    it('rejects event watches for missing sessions and children outside the session registry', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const other = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      await getLiveSessionById(target.app.accessor, other.id)!.accessor.get(ISessionMetadata)
+        .registerAgent('other-child', { type: 'sub' });
+      await target.klient.session(created.id).close();
+      try {
+        for (const [sessionId, agentId] of [[created.id, 'other-child'], [created.id, '__proto__'], ['missing-session', 'main']]) {
+          const sub = target.klient.session(sessionId!).agent(agentId!).events.on('goal.updated', () => {});
+          try { await expect(sub.ready).rejects.toMatchObject({ code: 40404 }); }
+          finally { sub.dispose(); }
+        }
+        expect(getLiveSessionById(target.app.accessor, created.id)).toBeUndefined();
+      } finally { await target.klient.session(other.id).close(); }
     });
 
     it('keeps todo state isolated per agent across the transport', async () => {
