@@ -39,6 +39,7 @@ import {
   TranscriptStore,
   TranscriptWireAdapter,
   applyContentSegment,
+  compareTurnIds,
   jsonBytes,
   transcriptResponseSchema,
   transcriptResetPayloadSchema,
@@ -4968,11 +4969,12 @@ it('continues beforeTurn past a leading higher turn when the tail window does no
   try {
     const tail = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', pageSize: 1 });
     expect(tail?.items.some((item) => item.kind === 'turn' && item.turnId === 't2')).toBe(false);
-    const first = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't2', pageSize: 1 });
-    expect(first?.items).toEqual([]);
-    expect(first?.has_more).toBe(true);
-    expect(first?.next_cursor).toBeDefined();
-    const older = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't2', pageSize: 1 });
+    let older = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't2', pageSize: 1 });
+    if ((older?.items.length ?? 0) === 0) {
+      expect(older?.has_more).toBe(true);
+      expect(older?.next_cursor).toBeDefined();
+      older = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't2', pageSize: 1 });
+    }
     expect(older?.items[0]).toMatchObject({ kind: 'turn', turnId: 't1' });
     let oldest = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't1', pageSize: 1 });
     if ((oldest?.items.length ?? 0) === 0) {
@@ -5019,11 +5021,12 @@ it.each(['cold', 'derived'] as const)('seeks before a long orphan turn in bounde
       vi.spyOn(service, 'getTranscriptCursor').mockReturnValue({ epoch: 'resident-test', seq: 7 });
     }
     const before = service.memoryReport().coldReads.bytes;
-    const pending = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: 'turn:t1', pageSize: 1 });
-    expect(pending).toMatchObject({ items: [], has_more: true, read: { source, readiness: 'preparing' } });
-    expect(pending?.next_cursor).toBeDefined();
-    expect(JSON.parse(Buffer.from(pending!.next_cursor!, 'base64url').toString('utf8'))).toMatchObject({ anchor: 'turn:t1', source });
-    const marker = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: pending!.next_cursor!, pageSize: 1 });
+    let marker = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: 'turn:t1', pageSize: 1 });
+    if (marker?.read?.readiness === 'preparing') {
+      expect(marker).toMatchObject({ items: [], has_more: true, read: { source } });
+      expect(JSON.parse(Buffer.from(marker.next_cursor!, 'base64url').toString('utf8'))).toMatchObject({ anchor: 'turn:t1', source });
+      marker = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: marker.next_cursor!, pageSize: 1 });
+    }
     expect(marker?.items).toContainEqual(expect.objectContaining({ kind: 'marker', markerId: 'wire:v2:plan_mode.enter:older-plan' }));
     const locatedBytes = service.memoryReport().coldReads.bytes;
     expect(locatedBytes - before).toBeLessThan(12 << 20);
@@ -5031,6 +5034,116 @@ it.each(['cold', 'derived'] as const)('seeks before a long orphan turn in bounde
     expect(older?.items.find(item => item.kind === 'turn')).toMatchObject({ turnId: 't0', prompt: 'original-0' });
     expect(service.memoryReport().coldReads.bytes - locatedBytes).toBeLessThan(2 << 20);
     expect(service.memoryReport().coldWindowBytes).toBeLessThanOrEqual(32 << 20);
+  } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+});
+
+async function writeManagedSubagentWire(path: string, turns: number, steps: number, tail = ''): Promise<string[]> {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFixtureFile(path, `${JSON.stringify({ type: 'metadata', protocol_version: '1.6' })}\n`);
+  const prompts: string[] = [];
+  for (let turnId = 0; turnId < turns; turnId++) {
+    const text = `subagent opening ${turnId}`;
+    prompts.push(text);
+    const origin = { kind: 'system_trigger', name: 'subagent' };
+    const promptId = `subagent-prompt-${turnId}`;
+    await appendFixtureFile(path, [
+      { type: 'prompt.enqueued', promptId, userMessageId: promptId, message: { role: 'user', content: [{ type: 'text', text }], origin, id: promptId }, time: 1000 + turnId },
+      { type: 'turn.prompt', turnId, promptId, input: [{ type: 'text', text }], origin, managed: true, time: 1001 + turnId },
+      { type: 'context.append_message', message: { role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin, id: promptId },
+        delivery: { deliveryId: `delivery-${turnId}`, messageId: promptId, turnId, stepId: `step-${turnId}`, step: 1, deliveredAt: '2026-01-01T00:00:00.000Z', origin: 'queue' }, time: 1002 + turnId },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId, uuid: `step-${turnId}`, step: 1 } },
+    ].map(record => JSON.stringify(record)).join('\n') + '\n');
+    for (let step = 0; step < steps; step++) await appendFixtureFile(path, [
+      { type: 'context.append_loop_event', event: { type: 'tool.call', turnId, stepUuid: `step-${turnId}`, uuid: `f${turnId}-${step}`, toolCallId: `c${turnId}-${step}`, name: 'Read', args: {} } },
+      { type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: `c${turnId}-${step}`, result: { output: 'x'.repeat(256 << 10), isError: false } } },
+    ].map(record => JSON.stringify(record)).join('\n') + '\n');
+    await appendFixtureFile(path, `${JSON.stringify({ type: 'turn.ended', turnId, reason: 'completed', time: 2000 + turnId })}\n`);
+  }
+  if (tail.length > 0) await appendFixtureFile(path, tail);
+  return prompts;
+}
+
+async function walkOlderPrompts(service: TranscriptService, agentId: string, maxPages = 200): Promise<{ prompts: Map<string, string | undefined>; stale: boolean; pages: number }> {
+  const prompts = new Map<string, string | undefined>();
+  let cursor: string | undefined;
+  let pages = 0;
+  for (; pages < maxPages; pages++) {
+    const page = await readSessionViewTranscriptPage(service, 's1', { agentId, beforeItem: cursor });
+    if (page?.read?.stale !== undefined) return { prompts, stale: true, pages };
+    for (const item of page?.items ?? []) if (item.kind === 'turn') prompts.set(item.turnId, item.prompt ?? prompts.get(item.turnId));
+    if (page?.has_more !== true || page.next_cursor === undefined) break;
+    cursor = page.next_cursor;
+  }
+  return { prompts, stale: false, pages };
+}
+
+it.each([
+  { name: 'complete wire', tail: '' },
+  { name: 'torn tail after a power loss', tail: '{"type":"context.append_loop_event","event":{"type":"tool.call","turnId":' },
+])('pages every managed subagent opening of a large cold wire back to the first turn ($name)', async ({ tail }) => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-managed-openings-'));
+  const path = join(home, 'sessions/ws/s1/agents/agent-7/wire.jsonl');
+  const prompts = await writeManagedSubagentWire(path, 5, 10, tail);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const walked = await walkOlderPrompts(service, 'agent-7');
+    expect(walked.stale).toBe(false);
+    expect([...walked.prompts.keys()].sort(compareTurnIds)).toEqual(['t0', 't1', 't2', 't3', 't4']);
+    expect(Object.fromEntries(walked.prompts)).toEqual(Object.fromEntries(prompts.map((text, turnId) => [`t${turnId}`, text])));
+  } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+}, 60_000);
+
+it('opens an anchor window at the delivered prompt of a managed turn', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-managed-anchor-'));
+  const path = join(home, 'sessions/ws/s1/agents/agent-7/wire.jsonl');
+  await writeManagedSubagentWire(path, 3, 16);
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    let snapshot = await service.readAnchoredColdSnapshot('s1', 'agent-7', 't1');
+    for (let attempt = 0; snapshot !== undefined && service.anchorReadState(snapshot) === 'pending' && attempt < 8; attempt++) {
+      snapshot = await service.readAnchoredColdSnapshot('s1', 'agent-7', 't1');
+    }
+    expect(snapshot?.items.find(item => item.kind === 'turn' && item.turnId === 't1')).toMatchObject({
+      promptId: 'subagent-prompt-1', prompt: 'subagent opening 1' });
+  } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+}, 60_000);
+
+it('locates an old turn of a long wire without one preparing page per 8 MiB slice', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-turn-start-index-'));
+  const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+  await mkdir(dirname(path), { recursive: true });
+  const padding = `${JSON.stringify({ type: 'fixture.padding', padding: 'x'.repeat(1 << 20) })}\n`.repeat(8);
+  for (let turnId = 0; turnId < 6; turnId++) {
+    await appendFixtureFile(path, `${JSON.stringify({ type: 'turn.prompt', turnId, promptId: `p${turnId}`, input: [{ type: 'text', text: `opening ${turnId}` }], origin: { kind: 'user' } })}\n`);
+    await appendFixtureFile(path, padding);
+    await appendFixtureFile(path, `${JSON.stringify({ type: 'turn.ended', turnId, reason: 'completed' })}\n`);
+  }
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const snapshot = await service.readAnchoredColdSnapshot('s1', 'main', 't1');
+    expect(snapshot === undefined ? undefined : service.anchorReadState(snapshot)).not.toBe('pending');
+    expect(snapshot?.items.find(item => item.kind === 'turn' && item.turnId === 't1')).toMatchObject({ prompt: 'opening 1' });
+  } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+}, 60_000);
+
+it('continues a live-source cursor through the derived history path', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-live-cursor-'));
+  const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+  await mkdir(dirname(path), { recursive: true });
+  await writeFixtureFile(path, Array.from({ length: 30 }, (_, turnId) => JSON.stringify({ type: 'turn.prompt', turnId, promptId: `p${turnId}`,
+    input: [{ type: 'text', text: `opening ${turnId}` }], origin: { kind: 'user' } })).join('\n') + '\n');
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const resident = new AgentTranscript('main');
+    resident.apply([{ op: 'reset', agentId: 'main', snapshot: { ...(await service.readColdPageSnapshot('s1', 'main', value => value))!, hasMoreOlder: true } }]);
+    vi.spyOn(service, 'forSessionLive').mockReturnValue({ agents: () => [] } as unknown as TranscriptStore);
+    vi.spyOn(service, 'ensureAgentHistory').mockResolvedValue(resident);
+    vi.spyOn(service, 'verifyTranscriptLiveCoverage').mockResolvedValue(false);
+    vi.spyOn(service, 'getTranscriptCursor').mockReturnValue({ epoch: 'resident-test', seq: 7 });
+    const liveCursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'live', anchor: 'turn:t25', epoch: 'resident-test' }), 'utf8').toString('base64url');
+    const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: liveCursor });
+    expect(page?.read?.stale).toBeUndefined();
+    expect(page?.items.filter(item => item.kind === 'turn').map(item => item.turnId)).toContain('t24');
   } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 });
 
@@ -5435,7 +5548,10 @@ it('shares the history lane across anchored agent scans and cancels queued and a
     const results: unknown[] = [];
     flights = controllers.map((controller, n) => service.readAnchoredColdSnapshot('s1', `child-${n}`, 't2', controller.signal)
       .catch(error => { results.push(error); return error; }));
-    await vi.waitFor(() => expect(service.memoryReport().readLane).toMatchObject({ active: 2, queued: 10, peak: 2 }));
+    await vi.waitFor(() => {
+      expect(service.memoryReport().readLane).toMatchObject({ active: 2, queued: 10, peak: 2 });
+      expect(active).toBe(2);
+    });
     expect(results).toEqual([]);
     expect(peak).toBe(2);
     controllers.forEach(controller => controller.abort(new Error('reader cancelled')));

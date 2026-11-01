@@ -124,6 +124,10 @@ const COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES = 32 << 20;
 const COLD_WIRE_WINDOWS_MAX_ENTRIES = 4;
 const UNVERIFIED_RESIDENT_MAX_BYTES = 4 << 20;
 const UNVERIFIED_RESIDENT_MAX_AGENTS = 16;
+const TURN_START_INDEX_MAX_WIRES = 64;
+const TURN_START_SCAN_BYTES_PER_READ = 512 << 20;
+const TURN_START_SCAN_CHUNK_BYTES = 1 << 20;
+const ANCHOR_OPENING_MAX_RECORDS = 8;
 
 export interface TranscriptToolCallCountLimits {
   readonly maxBytesPerRequest?: number;
@@ -434,6 +438,33 @@ function turnIdInPrefix(prefix: string): string | undefined {
   return Number.isSafeInteger(ordinal) && ordinal >= 0 ? `t${ordinal}` : undefined;
 }
 
+interface TurnStartIndex {
+  identity: string;
+  scannedTo: number;
+  readonly starts: Map<string, number>;
+}
+
+function wireRecordTurnIdOfLine(line: Buffer): string | undefined {
+  if (!line.subarray(0, 512).includes('"turnId"')) return undefined;
+  try {
+    const record = JSON.parse(line.toString('utf8')) as ContextRecord;
+    return record !== null && typeof record === 'object' ? wireTurnId(record) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function followingTurnStart(starts: ReadonlyMap<string, number>, turnId: string): number | undefined {
+  let previous = -1;
+  let following: number | undefined;
+  for (const [candidate, at] of starts) {
+    if (at <= previous) return undefined;
+    previous = at;
+    if (following === undefined && compareTurnIds(candidate, turnId) > 0) following = at;
+  }
+  return following;
+}
+
 interface AnchorSeek {
   fingerprint: string;
   offset: number;
@@ -475,6 +506,7 @@ export class TranscriptService {
   private readonly anchorSeeks = new Map<string, AnchorSeek>();
   private readonly anchorWindows = new Map<string, { fingerprint: string; at: number; snapshot: AgentTranscriptSnapshot; bytes: number }>();
   private readonly anchorReads = new WeakMap<AgentTranscriptSnapshot, 'window' | 'continues' | 'pending'>();
+  private readonly turnStartIndexes = new Map<string, TurnStartIndex>();
   private coldSnapshotCacheBytes = 0;
   private readonly unverifiedResident = new Map<string, { transcript: AgentTranscript; bytes: number }>();
   private unverifiedResidentBytes = 0;
@@ -3028,6 +3060,20 @@ export class TranscriptService {
       this.rememberAnchorSeek(key, { fingerprint, offset: indexed, at: indexed, monotonic: true });
       return this.readAnchorWindow(sessionId, agentId, location.wirePath, info.size, indexed, fingerprint, signal);
     }
+    try {
+      const started = await this.scheduleHistoryRead(signal, owned => this.turnStartOffset(location.wirePath, info, beforeTurn, owned));
+      const startAt = started.kind === 'found' ? started.at : started.kind === 'absent' && started.complete ? started.following : undefined;
+      if (startAt !== undefined) return await this.readAnchorWindow(sessionId, agentId, location.wirePath, info.size, startAt, fingerprint, signal);
+      if (started.kind === 'absent' && started.complete) return undefined;
+      if (started.kind === 'pending') {
+        const pending = this.projectColdRecords(agentId, [], false);
+        this.anchorReads.set(pending, 'pending');
+        return pending;
+      }
+    } catch (error) {
+      if (signal?.aborted === true) this.coldReadsCancelled += 1;
+      throw error;
+    }
     const offset = resume?.offset ?? 0;
     if (offset >= info.size) return undefined;
     const end = Math.min(info.size, offset + FIRST_SCREEN_WINDOW_MAX_BYTES);
@@ -3130,15 +3176,125 @@ export class TranscriptService {
     const readEnd = matchedFits ? recordEnd : end;
     const start = await this.tailRecordStart(wirePath, readEnd, opened);
     const read = await this.readWireRange(wirePath, start, readEnd, opened);
-    const snapshot = this.projectColdRecords(agentId, read.records, start === 0 && matchedFits);
+    const opening = matchedFits && readEnd < fileSize ? await this.anchorOpeningRecords(wirePath, read.records, readEnd, fileSize, opened) : undefined;
+    const records = opening === undefined ? read.records : [...read.records, ...opening.records];
+    const windowEnd = opening?.end ?? readEnd;
+    const snapshot = this.projectColdRecords(agentId, records, start === 0 && matchedFits);
     this.anchorReads.set(snapshot, start === 0 && matchedFits ? 'window' : 'continues');
     this.rememberAnchorWindow(wirePath, fingerprint, end, snapshot);
     if (matchedFits) {
-      this.rememberColdWindow(wirePath, { fingerprint, start, end: readEnd, entire: false, records: read.records,
-        snapshot, bytes: this.coldWindowBytes(snapshot, read.records), droppedTail: readEnd < fileSize });
+      this.rememberColdWindow(wirePath, { fingerprint, start, end: windowEnd, entire: false, records,
+        snapshot, bytes: this.coldWindowBytes(snapshot, records), droppedTail: windowEnd < fileSize });
       this.deleteColdSnapshotCache(wirePath);
     }
     return snapshot;
+  }
+
+  private async anchorOpeningRecords(wirePath: string, records: readonly ColdWireRecord[], from: number, fileSize: number,
+    signal: AbortSignal): Promise<{ records: ColdWireRecord[]; end: number } | undefined> {
+    const opening = records.at(-1)?.record;
+    if (opening?.type !== 'turn.prompt' || (opening as { managed?: unknown }).managed !== true) return undefined;
+    const turnId = wireTurnId(opening);
+    const promptId = (opening as { promptId?: unknown }).promptId;
+    if (turnId === undefined) return undefined;
+    const following: ColdWireRecord[] = [];
+    let end: number | undefined;
+    await this.scheduleHistoryRead(signal, owned => this.wireRecordReader(wirePath, {
+      startByteOffset: from,
+      endByteOffset: Math.min(fileSize, from + FIRST_SCREEN_WINDOW_MAX_BYTES),
+      maxRecords: ANCHOR_OPENING_MAX_RECORDS,
+      maxBytes: FIRST_SCREEN_WINDOW_MAX_BYTES,
+      chunkBytes: this.coldReadLimits.chunkBytes,
+      signal: owned,
+      onRecord: (record, span) => {
+        this.coldReadBytes += span.endByteOffset - span.startByteOffset;
+        following.push({ record, position: { startByteOffset: span.startByteOffset, endByteOffset: span.endByteOffset } });
+        const recordTurn = wireTurnId(record);
+        if (recordTurn !== undefined && recordTurn !== turnId) return false;
+        const delivery = (record as { delivery?: { turnId?: unknown; messageId?: unknown } }).delivery;
+        const messageId = (record as { message?: { id?: unknown } }).message?.id;
+        if (record.type === 'context.append_message' && delivery !== undefined &&
+            (`t${String(delivery.turnId)}` === turnId || (promptId !== undefined && (delivery.messageId === promptId || messageId === promptId)))) {
+          end = span.endByteOffset;
+          return false;
+        }
+        return true;
+      },
+    }));
+    return end === undefined ? undefined : { records: following, end };
+  }
+
+  private async turnStartOffset(wirePath: string, info: { size: number; dev: number | bigint; ino: number | bigint; birthtimeMs: number },
+    turnId: string, signal: AbortSignal): Promise<{ kind: 'found'; at: number } | { kind: 'pending' } | { kind: 'absent'; complete: boolean; following?: number }> {
+    const identity = fileIdentity(info);
+    let index = this.turnStartIndexes.get(wirePath);
+    if (index === undefined || index.identity !== identity || index.scannedTo > info.size) index = { identity, scannedTo: 0, starts: new Map() };
+    this.turnStartIndexes.delete(wirePath);
+    this.turnStartIndexes.set(wirePath, index);
+    while (this.turnStartIndexes.size > TURN_START_INDEX_MAX_WIRES) {
+      const oldest = this.turnStartIndexes.keys().next().value;
+      if (oldest === undefined) break;
+      this.turnStartIndexes.delete(oldest);
+    }
+    const known = index.starts.get(turnId);
+    if (known !== undefined) {
+      if (await this.recordStartsTurn(wirePath, known, turnId, signal)) return { kind: 'found', at: known };
+      this.turnStartIndexes.delete(wirePath);
+      return { kind: 'pending' };
+    }
+    if (index.scannedTo >= info.size) return { kind: 'absent', complete: true, following: followingTurnStart(index.starts, turnId) };
+    const opened = await openLogicalWire(wirePath, signal);
+    if (opened === undefined) return { kind: 'absent', complete: false };
+    try {
+      const size = Math.min(info.size, opened.size);
+      const limit = Math.min(size, index.scannedTo + TURN_START_SCAN_BYTES_PER_READ);
+      let position = index.scannedTo;
+      while (position < limit && !index.starts.has(turnId)) {
+        signal.throwIfAborted();
+        const bytes = Buffer.from(await opened.readAt(position, Math.min(TURN_START_SCAN_CHUNK_BYTES, size - position)));
+        if (bytes.byteLength === 0) break;
+        this.coldReadBytes += bytes.byteLength;
+        let lineStart = 0;
+        for (;;) {
+          const newline = bytes.indexOf(0x0a, lineStart);
+          if (newline < 0) break;
+          const found = wireRecordTurnIdOfLine(bytes.subarray(lineStart, newline));
+          if (found !== undefined && !index.starts.has(found)) index.starts.set(found, position + lineStart);
+          lineStart = newline + 1;
+        }
+        if (lineStart > 0) position += lineStart;
+        else {
+          const next = await this.nextRecordBoundary(wirePath, position + bytes.byteLength, size, signal);
+          position = next > position ? next : size;
+        }
+        index.scannedTo = position;
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+    } finally { opened.close(); }
+    const scanned = index.starts.get(turnId);
+    if (scanned !== undefined) {
+      if (await this.recordStartsTurn(wirePath, scanned, turnId, signal)) return { kind: 'found', at: scanned };
+      this.turnStartIndexes.delete(wirePath);
+      return { kind: 'pending' };
+    }
+    return index.scannedTo < info.size ? { kind: 'pending' } : { kind: 'absent', complete: true, following: followingTurnStart(index.starts, turnId) };
+  }
+
+  private async recordStartsTurn(wirePath: string, at: number, turnId: string, signal: AbortSignal): Promise<boolean> {
+    const opened = await openLogicalWire(wirePath, signal);
+    if (opened === undefined) return false;
+    try {
+      const before = at === 0 ? undefined : Buffer.from(await opened.readAt(at - 1, 1));
+      if (before !== undefined && before[0] !== 0x0a) return false;
+      const head = Buffer.from(await opened.readAt(at, 512));
+      this.coldReadBytes += head.byteLength + (before?.byteLength ?? 0);
+      if (turnIdInPrefix(head.toString('utf8')) === turnId) return true;
+      const end = await this.nextRecordBoundary(wirePath, at, opened.size, signal);
+      if (end - at > FIRST_SCREEN_WINDOW_MAX_BYTES) return false;
+      const line = Buffer.from(await opened.readAt(at, end - at));
+      this.coldReadBytes += line.byteLength;
+      return wireRecordTurnIdOfLine(line.subarray(0, line.at(-1) === 0x0a ? -1 : undefined)) === turnId;
+    } finally { opened.close(); }
   }
 
   private rememberAnchorWindow(wirePath: string, fingerprint: string, at: number, snapshot: AgentTranscriptSnapshot): void {
