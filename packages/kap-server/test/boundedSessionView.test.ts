@@ -234,6 +234,29 @@ describe('bounded session-view canonical reads', () => {
     expect(stale?.next_cursor).toBeUndefined();
   });
 
+  it('retains an orphan opening across a preparing marker cursor and delivers it before advancing', async () => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, prompt: `Opening ${ordinal}`, steps: [] });
+    const orphan: TranscriptTurn = { ...turn(8), origin: { kind: 'other' }, prompt: undefined };
+    const marker = { kind: 'marker' as const, markerId: 'older-notification', marker: 'message.delivery' };
+    const tail = { ...empty(), items: [marker, orphan], hasMoreOlder: true };
+    const pending = { ...empty(), hasMoreOlder: true };
+    const recovered = { ...empty(), items: [turn(7), turn(8)], hasMoreOlder: false };
+    let seeks = 0;
+    const service = {
+      forSessionLive: () => undefined, readColdPageSnapshot: async () => seeks >= 2 ? recovered : tail,
+      readAnchoredColdSnapshot: async () => ++seeks === 1 ? pending : recovered,
+      anchorReadState: (snapshot: AgentTranscriptSnapshot) => snapshot === pending ? 'pending' : undefined,
+      readColdRoster: async () => [], reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
+    const cursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'cold', anchor: 'marker:older-notification', seekTurn: 't8', beforeTurn: 't8', orphanTurn: 't8' })).toString('base64url');
+    const preparing = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor });
+    expect(preparing).toMatchObject({ items: [], has_more: true, read: { readiness: 'preparing' } });
+    expect(JSON.parse(Buffer.from(preparing!.next_cursor!, 'base64url').toString())).toMatchObject({ orphanTurn: 't8' });
+    const repaired = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: preparing!.next_cursor });
+    expect(repaired?.items).toEqual([turn(8)]);
+    expect(repaired?.next_cursor).toBeDefined();
+  });
+
   it('keeps a pending item-anchor seek preparing even when turn headers cover its neighbourhood', async () => {
     const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
     const ref = { kind: 'taskref' as const, refId: 'leading-ref', taskId: 'example-task' };
@@ -597,7 +620,7 @@ describe('bounded session-view canonical reads', () => {
     expect(newerTurn.steps[0]?.frames.map((frame) => frame.frameId)).toEqual(Array.from({ length: 8 }, (_, index) => `t1-f0-${index}`));
   });
 
-  it('reloads one tail preview for a single before-turn page from the canonical turn and keeps history pages head-first', async () => {
+  it.each(['before-turn', 'before-item', 'latest'] as const)('reloads one canonical tail preview for a single %s page and keeps history pages head-first', async (position) => {
     const step = (turnId: string, ordinal: number, stepId = `${turnId}-s${ordinal}`): TranscriptStep => ({
       kind: 'step' as const, turnId, stepId, ordinal, state: 'completed' as const,
       frames: [{ kind: 'text' as const, frameId: `${stepId}-f`, role: 'assistant' as const, text: `saved ${stepId}` }],
@@ -613,8 +636,9 @@ describe('bounded session-view canonical reads', () => {
     expect(staleRef.total).toBe(18);
     const canonical = turnFor('t1', 1, [step('t1', 0, 't1-replaced'), ...stale.steps.slice(1)]);
     expect(() => readContentSegment(canonical, staleRef)).toThrow('Content changed');
+    const windowPreview = position === 'before-item' ? boundedEntity(stale, { kind: 'turn', id: 't1' }, undefined, 'main', 'head') : echoed;
     const source: AgentTranscriptSnapshot = {
-      ...empty(), hasMoreOlder: true, items: [turnFor('t0', 0), echoed, turnFor('t2', 2, [])],
+      ...empty(), hasMoreOlder: true, items: position === 'latest' ? [turnFor('t0', 0), windowPreview] : [turnFor('t0', 0), windowPreview, turnFor('t2', 2, [])],
     };
     const cold = {
       forSessionLive: () => undefined,
@@ -629,7 +653,8 @@ describe('bounded session-view canonical reads', () => {
         return undefined;
       },
     } as unknown as TranscriptService;
-    const page = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', beforeTurn: 't2', pageSize: 1 });
+    const page = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', beforeTurn: position === 'before-turn' ? 't2' : undefined,
+      beforeItem: position === 'before-item' ? 'turn:t2' : undefined, pageSize: 1 });
     const turn = page?.items.find((item) => item.kind === 'turn');
     if (turn?.kind !== 'turn') throw new Error('Expected canonical preview');
     expect(turn.turnId).toBe('t1');
@@ -653,6 +678,29 @@ describe('bounded session-view canonical reads', () => {
     if (historyTurn?.kind !== 'turn') throw new Error('Expected history turn');
     expect(historyTurn.steps.map((entry) => entry.stepId).slice(0, 2)).toEqual(['t0-s0', 't0-s1']);
     expect(historyTurn.contentRefs?.find((ref) => ref.path.length === 1 && ref.path[0] === 'steps')?.direction).not.toBe('backward');
+  });
+
+  it.each(['before-turn', 'before-item'] as const)('keeps a prompt-only %s preview on the cold-page source without canonical replay', async (position) => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' },
+      promptId: 'prompt-zero', prompt: 'opening '.repeat(20_000), startedAt: '2025-01-01T00:00:00.000Z', steps: [] };
+    const next: TranscriptTurn = { ...turn, turnId: 't1', ordinal: 1, promptId: 'prompt-one', prompt: 'next' };
+    const source: AgentTranscriptSnapshot = { ...empty(), items: [turn, next] };
+    const canonical = vi.fn(async () => turn);
+    const cold = {
+      forSessionLive: () => undefined,
+      readColdSnapshot: async () => source,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot) => project(source),
+      readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+      readCanonicalEntity: canonical,
+    } as unknown as TranscriptService;
+    const page = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', pageSize: 1,
+      beforeTurn: position === 'before-turn' ? 't1' : undefined, beforeItem: position === 'before-item' ? 'turn:t1' : undefined });
+    const preview = page?.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === 't0');
+    expect(preview?.promptId).toBe('prompt-zero');
+    expect(turn.prompt?.startsWith(preview?.prompt ?? '')).toBe(true);
+    expect(preview?.contentRefs).toContainEqual(expect.objectContaining({ path: ['prompt'], kind: 'text' }));
+    expect(canonical).not.toHaveBeenCalled();
   });
 
   it('still opens a legal oversized turn header on the single before-turn preview', async () => {

@@ -23,7 +23,15 @@ export interface WireByteSource {
   readAt(position: number, length: number): Promise<Uint8Array>;
 }
 
+/** Retained bytes of one unfinished record; callers must validate the unchanged source prefix before reuse. */
+export interface WireRecordContinuation {
+  readonly startByteOffset: number;
+  readonly chunks: readonly Uint8Array[];
+}
+
 export interface WireRecordsStreamOptions {
+  readonly retainIncompleteRecord?: boolean;
+  readonly continuation?: WireRecordContinuation;
   readonly chunkBytes?: number;
   readonly maxBytes?: number;
   readonly maxRecords?: number;
@@ -43,6 +51,7 @@ export interface WireRecordsStreamResult {
   readonly nextByteOffset: number;
   readonly complete: boolean;
   readonly incompleteReason?: WireRecordsIncompleteReason;
+  readonly continuation?: WireRecordContinuation;
 }
 
 function compactionHeadlineRecord(line: Buffer): ContextRecord | undefined {
@@ -117,8 +126,11 @@ export async function streamWireRecords(
   if (!Number.isSafeInteger(startRecordOrdinal)) throw new Error('invalid wire record ordinal');
   const signal = options.signal;
   let remainingBytes = maxBytes ?? Number.POSITIVE_INFINITY;
-  let lineChunks: Buffer[] = [];
-  let lineBytes = 0;
+  if (options.continuation !== undefined && options.continuation.startByteOffset !== startByteOffset) throw new Error('invalid wire continuation offset');
+  let lineChunks: Buffer[] = options.continuation?.chunks.map(bytes => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)) ?? [];
+  let lineBytes = lineChunks.reduce((sum, bytes) => sum + bytes.byteLength, 0);
+  const retainedBytes = lineBytes;
+  let continuation: WireRecordContinuation | undefined;
   let lineNumber = 0;
   let recordCount = 0;
   let bytesRead = 0;
@@ -129,6 +141,9 @@ export async function streamWireRecords(
   const stop = (reason: WireRecordsIncompleteReason): void => {
     stopped = true;
     incompleteReason = reason;
+    if (options.retainIncompleteRecord && reason === 'byte_budget' && lineBytes > 0) {
+      continuation = { startByteOffset: nextByteOffset, chunks: lineChunks };
+    }
     lineChunks = [];
     lineBytes = 0;
   };
@@ -213,10 +228,10 @@ export async function streamWireRecords(
       throw new Error(`wire.jsonl: invalid size for ${wirePath}`);
     }
     const fileSize = Math.min(infoSize, endByteOffset ?? infoSize);
-    if (startByteOffset > fileSize) {
+    if (startByteOffset + retainedBytes > fileSize) {
       throw new Error(`wire.jsonl: start offset exceeds file size for ${wirePath}`);
     }
-    let position = startByteOffset;
+    let position = startByteOffset + retainedBytes;
     while (position < fileSize) {
       if (stopped) break;
       signal?.throwIfAborted();
@@ -239,6 +254,7 @@ export async function streamWireRecords(
       if (read === 0) {
         throw new Error(`wire.jsonl: file changed during streaming read for ${wirePath}`);
       }
+      signal?.throwIfAborted();
       position += read;
       bytesRead += read;
       remainingBytes -= read;
@@ -260,6 +276,7 @@ export async function streamWireRecords(
     nextByteOffset,
     complete: incompleteReason === undefined,
     incompleteReason,
+    continuation,
   };
 }
 
@@ -303,6 +320,8 @@ export async function streamWireRecordsAwaited(
       signal: options.signal,
       includeRawRecord: options.includeRawRecord,
       byteSource: options.byteSource,
+      retainIncompleteRecord: options.retainIncompleteRecord,
+      continuation: nextByteOffset === (options.startByteOffset ?? 0) ? options.continuation : undefined,
       onRecord: (record, span, raw) => {
         pending.push({ record, span, raw });
         batchBytes += span.endByteOffset - span.startByteOffset;
@@ -322,7 +341,7 @@ export async function streamWireRecordsAwaited(
     nextByteOffset = read.nextByteOffset;
     if (read.complete) return { recordCount, bytesRead, nextByteOffset, complete: true };
     if (read.incompleteReason !== 'record_budget' || pending.length === 0) return {
-      recordCount, bytesRead, nextByteOffset, complete: false, incompleteReason: read.incompleteReason,
+      recordCount, bytesRead, nextByteOffset, complete: false, incompleteReason: read.incompleteReason, continuation: read.continuation,
     };
   }
 }

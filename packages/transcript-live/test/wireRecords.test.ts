@@ -829,3 +829,165 @@ describe('wire byte source', () => {
 function toMiB(bytes: number): string {
   return (bytes / 1024 / 1024).toFixed(1);
 }
+
+
+describe('wire record continuations', () => {
+  it('retains a legal record larger than 1 MiB across bounded slices with an exact span', async () => {
+    const record = { type: 'metadata', index: 7, text: 'x'.repeat((1 << 20) + 123) };
+    const raw = `${JSON.stringify(record)}\n`;
+    const maxBytes = 65_537;
+    await withWireFile(raw, async (wirePath) => {
+      const records: ContextRecord[] = [];
+      const spans: Array<{ startByteOffset: number; endByteOffset: number; ordinal: number }> = [];
+      let startByteOffset = 0;
+      let continuation: { startByteOffset: number; chunks: readonly Uint8Array[] } | undefined;
+      let totalBytes = 0;
+      let slices = 0;
+      let result: Awaited<ReturnType<typeof streamWireRecords>>;
+      do {
+        result = await streamWireRecords(wirePath, {
+          startByteOffset,
+          continuation,
+          chunkBytes: 4_097,
+          maxBytes,
+          retainIncompleteRecord: true,
+          onRecord: (value, span) => {
+            records.push(value);
+            spans.push(span);
+          },
+        });
+        slices += 1;
+        totalBytes += result.bytesRead;
+        expect(result.bytesRead).toBeLessThanOrEqual(maxBytes);
+        if (result.complete) {
+          expect(result.continuation).toBeUndefined();
+          expect(result.nextByteOffset).toBe(Buffer.byteLength(raw));
+        } else {
+          expect(result.incompleteReason).toBe('byte_budget');
+          expect(result.nextByteOffset).toBe(0);
+          expect(result.continuation).toMatchObject({ startByteOffset: 0 });
+          expect(result.continuation!.chunks.length).toBeGreaterThan(1);
+          continuation = result.continuation;
+          startByteOffset = result.nextByteOffset;
+        }
+      } while (!result.complete);
+      expect(slices).toBeGreaterThan(1);
+      expect(totalBytes).toBe(Buffer.byteLength(raw));
+      expect(records).toEqual([record]);
+      expect(spans).toEqual([{ startByteOffset: 0, endByteOffset: Buffer.byteLength(raw), ordinal: 0 }]);
+    });
+  });
+
+  it('keeps the previous continuation usable after cancellation without duplicate callbacks', async () => {
+    const record = { type: 'metadata', index: 8, text: 'y'.repeat((1 << 20) + 257) };
+    const raw = `${JSON.stringify(record)}\n`;
+    const retainedBudget = 65_537;
+    await withWireFile(raw, async (wirePath) => {
+      const callbacks: ContextRecord[] = [];
+      const first = await streamWireRecords(wirePath, {
+        chunkBytes: 4_097,
+        maxBytes: retainedBudget,
+        retainIncompleteRecord: true,
+        onRecord: (value) => { callbacks.push(value); },
+      });
+      expect(first.complete).toBe(false);
+      expect(first.incompleteReason).toBe('byte_budget');
+      expect(first.recordCount).toBe(0);
+      expect(first.continuation).toBeDefined();
+      expect(callbacks).toEqual([]);
+      const continuation = first.continuation!;
+      const retained = Buffer.concat(continuation.chunks.map((chunk) => Buffer.from(chunk)));
+      const bytes = Buffer.from(raw);
+      const controller = new AbortController();
+      let reads = 0;
+      const source = {
+        size: bytes.byteLength,
+        readAt: async (position: number, length: number) => {
+          reads += 1;
+          const chunk = bytes.subarray(position, position + length);
+          if (reads === 1) controller.abort(new DOMException('continuation read stopped', 'AbortError'));
+          return chunk;
+        },
+      };
+      await expect(streamWireRecords(wirePath, {
+        startByteOffset: first.nextByteOffset,
+        continuation,
+        chunkBytes: 4_097,
+        maxBytes: retainedBudget,
+        retainIncompleteRecord: true,
+        signal: controller.signal,
+        byteSource: source,
+        onRecord: (value) => { callbacks.push(value); },
+      })).rejects.toThrow('continuation read stopped');
+      expect(callbacks).toEqual([]);
+      expect(Buffer.concat(continuation.chunks.map((chunk) => Buffer.from(chunk)))).toEqual(retained);
+
+      const retry = await streamWireRecords(wirePath, {
+        startByteOffset: first.nextByteOffset,
+        continuation,
+        chunkBytes: 4_097,
+        maxBytes: Buffer.byteLength(raw),
+        retainIncompleteRecord: true,
+        onRecord: (value) => { callbacks.push(value); },
+      });
+      expect(retry).toMatchObject({ complete: true, recordCount: 1, nextByteOffset: Buffer.byteLength(raw) });
+      expect(retry.continuation).toBeUndefined();
+      expect(callbacks).toEqual([record]);
+    });
+  });
+
+  it('reports a corrupted unterminated tail as partial_tail without a continuation', async () => {
+    const first = JSON.stringify({ type: 'metadata', index: 0 });
+    const raw = `${first}\n{"type":"metadata","index":`;
+    await withWireFile(raw, async (wirePath) => {
+      const records: ContextRecord[] = [];
+      const result = await streamWireRecords(wirePath, {
+        chunkBytes: 3,
+        retainIncompleteRecord: true,
+        onRecord: (record) => { records.push(record); },
+      });
+      expect(result).toMatchObject({ complete: false, incompleteReason: 'partial_tail', recordCount: 1,
+        nextByteOffset: Buffer.byteLength(`${first}\n`), bytesRead: Buffer.byteLength(raw) });
+      expect(result.continuation).toBeUndefined();
+      expect(records).toEqual([{ type: 'metadata', index: 0 }]);
+    });
+  });
+
+  it('inherits continuation options through awaited bounded batches', async () => {
+    const record = { type: 'metadata', index: 9, text: 'z'.repeat((1 << 20) + 389) };
+    const raw = `${JSON.stringify(record)}\n`;
+    const maxBytes = 65_537;
+    await withWireFile(raw, async (wirePath) => {
+      const first = await streamWireRecordsAwaited(wirePath, {
+        chunkBytes: 4_097,
+        maxBytes,
+        retainIncompleteRecord: true,
+        onRecord: async () => undefined,
+      });
+      expect(first).toMatchObject({ complete: false, incompleteReason: 'byte_budget', recordCount: 0, nextByteOffset: 0 });
+      expect(first.bytesRead).toBeLessThanOrEqual(maxBytes);
+      expect(first.continuation).toBeDefined();
+      const retainedBytes = first.continuation!.chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+      const seen: { record: ContextRecord; span: { startByteOffset: number; endByteOffset: number; ordinal: number }; raw?: Uint8Array }[] = [];
+      const second = await streamWireRecordsAwaited(wirePath, {
+        startByteOffset: first.nextByteOffset,
+        startRecordOrdinal: first.recordCount,
+        continuation: first.continuation,
+        chunkBytes: 4_097,
+        maxBytes: Buffer.byteLength(raw),
+        retainIncompleteRecord: true,
+        includeRawRecord: true,
+        onRecord: async (value, span, rawRecord) => { seen.push({ record: value, span, raw: rawRecord }); },
+      });
+      expect(second).toMatchObject({ complete: true, recordCount: 1, nextByteOffset: Buffer.byteLength(raw) });
+      expect(second.bytesRead).toBe(Buffer.byteLength(raw) - retainedBytes);
+      expect(second.continuation).toBeUndefined();
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toMatchObject({
+        record,
+        span: { startByteOffset: 0, endByteOffset: Buffer.byteLength(raw), ordinal: 0 },
+      });
+      expect(Buffer.from(seen[0]!.raw!)).toEqual(Buffer.from(raw));
+    });
+  });
+});
