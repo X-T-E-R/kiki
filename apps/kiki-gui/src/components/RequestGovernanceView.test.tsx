@@ -1049,4 +1049,101 @@ describe('execution pause/resume', () => {
     expect(container.querySelector('[data-execution-paused="session-alpha"]')).not.toBeNull();
     expect(container.querySelector<HTMLElement>('[data-execution-control="session-alpha"]')?.textContent).toContain('Paused');
   });
+
+  it('shows a visible retry when the cold discovery read fails, and recovers on retry', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith([]);
+    stubExecution('session-late', executionState('paused', { pauseOperationId: 'pause-late' }));
+    const list = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('index building'), { code: 50311 }))
+      .mockResolvedValue({ items: [{ id: 'session-late', executionPhase: 'paused' }] });
+    connection.client.klient = { global: { sessions: { list, get: vi.fn() } }, events: undefined };
+    const { container, render } = mount('realtime');
+    await settle(render, 1100);
+    // A genuine discovery failure (not 40401) surfaces on the recovery line.
+    const stale = container.querySelector<HTMLElement>('[data-execution-stale]')!;
+    expect(stale).not.toBeNull();
+    expect(container.querySelector('[data-execution-paused="session-late"]')).toBeNull();
+    await act(async () => { stale.querySelector<HTMLButtonElement>('[data-execution-stale-retry]')!.click(); });
+    await settle(render, 1100);
+    expect(container.querySelector('[data-execution-paused="session-late"]')).not.toBeNull();
+    expect(container.querySelector('[data-execution-stale]')).toBeNull();
+    connection.client.klient = undefined;
+  });
+
+  it('patches the paused set by session id on an event burst without re-walking history', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith([]);
+    stubExecution('session-burst', executionState('paused', { pauseOperationId: 'pause-burst' }));
+    const listeners: Array<(payload: unknown) => void> = [];
+    const list = vi.fn(async () => ({ items: [] }));
+    const get = vi.fn(async (id: string) => ({ id, executionPhase: 'paused' as const }));
+    connection.client.klient = {
+      global: { sessions: { list, get } },
+      events: {
+        on: vi.fn((_event: string, listener: (payload: unknown) => void) => { listeners.push(listener); return { dispose: vi.fn() }; }),
+      },
+    };
+    const { container, render } = mount('realtime');
+    await settle(render, 1100);
+    expect(container.querySelector('[data-execution-paused="session-burst"]')).toBeNull();
+    const historyCalls = list.mock.calls.length;
+    // A burst of session events point-patches the set; no full-history re-walk.
+    await act(async () => {
+      for (let i = 0; i < 8; i++) for (const listener of listeners) listener({ sessionId: 'session-burst' });
+    });
+    await settle(render, 1100);
+    expect(get).toHaveBeenCalledWith('session-burst');
+    expect(list.mock.calls.length).toBe(historyCalls);
+    expect(container.querySelector('[data-execution-paused="session-burst"]')).not.toBeNull();
+    connection.client.klient = undefined;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Discovery pagination against a faithful keyset index (real semantics, >100)
+// ---------------------------------------------------------------------------
+
+import { collectPausedSessionIds } from '../lib/executionControls';
+
+/** Mirrors FileSessionIndex's canonical order + before/after keyset paging. */
+function faithfulKeysetIndex(records: readonly { id: string; updatedAt: number; executionPhase?: string }[]) {
+  const ordered = [...records].sort((a, b) => (a.updatedAt !== b.updatedAt ? b.updatedAt - a.updatedAt : a.id < b.id ? 1 : -1));
+  return {
+    list: async (query: { limit?: number; before?: string; after?: string }) => {
+      const limit = query.limit ?? ordered.length;
+      let window = ordered;
+      if (query.before !== undefined) {
+        const anchor = ordered.find((r) => r.id === query.before);
+        window = anchor === undefined ? [] : ordered.filter((r) => r.updatedAt < anchor.updatedAt || (r.updatedAt === anchor.updatedAt && r.id < anchor.id));
+      } else if (query.after !== undefined) {
+        const anchor = ordered.find((r) => r.id === query.after);
+        window = anchor === undefined ? [] : ordered.filter((r) => r.updatedAt > anchor.updatedAt || (r.updatedAt === anchor.updatedAt && r.id > anchor.id));
+      }
+      const items = window.slice(0, limit);
+      return { items, nextCursor: window.length > limit ? items.at(-1)?.id : undefined };
+    },
+  };
+}
+
+describe('collectPausedSessionIds over a real keyset index', () => {
+  it('pages strictly older past 100 records and finds the oldest paused session', async () => {
+    const records: { id: string; updatedAt: number; executionPhase?: string }[] = Array.from({ length: 130 }, (_, i) => ({ id: `session-${String(i).padStart(3, '0')}`, updatedAt: 1000 - i, executionPhase: 'running' }));
+    records.push({ id: 'session-oldest', updatedAt: 1, executionPhase: 'paused' });
+    const index = faithfulKeysetIndex(records);
+    const found = await collectPausedSessionIds(index);
+    expect(found).toEqual(['session-oldest']);
+  });
+
+  it('stops paging when its signal aborts mid-walk', async () => {
+    const records = Array.from({ length: 250 }, (_, i) => ({ id: `session-${i}`, updatedAt: 1000 - i, executionPhase: i > 200 ? ('paused' as const) : ('running' as const) }));
+    const index = faithfulKeysetIndex(records);
+    const controller = new AbortController();
+    let calls = 0;
+    const counting = { list: async (q: unknown) => { calls += 1; if (calls === 2) controller.abort(); return index.list(q as never); } };
+    const found = await collectPausedSessionIds(counting, controller.signal);
+    // Aborted after the first page: it never walked the rest of the history.
+    expect(calls).toBe(2);
+    expect(found).toEqual([]);
+  });
 });

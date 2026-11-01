@@ -172,6 +172,14 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
     [liveSessionIds, pausedDiscovery.sessionIds],
   );
   const { states: executionStates, readError: executionReadError, refetch: refetchExecutions } = useSessionExecutions(executionSessionIds);
+  // One visible recovery line for either read path that failed: the per-session
+  // execution read, or the cold paused-session discovery. 40401 (an older
+  // server) stays silent on both.
+  const executionVisibleError = executionReadError ?? pausedDiscovery.error;
+  const retryExecutionReads = () => {
+    if (executionReadError !== undefined) refetchExecutions();
+    else pausedDiscovery.refresh();
+  };
 
   const requestSummary = [
     `${t('usage.governance.running')} ${snapshot.active}`,
@@ -327,10 +335,10 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
             ))}
           </ol>
         ) : null}
-        {executionReadError !== undefined ? (
+        {executionVisibleError !== undefined ? (
           <p role="status" data-execution-stale className="mb-2 text-[12px] text-amber-ink">
             {t('usage.execution.staleState')}
-            <button type="button" data-execution-stale-retry className="ml-2 underline underline-offset-2 hover:text-ink" onClick={() => { refetchExecutions(); }}>
+            <button type="button" data-execution-stale-retry className="ml-2 underline underline-offset-2 hover:text-ink" onClick={retryExecutionReads}>
               {t('usage.execution.retryRefresh')}
             </button>
           </p>

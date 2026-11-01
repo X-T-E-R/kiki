@@ -212,81 +212,146 @@ export function liveInventorySessionIds(agents: readonly { readonly sessionId: s
 /** One discovery page; the loop walks every page so a paused session past the first page is still found. */
 const DISCOVERY_PAGE_LIMIT = 100;
 
+interface SessionSummaryPage {
+  readonly items: readonly { readonly id: string; readonly executionPhase?: string }[];
+  readonly nextCursor?: string;
+}
+interface SessionsListSource {
+  list(query: unknown): Promise<SessionSummaryPage>;
+  get?(id: string): Promise<{ readonly id: string; readonly executionPhase?: string } | undefined>;
+}
+
 /** True when a sessions.list RPC failure means "this server predates the index". */
-function isUnsupportedSessionsRpc(error: unknown): boolean {
+export function isUnsupportedSessionsRpc(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 40401;
 }
 
 /**
+ * Walk the session index strictly OLDER page by page (the keyset `nextCursor`
+ * is the page's last session id, passed as `before`) and collect every summary
+ * whose `executionPhase` the server projected as non-running. Pure and
+ * transport-free so the real `FileSessionIndex` can drive it directly in a
+ * test. Honours `signal`: an aborted walk stops paging and returns what it has.
+ */
+export async function collectPausedSessionIds(
+  sessions: SessionsListSource,
+  signal?: AbortSignal,
+): Promise<readonly string[]> {
+  const found: string[] = [];
+  let before: string | undefined;
+  for (;;) {
+    if (signal?.aborted === true) return found;
+    let page: SessionSummaryPage;
+    try {
+      page = await sessions.list({ includeArchived: true, limit: DISCOVERY_PAGE_LIMIT, ...(before === undefined ? {} : { before }) });
+    } catch (error) {
+      if (isUnsupportedSessionsRpc(error)) return found;
+      throw error;
+    }
+    for (const item of page.items) {
+      if (item.executionPhase !== undefined && item.executionPhase !== 'running') found.push(item.id);
+    }
+    if (page.nextCursor === undefined || page.items.length === 0) return found;
+    before = page.nextCursor;
+  }
+}
+
+function sessionsSourceOf(client: unknown): SessionsListSource | undefined {
+  return (client as { klient?: { global?: { sessions?: SessionsListSource } } }).klient?.global?.sessions;
+}
+
+function globalEventsOf(client: unknown) {
+  return (client as { klient?: { events?: import('@kiki/klient').KlientEvents } }).klient?.events;
+}
+
+/**
  * Sessions the cold summary projects a non-running execution for — the
- * restart-recovery discovery path. Walks the existing paginated session index
- * (`klient.global.sessions.list`) strictly OLDER page by page (the keyset
- * `nextCursor` is the page's last session id, passed as `before`), never
- * activates a session, and keeps only summaries whose `executionPhase` the
- * server projected as paused / pausing / resuming / failed.
+ * restart-recovery discovery path.
  *
- * This is a triggered read, not a standing full scan: it runs on first mount,
- * on a reconnect, on a relevant session-list change (metaUpdated / archived /
- * workChanged), and on an explicit refresh — never on a wall-clock interval.
- * A pagination in flight when the component unmounts is abandoned. A genuine
- * read failure surfaces as `error`; a server that predates the index (RPC
- * 40401) reads as simply "no discovery support", not an error.
+ * Trigger surface, never a standing full scan:
+ *  - first mount, a reconnect, or an explicit `refresh()` walks the index once;
+ *  - a session-level change (metaUpdated / archived / workChanged) patches the
+ *    known set by session id (a point `sessions.get`, batched per burst), so a
+ *    busy fleet never turns into a high-frequency full-history re-walk. An
+ *    archive removes the id; a phase change adds or drops it.
+ *
+ * The walk carries the query's own `AbortSignal`, so a remount or a superseded
+ * scope abandons its later pages instead of only resetting a shared flag on
+ * the next mount. A genuine read failure surfaces as `error` (with `refresh`
+ * to retry); a server that predates the index (RPC 40401) reads as "no
+ * discovery support", not an error.
  */
 export function usePausedSessionDiscovery(options?: { readonly enabled?: boolean }) {
   const { client, scopeId, wsStatus } = useConnection();
   const queryClient = useQueryClient();
   const enabled = options?.enabled ?? true;
   const queryKey = useMemo(() => [EXECUTION_KEY, scopeId, 'paused-summaries'] as const, [scopeId]);
-  const cancelled = useRef(false);
-  useEffect(() => {
-    cancelled.current = false;
-    return () => { cancelled.current = true; };
-  }, []);
 
   const query = useQuery({
     queryKey,
-    queryFn: async (): Promise<readonly string[]> => {
-      const sessions = (client as { klient?: { global?: { sessions?: { list(query: unknown): Promise<{ items: readonly { id: string; executionPhase?: string }[]; nextCursor?: string }> } } } })
-        .klient?.global?.sessions;
+    queryFn: async ({ signal }): Promise<readonly string[]> => {
+      const sessions = sessionsSourceOf(client);
       if (sessions === undefined) return [];
-      const found: string[] = [];
-      let before: string | undefined;
-      for (;;) {
-        if (cancelled.current) return found;
-        let page: { items: readonly { id: string; executionPhase?: string }[]; nextCursor?: string };
-        try {
-          page = await sessions.list({ includeArchived: true, limit: DISCOVERY_PAGE_LIMIT, ...(before === undefined ? {} : { before }) });
-        } catch (error) {
-          if (isUnsupportedSessionsRpc(error)) return found;
-          throw error;
-        }
-        for (const item of page.items) {
-          if (item.executionPhase !== undefined && item.executionPhase !== 'running') found.push(item.id);
-        }
-        if (page.nextCursor === undefined || page.items.length === 0) return found;
-        before = page.nextCursor;
-      }
+      return collectPausedSessionIds(sessions, signal);
     },
     retry: false,
     enabled,
   });
 
-  // Trigger a re-read on a reconnect and on a relevant session-list change —
-  // never on an interval.
+  // Patch the known paused set by session id on a session-level change —
+  // batched per burst so a flurry of events issues one point read per id, not
+  // a full-history re-walk per event.
   useEffect(() => {
     if (!enabled) return;
-    const events = (client as { klient?: { events?: import('@kiki/klient').KlientEvents } }).klient?.events;
-    if (events === undefined) return;
-    const refresh = () => { if (!cancelled.current) void queryClient.invalidateQueries({ queryKey }); };
+    const events = globalEventsOf(client);
+    const sessions = sessionsSourceOf(client);
+    if (events === undefined || sessions === undefined || typeof sessions.get !== 'function') return;
+    const pending = new Set<string>();
+    let flushing = false;
+    const flush = async () => {
+      if (flushing) return;
+      flushing = true;
+      try {
+        while (pending.size > 0) {
+          const batch = [...pending];
+          pending.clear();
+          const patches = await Promise.all(batch.map(async (sessionId) => {
+            try {
+              return { sessionId, summary: await sessions.get!(sessionId) };
+            } catch {
+              return { sessionId, summary: undefined };
+            }
+          }));
+          queryClient.setQueryData(queryKey, (current: readonly string[] | undefined) => {
+            const next = new Set(current ?? []);
+            for (const { sessionId, summary } of patches) {
+              const phase = summary?.executionPhase;
+              if (phase !== undefined && phase !== 'running') next.add(sessionId);
+              else next.delete(sessionId);
+            }
+            return [...next];
+          });
+        }
+      } finally {
+        flushing = false;
+      }
+    };
+    const onSession = (payload: unknown) => {
+      const sessionId = (payload as { sessionId?: unknown } | undefined)?.sessionId;
+      if (typeof sessionId === 'string' && sessionId !== '') {
+        pending.add(sessionId);
+        void flush();
+      }
+    };
     const subscriptions = [
-      events.on('session.metaUpdated', refresh),
-      events.on('session.archived', refresh),
-      events.on('session.workChanged', refresh),
+      events.on('session.metaUpdated', onSession),
+      events.on('session.archived', onSession),
+      events.on('session.workChanged', onSession),
     ];
     return () => { for (const subscription of subscriptions) subscription.dispose(); };
   }, [client, enabled, queryClient, queryKey]);
 
-  // Reconnect: re-read once the socket is open again.
+  // Reconnect: one inventory walk once the socket is open again.
   useEffect(() => {
     if (enabled && wsStatus === 'open') void queryClient.invalidateQueries({ queryKey });
   }, [enabled, wsStatus, queryClient, queryKey]);
