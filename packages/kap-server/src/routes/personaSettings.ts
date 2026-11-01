@@ -1,4 +1,4 @@
-import { IAgentLifecycleService, IAgentProfileService, ISessionIndex, MAIN_AGENT_ID, getLiveSessionById, type Scope } from '@kiki/agent-core-v2';
+import { IAgentLifecycleService, IAgentProfileService, IAgentTaskService, ISessionIndex, MAIN_AGENT_ID, getLiveSessionById, type Scope } from '@kiki/agent-core-v2';
 import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
 import { readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
 import { applyPersonaSettingsRequestSchema, sessionPersonaSettingsSchema } from '@kiki/protocol';
@@ -49,6 +49,7 @@ export function registerPersonaSettingsRoutes(app: RouteHost, core: Scope): void
       await withSessionOperation(core, req.params.session_id, async (session) => {
         if (session === undefined) { reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'Session not found', req.id)); return; }
         const agent = await ensureMainAgent(session);
+        await Promise.all(session.accessor.get(IAgentLifecycleService).list().map(async (handle) => handle.accessor.get(IAgentTaskService).resumeRestoration?.()));
         await agent.accessor.get(IAgentProfileService).applyPersonaSettings(req.body.restoreDefaults);
         reply.send(okEnvelope(await read(req.params.session_id), req.id));
       });
