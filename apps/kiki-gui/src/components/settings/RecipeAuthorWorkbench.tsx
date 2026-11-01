@@ -28,7 +28,7 @@ import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import type { ModelSteeringSource } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
-import { isRecipeHookConsentRequired, recipeConsentField, recipeHookEventKey, recipePreviewNeedsConsent } from '../../lib/recipeHooks';
+import { isRecipeHookConsentRequired, isRecipeRevisionConflict, recipeConsentField, recipeHookEventKey, recipePreviewNeedsConsent } from '../../lib/recipeHooks';
 import {
   RECIPE_MANIFEST, RecipeManifestError, manifestWouldReformat, parseRecipeManifest,
   readDeclaration, referencedFiles, renderManifest, writeSlot, writeSteeringSource,
@@ -162,6 +162,14 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
   const [unreadSave, setUnreadSave] = useState<string | null>(null);
   // Why a read did not answer, shown beside the retry rather than as a write failure.
   const [reloadReason, setReloadReason] = useState<string | null>(null);
+  /*
+    A save refused because the package moved on underneath this editor. The
+    draft stays; reading the newer copy rebases it — paths the person changed
+    keep their words, untouched paths take the newer bytes — so the next save
+    carries the current revision and still holds their edit.
+  */
+  const [conflict, setConflict] = useState(false);
+  const [conflictReason, setConflictReason] = useState<string | null>(null);
 
   /*
     What was handed to the server, captured at the press.
@@ -223,6 +231,31 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
     },
   );
 
+  /*
+    Catch the draft up with a newer published copy. The merge baseline is what
+    this editor last loaded, not what it sent: nothing was published, so every
+    path the person changed since loading is theirs and stays.
+  */
+  const rebase = useRecipeMutation(
+    (installationId: string) => client.getRecipe(installationId),
+    {
+      onSuccess: (latest) => {
+        if (latest === undefined) {
+          setConflictReason(t('st.recipe.conflictGone'));
+          return;
+        }
+        setFiles(mergePublished(latest.files, baselineFiles, liveFiles.current));
+        setBaselineFiles({ ...latest.files });
+        setGeneration((current) => current + 1);
+        setConflict(false);
+        setConflictReason(null);
+        setFeedback({ tone: 'success', text: t('st.recipe.conflictRebased') });
+        queryClient.setQueryData(['recipe', latest.summary.installation_id], latest);
+      },
+      onError: (error) => { setConflictReason(errorText(locale, error)); },
+    },
+  );
+
   const save = useRecipeMutation(
     (input: SaveInput) => {
       /* Keep the mutation's bytes even if the refusal arrives after more input. */
@@ -244,6 +277,12 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
         /* Nothing landed, so the draft and its revision remain unchanged. */
         sentAtPublish.current = null;
         setUnreadSave(null);
+        if (isRecipeRevisionConflict(error)) {
+          // Someone else published first. A second press would be refused for
+          // the same reason, so the way forward is reading their copy, not retrying.
+          setConflict(true);
+          return;
+        }
         setFeedback({ tone: 'error', text: t('st.recipe.saveFailed', { detail: errorText(locale, error) }) });
       },
     },
@@ -306,8 +345,8 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
     what it is doing. Both disable the press, for different reasons.
   */
   const writing = save.isPending || previewForConsent.isPending || installWithConsent.isPending
-    || readSaved.isPending;
-  const blocked = consentPreview !== null || unreadSave !== null;
+    || readSaved.isPending || rebase.isPending;
+  const blocked = consentPreview !== null || unreadSave !== null || conflict;
   const saveDisabled = writing || blocked;
 
   /** Write one slot's prose back into the manifest and into any file it owns. */
@@ -529,6 +568,21 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
         </button>
         {dirty ? <span className="text-[12px] text-ink-faint">{t('st.draft.unsaved')}</span> : null}
       </div>
+      {conflict ? (
+        <div className="flex flex-wrap items-center gap-2" data-recipe-author-conflict>
+          <p className="text-[12px] leading-5 text-amber-ink" role="alert">
+            {t('st.recipe.conflictBody')}
+            {conflictReason === null ? '' : ` ${conflictReason}`}
+          </p>
+          <button type="button"
+            disabled={rebase.isPending}
+            className="rounded-md border border-hairline bg-paper px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            data-recipe-conflict-reload
+            onClick={() => { setConflictReason(null); rebase.mutate(detail.summary.installation_id); }}>
+            {t('st.recipe.conflictReload')}
+          </button>
+        </div>
+      ) : null}
       {/*
         The write landed and this view could not catch up. The only thing left to
         do is read it again, so the only thing offered is reading it again —

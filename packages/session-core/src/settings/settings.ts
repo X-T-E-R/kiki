@@ -2291,6 +2291,7 @@ export const SETTINGS_SECTIONS: readonly { id: string; labelKey: I18nKey }[] = [
   { id: 'shortcuts', labelKey: 'st.section.shortcuts' },
   { id: 'notifications', labelKey: 'st.section.notifications' },
   { id: 'ai', labelKey: 'st.section.ai' },
+  { id: 'recipes', labelKey: 'st.section.recipes' },
   { id: 'agents', labelKey: 'st.section.agents' },
   { id: 'sessions', labelKey: 'st.section.sessions' },
   { id: 'workspaces', labelKey: 'st.section.workspaces' },
@@ -2331,7 +2332,7 @@ export type SettingsNavNode = SettingsNavGroupSpec | SettingsNavLeafSpec;
  */
 export const SETTINGS_NAV_TREE: readonly SettingsNavNode[] = [
   { kind: 'group', id: 'device', labelKey: 'st.group.device', sections: ['general', 'appearance', 'shortcuts', 'notifications'] },
-  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'agents'] },
+  { kind: 'group', id: 'models-agents', labelKey: 'st.group.modelsAgents', sections: ['ai', 'recipes', 'agents'] },
   { kind: 'group', id: 'sessions-work', labelKey: 'st.group.sessionsWork', sections: ['sessions', 'workspaces', 'memory'] },
   // Hooks are automation, so they sit with the other capabilities the agent
   // gains rather than with permission rules.
@@ -2418,6 +2419,7 @@ export const SETTINGS_SECTION_META: Readonly<Record<string, SettingsSectionMeta>
   'connection-services': { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.connectionServices' },
   identity: { scopes: ['server'], purposeKey: 'st.purpose.identity' },
   agents: { scopes: ['server', 'workspace'] },
+  recipes: { scopes: ['server'], purposeKey: 'st.purpose.recipes' },
   subagents: { scopes: ['server', 'workspace'], purposeKey: 'st.purpose.subagents' },
   sessions: { scopes: ['server'], purposeKey: 'st.purpose.sessions' },
   notifications: { scopes: ['server'], purposeKey: 'st.purpose.notifications' },
@@ -2484,7 +2486,7 @@ export const EXPERIMENTAL_FLAG_HOMES: readonly ExperimentalFlagHome[] = [
   { id: 'native_browser', section: 'browser-control', labelKey: 'st.exp.nativeBrowser.name', descriptionKey: 'st.exp.nativeBrowser.desc', effect: 'now' },
   { id: 'persistence_minidb_readmodel', section: 'developer', labelKey: 'st.exp.readModel.name', descriptionKey: 'st.exp.readModel.desc', effect: 'now' },
   { id: 'local_session_resume', section: 'sessions', labelKey: 'st.exp.localSessionResume.name', descriptionKey: 'st.exp.localSessionResume.desc', effect: 'now' },
-  { id: 'recipes', section: 'ai', labelKey: 'st.exp.recipes.name', descriptionKey: 'st.exp.recipes.desc', effect: 'now' },
+  { id: 'recipes', section: 'recipes', labelKey: 'st.exp.recipes.name', descriptionKey: 'st.exp.recipes.desc', effect: 'now' },
   { id: 'plugin_workspace_usage', section: 'extensions', labelKey: 'st.exp.pluginWorkspaceUsage.name', descriptionKey: 'st.exp.pluginWorkspaceUsage.desc', effect: 'now' },
   { id: 'plugin_app_lifecycle', section: 'extensions', labelKey: 'st.exp.pluginAppLifecycle.name', descriptionKey: 'st.exp.pluginAppLifecycle.desc', effect: 'restart' },
   { id: 'work_presets', section: 'spaces', labelKey: 'st.exp.workPresets.name', descriptionKey: 'st.exp.workPresets.desc', effect: 'now' },
@@ -2662,6 +2664,9 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'connection-services', cardId: 'st-card-web-access', tab: 'web', titleKey: 'st.web.title', keywordKeys: ['st.web.newLink', 'st.web.turnOff', 'st.web.address', 'st.web.signedIn', 'st.web.persistent', 'st.web.temporary'], synonyms: ['web access', 'web 访问', '浏览器访问', 'browser access', '网页', '临时开启', 'always on', '始终开启', 'entry link', '入口链接', 'web link', '手机', 'phone'] },
   // The import surface has its own sub-route; the hit lands on its entry card.
   { section: 'sessions', cardId: 'st-card-import-history', tab: 'conversations', titleKey: 'cap.import.entry', keywordKeys: ['cap.import.settingsHint', 'cap.import.open'], synonyms: ['import', '导入', '导入历史', '迁移', 'history', '旧对话'] },
+  { section: 'recipes', cardId: 'st-card-recipes-library', titleKey: 'st.recipes.libraryTitle', keywordKeys: ['st.recipes.checkUpdates', 'st.recipes.usedBy'], synonyms: ['Recipe', '配方', '食谱', '提示包', 'prompt package', 'fork', 'export', '导出', 'update', '更新'] },
+  { section: 'recipes', cardId: 'st-card-recipe-import', titleKey: 'st.recipes.installFrom', keywordKeys: ['st.recipe.source', 'st.recipe.sha256', 'st.recipe.previewRecipe'], synonyms: ['install', '安装', 'link', '链接', 'zip', 'path', '路径'] },
+  { section: 'recipes', cardId: 'st-card-recipe-markets', titleKey: 'st.recipe.market', keywordKeys: ['st.recipe.marketAdd', 'st.recipe.marketUrl'], synonyms: ['market', '市场', 'catalog', '目录'] },
 ];
 
 export interface SettingsSearchEntry {
@@ -2926,6 +2931,42 @@ export function pluginSettingsIdFromQuery(search: string | URLSearchParams): str
   const params = typeof search === 'string' ? new URLSearchParams(search.split('?').slice(1).join('?') ?? '') : search;
   const raw = params.get(PLUGIN_SETTINGS_QUERY_KEY);
   return raw === null || raw === '' ? null : raw;
+}
+
+/**
+ * One Recipe's own page — `/settings/recipes?recipe=<installation id>`. The
+ * same query shape `?plugin=` uses, so a copied link, a refresh and Back all
+ * land on the same package without a new route in the router. `?view=edit`
+ * opens the author workbench directly; every other address opens the package
+ * for reading.
+ *
+ * The helper is the one owner of that key's spelling. Anything that navigates
+ * here — the model Recipe field, the library list — goes through it, so a
+ * rename can never leave one surface pointing at a page that no longer
+ * resolves.
+ */
+export const RECIPE_SETTINGS_QUERY_KEY = 'recipe';
+
+/** The settings route of the Recipe library, or of one installed Recipe. */
+export function recipeSettingsPath(installationId?: string, view?: 'edit'): string {
+  if (installationId === undefined || installationId === '') return '/settings/recipes';
+  const query = new URLSearchParams({ [RECIPE_SETTINGS_QUERY_KEY]: installationId.replace(/^installation:/u, '') });
+  if (view === 'edit') query.set('view', 'edit');
+  return `/settings/recipes?${query.toString()}`;
+}
+
+/**
+ * The installation id a settings query names, or null on the library page. An
+ * empty value is the library, not an unknown Recipe: `?recipe=` is what a link
+ * built from an unset id resolves to, and showing an empty detail page there
+ * would be a dead end.
+ */
+export function recipeSettingsIdFromQuery(search: string | URLSearchParams): string | null {
+  // Accepts a query string, a whole route or an absolute URL, the same shapes
+  // `pluginSettingsIdFromQuery` accepts and for the same reason.
+  const params = typeof search === 'string' ? new URLSearchParams(search.split('?').slice(1).join('?') ?? '') : search;
+  const raw = params.get(RECIPE_SETTINGS_QUERY_KEY);
+  return raw === null || raw === '' ? null : raw.replace(/^installation:/u, '');
 }
 
 /**

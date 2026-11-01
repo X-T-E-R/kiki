@@ -74,6 +74,8 @@ import {
   installedPluginsPath,
   pluginSettingsIdFromQuery,
   pluginSettingsPath,
+  recipeSettingsIdFromQuery,
+  recipeSettingsPath,
   restartRequirementSnapshot,
   runtimeConfigDraftFromConfig,
   searchSettings,
@@ -1411,14 +1413,14 @@ describe('settings nav groups (IA purpose)', () => {
     expect(settingsSectionIsDeviceOnly('nope')).toBe(false);
   });
 
-  it('places each of the 20 dedicated leaves once across the seven groups', () => {
+  it('places each of the 21 dedicated leaves once across the seven groups', () => {
     const placed = SETTINGS_NAV_TREE.flatMap((node) => node.kind === 'group' ? node.sections : [node.section]);
-    expect(placed).toHaveLength(20);
-    expect(new Set(placed).size).toBe(20);
+    expect(placed).toHaveLength(21);
+    expect(new Set(placed).size).toBe(21);
     expect(new Set(placed)).toEqual(new Set(SETTINGS_SECTIONS.map((section) => section.id)));
     const sectionsOf = (id: string) => (SETTINGS_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as { sections: readonly string[] }).sections;
     expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts', 'notifications']);
-    expect(sectionsOf('models-agents')).toEqual(['ai', 'agents']);
+    expect(sectionsOf('models-agents')).toEqual(['ai', 'recipes', 'agents']);
     expect(sectionsOf('sessions-work')).toEqual(['sessions', 'workspaces', 'memory']);
     expect(sectionsOf('capabilities')).toEqual(['extensions', 'search', 'browser-control', 'hooks']);
     expect(sectionsOf('rules')).toEqual(['permissions']);
@@ -1507,6 +1509,29 @@ describe('installed-plugin settings pages', () => {
     expect(resolveSettingsRoute('plugins', '#st-card-webbridge'))
       .toMatchObject({ status: 'ok', section: 'browser-control', cardId: 'st-card-webbridge' });
     expect(settingsSectionForCard('st-card-webbridge')).toBe('browser-control');
+  });
+});
+
+describe('Recipe library settings page', () => {
+  it('addresses one Recipe\'s own page inside the recipes section', () => {
+    // A copied link, a refresh, and the browser's back button all have to land
+    // on the same package, so the id travels in the query of one section.
+    expect(recipeSettingsPath()).toBe('/settings/recipes');
+    expect(recipeSettingsPath('inst-clear-work')).toBe('/settings/recipes?recipe=inst-clear-work');
+    expect(recipeSettingsPath('inst-clear-work', 'edit'))
+      .toBe('/settings/recipes?recipe=inst-clear-work&view=edit');
+    expect(resolveSettingsRoute('recipes', '')).toMatchObject({ status: 'ok', section: 'recipes' });
+    expect(recipeSettingsIdFromQuery('?recipe=inst-clear-work')).toBe('inst-clear-work');
+  });
+
+  it('round-trips an id that needs escaping and treats an empty one as the library', () => {
+    const odd = 'inst/one two';
+    expect(recipeSettingsIdFromQuery(recipeSettingsPath(odd))).toBe(odd);
+    // The installation:<id> spelling a preview source uses names the same package.
+    expect(recipeSettingsIdFromQuery('?recipe=installation%3Ainst-clear-work')).toBe('inst-clear-work');
+    expect(recipeSettingsIdFromQuery('?recipe=')).toBeNull();
+    expect(recipeSettingsIdFromQuery('')).toBeNull();
+    expect(recipeSettingsIdFromQuery('?plugin=kiki-writing')).toBeNull();
   });
 });
 

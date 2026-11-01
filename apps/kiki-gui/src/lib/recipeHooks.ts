@@ -87,6 +87,17 @@ export function isRecipeHookConsentRequired(error: unknown): boolean {
 }
 
 /**
+ * Whether a refused write lost a revision race: another save published first,
+ * so the `expected_revision` it carried no longer names the installed copy.
+ * The service reports that as a validation failure on that one field.
+ */
+export function isRecipeRevisionConflict(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  return typeof error.details === 'object' && error.details !== null
+    && (error.details as { path?: unknown }).path === 'expected_revision';
+}
+
+/**
  * Scripts grouped by the event that fires them, so a package with six hooks on
  * two events reads as two things rather than six.
  *

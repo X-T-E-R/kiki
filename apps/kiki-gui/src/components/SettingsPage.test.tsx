@@ -154,6 +154,9 @@ const client = {
   listWorkspaceSkills: vi.fn(async () => ({ skills: [] })),
   listTools: vi.fn(async () => ({ tools: [] })),
   listNamedAgentProfiles: vi.fn(async () => ({ items: [] })),
+  // The Recipe library's own queries; the sweep renders the leaf empty.
+  listRecipes: vi.fn(async () => []),
+  listRecipeMarkets: vi.fn(async () => []),
   getMemorySettings: vi.fn(async () => ({ enabled: true, approval: 'auto', budget: 2000, workspaces: {} as Record<string, boolean> })),
   memoryAuthority: vi.fn(async (): Promise<unknown> => ({ version: 1, epoch: 0, backend: 'sqlite', mode: 'normal' })),
   patchMemorySettings: vi.fn(async (patch: { enabled?: boolean; approval?: string; budget?: number }) => ({ enabled: true, approval: 'auto', budget: 2000, workspaces: {}, ...patch })),
@@ -1501,6 +1504,9 @@ describe('SettingsPage search ownership', () => {
         plugin_app_lifecycle: true,
         work_presets: true,
         external_clients: true,
+        // The recipes leaf's own flag row, so its Experimental card mounts and
+        // the sweep's rendered set matches the indexed set.
+        recipes: true,
       },
     });
     client.klient.rest = { connections: { list: async () => [], handshake: async () => ({}) } };
@@ -1515,6 +1521,7 @@ describe('SettingsPage search ownership', () => {
     const developer = await renderSettings('/settings/developer');
     const labs = await renderSettings('/settings/labs');
     const defaults = await renderSettings('/settings/ai?tab=defaults');
+    const recipes = await renderSettings('/settings/recipes');
     const searchAdvanced = await renderSettings('/settings/search?tab=advanced');
     const ssh = await renderSettings('/settings/ssh');
     const plugins = await renderSettings('/settings/plugins');
@@ -1538,7 +1545,7 @@ describe('SettingsPage search ownership', () => {
         ])
         .map((match) => match[1]!),
     );
-    for (const page of [general, agents, subagents, mcp, sessions, permissions, tasks, developer, labs, defaults, searchAdvanced, ssh, plugins, spaces, connectionServices, accessKiki, accessClients]) {
+    for (const page of [general, agents, subagents, mcp, sessions, permissions, tasks, developer, labs, defaults, recipes, searchAdvanced, ssh, plugins, spaces, connectionServices, accessKiki, accessClients]) {
       for (const card of page.querySelectorAll('[id^="st-card-"]')) rendered.add(card.id);
     }
     expect(rendered.size).toBeGreaterThan(10);

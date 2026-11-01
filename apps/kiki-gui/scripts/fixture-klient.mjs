@@ -1351,7 +1351,12 @@ export class FixtureKlient {
       // here goes through the same list the GUI reads back, so browsing a
       // package cannot drift from what a later apply would send.
       case 'recipeService.list': {
-        return structuredClone(server.recipes.map((entry) => entry.summary));
+        // The real service reports which models bind each package; the list
+        // carries it so the library can say who uses what without a get per row.
+        return structuredClone(server.recipes.map((entry) => {
+          const usedBy = server.models.filter((model) => model.recipe === entry.summary.installation_id).map((model) => model.id);
+          return usedBy.length === 0 ? entry.summary : { ...entry.summary, used_by: usedBy };
+        }));
       }
       case 'recipeService.get': {
         const [installationId] = args;
@@ -1573,9 +1578,16 @@ export class FixtureKlient {
         return { ...structuredClone(forked), used_by: [] };
       }
       case 'recipeService.saveLocal': {
-        const [{ installation_id: installationId, files }] = args;
+        const [{ installation_id: installationId, expected_revision: expectedRevision, files }] = args;
         const found = server.recipes.find((entry) => entry.summary.installation_id === installationId);
         if (found === undefined) return undefined;
+        // Another writer published first: refused on the one field the real
+        // service names, so the editor can rebase instead of overwriting.
+        if (expectedRevision !== undefined && expectedRevision !== found.summary.revision) {
+          throw Object.assign(new Error('Recipe changed; reload before saving'), {
+            code: 40001, details: { source: installationId, path: 'expected_revision' },
+          });
+        }
         /*
           A save that would publish script content this machine has not
           authorized is refused, exactly as the real service refuses it: the

@@ -43,6 +43,10 @@ New bindings freeze the package revision, selected options, expanded text and mo
 
 ## Browse installed packages
 
+**Settings → Models & agents → Recipes** (`/settings/recipes`) manages packages without opening a model. The list shows each package's version, update rule, any failed update, and the models that use it. Open a package to read it (`?recipe=<installation id>`), then choose **Edit this Recipe** (`&view=edit`); a package installed from a source offers **Customize this Recipe**, which copies or extends it first. Nothing on this page binds a model. **Remove** names the models that still use the package and switches them back to their own saved settings. The page also installs from a link or path and manages Recipe markets. In a model's Recipe tab, **Open in the Recipe library** jumps to the bound package.
+
+If a save is refused because the package was saved elsewhere first, the editor keeps your edits and offers **Load the newer version**. Your changed files keep your words, untouched files take the newer copy, and the next save uses the newer revision.
+
 The [Recipe API](../server/rest-api.md#recipes-and-markets) exposes `global.recipes.list()` and `GET /api/recipes`. Each entry includes its installation id, display name, version, accepted revision, source locator, update mode and health. `copied_from` records a fork's source; market entries associate a package with their source URL.
 
 The optional directory fields support model pickers and management lists:
