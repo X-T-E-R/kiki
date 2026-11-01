@@ -1,5 +1,6 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 import { join } from 'pathe';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -303,15 +304,16 @@ describe('AgentDateChangeService', () => {
     try {
       await ctx.dispose();
       ctx = createTestAgent(
-        { cwd: '/workspace' },
+        { cwd: resolve(homeDir) },
         appService(IHostClock, clock),
-        hostEnvironmentServices(homeDir),
+        hostEnvironmentServices(homeDir, process.platform === 'win32' ? 'win32' : 'posix'),
       );
       context = ctx.get(IAgentContextMemoryService);
       loop = ctx.get(IAgentLoopService);
       profile = ctx.get(IAgentProfileService);
 
       await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: 'mock-model' });
+      expect(profile.data().environmentDisclosure?.cwd).toBe(ctx.get(ISessionContext).cwd);
 
       await runWillBeginStepHooks(loop);
       expect(dateReminders(context)).toHaveLength(0);
