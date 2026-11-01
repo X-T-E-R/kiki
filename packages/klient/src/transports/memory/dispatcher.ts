@@ -328,9 +328,16 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
       if (disposed || handle === session) return;
       detachSession();
       if (handle === undefined) return;
+      let instantiation: IInstantiationService;
+      try {
+        instantiation = handle.accessor.get(IInstantiationService);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'InstantiationService has been disposed') return;
+        throw error;
+      }
       session = handle;
+      sessionWatches.push(instantiation.onWillDispose(detachSession));
       const lifecycle = handle.accessor.get(IAgentLifecycleService);
-      sessionWatches.push(handle.accessor.get(IInstantiationService).onWillDispose(detachSession));
       sessionWatches.push(lifecycle.onDidCreate(created => {
         if (session !== handle || created.id !== agentId) return;
         try { attachAgent(created); } catch (error) { fail(error); }
