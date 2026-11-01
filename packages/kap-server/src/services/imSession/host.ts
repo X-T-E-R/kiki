@@ -29,7 +29,7 @@ import {
   type Scope,
   type SessionApprovalRequest,
 } from '@kiki/agent-core-v2';
-import type { ImProviderKind, MessageContent } from '@kiki/protocol';
+import { messageContentSchema, type ImProviderKind, type MessageContent } from '@kiki/protocol';
 import { createSafeHttpTransport } from '@nb-im/core';
 
 import { IUserMessageRouter } from '@kiki/agent-core-v2/app/bot/messageRouting';
@@ -342,7 +342,8 @@ class NotificationSessionPorts implements ImSessionPorts {
       const prompt = agent.accessor.get(IAgentPromptService);
       const known = prompt.lookup(input.promptId);
       if (known !== undefined) return { duplicate: true, promptId: input.promptId, turnId: known.turnId, deliveryState: prompt.list().pending.some((item) => item.id === input.promptId) ? 'queued' : 'pending' };
-      const prepared = await resolvePromptMediaFiles([...input.content], this.core.accessor.get(IFileService), this.core.accessor.get(IBootstrapService).cacheDir, {
+      const content = input.content.map((part) => messageContentSchema.parse(part));
+      const prepared = await resolvePromptMediaFiles(content, this.core.accessor.get(IFileService), this.core.accessor.get(IBootstrapService).cacheDir, {
         resolveAttachmentsDir: async () => join(session.accessor.get(ISessionContext).sessionDir, 'attachments'),
         sessionMedia: session.accessor.get(ISessionMediaStore),
       });
