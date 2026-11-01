@@ -1744,6 +1744,7 @@ export class SessionController {
       return firstFrames ?? steps ?? refs.toSorted((a, b) => Number(a.path[1]) - Number(b.path[1]));
     })[0];
     if (olderStructure !== undefined) {
+      const retention = this.beginContentRead(agentId, olderStructure.source, [String(olderStructure.path[0])], false);
       const loadingView = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
       this.publishAgentView(agentId, setLoadingOlder(loadingView, true));
       const cancel = () => { this.cancelContentSegment(agentId, olderStructure); };
@@ -1761,6 +1762,7 @@ export class SessionController {
         return { kind: 'failed', changed: false };
       } finally {
         signal.removeEventListener('abort', cancel);
+        retention.release();
         if (!obsolete()) {
           const current = agentId === MAIN_AGENT_ID ? this.state : this.agentStates.get(agentId) ?? this.emptyAgentState;
           if (current.loadingOlder) this.publishAgentView(agentId, setLoadingOlder(current, false));

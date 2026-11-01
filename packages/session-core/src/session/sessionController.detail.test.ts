@@ -308,6 +308,41 @@ describe('SessionController transcript detail', () => {
     } finally { controller.close(); }
   });
 
+  it.each(['main', 'child'] as const)('keeps the %s older gesture attached when its mounted content reader unmounts', async (agentId) => {
+    const source = { kind: 'turn' as const, id: 'shared-tail' };
+    const ref: ContentRef = { source, revision: 'shared-revision', path: ['steps'], kind: 'array', direction: 'backward', offset: 1, total: 2 };
+    const step = { kind: 'step' as const, stepId: 's1', turnId: source.id, ordinal: 1, state: 'completed' as const,
+      frames: [{ kind: 'text' as const, frameId: 'f1', role: 'assistant' as const, text: 'retained tail' }] };
+    let complete!: (segment: import('@kiki/transcript').ContentSegment) => void;
+    let readSignal: AbortSignal | undefined;
+    const content = vi.fn<NonNullable<SessionViewFacade['transcript']['content']>>((_input, options) => {
+      readSignal = options?.signal;
+      return new Promise(resolve => { complete = resolve; });
+    });
+    const { controller, deliver, view } = harness(undefined, content);
+    await controller.open();
+    if (agentId === 'child') controller.retainAgentView('shared-child', agentId, 'delta');
+    deliver(resetEvent(agentId, emptySnapshot({ items: [{ kind: 'turn', turnId: source.id, ordinal: 0, state: 'completed',
+      origin: { kind: 'user' }, prompt: 'original opening', steps: [step], contentRefs: [ref] }] }), 2));
+    const state = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    const mounted = controller.beginContentRead(agentId, source, ['steps']);
+    try {
+      await vi.waitFor(() => { expect(content).toHaveBeenCalledOnce(); });
+      const older = controller.loadOlderMessages(agentId);
+      mounted.release();
+      expect(readSignal?.aborted).toBe(false);
+      complete({ ref, start: 0, value: [{ ...step, stepId: 's0', ordinal: 0,
+        frames: [{ ...step.frames[0]!, frameId: 'f0', text: 'earlier content' }] }], contentRefs: [] });
+      expect(await older).toBe(true);
+      expect(state().olderError).toBeUndefined();
+      expect(state().blocks.filter(block => block.kind === 'assistant').map(block => block.text)).toEqual(['earlier content', 'retained tail']);
+      expect(state().blocks.some(block => block.kind === 'user' && block.text === 'original opening')).toBe(true);
+      expect(controller.contentRefsFor(agentId, source)).toEqual([]);
+      expect(content).toHaveBeenCalledOnce();
+      expect(view.transcript.page).not.toHaveBeenCalled();
+    } finally { mounted.release(); controller.close(); }
+  });
+
   it.each(['resolve', 'reject'] as const)('detaches a cancelled reverse flight before immediate retry and ignores its late %s', async (late) => {
     const source = { kind: 'turn' as const, id: 'immediate-retry-tail' };
     const ref: import('@kiki/transcript').ContentRef = { source, revision: 'fixed-tail', path: ['steps'], kind: 'array', direction: 'backward', offset: 1, total: 2 };
