@@ -53,12 +53,22 @@ function picture(width, height, color) {
 export const IMAGE_PATH = 'C:/Users/someone/AppData/Local/Programs/Kiki/workspaces/deeply/nested/project/output/renders/2026-11-01/session-screenshots/final-composite-frame.png';
 
 const FRAME = picture(640, 400, [40, 110, 90]);
-const FRAME_DATA_URL = `data:image/png;base64,${FRAME.toString('base64')}`;
+const FRAME_B64 = FRAME.toString('base64');
+const FRAME_DATA_URL = `data:image/png;base64,${FRAME_B64}`;
+
+// A remote image served by the fixture itself, so the details popup shows a
+// genuine same-origin http URL rather than a fabricated host path. `$ORIGIN`
+// is bound to the fixture's own request origin when the snapshot is served.
+export const REMOTE_FILE_ID = 'remote-frame';
+export const REMOTE_IMAGE_URL_PATH = `/media-image/${REMOTE_FILE_ID}`;
 
 export default {
   sessions: [sessionRecord(SID, { title: 'Fixture: image hover details' })],
   fsFiles: {
-    [IMAGE_PATH]: { base64: FRAME.toString('base64'), mime: 'image/png' },
+    [IMAGE_PATH]: { base64: FRAME_B64, mime: 'image/png' },
+  },
+  mediaFiles: {
+    [REMOTE_FILE_ID]: { base64: FRAME_B64, mime: 'image/png', name: 'cdn-frame.png' },
   },
   snapshots: {
     [SID]: {
@@ -102,6 +112,16 @@ export default {
             },
           ],
           created_at: ts(4),
+        },
+        {
+          id: fid('msg'),
+          session_id: SID,
+          role: 'user',
+          content: [
+            { type: 'text', text: '这是 CDN 上的同一帧。' },
+            { type: 'image', source: { kind: 'url', url: `$ORIGIN${REMOTE_IMAGE_URL_PATH}?token=secret` }, name: 'cdn-frame.png' },
+          ],
+          created_at: ts(3),
         },
       ],
     },

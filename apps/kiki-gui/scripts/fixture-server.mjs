@@ -525,6 +525,16 @@ function bind(value, sessionId) {
   return value;
 }
 
+/** Deep-replace the `$ORIGIN` placeholder with the fixture's own request origin. */
+function bindOrigin(value, origin) {
+  if (typeof value === 'string') return value.split('$ORIGIN').join(origin);
+  if (Array.isArray(value)) return value.map((item) => bindOrigin(item, origin));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, bindOrigin(v, origin)]));
+  }
+  return value;
+}
+
 /** Deep-replace `$PROMPT` with the server-issued prompt id (called per prompt). */
 function bindPrompt(value, promptId) {
   if (typeof value === 'string') return value === '$PROMPT' ? promptId : value;
@@ -967,7 +977,7 @@ class FixtureServer {
     resetBotRooms(this, data);
     for (const session of data.sessions ?? []) {
       const bound = bind(session, session.id);
-      const created = new FixtureSession(bound, bind(data.snapshots?.[session.id] ?? {}, session.id));
+      const created = new FixtureSession(bound, bindOrigin(bind(data.snapshots?.[session.id] ?? {}, session.id), this.origin ?? ''));
       // Execution pause/resume seed: a scenario opens a session in any phase
       // (running by default when the facade exists); the klient dispatcher
       // reads and mutates this record through pause/resume.
@@ -2164,6 +2174,24 @@ class FixtureServer {
     const playbackGrantPath = /^\/media-preview\/([^/]+)$/u.exec(url.pathname);
     if (playbackGrantPath !== null && req.method === 'GET') {
       serveSessionPlayback(this, req, res, playbackGrantPath[1]);
+      return;
+    }
+
+    // A scenario-seeded remote image, bearer-free for the same reason as the
+    // playback grant: an `<img src>` cannot send the fixture token. This lets a
+    // transcript carry a genuine same-origin http(s) image URL — the lightbox
+    // details then shows a real URL source rather than a fabricated host path.
+    const mediaImagePath = /^\/media-image\/([^/]+)$/u.exec(url.pathname);
+    if (mediaImagePath !== null && req.method === 'GET') {
+      const file = this.scenario?.data.mediaFiles?.[decodeURIComponent(mediaImagePath[1])];
+      if (file === undefined) {
+        res.writeHead(404, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ code: 40409, msg: 'media.not_found', data: null }));
+        return;
+      }
+      const bytes = Buffer.from(file.base64, 'base64');
+      res.writeHead(200, { 'content-type': file.mime ?? 'image/png', 'content-length': bytes.length });
+      res.end(bytes);
       return;
     }
 
@@ -5541,9 +5569,11 @@ class FixtureServer {
   }
 
   async start(port, scenarioName) {
-    await this.loadScenario(scenarioName);
     this.http.on('upgrade', (req, socket, head) => this.handleUpgrade(req, socket, head));
+    // Listen before seeding so `$ORIGIN` binds to the real (possibly ephemeral) port.
     await new Promise((resolve) => this.http.listen(port, '127.0.0.1', resolve));
+    this.origin = `http://127.0.0.1:${this.http.address().port}`;
+    await this.loadScenario(scenarioName);
     console.log(`[fixture] listening on http://127.0.0.1:${port} (token: ${FIXTURE_TOKEN})`);
     return this;
   }

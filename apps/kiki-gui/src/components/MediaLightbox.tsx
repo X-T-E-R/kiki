@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { formatBytes } from '@kiki/session-core/composer/media';
 
 import { useHost } from '../host';
@@ -50,6 +50,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
   const host = useHost();
   const [zoom, setZoom] = useState<'fit' | number>('fit');
   const [natural, setNatural] = useState<{ width: number; height: number }>();
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -67,6 +68,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
   const image = useRef<HTMLImageElement>(null);
   const zoomAnchor = useRef<{ fx: number; fy: number; px: number; py: number } | null>(null);
   const dpr = useDevicePixelRatio();
+  const detailsId = useId();
   const pan = useDragPan(zoom !== 'fit' && !editing);
   const label = imagePreviewLabel({ name }, t('media.image'));
   const [viewportDims, setViewportDims] = useState(() => ({
@@ -87,6 +89,7 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
   useLayoutEffect(() => {
     setZoom('fit');
     setNatural(undefined);
+    setDetailsOpen(false);
     setFailed(false);
     setMenu(null);
     setEditing(false);
@@ -323,20 +326,27 @@ export function MediaLightbox({ src, name, identity = src ?? 'image', loading = 
         </div>
         <button type="button" data-autofocus disabled={!zoomable} onClick={() => { switchZoom(); }} className={controlClass}>{zoom === 'fit' ? t('media.zoomActual') : t('media.zoomFit')}</button>
         {details.length === 0 && shownSource === undefined ? null : (
-          // Details ride a hover/focus popup, not a click toggle: the picture
-          // keeps the whole stage, and a click never pins a panel over it.
-          <span className="group static inline-flex"
-            onPointerLeave={(event) => {
-              if (event.pointerType === 'mouse' || event.pointerType === 'pen') return;
-              if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-              (event.currentTarget.querySelector('button') as HTMLButtonElement | null)?.blur();
-            }}
-          >
-            <button type="button" aria-label={t('media.details')} title={t('media.details')} className={`${controlClass} group-focus-within:!border-accent group-focus-within:!text-accent group-hover:!border-accent group-hover:!text-accent`}>
+          // Details ride a hover/keyboard popup, not a click toggle: the picture
+          // keeps the whole stage, and a click or tap never pins a panel over it.
+          // Keyboard entry is Tab focus (:focus-visible) or an explicit
+          // Enter/Space expand. A mouse click or touch tap focuses without
+          // :focus-visible, so it opens nothing and leaves nothing behind.
+          <span className="group static inline-flex">
+            <button type="button" aria-label={t('media.details')} title={t('media.details')}
+              aria-describedby={detailsId} aria-expanded={detailsOpen}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                setDetailsOpen((value) => !value);
+              }}
+              onBlur={() => { setDetailsOpen(false); }}
+              className={`${controlClass} focus-visible:!border-accent focus-visible:!text-accent group-hover:!border-accent group-hover:!text-accent`}>
               <Icon name="info" />
             </button>
-            <span data-lightbox-info role="tooltip"
-              className="invisible absolute left-1/2 top-full z-10 mt-1.5 flex w-max max-w-[min(92vw,560px)] -translate-x-1/2 flex-col items-center gap-1 rounded-2xl border border-shell-hairline bg-shell/90 px-3.5 py-2 font-mono text-[11px] text-shell-ink opacity-0 shadow-lg backdrop-blur-md transition-opacity duration-150 group-focus-within:visible group-focus-within:opacity-100 group-hover:visible group-hover:opacity-100">
+            <span id={detailsId} data-lightbox-info role="tooltip"
+              className={`absolute left-1/2 top-full z-10 mt-1.5 flex w-max max-w-[min(92vw,560px)] -translate-x-1/2 flex-col items-center gap-1 rounded-2xl border border-shell-hairline bg-shell/90 px-3.5 py-2 font-mono text-[11px] text-shell-ink shadow-lg backdrop-blur-md transition-opacity duration-150 ${
+                detailsOpen ? 'visible opacity-100' : 'invisible opacity-0 group-hover:visible group-hover:opacity-100 group-has-[:focus-visible]:visible group-has-[:focus-visible]:opacity-100'
+              }`}>
               {details.length === 0 ? null : <span className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">{details.map((part) => <span key={part}>{part}</span>)}</span>}
               {shownSource === undefined ? null : (
                 <span className="flex min-w-0 max-w-full items-start gap-1.5">

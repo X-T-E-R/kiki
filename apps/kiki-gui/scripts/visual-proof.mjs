@@ -5127,25 +5127,65 @@ async function scenarioImageHoverDetails() {
   }
   await shot('image-hover-details-hover');
 
-  // Clicking never pins it open: no aria-pressed toggle state is set.
-  await detailsButton.click();
-  await page.waitForTimeout(150);
-  if ((await detailsButton.getAttribute('aria-pressed')) !== null) throw new Error('details click toggled a pressed state');
-  // Click focuses the button, so focus-within legitimately keeps it open; it is
-  // focus, not a latched panel. Blur (and pointer leave) is what closes it.
-  await detailsButton.evaluate((el) => el.blur());
-  await page.mouse.move(4, 4); // leave the trigger
-  await page.waitForTimeout(250);
-  if (await infoVisibility() !== 'hidden') throw new Error('details stayed open after blur and pointer leave');
+  // The trigger is aria-describedby the tooltip, collapsed by default.
+  const describedBy = await detailsButton.getAttribute('aria-describedby');
+  const infoId = await info.getAttribute('id');
+  if (describedBy === null || infoId === null || describedBy !== infoId) {
+    throw new Error(`trigger/tooltip not linked: aria-describedby=${describedBy} id=${infoId}`);
+  }
+  if ((await detailsButton.getAttribute('aria-expanded')) !== 'false') throw new Error('details expanded without interaction');
 
-  // Keyboard focus is the equivalent entrance; blur closes it.
-  await detailsButton.focus();
+  // A mouse click must not pin the panel: release blurs the button, and moving
+  // the pointer away leaves it hidden — no toggle state survives the click.
+  await page.mouse.move(4, 4); // ensure no hover before the click
+  await detailsButton.click();
+  await page.waitForTimeout(200);
+  await page.mouse.move(4, 4); // move away without hovering the trigger
+  await page.waitForTimeout(300);
+  // The click did focus the trigger; only :focus-visible (keyboard) may open it.
+  if (!(await detailsButton.evaluate((el) => document.activeElement === el && !el.matches(':focus-visible')))) throw new Error('mouse click did not leave plain (non-visible) focus on the trigger');
+  if (await infoVisibility() !== 'hidden') throw new Error('details stayed open after a mouse click and pointer leave');
+  if ((await detailsButton.getAttribute('aria-expanded')) !== 'false') throw new Error('mouse click latched aria-expanded');
+
+  // A real touch tap (CDP touch emulation: touchstart/touchend → pointerType
+  // touch, focus, click) never leaves the panel resident either.
+  const cdp = await page.context().newCDPSession(job().page);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const box = await detailsButton.boundingBox();
+  const tapAt = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [tapAt] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await page.waitForTimeout(300);
+  const tapState = await detailsButton.evaluate((el) => ({ focused: document.activeElement === el, visible: el.matches(':focus-visible') }));
+  if (await infoVisibility() !== 'hidden') throw new Error(`details stayed open after a touch tap: ${JSON.stringify(tapState)}`);
+  if ((await detailsButton.getAttribute('aria-expanded')) !== 'false') throw new Error('touch tap latched aria-expanded');
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await cdp.detach();
+
+  // Keyboard Tab focus is the readable equivalent; blur closes it. Walk Tab
+  // from the document until the trigger takes real keyboard focus.
+  await page.mouse.move(4, 4);
+  await detailsButton.evaluate((el) => el.blur());
+  await page.waitForTimeout(250);
+  if (await infoVisibility() !== 'hidden') throw new Error('details stayed open after the tap was blurred');
+  let reached = false;
+  for (let step = 0; step < 40 && !reached; step += 1) {
+    await page.keyboard.press('Tab');
+    reached = await detailsButton.evaluate((el) => document.activeElement === el);
+  }
+  if (!reached) throw new Error('Tab never reached the details trigger');
   await page.waitForTimeout(250);
   if (await infoVisibility() !== 'visible') throw new Error('details did not reveal on keyboard focus');
   await shot('image-hover-details-focus');
-  await detailsButton.evaluate((el) => el.blur());
+  // An explicit Enter expands it as the keyboard modal.
+  await detailsButton.press('Enter');
+  await page.waitForTimeout(150);
+  if ((await detailsButton.getAttribute('aria-expanded')) !== 'true') throw new Error('Enter did not expand the keyboard details modal');
+  if (await infoVisibility() !== 'visible') throw new Error('keyboard modal did not stay readable');
+  await page.keyboard.press('Shift+Tab'); // keyboard blur
   await page.waitForTimeout(250);
   if (await infoVisibility() !== 'hidden') throw new Error('details stayed open after blur');
+  if ((await detailsButton.getAttribute('aria-expanded')) !== 'false') throw new Error('aria-expanded did not reset on blur');
 
   // Zoom regression: 100% then 500% via the controls still work.
   await page.locator('button[data-autofocus]').click(); // fit → actual
@@ -5162,6 +5202,34 @@ async function scenarioImageHoverDetails() {
   await viewport.click({ button: 'right' });
   await page.waitForSelector('[data-lightbox-image-menu] [role="menuitem"]', { timeout: 5000 });
   await shot('image-hover-context-menu');
+  await page.keyboard.press('Escape'); // close menu
+  await page.keyboard.press('Escape'); // close lightbox
+  await page.waitForSelector('[data-lightbox-viewport]', { state: 'detached', timeout: 5000 });
+
+  // The remote image shows its genuine same-origin URL (secret redacted), not a path.
+  // It sits at the bottom of the transcript and lazy-loads on approach, so scroll
+  // the transcript to the end and let the thumbnail mount before opening it.
+  await page.locator('[data-transcript-scroll]').evaluate((el) => { el.scrollTop = el.scrollHeight; });
+  await page.waitForTimeout(400);
+  const remoteThumb = page.locator('img[src*="/media-image/remote-frame"]').first();
+  await remoteThumb.waitFor({ timeout: 10_000 });
+  await remoteThumb.scrollIntoViewIfNeeded();
+  await remoteThumb.click();
+  await page.locator('[data-lightbox-viewport]').waitFor({ timeout: 10_000 });
+  const remoteDetails = page.locator(`[aria-label="${S.mediaDetails}"]`);
+  await remoteDetails.hover();
+  await page.waitForTimeout(250);
+  const remoteInfo = page.locator('[data-lightbox-info]');
+  if (await remoteInfo.evaluate((el) => getComputedStyle(el).visibility) !== 'visible') {
+    throw new Error('remote details did not reveal on hover');
+  }
+  const remoteSource = await page.locator('[data-lightbox-source]').innerText();
+  if (!/^http:\/\/127\.0\.0\.1:\d+\/media-image\/remote-frame/.test(remoteSource)) {
+    throw new Error(`remote details did not show the same-origin URL: ${JSON.stringify(remoteSource)}`);
+  }
+  if (remoteSource.includes('secret') || remoteSource.includes('token=')) throw new Error(`remote details leaked the query: ${JSON.stringify(remoteSource)}`);
+  if (/^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(remoteSource)) throw new Error(`remote details showed a host path: ${JSON.stringify(remoteSource)}`);
+  await shot('image-hover-details-remote');
 }
 
 async function scenarioPreviewWorkbench() {

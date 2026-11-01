@@ -248,33 +248,54 @@ describe('lightbox zoom controls and details', () => {
     expect(document.querySelector('[data-lightbox-viewport]')?.getAttribute('data-lightbox-viewport')).toBe('fit');
   });
 
-  it('reveals the details it holds on hover and keyboard focus, without a click toggle', () => {
+  it('links the trigger to the tooltip and never pins the details on a mouse click', () => {
     renderLightbox({ name: 'long.png', mime: 'image/png', size: 155769, linkUrl: 'https://example.test/shot.png?token=secret' });
     loadImage(1940, 5170);
     const trigger = document.querySelector<HTMLButtonElement>('[aria-label="Image details"]')!;
-    // The popup is mounted but invisible until hover or focus reaches the trigger.
     const info = () => document.querySelector('[data-lightbox-info]')!;
-    expect(info().className).toContain('invisible');
-    expect(trigger.getAttribute('aria-pressed')).toBeNull();
 
-    act(() => { trigger.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+    // The trigger describes itself by the tooltip, collapsed by default.
+    expect(trigger.getAttribute('aria-describedby')).toBe(info().id);
+    expect(info().id).not.toBe('');
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(info().className).toContain('invisible');
     expect(info().className).toContain('group-hover:visible');
+    // Only keyboard :focus-visible reveals it; plain (pointer) focus does not.
+    expect(info().className).toContain('group-has-[:focus-visible]:visible');
+    expect(info().className).not.toContain('group-focus-within');
     expect(info().textContent).toContain('1940 × 5170');
     expect(info().textContent).toContain('image/png');
     expect(info().textContent).toContain('152 KB');
     expect(info().querySelector('[data-lightbox-source]')?.textContent).toBe('https://example.test/shot.png?…');
     expect(info().textContent).not.toContain('secret');
 
-    // Clicking never pins the panel open: the trigger keeps no pressed state.
+    // A mouse click is not a keyboard expand: no toggle state is latched.
     act(() => { trigger.click(); });
-    expect(trigger.getAttribute('aria-pressed')).toBeNull();
-    expect(info().className).toContain('group-hover:visible');
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(info().className).toContain('invisible');
+  });
 
-    // Keyboard focus is the equivalent entrance; blur closes it again.
+  it('expands the details for an explicit keyboard press and closes on blur', () => {
+    renderLightbox({ name: 'long.png', sourcePath: '/C:/fixture/viewer/shot.png' });
+    loadImage(80, 90);
+    const trigger = document.querySelector<HTMLButtonElement>('[aria-label="Image details"]')!;
+    const info = () => document.querySelector('[data-lightbox-info]')!;
+
     act(() => { trigger.focus(); });
     expect(document.activeElement).toBe(trigger);
-    expect(info().className).toContain('group-focus-within:visible');
+    // Enter toggles the keyboard-expanded state on.
+    act(() => { trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(info().className).toContain('visible');
+    expect(info().className).not.toContain('invisible');
+    // Space toggles it back off.
+    act(() => { trigger.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })); });
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    // Re-open, then blur closes the keyboard-expanded state.
+    act(() => { trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
     act(() => { trigger.blur(); });
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
     expect(info().className).toContain('invisible');
   });
 
