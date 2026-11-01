@@ -19,6 +19,10 @@ export interface RunAgentOptions {
   readonly summaryPolicy?: AgentProfileSummaryPolicy;
   readonly onReady?: () => void;
   readonly onQueued?: () => void;
+  /** Persist the delivery-attempt guard before entering an external executor; rejection prevents delivery. */
+  readonly onBeforeExternalRun?: () => Promise<void>;
+  /** Persist retry eligibility only when the executor confirms the prompt was not accepted remotely. */
+  readonly onExternalRunNotSent?: () => Promise<void>;
 }
 
 export interface AgentRunHandle {

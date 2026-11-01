@@ -201,6 +201,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       session = await this.resolveSession();
       controller.signal.throwIfAborted();
       this.broken = undefined;
+      if ((binding.executorId ?? 'native') !== 'native') await options.onBeforeExternalRun?.();
       const handle = await session.run(outbound, { ...options, signal: controller.signal });
       active.turnId = handle.turn.id;
       this.statusChanged.fire(this.status());

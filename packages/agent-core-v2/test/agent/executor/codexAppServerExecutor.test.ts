@@ -1621,8 +1621,10 @@ describe('real Codex client through execution settlement and capacity', () => {
       new CodexAppServerClient({ spawn: async () => fixture.process }, {
         id: 'fixture', command: 'fixture', requestTimeoutMs: 10, shutdownGraceMs: 5,
       }, { onServerRequest }) });
+    const onBeforeExternalRun = vi.fn(async () => {});
+    const onExternalRunNotSent = vi.fn(async () => {});
     try {
-      const starting = harness.execution.run({ kind: 'prompt', prompt: 'Do this once' }, { signal: new AbortController().signal });
+      const starting = harness.execution.run({ kind: 'prompt', prompt: 'Do this once' }, { signal: new AbortController().signal, onBeforeExternalRun, onExternalRunNotSent });
       const failed = starting.catch((error: unknown) => error);
       await vi.waitFor(() => { expect(fixture.kill).toHaveBeenCalled(); }, { interval: 1 });
       fixture.exit();
@@ -1635,6 +1637,9 @@ describe('real Codex client through execution settlement and capacity', () => {
         expect(await failed).toMatchObject({ code: 'remote', remoteCode: -32000 });
         expect(await failed).not.toHaveProperty('details.deliveryOutcome');
       }
+      expect(onBeforeExternalRun).toHaveBeenCalledOnce();
+      if (startOutcome === 'reject') expect(onExternalRunNotSent).toHaveBeenCalledOnce();
+      else expect(onExternalRunNotSent).not.toHaveBeenCalled();
       expect(fixture.methods.filter(method => method === 'turn/start')).toHaveLength(1);
       await harness.execution.settled();
     } finally {

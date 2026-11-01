@@ -725,12 +725,28 @@ describe('ACP external executor', () => {
     const harness = createHarness();
     const error = new AcpClientError('executor.authentication_required', 'Sign in');
     vi.spyOn(harness.client, method).mockRejectedValue(error);
-    await expect(harness.session.run({ kind: 'prompt', prompt: 'neutral fixture' }, { signal: new AbortController().signal })).rejects.toBe(error);
+    const onExternalRunNotSent = vi.fn(async () => {});
+    await expect(harness.session.run({ kind: 'prompt', prompt: 'neutral fixture' }, { signal: new AbortController().signal, onExternalRunNotSent })).rejects.toBe(error);
+    expect(onExternalRunNotSent).toHaveBeenCalledOnce();
     expect(harness.events.find((event) => event.type === 'executor.auth.observed')).toMatchObject({
       status: 'required', scope: 'session', source: 'acp.authentication_required', executor_id: 'example-acp', cwd: 'C:\\workspace',
     });
     expect(harness.starts).toHaveLength(0);
     await harness.session.shutdown();
+  });
+
+  it('does not certify a failed start as unsent after the ACP delivery boundary', async () => {
+    const harness = createHarness();
+    const failure = new AcpClientError('executor.disconnected', 'Connection lost after prompt write');
+    vi.spyOn(harness.client, 'startTurn').mockImplementation(async request => {
+      request.onDeliveryAttempt?.();
+      throw failure;
+    });
+    const onExternalRunNotSent = vi.fn(async () => {});
+    try {
+      await expect(harness.session.run({ kind: 'prompt', prompt: 'Do this once' }, { signal: new AbortController().signal, onExternalRunNotSent })).rejects.toBe(failure);
+      expect(onExternalRunNotSent).not.toHaveBeenCalled();
+    } finally { await harness.session.shutdown(); }
   });
 
   it('cancels the active remote prompt when recording fails instead of leaving execution running', async () => {

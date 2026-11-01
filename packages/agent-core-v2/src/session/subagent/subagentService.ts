@@ -132,6 +132,8 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
         signal: opts.signal,
         onReady: opts.onReady,
         onQueued: opts.onQueued,
+        onBeforeExternalRun: opts.onBeforeExternalRun,
+        onExternalRunNotSent: opts.onExternalRunNotSent,
         capacityReservation: opts.capacityReservation,
       })
       .then((run) => {

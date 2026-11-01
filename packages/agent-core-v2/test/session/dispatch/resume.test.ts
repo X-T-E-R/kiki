@@ -131,8 +131,9 @@ async function defaultExternal(id = 'claude-acp', modelAlias?: string) {
   const resolved: ResolvedAgentExecutor = { descriptor: { id, protocol: 'acp', args: [], revision: 'fixture' }, options: {},
     provider: { id, protocol: 'acp', validateOptions: () => ({}), validateBinding: binding => ({ ok: true, binding }),
       create: context => ({ hooks: createHooks(['onWillRun']), status: () => ({ state: 'idle' }), cancel: () => false,
-        settled: async () => {}, shutdown: async () => {}, run: async request => {
+        settled: async () => {}, shutdown: async () => {}, run: async (request, runOptions) => {
           delivered.push({ request, binding: context.binding });
+          await runOptions.onExternalRunNotSent?.();
           throw new Error('fixture-native-run-reached');
         } }) } };
   vi.spyOn(registry, 'resolve').mockReturnValue(resolved);
@@ -1085,6 +1086,126 @@ describe('dispatch resume through model switch and real native run', () => {
     expect((await metadata.read()).agents![CHILD]).toMatchObject({ executor: 'example-acp', negotiated: { image: true }, model: 'external-new',
       parentAgentId: 'main', labels: { customState: 'preserved' } });
     expect(readResumeRecord((await metadata.read()).agents![CHILD], 'external-direct')).toMatchObject({ taskId: 'external-task', state: 'ready' });
+  });
+});
+
+describe('external resume durable delivery (CM-002)', () => {
+  async function external(deliveries: unknown[], outcome: 'unknown' | 'not_sent' | 'started' = 'unknown', modelAlias?: string) {
+    const ctx = await host();
+    const registry = ctx.get(IAgentExecutorRegistry);
+    const failure = new Error2(ErrorCodes.EXECUTOR_SESSION_FAILED, 'External start unavailable', { details: { deliveryOutcome: 'unknown' } });
+    const resolved: ResolvedAgentExecutor = { descriptor: { id: 'example-external', protocol: 'acp', args: [], revision: 'fixture' }, options: {},
+      provider: { id: 'example-external', protocol: 'acp', validateOptions: () => ({}), validateBinding: binding => ({ ok: true, binding }),
+        create: context => ({ hooks: createHooks(['onWillRun']), status: () => ({ state: 'idle' }), cancel: () => false, settled: async () => {}, shutdown: async () => {},
+          run: async (request, runOptions) => {
+            if (outcome === 'not_sent') {
+              await runOptions.onExternalRunNotSent?.();
+              throw new Error('Confirmed pre-send failure');
+            }
+            const turnId = deliveries.length + 40;
+            const recorder = new ExternalTurnRecorder(context.agent, turnId, 'example-remote-session', { executorId: 'example-external', protocol: 'acp',
+              model: 'vendor-model', resumeMode: 'live', profileDelivery: 'native' });
+            await recorder.begin(request.kind === 'retry' ? '' : request.prompt, { kind: 'system_trigger', name: 'subagent' }, [], request.kind === 'prompt' ? request.promptId : undefined);
+            deliveries.push(request);
+            if (outcome === 'unknown') { await recorder.fail(failure); throw failure; }
+            const handle: import('#/session/subagent/subagent').AgentRunHandle = { agentId: CHILD,
+              turn: { id: turnId } as import('#/agent/loop/loop').Turn, completion: Promise.resolve({ summary: 'External result' }) };
+            return handle;
+          } }) } };
+    vi.spyOn(registry, 'resolve').mockReturnValue(resolved);
+    vi.spyOn(registry, 'resolveExecutable').mockResolvedValue(resolved);
+    vi.spyOn(registry, 'validateBinding').mockImplementation((_id, _options, binding) => ({ ok: true, binding }));
+    vi.spyOn(registry, 'get').mockReturnValue(resolved.descriptor);
+    await ctx.get(IAgentProfileService).bind({ model: modelAlias, thinking: modelAlias === undefined ? undefined : 'off', delegationPosition: 'sub',
+      resolvedProfile: modelAlias === undefined ? nativeTargets([resolved.descriptor])[0] : normalizeAgentProfile({ name: 'example-worker', executor: 'example-external', modelAlias,
+        allowedModels: [modelAlias], tools: [], systemPrompt: () => 'External test role.' }) });
+    return { ctx, ...dispatchFor(ctx) };
+  }
+
+  it.each([undefined, 'vendor-model'])('does not resend an outcome-unknown external prompt after cold restore (model=%s)', async modelAlias => {
+    const deliveries: unknown[] = [];
+    const original = await external(deliveries, 'unknown', modelAlias);
+    const opts = options('unknown-external', { contextMode: 'direct' });
+    const first = await original.dispatch.runOnExisting(original.child, 'Perform one external side effect', opts);
+    await expect(first.started).rejects.toMatchObject({ details: { deliveryOutcome: 'unknown' } });
+    expect(await original.dispatch.runOnExisting(original.child, 'Perform one external side effect', opts)).toBe(first);
+    const records = await journal(original.ctx);
+    const meta = structuredClone((await original.ctx.get(ISessionMetadata).read()).agents![CHILD]!);
+    expect(readResumeRecord(meta, opts.operationId!)).toMatchObject({ state: 'ready', externalStart: 'unknown' });
+    const cold = await external(deliveries, 'unknown', modelAlias);
+    await cold.ctx.restore(records);
+    await cold.ctx.get(ISessionMetadata).registerAgent(CHILD, meta);
+    await expect(cold.dispatch.runOnExisting(cold.child, 'Perform one external side effect', opts)).rejects.toMatchObject({
+      code: ErrorCodes.EXECUTOR_SESSION_FAILED, details: { operationId: opts.operationId, externalStart: 'unknown', deliveryOutcome: 'unknown' } });
+    expect(deliveries).toEqual([expect.objectContaining({ promptId: 'resume-prompt:unknown-external' })]);
+  });
+
+  it.each(['attempting', 'started'] as const)('blocks cold replay when only the durable %s fact survived', async externalStart => {
+    const deliveries: unknown[] = [];
+    const original = await external(deliveries);
+    const opts = options('interrupted-external', { contextMode: 'direct' });
+    const first = await original.dispatch.runOnExisting(original.child, 'Original external work', opts);
+    await expect(first.started).rejects.toBeDefined();
+    const records = await journal(original.ctx);
+    const meta = structuredClone((await original.ctx.get(ISessionMetadata).read()).agents![CHILD]!);
+    const record = readResumeRecord(meta, opts.operationId!)!;
+    const interrupted = { ...meta, labels: { ...meta.labels, [`dispatchResume:${opts.operationId}`]: JSON.stringify({ ...record, externalStart }) } };
+    const cold = await external(deliveries);
+    await cold.ctx.restore(records);
+    await cold.ctx.get(ISessionMetadata).registerAgent(CHILD, interrupted);
+    await expect(cold.dispatch.runOnExisting(cold.child, 'Original external work', opts)).rejects.toMatchObject({ details: { externalStart } });
+    expect(deliveries).toHaveLength(1);
+  });
+
+  it.each(['attempting', 'unknown'] as const)('does not cross an unpersisted external %s boundary', async blocked => {
+    const deliveries: unknown[] = [];
+    const original = await external(deliveries);
+    const opts = options(`save-${blocked}`, { contextMode: 'direct' });
+    const metadata = original.ctx.get(ISessionMetadata);
+    const updateAgent = metadata.updateAgent.bind(metadata);
+    const failure = new Error('Resume guard save failed');
+    const save = vi.spyOn(metadata, 'updateAgent').mockImplementation(async (agentId, update) => {
+      const next = update((await metadata.read()).agents![agentId]!);
+      if (readResumeRecord(next, opts.operationId!)?.externalStart === blocked) throw failure;
+      await updateAgent(agentId, update);
+    });
+    const first = await original.dispatch.runOnExisting(original.child, 'Perform one external side effect', opts);
+    if (blocked === 'attempting') {
+      await expect(first.started).rejects.toBe(failure);
+      expect(deliveries).toHaveLength(0);
+      expect(readResumeRecord((await metadata.read()).agents![CHILD], opts.operationId!)).toMatchObject({ state: 'ready' });
+      save.mockRestore();
+      const retry = await original.dispatch.runOnExisting(original.child, 'Perform one external side effect', opts);
+      await expect(retry.started).rejects.toMatchObject({ details: { deliveryOutcome: 'unknown' } });
+      expect(deliveries).toHaveLength(1);
+    } else {
+      await expect(first.started).rejects.toMatchObject({ details: { deliveryOutcome: 'unknown' } });
+      const records = await journal(original.ctx);
+      const meta = structuredClone((await metadata.read()).agents![CHILD]!);
+      expect(readResumeRecord(meta, opts.operationId!)).toMatchObject({ externalStart: 'attempting' });
+      const cold = await external(deliveries);
+      await cold.ctx.restore(records);
+      await cold.ctx.get(ISessionMetadata).registerAgent(CHILD, meta);
+      await expect(cold.dispatch.runOnExisting(cold.child, 'Perform one external side effect', opts)).rejects.toMatchObject({ details: { externalStart: 'attempting' } });
+      expect(deliveries).toHaveLength(1);
+    }
+  });
+
+  it('keeps a confirmed pre-send failure retryable after cold restore', async () => {
+    const deliveries: unknown[] = [];
+    const original = await external(deliveries, 'not_sent');
+    const opts = options('unsent-external', { contextMode: 'direct' });
+    const first = await original.dispatch.runOnExisting(original.child, 'Retry unsent work', opts);
+    await expect(first.started).rejects.toThrow('Confirmed pre-send failure');
+    const records = await journal(original.ctx);
+    const meta = structuredClone((await original.ctx.get(ISessionMetadata).read()).agents![CHILD]!);
+    expect(readResumeRecord(meta, opts.operationId!)).toMatchObject({ externalStart: 'not_sent' });
+    const cold = await external(deliveries, 'started');
+    await cold.ctx.restore(records);
+    await cold.ctx.get(ISessionMetadata).registerAgent(CHILD, meta);
+    const replay = await cold.dispatch.runOnExisting(cold.child, 'Retry unsent work', opts);
+    expect(await replay.started).toMatchObject({ agentId: CHILD });
+    expect(deliveries).toEqual([expect.objectContaining({ promptId: 'resume-prompt:unsent-external' })]);
   });
 });
 

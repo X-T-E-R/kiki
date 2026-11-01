@@ -195,6 +195,8 @@ export interface AcpTurnRequest {
   readonly session: AcpOpenSessionOptions;
   /** Restores and verifies controls on the actual opened session before prompt delivery. A rejection sends no prompt. */
   readonly prepareSession?: (session: AcpOpenSessionResult) => Promise<void>;
+  /** Marks the last local boundary before issuing session/prompt; later failures may have delivered the prompt. */
+  readonly onDeliveryAttempt?: () => void;
 }
 
 export interface AcpTurnResult {
