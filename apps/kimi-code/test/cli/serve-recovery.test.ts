@@ -1,4 +1,6 @@
+import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { pathToFileURL } from 'node:url';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
@@ -213,3 +215,41 @@ it('protects a live child PID lease even with no instance record and allows canc
   expect(mocks.spawn).not.toHaveBeenCalled();
   expect(await readFile(join(homeDir, 'server', 'ensure.lock'), 'utf8')).toBe(String(process.pid));
 });
+
+it.each(['exit', 'exception', 'rejection', 'oom'] as const)('preserves %s diagnostics in an isolated home', async (mode) => {
+  const homeDir = await home();
+  const diagnostics = pathToFileURL(resolve(import.meta.dirname, '../../src/kiki/server-diagnostics.ts')).href;
+  const action = {
+    exit: 'process.exit(7)',
+    exception: 'setImmediate(() => { throw new Error("fixture exception"); })',
+    rejection: 'Promise.reject(new Error("fixture rejection"))',
+    oom: 'const retained=[];while(true)retained.push(new Array(1000000).fill(Math.random()))',
+  }[mode];
+  const child = spawnSync(process.execPath, [
+    '--max-old-space-size=32', '--input-type=module', '-e',
+    `import {installServerDiagnostics} from ${JSON.stringify(diagnostics)};installServerDiagnostics(${JSON.stringify(homeDir)});${action}`,
+  ], {
+    env: { ...process.env, NODE_OPTIONS: '', DIAGNOSTIC_SECRET_FIXTURE: 'must-not-appear' },
+    encoding: 'utf8',
+    timeout: 20_000,
+  });
+  expect(child.error).toBeUndefined();
+  expect(child.status).not.toBe(0);
+  const records = (await readFile(join(homeDir, 'logs/server-runtime.log'), 'utf8'))
+    .trim().split('\n').map((line) => JSON.parse(line));
+  expect(records[0]).toMatchObject({ event: 'starting', pid: expect.any(Number), heapLimitBytes: expect.any(Number) });
+  if (mode === 'exit') expect(records.at(-1)).toMatchObject({ event: 'exit', code: 7 });
+  else {
+    const reports = await readdir(join(homeDir, 'logs/reports'));
+    expect(reports).toHaveLength(1);
+    const report = JSON.parse(await readFile(join(homeDir, 'logs/reports', reports[0]!), 'utf8'));
+    expect(report.environmentVariables).toBeUndefined();
+    expect(report.header.networkInterfaces).toBeUndefined();
+    expect(JSON.stringify(report)).not.toContain('must-not-appear');
+    if (mode === 'oom') expect(report.header.event).toContain('Allocation failed');
+    else expect(records).toContainEqual(expect.objectContaining({
+      event: 'uncaught_exception',
+      origin: mode === 'rejection' ? 'unhandledRejection' : 'uncaughtException',
+    }));
+  }
+}, 30_000);

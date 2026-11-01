@@ -28,6 +28,8 @@ import { registerKikiCommands } from '../../src/kiki/register';
 import { parseDuration, startServeServer, registerServeCommand, findReachableServer, ensureServer } from '../../src/kiki/serve';
 
 import * as nativeAssets from '../../src/native/native-assets';
+import * as webAssets from '../../src/native/web-assets';
+import * as serverDiagnostics from '../../src/kiki/server-diagnostics';
 
 const roots: string[] = [];
 const servers: RunningServer[] = [];
@@ -108,6 +110,27 @@ describe('kiki command helpers', () => {
     expect(driver).toHaveBeenCalledOnce();
     driver.mockRestore();
   });
+
+  it('installs exit diagnostics on the real foreground serve path and records graceful idle closure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'kiki-serve-diagnostics-')); roots.push(root);
+    await writeFile(join(root, 'config.toml'), '[search]\nenabled = false\n');
+    await writeFile(join(root, 'index.html'), '<!doctype html><title>Serve fixture</title>');
+    const record = vi.fn();
+    const diagnostics = vi.spyOn(serverDiagnostics, 'installServerDiagnostics').mockReturnValue({ record });
+    const assets = vi.spyOn(webAssets, 'requireServerWebAssetsDir').mockReturnValue(root);
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const program = new Command(); registerServeCommand(program);
+    try {
+      await program.parseAsync(['node', 'kiki', 'serve', '--home', root, '--port', '0', '--idle-exit', '25ms', '--json']);
+      expect(diagnostics).toHaveBeenCalledExactlyOnceWith(root);
+      expect(record).toHaveBeenCalledWith('ready', { serverId: expect.any(String) });
+      expect(record).toHaveBeenCalledWith('closed', expect.objectContaining({ callerOutcome: 'resolved' }));
+    } finally {
+      diagnostics.mockRestore();
+      assets.mockRestore();
+      output.mockRestore();
+    }
+  }, 30_000);
 
   it('attaches a live backend and refuses ensure when its identity handshake cannot be verified', async () => {
     const root = await mkdtemp(join(tmpdir(), 'kiki-query-live-')); roots.push(root);

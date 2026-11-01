@@ -119,7 +119,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   private readonly outcomes: AgentOutcomeDocuments;
 
   private async persist(): Promise<void> {
-    await this.store.set(this.scope, META_KEY, encodeSessionMeta(await this.outcomes.project(this.data)));
+    await this.store.set(this.scope, META_KEY, encodeSessionMeta(await this.outcomes.project(this.data)), { cooperative: true });
   }
 
   private async persistAbsorbingDeferred(): Promise<readonly (keyof SessionMeta)[]> {
@@ -634,7 +634,8 @@ function isSessionTitleKind(value: unknown): value is SessionTitleKind {
 type PersistedSessionMeta = SessionMeta & { readonly isCustomTitle: boolean };
 
 export function encodeSessionMeta(meta: SessionMeta): PersistedSessionMeta {
-  return { ...meta, isCustomTitle: meta.titleKind === 'custom' };
+  const { custom } = JSON.parse(JSON.stringify({ custom: meta.custom })) as Pick<SessionMeta, 'custom'>;
+  return { ...meta, custom, isCustomTitle: meta.titleKind === 'custom' };
 }
 
 function sessionMetaTitleNeedsMigration(raw: SessionMeta, normalized: SessionMeta): boolean {

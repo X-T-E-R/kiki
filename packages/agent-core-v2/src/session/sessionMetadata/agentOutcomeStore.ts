@@ -73,7 +73,7 @@ export class AgentOutcomeDocuments {
       if (ref === undefined) {
         ref = `${OUTCOME_PREFIX}${randomUUID()}.json`;
         try {
-          await this.store.set(this.scope, ref, { version: 1, resultSummary: agent.resultSummary, error: agent.error } satisfies OutcomeDocument);
+          await this.store.set(this.scope, ref, { version: 1, resultSummary: agent.resultSummary, error: agent.error } satisfies OutcomeDocument, { cooperative: true });
         } catch (error) {
           this.onWriteFailure?.(id, error);
           agents[id] = agent;

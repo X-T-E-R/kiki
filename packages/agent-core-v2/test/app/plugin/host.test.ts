@@ -1,3 +1,5 @@
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
@@ -178,6 +180,31 @@ function deferred() {
 }
 
 describe('plugin host lifecycle', () => {
+  it.each([false, true])('reclaims a host with live timers after owner EOF even when deactivate hangs=%s', async (hang) => {
+    const root = await mkdtemp(join(tmpdir(), 'plugin-owner-eof-'));
+    const entry = join(root, 'entry.mjs');
+    await writeFile(entry, `
+      export function register() { setInterval(() => {}, 100); }
+      export function deactivate() { ${hang ? 'return new Promise(() => {});' : ''} }
+    `);
+    const child = spawn(process.execPath, [
+      fileURLToPath(new URL('../../../src/app/plugin/hostRunner.mjs', import.meta.url)), entry,
+    ], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, KIKI_HOME: root } });
+    child.stderr.resume();
+    const exited = once(child, 'exit');
+    let output = '';
+    child.stdout.on('data', (chunk) => { output += String(chunk); });
+    try {
+      child.stdin.write(`${JSON.stringify({ id: 0, method: 'handshake', params: { version: 1 } })}\n`);
+      await vi.waitFor(() => expect(output).toContain('"method":"ready"'));
+      child.stdin.end();
+      const [code, signal] = await once(child, 'exit', { signal: AbortSignal.timeout(4_000) });
+      expect({ code, signal }).toEqual({ code: 0, signal: null });
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) { child.kill(); await exited; }
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 10_000);
   it('uses the same active home in the real plugin child env and RPC context', async () => {
     const tools = (await parseManifest(fixture)).manifest!.kiki!.tools!;
     const host = new PluginHost('space-home-fixture', join(fixture, 'entry.mjs'), tools, [], [], undefined, 'space-home');

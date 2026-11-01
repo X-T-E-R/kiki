@@ -86,6 +86,7 @@ vi.mock('../../state/connection', () => {
   const connection = () => ({ scopeId: harness.scopeId, client,
     klient: {
       session: () => ({ getAgentExecutor: harness.getAgentExecutor, agent: harness.agent }),
+      events: { on: () => ({ ready: Promise.resolve(), dispose: () => {} }) },
       global: {
         agentPanel: {
           read: (query: unknown, options: { signal: AbortSignal }) =>
@@ -132,9 +133,13 @@ vi.mock('../PreviewToggleButton', () => ({ PreviewToggleButton: () => <div data-
 vi.mock('../RightRail', () => ({ RightRail: () => null }));
 vi.mock('../../host', () => ({ useHost: () => harness.host }));
 vi.mock('../../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: { preparePrompt: vi.fn() } }));
-vi.mock('../Transcript', () => ({ Transcript: ({ state, agentId }: { state: { blocks: readonly unknown[]; loadError?: string; transcriptReady?: boolean }; agentId?: string }) =>
+vi.mock('../Transcript', () => ({ Transcript: ({ state, agentId, showQueuedPrompts }: { state: { blocks: readonly { kind?: string; text?: string; optimisticStatus?: string }[]; loadError?: string; transcriptReady?: boolean }; agentId?: string; showQueuedPrompts?: boolean }) =>
   <div data-timeline-agent={agentId ?? 'main'} data-timeline-blocks={state.blocks.length}
-    data-timeline-error={state.loadError} data-timeline-ready={state.transcriptReady === true ? 'true' : 'false'} /> }));
+    data-timeline-queued={showQueuedPrompts === true ? 'shown' : 'hidden'}
+    data-timeline-error={state.loadError} data-timeline-ready={state.transcriptReady === true ? 'true' : 'false'}>
+    {state.blocks.filter((block) => block.kind === 'user').map((block, index) =>
+      <span key={index} data-timeline-user={block.text} data-timeline-optimistic={block.optimisticStatus} />)}
+  </div> }));
 vi.mock('./ResyncStatusBanner', () => ({ ResyncStatusBanner: () => null }));
 vi.mock('../../lib/toasts', () => ({ pushToast: harness.pushToast }));
 
@@ -1206,6 +1211,69 @@ it.each([false, true])('updates a mounted child tree and composer after send and
     expect(textarea.disabled).toBe(false);
     expect(header.querySelector('h1')?.textContent).toBe('General');
   }
+});
+
+it.each([
+  { name: 'idle', status: 'completed' as const, busy: false, promptStatus: 'running' as const },
+  { name: 'running', status: 'running' as const, busy: true, promptStatus: 'queued' as const },
+])('shows a message sent to a $name child on its timeline until the projection owns it', async ({ status, busy, promptStatus }) => {
+  let resolveSend!: (value: null) => void;
+  harness.sendAgentMessage.mockImplementation(() => new Promise((resolve) => { resolveSend = resolve; }));
+  const listeners = new Set<() => void>();
+  let childState = { ...createViewState('session'), loaded: true, transcriptReady: true, busy };
+  const controller = {
+    subscribeAgent: (_agentId: string, listener: () => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    getAgentState: () => childState,
+    getForest: () => testForest(status, busy),
+    retainHistoryRead: () => () => {},
+    retainHistoryPreview: () => () => {},
+    historyPreviewPending: () => false,
+  } as unknown as SessionController;
+  await renderWorkspace({ forest: testForest(status, busy), controller, sessionState: { ...createViewState('session'), loaded: true } });
+  await settle();
+  const timeline = () => container.querySelector('[data-timeline-agent="child"]')!;
+  const userRows = () => [...timeline().querySelectorAll('[data-timeline-user="message for the child"]')];
+  expect(timeline().getAttribute('data-timeline-queued')).toBe('shown');
+  await typeText(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, 'message for the child');
+  await act(async () => {
+    dock.querySelector<HTMLButtonElement>(busy ? '[aria-label="Queue prompt"]' : '[aria-label="Send message"]')?.click();
+  });
+  await settle();
+  expect(userRows()).toHaveLength(1);
+  expect(userRows()[0]!.getAttribute('data-timeline-optimistic')).toBe('sending');
+  const promptId = harness.sendAgentMessage.mock.calls[0]![4] as string;
+
+  await act(async () => { resolveSend(null); });
+  await settle();
+  expect(userRows()).toHaveLength(1);
+
+  await act(async () => {
+    childState = { ...childState, blocks: [{ kind: 'user', id: promptId, promptId, userMessageId: promptId,
+      text: 'message for the child', createdAt: '2026-01-01T00:00:00Z', promptStatus }] };
+    for (const listener of listeners) listener();
+  });
+  await settle();
+  expect(userRows()).toHaveLength(1);
+  expect(userRows()[0]!.getAttribute('data-timeline-optimistic')).toBeNull();
+});
+
+it('drops the child send echo when the server rejects the message, and keeps an unknown outcome marked', async () => {
+  harness.sendAgentMessage.mockRejectedValueOnce(new NativeChildPromptSendError(new ApiError({ code: 40001, msg: 'prompt.rejected', data: null })));
+  await renderWorkspace({ forest: testForest('completed') });
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, 'rejected message');
+  await clickComposerSend();
+  expect(container.querySelector('[data-timeline-user="rejected message"]')).toBeNull();
+  expect(textarea.value).toBe('rejected message');
+
+  harness.sendAgentMessage.mockRejectedValueOnce(new NativeChildPromptSendError(new ApiError({ code: 50001, msg: 'internal', data: null })));
+  await typeText(textarea, 'unknown outcome');
+  await clickComposerSend();
+  expect(container.querySelector('[data-timeline-user="unknown outcome"]')?.getAttribute('data-timeline-optimistic')).toBe('offline');
 });
 
 it.each(['completed', 'cancelled', 'failed'] as const)(

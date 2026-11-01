@@ -38,7 +38,7 @@ import { GoalCard, GoalHeaderSummary, GoalPauseButton, goalShowsInHeader, Recove
 import type { DraftSkillHandoff } from './NewSessionDraft';
 import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
 import { SubmissionRecovery } from './SubmissionRecovery';
-import { AdmissionScope, useAdmissionScope, withAdmissionUserBlocks } from './timeline/AdmissionLine';
+import { AdmissionScope, useAdmissionScope, withAdmissionUserBlocks, withOptimisticUserBlock } from './timeline/AdmissionLine';
 import { ContinuationRow } from './ContentContinuation';
 import { RightRail } from './RightRail';
 import { ModelSwitchDialog } from './model-switch/ModelSwitchDialog';
@@ -122,7 +122,6 @@ import {
   type ExecutionChoice,
 } from '@kiki/session-core/composer';
 import {
-  appendLocalUserMessage,
   assertSessionWritable,
   MAIN_AGENT_ID,
   SendNowError,
@@ -1412,21 +1411,6 @@ function hasDurableRecord(controller: Pick<SessionController, 'getDurableIngress
   return (controller.getDurableIngress?.() ?? []).some((item) => item.prompt_id === promptId);
 }
 
-export function withOptimisticUserBlock(
-  blocks: readonly Block[],
-  pending: { id: string; text: string; content?: MessageContent[]; createdAt: string; slow: boolean; preserved: boolean; retryable: boolean; status: 'sending' | 'offline' | 'server' } | undefined,
-): readonly Block[] {
-  if (pending === undefined || blocks.some(block => block.kind === 'user' && block.promptId === pending.id)) return blocks;
-  const projected = appendLocalUserMessage(createViewState(pending.id), {
-    userMessageId: pending.id, promptId: pending.id, text: pending.text, content: pending.content,
-    createdAt: pending.createdAt, status: 'running',
-  }).blocks;
-  return [...blocks, ...projected.map((block): Block => block.kind !== 'user' ? block : {
-    ...block, userMessageId: undefined, promptStatus: undefined,
-    optimisticStatus: pending.status, optimisticSlow: pending.slow,
-    optimisticPreserved: pending.preserved, optimisticRetryable: pending.retryable,
-  })];
-}
 
 /** Put a failed prompt's notes back in front of any the user added since. */
 export function restoreSentAnnotations<T extends { readonly id: string }>(
