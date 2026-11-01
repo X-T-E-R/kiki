@@ -115,7 +115,7 @@ export function useSessionExecutions(
   const commit = (sessionId: string, state: ExecutionControlState | null, readGeneration: number) => {
     if ((generations.current.get(sessionId) ?? 0) !== readGeneration) return;
     queryClient.setQueryData(batchKey, (current: Record<string, ExecutionControlState | null> | undefined) => ({
-      ...(current ?? {}),
+      ...current,
       [sessionId]: state,
     }));
   };
@@ -165,7 +165,7 @@ export function useSessionExecutions(
           (state) => {
             bump(sessionId);
             queryClient.setQueryData(batchKey, (current: Record<string, ExecutionControlState | null> | undefined) => ({
-              ...(current ?? {}),
+              ...current,
               [sessionId]: state,
             }));
             queryClient.setQueryData(executionQueryKey(scopeId, sessionId), state);
@@ -189,7 +189,7 @@ export function useSessionExecutions(
   }, [query.data]);
   const anyAvailable = query.data !== undefined && Object.values(query.data).some((state) => state !== null);
   const readError = query.isError ? query.error : lastReadError.current;
-  return { states, anyAvailable, resolved: query.data !== undefined, readError, refetch: query.refetch };
+  return { states, anyAvailable, resolved: query.data !== undefined, readError, refetch: () => { void query.refetch(); } };
 }
 
 /** Single-session convenience wrapper. */
