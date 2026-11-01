@@ -496,8 +496,7 @@ export class SSHKaos implements Kaos {
   private _home: string;
   private _cwd: string;
   private readonly _envLayers: readonly Record<string, string>[];
-  private readonly _activity: { count: number };
-  private _closed = false;
+  private readonly _activity: { count: number; closed: boolean };
   private _environmentProbe?: Promise<Environment>;
   private _osEnv: Environment & { defaultShellName?: string; codePage?: number; tempDir?: string } = {
     osKind: 'POSIX', osArch: 'unknown', osVersion: 'unknown', shellName: 'sh', shellPath: '/bin/sh',
@@ -565,15 +564,20 @@ export class SSHKaos implements Kaos {
     home: string,
     cwd: string,
     envLayers: readonly Record<string, string>[] = [],
-    activity = { count: 0 },
+    activity?: { count: number; closed: boolean },
   ) {
     this._client = client;
     this._sftp = sftp;
     this._home = home;
     this._cwd = cwd;
     this._envLayers = envLayers;
-    this._activity = activity;
-    this._client.once('close', () => { this._closed = true; });
+    if (activity === undefined) {
+      const shared = { count: 0, closed: false };
+      client.once('close', () => { shared.closed = true; });
+      this._activity = shared;
+    } else {
+      this._activity = activity;
+    }
   }
 
   get activeProcesses(): number {
@@ -1214,7 +1218,7 @@ export class SSHKaos implements Kaos {
    * Close the SSH connection. After this, the SSHKaos instance is unusable.
    */
   close(): Promise<void> {
-    if (this._closed) return Promise.resolve();
+    if (this._activity.closed) return Promise.resolve();
     this._sftp.end();
     return new Promise<void>((resolve) => {
       this._client.once('close', () => { resolve(); });

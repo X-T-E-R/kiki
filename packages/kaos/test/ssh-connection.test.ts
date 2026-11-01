@@ -488,6 +488,18 @@ describe('SSH connection manager with an actual ssh2 server', () => {
     expect(manager.status('dev')).toMatchObject({ state: 'ready', generation: 2 });
   });
 
+  it('does not add a close listener to the shared client for every scoped view', async () => {
+    const { path } = await fixture();
+    const { port } = await startServer(key());
+    const manager = new SshConnectionManager(async () => ({ ...host(port, path), autoTrustFirstKey: true }));
+    managers.push(manager);
+    const connection = await manager.get('dev');
+    const client = (connection as unknown as { _client: { listenerCount(event: string): number } })._client;
+    const before = client.listenerCount('close');
+    for (let index = 0; index < 20; index += 1) connection.withCwd('/home/tester').withEnv({ INDEX: String(index) });
+    expect(client.listenerCount('close')).toBe(before);
+  });
+
   it('does not idle-close a transport with an active exec channel', async () => {
     const { path } = await fixture();
     const { port, finishExec } = await startServer(key(), 0, true);
