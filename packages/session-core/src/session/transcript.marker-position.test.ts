@@ -40,6 +40,33 @@ describe('source-position timeline markers', () => {
       'user-sent-message', 'user-agent-turn-t1-prompt', 'agent-frame-f1.0']);
     expect(blocks[2]).toMatchObject({ turnId: 't0', userMessageId: 'sent-message' });
   });
+  it.each(['main', 'child'].flatMap((agentId) => [true, false].map((clock) => ({ agentId, clock }))))(
+    'replaces delivery-marker echoes with canonical rows while paging $agentId (clock=$clock)', ({ agentId, clock }) => {
+      const messages = [
+        { id: 'delivered-user', text: 'steer request', origin: { kind: 'user' as const } },
+        { id: 'delivered-context', text: 'owned context', origin: { kind: 'injection' as const, variant: 'model_steering' } },
+        { id: 'delivered-reminder', text: '<system-reminder>keep reading</system-reminder>', origin: { kind: 'injection' as const } },
+      ];
+      const deliveries = messages.map((message) => ({ kind: 'marker' as const, markerId: `delivery:${message.id}`,
+        marker: 'message.delivery', at: clock ? at(2) : undefined, payload: { messageId: message.id, text: message.text, origin: message.origin } }));
+      const projectSource = (items: AgentTranscriptProjectionSource['items'], previous = [] as ReturnType<typeof agentTranscriptToBlocks>) =>
+        agentTranscriptToBlocks({ agent_id: agentId, items }, previous);
+      const initial = projectSource(deliveries);
+      expect(initial.map((block) => block.id)).toEqual(['user-delivered-user', 'system-delivered-context', 'reminder-delivered-reminder-0']);
+      const canonical = { ...turn(0, 0, []), steps: [{ kind: 'step' as const, stepId: 't0.1', turnId: 't0', ordinal: 1,
+        state: 'completed' as const, startedAt: at(1), frames: messages.map((message) => ({ kind: 'text' as const,
+          frameId: `frame:${message.id}`, role: 'user' as const, text: message.text, origin: message.origin,
+          part: { partId: message.id, messageId: message.id, revision: 0, provenance: { source: 'engine' as const } },
+        })) }] };
+      for (const items of [[...deliveries, canonical], [canonical, ...deliveries]]) {
+        const blocks = projectSource(items, initial);
+        expect(blocks.map((block) => block.id)).toEqual(['user-agent-turn-t0-prompt', 'user-delivered-user', 'system-delivered-context', 'reminder-delivered-reminder-0']);
+        expect(blocks.slice(1).map((block) => 'turnId' in block ? block.turnId : undefined)).toEqual(['t0', 't0', 't0']);
+        expect(blocks[1]).toMatchObject({ contentSource: { kind: 'frame', id: 'frame:delivered-user', turnId: 't0' } });
+        expect(projectSource(items, blocks)).toEqual(blocks);
+      }
+    },
+  );
   it('does not attach an old page-global marker to the tail until its owning window is loaded', () => {
     expect(project([turn(10, 10, [[11, 'tail']]), marker('old', 4)]).map((block) => block.id))
       .toEqual(['user-agent-turn-t10-prompt', 'agent-frame-f10.0']);
@@ -68,6 +95,13 @@ it('restores each absorbed prompt from a merged canonical delivery, with media, 
   expect(blocks.map((block) => block.id)).toEqual(['user-first', 'user-second', 'user-third']);
   expect(blocks[1]).toMatchObject({ text: 'message 1', turnId: 't0', media: [{ kind: 'image', url: 'https://example.test/photo.png' }] });
   expect(agentTranscriptToBlocks(source, blocks)).toEqual(blocks);
+  for (const clock of [true, false]) {
+    const echoes = prompts.map((prompt, index) => ({ kind: 'marker' as const, markerId: `echo:${prompt.promptId}`,
+      marker: 'message.delivery', at: clock ? at(2) : undefined,
+      payload: { messageId: prompt.userMessageId, text: `message ${index}`, turnId: 't0', origin: { kind: 'user' } },
+    }));
+    expect(agentTranscriptToBlocks({ ...source, items: [...echoes, ...source.items] })).toEqual(blocks);
+  }
 });
 
 

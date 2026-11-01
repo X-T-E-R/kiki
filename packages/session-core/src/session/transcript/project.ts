@@ -2544,6 +2544,7 @@ export function agentTranscriptToBlocks(
   const blocks: Block[] = [];
   const deferredTaskBlocks: Block[] = [];
   const markerBlocks: Block[] = [];
+  const deliveryBlocks = new Set<Block>();
   const subagentPromptAsUser = response.agent_id !== MAIN_AGENT_ID;
   const phase = response.meta?.agent?.phase;
   const prompts = response.prompts ?? [];
@@ -2592,7 +2593,7 @@ export function agentTranscriptToBlocks(
         const text = recordString(payload, 'text');
         const presentation = readTextPresentation(payload['presentation']);
         if (messageId !== undefined && text !== undefined) {
-          destination.push(...classifiedTextToBlocks({
+          const delivery = classifiedTextToBlocks({
             id: messageId,
             classified: classifyTranscriptText({ text, presentation, role: 'user', origin: originFromRecord(payload), subagentPromptAsUser }),
             createdAt: item.at ?? '',
@@ -2603,7 +2604,9 @@ export function agentTranscriptToBlocks(
               attachmentsById,
               response.agent_id,
             ), presentation),
-          }));
+          });
+          for (const block of delivery) deliveryBlocks.add(block);
+          destination.push(...delivery);
         }
         continue;
       }
@@ -2933,12 +2936,13 @@ export function agentTranscriptToBlocks(
     }
   }
   const deliveredBlocks = blocks.flatMap((block): Block[] => {
+    if (deliveryBlocks.has(block)) return [block];
     if (block.kind !== 'user' || block.turnId === undefined || block.userMessageId === undefined) return [block];
     const first = prompts.find((prompt) => prompt.promptId === block.userMessageId && prompt.steeredAt !== undefined);
     if (first === undefined) return [block];
     const batch = prompts.filter((prompt) => prompt.steeredAt === first.steeredAt && prompt.status === 'completed');
     if (batch.length < 2 || batch[0]?.promptId !== first.promptId ||
-      batch.slice(1).some((prompt) => blocks.some((candidate) => candidate.kind === 'user' && candidate.userMessageId === prompt.promptId && candidate.turnId !== undefined))) return [block];
+      batch.slice(1).some((prompt) => blocks.some((candidate) => !deliveryBlocks.has(candidate) && candidate.kind === 'user' && candidate.userMessageId === prompt.promptId && candidate.turnId !== undefined))) return [block];
     const parts = batch.map((prompt) => promptContentParts(prompt.content));
     const combined = parts.flat().filter((part) => part.type === 'text').map((part) => part.text).join('');
     if (combined !== block.text) return [block];
@@ -2951,7 +2955,10 @@ export function agentTranscriptToBlocks(
       };
     });
   });
-  const withTaskBlocks = [...mergeTranscriptPromptBlocks(deliveredBlocks, prompts, previous, response.items)];
+  // Page-global delivery echoes yield to canonical rows, including absorbed prompts.
+  const turnBlockIds = new Set(deliveredBlocks.filter((block) => !deliveryBlocks.has(block)).map((block) => block.id));
+  const canonicalDeliveries = deliveredBlocks.filter((block) => !deliveryBlocks.has(block) || !turnBlockIds.has(block.id));
+  const withTaskBlocks = [...mergeTranscriptPromptBlocks(canonicalDeliveries, prompts, previous, response.items)];
   const frameTimes = new Map<string, number>();
   const sourceItems = [...response.items];
   const turns = sourceItems.filter((item): item is Extract<typeof item, { kind: 'turn' }> => item.kind === 'turn');
@@ -2967,7 +2974,9 @@ export function agentTranscriptToBlocks(
   const firstTurn = turns.reduce<(typeof turns)[number] | undefined>((first, turn) =>
     first === undefined || ordinalOf(turn) < ordinalOf(first) ? turn : first, undefined);
   const firstAt = timestampMs(firstTurn?.startedAt);
+  const projectedIds = new Set(withTaskBlocks.map((block) => block.id));
   for (const marker of markerBlocks.toSorted((left, right) => blockTimelineMs(left)! - blockTimelineMs(right)!)) {
+    if (deliveryBlocks.has(marker) && projectedIds.has(marker.id)) continue;
     const at = blockTimelineMs(marker)!;
     const promptOwner = marker.kind === 'system-reminder' || marker.kind === 'system' ? marker.ownerPromptId : undefined;
     const ownsLoadedPrompt = promptOwner !== undefined && withTaskBlocks.some((block) => isPromptIdentity(block, promptOwner));
@@ -2992,6 +3001,7 @@ export function agentTranscriptToBlocks(
     const noClock = !withTaskBlocks.some((block) => sourceTime(block) !== undefined);
     const insertion = (tied || noClock) && structural >= 0 ? structural : next;
     withTaskBlocks.splice(insertion < 0 ? withTaskBlocks.length : insertion, 0, marker);
+    projectedIds.add(marker.id);
   }
   for (const block of deferredTaskBlocks) {
     if (
