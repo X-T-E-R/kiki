@@ -78,7 +78,7 @@ import {
 } from '../lib/usageV2';
 import { useConnection } from '../state/connection';
 import { Toggle } from './controls';
-import { SettingsSegmented, SettingsSelect } from './settings/SettingsPrimitives';
+import { SettingsSelect } from './settings/SettingsPrimitives';
 import { SECONDARY_BUTTON } from './ui';
 import { PAGE_WIDTH, PageHeader } from './PageChrome';
 import { PricingPanel } from './usage/PricingPanel';

@@ -2,7 +2,7 @@ import type {
   ExecutorBinding,
   ExecutorValidationResult,
 } from '@kiki/agent-profiles/ports';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { type CollectionView } from '#/_base/di/collection';
 import { SyncDescriptor } from '#/_base/di/descriptors';
@@ -486,11 +486,13 @@ interface LaneOptions {
   readonly callerMessages?: readonly import('#/agent/contextMemory/types').ContextMessage[];
 }
 
+type SubagentRun = (agentId: string, request: AgentRunRequest, options: RunAgentOptions) => Promise<AgentRunHandle>;
+
 interface ParityLane {
   readonly probe: ParityProbe;
   readonly ix: TestInstantiationService;
   readonly lifecycleCreate: ReturnType<typeof vi.fn>;
-  readonly subagentRun: ReturnType<typeof vi.fn>;
+  readonly subagentRun: Mock<SubagentRun>;
   readonly completions: Deferred<{ summary: string; usage?: TokenUsage }>[];
   readonly metadataAgents: Record<string, AgentMeta>;
   readonly handles: Map<string, IAgentScopeHandle>;

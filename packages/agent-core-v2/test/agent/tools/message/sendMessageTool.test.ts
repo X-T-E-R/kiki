@@ -101,7 +101,7 @@ describe('SendMessage completion guidance', () => {
       expect(send).not.toHaveBeenCalled();
       expect(historyText(1)).toContain('Message approval rejected.');
     } finally {
-      await approval.dispose();
+      approval.dispose();
     }
   });
 

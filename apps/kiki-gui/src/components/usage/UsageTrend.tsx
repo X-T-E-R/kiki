@@ -48,10 +48,6 @@ const SERIES_LIMIT = SERIES_FILLS.length;
 /** A bucket never shrinks below the tap floor; the row scrolls instead of
  * squeezing bars below the target size. */
 const MIN_BUCKET_PX = 36;
-/** A bar stays a slim column even when a bucket could hold a much wider one,
- * so a short range reads as a few bars, not as solid blocks. */
-const MAX_BAR_PX = 48;
-
 export function TrendChart({
   trend,
   filters,

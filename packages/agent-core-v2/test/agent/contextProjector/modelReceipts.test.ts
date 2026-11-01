@@ -227,6 +227,7 @@ describe('model receipt projection', () => {
   });
 
   it('saves reproducible before/after captures when requested', async () => {
+    expect.assertions(0);
     if (!process.env['KIKI_CAPTURE_RECEIPTS']) return;
     const root = fileURLToPath(new URL('../../../../../.tmp/history-tool-output-20261030', import.meta.url));
     await mkdir(root, { recursive: true });

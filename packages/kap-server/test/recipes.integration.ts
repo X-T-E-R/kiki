@@ -132,13 +132,17 @@ it('binds profile installation, relative file, and installed market Recipes acro
   home = await mkdtemp(join(tmpdir(), 'kiki-profile-recipe-api-'));
   const root = home;
   const requests: string[] = [];
-  const provider = createServer(async (req, res) => {
-    let text = '';
-    for await (const part of req) text += part;
-    const body = JSON.parse(text);
-    requests.push(JSON.stringify(body.messages));
-    res.writeHead(200, { 'content-type': 'text/event-stream' });
-    res.end(`data: ${JSON.stringify({ id: 'reply', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: { role: 'assistant', content: 'ok' }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: 'reply', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+  const provider = createServer((req, res) => {
+    void (async () => {
+      let text = '';
+      for await (const part of req) text += part;
+      const body = JSON.parse(text);
+      requests.push(JSON.stringify(body.messages));
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(`data: ${JSON.stringify({ id: 'reply', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: { role: 'assistant', content: 'ok' }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: 'reply', object: 'chat.completion.chunk', model: body.model, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } })}\n\ndata: [DONE]\n\n`);
+    })().catch((error: unknown) => {
+      res.destroy(error instanceof Error ? error : new Error('Synthetic recipe provider request failed', { cause: error }));
+    });
   });
   await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
   try {

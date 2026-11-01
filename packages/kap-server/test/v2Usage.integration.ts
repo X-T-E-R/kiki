@@ -234,7 +234,7 @@ describe('server /api/usage', () => {
     try {
       const snapshot = await channel.rest.sessionUsageAccounting('session-high', { signal: AbortSignal.timeout(2_000) });
       expect(usageAccountingSnapshotSchema.parse(snapshot)).toMatchObject({ complete: true, freshness: 'current', tokens: { output: 150 } });
-    } finally { channel.close(); }
+    } finally { await channel.close(); }
     expect(accounting).toHaveBeenCalledOnce();
     const repeated = await authedFetch(server as RunningServer, base, '/api/sessions/session-high');
     const saved = await repeated.json() as { data: { usage: { accounting: unknown } } };

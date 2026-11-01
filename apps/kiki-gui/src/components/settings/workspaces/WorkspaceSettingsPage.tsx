@@ -531,7 +531,7 @@ function useWorkspaceTrust(workspaceId: string) {
   return { read, write };
 }
 
-function WorkspaceTrustCard({ workspace, read }: {
+function WorkspaceTrustCard({ workspace: _workspace, read }: {
   readonly workspace: Workspace;
   readonly read: ReturnType<typeof useWorkspaceTrust>;
 }) {
@@ -604,7 +604,7 @@ function useMemoryOverride(workspaceId: string) {
   return { read, write };
 }
 
-function WorkspaceMemoryCard({ workspace, memory }: {
+function WorkspaceMemoryCard({ workspace: _workspace, memory }: {
   readonly workspace: Workspace;
   readonly memory: ReturnType<typeof useMemoryOverride>;
 }) {

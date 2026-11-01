@@ -36,7 +36,7 @@ import {
 import { TokenPresetRow } from '../TokenPresetRow';
 import { useConnection } from '../../state/connection';
 import { ContextStepper } from '../ProviderFields';
-import { FeedbackLine, Hint, InlineError, SavedTick, type Feedback } from '../controls';
+import { FeedbackLine, InlineError, SavedTick, type Feedback } from '../controls';
 import { SMALL_INPUT } from '../ui';
 import { CompactPointField } from './CompactPointField';
 import { AdvancedDetails, SettingField, SettingsBox } from './fields';

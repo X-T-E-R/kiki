@@ -842,7 +842,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       });
     }, ACKNOWLEDGEMENT_RETRY_MS);
     timer.unref?.();
-    this.receiptRetries.set(key, toDisposable(() => { clearTimeout(timer); }));
+    void this.receiptRetries.set(key, toDisposable(() => { clearTimeout(timer); }));
   }
 
   private projectDeliveryReceipt(receipt: PendingDeliveryReceipt): void {

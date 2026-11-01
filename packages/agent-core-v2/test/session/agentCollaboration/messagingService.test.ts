@@ -2193,7 +2193,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     const sender = createTestAgent({ persistence });
     const target = agentHandle('agent-target');
     const lifecycle = lifecycleHarness([target.handle]);
-    lifecycle.service.create.mockImplementation(() => new Promise(() => {}));
+    lifecycle.service.create = vi.fn(() => new Promise<never>(() => {}));
     const adapter = mailboxStore(tempDir());
     const service = messagingService(adapter, lifecycle.service, sessionContext(),
       metadataHarness({ 'agent-sender': {}, 'agent-target': {} }));
@@ -2227,7 +2227,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     const lifecycle = lifecycleHarness(failure === 'cold-sender'
       ? [testAgentHandle(target, 'agent-target')]
       : [testAgentHandle(target, 'agent-target'), testAgentHandle(sender, 'main')]);
-    lifecycle.service.create.mockImplementation(() => new Promise(() => {}));
+    lifecycle.service.create = vi.fn(() => new Promise<never>(() => {}));
     let release!: () => void;
     if (failure === 'sender-flush') vi.spyOn(sender.wire, 'flush').mockImplementation(() => new Promise(resolve => { release = resolve; }));
     const metadata = metadataHarness({ main: {}, 'agent-target': {} });

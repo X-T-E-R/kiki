@@ -26,7 +26,6 @@ import { pushToast, pushUndoToast } from '../lib/toasts';
 import { useRequestGovernance } from '../lib/useRequestGovernance';
 import { useConnection } from '../state/connection';
 import { FeedbackLine, Toggle } from './controls';
-import { Icon } from './icons';
 import { InlineEditor } from './InlineEditor';
 import { SettingsSelect } from './settings/SettingsPrimitives';
 import { PausedExecutionsPanel, PauseAllExecutions, SessionExecutionControl } from './usage/ExecutionControls';
@@ -188,10 +187,10 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
   const agentSummary = [
     `${t('usage.governance.mainAgents')} ${agentSnapshot?.mainActive ?? agentSnapshot?.main ?? 0}`,
     `${t('usage.governance.subagents')} ${agentSnapshot?.subActive ?? agentSnapshot?.subagent ?? 0}`,
-    ...(agentSnapshot != null && (agentSnapshot.independentActive ?? agentSnapshot.independent ?? 0) > 0
+    ...(agentSnapshot !== null && agentSnapshot !== undefined && (agentSnapshot.independentActive ?? agentSnapshot.independent ?? 0) > 0
       ? [`${t('usage.governance.independentAgents')} ${agentSnapshot.independentActive ?? agentSnapshot.independent ?? 0}`]
       : []),
-    ...(agentSnapshot != null && agentSnapshot.queued > 0 ? [`${t('usage.governance.queued')} ${agentSnapshot.queued}`] : []),
+    ...(agentSnapshot !== null && agentSnapshot !== undefined && agentSnapshot.queued > 0 ? [`${t('usage.governance.queued')} ${agentSnapshot.queued}`] : []),
   ].join(' · ');
 
   return (

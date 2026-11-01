@@ -20,7 +20,7 @@
  * of presenting the zero placeholder as a measurement.
  */
 
-import { createContext, useContext, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useId, useRef, useState, type ReactNode } from 'react';
 
 import { Link } from 'react-router-dom';
 
