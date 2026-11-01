@@ -148,14 +148,14 @@ async function readSessionViewTranscriptPageWithinBudget(
 async function alignSingleTailTurn(
   service: TranscriptService,
   sessionId: string,
-  input: { readonly agentId: string; readonly beforeTurn?: string; readonly pageSize?: number; readonly signal?: AbortSignal },
+  input: { readonly agentId: string; readonly beforeTurn?: string; readonly beforeItem?: string; readonly pageSize?: number; readonly signal?: AbortSignal },
   response: TranscriptResponse,
 ): Promise<TranscriptResponse> {
   if (input.pageSize !== 1 || typeof service.readCanonicalEntity !== 'function') return response;
   const items: TranscriptResponse['items'] = [];
   let replaced = false;
   for (const item of response.items) {
-    if (item.kind !== 'turn' || (input.beforeTurn === undefined && !item.contentRefs?.some(ref =>
+    if (item.kind !== 'turn' || (input.beforeTurn === undefined && input.beforeItem === undefined && !item.contentRefs?.some(ref =>
       ref.direction === 'backward' && ref.kind === 'array' && ref.path[0] === 'steps'))) { items.push(item); continue; }
     let entity: object | undefined;
     try {

@@ -2462,7 +2462,19 @@ export class SessionController {
   /** Rebind one canonical structure revision without discarding already loaded children. */
   private async refreshTurnStructurePreview(agentId: string, ref: ContentRef, signal: AbortSignal): Promise<ContentRef | 'complete' | undefined> {
     if (ref.source.kind !== 'turn' || signal.aborted || this.closed) return undefined;
-    const turnId = ref.source.id;
+    const preview = await this.readTurnContentPreview(agentId, ref.source.id, signal);
+    if (preview === undefined) return undefined;
+    const candidate = preview.contentRefs?.find((current) => current.kind === 'array' &&
+      current.path.length === ref.path.length && current.path.every((part, partIndex) => part === ref.path[partIndex]) &&
+      current.source.kind === ref.source.kind && current.source.id === ref.source.id);
+    if (candidate === undefined) return !signal.aborted && this.adoptTimelinePreviewField(agentId, ref, preview) ? 'complete' : undefined;
+    if (candidate.revision === ref.revision && candidate.offset === ref.offset && candidate.total === ref.total) return undefined;
+    const fresh = ref.direction === 'backward' ? candidate : { ...candidate, direction: 'forward' as const, offset: 0 };
+    if (!this.installTurnStructureRef(agentId, ref, fresh) || signal.aborted) return undefined;
+    return this.contentEntity(agentId, ref.source)?.contentRefs?.find((current) => sameContentRef(current, fresh));
+  }
+
+  private async readTurnContentPreview(agentId: string, turnId: string, signal: AbortSignal): Promise<TranscriptTurn | undefined> {
     const items = this.composeAgentSnapshot(agentId).items;
     const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === turnId);
     if (index < 0) return undefined;
@@ -2471,21 +2483,12 @@ export class SessionController {
     const cursors = new Set<string>();
     for (;;) {
       const page = await this.readPreparedContent(() => this.view.transcript.page(
-        { agentId, beforeTurn: nextTurn?.kind === 'turn' ? nextTurn.turnId : undefined, beforeItem, pageSize: 1 },
+        { agentId, beforeTurn: beforeItem === undefined && nextTurn?.kind === 'turn' ? nextTurn.turnId : undefined, beforeItem, pageSize: 1 },
         { signal },
       ), signal);
       if (this.closed || signal.aborted || page.agent_id !== agentId || page.read?.stale !== undefined) return undefined;
-      const preview = page.items.find((item) => item.kind === 'turn' && item.turnId === turnId);
-      if (preview?.kind === 'turn') {
-        const candidate = preview.contentRefs?.find((current) => current.kind === 'array' &&
-          current.path.length === ref.path.length && current.path.every((part, partIndex) => part === ref.path[partIndex]) &&
-          current.source.kind === ref.source.kind && current.source.id === ref.source.id);
-        if (candidate === undefined) return !signal.aborted && this.adoptTimelinePreviewField(agentId, ref, preview) ? 'complete' : undefined;
-        if (candidate.revision === ref.revision && candidate.offset === ref.offset && candidate.total === ref.total) return undefined;
-        const fresh = ref.direction === 'backward' ? candidate : { ...candidate, direction: 'forward' as const, offset: 0 };
-        if (!this.installTurnStructureRef(agentId, ref, fresh) || signal.aborted) return undefined;
-        return this.contentEntity(agentId, ref.source)?.contentRefs?.find((current) => sameContentRef(current, fresh));
-      }
+      const preview = page.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
+      if (preview !== undefined) return preview;
       if (page.items.some((item) => item.kind === 'turn' && item.ordinal < (items[index] as TranscriptTurn).ordinal) ||
         !page.has_more || page.next_cursor === undefined || cursors.has(page.next_cursor)) return undefined;
       cursors.add(page.next_cursor);
@@ -2499,16 +2502,7 @@ export class SessionController {
     if ((source.kind !== 'turn' && source.kind !== 'frame') || signal.aborted || this.closed) return undefined;
     const turnId = source.kind === 'turn' ? source.id : source.turnId;
     if (turnId === undefined) return undefined;
-    const items = this.composeAgentSnapshot(agentId).items;
-    const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === turnId);
-    if (index < 0) return undefined;
-    const nextTurn = items.slice(index + 1).find((item) => item.kind === 'turn');
-    const page = await this.readPreparedContent(() => this.view.transcript.page(
-      { agentId, beforeTurn: nextTurn?.kind === 'turn' ? nextTurn.turnId : undefined, pageSize: 1 },
-      { signal },
-    ), signal);
-    if (this.closed || signal.aborted || page.agent_id !== agentId || page.read?.stale !== undefined) return undefined;
-    const turn = page.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
+    const turn = await this.readTurnContentPreview(agentId, turnId, signal);
     const preview: ContentWindow | undefined = turn === undefined ? undefined : source.kind === 'turn' ? turn
       : turn.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
     const samePath = (candidate: ContentRef) => candidate.path.length === ref.path.length && candidate.path.every((part, partIndex) => part === ref.path[partIndex]);

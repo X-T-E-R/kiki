@@ -1892,6 +1892,26 @@ describe('hidden prefix turn preview', () => {
     } finally { controller.close(); }
   });
 
+  it('continues past marker-only pages to recover a changed timeline text field', async () => {
+    const turn = (prompt: string): TranscriptTurn => ({ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt, steps: [] });
+    const canonical = turn(`CANONICAL ${'n'.repeat(40_000)}`);
+    const stale = boundedEntity(turn(`OLD ${'o'.repeat(40_000)}`), { kind: 'turn', id: 't1' }, undefined, 'main', 'tail');
+    const { controller, deliver, view } = harness(undefined, vi.fn(segmentRead(canonical)));
+    const page = await previewPage(canonical, 32_768)({ agentId: 'main', pageSize: 1 });
+    vi.mocked(view.transcript.page).mockResolvedValueOnce({ ...page, items: [{ kind: 'marker', markerId: 'intervening', marker: 'message.delivery' }], has_more: true, next_cursor: 'marker:intervening' })
+      .mockImplementation(previewPage(canonical, 32_768));
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [stale, { kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, steps: [] }] }), 2));
+    try {
+      const ref = controller.contentRefsFor('main', { kind: 'turn', id: 't1' }).find(candidate => candidate.path[0] === 'prompt');
+      if (ref === undefined) throw new Error('missing prompt ref');
+      expect(await controller.loadContentSegment('main', ref)).toBe(true);
+      expect(blockText(controller, 'CANONICAL')).toBe(true);
+      expect(view.transcript.page).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(view.transcript.page).mock.calls[1]?.[0]).toEqual({ agentId: 'main', beforeTurn: undefined, beforeItem: 'marker:intervening', pageSize: 1 });
+    } finally { controller.close(); }
+  });
+
   it.each(['main', 'child'] as const)('refreshes a changed %s text reference from one fresh preview and finishes the new body', async (agentId) => {
     const turn = (prompt: string): TranscriptTurn => ({ kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt, steps: [] });
     const original = turn(`ORIGINAL ${'o'.repeat(40_000)}`);
@@ -2133,7 +2153,7 @@ describe('hidden prefix turn preview', () => {
       expect(blockText(controller, 'saved 7')).toBe(true);
       expect(await controller.loadContentSegment('main', stale)).toBe(true);
       expect(view.transcript.page).toHaveBeenCalledTimes(2);
-      expect(vi.mocked(view.transcript.page).mock.calls[1]?.[0]).toEqual({ agentId: 'main', beforeTurn: 't2', beforeItem: 'marker-boundary', pageSize: 1 });
+      expect(vi.mocked(view.transcript.page).mock.calls[1]?.[0]).toEqual({ agentId: 'main', beforeTurn: undefined, beforeItem: 'marker-boundary', pageSize: 1 });
       expect(content.mock.calls[1]?.[0].ref).toMatchObject({ offset: 0, total: 18, direction: 'forward' });
       expect(blockText(controller, 'ORIGINAL-DELIVERY')).toBe(true);
       expect(blockText(controller, 'saved 7')).toBe(true);

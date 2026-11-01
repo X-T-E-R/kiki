@@ -620,7 +620,7 @@ describe('bounded session-view canonical reads', () => {
     expect(newerTurn.steps[0]?.frames.map((frame) => frame.frameId)).toEqual(Array.from({ length: 8 }, (_, index) => `t1-f0-${index}`));
   });
 
-  it.each(['before-turn', 'latest'] as const)('reloads one canonical tail preview for a single %s page and keeps history pages head-first', async (position) => {
+  it.each(['before-turn', 'before-item', 'latest'] as const)('reloads one canonical tail preview for a single %s page and keeps history pages head-first', async (position) => {
     const step = (turnId: string, ordinal: number, stepId = `${turnId}-s${ordinal}`): TranscriptStep => ({
       kind: 'step' as const, turnId, stepId, ordinal, state: 'completed' as const,
       frames: [{ kind: 'text' as const, frameId: `${stepId}-f`, role: 'assistant' as const, text: `saved ${stepId}` }],
@@ -636,8 +636,9 @@ describe('bounded session-view canonical reads', () => {
     expect(staleRef.total).toBe(18);
     const canonical = turnFor('t1', 1, [step('t1', 0, 't1-replaced'), ...stale.steps.slice(1)]);
     expect(() => readContentSegment(canonical, staleRef)).toThrow('Content changed');
+    const windowPreview = position === 'before-item' ? boundedEntity(stale, { kind: 'turn', id: 't1' }, undefined, 'main', 'head') : echoed;
     const source: AgentTranscriptSnapshot = {
-      ...empty(), hasMoreOlder: true, items: position === 'latest' ? [turnFor('t0', 0), echoed] : [turnFor('t0', 0), echoed, turnFor('t2', 2, [])],
+      ...empty(), hasMoreOlder: true, items: position === 'latest' ? [turnFor('t0', 0), windowPreview] : [turnFor('t0', 0), windowPreview, turnFor('t2', 2, [])],
     };
     const cold = {
       forSessionLive: () => undefined,
@@ -652,7 +653,8 @@ describe('bounded session-view canonical reads', () => {
         return undefined;
       },
     } as unknown as TranscriptService;
-    const page = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', beforeTurn: position === 'latest' ? undefined : 't2', pageSize: 1 });
+    const page = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', beforeTurn: position === 'before-turn' ? 't2' : undefined,
+      beforeItem: position === 'before-item' ? 'turn:t2' : undefined, pageSize: 1 });
     const turn = page?.items.find((item) => item.kind === 'turn');
     if (turn?.kind !== 'turn') throw new Error('Expected canonical preview');
     expect(turn.turnId).toBe('t1');
