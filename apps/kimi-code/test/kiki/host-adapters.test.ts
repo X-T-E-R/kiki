@@ -11,7 +11,7 @@ import { codexBindingPath, deliverCodexEvents, registerHostCodexCommands } from 
 
 const dispatchId = 'dispatch_MOCK001';
 const event = (seq: number, type: string, message?: string) => ({ seq, dispatchId, type, at: seq, message });
-function requestUrl(input: RequestInfo | URL): string {
+function requestUrl(input: Parameters<typeof fetch>[0]): string {
   return typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 }
 

@@ -33,6 +33,8 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
+import { stubExecutionControl } from '../../session/executionControl/stubs';
 import { AgentExecutionService } from '#/agent/execution/executionService';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import type { GoalSnapshot } from '#/agent/goal/types';
@@ -618,6 +620,7 @@ export function createExecutionHarness(options: FakeHarnessOptions = {}): {
     getNotes: () => ({ notes: options.notes }),
   });
   ix.stub(IAgentGoalService, { getGoal: () => ({ goal: options.goal ?? null }) });
+  ix.stub(ISessionExecutionControl, stubExecutionControl());
   ix.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
   ix.set(IAgentExecutorRegistry, {
     resolveExecutable: async () => ({

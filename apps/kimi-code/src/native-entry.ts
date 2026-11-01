@@ -60,6 +60,11 @@ if (!launching && indexerArg > 0) {
         process.exit(1);
       },
     );
+} else if (!launching && commandArguments(process.argv)[0] === '__plugin_run_node') {
+  void import('./plugin-node-entry').catch((error: unknown) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  });
 } else if (!launching) {
   const decision = attachedMcpDecision(process.argv);
   if (decision.kind === 'error') {

@@ -8,6 +8,8 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { AgentExecutionService } from '#/agent/execution/executionService';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
+import { stubExecutionControl } from '../../session/executionControl/stubs';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
@@ -630,6 +632,7 @@ describe('AgentExecutorPreflightService', () => {
     services.stub(IAgentActivityView, { state: () => ({ lifecycle: 'ready', background: [] }) });
     services.stub(IModelCatalog, {});
     services.stub(IRequestGovernance, { acquireAgent: async () => ({ release: () => {} }) });
+    services.stub(ISessionExecutionControl, stubExecutionControl());
     services.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
     const reconcileAllAtSafeBoundary = vi.fn(async () => {});
     services.stub(IAgentContextInjectorService, { reconcileAllAtSafeBoundary });

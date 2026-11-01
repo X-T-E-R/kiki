@@ -134,6 +134,11 @@ The first time the `Grep` tool needs ripgrep, the CLI can automatically download
 
 - **`logs/kimi-code.log`** (global): records startup, login, export, and other cross-session events.
 - **`<sessionDir>/logs/kimi-code.log`** (session-level): records diagnostic events within a single session.
+- **`logs/server-runtime.log`**: synchronous daemon startup, shutdown, uncaught-error and exit records, with process ID and memory counters; rotates at 1 MiB with one backup.
+- **`logs/desktop-backend.log`**: desktop backend stderr and the desktop owner's observed exit code or signal, including when the backend cannot write its own final record.
+- **`logs/reports/`**: Node.js reports for fatal errors such as heap exhaustion. Environment variables and network details are excluded; inspect reports before sharing because file paths and error text remain. Reports are retained until you remove them.
+
+When investigating a daemon restart, keep `server-runtime.log`, `desktop-backend.log`, their backups and any matching report. A forced process termination can prevent the daemon's final record; the desktop owner's exit record is the next source of evidence.
 
 When reporting a bug, prefer exporting the relevant session with `kiki export` (see [kiki command](../reference/command.md)); the session log is included in the export by default. Add `--no-include-global-log` if you do not want to share the global log.
 

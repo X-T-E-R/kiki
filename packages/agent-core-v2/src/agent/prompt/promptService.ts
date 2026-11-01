@@ -819,8 +819,11 @@ export class AgentPromptService implements IAgentPromptService {
     @ILogService private readonly log: ILogService,
     @ISessionExecutionControl private readonly executionControl: ISessionExecutionControl,
   ) {
-    const executionSubscription = executionControl.onDidChange(() => {
-      if (!executionControl.isHeld()) this.resumeRecoveredQueue();
+    let executionWasHeld = false;
+    const executionSubscription = executionControl.onDidChange((state) => {
+      const held = state.phase !== 'running';
+      if (executionWasHeld && !held) this.resumeRecoveredQueue();
+      executionWasHeld = held;
       if (!executionControl.isHeld()) void this.startNext();
     });
     instantiation.onWillDispose(() => { executionSubscription.dispose(); });

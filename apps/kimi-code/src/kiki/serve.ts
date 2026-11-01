@@ -23,6 +23,7 @@ import { createKimiCodeHostIdentity, getVersion } from '../cli/version';
 import { requireServerWebAssetsDir } from '../native/web-assets';
 import { getBrowserDriverFile } from '../native/native-assets';
 import { resolveKikiHome } from './home';
+import { installServerDiagnostics } from './server-diagnostics';
 
 export interface ServerConnection {
   readonly url: string;
@@ -268,6 +269,7 @@ export function startServeServer(
 async function runServeForeground(
   options: ServeStartOptions & { readonly json?: boolean },
 ): Promise<void> {
+  const diagnostics = installServerDiagnostics(options.homeDir);
   const running = await startServeServer(options);
   const token = await readLocalOwnerToken(options.homeDir);
   const connection = {
@@ -276,20 +278,27 @@ async function runServeForeground(
     serverId: running.serverId,
   };
   writeConnection(connection, options.json === true);
-  const shutdown = (): void => {
-    void running.close();
+  diagnostics.record('ready', { serverId: running.serverId });
+  const shutdown = (signal: string): void => {
+    diagnostics.record('shutdown_signal', { signal });
+    void running.close().catch((error: unknown) => {
+      diagnostics.record('close_failed', { error: String(error) });
+    });
   };
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
+  const interrupt = () => shutdown('SIGINT');
+  const terminate = () => shutdown('SIGTERM');
+  process.once('SIGINT', interrupt);
+  process.once('SIGTERM', terminate);
   try {
     await running.closed;
     const receipt = await running.exitReceipt;
+    diagnostics.record('closed', { ...receipt });
     if (receipt.callerOutcome === 'rejected') {
       throw new Error(`Kiki server cleanup failed: ${receipt.errorMessage ?? 'unknown cleanup error'}`);
     }
   } finally {
-    process.off('SIGINT', shutdown);
-    process.off('SIGTERM', shutdown);
+    process.off('SIGINT', interrupt);
+    process.off('SIGTERM', terminate);
   }
 }
 
