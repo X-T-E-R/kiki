@@ -1813,16 +1813,20 @@ export class SessionController {
         const readIsPreparing = emptyContinuation && pageReadiness === 'preparing';
         const readIsPartial = emptyContinuation && pageReadiness === 'partial';
         const recoveredHeaders: TranscriptOperation[] = [];
+        let recoveredOpening = false;
         for (const item of page.items) {
           if (item.kind !== 'turn' || item.startedAt === undefined) continue;
-          const current = store.getTurn(item.turnId);
+          const live = store.getTurn(item.turnId);
+          const current = live ?? currentSnapshot.items.find((existing): existing is TranscriptTurn => existing.kind === 'turn' && existing.turnId === item.turnId);
           if (current?.origin.kind !== 'other' || current.message !== undefined || current.promptId !== undefined || current.startedAt !== undefined) continue;
+          recoveredOpening = true;
+          if (live === undefined) continue;
           const { steps: _steps, ...header } = item;
           recoveredHeaders.push({ op: 'turn.upsert', turn: { ...header, state: current.state, endedAt: current.endedAt } });
         }
         const knownItems = new Set(currentSnapshot.items.map(item => item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));
         const addedItems = page.items.some(item => !knownItems.has(item.kind === 'turn' ? `turn:${item.turnId}` : item.kind === 'marker' ? `marker:${item.markerId}` : `taskref:${item.refId}`));
-        if (page.has_more && !readIsPreparing && !readIsPartial && !addedItems && recoveredHeaders.length === 0 &&
+        if (page.has_more && !readIsPreparing && !readIsPartial && !addedItems && !recoveredOpening &&
             (page.next_cursor !== undefined ? page.next_cursor === beforeItem : nextTurn === undefined || nextTurn === beforeTurn)) {
           throw new Error('History page did not advance its cursor');
         }

@@ -121,7 +121,7 @@ async function readSessionViewTranscriptPageWithinBudget(
     if (response === undefined) return undefined;
     const forward = args[2].afterTurn !== undefined || args[2].afterItem !== undefined;
     const bounded = boundedTranscriptResponse(response, forward ? 'head' : 'tail', 64 * 1024);
-    const aligned = await alignSingleBeforeTurn(args[0], args[1], args[2], bounded);
+    const aligned = forward ? bounded : await alignSingleTailTurn(args[0], args[1], args[2], bounded);
     const anchor = looseAnchor(aligned.next_cursor, response.agent_id);
     const seekTurn = anchor === undefined ? undefined : seekTurnForAnchor(response.items, anchor)
       ?? cursorSeekTurn(args[2].beforeItem ?? args[2].afterItem, response.agent_id);
@@ -132,7 +132,7 @@ async function readSessionViewTranscriptPageWithinBudget(
     const refreshedTurn = decodePageCursor(response.next_cursor, response.agent_id)?.refreshedTurn;
     const orphan = aligned.items.find(isOrphanTurn);
     const pendingOrphan = decodePageCursor(args[2].beforeItem, response.agent_id)?.orphanTurn;
-    const orphanTurn = refreshedTurn === undefined ? orphan?.turnId ?? (anchor === `turn:${pendingOrphan}` ? pendingOrphan : undefined) : undefined;
+    const orphanTurn = refreshedTurn === undefined ? orphan?.turnId ?? (aligned.items.length === 0 || anchor === `turn:${pendingOrphan}` ? pendingOrphan : undefined) : undefined;
     return { ...aligned, next_cursor: anchor === undefined || response.read === undefined ? aligned.next_cursor
       : encodePageCursor(anchor, response.agent_id, response.read.source, response.cursor?.epoch, seekTurn, beforeTurn, refreshedTurn, orphanTurn) };
   } catch (error) {
@@ -145,17 +145,18 @@ async function readSessionViewTranscriptPageWithinBudget(
   }
 }
 
-async function alignSingleBeforeTurn(
+async function alignSingleTailTurn(
   service: TranscriptService,
   sessionId: string,
   input: { readonly agentId: string; readonly beforeTurn?: string; readonly pageSize?: number; readonly signal?: AbortSignal },
   response: TranscriptResponse,
 ): Promise<TranscriptResponse> {
-  if (input.beforeTurn === undefined || input.pageSize !== 1 || typeof service.readCanonicalEntity !== 'function') return response;
+  if (input.pageSize !== 1 || typeof service.readCanonicalEntity !== 'function') return response;
   const items: TranscriptResponse['items'] = [];
   let replaced = false;
   for (const item of response.items) {
-    if (item.kind !== 'turn') { items.push(item); continue; }
+    if (item.kind !== 'turn' || (input.beforeTurn === undefined && !item.contentRefs?.some(ref =>
+      ref.direction === 'backward' && ref.kind === 'array' && ref.path[0] === 'steps'))) { items.push(item); continue; }
     let entity: object | undefined;
     try {
       entity = await service.readCanonicalEntity(sessionId, input.agentId, { kind: 'turn', id: item.turnId }, input.signal);
@@ -706,7 +707,13 @@ async function readColdTranscriptPage(
       const previous = { snapshot, located };
       snapshot = anchoredSnapshot;
       located = locate(prefixWasMaterialized(previousBoundary, await boundary()));
-      if (located.missing && !previous.located.missing) ({ snapshot, located } = previous);
+      if (located.missing && !previous.located.missing && anchor !== undefined && !anchor.startsWith('turn:') &&
+          previous.snapshot.items.some(item => historyAnchorMatches(itemKey(item), anchor))) {
+        snapshot = { ...previous.snapshot, items: withRecoveredOpenings(previous.snapshot.items, anchoredSnapshot.items),
+          attachments: [...previous.snapshot.attachments, ...anchoredSnapshot.attachments.filter(attachment =>
+            !previous.snapshot.attachments.some(existing => existing.attachmentId === attachment.attachmentId))] };
+        located = { ...previous.located, page: { ...previous.located.page, items: withRecoveredOpenings(previous.located.page.items, anchoredSnapshot.items) } };
+      }
     } else if (anchorState === 'pending' && anchoredSnapshot !== undefined) anchorPending = anchoredSnapshot;
   }
   if (!extendedBoundary && anchorPending === undefined && anchored && snapshot.hasMoreOlder === true && !coldWindowCovers(snapshot.items, turnAnchor ?? '')) {

@@ -73,8 +73,8 @@ function canonicalWithPositionedTurn(records: readonly Record<string, unknown>[]
   let currentTurn = -1;
   let byteOffset = 0;
   for (const record of records) {
-    const payload = record.type === 'context.append_loop_event' && typeof record.event === 'object' && record.event !== null
-      ? record.event as Record<string, unknown> : record;
+    const payload = record['type'] === 'context.append_loop_event' && typeof record['event'] === 'object' && record['event'] !== null
+      ? record['event'] as Record<string, unknown> : record;
     if (typeof payload['turnId'] === 'number') currentTurn = payload['turnId'];
     const recordBytes = Buffer.byteLength(line(record));
     const position = currentTurn === targetTurn ? { startByteOffset: byteOffset, endByteOffset: byteOffset + recordBytes } : undefined;

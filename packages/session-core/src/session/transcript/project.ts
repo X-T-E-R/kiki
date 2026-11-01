@@ -15,7 +15,7 @@ import type {
   UsageStatus,
 } from '@kiki/protocol';
 import { agentMessageDeliveredEventSchema } from '@kiki/protocol';
-import { readTextPresentation, transcriptValueEquals } from '@kiki/transcript';
+import { carryContentHydration, readTextPresentation, transcriptValueEquals } from '@kiki/transcript';
 import type {
   AgentState,
   AgentTranscriptSnapshot,
@@ -3631,6 +3631,7 @@ export function prependOlderTranscriptSnapshot(
 ): AgentTranscriptSnapshot {
   const positions = new Map(current.items.map((item, index) => [transcriptItemId(item), index]));
   const insertions = new Map<number, TranscriptItem[]>();
+  const recovered = new Map<number, TranscriptItem>();
   let pending: TranscriptItem[] = [];
   let previousPosition: number | undefined;
   const insert = (position: number) => {
@@ -3645,6 +3646,14 @@ export function prependOlderTranscriptSnapshot(
     const position = positions.get(key);
     if (position === undefined) pending.push(item);
     else {
+      const existing = current.items[position];
+      if (item.kind === 'turn' && existing?.kind === 'turn' && existing.origin.kind === 'other' &&
+          existing.message === undefined && existing.promptId === undefined && existing.startedAt === undefined && item.startedAt !== undefined) {
+        recovered.set(position, carryContentHydration(existing, { ...existing, origin: item.origin, prompt: item.prompt, promptId: item.promptId,
+          message: item.message, delivery: item.delivery, presentation: item.presentation, attachmentIds: item.attachmentIds, startedAt: item.startedAt,
+          contentRefs: [...(existing.contentRefs ?? []).filter(ref => ref.path[0] === 'steps'),
+            ...(item.contentRefs ?? []).filter(ref => ref.path[0] !== 'steps')] }));
+      }
       insert(position);
       previousPosition = position;
     }
@@ -3668,7 +3677,7 @@ export function prependOlderTranscriptSnapshot(
     }
     insert(position);
   }
-  const items = current.items.flatMap((item, index) => [...insertions.get(index) ?? [], item]);
+  const items = current.items.flatMap((item, index) => [...insertions.get(index) ?? [], recovered.get(index) ?? item]);
   items.push(...insertions.get(current.items.length) ?? []);
   const existingAttachments = new Set(current.attachments.map((attachment) => attachment.attachmentId));
   const olderAttachments = older.attachments.filter(

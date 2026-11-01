@@ -1781,6 +1781,44 @@ describe('hidden prefix turn preview', () => {
     return controller.getState().blocks.some((block) => 'text' in block && block.text === textValue || 'text' in block && typeof block.text === 'string' && block.text.includes(textValue));
   }
 
+  it.each([false, true])('recovers an older-page orphan opening with a repeated cursor and has_more=%s', async (hasMore) => {
+    const { controller, deliver, view } = harness(undefined);
+    const orphan: TranscriptTurn = { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'other' }, steps: [] };
+    const opening: TranscriptTurn = { ...orphan, startedAt: '2025-01-01T00:00:00.000Z', origin: { kind: 'user' }, promptId: 'opening-1', prompt: 'RECOVERED-OLDER-OPENING' };
+    vi.mocked(view.transcript.page)
+      .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', items: [orphan], has_more: true, next_cursor: 'turn:t1', tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [], coverage: { kind: 'unknown', hasMoreOlder: true } })
+      .mockResolvedValueOnce({ session_id: 'session_test', agent_id: 'main', items: [opening], has_more: hasMore, next_cursor: 'turn:t1', tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [], coverage: { kind: 'tail', hasMoreOlder: hasMore } });
+    await controller.open();
+    const sibling: TranscriptTurn = { kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, prompt: 'SIBLING-PAGE', steps: [] };
+    deliver(resetEvent('main', emptySnapshot({ items: [sibling] }), 2, true));
+    try {
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(blockText(controller, 'RECOVERED-OLDER-OPENING')).toBe(false);
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(blockText(controller, 'RECOVERED-OLDER-OPENING')).toBe(true);
+      expect(controller.getState().olderError).toBeUndefined();
+    } finally { controller.close(); }
+  });
+
+  it('refreshes the structure of an older-page turn after its canonical prefix changes', async () => {
+    const fixture = hiddenPrefixFixture();
+    const content = vi.fn(segmentRead(fixture.inserted));
+    const { controller, deliver, view } = harness(undefined, content);
+    const initial = await previewPage(fixture.client, fixture.maxBytes)({ agentId: 'main', pageSize: 20 });
+    vi.mocked(view.transcript.page).mockResolvedValueOnce({ ...initial, items: [fixture.client], has_more: true, next_cursor: 'turn:t1' })
+      .mockImplementation(previewPage(fixture.inserted, fixture.maxBytes));
+    await controller.open();
+    const sibling: TranscriptTurn = { kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, prompt: 'SIBLING-PAGE', steps: [] };
+    deliver(resetEvent('main', emptySnapshot({ items: [sibling] }), 2, true));
+    try {
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(blockText(controller, 'OMITTED-PREFIX')).toBe(true);
+      expect(blockText(controller, 'VISIBLE-USER')).toBe(true);
+      expect(controller.getState().olderError).toBeUndefined();
+    } finally { controller.close(); }
+  });
+
   it('reloads one fresh turn preview after a hidden prefix insert and keeps the loaded suffix', async () => {
     const fixture = hiddenPrefixFixture();
     const content = vi.fn(segmentRead(fixture.inserted));

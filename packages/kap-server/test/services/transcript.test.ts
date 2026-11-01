@@ -4166,9 +4166,12 @@ describe('TranscriptService live integration', () => {
           core: fakeCoreWithAgents(new SessionInteractionService(new TestSessionStateService()), new FakeAgents()),
         });
         const snapshot = await service.readColdSnapshot('s1', 'main');
-        expect(snapshot?.items.some((item) => item.kind === 'turn')).toBe(true);
+        expect(snapshot?.items.find((item) => item.kind === 'turn')).toMatchObject({ turnId: 't0', prompt: 'hi' });
         expect(snapshot?.toolCallCount).toBeUndefined();
         expect(snapshot?.toolCallCountKnown).toBe(false);
+        const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main' });
+        expect(page?.items.find((item) => item.kind === 'turn')).toMatchObject({ turnId: 't0', prompt: 'hi' });
+        expect(page?.coverage.kind).not.toBe('full');
       } finally {
         await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       }
@@ -5092,6 +5095,46 @@ it.each([
     expect(Object.fromEntries(walked.prompts)).toEqual(Object.fromEntries(prompts.map((text, turnId) => [`t${turnId}`, text])));
   } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 }, 60_000);
+
+it('pages every marker and managed opening outside the anchored window', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-marker-dense-'));
+  const path = join(home, 'sessions/ws/s1/agents/agent-7/wire.jsonl');
+  await mkdir(dirname(path), { recursive: true });
+  await writeFixtureFile(path, `${JSON.stringify({ type: 'metadata', protocol_version: '1.6' })}\n`);
+  const prompts: string[] = [];
+  for (let turnId = 0; turnId < 3; turnId++) {
+    const text = `external opening ${turnId}`;
+    prompts.push(text);
+    const origin = { kind: 'system_trigger', name: 'subagent' };
+    const promptId = `external-${turnId}`;
+    await appendFixtureFile(path, [
+      { type: 'turn.prompt', turnId, promptId, input: [{ type: 'text', text }], origin, managed: true, time: 1000 + turnId },
+      { type: 'context.append_message', message: { role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin, id: promptId },
+        delivery: { deliveryId: `d${turnId}`, messageId: promptId, turnId, stepId: `s${turnId}`, step: 1, deliveredAt: '2026-01-01T00:00:00.000Z', origin: 'queue' } },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId, uuid: `s${turnId}`, step: 1 } },
+    ].map(record => JSON.stringify(record)).join('\n') + '\n');
+    for (let marker = 0; marker < 160; marker++) await appendFixtureFile(path, `${JSON.stringify({ type: 'executor.runtime.update',
+      id: `u${turnId}-${marker}`, turnId, executorId: 'external', kind: 'session', value: { title: 'x'.repeat(64 << 10) }, time: 1500 + marker })}\n`);
+    await appendFixtureFile(path, `${JSON.stringify({ type: 'turn.ended', turnId, reason: 'completed', time: 3000 + turnId })}\n`);
+  }
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const markers: string[] = [];
+    const seenPrompts = new Map<string, string>();
+    let cursor: string | undefined;
+    for (let pageIndex = 0; pageIndex < 400; pageIndex++) {
+      const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'agent-7', beforeItem: cursor });
+      expect(page?.read?.stale).toBeUndefined();
+      markers.unshift(...(page?.items ?? []).flatMap(item => item.kind === 'marker' ? [item.markerId] : []));
+      for (const item of page?.items ?? []) if (item.kind === 'turn' && item.prompt !== undefined) seenPrompts.set(item.turnId, item.prompt);
+      if (page?.has_more !== true) break;
+      expect(page.next_cursor).toBeDefined();
+      cursor = page.next_cursor;
+    }
+    expect(Object.fromEntries(seenPrompts)).toEqual(Object.fromEntries(prompts.map((text, turnId) => [`t${turnId}`, text])));
+    expect(markers).toEqual(Array.from({ length: 3 }, (_, turnId) => Array.from({ length: 160 }, (_, marker) => `wire:v2:executor.runtime.update:u${turnId}-${marker}`)).flat());
+  } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+}, 120_000);
 
 it('opens an anchor window at the delivered prompt of a managed turn', async () => {
   const home = await mkdtemp(join(tmpdir(), 'transcript-managed-anchor-'));
