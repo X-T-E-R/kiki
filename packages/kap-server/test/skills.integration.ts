@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  drainSessionMetadataWrites,
   IAgentLifecycleService,
   IAgentLoopService,
   IAgentProfileService,
@@ -630,6 +631,7 @@ describe('server-v2 /api skills', () => {
       );
       expect(activated.body.code).toBe(0);
 
+      await drainSessionMetadataWrites();
       const got = await getJson<{ title: string }>(`/api/sessions/${id}`);
       expect(got.body.code).toBe(0);
       expect(got.body.data.title).toBe('/kiki-ops --help');
