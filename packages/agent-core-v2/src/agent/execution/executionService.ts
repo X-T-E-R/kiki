@@ -111,7 +111,7 @@ export class AgentExecutionService implements IAgentExecutionService {
     }
     options.signal.throwIfAborted();
     const control = this.agent.accessor.get(ISessionExecutionControl);
-    await control.ready();
+    if (control.isHeld()) await control.ready();
     if (control.isHeld()) {
       await new Promise<void>((resolve, reject) => {
         const cleanup = (): void => { subscription.dispose(); options.signal.removeEventListener('abort', aborted); };
