@@ -1835,6 +1835,95 @@ describe('hidden prefix turn preview', () => {
     } finally { controller.close(); }
   });
 
+  async function staleOpeningFixture(agentId: string) {
+    const source = { kind: 'turn' as const, id: 't1' };
+    const structure: ContentRef = { source, path: ['steps'], kind: 'array', offset: 1, total: 2, revision: 'loaded-structure' };
+    const prompt: ContentRef = { source, path: ['prompt'], kind: 'text', offset: 23, total: 30, revision: 'opening-text' };
+    const orphan: TranscriptTurn = { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'other' }, contentRefs: [structure], steps: [{
+      kind: 'step', stepId: 'loaded-step', turnId: 't1', ordinal: 0, state: 'completed',
+      frames: [{ kind: 'text', frameId: 'loaded-body', role: 'assistant', text: 'ALREADY-LOADED-BODY' }],
+    }] };
+    const opening: TranscriptTurn = { ...orphan, startedAt: FIXED_AT, origin: agentId === 'main' ? { kind: 'user' } : { kind: 'other', payload: { kind: 'peer_thread', messageId: 'peer-opening' } },
+      promptId: 'opening-1', prompt: 'RECOVERED-STALE-OPENING', steps: [], contentRefs: [prompt, { ...structure, revision: 'preview-structure' }] };
+    const oldest: TranscriptTurn = { ...opening, turnId: 't0', ordinal: 0, promptId: 'opening-0', prompt: 'OLDEST-OPENING', contentRefs: [] };
+    const { controller, deliver, view } = harness(undefined);
+    const shell = { session_id: 'session_test', agent_id: agentId, tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [], coverage: { kind: 'unknown' as const, hasMoreOlder: true as const } };
+    const stale = { ...shell, items: [], has_more: true,
+      read: { source: 'derived' as const, readiness: 'partial' as const, reason: 'stale_cursor' as const, stale: { reason: 'stale_cursor' as const, retry: 'authoritative' as const } } };
+    const page = vi.mocked(view.transcript.page).mockImplementation(async (input) => {
+      if (input.beforeItem === 'orphan-cursor') return stale;
+      if (input.pageSize === 1) return input.beforeItem === 'opening-cursor'
+        ? { ...shell, items: [opening], has_more: true }
+        : { ...shell, items: [orphan], has_more: true, next_cursor: 'opening-cursor' };
+      if (input.beforeTurn === 't1') return { ...shell, items: [oldest], has_more: false };
+      return { ...shell, items: [orphan], has_more: true, next_cursor: 'orphan-cursor' };
+    });
+    await controller.open();
+    if (agentId !== 'main') controller.retainAgentView('stale-opening-child', agentId, 'delta');
+    deliver(resetEvent(agentId, emptySnapshot({ items: [{ ...opening, turnId: 't2', ordinal: 2, prompt: 'NEWER-OPENING', contentRefs: [] }] }), 2, true));
+    return { controller, page, shell, stale, orphan, opening, structure, prompt };
+  }
+
+  it.each(['main', 'child'] as const)('recovers the oldest %s opening before restarting a stale exclusive cursor', async (agentId) => {
+    const { controller, page, structure, prompt } = await staleOpeningFixture(agentId);
+    try {
+      expect(await controller.loadOlderMessages(agentId)).toBe(true);
+      expect(await controller.loadOlderMessages(agentId)).toBe(true);
+      const state = agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+      const bodies = state.blocks.flatMap(block => 'text' in block ? [block.text] : []);
+      expect(bodies.filter(body => body === 'RECOVERED-STALE-OPENING')).toHaveLength(1);
+      expect(bodies).toContain('ALREADY-LOADED-BODY');
+      expect(bodies).toContain('OLDEST-OPENING');
+      expect(controller.contentRefsFor(agentId, structure.source)).toEqual([structure, prompt]);
+      expect(page.mock.calls.map(([input]) => input)).toEqual([
+        { agentId, beforeTurn: 't2', beforeItem: undefined, pageSize: 20 },
+        { agentId, beforeTurn: undefined, beforeItem: 'orphan-cursor', pageSize: 20 },
+        { agentId, beforeTurn: 't2', beforeItem: undefined, pageSize: 1 },
+        { agentId, beforeTurn: undefined, beforeItem: 'opening-cursor', pageSize: 1 },
+        { agentId, beforeTurn: 't1', beforeItem: undefined, pageSize: 20 },
+      ]);
+      expect(state.olderError).toBeUndefined();
+    } finally { controller.close(); }
+  });
+
+  it.each(['error', 'stalled', 'older-error', 'cancelled'] as const)('retains the orphan cursor after %s opening recovery and lets the next gesture retry', async (failure) => {
+    const { controller, page, shell, stale, orphan, opening } = await staleOpeningFixture('main');
+    try {
+      expect(await controller.loadOlderMessages()).toBe(true);
+      page.mockResolvedValueOnce(stale);
+      let complete: (() => void) | undefined;
+      let readSignal: AbortSignal | undefined;
+      if (failure === 'error') page.mockRejectedValueOnce(new Error('preview unavailable'));
+      if (failure === 'stalled') {
+        const stalled = { ...shell, items: [orphan], has_more: true, next_cursor: 'stalled-opening' };
+        page.mockResolvedValueOnce(stalled).mockResolvedValueOnce(stalled);
+      }
+      if (failure === 'older-error') page.mockResolvedValueOnce({ ...shell, items: [opening], has_more: true }).mockRejectedValueOnce(new Error('older page unavailable'));
+      if (failure === 'cancelled') page.mockImplementationOnce((_input, options) => new Promise(resolve => {
+        readSignal = options?.signal;
+        complete = () => { resolve({ ...shell, items: [opening], has_more: true }); };
+      }));
+      const abort = new AbortController();
+      const attempt = controller.loadOlderMessages('main', abort.signal);
+      if (failure === 'cancelled') {
+        await vi.waitFor(() => { expect(complete).toBeDefined(); });
+        abort.abort();
+        expect(readSignal?.aborted).toBe(true);
+        complete!();
+      }
+      expect(await attempt).toBe(false);
+      expect(blockText(controller, 'OLDEST-OPENING')).toBe(false);
+      expect(blockText(controller, 'ALREADY-LOADED-BODY')).toBe(true);
+      if (failure !== 'cancelled') expect(controller.getState().olderError).toBeDefined();
+      const calls = page.mock.calls.length;
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(page.mock.calls[calls]?.[0].beforeItem).toBe('orphan-cursor');
+      expect(blockText(controller, 'RECOVERED-STALE-OPENING')).toBe(true);
+      expect(blockText(controller, 'OLDEST-OPENING')).toBe(true);
+      expect(controller.getState().olderError).toBeUndefined();
+    } finally { controller.close(); }
+  });
+
   it('refreshes the structure of an older-page turn after its canonical prefix changes', async () => {
     const fixture = hiddenPrefixFixture();
     const content = vi.fn(segmentRead(fixture.inserted));

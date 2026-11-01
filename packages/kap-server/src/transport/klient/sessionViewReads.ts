@@ -155,8 +155,10 @@ async function alignSingleTailTurn(
   const items: TranscriptResponse['items'] = [];
   let replaced = false;
   for (const item of response.items) {
-    if (item.kind !== 'turn' || (input.beforeTurn === undefined && input.beforeItem === undefined && !item.contentRefs?.some(ref =>
-      ref.direction === 'backward' && ref.kind === 'array' && ref.path[0] === 'steps'))) { items.push(item); continue; }
+    if (item.kind !== 'turn' || (!item.contentRefs?.some(ref => ref.path[0] === 'steps') && !isOrphanTurn(item))) {
+      items.push(item);
+      continue;
+    }
     let entity: object | undefined;
     try {
       entity = await service.readCanonicalEntity(sessionId, input.agentId, { kind: 'turn', id: item.turnId }, input.signal);

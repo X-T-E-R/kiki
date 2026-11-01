@@ -680,6 +680,29 @@ describe('bounded session-view canonical reads', () => {
     expect(historyTurn.contentRefs?.find((ref) => ref.path.length === 1 && ref.path[0] === 'steps')?.direction).not.toBe('backward');
   });
 
+  it.each(['before-turn', 'before-item'] as const)('keeps a prompt-only %s preview on the cold-page source without canonical replay', async (position) => {
+    const turn: TranscriptTurn = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' },
+      promptId: 'prompt-zero', prompt: 'opening '.repeat(20_000), startedAt: '2025-01-01T00:00:00.000Z', steps: [] };
+    const next: TranscriptTurn = { ...turn, turnId: 't1', ordinal: 1, promptId: 'prompt-one', prompt: 'next' };
+    const source: AgentTranscriptSnapshot = { ...empty(), items: [turn, next] };
+    const canonical = vi.fn(async () => turn);
+    const cold = {
+      forSessionLive: () => undefined,
+      readColdSnapshot: async () => source,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot) => project(source),
+      readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+      readCanonicalEntity: canonical,
+    } as unknown as TranscriptService;
+    const page = await readSessionViewTranscriptPage(cold, 'fixture-session', { agentId: 'main', pageSize: 1,
+      beforeTurn: position === 'before-turn' ? 't1' : undefined, beforeItem: position === 'before-item' ? 'turn:t1' : undefined });
+    const preview = page?.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === 't0');
+    expect(preview?.promptId).toBe('prompt-zero');
+    expect(turn.prompt?.startsWith(preview?.prompt ?? '')).toBe(true);
+    expect(preview?.contentRefs).toContainEqual(expect.objectContaining({ path: ['prompt'], kind: 'text' }));
+    expect(canonical).not.toHaveBeenCalled();
+  });
+
   it('still opens a legal oversized turn header on the single before-turn preview', async () => {
     const turn: TranscriptTurn = {
       kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'H'.repeat(180_000),

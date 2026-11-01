@@ -1796,18 +1796,33 @@ export class SessionController {
         if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
         if (page.read?.stale !== undefined) {
           this.historyReads.set(agentId, page.read);
-          this.olderPageCursors.delete(agentId);
           this.publishProjectedAgent(agentId, store, { historyCoverageKind: 'unknown' });
           beforeItem = undefined;
-          beforeTurn = currentSnapshot.items.find((item) => item.kind === 'turn')?.turnId;
+          const oldest = currentSnapshot.items.find((item): item is TranscriptTurn => item.kind === 'turn');
+          beforeTurn = oldest?.turnId;
           if (page.read.stale.retry === 'resync' || beforeTurn === undefined) {
             this.publishProjectedAgent(agentId, store, { loadingOlder: false, historyCoverageKind: 'unknown' });
             void this.resync();
             return { kind: 'preparing', changed: false };
           }
+          let recovered: TranscriptTurn | undefined;
+          if (oldest?.origin.kind === 'other' && oldest.message === undefined && oldest.promptId === undefined && oldest.startedAt === undefined) {
+            const preview = await this.readTurnContentPreview(agentId, oldest.turnId, signal, true);
+            if (obsolete()) return { kind: 'cancelled', changed: false };
+            if (preview?.startedAt === undefined) throw new Error('Could not recover the earlier message opening');
+            const { steps: _steps, contentRefs, ...header } = preview;
+            recovered = {
+              ...oldest, ...header, state: oldest.state, endedAt: oldest.endedAt,
+              contentRefs: [
+                ...(oldest.contentRefs ?? []).filter(ref => ref.path[0] === 'steps'),
+                ...(contentRefs ?? []).filter(ref => ref.path[0] !== 'steps'),
+              ],
+            };
+          }
           page = await this.readAuthoritativeTranscriptContinuation(read, 'History continuation is still stale', signal);
           if (obsolete()) return { kind: 'cancelled', changed: false };
           if (page.agent_id !== agentId) throw new Error('History page returned a different agent');
+          if (recovered !== undefined) page = { ...page, items: [...page.items.filter(item => item.kind !== 'turn' || item.turnId !== recovered.turnId), recovered] };
         }
         const nextTurn = page.items.find((item) => item.kind === 'turn')?.turnId;
         const pageReadiness = page.read?.readiness;
@@ -2482,7 +2497,7 @@ export class SessionController {
     return this.contentEntity(agentId, ref.source)?.contentRefs?.find((current) => sameContentRef(current, fresh));
   }
 
-  private async readTurnContentPreview(agentId: string, turnId: string, signal: AbortSignal): Promise<TranscriptTurn | undefined> {
+  private async readTurnContentPreview(agentId: string, turnId: string, signal: AbortSignal, openingOnly = false): Promise<TranscriptTurn | undefined> {
     const items = this.composeAgentSnapshot(agentId).items;
     const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === turnId);
     if (index < 0) return undefined;
@@ -2496,7 +2511,7 @@ export class SessionController {
       ), signal);
       if (this.closed || signal.aborted || page.agent_id !== agentId || page.read?.stale !== undefined) return undefined;
       const preview = page.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
-      if (preview !== undefined) return preview;
+      if (preview !== undefined && (!openingOnly || preview.startedAt !== undefined)) return preview;
       if (page.items.some((item) => item.kind === 'turn' && item.ordinal < (items[index] as TranscriptTurn).ordinal) ||
         !page.has_more || page.next_cursor === undefined || cursors.has(page.next_cursor)) return undefined;
       cursors.add(page.next_cursor);
