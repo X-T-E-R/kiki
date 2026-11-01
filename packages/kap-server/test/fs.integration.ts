@@ -2,7 +2,7 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { IModelCatalog, ISessionManager, IWorkspaceInstanceManager } from '@kiki/agent-core-v2';
+import { IAgentLifecycleService, IAgentTaskService, IModelCatalog, ISessionManager, IWorkspaceInstanceManager } from '@kiki/agent-core-v2';
 import { WorkspaceFsService } from '@kiki/agent-core-v2/workspace/workspaceFs/fsService';
 import { HostFileSystem } from '@kiki/agent-core-v2/os/backends/node-local/hostFsService';
 import { FakeRuntime } from '@kiki/agent-core-v2/runtime/fakeRuntime';
@@ -172,6 +172,8 @@ describe('server-v2 /api fs routes', () => {
       expect(await manager.evictIfIdle!(id)).toBe(true);
       const failed = await postFs<null>(id, 'stat', { path: 'pinned.txt' });
       expect(failed.code).toBe(ErrorCode.INTERNAL_ERROR);
+      const restoredAgents = manager.get(id)!.accessor.get(IAgentLifecycleService).list();
+      await Promise.all(restoredAgents.map(async (agent) => agent.accessor.get(IAgentTaskService).resumeRestoration?.()));
       expect(await manager.evictIfIdle!(id)).toBe(true);
       const download = fetch(`${base}/api/sessions/${id}/fs/pinned.txt:download`, {
         headers: authHeaders(server),

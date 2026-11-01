@@ -11,6 +11,7 @@ import {
   IAgentPromptService,
   IAgentRuntimeBindingService,
   IAgentShellCommandService,
+  IAgentTaskService,
   IAppendLogStore,
   IDebugEventsService,
   IEventService,
@@ -873,6 +874,8 @@ describe('server-v2 /api/debug scoped operation residency', () => {
       await restored!.dispose();
       const errorResponse = await fetch(`${base}${rpc('session', ISessionMetadata, 'missingMethod', { sid: sessionId })}`, { method: 'POST', headers });
       expect(((await errorResponse.json()) as Envelope<null>).code).toBe(40001);
+      const restoredAgents = manager.get(sessionId)!.accessor.get(IAgentLifecycleService).list();
+      await Promise.all(restoredAgents.map(async (agent) => agent.accessor.get(IAgentTaskService).resumeRestoration?.()));
       expect(await manager.evictIfIdle!(sessionId)).toBe(true);
     } finally {
       release?.();
