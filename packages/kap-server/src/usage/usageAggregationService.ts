@@ -620,10 +620,17 @@ export class UsageAggregationService {
 
   private preparationController?: AbortController;
   private preparationWaiters = 0;
+  private preparationRecovering = false;
+  private readonly preparationRecoveryWaiters = new Set<() => void>();
   private modelIncompleteReason: UsageResponse['reliability']['incomplete_reason'] = null;
 
   private modelRangeStart = -Infinity;
   private readonly modelExcludedSources = new Set<string>();
+
+  private markPreparationRecovery(): void {
+    this.preparationRecovering = true;
+    for (const waiter of this.preparationRecoveryWaiters) waiter();
+  }
 
   private async prepareReadModel(requestSignal: AbortSignal, startAt?: number): Promise<void> {
     if (this.rescan.state === 'running') return;
@@ -632,8 +639,14 @@ export class UsageAggregationService {
     if (this.preparationController?.signal.aborted) await this.modelPreparing?.catch(() => undefined);
     if (this.modelPreparing === undefined) this.preparationController = new AbortController();
     const slice = new AbortController();
-    const timer = setTimeout(() => { slice.abort(new DOMException('Usage preparation continues in background', 'TimeoutError')); }, Math.min(this.limits.preparationWaitMs, this.limits.deadlineMs / 2));
+    const yieldPreparation = () => { slice.abort(new DOMException('Usage preparation continues in background', 'TimeoutError')); };
+    let recoveryWaitElapsed = false;
+    const yieldRecovery = () => { if (recoveryWaitElapsed && this.preparationRecovering) yieldPreparation(); };
+    this.preparationRecoveryWaiters.add(yieldRecovery);
+    const timer = setTimeout(() => { recoveryWaitElapsed = true; yieldRecovery(); }, Math.min(this.limits.preparationWaitMs, this.limits.deadlineMs / 2));
+    const verificationTimer = setTimeout(yieldPreparation, Math.min(Math.max(2_000, this.limits.preparationWaitMs), this.limits.deadlineMs / 2));
     timer.unref();
+    verificationTimer.unref();
     const signal = AbortSignal.any([requestSignal, slice.signal]);
     this.preparationWaiters++;
     try {
@@ -645,6 +658,8 @@ export class UsageAggregationService {
       this.modelIncompleteReason = 'deadline';
     } finally {
       clearTimeout(timer);
+      clearTimeout(verificationTimer);
+      this.preparationRecoveryWaiters.delete(yieldRecovery);
       if (--this.preparationWaiters === 0 && requestSignal.aborted && this.modelPreparing !== undefined) this.preparationController?.abort(requestSignal.reason);
     }
   }
@@ -753,6 +768,7 @@ export class UsageAggregationService {
     const deadlineAt = full ? Infinity : this.now() + this.limits.deadlineMs;
     this.modelIncompleteReason = null;
     this.modelReady = false;
+    this.preparationRecovering = false;
     const rangeStart = full ? -Infinity : startAt ?? -Infinity;
     if (full || this.inventory !== undefined && rangeStart < this.inventory.startAt) this.inventory = undefined;
     const work = (async () => {
@@ -774,12 +790,12 @@ export class UsageAggregationService {
         inventory.current = undefined;
       }
       let scannedSessions = 0;
-      let scannedSources = 0;
+      let recoverySources = 0;
       const fullScannedSessions = new Set<string>();
       const stop = (): boolean => {
         signal.throwIfAborted();
         if (this.now() >= deadlineAt) { this.modelIncompleteReason = 'deadline'; return true; }
-        if (factBudget.remainingRecords <= 0 || recoveryBudget.remainingRecords <= 0 || !full && scannedSources >= this.limits.sourceScanLimit) { this.modelIncompleteReason = 'record_budget'; return true; }
+        if (factBudget.remainingRecords <= 0 || recoveryBudget.remainingRecords <= 0 || !full && recoverySources >= this.limits.sourceScanLimit) { this.modelIncompleteReason = 'record_budget'; return true; }
         return false;
       };
       while (true) {
@@ -839,7 +855,7 @@ export class UsageAggregationService {
         while (current.nextAgent < current.agents.length) {
           if (stop()) return;
           if (current.pending === undefined || current.pending.length === 0) {
-            const count = full ? 32 : Math.min(32, this.limits.sourceScanLimit - scannedSources);
+            const count = full ? 32 : Math.min(32, this.limits.sourceScanLimit - recoverySources);
             current.pending = await waitForSource(Promise.all(current.sources.slice(current.nextAgent, current.nextAgent + count).map(async ({ source }, offset) => {
               const [metadata, head] = await Promise.all([this.metadataOf(source, current.agents[current.nextAgent + offset]!), inventory.full ? inventory.heads.get(source) : model.source(source, signal)]);
               const checkpoint = head?.checkpoint;
@@ -853,7 +869,11 @@ export class UsageAggregationService {
             const key = sessionKey(current.summary);
             if (!source.aligned && this.sessionAccounting.has(key)) this.sessionVersions.set(key, (this.sessionVersions.get(key) ?? 0) + 1);
             this.modelExcludedSources.delete(source.source);
-            if (!source.aligned && !await this.synchronizeSource(source, signal, { factBudget, recoveryBudget, deadlineAt, background: true, onScannedRecord: full ? () => { this.rescan = { ...this.rescan, scanned_records: this.rescan.scanned_records + 1 }; } : undefined })) { this.modelIncompleteReason = this.now() >= deadlineAt ? 'deadline' : 'record_budget'; return; }
+            if (!source.aligned) {
+              this.markPreparationRecovery();
+              recoverySources++;
+              if (!await this.synchronizeSource(source, signal, { factBudget, recoveryBudget, deadlineAt, background: true, onScannedRecord: full ? () => { this.rescan = { ...this.rescan, scanned_records: this.rescan.scanned_records + 1 }; } : undefined })) { this.modelIncompleteReason = this.now() >= deadlineAt ? 'deadline' : 'record_budget'; return; }
+            }
             if (full && (await model.source(source.source, signal))?.checkpoint?.valid !== true) {
               fullScannedSessions.add(sessionKey(current.summary));
               this.rescan = { ...this.rescan, scanned_sessions: fullScannedSessions.size };
@@ -862,7 +882,6 @@ export class UsageAggregationService {
           }
           current.pending.shift();
           current.nextAgent++;
-          scannedSources++;
         }
         const key = sessionKey(current.summary);
         if (this.dirtySessions.get(key) === current.version) this.dirtySessions.delete(key);
@@ -877,6 +896,8 @@ export class UsageAggregationService {
       this.knownSources = inventory.sources;
       const retained = this.core.accessor.get(IRetainedUsageService);
       if (retained.prepareReadModel !== undefined) {
+        this.retainedProgress = await retained.readModelImportProgress?.(signal) ?? [];
+        if (this.retainedProgress.some((row) => !row.complete)) this.markPreparationRecovery();
         const progress = await retained.prepareReadModel({ deadlineAt, recordLimit: factBudget.remainingRecords, signal });
         this.retainedProgress = await retained.readModelImportProgress?.(signal) ?? [];
         if (!progress.complete) { this.modelIncompleteReason = progress.incompleteReason ?? null; return; }

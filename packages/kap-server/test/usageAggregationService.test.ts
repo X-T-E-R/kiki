@@ -865,6 +865,30 @@ describe('UsageAggregationService accounting evidence', () => {
 });
 
 describe('UsageAggregationService cache budgets', () => {
+  it('finishes metadata-only cold verification beyond the recovery source budget and foreground slice', async () => {
+    const ids = Array.from({ length: 7 }, (_, i) => `agent-${i}`);
+    const sources = ids.map((id) => `sessions/w/s/agents/${id}`);
+    const f = fixture([summary('s', 'w')], Object.fromEntries(sources.map((source) => [source, [usageRecord(1)]])), Date.now, { sourceScanLimit: 2, preparationWaitMs: 10 }, undefined, undefined, undefined, undefined, undefined, { ready: true, onDidChange: () => ({ dispose() {} }) });
+    f.setAgentIds(ids);
+    await f.service.readAgentUsage('w', 's', ids, { summaryOnly: true });
+    const cold = f.restart();
+    const storage = f.core.accessor.get(IFileSystemStorageService);
+    const mtime = storage.mtime.bind(storage);
+    const delayed = vi.spyOn(storage, 'mtime').mockImplementation(async (...args) => {
+      await new Promise<void>((resolve) => { setTimeout(resolve, 30); });
+      return mtime(...args);
+    });
+    const reads = [...f.reads.values()].reduce((sum, value) => sum + value, 0);
+    f.sourceProbes.clear();
+    try {
+      const response = await cold.query({});
+      expect(response.reliability).toMatchObject({ complete: true, incomplete_reason: null, usage_coverage: { known_records: 7 } });
+      expect(response.summary.tokens.output).toBe(7);
+      expect([...f.sourceProbes.values()]).toEqual(ids.map(() => 1));
+      expect([...f.reads.values()].reduce((sum, value) => sum + value, 0)).toBe(reads);
+    } finally { delayed.mockRestore(); cold.dispose(); f.service.dispose(); }
+  });
+
   it('resumes a source-budgeted inventory without listing or probing the verified prefix again', async () => {
     const ids = Array.from({ length: 7 }, (_, i) => `agent-${i}`);
     const f = fixture([summary('s', 'w')], {}, () => 0, { sourceScanLimit: 2 });
@@ -1898,6 +1922,24 @@ describe('shared agent and History typed usage', () => {
       f.service.dispose();
       changed.dispose();
     }
+  });
+
+  it('keeps retained-only recovery within the foreground slice and resumes its preparation', async () => {
+    const f = fixture([], {}, Date.now, { preparationWaitMs: 20 });
+    const retained = f.core.accessor.get(IRetainedUsageService);
+    retained.readModelImportProgress = async () => [{ source: 'retained-ledger:deleted', size: 100, readBytes: 0, complete: false }];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(retained, 'prepareReadModel').mockImplementation(async () => { await gate; return { complete: true, scannedRecords: 0 }; });
+    try {
+      const start = performance.now();
+      const partial = await f.service.query({});
+      expect(performance.now() - start).toBeLessThan(1000);
+      expect(partial.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline' });
+      release();
+      await Reflect.get(f.service, 'modelPreparing');
+      expect((await f.service.query({})).reliability.complete).toBe(true);
+    } finally { release(); await Reflect.get(f.service, 'modelPreparing'); f.service.dispose(); }
   });
 
   it('retains committed panel totals when source preparation reaches its deadline and continues on the next read', async () => {
