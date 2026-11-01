@@ -2460,7 +2460,7 @@ export class SessionController {
   }
 
   /** Rebind one canonical structure revision without discarding already loaded children. */
-  private async refreshTurnStructurePreview(agentId: string, ref: ContentRef, signal: AbortSignal): Promise<ContentRef | undefined> {
+  private async refreshTurnStructurePreview(agentId: string, ref: ContentRef, signal: AbortSignal): Promise<ContentRef | 'complete' | undefined> {
     if (ref.source.kind !== 'turn' || signal.aborted || this.closed) return undefined;
     const turnId = ref.source.id;
     const items = this.composeAgentSnapshot(agentId).items;
@@ -2480,7 +2480,8 @@ export class SessionController {
         const candidate = preview.contentRefs?.find((current) => current.kind === 'array' &&
           current.path.length === ref.path.length && current.path.every((part, partIndex) => part === ref.path[partIndex]) &&
           current.source.kind === ref.source.kind && current.source.id === ref.source.id);
-        if (candidate === undefined || candidate.revision === ref.revision && candidate.offset === ref.offset && candidate.total === ref.total) return undefined;
+        if (candidate === undefined) return !signal.aborted && this.adoptTimelinePreviewField(agentId, ref, preview) ? 'complete' : undefined;
+        if (candidate.revision === ref.revision && candidate.offset === ref.offset && candidate.total === ref.total) return undefined;
         const fresh = ref.direction === 'backward' ? candidate : { ...candidate, direction: 'forward' as const, offset: 0 };
         if (!this.installTurnStructureRef(agentId, ref, fresh) || signal.aborted) return undefined;
         return this.contentEntity(agentId, ref.source)?.contentRefs?.find((current) => sameContentRef(current, fresh));
@@ -2514,10 +2515,17 @@ export class SessionController {
     const candidate = preview?.contentRefs?.find((current) => samePath(current) && current.kind === ref.kind);
     if (preview === undefined || candidate?.revision === ref.revision ||
       (candidate === undefined && contentPathValue(preview, ref.path) === undefined)) return undefined;
+    if (signal.aborted || !this.adoptTimelinePreviewField(agentId, ref, preview)) return undefined;
+    if (candidate === undefined) return 'complete';
+    return this.contentEntity(agentId, source)?.contentRefs?.find((entry) => sameContentRef(entry, candidate));
+  }
+
+  private adoptTimelinePreviewField(agentId: string, ref: ContentRef, preview: ContentWindow): boolean {
+    const source = ref.source;
     const current = this.contentEntity(agentId, source);
-    if (current === undefined || !(current.contentRefs ?? []).some((entry) => sameContentRef(entry, ref))) return undefined;
+    if (current === undefined || !(current.contentRefs ?? []).some((entry) => sameContentRef(entry, ref))) return false;
     let adopted: ContentWindow;
-    try { adopted = adoptContentPreviewField(current, preview, ref.path); } catch { return undefined; }
+    try { adopted = adoptContentPreviewField(current, preview, ref.path); } catch { return false; }
     const store = this.agentTranscripts.get(agentId);
     let installed = store !== undefined && transcriptContentEntity(store, source) !== undefined && replaceAgentContentEntity(store, source, adopted);
     if (!installed) {
@@ -2527,12 +2535,11 @@ export class SessionController {
         installed = true;
       }
     }
-    if (!installed || signal.aborted) return undefined;
+    if (!installed) return false;
     this.forestDirtyAgents.add(agentId);
     this.pendingTranscriptAgents.add(agentId);
     this.flushFrames();
-    if (candidate === undefined) return 'complete';
-    return this.contentEntity(agentId, source)?.contentRefs?.find((entry) => sameContentRef(entry, candidate));
+    return true;
   }
 
   private installTurnStructureRef(agentId: string, ref: ContentRef, fresh: ContentRef): boolean {

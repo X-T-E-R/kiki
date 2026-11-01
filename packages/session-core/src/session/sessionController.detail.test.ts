@@ -1819,6 +1819,34 @@ describe('hidden prefix turn preview', () => {
     } finally { controller.close(); }
   });
 
+  it.each(['steps', 'frames'] as const)('adopts a complete canonical %s preview when its stale continuation disappears', async (field) => {
+    const fixture = hiddenPrefixFixture();
+    const original: TranscriptTurn = field === 'frames' ? fixture.client : { ...fixture.client,
+      steps: Array.from({ length: 12 }, (_, ordinal) => ({ kind: 'step', stepId: `old-${ordinal}`, turnId: 't1', ordinal, state: 'completed',
+        frames: [{ kind: 'text', frameId: `old-frame-${ordinal}`, role: 'assistant', text: 'old body '.repeat(300) }] })) };
+    const stale = field === 'frames' ? original : rebindTurnContentRefs(boundedEntity(original, { kind: 'turn', id: 't1' }, undefined, 'main', 'tail'));
+    const canonical: TranscriptTurn = { ...original, contentRefs: undefined, steps: [{ kind: 'step', stepId: stale.steps[0]!.stepId, turnId: 't1',
+      ordinal: stale.steps[0]!.ordinal, state: 'completed', frames: [{ kind: 'text', frameId: 'canonical-complete', role: 'assistant', text: 'COMPLETE-CANONICAL-BODY' }] }] };
+    const content = vi.fn(segmentRead(canonical));
+    const { controller, deliver, view } = harness(undefined, content);
+    const first = await previewPage(stale, 12_000)({ agentId: 'main', pageSize: 20 });
+    vi.mocked(view.transcript.page).mockResolvedValueOnce({ ...first, items: [stale], has_more: true, next_cursor: 'turn:t1' })
+      .mockImplementation(previewPage(canonical, 12_000));
+    await controller.open();
+    const sibling: TranscriptTurn = { kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, steps: [] };
+    deliver(resetEvent('main', emptySnapshot({ items: [sibling] }), 2, true));
+    try {
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(await controller.loadOlderMessages()).toBe(true);
+      expect(blockText(controller, 'COMPLETE-CANONICAL-BODY')).toBe(true);
+      expect(controller.contentRefsFor('main', { kind: 'turn', id: 't1' }).filter(ref => ref.direction === 'backward')).toEqual([]);
+      expect(controller.getState().olderError).toBeUndefined();
+      const reads = content.mock.calls.length;
+      await controller.loadOlderMessages();
+      expect(content).toHaveBeenCalledTimes(reads);
+    } finally { controller.close(); }
+  });
+
   it('reloads one fresh turn preview after a hidden prefix insert and keeps the loaded suffix', async () => {
     const fixture = hiddenPrefixFixture();
     const content = vi.fn(segmentRead(fixture.inserted));
