@@ -186,9 +186,11 @@ describe('AcpProcessClient limits and observers', () => {
       if (outcome === 'cancel') controller.abort();
       if (outcome === 'disconnect') await child.kill();
     });
+    const onDeliveryAttempt = vi.fn();
     try {
-      await expect(client.startTurn({ prompt: 'work', signal: controller.signal, session: { cwd: '/example' }, prepareSession })).rejects.toThrow();
+      await expect(client.startTurn({ prompt: 'work', signal: controller.signal, session: { cwd: '/example' }, prepareSession, onDeliveryAttempt })).rejects.toThrow();
       expect(prepareSession).toHaveBeenCalledOnce();
+      expect(onDeliveryAttempt).not.toHaveBeenCalled();
       const methods = writes.mock.calls.map(([chunk]) => typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')).join('').trim().split('\n')
         .map(line => (JSON.parse(line) as { method?: string }).method);
       expect(methods).not.toContain('session/prompt');
@@ -331,11 +333,14 @@ describe('AcpProcessClient limits and observers', () => {
       { id: 'fixture', command: 'fixture', startupTimeoutMs: 5_000 },
       { platform: 'linux' },
     );
+    const onDeliveryAttempt = vi.fn();
     const handle = await client.startTurn({
       prompt: 'go',
       signal: new AbortController().signal,
       session: { cwd: 'C:/workspace' },
+      onDeliveryAttempt,
     });
+    expect(onDeliveryAttempt).toHaveBeenCalledOnce();
     await new Promise((resolve) => setImmediate(resolve));
     const events: string[] = [];
     for await (const event of handle.events) {

@@ -31,7 +31,7 @@ import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalo
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
-import { SessionSubagentService } from '#/session/subagent/subagentService';
+import { SessionSubagentService, SUBAGENT_RELEASE_GRACE_MS, isReleasable } from '#/session/subagent/subagentService';
 import { ISessionDispatchService, type DispatchChild, type DispatchRunOptions } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import { acknowledgeResumeOutcome, bindResumeTask, pruneResumeRecords, readResumeRecord, writeResumeRecord, type DispatchResumeRecord } from '#/session/dispatch/resume';
@@ -53,7 +53,7 @@ import type { WireRecord } from '#/wire/record';
 import { Error2, ErrorCodes } from '#/errors';
 import { agentServices, appServices, testAgent, type TestAgentContext } from '../../harness';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
-import { Event } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { MessageStepRequest } from '#/agent/loop/stepRequest';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
@@ -105,8 +105,11 @@ function dispatchFor(ctx: TestAgentContext) {
   containers.push(ix);
   const childHandle: IAgentScopeHandle = { kind: 'agent', id: CHILD, accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
   const callerHandle: IAgentScopeHandle = { kind: 'agent', id: 'main', accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
-  ix.stub(IAgentLifecycleService, { onDidCreate: Event.None as IAgentLifecycleService['onDidCreate'],
-    get: (id) => id === CHILD ? childHandle : id === 'main' ? callerHandle : undefined });
+  const created = new Emitter<IAgentScopeHandle>();
+  let removed = false;
+  const remove = vi.fn(async () => { removed = true; });
+  ix.stub(IAgentLifecycleService, { onDidCreate: created.event, remove,
+    get: (id) => id === CHILD ? removed ? undefined : childHandle : id === 'main' ? callerHandle : undefined });
   ix.stub(IAgentCollaborationRegistry, {});
   ix.set(IConfigService, ctx.get(IConfigService));
   ix.set(IModelService, ctx.get(IModelService));
@@ -121,7 +124,7 @@ function dispatchFor(ctx: TestAgentContext) {
   ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
   const dispatch = ix.get(ISessionDispatchService);
   const child: DispatchChild = { agent: childHandle, agentId: CHILD, name: 'saved_child', profileName: 'example-worker', thinkingEffort: 'off' };
-  return { dispatch, child, runs: ix.get(ISessionSubagentService) };
+  return { dispatch, child, runs: ix.get(ISessionSubagentService), created, remove };
 }
 
 async function defaultExternal(id = 'claude-acp', modelAlias?: string) {
@@ -131,8 +134,9 @@ async function defaultExternal(id = 'claude-acp', modelAlias?: string) {
   const resolved: ResolvedAgentExecutor = { descriptor: { id, protocol: 'acp', args: [], revision: 'fixture' }, options: {},
     provider: { id, protocol: 'acp', validateOptions: () => ({}), validateBinding: binding => ({ ok: true, binding }),
       create: context => ({ hooks: createHooks(['onWillRun']), status: () => ({ state: 'idle' }), cancel: () => false,
-        settled: async () => {}, shutdown: async () => {}, run: async request => {
+        settled: async () => {}, shutdown: async () => {}, run: async (request, runOptions) => {
           delivered.push({ request, binding: context.binding });
+          await runOptions.onExternalRunNotSent?.();
           throw new Error('fixture-native-run-reached');
         } }) } };
   vi.spyOn(registry, 'resolve').mockReturnValue(resolved);
@@ -1085,6 +1089,218 @@ describe('dispatch resume through model switch and real native run', () => {
     expect((await metadata.read()).agents![CHILD]).toMatchObject({ executor: 'example-acp', negotiated: { image: true }, model: 'external-new',
       parentAgentId: 'main', labels: { customState: 'preserved' } });
     expect(readResumeRecord((await metadata.read()).agents![CHILD], 'external-direct')).toMatchObject({ taskId: 'external-task', state: 'ready' });
+  });
+});
+
+describe('compact resume lifecycle retention (CM-001)', () => {
+  it.each(['success', 'failure', 'cancel'] as const)('keeps idle preparation resident and restores release after %s', async outcome => {
+    const ctx = await host();
+    const { dispatch, child, created, remove } = dispatchFor(ctx);
+    const controller = new AbortController();
+    const operationId = `retained-compact-${outcome}`;
+    const failure = new Error('Summary preparation failed');
+    let release!: () => void;
+    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareModelSwitchSummary').mockImplementation(async (_history, signal) => new Promise<string>((resolve, reject) => {
+      release = () => { if (outcome === 'failure') reject(failure); else resolve('Prepared summary.'); };
+      signal.addEventListener('abort', () => { reject(signal.reason); }, { once: true });
+    }));
+    if (outcome === 'success') ctx.mockNextResponse({ type: 'text', text: 'Continued after compact.' });
+    vi.useFakeTimers();
+    try {
+      created.fire(child.agent);
+      const pending = dispatch.runOnExisting(child, 'Continue after summary', { ...options(operationId, { contextMode: 'compact', modelAlias: NEW }), signal: controller.signal });
+      let settled = false;
+      const result = pending.then(async run => { await (await run.started).completion; settled = true; }, error => { settled = true; throw error; });
+      void result.catch(() => {});
+      await vi.waitFor(() => { expect(release).toBeTypeOf('function'); });
+      expect(ctx.get(IAgentModelSwitchService).get(operationId)?.state).toBe('preparing');
+      expect(ctx.get(IAgentExecutionService).status().state).toBe('idle');
+      expect(ctx.get(IAgentLoopService).status().state).toBe('idle');
+      expect(isReleasable(child.agent)).toBe(true);
+      await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS * 2);
+      expect(remove).not.toHaveBeenCalled();
+      if (outcome === 'cancel') controller.abort(failure);
+      else release();
+      await vi.waitFor(() => { expect(settled).toBe(true); });
+      if (outcome === 'success') {
+        await result;
+        expect(ctx.get(IAgentProfileService).getModel()).toBe(NEW);
+        expect(ctx.llmCalls).toHaveLength(1);
+      } else {
+        await expect(result).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID, message: failure.message,
+          details: { operationId, modelSwitchState: outcome === 'cancel' ? 'cancelled' : 'failed' } });
+        expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+        expect(ctx.llmCalls).toHaveLength(0);
+      }
+      expect(remove).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS);
+      expect(remove).toHaveBeenCalledExactlyOnceWith(CHILD);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('external resume durable delivery (CM-002)', () => {
+  async function external(deliveries: unknown[], outcome: 'unknown' | 'not_sent' | 'started' = 'unknown', modelAlias?: string) {
+    const ctx = await host();
+    const registry = ctx.get(IAgentExecutorRegistry);
+    const failure = new Error2(ErrorCodes.EXECUTOR_SESSION_FAILED, 'External start unavailable', { details: { deliveryOutcome: 'unknown' } });
+    const resolved: ResolvedAgentExecutor = { descriptor: { id: 'example-external', protocol: 'acp', args: [], revision: 'fixture' }, options: {},
+      provider: { id: 'example-external', protocol: 'acp', validateOptions: () => ({}), validateBinding: binding => ({ ok: true, binding }),
+        create: context => ({ hooks: createHooks(['onWillRun']), status: () => ({ state: 'idle' }), cancel: () => false, settled: async () => {}, shutdown: async () => {},
+          run: async (request, runOptions) => {
+            if (outcome === 'not_sent') {
+              await runOptions.onExternalRunNotSent?.();
+              throw new Error('Confirmed pre-send failure');
+            }
+            const turnId = deliveries.length + 40;
+            const recorder = new ExternalTurnRecorder(context.agent, turnId, 'example-remote-session', { executorId: 'example-external', protocol: 'acp',
+              model: 'vendor-model', resumeMode: 'live', profileDelivery: 'native' });
+            await recorder.begin(request.kind === 'retry' ? '' : request.prompt, { kind: 'system_trigger', name: 'subagent' }, [], request.kind === 'prompt' ? request.promptId : undefined);
+            deliveries.push(request);
+            if (outcome === 'unknown') { await recorder.fail(failure); throw failure; }
+            const handle: import('#/session/subagent/subagent').AgentRunHandle = { agentId: CHILD,
+              turn: { id: turnId } as import('#/agent/loop/loop').Turn, completion: Promise.resolve({ summary: 'External result' }) };
+            return handle;
+          } }) } };
+    vi.spyOn(registry, 'resolve').mockReturnValue(resolved);
+    vi.spyOn(registry, 'resolveExecutable').mockResolvedValue(resolved);
+    vi.spyOn(registry, 'validateBinding').mockImplementation((_id, _options, binding) => ({ ok: true, binding }));
+    vi.spyOn(registry, 'get').mockReturnValue(resolved.descriptor);
+    await ctx.get(IAgentProfileService).bind({ model: modelAlias, thinking: modelAlias === undefined ? undefined : 'off', delegationPosition: 'sub',
+      resolvedProfile: modelAlias === undefined ? nativeTargets([resolved.descriptor])[0] : normalizeAgentProfile({ name: 'example-worker', executor: 'example-external', modelAlias,
+        allowedModels: [modelAlias], tools: [], systemPrompt: () => 'External test role.' }) });
+    return { ctx, ...dispatchFor(ctx) };
+  }
+
+  it.each([undefined, 'vendor-model'])('does not resend an outcome-unknown external prompt after cold restore (model=%s)', async modelAlias => {
+    const deliveries: unknown[] = [];
+    const original = await external(deliveries, 'unknown', modelAlias);
+    const opts = options('unknown-external', { contextMode: 'direct' });
+    const first = await original.dispatch.runOnExisting(original.child, 'Perform one external side effect', opts);
+    await expect(first.started).rejects.toMatchObject({ details: { deliveryOutcome: 'unknown' } });
+    expect(await original.dispatch.runOnExisting(original.child, 'Perform one external side effect', opts)).toBe(first);
+    const records = await journal(original.ctx);
+    const meta = structuredClone((await original.ctx.get(ISessionMetadata).read()).agents![CHILD]!);
+    expect(readResumeRecord(meta, opts.operationId!)).toMatchObject({ state: 'ready', externalStart: 'unknown' });
+    const cold = await external(deliveries, 'unknown', modelAlias);
+    await cold.ctx.restore(records);
+    await cold.ctx.get(ISessionMetadata).registerAgent(CHILD, meta);
+    await expect(cold.dispatch.runOnExisting(cold.child, 'Perform one external side effect', opts)).rejects.toMatchObject({
+      code: ErrorCodes.EXECUTOR_SESSION_FAILED, details: { operationId: opts.operationId, externalStart: 'unknown', deliveryOutcome: 'unknown' } });
+    expect(deliveries).toEqual([expect.objectContaining({ promptId: 'resume-prompt:unknown-external' })]);
+  });
+
+  it.each([undefined, 'vendor-model'])('blocks legacy ready records without delivery confirmation after cold restore (model=%s)', async modelAlias => {
+    const deliveries: unknown[] = [];
+    const original = await external(deliveries, 'unknown', modelAlias);
+    const opts = options('legacy-unknown-external', { contextMode: 'direct' });
+    const first = await original.dispatch.runOnExisting(original.child, 'Perform one external side effect', opts);
+    await expect(first.started).rejects.toMatchObject({ details: { deliveryOutcome: 'unknown' } });
+    const records = await journal(original.ctx);
+    expect(records.filter(record => record.type === 'turn.ended')).toHaveLength(1);
+    const meta = structuredClone((await original.ctx.get(ISessionMetadata).read()).agents![CHILD]!);
+    const { externalStart, ...legacyRecord } = readResumeRecord(meta, opts.operationId!)!;
+    expect(externalStart).toBe('unknown');
+    expect(legacyRecord).toMatchObject({ state: 'ready' });
+    expect(legacyRecord.taskId).toBeUndefined();
+    const legacy = { ...meta, labels: { ...meta.labels, [`dispatchResume:${opts.operationId}`]: JSON.stringify(legacyRecord) } };
+    const cold = await external(deliveries, 'unknown', modelAlias);
+    await cold.ctx.restore(records);
+    await cold.ctx.get(ISessionMetadata).registerAgent(CHILD, legacy);
+    await expect(cold.dispatch.runOnExisting(cold.child, 'Perform one external side effect', opts)).rejects.toMatchObject({
+      code: ErrorCodes.EXECUTOR_SESSION_FAILED, message: expect.stringContaining('Inspect the original remote session'),
+      details: { operationId: opts.operationId, externalStart: 'unconfirmed', deliveryOutcome: 'unknown' } });
+    expect(deliveries).toEqual([expect.objectContaining({ promptId: 'resume-prompt:legacy-unknown-external' })]);
+  });
+
+  it.each(['attempting', 'started'] as const)('blocks cold replay when only the durable %s fact survived', async externalStart => {
+    const deliveries: unknown[] = [];
+    const original = await external(deliveries);
+    const opts = options('interrupted-external', { contextMode: 'direct' });
+    const first = await original.dispatch.runOnExisting(original.child, 'Original external work', opts);
+    await expect(first.started).rejects.toBeDefined();
+    const records = await journal(original.ctx);
+    const meta = structuredClone((await original.ctx.get(ISessionMetadata).read()).agents![CHILD]!);
+    const record = readResumeRecord(meta, opts.operationId!)!;
+    const interrupted = { ...meta, labels: { ...meta.labels, [`dispatchResume:${opts.operationId}`]: JSON.stringify({ ...record, externalStart }) } };
+    const cold = await external(deliveries);
+    await cold.ctx.restore(records);
+    await cold.ctx.get(ISessionMetadata).registerAgent(CHILD, interrupted);
+    await expect(cold.dispatch.runOnExisting(cold.child, 'Original external work', opts)).rejects.toMatchObject({ details: { externalStart } });
+    expect(deliveries).toHaveLength(1);
+  });
+
+  it.each(['attempting', 'unknown'] as const)('does not cross an unpersisted external %s boundary', async blocked => {
+    const deliveries: unknown[] = [];
+    const original = await external(deliveries);
+    const opts = options(`save-${blocked}`, { contextMode: 'direct' });
+    const metadata = original.ctx.get(ISessionMetadata);
+    const updateAgent = metadata.updateAgent.bind(metadata);
+    const failure = new Error('Resume guard save failed');
+    const save = vi.spyOn(metadata, 'updateAgent').mockImplementation(async (agentId, update) => {
+      const next = update((await metadata.read()).agents![agentId]!);
+      if (readResumeRecord(next, opts.operationId!)?.externalStart === blocked) throw failure;
+      await updateAgent(agentId, update);
+    });
+    const first = await original.dispatch.runOnExisting(original.child, 'Perform one external side effect', opts);
+    if (blocked === 'attempting') {
+      await expect(first.started).rejects.toBe(failure);
+      expect(deliveries).toHaveLength(0);
+      expect(readResumeRecord((await metadata.read()).agents![CHILD], opts.operationId!)).toMatchObject({ state: 'ready' });
+      save.mockRestore();
+      const retry = await original.dispatch.runOnExisting(original.child, 'Perform one external side effect', opts);
+      await expect(retry.started).rejects.toMatchObject({ details: { deliveryOutcome: 'unknown' } });
+      expect(deliveries).toHaveLength(1);
+    } else {
+      await expect(first.started).rejects.toMatchObject({ details: { deliveryOutcome: 'unknown' } });
+      const records = await journal(original.ctx);
+      const meta = structuredClone((await metadata.read()).agents![CHILD]!);
+      expect(readResumeRecord(meta, opts.operationId!)).toMatchObject({ externalStart: 'attempting' });
+      const cold = await external(deliveries);
+      await cold.ctx.restore(records);
+      await cold.ctx.get(ISessionMetadata).registerAgent(CHILD, meta);
+      await expect(cold.dispatch.runOnExisting(cold.child, 'Perform one external side effect', opts)).rejects.toMatchObject({ details: { externalStart: 'attempting' } });
+      expect(deliveries).toHaveLength(1);
+    }
+  });
+
+  it.each([undefined, 'vendor-model'])('keeps a confirmed pre-send failure retryable after cold restore (model=%s)', async modelAlias => {
+    const deliveries: unknown[] = [];
+    const original = await external(deliveries, 'not_sent', modelAlias);
+    const opts = options('unsent-external', { contextMode: 'direct' });
+    const first = await original.dispatch.runOnExisting(original.child, 'Retry unsent work', opts);
+    await expect(first.started).rejects.toThrow('Confirmed pre-send failure');
+    const records = await journal(original.ctx);
+    const meta = structuredClone((await original.ctx.get(ISessionMetadata).read()).agents![CHILD]!);
+    expect(readResumeRecord(meta, opts.operationId!)).toMatchObject({ externalStart: 'not_sent' });
+    const cold = await external(deliveries, 'started', modelAlias);
+    await cold.ctx.restore(records);
+    await cold.ctx.get(ISessionMetadata).registerAgent(CHILD, meta);
+    const replay = await cold.dispatch.runOnExisting(cold.child, 'Retry unsent work', opts);
+    expect(await replay.started).toMatchObject({ agentId: CHILD });
+    expect(deliveries).toEqual([expect.objectContaining({ promptId: 'resume-prompt:unsent-external' })]);
+  });
+
+  it.each([undefined, 'vendor-model'])('keeps a ready prompt retryable when execution preparation failed before the external guard (model=%s)', async modelAlias => {
+    const deliveries: unknown[] = [];
+    const original = await external(deliveries, 'started', modelAlias);
+    const failure = new Error('Execution preparation failed');
+    original.ctx.get(IAgentExecutionService).hooks.onWillRun.register('pre-send-failure', async () => { throw failure; });
+    const opts = options('unattempted-external', { contextMode: 'direct' });
+    const first = await original.dispatch.runOnExisting(original.child, 'Retry unattempted work', opts);
+    await expect(first.started).rejects.toBe(failure);
+    expect(deliveries).toHaveLength(0);
+    const records = await journal(original.ctx);
+    const meta = structuredClone((await original.ctx.get(ISessionMetadata).read()).agents![CHILD]!);
+    expect(readResumeRecord(meta, opts.operationId!)).toMatchObject({ state: 'ready', externalStart: 'not_sent' });
+    const cold = await external(deliveries, 'started', modelAlias);
+    await cold.ctx.restore(records);
+    await cold.ctx.get(ISessionMetadata).registerAgent(CHILD, meta);
+    const replay = await cold.dispatch.runOnExisting(cold.child, 'Retry unattempted work', opts);
+    expect(await replay.started).toMatchObject({ agentId: CHILD });
+    expect(deliveries).toEqual([expect.objectContaining({ promptId: 'resume-prompt:unattempted-external' })]);
   });
 });
 

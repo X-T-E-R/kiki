@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto';
 import { IAgentModelSwitchService, resolveResumeContextMode } from '#/agent/modelSwitch/modelSwitch';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { resolveAgentRunSource } from '#/agent/prompt/agentReferences';
-import { assertResumeFingerprint, bindResumeTask, readResumeRecord, resumeFingerprint, writeResumeRecord } from './resume';
+import { assertResumeFingerprint, bindResumeTask, readResumeRecord, resumeFingerprint, writeResumeRecord, type DispatchResumeRecord } from './resume';
 
 import { Emitter } from '#/_base/event';
 import { DispatchCapacity } from './capacity';
@@ -436,7 +436,20 @@ export class SessionDispatchService implements ISessionDispatchService {
     return promise;
   }
 
-  private async runExistingOnce(
+  private async runExistingOnce(child: DispatchChild, requestInput: AgentRunRequest, options: DispatchRunOptions): Promise<DispatchRun> {
+    options.signal.throwIfAborted();
+    const retained = this.runs.retain(child.agentId);
+    try {
+      const run = await this.runExistingRetained(child, requestInput, options);
+      void run.started.then(() => { retained.dispose(); }, () => { retained.dispose(); });
+      return run;
+    } catch (error) {
+      retained.dispose();
+      throw error;
+    }
+  }
+
+  private async runExistingRetained(
     child: DispatchChild,
     requestInput: AgentRunRequest,
     options: DispatchRunOptions,
@@ -547,6 +560,13 @@ export class SessionDispatchService implements ISessionDispatchService {
     const fingerprint = resumeFingerprint(originalRequest, options);
     const saved = readResumeRecord((await this.metadata.read()).agents?.[child.agentId], operationId);
     if (saved !== undefined) assertResumeFingerprint(saved.fingerprint, fingerprint);
+    if (saved !== undefined && (childData.executorId ?? 'native') !== 'native' &&
+      (saved.state === 'started' || (saved.externalStart !== 'not_sent' && (saved.state === 'ready' || saved.externalStart !== undefined)))) {
+      throw new Error2(ErrorCodes.EXECUTOR_SESSION_FAILED,
+        'This resume may already have delivered an external prompt. Inspect the original remote session and saved task result; this operation will not send the prompt again.',
+        { details: { operationId, agentId: child.agentId, executorId: childData.executorId, turnId: saved.turnId,
+          externalStart: saved.externalStart ?? (saved.state === 'started' ? 'started' : 'unconfirmed'), deliveryOutcome: 'unknown' } });
+    }
     const contextMode = resolveResumeContextMode(options.bindingOverride);
     if (childData.execution !== undefined && childData.modelAlias === undefined && options.bindingOverride?.modelAlias === undefined) {
       if (contextMode !== 'direct' || options.bindingOverride?.thinkingEffort !== undefined) {
@@ -560,24 +580,12 @@ export class SessionDispatchService implements ISessionDispatchService {
       checkResume();
       const record = saved ?? { operationId, fingerprint, request: originalRequest,
         switchInput: { operationId, mode: 'direct' as const }, state: 'accepted' as const };
-      await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'ready' });
+      await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'ready',
+        externalStart: (childData.executorId ?? 'native') !== 'native' ? 'not_sent' : undefined });
       const request: AgentRunRequest = originalRequest.kind === 'prompt'
         ? { ...originalRequest, promptId: originalRequest.promptId ?? `resume-prompt:${operationId}` } : originalRequest;
       if (options.requesterAgentId !== undefined) this.recordDelegatedRun(options.requesterAgentId, child.agentId);
-      const started = this.runs.run(child.agentId, request, { signal: options.signal, onReady: options.onReady, onQueued: options.onQueued, capacityReservation: reservation })
-        .then(async handle => {
-          try {
-            await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'started', turnId: handle.turn.id });
-          } catch (error) {
-            this.log.warn('resume started but metadata confirmation failed', { operationId, agentId: child.agentId, turnId: handle.turn.id, error });
-          }
-          return handle;
-        }, (error: unknown) => {
-          if (!(isCodedError(error) && error.code === ErrorCodes.EXECUTOR_SESSION_FAILED && error.details?.['deliveryOutcome'] === 'unknown')) {
-            this.resumeRuns.delete(JSON.stringify([child.agentId, operationId]));
-          }
-          throw error;
-        });
+      const started = this.startResume(child, request, record, options, reservation);
       return { child: { ...this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta), sourceRef: child.sourceRef }, request, lineage: options.lineage, started };
     }
     if (saved !== undefined && saved.switchInput.model === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID,
@@ -639,7 +647,8 @@ export class SessionDispatchService implements ISessionDispatchService {
       }
     }
     assertAdmission();
-    await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'ready' });
+    await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'ready',
+      externalStart: (childData.executorId ?? 'native') !== 'native' ? 'not_sent' : undefined });
     assertAdmission();
     const request: AgentRunRequest = originalRequest.kind === 'prompt'
       ? { ...originalRequest, promptId: originalRequest.promptId ?? `resume-prompt:${operationId}` }
@@ -647,30 +656,53 @@ export class SessionDispatchService implements ISessionDispatchService {
     if (options.requesterAgentId !== undefined) {
       this.recordDelegatedRun(options.requesterAgentId, child.agentId);
     }
-    const started = this.runs.run(child.agentId, request, {
-      signal: options.signal,
-      onReady: options.onReady,
-      onQueued: options.onQueued,
-      capacityReservation: reservation,
-    }).then(async (handle) => {
-      try {
-        await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'started', turnId: handle.turn.id });
-      } catch (error) {
-        this.log.warn('resume started but metadata confirmation failed', { operationId, agentId: child.agentId, turnId: handle.turn.id, error });
-      }
-      return handle;
-    }, (error: unknown) => {
-      if (!(isCodedError(error) && error.code === ErrorCodes.EXECUTOR_SESSION_FAILED && error.details?.['deliveryOutcome'] === 'unknown')) {
-        this.resumeRuns.delete(JSON.stringify([child.agentId, operationId]));
-      }
-      throw error;
-    });
+    const started = this.startResume(child, request, record, options, reservation);
     return {
       child: { ...this.childView(child.agent, child.name, child.profileName, child.effectiveProfile, child.meta), sourceRef: child.sourceRef },
       request,
       lineage: options.lineage,
       started,
     };
+  }
+
+  private async startResume(
+    child: DispatchChild,
+    request: AgentRunRequest,
+    initialRecord: DispatchResumeRecord,
+    options: DispatchRunOptions,
+    reservation?: import('./capacity').DispatchReservation,
+  ): Promise<import('#/session/subagent/subagent').AgentRunHandle> {
+    let record = initialRecord;
+    const external = (child.agent.accessor.get(IAgentProfileService).data().executorId ?? 'native') !== 'native';
+    const persistExternalStart = async (externalStart: NonNullable<DispatchResumeRecord['externalStart']>): Promise<void> => {
+      const next = { ...record, externalStart };
+      await writeResumeRecord(this.metadata, child.agentId, next);
+      record = next;
+    };
+    try {
+      const handle = await this.runs.run(child.agentId, request, {
+        signal: options.signal, onReady: options.onReady, onQueued: options.onQueued, capacityReservation: reservation,
+        onBeforeExternalRun: external ? () => persistExternalStart('attempting') : undefined,
+        onExternalRunNotSent: external ? () => persistExternalStart('not_sent') : undefined,
+      });
+      try {
+        await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'started', turnId: handle.turn.id,
+          externalStart: external ? 'started' : undefined });
+      } catch (error) {
+        this.log.warn('resume started but metadata confirmation failed', { operationId: record.operationId, agentId: child.agentId, turnId: handle.turn.id, error });
+      }
+      return handle;
+    } catch (error) {
+      const unknown = isCodedError(error) && error.details?.['deliveryOutcome'] === 'unknown';
+      if (external && (record.externalStart === 'attempting' || unknown)) {
+        try { await persistExternalStart('unknown'); }
+        catch (saveError) { this.log.warn('external resume outcome could not be saved; retained attempt still prevents replay', { operationId: record.operationId, agentId: child.agentId, error: saveError }); }
+      }
+      if (record.externalStart !== 'attempting' && record.externalStart !== 'unknown' && !unknown) {
+        this.resumeRuns.delete(JSON.stringify([child.agentId, record.operationId]));
+      }
+      throw error;
+    }
   }
 
   private registerOwnedContinuation(

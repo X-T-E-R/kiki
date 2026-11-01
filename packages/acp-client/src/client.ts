@@ -581,6 +581,7 @@ export class AcpProcessClient {
 
     const completion = (async (): Promise<AcpTurnResult> => {
       try {
+        request.onDeliveryAttempt?.();
         const prompt = connection.agent.request(
           methods.agent.session.prompt,
           {

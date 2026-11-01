@@ -214,9 +214,19 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     this.#threadId = undefined;
   }
 
-  async run(
+  async run(request: AgentRunRequest, options: RunAgentOptions): Promise<AgentRunHandle> {
+    const attempt = { possibleDelivery: false };
+    try { return await this.#runOnce(request, options, attempt); }
+    catch (error) {
+      if (!attempt.possibleDelivery) await options.onExternalRunNotSent?.();
+      throw error;
+    }
+  }
+
+  async #runOnce(
     request: AgentRunRequest,
     options: RunAgentOptions,
+    attempt: { possibleDelivery: boolean },
   ): Promise<AgentRunHandle> {
     if (this.#shutdown) {
       throw new Error2(ErrorCodes.INTERNAL, 'Codex app-server executor session is shut down');
@@ -358,8 +368,9 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
             ? this.context.binding.thinkingLevel : undefined,
         approvalPolicy,
         sandboxPolicy: undefined,
-      }, controller.signal, recorder.record.bind(recorder), () => { deliveryAttempted = true; });
+      }, controller.signal, recorder.record.bind(recorder), () => { deliveryAttempted = true; attempt.possibleDelivery = true; });
       acknowledged = true;
+      attempt.possibleDelivery = true;
       if (override === undefined && this.#approvalRestore !== undefined) {
         this.#vendorApprovalPolicy = this.#approvalRestore.policy;
         this.#approvalRestore = undefined;
@@ -378,6 +389,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       options.onReady?.();
     } catch (error) {
       const outcomeUnknown = acknowledged || (deliveryAttempted && !(error instanceof CodexRemoteError));
+      attempt.possibleDelivery = outcomeUnknown;
       const classify = (cause: unknown): unknown => outcomeUnknown
         ? new Error2(ErrorCodes.EXECUTOR_SESSION_FAILED,
             'Codex may have received this prompt, but its start could not be confirmed. Inspect the external session before starting another run.',

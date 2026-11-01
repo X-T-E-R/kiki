@@ -19,6 +19,10 @@ export interface RunAgentOptions {
   readonly summaryPolicy?: AgentProfileSummaryPolicy;
   readonly onReady?: () => void;
   readonly onQueued?: () => void;
+  /** Persist the delivery-attempt guard before entering an external executor; rejection prevents delivery. */
+  readonly onBeforeExternalRun?: () => Promise<void>;
+  /** Persist retry eligibility only when the executor confirms the prompt was not accepted remotely. */
+  readonly onExternalRunNotSent?: () => Promise<void>;
 }
 
 export interface AgentRunHandle {
@@ -50,6 +54,9 @@ export interface ISessionSubagentService {
   readonly onDidStopAgentTask: Event<AgentTaskStopHookContext>;
 
   run(agentId: string, request: AgentRunRequest, opts: RunAgentOptions): Promise<AgentRunHandle>;
+
+  /** Keep the current agent-scope generation resident during admission and preparation without changing execution state. */
+  retain(agentId: string): import('#/_base/di/lifecycle').ISyncDisposable;
 
   /** Track an admitted prompt run and defer idle release until its completion in the same agent-scope generation. */
   trackPromptRun(agentId: string, completion: Promise<unknown>, signal: AbortSignal): AbortSignal;

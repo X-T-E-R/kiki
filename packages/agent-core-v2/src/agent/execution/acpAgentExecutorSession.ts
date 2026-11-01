@@ -211,9 +211,19 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     );
   }
 
-  async run(
+  async run(request: AgentRunRequest, options: RunAgentOptions): Promise<AgentRunHandle> {
+    const attempt = { possibleDelivery: false };
+    try { return await this.#runOnce(request, options, attempt); }
+    catch (error) {
+      if (!attempt.possibleDelivery) await options.onExternalRunNotSent?.();
+      throw error;
+    }
+  }
+
+  async #runOnce(
     request: AgentRunRequest,
     options: RunAgentOptions,
+    attempt: { possibleDelivery: boolean },
   ): Promise<AgentRunHandle> {
     if (this.#shutdown) {
       throw new Error2(ErrorCodes.INTERNAL, 'ACP executor session is shut down');
@@ -410,6 +420,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         attachments: acpAttachments(externalAttachments(request)),
         signal: controller.signal,
         session: { ...sessionOptions, sessionRef: configured.sessionRef, requireResume: true },
+        onDeliveryAttempt: () => { attempt.possibleDelivery = true; },
         prepareSession: async actual => {
           if (actual.sessionId !== configured.sessionId) throw new Error2(ErrorCodes.CONFIG_INVALID, 'ACP session identity changed before prompt');
           const restored = actual.mode === 'live' ? actual :
@@ -427,6 +438,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           configured = restored;
         },
       });
+      attempt.possibleDelivery = true;
       await this.#dispatcher.dispatch(
         new ExecutorSessionUpdated({
           executionGeneration: this.context.binding.execution?.generation,
