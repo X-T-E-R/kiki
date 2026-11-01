@@ -812,7 +812,10 @@ function anthropicAgent(
     readonly permission?: 'manual' | 'yolo';
     readonly model?: string;
     readonly sdkFetch?: typeof fetch;
-    readonly initialConfig?: { readonly loopControl?: { readonly maxStepsPerTurn?: number; readonly thinkingOnlyContinuation?: boolean; readonly zeroOutputContinuation?: boolean } };
+    readonly initialConfig?: {
+      readonly loopControl?: { readonly maxStepsPerTurn?: number; readonly thinkingOnlyContinuation?: boolean; readonly zeroOutputContinuation?: boolean };
+      readonly retry?: { readonly policies?: readonly { readonly match: string; readonly backoff?: number }[] };
+    };
   } = {},
 ): TestAgentContext {
   const provider = new AnthropicChatProvider({
