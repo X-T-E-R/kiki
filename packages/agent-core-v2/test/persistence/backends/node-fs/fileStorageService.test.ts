@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { statSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, unlink, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, unlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join as nativeJoin } from 'node:path';
 
@@ -10,6 +10,7 @@ import { FSWatcher } from 'chokidar';
 import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '#/_base/errors/unexpectedError';
 import { cleanupExpiredSessionLocks, isSessionLockActive } from '#/persistence/backends/node-fs/fileLock';
 import { FileStorageService, openAppendAfterTransientDenial } from '#/persistence/backends/node-fs/fileStorageService';
 
@@ -171,6 +172,35 @@ describe('FileStorageService — watch initialization', () => {
     } finally {
       first.dispose();
       second.dispose();
+    }
+  });
+});
+
+describe('FileStorageService — watch sibling isolation', () => {
+  let dir: string;
+
+  afterEach(async () => {
+    resetUnexpectedErrorHandler();
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it('does not touch unreadable sibling entries next to the watched key', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'fss-watch-sibling-'));
+    await writeFile(join(dir, 'credentials.toml'), 'first');
+    const sibling = nativeJoin(dir, 'token.lock-target.lock');
+    await symlink(sibling, sibling, isWin ? 'junction' : 'dir');
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    const storage = new FileStorageService(dir);
+    const changed = vi.fn();
+    const subscription = storage.watch('', 'credentials.toml')(changed);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await writeFile(join(dir, 'credentials.toml'), 'second');
+      await vi.waitFor(() => expect(changed).toHaveBeenCalled(), { timeout: 3_000 });
+      expect(unexpected).toEqual([]);
+    } finally {
+      subscription.dispose();
     }
   });
 });
