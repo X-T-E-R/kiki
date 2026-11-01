@@ -365,8 +365,15 @@ describe('server-v2 /api/ws resync', () => {
         expect(payload.snapshot.globalCoverage!.tasks.total).toBeLessThanOrEqual(438);
         expect(payload.snapshot.taskRefs).toBeUndefined();
         for (const preview of transcript.snapshot().tasks) {
-          expect(preview.contentRefs?.length).toBeGreaterThan(0);
-          const task = await completeTask(preview);
+          const params = new URLSearchParams({ agent_id: 'main', kind: 'task', id: preview.taskId });
+          const response = await fetch(`${base}/api/sessions/${sid}/transcript/detail?${params}`, {
+            headers: authHeaders(server as RunningServer),
+          });
+          const body = await response.json() as { code: number; data: { kind: 'task'; task: TranscriptTask } };
+          expect(body.code).toBe(0);
+          expect(jsonBytes(body)).toBeLessThan(64 * 1024);
+          expect(body.data.task).toMatchObject({ taskId: preview.taskId, state: 'completed' });
+          const task = await completeTask(body.data.task);
           const index = Number(task.taskId.slice('example-task-'.length));
           expect(task.resultSummary).toBe(`${index}:${summary}`);
         }

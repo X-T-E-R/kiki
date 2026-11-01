@@ -2985,7 +2985,12 @@ export class TranscriptService {
     }
     const merged = new AgentTranscript(agentId);
     merged.apply([{ op: 'reset', agentId, snapshot: cold }]);
-    merged.apply(snapshotToOps(transcript.snapshot(), turn => {
+    const live = transcript.snapshot();
+    const tasks = live.tasks.filter((task) => {
+      const recovered = merged.getTask(task.taskId);
+      return task.state !== 'running' || recovered === undefined || recovered.state === 'running';
+    });
+    merged.apply(snapshotToOps({ ...live, tasks }, turn => {
       const recovered = merged.getTurn(turn.turnId);
       if (turn.origin.kind !== 'other' || turn.message !== undefined || turn.promptId !== undefined ||
           recovered === undefined || (recovered.message === undefined && recovered.promptId === undefined)) return snapshotTurnOps(turn);

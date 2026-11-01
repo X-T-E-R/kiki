@@ -67,7 +67,9 @@ export async function readSessionViewCanonicalEntity(
   }
   const store = service.forSessionLive(sessionId);
   const transcript = store === undefined ? undefined : await service.ensureAgentHistory(sessionId, input.agentId);
-  const snapshot = transcript?.snapshot() ?? await service.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
+  const snapshot = transcript?.hasMoreOlder && input.ref.source.kind === 'task'
+    ? await service.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal)
+    : transcript?.snapshot() ?? await service.readColdSnapshot(sessionId, input.agentId, undefined, input.signal);
   if (snapshot === undefined) return undefined;
   const source = input.ref.source;
   const select = (value: typeof snapshot): object | undefined => {
@@ -440,7 +442,7 @@ async function readSessionViewTranscriptDetailRaw(
     if (input.kind === 'task') task = transcript.getTask(input.id);
     else if (input.kind === 'attachment') attachment = transcript.getAttachment(input.id);
     else prompt = transcript.getPrompt(input.id);
-    if ((task ?? attachment ?? prompt) === undefined && transcript.hasMoreOlder) {
+    if (transcript.hasMoreOlder && (input.kind === 'task' || (attachment ?? prompt) === undefined)) {
       const snapshot = await transcriptService.readFullAgentSnapshot(sessionId, input.agentId, transcript, input.signal);
       if (input.kind === 'task') task = snapshot?.tasks.find((entry) => entry.taskId === input.id);
       else if (input.kind === 'attachment') attachment = snapshot?.attachments.find((entry) => entry.attachmentId === input.id);
