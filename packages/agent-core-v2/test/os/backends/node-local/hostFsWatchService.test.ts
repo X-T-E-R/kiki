@@ -421,6 +421,29 @@ describe('host filesystem change notifications', () => {
     expect(events.some((e) => e.path === preexisting)).toBe(false);
   });
 
+  it.skipIf(process.platform !== 'win32')(
+    'reports native watch failures of a deleted subtree as one throttled warning instead of unexpected errors',
+    async () => {
+      root = await mkdtemp(join(tmpdir(), 'hostfswatch-deleted-'));
+      for (let index = 0; index < 8; index += 1) {
+        await mkdir(join(root, 'tree', `d${index}`, 'nested'), { recursive: true });
+        await writeFile(join(root, 'tree', `d${index}`, 'nested', 'f.txt'), 'x');
+      }
+      const unexpected: unknown[] = [];
+      setUnexpectedErrorHandler((error) => unexpected.push(error));
+      const warnings: string[] = [];
+      const svc = new HostFsWatchService(undefined, { ...stubLog(), warn: (message: string) => warnings.push(message) });
+      handle = svc.watch(root, { recursive: true });
+      await handle.ready;
+
+      await rm(join(root, 'tree'), { recursive: true, force: true });
+      await wait(1000);
+
+      expect(unexpected).toEqual([]);
+      expect(warnings.filter((message) => message === 'filesystem watch failed')).toHaveLength(1);
+    },
+  );
+
   it('stops firing after the handle is disposed', async () => {
     root = await mkdtemp(join(tmpdir(), 'hostfswatch-'));
     const events = await start();

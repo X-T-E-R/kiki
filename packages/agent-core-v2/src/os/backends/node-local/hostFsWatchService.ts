@@ -8,6 +8,7 @@ import { FSWatcher } from 'chokidar';
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
+import { runWithNativeFsWatchErrorOwner } from '#/_base/utils/nativeFsWatchErrorGuard';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter, Event } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
@@ -141,7 +142,10 @@ class HostFsWatchHandle implements IHostFsWatchHandle {
       this.reportError(this.root, error, 'chokidar');
     });
     this.watcher.once('ready', () => this.readiness.resolve());
-    this.watcher.add(this.root);
+    runWithNativeFsWatchErrorOwner(
+      (error) => { if (!this.disposed) this.reportError(this.root, error, 'chokidar'); },
+      () => this.watcher.add(this.root),
+    );
   }
 
   dispose(): void {
