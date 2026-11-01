@@ -1043,6 +1043,7 @@ export class AgentPromptService implements IAgentPromptService {
     }
     if (joinFlight) return this.runModelSwitch(operationId);
     if (!this.scheduleLiveModelSwitch(operationId)) await this.startNext();
+    if (this.switchFlight?.operationId === operationId) return this.runModelSwitch(operationId);
     return this.getModelSwitch(operationId)!;
   }
 
