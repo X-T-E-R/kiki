@@ -336,6 +336,7 @@ export class FileStorageService implements IFileSystemStorageService {
     const target = this.pathFor(scope, key);
     const dir = dirname(target);
     const normalizedTarget = normalize(target);
+    const normalizedDir = normalize(dir);
     const emitter = new Emitter<void>();
 
     let watcher: FSWatcher | undefined;
@@ -366,6 +367,10 @@ export class FileStorageService implements IFileSystemStorageService {
           ignoreInitial: true,
           awaitWriteFinish: false,
           depth: 0,
+          ignored: (changedPath: string) => {
+            const normalized = normalize(changedPath);
+            return normalized !== normalizedDir && normalized !== normalizedTarget;
+          },
         });
         watcher = current;
         current.on('all', (_event, changedPath) => {

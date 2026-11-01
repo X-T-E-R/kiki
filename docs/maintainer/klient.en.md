@@ -53,6 +53,10 @@ await klient.session(session.id).close();
 await klient.close();
 ```
 
+`agent.events.on(...)` is a live, best-effort subscription. If the agent ID exists only in the session's persisted metadata, subscribing does not resume the session or run the agent; it attaches session and agent lifecycle watches instead. `ready` resolves when the event source or lifecycle watch is actually attached. It does not indicate that the agent is running or idle, and the subscription does not replay past events.
+
+If that child is later legally created or restored, the subscription follows its live event source. The lifecycle watch survives session close/reopen and agent generation replacement; `dispose()` cancels every source and lifecycle watch. A missing session or child still fails with `40404`.
+
 `agent.prompt(..., { waitFor: 'terminal' })` waits for that submitted prompt's own terminal receipt (including blocked or failed launches); without `waitFor`, the call returns the launch result immediately. Use `agent.cancel()` to stop execution — it cancels the work without affecting the wait.
 
 To drive the engine directly in-process without a separate server, use the memory transport:

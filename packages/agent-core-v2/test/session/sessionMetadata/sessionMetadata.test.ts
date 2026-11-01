@@ -126,6 +126,38 @@ describe('SessionMetadata', () => {
     await expect(drainSessionMetadataWrites()).resolves.toBeUndefined();
   });
 
+  it('retains native JSON semantics for custom metadata during cooperative writes', async () => {
+    const meta = ix.get(ISessionMetadata);
+    const custom = {
+      created: new Date('2026-01-01T00:00:00Z'),
+      omitted: undefined,
+      nested: { toJSON: () => ({ value: 'serialized' }) },
+    };
+    await meta.update({ custom });
+    expect((await createFreshMetadata(ix).read()).custom).toEqual(JSON.parse(JSON.stringify(custom)));
+    await meta.update({ custom: { toJSON: (key: string) => ({ key }) } });
+    expect((await createFreshMetadata(ix).read()).custom).toEqual({ key: 'custom' });
+  });
+
+  it('yields during a durable write of an 8 MiB thousand-agent roster', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.ready;
+    const agents = Object.fromEntries(Array.from({ length: 1062 }, (_, index) => [
+      `child-${index}`, { model: 'fixture', labels: { padding: 'x'.repeat(8_000) } },
+    ]));
+    let yielded = false;
+    const tick = new Promise<void>((resolve) => { setImmediate(() => { yielded = true; resolve(); }); });
+    const writing = meta.update({ agents });
+    const stored = vi.spyOn(ix.get(IFileSystemStorageService), 'write');
+    await tick;
+    expect(yielded).toBe(true);
+    expect(stored).not.toHaveBeenCalled();
+    await writing;
+    const restored = await createFreshMetadata(ix).read();
+    expect(Object.keys(restored.agents!)).toHaveLength(1062);
+    expect(restored.agents?.['child-1061']?.labels?.['padding']).toBe(agents['child-1061']!.labels.padding);
+  });
+
   it('commits one 50ms agent batch for 100 callers on a 900-agent roster and releases them only after durability', async () => {
     const store = ix.get(IAtomicDocumentStore);
     await store.set(META_SCOPE, 'state.json', { id: 's1', version: 2, createdAt: 1, updatedAt: 1,

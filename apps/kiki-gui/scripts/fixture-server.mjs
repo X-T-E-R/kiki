@@ -5136,6 +5136,23 @@ class FixtureServer {
 
   async handleControl(body, res) {
     switch (body.action) {
+      case 'recipe_read_fail_next':
+        // Refuses the next Recipe reads, so a page's load failure and its retry
+        // are walkable on screen.
+        this.recipeReadFailures = typeof body.count === 'number' ? body.count : 1;
+        return this.envelope(res, { armed: this.recipeReadFailures });
+      case 'recipe_publish_elsewhere': {
+        // Another writer saves the package: one file changes and the revision
+        // moves, so an editor still holding the old revision is refused.
+        const found = this.recipes.find((entry) => entry.summary.installation_id === body.installation_id);
+        if (found === undefined) return this.envelope(res, null, 40414, 'recipe.not_installed');
+        found.files = { ...found.files, [body.path]: body.text };
+        const revision = `sha256:${fixtureHash(found.files)}`;
+        found.summary = { ...found.summary, revision };
+        found.resolved = { ...found.resolved, revision };
+        found.history = [...found.history, revision];
+        return this.envelope(res, { revision });
+      }
       case 'plugin_settings_fail_next':
         this.pluginSettingsFailNext = typeof body.plugin_id === 'string' ? body.plugin_id : undefined;
         return this.envelope(res, { armed: this.pluginSettingsFailNext !== undefined });

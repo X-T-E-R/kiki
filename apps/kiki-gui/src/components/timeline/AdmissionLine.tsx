@@ -16,8 +16,8 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
-import type { PromptItem } from '@kiki/protocol';
-import { projectMessageContent, type Block, type SessionController } from '@kiki/session-core/session';
+import type { MessageContent, PromptItem } from '@kiki/protocol';
+import { appendLocalUserMessage, createViewState, projectMessageContent, type Block, type SessionController } from '@kiki/session-core/session';
 import { useI18n } from '../../i18n';
 import { pushToast } from '../../lib/toasts';
 import { Icon, Spinner } from '../icons';
@@ -105,6 +105,38 @@ export function withAdmissionUserBlocks(blocks: readonly Block[], ingress: reado
     });
   }
   return extra.length === 0 ? blocks : [...blocks, ...extra];
+}
+
+/** A message the composer sent that no projection owns yet. */
+export interface OptimisticSubmission {
+  readonly id: string;
+  readonly text: string;
+  readonly content?: MessageContent[];
+  readonly createdAt: string;
+  readonly slow: boolean;
+  readonly preserved: boolean;
+  readonly retryable: boolean;
+  readonly status: 'sending' | 'offline' | 'server';
+}
+
+/**
+ * Show the composer's in-flight message as the user's bubble until the
+ * timeline has a row for the same prompt id.
+ */
+export function withOptimisticUserBlock(
+  blocks: readonly Block[],
+  pending: OptimisticSubmission | undefined,
+): readonly Block[] {
+  if (pending === undefined || blocks.some(block => block.kind === 'user' && block.promptId === pending.id)) return blocks;
+  const projected = appendLocalUserMessage(createViewState(pending.id), {
+    userMessageId: pending.id, promptId: pending.id, text: pending.text, content: pending.content,
+    createdAt: pending.createdAt, status: 'running',
+  }).blocks;
+  return [...blocks, ...projected.map((block): Block => block.kind !== 'user' ? block : {
+    ...block, userMessageId: undefined, promptStatus: undefined,
+    optimisticStatus: pending.status, optimisticSlow: pending.slow,
+    optimisticPreserved: pending.preserved, optimisticRetryable: pending.retryable,
+  })];
 }
 
 /**

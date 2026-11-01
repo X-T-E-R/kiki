@@ -13,6 +13,7 @@ export interface DispatchResumeRecord {
   readonly switchInput: ModelSwitchInput | { readonly operationId: string; readonly mode: 'direct'; readonly model?: undefined; readonly thinking?: undefined };
   readonly toolOverride?: import('#/agent/profile/profile').ToolBindingOverride;
   readonly state: 'accepted' | 'ready' | 'started';
+  readonly externalStart?: 'attempting' | 'not_sent' | 'unknown' | 'started';
   readonly turnId?: number;
   readonly taskId?: string;
   readonly createdAt?: number;
@@ -30,6 +31,7 @@ export function resumeFingerprint(request: AgentRunRequest, options: DispatchRun
       thinkingEffort: options.bindingOverride?.thinkingEffort,
       allowModelChange: options.bindingOverride?.allowModelChange,
       newWindow: options.bindingOverride?.newWindow,
+      contextMode: options.bindingOverride?.contextMode,
     },
     allowParentNotify: options.allowParentNotify,
     tools: options.toolOverride?.tools,
@@ -73,6 +75,7 @@ export async function writeResumeRecord(metadata: ISessionMetadata, agentId: str
       createdAt: previous?.createdAt ?? record.createdAt ?? (previous === undefined ? Date.now() : undefined),
       retentionVersion: previous === undefined ? 1 : previous.retentionVersion,
       outcome: previous?.outcome ?? record.outcome,
+      externalStart: record.externalStart ?? previous?.externalStart,
       state: previous !== undefined && states.indexOf(previous.state) > states.indexOf(record.state) ? previous.state : record.state };
     updated = true;
     return { ...meta, labels: { ...meta.labels, [label(record.operationId)]: JSON.stringify(merged) } };

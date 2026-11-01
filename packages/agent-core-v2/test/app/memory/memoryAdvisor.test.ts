@@ -122,6 +122,8 @@ function fixture(
         },
   });
   let query = 'Need advice without literal overlap';
+  let queryOrigin: import('#/agent/contextMemory/types').PromptOrigin = { kind: 'user' };
+  let activeTurn: number | undefined;
   let requestId = 1;
   let generation = 'g1';
   let entries = [
@@ -162,7 +164,7 @@ function fixture(
         role: 'user',
         content: [{ type: 'text', text: query }],
         toolCalls: [],
-        origin: { kind: 'user' },
+        origin: queryOrigin,
       },
     ],
   });
@@ -191,6 +193,7 @@ function fixture(
     onDidChange: policyChanges.event,
   });
   ix.stub(IAgentLoopService, {
+    status: () => ({ state: activeTurn === undefined ? 'idle' : 'running', activeTurnId: activeTurn, pendingTurnIds: [], hasPendingRequests: false }),
     hooks: {
       onWillBeginStep: before,
       onDidAppendToolResult: new OrderedHookSlot<AppendedToolResultContext>(),
@@ -249,11 +252,14 @@ function fixture(
     record,
     tools,
     prepare,
-    step: async (turnId = 1, firstStepOfTurn = true, signal = new AbortController().signal) =>
-      before.run({ turnId, firstStepOfTurn, step: 1, signal }),
+    step: async (turnId = 1, firstStepOfTurn = true, signal = new AbortController().signal) => {
+      activeTurn = turnId;
+      await before.run({ turnId, firstStepOfTurn, step: 1, signal });
+    },
     published: () => published,
-    setQuery: (value: string) => {
+    setQuery: (value: string, origin: import('#/agent/contextMemory/types').PromptOrigin = { kind: 'user' }) => {
       query = value;
+      queryOrigin = origin;
       requestId++;
     },
     settings: () => settings,
@@ -589,7 +595,7 @@ describe('Memory Advisor lifecycle and snapshot publication', () => {
       expect(f.calls).toHaveBeenCalledTimes(7);
     },
   );
-  it('revalidates forgotten/revised units and retains new unjudged lexical units in select mode', async () => {
+  it('keeps the stable set for judged-empty advice, revalidates forgotten/revised units and retains new unjudged lexical units in select mode', async () => {
     const f = fixture({
       mode: 'select',
       wait: 100,
@@ -599,8 +605,12 @@ describe('Memory Advisor lifecycle and snapshot publication', () => {
           use: input.stage === 'discover' ? 'read' : 'skip',
         })),
     });
+    const baseline = fixture({ mode: 'select', advisorHook: false });
     await f.step();
-    expect(f.snapshot.projectionView?.workset?.entries).toEqual([]);
+    await baseline.step();
+    expect(f.advisor.status().state).toBe('none');
+    expect(f.published()).toBe(baseline.published());
+    expect(f.snapshot.projectionView?.workset?.entries.map((unit) => unit.id)).toEqual(['m_lexical']);
     const newEntry = entry('m_new', 'Need advice', 'New unjudged unit.');
     f.mutate([newEntry, { ...f.entries()[0]!, revision: 'r2' }]);
     await f.step(1, false);
@@ -744,28 +754,38 @@ describe('Memory Advisor lifecycle and snapshot publication', () => {
     expect(f.published()).not.toContain('use=');
     expect(f.advisor.status()).toMatchObject({ state: 'none', enumeration: 'partial' });
   });
-  it('wakes on changed task notes and deduplicates the same tool error within a turn', async () => {
-    const f = fixture({ wait: 100 });
-    await f.step();
+  it('keeps one workset through a multi-step tool turn and re-advises only for new human input or a new turn', async () => {
+    const f = fixture();
+    const shown: string[] = [];
+    const step = async (turnId: number, first: boolean) => {
+      await f.step(turnId, first);
+      await flush();
+      if (shown.at(-1) !== f.published()) shown.push(f.published());
+    };
+    await step(1, true);
+    await step(1, false);
+    expect(f.calls).toHaveBeenCalledTimes(2);
+    expect(f.published()).toContain('use=history');
+    const request = f.snapshot.advisorRequest;
+    f.setQuery('Background report from a child agent', { kind: 'agent_message', messageId: 'synthetic-message', senderAgentId: 'child', senderTaskName: 'child' });
     f.ix.stub(ISessionTodoService, { getNotes: () => ({ notes: { goal: 'Different goal' } }) });
-    await f.step(1, false);
-    await flush();
-    await f.step(1, false);
-    expect(f.calls).toHaveBeenCalledTimes(4);
-    const failure = {
+    await f.tools.run({
       turnId: 1,
       toolCall: { id: 'synthetic-call', name: 'ExampleTool', arguments: '{}' },
       result: { output: 'Synthetic failure', isError: true },
       outcome: 'executed',
-    } as ToolDidExecuteContext;
-    await f.tools.run(failure);
-    await f.step(1, false);
-    await flush();
-    await f.step(1, false);
-    expect(f.calls).toHaveBeenCalledTimes(6);
-    expect(f.calls.mock.calls[4]![0].query).toContain('Synthetic failure');
-    await f.tools.run(failure);
-    await f.step(1, false);
+    } as ToolDidExecuteContext);
+    for (let index = 0; index < 4; index++) await step(1, false);
+    expect(f.calls).toHaveBeenCalledTimes(2);
+    expect(f.snapshot.advisorRequest).toBe(request);
+    expect(shown).toHaveLength(2);
+    expect(f.published()).toContain('use=history');
+    await step(2, true);
+    expect(f.calls).toHaveBeenCalledTimes(4);
+    expect(f.snapshot.advisorRequest).toContain('Background report from a child agent');
+    expect(f.snapshot.advisorRequest).toContain('Different goal');
+    f.setQuery('A new human instruction in the same turn');
+    await step(2, false);
     expect(f.calls).toHaveBeenCalledTimes(6);
   });
   it.each([{ enabled: false }, { advisor: undefined }])(

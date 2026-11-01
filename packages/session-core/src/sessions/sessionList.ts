@@ -139,6 +139,48 @@ export function mergeSessionWorkChanged(
   };
 }
 
+/** Upper bound on pages drained for the complete pinned set. */
+export const PINNED_SESSION_PAGE_LIMIT = 20;
+
+/**
+ * Drain every page of a filtered listing (the pinned set) into one
+ * `SessionListData` page, so cache helpers that fold `pages` keep working.
+ */
+export async function readAllSessionPages(
+  read: (beforeId?: string) => Promise<SessionListPage>,
+  signal?: AbortSignal,
+  maxPages = PINNED_SESSION_PAGE_LIMIT,
+): Promise<SessionListData> {
+  const items: Session[] = [];
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  for (let pages = 0; pages < maxPages; pages += 1) {
+    signal?.throwIfAborted();
+    const page = await read(cursor);
+    items.push(...page.items);
+    if (!page.has_more) break;
+    cursor = page.next_cursor ?? page.items.at(-1)?.id;
+    if (cursor === undefined || cursors.has(cursor)) break;
+    cursors.add(cursor);
+  }
+  return { pages: [{ items, has_more: false }], pageParams: [undefined] };
+}
+
+/**
+ * The paged recency list plus every pinned session it has not loaded yet.
+ * Rows from the pinned read count only while they are still pinned, so a
+ * stale cache never keeps an unpinned session outside its page.
+ */
+export function withPinnedSessions(
+  list: SessionListData | undefined,
+  pinned: SessionListData | undefined,
+): Session[] {
+  const loaded = dedupeSessions(list);
+  const ids = new Set(loaded.map((session) => session.id));
+  const extra = dedupeSessions(pinned).filter((session) => !ids.has(session.id) && isPinnedSession(session));
+  return extra.length === 0 ? loaded : [...loaded, ...extra];
+}
+
 /** A fresher page 1 can overlap an older loaded page as sessions shift. */
 export function dedupeSessions(data: SessionListData | undefined): Session[] {
   const seen = new Set<string>();

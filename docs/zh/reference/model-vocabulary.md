@@ -25,7 +25,7 @@ Kiki 的模型选择把三件事分开：配置文件里的模型键、派发 su
 
 这些来源都不存在时，派生以 `model.not_configured` 失败；调用方模型与主 Agent 的 `default_model` 都不是静默回退来源。在 profile、route 或 caller lease 上写 `model_alias: inherit`，才会绑定调用方当前的模型与思考强度；工具显式 `effort` 或适用的 effort pin 优先。`AgentRun` 本身拒绝 `model_alias: "inherit"`——请写具体的已配置模型名，或省略参数以使用目标默认模型。未知 alias 或命中禁止列表的模型会在子 Agent 启动前失败。选一个不在 `preferred_models` / `discouraged_models` 里的模型是可以的，只要它仍在所有硬模型与档位限制之内。
 
-恢复或重试的 subagent 会保持已持久化的绑定，除非 `AgentRun` 的 `resume` 显式请求修改。同时省略 `model_alias` 与 `effort` 会保留已有绑定；显式传入的 effort 应用于下一次空闲运行。`AgentRun` 恢复时同样拒绝 `model_alias: "inherit"`；显式换模请写具体模型名，或省略参数以保留已保存模型。切换到不同规范模型需要传 `allow_model_change: true`；如果解析到同一规范模型，则不产生模型变化。
+恢复或重试的 subagent 会保持已持久化的绑定，除非 `AgentRun` 的 `resume` 显式请求修改。同时省略 `model_alias` 与 `effort` 会保留已有绑定；显式传入的 effort 应用于下一次空闲运行。`AgentRun` 恢复时同样拒绝 `model_alias: "inherit"`；显式换模请写具体模型名，或省略参数以保留已保存模型。切换到不同规范模型需要显式选择 [`context_mode`](../customization/agents-and-subagents.md#具名子-agent)，或用旧参数 `allow_model_change: true` / `new_window: true` 确认。`context_mode` 不能与任一旧参数混用。解析到同一规范模型时不产生模型变化，但仍可用 `compact` 或 `fresh` 重建上下文。
 
 ## Agent 文件与 routes
 

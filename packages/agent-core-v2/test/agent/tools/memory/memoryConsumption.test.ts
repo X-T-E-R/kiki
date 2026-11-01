@@ -388,6 +388,35 @@ describe('canonical Memory actual request working sets', () => {
     expect(requestText(ctx).split(covered.entry.body)).toHaveLength(2);
     expect(call).toHaveBeenCalledTimes(2);
   });
+  it('keeps one advised workset across the tool steps of an actual turn and advises again on the next prompt', async () => {
+    const store = await canonicalMemory();
+    const scope = { kind: 'workspace', workspaceId: sessionContext.workspaceId } as const;
+    const saved = await store.put({ action: 'create', scope, type: 'feedback', title: 'Release routine', body: 'Run exactly 17 workers for releases.', source: { writer: 'user' }, reason: 'Human guidance' });
+    await store.put({ action: 'create', scope, type: 'project', title: 'Garden notes', body: 'Water the garden after a failed release check.', source: { writer: 'user' }, reason: 'Another topic' });
+    const destination = 'example@https://example.test';
+    const call = vi.fn<IMemorySelector['call']>(async (input) => {
+      input.stats.requests++;
+      return input.units.map((unit) => ({ handle: unit.handle, use: input.stage === 'discover' ? 'read' : 'apply' }));
+    });
+    const ctx = memoryAgent(undefined, 'main', store, { _serviceBrand: undefined, describe: () => advisorStatus('ready', { destination, applicability: 'full_units' }), call, probe: async () => { throw new Error('Synthetic probe unused'); } });
+    ctx.get(IDynamicPromptInjection);
+    await ctx.get(IAgentProfileService).applyProfile(ctx.get(IBuiltinAgentProfileLoader).getDefault());
+    ctx.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
+    ctx.kimiConfig = { ...ctx.kimiConfig, [MEMORY_SECTION]: MemoryConfigSchema.parse({ budget: 4000, advisor: { selector: { protocol: 'chat_json', model: 'mock-model' }, first_step_wait_ms: 500 } }) };
+    ctx.mockNextResponse({ type: 'function', id: 'missing-read', name: 'MemoryRead', arguments: JSON.stringify({ id: 'm_missing_example', scope: 'workspace' }) });
+    ctx.mockNextResponse({ type: 'function', id: 'notes', name: 'TodoList', arguments: JSON.stringify({ notes: { goal: 'Water the garden' } }) });
+    ctx.mockNextResponse({ type: 'function', id: 'second-missing-read', name: 'MemoryRead', arguments: JSON.stringify({ id: 'm_other_missing', scope: 'workspace' }) });
+    await prompt(ctx, 'Prepare the release');
+    expect(ctx.llmCalls).toHaveLength(4);
+    const injected = () => ctx.get(IAgentContextMemoryService).get().filter((message) => message.content.some((part) => part.type === 'text' && part.text.includes('<memory-workset '))).length;
+    expect(injected()).toBe(1);
+    expect(requestText(ctx)).toContain(saved.entry.body);
+    expect(requestText(ctx)).toContain('use=apply');
+    expect(call).toHaveBeenCalledTimes(2);
+    await prompt(ctx, 'Now check the garden');
+    expect(call).toHaveBeenCalledTimes(4);
+    expect(call.mock.calls[2]![0].query).toContain('Water the garden');
+  });
   it.each(['main', 'child'])('delivers complete relevant guidance to the %s actual request and removes replaced workset bodies', async (agentId) => {
     const store = await canonicalMemory();
     const scope = { kind: 'workspace', workspaceId: sessionContext.workspaceId } as const;

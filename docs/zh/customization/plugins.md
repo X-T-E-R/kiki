@@ -153,13 +153,15 @@ Auto 默认本地处理，不上传也不做 OCR。空内容或只有图像的�
 
 ## 媒体来源
 
-只需安装并启用一个 **Kiki Media**（`kiki-media`），再打开**能力 → 扩展与工具 → 插件 → 媒体来源**。0.2.0 内置 OpenAI、Google、Ark、xAI、MiniMax、StepFun、Novita、Agnes、NewAPI 和 ComfyUI 的图像、视频与语音来源，不必按厂商另装插件。你自己的本地命令也可以作为脚本来源加入同一列表。
+只需安装并启用一个 **Kiki Media**（`kiki-media`），再打开**能力 → 扩展与工具 → 插件 → 媒体来源**。它内置 OpenAI、Google、Ark、xAI、MiniMax、StepFun、Novita、Agnes、NewAPI 和 ComfyUI 的图像、视频与语音来源，不必按厂商另装插件。你自己的本地命令也可以作为脚本来源加入同一列表。
 
 统一包需要支持媒体来源分组及脚本来源管理的 Kiki 宿主。如果当前版本没有**添加脚本来源**操作，或报告未知 manifest 字段，请先更新宿主。包声明的插件引擎要求 `>=0.4.0` 是协议版本，不是 CLI 发行版本号；具体宿主接口见[插件 README](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media#configure-a-source)。
 
 ### 发起生成
 
 媒体生成没有实验总开关。安装并启用插件，配置一个已启用的来源，再按需发起生成。打开列表或保存设置不会开始任务；来源的访问要求、费用和脚本授权仍然适用。
+
+插件自带 `media-image`、`media-video`、`media-tts` 三个 skill，Agent 出图、出视频、配音时都通过它的 `generate` 工具调用。互不相干的生成可以并行；每个来源默认同时处理 8 个提交或轮询请求，可在该来源设置的**提供方并发请求上限**中修改。
 
 ### 列表
 

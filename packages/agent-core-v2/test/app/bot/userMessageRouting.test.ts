@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { ErrorCodes } from '#/errors';
+import { createDecorator } from '#/_base/di/instantiation';
+import { IImMessageHistoryReader } from '#/app/bot/imMessageHistory';
+import { IUserMessageRouter as DirectUserMessageRouter } from '#/app/bot/userMessageRouting';
 import {
+  IRoomMessageRouter,
+  IUserMessageRouter,
   internalMessageChannel,
   routeUserMessage,
   validateUserMessageChannels,
@@ -23,6 +28,13 @@ function channel(id: string, enabled: boolean, kinds: readonly string[], send = 
 }
 
 describe('user message routing', () => {
+  it('keeps the existing DI token identities while sharing routing contracts', () => {
+    expect(IUserMessageRouter).toBe(DirectUserMessageRouter);
+    expect(IUserMessageRouter).toBe(createDecorator('userMessageRouter'));
+    expect(IRoomMessageRouter).toBe(createDecorator('roomMessageRouter'));
+    expect(IImMessageHistoryReader).toBe(createDecorator('imMessageHistoryReader'));
+  });
+
   it('delivers through the in-app channel by default', async () => {
     const receipt = await routeUserMessage(input([image]), [internalMessageChannel()]);
     expect(receipt.deliveredTo).toEqual(['user']);

@@ -100,7 +100,7 @@ When a profile binds — a new main session, a new subagent, a model switch, or 
 
 If none of those produces a value, or the resulting effort is not one the model supports, the bind fails as a configuration error rather than silently picking something. With no model configured at all, the bind asks for both a model and an effort. You do not have to pass an effort when a route, lease, profile pin, or model default already supplies one; you need one only when nothing else does, in which case configure that pin or pass `effort` for this call.
 
-This applies to profile binding only. A plain resume that keeps an existing valid binding is not recomputed, so an effort saved earlier keeps working. Changing only `effort` keeps the saved model, and changing model on resume still requires `allow_model_change: true`.
+This applies to profile binding only. A plain resume that keeps an existing valid binding is not recomputed, so an effort saved earlier keeps working. Changing only `effort` keeps the saved model, and changing model on resume requires an explicit [`context_mode`](../customization/agents-and-subagents.md#named-child-agents) or the legacy `allow_model_change: true` / `new_window: true` confirmation.
 
 Paths that do not bind a profile are unchanged: the global `[thinking]` section still supplies its fallback, and `[thinking].enabled = false` still resolves an unpinned effort to Off there.
 

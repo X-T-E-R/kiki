@@ -19,11 +19,11 @@ What each capability does for you, and where to read the details. The online **F
 ## Keep work going past the session
 
 - **Goals.** `/goal` gives the agent a target it keeps working toward across turns, with edit, pause, and cancel controls. [Goals →](https://x-t-e-r.github.io/kiki/en/guides/goals)
-- **The message queue.** Messages you send while the agent is busy wait instead of cutting in, and each can go out when the agent is idle, after its subagents finish, or after its tasks finish. [Queue →](https://x-t-e-r.github.io/kiki/en/guides/interface#input-box)
+- **The message queue.** Messages you send while the agent is busy wait instead of cutting in, and each can go out after this turn, after its subagents finish, or after its tasks finish. [Queue →](https://x-t-e-r.github.io/kiki/en/guides/interface#input-box)
 - **Scheduled prompts.** The agent can schedule a prompt once or on a cron expression. A schedule fires while a Kiki process holds that session open. [Scheduled tasks →](https://x-t-e-r.github.io/kiki/en/reference/tools#scheduled-tasks)
 - **Task board.** With the optional `kiki-task-board` plugin, each workspace gets a board where requirements are cards linked to the sessions working on them; the main agent reads and updates it. [Task board →](https://x-t-e-r.github.io/kiki/en/guides/sessions#task-board) · [Spotlight →](task-board.en.md)
 - **Context that lasts.** You set the compaction point, and at it the agent compresses into a summary, restarts from its working notes, or picks per run. [Context compression →](https://x-t-e-r.github.io/kiki/en/guides/sessions#context-compression)
-- **Memory.** Facts kept across sessions as global, per workspace, or per persona, with a change history you can undo operation by operation. [Memory →](https://x-t-e-r.github.io/kiki/en/guides/memory)
+- **Memory.** Facts kept across sessions as global, per workspace, or per persona, each with its basis and any check to run before reuse. Changes can be undone one by one, writes can wait in an inbox for your approval, and Memory Advisor uses a decision service or model you choose to pick the entries each turn should bring along. [Memory →](https://x-t-e-r.github.io/kiki/en/guides/memory)
 
 ## Work in the window you have open
 

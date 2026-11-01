@@ -57,6 +57,7 @@
   "dependencies": {
     "@fastify/multipart": "^10.0.0",
     "@fastify/swagger": "^9.7.0",
+    "@kiki-dsh/im-bridge-core": "file:../../vendor/kiki-dsh-im-bridge-core-0.1.0.tgz",
     "@kiki/agent-core-v2": "workspace:^",
     "@kiki/klient": "workspace:^",
     "@kiki/lexical": "workspace:^",

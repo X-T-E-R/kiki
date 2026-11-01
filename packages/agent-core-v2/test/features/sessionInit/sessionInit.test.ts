@@ -21,6 +21,8 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionInitService } from '#/features/sessionInit/sessionInit';
 import { SessionInitService } from '#/features/sessionInit/sessionInitService';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
+import { stubExecutionControl } from '../../session/executionControl/stubs';
 
 const WORK_DIR = '/project';
 const AGENTS_MD = 'latest project instructions';
@@ -96,6 +98,7 @@ describe('SessionInitService', () => {
           }
           if (id === IEventBus) return eventBus;
           if (id === ITelemetryService) return telemetry;
+          if (id === ISessionExecutionControl) return stubExecutionControl();
           return undefined;
         },
       },

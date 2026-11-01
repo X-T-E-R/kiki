@@ -92,7 +92,6 @@ import {
   executionSwitchName,
   executionPickIsPending,
   sessionHasStartedConversation,
-  withOptimisticUserBlock,
   recoverFailedSubmission,
   parseSessionCreateHandoff,
   promptGoalObjective,
@@ -115,6 +114,7 @@ import {
   shouldHandleApprovalShortcut,
   isTerminalShortcut,
 } from './SessionView';
+import { withOptimisticUserBlock } from './timeline/AdmissionLine';
 import { nowReceiptDecision, sendNowNotice, sendNowQueuedNotice } from './agent-workspace';
 import { API_CODES, ApiError, KikiClient } from '../lib/client';
 

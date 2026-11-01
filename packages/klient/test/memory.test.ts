@@ -1,12 +1,22 @@
 import { rm } from 'node:fs/promises';
 
 import { describe, expect, it, vi } from 'vitest';
-import { ConfigTarget, IConfigService, ISessionManager } from '@kiki/agent-core-v2';
+import { ConfigTarget, IConfigService, IHomeRuntimeService, ISessionManager, IThreadCommunicationService } from '@kiki/agent-core-v2';
+import { drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/queryStoreDisposals';
 import { Error2, ErrorCodes } from '@kiki/agent-core-v2/errors';
 import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessionLookup';
 import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
 import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
-import { ISessionMetadata } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { ISessionMetadata, type SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { Emitter } from '@kiki/agent-core-v2/_base/event';
+import { IInstantiationService, type ServiceIdentifier } from '@kiki/agent-core-v2/_base/di/instantiation';
+import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
+import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
+import { IEventBus } from '@kiki/agent-core-v2/app/event/eventBus';
+import { IThreadMailboxStore } from '@kiki/agent-core-v2/app/threadCommunication/threadMailboxStore';
+import { Service } from '@kiki/agent-core-v2/_base/di/service';
+import { IAgentPermissionModeService } from '@kiki/agent-core-v2/agent/permissionMode/permissionMode';
+import { IEventDispatcher } from '@kiki/agent-core-v2/state/eventDispatcher';
 
 import { defineKlientConformance } from './helpers/conformance.js';
 import { createKlient } from '../src/transports/memory/index.js';
@@ -33,7 +43,11 @@ defineKlientConformance('memory', async () => {
     app,
     cleanup: async () => {
       await klient.close();
+      await app.accessor.get(IThreadCommunicationService).shutdown();
+      await app.accessor.get(IThreadMailboxStore).close();
+      await app.accessor.get(IHomeRuntimeService).close();
       await app.dispose();
+      await drainQueryStoreDisposals();
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     },
   };
@@ -195,6 +209,206 @@ describe('memory dispatcher specifics', () => {
       await rm(homeDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
     }
   });
+  it('COLD-EVENTS-R1 keeps new saved-child subscriptions attached across the real session closing window', async () => {
+    const { homeDir, app } = await makeEngine('klient-closing-events-');
+    const manager = app.accessor.get(ISessionManager);
+    let releaseTeardown!: () => void;
+    const teardown = new Promise<void>(resolve => { releaseTeardown = resolve; });
+    let closing: Promise<void> | undefined;
+    let subscription: ReturnType<ReturnType<typeof createMemoryDispatcher>['listen']> | undefined;
+    const lifecycleSpies: Array<{ mockRestore(): void }> = [];
+    try {
+      const session = await manager.create({ workDir: homeDir });
+      const metadata = session.accessor.get(ISessionMetadata);
+      await metadata.registerAgent('example-child', { type: 'sub', status: 'cancelled' });
+      (metadata as unknown as Service).effect(() => () => teardown, 'closing subscription teardown latch');
+      let resolveDisposing!: () => void;
+      const disposing = new Promise<void>(resolve => { resolveDisposing = resolve; });
+      session.accessor.get(IInstantiationService).onWillDispose(resolveDisposing);
+      closing = manager.close(session.id);
+      await disposing;
+      expect(manager.get(session.id)).toBe(session);
+      expect(() => session.accessor.get(IInstantiationService)).toThrow('InstantiationService has been disposed');
+      const created = vi.spyOn(manager, 'onDidCreateSession');
+      const closed = vi.spyOn(manager, 'onDidCloseSession');
+      const archived = vi.spyOn(manager, 'onDidArchiveSession');
+      const deleted = vi.spyOn(manager, 'onDidDeleteSession');
+      const resume = vi.spyOn(manager, 'resume');
+      lifecycleSpies.push(created, closed, archived, deleted, resume);
+      const seen = vi.fn();
+      const error = vi.fn();
+      const ready = vi.fn();
+      const dispatcher = createMemoryDispatcher(app);
+      const scope = { sessionId: session.id, agentId: 'example-child' };
+      subscription = dispatcher.listen(scope, { kind: 'stream', name: 'events' }, seen, error, ready);
+      await vi.waitFor(() => { expect(ready.mock.calls.length + error.mock.calls.length).toBe(1); });
+      expect(error).not.toHaveBeenCalled();
+      expect(ready).toHaveBeenCalledOnce();
+      expect(resume).not.toHaveBeenCalled();
+      const detached = [created, closed, archived, deleted].map(spy => vi.spyOn(spy.mock.results[0]!.value, 'dispose'));
+      const cancelledReady = vi.fn();
+      const cancelled = dispatcher.listen(scope, { kind: 'stream', name: 'events' }, vi.fn(), error, cancelledReady);
+      cancelled.dispose();
+      releaseTeardown();
+      await closing;
+      const reopened = await manager.resume(session.id);
+      const lifecycle = reopened!.accessor.get(IAgentLifecycleService);
+      expect(lifecycle.get(scope.agentId)).toBeUndefined();
+      expect((await reopened!.accessor.get(ISessionMetadata).read()).agents?.[scope.agentId]).toMatchObject({ status: 'cancelled' });
+      const child = await lifecycle.create({ agentId: scope.agentId });
+      const permissions = child.accessor.get(IAgentPermissionModeService);
+      permissions.setMode('manual');
+      await child.accessor.get(IEventDispatcher).flush();
+      expect(seen.mock.calls.some(([event]) => event.type === 'agent.status.updated' && event.permission === 'manual')).toBe(true);
+      subscription.dispose();
+      for (const watch of detached) expect(watch).toHaveBeenCalledOnce();
+      const count = seen.mock.calls.length;
+      permissions.setMode('yolo');
+      await child.accessor.get(IEventDispatcher).flush();
+      expect(seen).toHaveBeenCalledTimes(count);
+      expect(cancelledReady).not.toHaveBeenCalled();
+      expect(ready).toHaveBeenCalledOnce();
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      releaseTeardown(); await closing; subscription?.dispose();
+      for (const spy of lifecycleSpies) spy.mockRestore();
+      for (const session of manager.list()) await manager.close(session.id);
+      await app.accessor.get(IThreadCommunicationService).shutdown();
+      await app.accessor.get(IThreadMailboxStore).close();
+      await app.accessor.get(IHomeRuntimeService).close();
+      await app.dispose(); await drainQueryStoreDisposals();
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
+  it('validates cold membership before ready and cancels every pending watch on dispose', async () => {
+    const fixture = agentEventWatchFixture();
+    let resolveMetadata!: (metadata: SessionMeta) => void;
+    fixture.read.mockImplementationOnce(() => new Promise<SessionMeta>(resolve => { resolveMetadata = resolve; }));
+    const ready = vi.fn();
+    const error = vi.fn();
+    const sub = fixture.dispatcher.listen(fixture.scope, { kind: 'stream', name: 'events' }, vi.fn(), error, ready);
+    await vi.waitFor(() => { expect(fixture.read).toHaveBeenCalledOnce(); });
+    expect(fixture.created.listenerCount).toBe(1);
+    expect(ready).not.toHaveBeenCalled();
+    sub.dispose();
+    resolveMetadata(fixture.metadata);
+    await Promise.resolve();
+    expect(fixture.created.listenerCount).toBe(0);
+    expect(fixture.closed.listenerCount).toBe(0);
+    expect(fixture.deleted.listenerCount).toBe(0);
+    expect(ready).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('keeps the live source when an older cold membership read finishes after creation', async () => {
+    const fixture = agentEventWatchFixture();
+    let rejectMetadata!: (error: Error) => void;
+    fixture.read.mockImplementationOnce(() => new Promise<SessionMeta>((_resolve, reject) => { rejectMetadata = reject; }));
+    const ready = vi.fn();
+    const error = vi.fn();
+    const seen = vi.fn();
+    const sub = fixture.dispatcher.listen(fixture.scope, { kind: 'stream', name: 'events' }, seen, error, ready);
+    await vi.waitFor(() => { expect(fixture.read).toHaveBeenCalledOnce(); });
+    const session = fixture.makeSession();
+    fixture.created.fire({ sessionId: fixture.scope.sessionId, handle: session.handle });
+    const agent = session.createAgent();
+    rejectMetadata(new Error('retired cold read'));
+    await vi.waitFor(() => { expect(ready).toHaveBeenCalledOnce(); });
+    agent.events.fire({ type: 'real source' });
+    expect(seen).toHaveBeenCalledWith({ type: 'real source' });
+    expect(error).not.toHaveBeenCalled();
+    sub.dispose();
+  });
+
+  it('detaches retired generations, follows reopened sessions and releases lifecycle watches', async () => {
+    const fixture = agentEventWatchFixture();
+    const ready = vi.fn();
+    const error = vi.fn();
+    const seen = vi.fn();
+    const sub = fixture.dispatcher.listen(fixture.scope, { kind: 'stream', name: 'events' }, seen, error, ready);
+    await vi.waitFor(() => { expect(ready).toHaveBeenCalledOnce(); });
+    const first = fixture.makeSession();
+    fixture.created.fire({ sessionId: fixture.scope.sessionId, handle: first.handle });
+    expect(first.created.listenerCount).toBe(1);
+    const oldAgent = first.createAgent();
+    oldAgent.events.fire({ type: 'first' });
+    oldAgent.disposal.fire();
+    oldAgent.events.fire({ type: 'retired' });
+    expect(oldAgent.events.listenerCount).toBe(0);
+    const replacement = first.createAgent();
+    replacement.events.fire({ type: 'replacement' });
+    expect(replacement.events.listenerCount).toBe(1);
+    first.disposal.fire();
+    expect(first.created.listenerCount).toBe(0);
+    expect(first.removed.listenerCount).toBe(0);
+    expect(replacement.events.listenerCount).toBe(0);
+    fixture.closed.fire({ sessionId: fixture.scope.sessionId });
+    const reopened = fixture.makeSession();
+    fixture.created.fire({ sessionId: fixture.scope.sessionId, handle: reopened.handle });
+    const active = reopened.createAgent();
+    active.events.fire({ type: 'reopened' });
+    expect(seen.mock.calls.map(([event]) => event.type)).toEqual(['first', 'replacement', 'reopened']);
+    sub.dispose(); sub.dispose();
+    expect(active.events.listenerCount).toBe(0);
+    expect(active.disposal.listenerCount).toBe(0);
+    expect(reopened.created.listenerCount).toBe(0);
+    expect(reopened.disposal.listenerCount).toBe(0);
+    expect(fixture.created.listenerCount).toBe(0);
+    expect(fixture.closed.listenerCount).toBe(0);
+    expect(fixture.deleted.listenerCount).toBe(0);
+    expect(ready).toHaveBeenCalledOnce();
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it.each(['metadata', 'source'])('preserves real %s failures even when they name disposed instantiation', async boundary => {
+    const fixture = agentEventWatchFixture();
+    const failure = new Error('InstantiationService has been disposed');
+    if (boundary === 'metadata') fixture.read.mockRejectedValueOnce(failure);
+    const ready = vi.fn();
+    const error = vi.fn();
+    fixture.dispatcher.listen(fixture.scope, { kind: 'stream', name: 'events' }, vi.fn(), error, ready);
+    if (boundary === 'source') {
+      await vi.waitFor(() => { expect(ready).toHaveBeenCalledOnce(); });
+      const session = fixture.makeSession();
+      session.createAgent(() => { throw failure; });
+      fixture.created.fire({ sessionId: fixture.scope.sessionId, handle: session.handle });
+      expect(session.created.listenerCount).toBe(0);
+      expect(session.disposal.listenerCount).toBe(0);
+    } else expect(ready).not.toHaveBeenCalled();
+    await vi.waitFor(() => { expect(error).toHaveBeenCalledWith(failure); });
+    expect(fixture.created.listenerCount).toBe(0);
+    expect(fixture.closed.listenerCount).toBe(0);
+    expect(fixture.deleted.listenerCount).toBe(0);
+  });
+
+  it.each(['missing', 'attachment failure', 'deleted'])('cleans agent event watches after %s', async failure => {
+    const fixture = agentEventWatchFixture();
+    if (failure === 'missing') fixture.read.mockResolvedValueOnce({ ...fixture.metadata, agents: {} });
+    const ready = vi.fn();
+    const error = vi.fn();
+    fixture.dispatcher.listen(fixture.scope, { kind: 'stream', name: 'events' }, vi.fn(), error, ready);
+    if (failure === 'missing') {
+      await vi.waitFor(() => { expect(error).toHaveBeenCalledOnce(); });
+      expect(error.mock.calls[0]![0]).toMatchObject({ code: 40404 });
+      expect(ready).not.toHaveBeenCalled();
+    } else {
+      await vi.waitFor(() => { expect(ready).toHaveBeenCalledOnce(); });
+      if (failure === 'deleted') fixture.deleted.fire({ sessionId: fixture.scope.sessionId });
+      else {
+        const session = fixture.makeSession();
+        session.createAgent(() => { throw new Error('attachment failure'); });
+        fixture.created.fire({ sessionId: fixture.scope.sessionId, handle: session.handle });
+        expect(session.created.listenerCount).toBe(0);
+        expect(session.disposal.listenerCount).toBe(0);
+      }
+      expect(error).toHaveBeenCalledOnce();
+    }
+    expect(fixture.created.listenerCount).toBe(0);
+    expect(fixture.closed.listenerCount).toBe(0);
+    expect(fixture.deleted.listenerCount).toBe(0);
+  });
+
   it('acknowledges only attached subscriptions and cancels pending attach on dispose', async () => {
     const dispose = vi.fn();
     const attach = vi.fn(() => ({ dispose }));
@@ -298,6 +512,52 @@ function scopeReturning(value: unknown): ScopeLike {
       },
     },
   };
+}
+
+function scopeWithServices(entries: Array<readonly [ServiceIdentifier<unknown>, unknown]>): ScopeLike {
+  const services = new Map(entries);
+  return { accessor: { get<T>(id: ServiceIdentifier<T>): T {
+    if (!services.has(id)) throw new Error(`unexpected service: ${String(id)}`);
+    return services.get(id) as T;
+  } } };
+}
+
+function agentEventWatchFixture() {
+  const scope = { sessionId: 'example-session', agentId: 'example-child' };
+  const metadata: SessionMeta = { id: scope.sessionId, createdAt: 1, updatedAt: 1, archived: false,
+    agents: { [scope.agentId]: { type: 'sub', status: 'cancelled' } } };
+  const created = new Emitter<{ sessionId: string; handle: ScopeLike }>();
+  const closed = new Emitter<{ sessionId: string }>();
+  const deleted = new Emitter<{ sessionId: string }>();
+  const read = vi.fn(async () => metadata);
+  const root = scopeWithServices([
+    [ISessionManager, { get: () => undefined, onDidCreateSession: created.event, onDidCloseSession: closed.event,
+      onDidDeleteSession: deleted.event }],
+    [ISessionIndex, { get: async () => ({ workspaceId: 'example-workspace' }) }],
+    [IAtomicDocumentStore, { get: read }],
+  ]);
+  const makeSession = () => {
+    const disposal = new Emitter<void>();
+    const agentCreated = new Emitter<{ id: string } & ScopeLike>();
+    const removed = new Emitter<string>();
+    let agent: ({ id: string } & ScopeLike) | undefined;
+    const handle = scopeWithServices([
+      [IInstantiationService, { onWillDispose: disposal.event }],
+      [ISessionMetadata, { read }],
+      [IAgentLifecycleService, { get: () => agent, onDidCreate: agentCreated.event, onDidDispose: removed.event }],
+    ]);
+    return { handle, disposal, created: agentCreated, removed, createAgent: (subscribe?: () => never) => {
+      const agentDisposal = new Emitter<void>();
+      const events = new Emitter<unknown>();
+      agent = { id: scope.agentId, ...scopeWithServices([
+        [IInstantiationService, { onWillDispose: agentDisposal.event }],
+        [IEventBus, { subscribe: subscribe ?? events.event }],
+      ]) };
+      agentCreated.fire(agent);
+      return { events, disposal: agentDisposal };
+    } };
+  };
+  return { scope, metadata, created, closed, deleted, read, makeSession, dispatcher: createMemoryDispatcher(root) };
 }
 
 describe('contract dispatcher boundary', () => {

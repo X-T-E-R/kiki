@@ -162,6 +162,8 @@ const booleanQueryParam = z.preprocess((value) => {
 
 const DEFAULT_SESSION_LIST_PAGE_SIZE = 50;
 
+const SESSION_PIN_METADATA_KEY = 'kiki.pinned';
+
 const sessionsListQueryCoercion = z
   .object({
     before_id: z.string().min(1).optional(),
@@ -172,6 +174,7 @@ const sessionsListQueryCoercion = z
     include_ephemeral: booleanQueryParam,
     exclude_empty: booleanQueryParam,
     archived_only: booleanQueryParam,
+    pinned: booleanQueryParam,
     q: z.string().max(500).optional(),
     workspace_id: workspaceIdSchema.optional(),
     persona: z.string().min(1).optional(),
@@ -739,6 +742,7 @@ export function registerSessionsRoutes(
             if (raw.persona !== undefined && !(await core.accessor.get(IBotService).sessionBelongsToPersona(summary, raw.persona))) continue;
             if (raw.exclude_empty === true && (summary.lastPrompt ?? '').length === 0) continue;
             if (archivedOnly && !summary.archived) continue;
+            if (raw.pinned !== undefined && (summary.custom?.[SESSION_PIN_METADATA_KEY] === true) !== raw.pinned) continue;
             const facts = raw.busy !== undefined ? resolveSessionFacts(core, summary.id, summary.usage) : undefined;
             if (raw.busy !== undefined && facts?.busy !== raw.busy) continue;
             collected.push({ summary, cwd, facts });

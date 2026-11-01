@@ -15,8 +15,10 @@
 
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
+import { recipeSettingsPath } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useRecipeList, useRecipeMutation } from '../../lib/recipeQueries';
 import { recipeRevisionShort } from '../../lib/recipes';
@@ -179,6 +181,16 @@ export function ModelRecipeField({ modelId, modelName, onCommitRecipe, appliedId
             </button>
           </>
         )}
+        {/*
+          The package's own home is one click from the model that uses it. A
+          link, not a nested view: the library is where a package is managed
+          for every model, and leaving the model editor for it is the point.
+        */}
+        <Link to={appliedId === undefined ? recipeSettingsPath() : recipeSettingsPath(appliedId)}
+          className="text-[12px] text-ink-soft underline decoration-ink/20 underline-offset-4 hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40"
+          data-recipe-open-library>
+          {t('st.recipe.openInLibrary')}
+        </Link>
       </div>
 
       <FeedbackLine feedback={feedback} />

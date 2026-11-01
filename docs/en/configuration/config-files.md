@@ -1205,7 +1205,7 @@ In the desktop GUI, open **Settings → Agents → Prompt fields** to edit this 
 
 ## `[request_governance]`
 
-`request_governance` limits either native model requests (`resource = "model_request"`) or running agents (`resource = "agent_execution"`). No rule means no concurrency cap; existing rules without `resource` remain model-request rules. In the GUI, **Usage → Live** shows running and queued requests and includes **Concurrency limits** to add, edit, pause, or delete rules. **History**, the default tab, shows token usage and estimated cost. See [Usage](../guides/settings.md#usage) for the diagnostic workflow.
+`request_governance` limits either native model requests (`resource = "model_request"`) or running agents (`resource = "agent_execution"`). No rule means no concurrency cap; existing rules without `resource` remain model-request rules. In the GUI, **Usage → Live** shows running and queued requests and includes **Concurrency limits** to add, edit, pause, or delete rules. **History** shows token usage and estimated cost, and **Live** is the tab that opens by default. See [Usage](../guides/settings.md#usage) for the diagnostic workflow.
 
 A `global` rule shares capacity across sessions in the same Kiki service process. An `each_session` rule gives each session its own bucket. These limits do not span independent Kiki processes, set requests-per-minute, or impose token or spending budgets. For search and fetch calls, use [`nb_search.execution`](#nb-search).
 

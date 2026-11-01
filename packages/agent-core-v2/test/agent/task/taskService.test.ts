@@ -66,6 +66,7 @@ import { runWillBeginStepHooks, stubLoopWithHooks, type StubLoop } from '../loop
 import { stubFlag } from '../../app/flag/stubs';
 import { executeTool } from '../../tools/fixtures/execute-tool';
 import type { TaskServiceTestManager } from './stubs';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -86,6 +87,14 @@ const noopBlob: IAgentBlobService = {
   offloadParts: async (parts) => parts,
   loadParts: async (parts) => parts,
   isBlobRef: () => false,
+};
+
+const runningExecution: Pick<ISessionExecutionControl, '_serviceBrand' | 'ready' | 'isHeld' | 'resumePoint' | 'isParked'> = {
+  _serviceBrand: undefined,
+  ready: async () => {},
+  isHeld: () => false,
+  resumePoint: () => undefined,
+  isParked: () => false,
 };
 
 function stubWireService(): IWireService {
@@ -183,6 +192,7 @@ describe('AgentTaskService', () => {
     });
     ix.stub(IAgentBlobService, noopBlob);
     ix.set(IAgentStateService, new AgentStateService());
+    ix.stub(ISessionExecutionControl, runningExecution);
     ix.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
     ix.set(IAgentTaskService, new SyncDescriptor(AgentTaskService));
   });
@@ -1641,6 +1651,7 @@ describe('AgentTaskService', () => {
     ix.stub(IFileSystemStorageService, bytes);
     ix.stub(IAgentBlobService, noopBlob);
     ix.set(IAgentStateService, new AgentStateService());
+    ix.stub(ISessionExecutionControl, runningExecution);
     ix.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
     ix.set(IAgentTaskService, new SyncDescriptor(AgentTaskService));
     ix.stub(IFlagService, stubFlag(true));
@@ -1705,6 +1716,7 @@ describe('AgentTaskService', () => {
     ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
     ix.set(IWireService, new SyncDescriptor(WireService));
     ix.set(IAgentStateService, new AgentStateService());
+    ix.stub(ISessionExecutionControl, runningExecution);
     ix.set(IEventDispatcher, new SyncDescriptor(EventDispatcherService));
     ix.set(IAgentTaskService, new SyncDescriptor(AgentTaskService));
     return ix;

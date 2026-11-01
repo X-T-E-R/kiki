@@ -55,7 +55,21 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 
 继承工作区提供的是上下文，不会新建目录沙箱。Kiki 不主动添加输入根目录，也不覆盖外部引擎的沙箱；未设置的模型、思考强度和权限选择保留[引擎自己的配置](#外部直连执行)。显式声明的额外目录通过执行器支持的目录接口传递；ACP 执行器未声明支持时，会记录 `additional_directories_dropped`。声明目录不会关闭显式权限规则、已绑定的 worktree 限制或引擎自己的沙箱。
 
-继续直属子 Agent 时把 `resume` 设为它的名称或 agent id，它与 `name`、`profile`、`profile_file`、`route` 互斥。`allow_model_change` 只在 `resume` 同时显式传入、且解析到不同规范模型的 `model_alias` 时有意义。原生子 Agent 仍有恢复后暂停的旧队列时，显式 `resume` 会单独运行本次请求，旧队列继续暂停，不会自动重放。
+继续直属子 Agent 时把 `resume` 设为它的名称或 agent id，它与 `name`、`profile`、`profile_file`、`route` 互斥。子 Agent 必须空闲；需要明确控制下一段上下文时，设置 `context_mode`：
+
+| `context_mode` | 继续方式 |
+| --- | --- |
+| `direct` | 保留当前上下文，也是普通 resume 的默认行为。 |
+| `compact` | 先用当前绑定的模型总结当前窗口，再带着摘要和已保存的任务状态继续。 |
+| `fresh` | 从已保存的任务状态与历史引用建立新窗口，不调用旧模型。 |
+
+三种模式都保留同一个子 Agent ID、任务笔记、Todo、完整历史与工作区根目录。省略 `model_alias` 和 `effort` 会保留已保存的绑定，因此不换模型也可以压缩或从全新上下文继续。显式 `model_alias` 选到不同规范模型时，所选 `context_mode` 同时确认这次换模；profile、调用方、route 和机器规则照常生效。`compact` 与 `fresh` 只重建原生 Kiki 上下文；外部执行器会拒绝，不会替换远端会话。`[model_switch].default_mode` 不改变普通 resume 的默认方式。
+
+例如，`AgentRun({ resume: "saved_child", context_mode: "compact", prompt: "继续剩余检查。", description: "继续剩余检查" })` 会先压缩，再沿用原模型继续；加上获准的 `model_alias`，则在摘要之后换到该模型。
+
+旧参数继续有效：`allow_model_change: true` 确认换模并保留上下文，`new_window: true` 选择全新上下文并同时确认换模。两个旧参数都为 true 时，`new_window: true` 优先；`new_window: false` 不否决 `allow_model_change: true`。`allow_model_change` 要求同时有 `resume` 和 `model_alias`，`new_window` 要求有 `resume`。两者任一都不能与 `context_mode` 混用，即使值为 false 也会拒绝。
+
+摘要在提交前失败或被取消时，旧绑定和上下文保持不变。切换提交后的保存若失败，应先恢复原操作再启动新工作，已提交的摘要会被复用。原生子 Agent 仍有恢复后暂停的旧队列时，显式 `resume` 会单独运行本次请求，旧队列继续暂停，不会自动重放。
 
 供应商报告完成，不等于任务已交付回执。已完成的响应如果含有真实思考、却没有正文或工具调用，Kiki 会在同一轮次内继续，直到出现正文或工具调用，无论思考是否带签名。已有签名和用量会保留，不另加用户提示词；步骤预算耗尽、取消或供应商永久错误仍会结束轮次。没有正文的工具步骤仍然有效，但 Agent 任务仍须提交书面结果。
 
@@ -63,7 +77,7 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 
 恢复前先检查原轮次与已保存改动，再用新提示词唤回同一个子 Agent，要求它完成工作并报告结果。SDK 调用方须使用新的 prompt ID；重复已结束的 ID 只会重放保存的结果。Kiki 不为这两类失败自动重试，也不改写旧任务记录。
 
-普通职责 profile 的新派生按此顺序选模型：具体的 `model_alias` 参数 → 生效 profile / route / caller lease 的 pin → 显式配置的 `[subagent].default_model`；三者都没有则以 `model.not_configured` 失败，不创建子 Agent，未知 alias 同样报错。引擎目标使用上文的厂商默认顺序。effort 单独解析，来源可能是工具调用、route、caller lease、profile 或模型自身——[完整顺序见下文](#具名-profile-route-实验功能)。`resume` 时省略 `model_alias` 和 `effort` 会保留已保存绑定，解析到同一规范模型的 alias 不产生变化，换到不同规范模型则需要 `allow_model_change: true`。
+普通职责 profile 的新派生按此顺序选模型：具体的 `model_alias` 参数 → 生效 profile / route / caller lease 的 pin → 显式配置的 `[subagent].default_model`；三者都没有则以 `model.not_configured` 失败，不创建子 Agent，未知 alias 同样报错。引擎目标使用上文的厂商默认顺序。effort 单独解析，来源可能是工具调用、route、caller lease、profile 或模型自身——[完整顺序见下文](#具名-profile-route-实验功能)。`resume` 时省略 `model_alias` 和 `effort` 会保留已保存绑定，解析到同一规范模型的 alias 不产生变化，换到不同规范模型则需要显式选择 `context_mode`，或用旧参数 `allow_model_change: true` / `new_window: true` 确认。
 
 `preferred_models`、`discouraged_models`、`preferred_efforts` 以及 route / caller lease 的 pin 都是软建议：满足硬规则的覆盖会带着结构化 advisory 继续执行。`allowed_models`、`deny_models`、`allowed_efforts` 在任何作用域都是硬规则。机器级 `[subagent].deny_models`、不受支持的模型能力、route 身份、缺少换模确认以及 executor / thread 限制都是硬错误；外部 executor 无法修改恢复的 thread 绑定时会报错，不会重建 thread 或 executor。
 
@@ -79,7 +93,7 @@ Agent 任务默认 2 小时超时，全局限制用 `[subagent] timeout_ms` 或 
 
 原生子 Agent 轮次遇到[上游连接中断](../configuration/providers.md#通过-websocket-增量传输-responses)会自动重试，先撤掉不完整输出再重发。重试预算耗尽后，任务变为 `failed`，通知中会附恢复说明。用 `AgentRun` 的 `resume` 指定该子 Agent 的 id，即可沿用原有上下文继续。
 
-`AgentSend` 把子 Agent 继续工作所需的输入交给它。native 子 Agent 运行中时，消息在下一个 step 边界进入当前工作；Codex 和支持 steer 的 ACP 子 Agent 可以在运行期间收到。已经停止的子 Agent，包括运行刚好在消息进入上下文前结束的情况，会沿用原来的模型、profile、工具和上下文继续，这次运行结束时照常通知父 Agent。已保存的消息按顺序留在这同一个绑定上。`queued` 表示消息已保存，不表示运行已经开始。如果继续无法启动，已保存的消息仍在队列里，发送方会收到原因、error code、目标和原来的 message id。用 AgentRun 继续同一个子 Agent：resume 设为该 agent id，prompt 设为空字符串，description 设为简短标签。不要再次调用 AgentSend，不要在 prompt 里重复这条已保存的消息，也不要设置 new_window。外部 resume 失败时不会另开一个新的远端会话。ACP 恢复使用已保存的原会话，不取决于权限模式的配置方式。提示词投递前若进程重连，Kiki 会先恢复并验证实际会话的模型、思考与权限控制；远端不支持 resume/load、绑定变化或控制状态无法验证时会停止投递。若启动在任何远端会话或提示词形成前就失败，`AgentRun` 可以重新构造执行器。Kiki 在发送提示词前保存 ACP 会话和 Codex thread 引用，不会自动重发结果未知的提示词。用 `name` 或 agent id 指定目标。
+`AgentSend` 把子 Agent 继续工作所需的输入交给它。native 子 Agent 运行中时，消息在下一个 step 边界进入当前工作；Codex 和支持 steer 的 ACP 子 Agent 可以在运行期间收到。已经停止的子 Agent，包括运行刚好在消息进入上下文前结束的情况，会沿用原来的模型、profile、工具和上下文继续，这次运行结束时照常通知父 Agent。已保存的消息按顺序留在这同一个绑定上。`queued` 表示消息已保存，不表示运行已经开始。如果继续无法启动，已保存的消息仍在队列里，发送方会收到原因、error code、目标和原来的 message id。用 AgentRun 继续同一个子 Agent：resume 设为该 agent id，prompt 设为空字符串，description 设为简短标签。不要再次调用 AgentSend，不要在 prompt 里重复这条已保存的消息，也不要设置 new_window。外部 resume 失败时不会另开一个新的远端会话。ACP 恢复使用已保存的原会话，不取决于权限模式的配置方式。提示词投递前若进程重连，Kiki 会先恢复并验证实际会话的模型、思考与权限控制；远端不支持 resume/load、绑定变化或控制状态无法验证时会停止投递。若启动在任何远端会话或提示词形成前就失败，`AgentRun` 可以重新构造执行器。Kiki 在发送提示词前保存 ACP 会话和 Codex thread 引用。外部 resume 一旦已尝试投递或结果未知，同一个操作就不会再次发送提示词，重启 Kiki 后也一样；先检查原远端会话和已保存的任务结果，再决定下一步。确认尚未发送的失败仍可重试。用 `name` 或 agent id 指定目标。
 
 `AgentNotify` 方向相反，只有 subagent 可用：它把一条 fire-and-forget 消息排进父 Agent 邮箱，父 Agent 运行时在下一个 step 边界读到，空闲时在下一次运行时读取。main agent 没有父 Agent，永远拿不到它。在 `config.toml` 里设 `[agents] notify_parent = false` 可全局关闭，默认开启。
 
@@ -155,7 +169,7 @@ harness 决定实际运行程序，profile 是可选定制，模型则是在该 
 
 通过 `engine:<executor-id>` 启动的 child 在恢复时保留已保存的原生引擎会话合同。原生会话不可用或无法核验时，Kiki 不会静默改开一个新会话，而是按引擎诊断让恢复失败。不同厂商支持的 resume、load 和控制能力并不相同，因此目标能启动不代表支持所有恢复操作。
 
-普通 resume 未提供模型覆盖时，会保留已有引擎会话。若要请求 fresh context（`new_window`）或单独修改 `effort`，必须先显式选择 vendor model；Kiki 不会从原生或引擎默认绑定中推断模型。
+普通 resume 或 `context_mode: "direct"` 未提供模型覆盖时，会保留已有引擎会话。修改 `effort` 必须显式选择 vendor model；Kiki 不会从引擎默认绑定中推断模型。`context_mode: "compact"`、`context_mode: "fresh"` 和旧参数 `new_window: true` 无法重建外部引擎上下文，会报错而不替换会话。
 
 审批怎样送达与采用哪种策略是两件事。Adapter 支持时，ACP 与 Codex 发出的审批请求进入 Kiki 审批交互。无界面的 CLI 如果要求审批，却没有受支持的回复通道，这次请求就无法完成：使用带审批桥的 adapter，或为该任务明确选择受支持的权限模式，不必修改引擎全局默认值。
 
@@ -456,7 +470,7 @@ Route 的 `tools` 与 `disallowedTools` 替换基础对应字段，`allowed_suba
 
 新子 Agent 的选模顺序是：具体的 `model_alias` 参数 → 生效 profile / route / caller lease 的 pin → 显式配置的 `[subagent].default_model`；都没有则以 `model.not_configured` 失败且不创建子 Agent，调用方模型不是静默回退。在 profile、route 或 caller lease 中写 `model_alias: inherit` 才是显式跟随调用方已解析的模型，而 `AgentRun` 本身拒绝 `model_alias: "inherit"`，请写具体模型名或省略参数。配置为继承时思考强度也跟随调用方，除非工具 `effort` 或适用的 `thinking_effort` pin 优先；否则按工具 `effort` → route 上锁定的 effort（route 未锁定时改用 caller lease 的）→ 匹配的 `model_profiles` 档位 → 绑定模型与 profile pin 一致时的 `thinking_effort` → 绑定模型默认档位解析。都不提供时，能力明确不支持思考的模型使用 `off`；思考模型没有可解析默认档位时仍需显式选择。未知能力不视为 `off`，未知 alias 一律报错。
 
-`resume` 时省略 `model_alias` 和 `effort` 保留已保存绑定，解析到同一规范模型的 alias 不产生变化；只改 `effort` 在下次空闲运行生效；换到不同规范模型需要 `allow_model_change: true`，此时省略 `effort` 会重新解析目标模型默认值而不沿用旧值。恢复准入会检查 profile、lease、model-profile 与继承的硬规则，拒绝时已保存绑定保持不变；provider 无法执行的 effort、机器级模型禁止和 executor thread 绑定限制同样是硬错误。
+`resume` 时省略 `model_alias` 和 `effort` 保留已保存绑定，解析到同一规范模型的 alias 不产生变化；只改 `effort` 在下次空闲运行生效；换到不同规范模型需要显式选择 `context_mode`，或用旧参数 `allow_model_change: true` / `new_window: true` 确认，此时省略 `effort` 会重新解析目标模型默认值而不沿用旧值。恢复准入会检查 profile、lease、model-profile 与继承的硬规则，拒绝时已保存绑定保持不变；provider 无法执行的 effort、机器级模型禁止和 executor thread 绑定限制同样是硬错误。
 
 新建子 Agent 时省略 `model_alias` 和 `effort` 即使用目标默认值。模型目录按硬规则过滤，并单独标明来自有效 profile、lease、route 和 model-profile 的推荐；出现在其他目标下的模型在这里既不算推荐也不算允许。把 `preferred_models` 与默认 `model_alias` 一起声明可以发布推荐模型池，`model_profiles` 用来提供逐模型默认值和指引。route 的档位覆盖（包括 `service_tier: null`）不会清除模型级档位配置。
 

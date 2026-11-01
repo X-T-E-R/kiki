@@ -12,6 +12,7 @@ import {
   SETTINGS_SECTION_META,
   experimentalTabForSection,
   pluginSettingsIdFromQuery,
+  recipeSettingsIdFromQuery,
   resolveSettingsRoute,
   settingsGroupForSection,
   settingsSectionIsDeviceOnly,
@@ -31,6 +32,7 @@ import { Icon } from './icons';
 import { AgentsSection } from './settings/AgentsSection';
 import { AiSection } from './settings/AiSection';
 import { ProvidersSection } from './settings/ProvidersSection';
+import { RecipesSection } from './settings/RecipesSection';
 import { DefaultsTab } from './settings/ModelsSection';
 import { HooksSection } from './settings/hooks/HooksSection';
 import { ConnectionSection } from './settings/ConnectionSection';
@@ -91,6 +93,7 @@ const OBJECT_LIST_CARD_HASH: Readonly<Partial<Record<SectionId, string>>> = {
   plugins: '#st-card-plugins',
   extensions: '#st-card-plugins',
   workspaces: '#st-card-workspaces',
+  recipes: '#st-card-recipes-library',
 };
 
 /**
@@ -443,6 +446,14 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     ? workspaceSettingsIdFromQuery(search)
     : null;
 
+  // One Recipe's own page, or the library list. The query selects the package,
+  // exactly as `?plugin=` selects a plugin's own settings page.
+  const activeRecipeId = active === 'recipes' && !onListCard
+    ? recipeSettingsIdFromQuery(search)
+    : null;
+  const recipeInitialEdit = activeRecipeId !== null
+    && new URLSearchParams(search).get('view') === 'edit';
+
   const currentTab = new URLSearchParams(search).get('tab')
     ?? (active === 'ai' ? AI_SETTINGS_DEFAULT_TAB
       : active === 'agents' ? AGENTS_SETTINGS_DEFAULT_TAB
@@ -464,6 +475,10 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'shortcuts' ? <ShortcutsSection />
     : active === 'connection' ? <ConnectionSection />
     : active === 'ai' ? <AiSection />
+    // One Recipe's own page, or the library. The query selects the package for
+    // every address except the list's own card hash, exactly as `?plugin=`
+    // selects a plugin's own settings page.
+    : active === 'recipes' ? <RecipesSection recipeId={activeRecipeId} initialEdit={recipeInitialEdit} />
     : active === 'providers' ? <ProvidersSection />
     : active === 'models' ? <DefaultsTab />
     : active === 'connection-services' ? <ConnectionServicesSection />

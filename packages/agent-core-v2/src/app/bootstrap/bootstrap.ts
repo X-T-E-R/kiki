@@ -11,6 +11,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import { createAppScope, type Scope, type ScopeSeed } from '#/_base/di/scope';
 import { DisposableStore, combinedDisposable, toDisposable } from '#/_base/di/lifecycle';
 import { Emitter, type Event } from '#/_base/event';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import {
   IFileSystemStorageService,
   StorageError,
@@ -282,10 +283,16 @@ class ReadOnlyAtomicDocumentStore implements IAtomicTomlDocumentStore {
     const target = normalize(join(root, scope, key));
     return (listener, thisArg, disposables) => {
       const emitter = new Emitter<void>();
-      const watcher = new FSWatcher({ ignoreInitial: true, depth: 1 });
+      const watched = new Set([root, dirname(target), target].map((path) => normalize(path).toLowerCase()));
+      const watcher = new FSWatcher({
+        ignoreInitial: true,
+        depth: 1,
+        ignored: (changedPath: string) => !watched.has(normalize(changedPath).toLowerCase()),
+      });
       watcher.on('all', (_event, changedPath) => {
         if (normalize(changedPath).toLowerCase() === target.toLowerCase()) emitter.fire();
       });
+      watcher.on('error', onUnexpectedError);
       watcher.add(root);
       const subscription = emitter.event(listener, thisArg);
       const combined = combinedDisposable(subscription, toDisposable(() => {

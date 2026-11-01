@@ -13,7 +13,7 @@ title: 插件、Skill、MCP 与搜索
 目录就是 **Official** 页签：Kiki 自建插件与 Kimi 维护的上游条目并列，按任务需要逐个安装。
 
 - **Kiki Extract** 把本地 PDF、Office、HTML 或文本文件转成 `Read` 和 `Grep` 能用的 Markdown。这是一次读取动作：原件既不会被创建也不会被修改，处理 PDF 或 Office 需要运行 Kiki 的机器上备好 Python 与 MarkItDown。
-- **Kiki Office Suite** 在本机创建和编辑 Word、Excel、PowerPoint 文件。
+- **Kiki Office Suite** 在本机创建和编辑 Word、Excel、PowerPoint 文件。它需要 OfficeCLI 1.0.152：安装插件后，Kiki 会先征得你同意，再下载这个固定版本并核对校验和。
 - **Kiki Work** 在本机核对 CSV/TSV 键并对照两张表，不改原件也不上传。
 - **Kiki Writing** 提供专注的手稿面板与续写草稿命令。
 - **Kiki Notion** 连接 Notion 官方托管 MCP 服务，只写回你点名的页面。

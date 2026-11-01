@@ -38,6 +38,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@kiki-dsh/im-bridge-core": "file:../../vendor/kiki-dsh-im-bridge-core-0.1.0.tgz",
     "@kiki/plugin-sdk": "workspace:*",
     "@kiki/transcript": "workspace:*",
     "@nb-corp/nb-search": "file:../../vendor/nb-corp-nb-search-0.5.0-next.4.tgz",

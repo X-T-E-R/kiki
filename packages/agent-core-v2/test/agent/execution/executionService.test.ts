@@ -49,6 +49,8 @@ import { Event } from '#/_base/event';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { externalExecutorKey } from '#/agent/execution/externalExecutorOps';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
+import { stubExecutionControl } from '../../session/executionControl/stubs';
 
 const IMarker = createDecorator<string>('executionTestMarker');
 
@@ -88,6 +90,7 @@ function activityDependencies(ix: TestInstantiationService): void {
   ix.stub(IModelCatalog, {});
   ix.stub(ISessionContext, { sessionId: 'session-test' });
   ix.stub(ISessionMetadata, { read: async () => ({ id: 'session-test', createdAt: 0, updatedAt: 0, archived: false, agents: {} }) });
+  ix.stub(ISessionExecutionControl, stubExecutionControl());
 }
 
 function executionService(
@@ -684,6 +687,7 @@ describe('AgentExecutionService', () => {
     ix.stub(ExecutorRegistryId, { resolveExecutable: resolveExecutable as IAgentExecutorRegistry['resolveExecutable'] });
     ix.stub(IAgentLoopService, {});
     ix.stub(IAgentPromptService, {});
+    ix.stub(ISessionExecutionControl, stubExecutionControl());
     ix.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
     const service = ix.get(IAgentExecutionService);
     await expect(service.run({ kind: 'prompt', prompt: 'resume research' }, {

@@ -66,6 +66,18 @@ export async function compactSessionContext(
 }
 
 /**
+ * What a manual-compaction receipt means for the user. `duplicate` is the
+ * server refusing a second request while one is running or queued; it is not a
+ * success. `requested` covers older servers whose receipt carries no status.
+ */
+export type CompactReceiptOutcome = 'duplicate' | 'queued' | 'running' | 'requested';
+
+export function compactReceiptOutcome(receipt: CompactSessionResponse): CompactReceiptOutcome {
+  if (receipt.accepted === false) return 'duplicate';
+  return receipt.status ?? 'requested';
+}
+
+/**
  * Export the diagnostic archive. The desktop build asks for a destination via
  * the native save dialog and writes through tauri-plugin-fs; the browser build
  * keeps the blob download. Resolves `true` when the archive was saved, `false`

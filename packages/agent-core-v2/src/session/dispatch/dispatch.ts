@@ -67,6 +67,7 @@ export interface DispatchRunOptions {
   readonly signal: AbortSignal;
   readonly requesterAgentId?: string;
   readonly onReady?: () => void;
+  readonly onQueued?: () => void;
   readonly lineage?: string;
   readonly idlePolicy?: DispatchIdlePolicy;
   readonly allowParentNotify?: boolean;
@@ -76,6 +77,7 @@ export interface DispatchRunOptions {
     readonly thinkingEffort?: string;
     readonly allowModelChange?: boolean;
     readonly newWindow?: boolean;
+    readonly contextMode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode;
   };
   readonly onBeforeRun?: (child: DispatchChild) => Promise<void>;
 }

@@ -10,18 +10,18 @@ Kiki's browser driver, any independent browser it starts, and computer control r
 
 ## Browser control {#browser-control}
 
-Once you complete the component setup and check the browsers an agent may use under **Settings → Capabilities → Browser & computer → Browser control**, agents can open pages, read snapshots, click elements, fill forms, and take screenshots through the [browser tools](/en/reference/tools#browser-tools), attaching screenshots or recordings back to the timeline. Connections start only when a task requests them.
+Once you complete the component setup and allow the browsers an agent may use under **Settings → Capabilities → Browser & computer → Browser control**, agents can open pages, read snapshots, click elements, fill forms, and take screenshots through the [browser tools](/en/reference/tools#browser-tools), attaching screenshots or recordings back to the timeline. Connections start only when a task requests them.
 
-You can connect the kind of browser that fits the job:
+**Add browser** opens a side panel: pick a route first, then finish that route's own setup in the same panel. You can connect the kind of browser that fits the job:
 
-- **Your everyday signed-in browser (Kimi / Codex browser extensions)**: use the **Kimi Browser Extension** or **Codex / ChatGPT browser extension** to drive the browser you already use, keeping your existing sign-ins and cookies for internal dashboards, social research, form filling, and cross-site collection. Kiki prepares the local bridge components, and you add and approve the extension from your browser's store.
+- **Your everyday signed-in browser (Kimi / Codex browser extensions)**: use the **Kimi Browser Extension** or **Codex / ChatGPT browser extension** to drive the browser you already use, keeping your existing sign-ins and cookies for internal dashboards, social research, form filling, and cross-site collection. For the Kimi extension, Kiki installs the plugin and local bridge, and you add and approve the extension from your browser's store. For the Codex extension, you first install the Codex or ChatGPT desktop app and its browser extension, authorize it by the official instructions, and then connect it in Kiki.
 - **Kiki-managed independent browser**: Kiki starts and manages a separate browser and sign-in profile on the server without copying your everyday cookies. It is suited for automated verification, stateless browsing, or tasks that need an isolated account. It runs headless by default, with an option to show the browser window.
 - **Ego Lite**: if you install Ego Lite yourself and finish its setup window, Kiki can check its readiness and connect it so agents can run page automation scripts with screenshots attached directly to the timeline.
-- **Existing or remote browsers (CDP)**: under **+ Add browser → Configure manually**, attach directly to any local or remote browser that already exposes a CDP address without launching a new browser instance.
+- **Existing or remote browsers (CDP)**: under **Add browser → Configure manually**, attach directly to any local or remote browser that already exposes a CDP address without launching a new browser instance.
 
 ### Browser permissions
 
-Each browser source has an enable switch for that integration method (turning a source off stops discovery, connection, and tool calls for it while preserving your checked browsers), and each browser in the connection list has an **Allow agent use** checkbox. An agent can use only the browsers you check, and clearing a checkbox revokes that access immediately. You can allow several browsers at once and pick one in **Default connection** at the top of the list for new sessions, or choose **Choose each time** so each call names its browser explicitly.
+Each browser source has an enable switch for that integration method (turning a source off stops discovery, connection, and tool calls for it while preserving your checked browsers), and each browser in the connection list has its own allow switch on its row. An agent can use only the browsers you switch on, and switching one off revokes that access immediately. You can allow several browsers at once and pick **Set as default** in a row's **⋯** menu to make it the browser for new sessions; with no default, each call names its browser explicitly.
 
 See [Settings pages: Browser control](/en/guides/settings#browser-control) for route setup and readiness checks, and [Built-in Tools: Browser Tools](/en/reference/tools#browser-tools) for tool parameters.
 

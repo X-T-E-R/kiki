@@ -451,41 +451,34 @@ Client-provided stdio MCP servers are disabled by default. To trust an IDE to st
 
 ### `kiki web`
 
-Run the local Kiki server in the foreground of the current terminal — a single process that exposes the REST + WebSocket API and serves the Kiki GUI from the same origin — and open the Kiki GUI in the default browser once it is ready. The command stays attached to the terminal and shuts down cleanly on `SIGINT` / `SIGTERM` (e.g. `Ctrl-C`).
-
-When the server is running, `GET /openapi.json` returns the REST OpenAPI document and `GET /asyncapi.json` returns the local WebSocket AsyncAPI document. For an end-to-end walkthrough of driving sessions over the API, see [Local server and API](../server/local-server.md); for the protocol details, see the [Server API](../server/rest-api.md) reference.
+Turn on Web access on this home's shared daemon so a browser on another device can enter this Kiki. If no daemon is reachable, one is started first and kept running until you stop it (as `kiki serve --ensure --idle-exit 0ms` would). Kiki then signs a single-use entry link, prints it, opens it in the local browser by default, and the command returns instead of holding the terminal. The output never contains `#token=` or the local-owner capability.
 
 ```sh
-kiki web                 # run the server in the foreground and open the browser
-kiki web --no-open       # do not open the browser
-kiki web --port 58628    # specify a custom port
+kiki web                        # temporary Web access (eight hours), print a single-use link
+kiki web --persistent --no-open # always on, print the link only
+kiki web --status               # query only; does not start a daemon
+kiki web --off                  # close Web access; Kiki and its tasks keep running
+kiki web --revoke [session-id]  # sign out one browser, or all without an id
 ```
-
-Multiple instances can run concurrently under the same home: each registers itself in `<home>/server/instances/` (default `~/.kiki/server/instances/`), and port collisions increment automatically (58628, 58629, etc.).
 
 | Option | Description |
 | --- | --- |
-| `--port <port>` | Port to bind; default `58627`; increments automatically if occupied |
-| `--host [host]` | Address to bind; default `127.0.0.1` (local only). Binding a non-loopback address (including bare `--host`, which targets `0.0.0.0`) requires either a TLS-terminating reverse proxy or `--insecure-no-tls`; without one of those the server refuses to start |
-| `--insecure-no-tls` | Allow a non-loopback bind without a TLS-terminating reverse proxy; the bind is then reachable unencrypted on that address |
-| `--allowed-host <host...>` | Additional Host header allowed by DNS rebinding checks, repeatable or comma-separated |
-| `--log-level <level>` | Log level for the server; default off |
-| `--debug-endpoints` | Mount `/api/debug/*` debug routes (default off) |
-| `--dangerous-bypass-auth` | Disable bearer token auth for all REST and WebSocket routes, allowing Kiki GUI to connect without a token; use only in trusted networks or behind your own auth proxy |
-| `--no-open` | Do not open the browser automatically once ready |
-| `--idle-exit <duration>` | Exit after no GUI leases or busy sessions remain for this duration; accepts integer `ms`, `s`, `m`, or `h` (for example `30m`). Omitted by default, so the foreground server stays running |
+| `--home <dir>` | Kiki home to operate on |
+| `--temporary` | Open for eight hours, then close by itself (default) |
+| `--persistent` | Stay open across daemon restarts until you turn it off |
+| `--status` | Show whether it is on and which browsers are signed in; does not start a daemon |
+| `--off` | Close Web access and revoke every link and browser session; Kiki and its tasks keep running |
+| `--revoke [session-id]` | Sign out one browser, or all of them without an id |
+| `--port <port>` | Port for the Web listener; omitted, it reuses the daemon's local port |
+| `--host [host]` | Web listener address; bare `--host` listens on all IPv4 interfaces. A non-loopback address needs an HTTPS `--public-url` or `--insecure-no-tls` |
+| `--public-url <url>` | The origin browsers actually use, for example your HTTPS reverse proxy |
+| `--insecure-no-tls` | Allow plain LAN HTTP; traffic and browser access are not encrypted |
+| `--json` | Print the result as JSON (including `link` when turning on) |
+| `--no-open` | Do not open the link in the local default browser |
 
-`kiki web` binds to the local loopback address by default and prints the bearer token in the startup banner; Kiki GUI authenticates automatically via the `#token=` URL fragment.
+Choose at most one of `--status`, `--off`, and `--revoke`, and not both `--temporary` and `--persistent`. A single-use link is valid for ten minutes and signs in one browser; Web access is a full-access entry into this Kiki rather than a read-only share. See [Use Kiki in a browser](../server/local-server.md#use-kiki-in-a-browser) for the session and revocation model. The same operations are available as `/web temporary|persistent|status|off|link|revoke [id]` in the interactive TUI, and under **Settings → Connection & remote → Access from elsewhere → Web access** in the GUI.
 
-`kiki web` also carries the Web-access controls — `--temporary`, `--persistent`, `--status`, `--off`, `--revoke [session-id]` — which open this Kiki to a browser on another device and print a single-use entry link. Web access is a full-access entry into this Kiki rather than a read-only share; see [Use Kiki in a browser](../server/local-server.md#use-kiki-in-a-browser) for the session and revocation model. The same operations are available as `/web temporary|persistent|status|off|link|revoke [id]` in the interactive TUI, and under **Settings → Spaces → Web access** in the GUI.
-
-::: info Note
-`kiki web` is a compatibility foreground command: it starts an independent server in the current process and does not connect to or manage the shared daemon. Use `kiki serve` to manage the shared daemon lifecycle; use `kiki web` when you need the existing foreground REST/WebSocket/web UI workflow. The legacy `kiki server …` command is no longer supported.
-:::
-
-::: danger Warning
-`--dangerous-bypass-auth` exposes legacy APIs without authentication: anyone with access to the port can control sessions, files and shell. Connection management and forwarding still require local-owner access; effective peer admission is unavailable, and saved grants cannot authorize incoming peers in this mode. Use only in trusted networks or behind an authenticating reverse proxy, and stop the server when finished.
-:::
+The daemon's own lifecycle belongs to [`kiki serve`](#kiki-serve). While it runs, `GET /openapi.json` returns the REST OpenAPI document and `GET /asyncapi.json` returns the local WebSocket AsyncAPI document; see [Local server and API](../server/local-server.md) for driving sessions over the API and the [Server API](../server/rest-api.md) reference for protocol details. The legacy `kiki server …` command is no longer supported.
 
 #### `kiki web rotate-token`
 

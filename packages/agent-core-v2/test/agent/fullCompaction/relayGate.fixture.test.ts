@@ -173,7 +173,7 @@ describe('relay gate fixtures', () => {
     expect(result.reasonCodes).toEqual(expect.arrayContaining(['tool_error', 'requested:auto', 'strategy_source:default']));
     expect(result.reasonCodes).not.toEqual(expect.arrayContaining(['non_replayable_result', 'debug_chain', 'multiple_sources']));
     expect(ctx.llmCalls).toHaveLength(0);
-    expect(text).toContain('HistoryRead {ref:"h1_lookup_result"}');
+    expect(text.match(/HistoryRead \{step_id:"t3\.1"\}/g)).toHaveLength(1);
     expect(text).toContain('distinctive body alpha-recoverable');
     expect(text).not.toContain('query:"spill_debug"');
     expect(text).not.toContain("query:'spill_debug'");
@@ -360,7 +360,9 @@ describe('relay gate fixtures', () => {
     expect(ctx.llmCalls).toHaveLength(0);
     expect(ctx.compactHistory().some((message) => message.text === 'Ship the blue cover, not the red one.')).toBe(true);
     expect(text).toContain('HistoryRead {ref:"handoff-prev"}');
-    expect(text).toContain('reviewed not confirmed');
+    expect(text).toContain('## Pending handoff reviews');
+    expect(text).toContain('handoff review pending');
+    expect(text).not.toContain('handoff review recorded');
     expect(ctx.get(ISessionTodoService).getNotes('main').meta?.reviewedMessageId).toBeUndefined();
   });
 

@@ -177,7 +177,7 @@ function RealtimePanel({ snapshot }: { snapshot: RequestGovernanceSnapshot }) {
   const executionVisibleError = executionReadError ?? pausedDiscovery.error;
   const retryExecutionReads = () => {
     if (executionReadError !== undefined) refetchExecutions();
-    else pausedDiscovery.refresh();
+    else void pausedDiscovery.refresh();
   };
 
   const requestSummary = [

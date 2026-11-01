@@ -36,7 +36,7 @@ Settings → Appearance → Background puts a picture or a short video behind th
 - **Panel opacity** and **Panel blur**: how much the sidebar, page sheets, headers and composer surfaces let the picture through, within the scope you chose.
 - **Separate for light and dark**: off by default. Turn it on to pick a different background for each theme.
 
-Readability assist adds a local wash behind conversation and settings text without raising your **Panel opacity** setting. Page sheets, headers and the composer follow that setting; menus, dialogs and approval prompts keep solid backgrounds. A busy picture can still make text hard to read at low opacity, so raise **Panel opacity** when you need more separation.
+Readability assist adds a local wash behind conversation and settings text without raising your **Panel opacity** setting. Page sheets, headers and the composer follow that setting; menus and dialogs keep solid backgrounds. Since an approval request is answered in the composer card, it follows that setting too. A busy picture can still make text hard to read at low opacity, so raise **Panel opacity** when you need more separation.
 
 Video plays muted and on a loop. It holds on its first frame — or the pack's poster — while the window is hidden or not focused, when reduced motion is on, and when the battery is low and you are unplugged. Kiki warns about videos above 1440p or 40 MB: they cost a lot of memory and you cannot see the difference behind the panels.
 

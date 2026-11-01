@@ -53,6 +53,7 @@ import {
 import { IPromptFieldRegistry } from '#/app/promptField/promptFieldRegistry';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { IModelCatalog } from '#/kosong/model/catalog';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IModelService } from '#/kosong/model/model';
 import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { IHostClock } from '#/os/interface/hostClock';
@@ -1331,6 +1332,7 @@ describe('AgentLifecycleService', () => {
     const executeSwitch = vi.fn();
     ix.stub(IAgentModelSwitchService, { get: () => undefined, execute: executeSwitch });
     ix.stub(ISessionSubagentService, { run });
+    ix.stub(IAgentContextMemoryService, { get: () => [] });
     ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     const lifecycle = ix.get(IAgentLifecycleService);
     await lifecycle.create({ agentId: 'main' });
@@ -1344,7 +1346,7 @@ describe('AgentLifecycleService', () => {
       signal: new AbortController().signal,
     })).rejects.toMatchObject({
       code: ErrorCodes.REQUEST_INVALID,
-      details: { requiredParameter: 'allow_model_change' },
+      details: { requiredParameter: 'context_mode' },
     });
     expect(run).not.toHaveBeenCalled();
     expect(executeSwitch).not.toHaveBeenCalled();
@@ -2545,7 +2547,6 @@ describe('AgentLifecycleService', () => {
     const lifecycleRegistrations = scopes.flatMap(getScopedServiceDescriptors);
     const { testAgent, sessionService } = await import('../../harness');
     const { IAgentModelSwitchService } = await import('#/agent/modelSwitch/modelSwitch');
-    const { IAgentContextMemoryService } = await import('#/agent/contextMemory/contextMemory');
     const { contextWindowEpochKey } = await import('#/agent/fullCompaction/windowEpoch');
     overrideScopedService(LifecycleScope.Agent, IAgentPromptService, AgentPromptService);
     const harnessRegistrations = scopes.flatMap(getScopedServiceDescriptors);

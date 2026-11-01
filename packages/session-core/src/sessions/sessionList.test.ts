@@ -17,8 +17,10 @@ import {
   mergeSessionActivity,
   mergeSessionWorkChanged,
   pinMetadataPatch,
+  readAllSessionPages,
   SESSION_PIN_META_KEY,
   sortSessionItems,
+  withPinnedSessions,
   WORKSPACE_UNGROUPED_KEY,
   type SessionListData,
 } from './sessionList';
@@ -411,6 +413,33 @@ describe('created sort order', () => {
     expect(sortSessionItems([first, second], 'created-desc').map((s) => s.id)).toEqual(['second', 'first']);
     expect(isSessionSortOrder('created-desc')).toBe(true);
     expect(isSessionSortOrder('nope')).toBe(false);
+  });
+});
+
+describe('complete pinned set', () => {
+  const pin = { metadata: { cwd: 'C:/tmp', [SESSION_PIN_META_KEY]: true } };
+
+  it('adds pinned sessions the loaded pages have not reached, once, and only while still pinned', () => {
+    const loaded = data({ items: [session('a', '2026-01-03T00:00:00.000Z', pin), session('b', '2026-01-02T00:00:00.000Z')], has_more: true });
+    const pinned = data({ items: [
+      session('a', '2026-01-03T00:00:00.000Z', pin),
+      session('old', '2025-01-01T00:00:00.000Z', pin),
+      session('stale', '2025-01-01T00:00:00.000Z'),
+    ], has_more: false });
+    expect(withPinnedSessions(loaded, pinned).map((s) => s.id)).toEqual(['a', 'b', 'old']);
+    expect(withPinnedSessions(loaded, undefined).map((s) => s.id)).toEqual(['a', 'b']);
+  });
+
+  it('drains every page of the pinned read into one terminal page', async () => {
+    const calls: (string | undefined)[] = [];
+    const result = await readAllSessionPages(async (cursor) => {
+      calls.push(cursor);
+      return cursor === undefined ? { ...page(['p1', 'p2'], true), next_cursor: 'p2' } : page(['p3'], false);
+    });
+    expect(calls).toEqual([undefined, 'p2']);
+    expect(dedupeSessions(result).map((s) => s.id)).toEqual(['p1', 'p2', 'p3']);
+    expect(result.pages).toHaveLength(1);
+    expect(result.pages[0]!.has_more).toBe(false);
   });
 });
 

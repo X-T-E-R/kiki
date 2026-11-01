@@ -29,6 +29,7 @@ import { useLocation } from 'react-router-dom';
 import type { RoomListItem, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import {
+  compactReceiptOutcome,
   compactSessionContext,
   exportSessionArchive,
   forkSession,
@@ -89,7 +90,7 @@ import { SESSION_SEARCH_EVENT } from '../lib/sidebarSearch';
 import { lifeOf, type LifeState } from '../lib/motion';
 import { nestConversationItems, sessionRelationOf, type ConversationTreeNode, type SessionRelation } from '../lib/sessionThreads';
 import { readTopLevelThreads, writeTopLevelThreads } from '../lib/threadDisplayMemory';
-import { runToastAction } from '../lib/toasts';
+import { pushToast, runToastAction } from '../lib/toasts';
 import { useThreadTitleResolver } from '../lib/threadTitles';
 import { readWorkspaceGroupMemory, writeWorkspaceGroupMemory } from '../lib/sidebarGroupMemory';
 import { registerOverlay } from '../lib/uiBusy';
@@ -887,7 +888,8 @@ export function Sidebar({
         });
     } else {
       void compactSessionContext(actionContext, session)
-        .then(() => {
+        .then((receipt) => {
+          if (compactReceiptOutcome(receipt) === 'duplicate') { pushToast({ tone: 'info', text: t('context.compaction.manual.duplicate') }); return; }
           setActionNotice(t('action.compactRequested', { title: resolveTitle(sessionLabel(session, untitled)) }));
         })
         .catch((error: unknown) => {

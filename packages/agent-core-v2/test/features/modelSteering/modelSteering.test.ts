@@ -193,10 +193,15 @@ describe('AgentModelSteeringService', () => {
       await agent.rpc.prompt({ input: [{ type: 'text', text: 'Initial request' }] });
       await started;
       expect(scripted.calls).toHaveLength(1);
-      expect(scripted.calls[0]!.history.slice(-2)).toEqual(configured ? [
+      const snapshots = memory.get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'runtime_snapshot');
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]!.content).toEqual([{ type: 'text', text: expect.stringContaining('## Space') }]);
+      const initialTail = [
         expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'Initial request' }] }),
-        expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'CLASSIFY THEN ACT' }] }),
-      ] : [expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'Initial request' }] })]);
+        expect.objectContaining({ role: 'user', content: snapshots[0]!.content }),
+      ];
+      if (configured) initialTail.push(expect.objectContaining({ role: 'user', content: [{ type: 'text', text: 'CLASSIFY THEN ACT' }] }));
+      expect(scripted.calls[0]!.history.slice(-initialTail.length)).toEqual(initialTail);
       const cancelled = await prompts.enqueue({ message: {
         role: 'user', content: [{ type: 'text', text: 'Cancelled correction' }], toolCalls: [], origin: { kind: 'user' },
       } });

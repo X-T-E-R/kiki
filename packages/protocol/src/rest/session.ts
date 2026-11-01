@@ -81,6 +81,7 @@ export const listSessionsQuerySchema = cursorQuerySchema.and(
     archived_only: booleanQueryParam,
     q: z.string().max(500).optional(),
     exclude_empty: booleanQueryParam,
+    pinned: booleanQueryParam,
   }),
 );
 export type ListSessionsQuery = z.infer<typeof listSessionsQuerySchema>;

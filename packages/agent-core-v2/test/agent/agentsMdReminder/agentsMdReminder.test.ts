@@ -375,13 +375,16 @@ async function snapshot(h: Harness, paths: readonly string[], revision = 1, prev
 function watchHarness(ready: Promise<void> = Promise.resolve()): {
   readonly service: IHostFsWatchService;
   readonly paths: string[];
+  readonly ignored: Map<string, ((path: string) => boolean) | undefined>;
   activePaths(): readonly string[];
   fire(watchPath: string, change: HostFsChange): void;
 } {
   const emitters = new Map<string, Emitter<HostFsChange>>();
   const paths: string[] = [];
+  const ignored = new Map<string, ((path: string) => boolean) | undefined>();
   return {
     paths,
+    ignored,
     activePaths: () => [...emitters.keys()],
     service: {
       _serviceBrand: undefined,
@@ -389,6 +392,7 @@ function watchHarness(ready: Promise<void> = Promise.resolve()): {
         expect(options?.recursive).toBe(false);
         const key = normalize(path);
         paths.push(key);
+        ignored.set(key, options?.ignored);
         const emitter = new Emitter<HostFsChange>();
         emitters.set(key, emitter);
         return {
@@ -1267,6 +1271,26 @@ describe('agentsMdReminder discovery cache', () => {
 
     expect(watch.activePaths().length).toBeLessThanOrEqual(2);
     expect(watch.activePaths()).toContain(normalize(directories[2]!));
+  });
+
+  it('limits directory watchers to the directory and its instruction entries', async () => {
+    const watch = watchHarness();
+    const h = createHarness({ hostWatch: watch.service });
+    const subDir = join(workDir, 'packages', 'kap-server');
+    await mkdir(subDir, { recursive: true });
+    h.reminder.seedInjected([], workDir);
+
+    await fire(h, didCtx('Read', { path: join(subDir, 'before.ts') }));
+
+    const ignored = watch.ignored.get(normalize(subDir));
+    expect(ignored).toBeDefined();
+    expect(ignored!(subDir)).toBe(false);
+    expect(ignored!(join(subDir, 'AGENTS.md'))).toBe(false);
+    expect(ignored!(join(subDir, 'agents.md'))).toBe(false);
+    expect(ignored!(join(subDir, '.kiki'))).toBe(false);
+    expect(ignored!(join(subDir, 'before.ts'))).toBe(true);
+    expect(ignored!(join(subDir, 'DumpStack.log'))).toBe(true);
+    expect(ignored!(join(subDir, 'nested', 'AGENTS.md'))).toBe(true);
   });
 
   it('explicitly invalidates the outer directory after writing .kiki/AGENTS.md', async () => {

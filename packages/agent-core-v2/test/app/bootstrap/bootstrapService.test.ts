@@ -1,10 +1,11 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { resolve } from 'node:path';
+import { join as nativeJoin, resolve } from 'node:path';
 import { join } from 'pathe';
 
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { spaceRecordSchema } from '@kiki/protocol';
+import { resetUnexpectedErrorHandler, setUnexpectedErrorHandler } from '#/_base/errors/unexpectedError';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, _clearScopedRegistryForTests, registerScopedService } from '#/_base/di/scope';
 import { createScopedTestHost } from '#/_base/di/test';
@@ -245,6 +246,29 @@ describe('space home bootstrap', () => {
       await expect(store.setText('', 'config.toml', 'default_model = "changed"\n')).rejects.toMatchObject({ code: 'storage.permission_denied' });
       expect(await readFile(join(base, 'config.toml'), 'utf8')).toContain('original');
     } finally { await rm(base, { recursive: true, force: true }); }
+  });
+
+  it('watches base credentials without touching unreadable sibling entries', async () => {
+    const base = await mkdtemp(join(tmpdir(), 'kiki-base-watch-'));
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    let subscription: { dispose(): unknown } | undefined;
+    try {
+      await mkdir(join(base, 'credentials'));
+      await writeFile(join(base, 'credentials', 'credentials.toml'), 'first');
+      const sibling = nativeJoin(base, 'credentials', 'token.lock-target.lock');
+      await symlink(sibling, sibling, process.platform === 'win32' ? 'junction' : 'dir');
+      let changes = 0;
+      subscription = createBaseConfigDocumentStore(base).watch('', 'credentials/credentials.toml')(() => { changes += 1; });
+      await new Promise((r) => setTimeout(r, 500));
+      await writeFile(join(base, 'credentials', 'credentials.toml'), 'second');
+      await vi.waitFor(() => expect(changes).toBeGreaterThan(0), { timeout: 3_000 });
+      expect(unexpected).toEqual([]);
+    } finally {
+      subscription?.dispose();
+      resetUnexpectedErrorHandler();
+      await rm(base, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
 
   it('keeps legacy homes without home.toml unchanged', async () => {

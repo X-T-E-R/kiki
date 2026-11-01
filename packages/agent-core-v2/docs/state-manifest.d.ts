@@ -556,6 +556,7 @@ export interface SessionStateSnapshot {
     readonly createdAt: number;
     readonly updatedAt: number;
     readonly activityUpdatedAt?: number;
+    readonly executionPhase?: 'failed' | 'running' | 'pausing' | 'paused' | 'resuming';
     readonly archived: boolean;
     readonly archivedAt?: number;
     readonly cwd?: string;
@@ -1109,7 +1110,7 @@ export interface AgentStateSnapshot {
           };
         })[];
         readonly im?: {
-          provider_kind: 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix' | `plugin:${string}/${string}`;
+          provider_kind: `plugin:${string}/${string}` | 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix';
           provider_instance_id: string;
           account_id: string;
           identity: {
@@ -1458,7 +1459,7 @@ export interface AgentStateSnapshot {
         };
       })[];
       readonly im?: {
-        provider_kind: 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix' | `plugin:${string}/${string}`;
+        provider_kind: `plugin:${string}/${string}` | 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix';
         provider_instance_id: string;
         account_id: string;
         identity: {
@@ -1735,7 +1736,7 @@ export interface AgentStateSnapshot {
           };
         })[];
         readonly im?: {
-          provider_kind: 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix' | `plugin:${string}/${string}`;
+          provider_kind: `plugin:${string}/${string}` | 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix';
           provider_instance_id: string;
           account_id: string;
           identity: {
@@ -2136,7 +2137,7 @@ export interface AgentStateSnapshot {
         };
       })[];
       readonly im?: {
-        provider_kind: 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix' | `plugin:${string}/${string}`;
+        provider_kind: `plugin:${string}/${string}` | 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix';
         provider_instance_id: string;
         account_id: string;
         identity: {
@@ -2472,7 +2473,7 @@ export interface AgentStateSnapshot {
     readonly goalId: string;
     readonly objective: string;
     readonly completionCriterion?: string;
-    readonly status: /* GoalStatus — packages/agent-core-v2/src/agent/goal/types.ts */ 'blocked' | 'active' | 'paused' | 'complete';
+    readonly status: /* GoalStatus — packages/agent-core-v2/src/agent/goal/types.ts */ 'paused' | 'blocked' | 'active' | 'complete';
     readonly statusActor?: 'user' | 'model' | 'system' | 'runtime';
     readonly followUpTiming: /* GoalFollowUpTiming — packages/agent-core-v2/src/agent/goal/types.ts */ 'subagents_done' | 'tasks_done';
     readonly controlRevision: number;
@@ -7533,7 +7534,7 @@ export interface AgentStateSnapshot {
             };
           })[];
           readonly im?: {
-            provider_kind: 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix' | `plugin:${string}/${string}`;
+            provider_kind: `plugin:${string}/${string}` | 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix';
             provider_instance_id: string;
             account_id: string;
             identity: {
@@ -7804,7 +7805,7 @@ export interface AgentStateSnapshot {
         readonly planMode?: boolean;
         readonly goalObjective?: string;
         readonly goalFollowUpTiming?: 'subagents_done' | 'tasks_done';
-        readonly goalInitialStatus?: 'active' | 'paused';
+        readonly goalInitialStatus?: 'paused' | 'active';
         readonly goalControl?: 'resume' | 'pause' | 'cancel';
       };
       deferredDisabledTools?: string[];

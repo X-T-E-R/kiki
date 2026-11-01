@@ -2,8 +2,26 @@ import { createDecorator } from '#/_base/di/instantiation';
 import type { Event } from '#/_base/event';
 import type { PreparedModelSwitchBinding } from '#/agent/profile/profile';
 import type { Hooks } from '#/hooks';
+import { Error2, ErrorCodes } from '#/errors';
 
 export type ModelSwitchMode = 'direct' | 'compact' | 'fresh';
+
+export function resolveResumeContextMode(input?: {
+  readonly contextMode?: ModelSwitchMode;
+  readonly newWindow?: boolean;
+  readonly allowModelChange?: boolean;
+}): ModelSwitchMode {
+  if (input?.contextMode !== undefined) {
+    if (!['direct', 'compact', 'fresh'].includes(input.contextMode)) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'context_mode must be direct, compact or fresh.');
+    }
+    if (input.newWindow !== undefined || input.allowModelChange !== undefined) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'context_mode is mutually exclusive with new_window and allow_model_change, including false values.');
+    }
+    return input.contextMode;
+  }
+  return input?.newWindow === true ? 'fresh' : 'direct';
+}
 
 /** With `intent: 'setting'`, direct changes coalesce until a queued message requires ordering and apply at the next native request boundary, or immediately while idle. Omit `intent` for an explicitly ordered switch. */
 export interface ModelSwitchInput {

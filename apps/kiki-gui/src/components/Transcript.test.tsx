@@ -1773,6 +1773,25 @@ describe('live and event chrome', () => {
     expect(container.querySelector('[data-block-id="stable-user"]')?.textContent).toContain('delivered prompt');
   });
 
+  it('keeps a queued prompt on a timeline without a queue strip, after the running turn', async () => {
+    const queued = userBlock({ id: 'child-queued', promptId: 'child-queued', text: 'queued for the child', promptStatus: 'queued' });
+    const running = userBlock({ id: 'child-running', promptId: 'child-running', text: 'current work', turnId: 't1' });
+    const reply = assistantBlock('child-reply', 'still working', { turnId: 't1' });
+    const hidden = await renderTranscript([running, queued, reply]);
+    expect(hidden.textContent).not.toContain('queued for the child');
+
+    const container = await renderTranscript([running, queued, reply], undefined, undefined, { showQueuedPrompts: true });
+    const rows = [...container.querySelectorAll('[data-block-id]')].map((row) => row.getAttribute('data-block-id'));
+    expect(rows.indexOf('child-queued')).toBeGreaterThan(rows.indexOf('child-reply'));
+    const queuedRow = container.querySelector('[data-block-id="child-queued"]');
+    expect(queuedRow?.textContent).toContain('queued for the child');
+    expect(queuedRow?.querySelector('[data-prompt-queued]')?.textContent).toBe('Queued');
+
+    const delivered = await renderTranscript([running, reply, { ...queued, promptStatus: undefined, turnId: 't2' }], undefined, undefined, { showQueuedPrompts: true });
+    expect(delivered.querySelectorAll('[data-block-id="child-queued"]')).toHaveLength(1);
+    expect(delivered.querySelector('[data-prompt-queued]')).toBeNull();
+  });
+
   it('keeps an older-page failure retryable when queued prompts leave the timeline empty', async () => {
     const queued = userBlock({ id: 'queued-error', text: 'pending prompt', promptStatus: 'queued' });
     const onLoadOlder = vi.fn(async () => true);

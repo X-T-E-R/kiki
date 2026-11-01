@@ -11,6 +11,7 @@ import type { ImPendingApproval, ImPendingQuestion, ImSessionPorts, ImSubmitResu
 
 const identity: ImInboundIdentity = { chatId: 'c1', senderId: 'u1', topicId: '0', chatTitle: 'Ada', senderName: 'Ada' };
 const other: ImInboundIdentity = { chatId: 'c1', senderId: 'u2', topicId: '0' };
+type ImSubmitInput = Parameters<ImSessionPorts['sessions']['submit']>[0];
 
 function ports(overrides: Partial<ImSessionPorts['sessions']> = {}, initialState = ''): { ports: ImSessionPorts; submitted: ImSubmitResult[]; decisions: string[]; answers: string[]; saved: string[]; saveCount: { value: number } } {
   const secrets = new Map<string, string>();
@@ -363,7 +364,7 @@ describe('im session bridge', () => {
 
   it('keeps current text distinct from a quoted private-chat message', async () => {
     const adapter = new FakeImAdapter('telegram', '42');
-    const submitted: { content: readonly import('@kiki/protocol').MessageContent[]; im?: import('@kiki/protocol').ImMessageMetadata }[] = [];
+    const submitted: { content: ImSubmitInput['content']; im?: ImSubmitInput['im'] }[] = [];
     const harness = bridgeFor(adapter, ports({ submit: async (input) => {
       submitted.push({ content: input.content, im: input.im });
       return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' };

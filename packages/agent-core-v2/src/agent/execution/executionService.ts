@@ -111,7 +111,7 @@ export class AgentExecutionService implements IAgentExecutionService {
     }
     options.signal.throwIfAborted();
     const control = this.agent.accessor.get(ISessionExecutionControl);
-    await control.ready();
+    if (control.isHeld()) await control.ready();
     if (control.isHeld()) {
       await new Promise<void>((resolve, reject) => {
         const cleanup = (): void => { subscription.dispose(); options.signal.removeEventListener('abort', aborted); };
@@ -201,6 +201,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       session = await this.resolveSession();
       controller.signal.throwIfAborted();
       this.broken = undefined;
+      if ((binding.executorId ?? 'native') !== 'native') await options.onBeforeExternalRun?.();
       const handle = await session.run(outbound, { ...options, signal: controller.signal });
       active.turnId = handle.turn.id;
       this.statusChanged.fire(this.status());

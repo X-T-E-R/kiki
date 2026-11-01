@@ -1,6 +1,6 @@
 # Memory
 
-Kiki remembers the things you would otherwise re-explain every session: how you like your code reviewed, which project fact you confirmed last week, where a reference lives. Memory is on by default, entries are stored on the machine running Kiki, and every write shows up as one line in the conversation. The optional [Memory Advisor](#memory-advisor) uses a model you choose to pick relevant saved entries.
+Kiki remembers the things you would otherwise re-explain every session: how you like your code reviewed, which project fact you confirmed last week, where a reference lives. Memory is on by default, entries are stored on the machine running Kiki, and every write shows up as one line in the conversation. The optional [Memory Advisor](#memory-advisor) uses a decision service or chat model you choose to pick the relevant saved entries for each turn.
 
 This page covers the scope choices on the **/memory** page, reviewed Markdown edits, the review inbox, model-assisted recommendations, and how to turn memory off. For what the agent does inside one session — compression, the message queue, the task board — see [Work that runs long](/en/features/long-work).
 
@@ -68,7 +68,9 @@ The list and Inbox show available entries as they arrive and keep reading automa
 
 ### Change history and undo
 
-Every change to an entry is recorded. Each history row shows the before and after and offers **Undo** for that one operation, deletes included — which is why the delete confirmation says you can undo it.
+Every change to an entry is recorded. Each history row shows the before and after and offers **Undo** for that one operation, deletes included: **Delete** runs at once, the notice it shows carries **Undo**, and the entry's history keeps that undo available afterwards.
+
+**Forget permanently** is different, and it is the one memory action that cannot be undone. It removes every entry that shares this entry's source, with their revisions and sources, and leaves a barrier so the content cannot be imported back. So it always previews the exact set first and runs only after you tick "I understand this cannot be undone". If the set changed after the preview, nothing is forgotten; preview again.
 
 If the entry changed while you had it open, saving is refused and you are asked to reload first, so your edit cannot overwrite the newer version. Reload and re-apply what you meant to change.
 
@@ -100,9 +102,15 @@ The API can also save a governed recovery package and switch SQLite to read-only
 
 ## The review inbox
 
-Memory approval has three settings. The default, **auto**, applies a write the agent proposes right away. Set it to **review** and a proposed update or archive waits for you. With `auto` there is nothing pending, so no **Inbox** tab appears at all.
+**New memory entries** in **Settings → Memory** decides when an agent's write takes effect. It has three settings (`[memory] approval` in `config.toml`):
 
-While a proposal waits, the original entry keeps its current content and stays in effect. **Keep** applies the proposal — an update replaces the text of the entry it supersedes, an archive archives that entry. **Discard** drops only the proposal and leaves the original untouched. A proposal is not active guidance: it is not used as a premise, and an agent's own write cannot approve it, only you can.
+- **Save automatically** (`auto`, the default): the agent's writes apply right away.
+- **Review in Inbox** (`review`): every create, update or archive the agent makes becomes a proposal that waits for you in the **Inbox** tab on **/memory**.
+- **Do not save automatically** (`off`): the agent no longer gets `MemoryWrite`, so it adds and changes nothing; saved memory stays readable and searchable.
+
+Only `review` produces pending proposals, so the **Inbox** tab appears only under that setting.
+
+While a proposal waits, the original entry keeps its current content and stays in effect. **Keep** applies the proposal: a new entry becomes active, an update replaces the text of the entry it supersedes, an archive archives that entry. **Discard** drops only the proposal and leaves the original untouched. A proposal is not active guidance: it is not used as a premise, and an agent's own write cannot approve it, only you can.
 
 ## Memory Advisor
 

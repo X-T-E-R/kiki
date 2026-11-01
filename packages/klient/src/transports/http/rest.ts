@@ -221,6 +221,7 @@ export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFaca
           archived_only: query.archived_only,
           q: query.q,
           exclude_empty: query.exclude_empty,
+          pinned: query.pinned,
           workspace_id: query.workspace_id,
           persona: query.persona,
         },

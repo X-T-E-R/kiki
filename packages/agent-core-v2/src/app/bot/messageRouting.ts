@@ -1,38 +1,7 @@
-import { createDecorator, type ServiceIdentifier, type LiveRef } from '#/_base/di/instantiation';
+import { createDecorator, type LiveRef, type ServiceIdentifier } from '#/_base/di/instantiation';
+import type { MessageAttachmentReceipt, SendMessageReceipt } from '@kiki-dsh/im-bridge-core/messageRouting';
 
-export interface MessageAttachmentReceipt {
-  readonly blobId: string;
-  readonly path: string;
-  readonly title?: string;
-  readonly mimeType?: string;
-  readonly size?: number;
-  readonly kind?: string;
-}
-
-export interface MessageSenderIdentity {
-  readonly personaId?: string;
-  readonly name?: string;
-  readonly sessionId: string;
-}
-
-export interface MessageHandoffReceipt {
-  readonly targetPersonaId: string;
-  readonly targetSessionId: string;
-  readonly targetName: string;
-  readonly messageId?: string;
-}
-
-export interface SendMessageReceipt {
-  readonly messageId: string;
-  readonly deliveredTo: readonly string[];
-  readonly attachments?: readonly MessageAttachmentReceipt[];
-  readonly sender?: MessageSenderIdentity;
-  readonly handoff?: MessageHandoffReceipt;
-  readonly deduplicated?: boolean;
-  readonly delivery?: 'pending' | 'delivered' | 'undeliverable';
-  readonly channels?: readonly import('./userMessageRouting').MessageChannelReceipt[];
-}
-
+export type { MessageAttachmentReceipt, MessageSenderIdentity, MessageHandoffReceipt, SendMessageReceipt } from '@kiki-dsh/im-bridge-core/messageRouting';
 export * from './userMessageRouting';
 
 export interface RoomBotMessageInput {

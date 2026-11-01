@@ -39,6 +39,7 @@ import { IAgentPromptService, reservePrompt } from '#/agent/prompt/prompt';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { GoalUpdate } from '#/agent/goal/goalOps';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import {
   agentService,
   sessionService,
@@ -968,6 +969,86 @@ describe('task notification → main agent (real Agent instance)', () => {
         expect(goals.getGoal().goal).toEqual(expectedGoal);
       }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
     );
+
+    it.each(['interrupt', 'user', 'runtime'] as const)(
+      'PAUSED GOAL: a %s goal pause still lets goal children wake idle main', async (control) => {
+        const goals = ctx.get(IAgentGoalService);
+        const goal = await goals.createGoal({ objective: 'finish delegated work', followUpTiming: 'subagents_done' });
+        const completions = [createControlledPromise<{ result: string }>(), createControlledPromise<{ result: string }>()];
+        const taskIds: string[] = [];
+        const hook = loop.hooks.onDidFinishStep.register('test.goal-children', async (step, next) => {
+          await hook.dispose();
+          for (const [index, completion] of completions.entries()) {
+            taskIds.push(background.registerTask(new SubagentTask(
+              { agentId: `agent-goal-child-${index}`, profileName: 'coder', completion },
+              `goal child ${index}`, new AbortController(),
+            )));
+          }
+          if (control === 'interrupt') loop.cancel(step.turnId);
+          await next();
+        });
+        try {
+          ctx.mockNextResponse({ type: 'text', text: 'delegated the work' });
+          await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start delegated work' }] });
+          await ctx.untilTurnEnd();
+          await loop.settled();
+          if (control !== 'interrupt') await goals.pauseGoal({}, control);
+          ctx.mockNextResponse({ type: 'text', text: 'answered an unrelated question' });
+          await ctx.rpc.prompt({ input: [{ type: 'text', text: 'unrelated question' }] });
+          await ctx.untilTurnEnd();
+          await loop.settled();
+          expect(goals.getGoal().goal).toMatchObject({ goalId: goal.goalId, status: 'paused' });
+          for (const taskId of taskIds) expect(background.getTask(taskId)?.goalId).toBe(goal.goalId);
+          const turnsUsed = goals.getGoal().goal?.turnsUsed;
+          const calls = ctx.llmCalls.length;
+          for (const [index, completion] of completions.entries()) {
+            ctx.mockNextResponse({ type: 'text', text: `received child ${index}` });
+            const ended = ctx.untilTurnEnd();
+            completion.resolve({ result: `goal child receipt ${index}` });
+            await background.wait(taskIds[index]!);
+            await ended;
+            await loop.settled();
+            expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).toContain(`goal child receipt ${index}`);
+          }
+          expect(notifiedCount(ctx)).toBe(2);
+          expect(ctx.llmCalls).toHaveLength(calls + 2);
+          expect(goals.getGoal().goal).toMatchObject({ status: 'paused', turnsUsed });
+          expect(ctx.context.get().filter((m) => m.origin?.kind === 'system_trigger' && m.origin.name === 'goal_continuation')).toHaveLength(0);
+        } finally {
+          for (const completion of completions) completion.resolve({ result: 'cleanup' });
+          await hook.dispose();
+        }
+      }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS,
+    );
+
+    it('EXECUTION PAUSE: holds an idle completion wakeup until execution resumes', async () => {
+      const control = ctx.get(ISessionExecutionControl);
+      const goals = ctx.get(IAgentGoalService);
+      await goals.createGoal({ objective: 'finish delegated work' });
+      await goals.pauseGoal();
+      const completion = createControlledPromise<{ result: string }>();
+      const taskId = background.registerTask(agentTask(completion, 'held by execution pause'));
+      await control.pause({ operationId: 'notification-pause' });
+      await vi.waitFor(async () => expect(await control.read()).toMatchObject({ phase: 'paused' }));
+      const enqueue = vi.spyOn(loop, 'enqueue');
+      completion.resolve({ result: 'receipt held while paused' });
+      await background.wait(taskId);
+      await vi.waitFor(() => expect(enqueue.mock.calls.some(([r]) => r.kind === 'task_notification')).toBe(true));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(ctx.llmCalls).toHaveLength(0);
+      expect(notifiedCount(ctx)).toBe(0);
+      expect(loop.status().activeTurnId).toBeUndefined();
+      ctx.mockNextResponse({ type: 'text', text: 'received after resume' });
+      const ended = ctx.untilTurnEnd();
+      await control.resume({ operationId: 'notification-resume', pauseOperationId: 'notification-pause' });
+      await ended;
+      await loop.settled();
+      expect(notifiedCount(ctx)).toBe(1);
+      expect(ctx.llmCalls).toHaveLength(1);
+      expect(JSON.stringify(ctx.llmCalls[0]!.history)).toContain('receipt held while paused');
+      expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === taskId)).toHaveLength(1);
+      expect(goals.getGoal().goal?.status).toBe('paused');
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it.each(['issuing turn', 'earlier task', 'new task'] as const)(
       'CANCELLED TURN: applies wake protection only to its own task (%s)', async (owner) => {

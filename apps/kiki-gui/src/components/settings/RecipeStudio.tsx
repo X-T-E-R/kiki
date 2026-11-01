@@ -25,11 +25,12 @@ import {
 } from '../../lib/recipes';
 import { useConnection } from '../../state/connection';
 import { ConfirmDialog } from '../ConfirmDialog';
-import { FeedbackLine, Hint, type Feedback } from '../controls';
+import { FeedbackLine, type Feedback } from '../controls';
 import { FORM_LABEL, SettingsDetailLayout } from './SettingsPrimitives';
 import { DownloadZipButton } from './DownloadZipButton';
 import { RecipeDetailBody } from './RecipeDetailBody';
-import { RecipeHookConsentBody, RecipeHookScripts } from './RecipeHookScripts';
+import { RecipeHookConsentBody } from './RecipeHookScripts';
+import { RecipeImportForm } from './RecipeImportForm';
 import { SMALL_INPUT } from '../ui';
 
 type PickerTab = 'installed' | 'market' | 'import';
@@ -407,128 +408,4 @@ function useRecipeMarketInstall(
   return { previewAndInstall, install, awaitingConsent, setAwaitingConsent };
 }
 
-/**
- * Import by link or local path; a ZIP additionally carries its digest.
- *
- * The preview is the frozen candidate: it is what the person reads, and it is
- * what gets installed. Nothing is re-resolved at install time, so a command
- * shown in the confirmation is the command that runs.
- *
- * When that candidate declares script hooks the confirmation grows the commands,
- * their events, their sources and their resource files, and says plainly what
- * agreeing authorizes. The button is still "Install and apply", and pressing it
- * is still one decision — there is no second dialog and no separate approval
- * step. `consent` is sent only for a candidate that asked for it, so an ordinary
- * package keeps sending exactly the request it always sent.
- */
-function RecipeImportForm({ onInstalled, onApply }: {
-  onInstalled: (installationId: string) => void;
-  onApply: (installationId: string) => Promise<void>;
-}) {
-  const { t, locale } = useI18n();
-  const [locator, setLocator] = useState('');
-  const [sha256, setSha256] = useState('');
-  const [previewed, setPreviewed] = useState<RecipePreview | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
-  const { client } = useConnection();
 
-  const preview = useRecipeMutation(
-    async (input: { locator: string; sha256?: string }) => client.previewRecipe({ source: { locator: input.locator, sha256: input.sha256 } }),
-    { onSuccess: setPreviewed, onError: (error) => { setPreviewed(null); setFailure(t('st.recipe.previewFailed', { detail: errorText(locale, error) })); } },
-  );
-  const install = useRecipeMutation(
-    async (input: { preview: RecipePreview; applyAfterInstall: boolean }) =>
-      client.installRecipe({ preview_id: input.preview.preview_id, ...recipeConsentField(input.preview) }),
-    {
-      onSuccess: (summary, input) => {
-        setFailure(null);
-        setPreviewed(null);
-        onInstalled(summary.installation_id);
-        if (input.applyAfterInstall) void onApply(summary.installation_id);
-      },
-      onError: (error) => { setFailure(t('st.recipe.installFailed', { detail: errorText(locale, error) })); },
-    },
-  );
-
-  const isZip = locator.trim().toLowerCase().endsWith('.zip');
-  const hooks = previewed?.hooks;
-  const needsConsent = previewed !== null && recipePreviewNeedsConsent(previewed);
-
-  return (
-    <form className="min-w-0 space-y-3" data-recipe-import
-      onSubmit={(event) => { event.preventDefault(); }}>
-      <label className={FORM_LABEL}>
-        {t('st.recipe.source')}
-        <input className={`${SMALL_INPUT} mt-1 w-full font-mono`} value={locator} data-recipe-import-locator
-          placeholder="https://example.com/recipes/clear-work/recipe.toml"
-          onChange={(event) => { setLocator(event.target.value); setPreviewed(null); }} />
-      </label>
-      <label className={FORM_LABEL}>
-        {t('st.recipe.sha256')}
-        <input className={`${SMALL_INPUT} mt-1 w-full font-mono`} value={sha256} data-recipe-import-sha
-          disabled={!isZip && sha256.trim() === ''}
-          placeholder={isZip ? t('st.recipe.sha256Required') : t('st.recipe.sha256Optional')}
-          onChange={(event) => { setSha256(event.target.value); setPreviewed(null); }} />
-      </label>
-      <Hint>{t('st.recipe.sourceHelp')}</Hint>
-      <div className="flex flex-wrap gap-2">
-        <button type="button" className={SECONDARY} disabled={preview.isPending || locator.trim() === ''}
-          data-recipe-preview
-          onClick={() => {
-            const trimmed = sha256.trim();
-            preview.mutate({ locator: locator.trim(), sha256: trimmed === '' ? undefined : trimmed });
-          }}>
-          {t(preview.isPending ? 'st.recipe.preparing' : 'st.recipe.previewRecipe')}
-        </button>
-      </div>
-
-      {previewed !== null ? (
-        <div className="space-y-2 pt-3" data-recipe-preview>
-          <p className="font-display text-[15px] text-ink">{previewed.summary.name}</p>
-          <p className="font-mono text-[11px] text-ink-faint">
-            {previewed.summary.version} · {recipeRevisionShort(previewed.resolved.revision)}
-          </p>
-          {previewed.summary.description !== undefined ? (
-            <p className="text-[12px] leading-5 text-ink-soft">{previewed.summary.description}</p>
-          ) : null}
-          {/*
-            A candidate that has not been authorized here gets the whole argument
-            inline, above the same two buttons that were always there. Pressing
-            "Install and apply" *is* the consent — there is no second dialog and
-            no separate approval step, because a person who was shown a command
-            and what it can reach has nothing left to confirm.
-          */}
-          {needsConsent && hooks !== undefined ? (
-            <RecipeHookConsentBody hooks={hooks} name={previewed.summary.name} />
-          ) : hooks === undefined || hooks.scripts.length === 0 ? null : (
-            /* Already trusted on this machine: shown, but with nothing to decide. */
-            <RecipeHookScripts hooks={hooks} />
-          )}
-          {previewed.diagnostics.length === 0 ? null : (
-            <ul className="space-y-1" data-recipe-preview-diagnostics>
-              {previewed.diagnostics.map((diagnostic, index) => (
-                <li key={index} className="text-[12px] leading-5 text-amber-ink">
-                  {diagnostic.path === undefined ? diagnostic.message : `${diagnostic.path}: ${diagnostic.message}`}
-                </li>
-              ))}
-            </ul>
-          )}
-          <div className="flex flex-wrap gap-2">
-            <button type="button" className={PRIMARY} disabled={install.isPending}
-              data-recipe-install-apply
-              onClick={() => { install.mutate({ preview: previewed, applyAfterInstall: true }); }}>
-              {t('st.recipe.installAndApply')}
-            </button>
-            <button type="button" className={SECONDARY} disabled={install.isPending}
-              data-recipe-install-only
-              onClick={() => { install.mutate({ preview: previewed, applyAfterInstall: false }); }}>
-              {t('st.recipe.installOnly')}
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      {failure !== null ? <p role="alert" className="text-[12px] leading-5 text-danger">{failure}</p> : null}
-    </form>
-  );
-}

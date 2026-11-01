@@ -82,6 +82,8 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { createFakeProcessRunner } from '../tools/fixtures/fake-exec';
 import { StubConfigService } from '../kosong/stubs';
 import { stubFlag } from '../app/flag/stubs';
+import { stubExecutionControl } from '../session/executionControl/stubs';
+import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import {
   agentService,
   appService,
@@ -257,6 +259,7 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
         if (service !== undefined) return service as never;
         if (serviceId === IAgentLifecycleService) return lifecycle as never;
         if (serviceId === ISessionSubagentService) return lifecycle as never;
+        if (serviceId === ISessionExecutionControl) return stubExecutionControl() as never;
         if (serviceId === IAgentScopeContext) {
           return makeAgentScopeContext({ agentId, agentScope: agentId === 'main' ? '' : `agents/${agentId}`, parentAgentId: agentId === 'main' ? undefined : 'main' }) as never;
         }
@@ -460,6 +463,7 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
       servicesByAgentId.delete(agentId);
     },
     notifyAgentTaskStopped: vi.fn(),
+    retain: () => ({ dispose() {} }),
     trackPromptRun: (_agentId, _completion, signal) => signal,
     fork: vi.fn(async () => {
       throw new Error('unexpected fork');
@@ -2226,7 +2230,7 @@ describe('AgentRun tool execution contract', () => {
     const requester = {
       id: 'main', kind: LifecycleScope.Agent,
       accessor: {
-        get: ((serviceId: unknown) => serviceId === IEventDispatcher ? dispatcher : undefined) as IAgentScopeHandle['accessor']['get'],
+        get: ((serviceId: unknown) => serviceId === IEventDispatcher ? dispatcher : serviceId === ISessionExecutionControl ? stubExecutionControl() : undefined) as IAgentScopeHandle['accessor']['get'],
       },
       dispose: () => {},
     } satisfies IAgentScopeHandle;
@@ -2268,6 +2272,7 @@ describe('AgentRun tool execution contract', () => {
               if (current !== undefined) await registerAgent(agentId, updater(structuredClone(current)));
             } };
           if (serviceId === IEventDispatcher) return { dispatch };
+          if (serviceId === ISessionExecutionControl) return stubExecutionControl();
           if (serviceId === IAgentLifecycleService) return {
             get: () => ({ accessor: { get: () => ({ statusSize: () => 23 }) } }),
           };
@@ -2541,7 +2546,7 @@ describe('AgentRun tool execution contract', () => {
     expect(result).toMatchObject({
       isError: true,
       output:
-        'subagent error: Agent instance "agent-existing" is already running and cannot run concurrently',
+        'subagent error: Agent instance "agent-existing" is already running and cannot run concurrently. Use AgentSend to give it this input while it runs.',
     });
     expect(lifecycle.run).not.toHaveBeenCalled();
   });

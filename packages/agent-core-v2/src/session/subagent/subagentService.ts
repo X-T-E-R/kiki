@@ -58,6 +58,7 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     readonly settled: Promise<void>;
   }>();
   private readonly pendingReleases = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly retained = new WeakMap<IAgentScopeHandle, number>();
   private stopped = false;
 
   get onDidStopAgentTask() {
@@ -131,6 +132,9 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
         summaryPolicy: opts.summaryPolicy ?? this.summaryPolicyFor(handle),
         signal: opts.signal,
         onReady: opts.onReady,
+        onQueued: opts.onQueued,
+        onBeforeExternalRun: opts.onBeforeExternalRun,
+        onExternalRunNotSent: opts.onExternalRunNotSent,
         capacityReservation: opts.capacityReservation,
       })
       .then((run) => {
@@ -143,6 +147,21 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
         if (this.agentLifecycle.get(agentId) === handle) this.scheduleRelease(agentId);
         return Promise.reject(error);
       });
+  }
+
+  retain(agentId: string): import('#/_base/di/lifecycle').ISyncDisposable {
+    const handle = this.agentLifecycle.get(agentId);
+    if (handle === undefined) throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `Agent "${agentId}" does not exist`, { details: { agentId } });
+    this.retained.set(handle, (this.retained.get(handle) ?? 0) + 1);
+    this.cancelRelease(agentId);
+    return toDisposable(() => {
+      const remaining = (this.retained.get(handle) ?? 1) - 1;
+      if (remaining > 0) this.retained.set(handle, remaining);
+      else {
+        this.retained.delete(handle);
+        if (this.agentLifecycle.get(agentId) === handle) this.scheduleRelease(agentId);
+      }
+    });
   }
 
   trackPromptRun(agentId: string, completion: Promise<unknown>, signal: AbortSignal): AbortSignal {
@@ -188,7 +207,7 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
     if (this.stopped || !this.flags.enabled(SUBAGENT_RELEASE_IDLE_FLAG)) return;
     const handle = this.agentLifecycle.get(agentId);
     if (handle === undefined) return;
-    if ([...this.pendingReceipts].some((receipt) => receipt.child === handle) || !isReleasable(handle)) {
+    if (this.retained.has(handle) || [...this.pendingReceipts].some((receipt) => receipt.child === handle) || !isReleasable(handle)) {
       this.scheduleRelease(agentId, false);
       return;
     }
