@@ -1,4 +1,4 @@
-import { dirname, join, normalize } from 'pathe';
+import { basename, dirname, join, normalize } from 'pathe';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { isPromiseLike } from '#/_base/lifecycle/disposer';
@@ -12,6 +12,7 @@ import type { Runtime, RuntimeLease } from '#/runtime/runtime';
 
 const DISCOVERY_CACHE_TTL_MS = 5_000;
 const MAX_DIRECTORY_WATCHERS = 64;
+const WATCHED_ENTRY_NAMES = new Set(['.kiki', ...AGENTS_MD_PLAIN_NAMES.map((name) => name.toLowerCase())]);
 
 interface DirectoryEntry {
   readonly paths: readonly string[];
@@ -200,7 +201,15 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
     const resources = new DisposableStore();
     let entry: WatchEntry;
     try {
-      const handle = resources.add(watch.watch(watchPath, { recursive: false }));
+      const handle = resources.add(watch.watch(watchPath, {
+        recursive: false,
+        ignored: (changed: string) => {
+          const changedKey = pathKey(changed, pathClass);
+          if (changedKey === watchKey) return false;
+          if (pathKey(dirname(changed), pathClass) !== watchKey) return true;
+          return !WATCHED_ENTRY_NAMES.has(basename(changed).toLowerCase());
+        },
+      }));
       resources.add(
         handle.onDidChange((event) => {
           const changedKey = pathKey(event.path, pathClass);
