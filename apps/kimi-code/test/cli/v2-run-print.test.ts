@@ -17,10 +17,13 @@ import {
   IConfigService,
   IEventBus,
   IEventDispatcher,
+  IHomeRuntimeService,
   ISessionCronService,
   ISessionIndex,
   ISessionManager,
   ISessionMetadata,
+  IThreadCommunicationService,
+  IThreadMailboxStore,
   IAgentLoopService,
   type BootstrapInput,
   type Event2,
@@ -149,6 +152,7 @@ function makeFakeHarness() {
       countPendingBackgroundTasks: vi.fn(() => 0),
       drainBackgroundTasks: vi.fn(async () => {}),
       list: vi.fn(() => [agent]),
+      get: vi.fn(() => agent),
     }],
     [ISessionCronService, { getNextFireTime: vi.fn(() => null) }],
     [ISessionMetadata, { read: vi.fn(async () => ({ id: 'ses_v2', createdAt: 1, updatedAt: 1, archived: false })) }],
@@ -161,6 +165,9 @@ function makeFakeHarness() {
       inspect: vi.fn(() => ({ value: {} })), set: vi.fn(async () => {}), diagnostics: vi.fn(() => []),
     }],
     [IAuthSummaryService, { ensureReady: vi.fn(async () => {}) }],
+    [IThreadCommunicationService, { shutdown: vi.fn(async () => {}) }],
+    [IThreadMailboxStore, { close: vi.fn(async () => {}) }],
+    [IHomeRuntimeService, { close: vi.fn(async () => {}) }],
     [ISessionManager, {
       create: vi.fn(async () => session), resume: vi.fn(async () => session),
       get: vi.fn(() => session), list: vi.fn(() => [session]), close: vi.fn(async () => {}), delete: vi.fn(async () => {}),
@@ -348,7 +355,7 @@ describe('runV2Print', () => {
       cwd.mockRestore();
       mocks.resolveKikiHome.mockImplementation((home?: string) => home ?? '/tmp/kimi-code-test-home');
       server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => { resolve(); }));
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   }, 60_000);
@@ -368,9 +375,9 @@ describe('runV2Print', () => {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         const base = { id: 'history-local', object: 'chat.completion.chunk', created: 1, model: 'gpt-4o-mini' };
         const calls = requests.length === 2 ? [
-          { index: 0, id: 'current-turns', type: 'function', function: { name: 'HistoryList', arguments: JSON.stringify({ kind: 'turns' }) } },
-          { index: 1, id: 'current-agents', type: 'function', function: { name: 'HistoryList', arguments: JSON.stringify({ kind: 'agents' }) } },
-          { index: 2, id: 'prior-turns', type: 'function', function: { name: 'HistoryList', arguments: JSON.stringify({ kind: 'turns', session_id: priorSessionId }) } },
+          { index: 0, id: 'current-turns', type: 'function', function: { name: 'HistoryList', arguments: JSON.stringify({ raw: true, kind: 'turns' }) } },
+          { index: 1, id: 'current-agents', type: 'function', function: { name: 'HistoryList', arguments: JSON.stringify({ raw: true, kind: 'agents' }) } },
+          { index: 2, id: 'prior-turns', type: 'function', function: { name: 'HistoryList', arguments: JSON.stringify({ raw: true, kind: 'turns', session_id: priorSessionId }) } },
         ] : undefined;
         const delta = calls === undefined ? { role: 'assistant', content: requests.length === 1 ? 'PRIOR_REPLY' : 'HISTORY_OK' } : { role: 'assistant', tool_calls: calls };
         res.write(`data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
@@ -411,7 +418,7 @@ describe('runV2Print', () => {
       cwd.mockRestore();
       mocks.resolveKikiHome.mockImplementation((home?: string) => home ?? '/tmp/kimi-code-test-home');
       server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => { resolve(); }));
       await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   }, 90_000);
@@ -439,7 +446,7 @@ describe('runV2Print', () => {
       } };
     });
     const loop = agentServices.get(IAgentLoopService) as { cancelFromUser: ReturnType<typeof vi.fn> };
-    loop.cancelFromUser.mockImplementation(() => finish());
+    loop.cancelFromUser.mockImplementation(() => { finish(); });
     const handlers = new Map<NodeJS.Signals, () => Promise<void>>();
     const exit = vi.fn();
     const run = runV2Print(opts({ session: 'ses_v2', permissionMode }) as never, 'test', {
@@ -538,7 +545,7 @@ describe('runV2Print', () => {
     sessions.close.mockImplementation(async () => {
       order.push('close');
     });
-    (app.dispose as ReturnType<typeof vi.fn>).mockImplementation(() => {
+    app.dispose.mockImplementation(() => {
       order.push('dispose');
     });
 

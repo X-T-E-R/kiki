@@ -4,8 +4,11 @@ import {
   IConfigService,
   IEventDispatcher,
   IHistoryArchive,
+  IHomeRuntimeService,
   ISessionIndex,
   ISessionManager,
+  IThreadCommunicationService,
+  IThreadMailboxStore,
   applyPrintModeConfigDefaults,
   logSeed,
   resolveLoggingConfig,
@@ -97,7 +100,19 @@ export async function createPrintClient(
         try {
           await klient.close();
         } finally {
-          await app.dispose();
+          try {
+            await app.accessor.get(IThreadCommunicationService).shutdown();
+          } finally {
+            try {
+              await app.accessor.get(IThreadMailboxStore).close();
+            } finally {
+              try {
+                await app.accessor.get(IHomeRuntimeService).close();
+              } finally {
+                await app.dispose();
+              }
+            }
+          }
         }
       })(),
     };
