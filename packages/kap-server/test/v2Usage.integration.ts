@@ -341,11 +341,15 @@ describe('server /api/usage', () => {
   }
 
   async function getData(query = ''): Promise<UsageResponse> {
-    const { status, body } = await get(query);
-    expect(status).toBe(200);
-    expect(body.code).toBe(0);
-    expect(typeof body.request_id).toBe('string');
-    return usageResponseSchema.parse(body.data);
+    return vi.waitFor(async () => {
+      const { status, body } = await get(query);
+      expect(status).toBe(200);
+      expect(body.code).toBe(0);
+      expect(typeof body.request_id).toBe('string');
+      const data = usageResponseSchema.parse(body.data);
+      expect(data.reliability).toMatchObject({ complete: true, incomplete_reason: null });
+      return data;
+    });
   }
 
   it('serves native source grouping and repeated profile filters with precise session attribution', async () => {
