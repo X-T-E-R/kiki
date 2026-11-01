@@ -7,6 +7,7 @@ import { join } from 'pathe';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IAgentProfileService, type ResolvedAgentProfile } from '#/agent/profile/profile';
+import { IAgentExecutionService } from '#/agent/execution/execution';
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import {
   Error2,
@@ -420,6 +421,7 @@ describe('Agent config', () => {
     `);
 
     ctx.mockNextResponse({ type: 'text', text: 'Now the changed config is active.' });
+    await ctx.get(IAgentExecutionService).settled();
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Start a fresh turn' }] });
 
     expect(await ctx.untilTurnEnd()).toMatchInlineSnapshot(`

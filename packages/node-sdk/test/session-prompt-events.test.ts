@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import { KIMI_CODE_PLATFORM } from '@kiki/oauth';
+import { drainSessionMetadataWrites } from '@kiki/agent-core-v2';
 import type { ProtocolAdapterConfig } from '@kiki/agent-core-v2/kosong/protocol/protocol';
 import { ProtocolAdapterRegistry } from '@kiki/agent-core-v2/kosong/provider/protocolAdapterRegistry';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -156,6 +157,7 @@ describe('Session.prompt events', () => {
       await done;
 
       const statePath = join(session.summary!.sessionDir, 'state.json');
+      await drainSessionMetadataWrites();
       const firstState = JSON.parse(await readFile(statePath, 'utf-8')) as Record<string, unknown>;
       expect(firstState['title']).toBe('use api_key=[redacted] for the request');
       expect(firstState['isCustomTitle']).toBe(false);
@@ -176,6 +178,7 @@ describe('Session.prompt events', () => {
       await session.prompt('second prompt');
       await done;
 
+      await drainSessionMetadataWrites();
       const secondState = JSON.parse(await readFile(statePath, 'utf-8')) as Record<string, unknown>;
       expect(secondState['title']).toBe('use api_key=[redacted] for the request');
       expect(secondState['isCustomTitle']).toBe(false);
@@ -195,6 +198,7 @@ describe('Session.prompt events', () => {
       await done;
       unsubscribe();
 
+      await drainSessionMetadataWrites();
       const mediaState = JSON.parse(await readFile(statePath, 'utf-8')) as Record<string, unknown>;
       expect(mediaState['title']).toBe('use api_key=[redacted] for the request');
       expect(mediaState['lastPrompt']).toBe('[image]');

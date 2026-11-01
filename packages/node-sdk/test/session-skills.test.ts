@@ -7,6 +7,7 @@
 import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { drainSessionMetadataWrites } from '@kiki/agent-core-v2';
 import type { ProtocolAdapterConfig } from '@kiki/agent-core-v2/kosong/protocol/protocol';
 import { ProtocolAdapterRegistry } from '@kiki/agent-core-v2/kosong/provider/protocolAdapterRegistry';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
@@ -244,6 +245,7 @@ describe('Session skills', () => {
       });
 
       const statePath = join(session.summary!.sessionDir, 'state.json');
+      await drainSessionMetadataWrites();
       const state = JSON.parse(await readFile(statePath, 'utf-8')) as Record<string, unknown>;
       expect(state['title']).toBe('/review src/app.ts');
       expect(state['isCustomTitle']).toBe(false);

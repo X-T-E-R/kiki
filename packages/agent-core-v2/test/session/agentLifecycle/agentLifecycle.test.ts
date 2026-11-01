@@ -1518,7 +1518,7 @@ describe('AgentLifecycleService', () => {
     } as unknown as ISessionMetadata);
     ix.stub(IModelCatalog, {
       _serviceBrand: undefined,
-      get: () => ({ providerName: 'test-provider', capabilities: UNKNOWN_CAPABILITY }),
+      get: () => ({ providerName: 'test-provider', capabilities: UNKNOWN_CAPABILITY, supportEfforts: ['high'] }),
     } as unknown as IModelCatalog);
     const svc = ix.get(IAgentLifecycleService);
 
@@ -1551,12 +1551,12 @@ describe('AgentLifecycleService', () => {
     expect(after.modelAlias).toBe('provider/other-model');
     expect(changedKeys).toEqual([
       'bindingAdvisories',
-      'effectiveThinkingLevel',
       'modelAlias',
       'routeDetached',
-      'thinkingLevel',
     ]);
     expect(after).toMatchObject({
+      thinkingLevel: 'high',
+      effectiveThinkingLevel: 'high',
       profileName: undefined,
       routeId: 'route-only',
       routeDetached: true,

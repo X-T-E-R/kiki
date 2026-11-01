@@ -16,6 +16,7 @@ import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMo
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IConfigService } from '#/app/config/config';
 import { IModelCatalog } from '#/kosong/model/catalog';
+import { IRequestAdmission } from '#/kosong/model/requestAdmission';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import type {
   PermissionMode,
@@ -194,6 +195,7 @@ describe('AgentToolApprovalService', () => {
       }) }] } };
     });
     ix.set(IModelCatalog, { getRequester: () => ({ request }) } as unknown as IModelCatalog);
+    ix.stub(IRequestAdmission, { acquire: async () => ({ release() {} }) });
     return request;
   }
 
