@@ -32,7 +32,7 @@
 
 ![上下文用量表详情卡：压缩轨道与续上下文策略选中「清空重开」。](shots/long-work-context-fresh.zh.light.png)
 
-记忆按全局、工作区或角色跨会话留住事实，每次改动都能撤销。
+记忆按全局、工作区或角色跨会话留住事实，每条都写明凭什么记，改动都能撤销。
 
 ![记忆页：三个范围、一条条目及其改动历史。](shots/long-work-memory-scopes.zh.light.png)
 

@@ -4,7 +4,7 @@ title: Goals, Queues, Cron & Memory
 
 # Goals, Queues, Cron & Memory
 
-Some work does not fit in one turn. It spans a morning, or a week, or it depends on a schedule. This page covers the parts of Kiki built for that: goals that carry across turns, the queue for what you type while the agent is busy, scheduled tasks for work that outlives a session, the optional task board plugin, the context window that decides what happens when a conversation fills up, and memory for the facts that should survive all of it.
+Some work does not fit in one turn. It spans a morning, or a week, or it depends on a schedule. This page covers the parts of Kiki built for that: goals that carry across turns, the queue for what you type while the agent is busy, a session pause that survives a restart, scheduled tasks for work that outlives a session, the optional task board plugin, the context window that decides what happens when a conversation fills up, and memory for the facts that should survive all of it.
 
 ## Cross-turn goals (/goal)
 
@@ -14,9 +14,9 @@ Goals work best when the objective names the result and the evidence that proves
 
 ## Message queue & timing
 
-While the agent is busy, a new message joins a queue above the input box instead of interrupting. Each queued message carries its own send timing: **when idle** (as soon as the agent finishes its turn), **after subagents** (once the running subagents finish), or **after tasks** (once all background tasks finish). You can change the timing, edit the text, reorder, or send one right away from its row.
+While the agent is busy, a new message joins a queue above the input box instead of interrupting. Each queued message carries its own send timing: **after this turn** (as soon as the agent finishes its turn), **after subagents** (once the running subagents finish), or **after tasks** (once all background tasks finish). You can change the timing, edit the text, reorder, or send one right away from its row.
 
-Hovering the send button (or focusing it and pressing `↓`) opens the same choices, plus the option to deliver the message into the current turn at the next safe step boundary — the same as `Ctrl-Enter`. The timing choice applies only to that message and does not change the default. After a restart, restored queued messages wait for confirmation: **Send now** sends one, **Resume queue** releases them all.
+Hovering the send button (or focusing it and pressing `↓`) opens the same choices, plus the option to deliver the message into the current turn at the next safe step boundary — the same as `Ctrl-Enter`. The timing choice applies only to that message and does not change the default. After a restart, restored queued messages wait for confirmation: **Send now** sends one, **Resume queue** releases them all. A turn cut off by the restart is marked **Interrupted when Kiki restarted**; choose **Resume** to run that message again.
 
 The full behavior is described in [Interface overview](/en/guides/interface#input-box).
 
@@ -25,6 +25,10 @@ A scheduled task set to **Queue** joins this queue alongside your own messages, 
 ![An active goal with two queued messages, each with its own send timing.](/shots/long-work/long-work-goal-queue.en.png)
 
 ![The queue expanded under a running goal, with each queued message's own send timing and its edit, send-now, and remove actions.](/shots/long-work/wl-20261005-longwork-goal-queue.en.png)
+
+## Pausing execution
+
+Scripts and integrations can also hold a whole session: a session-level pause through the Klient SDK or the server's `POST /api/klient/call` covers the main agent and its native subagents together. A model or tool step already under way finishes with its real result, and the hold takes effect before the next step; external processes are not killed, so the session can stay in `pausing` until they settle. Messages you send while it is paused are queued, not refused. Once paused, the hold survives a normal close and a restart, with turns, tasks, the queue and bindings kept, and nothing runs again until an explicit resume. Work whose external result is unknown is not replayed. This pause is separate from pausing a goal: neither one lifts the other. The desktop app and the terminal have no control for it yet. See [Pause and resume execution through Klient](/en/server/rest-api#pause-and-resume-execution-through-klient).
 
 ## Scheduled tasks & board
 
@@ -74,9 +78,9 @@ For the manual side, `/compact` compresses on demand and accepts a hint about wh
 
 A session ends. Memory is what does not. The agent saves user preferences, feedback, verified project facts, and reference pointers, and finds them again later. On the `/memory` page you choose which body of memory you are looking at — **Global**, one **Workspace**, or one **Persona**. Persona-specific entries are isolated from other personas; by default a persona can also read the shared global and workspace memory.
 
-Memory is on by default, and the `/memory` page in the sidebar is its permanent home either way — with memory off it is the turn-on guide, with memory on it is the management console. You can search entries, filter by type, edit, pin, and delete them, and every change can be undone one operation at a time, including a delete. When memory approval is set to `review`, proposed changes wait in an Inbox tab for you to accept or discard instead of taking effect on their own.
+Memory is on by default, and the `/memory` page in the sidebar is its permanent home either way — with memory off it is the turn-on guide, with memory on it is the management console. You can search entries, filter by type, edit, pin, and delete them, and every change can be undone one operation at a time, including a delete; only an explicit **Forget permanently** cannot be undone. Each entry can also record its basis (something you asked for, checkable material, or Kiki's own inference) and what to check again before relying on it. When new memory entries are set to **Review in Inbox**, every write the agent makes waits in the **Inbox** tab for you to keep or discard instead of taking effect on its own. A single entry can be exported as Markdown, edited, and previewed against the saved version before it is saved.
 
-Agents write memory with `MemoryWrite` and read it with `MemorySearch` and `MemoryRead`. See [Memory](/en/guides/memory) for the full page, the review inbox, and how to turn memory off.
+Agents write memory with `MemoryWrite` and read it with `MemorySearch` and `MemoryRead`. By default, keyword matches decide which saved entries ride into each turn; with [Memory Advisor](/en/guides/memory#memory-advisor) on, a decision service or chat model you choose picks them for the current request, recommended entries go first, and a timeout or failure falls back to keyword matching. See [Memory](/en/guides/memory) for the full page, the review inbox, and how to turn memory off.
 
 ![The memory page in the persona scope, listing entries across the global, workspace, and persona bodies, with an entry open and its change history.](/shots/long-work/long-work-memory-scopes.en.png)
 

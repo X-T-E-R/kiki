@@ -41,7 +41,7 @@ Some commands are only available in the idle state. Executing these commands whi
 | `/export-debug-zip` | — | Export the current session as a debug ZIP archive (same behavior as [`kiki export`](./command.md#kiki-export)) | No |
 | `/copy` | — | Copy the last assistant message to the clipboard | No |
 | `/add-dir [<path>]` | — | Add an extra workspace directory to the current session. Run without a path (or with `list`) to list configured directories. When adding, choose whether to remember the directory for the project in `.kiki/local.toml` | No |
-| `/web` | — | Open the current session in the web UI: pick a running server to connect to, or start a new foreground server after the TUI exits. See [`kiki web`](./command.md#kiki-web) | Yes |
+| `/web` | — | Manage Web access on the shared daemon: `/web temporary\|persistent\|status\|off\|link\|revoke [id]`, with `--host`, `--port`, `--public-url`, `--insecure-no-tls`, and `--no-open`; with no argument it turns on temporary access and prints a single-use link while the TUI keeps running. See [`kiki web`](./command.md#kiki-web) | Yes |
 
 ## Modes & Run Control
 

@@ -19,11 +19,11 @@
 ## 让活跨过会话
 
 - **目标。** `/goal` 给智能体一个跨多轮持续推进的目标，可以编辑、暂停和取消。[目标模式 →](https://x-t-e-r.github.io/kiki/zh/guides/goals)
-- **消息队列。** 智能体忙着时你发的消息先进队而不是打断，每条可以选空闲后、子智能体完成后，或任务完成后发出。[队列 →](https://x-t-e-r.github.io/kiki/zh/guides/interface#输入框)
+- **消息队列。** 智能体忙着时你发的消息先进队而不是打断，每条可以选本轮结束后、子智能体完成后，或任务完成后发出。[队列 →](https://x-t-e-r.github.io/kiki/zh/guides/interface#输入框)
 - **定时提示词。** 智能体可以安排一次性或按 cron 表达式重复的提示词。只要还有 Kiki 进程持有那个已打开的会话，计划就会触发。[定时任务 →](https://x-t-e-r.github.io/kiki/zh/reference/tools#定时任务)
 - **任务看板。** 装上可选的 `kiki-task-board` 插件后，每个工作区一块看板，需求是卡片，关联到正在处理它的会话；主智能体也能读写。[任务看板 →](https://x-t-e-r.github.io/kiki/zh/guides/sessions#任务看板) · [专题介绍 →](task-board.zh-CN.md)
 - **上下文撑得住。** 压缩点由你定；到了压缩点，智能体压成摘要、只从工作笔记重启，或每次自己判断。[上下文压缩 →](https://x-t-e-r.github.io/kiki/zh/guides/sessions#上下文压缩)
-- **记忆。** 事实按全局、工作区或角色跨会话留下，改动历史可以逐条撤销。[记忆 →](https://x-t-e-r.github.io/kiki/zh/guides/memory)
+- **记忆。** 事实按全局、工作区或角色跨会话留下，每条写明依据和复核条件；改动可以逐条撤销，写入可以先进收件箱等你批；记忆顾问用你选的决策服务或模型，挑出这一轮该带上的条目。[记忆 →](https://x-t-e-r.github.io/kiki/zh/guides/memory)
 
 ## 在手头的窗口里干活
 

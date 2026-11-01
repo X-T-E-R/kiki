@@ -451,41 +451,34 @@ kiki acp
 
 ### `kiki web`
 
-在当前终端前台运行本地 Kiki 服务 —— 同一个进程同时挂载 REST + WebSocket API 与 Kiki GUI —— 并在服务就绪后用默认浏览器打开 Kiki GUI。命令会一直挂在终端，直到收到 `SIGINT` / `SIGTERM`（如 `Ctrl-C`）时干净退出。
-
-服务运行时，`GET /openapi.json` 会返回 REST OpenAPI 文档，`GET /asyncapi.json` 会返回本地 WebSocket 协议的 AsyncAPI 文档。用 API 驱动会话的完整流程见[本地服务与 API](../server/local-server.md)，协议细节见[服务 API](../server/rest-api.md)。
+在这个 home 的共享 daemon 上开启 Web 访问，让另一台设备的浏览器进入这台 Kiki。找不到可达的 daemon 时，先启动一个并让它一直运行到你停止（相当于 `kiki serve --ensure --idle-exit 0ms`）。随后签发一条一次性进入链接，打印出来，默认在本机浏览器打开，然后命令返回，不占着终端。终端输出里不会出现 `#token=` 或 local-owner 凭据。
 
 ```sh
-kiki web                 # 前台运行服务并打开浏览器
-kiki web --no-open       # 不打开浏览器
-kiki web --port 58628    # 指定绑定端口
+kiki web                        # 临时开启 Web 访问（八小时），打印一次性链接
+kiki web --persistent --no-open # 始终开启，只打印链接
+kiki web --status               # 只查询，不启动 daemon
+kiki web --off                  # 关闭 Web 访问，Kiki 和它的任务继续运行
+kiki web --revoke [session-id]  # 注销一个浏览器；不带 id 注销全部
 ```
-
-同一 home 目录下可以同时运行多个实例：每个实例注册到当前 `<home>/server/instances/`（默认 `~/.kiki/server/instances/`），端口被占用时自动 +1 重试（58628、58629……）。
 
 | 选项 | 说明 |
 | --- | --- |
-| `--port <port>` | 绑定端口；默认 `58627`；被占用时自动 +1 重试 |
-| `--host [host]` | 绑定地址；缺省 `127.0.0.1`（仅本机）。绑定非本机地址（包括裸 `--host`，即 `0.0.0.0`）需要有终结 TLS 的反向代理，或加 `--insecure-no-tls`；两者都没有时服务拒绝启动 |
-| `--insecure-no-tls` | 允许不带终结 TLS 的反向代理绑定非本机地址；此时该地址上的连接不加密 |
-| `--allowed-host <host...>` | DNS 重绑定检查额外允许的 Host 头，可重复或逗号分隔 |
-| `--log-level <level>` | 按所选级别开启服务日志；默认不输出 |
-| `--debug-endpoints` | 挂载 `/api/debug/*` 调试路由（默认关闭） |
-| `--dangerous-bypass-auth` | 关闭所有 REST 与 WebSocket 路由的 bearer token 鉴权，使 Kiki GUI 无需 token 即可连接；仅用于可信网络或自有鉴权代理之后 |
-| `--no-open` | 就绪后不自动打开浏览器 |
-| `--idle-exit <duration>` | 没有 GUI lease 或忙碌会话持续达到此时长后退出；接受整数加 `ms`、`s`、`m` 或 `h`（如 `30m`）。默认不设置，前台服务会持续运行 |
+| `--home <dir>` | 要操作的 Kiki home |
+| `--temporary` | 临时开启八小时，之后自己关闭（默认） |
+| `--persistent` | 一直开着，跨 daemon 重启保留，直到你关闭 |
+| `--status` | 显示是否开启和已登录的浏览器；不启动 daemon |
+| `--off` | 关闭 Web 访问，撤销全部链接和浏览器会话；不停止 Kiki 和它的任务 |
+| `--revoke [session-id]` | 注销一个浏览器；不带 id 时注销全部 |
+| `--port <port>` | Web 监听端口；省略时复用 daemon 的本机端口 |
+| `--host [host]` | Web 监听地址；裸 `--host` 监听全部 IPv4 网卡。非本机地址需要 HTTPS 的 `--public-url` 或 `--insecure-no-tls` |
+| `--public-url <url>` | 浏览器实际访问的来源，例如你的 HTTPS 反向代理地址 |
+| `--insecure-no-tls` | 允许明文局域网 HTTP；传输内容和浏览器访问都不加密 |
+| `--json` | 以 JSON 输出结果（开启时含 `link`） |
+| `--no-open` | 不在本机默认浏览器里打开链接 |
 
-`kiki web` 默认只绑定本机 loopback 地址，并在启动横幅中打印 bearer token；Kiki GUI 通过 URL 的 `#token=` 片段自动完成鉴权。
+`--status`、`--off`、`--revoke` 三者一次只能选一个，`--temporary` 与 `--persistent` 也不能同时给。一次性链接十分钟内有效，只能登录一个浏览器；Web 访问是对这台 Kiki 的完整访问入口，不是只读分享。会话与撤销模型见[在浏览器里使用 Kiki](../server/local-server.md#在浏览器里使用-kiki)。同样的操作在交互式 TUI 中是 `/web temporary|persistent|status|off|link|revoke [id]`，在 GUI 中位于**设置 → 连接与远程 → 外部接入 → 网页访问**。
 
-`kiki web` 同时承载 Web 访问控制——`--temporary`、`--persistent`、`--status`、`--off`、`--revoke [session-id]`——用于把这台 Kiki 开放给另一台设备的浏览器，并打印一次性进入链接。Web 访问是对这台 Kiki 的完整访问入口，不是只读分享；会话与撤销模型见[在浏览器里使用 Kiki](../server/local-server.md#在浏览器里使用-kiki)。同样的操作在交互式 TUI 中是 `/web temporary|persistent|status|off|link|revoke [id]`，在 GUI 中位于**设置 → 空间 → Web 访问**。
-
-::: info 提示
-`kiki web` 是兼容性的前台命令：它在当前进程中启动独立服务，不会连接或管理共享 daemon。需要控制共享 daemon 的生命周期时使用 `kiki serve`；需要已有前台 REST/WebSocket/web UI 流程时使用 `kiki web`。旧的 `kiki server …` 命令已不再支持。
-:::
-
-::: danger 警告
-`--dangerous-bypass-auth` 会免鉴权暴露旧 API：任何能访问该端口的人都能控制会话、文件和 shell。连接管理与转发仍要求 local-owner；有效 peer 准入不可用，保存的 grant 也不能在此模式授权入站 peer。仅在可信网络或自有鉴权反向代理之后使用，用完后停止服务。
-:::
+daemon 本身的生命周期用 [`kiki serve`](#kiki-serve) 控制。daemon 运行时，`GET /openapi.json` 返回 REST OpenAPI 文档，`GET /asyncapi.json` 返回本地 WebSocket 协议的 AsyncAPI 文档；用 API 驱动会话见[本地服务与 API](../server/local-server.md)，协议细节见[服务 API](../server/rest-api.md)。旧的 `kiki server …` 命令已不再支持。
 
 #### `kiki web rotate-token`
 

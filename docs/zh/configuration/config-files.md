@@ -1191,7 +1191,7 @@ prompt_overrides:
 
 ## `[request_governance]`
 
-`request_governance` 可限制原生模型请求（`resource = "model_request"`）或正在执行的 Agent（`resource = "agent_execution"`）。没有规则时不限制并发；现有未写 `resource` 的规则仍按模型请求计数。GUI 的「用量 → 实时」显示运行与排队请求，同页「并发限制」可新增、编辑、暂停或删除规则。默认打开的「历史」标签显示 Token 用量与估算费用。诊断流程见[用量](../guides/settings.md#usage)。
+`request_governance` 可限制原生模型请求（`resource = "model_request"`）或正在执行的 Agent（`resource = "agent_execution"`）。没有规则时不限制并发；现有未写 `resource` 的规则仍按模型请求计数。GUI 的「用量 → 实时」显示运行与排队请求，同页「并发限制」可新增、编辑、暂停或删除规则。「历史」标签显示 Token 用量与估算费用，默认打开的是「实时」。诊断流程见[用量](../guides/settings.md#usage)。
 
 `global` 规则让同一个 Kiki 服务进程内的会话共享容量；`each_session` 按会话分别计数。这些限制不跨独立 Kiki 进程，也不设置每分钟请求数、Token 或金额预算。搜索与抓取调用用 [`nb_search.execution`](#nb-search) 限制。
 

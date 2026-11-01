@@ -36,7 +36,7 @@ When the context window fills up, you choose what happens at the compaction poin
 
 ![The context meter's detail card, with the compaction track and the renewal strategy set to Fresh.](shots/long-work-context-fresh.en.light.png)
 
-Memory keeps facts across sessions, as global, per workspace, or per persona, and every change can be undone.
+Memory keeps facts across sessions, as global, per workspace, or per persona. Each entry says what it is based on, and every change can be undone.
 
 ![The memory page showing the three scopes, an entry, and its change history.](shots/long-work-memory-scopes.en.light.png)
 

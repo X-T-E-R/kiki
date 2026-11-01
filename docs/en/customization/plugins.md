@@ -153,13 +153,15 @@ Reading results and output-layer model history are stored separately. The defaul
 
 ## Media Sources
 
-Install and enable **Kiki Media** (`kiki-media`) once, then open **Capabilities → Extensions & tools → Plugins → Media sources**. Version 0.2.0 includes OpenAI, Google, Ark, xAI, MiniMax, StepFun, Novita, Agnes, NewAPI and ComfyUI sources for images, video and speech; you do not need a separate package for each vendor. Your own local commands can join the same list as script sources.
+Install and enable **Kiki Media** (`kiki-media`) once, then open **Capabilities → Extensions & tools → Plugins → Media sources**. It includes OpenAI, Google, Ark, xAI, MiniMax, StepFun, Novita, Agnes, NewAPI and ComfyUI sources for images, video and speech; you do not need a separate package for each vendor. Your own local commands can join the same list as script sources.
 
 The unified package needs a Kiki host with grouped media sources and script-source management. If your build has no **Add script source** action or rejects unknown manifest fields, update the host first. The package's plugin-engine requirement `>=0.4.0` is a protocol version, not a CLI release number; the [package README](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media#configure-a-source) gives the host contract.
 
 ### Starting generation
 
 Media generation has no experimental master switch. Install and enable the plugin, configure an enabled source, then request a generation. Opening the list or saving settings does not start a job; the source's access requirements, charges and script authorization still apply.
+
+The plugin ships the `media-image`, `media-video` and `media-tts` skills; the agent uses its `generate` tool for images, video and speech. Independent generations can run in parallel. Each source handles eight simultaneous submit or poll requests by default; change this with **Maximum concurrent provider requests** in that source's settings.
 
 ### The list
 

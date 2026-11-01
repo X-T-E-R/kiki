@@ -13,7 +13,7 @@ A plugin is the packaging unit. One plugin can contribute skills, agents, MCP se
 The catalog is the **Official** tab: Kiki's own plugins and upstream entries maintained by Kimi, installed one at a time as a task needs them.
 
 - **Kiki Extract** turns a local PDF, Office, HTML, or text file into Markdown that `Read` and `Grep` can use. It is a reading step: the original is neither created nor edited, and PDF or Office input needs Python with MarkItDown on the machine running Kiki.
-- **Kiki Office Suite** creates and edits local Word, Excel, and PowerPoint files.
+- **Kiki Office Suite** creates and edits local Word, Excel, and PowerPoint files. It needs OfficeCLI 1.0.152: after you install the plugin, Kiki asks for your consent, then downloads that pinned version and verifies its checksum.
 - **Kiki Work** audits CSV/TSV keys and reconciles two tables locally, without changing or uploading either.
 - **Kiki Writing** adds a focused manuscript panel with a draft command.
 - **Kiki Notion** connects Notion's hosted MCP service and writes back only to the page you name.

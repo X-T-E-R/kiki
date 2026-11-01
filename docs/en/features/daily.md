@@ -36,7 +36,7 @@ See [Interface overview](/en/guides/interface#right-rail) and [Session controls]
 
 ## The usage page {#the-usage-page-answers-three-different-questions}
 
-**Usage** in the sidebar opens on **Live**. The tabs are **Live**, **History**, **Quotas**, and **External sync**, in that order. **Live** answers why nothing is moving, **History** answers what a date range cost, **Quotas** answers what a configured provider account still has, and **External sync** answers where you want the numbers to go. An address that already filters history opens **History**. See [Usage](/en/guides/settings#usage).
+**Usage** in the sidebar opens on **Live**. The tabs are **Live**, **History**, **Quotas**, and **Export**, in that order. **Live** answers why nothing is moving, **History** answers what a date range cost, **Quotas** answers what a configured provider account still has, and **Export** answers where you want the numbers to go. An address that already filters history opens **History**. See [Usage](/en/guides/settings#usage).
 
 ### History & cost
 
@@ -48,7 +48,7 @@ The number it will not give you is a confident wrong one. Token usage and cost c
 
 ### Live rules & queues
 
-**Live** is the other half of the same page, and it answers the question a spending page raises the moment something feels slow. It counts what this Kiki service is running and what it is holding, and **Request details** breaks those counts down by model, provider, or role.
+**Live** is the other half of the same page, and it answers the question a spending page raises the moment something feels slow. It counts what this Kiki service is running and what it is holding, with a running-and-queued total in the line above, and **By dimension** switches the breakdown between model, provider and role.
 
 The part that makes it useful is the **Waiting now** list. Each waiting row names the model, how long it has been waiting, and which concurrency rule is holding it back, by rule id. That id is the same one in the **Concurrency limits** editor directly below, so the row tells you which rule to change.
 
@@ -70,7 +70,7 @@ What crosses the wire is deliberately small: the model, a UTC half-hour bucket, 
 
 External sync needs no experimental switch. Without a destination nothing is sent, and a saved destination stays **disabled until you preview the exact payload, agree once, and enable it**. Widening the range, changing the endpoint, or pointing the destination at a different credential asks again; narrowing the range or changing the interval does not.
 
-![The usage page on its External sync tab: three destinations — a webhook that is active, a VibeCafe connection whose credential was refused with its queue intact, and a script that is paused — each with its endpoint, state, and pending count.](/shots/daily/ux-usage-export.en.png)
+![The usage page on its Export tab: three destinations — a webhook that is active, a VibeCafe connection whose credential was refused with its queue intact, and a script that is paused — each with its endpoint, state, and pending count.](/shots/daily/ux-usage-export.en.png)
 
 The same destinations can be managed from the terminal with [`kiki usage-export`](/en/reference/command#kiki-usage-export), and every control on this page has a documented field, error code, and limit behind it: see [Usage](/en/guides/settings#usage) for where each control lives and [`request_governance`](/en/configuration/config-files#request-governance) for the rules' full field reference.
 
