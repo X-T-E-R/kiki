@@ -67,6 +67,7 @@ export interface DispatchRunOptions {
   readonly signal: AbortSignal;
   readonly requesterAgentId?: string;
   readonly onReady?: () => void;
+  readonly onQueued?: () => void;
   readonly lineage?: string;
   readonly idlePolicy?: DispatchIdlePolicy;
   readonly allowParentNotify?: boolean;

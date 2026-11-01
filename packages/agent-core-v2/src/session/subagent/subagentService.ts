@@ -131,6 +131,7 @@ export class SessionSubagentService extends Service implements ISessionSubagentS
         summaryPolicy: opts.summaryPolicy ?? this.summaryPolicyFor(handle),
         signal: opts.signal,
         onReady: opts.onReady,
+        onQueued: opts.onQueued,
         capacityReservation: opts.capacityReservation,
       })
       .then((run) => {

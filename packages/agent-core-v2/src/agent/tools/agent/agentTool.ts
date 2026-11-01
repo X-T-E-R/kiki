@@ -483,6 +483,8 @@ export class SubagentTool implements ISubagentTool {
           );
       return { defaultTarget, effectiveRoots, existingChild, fileProfile, fileTarget, policy, requester };
     });
+    let markQueued = (): void => {};
+    const queued = new Promise<'queued'>((resolve) => { markQueued = () => { resolve('queued'); }; });
     const run = await this.withAgentRunPhase(toolCallId, 'dispatch', async () =>
       prepared.existingChild === undefined
         ? this.dispatch.launch({
@@ -519,13 +521,17 @@ export class SubagentTool implements ISubagentTool {
               sourceRef: args.source_ref,
               toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
               operationId: `resume:${this.callerAgentId}:${parentTurnId}:${toolCallId}`,
+              onQueued: markQueued,
               bindingOverride: args.model_alias === undefined && args.effort === undefined && args.new_window === undefined ? undefined : {
                 modelAlias: args.model_alias, thinkingEffort: args.effort, allowModelChange: args.allow_model_change,
                 newWindow: args.new_window,
               },
             },
           ));
-    const started = await this.withAgentRunPhase(toolCallId, 'started', () => run.started);
+    const admitted = await this.withAgentRunPhase(toolCallId, 'started', () => Promise.race([run.started, queued]));
+    const started = admitted === 'queued'
+      ? { agentId: run.child.agentId, completion: run.started.then((handle) => handle.completion) }
+      : admitted;
     const prompt = run.request.kind === 'prompt' ? run.request.prompt : undefined;
     const mirrored = mirrorAgentRun(prepared.requester, started, {
       profileName: run.child.profileName,
@@ -566,6 +572,7 @@ export class SubagentTool implements ISubagentTool {
       bindingAdvisories: run.child.bindingAdvisories,
       dispatchDecision: run.child.dispatchDecision,
       parentNotify,
+      queued: admitted === 'queued' ? true : undefined,
       completion: mirrored.then((result) => ({ result: result.summary, usage: result.usage })),
     };
   }
@@ -773,6 +780,9 @@ export class SubagentTool implements ISubagentTool {
       if (isError2(error) && error.code === ErrorCodes.DISPATCH_LIMIT_EXCEEDED) {
         return { output: JSON.stringify({ code: error.code, message: error.message, details: error.details }), isError: true };
       }
+      if (isError2(error) && error.code === ErrorCodes.AGENT_ALREADY_RUNNING) {
+        return { output: `subagent error: ${error.message}. Use AgentSend to give it this input while it runs.`, isError: true };
+      }
       return { output: `subagent error: ${launchErrorMessage(error, signal)}`, isError: true };
     }
   }
@@ -849,11 +859,14 @@ function formatBackgroundAgentResult(
 ): string {
   return [
     `task_id: ${taskId}`,
-    'status: running',
+    handle.queued === true ? 'status: queued' : 'status: running',
     `agent_id: ${handle.agentId}`,
     ...bindingResultLines(handle),
     'automatic_notification: true',
     `description: ${description}`,
+    ...(handle.queued === true
+      ? ['next_step: The agent is finishing earlier work. This prompt is saved and starts once after that turn ends; do not send it again.']
+      : []),
   ].join('\n');
 }
 

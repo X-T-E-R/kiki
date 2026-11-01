@@ -1550,6 +1550,34 @@ describe('AgentRun and dispatch parity golden', () => {
     expect(external.taskRecords.size).toBe(0);
   });
 
+  it('returns a background resume as queued without waiting for the child to finish earlier work', async () => {
+    const lane = createLane(disposables, 'internal');
+    await lane.runInternal({ profile: 'coder', name: 'busy_child', prompt: 'start', description: 'Spawn', background: true });
+    await complete(lane, 0);
+    const original = lane.subagentRun.getMockImplementation() as unknown as (
+      agentId: string, request: AgentRunRequest, options: RunAgentOptions,
+    ) => Promise<AgentRunHandle>;
+    const launch = deferred<void>();
+    lane.subagentRun.mockImplementationOnce(async (agentId: string, request: AgentRunRequest, runOptions: RunAgentOptions) => {
+      runOptions.onQueued?.();
+      await launch.promise;
+      return original(agentId, request, runOptions);
+    });
+    const resumed = await lane.runInternal({ resume: 'busy_child', prompt: 'continue later', description: 'Resume', background: true });
+    expect(resumed.isError).not.toBe(true);
+    const fields = fieldMap(outputText(resumed.output));
+    expect(fields['status']).toBe('queued');
+    expect(outputText(resumed.output)).toContain('do not send it again');
+    expect(lane.completions).toHaveLength(1);
+    const task = lane.taskRecords.get(fields['task_id']!)!;
+    expect(task.status).toBe('running');
+    launch.resolve();
+    await complete(lane, 1, 'queued result');
+    await task.terminal.promise;
+    expect(task).toMatchObject({ status: 'completed', output: expect.stringContaining('queued result') });
+    expect(lane.subagentRun).toHaveBeenCalledTimes(2);
+  });
+
   it('passes fresh-only through AgentRun and reuses one run and task for a repeated tool-call identity', async () => {
     const lane = createLane(disposables, 'internal');
     await lane.runInternal({ profile: 'coder', name: 'repeat_child', prompt: 'start', description: 'Spawn', background: true });

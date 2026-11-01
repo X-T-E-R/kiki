@@ -562,7 +562,7 @@ export class SessionDispatchService implements ISessionDispatchService {
       const request: AgentRunRequest = originalRequest.kind === 'prompt'
         ? { ...originalRequest, promptId: originalRequest.promptId ?? `resume-prompt:${operationId}` } : originalRequest;
       if (options.requesterAgentId !== undefined) this.recordDelegatedRun(options.requesterAgentId, child.agentId);
-      const started = this.runs.run(child.agentId, request, { signal: options.signal, onReady: options.onReady, capacityReservation: reservation })
+      const started = this.runs.run(child.agentId, request, { signal: options.signal, onReady: options.onReady, onQueued: options.onQueued, capacityReservation: reservation })
         .then(async handle => {
           try {
             await writeResumeRecord(this.metadata, child.agentId, { ...record, state: 'started', turnId: handle.turn.id });
@@ -640,6 +640,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     const started = this.runs.run(child.agentId, request, {
       signal: options.signal,
       onReady: options.onReady,
+      onQueued: options.onQueued,
       capacityReservation: reservation,
     }).then(async (handle) => {
       try {

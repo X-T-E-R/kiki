@@ -35,6 +35,7 @@ export type SubagentHandle = {
   readonly bindingAdvisories?: readonly BindingAdvisory[];
   readonly dispatchDecision?: import('#/app/agentProfileCatalog/subagentDispatch').SubagentDispatchDecision;
   readonly parentNotify?: 'enabled' | 'disabled';
+  readonly queued?: boolean;
   readonly completion: Promise<SubagentCompletion>;
 };
 

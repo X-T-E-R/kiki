@@ -60,7 +60,7 @@ export const SubagentToolInputSchema = z.preprocess(
       .string()
       .optional()
       .describe(
-        'Name or agent ID of an existing direct child. Do not pass name, profile, profile_file, or route. Omitted effort/model keep the saved binding. An explicit effort applies to the next idle run; changing model_alias requires allow_model_change:true or new_window:true. A running child cannot be resumed.',
+        'Name or agent ID of an existing direct child. Do not pass name, profile, profile_file, or route. Omitted effort/model keep the saved binding. An explicit effort applies to the next idle run; changing model_alias requires allow_model_change:true or new_window:true. A running child cannot be resumed; use AgentSend. If the child is still finishing earlier work, the prompt is saved and the receipt reports status: queued.',
       ),
     background: z
       .boolean()

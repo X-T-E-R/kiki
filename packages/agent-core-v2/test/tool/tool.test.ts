@@ -2541,7 +2541,7 @@ describe('AgentRun tool execution contract', () => {
     expect(result).toMatchObject({
       isError: true,
       output:
-        'subagent error: Agent instance "agent-existing" is already running and cannot run concurrently',
+        'subagent error: Agent instance "agent-existing" is already running and cannot run concurrently. Use AgentSend to give it this input while it runs.',
     });
     expect(lifecycle.run).not.toHaveBeenCalled();
   });

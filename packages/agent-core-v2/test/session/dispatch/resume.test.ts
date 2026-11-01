@@ -1411,6 +1411,56 @@ describe('dispatch resume after cancellation with deferred task notifications', 
     expect(ctx.get(IAgentLoopService).status().hasPendingRequests).toBe(false);
   });
 
+  it('reports a resume queued behind a restored loop turn before that turn ends and runs it once afterwards', async () => {
+    const ctx = await host();
+    const { child, dispatch } = dispatchFor(ctx);
+    const loop = ctx.get(IAgentLoopService);
+    let release!: () => void;
+    let enter!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    let gated = true;
+    const hook = loop.hooks.onWillBeginStep.register('restored-turn-fixture', async (_context, next) => {
+      if (gated) { gated = false; enter(); await gate; }
+      await next();
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Restored notification handled.' });
+    ctx.mockNextResponse({ type: 'text', text: 'Queued resume result.' });
+    const switcher = ctx.get(IAgentModelSwitchService);
+    const execute = switcher.execute.bind(switcher);
+    let restoredTurn: Promise<unknown> = Promise.resolve();
+    vi.spyOn(switcher, 'execute').mockImplementationOnce(async (input, executeOptions) => {
+      const receipt = await execute(input, executeOptions);
+      const restored = loop.enqueue(new MessageStepRequest({ role: 'user', content: [{ type: 'text', text: 'Restored notification' }], toolCalls: [] }, { admission: 'newTurn' }));
+      const turn = (await restored.assigned).turn;
+      restoredTurn = turn.result;
+      await entered;
+      expect(ctx.get(IAgentExecutionService).status().state).toBe('idle');
+      return receipt;
+    });
+    let queued = 0;
+    let started = false;
+    try {
+      const run = await dispatch.runOnExisting(child, 'Continue after the restored turn.', { ...options('queued-resume'), onQueued: () => { queued += 1; } });
+      void run.started.then(() => { started = true; }, () => undefined);
+      await vi.waitFor(() => expect(queued).toBe(1));
+      expect(started).toBe(false);
+      expect(ctx.get(IAgentPromptService).list().pending.map((item) => item.id)).toEqual(['resume-prompt:queued-resume']);
+      await expect(dispatch.runOnExisting(child, 'Second resume', options('second-resume'))).rejects.toMatchObject({ code: ErrorCodes.AGENT_ALREADY_RUNNING });
+      release();
+      const handle = await run.started;
+      expect(handle.turn.id).toBeGreaterThan(0);
+      await expect(handle.completion).resolves.toMatchObject({ summary: 'Queued resume result.' });
+      expect(queued).toBe(1);
+      expect(ctx.llmCalls).toHaveLength(2);
+      expect((JSON.stringify(ctx.llmCalls[1]).match(/Continue after the restored turn\./g) ?? [])).toHaveLength(1);
+    } finally {
+      release();
+      await restoredTurn;
+      await hook.dispose();
+    }
+  });
+
   it('rejects ordinary resume during a real active turn and model switching with queued turns', async () => {
     const ctx = await host();
     const { child, dispatch, runs } = dispatchFor(ctx);

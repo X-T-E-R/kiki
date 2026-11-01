@@ -18,6 +18,7 @@ export interface RunAgentOptions {
   readonly signal: AbortSignal;
   readonly summaryPolicy?: AgentProfileSummaryPolicy;
   readonly onReady?: () => void;
+  readonly onQueued?: () => void;
 }
 
 export interface AgentRunHandle {

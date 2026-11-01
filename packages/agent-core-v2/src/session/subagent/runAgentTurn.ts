@@ -11,6 +11,7 @@ import { IAgentLoopService, TurnPersistenceError, type Turn, type TurnResult } f
 import { IAgentUsageService } from '#/agent/usage/usage';
 import type { AgentProfileSummaryPolicy } from '#/app/agentProfileCatalog/agentProfileCatalog';
 import { hasMailboxMessageInContext } from '#/session/agentCollaboration/messageIdentity';
+import { IWireService } from '#/wire/wire';
 
 import type { AgentRunHandle, AgentRunRequest } from './subagent';
 
@@ -26,6 +27,7 @@ export interface RunAgentTurnOptions {
   readonly summaryPolicy?: AgentProfileSummaryPolicy;
   readonly signal: AbortSignal;
   readonly onReady?: () => void;
+  readonly onQueued?: () => void;
 }
 
 /** Runs the selected native request and its summary turns without releasing older recovery-held prompts. */
@@ -68,14 +70,14 @@ export async function runAgentTurn(
   let turn: Turn | undefined;
   try {
     turn = promptInput !== undefined
-      ? await launchRunPrompt(target, promptInput, options.signal)
+      ? await launchRunPrompt(target, promptInput, options.signal, options.onQueued)
       : request.kind === 'mailbox'
         ? await launchRunPrompt(target, {
             parentReceiptManaged: true,
             message: request.message,
             alreadyMaterialized: hasMailboxMessageInContext(target.accessor.get(IAgentContextMemoryService).get(), request.message),
             signal: options.signal,
-          }, options.signal)
+          }, options.signal, options.onQueued)
         : await promptService.retry({ parentReceiptManaged: true });
   } catch (error) {
     options.signal.throwIfAborted();
@@ -94,7 +96,7 @@ export async function runAgentTurn(
   return { agentId: target.id, turn, completion };
 }
 
-async function launchRunPrompt(target: AgentExecutorAgentContext, input: PromptInput, signal: AbortSignal): Promise<Turn | undefined> {
+async function launchRunPrompt(target: AgentExecutorAgentContext, input: PromptInput, signal: AbortSignal, onQueued?: () => void): Promise<Turn | undefined> {
   const prompts = target.accessor.get(IAgentPromptService);
   const prompt = await prompts.enqueue({ ...input, waitForLaunch: false });
   const cancel = (): void => {
@@ -104,6 +106,11 @@ async function launchRunPrompt(target: AgentExecutorAgentContext, input: PromptI
   try {
     if (signal.aborted) cancel();
     signal.throwIfAborted();
+    if (onQueued !== undefined && prompt.state === 'pending' && queuedBehindWork(target)) {
+      await target.accessor.get(IWireService).flush();
+      signal.throwIfAborted();
+      if (prompt.state === 'pending') onQueued();
+    }
     if (prompt.state === 'pending' && prompts.list().hold?.reason === 'recovery') {
       const loop = target.accessor.get(IAgentLoopService);
       await abortable(loop.settled({ rejectOnPersistenceFailure: true }), signal);
@@ -114,6 +121,11 @@ async function launchRunPrompt(target: AgentExecutorAgentContext, input: PromptI
   } finally {
     signal.removeEventListener('abort', cancel);
   }
+}
+
+function queuedBehindWork(target: AgentExecutorAgentContext): boolean {
+  const loop = target.accessor.get(IAgentLoopService).status();
+  return loop.state === 'running' || loop.pendingTurnIds.length > 0;
 }
 
 async function awaitRun(
