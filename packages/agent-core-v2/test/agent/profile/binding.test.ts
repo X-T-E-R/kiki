@@ -4406,7 +4406,7 @@ describe('AgentProfileService tool-pattern warnings', () => {
     );
   });
 
-  it('bind also rejects inert profile tool patterns', async () => {
+  it.each([false, true])('bind rejects inert profile tool patterns with deferred prompt context %s', async (deferPromptContext) => {
     registerAgentProfile({
       name: 'bind-bad-patterns',
       tools: ['mcp__github'],
@@ -4415,7 +4415,7 @@ describe('AgentProfileService tool-pattern warnings', () => {
     });
     ctx = createTestAgent(hostEnvironmentServices(homeDir, hostPathClass));
     await expect(
-      ctx.get(IAgentProfileService).bind({ profile: 'bind-bad-patterns', model: MOCK_MODEL }),
+      ctx.get(IAgentProfileService).bind({ profile: 'bind-bad-patterns', model: MOCK_MODEL, deferPromptContext }),
     ).rejects.toThrow(/"mcp__github"[\s\S]*mcp__github__\*[\s\S]*"\*"[\s\S]*disallowedTools/);
     expect(toolPatternWarnings()).toEqual([]);
   });

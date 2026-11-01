@@ -798,7 +798,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       models: this.models,
     });
 
-    if (input.deferPromptContext !== true) await this.assertProfileToolPatterns(renderProfile, input.inheritedUserToolNames, input.unavailableTools);
+    await this.assertProfileToolPatterns(renderProfile, input.inheritedUserToolNames, input.unavailableTools);
     const assembled = await this.assembleBoundSystemPrompt(renderProfile, context, alias, undefined, persona, input.roomPrompt ?? this.profileState.roomPrompt, recipe ?? null);
     const systemPrompt = assembled.text;
     this.cacheAgentsMdWarning(context);
