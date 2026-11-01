@@ -790,6 +790,12 @@ const UserMessage = memo(function UserMessage({
           )}
         </span>
       ) : null}
+      {block.promptStatus === 'queued' && admission === undefined && block.optimisticStatus === undefined ? (
+        <span role="status" data-prompt-queued className="mt-1 mr-1 flex items-center gap-1.5 text-[11px] text-ink-faint">
+          <Icon name="clock" size={12} />
+          <span>{t('transcript.queued')}</span>
+        </span>
+      ) : null}
       {block.promptStatus === 'blocked' ? (
         <span className="mt-1 mr-1 flex items-center gap-1.5 text-[11px] font-medium text-danger">
           {t('transcript.blocked')}
@@ -3680,6 +3686,13 @@ export function TranscriptLoading() {
   );
 }
 
+/** Queued prompts wait behind everything already running, in queue order. */
+export function queuedPromptsLast(blocks: readonly Block[]): readonly Block[] {
+  const isQueued = (block: Block) => block.kind === 'user' && block.promptStatus === 'queued';
+  if (!blocks.some(isQueued)) return blocks;
+  return [...blocks.filter((block) => !isQueued(block)), ...blocks.filter(isQueued)];
+}
+
 export function Transcript({
   state,
   agentId = 'main',
@@ -3700,9 +3713,15 @@ export function Transcript({
   draftAnnotations,
   onSaveDraftAnnotation,
   onRemoveDraftAnnotation,
+  showQueuedPrompts = false,
 }: {
   state: SessionViewState;
   agentId?: string;
+  /**
+   * Keep queued user prompts on the timeline (with a queued line) instead of
+   * leaving them to a separate queue strip.
+   */
+  showQueuedPrompts?: boolean;
   /** `message`: only delivered speech, your cards and one-line activity summaries. */
   view?: TimelineView;
   /**
@@ -3784,9 +3803,11 @@ export function Transcript({
       : (blockId: string) => messageLinkHref(sessionIdForLocate, agentId, blockId)),
     [sessionIdForLocate, agentId],
   );
+  // The main conversation lists parked prompts in the composer's queue strip;
+  // a timeline without that strip keeps them in place, marked as queued.
   const timelineBlocks = useMemo(
-    () => blocks.filter((block) => block.kind !== 'user' || block.promptStatus !== 'queued'),
-    [blocks],
+    () => showQueuedPrompts ? queuedPromptsLast(blocks) : blocks.filter((block) => block.kind !== 'user' || block.promptStatus !== 'queued'),
+    [blocks, showQueuedPrompts],
   );
   const annotationOverrides = useSyncExternalStore(subscribeAnnotationOverrides, getAnnotationOverridesSnapshot, getAnnotationOverridesSnapshot);
   const annotationTargets = useStableAnnotationTargets(

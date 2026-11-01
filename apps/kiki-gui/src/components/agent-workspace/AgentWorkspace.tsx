@@ -76,6 +76,7 @@ import { PreviewToggleButton } from '../PreviewToggleButton';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { RightRail } from '../RightRail';
 import { Transcript } from '../Transcript';
+import { withOptimisticUserBlock, type OptimisticSubmission } from '../timeline/AdmissionLine';
 import { TranscriptDetailProvider, type TranscriptEntityKind } from '../transcriptDetail';
 import { ResyncStatusBanner } from './ResyncStatusBanner';
 import { registerOverlay } from '../../lib/uiBusy';
@@ -669,6 +670,11 @@ function ChildAgentWorkspace({
   // later render switches back to the same target and unchanged draft.
   const sendScope = JSON.stringify([scopeId, sessionId, agentId]);
   const [sendNotice, setSendNotice] = useState<{ scope: string; text: string } | null>(null);
+  // The sent message stays on this timeline from the keypress until the
+  // projection owns a row under the same prompt id, or until the send settles
+  // when the server does not use the key as the prompt id.
+  const [sendEcho, setSendEcho] = useState<OptimisticSubmission & { readonly scope: string }>();
+  const clearSendEcho = (id: string) => { setSendEcho((current) => current?.id === id ? undefined : current); };
   const pendingSendRef = useRef<{
     scope: string; payload: string; key: string; afterModelSwitch: string | undefined;
     appendTiming?: DeferredAppendTiming;
@@ -897,6 +903,11 @@ function ChildAgentWorkspace({
         afterModelSwitch: useSwitchDependency ? modelSwitches.dependency?.input.operationId : undefined };
     pendingSendRef.current = submission;
     const hasNonTextAttachment = content.some((part) => part.type !== 'text');
+    // Native text-only sends use the key as their prompt id, so the echo can
+    // hand over to the projected row; other sends drop it when they settle.
+    const keyedEcho = !externalExecutor && !hasNonTextAttachment;
+    setSendEcho({ scope: sendScope, id: submission.key, text, content, createdAt: new Date().toISOString(),
+      slow: false, preserved: false, retryable: false, status: 'sending' });
     let receipt: Awaited<ReturnType<typeof client.sendAgentMessage>>;
     try {
       // The server already defaults to agent_idle; keep the ordinary six-arg
@@ -906,9 +917,15 @@ function ChildAgentWorkspace({
         : await client.sendAgentMessage(sessionId, agentId, text, content, submission.key, submission.afterModelSwitch, submission.appendTiming);
     } catch (error) {
       if (isDefinitivePromptRejection(error)) {
+        clearSendEcho(submission.key);
         if (pendingSendRef.current === submission) setSendNotice(null);
         throw error instanceof NativeChildPromptSendError ? error.cause : error;
       }
+      // An unknown outcome under a replayable key stays on the timeline as
+      // unconfirmed; anything else leaves it to the composer's draft.
+      if (keyedEcho && error instanceof NativeChildPromptSendError) {
+        setSendEcho((current) => current?.id === submission.key ? { ...current, status: 'offline' } : current);
+      } else clearSendEcho(submission.key);
       // Native attachments have no replay receipt; a failed request may have
       // been accepted already. The external path rejects attachments before send.
       if (error instanceof NativeChildPromptSendError) {
@@ -932,9 +949,13 @@ function ChildAgentWorkspace({
       // so this draft was NOT accepted. Fail closed before clearing: keep the
       // draft for a retry and let the composer report the failure in place
       // instead of reading as a delivered message.
+      clearSendEcho(submission.key);
       if (pendingSendRef.current === submission) setSendNotice(null);
       throw new Error(t('agentMessage.payloadConflict'));
     }
+    if (keyedEcho) {
+      setSendEcho((current) => current?.id === submission.key ? { ...current, status: 'sending' } : current);
+    } else clearSendEcho(submission.key);
     if (pendingSendRef.current !== submission) return;
     // A settled acceptance releases the key. Rejected attempts keep it so the
     // composer retry button can recover a response lost after durable accept.
@@ -1381,6 +1402,16 @@ function ChildAgentWorkspace({
     () => filterBlocksToDirectChildren(capturedBlocks, forest, agentId),
     [capturedBlocks, forest, agentId],
   );
+  const scopedEcho = sendEcho?.scope === sendScope ? sendEcho : undefined;
+  const echoOwned = scopedEcho !== undefined &&
+    agentBlocks.some((block) => block.kind === 'user' && block.promptId === scopedEcho.id);
+  useEffect(() => {
+    if (echoOwned) clearSendEcho(scopedEcho.id);
+  }, [echoOwned, scopedEcho?.id]);
+  const timelineBlocks = useMemo(
+    () => withOptimisticUserBlock(agentBlocks, scopedEcho),
+    [agentBlocks, scopedEcho],
+  );
   const agentState: SessionViewState = {
     ...agentLiveState,
     session: sessionState.session,
@@ -1427,7 +1458,8 @@ function ChildAgentWorkspace({
         onLocateSpawn={locateSpawnInMenu ? handleJumpToSpawn : undefined}
       />}
       timeline={{
-        state: agentState, agentId, onLoadOlder: handleLoadOlder,
+        state: timelineBlocks === agentBlocks ? agentState : { ...agentState, blocks: timelineBlocks },
+        agentId, onLoadOlder: handleLoadOlder, showQueuedPrompts: true,
         onResolveApproval: handleResolveApproval, onAnswerQuestion: handleAnswerQuestion,
         onDismissQuestion: handleDismissQuestion, forest, onOpenAgent: navigation.openAgent,
         onRetryLoad: controller === null ? undefined : () => { void controller.retryOpen(); },

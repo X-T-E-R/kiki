@@ -1761,6 +1761,7 @@ export const zh = {
   'transcript.blank': '白纸一张。告诉 Kiki 要做什么。',
   'transcript.blocked': '已阻塞',
   'transcript.sending': '正在发送…',
+  'transcript.queued': '排队中',
   'transcript.sendingSlowTitle': '仍在发送。等待 10 秒后，这条消息还没有出现在时间线或队列中。内容已本地保存。',
   'transcript.sendingSlowNoBackupTitle': '仍在发送。等待 10 秒后，这条消息还没有出现在时间线或队列中。',
   'transcript.sendUnconfirmed': '未确认送达',

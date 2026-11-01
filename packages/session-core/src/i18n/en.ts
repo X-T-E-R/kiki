@@ -1778,6 +1778,7 @@ export const en = {
   'transcript.blank': 'A blank page. Tell Kiki what to do.',
   'transcript.blocked': 'Blocked',
   'transcript.sending': 'Sending…',
+  'transcript.queued': 'Queued',
   'transcript.sendingSlowTitle': 'Still sending. This message has not appeared in the timeline or queue after 10 seconds. Its content is saved locally.',
   'transcript.sendingSlowNoBackupTitle': 'Still sending. This message has not appeared in the timeline or queue after 10 seconds.',
   'transcript.sendUnconfirmed': 'Delivery unconfirmed',
