@@ -463,6 +463,7 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
       servicesByAgentId.delete(agentId);
     },
     notifyAgentTaskStopped: vi.fn(),
+    retain: () => ({ dispose() {} }),
     trackPromptRun: (_agentId, _completion, signal) => signal,
     fork: vi.fn(async () => {
       throw new Error('unexpected fork');

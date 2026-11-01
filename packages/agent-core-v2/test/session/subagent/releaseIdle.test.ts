@@ -145,6 +145,39 @@ describe('SessionSubagentService idle release', () => {
     return svc.run(agentId, { kind: 'prompt', prompt: 'go' }, { signal: new AbortController().signal });
   }
 
+  it('retains an idle generation until its last preparation lease is disposed', async () => {
+    const child = fakeAgent('agent-1');
+    agents.set('agent-1', child);
+    const service = ix.get(ISessionSubagentService);
+    created.fire(child.handle);
+    const first = service.retain('agent-1');
+    const last = service.retain('agent-1');
+    expect(isReleasable(child.handle)).toBe(true);
+    first.dispose();
+    first.dispose();
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS * 3);
+    expect(remove).not.toHaveBeenCalled();
+    last.dispose();
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS - 1);
+    expect(remove).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(remove).toHaveBeenCalledExactlyOnceWith('agent-1');
+  });
+
+  it('does not retain or schedule a replacement generation from an old preparation lease', async () => {
+    const child = fakeAgent('agent-1');
+    agents.set('agent-1', child);
+    const service = ix.get(ISessionSubagentService);
+    const old = service.retain('agent-1');
+    agents.set('agent-1', fakeAgent('agent-1'));
+    old.dispose();
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS * 2);
+    expect(remove).not.toHaveBeenCalled();
+    created.fire(agents.get('agent-1')!.handle);
+    await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS * 2);
+    expect(remove).toHaveBeenCalledExactlyOnceWith('agent-1');
+  });
+
   it('tracks repeated direct prompt runs and releases only after the last queued run settles', async () => {
     const child = fakeAgent('agent-1');
     agents.set('agent-1', child);

@@ -31,7 +31,7 @@ import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalo
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionExecutionControl } from '#/session/executionControl/executionControl';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
-import { SessionSubagentService } from '#/session/subagent/subagentService';
+import { SessionSubagentService, SUBAGENT_RELEASE_GRACE_MS, isReleasable } from '#/session/subagent/subagentService';
 import { ISessionDispatchService, type DispatchChild, type DispatchRunOptions } from '#/session/dispatch/dispatch';
 import { SessionDispatchService } from '#/session/dispatch/dispatchService';
 import { acknowledgeResumeOutcome, bindResumeTask, pruneResumeRecords, readResumeRecord, writeResumeRecord, type DispatchResumeRecord } from '#/session/dispatch/resume';
@@ -53,7 +53,7 @@ import type { WireRecord } from '#/wire/record';
 import { Error2, ErrorCodes } from '#/errors';
 import { agentServices, appServices, testAgent, type TestAgentContext } from '../../harness';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
-import { Event } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { MessageStepRequest } from '#/agent/loop/stepRequest';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
@@ -105,8 +105,11 @@ function dispatchFor(ctx: TestAgentContext) {
   containers.push(ix);
   const childHandle: IAgentScopeHandle = { kind: 'agent', id: CHILD, accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
   const callerHandle: IAgentScopeHandle = { kind: 'agent', id: 'main', accessor: { get: (id) => ctx.get(id) }, dispose: () => {} };
-  ix.stub(IAgentLifecycleService, { onDidCreate: Event.None as IAgentLifecycleService['onDidCreate'],
-    get: (id) => id === CHILD ? childHandle : id === 'main' ? callerHandle : undefined });
+  const created = new Emitter<IAgentScopeHandle>();
+  let removed = false;
+  const remove = vi.fn(async () => { removed = true; });
+  ix.stub(IAgentLifecycleService, { onDidCreate: created.event, remove,
+    get: (id) => id === CHILD ? removed ? undefined : childHandle : id === 'main' ? callerHandle : undefined });
   ix.stub(IAgentCollaborationRegistry, {});
   ix.set(IConfigService, ctx.get(IConfigService));
   ix.set(IModelService, ctx.get(IModelService));
@@ -121,7 +124,7 @@ function dispatchFor(ctx: TestAgentContext) {
   ix.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
   const dispatch = ix.get(ISessionDispatchService);
   const child: DispatchChild = { agent: childHandle, agentId: CHILD, name: 'saved_child', profileName: 'example-worker', thinkingEffort: 'off' };
-  return { dispatch, child, runs: ix.get(ISessionSubagentService) };
+  return { dispatch, child, runs: ix.get(ISessionSubagentService), created, remove };
 }
 
 async function defaultExternal(id = 'claude-acp', modelAlias?: string) {
@@ -1086,6 +1089,55 @@ describe('dispatch resume through model switch and real native run', () => {
     expect((await metadata.read()).agents![CHILD]).toMatchObject({ executor: 'example-acp', negotiated: { image: true }, model: 'external-new',
       parentAgentId: 'main', labels: { customState: 'preserved' } });
     expect(readResumeRecord((await metadata.read()).agents![CHILD], 'external-direct')).toMatchObject({ taskId: 'external-task', state: 'ready' });
+  });
+});
+
+describe('compact resume lifecycle retention (CM-001)', () => {
+  it.each(['success', 'failure', 'cancel'] as const)('keeps idle preparation resident and restores release after %s', async outcome => {
+    const ctx = await host();
+    const { dispatch, child, created, remove } = dispatchFor(ctx);
+    const controller = new AbortController();
+    const operationId = `retained-compact-${outcome}`;
+    const failure = new Error('Summary preparation failed');
+    let release!: () => void;
+    vi.spyOn(ctx.get(IAgentFullCompactionService), 'prepareModelSwitchSummary').mockImplementation(async (_history, signal) => new Promise<string>((resolve, reject) => {
+      release = () => { if (outcome === 'failure') reject(failure); else resolve('Prepared summary.'); };
+      signal.addEventListener('abort', () => { reject(signal.reason); }, { once: true });
+    }));
+    if (outcome === 'success') ctx.mockNextResponse({ type: 'text', text: 'Continued after compact.' });
+    vi.useFakeTimers();
+    try {
+      created.fire(child.agent);
+      const pending = dispatch.runOnExisting(child, 'Continue after summary', { ...options(operationId, { contextMode: 'compact', modelAlias: NEW }), signal: controller.signal });
+      let settled = false;
+      const result = pending.then(async run => { await (await run.started).completion; settled = true; }, error => { settled = true; throw error; });
+      void result.catch(() => {});
+      await vi.waitFor(() => { expect(release).toBeTypeOf('function'); });
+      expect(ctx.get(IAgentModelSwitchService).get(operationId)?.state).toBe('preparing');
+      expect(ctx.get(IAgentExecutionService).status().state).toBe('idle');
+      expect(ctx.get(IAgentLoopService).status().state).toBe('idle');
+      expect(isReleasable(child.agent)).toBe(true);
+      await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS * 2);
+      expect(remove).not.toHaveBeenCalled();
+      if (outcome === 'cancel') controller.abort(failure);
+      else release();
+      await vi.waitFor(() => { expect(settled).toBe(true); });
+      if (outcome === 'success') {
+        await result;
+        expect(ctx.get(IAgentProfileService).getModel()).toBe(NEW);
+        expect(ctx.llmCalls).toHaveLength(1);
+      } else {
+        await expect(result).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID, message: failure.message,
+          details: { operationId, modelSwitchState: outcome === 'cancel' ? 'cancelled' : 'failed' } });
+        expect(ctx.get(IAgentProfileService).getModel()).toBe(OLD);
+        expect(ctx.llmCalls).toHaveLength(0);
+      }
+      expect(remove).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(SUBAGENT_RELEASE_GRACE_MS);
+      expect(remove).toHaveBeenCalledExactlyOnceWith(CHILD);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

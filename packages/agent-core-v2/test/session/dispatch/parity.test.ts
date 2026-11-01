@@ -929,6 +929,7 @@ function createLane(
       },
     },
     onDidStopAgentTask: Event.None,
+    retain: () => ({ dispose: () => {} }),
     run: subagentRun,
     notifyAgentTaskStopped: () => {},
   } as unknown as ISessionSubagentService;

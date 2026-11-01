@@ -436,7 +436,20 @@ export class SessionDispatchService implements ISessionDispatchService {
     return promise;
   }
 
-  private async runExistingOnce(
+  private async runExistingOnce(child: DispatchChild, requestInput: AgentRunRequest, options: DispatchRunOptions): Promise<DispatchRun> {
+    options.signal.throwIfAborted();
+    const retained = this.runs.retain(child.agentId);
+    try {
+      const run = await this.runExistingRetained(child, requestInput, options);
+      void run.started.then(() => { retained.dispose(); }, () => { retained.dispose(); });
+      return run;
+    } catch (error) {
+      retained.dispose();
+      throw error;
+    }
+  }
+
+  private async runExistingRetained(
     child: DispatchChild,
     requestInput: AgentRunRequest,
     options: DispatchRunOptions,
