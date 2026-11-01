@@ -34,6 +34,7 @@ import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { dynamicPromptKey, ProfileDynamicSnapshot } from '#/agent/profile/dynamicPrompt';
 import { WarningIssued } from '#/agent/profile/profileOps';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { DEFAULT_AGENT_PROFILE_NAME } from '#/app/agentProfileCatalog/agentProfileCatalog';
@@ -705,6 +706,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const childProfile = child.accessor.get(IAgentProfileService);
     if (overrideBinding === undefined) {
       childProfile.applyBindingSnapshot(sourceData);
+      const dynamicPrompt = source.accessor.get(IAgentStateService).get(dynamicPromptKey);
+      if (dynamicPrompt !== undefined) await child.accessor.get(IEventDispatcher).dispatch(new ProfileDynamicSnapshot(dynamicPrompt));
       if (override?.model !== undefined) await childProfile.setModel(override.model);
       if (typeof override?.thinking === 'string') childProfile.setThinking(override.thinking);
       else if (override?.thinking === null) childProfile.restoreDefaultThinking();

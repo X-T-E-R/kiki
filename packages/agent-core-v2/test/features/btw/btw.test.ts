@@ -14,6 +14,8 @@ import {
 import { SessionBtwService } from '#/features/btw/btwService';
 import type { ToolCall } from '#/kosong/contract/message';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
+import { AUTONOMOUS_RECEIPT_POLICY_LABEL } from '#/session/subagent/autonomousReceipt';
 
 import { stubToolExecutorEvents, type ToolExecutorEventStubs } from '../../agent/toolExecutor/stubs';
 
@@ -24,6 +26,7 @@ describe('SessionBtwService', () => {
   let appendReminder: ReturnType<typeof vi.fn>;
   let formatDenyMessage: ReturnType<typeof vi.fn>;
   let executorEvents: ToolExecutorEventStubs;
+  let agentMeta: AgentMeta;
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -31,6 +34,7 @@ describe('SessionBtwService', () => {
     appendReminder = vi.fn(() => 'reminder-id');
     formatDenyMessage = vi.fn((message: string) => `${message} [worker guidance]`);
     executorEvents = stubToolExecutorEvents();
+    agentMeta = { labels: { profileName: 'example' } };
 
     const child = {
       id: 'agent-btw-1',
@@ -39,6 +43,7 @@ describe('SessionBtwService', () => {
           if (id === IAgentSystemReminderService) return { appendSystemReminder: appendReminder };
           if (id === IAgentToolApprovalService) return { formatDenyMessage };
           if (id === IAgentToolExecutorService) return executorEvents.executor;
+          if (id === ISessionMetadata) return { updateAgent: async (_agentId: string, update: (current: AgentMeta) => AgentMeta) => { agentMeta = update(agentMeta); } };
           return undefined;
         },
       },
@@ -58,6 +63,7 @@ describe('SessionBtwService', () => {
 
     expect(id).toBe('agent-btw-1');
     expect(fork).toHaveBeenCalledWith('main');
+    expect(agentMeta.labels).toEqual({ profileName: 'example', [AUTONOMOUS_RECEIPT_POLICY_LABEL]: 'local' });
     expect(appendReminder).toHaveBeenCalledWith(SIDE_QUESTION_SYSTEM_REMINDER, {
       kind: 'injection',
       variant: 'btw',

@@ -21,6 +21,8 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { mirrorAgentRun, SubagentStarted } from './mirrorAgentRun';
 import { latestAssistantText } from './runAgentTurn';
 
+export const AUTONOMOUS_RECEIPT_POLICY_LABEL = 'autonomousReceiptPolicy';
+
 export function observeAutonomousReceipts(
   child: IAgentScopeHandle,
   track: (delivery: Promise<void>) => void,
@@ -31,7 +33,8 @@ export function observeAutonomousReceipts(
   const turns = new Map<number, number>();
   const events = child.accessor.get(IEventBus);
   subscriptions.add(events.subscribe(TurnStarted, (event) => {
-    if (event.parentReceiptManaged !== true) turns.set(event.turnId, event.time);
+    const policy = child.accessor.get(ISessionMetadata).snapshot().agents?.[child.id]?.labels?.[AUTONOMOUS_RECEIPT_POLICY_LABEL];
+    if (event.parentReceiptManaged !== true && policy !== 'local') turns.set(event.turnId, event.time);
   }));
   subscriptions.add(events.subscribe(TurnEnded, (event) => {
     const startedAt = turns.get(event.turnId);

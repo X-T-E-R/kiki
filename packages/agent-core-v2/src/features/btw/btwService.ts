@@ -3,6 +3,8 @@ import { IAgentToolApprovalService } from '#/agent/toolApproval/toolApproval';
 import { denyToolExecution } from '#/agent/toolExecutor/beforeToolExecuteEvent';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { AUTONOMOUS_RECEIPT_POLICY_LABEL } from '#/session/subagent/autonomousReceipt';
 
 import { ISessionBtwService, SIDE_QUESTION_SYSTEM_REMINDER, TOOL_CALL_DISABLED_MESSAGE } from './btw';
 
@@ -15,6 +17,9 @@ export class SessionBtwService implements ISessionBtwService {
 
   async start(): Promise<string> {
     const child = await this.lifecycle.fork('main');
+    await child.accessor.get(ISessionMetadata).updateAgent(child.id, (current) => ({
+      ...current, labels: { ...current.labels, [AUTONOMOUS_RECEIPT_POLICY_LABEL]: 'local' },
+    }));
     child.accessor
       .get(IAgentSystemReminderService)
       ?.appendSystemReminder(SIDE_QUESTION_SYSTEM_REMINDER, {
