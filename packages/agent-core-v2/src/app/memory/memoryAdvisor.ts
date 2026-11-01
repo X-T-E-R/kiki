@@ -9,7 +9,6 @@ import { IConfigService } from '#/app/config/config';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentLoopService, type BeforeStepContext } from '#/agent/loop/loop';
-import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ConfigUpdate } from '#/agent/profile/profileOps';
@@ -33,9 +32,8 @@ import {
   selectorThinkingEffort,
 } from './memorySelector';
 import { runMemoryAdvice } from './memoryAdvisorCatalog';
-import { advisorStatus, memoryAdviceKey, type MemoryAdvice } from './memoryAdvisorTypes';
+import { advisorStatus, memoryAdviceKey, memoryAdviceRecommends, type MemoryAdvice } from './memoryAdvisorTypes';
 import { renderMemoryWorkingSet } from './memoryContext';
-import { redactMemorySecrets } from './memorySafety';
 
 export interface IAgentMemoryAdvisor {
   readonly _serviceBrand: undefined;
@@ -51,8 +49,6 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
   private currentStatus = advisorStatus('unconfigured');
   private turnId?: number;
   private calls = 0;
-  private toolEvent = '';
-  private readonly toolErrors = new Set<string>();
   private failures = 0;
   private failureReason?: MemoryAdvisorFailure;
   private backoffUntil = 0;
@@ -62,7 +58,6 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
     @IConfigService private readonly memoryConfig: IConfigService,
     @IAgentLoopService loop: IAgentLoopService,
     @IAgentContextInjectorService _injector: IAgentContextInjectorService,
-    @IAgentToolExecutorService tools: IAgentToolExecutorService,
     @IAgentMemorySnapshot private readonly snapshot: IAgentMemorySnapshot,
     @IMemoryStore private readonly store: IMemoryStore,
     @IMemorySelector private readonly selector: IMemorySelector,
@@ -91,29 +86,6 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
         },
         { before: 'context-injector' },
       ),
-    );
-    this._register(
-      tools.hooks.onDidExecuteTool.register('memory-advisor', async (context, next) => {
-        if (
-          context.result.isError === true &&
-          context.outcome !== 'aborted' &&
-          this.toolErrors.size < 10
-        ) {
-          const output = context.result.output;
-          const text =
-            typeof output === 'string'
-              ? output
-              : Array.isArray(output)
-              ? output.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('\n')
-              : '';
-          const event = redactMemorySecrets(`${context.toolCall.name}: ${text.slice(0, 600)}`);
-          if (!this.toolErrors.has(event)) {
-            this.toolErrors.add(event);
-            this.toolEvent = event;
-          }
-        }
-        await next();
-      }),
     );
     this._register(
       memoryConfig.onDidChangeConfiguration((event) => {
@@ -235,10 +207,8 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
     if (this.turnId !== context.turnId) {
       this.turnId = context.turnId;
       this.calls = 0;
-      this.toolErrors.clear();
-      this.toolEvent = '';
     }
-    const query = [this.snapshot.advisorRequest, this.toolEvent].filter(Boolean).join('\n');
+    const query = this.snapshot.advisorRequest ?? '';
     if (query.trim() === '') return;
     const fingerprint = JSON.stringify([
       query,
@@ -342,7 +312,7 @@ export class AgentMemoryAdvisor extends Service implements IAgentMemoryAdvisor {
     if (context.firstStepOfTurn && this.pending !== undefined && wait > 0)
       await waitForAdvice(this.pending, wait, context.signal);
     if (this.completed !== undefined && this.completed.fingerprint === this.fingerprint) {
-      this.snapshot.setAdvice?.(this.completed);
+      if (memoryAdviceRecommends(this.completed)) this.snapshot.setAdvice?.(this.completed);
       this.currentStatus = this.completed.status;
     }
   }

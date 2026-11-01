@@ -16,6 +16,10 @@ export interface MemoryAdvice {
   readonly seen: readonly string[];
   readonly status: MemoryAdvisorStatus;
 }
+/** Whether advice recommends at least one entry; advice without one is a judged-empty result. */
+export function memoryAdviceRecommends(advice: Pick<MemoryAdvice, 'items'>): boolean {
+  return advice.items.some((item) => item.use !== 'skip');
+}
 export function memoryAdviceKey(entry: Pick<MemoryRecallEntry, 'scope' | 'id'>): string {
   const scope = entry.scope;
   return JSON.stringify([

@@ -25,6 +25,15 @@ export function memoryRequestIdentity(messages: readonly ContextMessage[]): stri
   const message = messages.findLast((item) => item.role === 'user' && eligibleOrigin(item.origin));
   return message?.id === undefined && message?.providerMessageId === undefined ? undefined : JSON.stringify([message.id, message.providerMessageId]);
 }
+function directingOrigin(origin: PromptOrigin | undefined, parentAgentId: string | undefined): boolean {
+  return origin?.kind === 'user' || origin?.kind === 'external_client' || origin?.kind === 'system_trigger' && origin.name === 'subagent' ||
+    parentAgentId !== undefined && origin?.kind === 'agent_message' && origin.senderAgentId === parentAgentId ||
+    origin?.kind === 'merged' && origin.origins.some((item) => directingOrigin(item, parentAgentId));
+}
+/** Whether the latest request message directs this agent: human input or an assignment, or for a child an instruction from its parent. Reports from other agents do not. */
+export function memoryRequestDirects(messages: readonly ContextMessage[], parentAgentId?: string): boolean {
+  return directingOrigin(messages.findLast((item) => item.role === 'user' && eligibleOrigin(item.origin))?.origin, parentAgentId);
+}
 export function memoryRequestText(messages: readonly ContextMessage[]): string | undefined {
   const message = messages.findLast((item) => item.role === 'user' && eligibleOrigin(item.origin));
   if (message === undefined) return undefined;

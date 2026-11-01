@@ -8,7 +8,8 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
-import { memoryRequestIdentity, memoryRequestText, renderMemoryWorkingSet } from './memoryContext';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { memoryRequestDirects, memoryRequestIdentity, memoryRequestText, renderMemoryWorkingSet } from './memoryContext';
 import { MEMORY_SECTION, memoryEnabled, type MemoryConfig } from './configSection';
 import { IMemoryStore, memoryApplicability, type MemoryEntry } from './memoryStore';
 import type { MemoryPublicScopeKind, MemoryScope } from './memoryScopes';
@@ -55,6 +56,8 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
   private refreshing?: Promise<string | undefined>;
   private unpublished = false;
   private advice?: MemoryAdvice;
+  private requestTurn?: number;
+  private task?: string;
   get advisorRequest(): string { return this.request; }
   advisorRequestIdentity?: string;
   setAdvice(advice: MemoryAdvice | undefined): void { if (this.advice === advice) return; this.advice = advice; this.dirty = true; }
@@ -115,21 +118,28 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
         try { await store.prepare?.(); } catch { this.dirty = true; }
         if (store.snapshot !== undefined) {
           let request = inbound;
+          let adopt = inbound !== undefined;
           if (request === undefined) try {
             const context = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentContextMemoryService));
             const messages = context.get();
-            this.advisorRequestIdentity = memoryRequestIdentity(messages) ?? (messages.length === 0 ? undefined : this.advisorRequestIdentity);
-            request = memoryRequestText(messages) ?? (messages.length === 0 ? '' : this.inbound);
+            const identity = memoryRequestIdentity(messages) ?? (messages.length === 0 ? undefined : this.advisorRequestIdentity);
+            const turn = this.activeTurn();
+            adopt = turn === undefined || turn !== this.requestTurn || this.task === undefined ||
+              identity !== this.advisorRequestIdentity && memoryRequestDirects(messages, this.agent.parentAgentId);
+            if (adopt) {
+              this.requestTurn = turn;
+              this.advisorRequestIdentity = identity;
+              request = memoryRequestText(messages) ?? (messages.length === 0 ? '' : this.inbound);
+            }
           } catch {}
           if (request !== undefined) this.inbound = request;
-          let task = '';
-          try {
+          if (adopt || this.task === undefined) try {
             const todos = this.instantiation.invokeFunction((accessor) => accessor.get(ISessionTodoService));
             const notes = todos.getNotes(this.agent.agentId).notes;
             const references = [...new Set(Object.values(notes ?? {}).flatMap((text) => [...text.matchAll(/\[(m_[a-zA-Z0-9_]+)\]/g)].map((match) => match[0])))].slice(0, 20).join(' ');
-            task = [notes?.goal, notes?.directives, notes?.next, references].filter(Boolean).join('\n');
-          } catch {}
-          const currentRequest = [this.inbound, task].filter(Boolean).join('\n');
+            this.task = [notes?.goal, notes?.directives, notes?.next, references].filter(Boolean).join('\n');
+          } catch { this.task = ''; }
+          const currentRequest = [this.inbound, this.task].filter(Boolean).join('\n');
           if (currentRequest !== this.request) { this.request = currentRequest; this.dirty = true; }
           try { if (await store.checkpoint?.() !== this.generation) this.dirty = true; }
           catch { this.dirty = true; }
@@ -229,6 +239,14 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
         { kind: 'persona_workspace', workspaceId: this.session.workspaceId, personaId: this.persona.id } as const,
       ]),
     ];
+  }
+
+  private activeTurn(): number | undefined {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IAgentLoopService)).status().activeTurnId;
+    } catch {
+      return undefined;
+    }
   }
 
   invalidate(): void { this.frozen = undefined; this.frozenRelated = []; this.generation = undefined; this.dirty = true; }
