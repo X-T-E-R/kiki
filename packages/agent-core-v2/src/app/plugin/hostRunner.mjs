@@ -210,8 +210,15 @@ function shutdown() {
   });
   return shuttingDown;
 }
-for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void shutdown().finally(() => process.exit()); });
-for await (const line of createInterface({ input: process.stdin })) {
+function stopWithOwner() {
+  const timer = setTimeout(() => process.exit(), 1000);
+  timer.unref();
+  void shutdown().finally(() => process.exit());
+}
+for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, stopWithOwner);
+const input = createInterface({ input: process.stdin });
+input.once('close', stopWithOwner);
+for await (const line of input) {
   let message;
   try { message = JSON.parse(line); } catch { continue; }
   if (message.method === 'handshake') {

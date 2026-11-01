@@ -260,6 +260,13 @@ impl BackendMonitor {
         }
     }
 
+    fn record_exit(&self, pid: u32, launched_at_ms: u64, payload: &TerminatedPayload) {
+        self.record_stderr_line(&serde_json::json!({
+            "event": "sidecar_exit", "pid": pid, "launched_at_ms": launched_at_ms,
+            "time_ms": unix_epoch_millis().ok(), "code": payload.code, "signal": payload.signal,
+        }).to_string());
+    }
+
     /// The pump ended without a Terminated event; fail waiters fast regardless.
     fn ensure_exit(&self) {
         if let Ok(mut exit) = self.exit.lock() {
@@ -350,6 +357,7 @@ fn spawn_backend_event_pump(
         let exit = monitor
             .exit()
             .expect("backend event pump must record an exit");
+        monitor.record_exit(pid, launched_at_ms, &exit);
         manager.handle_backend_exit(&app, pid, launched_at_ms, &exit);
     });
 }
@@ -5062,6 +5070,15 @@ mod tests {
             signal: None,
         });
         assert_eq!(monitor.exit().map(|payload| payload.code), Some(Some(1)));
+        monitor.record_exit(4242, 1234, &monitor.exit().unwrap());
+        let logged = fs::read_to_string(&log_path).unwrap();
+        let receipt: serde_json::Value = serde_json::from_str(logged.lines().last().unwrap()).unwrap();
+        assert_eq!(receipt["event"], "sidecar_exit");
+        assert_eq!(receipt["pid"], 4242);
+        assert_eq!(receipt["launched_at_ms"], 1234);
+        assert_eq!(receipt["code"], 1);
+        assert!(receipt["signal"].is_null());
+        assert!(receipt["time_ms"].as_u64().unwrap() >= 1234);
         fs::remove_dir_all(root).unwrap();
     }
 

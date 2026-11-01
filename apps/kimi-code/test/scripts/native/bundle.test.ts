@@ -55,6 +55,8 @@ describe('SEA native package imports', () => {
       const main = join(dir, 'main.ts');
       const indexer = join(dir, 'indexer.ts');
       const attached = join(dir, 'attached.ts');
+      const plugin = join(dir, 'plugin.ts');
+      writeFileSync(plugin, "console.log('plugin-node-loaded');\n");
       writeFileSync(main, "console.log('application-loaded');\n");
       writeFileSync(indexer, "export async function runSqliteIndexerCommand(path: string) { if (!path) throw new Error('missing-index-path'); console.log(JSON.stringify({ indexer: path })); }\n");
       writeFileSync(attached, "console.log('attached-mcp-loaded');\n");
@@ -68,6 +70,7 @@ describe('SEA native package imports', () => {
           ...nativeConfig.alias,
           './main': main,
           './mcp-sea-entry': attached,
+          './plugin-node-entry': plugin,
           '@kiki/kap-server/sqlite-indexer-runtime': indexer,
         },
       });
@@ -99,6 +102,10 @@ describe('SEA native package imports', () => {
       expect(normal.status).toBe(0);
       expect(normal.stderr).toBe('');
       expect(normal.stdout).toBe('application-loaded\n');
+      const pluginProcess = spawnSync(process.execPath, ['--max-old-space-size=64', bundle, '__plugin_run_node', 'fixture.mjs'], { encoding: 'utf8', timeout: 10_000 });
+      expect(pluginProcess.status).toBe(0);
+      expect(pluginProcess.stderr).toBe('');
+      expect(pluginProcess.stdout).toBe('plugin-node-loaded\n');
       const attachedProcess = spawnSync(process.execPath, [bundle, 'mcp', '--workspace', 'C:/fixture', '--attached'], { encoding: 'utf8', timeout: 10_000 });
       expect(attachedProcess.status).toBe(0);
       expect(attachedProcess.stderr).toBe('');

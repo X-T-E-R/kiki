@@ -19,7 +19,9 @@ export async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const assetSmoke = process.env['KIKI_NATIVE_ASSET_SMOKE'] === '1' || process.env['KIKI_AUTH_NATIVE_SMOKE'] === '1';
   try {
-    if (!assetSmoke && args[0] === 'tools') {
+    if (!assetSmoke && args[0] === '__plugin_run_node') {
+      await import('./plugin-node-entry');
+    } else if (!assetSmoke && args[0] === 'tools') {
       const { runToolsCommand } = await import('./cli/tools-entry');
       await runToolsCommand(process.argv);
     } else if (!assetSmoke && args.length === 1 && (args[0] === '--version' || args[0] === '-V')) {

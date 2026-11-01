@@ -49,6 +49,10 @@
     "./worker-heap-policy": {
       "types": "./src/worker-heap-policy.ts",
       "default": "./src/worker-heap-policy.ts"
+    },
+    "./proxy": {
+      "types": "./src/proxy.ts",
+      "default": "./src/proxy.ts"
     }
   },
   "publishConfig": {
@@ -68,6 +72,11 @@
         "types": "./dist/worker-heap-policy.d.mts",
         "import": "./dist/worker-heap-policy.mjs",
         "default": "./dist/worker-heap-policy.mjs"
+      },
+      "./proxy": {
+        "types": "./dist/proxy.d.mts",
+        "import": "./dist/proxy.mjs",
+        "default": "./dist/proxy.mjs"
       }
     },
     "provenance": true
