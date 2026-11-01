@@ -1854,6 +1854,62 @@ describe('hidden prefix turn preview', () => {
     } finally { controller.close(); }
   });
 
+  it.each(['main', 'child'] as const)('replaces a stale %s step window when canonical frame ordinals move outside it', async (agentId) => {
+    const source = { kind: 'turn' as const, id: 't1' };
+    const frames: TranscriptFrame[] = Array.from({ length: 9 }, (_, index) => ({
+      kind: 'text', frameId: `nested-${index}`, role: 'assistant', text: `NESTED-FRAME-${index}`,
+    }));
+    const turn = (count: number): TranscriptTurn => ({
+      kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'OWNED-OPENING', promptId: 'opening-1',
+      steps: Array.from({ length: count }, (_, ordinal) => ({
+        kind: 'step', stepId: `s${ordinal}`, turnId: 't1', ordinal, state: 'completed',
+        frames: ordinal === count - 3 ? frames : [{ kind: 'text', frameId: `f${ordinal}`, role: 'assistant', text: `CANONICAL-STEP-${ordinal}` }],
+      })),
+    });
+    const canonical = turn(31);
+    const stale = rebindTurnContentRefs(boundedEntity({ ...canonical, steps: canonical.steps.slice(17) }, source, undefined, agentId, 'tail'));
+    const fresh = rebindTurnContentRefs(boundedEntity(canonical, source, undefined, agentId, 'tail'));
+    const oldFrames = stale.contentRefs?.find(ref => ref.path.length === 3);
+    const newFrames = fresh.contentRefs?.find(ref => ref.path.length === 3);
+    expect(oldFrames?.path).toEqual(['steps', 11, 'frames']);
+    expect(newFrames?.path).toEqual(['steps', 28, 'frames']);
+    expect(newFrames?.revision).toBe(oldFrames?.revision);
+    expect(fresh.contentRefs?.find(ref => ref.path.length === 1)).toMatchObject({ offset: 23, total: 31 });
+    const content = vi.fn(segmentRead(canonical));
+    const { controller, deliver, view } = harness(undefined, content);
+    const page = { session_id: 'session_test', agent_id: agentId, has_more: false,
+      tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {}, agents: [], pending_interactions: [],
+      coverage: { kind: 'tail' as const, hasMoreOlder: false }, items: [fresh] };
+    vi.mocked(view.transcript.page).mockResolvedValueOnce({ ...page, items: [stale], has_more: true, next_cursor: 'turn:t1' }).mockResolvedValue(page);
+    await controller.open();
+    if (agentId === 'child') controller.retainAgentView('shifted-child', agentId, 'delta');
+    const sibling: TranscriptTurn = { kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, prompt: 'SIBLING-PAGE', steps: [] };
+    deliver(resetEvent(agentId, emptySnapshot({ items: [sibling] }), 2, true));
+    try {
+      expect(await controller.loadOlderMessages(agentId)).toBe(true);
+      if (oldFrames === undefined) throw new Error('missing stale frames reference');
+      expect(await controller.loadContentSegment(agentId, oldFrames)).toBe(true);
+      expect(controller.contentRefsFor(agentId, source).some(ref => ref.path[1] === 11)).toBe(false);
+      for (let reads = 0; ; reads += 1) {
+        const next = controller.contentRefsFor(agentId, source).find(ref => ref.direction === 'backward');
+        if (next === undefined) break;
+        expect(reads).toBeLessThan(10);
+        expect(await controller.loadContentSegment(agentId, next)).toBe(true);
+      }
+      const state = agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+      const bodies = state.blocks.flatMap(block => 'text' in block ? [block.text] : []);
+      expect(bodies).toContain('OWNED-OPENING');
+      expect(bodies).toContain('SIBLING-PAGE');
+      expect(bodies).toContain('CANONICAL-STEP-30');
+      expect(bodies).toContain('CANONICAL-STEP-0');
+      for (let index = 0; index < 9; index += 1) expect(bodies).toContain(`NESTED-FRAME-${index}`);
+      expect(view.transcript.page).toHaveBeenCalledTimes(2);
+      expect(content.mock.calls.length).toBeLessThan(8);
+      expect(state.olderError).toBeUndefined();
+      expect(Object.values(state.detailLoads).some(load => load.status === 'error')).toBe(false);
+    } finally { controller.close(); }
+  });
+
   it.each(['steps', 'frames'] as const)('adopts a complete canonical %s preview when its stale continuation disappears', async (field) => {
     const fixture = hiddenPrefixFixture();
     const original: TranscriptTurn = field === 'frames' ? fixture.client : { ...fixture.client,

@@ -2461,7 +2461,7 @@ export class SessionController {
       (ref.path.length === 1 || ref.path.length === 3 && ref.path[2] === 'frames');
   }
 
-  /** Rebind one canonical structure revision without discarding already loaded children. */
+  /** Rebind one canonical structure revision, retaining loaded children while their positions remain compatible. */
   private async refreshTurnStructurePreview(agentId: string, ref: ContentRef, signal: AbortSignal): Promise<ContentRef | 'complete' | undefined> {
     if (ref.source.kind !== 'turn' || signal.aborted || this.closed) return undefined;
     const preview = await this.readTurnContentPreview(agentId, ref.source.id, signal);
@@ -2469,7 +2469,13 @@ export class SessionController {
     const candidate = preview.contentRefs?.find((current) => current.kind === 'array' &&
       current.path.length === ref.path.length && current.path.every((part, partIndex) => part === ref.path[partIndex]) &&
       current.source.kind === ref.source.kind && current.source.id === ref.source.id);
-    if (candidate === undefined) return !signal.aborted && this.adoptTimelinePreviewField(agentId, ref, preview) ? 'complete' : undefined;
+    if (candidate === undefined) {
+      const moved = ref.path.length === 3 && contentPathValue(preview, ref.path) === undefined;
+      const path = moved ? ['steps'] : ref.path;
+      if (signal.aborted || !this.adoptTimelinePreviewField(agentId, ref, preview, path)) return undefined;
+      return moved ? this.contentEntity(agentId, ref.source)?.contentRefs?.find(current => current.kind === 'array' &&
+        current.path.length === 1 && current.path[0] === 'steps') ?? 'complete' : 'complete';
+    }
     if (candidate.revision === ref.revision && candidate.offset === ref.offset && candidate.total === ref.total) return undefined;
     const fresh = ref.direction === 'backward' ? candidate : { ...candidate, direction: 'forward' as const, offset: 0 };
     if (!this.installTurnStructureRef(agentId, ref, fresh) || signal.aborted) return undefined;
@@ -2516,12 +2522,12 @@ export class SessionController {
     return this.contentEntity(agentId, source)?.contentRefs?.find((entry) => sameContentRef(entry, candidate));
   }
 
-  private adoptTimelinePreviewField(agentId: string, ref: ContentRef, preview: ContentWindow): boolean {
+  private adoptTimelinePreviewField(agentId: string, ref: ContentRef, preview: ContentWindow, path = ref.path): boolean {
     const source = ref.source;
     const current = this.contentEntity(agentId, source);
     if (current === undefined || !(current.contentRefs ?? []).some((entry) => sameContentRef(entry, ref))) return false;
     let adopted: ContentWindow;
-    try { adopted = adoptContentPreviewField(current, preview, ref.path); } catch { return false; }
+    try { adopted = adoptContentPreviewField(current, preview, path); } catch { return false; }
     const store = this.agentTranscripts.get(agentId);
     let installed = store !== undefined && transcriptContentEntity(store, source) !== undefined && replaceAgentContentEntity(store, source, adopted);
     if (!installed) {
