@@ -22,7 +22,7 @@ import {
 } from '@nb-im/core';
 
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
-import { ImSendError, type ImAdapterFactory, type ImInboundEvent, type ImInboundIdentity, type ImMediaReceipt, type ImOutboundFile, type ImOutboundMedia, type ImOutboundText, type ImSessionAdapter } from './adapter';
+import { ImSendError, mimeAllowed, type ImAdapterFactory, type ImInboundEvent, type ImInboundIdentity, type ImMediaReceipt, type ImOutboundFile, type ImOutboundMedia, type ImOutboundText, type ImSessionAdapter } from './adapter';
 import { segmentText } from './segment';
 import { oneBotIdentityTransport } from './oneBotIdentity';
 import { wechatEndpointAllowed } from './wechatLogin';
@@ -545,10 +545,4 @@ function realtimeCapability(platform: SessionPlatformId) {
 
 function isSessionMediaKind(kind: string): kind is 'file' | 'image' | 'audio' | 'voice' | 'video' {
   return kind === 'file' || kind === 'image' || kind === 'audio' || kind === 'voice' || kind === 'video';
-}
-
-export function mimeAllowed(capability: MessageMediaCapability, mediaType: string): boolean {
-  if (capability.mimeTypes === undefined) return true;
-  const actual = mediaType.toLowerCase();
-  return capability.mimeTypes.some((mime) => mime === actual || (mime.endsWith('/*') && actual.startsWith(mime.slice(0, -1))));
 }

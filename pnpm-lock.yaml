@@ -438,6 +438,9 @@ importers:
       '@jsquash/webp':
         specifier: ^1.5.0
         version: 1.5.0
+      '@kiki-dsh/im-bridge-core':
+        specifier: file:../../vendor/kiki-dsh-im-bridge-core-0.1.0.tgz
+        version: file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz
       '@kiki/acp-client':
         specifier: workspace:^
         version: link:../acp-client
@@ -641,6 +644,9 @@ importers:
       '@fastify/swagger':
         specifier: ^9.7.0
         version: 9.7.0
+      '@kiki-dsh/im-bridge-core':
+        specifier: file:../../vendor/kiki-dsh-im-bridge-core-0.1.0.tgz
+        version: file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz
       '@kiki/agent-core-v2':
         specifier: workspace:^
         version: link:../agent-core-v2
@@ -853,6 +859,9 @@ importers:
 
   packages/protocol:
     dependencies:
+      '@kiki-dsh/im-bridge-core':
+        specifier: file:../../vendor/kiki-dsh-im-bridge-core-0.1.0.tgz
+        version: file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz
       '@kiki/plugin-sdk':
         specifier: workspace:*
         version: link:../plugin-sdk
@@ -2196,6 +2205,10 @@ packages:
 
   '@jsquash/webp@1.5.0':
     resolution: {integrity: sha512-KggLoj2MnRSfIqTeKe1EmbljTX2vuV7mh79k89PCL1pyqiDULcPM1L47twxXt0hkb68F70bXiL31MxsuoZtKFw==}
+
+  '@kiki-dsh/im-bridge-core@file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz':
+    resolution: {integrity: sha512-A+a7onUHL2xLN9bj8oIpvl/6a6XT2N6XpwrvlJRBlCraOgwgZNbFveCKBh6bDcoHUA6TAiYfZL1wLRgEnYuxAA==, tarball: file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz}
+    version: 0.1.0
 
   '@larksuiteoapi/node-sdk@1.76.0':
     resolution: {integrity: sha512-v/bxQNCugwAmMPbZtBGJtSu8hdQLiB1/29Jr+GBIG18DyQ4LYyp7gxQ74pkhXVSuoUeH4v+/ZHAw/SW+KMrj2g==}
@@ -8688,6 +8701,9 @@ packages:
   zod@4.3.6:
     resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
 
+  zod@4.4.3:
+    resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
@@ -10272,6 +10288,10 @@ snapshots:
   '@jsquash/webp@1.5.0':
     dependencies:
       wasm-feature-detect: 1.8.0
+
+  '@kiki-dsh/im-bridge-core@file:vendor/kiki-dsh-im-bridge-core-0.1.0.tgz':
+    dependencies:
+      zod: 4.4.3
 
   '@larksuiteoapi/node-sdk@1.76.0':
     dependencies:
@@ -17311,5 +17331,7 @@ snapshots:
   zod@3.25.76: {}
 
   zod@4.3.6: {}
+
+  zod@4.4.3: {}
 
   zwitch@2.0.4: {}
