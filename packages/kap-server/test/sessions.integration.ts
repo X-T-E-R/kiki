@@ -1683,6 +1683,34 @@ describe('server-v2 /api/sessions', () => {
     expect(filtered.body.data.items.some((s) => s.id === created.body.data.id)).toBe(false);
   });
 
+  it('lists pinned sessions beyond the first recency page with the pinned filter', async () => {
+    const cwd = home as string;
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const pinned = (await postJson<SessionWire>('/api/sessions', { metadata: { cwd } })).body.data.id;
+    await postJson<SessionWire>(`/api/sessions/${pinned}/profile`, { metadata: { 'kiki.pinned': true } });
+    const archived = (await postJson<SessionWire>('/api/sessions', { metadata: { cwd } })).body.data.id;
+    await postJson<SessionWire>(`/api/sessions/${archived}/profile`, { metadata: { 'kiki.pinned': true } });
+    await postJson<SessionWire>(`/api/sessions/${archived}:archive`, {});
+    const newer: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      await sleep(5);
+      newer.push((await postJson<SessionWire>('/api/sessions', { metadata: { cwd } })).body.data.id);
+    }
+
+    const head = await getJson<PageWire>('/api/sessions?page_size=3');
+    expect(head.body.data.items.map((s) => s.id)).not.toContain(pinned);
+
+    const only = await getJson<PageWire>('/api/sessions?page_size=3&pinned=true');
+    expect(only.body.code).toBe(0);
+    expect(only.body.data.items.map((s) => s.id)).toEqual([pinned]);
+    expect(only.body.data.items[0]!.metadata['kiki.pinned']).toBe(true);
+    expect(only.body.data.has_more).toBe(false);
+
+    const unpinned = await getJson<PageWire>('/api/sessions?page_size=100&pinned=false');
+    expect(unpinned.body.data.items.map((s) => s.id)).toEqual(expect.arrayContaining(newer));
+    expect(unpinned.body.data.items.map((s) => s.id)).not.toContain(pinned);
+  });
+
   it('paginates sessions with before_id and terminates on the last page', async () => {
     const cwd = home as string;
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

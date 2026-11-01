@@ -7,7 +7,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RoomChangeEvent, RoomListItem, Session } from '@kiki/protocol';
 import { markRoomSeen, resetSessionSeen, sessionSeenSnapshot } from '@kiki/session-core/settings';
-import { SESSION_EVENT_READ_INTERVAL_MS, useConversationList } from './useConversationList';
+import { PINNED_SESSIONS_QUERY_KEY, SESSION_EVENT_READ_INTERVAL_MS, useConversationList } from './useConversationList';
 import { RoomLinkRedirect } from './conversationRoutes';
 
 const mock = vi.hoisted(() => ({ listItems: vi.fn(), getSession: vi.fn(), on: vi.fn(), dispose: vi.fn() }));
@@ -129,6 +129,25 @@ describe('conversation source', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+  it('refreshes the pinned read when another client pins a session it has not loaded', async () => {
+    mock.listItems.mockResolvedValue([]);
+    const query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const pinnedKey = [...PINNED_SESSIONS_QUERY_KEY, false, undefined];
+    query.setQueryData(['sessions', false], { pages: [{ items: sessions, has_more: true }], pageParams: [undefined] });
+    query.setQueryData(pinnedKey, { pages: [{ items: [], has_more: false }], pageParams: [undefined] });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => { root.render(<QueryClientProvider client={query}><List /></QueryClientProvider>); });
+    mock.getSession.mockResolvedValueOnce({ ...sessions[0]!, id: 'old', metadata: { cwd: '/example', 'kiki.pinned': true } });
+    await act(async () => {
+      metaChanged?.({ sessionId: 'old' });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(query.getQueryState(pinnedKey)?.isInvalidated).toBe(true);
+    expect(query.getQueryState(['sessions', false])?.isInvalidated).toBe(false);
   });
   it('exposes a failed room query rather than hiding it as a successful empty list', async () => {
     mock.listItems.mockRejectedValue(new Error('Rooms unavailable'));

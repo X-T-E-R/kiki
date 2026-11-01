@@ -19,6 +19,7 @@ import { resolveFallbackPhase } from './components/ConversationShell';
 import { ApiError } from './lib/client';
 import { shouldGuardNavigation } from './components/dirtyGuard';
 import { handleGlobalConnectionFrame, refreshSessionAttention } from './state/connection';
+import { writeLayoutPreferences } from '@kiki/session-core/settings';
 
 const appHarness = vi.hoisted(() => ({ connection: null as unknown }));
 
@@ -445,6 +446,37 @@ describe('App sidebar Escape wiring', () => {
       expect(seen?.hasPendingApproval).toBe(true);
     } finally {
       base.client.listSessions = original;
+    }
+  });
+
+  it('shows a pinned session that sits beyond the first loaded page in the Pinned group', async () => {
+    writeLayoutPreferences({ groupBy: 'workspace' });
+    const base = appHarness.connection as { client: { listSessions: (query?: { pinned?: boolean }) => Promise<unknown> } };
+    const row = (id: string, updatedAt: string, pinned = false) => ({
+      id, title: id, workspace_id: 'wd_example', busy: false,
+      metadata: pinned ? { cwd: '/work/example', 'kiki.pinned': true } : { cwd: '/work/example' },
+      created_at: '2026-01-01T00:00:00Z', updated_at: updatedAt,
+    });
+    const recent = Array.from({ length: 50 }, (_, i) => row(`recent_${i}`, new Date(Date.UTC(2026, 5, 1, 0, 60 - i)).toISOString()));
+    const firstPagePinned = row('pinned_recent', '2026-06-01T02:00:00Z', true);
+    const oldPinned = row('pinned_old', '2025-01-01T00:00:00Z', true);
+    const original = base.client.listSessions;
+    const list = vi.fn(async (query: { pinned?: boolean } = {}) => query.pinned === true
+      ? { items: [firstPagePinned, oldPinned], has_more: false }
+      : { items: [firstPagePinned, ...recent], has_more: true, next_cursor: 'recent_49' });
+    base.client.listSessions = list;
+    try {
+      await mountApp();
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(list).toHaveBeenCalledWith(expect.objectContaining({ pinned: true }), expect.anything());
+      const block = element('[data-session-group-block="pinned"]');
+      const rows = [...block.querySelectorAll('[data-session-row]')].map((node) => node.getAttribute('data-session-row'));
+      expect(rows).toEqual(['pinned_recent', 'pinned_old']);
+      expect(block.querySelector('[data-session-group-count]')?.textContent).toBe('2');
+      expect(container.querySelectorAll('[data-session-row="pinned_old"]')).toHaveLength(1);
+    } finally {
+      base.client.listSessions = original;
+      writeLayoutPreferences({ groupBy: 'time' });
     }
   });
 

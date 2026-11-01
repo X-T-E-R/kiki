@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Session } from '@kiki/protocol';
-import { mergeConversationItems, mergeSessionActivity, type ConversationWorkspace, type SessionListData, type SessionSortOrder } from '@kiki/session-core/sessions';
+import { dedupeSessions, isPinnedSession, mergeConversationItems, mergeSessionActivity, type ConversationWorkspace, type SessionListData, type SessionSortOrder } from '@kiki/session-core/sessions';
 import { forgetRoomSeen, sessionSeenSnapshot, subscribeSessionSeen } from '@kiki/session-core/settings';
 import { useConnection } from '../state/connection';
 import { ROOMS_QUERY_KEY } from './botRooms';
 
 export const ROOM_ITEMS_QUERY_KEY = ['rooms', 'items'] as const;
+/** Prefix of the complete pinned-session reads (one per archive/workspace scope). */
+export const PINNED_SESSIONS_QUERY_KEY = ['sessions', 'pinned'] as const;
 /** Minimum spacing between event-driven point reads of one session row. */
 export const SESSION_EVENT_READ_INTERVAL_MS = 250;
 
@@ -51,6 +53,12 @@ export function useConversationList(sessions: readonly Session[], order: Session
       void client.getSession(sessionId).then((fresh) => {
         if (disposed) return;
         queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) => mergeSessionActivity(old, fresh));
+        // A session pinned elsewhere may sit outside every loaded page; the
+        // pinned read is the only list that can bring it in.
+        const pinnedReads = queryClient.getQueriesData<SessionListData>({ queryKey: PINNED_SESSIONS_QUERY_KEY });
+        if (isPinnedSession(fresh) && pinnedReads.some(([, data]) => !dedupeSessions(data).some((session) => session.id === fresh.id))) {
+          void queryClient.invalidateQueries({ queryKey: PINNED_SESSIONS_QUERY_KEY });
+        }
       }).catch(() => {
         // The bounded head poll repairs a failed point read without dropping loaded rows.
       }).finally(() => {

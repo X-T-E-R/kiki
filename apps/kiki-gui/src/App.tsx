@@ -50,7 +50,7 @@ import {
 import { ActivityPage, useSessionSeen } from './components/ActivityPage';
 import { AppConnectionBanner } from './components/AppConnectionBanner';
 import { ArchivedSessionsPage } from './components/ArchivedSessionsPage';
-import { useConversationList } from './lib/useConversationList';
+import { PINNED_SESSIONS_QUERY_KEY, useConversationList } from './lib/useConversationList';
 import { RoomLinkRedirect } from './lib/conversationRoutes';
 import { CapabilitiesPage } from './components/capabilities/CapabilitiesPage';
 import { ConversationShell } from './components/ConversationShell';
@@ -81,11 +81,12 @@ import {
   adjacentRunningSession,
   arrangePinnedFirst,
   buildConversationInbox,
-  dedupeSessions,
   groupConversationItems,
   mergeSessionFirstPage,
+  readAllSessionPages,
   readSessionFirstPage,
   sortWorkspacesByPinnedThenRecency,
+  withPinnedSessions,
   type ConversationListItem,
   type SessionGroup,
   type SessionListData,
@@ -129,6 +130,11 @@ import { SidebarContext } from './components/sidebarContext';
 import { retryRootReadModelDelay, retryRootReadModelQuery } from './lib/readModelRetry';
 
 export const SESSION_FIRST_PAGE_POLL_INTERVAL_MS = 15_000;
+
+/** The complete pinned-session read, under ['sessions'] so list refreshes reach it. */
+export function pinnedSessionsQueryKey(showArchived: boolean, workspaceFilter: string | undefined) {
+  return [...PINNED_SESSIONS_QUERY_KEY, showArchived, workspaceFilter] as const;
+}
 
 async function showDesktopWindow(): Promise<void> {
   const { invoke } = await import('@tauri-apps/api/core');
@@ -534,6 +540,22 @@ function NormalApp() {
       controller.abort();
     };
   }, [client, queryClient, showArchived, workspaceFilter]);
+  // Pinned sessions are read as their own complete set: the recency pages
+  // above only reach as far as the reader has scrolled, and an old pinned
+  // session must not wait for them. The key sits under ['sessions'], so every
+  // list refresh and pin toggle refreshes it too.
+  const pinnedSessionsQuery = useQuery({
+    queryKey: pinnedSessionsQueryKey(showArchived, workspaceFilter),
+    queryFn: ({ signal }) => readAllSessionPages((before_id) => client.listSessions({
+      page_size: 100,
+      pinned: true,
+      include_archive: showArchived || undefined,
+      workspace_id: workspaceFilter,
+      before_id,
+    }, { signal }), signal),
+    retry: retryRootReadModelQuery,
+    retryDelay: retryRootReadModelDelay,
+  });
 
   const workspacesQuery = useQuery({
     queryKey: ['workspaces', 'catalog'],
@@ -553,8 +575,8 @@ function NormalApp() {
   // chips, so it stays pinned-first + newest-first regardless of
   // the sidebar's view preference. Grouping applies its own sort internally.
   const sessions = useMemo(
-    () => arrangePinnedFirst(dedupeSessions(sessionsQuery.data)),
-    [sessionsQuery.data],
+    () => arrangePinnedFirst(withPinnedSessions(sessionsQuery.data, pinnedSessionsQuery.data)),
+    [sessionsQuery.data, pinnedSessionsQuery.data],
   );
   const conversations = useConversationList(sessions, layoutPrefs.sortBy, workspaceOptions);
   // The one update schedule for the whole app: a check after the first screen,
