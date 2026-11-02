@@ -888,6 +888,23 @@ describe('execution pause/resume', () => {
     expect(row('session-alpha').textContent).toContain('Paused');
   });
 
+  it('drops the no-op disclosure and states the paused hint once when every session is paused', async () => {
+    vi.useFakeTimers();
+    liveAgentsWith(['session-alpha', 'session-beta', 'session-gamma']);
+    for (const id of ['session-alpha', 'session-beta', 'session-gamma']) {
+      stubExecution(id, executionState('paused', { pauseOperationId: `pause-${id}` }));
+    }
+    const { container, render } = mount('realtime');
+    await settle(render, 1100);
+    const list = container.querySelector<HTMLElement>('[data-execution-sessions]')!;
+    expect(list.querySelector('[data-execution-sessions-toggle]')).toBeNull();
+    expect(list.getAttribute('data-collapsed')).toBeNull();
+    expect(list.querySelectorAll('[data-execution-session]:not([hidden])')).toHaveLength(3);
+    expect(list.querySelector('[data-execution-shared-hint="paused"]')?.textContent).toContain('safe to restart');
+    expect(list.textContent!.split('safe to restart')).toHaveLength(2);
+    expect(list.querySelectorAll('[data-execution-action="resume"]')).toHaveLength(3);
+  });
+
   it('names the session cut of the agent breakdown instead of showing bare ids', async () => {
     vi.useFakeTimers();
     const TITLED = 'session_3f9e1ab7-0c2d-4e5f-8a9b-1c2d3e4f5a6b';

@@ -165,7 +165,9 @@ export function PauseAllExecutions({ snapshot, states, labelOf }: {
  * state, then every other session the batch reports held or failed (a session
  * paused before a restart has left the inventory but still needs its resume).
  * One session shows directly; several fold behind a disclosure that starts
- * closed, and the folded list still shows each row that needs the user.
+ * closed, and the folded list still shows each row that needs the user. With
+ * no running row left to fold, the disclosure becomes a plain heading, and a
+ * phase hint every row shares reads once under it.
  */
 export function ExecutionSessionList({ liveSessionIds, states, onRetryRead, labelOf }: {
   readonly liveSessionIds: readonly string[];
@@ -183,9 +185,15 @@ export function ExecutionSessionList({ liveSessionIds, states, onRetryRead, labe
     .sort((a, b) => a.localeCompare(b));
   const rows = [...liveSessionIds.filter((sessionId) => states[sessionId] !== undefined), ...held];
   if (rows.length === 0) return null;
-  const foldable = rows.length > 1;
+  const phases = rows.map((sessionId) => states[sessionId]!.phase);
+  // Only running rows ever fold away; with none left the disclosure would be a no-op.
+  const foldable = rows.length > 1 && phases.includes('running');
   const collapsed = foldable && !expanded;
   const heading = t('usage.execution.sessionsCount', { count: rows.length });
+  // When every row is held the same way, the phase hint reads once for the list.
+  const sharedPhase = rows.length > 1 && (phases.every((phase) => phase === 'paused') || phases.every((phase) => phase === 'pausing'))
+    ? phases[0] as 'paused' | 'pausing'
+    : undefined;
   return (
     <div data-execution-sessions data-collapsed={collapsed || undefined} className="mt-3 border-t border-hairline pt-2">
       {foldable ? (
@@ -203,6 +211,11 @@ export function ExecutionSessionList({ liveSessionIds, states, onRetryRead, labe
       ) : (
         <h3 className="flex h-7 items-center text-[11.5px] font-medium text-ink-faint">{heading}</h3>
       )}
+      {sharedPhase !== undefined ? (
+        <p data-execution-shared-hint={sharedPhase} className="pb-1 text-[11.5px] leading-4 text-ink-faint">
+          {t(sharedPhase === 'paused' ? 'usage.execution.pausedHint' : 'usage.execution.pausingHint')}
+        </p>
+      ) : null}
       <ol id={listId} aria-label={heading}>
         {rows.map((sessionId) => (
           <ExecutionSessionRow
@@ -211,6 +224,7 @@ export function ExecutionSessionList({ liveSessionIds, states, onRetryRead, labe
             state={states[sessionId]!}
             label={labelOf(sessionId)}
             collapsed={collapsed}
+            phaseHintShared={sharedPhase !== undefined}
             onRetryRead={onRetryRead}
           />
         ))}
@@ -226,11 +240,13 @@ export function ExecutionSessionList({ liveSessionIds, states, onRetryRead, labe
  * strictly this session. A folded row stays mounted, so an action in flight
  * keeps its state and surfaces its result.
  */
-function ExecutionSessionRow({ sessionId, state, label, collapsed, onRetryRead }: {
+function ExecutionSessionRow({ sessionId, state, label, collapsed, phaseHintShared, onRetryRead }: {
   readonly sessionId: string;
   readonly state: ExecutionControlState;
   readonly label: SessionLabel;
   readonly collapsed: boolean;
+  /** The list already states this row's phase hint once for every row. */
+  readonly phaseHintShared: boolean;
   readonly onRetryRead: () => void;
 }) {
   const { t } = useI18n();
@@ -244,11 +260,13 @@ function ExecutionSessionRow({ sessionId, state, label, collapsed, onRetryRead }
     || pause.error !== undefined || resume.error !== undefined;
   const settling = settlingCount(state);
   const name = sessionLabelText(label);
-  const note = phase === 'paused'
-    ? t('usage.execution.pausedHint')
-    : phase === 'pausing'
-      ? t('usage.execution.pausingHint')
-      : undefined;
+  const note = phaseHintShared
+    ? undefined
+    : phase === 'paused'
+      ? t('usage.execution.pausedHint')
+      : phase === 'pausing'
+        ? t('usage.execution.pausingHint')
+        : undefined;
   const settlingNote = settling > 0 ? t('usage.execution.agentsSettling', { count: settling }) : undefined;
   const noteText = [note, settlingNote].filter((part) => part !== undefined).join(' · ');
 
@@ -267,7 +285,7 @@ function ExecutionSessionRow({ sessionId, state, label, collapsed, onRetryRead }
           onClick={() => void navigate(`/s/${sessionId}`)}
           className="group flex min-h-7 min-w-0 flex-1 items-baseline gap-2 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
         >
-          <span className={`min-w-0 truncate text-[13px] underline-offset-2 group-hover:underline ${label.titled ? 'text-ink' : 'text-ink-soft'}`}>{label.text}</span>
+          <span className={`min-w-0 truncate text-[13px] underline-offset-2 group-hover:underline sm:max-w-[40rem] ${label.titled ? 'text-ink' : 'text-ink-soft'}`}>{label.text}</span>
           <span className={`shrink-0 font-mono text-[11px] text-ink-faint tabular-nums ${label.titled ? 'hidden sm:inline' : ''}`}>{label.shortId}</span>
         </button>
         <span className="flex shrink-0 items-center gap-2" data-execution-control={sessionId}>

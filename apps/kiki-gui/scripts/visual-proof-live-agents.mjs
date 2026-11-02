@@ -12,7 +12,8 @@
  *               session cut of the breakdown uses the same names; a row's
  *               pause can be cancelled or confirmed, a held row stays in view
  *               while folded, resume returns it; pause-all covers the whole
- *               inventory even while the list is folded.
+ *               inventory even while the list is folded, and the all-paused
+ *               list drops its disclosure and states the paused hint once.
  *   attention — a failed live session and a session paused before a restart
  *               stay in view in the folded list with their explicit actions;
  *               retry-read never resumes; resume clears the held row.
@@ -204,6 +205,11 @@ export function createLiveAgentsCompactWalker(options) {
     await kit.dialog().locator('[data-confirm-action="confirm"]').click();
     for (const id of LIVE) await kit.waitPhase(id, 'paused');
     await page.waitForFunction((ids) => ids.every((id) => document.querySelector(`[data-execution-session="${id}"]`)?.hidden === false), LIVE, { timeout: 15_000 });
+    // Nothing left to fold: no disclosure, and the restart-safety hint reads once.
+    expect(await kit.toggle().count() === 0, 'an all-paused list still offers a disclosure that folds nothing');
+    const pausedHint = text('usage.execution.pausedHint');
+    const allPausedText = await page.locator('[data-execution-sessions]').innerText();
+    expect(allPausedText.split(pausedHint).length === 2, 'the paused hint repeats on every row of an all-paused list');
     await kit.assertLayout('all paused');
     await kit.focusSection();
     await shot(name('all-paused'));
