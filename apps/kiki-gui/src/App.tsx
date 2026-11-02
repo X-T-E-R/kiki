@@ -202,7 +202,7 @@ export function App() {
 
 function NormalApp() {
   const host = useHost();
-  const { client, socket, wsStatus } = useConnection();
+  const { client, socket, wsStatus, recoveryError } = useConnection();
   const { t, locale } = useI18n();
   const rawNavigate = useNavigate();
   const location = useLocation();
@@ -839,7 +839,7 @@ function NormalApp() {
           raised sheet (the conversation route splits into its own sheets). */}
       <div className="app-stage">
         {wsStatus !== 'open' && !isSettingsRoute ? (
-          <AppConnectionBanner wsStatus={wsStatus} onReconnect={() => { socket.nudge(); }} />
+          <AppConnectionBanner wsStatus={wsStatus} recoveryError={recoveryError} onReconnect={() => { socket.nudge(); }} />
         ) : null}
         <RestartBanner />
         <div className="app-sheet">

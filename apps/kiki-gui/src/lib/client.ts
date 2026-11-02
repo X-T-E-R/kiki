@@ -5,7 +5,7 @@
  */
 
 import { nbSearchCapabilitiesSchema, nbSearchKeyUsageViewSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, documentPreviewResponseSchema, workPresetMutationResponseSchema, workPresetsResponseSchema, storageMigrationViewSchema, type DeferredAppendTiming, type DocumentPreviewRequest, type DocumentPreviewResponse, type NbSearchKeyUsageView, type NbSearchManagedCredentialView, type WorkPresetMutationResponse, type WorkPresetPreference, type WorkPresetsResponse, type StorageMigrationAction, type StorageMigrationView } from '@kiki/protocol';
-import { createConnectionTransport, createKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
+import { createConnectionTransport, createKlient, createRebindableKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
 import { translate } from '@kiki/session-core/i18n';
 import type { PromptConfig } from '@kiki/agent-profiles/promptConfig';
 import { contentOriginalFileId, type ContentRef } from '@kiki/transcript';
@@ -1327,10 +1327,12 @@ export type AgentModelSwitchEvent =
   | { readonly kind: 'status'; readonly operationId: string; readonly receipt: ModelSwitchReceipt };
 
 export class KikiClient {
-  readonly baseUrl: string;
+  private connection: { baseUrl: string; token: string | undefined; signal: AbortController };
+  get baseUrl(): string { return this.connection.baseUrl; }
+  private get token(): string | undefined { return this.connection.token; }
+  private readonly rebindTransport: ReturnType<typeof createRebindableKlient>['rebind'];
   readonly klient: ReturnType<typeof createKlient>;
   readonly sessions: ReturnType<typeof createSessionTransport>;
-  private readonly token: string | undefined;
   private readonly transport: KikiClientTransport | undefined;
   private serverLeaseId: string | undefined;
   private readonly previewBytes = new Map<string, { bytes: Uint8Array; mime: string; name?: string; etag: string }>();
@@ -1350,9 +1352,8 @@ export class KikiClient {
   constructor(options: KikiClientOptions) {
     this.onSessionMutation = options.onSessionMutation;
     this.transport = options.transport;
-    this.baseUrl = options.baseUrl;
-    this.token = options.token !== undefined && options.token !== '' ? options.token : undefined;
-    this.klient = createKlient({
+    this.connection = { baseUrl: options.baseUrl, token: options.token || undefined, signal: new AbortController() };
+    const transport = createRebindableKlient({
       endpoint: this.baseUrl,
       token: this.token,
       timeoutMs: options.timeoutMs,
@@ -1360,6 +1361,8 @@ export class KikiClient {
       onSocketDiagnostic: (event) => { recordConnectionEvent(event); },
       ...options.transport,
     });
+    this.klient = transport.klient;
+    this.rebindTransport = transport.rebind;
     const sessions = createSessionTransport(this.klient);
     // Controllers consume this transport directly, not the convenience methods below.
     this.sessions = {
@@ -1383,6 +1386,22 @@ export class KikiClient {
       dismissQuestion: (...args) => this.runSessionMutation(args[0], () => sessions.dismissQuestion(...args)),
       cancelTask: (...args) => this.runSessionMutation(args[0], () => sessions.cancelTask(...args)),
     };
+  }
+
+  /** Native discovery and /meta must verify the same home and authentication mode first. */
+  rebindDesktop(config: { url: string; token: string }): void {
+    if (this.transport !== undefined) throw new Error('A remote transport cannot be rebound as a local desktop');
+    const previous = this.connection;
+    const baseUrl = config.url.trim().replace(/\/+$/, '');
+    const token = config.token.trim() || undefined;
+    this.rebindTransport({ endpoint: baseUrl, token });
+    this.connection = { baseUrl, token, signal: new AbortController() };
+    previous.signal.abort();
+    for (const flight of this.previewFlights.values()) flight.controller.abort();
+    this.previewFlights.clear();
+    this.previewBytes.clear();
+    this.previewCacheBytes = 0;
+    this.serverLeaseId = undefined;
   }
 
   /** Also used by specialized approval routes that bypass the session transport. */
@@ -3213,7 +3232,8 @@ export class KikiClient {
     path: string,
     options: { readonly target?: MemoryTarget; readonly query?: Record<string, string | undefined>; readonly body?: unknown; readonly timeoutMs?: number; readonly signal?: AbortSignal } = {},
   ): Promise<T> {
-    const root = this.baseUrl.replace(/\/+$/u, '');
+    const connection = this.connection;
+    const root = connection.baseUrl.replace(/\/+$/u, '');
     const url = root === '' ? new URL(`/api${path}`, globalThis.location?.origin ?? 'http://localhost') : new URL(`${root}/api${path}`);
     const scope = options.target?.scope;
     const query = {
@@ -3225,10 +3245,10 @@ export class KikiClient {
       if (value !== undefined) url.searchParams.set(key, value);
     }
     const headers: Record<string, string> = { accept: 'application/json' };
-    if (this.token !== undefined) headers['authorization'] = `Bearer ${this.token}`;
+    if (connection.token !== undefined) headers['authorization'] = `Bearer ${connection.token}`;
     if (options.body !== undefined) headers['content-type'] = 'application/json';
     const deadline = options.timeoutMs === 0 ? undefined : AbortSignal.timeout(options.timeoutMs ?? 30_000);
-    const signal = options.signal === undefined ? deadline : deadline === undefined ? options.signal : AbortSignal.any([options.signal, deadline]);
+    const signal = AbortSignal.any([connection.signal.signal, ...[options.signal, deadline].filter((entry): entry is AbortSignal => entry !== undefined)]);
     let response: Response;
     try {
       response = await (this.transport?.fetch ?? fetch)(url, {
@@ -3249,6 +3269,7 @@ export class KikiClient {
     } catch {
       envelope = null;
     }
+    signal.throwIfAborted();
     if (envelope === null || typeof envelope !== 'object' || !('code' in envelope) || typeof envelope.code !== 'number'
       || !('msg' in envelope) || typeof envelope.msg !== 'string') {
       throw new ApiError({ code: API_CODES.INVALID_RESPONSE, msg: `HTTP ${response.status} — non-JSON response`, data: null });
@@ -3276,17 +3297,21 @@ export class KikiClient {
    */
   async readDocumentPreviewAsset(assetUrl: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; mime: string }> {
     const path = documentPreviewAssetPath(assetUrl);
-    const root = this.baseUrl.replace(/\/+$/u, '');
+    const connection = this.connection;
+    const requestSignal = signal === undefined ? connection.signal.signal : AbortSignal.any([signal, connection.signal.signal]);
+    const root = connection.baseUrl.replace(/\/+$/u, '');
     const url = root === ''
       ? new URL(path, globalThis.location?.origin ?? 'http://localhost')
       : new URL(`${root}${path}`);
     const headers: Record<string, string> = { accept: '*/*' };
-    if (this.token !== undefined) headers['authorization'] = `Bearer ${this.token}`;
-    const response = await (this.transport?.fetch ?? fetch)(url, { headers, signal });
+    if (connection.token !== undefined) headers['authorization'] = `Bearer ${connection.token}`;
+    const response = await (this.transport?.fetch ?? fetch)(url, { headers, signal: requestSignal });
     if (!response.ok) {
       throw new ApiError({ code: API_CODES.INVALID_RESPONSE, msg: `Preview asset could not be read (HTTP ${response.status})`, data: null });
     }
-    return { bytes: new Uint8Array(await response.arrayBuffer()), mime: response.headers.get('content-type') ?? 'application/octet-stream' };
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    requestSignal.throwIfAborted();
+    return { bytes, mime: response.headers.get('content-type') ?? 'application/octet-stream' };
   }
 
   /**

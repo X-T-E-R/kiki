@@ -33,6 +33,15 @@ export interface HttpKlientOptions extends KlientOptions, HttpChannelOptions {}
 export function createKlient(options: HttpKlientOptions): Klient {
   return createKlientFromChannel(new HttpChannel(options), options);
 }
+/** Retains facade and subscription identities across an owner-verified server replacement. */
+export function createRebindableKlient(options: HttpKlientOptions): {
+  klient: Klient;
+  rebind(connection: Pick<HttpChannelOptions, 'endpoint' | 'token'>): void;
+} {
+  const channel = new HttpChannel(options);
+  return { klient: createKlientFromChannel(channel, options), rebind: (connection) => channel.rebind(connection) };
+}
+
 /** Use a registered source-home connection without exposing its remote credentials. */
 export function createConnectionKlient(options: HttpKlientOptions & { connectionId: string }): Klient {
   return createKlient({ ...options, ...createConnectionTransport(options) });

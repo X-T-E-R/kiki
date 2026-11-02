@@ -466,6 +466,18 @@ HTTP projection, and the IPC host ships as `serveKlientIpc({ scope, socketPath }
 The same conformance suite runs against all three transports in this package's
 tests (`test/helpers/conformance.ts` — one test file per transport).
 
+For a local desktop backend replacement, `createRebindableKlient(options)` returns
+`{ klient, rebind }`. The owner must first authenticate the candidate through
+native discovery and metadata, verifying the original home, current local space,
+authentication mode, and compatible protocol. Pass the verified endpoint and token
+together to `rebind({ endpoint, token })`; the facade and session-view identities
+stay in place. Outstanding HTTP calls are aborted and late results reject with
+`transport.connection_changed`; calls and submissions are never replayed.
+The existing shared socket restarts with ordered session/transcript checkpoints,
+PTY replay, and ordinary subscription/stream invalidation. A fixed `eventsUrl`
+cannot be rebound. SSH and remote-source selections retain their own identity and
+authentication contracts.
+
 `global.mcp.completeAuth(input, { signal })` cancels only that caller's wait when
 the signal aborts; it does not cancel the shared authorization flow. Use
 `global.mcp.cancelAuth({ flowId })` to cancel the flow itself. Memory passes the

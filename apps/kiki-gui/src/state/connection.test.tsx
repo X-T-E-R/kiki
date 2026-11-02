@@ -65,8 +65,9 @@ vi.mock('../lib/busySessionsHook', () => ({ useBusySessionCount: () => 0 }));
 vi.mock('../lib/client', () => ({
   ApiError: class ApiError extends Error {},
   KikiClient: class KikiClient {
-    readonly baseUrl: string;
+    baseUrl: string;
     readonly klient;
+    private readonly statusListeners = new Set<(status: string) => void>();
 
     constructor(options: { baseUrl: string; token?: string; timeoutMs?: number }) {
       this.baseUrl = options.baseUrl;
@@ -88,8 +89,9 @@ vi.mock('../lib/client', () => ({
             if (klient.closed) throw new Error('http closed');
             return () => {};
           }),
-          onStatus: vi.fn(() => {
-            const subscription = { baseUrl: options.baseUrl, connect: vi.fn(), close: vi.fn() };
+          onStatus: vi.fn((listener: (status: string) => void) => {
+            this.statusListeners.add(listener);
+            const subscription = { baseUrl: options.baseUrl, connect: vi.fn(), close: vi.fn(() => { this.statusListeners.delete(listener); }) };
             subscription.connect();
             mocks.terminalSubscriptions.push(subscription);
             return subscription.close;
@@ -100,6 +102,13 @@ vi.mock('../lib/client', () => ({
       mocks.klients.push(klient);
     }
 
+    rebindDesktop(config: { url: string; token: string }) {
+      this.baseUrl = config.url;
+      this.klient.endpoint = config.url;
+      this.klient.token = config.token;
+      for (const listener of this.statusListeners) listener('closed');
+      for (const listener of this.statusListeners) listener('connecting');
+    }
     meta() { return mocks.meta(this.baseUrl); }
     getSession(id: string) { return Promise.resolve({ id }); }
     renewLease(body: { clientId: string; kind: 'gui' }) { return mocks.renewLease(body); }
@@ -125,6 +134,7 @@ function ConnectedHarness() {
   const [switchError, setSwitchError] = useState('');
   return <>
     <span data-switch-error>{switchError}</span>
+    <span data-recovery-error>{connection.recoveryError}</span>
     <span data-connected-url>{connection.config.url}</span>
     <span data-scope-id>{connection.scopeId}</span>
     <span data-local-control-url>{connection.localClient?.baseUrl ?? 'pending'}</span>
@@ -223,6 +233,7 @@ function RecoveryHarness() {
   }, [connection.client, registry]);
   return <>
     <input data-recovery-draft defaultValue="unsent local draft" />
+    <div data-recovery-reading style={{ height: 120, overflow: 'auto' }}><p style={{ height: 2000 }}>Retained conversation history</p></div>
     <span data-recovery-status>{connection.wsStatus}</span>
     <button data-recovery-retry onClick={() => { connection.socket.nudge(); }} />
   </>;
@@ -1024,31 +1035,31 @@ describe('ConnectionProvider desktop backend recovery', () => {
     const newMeta = deferred<object>();
     mocks.detectLocalConnection.mockResolvedValueOnce({ config: oldConfig, persist: false })
       .mockResolvedValueOnce({ config: intermediateConfig, persist: false });
-    mocks.meta.mockResolvedValueOnce({ serverVersion: 'test' })
+    const identity = { server_id: 'original', server_home_id: 'd92a5d0d-7059-4dd4-b16b-1bc1d179f09e', current_space_id: 'main', dangerous_bypass_auth: false };
+    mocks.meta.mockResolvedValueOnce(identity)
       .mockReturnValueOnce(staleMeta.promise).mockReturnValueOnce(newMeta.promise);
     const container = await mountProvider();
     expect(container.querySelector('[data-connected-url]')?.textContent).toBe(oldConfig.url);
     await loseLocalConnection(oldConfig.url);
-    expect(mocks.terminalSubscriptions[0]!.close).toHaveBeenCalledTimes(1);
-    expect(mocks.klients[0]!.close).toHaveBeenCalledTimes(1);
+    expect(mocks.terminalSubscriptions[0]!.close).not.toHaveBeenCalled();
+    expect(mocks.klients[0]!.close).not.toHaveBeenCalled();
     expect(mocks.meta).toHaveBeenCalledTimes(2);
     await emitStage({ stage: 'ready', connection: newConfig });
     await flush();
-    staleMeta.resolve({ serverVersion: 'stale' });
+    staleMeta.resolve({ ...identity, server_id: 'superseded' });
     await flush();
-    expect(container.querySelector('[data-connected-url]')).toBeNull();
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(oldConfig.url);
     expect(mocks.terminalSubscriptions).toHaveLength(1);
     expect(mocks.klients[1]!.close).toHaveBeenCalledTimes(1);
     expect(mocks.meta).toHaveBeenCalledTimes(3);
     expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(2);
-    newMeta.resolve({ serverVersion: 'test' });
+    newMeta.resolve({ ...identity, server_id: 'replacement' });
     await flush();
     expect(container.querySelector('[data-connected-url]')?.textContent).toBe(newConfig.url);
-    expect(mocks.terminalSubscriptions).toHaveLength(2);
+    expect(mocks.terminalSubscriptions).toHaveLength(1);
     expect(mocks.klients).toHaveLength(3);
-    expect(mocks.klients[2]).toMatchObject({ endpoint: newConfig.url, token: newConfig.token });
-    expect(mocks.terminalSubscriptions[1]!.baseUrl).toBe(newConfig.url);
-    expect(mocks.terminalSubscriptions[1]!.connect).toHaveBeenCalledTimes(1);
+    expect(mocks.klients[0]).toMatchObject({ endpoint: newConfig.url, token: newConfig.token, closed: false });
+    expect(mocks.klients[2]!.close).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a failed recovery visible when an old meta promise resolves later', async () => {
@@ -1080,9 +1091,9 @@ describe('ConnectionProvider desktop backend recovery', () => {
     await flush();
 
     expect(container.textContent).toContain('backend recovery exhausted');
-    expect(container.querySelector('[data-connected-url]')).toBeNull();
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(oldConfig.url);
     expect(mocks.terminalSubscriptions).toHaveLength(1);
-    expect(mocks.terminalSubscriptions[0]!.close).toHaveBeenCalledTimes(1);
+    expect(mocks.terminalSubscriptions[0]!.close).not.toHaveBeenCalled();
   });
 
   it('builds lease client ids without crypto.randomUUID', () => {
@@ -1253,31 +1264,119 @@ describe('a closed desktop socket', () => {
 
   it.each([
     ['server instance', { server_id: 'replacement' }, firstPort],
-    ['server home', { server_home_id: '462f8d09-a1bf-4d73-bd20-49ec3b4b2fd4' }, firstPort],
-    ['authentication mode', { dangerous_bypass_auth: true }, firstPort],
-    ['bearer identity', {}, { ...firstPort, token: 'replacement-token' }],
-  ] as const)('retires the prior client and controller when %s changes at the same URL', async (_reason, patch, config) => {
+    ['bearer identity', { server_id: 'replacement' }, { ...firstPort, token: 'replacement-token' }],
+    ['random port', { server_id: 'replacement' }, restartedPort],
+  ] as const)('preserves the controller, draft and reading surface when the verified %s changes', async (_reason, patch, config) => {
     mocks.detectLocalConnection.mockResolvedValueOnce({ config: firstPort, persist: false }).mockResolvedValue({ config, persist: false });
+    const container = await mountRecovery();
+    const draft = container.querySelector<HTMLInputElement>('[data-recovery-draft]')!;
+    draft.value = 'a draft written before service replacement';
+    const reading = container.querySelector<HTMLElement>('[data-recovery-reading]')!;
+    reading.scrollTop = 713;
+    const previous = mocks.klients[0]!;
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-write-cache]')!.click(); });
+    mocks.meta.mockResolvedValue({ ...identity, ...patch });
+    await statusHandler()('closed');
+    await settle();
+    expect(previous.close).not.toHaveBeenCalled();
+    expect(recoveryControllers[0]!.close).not.toHaveBeenCalled();
+    expect(recoveryControllers).toHaveLength(1);
+    expect(container.querySelector('[data-recovery-draft]')).toBe(draft);
+    expect(draft.value).toBe('a draft written before service replacement');
+    expect(container.querySelector('[data-recovery-reading]')).toBe(reading);
+    expect(reading.scrollTop).toBe(713);
+    expect(container.querySelector('[data-cache-value]')?.textContent).toBe('local');
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(config.url);
+    expect(previous).toMatchObject({ endpoint: config.url, token: config.token, closed: false });
+  });
+
+  it('does not treat the synchronous socket restart inside a verified rebind as a new discovery failure', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.detectLocalConnection.mockResolvedValue({ config: firstPort, persist: false });
+      const container = await mountRecovery();
+      await statusHandler()('open');
+      const controller = recoveryControllers[0]!;
+      mocks.meta.mockResolvedValue({ ...identity, server_id: 'replacement' });
+      await emitStage({ stage: 'ready', connection: { ...restartedPort, token: 'rotated-token' } });
+      await flush();
+      expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('connecting');
+      await statusHandler()('open');
+      expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('open');
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+      expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('open');
+      expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('[data-connected-url]')?.textContent).toBe(restartedPort.url);
+      expect(recoveryControllers).toEqual([controller]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each([
+    ['server home', { server_home_id: '462f8d09-a1bf-4d73-bd20-49ec3b4b2fd4' }],
+    ['space', { current_space_id: 'another-space' }],
+    ['missing space', { current_space_id: undefined }],
+    ['authentication mode', { dangerous_bypass_auth: true }],
+    ['missing authentication mode', { dangerous_bypass_auth: undefined }],
+  ] as const)('rejects a candidate whose %s changed without dropping the prior view or binding', async (_reason, patch) => {
+    mocks.detectLocalConnection.mockResolvedValueOnce({ config: firstPort, persist: false }).mockResolvedValue({ config: restartedPort, persist: false });
     const container = await mountRecovery();
     const draft = container.querySelector('[data-recovery-draft]');
     const previous = mocks.klients[0]!;
-    const oldStatus = statusHandler();
-    await act(async () => { container.querySelector<HTMLButtonElement>('[data-write-cache]')!.click(); });
     mocks.meta.mockResolvedValue({ ...identity, ...patch });
-    await oldStatus('closed');
+    await statusHandler()('closed');
     await settle();
-    expect(previous.close).toHaveBeenCalledTimes(1);
-    expect(recoveryControllers[0]!.close).toHaveBeenCalledTimes(1);
-    expect(mocks.klients).toHaveLength(2);
-    expect(recoveryControllers).toHaveLength(2);
-    expect(container.querySelector('[data-recovery-draft]')).not.toBe(draft);
-    expect(container.querySelector('[data-cache-value]')?.textContent).toBe('empty');
-    await statusHandler()('open');
-    const calls = mocks.detectLocalConnection.mock.calls.length;
-    await oldStatus('closed');
-    await settle();
-    expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('open');
-    expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(calls);
+    expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('closed');
+    expect(container.querySelector('[data-connected-url]')?.textContent).toBe(firstPort.url);
+    expect(previous).toMatchObject({ endpoint: firstPort.url, token: firstPort.token, closed: false });
+    expect(previous.close).not.toHaveBeenCalled();
+    expect(recoveryControllers).toHaveLength(1);
+    expect(container.querySelector('[data-recovery-draft]')).toBe(draft);
+  });
+
+  it('automatically retries a temporarily unreachable replacement and retains the view until it verifies', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.detectLocalConnection.mockResolvedValueOnce({ config: firstPort, persist: false })
+        .mockRejectedValueOnce(new Error('service is starting'))
+        .mockResolvedValue({ config: { ...restartedPort, token: 'rotated-token' }, persist: false });
+      const container = await mountRecovery();
+      const draft = container.querySelector<HTMLInputElement>('[data-recovery-draft]')!;
+      draft.value = 'preserve through automatic retry';
+      const reading = container.querySelector<HTMLElement>('[data-recovery-reading]')!;
+      reading.scrollTop = 713;
+      const controller = recoveryControllers[0]!;
+      await statusHandler()('closed');
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('closed');
+      mocks.meta.mockResolvedValue({ ...identity, server_id: 'replacement' });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+      await flush();
+      expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(3);
+      expect(container.querySelector('[data-connected-url]')?.textContent).toBe(restartedPort.url);
+      expect(container.querySelector('[data-recovery-draft]')).toBe(draft);
+      expect(draft.value).toBe('preserve through automatic retry');
+      expect(container.querySelector('[data-recovery-reading]')).toBe(reading);
+      expect(reading.scrollTop).toBe(713);
+      expect(recoveryControllers).toEqual([controller]);
+      expect(controller.close).not.toHaveBeenCalled();
+      await statusHandler()('open');
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(3);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('recovers an initial desktop discovery failure without requiring a restart button', async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.detectLocalConnection.mockRejectedValueOnce(new Error('service temporarily unavailable'))
+        .mockResolvedValue({ config: firstPort, persist: false });
+      const container = await mountRecovery();
+      expect(container.textContent).toContain('service temporarily unavailable');
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+      await flush();
+      expect(container.querySelector('[data-connected-url]')?.textContent).toBe(firstPort.url);
+      expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
   });
 
   it.each(['discovery failure', 'metadata failure', 'unknown identity'] as const)(
@@ -1326,7 +1425,8 @@ describe('a closed desktop socket', () => {
     expect(container.querySelector('[data-connected-url]')?.textContent).toBe(restartedPort.url);
     expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('open');
     expect(mocks.klients).toHaveLength(2);
-    expect(mocks.klients[0]!.close).toHaveBeenCalledTimes(1);
+    expect(mocks.klients[0]!.close).not.toHaveBeenCalled();
+    expect(mocks.klients[1]!.close).toHaveBeenCalledTimes(1);
     expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(2);
   });
 

@@ -16,9 +16,11 @@ import { useI18n } from '../i18n';
 export function AppConnectionBanner({
   wsStatus,
   onReconnect,
+  recoveryError,
 }: {
   readonly wsStatus: TerminalConnectionStatus;
   readonly onReconnect: () => void;
+  readonly recoveryError?: string;
 }) {
   const { t } = useI18n();
   if (wsStatus === 'open') return null;
@@ -40,7 +42,7 @@ export function AppConnectionBanner({
             {t('app.reconnectNow')}
           </button>
           {' · '}
-          <span className="font-normal">{t('app.disconnectedSendHint')}</span>
+          <span className="font-normal">{recoveryError ?? t('app.disconnectedSendHint')}</span>
         </>
       ) : null}
     </div>

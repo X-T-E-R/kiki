@@ -71,7 +71,7 @@ export interface HttpChannelOptions {
  * for (server close, network drop, heartbeat kill); the rest are client
  * decisions.
  */
-export type HttpSocketCloseCause = 'server' | 'establish_timeout' | 'fatal_frame' | 'view_restart' | 'stale_heartbeat';
+export type HttpSocketCloseCause = 'server' | 'establish_timeout' | 'fatal_frame' | 'view_restart' | 'stale_heartbeat' | 'connection_rebound';
 
 export type HttpSocketDiagnostic =
   | { readonly kind: 'open'; readonly attempt: number }
@@ -109,8 +109,8 @@ interface PendingStream {
 type SocketState = 'idle' | 'connecting' | 'open' | 'closed';
 
 export class HttpChannel implements KlientChannel {
-  private readonly endpoint: string;
-  private readonly token?: string;
+  private connection: Pick<HttpChannelOptions, 'endpoint' | 'token'>;
+  private readonly fixedEventsUrl: boolean;
   private readonly fetchImpl: typeof fetch;
   private readonly defaultTimeoutMs: number;
   private readonly readingTimeoutMs: () => number;
@@ -281,6 +281,10 @@ export class HttpChannel implements KlientChannel {
     consume: (response: Response, acceptRequestId: (value: string | undefined) => void) => Promise<T>,
   ): Promise<T> {
     if (this.closed) throw new Error('http closed');
+    const connection = this.connection;
+    const ensureCurrent = () => {
+      if (connection !== this.connection) throw new RPCError(-1, 'Connection changed while the request was pending', undefined, 'transport.connection_changed', undefined, undefined, 'transport');
+    };
     const body = options.rawBody ?? (options.body === undefined ? undefined : JSON.stringify(options.body));
     const bodySize = typeof body === 'string'
       ? new TextEncoder().encode(body).byteLength
@@ -311,7 +315,7 @@ export class HttpChannel implements KlientChannel {
     if (sourceSignal?.aborted === true) abort();
     else sourceSignal?.addEventListener('abort', abort, { once: true });
     try {
-      const baseUrl = options.baseUrl ?? this.endpoint;
+      const baseUrl = options.baseUrl ?? connection.endpoint;
       const root = baseUrl.replace(/\/+$/u, '');
       const route = path.startsWith('/api/') ? path : `/api${path}`;
       const locationOrigin = (globalThis as { readonly location?: { readonly origin?: string } }).location?.origin;
@@ -330,7 +334,7 @@ export class HttpChannel implements KlientChannel {
       const suppliedRequestId = headers.get('x-request-id');
       let requestId = suppliedRequestId !== null && isValid(suppliedRequestId) ? suppliedRequestId : ulid();
       headers.set('x-request-id', requestId);
-      if (this.token !== undefined && options.skipAuth !== true) headers.set('authorization', `Bearer ${this.token}`);
+      if (connection.token !== undefined && options.skipAuth !== true) headers.set('authorization', `Bearer ${connection.token}`);
       if (options.body !== undefined && !headers.has('content-type')) headers.set('content-type', 'application/json');
       const acceptRequestId = (value: string | undefined | null): void => {
         if (typeof value === 'string' && isValid(value)) requestId = value;
@@ -354,19 +358,26 @@ export class HttpChannel implements KlientChannel {
           redirect: 'error',
         });
       } catch (error) {
+        ensureCurrent();
         if (timedOutPhase !== undefined) throw timeoutError();
         if (this.closed && controller.signal.aborted) throw new Error('http closed', { cause: error });
         if (error instanceof RPCError) throw error;
         throw new RPCError(-1, error instanceof Error ? error.message : 'Connection failed', undefined, 'transport.network', undefined, undefined, 'transport');
+      }
+      if (connection !== this.connection) {
+        void response.body?.cancel();
+        ensureCurrent();
       }
       acceptRequestId(response.headers.get('x-request-id'));
       phase = 'body';
       if (timedOutPhase !== undefined) throw timeoutError();
       try {
         const result = await consume(response, acceptRequestId);
+        ensureCurrent();
         if (timedOutPhase !== undefined) throw timeoutError();
         return result;
       } catch (error) {
+        ensureCurrent();
         if (timedOutPhase !== undefined) throw timeoutError();
         if (this.closed && controller.signal.aborted) throw new Error('http closed', { cause: error });
         if (error instanceof TypeError && !controller.signal.aborted) {
@@ -408,9 +419,9 @@ export class HttpChannel implements KlientChannel {
   }
 
   constructor(options: HttpChannelOptions) {
-    const endpoint = options.endpoint.replace(/\/$/u, '');
-    this.endpoint = endpoint;
-    this.token = options.token;
+    const endpoint = options.endpoint.replace(/\/+$/u, '');
+    this.connection = { endpoint, token: options.token };
+    this.fixedEventsUrl = options.eventsUrl !== undefined;
     const fetchImpl = options.fetch ?? globalThis.fetch;
     if (fetchImpl === undefined) {
       throw new Error('no fetch implementation available; pass fetch');
@@ -465,6 +476,17 @@ export class HttpChannel implements KlientChannel {
     return this.socket.listen(scope, source, handler, onError, onReady);
   }
 
+  /** Rebind only after the owner verifies the destination's identity. Never replays HTTP calls. */
+  rebind(connection: Pick<HttpChannelOptions, 'endpoint' | 'token'>): void {
+    if (this.closed) throw new Error('http closed');
+    if (this.fixedEventsUrl) throw new Error('A fixed event transport cannot be rebound');
+    const endpoint = connection.endpoint.replace(/\/+$/u, '');
+    const wsUrl = toWebSocketUrl(endpoint);
+    this.connection = { endpoint, token: connection.token };
+    for (const call of this.activeCalls) call.controller.abort();
+    this.socket.rebind(wsUrl, connection.token);
+  }
+
   close(): Promise<void> {
     if (this.closed) return Promise.resolve();
     this.closed = true;
@@ -476,8 +498,8 @@ export class HttpChannel implements KlientChannel {
 }
 
 class HttpEventSocket {
-  private readonly wsUrl: string;
-  private readonly token?: string;
+  private wsUrl: string;
+  private token: string | undefined;
   private readonly WebSocketCtor: typeof WebSocket | undefined;
   private readonly listens = new Map<string, ActiveListen>();
   private readonly streams = new Map<string, PendingStream>();
@@ -509,6 +531,14 @@ class HttpEventSocket {
     restart: () => { this.restart('view_restart'); },
     nudge: () => { this.nudge(); },
   });
+
+  rebind(wsUrl: string, token: string | undefined): void {
+    this.wsUrl = wsUrl;
+    this.token = token;
+    this.fatalRetriesLeft = undefined;
+    this.reconnectAttempt = 0;
+    this.restart('connection_rebound');
+  }
 
   private restart(cause: HttpSocketCloseCause = 'view_restart'): void {
     if (this.closed) return;

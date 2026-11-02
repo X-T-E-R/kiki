@@ -144,7 +144,10 @@ export function AboutSection() {
   ];
   const technicalRows: { label: string; value: string }[] = [
     ...(buildSha !== undefined && buildSha !== ''
-      ? [{ label: t('st.about.build'), value: buildSha.slice(0, 12) }]
+      ? [{ label: t(isDesktop ? 'st.about.desktopBuild' : 'st.about.build'), value: buildSha.slice(0, 12) }]
+      : []),
+    ...(meta.build_id !== undefined && meta.build_id !== ''
+      ? [{ label: t('st.about.serverBuild'), value: meta.build_id.slice(0, 12) }]
       : []),
     { label: t('st.about.serverId'), value: meta.server_id },
     { label: t('st.about.backend'), value: meta.backend ?? 'v1' },

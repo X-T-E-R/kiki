@@ -10,16 +10,17 @@ import { resetUpdateCheckCache } from '../../lib/desktopUpdates';
 import { AboutSection } from './AboutSection';
 import { pickOption, selectText } from './testControls';
 
-const { checkDesktopUpdate, supportsDesktopUpdates, writeDesktopPrefs, readNativePrefs } = vi.hoisted(() => ({
+const { checkDesktopUpdate, supportsDesktopUpdates, writeDesktopPrefs, readNativePrefs, source } = vi.hoisted(() => ({
   checkDesktopUpdate: vi.fn(),
   supportsDesktopUpdates: vi.fn(),
   writeDesktopPrefs: vi.fn(),
   readNativePrefs: vi.fn(),
+  source: { kind: 'tauri', meta: { server_version: '1.0.0', server_id: 'example-server', backend: 'v2', build_id: undefined as string | undefined } },
 }));
 
 vi.mock('../../host', () => ({
   useHost: () => ({
-    kind: 'tauri',
+    kind: source.kind,
     checkDesktopUpdate,
     supportsDesktopUpdates,
     writeDesktopPrefs,
@@ -27,13 +28,7 @@ vi.mock('../../host', () => ({
   }),
 }));
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({
-    meta: {
-      server_version: '1.0.0',
-      server_id: 'example-server',
-      backend: 'v2',
-    },
-  }),
+  useConnection: () => ({ meta: source.meta }),
 }));
 
 const containers: HTMLDivElement[] = [];
@@ -54,6 +49,9 @@ beforeEach(() => {
   supportsDesktopUpdates.mockReset().mockResolvedValue(true);
   writeDesktopPrefs.mockReset().mockResolvedValue(undefined);
   readNativePrefs.mockReset().mockResolvedValue(null);
+  source.kind = 'tauri';
+  source.meta = { server_version: '1.0.0', server_id: 'example-server', backend: 'v2', build_id: undefined };
+  vi.unstubAllEnvs();
 });
 
 afterEach(async () => {
@@ -360,5 +358,46 @@ describe('AboutSection native channel drift recovery', () => {
     expect(checkDesktopUpdate).toHaveBeenLastCalledWith('beta');
     expect(container.textContent).toContain('Install 0.4.0-beta.1');
     expect(betaInstall).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('AboutSection build sources', () => {
+  const rows = (container: HTMLElement) => Object.fromEntries([...container.querySelectorAll('[data-about-technical] dl > div')].map((row) => [row.querySelector('dt')?.textContent, row.querySelector('dd')?.textContent]));
+
+  it('shows distinct desktop and server builds even when their versions are equal', async () => {
+    vi.stubEnv('VITE_APP_VERSION', '1.0.0');
+    vi.stubEnv('VITE_BUILD_SHA', '1111111111111111111111111111111111111111');
+    source.meta.build_id = '2222222222222222222222222222222222222222';
+    const container = await renderSection();
+    expect(rows(container)).toMatchObject({ 'Desktop build': '111111111111', 'Server build': '222222222222' });
+    expect(container.textContent).toContain('App version1.0.0Server version1.0.0');
+  });
+
+  it('refreshes only the server build when authenticated metadata changes generation', async () => {
+    vi.stubEnv('VITE_BUILD_SHA', '1111111111111111111111111111111111111111');
+    source.meta.build_id = '2222222222222222222222222222222222222222';
+    const container = await renderSection();
+    source.meta = { ...source.meta, server_id: 'replacement-server', build_id: '3333333333333333333333333333333333333333' };
+    await act(async () => { roots.at(-1)!.render(<I18nProvider><AboutSection /></I18nProvider>); });
+    expect(rows(container)).toMatchObject({ 'Desktop build': '111111111111', 'Server build': '333333333333', 'Server ID': 'replacement-server' });
+  });
+
+  it.each([['', '2222222222222222222222222222222222222222'], ['1111111111111111111111111111111111111111', undefined], ['', undefined]])('omits missing source fields instead of filling them with the other build (%s, %s)', async (desktop, server) => {
+    vi.stubEnv('VITE_BUILD_SHA', desktop);
+    source.meta.build_id = server;
+    const container = await renderSection();
+    const actual = rows(container);
+    expect(actual['Desktop build']).toBe(desktop === '' ? undefined : desktop.slice(0, 12));
+    expect(actual['Server build']).toBe(server?.slice(0, 12));
+  });
+
+  it('names the served frontend as a web UI build outside the desktop host', async () => {
+    source.kind = 'browser';
+    vi.stubEnv('VITE_BUILD_SHA', '1111111111111111111111111111111111111111');
+    source.meta.build_id = '2222222222222222222222222222222222222222';
+    const container = await renderSection();
+    expect(rows(container)).toMatchObject({ 'Web UI build': '111111111111', 'Server build': '222222222222' });
+    expect(rows(container)['Desktop build']).toBeUndefined();
   });
 });

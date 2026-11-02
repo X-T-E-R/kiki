@@ -46,7 +46,11 @@ For a trusted local client, carry the local-owner capability as follows:
 
 If the remote owner token leaks, run `kiki web rotate-token`: it replaces `server.token`, invalidates the old remote credential and stops affected peer streams without a restart. It does not rotate `server.local-owner`, so treat exposure of that file as a compromise of local access.
 
-The desktop GUI first checks the instance registry and attaches to an existing server with its local-owner capability; only when none is found does it start its own sidecar. Supported local clients in the same home therefore share the same sessions, regardless of which launcher started the server.
+The desktop GUI discovers local instances through its native launcher and authenticates with the local-owner capability. It verifies the service identity and connection protocol before attaching. Different desktop and service builds can connect when the protocol is compatible; status and diagnostics show the service's actual build. If an identified service has an incompatible protocol, Kiki reports the problem instead of starting a second service. When no instance is found, it starts its bundled backend.
+
+After a backend restart or port/token change, the desktop automatically rediscovers the service and verifies the original home, current space, and authentication mode. Temporary failures retry with exponential backoff starting at 1 second and capped at 10 seconds. The draft, current session route, and reading position remain in place. A candidate from another home, space, or authentication mode is rejected while the original view stays open.
+
+Supported local clients in the same home share the same sessions, regardless of which launcher started the server.
 
 ::: warning Note
 Two independently provisioned runtimes that do not trust each other — separate services with their own host identity and authority domain — must not share a writable `KIKI_HOME`, must not copy session directories between their homes, and must not copy `device_id` to impersonate the same host. Session indexes, thread attribution, and permission boundaries all depend on a home having a unique identity. The shared daemon, TUI, desktop GUI, and coexisting server instances inside one home are supported and unaffected.

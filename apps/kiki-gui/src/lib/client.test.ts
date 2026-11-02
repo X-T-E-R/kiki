@@ -2001,7 +2001,7 @@ describe('memory client surface', () => {
     expect(await api.memoryInbox(target, { cursor: 'opaque-example' }, controller.signal)).toEqual(page);
     expect([...seen[2]!.searchParams.keys()].sort()).toEqual(['cursor', 'persona_id', 'workspace_id']);
     controller.abort();
-    await api.memoryInbox(target, {}, controller.signal);
+    await expect(api.memoryInbox(target, {}, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
   });
 
   const client = () => new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
@@ -2248,5 +2248,43 @@ describe('KikiClient profile file preview', () => {
     const client = new KikiClient({ baseUrl: 'http://example.test', transport: { fetch: fetchMock, eventsUrl: 'ws://example.test/api/ws' } });
     try { await expect(client.previewAgentProfileFile(body)).resolves.toEqual(result); }
     finally { await client.klient.close(); }
+  });
+});
+
+
+describe('KikiClient verified desktop rebind', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('retains its facade and session transport while cancelling direct old-generation reads', async () => {
+    let finishMemory!: (response: Response) => void;
+    let finishAsset!: (response: Response) => void;
+    const fetcher = vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finishMemory = resolve; }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { finishAsset = resolve; }))
+      .mockResolvedValue(Response.json({ code: 0, msg: 'success', data: { items: [], total: 0 } }));
+    vi.stubGlobal('fetch', fetcher);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:41001', token: 'old-token' });
+    const facade = client.klient;
+    const sessions = client.sessions;
+    try {
+      const memory = client.listMemory({ scope: 'global' });
+      const asset = client.readDocumentPreviewAsset('/api/sessions/example/document-preview/assets/1234567890abcdef');
+      const failedMemory = expect(memory).rejects.toMatchObject({ name: 'AbortError' });
+      const failedAsset = expect(asset).rejects.toMatchObject({ name: 'AbortError' });
+      client.rebindDesktop({ url: 'http://127.0.0.1:42002/', token: 'new-token' });
+      finishMemory(Response.json({ code: 0, msg: 'success', data: { items: ['stale'] } }));
+      finishAsset(new Response('stale asset'));
+      await Promise.all([failedMemory, failedAsset]);
+      expect(client.klient).toBe(facade);
+      expect(client.sessions).toBe(sessions);
+      expect(client.baseUrl).toBe('http://127.0.0.1:42002');
+      expect(fetcher.mock.calls.slice(0, 2).every(([, init]) => init.signal.aborted)).toBe(true);
+      await client.listMemory({ scope: 'global' });
+      expect(fetcher.mock.calls.map(([url, init]) => [new URL(String(url)).origin, init.headers.authorization])).toEqual([
+        ['http://127.0.0.1:41001', 'Bearer old-token'],
+        ['http://127.0.0.1:41001', 'Bearer old-token'],
+        ['http://127.0.0.1:42002', 'Bearer new-token'],
+      ]);
+    } finally { await client.klient.close(); }
   });
 });

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, TcpStream},
     path::Path,
@@ -33,22 +34,59 @@ pub struct SshConnectionConfig {
     pub token: String,
 }
 
+#[derive(Default)]
+struct OwnedSshChildren {
+    stopping: bool,
+    next_id: u64,
+    children: HashMap<u64, Child>,
+}
+
+struct OwnedSshChild {
+    id: u64,
+    owner: Arc<Mutex<OwnedSshChildren>>,
+}
+
+impl OwnedSshChild {
+    fn spawn(owner: &Arc<Mutex<OwnedSshChildren>>, command: &mut Command) -> Result<(Self, Option<std::process::ChildStderr>), String> {
+        let mut state = owner.lock().map_err(|_| "SSH tunnel manager unavailable")?;
+        if state.stopping { return Err("The desktop is exiting; SSH connections are closed".into()); }
+        let mut child = command.spawn().map_err(|error| format!("Cannot start system OpenSSH: {error}"))?;
+        let stderr = child.stderr.take();
+        let id = state.next_id;
+        state.next_id += 1;
+        state.children.insert(id, child);
+        Ok((Self { id, owner: owner.clone() }, stderr))
+    }
+
+    fn try_wait(&self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        let mut state = self.owner.lock().unwrap_or_else(|error| error.into_inner());
+        state.children.get_mut(&self.id).ok_or_else(|| std::io::Error::other("SSH child was released"))?.try_wait()
+    }
+}
+
+impl Drop for OwnedSshChild {
+    fn drop(&mut self) {
+        let (child, wait) = {
+            let mut state = self.owner.lock().unwrap_or_else(|error| error.into_inner());
+            let mut child = state.children.remove(&self.id);
+            if let Some(child) = child.as_mut() { let _ = child.kill(); }
+            (child, !state.stopping)
+        };
+        // Normal disconnect still reaps its exact child. Final application exit
+        // already issued termination under this same registry, and never waits.
+        if wait { if let Some(mut child) = child { let _ = child.wait(); } }
+    }
+}
+
 struct Tunnel {
     profile_id: String,
     tunnel_id: String,
-    child: Child,
+    child: OwnedSshChild,
     home_id: String,
     window_label: String,
     connection: Option<SshResolvedConnection>,
     accepted: bool,
     profile: SshProfile,
-}
-
-impl Drop for Tunnel {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 
 #[derive(Clone, Default)]
@@ -57,14 +95,33 @@ pub struct TunnelManager {
     prepared: Arc<Mutex<Option<Tunnel>>>,
     selected: Arc<Mutex<Option<String>>>,
     next_id: Arc<AtomicU64>,
+    children: Arc<Mutex<OwnedSshChildren>>,
 }
 
 impl TunnelManager {
+    fn ensure_accepting(&self) -> Result<(), String> {
+        if self.children.lock().map_err(|_| "SSH tunnel manager unavailable")?.stopping {
+            return Err("The desktop is exiting; SSH connections are closed".into());
+        }
+        Ok(())
+    }
+
+    fn publish(&self, slot: &mut Option<Tunnel>, candidate: Tunnel) -> Result<(), String> {
+        let previous = {
+            let state = self.children.lock().map_err(|_| "SSH tunnel manager unavailable")?;
+            if state.stopping { return Err("The desktop is exiting; SSH connections are closed".into()); }
+            slot.replace(candidate)
+        };
+        drop(previous);
+        Ok(())
+    }
+
     pub fn connect(&self, profile: &SshProfile, token: &str) -> Result<SshResolvedConnection, String> {
         self.connect_with_binary(profile, token, Path::new("ssh"))
     }
 
     pub fn prepare(&self, profile: &SshProfile, token: &str, home_id: &str, window_label: &str) -> Result<SshResolvedConnection, String> {
+        self.ensure_accepting()?;
         {
             let mut prepared = self.prepared.lock().map_err(|_| "SSH tunnel manager unavailable")?;
             let selected = self.selected.lock().map_err(|_| "SSH tunnel manager unavailable")?;
@@ -83,6 +140,15 @@ impl TunnelManager {
     }
 
     fn connect_to(&self, profile: &SshProfile, token: &str, ssh: &Path, staged: bool) -> Result<SshResolvedConnection, String> {
+        self.connect_to_with_command(profile, token, staged, |args| {
+            let mut command = Command::new(ssh);
+            command.args(args);
+            command
+        })
+    }
+
+    fn connect_to_with_command(&self, profile: &SshProfile, token: &str, staged: bool, command: impl FnOnce(Vec<String>) -> Command) -> Result<SshResolvedConnection, String> {
+        self.ensure_accepting()?;
         profile.validate()?;
         let remote_port = profile.remote_port.ok_or("Set the running Kiki server port in this SSH profile")?;
         let expected_home = profile.server_home_id.as_deref().ok_or("Set the expected home ID from the trusted remote Kiki terminal")?;
@@ -98,9 +164,9 @@ impl TunnelManager {
         let forward = format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}");
         let position = args.len() - 1;
         args.splice(position..position, ["-v".to_string(), "-N".to_string(), "-o".to_string(), "ExitOnForwardFailure=yes".to_string(), "-L".to_string(), forward]);
-        let mut child = Command::new(ssh).args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
-            .spawn().map_err(|e| format!("Cannot start system OpenSSH: {e}"))?;
-        let stderr = child.stderr.take().ok_or("Cannot inspect system OpenSSH forwarding readiness")?;
+        let (child, stderr) = OwnedSshChild::spawn(&self.children,
+            command(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()))?;
+        let stderr = stderr.ok_or("Cannot inspect system OpenSSH forwarding readiness")?;
         let (ready_sender, ready_receiver) = mpsc::channel();
         let expected_ready = format!("debug1: Local forwarding listening on 127.0.0.1 port {local_port}.");
         thread::spawn(move || {
@@ -120,6 +186,7 @@ impl TunnelManager {
         // Never send the bearer to a freshly freed port until this exact SSH
         // process reports binding it. A competing listener must not get a probe.
         loop {
+            self.ensure_accepting()?;
             if let Some(status) = candidate.child.try_wait().map_err(|e| format!("Cannot inspect the SSH tunnel: {e}"))? {
                 return Err(format!("SSH tunnel exited ({status}); verify the host key, SSH config alias, and local forwarding permission"));
             }
@@ -130,6 +197,7 @@ impl TunnelManager {
             thread::sleep(Duration::from_millis(50));
         }
         let verified = loop {
+            self.ensure_accepting()?;
             if let Some(status) = candidate.child.try_wait().map_err(|e| format!("Cannot inspect the SSH tunnel: {e}"))? {
                 return Err(format!("SSH tunnel exited ({status}); verify the host key, SSH config alias, and remote port"));
             }
@@ -153,11 +221,12 @@ impl TunnelManager {
             build_channel: verified.build_channel,
         };
         candidate.connection = Some(connection.clone());
-        *active = Some(candidate);
+        self.publish(&mut active, candidate)?;
         Ok(connection)
     }
 
     pub fn bind(&self, profile_id: &str, tunnel_id: &str, home_id: &str, window_label: &str) -> Result<(), String> {
+        self.ensure_accepting()?;
         for slot in [&self.prepared, &self.active] {
             let mut value = slot.lock().map_err(|_| "SSH tunnel manager unavailable")?;
             if let Some(tunnel) = value.as_mut().filter(|t| t.profile_id == profile_id && t.tunnel_id == tunnel_id) {
@@ -181,6 +250,7 @@ impl TunnelManager {
     }
 
     pub fn resume(&self, profile_id: &str, tunnel_id: &str, home_id: &str, window_label: &str) -> Result<SshResolvedConnection, String> {
+        self.ensure_accepting()?;
         for slot in [&self.prepared, &self.active] {
             let mut value = slot.lock().map_err(|_| "SSH tunnel manager unavailable")?;
             if let Some(tunnel) = value.as_mut().filter(|t| t.profile_id == profile_id && t.tunnel_id == tunnel_id &&
@@ -221,7 +291,13 @@ impl TunnelManager {
     }
 
     pub fn shutdown(&self) {
-        for slot in [&self.prepared, &self.active] { if let Ok(mut value) = slot.lock() { *value = None; } }
+        // This registry never holds a handshake or child.wait. Admission and
+        // child ownership are serialized with spawn, including pending tunnels.
+        let mut state = self.children.lock().unwrap_or_else(|error| error.into_inner());
+        state.stopping = true;
+        for child in state.children.values_mut() {
+            if let Err(error) = child.kill() { eprintln!("Kiki SSH forwarding child termination failed: {error}"); }
+        }
     }
 }
 
@@ -352,10 +428,10 @@ mod tests {
     #[ignore]
     fn scope_reference_child_process() { thread::sleep(Duration::from_secs(30)); }
 
-    fn fixture_tunnel(id: &str, home: &str, window: &str) -> Tunnel {
-        let child = Command::new(std::env::current_exe().unwrap())
+    fn fixture_tunnel(manager: &TunnelManager, id: &str, home: &str, window: &str) -> Tunnel {
+        let (child, _) = OwnedSshChild::spawn(&manager.children, Command::new(std::env::current_exe().unwrap())
             .args(["--ignored", "--exact", "ssh_tunnel::tests::scope_reference_child_process"])
-            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())).unwrap();
         Tunnel { profile_id: "example".to_string(), tunnel_id: id.to_string(), child,
             home_id: home.to_string(), window_label: window.to_string(), accepted: false,
             profile: SshProfile { id: "example".to_string(), label: "Example".to_string(), target: crate::ssh_remote::SshTarget::Alias { alias: "example".to_string() },
@@ -368,7 +444,7 @@ mod tests {
     #[test]
     fn scope_reference_is_bound_to_window_home_profile_and_exact_live_tunnel() {
         let manager = TunnelManager::default();
-        *manager.active.lock().unwrap() = Some(fixture_tunnel("original", "home-a", "window-a"));
+        *manager.active.lock().unwrap() = Some(fixture_tunnel(&manager, "original", "home-a", "window-a"));
         assert!(manager.resume("example", "original", "home-a", "window-a").is_ok());
         assert!(manager.resume("example", "original", "home-b", "window-a").is_err());
         assert!(manager.resume("example", "original", "home-a", "window-b").is_err());
@@ -385,8 +461,8 @@ mod tests {
     #[test]
     fn scope_reference_cancelled_candidate_never_revokes_the_source() {
         let manager = TunnelManager::default();
-        *manager.active.lock().unwrap() = Some(fixture_tunnel("original", "home-a", "window-a"));
-        *manager.prepared.lock().unwrap() = Some(fixture_tunnel("candidate", "home-b", "window-a"));
+        *manager.active.lock().unwrap() = Some(fixture_tunnel(&manager, "original", "home-a", "window-a"));
+        *manager.prepared.lock().unwrap() = Some(fixture_tunnel(&manager, "candidate", "home-b", "window-a"));
         assert!(manager.commit("example", "candidate", "home-b", "window-a").is_ok());
         assert!(manager.resume("example", "original", "home-a", "window-a").is_ok());
         manager.disconnect("example", "candidate");
@@ -397,13 +473,95 @@ mod tests {
     #[test]
     fn scope_reference_return_selects_the_exact_prior_connection_without_reauthentication() {
         let manager = TunnelManager::default();
-        *manager.active.lock().unwrap() = Some(fixture_tunnel("original", "home-a", "window-a"));
-        *manager.prepared.lock().unwrap() = Some(fixture_tunnel("candidate", "home-b", "window-a"));
+        *manager.active.lock().unwrap() = Some(fixture_tunnel(&manager, "original", "home-a", "window-a"));
+        *manager.prepared.lock().unwrap() = Some(fixture_tunnel(&manager, "candidate", "home-b", "window-a"));
         manager.commit("example", "candidate", "home-b", "window-a").unwrap();
         manager.commit("example", "original", "home-a", "window-a").unwrap();
         assert_eq!(manager.selected.lock().unwrap().as_deref(), Some("original"));
         assert_eq!(manager.resume("example", "original", "home-a", "window-a").unwrap().tunnel_id, "original");
         assert!(manager.is_running("example", "candidate"));
+    }
+
+    fn await_fixture(condition: impl Fn() -> bool) {
+        let start = Instant::now();
+        while !condition() {
+            assert!(start.elapsed() < Duration::from_secs(3), "isolated SSH fixture did not settle");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn desktop_exit_kills_only_its_active_and_prepared_children_without_waiting_for_slot_locks() {
+        let manager = TunnelManager::default();
+        *manager.active.lock().unwrap() = Some(fixture_tunnel(&manager, "active", "home-a", "window-a"));
+        *manager.prepared.lock().unwrap() = Some(fixture_tunnel(&manager, "prepared", "home-b", "window-a"));
+        let other = TunnelManager::default();
+        let external = fixture_tunnel(&other, "external", "home-c", "window-b");
+        let active = manager.active.lock().unwrap();
+        let prepared = manager.prepared.lock().unwrap();
+        let quitting = manager.clone();
+        let (done, finished) = mpsc::channel();
+        let exit = thread::spawn(move || {
+            crate::desktop_exit_requested(true, false, || panic!("desktop-only exit must not stop services"), |_| panic!("no service diagnostic"), || {
+                quitting.shutdown();
+                done.send(()).unwrap();
+            });
+        });
+        let result = finished.recv_timeout(Duration::from_millis(500));
+        drop(prepared);
+        drop(active);
+        exit.join().unwrap();
+        assert!(result.is_ok(), "final exit waited for a tunnel handshake/slot lock");
+        assert!(manager.children.lock().unwrap().stopping);
+        await_fixture(|| manager.children.lock().unwrap().children.values_mut().all(|child| child.try_wait().unwrap().is_some()));
+        assert!(external.child.try_wait().unwrap().is_none());
+        assert!(manager.resume("example", "active", "home-a", "window-a").err().unwrap().contains("exiting"));
+    }
+
+    #[test]
+    fn desktop_exit_terminates_a_handshaking_child_and_rejects_late_completion() {
+        for staged in [false, true] {
+            let manager = TunnelManager::default();
+            let connecting = manager.clone();
+            let (done, finished) = mpsc::channel();
+            let connection = thread::spawn(move || {
+                let profile = SshProfile { id: "example".into(), label: "Example".into(),
+                    target: crate::ssh_remote::SshTarget::Alias { alias: "example".into() }, identity_file: None,
+                    release_channel: ReleaseChannel::Stable, remote_port: Some(58627), server_home_id: Some("46aca369-50e8-4fd3-9c45-606d084450ed".into()) };
+                let result = connecting.connect_to_with_command(&profile, &"a".repeat(43), staged, |args| {
+                    assert!(args.contains(&"ExitOnForwardFailure=yes".into()));
+                    let mut command = Command::new(std::env::current_exe().unwrap());
+                    command.args(["--ignored", "--exact", "ssh_tunnel::tests::scope_reference_child_process"]);
+                    command
+                });
+                done.send(result.map(|_| ())).unwrap();
+            });
+            await_fixture(|| !manager.children.lock().unwrap().children.is_empty());
+            let pid = manager.children.lock().unwrap().children.values().next().unwrap().id();
+            let slot = if staged { &manager.prepared } else { &manager.active };
+            assert!(slot.try_lock().is_err(), "fixture must be inside the real readiness handshake");
+            let start = Instant::now();
+            manager.shutdown();
+            assert!(start.elapsed() < Duration::from_millis(500));
+            assert!(finished.recv_timeout(Duration::from_secs(1)).unwrap().unwrap_err().contains("exiting"));
+            connection.join().unwrap();
+            assert!(slot.lock().unwrap().is_none());
+            assert!(manager.children.lock().unwrap().children.is_empty());
+            await_fixture(|| !crate::pid_alive(pid));
+        }
+    }
+
+    #[test]
+    fn desktop_exit_rejects_new_children_and_already_verified_candidates_before_publication() {
+        let manager = TunnelManager::default();
+        let candidate = fixture_tunnel(&manager, "late", "home-a", "window-a");
+        manager.shutdown();
+        let mut slot = manager.active.lock().unwrap();
+        assert!(manager.publish(&mut slot, candidate).unwrap_err().contains("exiting"));
+        assert!(slot.is_none());
+        assert!(manager.children.lock().unwrap().children.is_empty());
+        let mut command = Command::new("nonexistent-fixture-must-not-run");
+        assert!(OwnedSshChild::spawn(&manager.children, &mut command).err().unwrap().contains("exiting"));
     }
 
     #[test]

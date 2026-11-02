@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { HTTP_TRANSPORT_TIMEOUT_REASON, HttpChannel, type HttpSocketDiagnostic } from '../src/transports/http/channel.js';
-import { createKlient } from '../src/transports/http/index.js';
+import { createKlient, createRebindableKlient } from '../src/transports/http/index.js';
 import { KlientValidationError } from '../src/core/validation.js';
 
 const tick = (ms = 0): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -142,6 +142,66 @@ function hangingJsonResponse(signal: AbortSignal, message: string, contentType =
 }
 
 describe('http transport', () => {
+  it('rebinds a verified replacement atomically without replaying calls or accepting late results', async () => {
+    let resolveOld!: (response: Response) => void;
+    const fetcher = vi.fn().mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValue(jsonResponse(okEnvelope({ generation: 'new' })));
+    const channel = new HttpChannel({ endpoint: 'http://127.0.0.1:41001', token: 'old-token', fetch: fetcher });
+    const pending = channel.call({ kind: 'core' }, 'example', 'write', ['one submission']);
+    const failed = expect(pending).rejects.toMatchObject({ reason: 'transport.connection_changed' });
+    channel.rebind({ endpoint: 'http://127.0.0.1:42002', token: 'new-token' });
+    expect(fetcher.mock.calls[0]![1].signal.aborted).toBe(true);
+    resolveOld(jsonResponse(okEnvelope({ generation: 'old' })));
+    await failed;
+    await expect(channel.call({ kind: 'core' }, 'example', 'read', [])).resolves.toEqual({ generation: 'new' });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls.map(([url, init]) => [String(url), init.headers.authorization])).toEqual([
+      ['http://127.0.0.1:41001/api/klient/call', 'Bearer old-token'],
+      ['http://127.0.0.1:42002/api/klient/call', 'Bearer new-token'],
+    ]);
+    await channel.close();
+  });
+
+  it('keeps ordered view checkpoints and PTY recovery while replacing the shared socket generation', async () => {
+    const server = new FakeWebSocketServer();
+    const { klient, rebind } = createRebindableKlient({ endpoint: 'http://127.0.0.1:41001', token: 'first-token', WebSocket: fakeWebSocket(server) });
+    const signals: unknown[] = [];
+    const errors: Error[] = [];
+    const events: unknown[] = [];
+    klient.events.onError((error) => errors.push(error));
+    const ordinary = klient.events.on('kosong.providers.changed', (event) => events.push(event));
+    const subscription = klient.session('s1').view.subscribe({ sessionCursor: { seq: 7, epoch: 'session-epoch' }, transcriptGrades: { main: 'delta' }, transcriptSince: { main: { seq: 31, epoch: 'transcript-epoch' } } }, (signal) => signals.push(signal));
+    try {
+      await tick(10);
+      const old = server.sockets[0]!;
+      const firstAttach = server.frames.find((frame) => frame['type'] === 'view_attach')!;
+      const attached = klient.terminal.terminalAttach('s1', 't1');
+      const terminal = server.frames.find((frame) => frame['type'] === 'terminal_attach')!;
+      server.push({ type: 'terminal_ack', id: terminal['id'], code: 0, data: { replayed: 0, earliest_seq: 1, truncated: false } });
+      await attached;
+      subscription.updateSessionCursor({ seq: 8, epoch: 'session-epoch' });
+      rebind({ endpoint: 'http://127.0.0.1:42002', token: 'next-token' });
+      await tick(10);
+      expect(server.lastUrl).toBe('ws://127.0.0.1:42002/api/klient/events');
+      expect(server.lastProtocols).toEqual(['kimi-code.bearer.next-token']);
+      expect(errors).toHaveLength(1);
+      expect(server.frames.findLast((frame) => frame['type'] === 'view_attach')).toMatchObject({ data: { generation: 2, reconnected: true, input: { sessionCursor: { seq: 8, epoch: 'session-epoch' }, transcriptSince: { main: { seq: 31, epoch: 'transcript-epoch' } } } } });
+      expect(server.frames.filter((frame) => frame['type'] === 'terminal_attach')).toHaveLength(2);
+      const before = signals.length;
+      server.push({ type: 'view_signal', id: firstAttach['id'], data: { type: 'sessionCursorAdvanced', cursor: { seq: 99 }, generation: 1 } }, old);
+      server.pushEvent({ added: ['stale'], removed: [], changed: [] }, old);
+      old.open(); old.serverClose();
+      await tick(10);
+      expect(signals).toHaveLength(before);
+      expect(events).toEqual([]);
+      // A new server may reuse the exact address and bearer. The owner has
+      // verified its new identity, so outstanding work still needs retiring.
+      rebind({ endpoint: 'http://127.0.0.1:42002', token: 'next-token' });
+      await tick(10);
+      expect(server.sockets).toHaveLength(3);
+    } finally { subscription.close(); ordinary.dispose(); await klient.close(); }
+  });
+
   it('bounds fatal retries, revives on nudge and stays closed after disposal', async () => {
     vi.useFakeTimers();
     const server = new FakeWebSocketServer();

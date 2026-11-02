@@ -125,6 +125,7 @@ struct InstanceRecord {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct InstanceCandidate {
+    server_id: Option<String>,
     pid: u32,
     port: u16,
     started_at: u64,
@@ -139,9 +140,19 @@ struct MetaEnvelope {
     data: BackendIdentity,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 struct BackendIdentity {
     server_version: String,
+    #[serde(default)]
+    server_home_id: Option<String>,
+    #[serde(default)]
+    current_space_id: Option<String>,
+    #[serde(default)]
+    dangerous_bypass_auth: Option<bool>,
+    #[serde(default)]
+    backend: Option<String>,
+    #[serde(default)]
+    capabilities: serde_json::Value,
     #[serde(default)]
     server_id: String,
     #[serde(default)]
@@ -687,7 +698,7 @@ impl BackendManager {
         if let Some(connection) = cached {
             let port = connection_port(&connection)?;
             if authenticated_backend_identity(port, &connection.token)
-                .is_ok_and(|identity| backend_identity_matches(&identity))
+                .is_ok_and(|identity| verify_discovered_backend(&home, port, &connection.token, &identity).is_ok())
             {
                 return Ok(connection);
             }
@@ -1090,7 +1101,10 @@ impl BackendManager {
         let Some(connection) = self.hot_connection() else { return Ok(None); };
         let identity = authenticated_backend_identity(connection_port(&connection)?, &connection.token)?;
         if action == "quit" && !identity.desktop_managed { return Ok(None); }
-        if !backend_identity_matches(&identity) || !identity.desktop_managed || identity.server_id.is_empty() {
+        if action == "quit" {
+            verify_discovered_backend(self.home.as_ref().ok_or("The managed service home is unavailable")?, connection_port(&connection)?, &connection.token, &identity)?;
+        }
+        if (action != "quit" && !backend_identity_matches(&identity)) || !identity.desktop_managed || identity.server_id.is_empty() {
             return Err("This service is externally managed or belongs to another build; stop it through its owner before restarting or updating".to_string());
         }
         Ok(Some((connection, identity)))
@@ -1108,7 +1122,10 @@ impl BackendManager {
 
     fn stop_shared_target(&self, connection: &DesktopConnection, identity: &BackendIdentity, action: &str) -> Result<(), String> {
         let current = authenticated_backend_identity(connection_port(connection)?, &connection.token)?;
-        if current.server_id != identity.server_id || !current.desktop_managed || !backend_identity_matches(&current) {
+        if current.server_id != identity.server_id || !current.desktop_managed ||
+            (action != "quit" && !backend_identity_matches(&current)) ||
+            current.server_home_id != identity.server_home_id || current.current_space_id != identity.current_space_id ||
+            current.dangerous_bypass_auth != identity.dangerous_bypass_auth {
             return Err("The service changed after confirmation; review the affected space again".to_string());
         }
         let home = self.home.as_ref().ok_or("The shared service home is unavailable")?;
@@ -1510,12 +1527,26 @@ impl SpaceBackendManager {
         }
     }
 
-    fn shutdown(&self) {
-        let slots = self.inner.lock().ok().map(|mut state| {
-            state.stopping = true;
-            state.slots.values().map(|(_, backend)| backend.clone()).collect::<Vec<_>>()
-        }).unwrap_or_default();
-        for backend in slots { backend.shutdown(); }
+    fn detach_desktop(&self) {
+        // Exiting releases the window, not its services. Never wait for a
+        // discovery leader, network request, or child cleanup on this path.
+        let Ok(mut state) = self.inner.try_lock().or_else(|error| match error {
+            std::sync::TryLockError::Poisoned(error) => Ok(error.into_inner()),
+            error => Err(error),
+        }) else { return; };
+        state.stopping = true;
+        for (_, backend) in state.slots.values() {
+            let Ok(mut slot) = backend.inner.try_lock().or_else(|error| match error {
+                std::sync::TryLockError::Poisoned(error) => Ok(error.into_inner()),
+                error => Err(error),
+            }) else { continue; };
+            slot.stopping = true;
+            slot.recovery.reset();
+            // Do not cancel the leader: cancellation owns pre-ready cleanup.
+            // The application's normal exit ends its wait without killing it.
+            slot.attached = None;
+            slot.backend.take();
+        }
     }
 }
 
@@ -3072,46 +3103,14 @@ fn discover_running_backend(
         current_workspace,
         |_| true,
     ) {
-        if candidate.build_id.as_deref() != Some(EXPECTED_SIDECAR_BUILD_ID)
-            || candidate.build_channel.as_deref() != Some(EXPECTED_SIDECAR_BUILD_CHANNEL)
-        {
-            eprintln!(
-                "Kiki skipped backend pid {} on port {}: registry build identity {} / {} does not match {} / {}",
-                candidate.pid,
-                candidate.port,
-                candidate.build_id.as_deref().unwrap_or("missing build id"),
-                candidate
-                    .build_channel
-                    .as_deref()
-                    .unwrap_or("missing channel"),
-                EXPECTED_SIDECAR_BUILD_ID,
-                EXPECTED_SIDECAR_BUILD_CHANNEL,
-            );
-            continue;
-        }
-        let Ok(identity) = authenticated_backend_identity(candidate.port, &token) else {
-            continue;
-        };
-        if backend_identity_matches(&identity) {
-            return Ok(Some(DesktopConnection {
-                url: format!("http://127.0.0.1:{}", candidate.port),
-                token,
-            }));
-        }
-        eprintln!(
-            "Kiki skipped backend pid {} on port {}: authenticated identity {} / {} / {} does not match {} / {} / {}",
-            candidate.pid,
-            candidate.port,
-            identity.server_version,
-            identity.build_id.as_deref().unwrap_or("missing build id"),
-            identity
-                .build_channel
-                .as_deref()
-                .unwrap_or("missing channel"),
-            EXPECTED_SIDECAR_SERVER_VERSION,
-            EXPECTED_SIDECAR_BUILD_ID,
-            EXPECTED_SIDECAR_BUILD_CHANNEL,
-        );
+        let Some(server_id) = candidate.server_id.as_deref() else { continue; };
+        let Ok(identity) = authenticated_backend_identity(candidate.port, &token) else { continue; };
+        if identity.server_id != server_id { continue; }
+        verify_discovered_backend(home, candidate.port, &token, &identity)?;
+        return Ok(Some(DesktopConnection {
+            url: format!("http://127.0.0.1:{}", candidate.port),
+            token,
+        }));
     }
     Ok(None)
 }
@@ -3165,6 +3164,7 @@ fn instance_candidate(record: InstanceRecord) -> Option<InstanceCandidate> {
         return None;
     }
     Some(InstanceCandidate {
+        server_id: record.server_id,
         pid: record.pid,
         port,
         started_at: record.started_at,
@@ -3327,6 +3327,33 @@ fn backend_identity_matches(identity: &BackendIdentity) -> bool {
     identity.server_version == EXPECTED_SIDECAR_SERVER_VERSION
         && identity.build_id.as_deref() == Some(EXPECTED_SIDECAR_BUILD_ID)
         && identity.build_channel.as_deref() == Some(EXPECTED_SIDECAR_BUILD_CHANNEL)
+}
+
+fn verify_discovered_backend(home: &Path, port: u16, token: &str, identity: &BackendIdentity) -> Result<(), String> {
+    let space = read_desktop_space(home)?.map(|space| space.home_id).unwrap_or_else(|| "main".into());
+    if identity.server_id.is_empty() || identity.server_home_id.as_ref().is_none_or(String::is_empty)
+        || identity.current_space_id.as_deref() != Some(space.as_str()) || identity.dangerous_bypass_auth != Some(false)
+        || identity.backend.as_deref() != Some("v2")
+        || identity.capabilities.get("websocket").and_then(serde_json::Value::as_bool) != Some(true)
+        || identity.capabilities.get("transcript").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Err("The local service identity, authentication mode or GUI protocol is unavailable. Reopen the intended space or inspect its service logs; no second service was started.".into());
+    }
+    // The CLI uses this same authenticated handshake. Build IDs describe
+    // provenance; the connection protocol and home identity decide admission.
+    let response = http_get_body(port, "/api/remote-connections/handshake", token, 8192)?;
+    let status_end = response.iter().position(|byte| *byte == b'\n').ok_or("Incomplete service handshake")?;
+    let boundary = response.windows(4).position(|part| part == b"\r\n\r\n").ok_or("Incomplete service handshake")?;
+    let envelope: serde_json::Value = serde_json::from_slice(&response[boundary + 4..]).map_err(|_| "Invalid service handshake")?;
+    let hello = &envelope["data"];
+    if !matches!(parse_http_status_line(&response[..=status_end]), StatusLineParse::Complete(200))
+        || envelope["code"].as_i64() != Some(0) || hello["serverId"].as_str() != Some(identity.server_id.as_str())
+        || hello["identity"]["homeId"].as_str() != identity.server_home_id.as_deref()
+        || hello["identity"]["homeId"].as_str().is_none_or(|id| remote_space::validate_connection_id(id).is_err())
+        || hello["identity"]["hostId"].as_str().is_none_or(|id| id.is_empty() || id.chars().count() > 128)
+        || hello["identity"]["protocol"].as_u64() != Some(1) {
+        return Err("The local service identity handshake or connection protocol could not be verified. No second service was started.".into());
+    }
+    Ok(())
 }
 
 fn authenticated_backend_identity(port: u16, token: &str) -> Result<BackendIdentity, String> {
@@ -3725,6 +3752,21 @@ fn build_tray(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn desktop_exit_requested(
+    keeping: bool,
+    stopping: bool,
+    stop_services: impl FnOnce() -> Result<(), String>,
+    diagnose: impl FnOnce(String),
+    exit: impl FnOnce(),
+) -> bool {
+    if !keeping && !stopping { return false; }
+    if stopping && !keeping {
+        if let Err(error) = stop_services() { diagnose(error); }
+    }
+    exit();
+    true
+}
+
 fn request_confirmed_exit(
     app: AppHandle,
     manager: SpaceBackendManager,
@@ -3733,7 +3775,6 @@ fn request_confirmed_exit(
 ) {
     if prompting.swap(true, Ordering::SeqCst) { return; }
     thread::spawn(move || {
-        let targets = manager.shared_shutdown_targets("quit");
         let zh = read_desktop_prefs_file().locale.as_deref() == Some("zh");
         let (message, stop, keep, cancel) = if zh {
             ("停止本桌面连接的本机共享服务，会断开使用这些空间的所有窗口、CLI 和外部客户端，并取消未完成任务、等待 MCP 和 Bash 清理。其他空间和外部管理的服务不受影响。也可以只退出桌面，让后台任务继续运行。", "停止服务并退出", "仅退出桌面", "取消")
@@ -3745,18 +3786,21 @@ fn request_confirmed_exit(
             .blocking_show_with_result();
         let stopping = matches!(&choice, MessageDialogResult::Yes) || matches!(&choice, MessageDialogResult::Custom(label) if label == stop);
         let keeping = matches!(&choice, MessageDialogResult::No) || matches!(&choice, MessageDialogResult::Custom(label) if label == keep);
-        let proceed = if stopping {
-            match targets.and_then(|targets| manager.shutdown_for_quit(targets)) {
-                Ok(()) => true,
-                Err(error) => {
-                    app.dialog().message(error).title(if zh { "Kiki · 服务尚未确认停止" } else { "Kiki · Service shutdown not confirmed" }).blocking_show();
-                    false
-                }
-            }
-        } else { keeping && confirm_backend_shutdown(&app, &manager, "Closing the desktop") };
-        if proceed { confirmed.store(true, Ordering::SeqCst); }
+        // Service cleanup can take time; a second quit can still close only
+        // the desktop while that explicitly requested cleanup is pending.
         prompting.store(false, Ordering::SeqCst);
-        if proceed { app.exit(0); }
+        desktop_exit_requested(keeping, stopping, || {
+            manager.shared_shutdown_targets("quit").and_then(|targets| manager.shutdown_for_quit(targets))
+        }, |error| {
+            eprintln!("Kiki service shutdown not confirmed: {error}");
+            let home = manager.inner.try_lock().ok().and_then(|state| state.slots.get(&state.active).map(|(space, _)| PathBuf::from(&space.path)));
+            if let Some(home) = home {
+                BackendMonitor::open(&home).record_stderr_line(&format!("Kiki desktop phase=quit_shutdown_unconfirmed: {error}"));
+            }
+        }, || {
+            confirmed.store(true, Ordering::SeqCst);
+            app.exit(0);
+        });
     });
 }
 
@@ -3972,7 +4016,7 @@ pub fn run() {
         if let RunEvent::ExitRequested { api, .. } = &event {
             if exit_confirmed.load(Ordering::SeqCst) {
                 shutdown_tunnels.shutdown();
-                shutdown_manager.shutdown();
+                shutdown_manager.detach_desktop();
             } else {
                 api.prevent_exit();
                 request_confirmed_exit(app_handle.clone(), shutdown_manager.clone(), exit_confirmed.clone(), exit_prompting.clone());
@@ -3993,6 +4037,47 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_only_exit_never_checks_or_stops_a_service() {
+        for failure in ["unreachable", "unreadable state", "starting", "identity changed", "cleanup unconfirmed"] {
+            let exited = std::cell::Cell::new(false);
+            assert!(desktop_exit_requested(true, false, || panic!("{failure} must not be inspected"), |_| panic!("desktop-only exit needs no service diagnostic"), || exited.set(true)));
+            assert!(exited.get());
+            let steps = std::cell::RefCell::new(Vec::new());
+            assert!(desktop_exit_requested(false, true, || Err(failure.into()), |error| steps.borrow_mut().push(error), || steps.borrow_mut().push("exit".into())));
+            assert_eq!(*steps.borrow(), [failure, "exit"]);
+        }
+        assert!(!desktop_exit_requested(false, false, || panic!("cancel must not stop"), |_| panic!("cancel must not diagnose"), || panic!("cancel must retain the window")));
+    }
+
+    #[test]
+    fn desktop_detach_does_not_wait_for_discovery_or_touch_an_attached_service() {
+        let home = env::temp_dir().join(format!("kiki-detach-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
+        let manager = SpaceBackendManager::new(&home, WindowMode::Switch).unwrap();
+        let backend = manager.active_backend().unwrap();
+        let (flight, _) = backend.begin_discovery().unwrap();
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        backend.inner.lock().unwrap().attached = Some(DesktopConnection { url: format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port()), token: "fixture-token".into() });
+        manager.detach_desktop();
+        assert!(manager.inner.lock().unwrap().stopping);
+        assert!(backend.begin_discovery().is_err());
+        assert!(!flight.cancelled.load(Ordering::SeqCst));
+        assert!(flight.result.lock().unwrap().is_none());
+        assert_eq!(listener.accept().unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        backend.finish_discovery(&flight, Err(DesktopStartupFailure::plain("fixture finished".into()))).unwrap_err();
+    }
+
+    #[test]
+    fn desktop_detach_can_leave_a_busy_lifecycle_lock_to_normal_application_exit() {
+        let home = env::temp_dir().join(format!("kiki-detach-busy-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
+        let manager = SpaceBackendManager::new(&home, WindowMode::Switch).unwrap();
+        let backend = manager.active_backend().unwrap();
+        let _busy = backend.inner.lock().unwrap();
+        manager.detach_desktop();
+        assert!(manager.inner.lock().unwrap().stopping);
+    }
 
     #[test]
     fn shared_update_lock_is_home_local_and_released_without_stopping_services() {
@@ -4695,7 +4780,7 @@ mod tests {
         let backend = BackendManager::for_home(env::temp_dir(), false);
         let connection = DesktopConnection { url: format!("http://127.0.0.1:{port}"), token: "fixture-token".into() };
         let identity = BackendIdentity { server_id: "confirmed".into(), desktop_managed: true,
-            server_version: EXPECTED_SIDECAR_SERVER_VERSION.into(), build_id: Some(EXPECTED_SIDECAR_BUILD_ID.into()), build_channel: Some(EXPECTED_SIDECAR_BUILD_CHANNEL.into()) };
+            server_version: EXPECTED_SIDECAR_SERVER_VERSION.into(), build_id: Some(EXPECTED_SIDECAR_BUILD_ID.into()), build_channel: Some(EXPECTED_SIDECAR_BUILD_CHANNEL.into()), ..Default::default() };
         assert!(backend.stop_shared_target(&connection, &identity, "quit").unwrap_err().contains("changed after confirmation"));
     }
 
@@ -4822,6 +4907,7 @@ mod tests {
             server_version: EXPECTED_SIDECAR_SERVER_VERSION.to_string(),
             build_id: Some("different-build".to_string()),
             build_channel: Some(EXPECTED_SIDECAR_BUILD_CHANNEL.to_string()),
+            ..Default::default()
         };
         assert!(!backend_identity_matches(&same_version_other_build));
 
@@ -4832,7 +4918,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_rejects_same_version_different_build_without_removing_external_record() {
+    fn discovery_accepts_a_verified_same_space_service_from_a_different_build() {
         let home = env::temp_dir().join(format!(
             "kiki-build-selection-{}-{}",
             std::process::id(),
@@ -4846,41 +4932,56 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(home.join("server.local-owner"), fs::Permissions::from_mode(0o600)).unwrap();
         }
-        let body = serde_json::json!({
-            "data": {
-                "server_version": EXPECTED_SIDECAR_SERVER_VERSION,
-                "build_id": "different-build",
-                "build_channel": EXPECTED_SIDECAR_BUILD_CHANNEL,
-            }
-        })
-        .to_string();
-
-        let rejected_port = spawn_stub_server("200 OK", body, 1);
-        let record_path = instances.join("rejected.json");
-        fs::write(
-            &record_path,
-            serde_json::json!({
-                "server_id": "rejected",
-                "pid": std::process::id(),
-                "host": "127.0.0.1",
-                "port": rejected_port,
-                "started_at": 100,
-                "heartbeat_at": 100,
-                "build_id": EXPECTED_SIDECAR_BUILD_ID,
-                "build_channel": EXPECTED_SIDECAR_BUILD_CHANNEL,
-            })
-            .to_string(),
-        )
-        .unwrap();
-        assert_eq!(discover_running_backend(&home, None).unwrap(), None);
+        let body = serde_json::json!({ "code": 0, "data": {
+            "server_id": "replacement", "server_home_id": "d92a5d0d-7059-4dd4-b16b-1bc1d179f09e",
+            "current_space_id": "main", "dangerous_bypass_auth": false, "backend": "v2",
+            "capabilities": { "websocket": true, "transcript": true },
+            "server_version": "9.9.0", "build_id": "different-build", "build_channel": "stable",
+            "serverId": "replacement", "identity": { "homeId": "d92a5d0d-7059-4dd4-b16b-1bc1d179f09e", "hostId": "fixture-host", "protocol": 1 }
+        }}).to_string();
+        let port = spawn_stub_server("200 OK", body, 2);
+        let record_path = instances.join("replacement.json");
+        fs::write(&record_path, serde_json::json!({
+            "server_id": "replacement", "pid": std::process::id(), "host": "127.0.0.1", "port": port,
+            "started_at": 100, "heartbeat_at": 100, "build_id": "different-build", "build_channel": "stable"
+        }).to_string()).unwrap();
+        assert_eq!(discover_running_backend(&home, None).unwrap(), Some(DesktopConnection { url: format!("http://127.0.0.1:{port}"), token: "test-token".into() }));
         assert!(record_path.exists());
         fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
-    fn discovery_skips_legacy_record_without_build_identity_before_http_probe() {
+    fn discovery_rejects_wrong_space_auth_capabilities_and_identity_handshakes() {
+        let home = env::temp_dir().join(format!("kiki-discovery-boundary-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
+        fs::create_dir_all(&home).unwrap();
+        let meta = serde_json::json!({
+            "server_version": "9.9.0", "server_id": "fixture-server", "server_home_id": "d92a5d0d-7059-4dd4-b16b-1bc1d179f09e",
+            "current_space_id": "main", "dangerous_bypass_auth": false, "backend": "v2", "capabilities": { "websocket": true, "transcript": true }
+        });
+        for (key, value) in [("current_space_id", serde_json::json!("another-space")), ("dangerous_bypass_auth", serde_json::json!(true)), ("capabilities", serde_json::json!({"websocket": true})), ("server_home_id", serde_json::json!(null))] {
+            let mut invalid = meta.clone();
+            invalid[key] = value;
+            assert!(verify_discovered_backend(&home, 0, "test-token", &serde_json::from_value(invalid).unwrap()).is_err());
+        }
+        let identity: BackendIdentity = serde_json::from_value(meta).unwrap();
+        let hello = serde_json::json!({ "code": 0, "data": { "serverId": "fixture-server", "identity": {
+            "homeId": "d92a5d0d-7059-4dd4-b16b-1bc1d179f09e", "hostId": "fixture-host", "protocol": 1
+        }}});
+        for (key, value) in [("homeId", serde_json::json!("462f8d09-a1bf-4d73-bd20-49ec3b4b2fd4")), ("protocol", serde_json::json!(2)), ("hostId", serde_json::json!(""))] {
+            let mut invalid = hello.clone();
+            invalid["data"]["identity"][key] = value;
+            let port = spawn_stub_server("200 OK", invalid.to_string(), 1);
+            assert!(verify_discovered_backend(&home, port, "test-token", &identity).unwrap_err().contains("handshake"));
+        }
+        let port = spawn_stub_server("401 Unauthorized", hello.to_string(), 1);
+        assert!(verify_discovered_backend(&home, port, "test-token", &identity).is_err());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn discovery_skips_record_without_server_identity_before_http_probe() {
         let home = env::temp_dir().join(format!(
-            "kiki-record-build-prefilter-{}-{}",
+            "kiki-record-identity-prefilter-{}-{}",
             std::process::id(),
             unix_epoch_millis().unwrap()
         ));
@@ -4899,7 +5000,6 @@ mod tests {
         fs::write(
             &record_path,
             serde_json::json!({
-                "server_id": "legacy",
                 "pid": std::process::id(),
                 "host": "127.0.0.1",
                 "port": port,
