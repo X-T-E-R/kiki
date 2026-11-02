@@ -189,6 +189,12 @@ fn main() {
         "cargo:rustc-env=KIKI_DISTRIBUTION={}",
         env::var("KIKI_DISTRIBUTION").unwrap_or_else(|_| "local".to_string())
     );
+    if env::var("TARGET").is_ok_and(|target| target.ends_with("windows-msvc")) {
+        let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo supplies the manifest directory")).join("tests/windows.manifest");
+        println!("cargo:rerun-if-changed={}", manifest.display());
+        println!("cargo:rustc-link-arg-tests=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg-tests=/MANIFESTINPUT:{}", manifest.display());
+    }
     tauri_build::try_build(
         tauri_build::Attributes::new()
             .app_manifest(tauri_build::AppManifest::new().commands(APP_COMMANDS)),

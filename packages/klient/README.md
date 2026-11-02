@@ -467,12 +467,22 @@ The same conformance suite runs against all three transports in this package's
 tests (`test/helpers/conformance.ts` — one test file per transport).
 
 For a local desktop backend replacement, `createRebindableKlient(options)` returns
-`{ klient, rebind }`. The owner must first authenticate the candidate through
+`{ klient, rebind, suspend }`. The owner must first authenticate the candidate through
 native discovery and metadata, verifying the original home, current local space,
 authentication mode, and compatible protocol. Pass the verified endpoint and token
 together to `rebind({ endpoint, token })`; the facade and session-view identities
 stay in place. Outstanding HTTP calls are aborted and late results reject with
 `transport.connection_changed`; calls and submissions are never replayed.
+For a compound action, call `klient.captureOperation?.()` at its start and invoke
+its returned guard after each await, before dispatching another request or
+accepting results and callbacks. The guard rejects a replaced or closed connection
+without cancelling work from a newer action. The shared session transport applies
+this to resume-then-edit, regenerate, steer, approve, answer, dismiss, and cancel.
+Fixed transports without this capability keep their existing behavior.
+On a permanent identity, authentication, or protocol refusal, call `suspend()` to
+abort old calls and park HTTP dispatch and socket reconnection while keeping the
+view. New calls reject with `transport.connection_blocked`. Only a subsequent
+owner-verified `rebind` resumes this binding, even at the same address.
 The existing shared socket restarts with ordered session/transcript checkpoints,
 PTY replay, and ordinary subscription/stream invalidation. A fixed `eventsUrl`
 cannot be rebound. SSH and remote-source selections retain their own identity and

@@ -52,15 +52,13 @@ async function reconnect({ page, webUrl, fixtureUrl, control, shot }) {
       if (command !== 'desktop_connection') return invoke(command, args);
       const state = window.__desktopReconnectProof;
       state.discoveries += 1;
-      if (state.fail) throw new Error('Fixture local service is restarting');
+      if (state.fail) throw { message: 'This space still has a starting, draining or unreachable service. No second service was started. Reopen the intended space or inspect its service logs.', kind: state.kind };
       return { url: state.url, token };
     };
   }, { fixtureUrl, token: FIXTURE_TOKEN });
   try {
     await page.evaluate(() => { localStorage.clear(); sessionStorage.clear(); });
-    await page.goto(`${webUrl}/new?server=${encodeURIComponent(fixtureUrl)}`, { waitUntil: 'domcontentloaded' });
-    await page.locator('aside div.group', { hasText: 'Fixture: complete history paging' }).first().locator('button').first().click();
-    await page.waitForURL(`**/s/${SID}`);
+    await page.goto(`${webUrl}/s/${SID}?server=${encodeURIComponent(fixtureUrl)}`, { waitUntil: 'domcontentloaded' });
     const composer = page.locator('[data-composer-variant="main"] [data-composer-input]');
     const scroll = page.locator('[data-transcript-scroll]').first();
     await composer.waitFor({ timeout: 30_000 });
@@ -79,8 +77,23 @@ async function reconnect({ page, webUrl, fixtureUrl, control, shot }) {
     await shot('desktop-reconnect-before');
     await page.evaluate((url) => { Object.assign(window.__desktopReconnectProof, { url, fail: true }); }, replacementUrl);
     await control({ action: 'drop_ws' });
-    await page.locator('[data-app-banner]', { hasText: 'Fixture local service is restarting' }).waitFor({ timeout: 10_000 });
+    await page.waitForFunction(() => window.__desktopReconnectProof.discoveries >= 2 && document.querySelector('[data-app-banner] button:not([disabled])'));
+    const bannerBefore = await page.locator('[data-app-banner]').evaluate((node) => ({ text: node.textContent, height: node.getBoundingClientRect().height, top: document.querySelector('[data-transcript-scroll]').scrollTop }));
+    assert(!bannerBefore.text.includes('No second service'), 'raw production diagnostics belong in details, not the banner');
+    await page.locator('[data-app-banner] button').click();
+    await page.locator('[role="dialog"] pre', { hasText: 'This space still has a starting, draining or unreachable service.' }).waitFor();
+    await shot('desktop-reconnect-diagnostic');
+    await page.keyboard.press('Escape');
+    const checks = [];
+    while (checks.length < 12) {
+      const check = await page.locator('[data-app-banner]').evaluate((node) => ({ text: node.textContent, height: node.getBoundingClientRect().height, top: document.querySelector('[data-transcript-scroll]').scrollTop }));
+      assert.deepEqual(check, bannerBefore, 'backoff retries must keep the status, banner height and reading position stable');
+      checks.push(check);
+      await page.waitForTimeout(300);
+    }
+    assert(await page.evaluate(() => window.__desktopReconnectProof.discoveries >= 3), 'the proof must cross multiple automatic backoff attempts');
     await shot('desktop-reconnect-retrying');
+    console.log('[check] production long diagnostic stays in details; localized banner, height and reading position remain stable through multiple backoff attempts');
     await page.evaluate(() => { window.__desktopReconnectProof.fail = false; });
     const deadline = Date.now() + 20_000;
     let stableSince;
@@ -116,21 +129,23 @@ async function reconnect({ page, webUrl, fixtureUrl, control, shot }) {
     const socket = socketStates.findLast((state) => state.url.startsWith(replacementUrl.replace('http:', 'ws:')));
     assert(socket !== undefined && !socket.closed && socket.ready, 'the replacement event socket must remain open with ordered recovery ready at capture');
     console.log(`[check] desktop reconnect retained route, history entry, composer, draft and scroll (${before.top} -> ${after.top}); replacement event socket open, ordered view ready and no banner stable for 1500ms; no prompt submissions`);
-    await page.locator('[data-nav-settings]').click();
-    await page.locator('nav [data-settings-nav-leaf="about"]').click();
-    const technical = page.locator('#st-card-about [data-about-technical]');
-    await technical.locator('summary').click();
-    const builds = await technical.locator('dl > div').evaluateAll((rows) => Object.fromEntries(rows.map((row) => [row.querySelector('dt')?.textContent, row.querySelector('dd')?.textContent])));
-    assert.equal(builds['Desktop build'], '111111111111');
-    assert.equal(builds['Server build'], 'replacement-');
-    assert.equal(builds['Server ID'], 'replacement-server');
-    await technical.scrollIntoViewIfNeeded();
-    await shot('desktop-reconnect-build-sources');
-    console.log('[check] About shows the unchanged desktop build and the authenticated replacement server build separately');
+    await page.evaluate(() => { Object.assign(window.__desktopReconnectProof, { fail: true, kind: 'identity' }); });
+    await fetch(`${replacementUrl}/__control`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'drop_ws' }) });
+    await page.locator('[data-app-banner][data-recovery-state="blocked"]').waitFor();
+    const discoveries = await page.evaluate(() => window.__desktopReconnectProof.discoveries);
+    await page.waitForTimeout(1_500);
+    assert.equal(await page.evaluate(() => window.__desktopReconnectProof.discoveries), discoveries, 'identity refusal must stop automatic discovery retries');
+    assert.equal(await composer.textContent(), before.draft);
+    assert.equal(await page.evaluate(() => location.pathname), before.path);
+    await shot('desktop-reconnect-blocked');
+    await page.locator('[data-app-banner] button').first().click();
+    await page.waitForURL('**/settings/spaces');
+    assert.equal(submissions, 0);
+    console.log('[check] structured identity refusal preserves the prior conversation and offers the working spaces settings route without automatic retry or submission');
   } finally {
     await replacement.stop();
   }
 }
 
-const result = await runProof({ root, scenarios: [{ name: 'desktop-reconnect', fixture: 'history-paging', run: reconnect }], argv: process.argv.slice(2), label: 'desktop-reconnect', workers: 1, jobTimeoutMs: 90_000 });
+const result = await runProof({ root, scenarios: [{ name: 'desktop-reconnect', fixture: 'history-paging', matrix: ['width'], run: reconnect }], argv: process.argv.slice(2), label: 'desktop-reconnect', workers: 1, jobTimeoutMs: 90_000 });
 if (result.failed.length > 0) process.exitCode = 1;

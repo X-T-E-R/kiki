@@ -109,6 +109,7 @@ vi.mock('../lib/client', () => ({
       for (const listener of this.statusListeners) listener('closed');
       for (const listener of this.statusListeners) listener('connecting');
     }
+    suspendDesktop = vi.fn();
     meta() { return mocks.meta(this.baseUrl); }
     getSession(id: string) { return Promise.resolve({ id }); }
     renewLease(body: { clientId: string; kind: 'gui' }) { return mocks.renewLease(body); }
@@ -134,7 +135,9 @@ function ConnectedHarness() {
   const [switchError, setSwitchError] = useState('');
   return <>
     <span data-switch-error>{switchError}</span>
-    <span data-recovery-error>{connection.recoveryError}</span>
+    <span data-recovery-error>{connection.recovery?.failure?.message}</span>
+    <span data-recovery-state>{connection.recovery?.status}</span>
+    <span data-recovery-kind>{connection.recovery?.failure?.kind}</span>
     <span data-connected-url>{connection.config.url}</span>
     <span data-scope-id>{connection.scopeId}</span>
     <span data-local-control-url>{connection.localClient?.baseUrl ?? 'pending'}</span>
@@ -1315,6 +1318,7 @@ describe('a closed desktop socket', () => {
     ['server home', { server_home_id: '462f8d09-a1bf-4d73-bd20-49ec3b4b2fd4' }],
     ['space', { current_space_id: 'another-space' }],
     ['missing space', { current_space_id: undefined }],
+    ['unknown identity', { server_home_id: undefined }],
     ['authentication mode', { dangerous_bypass_auth: true }],
     ['missing authentication mode', { dangerous_bypass_auth: undefined }],
   ] as const)('rejects a candidate whose %s changed without dropping the prior view or binding', async (_reason, patch) => {
@@ -1331,6 +1335,45 @@ describe('a closed desktop socket', () => {
     expect(previous.close).not.toHaveBeenCalled();
     expect(recoveryControllers).toHaveLength(1);
     expect(container.querySelector('[data-recovery-draft]')).toBe(draft);
+    expect(container.querySelector('[data-recovery-state]')?.textContent).toBe('blocked');
+    expect(container.querySelector('[data-recovery-kind]')?.textContent).toBe(_reason.includes('authentication') ? 'authentication' : 'identity');
+  });
+
+  it.each(['identity', 'authentication', 'protocol'] as const)('parks structured native %s refusals without automatic retries or a stale socket reopening the view', async (kind) => {
+    vi.useFakeTimers();
+    try {
+      mocks.detectLocalConnection.mockResolvedValue({ config: firstPort, persist: false });
+      const container = await mountRecovery();
+      const draft = container.querySelector('[data-recovery-draft]');
+      await statusHandler()('open');
+      const diagnostic = 'The local service identity, authentication mode or GUI protocol is unavailable. Reopen the intended space or inspect its service logs; no second service was started.';
+      mocks.detectLocalConnection.mockRejectedValue({ kind, message: diagnostic });
+      await statusHandler()('closed');
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      expect(container.querySelector('[data-recovery-state]')?.textContent).toBe('blocked');
+      expect(container.querySelector('[data-recovery-error]')?.textContent).toBe(diagnostic);
+      for (const status of ['open', 'closed', 'connecting', 'open']) await statusHandler()(status);
+      await act(async () => { container.querySelector<HTMLButtonElement>('[data-recovery-retry]')!.click(); await vi.advanceTimersByTimeAsync(60_000); });
+      expect(mocks.detectLocalConnection).toHaveBeenCalledTimes(2);
+      expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('closed');
+      expect(container.querySelector('[data-recovery-draft]')).toBe(draft);
+      expect(container.querySelector('[data-connected-url]')?.textContent).toBe(firstPort.url);
+      expect(recoveryControllers).toHaveLength(1);
+      mocks.detectLocalConnection.mockResolvedValue({ config: firstPort, persist: false });
+      if (kind === 'identity') mocks.meta.mockRejectedValueOnce(new Error('metadata temporarily unavailable after refusal'));
+      await emitStage({ stage: 'ready', connection: firstPort });
+      await flush();
+      if (kind === 'identity') {
+        expect(container.querySelector('[data-recovery-state]')?.textContent).toBe('retrying');
+        await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+        await flush();
+      }
+      await statusHandler()('open');
+      expect(container.querySelector('[data-recovery-state]')?.textContent).toBe('');
+      expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('open');
+      expect(container.querySelector('[data-recovery-draft]')).toBe(draft);
+      expect(recoveryControllers).toHaveLength(1);
+    } finally { vi.useRealTimers(); }
   });
 
   it('automatically retries a temporarily unreachable replacement and retains the view until it verifies', async () => {
@@ -1379,7 +1422,7 @@ describe('a closed desktop socket', () => {
     } finally { vi.useRealTimers(); }
   });
 
-  it.each(['discovery failure', 'metadata failure', 'unknown identity'] as const)(
+  it.each(['discovery failure', 'metadata failure'] as const)(
     'keeps retained facts disconnected and retryable after %s rather than claiming no host', async (failure) => {
       mocks.detectLocalConnection.mockResolvedValue({ config: firstPort, persist: false });
       const container = await mountRecovery();
@@ -1388,8 +1431,7 @@ describe('a closed desktop socket', () => {
       const status = statusHandler();
       await status('open');
       if (failure === 'discovery failure') mocks.detectLocalConnection.mockRejectedValueOnce(new Error('lookup unavailable'));
-      else if (failure === 'metadata failure') mocks.meta.mockRejectedValueOnce(new Error('metadata unavailable'));
-      else mocks.meta.mockResolvedValueOnce({ ...identity, server_home_id: undefined });
+      else mocks.meta.mockRejectedValueOnce(new Error('metadata unavailable'));
       await status('closed');
       await settle();
       expect(container.querySelector('[data-recovery-status]')?.textContent).toBe('closed');

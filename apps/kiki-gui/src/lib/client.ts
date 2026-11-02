@@ -1331,6 +1331,7 @@ export class KikiClient {
   get baseUrl(): string { return this.connection.baseUrl; }
   private get token(): string | undefined { return this.connection.token; }
   private readonly rebindTransport: ReturnType<typeof createRebindableKlient>['rebind'];
+  private readonly suspendTransport: ReturnType<typeof createRebindableKlient>['suspend'];
   readonly klient: ReturnType<typeof createKlient>;
   readonly sessions: ReturnType<typeof createSessionTransport>;
   private readonly transport: KikiClientTransport | undefined;
@@ -1363,6 +1364,7 @@ export class KikiClient {
     });
     this.klient = transport.klient;
     this.rebindTransport = transport.rebind;
+    this.suspendTransport = transport.suspend;
     const sessions = createSessionTransport(this.klient);
     // Controllers consume this transport directly, not the convenience methods below.
     this.sessions = {
@@ -1388,6 +1390,12 @@ export class KikiClient {
     };
   }
 
+  suspendDesktop(): void {
+    if (this.transport !== undefined) throw new Error('A remote transport cannot be suspended as a local desktop');
+    this.suspendTransport();
+    this.connection.signal.abort();
+  }
+
   /** Native discovery and /meta must verify the same home and authentication mode first. */
   rebindDesktop(config: { url: string; token: string }): void {
     if (this.transport !== undefined) throw new Error('A remote transport cannot be rebound as a local desktop');
@@ -1406,9 +1414,14 @@ export class KikiClient {
 
   /** Also used by specialized approval routes that bypass the session transport. */
   async runSessionMutation<T>(sessionId: string, operation: () => Promise<T>): Promise<T> {
-    const result = await operation();
-    this.onSessionMutation?.(sessionId);
-    return result;
+    const assertCurrent = this.klient.captureOperation!();
+    return this.run(async () => {
+      assertCurrent();
+      const result = await operation();
+      assertCurrent();
+      this.onSessionMutation?.(sessionId);
+      return result;
+    });
   }
 
   readingOptions(): { timeoutMs: number } {

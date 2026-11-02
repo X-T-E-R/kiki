@@ -46,6 +46,8 @@ export interface Klient {
   readonly terminal: TerminalFacade;
   readonly global: GlobalFacade;
   readonly events: KlientEvents;
+  /** Capture a compound action's connection identity; the guard rejects after rebind or close. */
+  captureOperation?(): () => void;
   session(sessionId: string): SessionHandle;
   close(): Promise<void>;
 }
@@ -119,6 +121,7 @@ export function createKlientFromChannel(
     terminal: createTerminalFacade(channel.terminal),
     global: createGlobalFacade(call, callStream),
     events: makeHub<KlientEventPayloads>({}, globalEvents),
+    captureOperation: channel.captureOperation?.bind(channel),
     session(sessionId: string): SessionHandle {
       const scope: ScopeRef = { sessionId };
       return {

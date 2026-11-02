@@ -110,6 +110,7 @@ type SocketState = 'idle' | 'connecting' | 'open' | 'closed';
 
 export class HttpChannel implements KlientChannel {
   private connection: Pick<HttpChannelOptions, 'endpoint' | 'token'>;
+  private suspended = false;
   private readonly fixedEventsUrl: boolean;
   private readonly fetchImpl: typeof fetch;
   private readonly defaultTimeoutMs: number;
@@ -281,6 +282,7 @@ export class HttpChannel implements KlientChannel {
     consume: (response: Response, acceptRequestId: (value: string | undefined) => void) => Promise<T>,
   ): Promise<T> {
     if (this.closed) throw new Error('http closed');
+    if (this.suspended) throw new RPCError(-1, 'Connection blocked pending identity verification', undefined, 'transport.connection_blocked', undefined, undefined, 'transport');
     const connection = this.connection;
     const ensureCurrent = () => {
       if (connection !== this.connection) throw new RPCError(-1, 'Connection changed while the request was pending', undefined, 'transport.connection_changed', undefined, undefined, 'transport');
@@ -462,6 +464,7 @@ export class HttpChannel implements KlientChannel {
 
   stream(scope: ScopeRef, service: string, method: string, args: unknown[]): AsyncIterable<unknown> {
     if (this.closed) return failedStream(new Error('http closed'));
+    if (this.suspended) return failedStream(new RPCError(-1, 'Connection blocked pending identity verification', undefined, 'transport.connection_blocked', undefined, undefined, 'transport'));
     return this.socket.stream(scope, service, method, args);
   }
 
@@ -476,6 +479,25 @@ export class HttpChannel implements KlientChannel {
     return this.socket.listen(scope, source, handler, onError, onReady);
   }
 
+  /** Capture before a compound action starts, then check before dispatch after every await. */
+  captureOperation(): () => void {
+    const connection = this.connection;
+    return () => {
+      if (connection !== this.connection) throw new RPCError(-1, 'Connection changed while the operation was pending', undefined, 'transport.connection_changed', undefined, undefined, 'transport');
+      if (this.closed) throw new Error('http closed');
+      if (this.suspended) throw new RPCError(-1, 'Connection blocked pending identity verification', undefined, 'transport.connection_blocked', undefined, undefined, 'transport');
+    };
+  }
+
+  /** Park an identity-refused binding without discarding retained facade or view identities. */
+  suspend(): void {
+    if (this.closed || this.suspended) return;
+    this.suspended = true;
+    this.connection = { ...this.connection };
+    for (const call of this.activeCalls) call.controller.abort();
+    this.socket.suspend();
+  }
+
   /** Rebind only after the owner verifies the destination's identity. Never replays HTTP calls. */
   rebind(connection: Pick<HttpChannelOptions, 'endpoint' | 'token'>): void {
     if (this.closed) throw new Error('http closed');
@@ -483,6 +505,7 @@ export class HttpChannel implements KlientChannel {
     const endpoint = connection.endpoint.replace(/\/+$/u, '');
     const wsUrl = toWebSocketUrl(endpoint);
     this.connection = { endpoint, token: connection.token };
+    this.suspended = false;
     for (const call of this.activeCalls) call.controller.abort();
     this.socket.rebind(wsUrl, connection.token);
   }
@@ -506,6 +529,7 @@ class HttpEventSocket {
   private ws: WebSocket | undefined;
   private state: SocketState = 'idle';
   private closed = false;
+  private suspended = false;
   private reconnectAttempt = 0;
   private fatalRetriesLeft: number | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -537,7 +561,13 @@ class HttpEventSocket {
     this.token = token;
     this.fatalRetriesLeft = undefined;
     this.reconnectAttempt = 0;
+    this.suspended = false;
     this.restart('connection_rebound');
+  }
+
+  suspend(): void {
+    this.suspended = true;
+    this.restart();
   }
 
   private restart(cause: HttpSocketCloseCause = 'view_restart'): void {
@@ -771,7 +801,7 @@ class HttpEventSocket {
   }
 
   private ensureConnected(): void {
-    if (!this.hasDemand() || this.closed || this.state === 'open' || this.state === 'connecting') {
+    if (!this.hasDemand() || this.closed || this.suspended || this.state === 'open' || this.state === 'connecting') {
       return;
     }
     this.connect();

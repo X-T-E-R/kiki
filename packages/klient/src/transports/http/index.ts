@@ -37,9 +37,10 @@ export function createKlient(options: HttpKlientOptions): Klient {
 export function createRebindableKlient(options: HttpKlientOptions): {
   klient: Klient;
   rebind(connection: Pick<HttpChannelOptions, 'endpoint' | 'token'>): void;
+  suspend(): void;
 } {
   const channel = new HttpChannel(options);
-  return { klient: createKlientFromChannel(channel, options), rebind: (connection) => channel.rebind(connection) };
+  return { klient: createKlientFromChannel(channel, options), rebind: (connection) => channel.rebind(connection), suspend: () => channel.suspend() };
 }
 
 /** Use a registered source-home connection without exposing its remote credentials. */

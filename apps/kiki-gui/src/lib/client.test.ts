@@ -2288,3 +2288,49 @@ describe('KikiClient verified desktop rebind', () => {
     } finally { await client.klient.close(); }
   });
 });
+
+
+describe('KikiClient compound action generation (F1)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const actions = [
+    { name: 'cancel', invoke: (client: KikiClient) => client.sessions.cancelTask('s1', 'task1') },
+    { name: 'edit', invoke: (client: KikiClient) => client.sessions.editMessage('s1', 'm1', { content: [{ type: 'text', text: 'edited' }], expected_cursor: { seq: 7, epoch: 'cold:s1' } }) },
+    { name: 'approve', invoke: (client: KikiClient) => client.sessions.resolveApproval('s1', 'a1', { decision: 'approved' }) },
+  ];
+
+  it.each(actions)('does not send the old $name continuation or mutation callback to the replacement', async ({ invoke }) => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL) => Response.json({ code: 0, msg: 'success', data: { id: 's1', kind: 'session' } }));
+    vi.stubGlobal('fetch', fetcher);
+    const onSessionMutation = vi.fn();
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:41001', token: 'old-token', onSessionMutation });
+    const session = client.klient.session.bind(client.klient);
+    vi.spyOn(client.klient, 'session').mockImplementation((id) => {
+      const handle = session(id);
+      return { ...handle, resume: () => handle.resume().then((resumed) => {
+        queueMicrotask(() => client.rebindDesktop({ url: 'http://127.0.0.1:42002', token: 'new-token' }));
+        return resumed;
+      }) };
+    });
+    try {
+      await expect(invoke(client)).rejects.toMatchObject({ name: 'ApiError', reason: 'transport.connection_changed' });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(String(fetcher.mock.calls[0]![0])).toBe('http://127.0.0.1:41001/api/klient/call');
+      expect(onSessionMutation).not.toHaveBeenCalled();
+    } finally { await client.klient.close(); }
+  });
+
+  it('fences the post-result callback while allowing a newly started action after rebind', async () => {
+    const onSessionMutation = vi.fn();
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:41001', token: 'old-token', onSessionMutation });
+    try {
+      const stale = client.runSessionMutation('old-session', () => Promise.resolve('old-result').then((result) => {
+        queueMicrotask(() => client.rebindDesktop({ url: 'http://127.0.0.1:42002', token: 'new-token' }));
+        return result;
+      }));
+      await expect(stale).rejects.toMatchObject({ reason: 'transport.connection_changed' });
+      expect(onSessionMutation).not.toHaveBeenCalled();
+      await expect(client.runSessionMutation('new-session', async () => 'new-result')).resolves.toBe('new-result');
+      expect(onSessionMutation).toHaveBeenCalledExactlyOnceWith('new-session');
+    } finally { await client.klient.close(); }
+  });
+});

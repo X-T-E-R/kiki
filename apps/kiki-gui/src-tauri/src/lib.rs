@@ -13,6 +13,10 @@
 mod ssh_remote;
 mod ssh_tunnel;
 mod desktop_log;
+mod desktop_exit;
+use desktop_exit::{desktop_exit_requested, desktop_quit_dialog, request_desktop_only_exit};
+#[cfg(test)]
+use desktop_exit::{desktop_exit_copy, desktop_exit_stopping};
 mod desktop_update_state;
 use desktop_update_state::DesktopUpdateState;
 mod space_badge;
@@ -53,7 +57,9 @@ use tauri::{
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindowBuilder, WindowEvent, Wry,
 };
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogResult};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+#[cfg(test)]
+use tauri_plugin_dialog::MessageDialogResult;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_shell::{
     process::{CommandChild, CommandEvent, TerminatedPayload},
@@ -170,15 +176,17 @@ struct DesktopStartupFailure {
     message: String,
     stderr_tail: Vec<String>,
     log_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<&'static str>,
 }
 
 impl DesktopStartupFailure {
     fn plain(message: String) -> Self {
-        Self {
-            message,
-            stderr_tail: Vec::new(),
-            log_path: None,
-        }
+        Self { message, stderr_tail: Vec::new(), log_path: None, kind: None }
+    }
+
+    fn blocked(kind: &'static str, message: impl Into<String>) -> Self {
+        Self { kind: Some(kind), ..Self::plain(message.into()) }
     }
 }
 
@@ -325,6 +333,7 @@ impl BackendMonitor {
             message,
             stderr_tail,
             log_path: self.log_path_string(),
+            kind: None,
         }
     }
 }
@@ -1099,10 +1108,10 @@ impl BackendManager {
     fn shared_identity_for(&self, action: &str) -> Result<Option<(DesktopConnection, BackendIdentity)>, String> {
         if !self.shared_service { return Ok(None); }
         let Some(connection) = self.hot_connection() else { return Ok(None); };
-        let identity = authenticated_backend_identity(connection_port(&connection)?, &connection.token)?;
+        let identity = authenticated_backend_identity(connection_port(&connection)?, &connection.token).map_err(|failure| failure.message)?;
         if action == "quit" && !identity.desktop_managed { return Ok(None); }
         if action == "quit" {
-            verify_discovered_backend(self.home.as_ref().ok_or("The managed service home is unavailable")?, connection_port(&connection)?, &connection.token, &identity)?;
+            verify_discovered_backend(self.home.as_ref().ok_or("The managed service home is unavailable")?, connection_port(&connection)?, &connection.token, &identity).map_err(|failure| failure.message)?;
         }
         if (action != "quit" && !backend_identity_matches(&identity)) || !identity.desktop_managed || identity.server_id.is_empty() {
             return Err("This service is externally managed or belongs to another build; stop it through its owner before restarting or updating".to_string());
@@ -1121,7 +1130,7 @@ impl BackendManager {
     }
 
     fn stop_shared_target(&self, connection: &DesktopConnection, identity: &BackendIdentity, action: &str) -> Result<(), String> {
-        let current = authenticated_backend_identity(connection_port(connection)?, &connection.token)?;
+        let current = authenticated_backend_identity(connection_port(connection)?, &connection.token).map_err(|failure| failure.message)?;
         if current.server_id != identity.server_id || !current.desktop_managed ||
             (action != "quit" && !backend_identity_matches(&current)) ||
             current.server_home_id != identity.server_home_id || current.current_space_id != identity.current_space_id ||
@@ -3094,7 +3103,7 @@ fn find_instance_for_pid(
 fn discover_running_backend(
     home: &Path,
     current_workspace: Option<&Path>,
-) -> Result<Option<DesktopConnection>, String> {
+) -> Result<Option<DesktopConnection>, DesktopStartupFailure> {
     let Some(token) = read_token(home)? else {
         return Ok(None);
     };
@@ -3104,7 +3113,11 @@ fn discover_running_backend(
         |_| true,
     ) {
         let Some(server_id) = candidate.server_id.as_deref() else { continue; };
-        let Ok(identity) = authenticated_backend_identity(candidate.port, &token) else { continue; };
+        let identity = match authenticated_backend_identity(candidate.port, &token) {
+            Ok(identity) => identity,
+            Err(failure) if failure.kind.is_some() => return Err(failure),
+            Err(_) => continue,
+        };
         if identity.server_id != server_id { continue; }
         verify_discovered_backend(home, candidate.port, &token, &identity)?;
         return Ok(Some(DesktopConnection {
@@ -3329,36 +3342,53 @@ fn backend_identity_matches(identity: &BackendIdentity) -> bool {
         && identity.build_channel.as_deref() == Some(EXPECTED_SIDECAR_BUILD_CHANNEL)
 }
 
-fn verify_discovered_backend(home: &Path, port: u16, token: &str, identity: &BackendIdentity) -> Result<(), String> {
+fn verify_discovered_backend(home: &Path, port: u16, token: &str, identity: &BackendIdentity) -> Result<(), DesktopStartupFailure> {
     let space = read_desktop_space(home)?.map(|space| space.home_id).unwrap_or_else(|| "main".into());
     if identity.server_id.is_empty() || identity.server_home_id.as_ref().is_none_or(String::is_empty)
-        || identity.current_space_id.as_deref() != Some(space.as_str()) || identity.dangerous_bypass_auth != Some(false)
-        || identity.backend.as_deref() != Some("v2")
+        || identity.current_space_id.as_deref() != Some(space.as_str()) {
+        return Err(DesktopStartupFailure::blocked("identity", "The local service home or space identity could not be verified. No second service was started."));
+    }
+    if identity.dangerous_bypass_auth != Some(false) {
+        return Err(DesktopStartupFailure::blocked("authentication", "The local service does not confirm the expected authentication mode. No second service was started."));
+    }
+    if identity.backend.as_deref() != Some("v2")
         || identity.capabilities.get("websocket").and_then(serde_json::Value::as_bool) != Some(true)
         || identity.capabilities.get("transcript").and_then(serde_json::Value::as_bool) != Some(true) {
-        return Err("The local service identity, authentication mode or GUI protocol is unavailable. Reopen the intended space or inspect its service logs; no second service was started.".into());
+        return Err(DesktopStartupFailure::blocked("protocol", "The local service GUI protocol is unavailable. No second service was started."));
     }
     // The CLI uses this same authenticated handshake. Build IDs describe
     // provenance; the connection protocol and home identity decide admission.
     let response = http_get_body(port, "/api/remote-connections/handshake", token, 8192)?;
-    let status_end = response.iter().position(|byte| *byte == b'\n').ok_or("Incomplete service handshake")?;
-    let boundary = response.windows(4).position(|part| part == b"\r\n\r\n").ok_or("Incomplete service handshake")?;
-    let envelope: serde_json::Value = serde_json::from_slice(&response[boundary + 4..]).map_err(|_| "Invalid service handshake")?;
+    let protocol_error = || DesktopStartupFailure::blocked("protocol", "The local service identity handshake or connection protocol could not be verified. No second service was started.");
+    let status_end = response.iter().position(|byte| *byte == b'\n').ok_or_else(protocol_error)?;
+    let status = parse_http_status_line(&response[..=status_end]);
+    if matches!(status, StatusLineParse::Complete(401 | 403)) {
+        return Err(DesktopStartupFailure::blocked("authentication", "The local service identity handshake rejected authentication."));
+    }
+    if !matches!(status, StatusLineParse::Complete(200)) { return Err(protocol_error()); }
+    let boundary = response.windows(4).position(|part| part == b"\r\n\r\n").ok_or_else(protocol_error)?;
+    let envelope: serde_json::Value = serde_json::from_slice(&response[boundary + 4..]).map_err(|_| protocol_error())?;
     let hello = &envelope["data"];
-    if !matches!(parse_http_status_line(&response[..=status_end]), StatusLineParse::Complete(200))
-        || envelope["code"].as_i64() != Some(0) || hello["serverId"].as_str() != Some(identity.server_id.as_str())
+    if envelope["code"].as_i64() != Some(0) || hello["identity"]["protocol"].as_u64() != Some(1) { return Err(protocol_error()); }
+    if hello["serverId"].as_str() != Some(identity.server_id.as_str())
         || hello["identity"]["homeId"].as_str() != identity.server_home_id.as_deref()
         || hello["identity"]["homeId"].as_str().is_none_or(|id| remote_space::validate_connection_id(id).is_err())
-        || hello["identity"]["hostId"].as_str().is_none_or(|id| id.is_empty() || id.chars().count() > 128)
-        || hello["identity"]["protocol"].as_u64() != Some(1) {
-        return Err("The local service identity handshake or connection protocol could not be verified. No second service was started.".into());
+        || hello["identity"]["hostId"].as_str().is_none_or(|id| id.is_empty() || id.chars().count() > 128) {
+        return Err(DesktopStartupFailure::blocked("identity", "The local service identity handshake returned another home or server."));
     }
     Ok(())
 }
 
-fn authenticated_backend_identity(port: u16, token: &str) -> Result<BackendIdentity, String> {
+fn authenticated_backend_identity(port: u16, token: &str) -> Result<BackendIdentity, DesktopStartupFailure> {
     let response = http_get_body(port, "/api/meta", token, MAX_META_RESPONSE_BYTES)?;
-    parse_meta_backend_identity_response(&response)
+    let status = parse_http_status_line(&response[..response.iter().position(|byte| *byte == b'\n').map(|end| end + 1).unwrap_or(response.len())]);
+    if matches!(status, StatusLineParse::Complete(401 | 403)) {
+        return Err(DesktopStartupFailure::blocked("authentication", "The local service rejected authentication for its metadata."));
+    }
+    if matches!(status, StatusLineParse::Complete(500..=599)) {
+        return Err(DesktopStartupFailure::plain("The local service metadata is temporarily unavailable.".into()));
+    }
+    parse_meta_backend_identity_response(&response).map_err(|message| DesktopStartupFailure::blocked("protocol", message))
 }
 
 /// Authenticated GET against the loopback backend; returns the raw response
@@ -3752,21 +3782,6 @@ fn build_tray(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn desktop_exit_requested(
-    keeping: bool,
-    stopping: bool,
-    stop_services: impl FnOnce() -> Result<(), String>,
-    diagnose: impl FnOnce(String),
-    exit: impl FnOnce(),
-) -> bool {
-    if !keeping && !stopping { return false; }
-    if stopping && !keeping {
-        if let Err(error) = stop_services() { diagnose(error); }
-    }
-    exit();
-    true
-}
-
 fn request_confirmed_exit(
     app: AppHandle,
     manager: SpaceBackendManager,
@@ -3776,20 +3791,9 @@ fn request_confirmed_exit(
     if prompting.swap(true, Ordering::SeqCst) { return; }
     thread::spawn(move || {
         let zh = read_desktop_prefs_file().locale.as_deref() == Some("zh");
-        let (message, stop, keep, cancel) = if zh {
-            ("停止本桌面连接的本机共享服务，会断开使用这些空间的所有窗口、CLI 和外部客户端，并取消未完成任务、等待 MCP 和 Bash 清理。其他空间和外部管理的服务不受影响。也可以只退出桌面，让后台任务继续运行。", "停止服务并退出", "仅退出桌面", "取消")
-        } else {
-            ("Stopping the local shared services connected to this desktop disconnects every window, CLI and external client using those spaces, cancels unfinished work, and waits for MCP and Bash cleanup. Other spaces and externally managed services are not stopped. You can instead close only the desktop and keep background work running.", "Stop services and quit", "Close desktop only", "Cancel")
-        };
-        let choice = app.dialog().message(message).title("Kiki")
-            .buttons(MessageDialogButtons::YesNoCancelCustom(stop.into(), keep.into(), cancel.into()))
-            .blocking_show_with_result();
-        let stopping = matches!(&choice, MessageDialogResult::Yes) || matches!(&choice, MessageDialogResult::Custom(label) if label == stop);
-        let keeping = matches!(&choice, MessageDialogResult::No) || matches!(&choice, MessageDialogResult::Custom(label) if label == keep);
-        // Service cleanup can take time; a second quit can still close only
-        // the desktop while that explicitly requested cleanup is pending.
-        prompting.store(false, Ordering::SeqCst);
-        desktop_exit_requested(keeping, stopping, || {
+        let stopping = desktop_quit_dialog(&app, zh, "Kiki");
+        if !stopping { prompting.store(false, Ordering::SeqCst); }
+        desktop_exit_requested(false, stopping, || {
             manager.shared_shutdown_targets("quit").and_then(|targets| manager.shutdown_for_quit(targets))
         }, |error| {
             eprintln!("Kiki service shutdown not confirmed: {error}");
@@ -3829,7 +3833,6 @@ pub fn run() {
     let exit_confirmed = Arc::new(AtomicBool::new(false));
     let exit_prompting = Arc::new(AtomicBool::new(false));
     let close_confirmed = exit_confirmed.clone();
-    let close_prompting = exit_prompting.clone();
     let tunnel_manager = ssh_tunnel::TunnelManager::default();
     let shutdown_tunnels = tunnel_manager.clone();
     let mut context = tauri::generate_context!();
@@ -3938,7 +3941,7 @@ pub fn run() {
                         }
                     }
                     DesktopCloseAction::Exit => {
-                        request_confirmed_exit(window.app_handle().clone(), close_manager.clone(), close_confirmed.clone(), close_prompting.clone());
+                        request_desktop_only_exit(window.app_handle(), &close_confirmed);
                     }
                 }
             }
@@ -4037,6 +4040,23 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_tray_quit_maps_stop_and_cancel_in_english_and_chinese() {
+        for zh in [false, true] {
+            let (message, stop, cancel) = desktop_exit_copy(zh);
+            assert_eq!(stop, if zh { "停止服务并退出" } else { "Stop services and quit" });
+            assert!(desktop_exit_stopping(&MessageDialogResult::Ok, stop));
+            assert!(desktop_exit_stopping(&MessageDialogResult::Custom(stop.into()), stop));
+            for choice in [MessageDialogResult::Cancel, MessageDialogResult::Custom(cancel.into()), MessageDialogResult::No] {
+                assert!(!desktop_exit_stopping(&choice, stop));
+            }
+            assert!(!message.contains("MCP") && !message.contains("Bash"));
+            assert!(message.contains(if zh { "取消未完成" } else { "cancels unfinished" }));
+            assert!(message.contains(if zh { "远端和外部管理" } else { "remote and externally managed" }));
+            assert!(message.contains(if zh { "关闭窗口可保留后台" } else { "Close the window to keep the backend running" }));
+        }
+    }
 
     #[test]
     fn desktop_only_exit_never_checks_or_stops_a_service() {
@@ -4951,6 +4971,14 @@ mod tests {
     }
 
     #[test]
+    fn discovery_failure_categories_follow_metadata_status_not_english_messages() {
+        for (status, expected) in [("401 Unauthorized", Some("authentication")), ("403 Forbidden", Some("authentication")), ("404 Not Found", Some("protocol")), ("200 OK", Some("protocol")), ("503 Service Unavailable", None)] {
+            let port = spawn_stub_server(status, "not a metadata envelope".into(), 1);
+            assert_eq!(authenticated_backend_identity(port, "fixture-token").unwrap_err().kind, expected, "{status}");
+        }
+    }
+
+    #[test]
     fn discovery_rejects_wrong_space_auth_capabilities_and_identity_handshakes() {
         let home = env::temp_dir().join(format!("kiki-discovery-boundary-{}-{}", std::process::id(), unix_epoch_millis().unwrap()));
         fs::create_dir_all(&home).unwrap();
@@ -4961,7 +4989,8 @@ mod tests {
         for (key, value) in [("current_space_id", serde_json::json!("another-space")), ("dangerous_bypass_auth", serde_json::json!(true)), ("capabilities", serde_json::json!({"websocket": true})), ("server_home_id", serde_json::json!(null))] {
             let mut invalid = meta.clone();
             invalid[key] = value;
-            assert!(verify_discovered_backend(&home, 0, "test-token", &serde_json::from_value(invalid).unwrap()).is_err());
+            let failure = verify_discovered_backend(&home, 0, "test-token", &serde_json::from_value(invalid).unwrap()).unwrap_err();
+            assert_eq!(failure.kind, Some(match key { "dangerous_bypass_auth" => "authentication", "capabilities" => "protocol", _ => "identity" }));
         }
         let identity: BackendIdentity = serde_json::from_value(meta).unwrap();
         let hello = serde_json::json!({ "code": 0, "data": { "serverId": "fixture-server", "identity": {
@@ -4971,10 +5000,12 @@ mod tests {
             let mut invalid = hello.clone();
             invalid["data"]["identity"][key] = value;
             let port = spawn_stub_server("200 OK", invalid.to_string(), 1);
-            assert!(verify_discovered_backend(&home, port, "test-token", &identity).unwrap_err().contains("handshake"));
+            let failure = verify_discovered_backend(&home, port, "test-token", &identity).unwrap_err();
+            assert!(failure.message.contains("handshake"));
+            assert_eq!(failure.kind, Some(if key == "protocol" { "protocol" } else { "identity" }));
         }
         let port = spawn_stub_server("401 Unauthorized", hello.to_string(), 1);
-        assert!(verify_discovered_backend(&home, port, "test-token", &identity).is_err());
+        assert_eq!(verify_discovered_backend(&home, port, "test-token", &identity).unwrap_err().kind, Some("authentication"));
         fs::remove_dir_all(home).unwrap();
     }
 
@@ -5115,6 +5146,7 @@ mod tests {
                 message: "backend exited".to_string(),
                 stderr_tail: vec!["boom".to_string()],
                 log_path: Some("desktop-backend.log".to_string()),
+                kind: None,
             },
         };
         let value = serde_json::to_value(stage).unwrap();

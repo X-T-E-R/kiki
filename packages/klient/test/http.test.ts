@@ -162,6 +162,47 @@ describe('http transport', () => {
     await channel.close();
   });
 
+  it('captures an action identity before awaits and fences it on rebind, same-address replacement and close', async () => {
+    const connection = { endpoint: 'http://127.0.0.1:41001', token: 'first-token' };
+    const { klient, rebind } = createRebindableKlient(connection);
+    const original = klient.captureOperation!();
+    expect(original).not.toThrow();
+    rebind({ endpoint: 'http://127.0.0.1:42002', token: 'next-token' });
+    expect(original).toThrow(expect.objectContaining({ reason: 'transport.connection_changed' }));
+    const next = klient.captureOperation!();
+    expect(next).not.toThrow();
+    rebind({ endpoint: 'http://127.0.0.1:42002', token: 'next-token' });
+    expect(next).toThrow(expect.objectContaining({ reason: 'transport.connection_changed' }));
+    const final = klient.captureOperation!();
+    expect(final).not.toThrow();
+    await klient.close();
+    expect(final).toThrow('http closed');
+  });
+
+  it('parks a refused binding without outbound HTTP or socket reconnect until a verified rebind', async () => {
+    const server = new FakeWebSocketServer();
+    const fetcher = vi.fn(async () => Response.json({ code: 0, msg: 'success', data: { id: 's1', kind: 'session' } }));
+    const connection = { endpoint: 'http://127.0.0.1:41001', token: 'first-token' };
+    const { klient, rebind, suspend } = createRebindableKlient({ ...connection, fetch: fetcher, WebSocket: fakeWebSocket(server) });
+    const off = klient.terminal.onStatus(() => {});
+    try {
+      await klient.session('s1').resume();
+      const guard = klient.captureOperation!();
+      suspend();
+      expect(guard).toThrow(expect.objectContaining({ reason: 'transport.connection_changed' }));
+      await expect(klient.session('s1').resume()).rejects.toMatchObject({ reason: 'transport.connection_blocked' });
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      const count = server.sockets.length;
+      klient.terminal.nudge();
+      await Promise.resolve();
+      expect(server.sockets).toHaveLength(count);
+      rebind(connection);
+      await expect(klient.session('s1').resume()).resolves.toBe(true);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(server.sockets).toHaveLength(count + 1);
+    } finally { off(); await klient.close(); }
+  });
+
   it('keeps ordered view checkpoints and PTY recovery while replacing the shared socket generation', async () => {
     const server = new FakeWebSocketServer();
     const { klient, rebind } = createRebindableKlient({ endpoint: 'http://127.0.0.1:41001', token: 'first-token', WebSocket: fakeWebSocket(server) });
