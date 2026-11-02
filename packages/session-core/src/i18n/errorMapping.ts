@@ -44,6 +44,7 @@ const SPECIFIC_CODE_KEYS: Readonly<Record<number, I18nKey>> = {
   40901: 'err.sessionBusy',
   40933: 'err.sessionLocked',
   40939: 'err.indexBuilding',
+  40950: 'err.providerDisabled',
   41301: 'err.fileTooLarge',
   42901: 'err.rateLimited',
   42904: 'err.dispatchLimited',

@@ -158,6 +158,24 @@ describe('LocalizedError / errorText', () => {
     expect(errorText('zh', new Error('something else (code 42901)'))).toBe('请求太频繁了，请稍后再试');
   });
 
+  it('localizes disabled provider controls and the recoverable provider error', () => {
+    expect(translate('en', 'st.connections.enabledLabel')).toBe('Connection enabled');
+    expect(translate('zh', 'st.connections.enabledLabel')).toBe('启用此连接');
+    expect(translate('en', 'st.connections.disabled')).toBe('Disabled');
+    expect(translate('zh', 'st.connections.disabled')).toBe('已停用');
+    expect(translate('en', 'st.connections.disabledHint')).toBe(
+      'New requests are blocked. Account, models and credentials are kept; enable this connection to use it again.',
+    );
+    expect(translate('zh', 'st.connections.disabledHint')).toBe('不再发送新请求；账号、模型和凭据均保留，重新启用即可继续使用。');
+    const disabled = { code: 40950, message: 'provider.disabled (code 40950)' };
+    expect(errorText('en', disabled)).toBe(
+      'New requests are blocked. Account, models and credentials are kept; enable this connection to use it again.',
+    );
+    expect(errorText('zh', disabled)).toBe('不再发送新请求；账号、模型和凭据均保留，重新启用即可继续使用。');
+    expect(translate('en', 'composer.modelProviderDisabled')).toBe('Connection disabled');
+    expect(translate('zh', 'composer.modelProviderDisabled')).toBe('连接已停用');
+  });
+
   it('keeps validation refusal messages for ApiError objects and legacy suffixes', () => {
     const refusals = [
       { code: 40001, message: 'Choose a profile Markdown (.md) file' },
