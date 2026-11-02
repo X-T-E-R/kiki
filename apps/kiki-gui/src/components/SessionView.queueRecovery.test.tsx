@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
+import { composerInput, setComposerInputValue } from './composerInputTestUtils';
 import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
 import { SubmissionRecovery } from './SubmissionRecovery';
@@ -42,7 +43,7 @@ vi.mock('../state/connection', () => {
     readingOptions: () => ({ timeoutMs: 5000 }),
     listAgentModelSwitches: async () => [],
     subscribeAgentModelSwitches: () => ({ ready: Promise.resolve(), dispose: () => {} }),
-    klient: { session: () => ({ agent: () => ({ events: { on: () => ({ ready: Promise.resolve(), dispose: () => {} }) } }) }) },
+    klient: { session: () => ({ agent: () => ({ isCompacting: async () => false, getLoopStatus: async () => ({ state: 'idle' }), events: { on: () => ({ ready: Promise.resolve(), dispose: () => {} }), onError: () => ({ dispose: () => {} }) } }) }) },
   };
   const registry = { acquire: (_id: string, _scope: object, create: () => { open(): Promise<void>; close(): void }) => {
     fixture.acquires += 1;
@@ -102,7 +103,7 @@ vi.mock('./Transcript', async (original) => ({
     </div>;
   },
 }));
-vi.mock('./SelectionQuoteButton', () => ({ SelectionQuoteButton: ({ onQuote, onAnnotate }: { onQuote: (quote: string) => void; onAnnotate: (quote: string, comment: string) => void }) => <><button data-fixture-quote onClick={() => onQuote('new passage')}>Quote new passage</button><button data-fixture-annotation onClick={() => onAnnotate('new annotated passage', 'keep this note')}>Annotate new passage</button></> }));
+vi.mock('./SelectionQuoteButton', () => ({ SelectionQuoteButton: ({ onAnnotate }: { onAnnotate: (quote: string, comment: string) => string }) => <><button data-fixture-quote onClick={() => onAnnotate('new passage', '')}>Annotate without comment</button><button data-fixture-annotation onClick={() => onAnnotate('new annotated passage', 'keep this note')}>Annotate new passage</button></> }));
 vi.mock('./mediaPreview', () => ({ PreviewToggleButton: () => null, useMediaPreview: () => undefined, MediaPreviewProvider: ({ children }: { children: ReactNode }) => <>{children}</> }));
 vi.mock('./RightRail', () => ({ RightRail: () => null }));
 let root: Root | undefined;
@@ -145,7 +146,7 @@ it('keeps a queued composer seat mounted when real auto-compaction status is ava
       </Routes></MemoryRouter></I18nProvider>
     </QueryClientProvider>));
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-  expect(container.querySelector('textarea[data-composer]')).not.toBeNull();
+  expect(container.querySelector('[data-composer-input][contenteditable]')).not.toBeNull();
   expect(container.querySelector('[data-queue-count]')?.textContent).toContain('1');
 });
 
@@ -229,9 +230,9 @@ it('clicking a held message retries the same durable prompt exactly once', async
       </Routes></MemoryRouter></I18nProvider>
     </QueryClientProvider>));
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-  const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const input = composerInput(container);
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'held body');
+    setComposerInputValue(input, 'held body');
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
   await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!.click(); });
@@ -296,9 +297,9 @@ it('keeps the admitted body pending until a canonical projection takes over', as
       </Routes></MemoryRouter></I18nProvider>
     </QueryClientProvider>));
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-  const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const input = composerInput(container);
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'delayed body');
+    setComposerInputValue(input, 'delayed body');
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
   await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!.click(); });
@@ -401,7 +402,7 @@ it('keeps partial prompt records reachable with no loaded queued row and request
   expect(container.textContent).toContain('8 / 12 message records loaded');
   await act(async () => action!.click());
   expect(fixture.loadEntities).toHaveBeenCalledExactlyOnceWith('main', 'prompt');
-  expect(container.querySelector('textarea[data-composer]')).not.toBeNull();
+  expect(container.querySelector('[data-composer-input][contenteditable]')).not.toBeNull();
 });
 
 it('reads session structure a window did not carry without waiting for a press', async () => {
@@ -490,7 +491,7 @@ it('renders the canonical queue again after a fresh controller mount without res
   for (let mount = 0; mount < 2; mount++) {
     fixture.controller = createController();
     await render();
-    expect(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(false);
+    expect(composerInput(container).disabled).toBe(false);
     await baseline();
     expect(container.querySelector('[data-queue-count]')?.textContent).toContain('2');
     const toggle = container.querySelector<HTMLButtonElement>('[data-header-toggle="queue"]');
@@ -543,12 +544,12 @@ it('updates an appended queue from the transcript event before REST finishes, wi
     await new Promise(resolve => setTimeout(resolve, 40));
   });
   await act(async () => {
-    const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Append this ordinary message');
+    const input = composerInput(container);
+    setComposerInputValue(input, 'Append this ordinary message');
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
   expect(readDraft('session-example')).toBe('Append this ordinary message');
-  expect(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(false);
+  expect(composerInput(container).disabled).toBe(false);
   const send = container.querySelector<HTMLButtonElement>('button[aria-label="Queue prompt"], button[aria-label="Send message"]');
   expect(send).not.toBeNull();
   expect(send?.disabled, send?.title).toBe(false);
@@ -617,9 +618,9 @@ it.each([false, true])('accepts a send before delayed presentation dependencies 
   let loading: Promise<boolean> | undefined;
   if (hasBaseline) { await baseline(); await act(async () => { loading = controller.loadOlderMessages(); }); }
   await act(async () => {
-    const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const input = composerInput(container);
     expect(input.disabled).toBe(false);
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Send without waiting for history');
+    setComposerInputValue(input, 'Send without waiting for history');
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
   const send = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
@@ -709,7 +710,7 @@ it.each(['session_media', 'blobref'] as const)('restores serialized queued %s or
 it.each([
   ['ordinary', false, false], ['ordinary', true, false], ['now', false, false], ['now', true, false],
   ['ordinary', false, true], ['ordinary', true, true], ['now', false, true], ['now', true, true],
-] as const)('snapshots multiple quotes for %s send and preserves new quotes after rejection=%s, detached=%s', async (mode, rejected, detached) => {
+] as const)('snapshots multiple selections for %s send and preserves new entries after rejection=%s, detached=%s', async (mode, rejected, detached) => {
   const first = createQuote('first passage');
   const second = createQuote('second passage');
   writeComposerState('session-example', { attachments: [], annotations: [], quotes: [first, second], permissionMode: undefined, planMode: undefined, planGate: undefined, goalObjective: undefined, modelOverride: undefined, effortOverride: undefined });
@@ -729,23 +730,23 @@ it.each([
   root = createRoot(container);
   await act(async () => root!.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes><Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route></Routes></MemoryRouter></I18nProvider></QueryClientProvider>));
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-  expect(container.querySelectorAll('[data-quote-chip]')).toHaveLength(2);
-  const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
-  await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: mode === 'now', bubbles: true })));
+  expect(container.querySelectorAll('[data-composer-notes-pill]')).toHaveLength(1);
+  const input = composerInput(container);
+  await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: mode === 'now', bubbles: true, cancelable: true })));
   expect(send).toHaveBeenCalledTimes(1);
   const text = callbacks.content.find(part => part.type === 'text')!;
   expect(text).toMatchObject({ type: 'text', text: expect.stringContaining('first passage') });
   expect(text).toMatchObject({ type: 'text', text: expect.stringContaining('second passage'), presentation: { spans: [expect.objectContaining({ quote: 'first passage' }), expect.objectContaining({ quote: 'second passage' })] } });
   await act(async () => callbacks.onPreservation(true));
-  expect(container.querySelectorAll('[data-quote-chip]')).toHaveLength(0);
+  expect(container.querySelectorAll('[data-composer-notes-pill]')).toHaveLength(0);
   await act(async () => container.querySelector<HTMLButtonElement>('[data-fixture-quote]')!.click());
-  const newer = readComposerState('session-example').quotes![0]!;
+  const newer = readComposerState('session-example').annotations![0]!;
   if (detached) { await act(async () => root!.unmount()); root = undefined; }
   await act(async () => {
     if (rejected) reject(new Error('Submit refused'));
     else { callbacks.onAcknowledged(); accept(mode === 'now' ? { outcome: 'delivered' } : { status: 'queued', prompt_id: 'submitted-example' }); }
   });
-  const retained = readComposerState('session-example').quotes!;
+  const retained = readComposerState('session-example').annotations!;
   expect(retained.map(item => item.id)).toEqual(rejected ? [first.id, second.id, newer.id] : [newer.id]);
   expect(new Set(retained.map(item => item.id)).size).toBe(retained.length);
 });
@@ -772,13 +773,13 @@ it.each(['failed', 'cancelled'] as const)('restores draft and selection after a 
   root = createRoot(container);
   await act(async () => root!.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes><Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route></Routes></MemoryRouter></I18nProvider></QueryClientProvider>));
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-  const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
-  await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true })));
+  const input = composerInput(container);
+  await act(async () => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true })));
   expect(send).toHaveBeenCalledTimes(1);
   expect(callbacks.content.find(part => part.type === 'text')).toMatchObject({ text: expect.stringContaining('retry this message') });
   await act(async () => callbacks.onPreservation?.(true));
   expect(readDraft('session-example')).toBe('');
-  expect(container.querySelectorAll('[data-quote-chip]')).toHaveLength(0);
+  expect(container.querySelectorAll('[data-composer-notes-pill]')).toHaveLength(0);
   await act(async () => container.querySelector<HTMLButtonElement>('[data-fixture-quote]')!.click());
   const pending = send.mock.results[0]!.value as Promise<{ outcome: typeof admission }>;
   await act(async () => {
@@ -787,8 +788,8 @@ it.each(['failed', 'cancelled'] as const)('restores draft and selection after a 
     await Promise.resolve();
   });
   expect(readDraft('session-example')).toContain('retry this message');
-  expect(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.value).toContain('retry this message');
-  const retained = readComposerState('session-example').quotes!;
+  expect(composerInput(container).value).toContain('retry this message');
+  const retained = readComposerState('session-example').annotations!;
   expect(retained.map(item => item.id)).toEqual([first.id, retained[1]!.id]);
   expect(retained[1]!.quote).toBe('new passage');
 });
@@ -817,9 +818,9 @@ it('keeps a saved-but-failed durable send on its bubble, out of the composer and
   root = createRoot(container);
   await act(async () => root!.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes><Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route></Routes></MemoryRouter></I18nProvider></QueryClientProvider>));
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-  const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const input = composerInput(container);
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'keep off the composer');
+    setComposerInputValue(input, 'keep off the composer');
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
   await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!.click(); });
@@ -855,21 +856,23 @@ it('migrates a legacy draft quote and restores all serialized queued quotes thro
   root = createRoot(container);
   await act(async () => root!.render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><I18nProvider><MemoryRouter initialEntries={['/s/session-example']}><Routes><Route element={<ConversationShell />}><Route path="/s/:id" element={<SessionRouteView sessionId="session-example" sessions={[]} onToggleSidebar={() => {}} />} /></Route></Routes></MemoryRouter></I18nProvider></QueryClientProvider>));
   for (let i = 0; i < 4; i++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
-  expect(readComposerState('session-example').quotes?.map(item => item.quote)).toEqual(['legacy passage']);
+  expect(readComposerState('session-example').annotations?.map(item => [item.quote, item.comment])).toEqual([['legacy passage', '']]);
   await act(async () => container.querySelector<HTMLButtonElement>('[data-header-toggle="queue"]')!.click());
   const edit = async () => { await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click()); await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); }); };
   await edit();
   const quoteTitles = (selector: string) => [...container.querySelectorAll(selector)].map(item => item.getAttribute('title'));
-  expect(quoteTitles('[data-context-tray] [data-quote-chip]')).toEqual(['queued first', 'queued second']);
+  const noteTitles = () => [...container.querySelectorAll('[data-composer-note] > span[title]:first-child')].map(item => item.getAttribute('title'));
+  if (container.querySelector('[data-composer-notes-panel]') === null) await act(async () => container.querySelector<HTMLButtonElement>('[data-composer-notes-pill]')!.click());
+  expect(noteTitles()).toEqual(['queued first', 'queued second']);
   expect(quoteTitles('[data-queue-item="queued-example"] [data-quote-chip]')).toEqual(['queued first', 'queued second']);
-  expect(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.value).toBe('queued body');
+  expect(composerInput(container).value).toBe('queued body');
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Cancel editing"]')!.click());
-  expect(container.querySelector('[data-context-tray] [data-quote-chip]')?.getAttribute('title')).toBe('legacy passage');
+  expect(noteTitles()).toEqual(['legacy passage']);
   expect(replaceQueued).not.toHaveBeenCalled();
   await edit();
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!.click());
   expect(replaceQueued).toHaveBeenCalledWith('queued-example', content[0].text, [], carry.presentation);
-  expect(container.querySelector('[data-context-tray] [data-quote-chip]')?.getAttribute('title')).toBe('legacy passage');
+  expect(noteTitles()).toEqual(['legacy passage']);
 });
 
 
@@ -903,7 +906,7 @@ it('cancels pending queued previews, restores the parked draft and rejects late 
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click());
   expect(pending).toHaveLength(1);
   expect(fixture.readMedia).not.toHaveBeenCalled();
-  const input = () => container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const input = () => composerInput(container);
   const confirm = () => container.querySelector<HTMLButtonElement>('[aria-label="Confirm edit"]')!;
   const cancel = () => container.querySelector<HTMLButtonElement>('[aria-label="Cancel editing"]')!;
   expect(input().disabled).toBe(false);
@@ -914,7 +917,7 @@ it('cancels pending queued previews, restores the parked draft and rejects late 
   await act(async () => cancel().click());
   expect(pending[0]!.signal.aborted).toBe(true);
   expect(input().value).toBe('parked draft');
-  expect(readComposerState('session-example').quotes).toEqual([savedQuote]);
+  expect(readComposerState('session-example').annotations).toEqual([{ ...savedQuote, comment: '' }]);
   expect(replaceQueued).not.toHaveBeenCalled();
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click());
   expect(pending).toHaveLength(2);
@@ -923,7 +926,7 @@ it('cancels pending queued previews, restores the parked draft and rejects late 
   expect(confirm().disabled).toBe(true);
   expect(pending[1]!.signal.aborted).toBe(false);
   await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input(), 'typed queued edit');
+    setComposerInputValue(input(), 'typed queued edit');
     input().dispatchEvent(new Event('input', { bubbles: true }));
     pending[1]!.resolve(preview);
     await new Promise(resolve => setTimeout(resolve, 20));
@@ -934,7 +937,7 @@ it('cancels pending queued previews, restores the parked draft and rejects late 
   await act(async () => confirm().click());
   expect(replaceQueued).toHaveBeenCalledWith('queued-example', 'typed queued edit', content.slice(1), undefined);
   expect(input().value).toBe('parked draft');
-  expect(readComposerState('session-example').quotes).toEqual([savedQuote]);
+  expect(readComposerState('session-example').annotations).toEqual([{ ...savedQuote, comment: '' }]);
   expect(controller.state.blocks[0]!.queuedContent).toEqual(content);
   expect(holdQueued).toHaveBeenCalledWith('queued-example', false);
   await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Edit queued prompt"]')!.click());
@@ -943,7 +946,7 @@ it('cancels pending queued previews, restores the parked draft and rejects late 
   expect(pending[2]!.signal.aborted).toBe(true);
   await act(async () => { pending[2]!.resolve(preview); });
   expect(readDraft('session-example')).toBe('parked draft');
-  expect(readComposerState('session-example').quotes).toEqual([savedQuote]);
+  expect(readComposerState('session-example').annotations).toEqual([{ ...savedQuote, comment: '' }]);
 });
 
 describe('the session announcer', () => {
@@ -1075,7 +1078,7 @@ describe('live composer mode controls', () => {
     await click('[data-permission-mode="auto"]');
     expect(fixture.updateSessionProfile).toHaveBeenCalledExactlyOnceWith('session-example', { agent_config: { permission_mode: 'auto' } });
     expect(container.querySelector('button[aria-label="Approvals"]')?.textContent).toContain('Auto');
-    expect(container.querySelector('textarea[data-composer]')?.textContent).toBe('');
+    expect(composerInput(container).value).toBe('');
   });
 
   it('writes plan entry and exit without sending a prompt', async () => {

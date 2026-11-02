@@ -114,6 +114,8 @@ import { ContextMeter, type ContextMeterAutoCompact, type ContextMeterCompactAva
 import { LifeMark } from './LifeMark';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useComposerContextMenu } from './ComposerContextMenu';
+import { ComposerInput } from './ComposerInput';
+import type { ComposerInputHandle } from '../lib/composerInput';
 import { Icon } from './icons';
 import { useNow } from './RelativeTime';
 import { useComposerSsh } from './ssh/ComposerSsh';
@@ -294,9 +296,6 @@ function withoutRefusedActions<T extends { readonly kind: string; readonly actio
   // A side question (/btw) is a fork of the main agent, refused with it.
   return engine?.fork === false ? items.filter((item) => item.kind !== 'action' || (item.action !== 'fork' && item.action !== 'btw')) : items;
 }
-
-/** A zero-width tail so the backdrop's final line still paints; never shown. */
-const ZERO_WIDTH_TAIL = '\u200b';
 
 type ComposerMenu =
   | { kind: 'slash'; start: number; end: number; query: string; inline: boolean }
@@ -748,9 +747,8 @@ export function Composer({
   // the button), and the input text stays ≥16px so iOS never zooms on focus.
   const coarsePointer = useCoarsePointer();
   const text = value;
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = useRef<ComposerInputHandle>(null);
   const composingRef = useRef(false);
-  const [compositionText, setCompositionText] = useState<string | null>(null);
   // Custom right-click menu for the input (cut / copy / paste / select all).
   // Keyboard and menu paste share the native file-copy / browser media policy.
   type ClipboardContent = { text: string; files: File[] };
@@ -951,6 +949,7 @@ export function Composer({
                   { model: inheritDisplay },
                 ),
           hint: inheritHint !== '' ? inheritHint : undefined,
+          disabled: inheritResolved?.enabled === false,
           badges: inheritResolved !== undefined ? modelFactBadges(inheritResolved, t) : undefined,
           title: inheritResolved !== undefined ? modelTooltip(inheritResolved) : inheritTargetId,
         },
@@ -1280,14 +1279,6 @@ export function Composer({
     return registerOverlay('composer-menu');
   }, [menu]);
 
-  // Autosize the textarea up to ~8 lines.
-  useEffect(() => {
-    const node = textareaRef.current;
-    if (node === null) return;
-    node.style.height = 'auto';
-    node.style.height = `${Math.min(node.scrollHeight, 190)}px`;
-  }, [text]);
-
   // Placeholder chips (image base64 still reading, file upload still in
   // flight) block sending so a quick Enter cannot silently drop content.
   const pendingAttachments = attachments.some(
@@ -1331,24 +1322,7 @@ export function Composer({
   // each, a tinted token in the text, and whole-link deletion.
   const conversationRefs = useMemo(() => findConversationRefs(text), [text]);
   const agentRefs = useMemo(() => findAgentRefs(text), [text]);
-  // The token range being edited, tracked in state: the overlay shows a
-  // token's label until the caret enters its range, then reveals the raw link
-  // until the caret leaves. It starts null so a freshly inserted token shows
-  // its label; the selection handlers below update it on select/click/change.
-  const [editingRange, setEditingRange] = useState<{ start: number; end: number } | null>(null);
-  const syncEditingRange = (selStart: number, selEnd: number) => {
-    const hit = backdropTokens.find((ref) =>
-      selStart === selEnd
-        ? selStart > ref.start && selStart < ref.end
-        : selStart < ref.end && selEnd > ref.start,
-    );
-    const next = hit === undefined ? null : { start: hit.start, end: hit.end };
-    setEditingRange((current) => (current?.start === next?.start && current?.end === next?.end ? current : next));
-  };
-  // Both link kinds tint as tokens in the backdrop: one merged, ordered list so
-  // a draft mixing thread and agent links highlights every range in place. The
-  // backdrop's marks are transparent (the textarea's dark text paints over
-  // them); an opaque overlay sibling (below) carries each token's label.
+  // Labels are presentation only; the editor, draft and submission share raw offsets.
   const backdropTokens = useMemo(
     () => [
       ...conversationRefs.map((ref) => ({ start: ref.start, end: ref.end, raw: ref.raw, kind: ref.kind as string, profile: undefined as string | undefined })),
@@ -1386,7 +1360,6 @@ export function Composer({
   }, [agentCandidateList]);
   const overlayTokens = useMemo(
     () => backdropTokens.map((ref) => {
-      const editing = editingRange !== null && editingRange.start === ref.start && editingRange.end === ref.end;
       let label: string;
       if (ref.kind === 'agent') {
         label = `@${(ref.profile !== undefined ? agentLabelByProfile.get(ref.profile) : undefined) ?? ref.profile ?? ref.raw}`;
@@ -1401,16 +1374,10 @@ export function Composer({
       } else {
         label = ref.raw;
       }
-      return { ...ref, label, editing };
+      return { ...ref, label };
     }),
-    [backdropTokens, editingRange, agentLabelByProfile, conversationRefs, threadRefDirectory, roomRefDirectory],
+    [backdropTokens, agentLabelByProfile, conversationRefs, threadRefDirectory, roomRefDirectory],
   );
-  const hasOverlayLabels = useMemo(
-    () => overlayTokens.some((ref) => !ref.editing && ref.label !== ref.raw),
-    [overlayTokens],
-  );
-  const threadRefBackdropRef = useRef<HTMLDivElement>(null);
-  const threadRefOverlayRef = useRef<HTMLDivElement>(null);
   const removeConversationRefAt = (index: number) => {
     const ref = conversationRefs[index];
     if (ref === undefined) return;
@@ -1514,7 +1481,7 @@ export function Composer({
   insertAtCaretRef.current = (snippet: string) => {
     if (disabled || queueEditing || composingRef.current) return false;
     const node = textareaRef.current;
-    const focused = node !== null && document.activeElement === node;
+    const focused = node !== null && document.activeElement === node.element;
     const selection = focused
       ? { start: node.selectionStart, end: node.selectionEnd }
       : { start: lastCursorRef.current, end: lastCursorRef.current };
@@ -1713,9 +1680,7 @@ export function Composer({
     const next = replaceMentionTriggerWithAgentRef(text, trigger, cursor, candidate.reference);
     onChange(next.text);
     lastCursorRef.current = next.cursor;
-    // The caret rests just after the inserted token: outside its range, so the
-    // overlay keeps the label until the user moves back into it.
-    setEditingRange(null);
+    // Keep the caret after the token so subsequent typing extends the prose.
     requestAnimationFrame(() => {
       const node = textareaRef.current;
       if (node !== null && !composingRef.current) {
@@ -2368,17 +2333,18 @@ export function Composer({
     setMenu(null);
   };
 
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+  const onKeyDown = (event: globalThis.KeyboardEvent) => {
     // IME composition owns every key while it is open — Enter/Tab/arrows/
     // Escape all belong to the candidate window. Intercepting them (the menu
     // branches below used to run first) eats the commit key and leaves the
     // half-committed text stranded. keyCode 229 covers engines that skip the
     // isComposing flag on keydown.
-    if (composingRef.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    if (composingRef.current || event.isComposing || event.keyCode === 229) return;
     // A thread or agent link deletes as one token: Backspace/Delete touching
     // it (or a selection overlapping it) takes the whole link.
     if ((event.key === 'Backspace' || event.key === 'Delete') && !event.altKey) {
-      const node = event.currentTarget;
+      const node = textareaRef.current;
+      if (node === null) return;
       const range = threadRefDeletionRange(text, node.selectionStart, node.selectionEnd, event.key);
       if (range !== null) {
         event.preventDefault();
@@ -2440,7 +2406,7 @@ export function Composer({
     // the saved chords: ⌘/Ctrl+Shift+M and ⌘/Ctrl+Z / ⌘/Ctrl+Shift+Z by default.
     const chordEvent = {
       key: event.key, ctrlKey: event.ctrlKey, metaKey: event.metaKey, shiftKey: event.shiftKey,
-      altKey: event.altKey, isComposing: event.nativeEvent.isComposing, target: event.target,
+      altKey: event.altKey, isComposing: event.isComposing, target: event.target,
     };
     if (variant !== 'subagent' && matchesShortcutAction(chordEvent, 'composer-mode')) {
       event.preventDefault();
@@ -2493,8 +2459,8 @@ export function Composer({
         metaKey: event.metaKey,
         ctrlKey: event.ctrlKey,
         altKey: event.altKey,
-        isComposing: event.nativeEvent.isComposing,
-        keyCode: event.nativeEvent.keyCode,
+        isComposing: event.isComposing,
+        keyCode: event.keyCode,
       },
       sendShortcut,
     );
@@ -2558,13 +2524,13 @@ export function Composer({
     };
     const cancelOnFocusElsewhere = (event: globalThis.FocusEvent) => {
       const target = event.target;
-      if (target === textarea || target === document.body || target === document.documentElement) return;
+      if (target === textarea.element || target === document.body || target === document.documentElement) return;
       refocusOnEnableRef.current = false;
     };
-    textarea.addEventListener('blur', armOnDisableBlur);
+    textarea.element.addEventListener('blur', armOnDisableBlur);
     document.addEventListener('focusin', cancelOnFocusElsewhere);
     return () => {
-      textarea.removeEventListener('blur', armOnDisableBlur);
+      textarea.element.removeEventListener('blur', armOnDisableBlur);
       document.removeEventListener('focusin', cancelOnFocusElsewhere);
     };
   }, []);
@@ -3282,162 +3248,59 @@ export function Composer({
             {slashPreviewItem !== null ? (
               <SkillPreviewCard item={slashPreviewItem} />
             ) : null}
-            {/* Conversation links read as tokens: a tinted backdrop mirrors
-                the draft behind the (transparent) textarea and tints each
-                link's range. The overlay sibling re-renders the same text with
-                an opaque label where a token is not being edited; it sits above
-                the textarea's own text to cover the raw link, and shares the
-                backdrop's geometry, so it tracks scroll, wrap, font and resize.
-                A covered range keeps its width in the mirror (the visible label
-                truncates) so the surrounding text never reflows. Only mounted
-                while the draft carries a link. */}
-            {backdropTokens.length > 0 ? (
-              <div
-                ref={threadRefBackdropRef}
-                aria-hidden
-                data-thread-ref-backdrop
-                className="pointer-events-none absolute top-3 right-3 left-3 max-h-[190px] overflow-hidden py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed break-words whitespace-pre-wrap text-transparent"
-              >
-                {overlayTokens.map((ref, index) => {
-                  const covered = !ref.editing && ref.label !== ref.raw;
-                  return (
-                    <span key={ref.start}>
-                      {text.slice(index === 0 ? 0 : overlayTokens[index - 1]!.end, ref.start)}
-                      <mark
-                        data-thread-ref-token
-                        data-ref-kind={ref.kind}
-                        className={`rounded-[3px] text-transparent shadow-[0_0_0_1.5px_rgb(from_var(--color-accent)_r_g_b/0.14)]${covered ? ' invisible' : ' bg-accent/[0.14]'}`}
-                      >{ref.raw}</mark>
-                    </span>
-                  );
-                })}
-                {text.slice(overlayTokens.at(-1)!.end)}
-                {ZERO_WIDTH_TAIL}
-              </div>
-            ) : null}
-            {hasOverlayLabels ? (
-              <div
-                ref={threadRefOverlayRef}
-                aria-hidden
-                data-thread-ref-overlay
-                className="pointer-events-none absolute top-3 right-3 left-3 z-20 max-h-[190px] overflow-hidden py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed break-words whitespace-pre-wrap text-transparent"
-              >
-                {overlayTokens.map((ref, index) => {
-                  const covered = !ref.editing && ref.label !== ref.raw;
-                  return (
-                    <span key={ref.start}>
-                      {text.slice(index === 0 ? 0 : overlayTokens[index - 1]!.end, ref.start)}
-                      {covered ? (
-                        // Two layers over the link's range: an opaque, borderless
-                        // placeholder sized to the raw link covers the raw text;
-                        // a text-width pill carries just the label with the same
-                        // hairline ring and radius as a bubble chip. A long label
-                        // truncates to the placeholder's width.
-                        <mark className="relative inline-block rounded-md bg-paper align-bottom not-italic">
-                          <span className="invisible">{ref.raw}</span>
-                          <mark
-                            data-thread-ref-overlay-token
-                            data-ref-kind={ref.kind}
-                            title={ref.raw}
-                            className="absolute top-1/2 left-0 inline-block max-w-full -translate-y-1/2 truncate rounded-md bg-ink/[0.045] px-1 text-[0.92em] leading-tight text-ink not-italic shadow-[inset_0_0_0_1px_var(--color-hairline)]"
-                          >{ref.label}</mark>
-                        </mark>
-                      ) : (
-                        <mark className="invisible rounded-[3px]">{ref.raw}</mark>
-                      )}
-                    </span>
-                  );
-                })}
-                {text.slice(overlayTokens.at(-1)!.end)}
-                {ZERO_WIDTH_TAIL}
-              </div>
-            ) : null}
-            <textarea
-              ref={textareaRef}
-              data-composer-input
-              rows={1}
-              // The accessible name stays fixed; the placeholder below carries
-              // the per-state hint (busy, disabled, reply) and keeps changing.
-              aria-label={t('composer.inputAria')}
+            <ComposerInput
+              inputRef={textareaRef}
+              value={text}
+              references={overlayTokens}
+              label={t('composer.inputAria')}
               enterKeyHint={coarsePointer ? 'enter' : undefined}
-              // A catalog/seat rerender can precede the browser's IME input
-              // event. Never restore an older controlled prop over preedit text.
-              value={composingRef.current ? textareaRef.current?.value ?? compositionText ?? text : text}
-              onCompositionStart={(event) => {
+              onCompositionStart={() => {
                 composingRef.current = true;
-                setCompositionText(event.currentTarget.value);
-                pushUndoSnapshot({ text, cursor: event.currentTarget.selectionStart });
+                pushUndoSnapshot({ text, cursor: textareaRef.current?.selectionStart ?? lastCursorRef.current });
                 historyIndexRef.current = null;
               }}
-              onCompositionEnd={(event) => {
+              onCompositionEnd={() => {
                 composingRef.current = false;
-                setCompositionText(null);
-                const node = event.currentTarget;
+                const node = textareaRef.current;
+                if (node === null) return;
                 onChange(node.value);
                 lastCursorRef.current = node.selectionStart;
                 setSlashConfirm(null);
                 refreshMenu(node.value, node.selectionStart);
               }}
-              data-composer
-              data-composer-session={sessionId}
-              data-composer-agent={agentId}
-              onScroll={(event) => {
-                const backdrop = threadRefBackdropRef.current;
-                if (backdrop !== null) backdrop.scrollTop = event.currentTarget.scrollTop;
-                const overlay = threadRefOverlayRef.current;
-                if (overlay !== null) overlay.scrollTop = event.currentTarget.scrollTop;
-              }}
-              data-autofocus={autoFocus === true ? '' : undefined}
+              sessionId={sessionId}
+              agentId={agentId}
+              autoFocus={autoFocus}
               disabled={disabled}
-              onChange={(event) => {
+              onChange={(nextText, cursor) => {
                 setAttachmentError(null);
-                // User edits only: programmatic value writes never fire this.
-                if (!composingRef.current && event.target.value !== text) {
+                if (!composingRef.current && nextText !== text) {
                   pushUndoSnapshot({ text, cursor: lastCursorRef.current });
                 }
-                // An edit while browsing history ends the browse; the edited
-                // text stands (the pre-browse draft is superseded by it).
                 historyIndexRef.current = null;
-                if (composingRef.current) setCompositionText(event.target.value);
-                onChange(event.target.value);
-                lastCursorRef.current = event.target.selectionStart;
-                syncEditingRange(event.target.selectionStart, event.target.selectionEnd);
+                onChange(nextText);
+                lastCursorRef.current = cursor;
                 setSlashConfirm(null);
-                refreshMenu(event.target.value, event.target.selectionStart);
+                refreshMenu(nextText, cursor);
               }}
               onKeyDown={onKeyDown}
-              onKeyUp={(event) => {
-                // Caret moves (arrows/Home/End) re-evaluate the trigger.
-                if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
-                  refreshMenu(text, event.currentTarget.selectionStart);
-                }
+              onSelection={(cursor) => {
+                lastCursorRef.current = cursor;
+                refreshMenu(textareaRef.current?.value ?? text, cursor);
               }}
-              onClick={(event) => {
-                syncEditingRange(event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
-                refreshMenu(text, event.currentTarget.selectionStart);
-              }}
-              onSelect={(event) => {
-                lastCursorRef.current = event.currentTarget.selectionStart;
-                syncEditingRange(event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
-              }}
-              onFocus={(event) => {
-                setInputFocused(true);
-                syncEditingRange(event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
-              }}
-              onBlur={(event) => {
+              onFocus={() => { setInputFocused(true); }}
+              onBlur={() => {
                 setMenu(null);
-                // A caret in the input holds off the needs-you takeover only
-                // while it is there; leaving an empty draft lets it through.
                 setInputFocused(false);
-                // Redundant arming path for engines that DO fire focusout on
-                // disable; the native listener above covers Chromium.
-                if (event.currentTarget.disabled) refocusOnEnableRef.current = true;
+                if (textareaRef.current?.disabled) refocusOnEnableRef.current = true;
               }}
               onPaste={(event) => {
                 setAttachmentError(null);
-                const files = [...event.clipboardData.files];
+                const data = event.clipboardData;
+                if (data === null) return;
+                const files = [...data.files];
                 if (files.length === 0 && host.readClipboardFiles === undefined) return;
-                const plain = event.clipboardData.getData('text/plain');
+                const plain = data.getData('text/plain');
                 event.preventDefault();
                 void pasteContentRef.current(async () => ({ text: plain, files }));
               }}
@@ -3448,9 +3311,6 @@ export function Composer({
                     ? (busyPlaceholder ?? t(busySendsNow ? 'composer.placeholderBusySendsNow' : 'composer.placeholderBusy'))
                     : t('composer.placeholder')
               }
-              // The card's focus-within border is the focus indicator; the
-              // global :focus-visible ring would draw a box inside the card.
-              className="relative z-10 max-h-[190px] min-h-[24px] w-full resize-none bg-transparent py-0.5 text-[14.5px] pointer-coarse:text-[16px] leading-relaxed text-ink outline-none placeholder:text-ink-faint focus-visible:outline-none disabled:opacity-60"
             />
           </div>
 

@@ -66,7 +66,7 @@ import {
   TranscriptDetailProvider,
   type ContentContinuationHandle,
 } from './transcriptDetail';
-import { contentTextPresentation, readTextPresentation, type ContentRef } from '@kiki/transcript';
+import { contentTextPresentation, projectPresentedText, readTextPresentation, type ContentRef } from '@kiki/transcript';
 import { MediaPreviewProvider, PreviewToggleButton, useMediaPreview } from './mediaPreview';
 import type { MediaPreviewApi } from './mediaPreviewContext';
 import {
@@ -104,11 +104,8 @@ import {
   type ComposerModelChoice,
   type ComposerModelBindingChange,
   type SelectionAnnotation,
-  type SelectionQuote,
   type SelectionSourceAnchor,
-  addQuote,
-  createQuote,
-  removeQuote,
+  createAnnotation,
   collectDraftAnnotationTargets,
   boundExecutionChoice,
   sendsLegacyControl,
@@ -1422,17 +1419,16 @@ export function restoreSentAnnotations<T extends { readonly id: string }>(
   return missing.length === 0 ? current : [...missing, ...current];
 }
 
-function updateStoredSelectionCarryovers(
+function updateStoredAnnotations(
   sessionId: string,
-  updateQuotes: (current: readonly SelectionQuote[]) => readonly SelectionQuote[],
-  updateAnnotations: (current: readonly SelectionAnnotation[]) => readonly SelectionAnnotation[],
+  update: (current: readonly SelectionAnnotation[]) => readonly SelectionAnnotation[],
 ): void {
   const saved = readComposerState(sessionId);
   writeComposerState(sessionId, {
     ...saved,
     attachments: saved.attachments ?? [],
-    quotes: updateQuotes(saved.quotes ?? []),
-    annotations: updateAnnotations(saved.annotations ?? []),
+    quotes: [],
+    annotations: update(saved.annotations ?? []),
     permissionMode: saved.permissionMode,
     planMode: saved.planMode,
     planGate: saved.planGate,
@@ -2011,8 +2007,7 @@ export function SessionView({
   >(undefined);
   const [confirmClearQueue, setConfirmClearQueue] = useState(false);
   // Queue edit round-trip: the queued text being edited lives in the composer;
-  // `savedDraft`/`savedQuote`/`savedAnnotations` are what the composer held
-  // before the edit parked itself there.
+  // `savedDraft`/`savedAnnotations` are what the composer held before the edit.
   const [queueEdit, setQueueEdit] = useState<{
     readonly promptId: string;
     readonly owner: string;
@@ -2021,7 +2016,6 @@ export function SessionView({
     readonly loadError: boolean;
     readonly attachments: readonly ComposerAttachment[];
     readonly savedDraft: string;
-    readonly savedQuotes: readonly SelectionQuote[];
     readonly savedAnnotations: readonly SelectionAnnotation[];
   } | null>(null);
   const queueEditRef = useRef(queueEdit);
@@ -2070,36 +2064,31 @@ export function SessionView({
   draftRef.current = draft;
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
-  // Unsent quotes share the session's in-memory chrome with annotations;
-  // send (and the chip's ×) clear them explicitly.
-  const [quotes, setQuotes] = useState<readonly SelectionQuote[]>(() => {
-    if (restoredComposer.quotes !== undefined) return restoredComposer.quotes;
-    // Composer chrome saved before multiple quotes carries one legacy quote.
+  // One ordered selection list: an empty comment is a quote. Older quote-only
+  // composer chrome is normalized at this boundary instead of becoming a
+  // second live data source.
+  const [annotations, setAnnotations] = useState<readonly SelectionAnnotation[]>(() => {
+    const restored = restoredComposer.annotations ?? [];
+    if (restoredComposer.quotes !== undefined) {
+      return [...restored, ...restoredComposer.quotes.map((item) => ({ ...item, comment: '' }))];
+    }
     const legacy = restoredComposer.quote;
-    return legacy === null || legacy === undefined ? [] : [createQuote(legacy, restoredComposer.quoteSource)];
+    return legacy === null || legacy === undefined
+      ? restored
+      : [...restored, createAnnotation(legacy, '', restoredComposer.quoteSource)];
   });
-  // Selection annotations (quote + one-line comment) accumulate independently
-  // of the quote chip — any number ride the same prompt, and unsent ones return
-  // with the session's in-memory composer chrome after navigation.
-  const [annotations, setAnnotations] = useState<readonly SelectionAnnotation[]>(
-    () => restoredComposer.annotations ?? [],
-  );
-  const draftSelectionsRef = useRef({ quotes, annotations });
-  draftSelectionsRef.current = { quotes, annotations };
+  const draftSelectionsRef = useRef(annotations);
+  draftSelectionsRef.current = annotations;
   const transcriptQuoteRef = useRef<HTMLDivElement>(null);
   const focusComposer = useCallback(() => {
     // Return focus to the composer so the user can type the follow-up at once.
-    document.querySelector<HTMLTextAreaElement>('[data-composer]')?.focus();
+    document.querySelector<HTMLElement>('[data-composer]')?.focus();
   }, []);
-  const handleQuoteSelection = useCallback((text: string, source?: SelectionSourceAnchor | null) => {
-    setQuotes((current) => addQuote(current, text, source));
-    focusComposer();
-  }, [focusComposer]);
   const handleAnnotateSelection = useCallback((text: string, comment: string, source?: SelectionSourceAnchor | null) => {
-    setAnnotations((current) => addAnnotation(current, text, comment, source));
-    focusComposer();
-  }, [focusComposer]);
-  const handleRemoveQuoteItem = useCallback((id: string) => { setQuotes((current) => removeQuote(current, id)); }, []);
+    const annotation = createAnnotation(text, comment, source);
+    setAnnotations((current) => [...current, annotation]);
+    return annotation.id;
+  }, []);
   const handleRemoveAnnotation = useCallback((id: string) => {
     setAnnotations((current) => removeAnnotation(current, id));
   }, []);
@@ -2240,7 +2229,7 @@ export function SessionView({
           ...chrome,
           attachments: attachmentsRef.current,
           annotations: edit.savedAnnotations,
-          quotes: edit.savedQuotes,
+          quotes: [],
           quote: null,
           quoteSource: undefined,
           permissionMode: chrome.permissionMode,
@@ -2302,7 +2291,7 @@ export function SessionView({
     writeComposerState(sessionId, {
       attachments,
       annotations,
-      quotes,
+      quotes: [],
       quote: null,
       quoteSource: undefined,
       permissionMode: permissionOverride,
@@ -2320,7 +2309,6 @@ export function SessionView({
     sessionId,
     attachments,
     annotations,
-    quotes,
     permissionOverride,
     planOverride,
     planGateOverride,
@@ -3219,11 +3207,14 @@ export function SessionView({
     if (controller === null) return null;
     return {
       send: (text: string, composerAttachments: readonly ComposerAttachment[], options?: { readonly goalObjective?: string; readonly now?: boolean; readonly personaGreetingReply?: boolean; readonly appendTiming?: DeferredAppendTiming; readonly presentation?: import('@kiki/transcript').TextPresentation; readonly firstMessage?: FirstSessionMessageRecord }) => {
+        // The context block is generated for the model, never restored into the
+        // user's editor. Its presentation span is the lossless way back to the draft.
+        const submittedDraft = projectPresentedText(text, options?.presentation);
         // Selection carry-overs ride the prompt text as plain-text prefixes —
         // annotations first (blockquote + comment per segment), then the plain
         // quote as a Markdown blockquote — exactly what the transcript renders
         // back. The wire protocol stays untouched.
-        const carry = selectionCarryoverPresentation(annotations, quotes);
+        const carry = selectionCarryoverPresentation(annotations, []);
         const quotedText = `${carry.prefix}${text}`;
         const presentation = { spans: [...carry.presentation.spans, ...(options?.presentation?.spans ?? []).map((span) => ({ ...span, start: span.start + carry.prefix.length, end: span.end + carry.prefix.length }))] };
         const content = options?.firstMessage?.submission?.content ?? buildPromptContent(quotedText, composerAttachments, presentation.spans.length === 0 ? undefined : presentation);
@@ -3283,24 +3274,19 @@ export function SessionView({
         if (options?.now === true && !requiresOwnTurn) {
           const sentAnnotationsNow = annotations;
           const sentNowIds = new Set(sentAnnotationsNow.map((annotation) => annotation.id));
-          const sentQuotesNow = quotes;
-          const sentQuoteNowIds = new Set(sentQuotesNow.map((item) => item.id));
           let compositionReleased = false;
           const releaseComposition = () => {
             if (compositionReleased) return;
             compositionReleased = true;
-            if (composerOwnerActive.current && draftRef.current === stripThreadRefContext(text)
+            if (composerOwnerActive.current && draftRef.current === submittedDraft
               && JSON.stringify(attachmentsRef.current) === JSON.stringify(composerAttachments)) {
               updateDraft('');
               updateAttachments([]);
             }
             if (composerOwnerActive.current) {
               setAnnotations((current) => current.filter((annotation) => !sentNowIds.has(annotation.id)));
-              setQuotes((current) => current.filter((item) => !sentQuoteNowIds.has(item.id)));
             } else {
-              updateStoredSelectionCarryovers(sessionId,
-                (current) => current.filter((item) => !sentQuoteNowIds.has(item.id)),
-                (current) => current.filter((item) => !sentNowIds.has(item.id)));
+              updateStoredAnnotations(sessionId, (current) => current.filter((item) => !sentNowIds.has(item.id)));
             }
           };
           return controller
@@ -3334,17 +3320,14 @@ export function SessionView({
               if (result.outcome === 'failed' || result.outcome === 'cancelled') {
                 if (composerOwnerActive.current) {
                   setAnnotations((current) => restoreSentAnnotations(current, sentAnnotationsNow));
-                  setQuotes((current) => restoreSentAnnotations(current, sentQuotesNow));
-                  const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
+                  const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, submittedDraft, composerAttachments);
                   if (recovery !== undefined) {
                     updateDraft(recovery.text);
                     updateAttachments(recovery.attachments);
                   }
                 } else {
-                  recoverSubmittedDraft(sessionId, stripThreadRefContext(text), composerAttachments);
-                  updateStoredSelectionCarryovers(sessionId,
-                    (current) => restoreSentAnnotations(current, sentQuotesNow),
-                    (current) => restoreSentAnnotations(current, sentAnnotationsNow));
+                  recoverSubmittedDraft(sessionId, submittedDraft, composerAttachments);
+                  updateStoredAnnotations(sessionId, (current) => restoreSentAnnotations(current, sentAnnotationsNow));
                 }
                 pushToast({
                   tone: 'info',
@@ -3374,17 +3357,14 @@ export function SessionView({
                 // Nothing reached the turn: the text goes back to its author.
                 if (composerOwnerActive.current) {
                   setAnnotations((current) => restoreSentAnnotations(current, sentAnnotationsNow));
-                  setQuotes((current) => restoreSentAnnotations(current, sentQuotesNow));
-                  const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
+                  const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, submittedDraft, composerAttachments);
                   if (recovery !== undefined) {
                     updateDraft(recovery.text);
                     updateAttachments(recovery.attachments);
                   }
                 } else {
-                  recoverSubmittedDraft(sessionId, stripThreadRefContext(text), composerAttachments);
-                  updateStoredSelectionCarryovers(sessionId,
-                    (current) => restoreSentAnnotations(current, sentQuotesNow),
-                    (current) => restoreSentAnnotations(current, sentAnnotationsNow));
+                  recoverSubmittedDraft(sessionId, submittedDraft, composerAttachments);
+                  updateStoredAnnotations(sessionId, (current) => restoreSentAnnotations(current, sentAnnotationsNow));
                 }
               }
               const cause = error instanceof SendNowError ? error.cause : error;
@@ -3435,22 +3415,17 @@ export function SessionView({
         // the user composes after a failure toast appears.
         const sentAnnotations = annotations;
         const sentIds = new Set(sentAnnotations.map((annotation) => annotation.id));
-        const sentQuotes = quotes;
-        const sentQuoteIds = new Set(sentQuotes.map((item) => item.id));
         const restoreCapturedSubmission = () => {
           if (composerOwnerActive.current) {
             setAnnotations((current) => restoreSentAnnotations(current, sentAnnotations));
-            setQuotes((current) => restoreSentAnnotations(current, sentQuotes));
-            const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, stripThreadRefContext(text), composerAttachments);
+            const recovery = recoverFailedSubmission(draftRef.current, attachmentsRef.current, submittedDraft, composerAttachments);
             if (recovery !== undefined) {
               updateDraft(recovery.text);
               updateAttachments(recovery.attachments);
             }
           } else {
-            recoverSubmittedDraft(sessionId, stripThreadRefContext(text), composerAttachments);
-            updateStoredSelectionCarryovers(sessionId,
-              (current) => restoreSentAnnotations(current, sentQuotes),
-              (current) => restoreSentAnnotations(current, sentAnnotations));
+            recoverSubmittedDraft(sessionId, submittedDraft, composerAttachments);
+            updateStoredAnnotations(sessionId, (current) => restoreSentAnnotations(current, sentAnnotations));
           }
         };
         pendingRecoveryRef.current = { id: submissionId, restore: restoreCapturedSubmission };
@@ -3487,18 +3462,15 @@ export function SessionView({
             if (compositionReleased) return;
             compositionReleased = true;
             // Only X's recovered composition leaves; a newer Y stays untouched.
-            if (composerOwnerActive.current && (force || (draftRef.current === stripThreadRefContext(text)
+            if (composerOwnerActive.current && (force || (draftRef.current === submittedDraft
               && JSON.stringify(attachmentsRef.current) === JSON.stringify(composerAttachments)))) {
               updateDraft('');
               updateAttachments([]);
             }
             if (composerOwnerActive.current) {
               setAnnotations((current) => current.filter((annotation) => !sentIds.has(annotation.id)));
-              setQuotes((current) => current.filter((item) => !sentQuoteIds.has(item.id)));
             } else {
-              updateStoredSelectionCarryovers(sessionId,
-                (current) => current.filter((item) => !sentQuoteIds.has(item.id)),
-                (current) => current.filter((item) => !sentIds.has(item.id)));
+              updateStoredAnnotations(sessionId, (current) => current.filter((item) => !sentIds.has(item.id)));
             }
           };
           setPendingSubmission({
@@ -3831,7 +3803,6 @@ boundExecution,
     liveSettings.defaultAppendTiming,
     modelSwitches.switches,
     modelSwitches.refresh,
-    quotes,
     annotations,
     sessionId,
     t,
@@ -4403,15 +4374,13 @@ boundExecution,
         promptId, owner: crypto.randomUUID(), abort, loading: true, loadError: false,
         attachments: [...initialAttachments, ...pathFileMentions],
         savedDraft: draftRef.current,
-        savedQuotes: draftSelectionsRef.current.quotes,
-        savedAnnotations: draftSelectionsRef.current.annotations,
+        savedAnnotations: draftSelectionsRef.current,
       };
       queueEditRef.current = edit;
       setQueueEdit(edit);
       const carryovers = parseSelectionCarryovers(block?.text ?? item.text, block?.presentation ?? contentTextPresentation(item.content ?? [], '\n\n'));
       updateDraft(carryovers.body);
-      setQuotes(carryovers.quotes.map((entry) => createQuote(entry.quote, entry.source)));
-      setAnnotations(carryovers.annotations.reduce<readonly SelectionAnnotation[]>(
+      setAnnotations(carryovers.selections.reduce<readonly SelectionAnnotation[]>(
         (current, note) => addAnnotation(current, note.quote, note.comment, note.source), [],
       ));
       const ownsEdit = () => !abort.signal.aborted && composerOwnerActive.current && sessionIdRef.current === sessionId && queueEditRef.current?.owner === edit.owner;
@@ -4468,11 +4437,10 @@ boundExecution,
         queueEditRef.current = null;
         setQueueEdit(null);
         updateDraft(edit.savedDraft);
-        setQuotes(edit.savedQuotes);
         setAnnotations(edit.savedAnnotations);
       };
       const item = queuedItems.find((entry) => entry.promptId === edit.promptId);
-      const carry = selectionCarryoverPresentation(annotations, quotes);
+      const carry = selectionCarryoverPresentation(annotations, []);
       const presentation: import('@kiki/transcript').TextPresentation = {
         spans: [
           ...carry.presentation.spans,
@@ -4496,14 +4464,13 @@ boundExecution,
         .then(exit)
         .catch(() => undefined);
     },
-    [queueEdit, queuedItems, quotes, annotations, actions, updateDraft],
+    [queueEdit, queuedItems, annotations, actions, updateDraft],
   );
   const handleQueueEditCancel = useCallback(() => {
     const edit = queueEditRef.current;
     if (edit === null) return;
     edit.abort.abort();
     updateDraft(edit.savedDraft);
-    setQuotes(edit.savedQuotes);
     setAnnotations(edit.savedAnnotations);
     queueEditRef.current = null;
     setQueueEdit(null);
@@ -4515,7 +4482,6 @@ boundExecution,
     queueEditRef.current = null;
     setQueueEdit(null);
     updateDraft(edit.savedDraft);
-    setQuotes(edit.savedQuotes);
     setAnnotations(edit.savedAnnotations);
     void handleCancelQueued(edit.promptId);
   }, [queueEdit, updateDraft, handleCancelQueued]);
@@ -5084,8 +5050,6 @@ boundExecution,
             attachments={queueEdit?.attachments ?? attachments}
             attachmentScopeKey={queueEdit?.owner}
             onChangeAttachments={queueEdit === null ? updateAttachments : updateQueueEditAttachments}
-            quotes={quotes}
-            onRemoveQuoteItem={handleRemoveQuoteItem}
             annotations={annotations}
             onRemoveAnnotation={handleRemoveAnnotation}
             onActivateSkill={handleActivateSkill}
@@ -5169,9 +5133,7 @@ boundExecution,
     handleFsSearch,
     attachments,
     updateAttachments,
-    quotes,
     annotations,
-    handleRemoveQuoteItem,
     handleRemoveAnnotation,
     handleActivateSkill,
     runSessionAction,
@@ -5326,14 +5288,15 @@ boundExecution,
             forest,
             onOpenAgent: openAgent,
             rowActions: transcriptRowActions,
-            draftAnnotations: [...annotations, ...quotes.map((item) => ({ ...item, comment: null }))],
+            draftAnnotations: annotations,
             onSaveDraftAnnotation: handleUpdateAnnotation,
-            onRemoveDraftAnnotation: (id) => { if (quotes.some((item) => item.id === id)) handleRemoveQuoteItem(id); else handleRemoveAnnotation(id); },
+            onRemoveDraftAnnotation: handleRemoveAnnotation,
           },
           timelineRef: transcriptQuoteRef,
           timelineOverlay: <SelectionQuoteButton
             containerRef={transcriptQuoteRef}
-            onQuote={handleQuoteSelection} onAnnotate={handleAnnotateSelection}
+            onAnnotate={handleAnnotateSelection}
+            onUpdateAnnotation={handleUpdateAnnotation}
           />,
           dock: <>
             <SubmissionRecovery sessionId={sessionId} state={state} />

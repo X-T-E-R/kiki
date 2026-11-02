@@ -25,6 +25,7 @@
 import { useCallback, useEffect, useState, type MouseEvent } from 'react';
 
 import { useI18n } from '../i18n';
+import { composerInputElement, type ComposerInputHandle } from '../lib/composerInput';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { runToastAction } from '../lib/toasts';
 import { pastedMediaType } from '../lib/pastedFiles';
@@ -58,7 +59,7 @@ export function useComposerContextMenu({
   onPasteFiles,
   onPasteContent,
 }: {
-  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  textareaRef: React.RefObject<ComposerInputHandle | HTMLTextAreaElement | null>;
   /** Controlled value setter — paste/cut must route through it so React re-renders. */
   onChange: (next: string) => void;
   /** Plain-text paste of an already-read clipboard string (integration seam + tests). */
@@ -99,7 +100,7 @@ export function useComposerContextMenu({
 
   /** Re-pin the captured selection and focus so browser/execCommand act on the
    * range the user right-clicked (async clipboard reads can shift focus). */
-  const restoreSelection = useCallback((): HTMLTextAreaElement | null => {
+  const restoreSelection = useCallback((): ComposerInputHandle | HTMLTextAreaElement | null => {
     const el = textareaRef.current;
     if (el === null || anchor === null) return null;
     el.focus({ preventScroll: true });
@@ -117,7 +118,7 @@ export function useComposerContextMenu({
     // setRangeText by itself does not fire an input event — dispatch one so the
     // controlled textarea's React onChange climbs back into the parent.
     el.setRangeText('');
-    el.dispatchEvent(new Event('input', { bubbles: true }));
+    if (el instanceof HTMLTextAreaElement) el.dispatchEvent(new Event('input', { bubbles: true }));
     return true;
   }, [textareaRef, anchor]);
 
@@ -233,7 +234,7 @@ export function useComposerContextMenu({
         // Insert around the pinned range; the input event keeps the textarea
         // controlled and `onChange` climbs back into the parent.
         el.setRangeText(text, anchor.start, anchor.end, 'end');
-        el.dispatchEvent(new Event('input', { bubbles: true }));
+        if (el instanceof HTMLTextAreaElement) el.dispatchEvent(new Event('input', { bubbles: true }));
       }
     }
     closeMenu();
@@ -254,7 +255,7 @@ export function useComposerContextMenu({
     const el = textareaRef.current;
     if (el === null || el.disabled) return;
     const target = event.target as HTMLElement;
-    if (target !== el && target.closest('button, a, input, [role="menu"], [role="dialog"], [role="listbox"]') !== null) return;
+    if (target !== composerInputElement(el) && target.closest('button, a, input, [role="menu"], [role="dialog"], [role="listbox"]') !== null) return;
     event.preventDefault();
     const start = el.selectionStart ?? 0;
     const end = el.selectionEnd ?? 0;

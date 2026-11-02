@@ -19,6 +19,7 @@ import {
 import { I18nProvider } from '../../i18n';
 import { ApiError, ExternalAgentAttachmentUnsupportedError, NativeChildPromptConflictError, NativeChildPromptSendError, type AgentModelSwitchEvent, type QueuedModelSwitch } from '../../lib/client';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
+import { composerInput, setComposerInputValue, type ComposerInputElement } from '../composerInputTestUtils';
 import { AgentTreeView } from '../AgentTreeView';
 import { relatedAgentNodes } from '../AgentBreadcrumb';
 import { agentContinuationAvailable } from './AgentWorkspace';
@@ -232,15 +233,13 @@ async function clickAttach(): Promise<void> {
 
 async function sendNowFromComposer(): Promise<void> {
   await act(async () => {
-    dock.querySelector('textarea[data-composer]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+    composerInput(dock).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
   });
 }
 
-async function typeText(textarea: HTMLTextAreaElement, value: string): Promise<void> {
-  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+async function typeText(input: ComposerInputElement, value: string): Promise<void> {
   await act(async () => {
-    setter.call(textarea, value);
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    setComposerInputValue(input, value);
   });
 }
 
@@ -309,7 +308,7 @@ it('enables running fullscreen composer send, model switch, and stop', async () 
     },
   });
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   await typeText(textarea, 'next step');
   await settle();
   expect(textarea.value).toBe('next step');
@@ -481,14 +480,14 @@ it('tracks child agent working line and last response dynamically', async () => 
 
 async function sendNowToBusyChild(
   sendPromptNow: ReturnType<typeof vi.fn>,
-): Promise<HTMLTextAreaElement> {
+): Promise<ComposerInputElement> {
   const controller = Object.assign(
     controllerStub({ forest: testForest('running', true), agentStates: {} }),
     { sendPromptNow },
   );
   await renderWorkspace({ controller, forest: testForest('running', true) });
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   await typeText(textarea, 'look at the tests too');
   await settle();
   await sendNowFromComposer();
@@ -511,7 +510,7 @@ it('sends a busy native child timing pick once, then returns to the configured d
   harness.sendAgentMessage.mockResolvedValue(null);
   await renderWorkspace({ forest: testForest('running', true) });
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   await typeText(textarea, 'defer this child prompt');
   await act(async () => {
     dock.querySelector('[data-send-timing-root]')!
@@ -541,7 +540,7 @@ it('keeps the original key and timing on an unconfirmed same-draft retry, then r
     .mockResolvedValue(null);
   await renderWorkspace({ forest: testForest('running', true) });
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   await typeText(textarea, 'defer this unconfirmed prompt');
   await act(async () => {
     dock.querySelector('[data-send-timing-root]')!
@@ -590,7 +589,7 @@ it('recovers a failed child send-now into a newly mounted empty composer, includ
   }] };
   await renderWorkspace({ controller, forest: testForest('running', true) });
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   await typeText(textarea, 'recover this turn');
   await clickAttach();
   await settle();
@@ -603,7 +602,7 @@ it('recovers a failed child send-now into a newly mounted empty composer, includ
   await act(async () => root.render(null));
   await renderWorkspace({ controller: controllerStub({ forest: testForest('running', true), agentStates: {} }), forest: testForest('running', true) });
   await settle();
-  const remounted = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const remounted = composerInput(dock);
   expect(remounted.value).toBe('');
   expect(dock.querySelector('[data-attachment-chips]')).toBeNull();
 
@@ -622,14 +621,14 @@ it('does not overwrite a newer draft written by a remounted child before send-no
     forest,
   });
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   await typeText(textarea, 'stale in-flight text');
   await sendNowFromComposer();
   await settle();
   await act(async () => root.render(null));
   await renderWorkspace({ controller: controllerStub({ forest, agentStates: {} }), forest });
   await settle();
-  const remounted = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const remounted = composerInput(dock);
   await typeText(remounted, 'newer mounted draft');
   await settle();
   await act(async () => { rejectSend(new SendNowError('refused', new Error('turn rejected'))); });
@@ -673,7 +672,7 @@ it('consumes the final durable reason after the first acknowledgement, once', as
   const controller = Object.assign(controllerStub({ forest, agentStates: {} }), { sendPromptNow });
   await renderWorkspace({ controller, forest });
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   await typeText(textarea, 'late receipt');
   await settle();
   await sendNowFromComposer();
@@ -718,7 +717,7 @@ it('lets a started child prompt win over a stale queued durable receipt', async 
   const forest = testForest('running', true);
   await renderWorkspace({ controller: Object.assign(controllerStub({ forest, agentStates: {} }), { sendPromptNow }), forest });
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   await typeText(textarea, 'already running');
   await settle();
   await sendNowFromComposer();
@@ -765,8 +764,8 @@ function mailboxReceipt(overrides: {
   };
 }
 
-async function sendFromComposer(text: string): Promise<HTMLTextAreaElement> {
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+async function sendFromComposer(text: string): Promise<ComposerInputElement> {
+  const textarea = composerInput(dock);
   await typeText(textarea, text);
   await settle();
   await act(async () => {
@@ -875,7 +874,7 @@ it('throws a definitive 40001 child rejection instead of showing an unknown outc
   }] };
   await renderWorkspace({ forest: testForest('completed') });
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   await typeText(textarea, 'inspect');
   await clickAttach();
   await settle();
@@ -913,7 +912,7 @@ it('activates a child skill with its target, payload, switch dependency, and sta
   harness.activateSkill.mockRejectedValueOnce(new Error('activation unavailable')).mockResolvedValueOnce({});
   await renderWorkspace({ forest: testForest('completed') });
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   await typeText(textarea, '/review --fix');
   await clickAttach();
   await settle();
@@ -1031,7 +1030,7 @@ it('retains attached draft on unknown native outcome and does not disguise an ex
   }] };
   await renderWorkspace();
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   await typeText(textarea, 'inspect');
   await clickAttach();
   await settle();
@@ -1068,12 +1067,12 @@ it('isolates pending submissions across connection, session, and target switches
   const firstKey = harness.sendAgentMessage.mock.calls[0]?.[4];
   harness.scopeId = 'direct:two';
   await renderWorkspace();
-  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!.value).toBe('');
+  expect(composerInput(dock).value).toBe('');
   await sendFromComposer('next step');
   const secondKey = harness.sendAgentMessage.mock.calls[1]?.[4];
   expect(secondKey).not.toBe(firstKey);
   await renderWorkspace({ target: { sessionId: 'other-session', agentId: 'child' } });
-  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!.value).toBe('');
+  expect(composerInput(dock).value).toBe('');
   await sendFromComposer('next step');
   const thirdKey = harness.sendAgentMessage.mock.calls[2]?.[4];
   expect(thirdKey).not.toBe(secondKey);
@@ -1082,7 +1081,7 @@ it('isolates pending submissions across connection, session, and target switches
   await renderWorkspace({ target: { sessionId: 'other-session', agentId: 'other' }, forest: {
     roots: [main], byId: { ...testForest().byId, other },
   } });
-  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!.value).toBe('');
+  expect(composerInput(dock).value).toBe('');
   await sendFromComposer('next step');
   expect(harness.sendAgentMessage.mock.calls[3]?.[4]).not.toBe(thirdKey);
   expect(harness.sendAgentMessage.mock.calls[3]?.slice(0, 2)).toEqual(['other-session', 'other']);
@@ -1115,13 +1114,13 @@ it('does not let an old target receipt erase the target draft restored in a new 
   await sendFromComposer('A pending');
   await renderWorkspace({ target: { sessionId: 'other-session', agentId: 'child' } });
   await renderWorkspace();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   expect(textarea.value).toBe('A pending');
   await typeText(textarea, 'A newer draft');
   await act(async () => { resolveSend(null); });
   await renderWorkspace({ target: { sessionId: 'other-session', agentId: 'child' } });
   await renderWorkspace();
-  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!.value).toBe('A newer draft');
+  expect(composerInput(dock).value).toBe('A newer draft');
 });
 
 it('does not erase an edited draft when the in-flight receipt finally arrives', async () => {
@@ -1129,7 +1128,7 @@ it('does not erase an edited draft when the in-flight receipt finally arrives', 
   harness.sendAgentMessage.mockImplementation(() => new Promise((resolve) => { resolveSend = resolve; }));
   await renderWorkspace();
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   await typeText(textarea, 'next step');
   await clickComposerSend();
   expect(harness.sendAgentMessage).toHaveBeenCalledTimes(1);
@@ -1181,7 +1180,7 @@ it.each([false, true])('updates a mounted child tree and composer after send and
     </MemoryRouter></I18nProvider></QueryClientProvider>,
   ));
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   const statusText = () => container.querySelector('[data-agent-id="child"]')?.textContent;
   expect(statusText()).toContain(translate('en', 'subagent.status.completed'));
   expect(dock.querySelector('[aria-label="Stop this turn"]')).toBeNull();
@@ -1207,7 +1206,7 @@ it.each([false, true])('updates a mounted child tree and composer after send and
     expect(statusText()).toContain(translate('en', `subagent.status.${status}`));
     expect(container.querySelector('[data-agent-id="child"] .status-dot-busy') !== null).toBe(busy);
     expect(dock.querySelector('[aria-label="Stop this turn"]') !== null).toBe(busy);
-    expect(dock.querySelector('textarea[data-composer]')).toBe(textarea);
+    expect(dock.querySelector('[data-composer-input][contenteditable]')).toBe(textarea);
     expect(textarea.disabled).toBe(false);
     expect(header.querySelector('h1')?.textContent).toBe('General');
   }
@@ -1237,7 +1236,7 @@ it.each([
   const timeline = () => container.querySelector('[data-timeline-agent="child"]')!;
   const userRows = () => [...timeline().querySelectorAll('[data-timeline-user="message for the child"]')];
   expect(timeline().getAttribute('data-timeline-queued')).toBe('shown');
-  await typeText(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, 'message for the child');
+  await typeText(composerInput(dock), 'message for the child');
   await act(async () => {
     dock.querySelector<HTMLButtonElement>(busy ? '[aria-label="Queue prompt"]' : '[aria-label="Send message"]')?.click();
   });
@@ -1264,7 +1263,7 @@ it('drops the child send echo when the server rejects the message, and keeps an 
   harness.sendAgentMessage.mockRejectedValueOnce(new NativeChildPromptSendError(new ApiError({ code: 40001, msg: 'prompt.rejected', data: null })));
   await renderWorkspace({ forest: testForest('completed') });
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   await typeText(textarea, 'rejected message');
   await clickComposerSend();
   expect(container.querySelector('[data-timeline-user="rejected message"]')).toBeNull();
@@ -1283,7 +1282,7 @@ it.each(['completed', 'cancelled', 'failed'] as const)(
     harness.setAgentModel.mockResolvedValue(undefined);
     await renderWorkspace({ forest: testForest(status) });
     await settle();
-    const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(dock);
     expect(textarea.disabled).toBe(false);
     expect(dock.querySelector<HTMLButtonElement>('#composer-model-select')?.disabled).toBe(false);
     expect((await attachmentButton()).disabled).toBe(false);
@@ -1352,7 +1351,7 @@ it.each([
   expect(header.querySelector('[data-agent-effort]')?.textContent).toContain(effort);
   expect(dock.textContent).not.toContain('unavailable for this model');
   expect(dock.querySelector('[data-selection-diagnostic]')).toBeNull();
-  await typeText(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, 'continue');
+  await typeText(composerInput(dock), 'continue');
   expect(dock.querySelector<HTMLButtonElement>('[aria-label="Queue prompt"]')?.disabled).toBe(false);
   expect(harness.setAgentEffort).not.toHaveBeenCalled();
   expect(harness.setAgentModel).not.toHaveBeenCalled();
@@ -1550,9 +1549,9 @@ it('stops a nested subagent task through its parent agent scope', async () => {
 it('disables composer, model, and attach when the forest does not know the agent', async () => {
   await renderWorkspace({ forest: forestWithoutChild() });
   await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]');
-  expect(textarea?.disabled).toBe(true);
-  expect(textarea?.placeholder).toBe(translate('en', 'subagent.composerUnavailable'));
+  const textarea = composerInput(dock);
+  expect(textarea.disabled).toBe(true);
+  expect(textarea.placeholder).toBe(translate('en', 'subagent.composerUnavailable'));
   expect(dock.querySelector<HTMLButtonElement>('#composer-model-select')).toBeNull();
   expect(dock.querySelector('[data-composer-engine-model]')).not.toBeNull();
   expect((await attachmentButton()).disabled).toBe(true);
@@ -1607,7 +1606,7 @@ it('keeps the preview-tab composer disabled for an agent the forest does not kno
       showBreadcrumb: false,
     });
     await settle();
-    expect(previewDock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(true);
+    expect(composerInput(previewDock).disabled).toBe(true);
     expect(previewDock.querySelector<HTMLButtonElement>('#composer-model-select')).toBeNull();
     expect(previewDock.querySelector('[data-composer-engine-model]')).not.toBeNull();
   } finally {
@@ -1731,7 +1730,7 @@ it('replies with a known external binding before the presentation profile arrive
   expect(harness.getAgentExecutor).not.toHaveBeenCalled();
   expect(harness.getExecutorModels).toHaveBeenCalledWith('example-acp');
   expect(dock.querySelector('[data-selection-diagnostic]')).toBeNull();
-  await typeText(dock.querySelector('textarea')!, 'continue on the bound executor');
+  await typeText(composerInput(dock), 'continue on the bound executor');
   const send = dock.querySelector<HTMLButtonElement>('[aria-label="Queue prompt"]')!;
   expect(send.disabled).toBe(false);
   await act(async () => { send.click(); });
@@ -1771,7 +1770,7 @@ it.each(['unknown', 'partial', 'failed', 'unsupported'] as const)('keeps %s exte
   else harness.getExecutorModels.mockResolvedValue(externalModelCatalog('example-acp', kind === 'partial' ? 'partial' : kind === 'unknown' ? 'unknown' : 'ready', kind === 'unsupported'));
   await renderWorkspace({ forest: testForest('completed', false, { executorId: 'example-acp', model: 'vendor/unlisted' }) });
   await settle();
-  await typeText(dock.querySelector('textarea')!, 'resume');
+  await typeText(composerInput(dock), 'resume');
   expect(dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled).toBe(false);
   expect(dock.querySelector('[data-selection-diagnostic]')).toBeNull();
   const pick = dock.querySelector<HTMLButtonElement>('#composer-model-select');
@@ -1788,7 +1787,7 @@ it.each(['unknown', 'partial', 'failed', 'unsupported'] as const)('keeps %s exte
 it('blocks a truly invalid native model and effort while external identities remain independent', async () => {
   await renderWorkspace({ forest: testForest('completed', false, { executorId: 'native', model: 'vendor/missing' }) });
   await settle();
-  await typeText(dock.querySelector('textarea')!, 'resume');
+  await typeText(composerInput(dock), 'resume');
   expect(dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled).toBe(true);
   expect(dock.querySelector('[data-selection-diagnostic]')?.textContent).toContain('vendor/missing');
 });
@@ -1797,12 +1796,12 @@ it('waits for the real child binding and offers retry on failure instead of assu
   harness.getAgentExecutor.mockRejectedValue(new Error('binding read failed'));
   await renderWorkspace();
   await settle();
-  expect(dock.querySelector<HTMLTextAreaElement>('textarea')!.disabled).toBe(true);
+  expect(composerInput(dock).disabled).toBe(true);
   expect(dock.querySelector('[data-selection-diagnostic]')).toBeNull();
   harness.getAgentExecutor.mockResolvedValue('example-acp');
   await act(async () => { Array.from(dock.querySelectorAll('button')).find((button) => button.textContent === 'Retry')!.click(); });
   await settle();
-  expect(dock.querySelector<HTMLTextAreaElement>('textarea')!.disabled).toBe(false);
+  expect(composerInput(dock).disabled).toBe(false);
   expect(harness.getExecutorModels).toHaveBeenCalledWith('example-acp');
 });
 
@@ -2111,7 +2110,7 @@ it('sends after the second pending switch and freezes that execution payload acr
   });
   harness.sendAgentMessage.mockRejectedValueOnce(new NativeChildPromptSendError(new Error('response lost'))).mockResolvedValueOnce(null);
   await renderWorkspace({ forest: testForest('completed') }); await settle();
-  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(dock);
   await typeText(textarea, 'continue on the target');
   await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click(); });
   const firstCall = harness.sendAgentMessage.mock.calls[0];
@@ -2131,7 +2130,7 @@ it.each(['native', 'external'])(
     const forest = testForest('running', true);
     const controller = Object.assign(controllerStub({ forest, agentStates: {} }), { sendPromptNow });
     await renderWorkspace({ forest, controller }); await settle();
-    const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(dock);
     await typeText(textarea, 'send on current binding');
     await sendNowFromComposer();
     expect(sendPromptNow).toHaveBeenCalledWith({ agentId: 'child', text: 'send on current binding', content: [{ type: 'text', text: 'send on current binding' }] });
@@ -2198,13 +2197,13 @@ it('keeps child A text and attachments through real A/B/A routes without sending
     <MemoryRouter initialEntries={['/s/session/agent/child']}><RoutedHarness /></MemoryRouter>
   </I18nProvider></QueryClientProvider>));
   await settle();
-  await typeText(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, 'DRAFT FOR A');
+  await typeText(composerInput(dock), 'DRAFT FOR A');
   await clickAttach();
   await settle();
   expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
   await act(async () => { container.querySelector<HTMLButtonElement>('[data-child-b]')!.click(); });
   await settle();
-  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!.value).toBe('');
+  expect(composerInput(dock).value).toBe('');
   expect(dock.querySelector('[data-attachment-chips]')).toBeNull();
   await sendFromComposer('MESSAGE FOR B');
   expect(harness.sendAgentMessage.mock.calls[0]?.slice(0, 4)).toEqual([
@@ -2212,7 +2211,7 @@ it('keeps child A text and attachments through real A/B/A routes without sending
   ]);
   await act(async () => { container.querySelector<HTMLButtonElement>('[data-child-a]')!.click(); });
   await settle();
-  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!.value).toBe('DRAFT FOR A');
+  expect(composerInput(dock).value).toBe('DRAFT FOR A');
   expect(dock.querySelector('[data-attachment-chips] img')?.getAttribute('alt')).toBe('a.png');
   await clickComposerSend();
   expect(harness.sendAgentMessage.mock.calls[1]?.slice(0, 3)).toEqual(['session', 'child', 'DRAFT FOR A']);
@@ -2257,7 +2256,7 @@ it('opens a persisted body when the recent forest omits its agent, but keeps the
   await settle();
 
   expect(container.querySelector('[data-timeline-agent="child"]')?.getAttribute('data-timeline-blocks')).toBe('1');
-  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(false);
+  expect(composerInput(dock).disabled).toBe(false);
   expect(agentContinuationAvailable({ controller, node: undefined, subagent: undefined, state: legacyState })).toBe(true);
 });
 
@@ -2279,10 +2278,10 @@ it('settles a loaded partial empty target as unavailable and never enables conti
   await settle();
 
   expect(agentContinuationAvailable({ controller, node: unknown, subagent: undefined, state: unknownState })).toBe(false);
-  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(true);
+  expect(composerInput(dock).disabled).toBe(true);
   expect(container.querySelector('[data-timeline-error]')?.getAttribute('data-timeline-error')).toContain('Name not registered');
   expect(harness.getAgentExecutor).not.toHaveBeenCalled();
-  await typeText(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, 'must not send');
+  await typeText(composerInput(dock), 'must not send');
   await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click(); });
   expect(harness.sendAgentMessage).not.toHaveBeenCalled();
 });
@@ -2294,7 +2293,7 @@ it('keeps a known legacy child editable when its executor metadata is absent', a
   await settle();
   expect(harness.getAgentExecutor).toHaveBeenCalledWith('child');
   expect(queries.getQueryState(['agentExecutor', 'direct:one', 'session', 'child'])?.status).toBe('success');
-  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(false);
+  expect(composerInput(dock).disabled).toBe(false);
   expect(dock.textContent).not.toContain('data is undefined');
 });
 
@@ -2302,7 +2301,7 @@ it('keeps a failed legacy executor read retryable without choosing a native exec
   harness.getAgentExecutor.mockRejectedValue(new Error('executor metadata unavailable'));
   await renderWorkspace({ forest: testForest('completed', false) });
   await settle();
-  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(true);
+  expect(composerInput(dock).disabled).toBe(true);
   expect(dock.textContent).toContain('executor metadata unavailable');
   expect(dock.querySelector('button')?.textContent).toBe(translate('en', 'common.retry'));
 });

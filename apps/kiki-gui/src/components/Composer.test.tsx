@@ -18,6 +18,7 @@ import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { PERMISSION_MODES } from '../lib/permissionModes';
 import { Composer } from './Composer';
+import { composerInput, setComposerInputValue, type ComposerInputElement } from './composerInputTestUtils';
 import { activateSkillWithConditionalClear, canAbortActiveTurn } from './SessionView';
 
 const { selectFilesNative, selectFilePathNative, readClipboardFiles, connectionScope, onFileDrop, desktopRuntime, vscodeRuntime, preparePrompt } = vi.hoisted(() => ({
@@ -421,7 +422,7 @@ describe('Composer host compatibility', () => {
     writeSettings({});
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: 'default shortcut', onSend });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
 
     await pressKey(textarea, { key: 'Enter', shiftKey: true });
     expect(onSend).not.toHaveBeenCalled();
@@ -433,7 +434,7 @@ describe('Composer host compatibility', () => {
   it('never sends on an Enter that commits an IME candidate', async () => {
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: '你好', onSend });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await pressKey(textarea, { key: 'Enter', isComposing: true });
     await pressKey(textarea, { key: 'Enter', keyCode: 229 });
     await settle();
@@ -444,7 +445,7 @@ describe('Composer host compatibility', () => {
     const onSend = vi.fn();
     const onSendNow = vi.fn();
     const { container } = await renderComposer({ value: 'steer this', busy: true, onSend, onSendNow });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await pressKey(textarea, { key: 'Enter', ctrlKey: true });
     await settle();
     expect(onSendNow).toHaveBeenCalledWith('steer this', []);
@@ -460,7 +461,7 @@ describe('Composer host compatibility', () => {
     const onSend = vi.fn();
     const onSendNow = vi.fn();
     const { container } = await renderComposer({ value: 'cmd mode', busy: true, onSend, onSendNow });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await pressKey(textarea, { key: 'Enter' });
     await settle();
     expect(onSend).not.toHaveBeenCalled();
@@ -484,7 +485,7 @@ describe('Composer host compatibility', () => {
   it('submits browser prompts synchronously without VS Code preflight state', async () => {
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: 'browser prompt', onSend });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
 
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
@@ -499,7 +500,7 @@ describe('Composer host compatibility', () => {
   it('sends immediately on Ctrl+Enter even when the send shortcut is plain Enter', async () => {
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: 'ctrl enter prompt', onSend });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
 
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
@@ -517,7 +518,7 @@ describe('Composer host compatibility', () => {
     vscodeRuntime.value = true;
     const onSend = vi.fn();
     const rendered = await renderComposer({ value: 'new', sessionId: undefined, onSend });
-    const textarea = rendered.container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(rendered.container);
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -566,7 +567,7 @@ describe('Composer host compatibility', () => {
 describe('Composer disable focus continuity', () => {
   async function disableFocusedInput() {
     const harness = await renderComposer();
-    const textarea = harness.container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(harness.container);
     await act(async () => { textarea.focus(); });
     await harness.rerender({ disabled: true });
     // jsdom neither force-blurs on disable nor lets disabled inputs blur.
@@ -587,7 +588,7 @@ describe('Composer disable focus continuity', () => {
   it('restores the same input after a disable-caused blur', async () => {
     const { container, rerender, textarea } = await disableFocusedInput();
     await rerender({ disabled: false });
-    expect(container.querySelector('textarea[data-composer]')).toBe(textarea);
+    expect(container.querySelector('[data-composer-input][contenteditable]')).toBe(textarea);
     expect(document.activeElement).toBe(textarea);
   });
 
@@ -604,10 +605,10 @@ describe('Composer disable focus continuity', () => {
   it('restores the same input when the session id arrives after that blur', async () => {
     const { container, rerender, textarea } = await disableFocusedInput();
     await rerender({ disabled: true, sessionId: 'session-new', value: '' });
-    expect(container.querySelector('textarea[data-composer]')).toBe(textarea);
+    expect(container.querySelector('[data-composer-input][contenteditable]')).toBe(textarea);
     expect(document.activeElement).not.toBe(textarea);
     await rerender({ disabled: false, sessionId: 'session-new', value: '' });
-    expect(container.querySelector('textarea[data-composer]')).toBe(textarea);
+    expect(container.querySelector('[data-composer-input][contenteditable]')).toBe(textarea);
     expect(document.activeElement).toBe(textarea);
   });
 
@@ -618,12 +619,12 @@ describe('Composer disable focus continuity', () => {
     await act(async () => { button.focus(); });
     await rerender({ disabled: false, sessionId: 'session-new', value: '' });
     expect(document.activeElement).toBe(button);
-    expect(container.querySelector('textarea[data-composer]')).not.toBeNull();
+    expect(container.querySelector('[data-composer-input][contenteditable]')).not.toBeNull();
   });
 
   it('does not autofocus a cold input or restore a deliberate enabled blur', async () => {
     const { container, rerender } = await renderComposer();
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     expect(document.activeElement).not.toBe(textarea);
     await rerender({ disabled: true });
     await rerender({ disabled: false });
@@ -666,7 +667,7 @@ describe('Composer send latch', () => {
       .mockImplementationOnce(() => Promise.reject(new Error('fixture offline')))
       .mockImplementationOnce(() => Promise.resolve());
     const { container } = await renderComposer({ value: 'retry me', onSend });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
 
     await pressKey(textarea, { key: 'Enter' });
@@ -1897,7 +1898,7 @@ describe('Composer run mode (Normal / Plan / Goal)', () => {
 
   it('opens the Mode menu with Ctrl+Shift+M from the input', async () => {
     const { container } = await renderComposer();
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'M', ctrlKey: true, shiftKey: true, bubbles: true }));
     });
@@ -1967,7 +1968,7 @@ describe('Composer goal mode', () => {
   it('sends `/goal <text>` as a goal prompt instead of opening the panel', async () => {
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: '/goal ship the batch', onSend });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -1980,7 +1981,7 @@ describe('Composer goal mode', () => {
     const onSend = vi.fn();
     const onChangeGoalMode = vi.fn();
     const { container } = await renderComposer({ value: '/goal', onSend, onChangeGoalMode });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -1993,7 +1994,7 @@ describe('Composer goal mode', () => {
   it('arms goal locally for the new-session draft and opens the objective', async () => {
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: '/goal', onSend, onChangeGoalObjective: vi.fn() });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -2019,7 +2020,7 @@ describe('Composer goal mode', () => {
       'this message becomes the objective',
     );
     expect(container.querySelector('[data-run-mode-chip]')?.getAttribute('data-run-mode-chip')).toBe('goal');
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -2420,7 +2421,7 @@ describe('Composer file clipboard policy', () => {
     const onSend = vi.fn();
     const { container } = await renderStatefulComposer({ onSend });
     await settle();
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
     await typeText(textarea, 'review old end');
     textarea.setSelectionRange(7, 10);
     if (gesture === 'keyboard') {
@@ -2443,7 +2444,7 @@ describe('Composer file clipboard policy', () => {
   it('never invents a browser file path or uploads an ordinary file, and keeps mixed text', async () => {
     const { container } = await renderStatefulComposer();
     await settle();
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
     await dispatchClipboardPaste(textarea, [new File(['private'], 'report.pdf', { type: 'application/pdf' })], 'caption');
     expect(textarea.value).toBe('caption');
     expect(uploadFile).not.toHaveBeenCalled();
@@ -2458,7 +2459,7 @@ describe('Composer file clipboard policy', () => {
     const onSend = vi.fn();
     const { container } = await renderStatefulComposer({ onSend });
     await settle();
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
     await dispatchClipboardPaste(textarea, [new File(['pdf'], 'report.pdf', { type: 'application/pdf' })], 'caption');
     expect(container.querySelector('[data-attachment-error]')).not.toBeNull();
     await pressKey(textarea, { key: 'Enter' });
@@ -2469,7 +2470,7 @@ describe('Composer file clipboard policy', () => {
   it('keeps supported images and videos on the attachment path, not ordinary uploads', async () => {
     const onChangeAttachments = vi.fn();
     const { container } = await renderComposer({ onChangeAttachments });
-    await dispatchClipboardPaste(composerTextarea(container), [
+    await dispatchClipboardPaste(composerInputOf(container), [
       new File(['png'], 'shot.png', { type: 'image/png' }),
       new File(['mp4'], 'clip.mp4', { type: 'video/mp4' }),
       new File(['binary'], 'huge.bin'),
@@ -2484,7 +2485,7 @@ describe('Composer file clipboard policy', () => {
     desktopRuntime.value = true;
     const onSend = vi.fn();
     const { container } = await renderStatefulComposer({ onSend });
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
     await typeText(textarea, 'keep this draft');
     selectFilesNative.mockResolvedValue([{ name: 'huge.bin', size: 60 * 1024 * 1024, type: '', read: vi.fn() }]);
     await clickAttach(container);
@@ -2501,7 +2502,7 @@ describe('Composer file clipboard policy', () => {
     desktopRuntime.value = true;
     const onChange = vi.fn();
     const { container } = await renderComposer({ value: 'draft', onChange, queueEditing: true });
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
     textarea.setSelectionRange(5, 5);
     await dispatchClipboardPaste(textarea, [], ' text');
     expect(onChange).toHaveBeenCalledWith('draft text');
@@ -2519,7 +2520,7 @@ describe('Composer file clipboard policy', () => {
     readClipboardFiles.mockResolvedValue({ paths: ['C:/fixtures/report.pdf'], media: [] });
     const onChange = vi.fn();
     const { container } = await renderComposer({ value: 'draft', onChange });
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
     textarea.setSelectionRange(5, 5);
     await dispatchClipboardPaste(textarea);
     expect(onChange).toHaveBeenCalledExactlyOnceWith('draft C:/fixtures/report.pdf');
@@ -2533,7 +2534,7 @@ describe('Composer file clipboard policy', () => {
     const pending = deferred<{ paths: string[]; media: [] }>();
     readClipboardFiles.mockReturnValue(pending.promise);
     const { container } = await renderStatefulComposer();
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
     await dispatchClipboardPaste(textarea);
     await typeText(textarea, 'new draft');
     await act(async () => { pending.resolve({ paths: ['C:/fixtures/report.txt'], media: [] }); });
@@ -2568,7 +2569,7 @@ describe('Composer file drops', () => {
       onChange,
       onChangeAttachments,
     });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     textarea.setSelectionRange(4, 4);
 
     const event = await dispatchFileDrop(
@@ -2585,7 +2586,7 @@ describe('Composer file drops', () => {
   it('quotes whitespace paths, preserves drop order, and falls back to a browser file name', async () => {
     const onChange = vi.fn();
     const { container } = await renderComposer({ value: '', onChange });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
 
     await dispatchFileDrop(textarea, [
       droppedFile('alpha.txt', 'C:\\my dir\\alpha.txt'),
@@ -2607,7 +2608,7 @@ describe('Composer file drops', () => {
     });
     const onChange = vi.fn();
     const { container } = await renderComposer({ value: '', onChange });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     const card = textarea.closest<HTMLDivElement>('[data-composer-card]')!;
     vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({
       x: 20,
@@ -2663,9 +2664,9 @@ describe('Composer footer hints', () => {
 describe('Composer sendDisabled', () => {
   it('blocks the send button without locking the textarea', async () => {
     const { container } = await renderComposer({ value: 'hello', sendDisabled: true });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]');
+    const textarea = composerInput(container);
     const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]');
-    expect(textarea?.disabled).toBe(false);
+    expect(textarea?.getAttribute('contenteditable')).toBe('true');
     expect(sendButton?.disabled).toBe(true);
   });
 
@@ -2683,7 +2684,7 @@ describe('Composer sendDisabled', () => {
   it('swallows the send shortcut while sendDisabled', async () => {
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: 'hello', sendDisabled: true, onSend });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -2693,7 +2694,7 @@ describe('Composer sendDisabled', () => {
   it('sends on the send shortcut when sendDisabled stays at its default', async () => {
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: 'hello', onSend });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -2706,7 +2707,7 @@ describe('Composer sendDisabled', () => {
     preparePrompt.mockReturnValue(pending.promise);
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: 'hello', onSend });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
 
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
@@ -2729,7 +2730,7 @@ const workspaceSkill = {
 };
 
 async function openSlashMenu(container: HTMLDivElement): Promise<void> {
-  const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  const textarea = composerInput(container);
   await act(async () => {
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
     textarea.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -2766,7 +2767,7 @@ describe('Composer slash skill catalog', () => {
     await openSlashMenu(container);
     expect(container.querySelector('[data-composer-menu]')?.textContent).toContain('/review');
     expect(listWorkspaceSkills).toHaveBeenCalledTimes(1);
-    await pressKey(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, { key: 'Escape' });
+    await pressKey(composerInput(container), { key: 'Escape' });
     await openSlashMenu(container);
     expect(container.querySelector('[data-composer-menu]')?.textContent).toContain('/review');
     expect(listWorkspaceSkills).toHaveBeenCalledTimes(1);
@@ -2810,7 +2811,7 @@ describe('Composer slash skill catalog', () => {
       agentProfileCatalogMode: { mode: 'cwd', cwd: '/workspace/custom', effective: true },
     });
     for (let index = 0; index < 5; index += 1) await settle();
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await pressKey(textarea, { key: 'Enter' });
     expect(listDraftSkills).toHaveBeenCalledWith('/workspace/custom');
     expect(listWorkspaceSkills).not.toHaveBeenCalled();
@@ -2858,7 +2859,7 @@ describe('Composer slash skill catalog', () => {
     await settle();
     expect(container.querySelector('[data-slash-confirm]')).toBeNull();
     expect(container.textContent).toContain('Could not load skills. Please try sending again.');
-    expect(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.value).toBe('/kiki-ops Help me get started.');
+    expect(composerInput(container).value).toBe('/kiki-ops Help me get started.');
     expect(onSend).not.toHaveBeenCalled();
     expect(onActivateSkill).not.toHaveBeenCalled();
 
@@ -2906,7 +2907,7 @@ describe('Composer slash skill catalog', () => {
     await rendered.rerender({ value: '/skill:plan menu options', workspaceId: 'workspace-command',
       onChange, onActivateSkill, onChangePlanMode, attachments });
     await act(async () => {
-      rendered.container.querySelector('textarea[data-composer]')!
+      composerInput(rendered.container)
         .dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('plan', 'menu options', attachments, '/skill:plan menu options');
@@ -2925,7 +2926,7 @@ describe('Composer slash skill catalog', () => {
       onSend,
     });
     for (let index = 0; index < 8; index += 1) await settle();
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -2947,7 +2948,7 @@ describe('Composer slash skill catalog', () => {
       onSend,
     });
     for (let index = 0; index < 8; index += 1) await settle();
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
 
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
@@ -2993,7 +2994,7 @@ describe('Composer slash skill catalog', () => {
     expect(currentDraft).toBe(edited ? 'new follow-up' : '');
     expect(clear).toHaveBeenCalledTimes(edited ? 0 : 1);
     await rendered.rerender({ ...props, value: currentDraft });
-    expect(rendered.container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.value).toBe(currentDraft);
+    expect(composerInput(rendered.container).value).toBe(currentDraft);
   });
 
   it('still activates a bare hand-typed `/skill` command', async () => {
@@ -3007,7 +3008,7 @@ describe('Composer slash skill catalog', () => {
       onSend,
     });
     for (let index = 0; index < 8; index += 1) await settle();
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -3021,22 +3022,22 @@ describe('Composer slash skill catalog', () => {
     const props = { value: '/review tail', workspaceId: 'wd_fixture_0123456789ab', onChange };
     const { container, rerender } = await renderComposer(props);
     await openSlashMenu(container);
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.focus();
       textarea.setSelectionRange(0, 0);
       textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
     });
     // The browser owns preedit text before the corresponding input/prop update.
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, 'ni/review tail');
+    setComposerInputValue(textarea, 'ni/review tail');
     textarea.setSelectionRange(2, 2);
     await rerender(props);
     expect(textarea.value).toBe('ni/review tail');
     expect(textarea.selectionStart).toBe(2);
     expect(textarea.selectionEnd).toBe(2);
-    expect(container.querySelector('textarea[data-composer]')).toBe(textarea);
+    expect(container.querySelector('[data-composer-input][contenteditable]')).toBe(textarea);
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, '你/review tail');
+      setComposerInputValue(textarea, '你/review tail');
       textarea.setSelectionRange(1, 1);
       textarea.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '你' }));
     });
@@ -3049,7 +3050,7 @@ describe('Composer slash skill catalog', () => {
     const onChange = vi.fn();
     const { container } = await renderComposer({ value: '/rev', workspaceId: 'wd_fixture_0123456789ab', onChange });
     await openSlashMenu(container);
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
       for (const key of ['Tab', 'Enter', 'Escape', 'ArrowDown']) {
@@ -3057,7 +3058,7 @@ describe('Composer slash skill catalog', () => {
         textarea.dispatchEvent(event);
         expect(event.defaultPrevented).toBe(false);
       }
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, 'ni/rev');
+      setComposerInputValue(textarea, 'ni/rev');
       textarea.setSelectionRange(2, 2);
       textarea.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
       textarea.dispatchEvent(new KeyboardEvent('keyup', { key: 'Home', bubbles: true }));
@@ -3084,7 +3085,7 @@ describe('Composer slash skill catalog', () => {
     await openSlashMenu(container);
     expect(container.querySelector('[data-composer-menu]')?.textContent).toContain('/review');
 
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }),
@@ -3109,7 +3110,7 @@ describe('Composer slash skill catalog', () => {
       onChange,
     });
     for (let index = 0; index < 8; index += 1) await settle();
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -3155,7 +3156,7 @@ describe('Composer slash skill catalog', () => {
       onSend,
     });
     for (let index = 0; index < 8; index += 1) await settle();
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -3235,29 +3236,27 @@ async function renderStatefulComposer(
   return { container, root };
 }
 
-function composerTextarea(container: HTMLDivElement): HTMLTextAreaElement {
-  return container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+function composerInputOf(container: HTMLDivElement): ComposerInputElement {
+  return composerInput(container);
 }
 
-/** Set the textarea value through the native setter and fire the input event. */
-async function typeText(textarea: HTMLTextAreaElement, value: string): Promise<void> {
-  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+/** Set the editor value through a real CodeMirror transaction. */
+async function typeText(textarea: ComposerInputElement, value: string): Promise<void> {
   await act(async () => {
-    setter.call(textarea, value);
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    setComposerInputValue(textarea, value);
   });
 }
 
 async function pressKey(
-  textarea: HTMLTextAreaElement,
+  textarea: ComposerInputElement,
   init: KeyboardEventInit,
 ): Promise<void> {
   await act(async () => {
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...init }));
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init }));
   });
 }
 
-async function placeCaret(textarea: HTMLTextAreaElement, start: number, end = start): Promise<void> {
+async function placeCaret(textarea: ComposerInputElement, start: number, end = start): Promise<void> {
   await act(async () => {
     textarea.focus();
     textarea.setSelectionRange(start, end);
@@ -3363,7 +3362,7 @@ describe('Composer input history', () => {
     pushInputHistory('s_hist', 'first prompt');
     pushInputHistory('s_hist', 'second prompt');
     const { container } = await renderStatefulComposer({ sessionId: 's_hist' });
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
     expect(textarea.value).toBe('');
 
     await pressKey(textarea, { key: 'ArrowUp' });
@@ -3398,7 +3397,7 @@ describe('Composer input history', () => {
   it('Escape exits recall and restores the in-progress draft', async () => {
     pushInputHistory('s_hist', 'older prompt');
     const { container } = await renderStatefulComposer({ sessionId: 's_hist' });
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
 
     await typeText(textarea, 'draft in progress');
     await placeCaret(textarea, 0);
@@ -3414,7 +3413,7 @@ describe('Composer input history', () => {
   it('an edit during recall ends the browse and keeps the edited text', async () => {
     pushInputHistory('s_hist', 'older prompt');
     const { container } = await renderStatefulComposer({ sessionId: 's_hist' });
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
 
     await pressKey(textarea, { key: 'ArrowUp' });
     expect(textarea.value).toBe('older prompt');
@@ -3428,7 +3427,7 @@ describe('Composer input history', () => {
     pushInputHistory('s_hist', 'older prompt');
     pushInputHistory('s_hist', 'newer prompt');
     const { container } = await renderStatefulComposer({ sessionId: 's_hist' });
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
 
     await typeText(textarea, 'line one\nline two');
     await placeCaret(textarea, textarea.value.length);
@@ -3464,7 +3463,7 @@ describe('Composer input history', () => {
   it('keeps Shift, a selection, and IME composition on the draft', async () => {
     pushInputHistory('s_hist', 'older prompt');
     const { container } = await renderStatefulComposer({ sessionId: 's_hist' });
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
     await typeText(textarea, 'keep this draft');
 
     await placeCaret(textarea, 0);
@@ -3487,7 +3486,7 @@ describe('Composer input history', () => {
   it('records a send and recalls it afterwards', async () => {
     const onSend = vi.fn();
     const { container } = await renderStatefulComposer({ sessionId: 's_send', onSend });
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
 
     await typeText(textarea, 'ship it');
     await pressKey(textarea, { key: 'Enter' });
@@ -3509,7 +3508,7 @@ describe('Composer input history', () => {
       sessionId: 's_menu',
     });
     for (let index = 0; index < 8; index += 1) await settle();
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
 
     await typeText(textarea, '/');
     await settle();
@@ -3544,7 +3543,7 @@ describe('Composer input history', () => {
 describe('Composer undo/redo', () => {
   it('walks the local stack with caret positions and redo', async () => {
     const { container } = await renderStatefulComposer({ sessionId: 's_undo' });
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
 
     await typeText(textarea, 'hello');
     await typeText(textarea, 'hello world');
@@ -3567,7 +3566,7 @@ describe('Composer undo/redo', () => {
 
   it('a fresh edit clears the redo lane', async () => {
     const { container } = await renderStatefulComposer({ sessionId: 's_redo' });
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
 
     await typeText(textarea, 'a');
     await typeText(textarea, 'ab');
@@ -3580,7 +3579,7 @@ describe('Composer undo/redo', () => {
 
   it('caps the stack at 100 entries', async () => {
     const { container } = await renderStatefulComposer({ sessionId: 's_cap' });
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
 
     let value = '';
     for (let index = 0; index < 105; index += 1) {
@@ -3600,7 +3599,7 @@ describe('Composer undo/redo', () => {
   it('snapshots a sent prompt so Ctrl+Z resurrects it', async () => {
     const onSend = vi.fn();
     const { container } = await renderStatefulComposer({ sessionId: 's_send_undo', onSend });
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
 
     await typeText(textarea, 'ship it');
     await pressKey(textarea, { key: 'Enter' });
@@ -3627,8 +3626,8 @@ describe('Composer skill preview card', () => {
     source: 'user' as const,
   };
 
-  async function openPreviewMenu(container: HTMLDivElement): Promise<HTMLTextAreaElement> {
-    const textarea = composerTextarea(container);
+  async function openPreviewMenu(container: HTMLDivElement): Promise<ComposerInputElement> {
+    const textarea = composerInputOf(container);
     await typeText(textarea, '/');
     for (let index = 0; index < 8; index += 1) await settle();
     expect(container.querySelector('[data-composer-menu]')).not.toBeNull();
@@ -3696,7 +3695,7 @@ describe('Composer restored selection diagnostics', () => {
     expect(trigger.textContent).toContain('Choose a model');
     await click(trigger);
     expect(container.querySelector('[data-model-configure]')?.textContent).toBe('Connect a provider or add models');
-    expect(composerTextarea(container).value).toBe('Keep this welcome draft.');
+    expect(composerInputOf(container).value).toBe('Keep this welcome draft.');
     expect(onChange).not.toHaveBeenCalled();
   });
 
@@ -3714,7 +3713,7 @@ describe('Composer restored selection diagnostics', () => {
     await click(container.querySelector('#composer-model-select')!);
     await click(container.querySelector('[data-option-value="fixture/kiki-pro"]')!);
     expect(onChangeModel).toHaveBeenCalledWith('fixture/kiki-pro');
-    expect(composerTextarea(container).value).toBe('Keep this welcome draft.');
+    expect(composerInputOf(container).value).toBe('Keep this welcome draft.');
   });
 
   it.each([undefined, 'saved-session'])('sends immediately while catalogs and frozen details are pending (%s)', async (sessionId) => {
@@ -4225,7 +4224,7 @@ describe('Composer restored selection diagnostics', () => {
     expect(catalog === 'model' ? listModels : listNamedAgentProfiles).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
     expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')?.disabled).toBe(false);
-    await pressKey(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, { key: 'Enter' });
+    await pressKey(composerInput(container), { key: 'Enter' });
     expect(onSend).toHaveBeenCalledWith('preserved prompt', []);
     expect(onChangeModel).not.toHaveBeenCalled();
   });
@@ -4251,7 +4250,7 @@ describe('Composer restored selection diagnostics', () => {
     const { container } = await renderComposer({ value: 'hello', onSend });
     expect(container.querySelector('[data-selection-diagnostic][role="status"]')?.textContent).toContain('Invalid model config');
     expect(container.querySelector('[data-selection-diagnostic] button')?.textContent).toBe('Retry');
-    await pressKey(container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, { key: 'Enter' });
+    await pressKey(composerInput(container), { key: 'Enter' });
     expect(onSend).toHaveBeenCalledWith('hello', []);
     expect(listModels).toHaveBeenCalledTimes(1);
   });
@@ -4261,8 +4260,8 @@ describe('Composer restored selection diagnostics', () => {
     const onChangeModel = vi.fn();
     const { container } = await renderComposer({ model: 'fixture/deleted', value: 'hello', onSend, onChangeModel });
     expect(container.querySelector('[data-selection-diagnostic]')?.textContent).toContain('fixture/deleted');
-    const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
-    expect(input.disabled).toBe(false);
+    const input = composerInput(container);
+    expect(input.getAttribute('contenteditable')).toBe('true');
     await pressKey(input, { key: 'Enter' });
     expect(onSend).not.toHaveBeenCalled();
     await click(container.querySelector('#composer-model-select')!);
@@ -4328,7 +4327,7 @@ describe('Composer queue edit mode', () => {
     const onChangeAttachments = vi.fn();
     const onChange = vi.fn();
     const { container } = await renderComposer({ value: 'queued', onChange, ...queueEditProps({ onChangeAttachments }) });
-    const area = container.querySelector('textarea')!;
+    const area = composerInput(container);
     const file = new File(['png'], 'added.png', { type: 'image/png' });
     if (gesture === 'paste') await dispatchClipboardPaste(area, [file]);
     else await dispatchFileDrop(area, [file]);
@@ -4342,7 +4341,7 @@ describe('Composer queue edit mode', () => {
     const { container } = await renderComposer({ value: 'edited', attachments: [{ kind: 'image', name: 'pending.png', data: '', size: 3, mediaType: 'image/png', previewUrl: '' }], ...props });
     const button = container.querySelector<HTMLButtonElement>('button[aria-label="Confirm edit"]')!;
     expect(button.disabled).toBe(true);
-    await pressKey(container.querySelector('textarea')!, { key: 'Enter' });
+    await pressKey(composerInput(container), { key: 'Enter' });
     expect(props.onQueueEditConfirm).not.toHaveBeenCalled();
   });
 
@@ -4401,7 +4400,7 @@ describe('Composer queue edit mode', () => {
     const onActivateSkill = vi.fn();
     const image: ComposerAttachment = { kind: 'retained', name: 'original.png', content: { type: 'image', source: { kind: 'url', url: 'https://example.test/original.png' } } };
     const { container } = await renderComposer({ value: '/goal edited', messageEditing: true, attachments: [image], onSend, onActivateSkill });
-    const area = container.querySelector('textarea')!;
+    const area = composerInput(container);
     await pressKey(area, { key: 'Enter' });
     expect(onSend).not.toHaveBeenCalled();
     await pressKey(area, { key: 'Enter', ctrlKey: true });
@@ -4438,7 +4437,7 @@ describe('Composer queue edit mode', () => {
     const onSend = vi.fn(() => new Promise<void>(() => {}));
     const onQueueEditCancel = vi.fn();
     const { container } = await renderComposer({ value: 'edited text', messageEditing: true, onSend, onQueueEditCancel });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     const cancel = () => container.querySelector<HTMLButtonElement>('[data-edit-cancel]')!;
     expect(cancel().disabled).toBe(false);
     await pressKey(textarea, { key: 'Enter', ctrlKey: true });
@@ -4452,22 +4451,22 @@ describe('Composer queue edit mode', () => {
   it('takes the caret when it opens a message edit, and only then', async () => {
     // The editor's own entry: with both of its props set it focuses its field…
     const { container } = await renderComposer({ value: 'edited text', messageEditing: true, autoFocus: true });
-    expect(document.activeElement).toBe(container.querySelector('textarea[data-composer]'));
+    expect(document.activeElement).toBe(container.querySelector('[data-composer-input][contenteditable]'));
     // …a composer that autofocuses for another reason is not this editor…
     const { container: plain } = await renderComposer({ value: 'hello', autoFocus: true });
-    expect(document.activeElement).not.toBe(plain.querySelector('textarea[data-composer]'));
+    expect(document.activeElement).not.toBe(composerInput(plain));
     // …and a field that cannot hold a caret yet waits for the load, then takes it.
     const { container: gated, rerender } = await renderComposer({ value: 'edited text', messageEditing: true, autoFocus: true, disabled: true });
-    expect(document.activeElement).not.toBe(gated.querySelector('textarea[data-composer]'));
+    expect(document.activeElement).not.toBe(composerInput(gated));
     await rerender({ value: 'edited text', messageEditing: true, autoFocus: true, disabled: false });
-    expect(document.activeElement).toBe(gated.querySelector('textarea[data-composer]'));
+    expect(document.activeElement).toBe(composerInput(gated));
   });
 
   it('routes Enter to the queue edit confirm instead of a fresh send', async () => {
     const onSend = vi.fn();
     const props = queueEditProps({ onSend });
     const { container } = await renderComposer({ value: 'edited queued text', ...props });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     const sendButton = container.querySelector<HTMLButtonElement>('button[aria-label="Confirm edit"]')!;
 
     expect(sendButton.disabled).toBe(false);
@@ -4479,7 +4478,7 @@ describe('Composer queue edit mode', () => {
   it('skips the slash typo guard while editing a queued message', async () => {
     const props = queueEditProps();
     const { container } = await renderComposer({ value: '/not-a-skill at all', ...props });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
 
     await pressKey(textarea, { key: 'Enter' });
     // A slash-looking edit is queue text, not a command attempt: no guard.
@@ -4490,7 +4489,7 @@ describe('Composer queue edit mode', () => {
   it('cancels the edit with Escape and from the banner', async () => {
     const props = queueEditProps();
     const { container } = await renderComposer({ value: 'queued text', ...props });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
 
     expect(container.querySelector('[data-queue-edit-banner]')?.textContent).toContain(
       'Editing a queued message',
@@ -4577,7 +4576,7 @@ describe('Composer projected profile model menu', () => {
     await rerender({ ...props, model: 'fixture/outside' });
     expect(container.querySelector('[data-model-domain-note]')?.textContent).toContain('profile:agent.restrict_models_to_menu');
     expect(container.querySelector('[data-model-menu-warning]')).toBeNull();
-    await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    await act(async () => composerInput(container).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     expect(onSend).toHaveBeenCalledWith('hello', []);
     await act(async () => (container.querySelector<HTMLButtonElement>('#composer-profile-select') ?? container.querySelector<HTMLButtonElement>('#composer-execution-select'))!.click());
     expect([...document.body.querySelectorAll('[role="option"]')].some((node) => node.textContent?.includes('outside-profile'))).toBe(true);
@@ -4594,7 +4593,7 @@ describe('Composer projected profile model menu', () => {
     expect(outside.getAttribute('aria-disabled')).not.toBe('true');
     expect(outside.textContent).not.toContain('profile:agent');
     await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
-    await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    await act(async () => composerInput(container).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     expect(onSend).toHaveBeenCalledWith('hello', []);
   });
   it.each(['pending', 'failed'])('does not invent a main restriction when capabilities are %s', async (status) => {
@@ -4602,7 +4601,7 @@ describe('Composer projected profile model menu', () => {
     const onSend = vi.fn();
     const { container } = await renderComposer({ sessionId: 'saved-session', agentProfile: 'agent', model: 'fixture/outside', value: 'hello', onSend });
     expect(container.querySelector('[data-model-menu-blocked]')).toBeNull();
-    await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    await act(async () => composerInput(container).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     expect(onSend).toHaveBeenCalledWith('hello', []);
   });
   it('warns without blocking a main hard allow/deny domain when menu restriction is off', async () => {
@@ -4611,7 +4610,7 @@ describe('Composer projected profile model menu', () => {
     const onSend = vi.fn();
     const { container } = await renderComposer({ agentProfile: 'agent', model: 'fixture/outside', value: 'hello', onSend });
     expect(container.querySelector('[data-model-domain-note]')?.textContent).toContain('profile:agent');
-    await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    await act(async () => composerInput(container).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     expect(onSend).toHaveBeenCalledWith('hello', []);
   });
   it.each(['pending', 'failed'])('keeps subagent model choices usable when bound capabilities are %s', async (status) => {
@@ -4633,7 +4632,7 @@ describe('Composer projected profile model menu', () => {
     const { container } = await renderComposer({ sessionId: 'saved-session', agentProfile: 'agent', model: 'fixture/outside', value: 'hello', onSend });
     expect(getAgentCapabilities).toHaveBeenCalledWith({ session_id: 'saved-session', agent_id: 'main' });
     expect(container.querySelector('[data-model-menu-blocked]')).toBeNull();
-    await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    await act(async () => composerInput(container).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     expect(onSend).toHaveBeenCalledWith('hello', []);
   });
 });
@@ -4671,7 +4670,7 @@ describe('Composer on coarse pointers (phone contract)', () => {
     stubCoarsePointer();
     const onSend = vi.fn();
     const { container } = await renderComposer({ value: 'mobile draft', onSend });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     expect(textarea.getAttribute('enterkeyhint')).toBe('enter');
 
     await pressKey(textarea, { key: 'Enter' });
@@ -4684,7 +4683,7 @@ describe('Composer on coarse pointers (phone contract)', () => {
     const onSend = vi.fn();
     const onSendNow = vi.fn();
     const { container } = await renderComposer({ value: 'steer this', busy: true, onSend, onSendNow });
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
 
     await pressKey(textarea, { key: 'Enter', ctrlKey: true });
     await settle();
@@ -4954,7 +4953,7 @@ describe('Composer with a pending engine/profile switch', () => {
     // does, so it leaves the row; the pending chip beside it names the switch.
     expect(container.querySelector('[data-composer-send-now-hint]')).toBeNull();
 
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await pressKey(textarea, { key: 'Enter', ctrlKey: true });
     await settle();
     expect(onSendNow).toHaveBeenCalledWith('hello', []);
@@ -5000,12 +4999,12 @@ describe('Composer with a pending engine/profile switch', () => {
 describe('Composer input accessible name', () => {
   it('stays fixed while the placeholder drifts with state', async () => {
     const { container, rerender } = await renderComposer({ value: '', busy: false });
-    const input = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const input = composerInput(container);
     expect(input.getAttribute('aria-label')).toBe('Message input');
-    expect(input.getAttribute('placeholder')).toBe('What should Kiki work on…');
+    expect(input.querySelector('.cm-placeholder')?.textContent).toBe('What should Kiki work on…');
     await rerender({ value: '', busy: true });
     expect(input.getAttribute('aria-label')).toBe('Message input');
-    expect(input.getAttribute('placeholder')).not.toBe('What should Kiki work on…');
+    expect(input.querySelector('.cm-placeholder')?.textContent).not.toBe('What should Kiki work on…');
   });
 });
 
@@ -5067,7 +5066,7 @@ describe('session SSH stays resident and rides no message', () => {
     await settle();
     await rerender({ sessionId: 'session-example', value: '/review --fix', onSend, onActivateSkill });
     for (let index = 0; index < 8; index += 1) await settle();
-    const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+    const textarea = composerInput(container);
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
@@ -5399,7 +5398,7 @@ describe('Composer paged @ picker', () => {
     const fsSearch = vi.fn().mockResolvedValueOnce({ items: [], next_cursor: 'page-2', sort_scope: 'page' }).mockResolvedValueOnce({ items: hits, sort_scope: 'page' });
     const onChangeAttachments = vi.fn();
     const { container } = await renderStatefulComposer({ fsSearch, onChangeAttachments });
-    await typeText(composerTextarea(container), '@part');
+    await typeText(composerInputOf(container), '@part');
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 280)); });
     await settle();
     expect(fsSearch).toHaveBeenCalledTimes(1);
@@ -5411,14 +5410,14 @@ describe('Composer paged @ picker', () => {
     expect(container.querySelector('[data-mention-file-more]')).toBeNull();
     await click(container.querySelectorAll('[data-mention-file-list] [role="option"]')[11]!);
     expect(onChangeAttachments).toHaveBeenLastCalledWith([{ kind: 'file', path: 'src/part-0.ts', name: 'part-0.ts', isDir: false }]);
-    expect(composerTextarea(container).value).toBe('');
+    expect(composerInputOf(container).value).toBe('');
   });
 
   it('aborts an unfinished mention page when the picker closes and never appends its late rows', async () => {
     const pending = deferred<readonly { path: string; name: string; kind: 'file'; score: number; match_positions: number[] }[]>();
     const fsSearch = vi.fn().mockReturnValue(pending.promise);
     const { container } = await renderStatefulComposer({ fsSearch });
-    const textarea = composerTextarea(container);
+    const textarea = composerInputOf(container);
     await typeText(textarea, '@part');
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 280)); });
     const signal = fsSearch.mock.calls[0]?.[1]?.signal as AbortSignal;

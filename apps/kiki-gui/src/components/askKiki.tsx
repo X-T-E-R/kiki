@@ -40,6 +40,7 @@ import type { SessionCreate, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 
 import { useI18n } from '../i18n';
+import { composerInputOf } from '../lib/composerInput';
 import { pushToast } from '../lib/toasts';
 import { useConnection } from '../state/connection';
 import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
@@ -170,10 +171,11 @@ function landCaretAfterHandoff(sessionId: string, draft: string): void {
   const onFocusIn = (event: FocusEvent) => {
     const node = event.target;
     finish();
-    if (!(node instanceof HTMLTextAreaElement) || !node.matches('textarea[data-composer]')) return;
-    if (node.dataset['composerSession'] !== sessionId || node.value !== draft) return;
-    if (node.selectionStart !== 0 || node.selectionEnd !== 0) return;
-    node.setSelectionRange(draft.length, draft.length);
+    const input = composerInputOf(node);
+    if (!(node instanceof HTMLElement) || input === null) return;
+    if (node.dataset['composerSession'] !== sessionId || input.value !== draft) return;
+    if (input.selectionStart !== 0 || input.selectionEnd !== 0) return;
+    input.setSelectionRange(draft.length, draft.length);
   };
   pendingCaretLanding = finish;
   doc.addEventListener('focusin', onFocusIn, true);

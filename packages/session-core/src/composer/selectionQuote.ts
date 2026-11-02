@@ -187,7 +187,8 @@ export function buildQuotePrefix(quote: string, source?: SelectionSourceAnchor |
  */
 export function buildAnnotationBlock(annotation: { quote: string; comment: string; source?: SelectionSourceAnchor | null }): string {
   const comment = annotation.comment.replaceAll('\r\n', '\n').replaceAll('\r', '\n').trim();
-  return `${buildQuotePrefix(annotation.quote, annotation.source)}Comment: ${comment}\n\n`;
+  const quote = buildQuotePrefix(annotation.quote, annotation.source);
+  return comment === '' ? quote : `${quote}Comment: ${comment}\n\n`;
 }
 
 /**
@@ -246,7 +247,8 @@ export function selectionCarryoverPresentation(
   for (const annotation of annotations) {
     const start = prefix.length;
     prefix += buildAnnotationBlock(annotation);
-    spans.push({ start, end: prefix.length, kind: 'selection', quote: annotation.quote, comment: annotation.comment, source: annotation.source });
+    const comment = annotation.comment.trim();
+    spans.push({ start, end: prefix.length, kind: 'selection', quote: annotation.quote, comment: comment === '' ? undefined : annotation.comment, source: annotation.source });
   }
   const quotesList = Array.isArray(quoteOrQuotes)
     ? quoteOrQuotes

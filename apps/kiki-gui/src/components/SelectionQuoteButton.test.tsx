@@ -4,33 +4,19 @@ import { act, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import type { SelectionSourceAnchor } from '@kiki/session-core/composer';
 import { I18nProvider } from '../i18n';
 import { SelectionQuoteButton } from './SelectionQuoteButton';
 
 const containers: HTMLDivElement[] = [];
-const reactActEnvironment = globalThis as typeof globalThis & {
-  IS_REACT_ACT_ENVIRONMENT: boolean;
-};
+const reactActEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean };
 
 beforeAll(() => {
   reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
-  // Copy assertions are English: pin the locale source (Node's built-in
-  // navigator reports the OS language).
   vi.stubGlobal('navigator', { language: 'en-US' });
-  // jsdom ranges have no geometry at all; the popover needs a real anchor rect.
   Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
     configurable: true,
-    value: () => ({
-      top: 120,
-      left: 100,
-      right: 220,
-      bottom: 136,
-      width: 120,
-      height: 16,
-      x: 100,
-      y: 120,
-      toJSON: () => ({}),
-    }),
+    value: () => ({ top: 120, left: 100, right: 220, bottom: 136, width: 120, height: 16, x: 100, y: 120, toJSON: () => ({}) }),
   });
 });
 
@@ -46,11 +32,11 @@ afterAll(() => {
 });
 
 function Harness({
-  onQuote,
   onAnnotate,
+  onUpdateAnnotation,
 }: {
-  onQuote: (text: string) => void;
-  onAnnotate: (text: string, comment: string) => void;
+  onAnnotate: (text: string, comment: string, source?: SelectionSourceAnchor | null) => string;
+  onUpdateAnnotation: (id: string, comment: string) => void;
 }) {
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   return (
@@ -59,27 +45,25 @@ function Harness({
         <p data-source>the selectable transcript text</p>
         <p data-source-secondary>another selectable transcript text</p>
       </div>
-      <SelectionQuoteButton containerRef={transcriptRef} onQuote={onQuote} onAnnotate={onAnnotate} />
+      <SelectionQuoteButton containerRef={transcriptRef} onAnnotate={onAnnotate} onUpdateAnnotation={onUpdateAnnotation} />
     </>
   );
 }
 
-async function mount(onQuote = vi.fn(), onAnnotate = vi.fn()) {
+async function mount() {
+  let sequence = 0;
+  const onAnnotate = vi.fn((_text: string, _comment: string, _source?: SelectionSourceAnchor | null) => { sequence += 1; return `annotation-${sequence}`; });
+  const onUpdateAnnotation = vi.fn();
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
   await act(async () => {
-    root.render(
-      <I18nProvider>
-        <Harness onQuote={onQuote} onAnnotate={onAnnotate} />
-      </I18nProvider>,
-    );
+    root.render(<I18nProvider><Harness onAnnotate={onAnnotate} onUpdateAnnotation={onUpdateAnnotation} /></I18nProvider>);
   });
-  return { container, onQuote, onAnnotate };
+  return { container, onAnnotate, onUpdateAnnotation };
 }
 
-/** Selects a fixture paragraph and fires the mouseup that opens the pill. */
 async function selectSource(container: HTMLElement, selector = '[data-source]') {
   await act(async () => {
     const selection = window.getSelection()!;
@@ -95,10 +79,6 @@ function pill(container: HTMLElement): HTMLElement | null {
   return container.querySelector('[data-selection-quote]');
 }
 
-function quoteButton(container: HTMLElement): HTMLButtonElement {
-  return pill(container)!.querySelector('button')!;
-}
-
 function annotateButton(container: HTMLElement): HTMLButtonElement {
   return pill(container)!.querySelector('[data-selection-annotate-action]')!;
 }
@@ -107,7 +87,11 @@ function annotateInput(container: HTMLElement): HTMLInputElement | null {
   return pill(container)?.querySelector('[data-selection-annotate-input]') ?? null;
 }
 
-/** Types into the controlled comment input (native setter + input event). */
+async function createAnnotation(container: HTMLElement) {
+  await act(async () => { annotateButton(container).click(); });
+  return annotateInput(container)!;
+}
+
 async function typeComment(input: HTMLInputElement, text: string) {
   await act(async () => {
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
@@ -123,293 +107,116 @@ async function pressKey(target: HTMLElement, key: string, init: KeyboardEventIni
 }
 
 describe('SelectionQuoteButton', () => {
-  it('offers both quote and annotate actions above a contained selection', async () => {
+  it('offers one annotation entry above a contained selection', async () => {
     const { container } = await mount();
     await selectSource(container);
     expect(pill(container)).not.toBeNull();
-    expect(quoteButton(container).textContent).toContain('Quote');
+    expect(pill(container)!.querySelectorAll('button')).toHaveLength(1);
     expect(annotateButton(container).textContent).toContain('Annotate');
+    expect(pill(container)!.textContent).not.toContain('Quote');
   });
 
-  it('quotes the selection and dismisses the pill', async () => {
-    const onQuote = vi.fn();
-    const { container } = await mount(onQuote);
+  it('creates an empty sourced item immediately and opens its comment box', async () => {
+    const { container, onAnnotate, onUpdateAnnotation } = await mount();
     await selectSource(container);
-    await act(async () => { quoteButton(container).click(); });
-    expect(onQuote).toHaveBeenCalledWith('the selectable transcript text', null);
-    expect(pill(container)).toBeNull();
-    expect(window.getSelection()!.rangeCount).toBe(0);
-  });
-
-  it('annotate swaps to the comment input; Enter commits text + comment', async () => {
-    const onAnnotate = vi.fn();
-    const { container } = await mount(vi.fn(), onAnnotate);
-    await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    const input = annotateInput(container);
+    const input = await createAnnotation(container);
+    expect(onAnnotate).toHaveBeenCalledExactlyOnceWith('the selectable transcript text', '', null);
     expect(input).not.toBeNull();
-    expect(input!.placeholder).toContain('Enter');
-    await typeComment(input!, '  worth revisiting  ');
-    await pressKey(input!, 'Enter');
-    expect(onAnnotate).toHaveBeenCalledWith('the selectable transcript text', 'worth revisiting', null);
-    expect(pill(container)).toBeNull();
-    expect(window.getSelection()!.rangeCount).toBe(0);
+    expect(input.placeholder).toBe('Add a comment (optional)');
+    expect(onUpdateAnnotation).not.toHaveBeenCalled();
   });
 
-  it('Escape in the input falls back to the two actions without committing', async () => {
-    const onAnnotate = vi.fn();
-    const { container } = await mount(vi.fn(), onAnnotate);
+  it('updates the same item on every comment edit; Enter only closes the box', async () => {
+    const { container, onAnnotate, onUpdateAnnotation } = await mount();
     await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    const input = annotateInput(container)!;
-    await typeComment(input, 'half-written note');
-    await pressKey(input, 'Escape');
-    expect(onAnnotate).not.toHaveBeenCalled();
-    expect(annotateInput(container)).toBeNull();
-    expect(quoteButton(container).textContent).toContain('Quote');
-  });
-
-  it('keeps the pill Escape restored when a collapse is reported after it', async () => {
-    const { container } = await mount();
-    await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    await pressKey(annotateInput(container)!, 'Escape');
-    // Focusing the annotate input collapsed the document selection; a browser
-    // reports that collapse as an asynchronous selectionchange, which can be
-    // delivered after Escape already restored the two actions.
-    await act(async () => {
-      window.getSelection()!.removeAllRanges();
-      expect(window.getSelection()!.isCollapsed).toBe(true);
-      document.dispatchEvent(new Event('selectionchange'));
-    });
-    expect(quoteButton(container).textContent).toContain('Quote');
-    expect(annotateButton(container).textContent).toContain('Annotate');
-  });
-
-  it('still hides the pill when a fresh selection collapses after Escape', async () => {
-    const { container } = await mount();
-    await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    await pressKey(annotateInput(container)!, 'Escape');
-    await selectSource(container, '[data-source-secondary]');
-    expect(quoteButton(container).textContent).toContain('Quote');
-    await act(async () => {
-      window.getSelection()!.removeAllRanges();
-      document.dispatchEvent(new Event('selectionchange'));
-    });
-    expect(pill(container)).toBeNull();
-  });
-
-  it('Enter with an empty comment commits nothing and keeps the input open', async () => {
-    const onAnnotate = vi.fn();
-    const { container } = await mount(vi.fn(), onAnnotate);
-    await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    const input = annotateInput(container)!;
+    const input = await createAnnotation(container);
+    await typeComment(input, 'worth revisiting');
+    expect(onUpdateAnnotation).toHaveBeenLastCalledWith('annotation-1', 'worth revisiting');
     await pressKey(input, 'Enter');
-    expect(onAnnotate).not.toHaveBeenCalled();
-    expect(annotateInput(container)).not.toBeNull();
+    expect(onAnnotate).toHaveBeenCalledTimes(1);
+    expect(pill(container)).toBeNull();
   });
 
-  it('a collapsed selection does not hide the open annotate input or draft', async () => {
+  it('keeps an empty item when Escape or an outside click dismisses the box', async () => {
+    const { container, onAnnotate, onUpdateAnnotation } = await mount();
+    await selectSource(container);
+    const input = await createAnnotation(container);
+    await pressKey(input, 'Escape');
+    expect(onAnnotate).toHaveBeenCalledTimes(1);
+    expect(onUpdateAnnotation).not.toHaveBeenCalled();
+
+    await selectSource(container, '[data-source-secondary]');
+    const second = await createAnnotation(container);
+    await typeComment(second, 'keep this');
+    await act(async () => { document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); });
+    expect(pill(container)).toBeNull();
+    expect(onAnnotate).toHaveBeenCalledTimes(2);
+    expect(onUpdateAnnotation).toHaveBeenLastCalledWith('annotation-2', 'keep this');
+  });
+
+  it('allows clearing a comment without recreating or removing the item', async () => {
+    const { container, onAnnotate, onUpdateAnnotation } = await mount();
+    await selectSource(container);
+    const input = await createAnnotation(container);
+    await typeComment(input, 'temporary');
+    await typeComment(input, '');
+    expect(onUpdateAnnotation).toHaveBeenLastCalledWith('annotation-1', '');
+    await pressKey(input, 'Enter');
+    expect(onAnnotate).toHaveBeenCalledTimes(1);
+  });
+
+  it('accumulates independent entries in selection order', async () => {
+    const { container, onAnnotate } = await mount();
+    await selectSource(container);
+    await createAnnotation(container);
+    await pressKey(annotateInput(container)!, 'Enter');
+    await selectSource(container, '[data-source-secondary]');
+    await createAnnotation(container);
+    expect(onAnnotate.mock.calls.map((call) => call[0])).toEqual([
+      'the selectable transcript text',
+      'another selectable transcript text',
+    ]);
+  });
+
+  it('keeps the comment box through selection collapse and scrolling', async () => {
     const { container } = await mount();
     await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    const input = annotateInput(container)!;
-    await typeComment(input, 'draft survives collapse');
-    // Focusing the input collapses the document selection — the popover must
-    // survive because the text is already captured.
+    const input = await createAnnotation(container);
+    await typeComment(input, 'draft stays on its item');
     await act(async () => {
       window.getSelection()!.removeAllRanges();
       document.dispatchEvent(new Event('selectionchange'));
-    });
-    expect(annotateInput(container)?.value).toBe('draft survives collapse');
-  });
-
-  it('does not prevent an input mousedown from placing the caret', async () => {
-    const { container } = await mount();
-    await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    const input = annotateInput(container)!;
-    const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
-    await act(async () => {
-      input.dispatchEvent(event);
-    });
-    expect(event.defaultPrevented).toBe(false);
-  });
-
-  it('keeps a long annotation draft through transcript and input scrolling', async () => {
-    const onAnnotate = vi.fn();
-    const { container } = await mount(vi.fn(), onAnnotate);
-    await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    const input = annotateInput(container)!;
-    const longComment = 'long note '.repeat(400);
-    await typeComment(input, longComment);
-    await act(async () => {
-      input.dispatchEvent(new Event('scroll', { bubbles: true }));
-    });
-    expect(annotateInput(container)?.value).toBe(longComment);
-    await act(async () => {
       window.dispatchEvent(new Event('scroll'));
     });
-    const retainedInput = annotateInput(container);
-    expect(retainedInput).not.toBeNull();
-    expect(retainedInput!.value).toBe(longComment);
-    await pressKey(retainedInput!, 'Enter');
-    expect(onAnnotate).toHaveBeenCalledTimes(1);
-    expect(onAnnotate).toHaveBeenCalledWith('the selectable transcript text', longComment.trim(), null);
+    expect(annotateInput(container)?.value).toBe('draft stays on its item');
   });
 
-  it('temporarily hides on an outside click and reopens the draft on the same selection', async () => {
-    const onAnnotate = vi.fn();
-    const { container } = await mount(vi.fn(), onAnnotate);
+  it('does not close or commit Enter during IME composition', async () => {
+    const { container, onAnnotate, onUpdateAnnotation } = await mount();
     await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    const input = annotateInput(container)!;
-    await typeComment(input, 'half-written note');
-    await act(async () => {
-      document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    });
-    expect(annotateInput(container)).toBeNull();
-
-    await selectSource(container);
-    const resumedInput = annotateInput(container);
-    expect(resumedInput).not.toBeNull();
-    expect(resumedInput!.value).toBe('half-written note');
-    await pressKey(resumedInput!, 'Enter');
-    expect(onAnnotate).toHaveBeenCalledTimes(1);
+    const input = await createAnnotation(container);
+    await typeComment(input, '中文评论');
+    await act(async () => { input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })); });
+    await pressKey(input, 'Enter');
+    await pressKey(input, 'Escape');
+    expect(annotateInput(container)).not.toBeNull();
+    await act(async () => { input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })); });
+    await pressKey(input, 'Enter');
     expect(pill(container)).toBeNull();
-  });
-
-  it('shows actions for a different selection without losing the original draft', async () => {
-    const onQuote = vi.fn();
-    const { container } = await mount(onQuote);
-    await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    await typeComment(annotateInput(container)!, 'keep this draft');
-    await act(async () => {
-      document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    });
-
-    await selectSource(container, '[data-source-secondary]');
-    expect(quoteButton(container).textContent).toContain('Quote');
-    await act(async () => { quoteButton(container).click(); });
-    expect(onQuote).toHaveBeenCalledWith('another selectable transcript text', null);
-
-    await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    expect(annotateInput(container)?.value).toBe('keep this draft');
-  });
-
-  it('starts a fresh annotation for a different selection instead of reusing its draft', async () => {
-    const onAnnotate = vi.fn();
-    const { container } = await mount(vi.fn(), onAnnotate);
-    await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    await typeComment(annotateInput(container)!, 'old source note');
-    await act(async () => {
-      document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    });
-
-    await selectSource(container, '[data-source-secondary]');
-    await act(async () => { annotateButton(container).click(); });
-    expect(annotateInput(container)?.value).toBe('');
-    await typeComment(annotateInput(container)!, 'new source note');
-    await pressKey(annotateInput(container)!, 'Enter');
     expect(onAnnotate).toHaveBeenCalledTimes(1);
-    expect(onAnnotate).toHaveBeenCalledWith('another selectable transcript text', 'new source note', null);
+    expect(onUpdateAnnotation).toHaveBeenLastCalledWith('annotation-1', '中文评论');
   });
 
-  it('allows a second annotation after a successful submit', async () => {
-    const onAnnotate = vi.fn();
-    const { container } = await mount(vi.fn(), onAnnotate);
+  it('captures the message anchor before focusing the comment input', async () => {
+    const { container, onAnnotate } = await mount();
+    const source = container.querySelector<HTMLElement>('[data-source]')!;
+    source.dataset['sourceBlockId'] = 'actual-source';
+    source.dataset['sourceVersion'] = 'source-version';
     await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    await typeComment(annotateInput(container)!, 'first note');
-    await pressKey(annotateInput(container)!, 'Enter');
-    expect(onAnnotate).toHaveBeenCalledTimes(1);
-
-    await selectSource(container, '[data-source-secondary]');
-    await act(async () => { annotateButton(container).click(); });
-    expect(annotateInput(container)?.value).toBe('');
-    await typeComment(annotateInput(container)!, 'second note');
-    await pressKey(annotateInput(container)!, 'Enter');
-    expect(onAnnotate).toHaveBeenCalledTimes(2);
-    expect(onAnnotate).toHaveBeenLastCalledWith('another selectable transcript text', 'second note', null);
-  });
-
-  it('does not commit Enter while an IME composition is active and commits once after it ends', async () => {
-    const onAnnotate = vi.fn();
-    const { container } = await mount(vi.fn(), onAnnotate);
-    await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    const input = annotateInput(container)!;
-    await typeComment(input, '中文草稿');
-    await act(async () => {
-      input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    await createAnnotation(container);
+    const text = 'theselectabletranscripttext';
+    expect(onAnnotate).toHaveBeenCalledExactlyOnceWith('the selectable transcript text', '', {
+      blockId: 'actual-source', version: 'source-version', start: 0, end: text.length, text,
     });
-    await pressKey(input, 'Enter');
-    expect(onAnnotate).not.toHaveBeenCalled();
-    expect(annotateInput(container)?.value).toBe('中文草稿');
-    await act(async () => {
-      input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
-    });
-    await pressKey(input, 'Enter');
-    expect(onAnnotate).toHaveBeenCalledTimes(1);
-    await pressKey(input, 'Enter');
-    expect(onAnnotate).toHaveBeenCalledTimes(1);
   });
-
-  it('clears a temporarily retained draft only after explicit Escape cancellation', async () => {
-    const { container } = await mount();
-    await selectSource(container);
-    await act(async () => { annotateButton(container).click(); });
-    await typeComment(annotateInput(container)!, 'discard me');
-    await act(async () => {
-      document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    });
-    await pressKey(document.body, 'Escape');
-    await selectSource(container);
-    expect(annotateInput(container)).toBeNull();
-    await act(async () => { annotateButton(container).click(); });
-    expect(annotateInput(container)?.value).toBe('');
-  });
-});
-
-
-it('hands the captured message anchor through focus collapse for both annotate and quote', async () => {
-  const { container, onQuote, onAnnotate } = await mount();
-  const source = container.querySelector<HTMLElement>('[data-source]')!;
-  source.dataset['sourceBlockId'] = 'actual-source';
-  source.dataset['sourceVersion'] = 'source-version';
-  const expected = { blockId: 'actual-source', version: 'source-version', start: 0, end: 27, text: 'theselectabletranscripttext' };
-  expected.end = expected.text.length;
-  await selectSource(container);
-  await act(async () => { quoteButton(container).click(); });
-  expect(onQuote).toHaveBeenCalledWith('the selectable transcript text', expected);
-  await selectSource(container);
-  await act(async () => { annotateButton(container).click(); window.getSelection()!.removeAllRanges(); });
-  await typeComment(annotateInput(container)!, 'captured note');
-  await pressKey(annotateInput(container)!, 'Enter');
-  expect(onAnnotate).toHaveBeenCalledWith('the selectable transcript text', 'captured note', expected);
-});
-
-
-it('does not resume a retained note on identical text from a different source message', async () => {
-  const { container } = await mount();
-  const first = container.querySelector<HTMLElement>('[data-source]')!;
-  const second = container.querySelector<HTMLElement>('[data-source-secondary]')!;
-  first.dataset['sourceBlockId'] = 'first';
-  second.dataset['sourceBlockId'] = 'second';
-  first.dataset['sourceVersion'] = second.dataset['sourceVersion'] = 'same-version';
-  second.textContent = first.textContent;
-  await selectSource(container);
-  await act(async () => { annotateButton(container).click(); });
-  await typeComment(annotateInput(container)!, 'belongs to first');
-  await act(async () => { document.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); });
-  await selectSource(container, '[data-source-secondary]');
-  expect(annotateInput(container)).toBeNull();
-  await act(async () => { annotateButton(container).click(); });
-  expect(annotateInput(container)?.value).toBe('');
 });

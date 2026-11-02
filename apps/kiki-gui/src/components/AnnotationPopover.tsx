@@ -75,7 +75,7 @@ export function AnnotationPopover({
   const trimmed = draft.trim();
   const dirty = annotation.comment !== null && trimmed !== annotation.comment;
   const save = () => {
-    if (!dirty || trimmed === '') return;
+    if (!dirty) return;
     onSave(annotation.id, trimmed);
   };
 
@@ -136,7 +136,7 @@ export function AnnotationPopover({
             <button
               type="button"
               data-annotation-panel-save
-              disabled={!dirty || trimmed === ''}
+              disabled={!dirty}
               className="min-h-10 rounded-md bg-ink/[0.06] px-3 text-[11px] font-semibold text-ink transition-colors hover:bg-ink/[0.1] disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-8"
               onClick={save}
             >

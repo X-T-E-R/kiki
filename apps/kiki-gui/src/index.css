@@ -1124,7 +1124,7 @@ body[data-pane-resizing='true'] {
     0 1px 2px rgb(var(--kiki-shadow-ink) / 0.05),
     0 12px 32px -16px rgb(var(--kiki-shadow-ink) / 0.24);
 }
-.composer-card:has(textarea:focus-visible) {
+.composer-card:has(textarea:focus-visible, [data-composer-input]:focus-visible) {
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--color-ink) 18%, transparent),
     0 1px 2px rgb(var(--kiki-shadow-ink) / 0.05),
@@ -1136,7 +1136,7 @@ body[data-pane-resizing='true'] {
     inset 0 1px 0 rgb(239 232 220 / 0.035),
     0 16px 40px -18px rgb(0 0 0 / 0.75);
 }
-[data-theme='dark'] .composer-card:has(textarea:focus-visible) {
+[data-theme='dark'] .composer-card:has(textarea:focus-visible, [data-composer-input]:focus-visible) {
   box-shadow:
     0 0 0 1px rgb(239 232 220 / 0.16),
     inset 0 1px 0 rgb(239 232 220 / 0.035),
@@ -1419,10 +1419,37 @@ button.context-image:hover {
 
 /* The composer card's border carries the input's focus state; the global
  * :focus-visible outline would draw a second box inside the card. */
-.conversation-seat textarea[data-composer]:focus-visible,
-[data-composer-variant] textarea[data-composer]:focus-visible,
+.conversation-seat [data-composer]:focus-visible,
+[data-composer-variant] [data-composer]:focus-visible,
 .composer-card textarea[data-room-input]:focus-visible {
   outline: none;
+}
+
+.composer-input {
+  width: 100%;
+  container-type: inline-size;
+}
+.composer-input:has([aria-disabled='true']) {
+  opacity: 0.6;
+}
+.composer-reference {
+  display: inline-block;
+  max-width: min(32rem, 90cqw);
+  overflow: hidden;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-ink) 4.5%, transparent);
+  box-shadow: inset 0 0 0 1px var(--color-hairline);
+  color: var(--color-ink);
+  font-size: 0.92em;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: -0.2em;
+}
+.composer-reference-source {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
 }
 /* The ＋ menu's search field: its rounded well carries the focus ring. */
 input[data-add-search]:focus-visible {

@@ -48,6 +48,7 @@ function hasRouterErrors(routerState?: { errors?: Record<string, unknown> | null
 
 import { useConnection } from '../../state/connection';
 import { useI18n } from '../../i18n';
+import { composerInputOf } from '../../lib/composerInput';
 import { DirtyGuardContext, useGuardedNavigate } from '../dirtyGuard';
 
 export interface DiscoveryDataState {
@@ -487,7 +488,7 @@ export function DiscoveryProvider({
         if (freshDraft.trim() !== '') return 'cancelled';
 
         const composer = typeof document !== 'undefined'
-          ? document.querySelector<HTMLTextAreaElement>('textarea[data-composer]')
+          ? composerInputOf(document.querySelector<HTMLElement>('[data-composer]'))
           : null;
         if (composer && composer.value.trim() !== '') return 'cancelled';
 

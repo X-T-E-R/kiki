@@ -51,7 +51,7 @@ const { seat, submit, queueStub, fixture, updateSessionProfile, switchAgentModel
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../state/connection', () => {
   const client = {
-    klient: { session: () => ({ agent: () => ({ events: { on: () => ({ ready: Promise.resolve(), dispose: () => {} }) } }) }) },
+    klient: { session: () => ({ agent: () => ({ isCompacting: async () => false, getLoopStatus: async () => ({ state: 'idle' }), events: { on: () => ({ ready: Promise.resolve(), dispose: () => {} }), onError: () => ({ dispose: () => {} }) } }) }) },
     sessionView: () => ({}),
     getConfig: () => Promise.resolve({ default_model: 'provider/native-model' }),
     listModels: () => Promise.resolve({ items: [] }),
@@ -231,10 +231,10 @@ vi.mock('./Transcript', async (importOriginal) => {
   };
 });
 vi.mock('./SelectionQuoteButton', () => ({
-  SelectionQuoteButton: ({ onAnnotate, onQuote }: { onAnnotate: (quote: string, comment: string, source?: SelectionSourceAnchor) => void; onQuote: (text: string, source?: SelectionSourceAnchor) => void }) => (
+  SelectionQuoteButton: ({ onAnnotate }: { onAnnotate: (quote: string, comment: string, source?: SelectionSourceAnchor) => string }) => (
     <>
-      <button type="button" data-annotate onClick={() => { onAnnotate('selected source', 'keep this', { blockId: 'actual-source', version: 'source-version', start: 0, end: 14, text: 'selectedsource' }); }}>Annotate</button>
-      <button type="button" data-quote onClick={() => { onQuote('personal quote', { blockId: 'actual-quote', version: 'quote-version', start: 0, end: 13, text: 'personalquote' }); }}>Quote</button>
+      <button type="button" data-annotate onClick={() => onAnnotate('selected source', 'keep this', { blockId: 'actual-source', version: 'source-version', start: 0, end: 14, text: 'selectedsource' })}>Annotate</button>
+      <button type="button" data-quote onClick={() => onAnnotate('personal quote', '', { blockId: 'actual-quote', version: 'quote-version', start: 0, end: 13, text: 'personalquote' })}>Annotate without comment</button>
     </>
   ),
 }));
@@ -263,9 +263,6 @@ type ComposerProps = {
   onChangeAttachments: (attachments: readonly ComposerAttachment[]) => void;
   attachments: readonly ComposerAttachment[];
   queueEditing: boolean;
-  quote: string | null;
-  /** Every unsent quote chip; the single `quote` prop is the legacy shape. */
-  quotes?: readonly { id: string; quote: string; source?: SelectionSourceAnchor | null }[];
   header?: ReactElement<{ queue: { count: number; panel: ReactElement<{ children: ReactElement<{ onEdit: (id: string) => void; onClearAll: () => void }> }> } }>;
   annotations: readonly SelectionAnnotation[];
   onSend: (
@@ -724,8 +721,14 @@ describe('session selection annotations', () => {
 
   it('hands the notes back when the send fails, ahead of any added meanwhile', async () => {
     await withSession(async (container) => {
+      const raw = 'go on /s/session_reference';
+      const prepared = `${raw}\n\n<thread_refs>generated context</thread_refs>`;
       let sent: Promise<unknown> | undefined;
-      await act(async () => { sent = composerProps().onSend('go on', []); });
+      await act(async () => {
+        sent = composerProps().onSend(prepared, [], {
+          presentation: { spans: [{ start: raw.length, end: prepared.length, kind: 'context' }] },
+        });
+      });
       expect(currentAnnotations()).toEqual([]);
       await act(async () => { container.querySelector<HTMLButtonElement>('[data-annotate]')!.click(); });
       const added = currentAnnotations();
@@ -735,6 +738,7 @@ describe('session selection annotations', () => {
       expect(back).toHaveLength(2);
       expect(back[1]).toBe(added[0]);
       expect(back[0]!.id).not.toBe(added[0]!.id);
+      expect(composerProps().value).toBe(raw);
     });
   });
 
@@ -750,7 +754,7 @@ describe('session selection annotations', () => {
       expect(carry.body).toBe('follow up');
       await act(async () => { submit.calls[0]!.reject(new Error('offline')); await sent; });
       expect(currentAnnotations()[0]?.source).toEqual(source);
-      expect(readComposerState('session-a').quotes?.map((item) => item.source?.blockId)).toEqual(['actual-quote']);
+      expect(readComposerState('session-a').annotations?.filter((item) => item.comment === '').map((item) => item.source?.blockId)).toEqual(['actual-quote']);
     });
   });
 
@@ -831,20 +835,22 @@ describe('session selection annotations', () => {
     queueStub.holds = [];
     try {
       await withSession(async (container) => {
-        const originalNotes = currentAnnotations();
         await act(async () => { container.querySelector<HTMLButtonElement>('[data-quote]')!.click(); });
-        expect(composerProps().quotes?.map((item) => item.quote)).toEqual(['personal quote']);
+        const parkedSelections = currentAnnotations();
+        expect(parkedSelections.map((item) => [item.quote, item.comment])).toEqual([
+          ['selected source', 'keep this'],
+          ['personal quote', ''],
+        ]);
         await act(async () => { composerProps().header!.props.queue.panel.props.children.props.onEdit('p-edit'); });
         expect(composerProps().value).toBe('QUEUED TEXT');
         expect(composerProps().queueEditing).toBe(true);
         await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-b]')!.click(); });
         expect(readDraft('session-a')).toBe('ORIGINAL UNSENT DRAFT');
-        expect(readComposerState('session-a').annotations).toEqual(originalNotes);
-        expect(queueStub.holds.at(-1)).toMatchObject({ held: false, draft: 'ORIGINAL UNSENT DRAFT', annotations: originalNotes });
+        expect(readComposerState('session-a').annotations).toEqual(parkedSelections);
+        expect(queueStub.holds.at(-1)).toMatchObject({ held: false, draft: 'ORIGINAL UNSENT DRAFT', annotations: parkedSelections });
         await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-a]')!.click(); });
         expect(composerProps().value).toBe('ORIGINAL UNSENT DRAFT');
-        expect(currentAnnotations()).toEqual(originalNotes);
-        expect(composerProps().quotes?.map((item) => item.quote)).toEqual(['personal quote']);
+        expect(currentAnnotations()).toEqual(parkedSelections);
         expect(composerProps().queueEditing).toBe(false);
       });
     } finally {

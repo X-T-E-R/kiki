@@ -12,6 +12,7 @@ import { requestComposerInsert } from '@kiki/session-core/composer';
 import { writeSettings } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
 import { Composer } from './Composer';
+import { composerInput } from './composerInputTestUtils';
 
 const REF_ID = 'session_0f8e2a4c-1b3d-4e5f-8a9b-0c1d2e3f4a5b';
 const listModels = vi.fn();
@@ -140,7 +141,6 @@ const seedLists = (client: QueryClient) => {
   client.setQueryData(['workspaces', 'catalog'], { items: [workspace] });
 };
 
-const textarea = (container: HTMLDivElement) => container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
 const sendButton = (container: HTMLDivElement) => container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
 
 async function click(element: Element) {
@@ -201,10 +201,13 @@ describe('Composer thread links', () => {
     expect(chip.textContent).toContain('Fix the flaky upload test');
     expect(chip.textContent).toContain('kiki');
     expect(chip.getAttribute('data-thread-ref-status')).toBe('running');
-    expect(container.querySelector('[data-thread-ref-token]')?.textContent).toBe(`/s/${REF_ID}`);
+    const token = container.querySelector<HTMLElement>('[data-thread-ref-token]');
+    expect(token?.textContent).toBe('Fix the flaky upload test');
+    expect(token).toBe(container.querySelector('[data-thread-ref-overlay-token]'));
+    expect(token?.title).toBe(`Fix the flaky upload test\n/s/${REF_ID}`);
     await click(chip.querySelector('button[aria-label^="Remove link to"]')!);
     await settle();
-    expect(textarea(container).value).toBe('see now');
+    expect(composerInput(container).value).toBe('see now');
     expect(container.querySelector('[data-thread-ref-chip]')).toBeNull();
   });
 
@@ -234,7 +237,7 @@ describe('Composer thread links', () => {
   it('deletes a link as one token on Backspace', async () => {
     const draft = `a /s/${REF_ID}`;
     const container = await render({ sessionId: 'session_current', initial: draft }, seedLists);
-    const node = textarea(container);
+    const node = composerInput(container);
     node.setSelectionRange(draft.length, draft.length);
     await act(async () => { node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true })); });
     await settle();
@@ -243,7 +246,7 @@ describe('Composer thread links', () => {
 
   it('inserts a link at the caret when the sidebar asks this session\'s composer', async () => {
     const container = await render({ sessionId: 'session_current', initial: 'before after' }, seedLists);
-    const node = textarea(container);
+    const node = composerInput(container);
     await act(async () => {
       node.focus();
       node.setSelectionRange(7, 7);
@@ -276,7 +279,7 @@ describe('Composer room links', () => {
     expect(chip!.textContent).toContain('Release contract');
     expect(chip!.querySelector('button[aria-label^="Remove link to room"]')).not.toBeNull();
     // The raw link stays the user's own text in the draft, never rewritten.
-    expect(textarea(container).value).toContain(`/rooms/${ROOM_ID}`);
+    expect(composerInput(container).value).toContain(`/rooms/${ROOM_ID}`);
     await click(sendButton(container));
     await settle();
     const sent = onSend.mock.calls[0]?.[0] as string;
@@ -320,7 +323,7 @@ describe('Composer room links', () => {
       withRooms(client, [{ id: ROOM_ID, name: 'Release contract', members: [{}] }]);
     });
     expect(container.querySelector(`[data-room-ref-chip="${ROOM_ID}"]`)).not.toBeNull();
-    const input = textarea(container);
+    const input = composerInput(container);
     const afterLink = `go /rooms/${ROOM_ID}`.length;
     await act(async () => {
       input.focus();
@@ -329,7 +332,7 @@ describe('Composer room links', () => {
     });
     await settle();
     expect(container.querySelector(`[data-room-ref-chip="${ROOM_ID}"]`)).toBeNull();
-    expect(textarea(container).value).not.toContain('/rooms/');
+    expect(composerInput(container).value).not.toContain('/rooms/');
   });
 
   it('leaves an external same-shaped URL as ordinary text', async () => {

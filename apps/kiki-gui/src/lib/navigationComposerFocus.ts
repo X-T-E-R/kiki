@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { anyOverlayOpen } from './uiBusy';
+import { composerInputOf } from './composerInput';
 
 type Caret = { start: number; end: number; direction: 'forward' | 'backward' | 'none'; value: string };
 
-function composerKey(node: HTMLTextAreaElement): string {
+function composerKey(node: HTMLElement): string {
   return `${node.dataset['composerSession']}\0${node.dataset['composerAgent'] ?? 'main'}`;
 }
 
@@ -11,15 +12,9 @@ export function shouldYieldComposerFocus(active: Element | null): boolean {
   if (anyOverlayOpen()) return true;
   if (active === null || active === document.body) return false;
   if (active.closest('.xterm') !== null) return true;
-  if (
-    active instanceof HTMLInputElement ||
-    active instanceof HTMLSelectElement ||
-    (active instanceof HTMLElement && active.isContentEditable) ||
-    (active instanceof HTMLTextAreaElement && !active.matches('textarea[data-composer], textarea[data-composer-session]'))
-  ) {
-    return true;
-  }
-  return false;
+  if (active.matches('[data-composer]')) return false;
+  return active instanceof HTMLInputElement || active instanceof HTMLSelectElement ||
+    active instanceof HTMLTextAreaElement || (active instanceof HTMLElement && active.isContentEditable);
 }
 
 /** One focus request per conversation endpoint, consumed or cancelled by user focus. */
@@ -29,9 +24,10 @@ export function useNavigationComposerFocus(scopeId: string, sessionId: string | 
     carets.current.clear();
     const remember = (event: Event) => {
       const node = event.target;
-      if (!(node instanceof HTMLTextAreaElement) || !node.matches('[data-composer-session]')) return;
+      const input = composerInputOf(node);
+      if (!(node instanceof HTMLElement) || input === null || !node.matches('[data-composer-session]')) return;
       carets.current.set(composerKey(node), {
-        start: node.selectionStart, end: node.selectionEnd, direction: node.selectionDirection, value: node.value,
+        start: input.selectionStart, end: input.selectionEnd, direction: input.selectionDirection, value: input.value,
       });
     };
     for (const type of ['select', 'keyup', 'keydown', 'focusout']) document.addEventListener(type, remember, true);
@@ -53,20 +49,21 @@ export function useNavigationComposerFocus(scopeId: string, sessionId: string | 
     };
     const onFocusIn = (event: FocusEvent) => {
       const target = event.target;
-      if (target instanceof Element && target.matches('textarea[data-composer-session]')) return;
+      if (target instanceof Element && target.matches('[data-composer-session]')) return;
       cancel();
     };
     const attempt = () => {
       frame = 0;
       if (finished) return;
       if (shouldYieldComposerFocus(document.activeElement)) { cancel(); return; }
-      const node = [...document.querySelectorAll<HTMLTextAreaElement>('textarea[data-composer-session]')]
+      const node = [...document.querySelectorAll<HTMLElement>('[data-composer-session]')]
         .find((element) => element.dataset['composerSession'] === sessionId && element.dataset['composerAgent'] === agentId);
-      if (node === undefined || node.disabled || node.getClientRects().length === 0 || getComputedStyle(node).visibility === 'hidden') return;
+      const input = composerInputOf(node ?? null);
+      if (node === undefined || input === null || input.disabled || node.getClientRects().length === 0 || getComputedStyle(node).visibility === 'hidden') return;
       cancel();
       const caret = carets.current.get(composerKey(node));
-      node.focus({ preventScroll: true });
-      if (caret !== undefined && caret.value === node.value) node.setSelectionRange(caret.start, caret.end, caret.direction);
+      input.focus({ preventScroll: true });
+      if (caret !== undefined && caret.value === input.value) input.setSelectionRange(caret.start, caret.end, caret.direction);
     };
     function schedule() {
       if (!finished && frame === 0) frame = requestAnimationFrame(attempt);

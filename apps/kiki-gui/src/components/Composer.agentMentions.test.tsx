@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { writeSettings } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
 import { Composer } from './Composer';
+import { composerInput, setComposerInputValue, type ComposerInputElement } from './composerInputTestUtils';
 
 const referenceCandidates = vi.fn();
 const listModels = vi.fn();
@@ -129,22 +130,18 @@ async function render(props: Props & { initial?: string }) {
   return container;
 }
 
-const textarea = (container: HTMLDivElement) => container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
 const options = (container: HTMLDivElement) => [...container.querySelectorAll<HTMLElement>('[role="option"]')];
 
-/** Set the controlled textarea's value the way React's onChange expects. */
-async function typeText(node: HTMLTextAreaElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+/** Set the controlled editor's value through a real CodeMirror transaction. */
+async function typeText(node: ComposerInputElement, value: string) {
   await act(async () => {
     node.focus();
-    setter?.call(node, value);
-    node.setSelectionRange(value.length, value.length);
-    node.dispatchEvent(new Event('input', { bubbles: true }));
+    setComposerInputValue(node, value);
   });
 }
 
 async function typeAndSettle(container: HTMLDivElement, value: string) {
-  await typeText(textarea(container), value);
+  await typeText(composerInput(container), value);
   // The mention query debounces (250ms) before the feed and agent query settle.
   await settle(320);
   await settle(60);
@@ -171,14 +168,15 @@ describe('Composer agent mentions', () => {
   it('accepts an agent with the keyboard: the draft gains the verbatim link and a tinted token', async () => {
     const container = await render({ sessionId: 'session_current', fsSearch: vi.fn().mockResolvedValue([]) });
     await typeAndSettle(container, '@clau');
-    const node = textarea(container);
+    const node = composerInput(container);
     // First (only) row is claude-code; Enter accepts it.
     await act(async () => { node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
     await settle();
     expect(node.value).toContain('kiki://agents/claude-code');
-    // The backdrop marks the link's range as a tinted token (transparent marks
-    // can only tint; a readable label would need an overlay — see the receipt).
-    expect(container.querySelector('[data-thread-ref-token][data-ref-kind="agent"]')?.textContent).toContain('kiki://agents/claude-code');
+    const token = container.querySelector<HTMLElement>('[data-thread-ref-token][data-ref-kind="agent"]');
+    expect(token?.textContent).toBe('@claude-code');
+    expect(token).toBe(container.querySelector('[data-thread-ref-overlay-token][data-ref-kind="agent"]'));
+    expect(token?.title).toBe('@claude-code\nkiki://agents/claude-code');
   });
 
   it('falls back to the server reason text for a code it does not know', async () => {
@@ -199,14 +197,14 @@ describe('Composer agent mentions', () => {
     const codex = options(container).find((nodeEl) => (nodeEl.textContent ?? '').includes('codex'))!;
     await act(async () => { codex.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
     await settle();
-    expect(textarea(container).value).toBe('@codex');
+    expect(composerInput(container).value).toBe('@codex');
     expect(container.querySelector('[data-ref-kind="agent"]')).toBeNull();
   });
 
   it('deletes an agent link as one token on Backspace', async () => {
     const draft = 'ask kiki://agents/claude-code';
     const container = await render({ sessionId: 'session_current', initial: draft, fsSearch: vi.fn().mockResolvedValue([]) });
-    const node = textarea(container);
+    const node = composerInput(container);
     expect(node.value).toBe(draft);
     // Caret right after the link: one Backspace takes the whole token.
     await act(async () => {
@@ -222,7 +220,7 @@ describe('Composer agent mentions', () => {
     const onSend = vi.fn();
     const container = await render({ sessionId: 'session_current', onSend, fsSearch: vi.fn().mockResolvedValue([]) });
     await typeAndSettle(container, '@clau');
-    const node = textarea(container);
+    const node = composerInput(container);
     await act(async () => { node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
     await settle();
     await typeText(node, `${node.value}please review`);
@@ -246,35 +244,46 @@ describe('Composer agent mentions', () => {
   it('overlays the readable @label over the link and reveals the raw link while the caret is inside', async () => {
     const container = await render({ sessionId: 'session_current', fsSearch: vi.fn().mockResolvedValue([]) });
     await typeAndSettle(container, '@clau');
-    const node = textarea(container);
+    const node = composerInput(container);
     await act(async () => { node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
     await settle(60); // flush the rAF that lands the caret after the inserted token
     // The overlay carries the candidate label; the raw link stays in the draft.
     expect(node.value).toContain('kiki://agents/claude-code');
-    const token = container.querySelector<HTMLElement>('[data-thread-ref-overlay-token][data-ref-kind="agent"]');
+    const token = container.querySelector<HTMLElement>('[data-thread-ref-token][data-ref-kind="agent"]');
     expect(token?.textContent).toBe('@claude-code');
-    // Move the caret inside the link's range: the raw link shows for editing.
+    // Move the caret strictly inside the link's range: the raw link shows for editing.
     const start = node.value.indexOf('kiki://agents/');
+    const end = start + 'kiki://agents/claude-code'.length;
     await act(async () => {
       node.focus();
       node.setSelectionRange(start + 4, start + 4);
       node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await settle(60);
-    expect(container.querySelector('[data-thread-ref-overlay-token][data-ref-kind="agent"]')).toBeNull();
-    // Back out of the range and the label returns.
+    const editing = container.querySelector<HTMLElement>('[data-thread-ref-token][data-ref-kind="agent"]');
+    expect(editing).toBeNull();
+    expect(node.textContent).toContain('kiki://agents/claude-code');
+    // A selection covering the token keeps its replacement chip visible.
+    await act(async () => {
+      node.setSelectionRange(start, end);
+      node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await settle(60);
+    const selected = container.querySelector<HTMLElement>('[data-thread-ref-token][data-ref-kind="agent"]');
+    expect(selected?.textContent).toBe('@claude-code');
+    // Back out of the range and the label remains visible.
     await act(async () => {
       node.setSelectionRange(node.value.length, node.value.length);
       node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     await settle(60);
-    expect(container.querySelector('[data-thread-ref-overlay-token][data-ref-kind="agent"]')?.textContent).toBe('@claude-code');
+    expect(container.querySelector('[data-thread-ref-token][data-ref-kind="agent"]')?.textContent).toBe('@claude-code');
   });
 
   it('overlays each reference independently when the same target is named twice', async () => {
     const container = await render({ sessionId: 'session_current', fsSearch: vi.fn().mockResolvedValue([]) });
     await typeAndSettle(container, '@clau');
-    const node = textarea(container);
+    const node = composerInput(container);
     await act(async () => { node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
     await settle(60);
     await typeText(node, `${node.value}and @clau`);
@@ -282,7 +291,7 @@ describe('Composer agent mentions', () => {
     await settle(60);
     await act(async () => { node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
     await settle(60);
-    const tokens = [...container.querySelectorAll<HTMLElement>('[data-thread-ref-overlay-token][data-ref-kind="agent"]')];
+    const tokens = [...container.querySelectorAll<HTMLElement>('[data-thread-ref-token][data-ref-kind="agent"]')];
     expect(tokens.map((token) => token.textContent)).toEqual(['@claude-code', '@claude-code']);
   });
 
@@ -293,20 +302,20 @@ describe('Composer agent mentions', () => {
     });
     const container = await render({ sessionId: 'session_current', fsSearch: vi.fn().mockResolvedValue([]) });
     await typeAndSettle(container, '@clau');
-    const node = textarea(container);
+    const node = composerInput(container);
     await act(async () => { node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
     await settle(60);
-    const token = container.querySelector<HTMLElement>('[data-thread-ref-overlay-token][data-ref-kind="agent"]')!;
+    const token = container.querySelector<HTMLElement>('[data-thread-ref-token][data-ref-kind="agent"]')!;
     expect(token.textContent).toContain('Claude Code with an extremely long display name');
-    // The token is the truncating overlay chip, capped to the line.
-    expect(token.className).toContain('truncate');
-    expect(token.className).toContain('max-w-full');
+    expect(token).toBe(container.querySelector('[data-thread-ref-overlay-token][data-ref-kind="agent"]'));
+    expect(token.title).toBe('@Claude Code with an extremely long display name that cannot fit\nkiki://agents/claude-code');
+    expect(node.value).toContain('kiki://agents/claude-code');
   });
 
   it('falls back to the profile name for a reference the candidates do not list', async () => {
     const container = await render({ sessionId: 'session_current', initial: 'ask kiki://agents/stale-profile now', fsSearch: vi.fn().mockResolvedValue([]) });
     await settle();
-    const token = container.querySelector<HTMLElement>('[data-thread-ref-overlay-token][data-ref-kind="agent"]');
+    const token = container.querySelector<HTMLElement>('[data-thread-ref-token][data-ref-kind="agent"]');
     expect(token?.textContent).toBe('@stale-profile');
   });
 
@@ -322,7 +331,7 @@ describe('Composer agent mentions', () => {
       initial: draft,
       fsSearch: vi.fn().mockResolvedValue([]),
     });
-    const node = textarea(container);
+    const node = composerInput(container);
     expect(node.value).toBe(draft);
     await act(async () => { node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
     await settle();

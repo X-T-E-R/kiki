@@ -39,6 +39,7 @@ import { useMediaQuery } from '../lib/layoutHooks';
 import { staggerStyle } from '../lib/motion';
 import { importHistoryPath } from '@kiki/session-core/settings';
 import { useConnection } from '../state/connection';
+import { composerInputOf } from '../lib/composerInput';
 
 /**
  * What the target row and the starters name this session's home. A typed cwd
@@ -230,7 +231,7 @@ function heroStarters(workspaceName: string | undefined): readonly {
 
 function focusComposer() {
   window.requestAnimationFrame(() => {
-    const textarea = document.querySelector<HTMLTextAreaElement>('textarea[data-composer]');
+    const textarea = composerInputOf(document.querySelector<HTMLElement>('[data-composer]'));
     if (textarea === null) return;
     textarea.focus();
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);

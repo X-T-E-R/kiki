@@ -49,6 +49,10 @@ describe('buildAnnotationBlock', () => {
       '> one\n> two\n\nComment: noted\n\n',
     );
   });
+
+  it('keeps an empty comment as a quote-only segment with no empty Comment line', () => {
+    expect(buildAnnotationBlock({ quote: 'source text', comment: '   ' })).toBe('> source text\n\n');
+  });
 });
 
 describe('buildAnnotationsPrefix', () => {
@@ -93,6 +97,23 @@ describe('buildAnnotationsPrefix', () => {
         source,
       },
     ]);
+  });
+
+  it('preserves mixed empty and commented selections in their original order through cold replay', () => {
+    const firstSource = { blockId: 'a1', version: 'v1', start: 0, end: 5, text: 'first' };
+    const secondSource = { blockId: 'a2', version: 'v2', start: 0, end: 6, text: 'second' };
+    const thirdSource = { blockId: 'a3', version: 'v3', start: 0, end: 5, text: 'third' };
+    const annotations = [
+      { quote: 'first', comment: '', source: firstSource },
+      { quote: 'second', comment: 'keep this', source: secondSource },
+      { quote: 'third', comment: '', source: thirdSource },
+    ];
+    const carried = selectionCarryoverPresentation(annotations, []);
+    expect(carried.prefix).toBe(annotations.map((annotation) => buildAnnotationBlock(annotation)).join(''));
+    expect(carried.presentation.spans.map((span) => span.comment)).toEqual([undefined, 'keep this', undefined]);
+    const replayed = parseSelectionCarryovers(`${carried.prefix}follow up`, carried.presentation);
+    expect(replayed.selections).toEqual(annotations);
+    expect(replayed.body).toBe('follow up');
   });
 });
 

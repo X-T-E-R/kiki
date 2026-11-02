@@ -62,6 +62,8 @@ export function annotationOverrideId(
 export interface SelectionCarryovers {
   readonly annotations: readonly { quote: string; comment: string; source?: SelectionSourceAnchor | null }[];
   readonly quotes: readonly { quote: string; source?: SelectionSourceAnchor | null }[];
+  /** Unified draft order; an empty comment is a quote without a second data shape. */
+  readonly selections: readonly { quote: string; comment: string; source?: SelectionSourceAnchor | null }[];
   readonly quote: string | null;
   readonly quoteSource?: SelectionSourceAnchor | null;
   /** The typed remainder after the carry-over prefix. */
@@ -71,11 +73,13 @@ export interface SelectionCarryovers {
 function parseLegacyCarryoverPrefix(text: string): {
   annotations: { quote: string; comment: string; source?: SelectionSourceAnchor | null }[];
   quotes: { quote: string; source?: SelectionSourceAnchor | null }[];
+  selections: { quote: string; comment: string; source?: SelectionSourceAnchor | null }[];
   body: string;
 } | null {
   let index = 0;
   const annotations: { quote: string; comment: string; source?: SelectionSourceAnchor | null }[] = [];
   const quotes: { quote: string; source?: SelectionSourceAnchor | null }[] = [];
+  const selections: { quote: string; comment: string; source?: SelectionSourceAnchor | null }[] = [];
 
   while (index < text.length) {
     if (!text.slice(index).startsWith('>')) break;
@@ -125,16 +129,20 @@ function parseLegacyCarryoverPrefix(text: string): {
         commentText = text.slice(pos).trim();
         pos = text.length;
       }
-      annotations.push({ quote: quoteText, comment: commentText, source });
+      const annotation = { quote: quoteText, comment: commentText, source };
+      annotations.push(annotation);
+      selections.push(annotation);
       index = pos;
     } else {
-      quotes.push({ quote: quoteText, source });
+      const quote = { quote: quoteText, source };
+      quotes.push(quote);
+      selections.push({ ...quote, comment: '' });
       index = pos;
     }
   }
 
   if (annotations.length === 0 && quotes.length === 0) return null;
-  return { annotations, quotes, body: text.slice(index) };
+  return { annotations, quotes, selections, body: text.slice(index) };
 }
 
 /**
@@ -151,6 +159,7 @@ export function parseSelectionCarryovers(text: string, presentation?: import('@k
     return {
       annotations,
       quotes,
+      selections: selections.map((span) => ({ quote: span.quote!, comment: span.comment ?? '', source: span.source })),
       quote: quoted?.quote ?? null,
       quoteSource: quoted?.source,
       body: projectPresentedText(text, presentation),
@@ -163,6 +172,7 @@ export function parseSelectionCarryovers(text: string, presentation?: import('@k
     return {
       annotations: legacy.annotations,
       quotes: legacy.quotes,
+      selections: legacy.selections,
       quote: quoted?.quote ?? null,
       quoteSource: quoted?.source,
       body: projectPresentedText(legacy.body, presentation),
@@ -172,6 +182,7 @@ export function parseSelectionCarryovers(text: string, presentation?: import('@k
   return {
     annotations: [],
     quotes: [],
+    selections: [],
     quote: null,
     quoteSource: null,
     body: projectPresentedText(text, presentation),

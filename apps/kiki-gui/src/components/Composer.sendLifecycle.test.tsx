@@ -12,6 +12,7 @@ import type { NamedAgentProfile } from '../lib/client';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { I18nProvider } from '../i18n';
 import { Composer } from './Composer';
+import { composerInput } from './composerInputTestUtils';
 import { ConversationShell, useRegisterSeat, type ConversationSeat } from './ConversationShell';
 import { ContextBreakdownProvider } from './ContextMeter';
 
@@ -236,21 +237,19 @@ function sendButton(container: ParentNode): HTMLButtonElement {
   return button;
 }
 
-function textareaOf(container: ParentNode): HTMLTextAreaElement {
-  const textarea = container.querySelector<HTMLTextAreaElement>('textarea[data-composer]');
-  if (textarea === null) throw new Error('composer textarea missing');
-  return textarea;
+function inputOf(container: ParentNode) {
+  return composerInput(container);
 }
 
 async function pressEnter(container: ParentNode): Promise<void> {
-  const textarea = textareaOf(container);
+  const textarea = inputOf(container);
   await act(async () => {
     textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
   });
 }
 
 async function pressUndo(container: ParentNode): Promise<void> {
-  const textarea = textareaOf(container);
+  const textarea = inputOf(container);
   await act(async () => {
     textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
   });
@@ -288,7 +287,7 @@ describe('catalog reads and the running turn are not the submit latch', () => {
     const onSend = vi.fn(() => hung.promise);
     const { container } = await renderComposer({ sessionId: 'session-a', value: 'hello', busy: true, onSend });
     expect(sendButton(container).disabled).toBe(false);
-    const textarea = textareaOf(container);
+    const textarea = inputOf(container);
     await act(async () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
@@ -308,21 +307,21 @@ describe('resident submit latch', () => {
     const sendA = vi.fn(() => hung.promise);
     const sendB = vi.fn(async () => {});
     const { container, rerender } = await renderComposer({ sessionId: 'session-a', value: 'from-a', onSend: sendA });
-    const textarea = textareaOf(container);
+    const textarea = inputOf(container);
     await pressEnter(container);
     expect(sendA).toHaveBeenCalledTimes(1);
     expect(sendButton(container).disabled).toBe(true);
 
     await rerender({ sessionId: 'session-b', value: 'from-b', onSend: sendB });
     await settle(2);
-    expect(textareaOf(container)).toBe(textarea);
-    expect(textareaOf(container).value).toBe('from-b');
+    expect(inputOf(container)).toBe(textarea);
+    expect(inputOf(container).value).toBe('from-b');
     expect(sendButton(container).disabled).toBe(false);
 
     hung.resolve();
     await settle(2);
     expect(sendB).not.toHaveBeenCalled();
-    expect(textareaOf(container).value).toBe('from-b');
+    expect(inputOf(container).value).toBe('from-b');
     expect(container.querySelector('[data-attachment-error]')).toBeNull();
     await pressEnter(container);
     expect(sendB).toHaveBeenCalledTimes(1);
@@ -345,7 +344,7 @@ describe('resident submit latch', () => {
     await settle(2);
     expect(sendB).toHaveBeenCalledTimes(1);
     expect(sendButton(container).disabled).toBe(true);
-    expect(textareaOf(container).value).toBe('from-b');
+    expect(inputOf(container).value).toBe('from-b');
 
     hungB.resolve();
     await settle(2);
@@ -369,7 +368,7 @@ describe('resident submit latch', () => {
     await pressEnter(container);
     expect(sendA).toHaveBeenCalledTimes(1);
     expect(sendB).not.toHaveBeenCalled();
-    expect(textareaOf(container).value).toBe('from-a');
+    expect(inputOf(container).value).toBe('from-a');
 
     hungA.resolve();
     await settle(2);
@@ -417,15 +416,15 @@ describe('resident submit latch', () => {
     const createSend = vi.fn(() => created.promise);
     const sessionSend = vi.fn(async () => {});
     const { container, rerender } = await renderComposer({ value: 'first message', onSend: createSend });
-    const textarea = textareaOf(container);
+    const textarea = inputOf(container);
     await pressEnter(container);
     expect(createSend).toHaveBeenCalledTimes(1);
     expect(sendButton(container).disabled).toBe(true);
 
     await rerender({ sessionId: 'session-new', value: 'first message', onSend: sessionSend });
     await settle(2);
-    expect(textareaOf(container)).toBe(textarea);
-    expect(textareaOf(container).value).toBe('first message');
+    expect(inputOf(container)).toBe(textarea);
+    expect(inputOf(container).value).toBe('first message');
     expect(sessionSend).not.toHaveBeenCalled();
     expect(sendButton(container).disabled).toBe(false);
 
@@ -433,7 +432,7 @@ describe('resident submit latch', () => {
     await settle(2);
     expect(createSend).toHaveBeenCalledTimes(1);
     expect(sessionSend).not.toHaveBeenCalled();
-    expect(textareaOf(container).value).toBe('first message');
+    expect(inputOf(container).value).toBe('first message');
   });
 
   it('does not let the /new create latch unlock a submit the new session started', async () => {
@@ -459,7 +458,7 @@ describe('resident submit latch', () => {
     expect(createSend).toHaveBeenCalledTimes(1);
     expect(sessionSend).toHaveBeenCalledTimes(1);
     expect(sendButton(container).disabled).toBe(true);
-    expect(textareaOf(container).value).toBe('second message');
+    expect(inputOf(container).value).toBe('second message');
 
     sessionHung.resolve();
     await settle(2);
@@ -494,12 +493,12 @@ describe('vscode prepare that resolves after a session switch', () => {
     expect(sendA).toHaveBeenCalledTimes(1);
     expect(sendA).toHaveBeenCalledWith('prepared-a', []);
     expect(sendB).not.toHaveBeenCalled();
-    expect(textareaOf(container).value).toBe('from-b');
+    expect(inputOf(container).value).toBe('from-b');
     expect(readInputHistory('session-a')).toEqual(['from-a']);
     expect(readInputHistory('session-b')).toEqual([]);
     await pressUndo(container);
     expect(changes).toEqual([]);
-    expect(textareaOf(container).value).toBe('from-b');
+    expect(inputOf(container).value).toBe('from-b');
   });
 
   it('does not paint a prepare failure onto the session that is now open', async () => {
@@ -516,7 +515,7 @@ describe('vscode prepare that resolves after a session switch', () => {
     expect(sendA).not.toHaveBeenCalled();
     expect(sendB).not.toHaveBeenCalled();
     expect(container.querySelector('[data-attachment-error]')).toBeNull();
-    expect(textareaOf(container).value).toBe('from-b');
+    expect(inputOf(container).value).toBe('from-b');
     expect(sendButton(container).disabled).toBe(false);
   });
 
@@ -552,7 +551,7 @@ describe('vscode prepare that resolves after a session switch', () => {
     expect(activateA).toHaveBeenCalledTimes(1);
     expect(activateB).not.toHaveBeenCalled();
     expect(sendB).not.toHaveBeenCalled();
-    expect(textareaOf(container).value).toBe('from-b');
+    expect(inputOf(container).value).toBe('from-b');
     await pressUndo(container);
     expect(changes).toEqual([]);
   });
@@ -581,7 +580,7 @@ describe('resident slash catalog wait', () => {
     await settle(4);
     expect(sendA).not.toHaveBeenCalled();
     expect(sendB).not.toHaveBeenCalled();
-    expect(textareaOf(container).value).toBe('plain text');
+    expect(inputOf(container).value).toBe('plain text');
     expect(container.querySelector('[data-attachment-error]')).toBeNull();
   });
 
@@ -757,7 +756,7 @@ describe('ConversationShell route seat', () => {
     const hung = deferred();
     const sends = { a: vi.fn(() => hung.promise), b: vi.fn(async () => {}) };
     const router = await mountShell(sends, false);
-    const textarea = textareaOf(document);
+    const textarea = inputOf(document);
     await pressEnter(document);
     expect(sends.a).toHaveBeenCalledTimes(1);
 
@@ -766,8 +765,8 @@ describe('ConversationShell route seat', () => {
     });
     await settle(4);
     expect(document.querySelector('[data-publisher]')?.getAttribute('data-publisher')).toBe('session-b');
-    expect(textareaOf(document)).toBe(textarea);
-    expect(textareaOf(document).value).toBe('from-b');
+    expect(inputOf(document)).toBe(textarea);
+    expect(inputOf(document).value).toBe('from-b');
     expect(sendButton(document).disabled).toBe(false);
     await pressEnter(document);
     expect(sends.b).toHaveBeenCalledTimes(1);
@@ -783,7 +782,7 @@ describe('ConversationShell route seat', () => {
       await router.navigate('/s/session-b');
     });
     await settle(4);
-    expect(textareaOf(document).value).toBe('from-b');
+    expect(inputOf(document).value).toBe('from-b');
     expect(sendButton(document).disabled).toBe(false);
   });
 
@@ -792,17 +791,17 @@ describe('ConversationShell route seat', () => {
     const sends = { a: vi.fn(() => hung.promise), b: vi.fn(async () => {}) };
     const router = await mountShell(sends, true);
     await pressEnter(document);
-    const previous = textareaOf(document);
+    const previous = inputOf(document);
     await act(async () => {
       await router.navigate('/gap');
     });
     await settle(2);
-    expect(document.querySelector('textarea[data-composer]')).toBeNull();
+    expect(document.querySelector('[data-composer-input][contenteditable]')).toBeNull();
     await act(async () => {
       await router.navigate('/s/session-b');
     });
     await settle(4);
-    expect(textareaOf(document)).not.toBe(previous);
+    expect(inputOf(document)).not.toBe(previous);
     expect(sendButton(document).disabled).toBe(false);
     await pressEnter(document);
     expect(sends.b).toHaveBeenCalledTimes(1);

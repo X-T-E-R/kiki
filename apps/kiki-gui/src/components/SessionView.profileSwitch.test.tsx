@@ -24,6 +24,7 @@ import type { NamedAgentProfile, Session } from '@kiki/protocol';
 import { clearComposerState, clearStoredDrafts, resetComposerMemoryForTests, resetDraftMemoryForTests } from '@kiki/session-core/composer';
 import { settingsSnapshot } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
+import { composerInput as getComposerInput, setComposerInputValue, type ComposerInputElement } from './composerInputTestUtils';
 import { clearToasts, getToasts } from '../lib/toasts';
 import { ConversationShell } from './ConversationShell';
 import { SessionRouteView } from './SessionView';
@@ -261,16 +262,12 @@ const queueModelSwitchCancel = (container: HTMLElement) =>
   [...ui(container).querySelectorAll<HTMLButtonElement>('[data-queue-model-switch-actions] button')]
     .find((button) => button.textContent?.trim() === 'Cancel');
 
-const composerInput = (container: HTMLElement) =>
-  ui(container).querySelector<HTMLTextAreaElement>('textarea[data-composer]');
+const composerInput = (container: HTMLElement): ComposerInputElement => getComposerInput(ui(container));
 
 async function type(text: string, container: HTMLElement): Promise<void> {
   const input = composerInput(container);
-  if (input === null) throw new Error('composer input is missing');
   await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-    setter?.call(input, text);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    setComposerInputValue(input, text);
   });
   await settle();
 }

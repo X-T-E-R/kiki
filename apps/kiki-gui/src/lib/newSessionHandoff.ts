@@ -141,7 +141,7 @@ export function runNewSessionHandoff({ text, navigate }: {
   }
 
   const message = stripThreadRefContext(text ?? '').trim();
-  const source = message === '' ? null : document.querySelector<HTMLElement>('textarea[data-composer]');
+  const source = message === '' ? null : document.querySelector<HTMLElement>('[data-composer]');
   source?.setAttribute(SOURCE_ATTR, '');
   root.setAttribute(HANDOFF_ATTR, 'morph');
   let navigated = false;

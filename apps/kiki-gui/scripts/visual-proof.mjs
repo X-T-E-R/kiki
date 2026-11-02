@@ -85,6 +85,7 @@ const MATRIX = {
   steer: ['width'],
   'durable-admission': ['theme'],
   'notes-rail': ['width'],
+  'selection-annotate': ['width'],
   'annotation-bubbles': ['width'],
   worktrees: ['theme', 'width'],
   // Theme is not claimed as a dimension here: this build's palette is owned by
@@ -261,6 +262,8 @@ const SOURCES = {
   // Unsent selection notes fold into one pill; `.one`/`.other` on the count.
   notesPillOne: { key: 'composer.notes.pill', count: 1 },
   notesPillTwo: { key: 'composer.notes.pill', count: 2 },
+  notesPillThree: { key: 'composer.notes.pill', count: 3 },
+  notesEmptyComment: { key: 'composer.notes.emptyComment' },
   // A settled stretch of process rows folds into one line naming its steps.
   foldWorked: { key: 'transcript.fold.worked' },
   foldSteps2: { key: 'transcript.fold.steps', count: 2 },
@@ -522,9 +525,9 @@ async function selectSession(titleFragment) {
   // waiting only for the scroll container burned its whole timeout there.
   await page.waitForSelector(`[data-transcript-scroll], text=${S.blankPage}`, { timeout: 20_000 }).catch(() => undefined);
   // With a pending decision and an empty draft the composer card is taken over:
-  // the textarea stays mounted but hidden, and the takeover's "back to input"
-  // row is the live seat.
-  await page.waitForSelector('textarea:not([disabled]), [data-needs-you-back]', { timeout: 20_000 });
+  // the CodeMirror content stays mounted but hidden, and the takeover's "back
+  // to input" row is the live seat.
+  await page.waitForSelector('[data-composer-input]:not([aria-disabled="true"]), [data-needs-you-back]', { timeout: 20_000 });
   await page.waitForTimeout(300); // first paint of the transcript rows
 }
 
@@ -4795,15 +4798,14 @@ async function scenarioAttachments() {
  */
 async function scenarioAgentMentions() {
   await selectSession('Fixture: agent mentions');
-  await page.click('textarea');
+  const input = page.locator('[data-composer-variant="main"] [data-composer-input]');
+  await input.click();
   // "@" opens the unified menu: the file group header, then the agent groups.
-  await page.fill('textarea', '@');
+  await input.fill('@');
   await page.waitForSelector(`text=${S.filesHeader}`, { timeout: 5000 });
   await page.waitForSelector('[role="option"]:has-text("agent")', { timeout: 5000 });
-  // Group headers name what the group is, never the first item's engine.
   await page.waitForSelector(`text=${S.agentGroupNative}`, { timeout: 5000 });
   await page.waitForSelector(`text=${S.agentGroupProfile}`, { timeout: 5000 });
-  // The unavailable Codex target is dimmed and disabled, with a localized reason.
   const codex = page.locator('[role="option"]', { hasText: 'codex' }).first();
   await codex.waitFor({ timeout: 5000 });
   if ((await codex.getAttribute('aria-disabled')) !== 'true' && !(await codex.isDisabled())) {
@@ -4812,48 +4814,31 @@ async function scenarioAgentMentions() {
   if (!(await codex.textContent())?.includes(S.agentReasonNotInstalled)) {
     throw new Error(`unavailable reason must be localized, got "${await codex.textContent()}"`);
   }
-  await page.waitForTimeout(450); // menu entrance settle
+  await page.waitForTimeout(450);
   await shot('agent-mentions-picker');
-  // Filter narrows the list to the matching agent, then accept it.
-  await page.fill('textarea', '@clau');
+  await input.fill('@clau');
   await page.waitForSelector('[role="option"]:has-text("claude-code")', { timeout: 5000 });
   await page.locator('[role="option"]', { hasText: 'claude-code' }).first().click();
-  // The draft carries the verbatim link; the overlay shows the readable @label
-  // over the link's range (the raw text stays in the transparent textarea).
-  const draft = await page.inputValue('textarea');
-  if (!draft.includes('kiki://agents/claude-code')) throw new Error(`agent link missing from draft: "${draft}"`);
   const token = page.locator('[data-thread-ref-overlay-token][data-ref-kind="agent"]');
   await token.waitFor({ timeout: 5000 });
   if ((await token.textContent()) !== '@claude-code') {
     throw new Error(`agent token must show the readable @label, got "${await token.textContent()}"`);
   }
+  if (!(await token.getAttribute('title'))?.includes('kiki://agents/claude-code')) {
+    throw new Error('agent chip tooltip must retain the complete target');
+  }
   await shot('agent-mentions-chip');
-  // Moving the caret inside the link reveals the raw link for editing. Arrow
-  // keys move the caret through a real key event (onSelect syncs the overlay),
-  // so step from the end back into the token's interior.
-  const linkEnd = draft.indexOf('kiki://agents/') + 'kiki://agents/claude-code'.length;
-  const stepsIn = draft.length - (linkEnd - 3);
-  for (let index = 0; index < stepsIn; index += 1) await page.keyboard.press('ArrowLeft');
-  // Wait for the overlay to drop the label (caret inside reveals the raw link),
-  // not a fixed sleep, so a fast or slow run never catches a mid-transition.
-  await page.waitForFunction(
-    () => document.querySelector('[data-thread-ref-overlay-token][data-ref-kind="agent"]') === null,
-    undefined,
-    { timeout: 5000 },
-  );
-  // The backdrop keeps tinting the raw link while it is being edited.
-  await page.locator('[data-thread-ref-token][data-ref-kind="agent"]').waitFor({ timeout: 5000 });
-  await shot('agent-mentions-editing');
-  // Back out of the range: the label returns.
+
+  // Native clipboard reads the raw document, not the shorter replacement label.
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await input.focus();
+  await page.keyboard.press('Control+A');
+  await page.keyboard.press('Control+C');
+  const draft = await page.evaluate(() => navigator.clipboard.readText());
+  if (!draft.includes('kiki://agents/claude-code')) throw new Error(`agent link missing from raw draft: "${draft}"`);
   await page.keyboard.press('End');
-  await page.waitForFunction(
-    () => document.querySelector('[data-thread-ref-overlay-token][data-ref-kind="agent"]') !== null,
-    undefined,
-    { timeout: 5000 },
-  );
-  // Send: the text part carries the agent link; the fixture echoes receipt.
-  await page.type('textarea', 'please review');
-  await page.press('textarea', 'Control+Enter');
+  await page.keyboard.type(' please review');
+  await input.press('Control+Enter');
   await waitForText('Agent reference received by the fixture.');
   const state = await control({ action: 'session', session_id: 'session_fixture_agent_mentions' });
   const content = state.data?.last_prompt_submission?.content ?? [];
@@ -4874,8 +4859,9 @@ async function scenarioAgentMentions() {
  */
 async function scenarioAgentMentionsDelegation() {
   await selectSession('Fixture: agent mentions (no delegation)');
-  await page.click('textarea');
-  await page.fill('textarea', '@');
+  const input = page.locator('[data-composer-variant="main"] [data-composer-input]');
+  await input.click();
+  await input.fill('@');
   await page.waitForSelector('[role="option"]:has-text("agent")', { timeout: 5000 });
   const note = page.locator('[data-agent-mention-note]');
   await note.waitFor({ timeout: 5000 });
@@ -4898,8 +4884,9 @@ async function scenarioAgentMentionsDelegation() {
  */
 async function scenarioAgentMentionsFailure() {
   await selectSession('Fixture: agent mentions (load failure)');
-  await page.click('textarea');
-  await page.fill('textarea', '@');
+  const input = page.locator('[data-composer-variant="main"] [data-composer-input]');
+  await input.click();
+  await input.fill('@');
   // The file group still loads; the failed candidate query leaves the menu on
   // its empty line rather than a broken list.
   await page.waitForSelector(`text=${S.agentMentionFailed}`, { timeout: 8000 });
@@ -4908,27 +4895,30 @@ async function scenarioAgentMentionsFailure() {
 }
 
 /**
- * selection-annotate — the transcript selection popover's two actions:
- * "Quote" chips the selection (blockquote prefix on send, unchanged), while
- * "Annotate" opens an in-place comment input (Enter commits, Esc cancels) and
- * chips quote+comment pairs. Chips accumulate across selections, survive each
- * other, and are individually removable. The sent prompt is asserted on the
- * control plane: annotation segments (blockquote + `Comment:`) first, then the
- * plain quote blockquote, then the typed text — plain text all the way down.
+ * selection-annotate — one selection entry immediately creates a sourced item,
+ * with an optional comment edited in place. Empty and commented items accumulate
+ * in selection order and are individually removable. The walk also proves the
+ * thread widget's visible width, raw clipboard/editing behavior, send failure
+ * recovery, retained newer items, immediate send, and cold source replay.
  */
 async function scenarioSelectionAnnotate() {
   await selectSession('Fixture: selection annotate');
   await waitForText('drains parked prompts in order');
 
+  const SID = 'session_fixture_selection_annotate';
+  const THREAD = `/s/${SID}`;
   const FRAGMENT_A = 'batches transcript blocks into floors';
   const COMMENT_A = 'Floor batching keeps long sessions cheap';
   const FRAGMENT_B = 'drains parked prompts in order';
-  const COMMENT_B = 'Promotion order matters';
   const QUOTE = 'Queue promotion';
-  const TYPED = 'please factor these in';
+  const NEW_QUOTE = 'How does the transcript stay responsive?';
+  const NEW_COMMENT = 'Added while the retry was in flight';
+  const TYPED = `Before ${THREAD} after`;
+  const input = page.locator('[data-composer-variant="main"] [data-composer-input]');
+  const notesPill = page.locator('[data-composer-notes-pill]');
+  const noteRows = page.locator('[data-composer-note]');
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
 
-  // Select a text fragment inside the transcript and fire the mouseup the
-  // floating popover listens for.
   const selectFragment = async (marker) => {
     await page.evaluate((needle) => {
       const log = document.querySelector('[role="log"]');
@@ -4951,131 +4941,210 @@ async function scenarioSelectionAnnotate() {
     }, marker);
     await page.waitForSelector('[data-selection-quote]', { timeout: 5000 });
   };
-  const annotate = async (marker, comment) => {
+  const annotate = async (marker, comment, key = 'Enter') => {
     await selectFragment(marker);
     await page.click('[data-selection-annotate-action]');
     await page.waitForSelector('[data-selection-annotate-input]', { timeout: 5000 });
-    await page.fill('[data-selection-annotate-input]', comment);
-    await page.press('[data-selection-annotate-input]', 'Enter');
-    await page.waitForTimeout(300); // let the pill entrance animation settle
+    if (comment !== '') await page.fill('[data-selection-annotate-input]', comment);
+    await page.press('[data-selection-annotate-input]', key);
   };
-  // Unsent notes fold into ONE pill; its panel lists them one row each.
-  const notesPill = page.locator('[data-composer-notes-pill]');
-  const noteRows = page.locator('[data-composer-note]');
   const openNotesPanel = async () => {
-    await page.waitForSelector('[data-composer-notes-pill]', { timeout: 5000 });
+    await notesPill.waitFor({ timeout: 5000 });
     await notesPill.click();
     await page.waitForSelector('[data-composer-notes-panel]', { timeout: 5000 });
   };
-  // A second click on the pill closes the pinned panel again, so the panel
-  // never sits between the pointer and the transcript selection popover.
   const closeNotesPanel = async () => {
     await notesPill.click();
     await page.waitForSelector('[data-composer-notes-panel]', { state: 'detached', timeout: 5000 });
   };
+  const rawDraft = async () => {
+    // Whole-token deletion restores its caret in a frame; let that restoration
+    // finish before Select All, or it can collapse the selection before Copy.
+    await page.evaluate(() => new Promise((resolve) => { requestAnimationFrame(() => resolve()); }));
+    await input.focus();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Control+C');
+    // Chromium's system clipboard write is asynchronous even though the copy
+    // key chord has completed; reading in the same task can return the prior draft.
+    await page.waitForTimeout(80);
+    const raw = await page.evaluate(() => navigator.clipboard.readText());
+    await page.keyboard.press('End');
+    return raw;
+  };
 
-  // A1: the popover offers both actions above the selection.
+  // One action only. Activation creates the item before any comment exists.
   await selectFragment(FRAGMENT_A);
-  await page.waitForTimeout(300); // let the popover entrance animation settle
-  const pillText = await page.locator('[data-selection-quote]').innerText();
-  if (!pillText.includes(S.quoteAction) || !pillText.includes(S.annotateAction)) {
-    throw new Error(`selection popover missing an action: ${pillText}`);
+  const actionPill = page.locator('[data-selection-quote]');
+  if ((await actionPill.locator('button').count()) !== 1) throw new Error('selection must offer exactly one entry');
+  const actionText = await actionPill.innerText();
+  if (!actionText.includes(S.annotateAction) || actionText.includes(S.quoteAction)) {
+    throw new Error(`selection entry is not unified: ${actionText}`);
   }
   await shot('selection-annotate-actions');
-
-  // A2: annotate opens the in-place comment input; the note lands in the
-  // composer's single notes pill, which lists it in its panel.
   await page.click('[data-selection-annotate-action]');
   await page.waitForSelector('[data-selection-annotate-input]', { timeout: 5000 });
+  await notesPill.waitFor({ timeout: 5000 });
+  if ((await notesPill.innerText()).trim() !== S.notesPillOne) throw new Error('empty annotation was not created immediately');
   await shot('selection-annotate-input');
   await page.fill('[data-selection-annotate-input]', COMMENT_A);
   await page.press('[data-selection-annotate-input]', 'Enter');
-  await page.waitForSelector('[data-composer-notes-pill]', { timeout: 5000 });
-  const oneNotePill = (await notesPill.innerText()).trim();
-  if (oneNotePill !== S.notesPillOne) {
-    throw new Error(`notes pill should read the one-note count, saw ${oneNotePill}`);
-  }
-  await openNotesPanel();
-  if ((await noteRows.count()) !== 1) throw new Error('first note missing from the notes panel');
-  const firstRow = await noteRows.nth(0).innerText();
-  if (!firstRow.includes(COMMENT_A) || !firstRow.includes(FRAGMENT_A)) {
-    throw new Error(`notes panel row does not name its note: ${firstRow}`);
-  }
-  await shot('selection-annotate-note-panel');
-  await closeNotesPanel();
 
-  // A3: notes accumulate — a second selection keeps the one pill and adds a row.
-  await annotate(FRAGMENT_B, COMMENT_B);
-  const twoNotePill = (await notesPill.innerText()).trim();
-  if (twoNotePill !== S.notesPillTwo) {
-    throw new Error(`notes did not accumulate in the pill: ${twoNotePill}`);
-  }
+  // A second item stays with an empty comment after Escape.
+  await annotate(FRAGMENT_B, '', 'Escape');
+  if ((await notesPill.innerText()).trim() !== S.notesPillTwo) throw new Error('mixed selections did not accumulate');
   await openNotesPanel();
-  if ((await noteRows.count()) !== 2) {
-    throw new Error(`notes did not accumulate: ${await noteRows.count()}`);
+  if ((await noteRows.count()) !== 2) throw new Error('notes panel must list both selections');
+  const firstRow = await noteRows.nth(0).innerText();
+  const secondRow = await noteRows.nth(1).innerText();
+  if (!firstRow.includes(COMMENT_A) || !secondRow.includes(S.notesEmptyComment)) {
+    throw new Error(`mixed note rows are wrong: ${firstRow} / ${secondRow}`);
   }
   await shot('selection-annotate-notes');
-  const actionRows = await noteRows.evaluateAll((rows) => rows.map((row) => {
-    const buttons = [...row.querySelectorAll('button')];
-    return buttons.map((button) => {
-      const box = button.getBoundingClientRect();
-      return { width: box.width, height: box.height, centerY: box.y + box.height / 2, right: box.right };
-    });
-  }));
-  for (const actions of actionRows) {
-    if (actions.length !== 3 || actions.some((action) =>
-      action.width !== 28 || action.height !== 28 || Math.abs(action.centerY - actions[0].centerY) > 0.5)) {
-      throw new Error(`note actions must be aligned 28px icon buttons: ${JSON.stringify(actions)}`);
-    }
-  }
-  if (Math.abs(actionRows[0][2].right - actionRows[1][2].right) > 0.5) {
-    throw new Error(`note action groups must share a right edge: ${JSON.stringify(actionRows)}`);
-  }
-  const locateNote = noteRows.nth(0).locator('[data-composer-note-locate]');
-  if ((await locateNote.innerText()).trim() !== '' || await locateNote.locator('[data-icon="arrowUpRight"]').count() !== 1) {
-    throw new Error('note locate must use the existing jump icon without visible text');
-  }
-  await locateNote.hover();
-  await shot('selection-annotate-notes-hover');
 
-  // A4: notes are individually removable; the other one stays.
+  // Removal is per item, and re-selecting creates a new independent item.
   await noteRows.nth(1).getByRole('button', { name: S.removeAnnotation }).click();
-  if ((await noteRows.count()) !== 1) throw new Error('note was not removable');
-  const remaining = await noteRows.nth(0).innerText();
-  if (!remaining.includes(COMMENT_A)) throw new Error(`wrong note survived removal: ${remaining}`);
-  await closeNotesPanel();
-  await annotate(FRAGMENT_B, COMMENT_B);
-  await openNotesPanel();
-  if ((await noteRows.count()) !== 2) throw new Error('re-annotation did not restore the note');
-  await closeNotesPanel();
-
-  // A5: the quote action still lands its own chip beside the notes.
-  await selectFragment(QUOTE);
-  await page.locator('[data-selection-quote] button', { hasText: S.quoteAction }).click();
-  await page.waitForSelector('[data-quote-chip]', { timeout: 5000 });
-  if ((await notesPill.innerText()).trim() !== S.notesPillTwo) {
-    throw new Error('quote replaced the annotations');
+  if ((await noteRows.count()) !== 1 || !(await noteRows.nth(0).innerText()).includes(COMMENT_A)) {
+    throw new Error('individual note removal removed the wrong item');
   }
-  await page.waitForTimeout(300); // let the chip entrance animation settle
-  await shot('selection-annotate-quote-chip');
+  await closeNotesPanel();
+  await annotate(FRAGMENT_B, '', 'Escape');
+  if ((await notesPill.innerText()).trim() !== S.notesPillTwo) throw new Error('re-annotation did not create a new item');
 
-  // A6: send — the wire text carries annotation segments, then the quote
-  // blockquote, then the typed text.
-  await page.click('textarea');
-  await page.type('textarea', TYPED);
-  await page.press('textarea', 'Control+Enter');
+  // The visible title participates in layout; the raw long link does not leave a blank tail.
+  await input.fill(TYPED);
+  const chip = page.locator('[data-composer-variant="main"] [data-thread-ref-overlay-token][data-ref-kind="session"]');
+  await chip.waitFor({ timeout: 5000 });
+  if ((await chip.textContent()) !== 'Fixture: selection annotate') throw new Error(`wrong thread label: ${await chip.textContent()}`);
+  if (!(await chip.getAttribute('title'))?.includes(THREAD)) throw new Error('thread chip lost its complete raw target');
+  const geometry = await page.evaluate(() => {
+    const chip = document.querySelector('[data-composer-variant="main"] [data-thread-ref-overlay-token][data-ref-kind="session"]');
+    const root = chip.closest('[data-composer-input]');
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    let range = null;
+    while (node !== null) {
+      const index = node.textContent.indexOf('after');
+      if (index !== -1) {
+        range = document.createRange();
+        range.setStart(node, index);
+        range.setEnd(node, index + 'after'.length);
+        break;
+      }
+      node = walker.nextNode();
+    }
+    const chipBox = chip.getBoundingClientRect();
+    const afterBox = range.getBoundingClientRect();
+    return {
+      gap: afterBox.left - chipBox.right,
+      above: chipBox.top - afterBox.top,
+      chipWidth: chipBox.width,
+      inputWidth: root.getBoundingClientRect().width,
+      pageOverflow: document.documentElement.scrollWidth - window.innerWidth,
+    };
+  });
+  if (geometry.above > 1 || geometry.gap < -1 || geometry.gap > 24 || geometry.chipWidth > geometry.inputWidth * 0.91 + 1 || geometry.pageOverflow > 1) {
+    throw new Error(`thread label left raw-width space or overflowed: ${JSON.stringify(geometry)}`);
+  }
+  await shot('selection-thread-reference');
+  if (await rawDraft() !== TYPED) throw new Error('copy did not return the complete raw thread link');
+
+  // Whole-token Backspace/Delete and undo operate on the raw document.
+  await input.fill(THREAD);
+  await input.press('End');
+  await input.press('Backspace');
+  if (await rawDraft() !== '') throw new Error('Backspace did not remove the complete thread token');
+  await input.press('Control+z');
+  if (await rawDraft() !== THREAD) throw new Error('undo did not restore the raw thread token');
+  // A trailing space keeps `x` outside the session id grammar; without it the
+  // entire `/s/session_…x` string is itself one valid raw reference.
+  await input.fill(`${THREAD} x`);
+  await input.press('Home');
+  await input.press('Delete');
+  const afterDelete = await rawDraft();
+  if (afterDelete !== 'x') throw new Error(`Delete did not remove the complete thread token: ${JSON.stringify(afterDelete)}`);
+  await page.evaluate((text) => navigator.clipboard.writeText(text), TYPED);
+  await input.focus();
+  await page.keyboard.press('Control+A');
+  await page.keyboard.press('Control+V');
+  if (await rawDraft() !== TYPED) throw new Error('paste did not preserve the raw draft');
+
+  // Navigation restores the full raw draft and the same two selection items.
+  if ((page.viewportSize()?.width ?? 1440) < 768) {
+    await page.locator(`button[aria-label="${S.openMenuAria}"]`).first().click();
+    await page.waitForTimeout(300);
+  }
+  await page.locator(`text=${S.newSession}`).first().click();
+  await page.waitForURL(/\/new/, { timeout: 10_000 });
+  await selectSession('Fixture: selection annotate');
+  if (await rawDraft() !== TYPED) throw new Error('navigation did not restore the complete raw draft');
+  if ((await notesPill.innerText()).trim() !== S.notesPillTwo) throw new Error('navigation lost selection items');
+
+  // Hold the first request, add another empty item, then reject the captured send.
+  let requestSeen;
+  let releaseRequest;
+  let requestFinished;
+  const seen = new Promise((resolve) => { requestSeen = resolve; });
+  const gate = new Promise((resolve) => { releaseRequest = resolve; });
+  const finished = new Promise((resolve) => { requestFinished = resolve; });
+  await page.route(`**/api/sessions/${SID}/prompts?*`, async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    requestSeen();
+    await gate;
+    await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ code: 50000, msg: 'Fixture rejected prompt', data: null }) });
+    requestFinished();
+  });
+  await page.locator('[data-send-ready]').click();
+  await seen;
+  await annotate(QUOTE, '', 'Escape');
+  // The captured two are already out of the editable draft; only the item
+  // created during the request remains until failure restores the snapshot.
+  if ((await notesPill.innerText()).trim() !== S.notesPillOne) throw new Error('item added during send was not retained');
+  releaseRequest();
+  await finished;
+  await page.unroute(`**/api/sessions/${SID}/prompts?*`);
+  await page.waitForTimeout(300);
+  if ((await notesPill.innerText()).trim() !== S.notesPillThree) throw new Error('failed send duplicated or dropped selections');
+  if (await rawDraft() !== TYPED) throw new Error('failed send lost the raw draft');
+  await openNotesPanel();
+  await shot('selection-annotate-send-failed');
+  await closeNotesPanel();
+
+  // Immediate send clears only its captured items. A newer commented item stays.
+  await input.press('Control+Enter');
+  await page.waitForFunction(() => document.querySelector('[data-composer-notes-pill]') === null, undefined, { timeout: 10_000 });
+  await annotate(NEW_QUOTE, NEW_COMMENT);
   await waitForText('Selection annotations received by the fixture.');
-  const state = await control({ action: 'session', session_id: 'session_fixture_selection_annotate' });
+  if ((await notesPill.innerText()).trim() !== S.notesPillOne) throw new Error('successful send cleared an item added afterwards');
+  const state = await control({ action: 'session', session_id: SID });
   const content = state.data?.last_prompt_submission?.content ?? [];
   const textPart = content.find((part) => part.type === 'text');
-  const expected =
-    `> ${FRAGMENT_A}\n\nComment: ${COMMENT_A}\n\n` +
-    `> ${FRAGMENT_B}\n\nComment: ${COMMENT_B}\n\n` +
-    `> ${QUOTE}\n\n${TYPED}`;
-  if (textPart === undefined || textPart.text !== expected) {
-    throw new Error(`selection carry-overs assembled wrong: ${JSON.stringify(textPart)}`);
+  if (textPart === undefined) throw new Error('sent text part is missing');
+  const expectedQuotes = [FRAGMENT_A, FRAGMENT_B, QUOTE];
+  const offsets = expectedQuotes.map((quote) => textPart.text.indexOf(`> ${quote}`));
+  if (offsets.some((offset) => offset < 0) || !(offsets[0] < offsets[1] && offsets[1] < offsets[2])) {
+    throw new Error(`selection order or source text is wrong: ${JSON.stringify(textPart)}`);
   }
-  await shot('selection-annotate-sent');
+  if (!textPart.text.includes(`Comment: ${COMMENT_A}`) || textPart.text.includes(NEW_COMMENT) || !textPart.text.includes(THREAD)) {
+    throw new Error(`send snapshot or raw thread is wrong: ${JSON.stringify(textPart)}`);
+  }
+  const selectionSpans = (textPart.presentation?.spans ?? []).filter((span) => span.kind === 'selection');
+  if (selectionSpans.map((span) => span.quote).join('|') !== expectedQuotes.join('|')) {
+    throw new Error(`selection presentation order is wrong: ${JSON.stringify(selectionSpans)}`);
+  }
+  if (selectionSpans.some((span) => span.source === undefined)) throw new Error('a generated selection lost its source anchor');
+  await shot('selection-annotate-new-item-retained');
+
+  // Canonical cold replay keeps generated source metadata out of the user message.
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await selectSession('Fixture: selection annotate');
+  await waitForText('Selection annotations received by the fixture.');
+  const visibleText = await page.locator('[role="log"]').innerText();
+  if (visibleText.includes('<!-- kiki-source:')) throw new Error('cold replay exposed generated source metadata');
+  if (!visibleText.includes(COMMENT_A)) throw new Error('cold replay lost the sent annotation');
+  await shot('selection-annotate-cold-replay');
 }
 
 async function scenarioAnnotationBubbles() {

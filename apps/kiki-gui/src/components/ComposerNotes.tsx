@@ -175,7 +175,7 @@ function NoteRow({
   const [draft, setDraft] = useState(note.comment);
   const composingRef = useRef(false);
   const trimmed = draft.trim();
-  const canSave = trimmed !== '' && trimmed !== note.comment;
+  const canSave = trimmed !== note.comment;
   const quote = oneLine(note.quote);
   return (
     <li data-composer-note={note.id} className="flex min-h-9 items-center gap-2 rounded-lg px-2 py-1 hover:bg-ink/[0.03]">
@@ -208,7 +208,9 @@ function NoteRow({
           className="min-h-8 min-w-0 flex-1 rounded-md border border-hairline bg-paper px-2 text-[12.5px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-selected-ink/20"
         />
       ) : (
-        <span className="min-w-0 flex-1 truncate text-[13px] text-ink" title={note.comment}>{note.comment}</span>
+        <span className={`min-w-0 flex-1 truncate text-[13px] ${note.comment === '' ? 'text-ink-faint' : 'text-ink'}`} title={note.comment}>
+          {note.comment === '' ? t('composer.notes.emptyComment') : note.comment}
+        </span>
       )}
       <span className="ml-auto flex shrink-0 items-center justify-end">
         {editing ? (

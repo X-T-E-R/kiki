@@ -10,6 +10,8 @@
  * the editor exactly as it was.
  */
 
+import { EditorState } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -18,6 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { readDraft, resetDraftMemoryForTests } from '@kiki/session-core/composer';
 import { I18nProvider } from '../i18n';
+import { composerInput, type ComposerInputElement } from './composerInputTestUtils';
 import { AskKikiButton, useAskKiki } from './askKiki';
 import {
   DirtyGuardContext, useDirtyGuardState, useDirtyReporter,
@@ -32,6 +35,8 @@ let root: Root;
 let container: HTMLDivElement;
 let query: QueryClient;
 const guardRef: { current: DirtyGuardState | null } = { current: null };
+const composerViews: EditorView[] = [];
+const composerHosts: HTMLElement[] = [];
 /** The live guard state, read at assert time (it is a fresh object per render). */
 const guard = () => guardRef.current!;
 /**
@@ -96,6 +101,8 @@ afterEach(async () => {
   // Any landing still waiting ends here: the focus listener gives up on a
   // focus it does not own, which is exactly what a stray focusin is.
   document.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+  for (const view of composerViews.splice(0)) view.destroy();
+  for (const host of composerHosts.splice(0)) host.remove();
   container.remove(); query.clear();
 });
 
@@ -191,16 +198,25 @@ describe('the handoff leaves before it creates', () => {
  * that lands there, and never over a caret the user placed themselves.
  */
 describe('what the handoff leaves behind after navigating', () => {
-  const composer = (sessionId: string, value: string) => {
-    const node = document.createElement('textarea');
+  const composer = (sessionId: string, value: string): ComposerInputElement => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    composerHosts.push(host);
+    const view = new EditorView({
+      parent: host,
+      state: EditorState.create({ doc: value }),
+    });
+    composerViews.push(view);
+    const node = view.contentDOM as ComposerInputElement;
+    node.setAttribute('contenteditable', 'true');
+    node.setAttribute('data-composer-input', '');
     node.setAttribute('data-composer', '');
     node.dataset['composerSession'] = sessionId;
-    node.value = value;
-    document.body.append(node);
-    return node;
+    node.dataset['composerAgent'] = 'main';
+    return composerInput(host);
   };
   /** The browser's own focus signal, with the caret where focus left it. */
-  const focusWithCaretAt = (node: HTMLTextAreaElement, at: number) => {
+  const focusWithCaretAt = (node: ComposerInputElement, at: number) => {
     node.setSelectionRange(at, at);
     node.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
   };

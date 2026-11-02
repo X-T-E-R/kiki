@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { writeSettings } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
 import { Composer } from './Composer';
+import { composerInput } from './composerInputTestUtils';
 
 const listModels = vi.fn();
 vi.mock('../state/connection', () => ({
@@ -89,7 +90,6 @@ async function renderComposer(props: Props) {
   return { container, rerender };
 }
 
-const textarea = (container: HTMLElement) => container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
 const body = (container: HTMLElement) => container.querySelector<HTMLElement>('[data-composer-body]')!;
 
 async function click(element: Element) {
@@ -102,7 +102,7 @@ describe('Composer needs-you takeover', () => {
     expect(container.querySelector('[data-composer-takeover]')).not.toBeNull();
     expect(container.querySelector('[data-test-decision]')).not.toBeNull();
     expect(body(container).hidden).toBe(true);
-    expect(textarea(container)).not.toBeNull();
+    expect(composerInput(container)).not.toBeNull();
     expect(container.querySelector('[data-needs-you-banner]')).toBeNull();
   });
 
@@ -112,7 +112,7 @@ describe('Composer needs-you takeover', () => {
     const banner = container.querySelector<HTMLButtonElement>('[data-needs-you-banner]')!;
     expect(banner.textContent).toContain('2 items need you');
 
-    const input = textarea(container);
+    const input = composerInput(container);
     input.focus();
     input.setSelectionRange(4, 4);
     await click(banner);
@@ -125,27 +125,27 @@ describe('Composer needs-you takeover', () => {
     await act(async () => { await new Promise((resolve) => { requestAnimationFrame(() => { resolve(undefined); }); }); });
     expect(container.querySelector('[data-composer-takeover]')).toBeNull();
     expect(body(container).hidden).toBe(false);
-    expect(document.activeElement).toBe(textarea(container));
-    expect(textarea(container).selectionStart).toBe(4);
-    expect(textarea(container).value).toBe('half a thought');
+    expect(document.activeElement).toBe(composerInput(container));
+    expect(composerInput(container).selectionStart).toBe(4);
+    expect(composerInput(container).value).toBe('half a thought');
   });
 
   it('holds off while the caret is in an empty input, and takes over once it leaves', async () => {
     const { container, rerender } = await renderComposer({});
-    await act(async () => { textarea(container).focus(); });
+    await act(async () => { composerInput(container).focus(); });
     await rerender({ needsYou: { count: 1, render: decision } });
     expect(container.querySelector('[data-composer-takeover]')).toBeNull();
     expect(container.querySelector('[data-needs-you-banner]')).not.toBeNull();
-    await act(async () => { textarea(container).blur(); });
+    await act(async () => { composerInput(container).blur(); });
     expect(container.querySelector('[data-composer-takeover]')).not.toBeNull();
   });
 
   it('takes over when a decision arrives after a send that left the caret in the input', async () => {
     const onSend = vi.fn(async () => {});
     const { container, rerender } = await renderComposer({ value: 'go', onSend });
-    await act(async () => { textarea(container).focus(); });
+    await act(async () => { composerInput(container).focus(); });
     await act(async () => {
-      textarea(container).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      composerInput(container).dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
     expect(onSend).toHaveBeenCalled();
     await rerender({ value: '', onSend, needsYou: { count: 1, render: decision } });
@@ -157,7 +157,7 @@ describe('Composer needs-you takeover', () => {
     await click(container.querySelector('[data-needs-you-back]')!);
     // Back puts the caret in the input on the next frame; then the user leaves.
     await act(async () => { await new Promise((resolve) => { requestAnimationFrame(() => { resolve(undefined); }); }); });
-    await act(async () => { textarea(container).blur(); });
+    await act(async () => { composerInput(container).blur(); });
     expect(container.querySelector('[data-composer-takeover]')).toBeNull();
     await rerender({ needsYou: { count: 2, render: decision } });
     expect(container.querySelector('[data-composer-takeover]')).not.toBeNull();
