@@ -23,6 +23,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -87,6 +88,7 @@ const MATRIX = {
   'notes-rail': ['width'],
   'selection-annotate': ['width'],
   'annotation-bubbles': ['width'],
+  'annotation-save-performance': ['width'],
   worktrees: ['theme', 'width'],
   // Theme is not claimed as a dimension here: this build's palette is owned by
   // the applied skin, so a brightness flag alone repaints nothing (the walker
@@ -5285,6 +5287,218 @@ async function scenarioAnnotationBubbles() {
 }
 
 /**
+ * annotation-save-performance — real save gestures over a large canonical
+ * source shared by many sent notes. In-page timestamps separate visible
+ * feedback from the following effects; storage wrappers, longtasks and CPU
+ * profiles make the cost attributable instead of inferring it from a screenshot.
+ */
+async function scenarioAnnotationSavePerformance() {
+  const SID = 'session_fixture_annotation_save_performance';
+  await page.addInitScript(() => {
+    const perf = { longtasks: [], storage: [] };
+    Object.defineProperty(window, '__annotationPerf', { value: perf });
+    for (const method of ['getItem', 'setItem', 'removeItem']) {
+      const original = Storage.prototype[method];
+      Storage.prototype[method] = function (...args) {
+        const started = performance.now();
+        try {
+          return original.apply(this, args);
+        } finally {
+          perf.storage.push({
+            method,
+            key: String(args[0]),
+            bytes: method === 'setItem' ? String(args[1]).length : 0,
+            ms: performance.now() - started,
+          });
+        }
+      };
+    }
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) perf.longtasks.push({ startTime: entry.startTime, duration: entry.duration });
+    }).observe({ entryTypes: ['longtask'] });
+  });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await selectSession('Fixture: annotation save performance');
+  await waitForText('History follow-up 23');
+  const cdp = await page.context().newCDPSession(job().page);
+  await cdp.send('Profiler.enable');
+  await cdp.send('Profiler.setSamplingInterval', { interval: 1000 });
+  const measurements = [];
+  const view = job().view;
+  const measureSave = async (name, button, selector, expected, mode = 'text') => {
+    await button.evaluate((node, args) => {
+      const perf = window.__annotationPerf;
+      const measure = {
+        startedAt: null,
+        visibleAt: null,
+        settledAt: null,
+        storageStart: perf.storage.length,
+        longtaskStart: perf.longtasks.length,
+      };
+      window.__annotationSaveMeasure = measure;
+      node.addEventListener('click', () => {
+        measure.startedAt = performance.now();
+        const done = () => {
+          const target = document.querySelector(args.selector);
+          if (target === null) return false;
+          if (args.mode === 'disabled') return target.disabled;
+          if (args.mode === 'includes') return target.textContent.includes(args.expected);
+          return target.textContent === args.expected;
+        };
+        const observer = new MutationObserver(() => {
+          if (measure.visibleAt !== null || !done()) return;
+          measure.visibleAt = performance.now();
+          observer.disconnect();
+          requestAnimationFrame(() => requestAnimationFrame(() => { measure.settledAt = performance.now(); }));
+        });
+        observer.observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
+      }, { capture: true, once: true });
+    }, { selector, expected, mode });
+    await cdp.send('Profiler.start');
+    await button.click();
+    await page.waitForFunction(() => window.__annotationSaveMeasure.settledAt !== null, undefined, { timeout: 30_000 });
+    const sample = await page.evaluate(() => {
+      const measure = window.__annotationSaveMeasure;
+      const perf = window.__annotationPerf;
+      return {
+        visibleMs: measure.visibleAt - measure.startedAt,
+        settledMs: measure.settledAt - measure.startedAt,
+        longtasks: perf.longtasks.slice(measure.longtaskStart),
+        storage: perf.storage.slice(measure.storageStart),
+      };
+    });
+    const profile = await cdp.send('Profiler.stop');
+    const suffix = `${view.width}-${view.locale}`;
+    await writeFile(join(job().out, `annotation-save-${name}-${suffix}.cpuprofile`), JSON.stringify(profile.profile));
+    const summary = {
+      name,
+      visibleMs: sample.visibleMs,
+      settledMs: sample.settledMs,
+      maxLongtaskMs: Math.max(0, ...sample.longtasks.map((entry) => entry.duration)),
+      storageMs: sample.storage.reduce((total, entry) => total + entry.ms, 0),
+      storage: sample.storage,
+    };
+    measurements.push(summary);
+    console.log(`[check] annotation ${name}: visible ${summary.visibleMs.toFixed(1)}ms, settled ${summary.settledMs.toFixed(1)}ms, max longtask ${summary.maxLongtaskMs.toFixed(1)}ms, storage ${summary.storageMs.toFixed(1)}ms`);
+    return sample;
+  };
+  const selectFragment = async (marker) => {
+    await page.evaluate((needle) => {
+      const log = document.querySelector('[role="log"]');
+      const walker = document.createTreeWalker(log, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node !== null) {
+        const index = node.textContent.indexOf(needle);
+        if (index !== -1) {
+          const range = document.createRange();
+          range.setStart(node, index);
+          range.setEnd(node, index + needle.length);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          break;
+        }
+        node = walker.nextNode();
+      }
+      document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    }, marker);
+    await page.waitForSelector('[data-selection-annotate-action]', { timeout: 5000 });
+  };
+
+  const sentBubble = page.locator('[data-annotation-bubble]').last();
+  await sentBubble.scrollIntoViewIfNeeded();
+  await sentBubble.click();
+  const sentPanel = page.locator('[data-annotation-bubble-panel]');
+  await sentPanel.waitFor({ timeout: 5000 });
+  const readTop = await page.locator('[data-transcript-scroll]').first().evaluate((node) => node.scrollTop);
+  await sentPanel.locator('[data-annotation-bubble-edit]').click();
+  await sentPanel.locator('[data-annotation-bubble-input]').fill('Sent note after save');
+  await measureSave(
+    'sent-overlay',
+    sentPanel.locator('[data-annotation-bubble-save]'),
+    '[data-annotation-bubble-panel] [data-annotation-bubble-comment]',
+    'Sent note after save',
+  );
+  const afterTop = await page.locator('[data-transcript-scroll]').first().evaluate((node) => node.scrollTop);
+  if (Math.abs(afterTop - readTop) > 1) throw new Error(`sent save moved the reading position: ${readTop} -> ${afterTop}`);
+  await shot('annotation-save-sent-overlay');
+  await page.keyboard.press('Escape');
+  await sentPanel.waitFor({ state: 'detached', timeout: 5000 });
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await waitForText('History follow-up 23');
+  const coldBubble = page.locator('[data-annotation-bubble]').last();
+  await coldBubble.scrollIntoViewIfNeeded();
+  await coldBubble.click();
+  const coldPanel = page.locator('[data-annotation-bubble-panel]');
+  await coldPanel.waitFor({ timeout: 5000 });
+  if ((await coldPanel.locator('[data-annotation-bubble-comment]').innerText()) !== 'Sent note after save') {
+    throw new Error('reopening the session lost the sent annotation override');
+  }
+  await page.keyboard.press('Escape');
+  await coldPanel.waitFor({ state: 'detached', timeout: 5000 });
+  const snapshotResponse = await fetch(`${fixtureUrl()}/api/sessions/${SID}/snapshot`, {
+    headers: { authorization: `Bearer ${FIXTURE_TOKEN}` },
+  });
+  const snapshot = await snapshotResponse.json();
+  const carrier = snapshot.data.messages.items.find((message) => message.content?.[0]?.text?.includes('History follow-up 23'));
+  const raw = carrier?.content?.[0]?.text ?? '';
+  if (!raw.includes('Comment: Sent note before save') || raw.includes('Sent note after save')) {
+    throw new Error('editing the presentation overlay changed the sent prompt');
+  }
+
+  await selectFragment('Draft target passage');
+  await page.click('[data-selection-annotate-action]');
+  await page.fill('[data-selection-annotate-input]', 'Draft note before save');
+  await page.press('[data-selection-annotate-input]', 'Enter');
+  const notesPill = page.locator('[data-composer-notes-pill]');
+  await notesPill.waitFor({ timeout: 5000 });
+  await notesPill.click();
+  const notesPanel = page.locator('[data-composer-notes-panel]');
+  await notesPanel.waitFor({ timeout: 5000 });
+  const noteRow = notesPanel.locator('[data-composer-note]').first();
+  await noteRow.locator('[data-composer-note-edit]').click();
+  await noteRow.locator('[data-composer-note-input]').fill('Draft note after tray save');
+  await measureSave(
+    'draft-tray',
+    noteRow.locator('[data-composer-note-save]'),
+    '[data-composer-notes-panel] [data-composer-note]',
+    'Draft note after tray save',
+    'includes',
+  );
+  await shot('annotation-save-draft-tray');
+  await notesPill.click();
+  await notesPanel.waitFor({ state: 'detached', timeout: 5000 });
+
+  const draftMark = page.locator('[role="log"] mark[data-annotation-ref]').filter({ hasText: 'Draft target passage' }).last();
+  await draftMark.scrollIntoViewIfNeeded();
+  await draftMark.click();
+  const annotationPanel = page.locator('[data-annotation-panel]');
+  await annotationPanel.waitFor({ timeout: 5000 });
+  await annotationPanel.locator('[data-annotation-panel-input]').fill('Draft note after mark save');
+  await measureSave(
+    'draft-mark',
+    annotationPanel.locator('[data-annotation-panel-save]'),
+    '[data-annotation-panel-save]',
+    '',
+    'disabled',
+  );
+  await shot('annotation-save-draft-mark');
+  await page.keyboard.press('Escape');
+  await annotationPanel.waitFor({ state: 'detached', timeout: 5000 });
+
+  await selectFragment('Second draft target');
+  await page.click('[data-selection-annotate-action]');
+  await page.press('[data-selection-annotate-input]', 'Escape');
+  if ((await notesPill.innerText()).trim() !== S.notesPillTwo) throw new Error('an empty follow-up selection did not accumulate');
+  const composer = page.locator('[data-composer-variant="main"] [data-composer-input]');
+  await composer.fill('Composer remains responsive after annotation saves');
+  if (!(await composer.innerText()).includes('Composer remains responsive after annotation saves')) throw new Error('annotation saves blocked composer input');
+  await writeFile(join(job().out, `annotation-save-metrics-${view.width}-${view.locale}.json`), JSON.stringify({ measurements }, null, 2));
+  throwOnPageErrors('annotation save performance');
+}
+
+/**
  * image-hover-details — the lightbox details popup is hover/focus only, never
  * a click toggle. A long Windows host path wraps in full inside the popup
  * (no truncation, no overflow), revealed by pointer hover and keyboard focus,
@@ -7274,6 +7488,7 @@ const BODIES = [
   ['agent-mentions-failure', scenarioAgentMentionsFailure],
   ['selection-annotate', scenarioSelectionAnnotate],
   ['annotation-bubbles', scenarioAnnotationBubbles],
+  ['annotation-save-performance', scenarioAnnotationSavePerformance],
   ['preview-workbench', scenarioPreviewWorkbench],
   ['image-hover-details', scenarioImageHoverDetails],
   ['preview-media', scenarioPreviewMedia],

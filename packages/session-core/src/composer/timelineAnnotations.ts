@@ -247,25 +247,36 @@ export function findQuoteRange(
 /** Block kinds eligible as annotation anchors: message text only. */
 const ANCHORABLE_KINDS = new Set(['user', 'assistant']);
 
-/** Resolve an explicit source, or a unique legacy quote; ambiguity draws nothing. */
-function annotationSource(
-  blocks: readonly TimelineBlockLike[],
-  quote: string,
-  source?: SelectionSourceAnchor | null,
-): TimelineBlockLike | undefined {
-  if (quote.trim() === '' || source === null) return undefined;
-  const candidates = blocks.filter((block) => ANCHORABLE_KINDS.has(block.kind) && block.text !== undefined);
-  if (source !== undefined) {
-    return candidates.find((block) => block.id === source.blockId && sourceTextVersion(block.text!) === source.version);
-  }
-  const matches = candidates.filter((block) => findQuoteRange(block.text!, quote) !== null);
-  return matches.length === 1 ? matches[0] : undefined;
+/** Resolve explicit sources with one version read per text in a single derivation. */
+function createAnnotationSourceResolver() {
+  const versions = new Map<string, string>();
+  const versionOf = (text: string): string => {
+    const cached = versions.get(text);
+    if (cached !== undefined) return cached;
+    const version = sourceTextVersion(text);
+    versions.set(text, version);
+    return version;
+  };
+  return (
+    blocks: readonly TimelineBlockLike[],
+    quote: string,
+    source?: SelectionSourceAnchor | null,
+  ): TimelineBlockLike | undefined => {
+    if (quote.trim() === '' || source === null) return undefined;
+    const candidates = blocks.filter((block) => ANCHORABLE_KINDS.has(block.kind) && block.text !== undefined);
+    if (source !== undefined) {
+      return candidates.find((block) => block.id === source.blockId && versionOf(block.text!) === source.version);
+    }
+    const matches = candidates.filter((block) => findQuoteRange(block.text!, quote) !== null);
+    return matches.length === 1 ? matches[0] : undefined;
+  };
 }
 
 /** Sent markers derive from the same carrying text in local echoes and cold history. */
 export function collectTimelineAnnotations(
   blocks: readonly TimelineBlockLike[],
 ): ReadonlyMap<string, readonly TimelineAnnotation[]> {
+  const annotationSource = createAnnotationSourceResolver();
   const targets = new Map<string, TimelineAnnotation[]>();
   for (let index = 0; index < blocks.length; index += 1) {
     const block = blocks[index];
@@ -291,6 +302,7 @@ export function collectDraftAnnotationTargets(
   blocks: readonly TimelineBlockLike[],
   drafts: readonly TimelineAnnotation[],
 ): ReadonlyMap<string, readonly TimelineAnnotation[]> {
+  const annotationSource = createAnnotationSourceResolver();
   const targets = new Map<string, TimelineAnnotation[]>();
   for (const draft of drafts) {
     const candidate = annotationSource(blocks, draft.quote, draft.source);
