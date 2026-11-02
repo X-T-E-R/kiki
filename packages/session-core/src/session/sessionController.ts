@@ -75,7 +75,7 @@ import {
 } from './transcript';
 import { emptyOlderSnapshot } from './transcript/selectors';
 import { collectTranscriptContentRefs, patchTranscriptContent, patchAgentTranscriptContent, replaceAgentContentEntity, replaceSnapshotContentEntity, snapshotContentEntity, transcriptContentEntity } from './transcript/content';
-import { adoptContentPreviewField, applyContentSegment, carryContentHydration, contentPathValue, restoreContentPreview, sameContentRef, type ContentRef, type ContentSource, type ContentWindow } from '@kiki/transcript';
+import { adoptContentPreviewField, applyContentSegment, carryContentHydration, contentPathValue, mergeContentPreview, restoreContentPreview, sameContentRef, type ContentRef, type ContentSource, type ContentWindow } from '@kiki/transcript';
 import { isModelSwitchQueueId } from './modelSwitchQueue';
 import { questionAnswerTexts } from './transcript/questionAnswers';
 import { interactionToBlock } from './transcript/project';
@@ -529,9 +529,10 @@ export class SessionController {
     this.snapshotControllers.add(controller);
     const attachment = this.viewAttachment;
     try {
-      const snapshot = await this.view.snapshot({ signal: controller.signal });
+      let snapshot = await this.view.snapshot({ signal: controller.signal });
       if (!this.closed && !controller.signal.aborted && attachment === this.viewAttachment &&
         (!this.state.loaded || this.resyncInFlight || (snapshot.epoch === this.state.cursor.epoch && snapshot.as_of_seq >= this.state.cursor.seq))) {
+        if (this.latestSnapshot?.epoch === snapshot.epoch) snapshot = mergeContentPreview(this.latestSnapshot, snapshot);
         this.latestSnapshot = snapshot;
         this.state = { ...this.state, contentRefs: [...collectTranscriptContentRefs(this.composeAgentSnapshot(MAIN_AGENT_ID)), ...(snapshot.contentRefs ?? [])] };
       }
@@ -2615,7 +2616,7 @@ export class SessionController {
           throw new Error('Content segment did not advance its reference');
         if (ref.source.kind === 'snapshot') {
           const current = this.latestSnapshot;
-          if (current === undefined || (rosterRead && current !== baseline)) return false;
+          if (current === undefined) return false;
           const patched = applyContentSegment(current, segment);
           if (patched === current) return false;
           this.latestSnapshot = patched;

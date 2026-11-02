@@ -43,7 +43,7 @@ export function useAutoCompact(input: {
   const key = autoCompactQueryKey(sessionId ?? '', agentId);
   const query = useQuery({
     queryKey: [...key, refreshKey ?? ''],
-    queryFn: () => client.getAutoCompact(sessionId!, agentId),
+    queryFn: () => client.getAutoCompact(sessionId!, agentId, true),
     enabled,
     staleTime: 30_000,
     retry: false,

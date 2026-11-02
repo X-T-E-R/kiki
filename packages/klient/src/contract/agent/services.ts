@@ -83,7 +83,7 @@ export const agentGoalContract = {
 export const agentPromptContract = {
   switchModel: { input: z.tuple([modelSwitchInputSchema]), output: modelSwitchReceiptSchema },
   getModelSwitch: { input: z.tuple([z.string()]), output: maybe(modelSwitchReceiptSchema) },
-  listModelSwitches: { input: z.tuple([]), output: z.array(queuedModelSwitchSchema) },
+  listModelSwitches: { input: z.tuple([z.object({ observe: z.literal(true) }).strict().optional()]), output: z.array(queuedModelSwitchSchema) },
   updateModelSwitch: { input: z.tuple([modelSwitchInputSchema, z.number().int().nonnegative().optional()]), output: modelSwitchReceiptSchema },
   cancelModelSwitch: { input: z.tuple([z.string()]), output: modelSwitchReceiptSchema },
   recoverModelSwitch: {

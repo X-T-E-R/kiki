@@ -1,5 +1,5 @@
 import {
-  Error2, ErrorCodes, IAgentLifecycleService, IAgentRuntimeService, ISessionApprovalService, ISessionContext, ISessionInteractionService, ISessionManager, ISessionMetadata, ISessionStateService, ISshHostService,
+  Error2, ErrorCodes, IAgentRuntimeService, ISessionApprovalService, ISessionContext, ISessionInteractionService, ISessionManager, ISessionMetadata, ISessionStateService, ISshHostService,
   ISshConnectionGateService, sessionSshHostsKey, sshHostFingerprint, type Scope, type SshConnectionGateService,
 } from '@kiki/agent-core-v2';
 import { parseTransientSshTarget } from '@kiki/agent-core-v2/app/ssh/sshConfig';
@@ -12,6 +12,7 @@ import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { withSessionOperation } from '../lib/sessionOperationLease';
+import { readSessionObserver } from '../lib/sessionObserver';
 import { defineRoute } from '../middleware/defineRoute';
 import { ensureMainAgent } from '../transport/mainAgent';
 import { parseActionSuffix } from './action-suffix';
@@ -209,18 +210,16 @@ export function registerSshRoutes(app: SshRouteHost, core: Scope): void {
     success: { data: sshSessionHostsResponseSchema }, tags: ['ssh'],
     errors: { [ErrorCode.SESSION_NOT_FOUND]: {} },
   }, async (req, reply) => {
-    await withSessionOperation(core, req.params.session_id, async (session) => {
-      if (session === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${req.params.session_id} does not exist`);
-      const main = session.accessor.get(IAgentLifecycleService).get('main');
-      if (main !== undefined) await main.accessor.get(ISshConnectionGateService).ready;
-      const state = session.accessor.get(ISessionStateService);
-      const joined = state.has(sessionSshHostsKey) ? state.get(sessionSshHostsKey)
-        : (await session.accessor.get(ISessionMetadata).read()).sshHosts ?? sessionSshHostsKey.initial();
-      const workspaceId = session.accessor.get(ISessionContext).workspaceId;
-      const configured = await hosts().list(workspaceId, req.params.session_id);
-      reply.send(okEnvelope({ hosts: configured.filter((host) => joined[host.id] !== undefined)
-        .map((host) => ({ host, status: hosts().status(host.id, workspaceId) })) }, req.id));
-    });
+    const observed = await readSessionObserver(core, req.params.session_id);
+    if (observed === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${req.params.session_id} does not exist`);
+    const session = observed.live;
+    const state = session?.accessor.get(ISessionStateService);
+    const joined = state?.has(sessionSshHostsKey) ? state.get(sessionSshHostsKey)
+      : (session === undefined ? observed.metadata : await session.accessor.get(ISessionMetadata).read())?.sshHosts ?? sessionSshHostsKey.initial();
+    const workspaceId = session === undefined ? observed.summary!.workspaceId : session.accessor.get(ISessionContext).workspaceId;
+    const configured = await hosts().list(workspaceId, req.params.session_id);
+    reply.send(okEnvelope({ hosts: configured.filter((host) => joined[host.id] !== undefined)
+      .map((host) => ({ host, status: hosts().status(host.id, workspaceId) })) }, req.id));
   });
   app.get(sessionList.path, sessionList.options, sessionList.handler as SshHandler);
 

@@ -1,4 +1,4 @@
-import { IAgentLifecycleService, IAppendLogStore, IAtomicDocumentStore, IModelService, IPluginUsageService, ISessionContext, ISessionIndex, ISessionManager, ISessionMetadata, IWorkspaceInstanceManager, type Scope } from '@kiki/agent-core-v2';
+import { IAgentLifecycleService, IAppendLogStore, IAtomicDocumentStore, IFileSystemStorageService, IModelService, IPluginUsageService, ISessionContext, ISessionIndex, ISessionManager, ISessionMetadata, IWorkspaceInstanceManager, type Scope } from '@kiki/agent-core-v2';
 import type { SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import { sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import { IHookRulesRegistry } from '@kiki/agent-core-v2/features/externalHooks/app/hookRules';
@@ -6,6 +6,7 @@ import { IHookRulesSession } from '@kiki/agent-core-v2/features/externalHooks/se
 import { projectHookInspection, readPersistedHookInspection } from '@kiki/agent-core-v2/features/externalHooks/internal/inspection';
 import { loadWorkspaceHookRules, projectHookRules } from '@kiki/agent-core-v2/features/externalHooks/internal/snapshot';
 import { IAgentHookRules } from '@kiki/agent-core-v2/features/externalHooks/agent/hookRules';
+import { logicalByteSize } from '@kiki/agent-core-v2/persistence/coldSegmentLog';
 import { agentHooksInspectSchema } from '@kiki/protocol';
 import { z } from 'zod';
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -20,8 +21,9 @@ interface RouteHost {
 export function registerAgentHooksRoutes(app: RouteHost, core: Scope): void {
   const route = defineRoute({ method: 'GET', path: '/sessions/{session_id}/agents/{agent_id}/hooks',
     params: z.object({ session_id: z.string().min(1), agent_id: z.string().min(1) }),
+    querystring: z.object({ observe: z.enum(['true', 'false']).optional() }),
     success: { data: agentHooksInspectSchema },
-    errors: { [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.SESSION_NOT_FOUND]: {} },
+    errors: { [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.SESSION_BUSY]: {} },
     description: 'Inspect effective hook rules, sources and cadence for an agent', tags: ['sessions'],
   }, async (req, reply) => {
     const models = core.accessor.get(IModelService);
@@ -51,6 +53,10 @@ export function registerAgentHooksRoutes(app: RouteHost, core: Scope): void {
     const docs = core.accessor.get(IAtomicDocumentStore);
     const metadata = (await docs.get<SessionMeta>(scope, 'state.json') ?? await docs.get<SessionMeta>(`${scope}/session-meta`, 'state.json'))?.agents?.[req.params.agent_id];
     if (metadata === undefined && req.params.agent_id !== 'main') { reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, 'Agent does not exist in this session', req.id)); return; }
+    if (req.query.observe === 'true' && (await logicalByteSize(core.accessor.get(IFileSystemStorageService), `${scope}/agents/${req.params.agent_id}`, 'wire.jsonl') ?? 0) > 8 * 1024 * 1024) {
+      reply.send(errEnvelope(ErrorCode.SESSION_BUSY, 'Hook cadence is unavailable while the agent is not active', req.id));
+      return;
+    }
     const lease = await core.accessor.get(IWorkspaceInstanceManager).acquire({ workspaceId: summary.workspaceId });
     try {
       await lease.instance.program.ready;

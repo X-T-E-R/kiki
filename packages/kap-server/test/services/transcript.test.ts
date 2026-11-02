@@ -4996,6 +4996,85 @@ it('continues beforeTurn past a leading higher turn when the tail window does no
   }
 });
 
+it('recovers a recent orphan opening from the tail instead of scanning an unrelated large prefix', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-recent-orphan-'));
+  const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+  await mkdir(dirname(path), { recursive: true });
+  const padding = `${JSON.stringify({ type: 'fixture.padding', padding: 'x'.repeat(256 << 10) })}\n`;
+  for (let index = 0; index < 96; index++) await appendFixtureFile(path, padding);
+  await appendFixtureFile(path, [
+    { type: 'turn.prompt', turnId: 0, promptId: 'p0', input: [{ type: 'text', text: 'older opening' }], origin: { kind: 'user' } },
+    { type: 'turn.ended', turnId: 0, reason: 'completed' },
+    { type: 'plan_mode.enter', id: 'nearby-plan' },
+    { type: 'turn.prompt', turnId: 1, promptId: 'p1', input: [{ type: 'text', text: 'recent opening' }], origin: { kind: 'user' } },
+    { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 1, step: 1, uuid: 'recent-step' } },
+  ].map(record => JSON.stringify(record)).join('\n') + '\n');
+  for (let index = 0; index < 8; index++) await appendFixtureFile(path, [
+    { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 1, stepUuid: 'recent-step', uuid: `f${index}`, toolCallId: `c${index}`, name: 'Read', args: {} } },
+    { type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: `c${index}`, result: { output: 'x'.repeat(256 << 10), isError: false } } },
+  ].map(record => JSON.stringify(record)).join('\n') + '\n');
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    const tail = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', pageSize: 1 });
+    expect(tail?.items.find(item => item.kind === 'turn')).toMatchObject({ turnId: 't1', origin: { kind: 'other' } });
+    const before = service.memoryReport().coldReads.bytes;
+    const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: 'turn:t1', pageSize: 1 });
+    expect(page?.items).toContainEqual(expect.objectContaining({ kind: 'marker', markerId: 'wire:v2:plan_mode.enter:nearby-plan' }));
+    expect(service.memoryReport().coldReads.bytes - before).toBeLessThan(8 << 20);
+  } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+});
+
+it.each(['cold', 'derived'] as const)('continues a recent orphan beside a newer turn without scanning an unrelated prefix (%s)', async (source) => {
+  const home = await mkdtemp(join(tmpdir(), 'transcript-adjacent-orphan-'));
+  const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
+  await mkdir(dirname(path), { recursive: true });
+  const padding = `${JSON.stringify({ type: 'fixture.padding', padding: 'x'.repeat(256 << 10) })}\n`;
+  for (let index = 0; index < 96; index++) await appendFixtureFile(path, padding);
+  const prompt = (turnId: number) => ({ type: 'turn.prompt', turnId, promptId: `p${turnId}`,
+    input: [{ type: 'text', text: `opening-${turnId}` }], origin: { kind: 'user' } });
+  await appendFixtureFile(path, [prompt(89), { type: 'turn.ended', turnId: 89, reason: 'completed' },
+    { type: 'plan_mode.enter', id: 'adjacent-plan' }, prompt(90),
+    { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 90, step: 1, uuid: 'recent-step' } },
+  ].map(record => JSON.stringify(record)).join('\n') + '\n');
+  for (let index = 0; index < 48; index++) await appendFixtureFile(path, [
+    { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 90, stepUuid: 'recent-step', uuid: `f${index}`, toolCallId: `c${index}`, name: 'Read', args: {} } },
+    { type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: `c${index}`, result: { output: 'x'.repeat(256 << 10), isError: false } } },
+  ].map(record => JSON.stringify(record)).join('\n') + '\n');
+  await appendFixtureFile(path, [ { type: 'turn.ended', turnId: 90, reason: 'completed' }, prompt(91) ].map(record => JSON.stringify(record)).join('\n') + '\n');
+  const service = new TranscriptService({ homeDir: home, core: coldCore() });
+  try {
+    await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', pageSize: 1 });
+    if (source === 'derived') {
+      const resident = new AgentTranscript('main');
+      resident.apply([{ op: 'reset', agentId: 'main', snapshot: (await service.readColdPageSnapshot('s1', 'main', value => value))! }]);
+      vi.spyOn(service, 'forSessionLive').mockReturnValue({ agents: () => [] } as unknown as TranscriptStore);
+      vi.spyOn(service, 'ensureAgentHistory').mockResolvedValue(resident);
+      vi.spyOn(service, 'verifyTranscriptLiveCoverage').mockResolvedValue(false);
+      vi.spyOn(service, 'getTranscriptCursor').mockReturnValue({ epoch: 'resident-test', seq: 7 });
+    }
+    const forwardSeek = vi.spyOn(service, 'readAnchoredColdSnapshot');
+    const before = service.memoryReport().coldReads.bytes;
+    let cursor = 'turn:t90';
+    let found = false;
+    let preparations = 0;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const start = service.memoryReport().coldReads.bytes;
+      const page = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: cursor, pageSize: 1 });
+      expect(service.memoryReport().coldReads.bytes - start).toBeLessThan(8 << 20);
+      expect(forwardSeek).not.toHaveBeenCalled();
+      if (page?.items.some(item => item.kind === 'marker' && item.markerId === 'wire:v2:plan_mode.enter:adjacent-plan')) { found = true; break; }
+      expect(page).toMatchObject({ items: [], has_more: true, read: { source, readiness: 'preparing' } });
+      preparations++;
+      expect(page?.next_cursor).toBeDefined();
+      cursor = page!.next_cursor!;
+    }
+    expect(preparations).toBeGreaterThan(0);
+    expect(found).toBe(true);
+    expect(service.memoryReport().coldReads.bytes - before).toBeLessThan(16 << 20);
+    expect(service.memoryReport().coldWindowBytes).toBeLessThanOrEqual(32 << 20);
+  } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+});
+
 it.each(['cold', 'derived'] as const)('seeks before a long orphan turn in bounded slices and continues its marker page (%s)', async (source) => {
   const home = await mkdtemp(join(tmpdir(), 'transcript-long-orphan-'));
   const path = join(home, 'sessions/ws/s1/agents/main/wire.jsonl');
@@ -5025,14 +5104,17 @@ it.each(['cold', 'derived'] as const)('seeks before a long orphan turn in bounde
     }
     const before = service.memoryReport().coldReads.bytes;
     let marker = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: 'turn:t1', pageSize: 1 });
+    expect(service.memoryReport().coldReads.bytes - before).toBeLessThan(8 << 20);
     if (marker?.read?.readiness === 'preparing') {
       expect(marker).toMatchObject({ items: [], has_more: true, read: { source } });
       expect(JSON.parse(Buffer.from(marker.next_cursor!, 'base64url').toString('utf8'))).toMatchObject({ anchor: 'turn:t1', source });
+      const sliceStart = service.memoryReport().coldReads.bytes;
       marker = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: marker.next_cursor!, pageSize: 1 });
+      expect(service.memoryReport().coldReads.bytes - sliceStart).toBeLessThan(8 << 20);
     }
     expect(marker?.items).toContainEqual(expect.objectContaining({ kind: 'marker', markerId: 'wire:v2:plan_mode.enter:older-plan' }));
     const locatedBytes = service.memoryReport().coldReads.bytes;
-    expect(locatedBytes - before).toBeLessThan(12 << 20);
+    expect(locatedBytes - before).toBeLessThan(14 << 20);
     const older = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: 'marker:wire:v2:plan_mode.enter:older-plan', pageSize: 1 });
     expect(older?.items.find(item => item.kind === 'turn')).toMatchObject({ turnId: 't0', prompt: 'original-0' });
     expect(service.memoryReport().coldReads.bytes - locatedBytes).toBeLessThan(2 << 20);

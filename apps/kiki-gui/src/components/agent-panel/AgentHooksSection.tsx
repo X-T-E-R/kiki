@@ -104,9 +104,15 @@ export const AgentHooksSection = memo(function AgentHooksSection({ sessionId, ag
   const { t } = useI18n();
   const { client } = useConnection();
   const [open, setOpen] = useState(false);
+  const explicitRead = useRef<string | undefined>(undefined);
+  const target = `${sessionId}/${agentId}`;
   const inspect = useQuery({
     queryKey: ['agent-hooks-inspect', sessionId, agentId],
-    queryFn: () => client.getAgentHooksInspect(sessionId, agentId),
+    queryFn: () => {
+      const observe = explicitRead.current !== target;
+      explicitRead.current = undefined;
+      return client.getAgentHooksInspect(sessionId, agentId, observe);
+    },
     refetchInterval: open ? 10_000 : false,
     refetchOnWindowFocus: (query) => query.state.status === 'error' && !isHooksUnsupportedError(query.state.error),
     retry: false,
@@ -145,7 +151,7 @@ export const AgentHooksSection = memo(function AgentHooksSection({ sessionId, ag
         <button
           type="button"
           data-agent-hooks-retry
-          onClick={() => { void inspect.refetch(); }}
+          onClick={() => { explicitRead.current = target; void inspect.refetch(); }}
           className="font-medium text-selected-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink"
         >
           {t('common.retry')}
