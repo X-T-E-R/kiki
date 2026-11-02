@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { loadDispatchProfileFile, inheritProfileFileSources } from '#/session/dispatch/profileFile';
+import { loadDispatchProfileFile, inheritProfileFileSources, restoreProfileFileSources } from '#/session/dispatch/profileFile';
+import { parseSystemMdProfile } from '@kiki/agent-profiles/systemFile';
+import { ShippedAgentProfileSourceService } from '#/app/shippedAgentProfiles/shippedAgentProfileSourceService';
+import { declaredExternalToolPolicy } from '#/agent/profile/toolBinding';
 import { freezeBoundProfile } from '#/agent/profile/boundProfile';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
@@ -50,6 +53,36 @@ it.each([{ tools: undefined }, { tools: ['manage_task'] }, { tools: ['*'] }])('f
 });
 
 describe('profile file runtime isolation', () => {
+  it.each(['builtin-default', 'inherited-default', 'empty', 'finite', 'same-as-default'] as const)('freezes only explicit caller tools as an external ceiling (%s)', async (selection) => {
+    const shipped = new ShippedAgentProfileSourceService();
+    try {
+      const tools = selection === 'empty' ? [] : selection === 'finite' ? ['Read']
+        : selection === 'same-as-default' ? shipped.getDefault().tools : undefined;
+      const original = selection === 'builtin-default' ? shipped.getDefault()
+        : parseSystemMdProfile(`---\n${tools === undefined ? '' : `tools: ${JSON.stringify(tools)}\n`}---\nCaller instructions`,
+          '/example-home/SYSTEM.md', shipped.getDefault(), () => {});
+      const catalog = { getDefault: () => original, list: () => [original] } as unknown as ISessionAgentProfileCatalog;
+      const fake = new FakeRuntime({ workspaceId: 'test', runtimeId: 'test', generation: '1' });
+      Object.defineProperty(fake, 'fs', { value: {
+        realpath: async (path: string) => path,
+        readText: async () => '---\nname: external\ndescription: External role\nexecutor: example-acp\n---\nExternal instructions',
+      } as unknown as IHostFileSystem });
+      const caller: ProfileData = { thinkingLevel: 'off', systemPrompt: '', modelCapabilities: UNKNOWN_CAPABILITY,
+        boundProfile: freezeBoundProfile(original), activeToolNames: original.tools, disallowedTools: ['Bash'] };
+      const loaded = await loadDispatchProfileFile('role.md', fake, { workDir: '/workspace' }, catalog, caller);
+      const bound = JSON.parse(JSON.stringify(freezeBoundProfile(loaded.snapshot.publicProfiles.get('external')!)));
+      const policies = tools === undefined ? [] : [tools];
+      expect(bound.fileSources.callerCeiling.externalToolAllowPolicies).toEqual(policies);
+      const restored = restoreProfileFileSources(bound.fileSources, () => original.renderSystemPrompt({}))!;
+      for (const boundProfile of [bound, freezeBoundProfile(restored)]) {
+        expect(declaredExternalToolPolicy({ boundProfile }).toolAllowPolicies).toEqual(policies);
+      }
+      expect(bound.fileSources.callerCeiling.disallowedTools).toEqual(['Bash']);
+    } finally {
+      await shipped.dispose();
+    }
+  });
+
   it('retains tool ceilings without promoting explicit advisory recommendations to a hard ceiling', async () => {
     const ctx = createTestAgent();
     try {

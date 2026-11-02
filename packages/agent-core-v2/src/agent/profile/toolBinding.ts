@@ -37,8 +37,9 @@ export function effectiveToolBinding(base: ProfileToolPolicyBase, override: Tool
 export function declaredExternalToolPolicy(binding: Pick<ProfileData, 'boundProfile' | 'appliedLease' | 'toolOverride' | 'disallowedTools'>): ToolActivationPolicy {
   const profile = binding.boundProfile;
   const lease = binding.appliedLease;
-  const tools = binding.toolOverride?.tools ?? (lease?.tools !== undefined ? lease.tools ?? undefined
-    : profile?.fileDefinition?.tools ?? ((profile?.executor ?? 'native') === 'native' ? undefined : profile?.tools));
+  const profileTools = profile?.toolsSource === 'inherited-default' || profile?.toolsSource === 'builtin-default'
+    ? undefined : profile?.fileDefinition?.tools ?? ((profile?.executor ?? 'native') === 'native' ? undefined : profile?.tools);
+  const tools = binding.toolOverride?.tools ?? (lease?.tools !== undefined ? lease.tools ?? undefined : profileTools);
   const routeTools = lease?.tools !== undefined || binding.toolOverride?.tools !== undefined ? undefined : profile?.routeDefinition?.tools;
   return { tools, toolAllowPolicies: [
     ...(routeTools === undefined ? [] : [routeTools]),

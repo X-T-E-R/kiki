@@ -4,7 +4,8 @@ import { parseAgentFileText } from '@kiki/agent-profiles/agentFile';
 import { resolveAgentProfileRoute } from '@kiki/agent-profiles/agentProfileRoute';
 import { isToolActive } from '@kiki/agent-profiles/toolPolicy';
 import { normalizeAgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
-import { effectiveToolBinding, mergeToolBindingOverride } from '#/agent/profile/toolBinding';
+import { declaredExternalToolPolicy, effectiveToolBinding, mergeToolBindingOverride } from '#/agent/profile/toolBinding';
+import { freezeBoundProfile } from '#/agent/profile/boundProfile';
 
 function routedProfile(toolAllowPolicies?: readonly (readonly string[])[]) {
   return resolveAgentProfileRoute({ id: 'route', profile: 'base', description: 'Base route', path: '/routes/base.md', promptMode: 'inherit', prompt: '', overriddenFields: [] }, normalizeAgentProfile({ name: 'base', tools: ['Read'], toolAllowPolicies, systemPrompt: () => 'base' })).effectiveProfile;
@@ -35,6 +36,20 @@ describe('call-layer tool binding', () => {
     expect(isToolActive(effective, 'Grep')).toBe(false);
     expect(isToolActive(effective, 'Write')).toBe(false);
     expect(effective.disallowedTools).toEqual(['Write', 'Bash']);
+  });
+
+  it.each(['inherited-default', 'builtin-default'] as const)('preserves explicit layers over a %s catalog', (toolsSource) => {
+    const profile = normalizeAgentProfile({ name: 'base', executor: 'example-acp', tools: ['Read'], toolsSource, systemPrompt: () => '' });
+    const boundProfile = freezeBoundProfile(profile);
+    expect(declaredExternalToolPolicy({ boundProfile }).tools).toBeUndefined();
+    for (const tools of [[], ['Read'], ['*']]) {
+      expect(declaredExternalToolPolicy({ boundProfile, toolOverride: { tools } }).tools).toEqual(tools);
+      expect(declaredExternalToolPolicy({ boundProfile, appliedLease: { name: 'base', tools } }).tools).toEqual(tools);
+    }
+    const route = resolveAgentProfileRoute({ id: 'route', profile: 'base', description: 'Route', path: '/routes/base.md',
+      promptMode: 'inherit', prompt: '', overriddenFields: ['tools'], tools: ['Read'] }, profile).effectiveProfile;
+    expect(declaredExternalToolPolicy({ boundProfile: freezeBoundProfile(route) }).toolAllowPolicies).toEqual([['Read']]);
+    expect(declaredExternalToolPolicy({ boundProfile, disallowedTools: ['Bash'] }).disallowedTools).toEqual(['Bash']);
   });
 
   it('preserves omitted fields and only clears the explicitly supplied call layer', () => {

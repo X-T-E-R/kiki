@@ -53,6 +53,9 @@ import { ToolAccesses, type ToolAccesses as ToolAccessList } from '#/tool/toolCo
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { assertExternalPermissionSupport, externalPermissionMeta } from '#/agent/execution/externalPermission';
 import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
+import { parseSystemMdProfile } from '@kiki/agent-profiles/systemFile';
+import { ShippedAgentProfileSourceService } from '#/app/shippedAgentProfiles/shippedAgentProfileSourceService';
+import { freezeBoundProfile } from '#/agent/profile/boundProfile';
 import { ErrorCodes, isError2 } from '#/errors';
 import { IAgentPermissionGate } from '#/agent/permissionGate/permissionGate';
 import { AgentPermissionGate } from '#/agent/permissionGate/permissionGateService';
@@ -266,6 +269,42 @@ describe('AgentPermissionPolicyService chain', () => {
     });
     expect(() => assertExternalPermissionSupport(context)).not.toThrow();
     expect(externalPermissionMeta(context)).toEqual({ version: 2, override: undefined });
+  });
+
+  it.each(['builtin-default', 'inherited-default'] as const)('does not diagnose the %s catalog as an external tools declaration', (source) => {
+    const shipped = disposables.add(new ShippedAgentProfileSourceService());
+    const profile = source === 'builtin-default' ? { ...shipped.getDefault(), executor: 'example-acp' }
+      : parseSystemMdProfile('---\nexecutor: example-acp\n---\nExternal instructions', '/example-home/SYSTEM.md', shipped.getDefault(), () => {});
+    const boundProfile = freezeBoundProfile(profile);
+    expect(boundProfile.toolsSource).toBe(source);
+    expect(boundProfile.fileDefinition?.tools).toEqual(shipped.getDefault().tools);
+    for (const bound of [boundProfile, JSON.parse(JSON.stringify(boundProfile))]) {
+      const context = externalContext({ boundProfile: bound, activeToolNames: profile.tools });
+      expect(() => { assertExternalPermissionSupport(context); }).not.toThrow();
+    }
+  });
+
+  it.each(['empty', 'finite', 'same-as-default'] as const)('retains a %s explicit SYSTEM.md tools declaration', (selection) => {
+    const shipped = disposables.add(new ShippedAgentProfileSourceService());
+    const tools = selection === 'empty' ? [] : selection === 'finite' ? ['Read'] : shipped.getDefault().tools;
+    const profile = parseSystemMdProfile(`---\nexecutor: example-acp\ntools: ${JSON.stringify(tools)}\n---\nExternal instructions`,
+      '/example-home/SYSTEM.md', shipped.getDefault(), () => {});
+    expect(profile.toolsSource).toBe('declared');
+    const boundProfile = JSON.parse(JSON.stringify(freezeBoundProfile(profile)));
+    expectUnsupported(externalContext({ boundProfile }), 'tools allowlist');
+  });
+
+  it('does not infer implicit provenance for a legacy snapshot from catalog equality', () => {
+    const shipped = disposables.add(new ShippedAgentProfileSourceService());
+    const boundProfile = freezeBoundProfile({ ...shipped.getDefault(), executor: 'example-acp', toolsSource: undefined });
+    expectUnsupported(externalContext({ boundProfile }), 'tools allowlist');
+  });
+
+  it.each(['deny', 'ask'] as const)('retains an explicit %s rule with an implicit external catalog', (decision) => {
+    const shipped = disposables.add(new ShippedAgentProfileSourceService());
+    const boundProfile = freezeBoundProfile({ ...shipped.getDefault(), executor: 'example-acp' });
+    rules = [{ decision, scope: 'project', pattern: 'Bash' }];
+    expectUnsupported(externalContext({ boundProfile }), 'permission.rules (project)');
   });
 
   it.each([
